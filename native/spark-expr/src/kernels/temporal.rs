@@ -18,14 +18,13 @@
 //! temporal kernels
 
 use chrono::{
-    DateTime, Datelike, Duration, LocalResult, NaiveDate, NaiveDateTime, TimeZone, Timelike, Utc,
+    DateTime, Datelike, Duration, LocalResult, NaiveDate, NaiveDateTime, Offset, TimeZone, Timelike,
 };
 
 use std::sync::Arc;
 
 use arrow::array::{
     downcast_dictionary_array, downcast_temporal_array,
-    temporal_conversions::*,
     timezone::Tz,
     types::{ArrowDictionaryKeyType, ArrowTemporalType, TimestampMicrosecondType},
     ArrowNumericType,
@@ -35,6 +34,7 @@ use arrow::{
     datatypes::{DataType, TimeUnit},
 };
 
+use crate::utils::resolve_local_datetime;
 use crate::SparkError;
 
 // Copied from arrow_arith/temporal.rs
@@ -101,78 +101,69 @@ fn trunc_days_to_week(days: i32) -> Option<i32> {
     Some(days - days_since_monday)
 }
 
-// Based on arrow_arith/temporal.rs:extract_component_from_datetime_array
-// Transforms an array of DateTime<Tz> to an array of TimestampMicrosecond after applying an
-// operation. The output array carries the input timezone annotation so downstream operators
-// (shuffle, sort, row converter) observe a matching schema.
-fn as_timestamp_tz_with_op<A: ArrayAccessor<Item = T::Native>, T: ArrowTemporalType, F>(
-    iter: ArrayIter<A>,
-    mut builder: PrimitiveBuilder<TimestampMicrosecondType>,
-    tz_str: &str,
-    op: F,
-) -> Result<TimestampMicrosecondArray, SparkError>
-where
-    F: Fn(DateTime<Tz>) -> i64,
-    i64: From<T::Native>,
-{
-    let tz: Tz = tz_str.parse()?;
-    for value in iter {
-        match value {
-            Some(value) => match as_datetime_with_timezone::<T>(value.into(), tz) {
-                Some(time) => builder.append_value(op(time)),
-                _ => {
-                    return Err(SparkError::Internal(
-                        "Unable to read value as datetime".to_string(),
-                    ));
-                }
-            },
-            None => builder.append_null(),
-        }
-    }
-    Ok(builder.finish().with_timezone(tz_str))
+/// How `date_trunc` truncates a timestamp with a timezone. Spark's `DateTimeUtils.truncTimestamp`
+/// treats the levels differently, and matching it matters around DST transitions.
+#[derive(Clone, Copy)]
+enum TzTrunc {
+    /// `MICROSECOND`, `MILLISECOND` and `SECOND`. Offsets are whole seconds, so Spark truncates the
+    /// instant itself. The value is the unit in microseconds.
+    Instant(i64),
+    /// `MINUTE`, `HOUR` and `DAY`. Spark uses `ZonedDateTime.truncatedTo`, which truncates the local
+    /// time and keeps the input's offset if the result is ambiguous.
+    LocalTime(NtzTruncFn),
+    /// `WEEK`, `MONTH`, `QUARTER` and `YEAR`. Spark truncates the local date and then takes
+    /// `LocalDate.atStartOfDay`, which uses the earlier offset if midnight is ambiguous.
+    LocalDate(NtzTruncFn),
 }
 
-fn as_timestamp_tz_with_op_single<T: ArrowTemporalType, F>(
-    value: Option<T::Native>,
+/// Truncates `micros` in `tz` the way Spark's `DateTimeUtils.truncTimestamp` does. A truncated
+/// local time that falls in a DST gap takes the offset from before the gap, which gives the same
+/// instant as Java moving it forward by the gap's length. For the date levels that is also where
+/// `atStartOfDay` puts a day whose midnight falls in a gap that starts at midnight. Returns `None`
+/// if `micros` is out of chrono's range.
+fn trunc_timestamp_in_tz(micros: i64, tz: &Tz, trunc: TzTrunc) -> Option<i64> {
+    let (trunc_fn, keep_offset) = match trunc {
+        TzTrunc::Instant(unit) => return Some(micros - micros.rem_euclid(unit)),
+        TzTrunc::LocalTime(trunc_fn) => (trunc_fn, true),
+        TzTrunc::LocalDate(trunc_fn) => (trunc_fn, false),
+    };
+    let utc = DateTime::from_timestamp_micros(micros)?.naive_utc();
+    let input_offset = tz.offset_from_utc_datetime(&utc).fix();
+    let local = trunc_fn(utc.checked_add_offset(input_offset)?)?;
+    let truncated = match tz.offset_from_local_datetime(&local) {
+        LocalResult::Single(offset) => local.checked_sub_offset(offset.fix())?,
+        LocalResult::Ambiguous(earlier, later) => {
+            let offset = if keep_offset && later.fix() == input_offset {
+                later
+            } else {
+                earlier
+            };
+            local.checked_sub_offset(offset.fix())?
+        }
+        LocalResult::None => resolve_local_datetime(tz, local).naive_utc(),
+    };
+    Some(truncated.and_utc().timestamp_micros())
+}
+
+/// Truncates one timezone-aware value and appends it to `builder`.
+fn append_trunc_in_tz(
     builder: &mut PrimitiveBuilder<TimestampMicrosecondType>,
+    value: Option<i64>,
     tz: &Tz,
-    op: F,
-) -> Result<(), SparkError>
-where
-    F: Fn(DateTime<Tz>) -> i64,
-    i64: From<T::Native>,
-{
+    trunc: TzTrunc,
+) -> Result<(), SparkError> {
     match value {
-        Some(value) => match as_datetime_with_timezone::<T>(value.into(), *tz) {
-            Some(time) => builder.append_value(op(time)),
-            _ => {
+        Some(micros) => match trunc_timestamp_in_tz(micros, tz, trunc) {
+            Some(truncated) => builder.append_value(truncated),
+            None => {
                 return Err(SparkError::Internal(
                     "Unable to read value as datetime".to_string(),
-                ));
+                ))
             }
         },
         None => builder.append_null(),
     }
     Ok(())
-}
-
-// Apply the Tz to the Naive Date Time, convert to UTC, and return as microseconds in Unix epoch.
-// After truncation the carried UTC offset may be wrong if the truncated time falls in a different
-// DST period than the original (e.g., truncating a December/PST timestamp to QUARTER yields
-// October 1 which is in PDT). We re-resolve the naive local time through the timezone so that
-// chrono picks the correct offset for the target date.
-#[inline]
-fn as_micros_from_unix_epoch_utc(dt: Option<DateTime<Tz>>) -> i64 {
-    let dt = dt.unwrap();
-    let naive = dt.naive_local();
-    let tz = dt.timezone();
-
-    match tz.from_local_datetime(&naive) {
-        LocalResult::Single(resolved) | LocalResult::Ambiguous(resolved, _) => {
-            resolved.with_timezone(&Utc).timestamp_micros()
-        }
-        LocalResult::None => dt.with_timezone(&Utc).timestamp_micros(),
-    }
 }
 
 #[inline]
@@ -581,9 +572,6 @@ fn naive_to_micros(dt: NaiveDateTime) -> i64 {
 /// Truncates a `NaiveDateTime`, returning `None` if the result is out of range.
 type NtzTruncFn = fn(NaiveDateTime) -> Option<NaiveDateTime>;
 
-/// Truncates a `DateTime<Tz>`, returning `None` if the result is out of range.
-type TzTruncFn = fn(DateTime<Tz>) -> Option<DateTime<Tz>>;
-
 /// The `timestamp_trunc` formats Spark accepts for the NTZ path, and the truncation each one
 /// selects. All entries are ASCII, so `eq_ignore_ascii_case` on the raw input matches Spark
 /// without allocating.
@@ -605,23 +593,23 @@ const TIMESTAMP_TRUNC_FORMATS_NTZ: [(&str, NtzTruncFn); 15] = [
     ("MICROSECOND", trunc_date_to_microsec),
 ];
 
-/// Same formats as `TIMESTAMP_TRUNC_FORMATS_NTZ`, monomorphized for the timezone-aware path.
-const TIMESTAMP_TRUNC_FORMATS_TZ: [(&str, TzTruncFn); 15] = [
-    ("YEAR", trunc_date_to_year),
-    ("YYYY", trunc_date_to_year),
-    ("YY", trunc_date_to_year),
-    ("QUARTER", trunc_date_to_quarter),
-    ("MONTH", trunc_date_to_month),
-    ("MON", trunc_date_to_month),
-    ("MM", trunc_date_to_month),
-    ("WEEK", trunc_date_to_week),
-    ("DAY", trunc_date_to_day),
-    ("DD", trunc_date_to_day),
-    ("HOUR", trunc_date_to_hour),
-    ("MINUTE", trunc_date_to_minute),
-    ("SECOND", trunc_date_to_second),
-    ("MILLISECOND", trunc_date_to_ms),
-    ("MICROSECOND", trunc_date_to_microsec),
+/// The same formats as `TIMESTAMP_TRUNC_FORMATS_NTZ`, for the timezone-aware path.
+const TIMESTAMP_TRUNC_FORMATS_TZ: [(&str, TzTrunc); 15] = [
+    ("YEAR", TzTrunc::LocalDate(trunc_date_to_year)),
+    ("YYYY", TzTrunc::LocalDate(trunc_date_to_year)),
+    ("YY", TzTrunc::LocalDate(trunc_date_to_year)),
+    ("QUARTER", TzTrunc::LocalDate(trunc_date_to_quarter)),
+    ("MONTH", TzTrunc::LocalDate(trunc_date_to_month)),
+    ("MON", TzTrunc::LocalDate(trunc_date_to_month)),
+    ("MM", TzTrunc::LocalDate(trunc_date_to_month)),
+    ("WEEK", TzTrunc::LocalDate(trunc_date_to_week)),
+    ("DAY", TzTrunc::LocalTime(trunc_date_to_day)),
+    ("DD", TzTrunc::LocalTime(trunc_date_to_day)),
+    ("HOUR", TzTrunc::LocalTime(trunc_date_to_hour)),
+    ("MINUTE", TzTrunc::LocalTime(trunc_date_to_minute)),
+    ("SECOND", TzTrunc::Instant(1_000_000)),
+    ("MILLISECOND", TzTrunc::Instant(1_000)),
+    ("MICROSECOND", TzTrunc::Instant(1)),
 ];
 
 /// Resolve a truncation format string to the corresponding NaiveDateTime truncation function.
@@ -641,7 +629,7 @@ fn ntz_trunc_fn_for_format(format: &str) -> Result<NtzTruncFn, SparkError> {
 }
 
 /// Timezone-aware sibling of `ntz_trunc_fn_for_format`.
-fn tz_trunc_fn_for_format(format: &str) -> Result<TzTruncFn, SparkError> {
+fn tz_trunc_for_format(format: &str) -> Result<TzTrunc, SparkError> {
     TIMESTAMP_TRUNC_FORMATS_TZ
         .iter()
         .find(|(name, _)| name.eq_ignore_ascii_case(format))
@@ -711,18 +699,19 @@ where
     T: ArrowTemporalType + ArrowNumericType,
     i64: From<T::Native>,
 {
-    let builder = TimestampMicrosecondBuilder::with_capacity(array.len());
-    let iter = ArrayIter::new(array);
     match array.data_type() {
         DataType::Timestamp(TimeUnit::Microsecond, None) => {
             // TimestampNTZ: operate directly on naive microsecond values without timezone
             timestamp_trunc_ntz(array, format)
         }
-        DataType::Timestamp(TimeUnit::Microsecond, Some(tz)) => {
-            let trunc_fn = tz_trunc_fn_for_format(&format)?;
-            as_timestamp_tz_with_op::<&PrimitiveArray<T>, T, _>(iter, builder, tz, |dt| {
-                as_micros_from_unix_epoch_utc(trunc_fn(dt))
-            })
+        DataType::Timestamp(TimeUnit::Microsecond, Some(tz_str)) => {
+            let trunc = tz_trunc_for_format(&format)?;
+            let tz: Tz = tz_str.parse()?;
+            let mut builder = TimestampMicrosecondBuilder::with_capacity(array.len());
+            for value in array.iter() {
+                append_trunc_in_tz(&mut builder, value.map(i64::from), &tz, trunc)?;
+            }
+            Ok(builder.finish().with_timezone(tz_str.as_ref()))
         }
         dt => return_compute_error_with!(
             "Unsupported input type '{:?}' for function 'timestamp_trunc'",
@@ -826,10 +815,8 @@ macro_rules! timestamp_trunc_array_fmt_helper {
             DataType::Timestamp(TimeUnit::Microsecond, Some(tz_str)) => {
                 let tz: Tz = tz_str.parse()?;
                 for (index, val) in iter.enumerate() {
-                    let trunc_fn = tz_trunc_fn_for_format($formats.value(index))?;
-                    as_timestamp_tz_with_op_single::<T, _>(val, &mut builder, &tz, |dt| {
-                        as_micros_from_unix_epoch_utc(trunc_fn(dt))
-                    })?;
+                    let trunc = tz_trunc_for_format($formats.value(index))?;
+                    append_trunc_in_tz(&mut builder, val.map(|v| i64::from(v)), &tz, trunc)?;
                 }
                 Ok(builder.finish().with_timezone(tz_str.as_ref()))
             }
@@ -1238,6 +1225,52 @@ mod tests {
     /// pre-fix kernel reused the input's MST offset for the truncated date, producing a result
     /// one hour late. Also verifies the output array carries the input timezone, which is what
     /// allows the result to flow through shuffle/sort without a `RowConverter` schema mismatch.
+    /// Truncation around DST transitions, against java.time, which Spark's `truncTimestamp` uses.
+    /// The ambiguous hours check that `MINUTE`, `HOUR` and `DAY` keep the input's offset, and São
+    /// Paulo on 2018-11-04 has no midnight.
+    #[test]
+    fn test_timestamp_trunc_matches_spark_at_dst_transitions() {
+        let formats = ["MINUTE", "HOUR", "DAY", "WEEK", "MONTH", "QUARTER", "YEAR"];
+        #[rustfmt::skip]
+        let cases: [(&str, i64, [i64; 7]); 7] = [
+            // 01:30 PDT on 2024-11-03, the first 01:30 of the fall-back day
+            ("America/Los_Angeles", 1_730_622_600_000_000, [1_730_622_600_000_000, 1_730_620_800_000_000,
+                1_730_617_200_000_000, 1_730_098_800_000_000, 1_730_444_400_000_000, 1_727_766_000_000_000,
+                1_704_096_000_000_000]),
+            // 01:30 PST on 2024-11-03, the second 01:30
+            ("America/Los_Angeles", 1_730_626_200_000_000, [1_730_626_200_000_000, 1_730_624_400_000_000,
+                1_730_617_200_000_000, 1_730_098_800_000_000, 1_730_444_400_000_000, 1_727_766_000_000_000,
+                1_704_096_000_000_000]),
+            // 03:30 PDT on 2024-03-10, just after the spring-forward gap
+            ("America/Los_Angeles", 1_710_066_600_000_000, [1_710_066_600_000_000, 1_710_064_800_000_000,
+                1_710_057_600_000_000, 1_709_539_200_000_000, 1_709_280_000_000_000, 1_704_096_000_000_000,
+                1_704_096_000_000_000]),
+            // 01:39 PST on 1970-10-25, the second 01:39 of that fall-back day
+            ("America/Los_Angeles", 25_695_540_000_000, [25_695_540_000_000, 25_693_200_000_000,
+                25_686_000_000_000, 25_167_600_000_000, 23_612_400_000_000, 23_612_400_000_000,
+                28_800_000_000]),
+            // 13:00 on 2018-11-04 in São Paulo, a day whose midnight was skipped
+            ("America/Sao_Paulo", 1_541_343_600_000_000, [1_541_343_600_000_000, 1_541_343_600_000_000,
+                1_541_300_400_000_000, 1_540_782_000_000_000, 1_541_041_200_000_000, 1_538_362_800_000_000,
+                1_514_772_000_000_000]),
+            // 23:30 -02:00 on 2019-02-16, the first 23:30 of that fall-back night
+            ("America/Sao_Paulo", 1_550_367_000_000_000, [1_550_367_000_000_000, 1_550_365_200_000_000,
+                1_550_282_400_000_000, 1_549_850_400_000_000, 1_548_986_400_000_000, 1_546_308_000_000_000,
+                1_546_308_000_000_000]),
+            // 23:30 -03:00 on 2019-02-16, the second 23:30
+            ("America/Sao_Paulo", 1_550_370_600_000_000, [1_550_370_600_000_000, 1_550_368_800_000_000,
+                1_550_282_400_000_000, 1_549_850_400_000_000, 1_548_986_400_000_000, 1_546_308_000_000_000,
+                1_546_308_000_000_000]),
+        ];
+        for (tz, micros, expected) in cases {
+            let input = TimestampMicrosecondArray::from(vec![micros]).with_timezone(tz);
+            for (format, want) in formats.iter().zip(expected) {
+                let result = timestamp_trunc(&input, format.to_string()).unwrap();
+                assert_eq!(result.value(0), want, "{tz} {micros} {format}");
+            }
+        }
+    }
+
     #[test]
     fn test_timestamp_trunc_dst_boundary() {
         // 2023-11-15 18:30:00 UTC = 2023-11-15 11:30 MST
