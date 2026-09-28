@@ -41,8 +41,8 @@ import software.amazon.awssdk.auth.credentials.AwsSessionCredentials;
  *
  * <p>Activation: set {@code spark.sql.catalog.<cat>.s3.comet.credential.provider.class =
  * org.apache.comet.cloud.s3.IcebergRESTVendedS3Provider}. Comet calls {@link #initialize} once per
- * catalog with the unfiltered FileIO property bag, which carries {@code credentials.uri} and
- * {@code uri} as required by {@code VendedCredentialsProvider.create}.
+ * catalog with the unfiltered FileIO property bag, which carries {@code credentials.uri} and {@code
+ * uri} as required by {@code VendedCredentialsProvider.create}.
  */
 public final class IcebergRESTVendedS3Provider implements CometS3CredentialProvider {
 
