@@ -101,6 +101,7 @@ async fn assert_timestamp_overflow_preserved(nested: bool) {
             false,
             false,
             false,
+            false, // binary_as_string
             &session,
             false,
             false,

@@ -67,6 +67,7 @@ fn partitioned_scan(
         false,
         false,
         false,
+        false, // binary_as_string
         session,
         false,
         false,
