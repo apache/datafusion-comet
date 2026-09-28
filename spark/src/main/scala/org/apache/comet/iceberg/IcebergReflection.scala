@@ -57,6 +57,8 @@ object IcebergReflection extends Logging {
     val SPARK_STAGED_SCAN = "org.apache.iceberg.spark.source.SparkStagedScan"
     val SPARK_SCHEMA_UTIL = "org.apache.iceberg.spark.SparkSchemaUtil"
     val TABLE = "org.apache.iceberg.Table"
+    val DEFAULT_LOCATION_PROVIDER =
+      "org.apache.iceberg.LocationProviders$DefaultLocationProvider"
     val RESOLVING_FILE_IO = "org.apache.iceberg.io.ResolvingFileIO"
     val GCS_FILE_IO = "org.apache.iceberg.gcp.gcs.GCSFileIO"
     val PARTITIONING = "org.apache.iceberg.Partitioning"
@@ -1371,21 +1373,39 @@ object IcebergReflection extends Logging {
     }
   }
 
-  def getDataLocation(table: Any): Option[String] =
+  /**
+   * The table's resolved `LocationProvider` (`table.locationProvider()`). Inspecting the
+   * instantiated provider catches custom `TableOperations` that supply one without setting
+   * `write.location-provider.impl`. Returns `None` on reflection failure so callers fail closed.
+   */
+  def getLocationProvider(table: Any): Option[AnyRef] =
     try {
       val locationProviderMethod =
         findMethodInHierarchy(table.getClass, "locationProvider").getOrElse(
           throw new NoSuchMethodException(
             s"locationProvider() not found on ${table.getClass.getName}"))
-      val provider = locationProviderMethod.invoke(table)
-      val newDataLocMethod = provider.getClass.getMethod("newDataLocation", classOf[String])
-      newDataLocMethod.setAccessible(true)
-      val location = newDataLocMethod.invoke(provider, "").asInstanceOf[String]
-      Some(location.stripSuffix("/"))
+      Option(locationProviderMethod.invoke(table).asInstanceOf[AnyRef])
     } catch {
       case e: Exception =>
-        logError(s"Iceberg reflection failure: Failed to get data location: ${e.getMessage}", e)
+        logError(
+          "Iceberg reflection failure: Failed to get LocationProvider from table: " +
+            s"${e.getMessage}",
+          e)
         None
+    }
+
+  def getDataLocation(table: Any): Option[String] =
+    getLocationProvider(table).flatMap { provider =>
+      try {
+        val newDataLocMethod = provider.getClass.getMethod("newDataLocation", classOf[String])
+        newDataLocMethod.setAccessible(true)
+        val location = newDataLocMethod.invoke(provider, "").asInstanceOf[String]
+        Some(location.stripSuffix("/"))
+      } catch {
+        case e: Exception =>
+          logError(s"Iceberg reflection failure: Failed to get data location: ${e.getMessage}", e)
+          None
+      }
     }
 
   /**
