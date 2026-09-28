@@ -77,6 +77,26 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("AtLeastNNonNulls: counter and batch boundaries") {
+    val columns = (0 until 33).map(i => s"c$i")
+    val fields = columns.zipWithIndex.map { case (name, i) =>
+      s"CASE WHEN (id + $i) % 33 < id % 34 THEN cast(id AS DOUBLE) " +
+        s"WHEN $i % 2 = 0 THEN cast('NaN' AS DOUBLE) ELSE NULL END AS $name"
+    }
+    withTempPath { dir =>
+      spark.range(137).selectExpr((Seq("id") ++ fields): _*).write.parquet(dir.getCanonicalPath)
+      withParquetTable(dir.getCanonicalPath, "nonnulls") {
+        withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "65") {
+          for (n <- Seq(2, 3, 7, 8, 15, 16, 17, 31, 32, 33, 34)) {
+            checkSparkAnswerAndImpl(
+              spark.table("nonnulls").na.drop(n, columns),
+              native = Seq("atleastnnonnulls"))
+          }
+        }
+      }
+    }
+  }
+
   test("AtLeastNNonNulls: complex values use only their outer nullability") {
     val input = sql("""SELECT * FROM VALUES
       (array(cast(NULL AS INT)), named_struct('a', cast(NULL AS INT)), map(1, cast(NULL AS INT))),

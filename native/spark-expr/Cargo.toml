@@ -438,3 +438,7 @@ harness = false
 [[bench]]
 name = "nested_comparison"
 harness = false
+
+[[bench]]
+name = "at_least_n_non_nulls"
+harness = false

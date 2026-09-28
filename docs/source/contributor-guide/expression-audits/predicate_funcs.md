@@ -93,6 +93,8 @@
 
 Comet uses a native physical expression to preserve per-row short-circuit evaluation. Non-floating types use outer logical nullability; nested nulls and empty collections remain non-null values. Rust tests cover thresholds, sliced and empty batches, dictionary values, literals, and required and skipped child errors. DataFrame tests cover native routing, disabled-expression fallback, complex types and ANSI casts. This internal predicate has no SQL function name.
 
+- Performance (tuned 2026-09-28, [#6180](https://github.com/apache/datafusion-comet/pull/6180)): general thresholds use 64-row bitmap counters, retaining row counters below 64 rows. On M3 Pro in release mode, paired comparisons against `6ad5c0d2` measured 4.8–5.0x faster Float64 evaluation (0% NULL, 5% NaN) and 8.4–8.5x faster Utf8 evaluation (50% NULL), with 8192 rows, 32 columns and threshold 16. These are expression timings, not full-query speedups. The [Criterion benchmark](../../../../native/spark-expr/benches/at_least_n_non_nulls.rs) covers small batches and NULL/NaN densities; two supplementary 1,020-case paired runs covered random/clustered distributions and non-power-of-two thresholds without a reproduced regression over 5%.
+
 ## between
 
 - Spark 3.4.3 (audited 2026-05-27): the SQL form `expr BETWEEN low AND high` is rewritten at the parser level to `expr >= low AND expr <= high`. Comet sees only the resulting `And(GreaterThanOrEqual, LessThanOrEqual)` and routes via `CometAnd` + `CometGreaterThanOrEqual` + `CometLessThanOrEqual`.

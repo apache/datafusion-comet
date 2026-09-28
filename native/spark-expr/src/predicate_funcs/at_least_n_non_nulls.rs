@@ -19,7 +19,7 @@ use std::fmt::{Display, Formatter};
 use std::sync::Arc;
 
 use arrow::array::{Array, ArrayRef, AsArray, BooleanArray, RecordBatch};
-use arrow::buffer::BooleanBuffer;
+use arrow::buffer::{BooleanBuffer, Buffer};
 use arrow::compute::cast;
 use arrow::datatypes::{DataType, Float32Type, Float64Type, Schema};
 use datafusion::common::{Result, ScalarValue};
@@ -37,6 +37,54 @@ pub struct AtLeastNNonNulls {
 impl AtLeastNNonNulls {
     pub fn new(n: i32, children: Vec<Arc<dyn PhysicalExpr>>) -> Self {
         Self { n, children }
+    }
+
+    // Sub-word batches do not amortize the bitmap counter's bookkeeping. Keep
+    // the row counter for these batches, including single-row scalar inputs.
+    fn evaluate_small_batch(&self, batch: &RecordBatch) -> Result<ColumnarValue> {
+        let mut counts = vec![0; batch.num_rows()];
+        let mut remaining = batch.num_rows();
+        for child in &self.children {
+            if remaining == 0 {
+                break;
+            }
+            // Column/literal reads cannot raise per-row errors or have side effects. Avoid
+            // filtering the input batch for the common DataFrame.na.drop attribute inputs.
+            let value =
+                if remaining == batch.num_rows() || child.is::<Column>() || child.is::<Literal>() {
+                    child.evaluate(batch)?
+                } else {
+                    let selection = BooleanArray::new(
+                        BooleanBuffer::collect_bool(counts.len(), |i| counts[i] < self.n),
+                        None,
+                    );
+                    child.evaluate_selection(batch, &selection)?
+                };
+            let scalar = matches!(value, ColumnarValue::Scalar(_));
+            let array = value.into_array(if scalar { 1 } else { batch.num_rows() })?;
+            let valid = valid_values(&array)?;
+            if scalar {
+                if valid.value(0) {
+                    for count in &mut counts {
+                        if *count < self.n {
+                            *count += 1;
+                            remaining -= usize::from(*count == self.n);
+                        }
+                    }
+                }
+            } else {
+                for row in valid.set_indices() {
+                    if counts[row] < self.n {
+                        counts[row] += 1;
+                        remaining -= usize::from(counts[row] == self.n);
+                    }
+                }
+            }
+        }
+        Ok(ColumnarValue::Array(Arc::new(BooleanArray::new(
+            BooleanBuffer::collect_bool(counts.len(), |i| counts[i] >= self.n),
+            None,
+        ))))
     }
 }
 
@@ -93,20 +141,29 @@ impl PhysicalExpr for AtLeastNNonNulls {
                 result, None,
             ))));
         }
-        let mut counts = vec![0; batch.num_rows()];
+        if batch.num_rows() < 64 {
+            return self.evaluate_small_batch(batch);
+        }
+        // One bit plane per binary digit holds 64 row counts in each chunk.
+        // Increment these counters with a half-adder, saturating at n by masking
+        // out rows that have already reached it.
+        let bits = (i32::BITS - self.n.leading_zeros()) as usize;
+        let chunks = batch.num_rows().div_ceil(64);
+        let mut counts = vec![0_u64; chunks * bits];
+        let mut result = vec![0_u64; chunks];
         let mut remaining = batch.num_rows();
         for child in &self.children {
             if remaining == 0 {
                 break;
             }
-            // Column/literal reads cannot raise per-row errors or have side effects. Avoid
-            // filtering the input batch for the common DataFrame.na.drop attribute inputs.
             let value =
                 if remaining == batch.num_rows() || child.is::<Column>() || child.is::<Literal>() {
                     child.evaluate(batch)?
                 } else {
                     let selection = BooleanArray::new(
-                        BooleanBuffer::collect_bool(counts.len(), |i| counts[i] < self.n),
+                        BooleanBuffer::collect_bool(batch.num_rows(), |row| {
+                            result[row / 64] & (1 << (row % 64)) == 0
+                        }),
                         None,
                     );
                     child.evaluate_selection(batch, &selection)?
@@ -114,26 +171,47 @@ impl PhysicalExpr for AtLeastNNonNulls {
             let scalar = matches!(value, ColumnarValue::Scalar(_));
             let array = value.into_array(if scalar { 1 } else { batch.num_rows() })?;
             let valid = valid_values(&array)?;
-            if scalar {
-                if valid.value(0) {
-                    for count in &mut counts {
-                        if *count < self.n {
-                            *count += 1;
-                            remaining -= usize::from(*count == self.n);
-                        }
-                    }
+            let valid = if scalar {
+                if !valid.value(0) {
+                    continue;
                 }
+                BooleanBuffer::new_set(batch.num_rows())
             } else {
-                for row in valid.set_indices() {
-                    if counts[row] < self.n {
-                        counts[row] += 1;
-                        remaining -= usize::from(counts[row] == self.n);
+                valid
+            };
+            for ((counts, result), valid) in counts
+                .chunks_exact_mut(bits)
+                .zip(&mut result)
+                .zip(valid.bit_chunks().iter_padded())
+            {
+                let mut carry = valid & !*result;
+                if carry == 0 {
+                    continue;
+                }
+                for count in counts.iter_mut() {
+                    let next = *count & carry;
+                    *count ^= carry;
+                    carry = next;
+                    if carry == 0 {
+                        break;
                     }
                 }
+                // Counts never exceed n, so intersecting its set bit planes
+                // identifies equality without comparing the zero bit planes.
+                let mut threshold = (self.n as u32) ^ (1 << (bits - 1));
+                let mut reached = counts[bits - 1];
+                while threshold != 0 && reached != 0 {
+                    reached &= counts[threshold.trailing_zeros() as usize];
+                    threshold &= threshold - 1;
+                }
+                remaining -= (reached & !*result).count_ones() as usize;
+                *result |= reached;
             }
         }
+        // Arrow stores bitmap bytes in little-endian order on every platform.
+        let result = result.into_iter().map(u64::to_le).collect::<Vec<_>>();
         Ok(ColumnarValue::Array(Arc::new(BooleanArray::new(
-            BooleanBuffer::collect_bool(counts.len(), |i| counts[i] >= self.n),
+            BooleanBuffer::new(Buffer::from_vec(result), 0, batch.num_rows()),
             None,
         ))))
     }
@@ -358,6 +436,117 @@ mod tests {
         for n in [2, 3] {
             assert!(AtLeastNNonNulls::new(n, required.clone())
                 .evaluate(&batch)
+                .is_err());
+        }
+    }
+
+    #[test]
+    fn at_least_n_non_nulls_counter_bit_boundaries() {
+        // Every possible count up to 65 occurs on both sides of word boundaries.
+        // Rotating the valid children also exercises different carry orders.
+        let input = batch(
+            (0..65)
+                .map(|column| {
+                    Arc::new(Float64Array::from_iter((0..200).map(|row| {
+                        if (column + row) % 65 < row % 66 {
+                            Some(row as f64)
+                        } else if column % 2 == 0 {
+                            Some(f64::NAN)
+                        } else {
+                            None
+                        }
+                    }))) as ArrayRef
+                })
+                .collect(),
+        );
+        for offset in [0, 1, 7, 63] {
+            for len in [0, 1, 63, 64, 65, 129] {
+                let sliced = input.slice(offset, len);
+                for n in (0..=66).chain([i32::MAX as usize]) {
+                    let expected = (offset..offset + len)
+                        .map(|row| row % 66 >= n)
+                        .collect::<Vec<_>>();
+                    assert_eq!(
+                        result(&AtLeastNNonNulls::new(n as i32, columns(&sliced)), &sliced),
+                        expected,
+                        "offset={offset}, len={len}, n={n}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn at_least_n_non_nulls_bitmap_dictionary_and_scalars() {
+        let keys =
+            Int32Array::from_iter(
+                (0..137).map(|row| if row % 4 == 3 { None } else { Some(row % 4) }),
+            );
+        let floats = DictionaryArray::<Int32Type>::try_new(
+            keys.clone(),
+            Arc::new(Float64Array::from(vec![Some(3.0), Some(f64::NAN), None])),
+        )
+        .unwrap();
+        let strings = DictionaryArray::<Int32Type>::try_new(
+            keys,
+            Arc::new(StringArray::from(vec![Some(""), Some("NaN"), None])),
+        )
+        .unwrap();
+        let input = batch(vec![Arc::new(floats), Arc::new(strings)]).slice(3, 129);
+        let mut children = columns(&input);
+        children.push(Arc::new(Literal::new(ScalarValue::Utf8(Some("".into())))));
+        children.push(Arc::new(Literal::new(ScalarValue::Float32(Some(f32::NAN)))));
+        for n in 1..=5 {
+            let expected = (3..132)
+                .map(|row| [3, 2, 1, 1][row % 4] >= n)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                result(&AtLeastNNonNulls::new(n, children.clone()), &input),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn at_least_n_non_nulls_mixed_completion_before_cast() {
+        let input = batch(vec![
+            Arc::new(Int32Array::from_iter((0..137).map(|row| {
+                if row % 3 == 0 {
+                    None
+                } else {
+                    Some(1)
+                }
+            }))),
+            Arc::new(StringArray::from_iter((0..137).map(|row| {
+                if row % 3 == 0 {
+                    Some("7")
+                } else {
+                    Some("bad")
+                }
+            }))),
+        ]);
+        let children: Vec<Arc<dyn PhysicalExpr>> = vec![
+            Arc::new(Column::new("c0", 0)),
+            Arc::new(Literal::new(ScalarValue::Int32(Some(1)))),
+            Arc::new(CastExpr::new(
+                Arc::new(Column::new("c1", 1)),
+                DataType::Int32,
+                Some(CastOptions {
+                    safe: false,
+                    ..Default::default()
+                }),
+            )),
+            Arc::new(Literal::new(ScalarValue::Int32(None))),
+        ];
+        for len in [1, 63, 64, 65, 129] {
+            let sliced = input.slice(7, len);
+            assert_eq!(
+                result(&AtLeastNNonNulls::new(2, children.clone()), &sliced),
+                vec![true; len]
+            );
+            // These rows still need the cast when n=3, so its error is required.
+            assert!(AtLeastNNonNulls::new(3, children.clone())
+                .evaluate(&sliced)
                 .is_err());
         }
     }
