@@ -41,7 +41,10 @@ paths depending on whether the plan reads data from the JVM:
 **Async I/O path (no JVM data sources, e.g. Iceberg scans):** The DataFusion stream is spawned
 onto a tokio worker thread and batches are delivered to the executor thread via an `mpsc` channel.
 The executor thread parks in `blocking_recv()` until the next batch is ready. This avoids
-busy-polling on I/O-bound workloads.
+busy-polling on I/O-bound workloads. The channel closes when the task ends, and a task also ends
+when it is cancelled, as every task is when the runtime shuts down. So the task records that the
+stream has ended before it closes the channel, and a channel that closes without that record fails
+the Spark task instead of ending its output early.
 
 **JVM data source path (ScanExec or ShuffleScanExec present):** The executor thread calls
 `block_on()` and polls the DataFusion stream directly. On `Poll::Pending` it calls

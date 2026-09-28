@@ -1093,6 +1093,10 @@ where
 /// task thread.
 struct BatchProducer {
     batches: mpsc::Receiver<DataFusionResult<RecordBatch>>,
+    /// Set by the task once it has sent the stream's last batch. The channel closes whenever the
+    /// task ends, and a runtime that shuts down ends every task it has by cancelling it, so only
+    /// this tells the consumer that it has had every batch.
+    stream_ended: Arc<AtomicBool>,
     /// The plan's stream, and with it every reservation the stream holds. The task locks it only
     /// while polling it, so `stop` can take it whenever the task is waiting.
     stream: Arc<Mutex<Option<SendableRecordBatchStream>>>,
@@ -1107,6 +1111,8 @@ impl BatchProducer {
         // trade memory for latency hiding if JNI/FFI overhead dominates;
         // decreasing to 1 would serialize production and consumption.
         let (tx, batches) = mpsc::channel(2);
+        let stream_ended = Arc::new(AtomicBool::new(false));
+        let ended = Arc::clone(&stream_ended);
         let stream = Arc::new(Mutex::new(Some(stream)));
         let polled = Arc::clone(&stream);
         let task = runtime.spawn(async move {
@@ -1120,9 +1126,10 @@ impl BatchProducer {
                 };
                 while let Some(batch) = next().await {
                     if tx.send(batch).await.is_err() {
-                        break;
+                        return;
                     }
                 }
+                ended.store(true, Ordering::Release);
             })
             .catch_unwind()
             .await;
@@ -1144,8 +1151,26 @@ impl BatchProducer {
         });
         Self {
             batches,
+            stream_ended,
             stream,
             task,
+        }
+    }
+
+    /// Waits for the plan's next batch, and returns `None` once the stream has ended.
+    ///
+    /// A channel that closes before the stream has ended means the task was cancelled, and the
+    /// plan's output is incomplete. That is an error, or the Spark task would end successfully
+    /// with only the batches it has read so far.
+    fn next_batch(&mut self) -> CometResult<Option<RecordBatch>> {
+        match self.batches.blocking_recv() {
+            Some(batch) => Ok(Some(batch?)),
+            None if self.stream_ended.load(Ordering::Acquire) => Ok(None),
+            None => Err(CometError::Internal(
+                "The Tokio task running the native plan was cancelled before the plan produced \
+                 all of its output, for instance because Comet's Tokio runtime was shut down"
+                    .to_string(),
+            )),
         }
     }
 
@@ -1161,6 +1186,7 @@ impl BatchProducer {
             batches,
             stream,
             task,
+            ..
         } = self;
         drop(batches);
         task.abort();
@@ -1254,8 +1280,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
             }
 
             if let Some(producer) = &mut exec_context.batch_producer {
-                match producer.batches.blocking_recv() {
-                    Some(Ok(batch)) => {
+                match producer.next_batch()? {
+                    Some(batch) => {
                         update_metrics(env, exec_context)?;
                         return prepare_output(
                             env,
@@ -1264,9 +1290,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                             batch,
                             exec_context.debug_native,
                         );
-                    }
-                    Some(Err(e)) => {
-                        return Err(e.into());
                     }
                     None => {
                         log_plan_metrics(exec_context, stage_id, partition);
@@ -2604,7 +2627,7 @@ mod tests {
         });
 
         let mut producer = BatchProducer::spawn(runtime.handle(), plan_stream(stream));
-        assert!(producer.batches.blocking_recv().unwrap().is_ok());
+        assert!(producer.next_batch().unwrap().is_some());
         producer.stop().unwrap();
         assert_eq!(pool.reserved(), 0, "the stream outlived its producer");
     }
@@ -2632,7 +2655,7 @@ mod tests {
         });
 
         let mut producer = BatchProducer::spawn(runtime.handle(), plan_stream(stream));
-        assert!(producer.batches.blocking_recv().unwrap().is_ok());
+        assert!(producer.next_batch().unwrap().is_some());
         polling_rx.recv().unwrap();
         let finished = Arc::new(AtomicBool::new(false));
         let finishing = {
@@ -2745,7 +2768,7 @@ mod tests {
             }
         });
         let mut producer = BatchProducer::spawn(runtime.handle(), plan_stream(stream));
-        assert!(producer.batches.blocking_recv().unwrap().is_ok());
+        assert!(producer.next_batch().unwrap().is_some());
 
         // Holds the only worker until the stopped plan's memory comes back, as another task
         // waiting in `acquireMemory` does. It gives up eventually so a failure cannot hang the
@@ -2768,5 +2791,50 @@ mod tests {
             .expect("stopping the producer waited for a free worker")
             .unwrap();
         assert_eq!(pool.reserved(), 0, "the stream outlived its producer");
+    }
+
+    /// See issue #6294. A runtime cancels every task it has when it shuts down, which Comet's does
+    /// when the executor stops. The producer's channel then closes as it does at the end of the
+    /// stream, and the consumer must fail rather than end with the batches it has read so far.
+    #[test]
+    fn a_batch_producer_cancelled_mid_stream_is_an_error_not_the_end() {
+        let runtime = single_worker_runtime();
+        let mut first = Some(empty_batch());
+        // Yields one batch, then waits for input that never arrives.
+        let stream = futures::stream::poll_fn(move |_| match first.take() {
+            Some(batch) => Poll::Ready(Some(Ok(batch))),
+            None => Poll::Pending,
+        });
+        let mut producer = BatchProducer::spawn(runtime.handle(), plan_stream(stream));
+        assert!(producer.next_batch().unwrap().is_some());
+
+        // Shuts the runtime down while the consumer waits for the next batch.
+        let shutting_down = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            runtime.shutdown_timeout(Duration::from_secs(10));
+        });
+        match producer.next_batch() {
+            Err(CometError::Internal(msg)) => assert!(msg.contains("cancelled"), "{msg}"),
+            other => panic!("expected an error, got {other:?}"),
+        }
+        shutting_down.join().unwrap();
+        producer.stop().unwrap();
+    }
+
+    /// The channel also closes once the stream has ended, and the consumer has then had every
+    /// batch, even if the runtime shuts down before it takes the batches the producer sent.
+    #[test]
+    fn a_batch_producer_ends_cleanly_once_its_stream_has_ended() {
+        let runtime = single_worker_runtime();
+        let stream = futures::stream::iter([Ok(empty_batch()), Ok(empty_batch())]);
+        let mut producer = BatchProducer::spawn(runtime.handle(), plan_stream(stream));
+        // Both batches fit in the channel, so the task finishes without waiting for the consumer.
+        runtime.block_on(&mut producer.task).unwrap();
+        runtime.shutdown_timeout(Duration::from_secs(10));
+
+        assert!(producer.next_batch().unwrap().is_some());
+        assert!(producer.next_batch().unwrap().is_some());
+        assert!(producer.next_batch().unwrap().is_none());
+        producer.stop().unwrap();
     }
 }
