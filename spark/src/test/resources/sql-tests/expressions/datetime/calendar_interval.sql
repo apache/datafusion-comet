@@ -91,3 +91,23 @@ FROM (
   AS t(n, c)
   DISTRIBUTE BY n
 )
+
+statement
+CREATE TABLE test_interval_hash(y int) USING parquet
+
+statement
+INSERT INTO test_interval_hash VALUES (1), (-2), (NULL)
+
+-- Native make_interval output hashed natively over a Parquet scan. The interval is a tagged Arrow
+-- struct, and it must hash as Spark's CalendarInterval, not as a struct of its three fields. For
+-- y = 1, Spark returns -351543533 and 604378839101286624.
+query
+SELECT
+  y,
+  hash(make_interval(y)),
+  xxhash64(make_interval(y)),
+  hash(make_interval(y, y, y, y, y, y)),
+  xxhash64(make_interval(y, y, y, y, y, y)),
+  hash(array(make_interval(y, y))),
+  xxhash64(named_struct('i', make_interval(0, 0, 0, y)))
+FROM test_interval_hash

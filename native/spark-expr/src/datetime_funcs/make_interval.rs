@@ -42,6 +42,29 @@ pub fn calendar_interval_type() -> DataType {
     ]))
 }
 
+/// Whether `fields` are the children of a Spark `CalendarIntervalType` value, i.e. of the tagged
+/// struct built by [`calendar_interval_type`].
+///
+/// The `SPARK::calendarInterval::struct` marker on `months` is what identifies an interval: a
+/// user's own `struct<months:int, days:int, microseconds:bigint>` has the same shape and must keep
+/// ordinary struct semantics. Child nullability is deliberately not compared: the struct's own
+/// validity decides whether an interval is null, and a nullability widening that keeps field
+/// metadata must not turn an interval into a plain struct, which for the hash kernels would mean
+/// silently hashing it as one. The JVM counterpart is `Utils.isCalendarIntervalStructField`.
+pub fn is_calendar_interval_fields(fields: &Fields) -> bool {
+    let child = |index: usize, name: &str, data_type: &DataType| {
+        fields[index].name() == name && fields[index].data_type() == data_type
+    };
+    fields.len() == 3
+        && child(0, "months", &DataType::Int32)
+        && child(1, "days", &DataType::Int32)
+        && child(2, "microseconds", &DataType::Int64)
+        && fields[0]
+            .metadata()
+            .get(CALENDAR_INTERVAL_STRUCT_KEY)
+            .is_some_and(|value| value == "true")
+}
+
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub struct SparkMakeInterval {
     signature: Signature,
@@ -236,5 +259,27 @@ mod tests {
             make_interval(0, 0, 0, 0, i32::MAX, i32::MAX, i128::MAX),
             Err("long")
         );
+    }
+
+    #[test]
+    fn recognizes_tagged_interval_fields_by_marker() {
+        let DataType::Struct(fields) = calendar_interval_type() else {
+            unreachable!()
+        };
+        assert!(is_calendar_interval_fields(&fields));
+
+        // Children widened to nullable with the metadata kept are still an interval.
+        let widened: Fields = fields
+            .iter()
+            .map(|f| Arc::new(f.as_ref().clone().with_nullable(true)))
+            .collect();
+        assert!(is_calendar_interval_fields(&widened));
+
+        // The same shape without the marker is an ordinary user struct.
+        let unmarked: Fields = fields
+            .iter()
+            .map(|f| Arc::new(f.as_ref().clone().with_metadata(HashMap::new())))
+            .collect();
+        assert!(!is_calendar_interval_fields(&unmarked));
     }
 }

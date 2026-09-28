@@ -157,47 +157,68 @@ macro_rules! hash_array_primitive_float {
     };
 }
 
+/// Hashes a Spark `CalendarIntervalType` column, which Comet carries as the tagged
+/// `struct<months: int32, days: int32, microseconds: int64>` built by
+/// `calendar_interval_type`. `create_hashes_internal!` must route such a column here before its
+/// generic struct arm: Spark hashes an interval with its own formula, not as a struct of fields.
+///
+/// Only the struct's own validity is consulted. A null interval leaves the seed untouched, and a
+/// valid one always has its children populated by every producer (the native `make_interval`
+/// kernel, the JVM Arrow writer and the codegen dispatcher), whether or not the children are
+/// declared nullable.
 #[macro_export]
-macro_rules! hash_array_interval_month_day_nano {
+macro_rules! hash_array_calendar_interval {
     ($column: ident, $hashes: ident, $hash_method: ident) => {
         let array = $column
             .as_any()
-            .downcast_ref::<IntervalMonthDayNanoArray>()
+            .downcast_ref::<StructArray>()
             .unwrap_or_else(|| {
                 panic!(
                     "Failed to downcast column to {}. Actual data type: {:?}.",
-                    stringify!(IntervalMonthDayNanoArray),
+                    stringify!(StructArray),
                     $column.data_type()
                 )
             });
+        let months = array
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap_or_else(|| {
+                panic!(
+                    "Failed to downcast interval months to Int32Array. Actual data type: {:?}.",
+                    array.column(0).data_type()
+                )
+            });
+        let microseconds = array
+            .column(2)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap_or_else(|| {
+                panic!(
+                    "Failed to downcast interval microseconds to Int64Array. Actual data type: {:?}.",
+                    array.column(2).data_type()
+                )
+            });
 
-        // The `nanoseconds / 1_000` below is exact: Spark's `CalendarInterval` is
-        // microsecond-based, and both JVM-to-Arrow producers
-        // (`ArrowWriters.CalendarIntervalWriter` and the codegen dispatch kernel) convert
-        // with `Math.multiplyExact(microseconds, 1000L)`, so the nanoseconds field is
-        // always an exact multiple of 1000 and out-of-range intervals throw at
-        // conversion time instead of reaching this hasher.
+        // Match Spark 4.2 generated code, which hashes microseconds and then months and omits
+        // the days field:
+        // https://github.com/apache/spark/blob/v4.2.0/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/hash.scala#L428-L431
+        // Nested arrays, structs and maps reach this arm through the recursive hash, which is
+        // also how Spark's generated code hashes a nested interval. SPARK-58236 includes days
+        // starting in Spark 4.3; the version switch for that is tracked in
+        // https://github.com/apache/datafusion-comet/issues/5498.
         if array.null_count() == 0 {
             // Fast path: no nulls, use direct indexing
             for i in 0..$hashes.len() {
-                let value = array.value(i);
-                // Match Spark 4.2 generated code, which omits the days field:
-                // https://github.com/apache/spark/blob/v4.2.0/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/hash.scala#L428-L431
-                // SPARK-58236 includes days starting in Spark 4.3; the version
-                // switch for that is tracked in
-                // https://github.com/apache/datafusion-comet/issues/5498.
-                $hashes[i] =
-                    $hash_method((value.nanoseconds / 1_000).to_le_bytes(), $hashes[i]);
-                $hashes[i] = $hash_method(value.months.to_le_bytes(), $hashes[i]);
+                $hashes[i] = $hash_method(microseconds.value(i).to_le_bytes(), $hashes[i]);
+                $hashes[i] = $hash_method(months.value(i).to_le_bytes(), $hashes[i]);
             }
         } else {
             // Slow path: check nulls
             for i in 0..$hashes.len() {
                 if !array.is_null(i) {
-                    let value = array.value(i);
-                    $hashes[i] =
-                        $hash_method((value.nanoseconds / 1_000).to_le_bytes(), $hashes[i]);
-                    $hashes[i] = $hash_method(value.months.to_le_bytes(), $hashes[i]);
+                    $hashes[i] = $hash_method(microseconds.value(i).to_le_bytes(), $hashes[i]);
+                    $hashes[i] = $hash_method(months.value(i).to_le_bytes(), $hashes[i]);
                 }
             }
         }
@@ -836,7 +857,7 @@ macro_rules! hash_list_array {
 #[macro_export]
 macro_rules! create_hashes_internal {
     ($arrays: ident, $hashes_buffer: ident, $hash_method: ident, $create_dictionary_hash_method: ident, $recursive_hash_method: ident) => {
-        use arrow::datatypes::{DataType, IntervalUnit, TimeUnit};
+        use arrow::datatypes::{DataType, TimeUnit};
         use arrow::array::{types::*, *};
         use datafusion_comet_common::children_with_parent_nulls;
 
@@ -980,13 +1001,6 @@ macro_rules! create_hashes_internal {
                         $hash_method
                     );
                 }
-                DataType::Interval(IntervalUnit::MonthDayNano) => {
-                    $crate::hash_array_interval_month_day_nano!(
-                        col,
-                        $hashes_buffer,
-                        $hash_method
-                    );
-                }
                 DataType::Utf8 => {
                     $crate::hash_array!(StringArray, col, $hashes_buffer, $hash_method);
                 }
@@ -1097,6 +1111,12 @@ macro_rules! create_hashes_internal {
                     let list_size = *size as usize;
 
                     $crate::hash_list_with_primitive_elements!(fixed_size: list_array, values, list_size, field, $hashes_buffer, $hash_method, $recursive_hash_method);
+                }
+                // A Spark `CalendarIntervalType` value is a tagged struct, recognised by its field
+                // marker rather than its shape. Test it before the generic struct arm, which would
+                // hash its three children in field order.
+                DataType::Struct(fields) if $crate::is_calendar_interval_fields(fields) => {
+                    $crate::hash_array_calendar_interval!(col, $hashes_buffer, $hash_method);
                 }
                 DataType::Struct(_) => {
                     let struct_array = col.as_any().downcast_ref::<StructArray>().unwrap();
@@ -1335,5 +1355,42 @@ pub(crate) mod test_utils {
                 expected_with_nulls
             );
         };
+    }
+
+    /// Builds a Spark `CalendarIntervalType` column in Comet's tagged-struct layout, one
+    /// `(months, days, microseconds)` per row. `nullable_children` widens the three children to
+    /// nullable, keeping the marker.
+    #[cfg(test)]
+    pub(crate) fn calendar_interval_array(
+        values: &[Option<(i32, i32, i64)>],
+        nullable_children: bool,
+    ) -> arrow::array::ArrayRef {
+        use crate::calendar_interval_type;
+        use arrow::array::{Int32Array, Int64Array, StructArray};
+        use arrow::buffer::NullBuffer;
+        use arrow::datatypes::{DataType, Fields};
+        use std::sync::Arc;
+
+        let DataType::Struct(fields) = calendar_interval_type() else {
+            unreachable!("calendar_interval_type is a struct")
+        };
+        let fields: Fields = if nullable_children {
+            fields
+                .iter()
+                .map(|f| Arc::new(f.as_ref().clone().with_nullable(true)))
+                .collect()
+        } else {
+            fields
+        };
+        let value = |v: &Option<(i32, i32, i64)>| v.unwrap_or_default();
+        let months = Int32Array::from_iter_values(values.iter().map(|v| value(v).0));
+        let days = Int32Array::from_iter_values(values.iter().map(|v| value(v).1));
+        let micros = Int64Array::from_iter_values(values.iter().map(|v| value(v).2));
+        let nulls = NullBuffer::from_iter(values.iter().map(Option::is_some));
+        Arc::new(StructArray::new(
+            fields,
+            vec![Arc::new(months), Arc::new(days), Arc::new(micros)],
+            Some(nulls),
+        ))
     }
 }
