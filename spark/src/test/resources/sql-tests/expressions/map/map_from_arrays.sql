@@ -60,19 +60,24 @@ SELECT map_from_arrays(array('a'), NULL)
 query
 SELECT map_from_arrays(NULL, NULL)
 
--- Spark's ArrayBasedMapBuilder rejects a NULL key element outright, ahead of the duplicate-key
--- check, and resolves duplicates by the default `spark.sql.mapKeyDedupPolicy` = `EXCEPTION`.
+-- Spark's ArrayBasedMapBuilder rejects a NULL key and, under the default
+-- `spark.sql.mapKeyDedupPolicy` = `EXCEPTION`, a duplicate key. It inserts a row's entries one at
+-- a time, so whichever of the two comes first in the row is the one reported.
 -- `map_from_arrays_dedup_policy.sql` covers `LAST_WIN`.
 
 query expect_error(NULL_MAP_KEY)
 SELECT map_from_arrays(array('a', NULL), array(1, 2))
 
--- a NULL key is reported as such even when it repeats, which a duplicate check would see first
+-- the NULL comes first, so it is reported although the key after it repeats it
 query expect_error(NULL_MAP_KEY)
 SELECT map_from_arrays(array(CAST(NULL AS STRING), NULL), array(1, 2))
 
 query expect_error(DUPLICATED_MAP_KEY)
 SELECT map_from_arrays(array('a', 'a'), array(1, 2))
+
+-- the duplicate comes first, so it is reported although a NULL key follows it
+query expect_error(DUPLICATED_MAP_KEY)
+SELECT map_from_arrays(array('a', 'a', NULL), array(1, 2, 3))
 
 -- key and value arrays of different lengths. Spark reports this through a legacy condition,
 -- `_LEGACY_ERROR_TEMP_2128` in every version Comet supports; matching on the message keeps the

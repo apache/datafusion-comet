@@ -15,10 +15,9 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Verifies that `map_from_entries` follows `spark.sql.mapKeyDedupPolicy` = `LAST_WIN`, keeping
--- the last value for each duplicate key. Comet forwards the policy to the native builder as
--- `datafusion.spark.map_key_dedup_policy`, so the query stays native rather than routing through
--- the JVM codegen dispatcher. The default `EXCEPTION` mode is covered by `map_from_entries.sql`.
+-- Verifies that `map_from_entries` runs natively under `spark.sql.mapKeyDedupPolicy` = `LAST_WIN`
+-- and keeps the last value for each duplicate key. The default `EXCEPTION` mode is covered by
+-- `map_from_entries.sql`.
 
 -- Config: spark.sql.mapKeyDedupPolicy=LAST_WIN
 
@@ -30,36 +29,21 @@ INSERT INTO test_map_from_entries_dedup VALUES
   (array(struct('a', 1), struct('b', 2), struct('c', 3))),
   (array(struct('a', 1), struct('a', 2), struct('b', 3))),
   (array(struct('x', 10), struct('x', 20))),
+  (array(struct('a', 1), struct('a', 2), struct('a', 3))),
   (array(struct('a', 1), struct('b', 2), struct('a', 3))),
   (array(struct('a', 1), struct('a', CAST(NULL AS INT)), struct('b', 3))),
   (array()),
   (NULL)
 
--- literal duplicate keys: the last value wins
+-- literal arguments, for the all-scalar path
 query
 SELECT map_from_entries(array(struct('a', 1), struct('a', 2), struct('b', 3)))
 
--- three occurrences of the same key collapse to the last one
-query
-SELECT map_from_entries(array(struct('a', 1), struct('a', 2), struct('a', 3)))
-
--- a repeated key keeps the position of its first occurrence and takes its last value, as
--- `ArrayBasedMapBuilder` does: {a -> 3, b -> 2}. Maps compare equal in any entry order, so
--- `map_keys` and `map_values` pin the order.
-query
-SELECT map_keys(map_from_entries(array(struct('a', 1), struct('b', 2), struct('a', 3)))),
-       map_values(map_from_entries(array(struct('a', 1), struct('b', 2), struct('a', 3))))
-
--- a NULL can be the value that wins
-query
-SELECT map_from_entries(array(struct('a', 1), struct('a', CAST(NULL AS INT)), struct('b', 3)))
-
--- column input, including rows without duplicates and a NULL row
-query
-SELECT map_from_entries(entries) FROM test_map_from_entries_dedup
-
--- the same rows with their entry order pinned
-query
+-- A repeated key keeps the position of its first occurrence and takes its last value, as
+-- `ArrayBasedMapBuilder` does, so ('a', 'b', 'a') gives {a -> 3, b -> 2}; a NULL can be the value
+-- that wins. Maps compare equal in any entry order, so `map_keys` and `map_values` pin the order.
+-- `expect_native` also rules out the JVM codegen dispatcher, which a plain `query` would accept.
+query expect_native(map_from_entries)
 SELECT map_keys(map_from_entries(entries)), map_values(map_from_entries(entries)) FROM test_map_from_entries_dedup
 
 -- LAST_WIN does not weaken the NULL key check

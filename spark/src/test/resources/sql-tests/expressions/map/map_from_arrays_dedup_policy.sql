@@ -15,10 +15,9 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Verifies that `map_from_arrays` follows `spark.sql.mapKeyDedupPolicy` = `LAST_WIN`, keeping
--- the last value for each duplicate key. Comet forwards the policy to the native builder as
--- `datafusion.spark.map_key_dedup_policy`, so the query stays native rather than falling back.
--- The default `EXCEPTION` mode is covered by `map_from_arrays.sql`.
+-- Verifies that `map_from_arrays` runs natively under `spark.sql.mapKeyDedupPolicy` = `LAST_WIN`
+-- and keeps the last value for each duplicate key. The default `EXCEPTION` mode is covered by
+-- `map_from_arrays.sql`.
 
 -- Config: spark.sql.mapKeyDedupPolicy=LAST_WIN
 
@@ -30,51 +29,22 @@ INSERT INTO test_map_from_arrays_dedup VALUES
   (array('a', 'b', 'c'), array(1, 2, 3)),
   (array('a', 'a', 'b'), array(1, 2, 3)),
   (array('x', 'x'), array(10, 20)),
+  (array('a', 'a', 'a'), array(1, 2, 3)),
   (array('a', 'b', 'a'), array(1, 2, 3)),
   (array('a', 'a', 'b'), array(1, NULL, 3)),
   (array(), array()),
   (NULL, array(99))
 
--- literal duplicate keys: the last value wins
+-- literal arguments, for the all-scalar path
 query
 SELECT map_from_arrays(array('a', 'a', 'b'), array(1, 2, 3))
 
--- three occurrences of the same key collapse to the last one
-query
-SELECT map_from_arrays(array('a', 'a', 'a'), array(1, 2, 3))
-
--- a repeated key keeps the position of its first occurrence and takes its last value, as
--- `ArrayBasedMapBuilder` does: {a -> 3, b -> 2}. Maps compare equal in any entry order, so
--- `map_keys` and `map_values` pin the order.
-query
-SELECT map_keys(map_from_arrays(array('a', 'b', 'a'), array(1, 2, 3))),
-       map_values(map_from_arrays(array('a', 'b', 'a'), array(1, 2, 3)))
-
--- a NULL can be the value that wins
-query
-SELECT map_from_arrays(array('a', 'a', 'b'), array(1, NULL, 3))
-
--- column input, including rows without duplicates and a NULL row
-query
-SELECT map_from_arrays(k, v) FROM test_map_from_arrays_dedup
-
--- the same rows with their entry order pinned
-query
+-- A repeated key keeps the position of its first occurrence and takes its last value, as
+-- `ArrayBasedMapBuilder` does, so ('a', 'b', 'a') gives {a -> 3, b -> 2}; a NULL can be the value
+-- that wins. Maps compare equal in any entry order, so `map_keys` and `map_values` pin the order.
+query expect_native(map_from_arrays)
 SELECT map_keys(map_from_arrays(k, v)), map_values(map_from_arrays(k, v)) FROM test_map_from_arrays_dedup
 
 -- LAST_WIN does not weaken the NULL key check
 query expect_error(NULL_MAP_KEY)
 SELECT map_from_arrays(array('a', NULL), array(1, 2))
-
-statement
-CREATE TABLE test_map_from_arrays_dedup_nondet(id bigint) USING parquet
-
-statement
-INSERT INTO test_map_from_arrays_dedup_nondet SELECT id FROM range(0, 16)
-
--- A nondeterministic child used to fall back for the policy alone. The serde's null guards
--- serialize each child twice, so a stateful child would drift between the two copies; it is
--- declined and the projection falls back to Spark, which evaluates it once.
--- `map_from_arrays_nondeterministic_child.sql` has the default-policy cases.
-query expect_fallback(nondeterministic operand)
-SELECT id, map_from_arrays(IF(monotonically_increasing_id() % 2 != 0, array(1), NULL), array(2)) FROM test_map_from_arrays_dedup_nondet

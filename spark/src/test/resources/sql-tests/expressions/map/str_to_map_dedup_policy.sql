@@ -15,9 +15,8 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Verifies that `str_to_map` follows `spark.sql.mapKeyDedupPolicy` = `LAST_WIN`, keeping the
--- last value for each duplicate key. Comet forwards the policy to the native kernel as
--- `datafusion.spark.map_key_dedup_policy`. The default `EXCEPTION` mode is covered by
+-- Verifies that `str_to_map` runs natively under `spark.sql.mapKeyDedupPolicy` = `LAST_WIN` and
+-- keeps the last value for each duplicate key. The default `EXCEPTION` mode is covered by
 -- `str_to_map.sql`.
 
 -- Config: spark.sql.mapKeyDedupPolicy=LAST_WIN
@@ -32,21 +31,13 @@ INSERT INTO test_str_to_map_dedup VALUES
   ('x:1,x:2,x:3'),
   (NULL)
 
+-- literal arguments, for the all-scalar path
 query
 SELECT str_to_map('a:1,b:2,a:3')
 
 -- `a` keeps the position of its first occurrence and takes its last value, as
--- `ArrayBasedMapBuilder` does: {a -> 3, b -> 2}. Maps compare equal in any entry order, so
--- `map_keys` and `map_values` pin the order.
-query
-SELECT map_keys(str_to_map('a:1,b:2,a:3')), map_values(str_to_map('a:1,b:2,a:3'))
-
-query
-SELECT str_to_map(s) FROM test_str_to_map_dedup
-
--- the same rows with their entry order pinned
-query
+-- `ArrayBasedMapBuilder` does, so 'a:1,b:2,a:3' gives {a -> 3, b -> 2}. Maps compare equal in any
+-- entry order, so `map_keys` and `map_values` pin the order. `expect_native` also rules out the
+-- JVM codegen dispatcher, which a plain `query` would accept.
+query expect_native(str_to_map)
 SELECT map_keys(str_to_map(s)), map_values(str_to_map(s)) FROM test_str_to_map_dedup
-
-query
-SELECT str_to_map(s, ',', ':') FROM test_str_to_map_dedup

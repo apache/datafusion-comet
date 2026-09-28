@@ -459,25 +459,31 @@ abstract class CometTestBase
       errorClass: String): SparkThrowable with Throwable = {
     checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
     val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
-
-    def structuredError(
-        error: Option[Throwable],
-        engine: String): SparkThrowable with Throwable = {
-      val failure = error.getOrElse(fail(s"$engine did not fail with $errorClass"))
-      val chain = causeChain(failure)
-      assert(!chain.exists(_.isInstanceOf[CometNativeException]), s"$engine: $failure")
-      chain.collect { case e: SparkThrowable with Throwable => e }.lastOption.getOrElse {
-        fail(s"$engine did not throw a SparkThrowable: $failure")
-      }
-    }
-
-    val expected = structuredError(sparkError, "Spark")
-    val actual = structuredError(cometError, "Comet")
+    val expected = structuredError(sparkError, "Spark", errorClass)
+    val actual = structuredError(cometError, "Comet", errorClass)
     assert(expected.getErrorClass == errorClass)
     assert(actual.getClass == expected.getClass)
     assert(actual.getErrorClass == errorClass)
     assert(actual.getSqlState == expected.getSqlState)
     actual
+  }
+
+  /**
+   * The last `SparkThrowable` in the cause chain of `error`, which `engine` raised where
+   * `errorClass` was expected. Fails when there is no error, when no `SparkThrowable` is in the
+   * chain, or when a `CometNativeException` is anywhere in it, which means a native error reached
+   * the user without being converted to Spark's.
+   */
+  protected def structuredError(
+      error: Option[Throwable],
+      engine: String,
+      errorClass: String): SparkThrowable with Throwable = {
+    val failure = error.getOrElse(fail(s"$engine did not fail with $errorClass"))
+    val chain = causeChain(failure)
+    assert(!chain.exists(_.isInstanceOf[CometNativeException]), s"$engine: $failure")
+    chain.collect { case e: SparkThrowable with Throwable => e }.lastOption.getOrElse {
+      fail(s"$engine did not throw a SparkThrowable: $failure")
+    }
   }
 
   /**
