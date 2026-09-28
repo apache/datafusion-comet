@@ -106,9 +106,28 @@ The 5-minute fallback is a safety net so a vendor that omits expiry cannot leave
 
 ## Property-bag handling on the Iceberg path
 
-The full unfiltered FileIO property bag crosses JNI as `catalog_properties`. The storage-prefix filter (`s3.`/`gcs.`/`adls.`/`client.`) is applied native-side in `iceberg_scan.rs::load_file_io` immediately before `FileIOBuilder.with_prop`. This means the bridge sees `credentials.uri`, OAuth tokens, and any vendor-custom keys with no parallel field on the operator and no driver-side broadcast. Vendors set their own keys on the catalog config and read them back inside `initialize(Map)`.
+The full unfiltered FileIO property bag crosses JNI as `catalog_properties`. The storage-prefix filter (`s3.`/`gcs.`/`adls.`/`client.`) is applied native-side in `iceberg_common.rs::build_file_io` immediately before `FileIOBuilder.with_prop`. This means the bridge sees `credentials.uri`, OAuth tokens, and any vendor-custom keys with no parallel field on the operator and no driver-side broadcast. Vendors set their own keys on the catalog config and read them back inside `initialize(Map)`.
 
-`IcebergScanExec` derives a redacting `Debug` so plan dumps and tracing do not leak the property bag.
+`IcebergScanExec` derives a redacting `Debug`, and the `FileIO` cache key's `Debug` omits the property bag, so plan dumps and tracing do not leak it.
+
+## Executor `FileIO` cache on the Iceberg path
+
+`load_file_io` in `iceberg_common.rs` serves clones from a per-executor cache instead of building a `FileIO` per task. An entry is keyed by access mode, catalog name, the full reference path and the whole catalog property bag, and it holds the `FileIO` together with the bridge it was built with, so a bridge and its dispatcher handle live as long as the entry. The cache holds 64 entries, evicts the least recently used one, and is drained with the Tokio runtime. The reference path has to stay in the key: the bridge is constructed with the bucket and `url.path()` of that location and the JVM provider is called with exactly that pair, so dropping the path from the key would hand one table's bridge to another table in the same bucket. Two builds are never cached: `memory:///`, whose namespace the write path uses per task, and a read whose configured provider failed to initialise and fell back to the default chain, so the next task retries the provider instead of inheriting the fallback.
+
+This is consistent with [Why no Comet-side cache](#why-no-comet-side-cache): the cache holds the `FileIO` and its bridge, not credentials. `provide_credential` still reaches the vendor whenever `opendal`'s cached credential expires.
+
+## Property-bag handling on the Parquet path
+
+The Parquet path forwards the full `fs.s3a.*` config subset as `catalog_properties`, so an SPI provider sees the same `fs.s3a.*` config Spark would. `forward_catalog_properties` in `native/core/src/parquet/objectstore/s3.rs` keeps every `fs.s3a.*` key, including the static credentials (`*.access.key`, `*.secret.key`, `*.session.token`). Forwarding them is deliberate: `AWSCredentialProviderList` skips a provider that throws `NoAwsCredentialsException` and moves to the next entry, so stripping the static keys would let a chain such as `SimpleAWSCredentialsProvider,customProvider` silently resolve through a different provider than Spark, reading data as a different principal. These keys already cross JNI for the non-adapter native path (`build_credential_provider` reads them), so this matches existing behavior rather than widening exposure. Because `NativeConfig.extractObjectStoreOptions` only collects `fs.s3a.*` (plus the `fs.comet.*` scheme keys), config a provider reads that is not under `fs.s3a.*` -- notably `hadoop.security.credential.provider.path` -- never crosses JNI. `AdapterSupport.toConfiguration` therefore seeds the Hadoop `Configuration` from the executor's own Spark-derived Hadoop conf (`spark.hadoop.*`) and overlays the forwarded `fs.s3a.*` on top, so those keys are present.
+
+## Built-in adapters
+
+Comet ships two reference SPI implementations under `org.apache.comet.cloud.s3`, so standard provider classes that the native Rust list does not match work with a config change instead of bespoke code:
+
+- `HadoopS3ACredentialProviderAdapter` delegates to Hadoop S3A's own provider construction (`S3AUtils.createAWSCredentialProviderSet` on Hadoop 3.3.x, `CredentialProviderListFactory.createAWSCredentialProviderList` on 3.4+).
+- `AwsSdkCredentialProviderAdapter` wraps a raw AWS SDK provider named in `fs.s3a.comet.credential.adapter.class`.
+
+Each has a spark-3.x (SDK v1) and a spark-4.x (SDK v2) body under the same FQCN, selected by the `shims.majorVerSrc` source set, so each Comet build compiles against exactly the one AWS SDK its Hadoop line ships. The SDK and `hadoop-aws` are `provided` scope only (see the `hadoop-aws.version` property in the root `pom.xml`), so Comet does not bundle a second copy.
 
 ## Returns or throws, not a fall-through value
 
