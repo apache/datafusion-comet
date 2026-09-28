@@ -27,7 +27,7 @@
 - Spark 3.5.8 (audited 2026-05-27): baseline. `Coalesce(children) extends Expression with ComplexTypeMergingExpression`; returns the first non-null child, evaluated left-to-right with short-circuit. Result type is the merged child type. Comet routes via `CometCoalesce`, which serialises as nested `CaseWhen(IsNotNull(c1) -> c1, IsNotNull(c2) -> c2, ..., else cN)` so the native engine preserves the short-circuit semantics.
 - Spark 4.0.1 (audited 2026-05-27): byte-for-byte identical to 3.5.8.
 - Spark 4.1.1 (audited 2026-05-27): byte-for-byte identical to 3.5.8.
-- Performance (tuned 2026-09-28, PR #PR_NUMBER): runs through the `CASE WHEN` evaluation described under `when`. 12-13x faster for two columns. Benchmark: `benches/conditional.rs`.
+- Performance (tuned 2026-09-28, PR [#6350](https://github.com/apache/datafusion-comet/pull/6350)): runs through the `CASE WHEN` evaluation described under `when`. 12-13x faster for two columns. Benchmark: `benches/conditional.rs`.
 
 ## if
 
@@ -35,7 +35,7 @@
 - Spark 3.5.8 (audited 2026-05-27): baseline. `If(predicate, trueValue, falseValue) extends ComplexTypeMergingExpression`; standard ternary semantics with short-circuit, predicate must be `BooleanType`. Comet routes via `CometIf` to the native `IfExpr` proto.
 - Spark 4.0.1 (audited 2026-05-27): adds an `override def withNewAlwaysEvaluatedInputs(...)` hook for the new optimizer phase; semantics unchanged. Error messages reformatted (`paramIndex` -> `ordinalNumber`).
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
-- Performance (tuned 2026-09-28, PR #PR_NUMBER): runs through the `CASE WHEN` evaluation described under `when`, with an `IF` or `CASE WHEN` in the ELSE flattened into one merge. 1.5x faster with literal results, 6.6x with column results, 3.3-4.7x with string columns, 3.1-5.9x nested. Benchmark: `benches/conditional.rs`.
+- Performance (tuned 2026-09-28, PR [#6350](https://github.com/apache/datafusion-comet/pull/6350)): runs through the `CASE WHEN` evaluation described under `when`, with an `IF` or `CASE WHEN` in the ELSE flattened into one merge. 1.5x faster with literal results, 6.6x with column results, 3.3-4.7x with string columns, 3.1-5.9x nested. Benchmark: `benches/conditional.rs`.
 
 ## ifnull
 
@@ -71,6 +71,6 @@
 - Spark 3.5.8 (audited 2026-05-27): the `CASE WHEN ... THEN ...` SQL form lowers to `CaseWhen(branches: Seq[(Expression, Expression)], elseValue: Option[Expression])`. Spark evaluates left-to-right with short-circuit; result type is the merged branch type. Comet routes via `CometCaseWhen` to the native `CaseWhen` proto.
 - Spark 4.0.1 (audited 2026-05-27): adds the `withNewAlwaysEvaluatedInputs` optimizer hook; semantics unchanged.
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
-- Performance (tuned 2026-09-28, PR #PR_NUMBER): when no branch value and no WHEN after the first can fail, `CaseWhenExpr` evaluates them over the whole batch and takes each row's value with typed merges for primitive, boolean, string and binary results, instead of filtering the batch for each branch and merging the partial results with `MutableArrayData`. A branch is no longer wrapped in a cast to the type it already has, which hid literals and columns from DataFusion's fast paths. 2.8-4x faster with literal results and 2.2-7.8x with column results. When a branch can fail it is about 2% slower, because DataFusion's `CaseExpr` derives the result type of a bare branch for every batch. Benchmark: `benches/conditional.rs`.
+- Performance (tuned 2026-09-28, PR [#6350](https://github.com/apache/datafusion-comet/pull/6350)): when no branch value and no WHEN after the first can fail, `CaseWhenExpr` evaluates them over the whole batch and takes each row's value with typed merges for primitive, boolean, string and binary results, instead of filtering the batch for each branch and merging the partial results with `MutableArrayData`. A branch is no longer wrapped in a cast to the type it already has, which hid literals and columns from DataFusion's fast paths. 2.8-4x faster with literal results and 2.2-7.8x with column results. When a branch can fail it is about 2% slower, because DataFusion's `CaseExpr` derives the result type of a bare branch for every batch. Benchmark: `benches/conditional.rs`.
 
 [Spark Expression Support]: ../../user-guide/latest/expressions.md
