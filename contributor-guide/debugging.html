@@ -721,6 +721,15 @@ For example, see: <a class="reference external" href="https://github.com/apache/
 </pre></div>
 </div>
 <p>When backtraces are enabled (see earlier section) then backtraces will be included for failed allocations.</p>
+<p>Under memory pressure, Spark often grants a native memory pool less than it asked for, so Comet
+logs this only at <code class="docutils literal notranslate"><span class="pre">DEBUG</span></code>. The operator that needed the memory usually spills and carries on. If it
+cannot, the task fails with an error that says how much Spark granted and lists the largest memory
+consumers. To log every partial grant, set this logger to <code class="docutils literal notranslate"><span class="pre">DEBUG</span></code>, for example in
+<code class="docutils literal notranslate"><span class="pre">log4j2.properties</span></code>:</p>
+<div class="highlight-properties notranslate"><div class="highlight"><pre><span></span><span class="na">logger.cometTaskMemoryManager.name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">org.apache.spark.CometTaskMemoryManager</span>
+<span class="na">logger.cometTaskMemoryManager.level</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">debug</span>
+</pre></div>
+</div>
 </section>
 <section id="dumping-native-stream-output-with-the-debug-module">
 <h3>Dumping native stream output with the <code class="docutils literal notranslate"><span class="pre">debug</span></code> module<a class="headerlink" href="#dumping-native-stream-output-with-the-debug-module" title="Link to this heading">#</a></h3>
