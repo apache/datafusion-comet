@@ -59,9 +59,9 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   //
   // For the CUBE(9) offset-overflow repro at the bottom of the suite we MUST disable
   // off-heap (CometTestBase defaults to off-heap + 2 GiB cap, which spills long before
-  // i32::MAX) and force the on-heap memory pool to `unbounded`. Both knobs are read
-  // from SparkConf at SparkContext init (CometExecIterator.scala:295/310), NOT from
-  // per-query SQLConf, so they must live here.
+  // i32::MAX) and run Comet on-heap, which uses an unbounded native memory pool. The
+  // memory mode is read from SparkConf at SparkContext init, NOT from per-query SQLConf,
+  // so it must live here.
   override protected def sparkConf: SparkConf =
     super.sparkConf.set(SQLConf.ANSI_ENABLED.key, "false")
 
@@ -3405,8 +3405,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       // compile. Disable codegen so the baseline falls back to the interpreted path.
       SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
       CometConf.COMET_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_ENABLED.key -> "true",
-      CometConf.COMET_ONHEAP_MEMORY_POOL_TYPE.key -> "unbounded")
+      CometConf.COMET_EXEC_ENABLED.key -> "true")
 
     withTempDir { dir =>
       // ---- Branch 1: useLargeDataTypes=false ----
