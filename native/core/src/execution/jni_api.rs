@@ -420,10 +420,12 @@ pub fn get_runtime() -> Handle {
 
 /// Tears down the global Tokio runtime, if it has been initialized.
 ///
-/// The runtime is moved out of the global slot and shut down in the background so the
-/// calling (JNI) thread is not blocked waiting for worker threads to finish. Any handles
-/// previously returned by [`get_runtime`] will start failing their spawns once the runtime
-/// is gone, so this must only be called when no native execution is in flight.
+/// The runtime is moved out of the global slot, so the next [`init_runtime`] or
+/// [`get_runtime`] call builds a new one. Shutting it down blocks the calling (JNI) thread
+/// until the runtime's threads have stopped, for at most 3 seconds. Tasks still running on it
+/// are dropped at their next yield, and any handles previously returned by [`get_runtime`]
+/// will start failing their spawns, so this must only be called when no native execution is
+/// in flight.
 ///
 /// Must not be called from within the runtime's own worker threads, otherwise the shutdown
 /// would deadlock/panic.
