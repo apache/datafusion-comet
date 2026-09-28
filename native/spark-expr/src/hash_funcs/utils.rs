@@ -234,17 +234,24 @@ macro_rules! hash_array_small_decimal {
     };
 }
 
+/// Hash one wide decimal without allocating BigInteger's signed byte representation.
+#[macro_export]
+macro_rules! hash_decimal {
+    ($value:expr, $seed:expr, $hash_method:ident) => {{
+        let value: i128 = $value;
+        let bytes = value.to_be_bytes();
+        // Match BigInteger.toByteArray(): drop redundant sign bytes, retaining
+        // one sign bit. Zero and -1 still occupy one byte.
+        let sign_bits = value.leading_zeros().max(value.leading_ones());
+        let start = (sign_bits.saturating_sub(1) / 8) as usize;
+        $hash_method(&bytes[start..], $seed)
+    }};
+}
+
 #[macro_export]
 macro_rules! hash_array_decimal {
     ($array_type:ident, $column: ident, $hashes: ident, $hash_method: ident) => {
-        let hash_decimal = |value: &i128, seed| {
-            let bytes = value.to_be_bytes();
-            // Match BigInteger.toByteArray(): drop redundant sign bytes, retaining
-            // one sign bit. Zero and -1 still occupy one byte.
-            let sign_bits = value.leading_zeros().max(value.leading_ones());
-            let start = (sign_bits.saturating_sub(1) / 8) as usize;
-            $hash_method(&bytes[start..], seed)
-        };
+        let hash_decimal = |value: &i128, seed| $crate::hash_decimal!(*value, seed, $hash_method);
         $crate::hash_array!($array_type, $column, $hashes, hash_decimal);
     };
 }
@@ -408,6 +415,12 @@ macro_rules! hash_list_with_primitive_elements {
                 let elem_array = $values.as_any().downcast_ref::<Time64NanosecondArray>().unwrap();
                 $crate::hash_list_primitive!(offsets: $offsets, $list_array, elem_array, $hashes_buffer, $hash_method, |v: i64| v.to_le_bytes());
             }
+            DataType::Decimal128(precision, _) if *precision > 18 => {
+                // Downcast once per list column instead of slicing and dispatching each element.
+                let elem_array = $values.as_any().downcast_ref::<Decimal128Array>().unwrap();
+                let hash_decimal = |value: i128, seed| $crate::hash_decimal!(value, seed, $hash_method);
+                $crate::hash_list_primitive!(offsets: $offsets, $list_array, elem_array, $hashes_buffer, hash_decimal, |v| v);
+            }
             _ => {
                 // Fall back to recursive approach for complex element types
                 $crate::hash_list_array!($list_array_type, $fallback_offset_type, $col, $hashes_buffer, $recursive_hash_method);
@@ -502,6 +515,11 @@ macro_rules! hash_list_with_primitive_elements {
             DataType::Time64(TimeUnit::Nanosecond) => {
                 let elem_array = $values.as_any().downcast_ref::<Time64NanosecondArray>().unwrap();
                 $crate::hash_list_primitive!(fixed_size: $list_size, $list_array, elem_array, $hashes_buffer, $hash_method, |v: i64| v.to_le_bytes());
+            }
+            DataType::Decimal128(precision, _) if *precision > 18 => {
+                let elem_array = $values.as_any().downcast_ref::<Decimal128Array>().unwrap();
+                let hash_decimal = |value: i128, seed| $crate::hash_decimal!(value, seed, $hash_method);
+                $crate::hash_list_primitive!(fixed_size: $list_size, $list_array, elem_array, $hashes_buffer, hash_decimal, |v| v);
             }
             _ => {
                 // Fall back to recursive approach for complex element types
@@ -1385,6 +1403,128 @@ mod tests {
                                     expected.to_data(),
                                     "precision={precision}, scale={scale}, chained={chained}"
                                 );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn decimal_lists_match_independent_binary_encoding() {
+        use arrow::array::{FixedSizeListArray, LargeListArray, ListArray};
+        use arrow::buffer::{NullBuffer, OffsetBuffer};
+        use arrow::datatypes::Field;
+
+        for precision in [18, 19, 38] {
+            let max = 10_i128.pow(precision as u32) - 1;
+            let values = vec![
+                0, -1, 127, 128, -128, -129, max, -max, 255, 256, -256, -257, 32767, 32768, -32768,
+                -32769,
+            ];
+            for scale in [0, 2] {
+                for parent_nulls in [false, true] {
+                    for child_nulls in [false, true] {
+                        let nulls = child_nulls
+                            .then(|| NullBuffer::from_iter((0..values.len()).map(|i| i % 3 != 1)));
+                        // Keep nonzero values under null slots, and values under null parents.
+                        let decimal: ArrayRef = Arc::new(
+                            Decimal128Array::new(values.clone().into(), nulls.clone())
+                                .with_precision_and_scale(precision, scale)
+                                .unwrap(),
+                        );
+                        let bytes: Vec<_> = values
+                            .iter()
+                            .map(|&v| {
+                                if precision <= 18 {
+                                    (v as i64).to_le_bytes().to_vec()
+                                } else {
+                                    BigInt::from(v).to_signed_bytes_be()
+                                }
+                            })
+                            .collect();
+                        let binary: ArrayRef = Arc::new(BinaryArray::from_iter(
+                            bytes.iter().enumerate().map(|(i, v)| {
+                                if nulls.as_ref().is_some_and(|n| n.is_null(i)) {
+                                    None
+                                } else {
+                                    Some(v.as_slice())
+                                }
+                            }),
+                        ));
+                        for kind in ["list", "large_list", "fixed_list"] {
+                            let wrap = |values: ArrayRef| -> ArrayRef {
+                                let field =
+                                    Arc::new(Field::new("item", values.data_type().clone(), true));
+                                let nulls = parent_nulls
+                                    .then(|| NullBuffer::from_iter((0..8).map(|i| i % 3 != 1)));
+                                match kind {
+                                    "list" => Arc::new(ListArray::new(
+                                        field,
+                                        OffsetBuffer::new(
+                                            vec![0_i32, 2, 2, 5, 8, 11, 12, 14, 16].into(),
+                                        ),
+                                        values,
+                                        nulls,
+                                    )),
+                                    "large_list" => Arc::new(LargeListArray::new(
+                                        field,
+                                        OffsetBuffer::new(
+                                            vec![0_i64, 2, 2, 5, 8, 11, 12, 14, 16].into(),
+                                        ),
+                                        values,
+                                        nulls,
+                                    )),
+                                    _ => Arc::new(FixedSizeListArray::new(field, 2, values, nulls)),
+                                }
+                            };
+                            let decimal = wrap(Arc::clone(&decimal));
+                            let binary = wrap(Arc::clone(&binary));
+                            for (offset, len) in [(0, 8), (1, 6), (3, 1), (8, 0)] {
+                                let prefix: ArrayRef =
+                                    Arc::new(Int32Array::from_iter_values(0..len as i32));
+                                for seed in [0_i64, 42, -1, i32::MIN as i64] {
+                                    for chained in [false, true] {
+                                        let args = |array: &ArrayRef, seed: ScalarValue| {
+                                            let mut args = vec![ColumnarValue::Array(
+                                                array.slice(offset, len),
+                                            )];
+                                            if chained {
+                                                args.insert(
+                                                    0,
+                                                    ColumnarValue::Array(Arc::clone(&prefix)),
+                                                );
+                                                args.push(ColumnarValue::Array(Arc::clone(
+                                                    &prefix,
+                                                )));
+                                            }
+                                            args.push(ColumnarValue::Scalar(seed));
+                                            args
+                                        };
+                                        for (hash, seed) in [
+                                            (
+                                                spark_murmur3_hash as HashFunction,
+                                                ScalarValue::Int32(Some(seed as i32)),
+                                            ),
+                                            (
+                                                spark_xxhash64 as HashFunction,
+                                                ScalarValue::Int64(Some(seed)),
+                                            ),
+                                        ] {
+                                            let actual = hash(&args(&decimal, seed.clone()))
+                                                .unwrap()
+                                                .into_array(len)
+                                                .unwrap();
+                                            let expected = hash(&args(&binary, seed))
+                                                .unwrap()
+                                                .into_array(len)
+                                                .unwrap();
+                                            assert_eq!(actual.to_data(), expected.to_data(),
+                                                "{kind}, precision={precision}, scale={scale}, parent_nulls={parent_nulls}, child_nulls={child_nulls}, offset={offset}, len={len}, chained={chained}");
+                                        }
+                                    }
+                                }
                             }
                         }
                     }

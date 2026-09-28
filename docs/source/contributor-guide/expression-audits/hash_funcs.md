@@ -35,6 +35,7 @@
 - Spark 4.0.1 (audited 2026-05-27): semantics unchanged; some inner helper refactors only.
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 - Decimals with precision 19–38, including nested decimals, hash natively using the minimal signed big-endian bytes of the unscaled value, matching Spark's `BigInteger.toByteArray()`. Precision ≤18 retains unscaled-long hashing. `TimeType` remains unsupported through the shared `HashUtils`.
+- Performance (tuned 2026-09-28, issue #5994): typed wide-decimal list scans avoid per-element Arrow slices and recursive dispatch. Local Criterion measurements were 5.0–14.2x faster across 8,192-row `decimal(38,0)` List, LargeList and FixedSizeList inputs with 2/32 elements and no/sparse/dense nulls; paired scalar remeasurement found no significant slowdown. Benchmark: `benches/decimal_hash.rs`.
 
 ## md5
 
@@ -65,6 +66,8 @@
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 
 ## xxhash64
+
+- Performance (tuned 2026-09-28, issue #5994): the shared typed wide-decimal list path was 2.1–15.8x faster in local Criterion measurements across 8,192-row `decimal(38,0)` List, LargeList and FixedSizeList inputs with 2/32 elements and no/sparse/dense nulls; paired scalar remeasurement found no significant slowdown. Benchmark: `benches/decimal_hash.rs`.
 
 - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
 - Spark 3.5.8 (audited 2026-05-27): baseline. `XxHash64(children, seed) extends HashExpression[Long]`; produces an xxHash64 hash with a configurable Long seed and `LongType` result. Comet routes via `CometXxHash64` to the native `xxhash64` UDF.

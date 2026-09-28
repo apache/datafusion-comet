@@ -75,6 +75,10 @@ name = "hash"
 harness = false
 
 [[bench]]
+name = "decimal_hash"
+harness = false
+
+[[bench]]
 name = "hash_alloc"
 harness = false
 
