@@ -209,6 +209,10 @@ LOCAL_REPO=$(mktemp -d /tmp/comet-staging-repo-XXXXX)
 ./mvnw  "-Dmaven.repo.local=${LOCAL_REPO}" -P spark-3.4 -P scala-2.13  -DskipTests install
 ./mvnw  "-Dmaven.repo.local=${LOCAL_REPO}" -P spark-3.5 -P scala-2.12  -DskipTests install
 ./mvnw  "-Dmaven.repo.local=${LOCAL_REPO}" -P spark-3.5 -P scala-2.13  -DskipTests install
+# Spark 3.4 and 3.5 are supported on Java 11, so nothing in their jars may need a newer JVM.
+# Releases 0.11.0 to 1.0.0 shipped these jars built for Java 17 (#6283).
+python3 "$SCRIPT_DIR/check-class-versions.py" --max 55 \
+  "${LOCAL_REPO}"/org/apache/datafusion/*-spark3.[45]_*/*/*.jar
 # The spark-4.x profiles pin their own Scala 2.13.x patch versions to match the
 # corresponding Spark release, so the scala-2.13 profile is not used here.
 ./mvnw  "-Dmaven.repo.local=${LOCAL_REPO}" -P spark-4.0                 -DskipTests install
