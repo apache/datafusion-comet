@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::cloud::s3::credential_bridge::AccessMode;
 use crate::execution::operators::ExecutionError;
 use crate::parquet::name_fold::fold_names;
 use arrow::array::{
@@ -791,15 +792,18 @@ fn create_hdfs_object_store(
     })
 }
 
-/// Cache identity: `(scheme://[container@]host:port, config_hash, hdfs_backend)`.
+/// Cache identity: `(scheme://[container@]host:port, config_hash, hdfs_backend, access_mode)`.
 /// Native `s3a` is normalized to `s3`; Hadoop-selected schemes keep their spelling.
 /// The hash covers the object-store configuration. The boolean is `true` for the
 /// Hadoop backend (including custom schemes routed through Hadoop), `false` for native.
-type ObjectStoreCacheKey = (String, u64, bool);
+/// The access mode keeps a writer's store apart from a scan's: a store's
+/// `CometS3CredentialProvider` bridge is built for one access mode and asks for that mode on every
+/// request, so a store built for a scan would present read credentials to a write.
+type ObjectStoreCacheKey = (String, u64, bool, AccessMode);
 type ObjectStoreCache = RwLock<HashMap<ObjectStoreCacheKey, Arc<dyn ObjectStore>>>;
 
 /// Process-wide cache keyed by
-/// `(physical_scheme://[container@]host:port, config_hash, hdfs_backend)`.
+/// `(physical_scheme://[container@]host:port, config_hash, hdfs_backend, access_mode)`.
 /// Backend identity is separate from the normalized URL: a configuration can route `s3`
 /// through Hadoop while native `s3a` is normalized to the same `s3` scheme.
 ///
@@ -819,7 +823,8 @@ type ObjectStoreCache = RwLock<HashMap<ObjectStoreCacheKey, Arc<dyn ObjectStore>
 ///
 /// ## Unbounded size
 ///
-/// Cache entries include the physical URL, configuration hash and backend. A typical Spark
+/// Cache entries include the physical URL, configuration hash, backend and access mode, so a
+/// bucket that a job both reads and writes natively holds two entries. A typical Spark
 /// job accesses a small, fixed set of buckets or containers with a stable configuration, so the
 /// number of distinct keys remains small throughout the job.
 /// Entries are cheap relative to the cost of creating a new object store (new HTTP
@@ -886,24 +891,34 @@ fn object_store_backend(url: &Url, is_hdfs: bool) -> Result<ObjectStoreBackend, 
     })
 }
 
-/// Normalizes the owned URL using the borrowed configuration, selects and registers the backend
-/// in `runtime_env`, and returns its registry URL, object path, and I/O classification. Stores are
-/// reused from the process-wide cache when their normalized physical URL, configuration, and
-/// selected backend match. URL, configuration, and store-construction failures propagate to the
-/// caller. Callers must use the returned backend classification rather than infer it from an
-/// original alias or the synthetic registration scheme.
-pub(crate) fn prepare_object_store_with_configs(
-    runtime_env: Arc<RuntimeEnv>,
-    url: String,
+/// A store selected for one URL, before it is registered with any `RuntimeEnv`.
+struct ResolvedObjectStore {
+    /// The URL after alias normalization: `s3a` and configured aliases become `s3`.
+    url: Url,
+    /// The libhdfs routing decision, made on the URL as written.
+    is_hdfs: bool,
+    backend: ObjectStoreBackend,
+    config_hash: u64,
+    store: Arc<dyn ObjectStore>,
+    path: Path,
+}
+
+/// Normalizes `url` using the borrowed configuration, selects its backend, and returns the store
+/// with the object path. Stores are reused from the process-wide cache when their normalized
+/// physical URL, configuration, selected backend and `access_mode` match. URL, configuration, and
+/// store-construction failures propagate to the caller.
+fn resolve_object_store(
+    url: &str,
     object_store_configs: &HashMap<String, String>,
-) -> Result<(ObjectStoreUrl, Path, ObjectStoreBackend), ExecutionError> {
+    access_mode: AccessMode,
+) -> Result<ResolvedObjectStore, ExecutionError> {
     // `is_hdfs` comes back from normalization because it must be decided on the URL as written.
     // Re-deriving it from the normalized URL would let an `s3a`/alias rewrite land on an `s3`
     // entry in `fs.comet.libhdfs.schemes` and route an S3 read through libhdfs.
     let NormalizedObjectStoreUrl {
         url,
         is_hdfs: is_hdfs_scheme,
-    } = normalize_object_store_url(url.as_str(), object_store_configs)?;
+    } = normalize_object_store_url(url, object_store_configs)?;
     // Configured S3 aliases must be normalized before the object-store parser classifies them.
     // HDFS routing still wins, including when its configured schemes resemble remote stores.
     let backend = object_store_backend(&url, is_hdfs_scheme)?;
@@ -911,7 +926,7 @@ pub(crate) fn prepare_object_store_with_configs(
     let url_key = object_store_url_key(&url);
 
     let config_hash = hash_object_store_configs(object_store_configs);
-    let cache_key = (url_key.clone(), config_hash, is_hdfs_scheme);
+    let cache_key = (url_key.clone(), config_hash, is_hdfs_scheme, access_mode);
 
     // Check the cache first to reuse existing object store instances.
     // This enables HTTP connection pooling and avoids redundant DNS lookups.
@@ -933,7 +948,12 @@ pub(crate) fn prepare_object_store_with_configs(
             let (store, path): (Box<dyn ObjectStore>, Path) = if is_hdfs_scheme {
                 create_hdfs_object_store(&url)
             } else if scheme == "s3" {
-                objectstore::s3::create_store(&url, object_store_configs, Duration::from_secs(300))
+                objectstore::s3::create_store(
+                    &url,
+                    object_store_configs,
+                    Duration::from_secs(300),
+                    access_mode,
+                )
             } else if is_azure_scheme(scheme) {
                 objectstore::azure::create_store(&url, object_store_configs)
             } else {
@@ -949,6 +969,37 @@ pub(crate) fn prepare_object_store_with_configs(
             (store, path)
         };
 
+    Ok(ResolvedObjectStore {
+        url,
+        is_hdfs: is_hdfs_scheme,
+        backend,
+        config_hash,
+        store: object_store,
+        path: object_store_path,
+    })
+}
+
+/// Normalizes the owned URL using the borrowed configuration, selects and registers the backend
+/// in `runtime_env`, and returns its registry URL, object path, and I/O classification. Stores are
+/// reused from the process-wide cache when their normalized physical URL, configuration, and
+/// selected backend match. URL, configuration, and store-construction failures propagate to the
+/// caller. Callers must use the returned backend classification rather than infer it from an
+/// original alias or the synthetic registration scheme.
+pub(crate) fn prepare_object_store_with_configs(
+    runtime_env: Arc<RuntimeEnv>,
+    url: String,
+    object_store_configs: &HashMap<String, String>,
+) -> Result<(ObjectStoreUrl, Path, ObjectStoreBackend), ExecutionError> {
+    let ResolvedObjectStore {
+        url,
+        is_hdfs: is_hdfs_scheme,
+        backend,
+        config_hash,
+        store: object_store,
+        path: object_store_path,
+    } = resolve_object_store(&url, object_store_configs, AccessMode::Read)?;
+    let scheme = url.scheme();
+
     // A RuntimeEnv can plan multiple scans with different backends or credentials
     // for the same bucket. Use the same identity as the cache, even for the first
     // registration, so neither later registration nor planning order changes the
@@ -958,7 +1009,7 @@ pub(crate) fn prepare_object_store_with_configs(
     // Native LocalFileSystem ignores these Hadoop options and keeps file:// for
     // compatibility. An explicitly Hadoop-routed file scheme is still isolated.
     let object_store_url = if scheme == "file" && !is_hdfs_scheme {
-        ObjectStoreUrl::parse(url_key)?
+        ObjectStoreUrl::parse(object_store_url_key(&url))?
     } else {
         let backend = if is_hdfs_scheme { "hdfs" } else { "native" };
         // DataFusion keys stores only by scheme and authority, so put configuration
@@ -972,6 +1023,58 @@ pub(crate) fn prepare_object_store_with_configs(
     };
     runtime_env.register_object_store(object_store_url.as_ref(), object_store);
     Ok((object_store_url, object_store_path, backend))
+}
+
+/// Selects the store a native writer uploads `url` to and the object path within it, normalizing
+/// and decoding the URL exactly as a scan does. The store comes from the same process-wide cache
+/// as scans, under the write identity, so a configured `CometS3CredentialProvider` is asked for
+/// write access. Nothing is registered with a `RuntimeEnv`: the writer holds the store itself.
+pub(crate) fn object_store_for_write(
+    url: &str,
+    object_store_configs: &HashMap<String, String>,
+) -> Result<(Arc<dyn ObjectStore>, Path), ExecutionError> {
+    let ResolvedObjectStore { store, path, .. } =
+        resolve_object_store(url, object_store_configs, AccessMode::Write)?;
+    Ok((store, path))
+}
+
+/// Removes a test's store from the process-wide cache when dropped, including when the test fails.
+#[cfg(test)]
+pub(crate) struct CachedObjectStoreForTest(ObjectStoreCacheKey);
+
+#[cfg(test)]
+impl Drop for CachedObjectStoreForTest {
+    fn drop(&mut self) {
+        object_store_cache()
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&self.0);
+    }
+}
+
+/// Makes `url` resolve to `store` for `access_mode` under `object_store_configs`, as if the store
+/// had been built for it, so that a test outside this module can run a native reader or writer
+/// against an in-memory store. The cache is process-wide, so give each test its own bucket.
+#[cfg(test)]
+pub(crate) fn cache_object_store_for_test(
+    url: &str,
+    object_store_configs: &HashMap<String, String>,
+    access_mode: AccessMode,
+    store: Arc<dyn ObjectStore>,
+) -> CachedObjectStoreForTest {
+    let normalized =
+        normalize_object_store_url(url, object_store_configs).expect("test URL must parse");
+    let key = (
+        object_store_url_key(&normalized.url),
+        hash_object_store_configs(object_store_configs),
+        normalized.is_hdfs,
+        access_mode,
+    );
+    object_store_cache()
+        .write()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(key.clone(), store);
+    CachedObjectStoreForTest(key)
 }
 
 #[cfg(test)]
@@ -1082,9 +1185,10 @@ mod tests {
     }
 
     use super::{
-        hash_object_store_configs, object_store_cache, prepare_object_store_with_configs,
-        ObjectStoreBackend,
+        hash_object_store_configs, object_store_cache, object_store_for_write,
+        prepare_object_store_with_configs, ObjectStoreBackend,
     };
+    use crate::cloud::s3::credential_bridge::AccessMode;
     use bytes::Bytes;
     use datafusion::execution::object_store::ObjectStoreUrl;
     use datafusion::execution::runtime_env::RuntimeEnv;
@@ -1119,6 +1223,7 @@ mod tests {
                 format!("{}://{bucket}", case.physical_scheme),
                 hash_object_store_configs(&case.options),
                 case.hdfs_backend,
+                AccessMode::Read,
             )
         });
         for (index, store) in stores.iter().enumerate() {
@@ -1268,6 +1373,7 @@ mod tests {
             "s3://comet-isolation-native-aliases".to_string(),
             hash_object_store_configs(&options),
             false,
+            AccessMode::Read,
         );
         let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
         object_store_cache()
@@ -1296,6 +1402,49 @@ mod tests {
         object_store_cache().write().unwrap().remove(&key);
     }
 
+    /// A native writer and a scan of the same bucket with the same configuration must not share a
+    /// store, because the store's credential bridge asks the provider for one access mode. Seeds
+    /// one in-memory store per identity, so no remote requests are performed.
+    #[test]
+    fn native_writers_and_scans_use_separate_stores() {
+        let bucket = "comet-isolation-access-mode";
+        let options = HashMap::new();
+        let key = |mode| {
+            (
+                format!("s3://{bucket}"),
+                hash_object_store_configs(&options),
+                false,
+                mode,
+            )
+        };
+        let scan_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let write_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        {
+            let mut cache = object_store_cache().write().unwrap();
+            cache.insert(key(AccessMode::Read), Arc::clone(&scan_store));
+            cache.insert(key(AccessMode::Write), Arc::clone(&write_store));
+        }
+
+        let url = format!("s3a://{bucket}/directory/part%20one.parquet");
+        let (writer_store, writer_path) = object_store_for_write(&url, &options).unwrap();
+        let runtime = Arc::new(RuntimeEnv::default());
+        let (scan_url, scan_path, _) =
+            prepare_object_store_with_configs(Arc::clone(&runtime), url, &options).unwrap();
+
+        assert!(Arc::ptr_eq(&writer_store, &write_store));
+        assert!(Arc::ptr_eq(
+            &runtime.object_store(&scan_url).unwrap(),
+            &scan_store
+        ));
+        // Both entry points decode the object path identically.
+        assert_eq!(scan_path, Path::from("directory/part one.parquet"));
+        assert_eq!(writer_path, scan_path);
+
+        let mut cache = object_store_cache().write().unwrap();
+        cache.remove(&key(AccessMode::Read));
+        cache.remove(&key(AccessMode::Write));
+    }
+
     /// Checks that native file construction returns Local and cached Hadoop file routing returns
     /// Other, with distinct registered stores. Removes its synthetic Hadoop cache entry on success.
     #[test]
@@ -1306,6 +1455,7 @@ mod tests {
             "file://".to_string(),
             hash_object_store_configs(&options),
             true,
+            AccessMode::Read,
         );
         let hdfs_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
         object_store_cache()

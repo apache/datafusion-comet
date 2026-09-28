@@ -123,6 +123,13 @@ omitted from the tables below and may be reconsidered based on demand:
 | `DataWritingCommandExec`                                                                           | ⚠️     | Spark 3.4/3.5 only. Experimental native Parquet writes, disabled by default (opt-in). Replaced by `WriteFilesExec` on Spark 4.0+ and removed with Spark 3.x support.              |
 | `AppendDataExec`, `OverwriteByExpressionExec`, `OverwritePartitionsDynamicExec`, `ReplaceDataExec` | ⚠️     | Apache Iceberg tables only. Experimental, disabled by default. See [Iceberg Writes](iceberg-writes.md).                                                                           |
 
+Native Parquet writes (`WriteFilesExec` and `DataWritingCommandExec`) support local, HDFS and S3
+destinations. S3 means `s3a://`, or `s3://` when `fs.s3.impl` is S3A, and the native writer reads
+the same `fs.s3a.*` endpoint, region and credential settings as the native Parquet scan. A write to
+S3 falls back to Spark when the S3A magic committer is configured, when S3A is configured to
+encrypt the objects it creates or to set their ACL, storage class, content encoding or headers, or
+when the output path or `mapreduce.output.basename` contains `%`, `?`, `#` or a control character.
+
 ## Python and UDF
 
 | Operator                                           | Status | Notes                                                                                                                                                                                                    |

@@ -75,7 +75,7 @@ A Comet-side cache would have to either expose a tuning knob (TTL, max size, evi
 
 ## Location-scoped credentials on the Parquet path
 
-`object_store::CredentialProvider::get_credential` receives no request path, so one `AmazonS3` store presents one credential, and the process-wide `object_store` cache holds one store per `(scheme://bucket, config_hash, hdfs_backend)`. A base provider therefore gets one credential per bucket, requested with the path of the first file Comet reads. A bucket whose policies differ by location (one for `warehouse/sales`, another for `warehouse/finance`) needs a store per location and something that picks among them for each request.
+`object_store::CredentialProvider::get_credential` receives no request path, so one `AmazonS3` store presents one credential, and the process-wide `object_store` cache holds one store per `(scheme://bucket, config_hash, hdfs_backend, access_mode)`. The access mode separates the stores of native Parquet writes, whose bridge asks for `WRITE`, from those of scans. A base provider therefore gets one credential per bucket and access mode, requested with the path of the first file Comet reads or writes. A bucket whose policies differ by location (one for `warehouse/sales`, another for `warehouse/finance`) needs a store per location and something that picks among them for each request.
 
 `CometS3LocationScopedCredentialProvider` supplies that. `getPolicyLocations(bucket)` returns every location in the bucket that has its own policy, and `create_store` returns a `LocationScopedObjectStore` for the bucket instead of a plain store:
 

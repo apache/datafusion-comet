@@ -65,15 +65,13 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
                 "Parquet writes with empty-relation inputs require Spark's empty-file handling"))
             }
 
-            if (!cmd.outputPath.toString.startsWith("file:") && !cmd.outputPath.toString
-                .startsWith("hdfs:")) {
-              return Unsupported(Some("Supported output filesystems: local, HDFS"))
-            }
-
             NativeWriteUtils
               // This writer names its own files `part-<partition>-<attempt>.parquet`, so the
               // prefix is fixed rather than read from `mapreduce.output.basename`.
-              .escapedHdfsDestination(cmd.outputPath.toString, "part")
+              .unsupportedDestination(
+                cmd.outputPath.toString,
+                "part",
+                op.session.sessionState.newHadoopConfWithOptions(cmd.options))
               .foreach(reason => return Unsupported(Some(reason)))
 
             if (cmd.bucketSpec.isDefined) {

@@ -51,7 +51,7 @@ pub(crate) const DEFAULT_EXPIRY_WHEN_UNKNOWN: Duration = Duration::from_secs(300
 static WARNED_MISSING_EXPIRY: OnceCell<()> = OnceCell::new();
 
 /// Access intent forwarded to the Java SPI. Ordinal must match the JVM `CometS3AccessMode` enum.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AccessMode {
     Read = 0,
     Write = 1,

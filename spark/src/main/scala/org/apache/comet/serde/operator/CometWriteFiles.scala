@@ -73,12 +73,9 @@ object CometWriteFiles extends CometOperatorSerde[WriteFilesExec] {
         return Unsupported(Some("Only InsertIntoHadoopFsRelationCommand writes are supported"))
     }
 
-    if (!outputPath.startsWith("file:") && !outputPath.startsWith("hdfs:")) {
-      return Unsupported(Some("Supported output filesystems: local, HDFS"))
-    }
-
+    val conf = hadoopConf(op)
     NativeWriteUtils
-      .escapedHdfsDestination(outputPath, fileNamePrefix(hadoopConf(op)))
+      .unsupportedDestination(outputPath, fileNamePrefix(conf), conf)
       .foreach(reason => return Unsupported(Some(reason)))
 
     if (op.bucketSpec.isDefined) {

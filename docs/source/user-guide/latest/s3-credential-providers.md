@@ -19,7 +19,7 @@ under the License.
 
 # S3 Credential Providers
 
-Comet's native S3 readers and native Iceberg writer normally fetch credentials from the standard AWS credential chain (static keys, instance profiles, environment variables, etc.). Some clusters use a vendor-managed mechanism instead, where credentials are issued per request based on a JWT or per S3 path. For those clusters, Comet supports loading a vendor-supplied bridge class that routes every native credential request through the vendor's Java code.
+Comet's native S3 readers and writers normally fetch credentials from the standard AWS credential chain (static keys, instance profiles, environment variables, etc.). Some clusters use a vendor-managed mechanism instead, where credentials are issued per request based on a JWT or per S3 path. For those clusters, Comet supports loading a vendor-supplied bridge class that routes every native credential request through the vendor's Java code.
 
 ## Do I need this?
 
@@ -40,7 +40,7 @@ You probably do, if any of these are true:
 
 If a native Parquet scan fails with `Unsupported credential provider: <class>` (for example `com.amazonaws.auth.DefaultAWSCredentialsProviderChain`), the class you named in `fs.s3a.aws.credentials.provider` is one that plain Spark/Hadoop accepts but Comet's native reader does not reimplement. Comet ships two built-in `CometS3CredentialProvider` adapters that fix this with a one-line config change; you leave your existing `fs.s3a.aws.credentials.provider` untouched.
 
-These adapters cover the Parquet native scan path only. Enabling one is opt-in: naming it is what activates it. Note the native side forwards the `fs.s3a.*` config to `initialize()` for _any_ provider class named on the Parquet path, not just these two adapters: a vendor `CometS3CredentialProvider` that received an empty map in Comet 1.0 now receives the `fs.s3a.*` subset (including static keys), and one cached instance per distinct `fs.s3a.*` config rather than one per bucket. This is additive, but a provider that logs the map or treats an empty map as "the Parquet path" should be aware of it.
+These adapters cover the native Parquet path only: its scans, and its writes to S3. Enabling one is opt-in: naming it is what activates it. Note the native side forwards the `fs.s3a.*` config to `initialize()` for _any_ provider class named on the Parquet path, not just these two adapters: a vendor `CometS3CredentialProvider` that received an empty map in Comet 1.0 now receives the `fs.s3a.*` subset (including static keys), and one cached instance per distinct `fs.s3a.*` config rather than one per bucket. This is additive, but a provider that logs the map or treats an empty map as "the Parquet path" should be aware of it.
 
 The adapters and the AWS SDK are loaded through the class loader that loaded Comet, so `hadoop-aws` and the matching AWS SDK must be visible from there — put them on the same classpath as Comet (`spark.executor.extraClassPath` / `spark.driver.extraClassPath`, or `$SPARK_HOME/jars`), not only via `--packages`. If they are only on the user-jar loader, credential resolution fails at planning with `NoClassDefFoundError` before the adapter can report anything useful.
 
@@ -371,10 +371,10 @@ public final class IcebergRESTVendedS3Provider implements CometS3CredentialProvi
 
 ### Access mode
 
-| Value   | Used for                                                                                                                                                                                       |
-| ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `READ`  | All native scan paths (raw Parquet, Iceberg).                                                                                                                                                  |
-| `WRITE` | The native Iceberg writer (see [Iceberg Writes](iceberg-writes.md)). If the configured provider fails to initialize, the write fails rather than falling back to the default credential chain. |
+| Value   | Used for                                                                                                                                                                                                                       |
+| ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `READ`  | All native scan paths (raw Parquet, Iceberg).                                                                                                                                                                                  |
+| `WRITE` | The native Iceberg writer (see [Iceberg Writes](iceberg-writes.md)) and native Parquet writes to S3. If the configured provider fails to initialize, the write fails rather than falling back to the default credential chain. |
 
 A `WRITE` credential is not implicitly read-capable. Vendors that need read-during-write workflows include the required read permissions in the IAM policy attached to their `WRITE` credentials.
 

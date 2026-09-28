@@ -906,8 +906,9 @@ message ParquetWriter {
   //    fully-qualified path of the Parquet file to write, set per task from
   //    FileCommitProtocol.newTaskTempFile. Naming and staging are owned by Spark's commit
   //    protocol so that task-attempt isolation, speculative execution, and committers that track
-  //    individual files (S3A magic, streaming manifest) all behave as they do for Spark's own
-  //    writer. The native writer uses this path verbatim.
+  //    individual files (the streaming manifest, for example) all behave as they do for Spark's
+  //    own writer. The native writer uses this path verbatim. S3A's magic committer is the
+  //    exception: it needs S3A itself to create the file, so Comet leaves those writes to Spark.
   //  - Spark 3.x (CometNativeWriteExec): `work_dir` is set and the native writer derives the file
   //    name from it, the partition id and the task attempt id. `output_path` is the write's
   //    output directory and is unused natively. Goes away with Spark 3.x support.

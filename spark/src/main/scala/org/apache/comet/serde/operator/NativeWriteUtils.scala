@@ -21,12 +21,17 @@ package org.apache.comet.serde.operator
 
 import java.util.Locale
 
-import org.apache.hadoop.fs.Path
+import scala.util.control.NonFatal
+
+import org.apache.hadoop.conf.Configuration
+import org.apache.hadoop.fs.{FileSystem, Path}
 import org.apache.parquet.hadoop.ParquetOutputFormat
 import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.util.CaseInsensitiveMap
 import org.apache.spark.sql.internal.SQLConf
 
+import org.apache.comet.CometConf.COMET_LIBHDFS_SCHEMES_KEY
+import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.serde.OperatorOuterClass
 import org.apache.comet.serde.QueryPlanSerde.serializeDataType
 
@@ -172,19 +177,212 @@ object NativeWriteUtils {
   /**
    * Fail the task if the native writer would not write to exactly `filePath`.
    *
-   * [[escapedHdfsDestination]] declines the shapes Comet can predict at planning time, but the
+   * [[unsupportedDestination]] declines the shapes Comet can predict at planning time, but the
    * path a write actually uses comes from `FileCommitProtocol.newTaskTempFile`, and a custom
    * commit protocol can return anything. This is the backstop: it runs before the writer opens
    * anything, so the task fails with a clear message rather than committing successfully with the
    * data left somewhere else.
    */
-  def checkNativeWriteDestination(filePath: String): Unit =
+  def checkNativeWriteDestination(filePath: String): Unit = {
     hdfsPathDivergence(filePath).foreach { shown =>
       throw new UnsupportedOperationException(
         s"Comet's native Parquet writer cannot write to '$filePath': the path it would create " +
           s"on HDFS is not the one the commit protocol chose ($shown). Set " +
           "spark.comet.parquet.write.enabled=false to write this table with Spark.")
     }
+    if (s3Scheme(filePath).isDefined &&
+      (s3PathDivergence(filePath).isDefined || isS3AMagicPath(filePath))) {
+      throw new UnsupportedOperationException(
+        s"Comet's native Parquet writer cannot write to '$filePath': the object it would create " +
+          "on S3 is not the one the commit protocol expects. Set " +
+          "spark.comet.parquet.write.enabled=false to write this table with Spark.")
+    }
+  }
+
+  /**
+   * A fallback reason when the native writer cannot write `outputPath`'s files, or `None` when it
+   * can. Both native write serdes gate on this, so they admit exactly the same destinations.
+   *
+   * @param fileNamePrefix
+   *   the basename every file name starts with, see [[escapedHdfsDestination]]
+   * @param hadoopConf
+   *   the write's Hadoop configuration, the one its object store options are extracted from
+   */
+  def unsupportedDestination(
+      outputPath: String,
+      fileNamePrefix: String,
+      hadoopConf: Configuration): Option[String] = {
+    if (outputPath.startsWith("file:")) {
+      None
+    } else if (outputPath.startsWith("hdfs:")) {
+      escapedHdfsDestination(outputPath, fileNamePrefix)
+    } else {
+      s3Scheme(outputPath) match {
+        case Some(scheme) =>
+          unsupportedS3Destination(outputPath, scheme, fileNamePrefix, hadoopConf)
+        case None => Some("Supported output filesystems: local, HDFS, S3 (through S3A)")
+      }
+    }
+  }
+
+  /**
+   * The schemes the native writer uploads through `object_store`'s S3 client. Configured
+   * `fs.comet.s3Compliant.schemes` aliases are not among them even though the scan reads them:
+   * the native side reads their settings through vendor key translation, so a write could reach a
+   * different endpoint than the one Spark's committer then lists.
+   */
+  private val S3Schemes: Seq[String] = Seq("s3", "s3a")
+
+  /**
+   * The only Hadoop FileSystem whose writes the native S3 writer reproduces. Named rather than
+   * referenced, so that a deployment without hadoop-aws still plans writes and falls back.
+   */
+  private val S3AFileSystemClassName = "org.apache.hadoop.fs.s3a.S3AFileSystem"
+
+  /**
+   * S3A settings, without their `fs.s3a.` prefix, that change the objects S3A creates. The native
+   * writer does not apply them, so a write that sets one stays on Spark's writer rather than
+   * produce files without the encryption, ACL, storage class or content encoding it asks for. The
+   * list covers Hadoop 3.3 and 3.4.
+   */
+  private val UnsupportedS3AWriteOptions: Seq[String] = Seq(
+    // Server-side and client-side encryption, under its current and its deprecated name
+    "encryption.algorithm",
+    "server-side-encryption-algorithm",
+    "acl.default",
+    "create.storage.class",
+    "object.content.encoding")
+
+  /** Custom object headers S3A adds to every file it creates. */
+  private val S3ACreateHeaderPrefix = "create.header."
+
+  private def s3Scheme(path: String): Option[String] =
+    S3Schemes.find(scheme => path.startsWith(s"$scheme:"))
+
+  /**
+   * The first character of `path` that the native S3 writer would not carry into the object key,
+   * if any.
+   *
+   * The native writer derives the key the way the Parquet scan does: it parses the path as a URL
+   * and percent-decodes the URL's path. It is handed `Path.toString`, which Hadoop leaves
+   * unescaped, so that is only right where escaping and decoding cancel out. They do for the
+   * characters the URL parser escapes, among them spaces and every non-ASCII character, which
+   * come back unchanged. They do not for:
+   *
+   *   - `%`, which can start an escape sequence that decoding then replaces. `50%25` is written
+   *     as `50%`, and `%2F` even adds a directory level.
+   *   - `?` and `#`, which the parser takes for the start of the query and the fragment, so the
+   *     path is truncated there.
+   *   - ASCII control characters. The parser drops tabs and line breaks outright, and
+   *     `object_store` rejects the rest, which would fail the task.
+   *
+   * Returns the offending character as a fallback reason would show it.
+   */
+  private def s3PathDivergence(path: String): Option[String] =
+    path.find(c => c == '%' || c == '?' || c == '#' || c < ' ' || c == '\u007f').map { c =>
+      if (c == '%' || c == '?' || c == '#') s"'$c'" else f"control character U+${c.toInt}%04X"
+    }
+
+  /**
+   * Whether `path` is under an S3A magic committer directory: an element that starts with
+   * `__magic`, which is `__magic` on Hadoop 3.3 and `__magic_job-<id>` on 3.4. S3A intercepts a
+   * file created there, uploading it to its final destination as a multipart upload it leaves
+   * incomplete for the committer to complete at job commit. The native writer talks to S3
+   * directly, so it would create a real object in the magic directory instead, which the
+   * committer never lists and job cleanup deletes: the job would succeed without its data.
+   */
+  private def isS3AMagicPath(path: String): Boolean =
+    path.split('/').exists(_.startsWith("__magic"))
+
+  /**
+   * The key S3A takes setting `key` from for `bucket`, `fs.s3a.bucket.<bucket>.<key>` over
+   * `fs.s3a.<key>`, when it holds a value. A blank value, which S3A treats as no setting, does
+   * not count.
+   */
+  private def effectiveS3AKey(
+      hadoopConf: Configuration,
+      bucket: String,
+      key: String): Option[String] =
+    Seq(s"fs.s3a.bucket.$bucket.$key", s"fs.s3a.$key")
+      .find(name => hadoopConf.getTrimmed(name) != null)
+      .filter(name => hadoopConf.getTrimmed(name).nonEmpty)
+
+  /** The FileSystem class Hadoop would serve `scheme` with, or `None` when it has none. */
+  private def fileSystemClassName(scheme: String, hadoopConf: Configuration): Option[String] =
+    try {
+      Some(FileSystem.getFileSystemClass(scheme, hadoopConf).getName)
+    } catch {
+      case NonFatal(_) => None
+    }
+
+  /**
+   * Why the native writer cannot write an S3 destination, or `None` when it can. The native
+   * writer uploads with `object_store` rather than through S3A, so this admits only destinations
+   * where the two produce the same objects.
+   */
+  private def unsupportedS3Destination(
+      outputPath: String,
+      scheme: String,
+      fileNamePrefix: String,
+      hadoopConf: Configuration): Option[String] = {
+    // The same configuration `NativeConfig.extractObjectStoreOptions` forwards, so this matches
+    // the native routing, which would send the write to the HDFS writer instead.
+    if (NativeConfig.parseSchemeSet(hadoopConf.get(COMET_LIBHDFS_SCHEMES_KEY)).contains(scheme)) {
+      return Some(
+        s"$scheme:// output routed through libhdfs by $COMET_LIBHDFS_SCHEMES_KEY is " +
+          "not supported")
+    }
+    // Asking Hadoop rather than trusting the scheme is what keeps an `s3://` served by something
+    // other than S3A, such as EMRFS, on Spark's writer: its committers can depend on its own
+    // output streams, which the native writer would bypass.
+    val fileSystem = fileSystemClassName(scheme, hadoopConf)
+    if (!fileSystem.contains(S3AFileSystemClassName)) {
+      return Some(
+        s"S3 output is only supported through S3A, but $scheme:// is served by " +
+          fileSystem.getOrElse("no loadable FileSystem"))
+    }
+    s3PathDivergence(outputPath).foreach { shown =>
+      return Some(
+        s"S3 output paths containing $shown are not supported: the native writer would write " +
+          s"to a different key from the one Spark commits ($outputPath)")
+    }
+    // The basename goes into every file name, see `escapedHdfsDestination`.
+    s3PathDivergence(fileNamePrefix).foreach { shown =>
+      return Some(
+        s"S3 output file names containing $shown are not supported: " +
+          s"$BASE_OUTPUT_NAME=$fileNamePrefix would make the native writer create a different " +
+          "object from the one Spark commits")
+    }
+    if (isS3AMagicPath(outputPath)) {
+      return Some(s"S3A magic committer paths are not supported as output paths ($outputPath)")
+    }
+    val bucket = Option(new Path(outputPath).toUri.getAuthority).filter(_.nonEmpty) match {
+      case Some(bucket) => bucket
+      case None =>
+        return Some(s"S3 output paths without a bucket are not supported ($outputPath)")
+    }
+    // S3A reads the committer name from both the job and the filesystem configuration, so decline
+    // whichever of the two names the magic committer. This is conservative: the magic committer
+    // is only used with a commit protocol that asks S3A for its committer, such as Spark's
+    // `PathOutputCommitProtocol`.
+    Seq(s"fs.s3a.bucket.$bucket.committer.name", "fs.s3a.committer.name")
+      .find(key => "magic".equalsIgnoreCase(hadoopConf.getTrimmed(key)))
+      .foreach { key =>
+        return Some(
+          s"The S3A magic committer ($key=magic) is not supported: it commits the multipart " +
+            "uploads S3A leaves pending, which the native writer does not create")
+      }
+    UnsupportedS3AWriteOptions
+      .flatMap(key => effectiveS3AKey(hadoopConf, bucket, key))
+      .headOption
+      .orElse(
+        Seq(s"fs.s3a.bucket.$bucket.$S3ACreateHeaderPrefix", s"fs.s3a.$S3ACreateHeaderPrefix")
+          .find(prefix => !hadoopConf.getPropsWithPrefix(prefix).isEmpty)
+          .map(prefix => s"$prefix*"))
+      .map(key =>
+        s"S3A setting $key is not supported: the native writer would not apply it to the " +
+          "files it writes")
+  }
 
   /** Compression codecs Comet's native Parquet writer can produce. */
   val supportedCompressionCodecs: Set[String] =
