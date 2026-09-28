@@ -39,8 +39,11 @@ object CometUDF {
  *     (`spark.memory.offHeap.enabled`), allocations are charged to the current Spark task while
  *     the UDF holds them; when the returned vector is handed to native execution its accounting
  *     moves with it, so native operators that retain the buffers do not charge the task a second
- *     time. With on-heap Tungsten memory there is no matching Spark pool for off-heap Arrow
- *     buffers, so they are tracked by the allocator but not charged to the task.
+ *     time. The charge records memory use but never refuses it: when Spark grants less than an
+ *     allocation asks for, the allocation still succeeds and only the granted part is charged,
+ *     leaving the pressure to native operators, which can spill. With on-heap Tungsten memory
+ *     there is no matching Spark pool for off-heap Arrow buffers, so they are tracked by the
+ *     allocator but not charged to the task.
  *
  * `numRows` mirrors DataFusion's `ScalarFunctionArgs.number_rows` and is the batch row count.
  * UDFs that always have at least one batch-length input can read length from it and ignore

@@ -22,13 +22,15 @@ package org.apache.comet.udf;
 import java.io.IOException;
 import java.util.Collections;
 import java.util.Iterator;
+import java.util.Queue;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.AfterClass;
@@ -36,16 +38,18 @@ import org.junit.BeforeClass;
 import org.junit.Test;
 
 import org.apache.arrow.c.ArrowArray;
+import org.apache.arrow.c.ArrowSchema;
 import org.apache.arrow.c.Data;
 import org.apache.arrow.memory.ArrowBuf;
 import org.apache.arrow.memory.BufferAllocator;
-import org.apache.arrow.memory.OutOfMemoryException;
 import org.apache.arrow.vector.FieldVector;
 import org.apache.arrow.vector.IntVector;
+import org.apache.arrow.vector.ValueVector;
 import org.apache.arrow.vector.complex.ListVector;
 import org.apache.arrow.vector.types.Types;
 import org.apache.arrow.vector.types.pojo.FieldType;
 import org.apache.arrow.vector.util.TransferPair;
+import org.apache.spark.CometTaskMemoryManager;
 import org.apache.spark.TaskContext;
 import org.apache.spark.api.java.JavaSparkContext;
 import org.apache.spark.api.java.function.VoidFunction;
@@ -62,10 +66,16 @@ import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 public class CometUdfBridgeTest {
+  private static final long OFF_HEAP_BYTES = 64L << 20;
+  // What the memory-pressure tests leave free in the pool: less than one UDF output needs.
+  private static final long FREE_BYTES = 4096L;
+  private static final int NUM_ROWS = 1024;
+
   private static SparkSession spark;
   private static JavaSparkContext jsc;
   private static final AtomicReference<ArrowArray> DEFERRED_ARRAY = new AtomicReference<>();
   private static final AtomicReference<TaskContext> COMPLETED_CONTEXT = new AtomicReference<>();
+  private static final Queue<ArrowBuf> RETAINED_BUFFERS = new ConcurrentLinkedQueue<>();
 
   @BeforeClass
   public static void setUp() {
@@ -79,7 +89,7 @@ public class CometUdfBridgeTest {
             .appName("CometUdfBridgeTest")
             .config("spark.ui.enabled", "false")
             .config("spark.memory.offHeap.enabled", "true")
-            .config("spark.memory.offHeap.size", "67108864")
+            .config("spark.memory.offHeap.size", Long.toString(OFF_HEAP_BYTES))
             .getOrCreate();
     jsc = new JavaSparkContext(spark.sparkContext());
   }
@@ -91,6 +101,7 @@ public class CometUdfBridgeTest {
       deferred.release();
       deferred.close();
     }
+    closeRetainedBuffers();
     if (spark != null) {
       spark.stop();
       spark = null;
@@ -151,17 +162,213 @@ public class CometUdfBridgeTest {
       } else {
         previous.close();
       }
-      try {
-        ArrowBuf next = pending.get(10, TimeUnit.SECONDS);
-        next.close();
-      } catch (ExecutionException expected) {
-        assertTrue(expected.getCause() instanceof OutOfMemoryException);
-      }
+      // Recorded, not refused: Spark's spill loop does not retry the acquire after a spill that
+      // freed nothing, so the pending allocation may be granted nothing, and it must still
+      // succeed.
+      ArrowBuf next = pending.get(10, TimeUnit.SECONDS);
+      next.close();
       holder.freeMemory(held);
       threads.shutdownNow();
     }
     assertTrue(
         "buffer release must not wait for a blocking memory acquire", releasedWhileAcquireBlocked);
+    assertEquals(
+        "every charge should be handed back once the buffers are closed",
+        0L,
+        taskMemoryManager.getMemoryConsumptionForThisTask());
+  }
+
+  /**
+   * The memory-pressure regression. A native consumer ({@code CometTaskMemoryManager}, whose {@code
+   * spill} returns 0) holds all but {@link #FREE_BYTES} of the pool, as it does once native
+   * operators have reserved until their own {@code try_grow} failed. A UDF evaluation that needs
+   * more Arrow memory than Spark can grant must still succeed, so that the native operator it feeds
+   * gets the chance to spill, and the export must hand Spark back exactly what it granted.
+   */
+  @Test
+  public void udfEvaluationSucceedsWhenSparkGrantsLessThanRequested() {
+    LongAccumulator held = jsc.sc().longAccumulator("pressure-held");
+    LongAccumulator afterEvaluate = jsc.sc().longAccumulator("pressure-after-evaluate");
+    LongAccumulator resultSum = jsc.sc().longAccumulator("pressure-result-sum");
+    LongAccumulator afterFfiRelease = jsc.sc().longAccumulator("pressure-after-ffi-release");
+    LongAccumulator end = jsc.sc().longAccumulator("pressure-end");
+    AllocatingUdf.ALLOCATED.set(-1L);
+    AllocatingUdf.TASK_CHARGE.set(-1L);
+
+    jsc.parallelize(Collections.singletonList(0), 1)
+        .foreachPartition(
+            (VoidFunction<Iterator<Integer>>)
+                ignored -> {
+                  TaskContext context = TaskContext.get();
+                  CometUdfBridge.registerTask(context);
+                  TaskMemoryManager taskMemoryManager =
+                      CometTaskContextShim.taskMemoryManager(context);
+                  CometTaskMemoryManager nativeConsumer =
+                      new CometTaskMemoryManager(0L, context.taskAttemptId());
+                  long nativeHeld = nativeConsumer.acquireMemory(OFF_HEAP_BYTES - FREE_BYTES);
+                  held.add(nativeHeld);
+                  BufferAllocator rootAllocator =
+                      org.apache.comet.package$.MODULE$.CometArrowAllocator();
+                  try (ArrowArray outArray = ArrowArray.allocateNew(rootAllocator);
+                      ArrowSchema outSchema = ArrowSchema.allocateNew(rootAllocator)) {
+                    CometUdfBridge.evaluate(
+                        AllocatingUdf.class.getName(),
+                        new long[0],
+                        new long[0],
+                        outArray.memoryAddress(),
+                        outSchema.memoryAddress(),
+                        NUM_ROWS,
+                        context,
+                        Thread.currentThread().getContextClassLoader());
+                    afterEvaluate.add(
+                        taskMemoryManager.getMemoryConsumptionForThisTask() - nativeHeld);
+                    try (FieldVector result =
+                        Data.importVector(rootAllocator, outArray, outSchema, null)) {
+                      IntVector ints = (IntVector) result;
+                      for (int i = 0; i < ints.getValueCount(); i++) {
+                        resultSum.add(ints.get(i));
+                      }
+                    }
+                    afterFfiRelease.add(
+                        taskMemoryManager.getMemoryConsumptionForThisTask() - nativeHeld);
+                  } finally {
+                    nativeConsumer.releaseMemory(nativeHeld);
+                  }
+                  end.add(taskMemoryManager.getMemoryConsumptionForThisTask());
+                });
+
+    assertEquals(
+        "the native consumer should leave only FREE_BYTES of the pool",
+        OFF_HEAP_BYTES - FREE_BYTES,
+        held.value().longValue());
+    assertTrue(
+        "the UDF must need more Arrow memory than Spark can grant",
+        AllocatingUdf.ALLOCATED.get() > FREE_BYTES);
+    assertEquals(
+        "Spark should be charged what it could grant rather than refuse the allocation",
+        FREE_BYTES,
+        AllocatingUdf.TASK_CHARGE.get() - held.value());
+    assertEquals(
+        "the export must hand back exactly the grant, leaving native's reservation intact",
+        0L,
+        afterEvaluate.value().longValue());
+    assertEquals(
+        "the result should arrive intact",
+        (long) NUM_ROWS * (NUM_ROWS - 1) / 2,
+        resultSum.value().longValue());
+    assertEquals(
+        "the FFI release should not touch Spark's accounting",
+        0L,
+        afterFfiRelease.value().longValue());
+    assertEquals("nothing should remain charged", 0L, end.value().longValue());
+    assertEquals("the task state should be cleaned up", 0, CometUdfBridge.taskStateCount());
+  }
+
+  /**
+   * Short grants settle without over-releasing on the paths that do not go through export. A
+   * release repays the shortfall before handing Spark anything back, so the grant keeps backing
+   * memory that is still outstanding, and task completion hands back exactly what Spark granted
+   * while buffers recorded beyond the grant are still live.
+   */
+  @Test
+  public void shortGrantsAreRepaidBeforeSparkIsHandedBack() {
+    LongAccumulator afterAllocations = jsc.sc().longAccumulator("short-grant-after-allocations");
+    LongAccumulator afterRelease = jsc.sc().longAccumulator("short-grant-after-release");
+    LongAccumulator afterCompletion = jsc.sc().longAccumulator("short-grant-after-completion");
+    LongAccumulator end = jsc.sc().longAccumulator("short-grant-end");
+
+    jsc.parallelize(Collections.singletonList(0), 1)
+        .foreachPartition(
+            (VoidFunction<Iterator<Integer>>)
+                ignored -> {
+                  TaskContext context = TaskContext.get();
+                  TaskMemoryManager taskMemoryManager =
+                      CometTaskContextShim.taskMemoryManager(context);
+                  CometTaskMemoryManager nativeConsumer =
+                      new CometTaskMemoryManager(0L, context.taskAttemptId());
+                  long nativeHeld = nativeConsumer.acquireMemory(OFF_HEAP_BYTES - FREE_BYTES);
+                  // Registered before registerTask, so Spark's LIFO order runs it after the
+                  // bridge's own completion listener has settled the task's accounting.
+                  context.addTaskCompletionListener(
+                      ignoredContext -> {
+                        afterCompletion.add(
+                            taskMemoryManager.getMemoryConsumptionForThisTask() - nativeHeld);
+                        nativeConsumer.releaseMemory(nativeHeld);
+                        end.add(taskMemoryManager.getMemoryConsumptionForThisTask());
+                      });
+                  CometUdfBridge.registerTask(context);
+                  BufferAllocator allocator = CometUdfBridge.taskAllocator(context);
+
+                  // Spark grants FREE_BYTES of the first buffer and nothing of the second.
+                  ArrowBuf first = allocator.buffer(2 * FREE_BYTES);
+                  ArrowBuf second = allocator.buffer(2 * FREE_BYTES);
+                  afterAllocations.add(
+                      taskMemoryManager.getMemoryConsumptionForThisTask() - nativeHeld);
+                  // Repaid from the shortfall: the grant keeps backing `second`.
+                  first.close();
+                  afterRelease.add(
+                      taskMemoryManager.getMemoryConsumptionForThisTask() - nativeHeld);
+                  // Both outlive the task, one of them recorded without any grant at all.
+                  RETAINED_BUFFERS.add(second);
+                  RETAINED_BUFFERS.add(allocator.buffer(2 * FREE_BYTES));
+                });
+
+    assertEquals(
+        "Spark should be charged what it could grant",
+        FREE_BYTES,
+        afterAllocations.value().longValue());
+    assertEquals(
+        "a release should repay the shortfall before handing back a grant that still backs "
+            + "outstanding memory",
+        FREE_BYTES,
+        afterRelease.value().longValue());
+    assertEquals(
+        "task completion must hand back exactly what Spark granted",
+        0L,
+        afterCompletion.value().longValue());
+    assertEquals("nothing should remain charged", 0L, end.value().longValue());
+    assertEquals(
+        "buffers outliving the task should keep its allocator open",
+        1,
+        CometUdfBridge.taskStateCount());
+    closeRetainedBuffers();
+    assertEquals(
+        "closing the last buffer should clean up the task state",
+        0,
+        CometUdfBridge.taskStateCount());
+  }
+
+  private static void closeRetainedBuffers() {
+    ArrowBuf buffer;
+    while ((buffer = RETAINED_BUFFERS.poll()) != null) {
+      buffer.close();
+    }
+  }
+
+  /** Allocates its result from the allocator it is given and records what that cost the task. */
+  public static final class AllocatingUdf implements CometUDF {
+    static final AtomicLong ALLOCATED = new AtomicLong(-1L);
+    static final AtomicLong TASK_CHARGE = new AtomicLong(-1L);
+
+    @Override
+    public ValueVector evaluate(BufferAllocator allocator, ValueVector[] inputs, int numRows) {
+      IntVector out = new IntVector("out", allocator);
+      try {
+        out.allocateNew(numRows);
+        for (int i = 0; i < numRows; i++) {
+          out.set(i, i);
+        }
+        out.setValueCount(numRows);
+      } catch (RuntimeException e) {
+        out.close();
+        throw e;
+      }
+      ALLOCATED.set(allocator.getAllocatedMemory());
+      TASK_CHARGE.set(
+          CometTaskContextShim.taskMemoryManager(TaskContext.get())
+              .getMemoryConsumptionForThisTask());
+      return out;
+    }
   }
 
   @Test

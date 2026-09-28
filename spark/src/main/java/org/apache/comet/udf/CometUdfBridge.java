@@ -351,11 +351,13 @@ public class CometUdfBridge {
   }
 
   /**
-   * Moves the result's buffer accounting from the task allocator to the root allocator and drops
-   * the Spark task charge for the chunks the result owns exclusively (see {@link
-   * #chargedOutputSize}). Neither the ownership transfer nor the eventual FFI release is observed
-   * by the task allocator's {@link AllocationListener} (Arrow only notifies the allocator owning a
-   * chunk when the chunk is destroyed), so the charge must be released here.
+   * Moves the result's buffer accounting from the task allocator to the root allocator and returns
+   * the recorded bytes of the chunks the result owns exclusively (see {@link #chargedOutputSize}),
+   * which drops their Spark task charge. Neither the ownership transfer nor the eventual FFI
+   * release is observed by the task allocator's {@link AllocationListener} (Arrow only notifies the
+   * allocator owning a chunk when the chunk is destroyed), so the charge must be released here.
+   * When Spark granted less than was recorded, {@link TaskState#release} settles these bytes
+   * against the shortfall first, so the export never hands Spark back more than it granted.
    *
    * <p>The returned vector shares the original buffers and must be closed by the caller after
    * export; the exported FFI array keeps the buffers alive until native execution releases them.
@@ -370,11 +372,10 @@ public class CometUdfBridge {
   }
 
   /**
-   * Bytes of the result's buffers currently accounted against the task allocator, i.e. the portion
-   * of the Spark task charge that moves to native ownership on export. {@code getAccountedSize()}
-   * is non-zero only on the ledger that owns a chunk, so pass-through input buffers (owned by the
-   * root allocator) and chunks whose ownership already moved on a previous export contribute
-   * nothing.
+   * Bytes of the result's buffers currently accounted against the task allocator, i.e. the recorded
+   * bytes that move to native ownership on export. {@code getAccountedSize()} is non-zero only on
+   * the ledger that owns a chunk, so pass-through input buffers (owned by the root allocator) and
+   * chunks whose ownership already moved on a previous export contribute nothing.
    *
    * <p>Buffers are enumerated recursively from each vector's physical field buffers rather than
    * through {@code getBuffers(false)}: that method omits the allocated buffers of zero-length
@@ -465,6 +466,28 @@ public class CometUdfBridge {
    * Arrow buffers are off-heap, so with on-heap Tungsten memory there is no matching Spark pool to
    * charge and accounting is skipped entirely; the allocator still tracks buffers for cleanup.
    *
+   * <p>Allocations are recorded, never refused for lack of Spark memory. {@link #onPreAllocation}
+   * charges Spark whatever it grants and carries the rest as a shortfall. Refusing would fail the
+   * task at the wrong place: native operators reserve through consumers whose {@code spill} returns
+   * 0, and they spill only when their own {@code try_grow} fails, so by the time a task is under
+   * pressure native execution has already filled its share, and a UDF allocation that asks just
+   * before the native operator downstream would be the one refused, where that operator could have
+   * spilled instead. Comet's native pools record an infallible {@code grow} the same way, as
+   * overcommit (see {@code SparkMemory} in {@code spark_memory.rs}).
+   *
+   * <p>Accounting invariant. Let <i>recorded</i> be the bytes passed to {@link #onPreAllocation}
+   * and not yet returned through {@link #release} (from {@link #onRelease}, {@link
+   * #onFailedAllocation} or {@link #releaseExportedCharge}). Outside an allocation in progress,
+   * {@code consumer.getUsed() + shortfall == recorded}: every recorded byte is backed by Spark's
+   * grant or by the shortfall, never both. A release repays the shortfall before handing anything
+   * back, so afterwards Spark is charged {@code min(its previous grant, recorded)}: for as much of
+   * the outstanding memory as it granted, and only the excess of its grant over what is still
+   * outstanding is returned. Independently, {@link TaskMemoryConsumer#freeMemory} never hands back
+   * more than the consumer holds. That bound needs no bookkeeping to be right, so it also holds for
+   * chunks Arrow moves into or out of the task allocator without a listener callback (ownership
+   * transfers), where the invariant above cannot see the change. Task completion returns exactly
+   * what Spark still has granted and forgets the shortfall.
+   *
    * <p>Lock order: the {@link TaskMemoryManager} monitor, then this {@code TaskState} monitor, then
    * Spark's {@code MemoryManager} monitor (taken inside {@code acquireExecutionMemory} / {@code
    * releaseExecutionMemory}). {@link #onPreAllocation} takes all three in that order; every other
@@ -486,6 +509,8 @@ public class CometUdfBridge {
     private BufferAllocator allocator;
     // Arrow updates allocator accounting after onPreAllocation returns.
     private int evaluationsInFlight;
+    // Recorded bytes Spark did not grant and no release has repaid yet. See the class comment.
+    private long shortfall;
     private boolean completed;
     private boolean closed;
     private boolean completionListenerRegistered;
@@ -534,16 +559,21 @@ public class CometUdfBridge {
     @Override
     public void onPreAllocation(long size) {
       // Spark's executor cleanup also synchronizes on TaskMemoryManager. Keep that cleanup from
-      // overtaking an admitted allocation, while leaving this TaskState monitor free for buffer
+      // overtaking an allocation in progress, while leaving this TaskState monitor free for buffer
       // releases that can satisfy a blocking acquire.
       synchronized (taskMemoryManager) {
         synchronized (this) {
           if (completed) {
+            // The only refusal, and not for lack of memory: charging a finished task would leak
+            // the grant, because Spark releases everything the task held right after the
+            // completion listeners run.
             throw new OutOfMemoryException(
                 "Cannot allocate " + size + " JVM UDF bytes after task completion");
           }
         }
 
+        // A throw from here is a failure rather than a short grant (another consumer's spill
+        // failed, or the task is being killed). It propagates, and nothing has been recorded.
         long acquired = consumer == null ? size : consumer.acquireMemory(size);
         synchronized (this) {
           if (completed) {
@@ -554,11 +584,17 @@ public class CometUdfBridge {
                 "Cannot allocate " + size + " JVM UDF bytes after task completion");
           }
           if (acquired < size) {
-            if (acquired > 0) {
-              consumer.freeMemory(acquired);
+            // Record, don't refuse: see the class comment.
+            shortfall += size - acquired;
+            if (LOG.isDebugEnabled()) {
+              LOG.debug(
+                  "Task {} recorded {} JVM UDF bytes of which Spark granted {}; {} recorded bytes "
+                      + "are not charged to Spark",
+                  taskAttemptId,
+                  size,
+                  acquired,
+                  shortfall);
             }
-            throw new OutOfMemoryException(
-                "Failed to acquire " + size + " JVM UDF bytes from Spark TaskMemoryManager");
           }
         }
       }
@@ -566,21 +602,14 @@ public class CometUdfBridge {
 
     @Override
     public boolean onFailedAllocation(long size, AllocationOutcome outcome) {
-      synchronized (this) {
-        if (!completed && consumer != null) {
-          consumer.freeMemory(size);
-        }
-      }
+      // Arrow gives up on an allocation that onPreAllocation already recorded.
+      release(size);
       return false;
     }
 
     @Override
     public void onRelease(long size) {
-      synchronized (this) {
-        if (!completed && consumer != null) {
-          consumer.freeMemory(size);
-        }
-      }
+      release(size);
       closeIfIdle();
     }
 
@@ -590,14 +619,23 @@ public class CometUdfBridge {
      * never fire for their chunks. After completion the consumer was already drained wholesale.
      */
     private void releaseExportedCharge(long size) {
-      if (size <= 0) {
+      release(size);
+    }
+
+    /**
+     * Returns {@code size} recorded bytes. The shortfall is repaid first and only the rest is
+     * handed back to Spark, which keeps the invariant in the class comment: Spark is never handed
+     * back more than it granted, and stays charged for as much of the outstanding memory as it
+     * granted. After completion Spark's charge was already returned wholesale, so there is nothing
+     * to do.
+     */
+    private synchronized void release(long size) {
+      if (completed || consumer == null || size <= 0) {
         return;
       }
-      synchronized (this) {
-        if (!completed && consumer != null) {
-          consumer.freeMemory(size);
-        }
-      }
+      long repaid = Math.min(size, shortfall);
+      shortfall -= repaid;
+      consumer.freeMemory(size - repaid);
     }
 
     private synchronized void beginEvaluation() {
@@ -612,6 +650,8 @@ public class CometUdfBridge {
       synchronized (this) {
         completed = true;
         instances.clear();
+        // Bytes Spark never granted have nothing to return.
+        shortfall = 0L;
         if (consumer != null) {
           // Spark discards all remaining task accounting immediately after completion listeners.
           // Release it here; later FFI callbacks only drive allocator cleanup.
@@ -666,7 +706,9 @@ public class CometUdfBridge {
    * and cannot be safely evicted and reconstructed.
    */
   private static final class TaskMemoryConsumer extends MemoryConsumer {
-    private final AtomicLong accounted = new AtomicLong();
+    // Bytes Spark granted this consumer and has not been handed back. Atomic because Spark reads
+    // getUsed while holding the TaskMemoryManager monitor, where no other lock may be taken.
+    private final AtomicLong granted = new AtomicLong();
 
     private TaskMemoryConsumer(TaskMemoryManager taskMemoryManager) {
       super(taskMemoryManager, 0L, MemoryMode.OFF_HEAP);
@@ -675,23 +717,31 @@ public class CometUdfBridge {
     @Override
     public long acquireMemory(long size) {
       long acquired = taskMemoryManager.acquireExecutionMemory(size, this);
-      accounted.addAndGet(acquired);
+      granted.addAndGet(acquired);
       return acquired;
     }
 
     @Override
     public long getUsed() {
-      return accounted.get();
+      return granted.get();
     }
 
+    /**
+     * Hands back up to {@code size} bytes, and never more than this consumer holds. Spark clamps an
+     * over-release only against the whole task's usage, so one that stays within it would silently
+     * return bytes that another consumer in the task, such as native execution, still holds.
+     */
     @Override
     public void freeMemory(long size) {
-      taskMemoryManager.releaseExecutionMemory(size, this);
-      accounted.addAndGet(-size);
+      long held = granted.getAndUpdate(current -> current - Math.min(current, size));
+      long toFree = Math.min(held, size);
+      if (toFree > 0) {
+        taskMemoryManager.releaseExecutionMemory(toFree, this);
+      }
     }
 
     private void freeAllMemory() {
-      long toFree = accounted.getAndSet(0);
+      long toFree = granted.getAndSet(0);
       if (toFree > 0) {
         taskMemoryManager.releaseExecutionMemory(toFree, this);
       }
