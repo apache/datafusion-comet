@@ -54,6 +54,11 @@ impl NormalizeNaNAndZero {
         Self { data_type, child }
     }
 
+    /// Whether `evaluate` cannot fail, which it does by panicking for anything but a float.
+    pub(crate) fn is_infallible(&self) -> bool {
+        matches!(self.data_type, DataType::Float32 | DataType::Float64)
+    }
+
     /// Normalize scalar floating-point comparison keys, leaving other types unchanged.
     /// Sorting and range-partition boundaries must use the same representation.
     pub fn normalize_array(array: &ArrayRef) -> ArrayRef {

@@ -20,6 +20,7 @@ use arrow::array::{
     downcast_primitive, Array, ArrayRef, AsArray, BooleanArray, GenericByteArray, PrimitiveArray,
 };
 use arrow::buffer::{BooleanBuffer, NullBuffer, OffsetBuffer, ScalarBuffer};
+use arrow::compute::nullif;
 use arrow::datatypes::{
     ArrowNativeType, ArrowPrimitiveType, BinaryType, ByteArrayType, DataType, LargeBinaryType,
     LargeUtf8Type, Schema, Utf8Type,
@@ -100,17 +101,16 @@ pub fn create_case_when(
 /// branch the row chose. It uses [`CaseExpr`] otherwise.
 #[derive(Debug)]
 pub struct CaseWhenExpr {
-    when_then: Vec<WhenThen>,
-    else_expr: Option<Arc<dyn PhysicalExpr>>,
+    /// Holds the branches, and evaluates each one for just the rows that choose it
+    lazy: CaseExpr,
     /// The branches with a CASE or IF in the ELSE spliced in, as they are evaluated eagerly.
     /// `IF(a, x, IF(b, y, z))` is `CASE WHEN a THEN x WHEN b THEN y ELSE z END`, and merging
     /// the branches once is cheaper than merging each level into the next.
     flat_when_then: Vec<WhenThen>,
     flat_else_expr: Option<Arc<dyn PhysicalExpr>>,
-    /// Evaluates each branch for just the rows that choose it
-    lazy: CaseExpr,
-    /// Whether to evaluate every branch over the whole batch, decided on the first batch
-    eager: OnceLock<bool>,
+    /// The result type if every branch is evaluated over the whole batch, or `None` if they are
+    /// evaluated lazily, decided on the first batch
+    eager: OnceLock<Option<DataType>>,
 }
 
 impl CaseWhenExpr {
@@ -118,23 +118,26 @@ impl CaseWhenExpr {
         when_then: Vec<WhenThen>,
         else_expr: Option<Arc<dyn PhysicalExpr>>,
     ) -> Result<Self> {
-        let lazy = CaseExpr::try_new(None, when_then.clone(), else_expr.clone())?;
-        let mut flat_when_then = when_then.clone();
-        let mut flat_else_expr = else_expr.clone();
-        let nested = else_expr.as_ref().and_then(|e| {
+        let lazy = CaseExpr::try_new(None, when_then, else_expr)?;
+        let nested = lazy.else_expr().and_then(|e| {
             e.downcast_ref::<CaseWhenExpr>()
                 .or_else(|| e.downcast_ref::<IfExpr>().map(IfExpr::case_when))
         });
-        if let Some(nested) = nested {
-            flat_when_then.extend(nested.flat_when_then.iter().cloned());
-            flat_else_expr = nested.flat_else_expr.clone();
-        }
+        let (flat_when_then, flat_else_expr) = match nested {
+            Some(nested) => (
+                lazy.when_then_expr()
+                    .iter()
+                    .chain(&nested.flat_when_then)
+                    .cloned()
+                    .collect(),
+                nested.flat_else_expr.clone(),
+            ),
+            None => (lazy.when_then_expr().to_vec(), lazy.else_expr().cloned()),
+        };
         Ok(Self {
-            when_then,
-            else_expr,
+            lazy,
             flat_when_then,
             flat_else_expr,
-            lazy,
             eager: OnceLock::new(),
         })
     }
@@ -147,31 +150,30 @@ impl CaseWhenExpr {
             .chain(&self.flat_else_expr)
     }
 
-    /// Whether every expression that Spark evaluates for only some of the rows can be evaluated
-    /// for all of them, and the result is a type that [`merge`] handles.
-    fn can_evaluate_eagerly(&self, input_schema: &Schema) -> bool {
-        let Ok(data_type) = self.data_type(input_schema) else {
-            return false;
-        };
+    /// The result type, if every expression that Spark evaluates for only some of the rows can
+    /// be evaluated for all of them and the result is a type that [`merge`] handles.
+    fn eager_result_type(&self, input_schema: &Schema) -> Option<DataType> {
+        let data_type = self.data_type(input_schema).ok()?;
         // Spark evaluates the first WHEN for every row as well
         let later_whens = self.flat_when_then.iter().skip(1).map(|(when, _)| when);
-        can_merge(&data_type)
+        let eager = can_merge(&data_type)
             && self
                 .values()
                 .all(|v| v.data_type(input_schema).is_ok_and(|t| t == data_type))
             && self
                 .values()
                 .chain(later_whens)
-                .all(|e| is_infallible(e, input_schema))
+                .all(|e| is_infallible(e, input_schema));
+        eager.then_some(data_type)
     }
 
-    fn evaluate_eagerly(&self, batch: &RecordBatch) -> Result<ColumnarValue> {
+    fn evaluate_eagerly(&self, batch: &RecordBatch, data_type: &DataType) -> Result<ColumnarValue> {
         let num_rows = batch.num_rows();
         // The rows that no WHEN has matched yet
         let mut remaining = BooleanBuffer::new_set(num_rows);
         let mut remaining_count = num_rows;
-        // The rows that choose each branch, for the branches that some row chooses
-        let mut chosen: Vec<(BooleanBuffer, &Arc<dyn PhysicalExpr>)> = vec![];
+        // The rows that choose each branch, and how many, for the branches that some row chooses
+        let mut chosen: Vec<(BooleanBuffer, usize, &Arc<dyn PhysicalExpr>)> = vec![];
         for (when, then) in &self.flat_when_then {
             if remaining_count == 0 {
                 break;
@@ -202,49 +204,47 @@ impl CaseWhenExpr {
             if count == 0 {
                 continue;
             }
-            remaining = &remaining ^ &rows;
+            remaining ^= &rows;
             remaining_count -= count;
-            chosen.push((rows, then));
+            chosen.push((rows, count, then));
         }
         if remaining_count > 0 {
             if let Some(else_expr) = &self.flat_else_expr {
-                chosen.push((remaining, else_expr));
+                chosen.push((remaining, remaining_count, else_expr));
                 remaining_count = 0;
             }
         }
 
-        match chosen.as_slice() {
-            // No row chooses a branch, so every row is NULL
-            [] => {
-                let data_type = self.data_type(&batch.schema())?;
-                Ok(ColumnarValue::Scalar(ScalarValue::try_new_null(
-                    &data_type,
-                )?))
-            }
-            // Every row chooses the same branch, so its value is the result as it is
-            [(_, expr)] if remaining_count == 0 => expr.evaluate(batch),
-            _ => {
-                let data_type = self.data_type(&batch.schema())?;
-                let branches = chosen
-                    .into_iter()
-                    .map(|(rows, expr)| Branch::try_new(rows, expr.evaluate(batch)?, num_rows))
-                    .collect::<Result<Vec<_>>>()?;
-                merge(&data_type, num_rows, &branches).map(ColumnarValue::Array)
+        // Every row chooses the same branch, so its value is the result as it is
+        if let [(_, _, expr)] = chosen.as_slice() {
+            if remaining_count == 0 {
+                return expr.evaluate(batch);
             }
         }
+        let mut branches = chosen
+            .into_iter()
+            .map(|(rows, row_count, expr)| {
+                Branch::try_new(rows, row_count, expr.evaluate(batch)?, num_rows)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        // The rows of a NULL literal are NULL, as are the rows that choose no branch
+        branches.retain(|b| !b.is_scalar || b.values.is_valid(0));
+        if branches.is_empty() {
+            return Ok(ColumnarValue::Scalar(ScalarValue::try_new_null(data_type)?));
+        }
+        merge(data_type, num_rows, &branches).map(ColumnarValue::Array)
     }
 }
 
 impl Hash for CaseWhenExpr {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.when_then.hash(state);
-        self.else_expr.hash(state);
+        self.lazy.hash(state);
     }
 }
 
 impl PartialEq for CaseWhenExpr {
     fn eq(&self, other: &Self) -> bool {
-        self.when_then == other.when_then && self.else_expr == other.else_expr
+        self.lazy == other.lazy
     }
 }
 
@@ -252,14 +252,7 @@ impl Eq for CaseWhenExpr {}
 
 impl Display for CaseWhenExpr {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "CASE ")?;
-        for (when, then) in &self.when_then {
-            write!(f, "WHEN {when} THEN {then} ")?;
-        }
-        if let Some(else_expr) = &self.else_expr {
-            write!(f, "ELSE {else_expr} ")?;
-        }
-        write!(f, "END")
+        Display::fmt(&self.lazy, f)
     }
 }
 
@@ -270,41 +263,36 @@ impl PhysicalExpr for CaseWhenExpr {
 
     /// Spark's rule: the result can be NULL when a branch's value can, or when there is no ELSE.
     fn nullable(&self, input_schema: &Schema) -> Result<bool> {
-        for (_, then) in &self.when_then {
+        for (_, then) in self.lazy.when_then_expr() {
             if then.nullable(input_schema)? {
                 return Ok(true);
             }
         }
-        match &self.else_expr {
+        match self.lazy.else_expr() {
             Some(else_expr) => else_expr.nullable(input_schema),
             None => Ok(true),
         }
     }
 
     fn evaluate(&self, batch: &RecordBatch) -> Result<ColumnarValue> {
-        let eager = *self
+        match self
             .eager
-            .get_or_init(|| self.can_evaluate_eagerly(&batch.schema()));
-        if eager {
-            self.evaluate_eagerly(batch)
-        } else {
-            self.lazy.evaluate(batch)
+            .get_or_init(|| self.eager_result_type(&batch.schema()))
+        {
+            Some(data_type) => self.evaluate_eagerly(batch, data_type),
+            None => self.lazy.evaluate(batch),
         }
     }
 
     fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
-        self.when_then
-            .iter()
-            .flat_map(|(when, then)| [when, then])
-            .chain(&self.else_expr)
-            .collect()
+        self.lazy.children()
     }
 
     fn with_new_children(
         self: Arc<Self>,
         children: Vec<Arc<dyn PhysicalExpr>>,
     ) -> Result<Arc<dyn PhysicalExpr>> {
-        let expected = 2 * self.when_then.len() + usize::from(self.else_expr.is_some());
+        let expected = self.children().len();
         if children.len() != expected {
             return internal_err!(
                 "CaseWhenExpr expects {expected} children, got {}",
@@ -312,27 +300,14 @@ impl PhysicalExpr for CaseWhenExpr {
             );
         }
         let mut children = children.into_iter();
-        let when_then = (0..self.when_then.len())
+        let when_then = (0..self.lazy.when_then_expr().len())
             .map(|_| (children.next().unwrap(), children.next().unwrap()))
             .collect();
         Ok(Arc::new(CaseWhenExpr::try_new(when_then, children.next())?))
     }
 
     fn fmt_sql(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "CASE ")?;
-        for (when, then) in &self.when_then {
-            write!(f, "WHEN ")?;
-            when.fmt_sql(f)?;
-            write!(f, " THEN ")?;
-            then.fmt_sql(f)?;
-            write!(f, " ")?;
-        }
-        if let Some(else_expr) = &self.else_expr {
-            write!(f, "ELSE ")?;
-            else_expr.fmt_sql(f)?;
-            write!(f, " ")?;
-        }
-        write!(f, "END")
+        self.lazy.fmt_sql(f)
     }
 }
 
@@ -345,16 +320,16 @@ fn is_infallible(expr: &Arc<dyn PhysicalExpr>, input_schema: &Schema) -> bool {
     if expr.is::<Column>() || expr.is::<Literal>() {
         return true;
     }
-    let data_type = |e: &Arc<dyn PhysicalExpr>| e.data_type(input_schema).ok();
     let node_is_infallible = if let Some(binary) = expr.downcast_ref::<BinaryExpr>() {
         binary_is_infallible(binary, input_schema)
     } else if let Some(cast) = expr.downcast_ref::<Cast>() {
-        data_type(&cast.child).is_some_and(|from| cast_is_infallible(&from, &cast.data_type))
+        cast.is_infallible(input_schema)
+    } else if let Some(normalize) = expr.downcast_ref::<NormalizeNaNAndZero>() {
+        normalize.is_infallible()
     } else if let Some(not) = expr.downcast_ref::<NotExpr>() {
-        data_type(not.arg()) == Some(DataType::Boolean)
-    } else if expr.is::<NormalizeNaNAndZero>() {
-        // It panics for anything but a float
-        data_type(expr).is_some_and(|t| t.is_floating())
+        not.arg()
+            .data_type(input_schema)
+            .is_ok_and(|t| t == DataType::Boolean)
     } else {
         // A nested CASE or IF cannot fail when none of its parts can, however it evaluates them
         expr.is::<IsNullExpr>()
@@ -416,22 +391,6 @@ fn fails_on_overflow(binary: &BinaryExpr) -> bool {
     *binary != wrapping
 }
 
-/// Casts that `spark_cast` performs without being able to fail, in any eval mode.
-fn cast_is_infallible(from: &DataType, to: &DataType) -> bool {
-    use DataType::*;
-    !matches!(to, Dictionary(_, _))
-        && (from == to
-            || *from == Null
-            || matches!(
-                (from, to),
-                (Int8, Int16 | Int32 | Int64 | Float32 | Float64)
-                    | (Int16, Int32 | Int64 | Float32 | Float64)
-                    | (Int32, Int64 | Float32 | Float64)
-                    | (Int64, Float32 | Float64)
-                    | (Float32, Float64)
-            ))
-}
-
 macro_rules! supported {
     ($t:ty) => {
         true
@@ -461,7 +420,12 @@ struct Branch {
 }
 
 impl Branch {
-    fn try_new(rows: BooleanBuffer, value: ColumnarValue, num_rows: usize) -> Result<Self> {
+    fn try_new(
+        rows: BooleanBuffer,
+        row_count: usize,
+        value: ColumnarValue,
+        num_rows: usize,
+    ) -> Result<Self> {
         let (values, is_scalar) = match value {
             ColumnarValue::Array(array) if array.len() == num_rows => (array, false),
             ColumnarValue::Array(array) => {
@@ -473,8 +437,8 @@ impl Branch {
             ColumnarValue::Scalar(scalar) => (scalar.to_array_of_size(1)?, true),
         };
         Ok(Self {
-            row_count: rows.count_set_bits(),
             rows,
+            row_count,
             values,
             is_scalar,
         })
@@ -497,6 +461,14 @@ impl Branch {
 /// Takes each row's value from the branch that the row chose. No row chooses two branches, and a
 /// row that chooses none is NULL.
 fn merge(data_type: &DataType, num_rows: usize, branches: &[Branch]) -> Result<ArrayRef> {
+    // Only the rows of this array are valid, so it is the result once the others are NULL, and
+    // its buffers can be kept
+    if let [branch] = branches {
+        if !branch.is_scalar {
+            let others = BooleanArray::new(!&branch.rows, None);
+            return Ok(nullif(&branch.values, &others)?);
+        }
+    }
     macro_rules! primitive {
         ($t:ty) => {
             merge_primitive::<$t>(data_type, num_rows, branches)
@@ -643,7 +615,9 @@ struct ByteSource<'a, T: ByteArrayType> {
     data: &'a [u8],
     /// Turns a row into its position in `offsets`: every bit set for an array, none for a scalar
     position_mask: usize,
-    /// A scalar's value, padded to `SLACK` bytes when it fits in them
+    /// A scalar's value
+    scalar: Option<&'a [u8]>,
+    /// A scalar's value padded to `SLACK` bytes, when it fits in them
     padded_scalar: Option<[u8; SLACK]>,
 }
 
@@ -653,19 +627,18 @@ impl<'a, T: ByteArrayType> ByteSource<'a, T> {
             .values
             .as_bytes_opt::<T>()
             .ok_or_else(|| branch.type_mismatch(data_type))?;
-        let offsets = array.value_offsets();
-        let data = array.value_data();
-        let padded_scalar = branch.is_scalar.then(|| {
-            let value = &data[offsets[0].as_usize()..offsets[1].as_usize()];
+        let scalar: Option<&[u8]> = branch.is_scalar.then(|| array.value(0).as_ref());
+        let padded_scalar = scalar.filter(|v| v.len() <= SLACK).map(|v| {
             let mut padded = [0; SLACK];
-            padded.get_mut(..value.len())?.copy_from_slice(value);
-            Some(padded)
+            padded[..v.len()].copy_from_slice(v);
+            padded
         });
         Ok(Self {
-            offsets,
-            data,
+            offsets: array.value_offsets(),
+            data: array.value_data(),
             position_mask: if branch.is_scalar { 0 } else { usize::MAX },
-            padded_scalar: padded_scalar.flatten(),
+            scalar,
+            padded_scalar,
         })
     }
 
@@ -718,24 +691,24 @@ fn merge_bytes<T: ByteArrayType>(
             .map_or(num_rows, |n| start + n);
         match sources.get(i as usize) {
             None => {}
-            Some(source) if source.position_mask == 0 => {
-                let value_len = source.value_len(0);
-                match &source.padded_scalar {
-                    Some(padded) => {
-                        for _ in start..end {
-                            values[pos..pos + SLACK].copy_from_slice(padded);
-                            pos += value_len;
-                        }
-                    }
-                    None => {
-                        let value = &source.data[source.offsets[0].as_usize()..][..value_len];
-                        for _ in start..end {
-                            values[pos..pos + value_len].copy_from_slice(value);
-                            pos += value_len;
-                        }
+            Some(ByteSource {
+                scalar: Some(value),
+                padded_scalar,
+                ..
+            }) => match padded_scalar {
+                Some(padded) => {
+                    for _ in start..end {
+                        values[pos..pos + SLACK].copy_from_slice(padded);
+                        pos += value.len();
                     }
                 }
-            }
+                None => {
+                    for _ in start..end {
+                        values[pos..pos + value.len()].copy_from_slice(value);
+                        pos += value.len();
+                    }
+                }
+            },
             Some(source) => {
                 let from = source.offsets[start].as_usize();
                 let run_len = source.offsets[end].as_usize() - from;
@@ -893,6 +866,13 @@ mod tests {
         RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap()
     }
 
+    /// The first valid value in `values`, as a literal.
+    fn first_valid(values: &ArrayRef) -> Option<ScalarValue> {
+        (0..values.len())
+            .find(|&i| values.is_valid(i))
+            .map(|i| ScalarValue::try_from_array(values, i).unwrap())
+    }
+
     /// Evaluates the CASE with both `CaseWhenExpr` and DataFusion's `CaseExpr`, checks they agree,
     /// and returns whether `CaseWhenExpr` evaluated it eagerly.
     fn check_against_case_expr(
@@ -914,7 +894,7 @@ mod tests {
             .unwrap();
         assert_eq!(actual.data_type(), expected.data_type(), "{expr}");
         assert_eq!(actual.as_ref(), expected.as_ref(), "{expr}");
-        *expr.eager.get().unwrap()
+        expr.eager.get().unwrap().is_some()
     }
 
     #[test]
@@ -935,12 +915,8 @@ mod tests {
                     for batch in [batch.clone(), batch.slice(7, 250)] {
                         let schema = batch.schema();
                         let c = |name: &str| col(name, &schema).unwrap();
-                        let values = batch.column(3);
-                        let literal = (0..values.len())
-                            .find(|&i| values.is_valid(i))
-                            .map(|i| ScalarValue::try_from_array(values, i).unwrap())
-                            .unwrap_or(ScalarValue::try_new_null(&data_type).unwrap());
                         let null = ScalarValue::try_new_null(&data_type).unwrap();
+                        let literal = first_valid(batch.column(3)).unwrap_or(null.clone());
                         let shapes: Vec<CaseShape> = vec![
                             (vec![(c("p0"), c("v0"))], Some(c("v1"))),
                             (vec![(c("p0"), c("v0"))], None),
@@ -975,11 +951,7 @@ mod tests {
             let batch = test_batch(&data_type, 300, 0.2, Predicates::WithNulls, &mut rng);
             let schema = batch.schema();
             let c = |name: &str| col(name, &schema).unwrap();
-            let values = batch.column(3);
-            let literal = (0..values.len())
-                .find(|&i| values.is_valid(i))
-                .map(|i| ScalarValue::try_from_array(values, i).unwrap())
-                .unwrap();
+            let literal = first_valid(batch.column(3)).unwrap();
             // IF(p0, v0, IF(p1, v1, CASE WHEN p2 THEN literal ELSE v2 END))
             let inner: Arc<dyn PhysicalExpr> = Arc::new(
                 CaseWhenExpr::try_new(vec![(c("p2"), lit(literal.clone()))], Some(c("v2")))
@@ -1008,7 +980,7 @@ mod tests {
             let expected = reference.evaluate(&batch).unwrap().into_array(300).unwrap();
             let actual = expr.evaluate(&batch).unwrap().into_array(300).unwrap();
             assert_eq!(actual.as_ref(), expected.as_ref(), "{data_type}");
-            assert!(*expr.eager.get().unwrap());
+            assert!(expr.eager.get().unwrap().is_some());
         }
     }
 
@@ -1172,26 +1144,24 @@ mod tests {
         let batch = int_batch(vec![Some(1), Some(2)], vec![Some(1), Some(2)]);
         let schema = batch.schema();
         let a = col("a", &schema).unwrap();
+        let scalar = |expr: CaseWhenExpr| match expr.evaluate(&batch).unwrap() {
+            ColumnarValue::Scalar(v) => v,
+            other => panic!("expected a scalar, got {other:?}"),
+        };
         // Every row chooses THEN, a literal
         let expr = CaseWhenExpr::try_new(
             vec![(binary(Arc::clone(&a), Operator::Gt, lit(0i64)), lit(7i64))],
             Some(Arc::clone(&a)),
         )
         .unwrap();
-        match expr.evaluate(&batch).unwrap() {
-            ColumnarValue::Scalar(v) => assert_eq!(v, ScalarValue::Int64(Some(7))),
-            other => panic!("expected a scalar, got {other:?}"),
-        }
+        assert_eq!(scalar(expr), ScalarValue::Int64(Some(7)));
         // No row chooses a branch and there is no ELSE
         let expr = CaseWhenExpr::try_new(
             vec![(binary(Arc::clone(&a), Operator::Lt, lit(0i64)), a)],
             None,
         )
         .unwrap();
-        match expr.evaluate(&batch).unwrap() {
-            ColumnarValue::Scalar(v) => assert_eq!(v, ScalarValue::Int64(None)),
-            other => panic!("expected a scalar, got {other:?}"),
-        }
+        assert_eq!(scalar(expr), ScalarValue::Int64(None));
     }
 
     #[test]

@@ -27,7 +27,7 @@ use arrow::record_batch::RecordBatch;
 use criterion::{criterion_group, criterion_main, Criterion, Throughput};
 use datafusion::common::ScalarValue;
 use datafusion::logical_expr::Operator;
-use datafusion::physical_expr::expressions::{BinaryExpr, Column, IsNotNullExpr, Literal};
+use datafusion::physical_expr::expressions::{lit, BinaryExpr, Column, IsNotNullExpr};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion_comet_spark_expr::{
     create_case_when, Cast, EvalMode, IfExpr, NormalizeNaNAndZero, SparkCastOptions,
@@ -40,6 +40,9 @@ use std::sync::Arc;
 const NUM_ROWS: usize = 8192;
 
 type Expr = Arc<dyn PhysicalExpr>;
+
+/// A benchmark: its name, how to build its expression, and the batch to evaluate it on.
+type Shape<'a> = (&'a str, fn() -> Expr, &'a RecordBatch);
 
 /// Columns shaped like the ones in `CometConditionalExpressionBenchmark`:
 /// `c1` a random long, `c2` an int in `0..100`, `c3` another random long, and `c4` / `c5` short
@@ -54,29 +57,31 @@ fn make_batch(null_density: f32, sorted: bool) -> RecordBatch {
         c2.sort_unstable();
     }
     let c3: Vec<i64> = (0..NUM_ROWS).map(|_| rng.random::<i64>()).collect();
-    let mut null = |v: bool| {
-        if rng.random::<f32>() < null_density {
-            false
-        } else {
-            v
-        }
-    };
     let valid: Vec<Vec<bool>> = (0..7)
-        .map(|_| (0..NUM_ROWS).map(|_| null(true)).collect())
+        .map(|_| {
+            (0..NUM_ROWS)
+                .map(|_| rng.random::<f32>() >= null_density)
+                .collect()
+        })
         .collect();
-    let opt = |col: usize, i: usize| valid[col][i];
 
-    let c1: Int64Array = (0..NUM_ROWS).map(|i| opt(0, i).then_some(c1[i])).collect();
-    let c2: Int32Array = (0..NUM_ROWS).map(|i| opt(1, i).then_some(c2[i])).collect();
-    let c3: Int64Array = (0..NUM_ROWS).map(|i| opt(2, i).then_some(c3[i])).collect();
+    let c1: Int64Array = (0..NUM_ROWS)
+        .map(|i| valid[0][i].then_some(c1[i]))
+        .collect();
+    let c2: Int32Array = (0..NUM_ROWS)
+        .map(|i| valid[1][i].then_some(c2[i]))
+        .collect();
+    let c3: Int64Array = (0..NUM_ROWS)
+        .map(|i| valid[2][i].then_some(c3[i]))
+        .collect();
     let short = |col: usize, tag: &str| -> StringArray {
         (0..NUM_ROWS)
-            .map(|i| opt(col, i).then(|| format!("{tag}{}", i * 7919 % 100_000)))
+            .map(|i| valid[col][i].then(|| format!("{tag}{}", i * 7919 % 100_000)))
             .collect()
     };
     let long = |col: usize, tag: &str| -> StringArray {
         (0..NUM_ROWS)
-            .map(|i| opt(col, i).then(|| format!("{tag}{i}-").repeat(12)))
+            .map(|i| valid[col][i].then(|| format!("{tag}{i}-").repeat(12)))
             .collect()
     };
     let columns: Vec<ArrayRef> = vec![
@@ -106,10 +111,6 @@ fn schema() -> Schema {
 fn col(name: &str) -> Expr {
     let index = schema().index_of(name).unwrap();
     Arc::new(Column::new(name, index))
-}
-
-fn lit(value: impl Into<ScalarValue>) -> Expr {
-    Arc::new(Literal::new(value.into()))
 }
 
 fn binary(left: Expr, op: Operator, right: Expr) -> Expr {
@@ -191,7 +192,7 @@ fn case_column_10_branches() -> Expr {
         lit(ScalarValue::Float64(None)),
         two(),
     );
-    let values = vec![
+    let mut values = vec![
         double(col("c1")),
         double(col("c3")),
         double(binary(col("c1"), Operator::Plus, col("c3"))),
@@ -207,11 +208,9 @@ fn case_column_10_branches() -> Expr {
             col("c3"),
         )),
     ];
-    let mut values = values.into_iter();
-    let when_then = (1..10)
-        .map(|i| (c2_below(10 * i), values.next().unwrap()))
-        .collect();
-    case_when(when_then, values.next())
+    let else_value = values.pop();
+    let when_then = (1..10).map(|i| c2_below(10 * i)).zip(values).collect();
+    case_when(when_then, else_value)
 }
 
 fn if_literal() -> Expr {
@@ -316,79 +315,74 @@ fn criterion_benchmark(c: &mut Criterion) {
     let dense_nulls = make_batch(0.9, false);
     let sorted = make_batch(0.0, true);
 
+    let shapes: [Shape; 26] = [
+        (
+            "case literal 3 branches",
+            case_literal_3_branches,
+            &no_nulls,
+        ),
+        (
+            "case literal 10 branches",
+            case_literal_10_branches,
+            &no_nulls,
+        ),
+        ("case column 3 branches", case_column_3_branches, &no_nulls),
+        (
+            "case column 10 branches",
+            case_column_10_branches,
+            &no_nulls,
+        ),
+        ("if literal", if_literal, &no_nulls),
+        ("if column", if_column, &no_nulls),
+        ("nested if literal", nested_if_literal, &no_nulls),
+        ("nested if column", nested_if_column, &no_nulls),
+        ("case int literals", case_int_literals, &no_nulls),
+        ("case column or null", case_column_or_null, &no_nulls),
+        ("divisor guard", divisor_guard, &no_nulls),
+        ("coalesce, sparse nulls", coalesce, &sparse_nulls),
+        ("coalesce, dense nulls", coalesce, &dense_nulls),
+        ("if short strings", if_short_strings, &no_nulls),
+        ("if long strings", if_long_strings, &no_nulls),
+        ("if boolean", if_boolean, &no_nulls),
+        ("case fallible branch", case_fallible_branch, &no_nulls),
+        ("if column, sparse nulls", if_column, &sparse_nulls),
+        ("if column, dense nulls", if_column, &dense_nulls),
+        (
+            "if short strings, sparse nulls",
+            if_short_strings,
+            &sparse_nulls,
+        ),
+        (
+            "if short strings, dense nulls",
+            if_short_strings,
+            &dense_nulls,
+        ),
+        (
+            "case column 3 branches, dense nulls",
+            case_column_3_branches,
+            &dense_nulls,
+        ),
+        ("if column, sorted", if_column, &sorted),
+        ("if short strings, sorted", if_short_strings, &sorted),
+        (
+            "case literal 10 branches, sorted",
+            case_literal_10_branches,
+            &sorted,
+        ),
+        (
+            "case column 10 branches, sorted",
+            case_column_10_branches,
+            &sorted,
+        ),
+    ];
     let mut group = c.benchmark_group("conditional");
     group.throughput(Throughput::Elements(NUM_ROWS as u64));
-    let mut bench = |name: &str, expr: Expr, batch: &RecordBatch| {
+    for (name, expr, batch) in shapes {
+        let expr = expr();
         group.bench_function(name, |b| {
             b.iter(|| black_box(expr.evaluate(black_box(batch)).unwrap()))
         });
-    };
-
-    bench(
-        "case literal 3 branches",
-        case_literal_3_branches(),
-        &no_nulls,
-    );
-    bench(
-        "case literal 10 branches",
-        case_literal_10_branches(),
-        &no_nulls,
-    );
-    bench(
-        "case column 3 branches",
-        case_column_3_branches(),
-        &no_nulls,
-    );
-    bench(
-        "case column 10 branches",
-        case_column_10_branches(),
-        &no_nulls,
-    );
-    bench("if literal", if_literal(), &no_nulls);
-    bench("if column", if_column(), &no_nulls);
-    bench("nested if literal", nested_if_literal(), &no_nulls);
-    bench("nested if column", nested_if_column(), &no_nulls);
-
-    bench("case int literals", case_int_literals(), &no_nulls);
-    bench("case column or null", case_column_or_null(), &no_nulls);
-    bench("divisor guard", divisor_guard(), &no_nulls);
-    bench("coalesce, sparse nulls", coalesce(), &sparse_nulls);
-    bench("coalesce, dense nulls", coalesce(), &dense_nulls);
-    bench("if short strings", if_short_strings(), &no_nulls);
-    bench("if long strings", if_long_strings(), &no_nulls);
-    bench("if boolean", if_boolean(), &no_nulls);
-    bench("case fallible branch", case_fallible_branch(), &no_nulls);
-
-    bench("if column, sparse nulls", if_column(), &sparse_nulls);
-    bench("if column, dense nulls", if_column(), &dense_nulls);
-    bench(
-        "if short strings, sparse nulls",
-        if_short_strings(),
-        &sparse_nulls,
-    );
-    bench(
-        "if short strings, dense nulls",
-        if_short_strings(),
-        &dense_nulls,
-    );
-    bench(
-        "case column 3 branches, dense nulls",
-        case_column_3_branches(),
-        &dense_nulls,
-    );
-
-    bench("if column, sorted", if_column(), &sorted);
-    bench("if short strings, sorted", if_short_strings(), &sorted);
-    bench(
-        "case literal 10 branches, sorted",
-        case_literal_10_branches(),
-        &sorted,
-    );
-    bench(
-        "case column 10 branches, sorted",
-        case_column_10_branches(),
-        &sorted,
-    );
+    }
     group.finish();
 }
 
