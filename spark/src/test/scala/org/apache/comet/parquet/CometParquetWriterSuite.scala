@@ -1134,12 +1134,9 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
     }
   }
 
-  test("a custom output basename is honored on local storage") {
-    assume(isSpark40Plus, "Requires the WriteFilesExec seam")
-    // `escapedHdfsDestination` gates the basename on HDFS only, where the native URL parser would
-    // rename the file out from under the committer. Local writes hand the path to the native
-    // writer verbatim, so this is the control that keeps that guard from being widened: `part%foo`
-    // is declined on HDFS and has to keep working here.
+  test("local output basenames match Spark's version-specific commit protocol") {
+    // Spark 4.0+ honors the basename, including literal '%' on local storage where the path
+    // reaches the native writer verbatim. Spark 3.x ignores the option and always uses "part".
     Seq("out", "part%foo").foreach { basename =>
       withTempPath { dir =>
         val outputPath = new File(dir, "output.parquet").getAbsolutePath
@@ -1155,9 +1152,10 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
           }
           val written =
             new File(outputPath).listFiles().map(_.getName).filter(_.endsWith(".parquet"))
+          val expectedBasename = if (isSpark40Plus) basename else "part"
           assert(
-            written.nonEmpty && written.forall(_.startsWith(s"$basename-")),
-            s"expected every data file to be named '$basename-...', found: " +
+            written.nonEmpty && written.forall(_.startsWith(s"$expectedBasename-")),
+            s"expected every data file to be named '$expectedBasename-...', found: " +
               written.mkString(", "))
           checkAnswer(spark.read.parquet(outputPath), df)
         }
@@ -1189,8 +1187,7 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
   }
 
   test("dynamic partition overwrite falls back to Spark") {
-    assume(isSpark40Plus, "Requires the WriteFilesExec seam")
-    // A dynamic overwrite is a partitioned write, which CometWriteFiles declines - but the
+    // A dynamic overwrite is a partitioned write, which both native writers decline - but the
     // consequence of getting it wrong is silent data loss across untouched partitions, so assert
     // the fallback and the semantics explicitly rather than relying on the partitioning check.
     withTempPath { dir =>
@@ -1256,8 +1253,8 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
     // task writes a metadata-only file; if it produces zero partitions, the writer swaps in a
     // dummy single-partition RDD to get to the same branch. Both CometWriteFilesExec (Spark 4.0+)
     // and CometNativeWriteExec (Spark 3.x) do this. This test exercises the first; the
-    // zero-partition swap is reached by an AQE-collapsed empty relation and is covered by
-    // CometEmptyRelationParquetWriterSuite.
+    // zero-partition swap is covered by the empty-directory test below and, on Spark 4.0+,
+    // by CometEmptyRelationParquetWriterSuite.
     withTempPath { dir =>
       val outputPath = new File(dir, "output.parquet").getAbsolutePath
       val sourcePath = new File(dir, "source.parquet").getAbsolutePath
@@ -1274,6 +1271,31 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
         val readBack = spark.read.parquet(outputPath)
         assert(readBack.count() == 0L)
         assert(readBack.schema.map(_.name) == Seq("id", "name"))
+      }
+    }
+  }
+
+  test("a zero-partition native scan writes a schema-only file (#5303)") {
+    withTempPath { dir =>
+      val source = new File(dir, "empty-source")
+      assert(source.mkdirs())
+      val output = new File(dir, "output")
+      withNativeWriter {
+        val empty = spark.read.schema("id INT, name STRING").parquet(source.getAbsolutePath)
+        val scans = collect(empty.queryExecution.executedPlan) { case scan: CometNativeScanExec =>
+          scan
+        }
+        assert(scans.size == 1, empty.queryExecution.executedPlan.toString)
+        assert(scans.head.executeColumnar().getNumPartitions == 0)
+
+        val plan = captureWritePlan(p => empty.write.parquet(p), output.getAbsolutePath)
+        assertHasCometNativeWriteExec(plan)
+        assert(new File(output, "_SUCCESS").isFile)
+        assert(listPartFileNames(output.getAbsolutePath).size == 1)
+        assert(!new File(output, "_temporary").exists())
+        val readBack = spark.read.parquet(output.getAbsolutePath)
+        assert(readBack.schema == empty.schema)
+        assert(readBack.collect().isEmpty)
       }
     }
   }

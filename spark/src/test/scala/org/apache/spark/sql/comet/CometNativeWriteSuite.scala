@@ -41,8 +41,9 @@ import org.apache.spark.sql.types.{StringType, StructField}
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
+import org.apache.comet.serde.{Incompatible, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.Operator
-import org.apache.comet.serde.operator.{schema2Proto, CometDataWritingCommand}
+import org.apache.comet.serde.operator.{schema2Proto, CometDataWritingCommand, NativeWriteUtils}
 
 /** Exercises the retained Spark 3.x writer, including both terminal execution entry points. */
 class CometNativeWriteSuite extends CometTestBase {
@@ -94,6 +95,31 @@ class CometNativeWriteSuite extends CometTestBase {
         finally reset()
       }
     }
+  }
+
+  test("Spark 3.x HDFS admission ignores the configurable output basename") {
+    assume(!isSpark40Plus, "Spark 4.0+ honors mapreduce.output.basename")
+    val data = spark.range(1)
+    val cmd = InsertIntoHadoopFsRelationCommand(
+      outputPath = new Path("hdfs://localhost:8020/output"),
+      staticPartitions = Map.empty,
+      ifPartitionNotExists = false,
+      partitionColumns = Seq.empty,
+      bucketSpec = None,
+      fileFormat = new ParquetFileFormat,
+      options = Map(NativeWriteUtils.BASE_OUTPUT_NAME -> "out%?#"),
+      query = data.queryExecution.analyzed,
+      mode = SaveMode.ErrorIfExists,
+      catalogTable = None,
+      fileIndex = None,
+      outputColumnNames = data.columns.toSeq)
+    val command = DataWritingCommandExec(cmd, data.queryExecution.executedPlan)
+    assert(CometDataWritingCommand.getSupportLevel(command).isInstanceOf[Incompatible])
+    val escapedPath = cmd.copy(outputPath = new Path("hdfs://localhost:8020/out%?#"))
+    assert(
+      CometDataWritingCommand
+        .getSupportLevel(command.copy(cmd = escapedPath))
+        .isInstanceOf[Unsupported])
   }
 
   Seq(false, true).foreach { columnar =>

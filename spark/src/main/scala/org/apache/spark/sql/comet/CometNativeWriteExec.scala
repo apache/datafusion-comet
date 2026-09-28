@@ -109,7 +109,7 @@ case class CometNativeWriteExec(
 
   private def runNativeWriteJob(
       hadoopConf: SerializableConfiguration): Array[TaskCommitMessage] = {
-    val childRDD = if (child.supportsColumnar) {
+    val childRDD: RDD[ColumnarBatch] = if (child.supportsColumnar) {
       child.executeColumnar()
     } else {
       child.execute().mapPartitionsInternal { _ =>

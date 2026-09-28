@@ -141,12 +141,13 @@ object NativeWriteUtils {
    * byte for byte (see [[hdfsPathDivergence]] for why it may not):
    *
    *   - the destination directory, and
-   *   - `fileNamePrefix`, the basename every file name is built from. That is
-   *     `mapreduce.output.basename`, which `HadoopMapReduceCommitProtocol.getFilename`
-   *     interpolates into `<basename>-<split>-<jobId>`; both native writers take their file names
-   *     from the commit protocol, on every supported Spark version. A basename holding `?` or `#`
-   *     is the dangerous one: the native URL parser truncates there, so *every* task writes a
-   *     file with the same truncated name and they overwrite each other during commit.
+   *   - `fileNamePrefix`, the basename every file name is built from. Spark 4.0+
+   *     `HadoopMapReduceCommitProtocol.getFilename` reads `mapreduce.output.basename` and
+   *     interpolates it into `<basename>-<split>-<jobId>`; Spark 3.x hardcodes `part` instead.
+   *     Both native writers take the exact file name from the commit protocol. A basename holding
+   *     `?` or `#` is dangerous on 4.0+: the native URL parser truncates there, so every task
+   *     writes a file with the same truncated name and they overwrite each other during commit.
+   *     Custom committer paths are checked by [[checkNativeWriteDestination]].
    *
    * The basename is checked by running [[hdfsPathDivergence]] over the path it produces rather
    * than over the name alone. Everything else `getFilename` interpolates -- the split number, the
