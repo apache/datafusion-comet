@@ -20,56 +20,60 @@ description: 'Reuse an exact-input native library, otherwise build it with the C
 runs:
   using: composite
   steps:
-    - name: Pin native build flags
-      shell: bash
-      run: echo 'RUSTFLAGS=-Ctarget-cpu=x86-64-v3 -Clink-arg=-fuse-ld=bfd' >> "$GITHUB_ENV"
-
     # Call after checkout and setup-builder. Compute once, before Cargo writes
     # generated Rust files, and use the same keys for both restore and save.
     - name: Fingerprint native build inputs
       id: key
       shell: bash
-      run: python3 dev/ci/native-cache-key.py --profile ci --github-output "$GITHUB_OUTPUT"
+      env:
+        RUSTFLAGS: "-Ctarget-cpu=x86-64-v3 -Clink-arg=-fuse-ld=bfd"
+      run: |
+        python3 dev/ci/native-cache-key.py --profile ci --github-output "$GITHUB_OUTPUT"
+        # Keep one flag definition without changing later steps in the caller.
+        echo "rustflags=$RUSTFLAGS" >> "$GITHUB_OUTPUT"
 
     - name: Restore native library cache
-      id: binary-cache
+      id: library-cache
       uses: actions/cache/restore@v6
       with:
         path: native/target/ci/libcomet.so
-        key: ${{ steps.key.outputs.binary-key }}
+        key: ${{ steps.key.outputs.library-key }}
         # Main restores the incremental cache below, including libcomet.so.
         # A lookup avoids downloading the same library separately.
         lookup-only: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
     - name: Restore incremental Cargo cache
       id: cargo-cache
-      if: steps.binary-cache.outputs.cache-hit != 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+      if: steps.library-cache.outputs.cache-hit != 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
       uses: actions/cache/restore@v6
       with:
         path: native/target
-        key: ${{ steps.key.outputs.source-key }}
+        key: ${{ steps.key.outputs.cargo-key }}
         restore-keys: ${{ steps.key.outputs.restore-prefix }}
 
     - name: Build native library (CI profile)
-      if: steps.binary-cache.outputs.cache-hit != 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true')
+      if: steps.library-cache.outputs.cache-hit != 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true')
       shell: bash
+      env:
+        RUSTFLAGS: ${{ steps.key.outputs.rustflags }}
       run: |
         cd native
         # A library miss always builds, even on an exact incremental hit.
         # Main also builds to populate a missing incremental entry; two exact
         # hits already supply the library and leave neither cache to publish.
         cargo build --locked --profile ci
+        python3 ../dev/ci/native-cache-key.py --check-depinfo target/ci/libcomet.d
 
     - name: Save native library cache
-      if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.binary-cache.outputs.cache-hit != 'true'
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.library-cache.outputs.cache-hit != 'true'
       uses: actions/cache/save@v6
       with:
         path: native/target/ci/libcomet.so
-        key: ${{ steps.key.outputs.binary-key }}
+        key: ${{ steps.key.outputs.library-key }}
 
     - name: Save incremental Cargo cache
       if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
       uses: actions/cache/save@v6
       with:
         path: native/target
-        key: ${{ steps.key.outputs.source-key }}
+        key: ${{ steps.key.outputs.cargo-key }}

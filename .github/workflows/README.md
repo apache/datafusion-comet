@@ -437,6 +437,10 @@ lacks an exact match to replenish it.
 An incremental cache hit alone never replaces compilation. Builds use
 `cargo build --locked --profile ci`; manifest changes requiring a lockfile update
 must include that update to `native/Cargo.lock`. Artifact paths remain unchanged.
+After compilation, the action checks Cargo's `libcomet.d` dependency list before
+publishing either cache. Local build inputs must be covered by the tracked-file
+fingerprint, with explicit exceptions for generated protobuf modules and JDK
+files. Adding a new file input requires extending that contract.
 
 `dev/ci/native-cache-key.py` snapshots native sources, protobufs, dependencies,
 Cargo configuration and shared build/setup actions before source generation.
@@ -446,7 +450,9 @@ Caller workflows are excluded because their selected tools and environment are
 observed directly. Spark edits, documentation, generated files and disabled
 contrib sources preserve the key; contrib manifests remain inputs for `--locked`.
 Benchmarks enter only the debug key. The input lists and glob matcher are shared
-with main's routing in `compute-changes.py`; code generation uses `x86-64-v3`.
+with routing in `compute-changes.py` and fingerprinted independently of its
+unrelated routing policy. Native manifests select validation on pull requests and
+the merge queue as well as main's cache warmer. Code generation uses `x86-64-v3`.
 
 The helper supports the official Rust container and `setup-builder`. Introducing
 external tools or files requires updating that contract: an override's path does
@@ -454,6 +460,13 @@ not identify arbitrary contents stored there. Both binary and incremental keys
 retain package and JDK identity because native dependencies compile against JNI
 headers and link `libjvm`, and Cargo does not fully track external tool/header
 changes. Unrelated package updates can therefore cause conservative misses.
+
+Every consumer must match main's native producer environment to reuse its library
+or incremental cache. A different JDK or container needs its own publisher;
+otherwise it will repeatedly build cold. Preflight checks the shared Linux
+runner, Rust container, toolchain/JDK selection and declared producer environment,
+including changes before the native action. New environment overrides must be
+reviewed against the fingerprint before they are admitted by this check.
 
 The CI and debug incremental caches hold only `native/target`, including compiled
 dependencies. Cargo fetches registry and Git dependency sources as needed; those

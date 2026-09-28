@@ -42,7 +42,7 @@ from pathlib import Path
 # Preflight and retain the existing dev/ci/** routes, without adding consumers.
 NATIVE_CACHE_RECIPES = (
     ".github/actions/build-native-ci/**",
-    "dev/ci/native-cache-key.py", "dev/ci/compute-changes.py",
+    "dev/ci/native-cache-key.py",
 )
 
 # Cargo validates optional contrib manifests against native/Cargo.lock even
@@ -429,6 +429,10 @@ for _native_consumer in (
 ):
     FILTERS[_native_consumer].extend(NATIVE_CACHE_RECIPES)
 
+# Every input that Cargo validates must run before merge, including optional
+# contrib manifests. Use the build list so shuffle benchmarks retain coverage.
+FILTERS["build_linux"].extend(NATIVE_BUILD_INPUTS)
+
 FILTERS["spark_4_1_hive"] = FILTERS["spark_4_1"]
 FILTERS["build_linux_full"] = FILTERS["build_linux"]
 FILTERS["build_linux_all_profiles"] = FILTERS["build_linux"]
@@ -620,17 +624,11 @@ def release_branch_allows(job, event):
 
 
 def compute(files, event):
-    """Return job flags, including main's warmer for shared native cache inputs."""
-    selected = {
+    """Return {job: bool}, folding the path filter and the event policy."""
+    return {
         name: event_allows(name, event) and matches(patterns, files)
         for name, patterns in FILTERS.items()
     }
-    # Use the fingerprint's exact patterns and matcher for main's producer,
-    # including inputs owned by other workflows, without broadening PR jobs.
-    if (event.get("name") == "push" and event_allows("build_linux", event)
-            and matches(NATIVE_LIBRARY_INPUTS, files)):
-        selected["build_linux"] = True
-    return selected
 
 
 def event_from_env():
@@ -674,13 +672,16 @@ def glob_to_regex(pat):
     return "^" + "".join(out) + "$"
 
 
-def matches(patterns, files):
+def compile_matcher(patterns):
+    """Compile one path predicate; exclusions apply across all includes."""
     includes = [re.compile(glob_to_regex(p)) for p in patterns if not p.startswith("!")]
     excludes = [re.compile(glob_to_regex(p[1:])) for p in patterns if p.startswith("!")]
-    for f in files:
-        if any(r.match(f) for r in includes) and not any(r.match(f) for r in excludes):
-            return True
-    return False
+    return lambda path: any(r.match(path) for r in includes) and not any(r.match(path) for r in excludes)
+
+
+def matches(patterns, files):
+    match = compile_matcher(patterns)
+    return any(match(path) for path in files)
 
 
 if __name__ == "__main__":
