@@ -376,8 +376,10 @@ async fn build_provider(
 /// - Dual-stack requested (`AWS_USE_DUALSTACK_ENDPOINT`): the SDK's dual-stack regional endpoint.
 ///   Combining a custom `endpoint_url` with dual-stack is rejected by the SDK before any request is
 ///   sent, so we must not override here.
-/// - A custom/VPC/profile STS endpoint (`AWS_ENDPOINT_URL_STS` or a profile `endpoint_url`): honored
-///   by the SDK. Overriding it would silently ignore a caller's explicit endpoint.
+/// - A custom/VPC/profile STS endpoint (`AWS_ENDPOINT_URL_STS`, the generic `AWS_ENDPOINT_URL`, or a
+///   profile `endpoint_url`): honored. `AWS_ENDPOINT_URL_STS` is checked from the environment
+///   directly because the SDK resolves it per-service and it does not surface on
+///   `sdk.endpoint_url()`. Overriding it would silently ignore a caller's explicit endpoint.
 /// - `AWS_STS_REGIONAL_ENDPOINTS=regional`: the SDK's regional endpoint.
 /// - A non-commercial partition (China, GovCloud, ISO, EUSC): the SDK's regional endpoint. There is
 ///   no commercial-style global endpoint for these, and `sts.amazonaws.com` would be wrong.
@@ -403,8 +405,12 @@ fn configure_sts_endpoint(
     }
     // Anything the SDK resolves specially is left to it: overriding would either send the wrong
     // request or be rejected outright (dual-stack + a custom endpoint is rejected before sending).
+    // `AWS_ENDPOINT_URL_STS` is read directly: it is resolved per-service inside
+    // `Builder::from(&sdk)`, so it never shows up on `sdk.endpoint_url()` (which only carries the
+    // generic `AWS_ENDPOINT_URL` and the profile `endpoint_url`).
     if sdk.use_dual_stack().unwrap_or(false)
         || sdk.endpoint_url().is_some()
+        || non_empty_env("AWS_ENDPOINT_URL_STS").is_some()
         || sts_regional_setting().as_deref() == Some("regional")
     {
         return builder;
@@ -436,13 +442,26 @@ fn commercial_global_sts_endpoint(region: Option<&str>) -> Option<(&'static str,
 }
 
 /// Whether `region` is in the standard commercial partition (`aws`). Non-commercial partitions have
-/// their own STS hosts, so the global-endpoint override does not apply to them.
+/// their own STS hosts, so the global-endpoint override does not apply to them. This is an allowlist
+/// on purpose: an unrecognized prefix (a possible future partition) returns `false` so we defer to
+/// the SDK's regional resolution rather than sending to `sts.amazonaws.com`, which may not resolve
+/// there. A new commercial region reuses an existing prefix (e.g. a future `us-east-3`), so it is
+/// still recognized. The non-commercial partitions are excluded first because they share a leading
+/// token with commercial ones (`us-gov-`/`us-iso*` under `us-`, `eu-isoe-` under `eu-`).
 fn is_commercial_partition(region: &str) -> bool {
-    !(region.starts_with("cn-")            // China
-        || region.starts_with("us-gov-")   // GovCloud
-        || region.starts_with("us-iso")    // ISO / ISOB / ISOF
-        || region.starts_with("eusc-")     // European Sovereign Cloud
-        || region.starts_with("eu-isoe-")) // ISOE
+    if region.starts_with("cn-")            // China
+        || region.starts_with("us-gov-")    // GovCloud
+        || region.starts_with("us-iso")     // ISO / ISOB / ISOF
+        || region.starts_with("eusc-")      // European Sovereign Cloud
+        || region.starts_with("eu-isoe-")
+    // ISOE
+    {
+        return false;
+    }
+    const COMMERCIAL_PREFIXES: &[&str] = &[
+        "us-", "eu-", "ap-", "sa-", "ca-", "me-", "af-", "il-", "mx-",
+    ];
+    COMMERCIAL_PREFIXES.iter().any(|p| region.starts_with(p))
 }
 
 /// Assembles the provider from an STS client. Split out so tests can supply a client built with an
@@ -910,6 +929,8 @@ mod tests {
                 "AWS_USE_FIPS_ENDPOINT",
                 "AWS_USE_DUALSTACK_ENDPOINT",
                 "AWS_STS_REGIONAL_ENDPOINTS",
+                "AWS_ENDPOINT_URL",
+                "AWS_ENDPOINT_URL_STS",
             ] {
                 std::env::remove_var(var);
             }
@@ -934,6 +955,8 @@ mod tests {
                 "AWS_USE_FIPS_ENDPOINT",
                 "AWS_USE_DUALSTACK_ENDPOINT",
                 "AWS_STS_REGIONAL_ENDPOINTS",
+                "AWS_ENDPOINT_URL",
+                "AWS_ENDPOINT_URL_STS",
             ] {
                 std::env::remove_var(var);
             }
@@ -1214,7 +1237,7 @@ mod tests {
             build_s3_credential_loader("s3://bucket/db/table", &empty, "cat", AccessMode::Read)
                 .expect("loader builds");
         assert!(
-            engaged.is_some(),
+            engaged.0.is_some(),
             "IRSA with nothing configured must install the web-identity loader"
         );
 
@@ -1229,7 +1252,7 @@ mod tests {
             build_s3_credential_loader("s3://bucket/db/table", &disabled, "cat", AccessMode::Read)
                 .expect("loader builds");
         assert!(
-            off.is_none(),
+            off.0.is_none(),
             "enabled=false via the s3.-prefixed catalog key must disable the take-over"
         );
 
@@ -1242,7 +1265,7 @@ mod tests {
             build_s3_credential_loader("s3://bucket/db/table", &bare, "cat", AccessMode::Read)
                 .expect("loader builds");
         assert!(
-            still_on.is_some(),
+            still_on.0.is_some(),
             "a bare (unprefixed) key does not reach the catalog bag, so it must not disable anything"
         );
     }
@@ -1609,11 +1632,62 @@ mod tests {
     }
 
     #[test]
+    fn generic_endpoint_url_env_is_honored() {
+        // The generic AWS_ENDPOINT_URL surfaces on sdk.endpoint_url(), so the guard stands aside and
+        // the SDK applies it to the STS client. The global override must not replace it.
+        let _guard = lock_env();
+        let _env = IrsaEnv::set("generic-endpoint");
+        std::env::set_var("AWS_REGION", "us-west-2"); // commercial, so the override would engage
+        std::env::set_var("AWS_ENDPOINT_URL", "https://sts.generic.example.internal");
+        // legacy left unset: without the guard the global override would win over the endpoint.
+        let uri = resolved_sts_uri();
+        assert!(
+            uri.contains("generic.example.internal"),
+            "a generic AWS_ENDPOINT_URL must be honored, got {uri}"
+        );
+    }
+
+    #[test]
+    fn custom_sts_endpoint_env_is_honored() {
+        // AWS_ENDPOINT_URL_STS (a VPC STS endpoint) is resolved per-service inside
+        // Builder::from(&sdk), so it never shows up on sdk.endpoint_url(). The guard must read it
+        // directly and stand aside, or the global override would replace the caller's VPC endpoint.
+        let _guard = lock_env();
+        let _env = IrsaEnv::set("custom-sts");
+        std::env::set_var("AWS_REGION", "us-west-2"); // commercial, so the override would engage
+        std::env::set_var(
+            "AWS_ENDPOINT_URL_STS",
+            "https://vpce-0abc.sts.us-west-2.vpce.amazonaws.com",
+        );
+        // legacy left unset: without the guard the global override would win over the VPC endpoint.
+        let uri = resolved_sts_uri();
+        assert!(
+            uri.contains("vpce.amazonaws.com"),
+            "a custom AWS_ENDPOINT_URL_STS must be honored, got {uri}"
+        );
+    }
+
+    #[test]
     fn only_commercial_partition_gets_global_override() {
-        // The global sts.amazonaws.com override is commercial-only. Every other partition has its
-        // own STS host and must fall through to the SDK's regional resolution.
-        assert!(is_commercial_partition("us-east-1"));
-        assert!(is_commercial_partition("eu-west-1"));
+        // The global sts.amazonaws.com override is commercial-only. Every other partition, and any
+        // unrecognized prefix, must fall through to the SDK's regional resolution.
+        for commercial in [
+            "us-east-1",
+            "us-east-3", // a hypothetical future commercial region reuses the us- prefix
+            "eu-west-1",
+            "ap-southeast-2",
+            "sa-east-1",
+            "ca-central-1",
+            "me-south-1",
+            "af-south-1",
+            "il-central-1",
+            "mx-central-1",
+        ] {
+            assert!(
+                is_commercial_partition(commercial),
+                "{commercial} is in the commercial partition"
+            );
+        }
         for non_commercial in [
             "cn-north-1",
             "us-gov-west-1",
@@ -1621,6 +1695,7 @@ mod tests {
             "us-isob-east-1",
             "eusc-de-east-1",
             "eu-isoe-west-1",
+            "xx-unknown-1", // an unrecognized prefix (a possible future partition) must defer
         ] {
             assert!(
                 !is_commercial_partition(non_commercial),
