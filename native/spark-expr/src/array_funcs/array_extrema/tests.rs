@@ -19,8 +19,8 @@ use super::SparkArrayExtrema;
 use arrow::array::{
     Array, ArrayRef, Float64Array, Int32Array, ListArray, PrimitiveArray, StringArray, StructArray,
 };
-use arrow::buffer::OffsetBuffer;
-use arrow::datatypes::{Field, Float32Type, Float64Type, Int32Type};
+use arrow::buffer::{NullBuffer, OffsetBuffer};
+use arrow::datatypes::{DataType, Field, Float32Type, Float64Type, Int32Type};
 use datafusion::common::{config::ConfigOptions, ScalarValue};
 use datafusion::logical_expr::{ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl};
 use std::sync::Arc;
@@ -280,6 +280,68 @@ fn structs_compare_later_fields_without_normalizing_tied_floats() {
         for (row, winner) in winners.into_iter().enumerate() {
             assert_eq!(floats[row], expected[winner]);
             assert_eq!(ints.value(row), expected_ints.value(winner));
+        }
+    }
+}
+
+#[test]
+fn sliced_structs_preserve_nullable_list_fields() {
+    // A null list can cover nonempty child data. It must stay null without copying that data.
+    let items = ListArray::new(
+        Arc::new(Field::new_list_field(DataType::Float64, true)),
+        OffsetBuffer::new(vec![0, 1, 3, 5, 5, 6].into()),
+        Arc::new(Float64Array::from(vec![
+            Some(99.0),
+            Some(-0.0),
+            None,
+            Some(88.0),
+            Some(77.0),
+            Some(0.0),
+        ])),
+        Some(NullBuffer::from(vec![true, true, false, true, true])),
+    );
+    let children = StructArray::new(
+        vec![
+            Arc::new(Field::new("rank", DataType::Int32, false)),
+            Arc::new(Field::new("items", items.data_type().clone(), true)),
+        ]
+        .into(),
+        vec![
+            Arc::new(Int32Array::from(vec![99, 2, 1, 3, 4])),
+            Arc::new(items),
+        ],
+        None,
+    )
+    .slice(1, 4);
+    let input = list(Arc::new(children), &[0, 2, 4, 4]);
+    for is_min in [true, false] {
+        let result = extrema(&input, is_min);
+        let result = result.as_any().downcast_ref::<StructArray>().unwrap();
+        assert!(result.is_valid(0));
+        assert!(result.is_valid(1));
+        assert!(result.is_null(2));
+        let items = result
+            .column(1)
+            .as_any()
+            .downcast_ref::<ListArray>()
+            .unwrap();
+        assert!(items.is_valid(1));
+        assert!(items.is_null(2));
+        if is_min {
+            assert!(items.is_null(0));
+            assert_eq!(items.value_length(1), 0);
+            assert_eq!(items.values().len(), 0);
+        } else {
+            assert!(items.is_valid(0));
+            assert_eq!(
+                float64_bits(items.value(0).as_ref()),
+                vec![Some((-0.0f64).to_bits()), None]
+            );
+            assert_eq!(
+                float64_bits(items.value(1).as_ref()),
+                vec![Some(0.0f64.to_bits())]
+            );
+            assert_eq!(items.values().len(), 3);
         }
     }
 }

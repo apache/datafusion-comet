@@ -19,10 +19,11 @@ use std::cmp::Ordering;
 use std::sync::Arc;
 
 use arrow::array::{
-    make_array, make_comparator, new_empty_array, Array, ArrayRef, AsArray, DynComparator,
-    ListArray, MutableArrayData, PrimitiveArray, PrimitiveBuilder, StructArray, UInt32Array,
+    make_array, make_comparator, new_empty_array, Array, ArrayRef, AsArray, BooleanArray,
+    DynComparator, ListArray, MutableArrayData, PrimitiveArray, PrimitiveBuilder, StructArray,
+    UInt32Array,
 };
-use arrow::buffer::NullBuffer;
+use arrow::buffer::{NullBuffer, OffsetBuffer};
 use arrow::compute::{take, SortOptions};
 use arrow::datatypes::{ArrowPrimitiveType, DataType, Float32Type, Float64Type};
 use datafusion::common::{exec_err, Result, ScalarValue};
@@ -186,19 +187,84 @@ fn nested_extrema(array: &ListArray, is_min: bool) -> Result<ArrayRef> {
     take_extrema_values(values, &UInt32Array::from(indices))
 }
 
+#[inline(never)]
 fn take_extrema_values(values: &ArrayRef, indices: &UInt32Array) -> Result<ArrayRef> {
     match values.data_type() {
-        // Arrow's flat-list take is faster, but its child capacity estimate can
-        // grow excessively for sparse outputs or recursively nested children.
-        DataType::List(field)
-            if indices.len() <= values.len() && !field.data_type().is_nested() =>
-        {
-            let mut result = take(values.as_ref(), indices, None)?;
-            result.shrink_to_fit();
-            Ok(result)
+        DataType::List(field) if !field.data_type().is_nested() => {
+            let lists = values.as_list::<i32>();
+            // A selected struct can contain a null list field with hidden child values.
+            // Combine source-list validity with null indices before counting or copying children.
+            let nulls = match lists.nulls().filter(|nulls| nulls.null_count() > 0) {
+                Some(nulls) => {
+                    let validity = BooleanArray::new(nulls.inner().clone(), None);
+                    let selected = take(&validity, indices, None)?;
+                    let selected = selected.as_boolean();
+                    let valid_values = NullBuffer::new(selected.values().clone());
+                    NullBuffer::union(Some(&valid_values), selected.nulls())
+                }
+                None => indices.nulls().cloned(),
+            }
+            .filter(|nulls| nulls.null_count() > 0);
+            let source_offsets = lists.value_offsets();
+            let length =
+                |index: usize| (source_offsets[index + 1] - source_offsets[index]) as usize;
+            // Reserve selected lengths, not the average length of all candidates: large losing
+            // lists must not inflate even temporary child-buffer allocations.
+            let capacity = match &nulls {
+                Some(nulls) => nulls
+                    .valid_indices()
+                    .map(|row| length(indices.value(row) as usize))
+                    .sum(),
+                None => indices
+                    .values()
+                    .iter()
+                    .map(|&index| length(index as usize))
+                    .sum(),
+            };
+            let data = lists.values().to_data();
+            let mut child = MutableArrayData::new(vec![&data], false, capacity);
+            let mut offsets = Vec::with_capacity(indices.len() + 1);
+            offsets.push(0);
+            match &nulls {
+                Some(nulls) => {
+                    for row in nulls.valid_indices() {
+                        offsets.resize(row + 1, child.len() as i32);
+                        let index = indices.value(row) as usize;
+                        child.try_extend(
+                            0,
+                            source_offsets[index] as usize,
+                            source_offsets[index + 1] as usize,
+                        )?;
+                        offsets.push(child.len() as i32);
+                    }
+                    offsets.resize(indices.len() + 1, child.len() as i32);
+                }
+                None => {
+                    for &index in indices.values() {
+                        let index = index as usize;
+                        child.try_extend(
+                            0,
+                            source_offsets[index] as usize,
+                            source_offsets[index + 1] as usize,
+                        )?;
+                        offsets.push(child.len() as i32);
+                    }
+                }
+            }
+            // SAFETY: Offsets start at zero and increase with child.len(). Winners occupy
+            // disjoint input ranges, so their total fits the input's i32 offsets.
+            let offsets = unsafe { OffsetBuffer::new_unchecked(offsets.into()) };
+            Ok(Arc::new(ListArray::try_new(
+                Arc::clone(field),
+                offsets,
+                make_array(child.freeze()),
+                nulls,
+            )?))
         }
         DataType::List(_) => {
-            // Start nested children empty, copying only the selected values.
+            // Arrow's list take estimates child capacity from all input lists, including
+            // large losing candidates. Start empty so even temporary buffers grow only
+            // with selected values, including for sparse or recursively nested results.
             let data = values.to_data();
             let mut result = MutableArrayData::new(vec![&data], true, 0);
             for index in indices.iter() {
