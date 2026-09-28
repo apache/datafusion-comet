@@ -71,6 +71,9 @@ Native shuffle (`CometExchange`) is selected when all of the following condition
      Spark's `mapsort` normalization makes physical entry order irrelevant. A collated string at any
      depth still disqualifies the key. The config defaults to `false` pending measurement of the
      nested hashing paths, so by default a complex hash key falls back to JVM shuffle.
+     Decimal leaves with precision greater than 18 also disqualify a hash key when there is more
+     than one output partition: native decimal hashing differs from Spark's. A one-partition hash
+     exchange stays native because the writer serializes it as `SinglePartition` without hashing.
 
 ## Architecture
 
@@ -505,7 +508,7 @@ independently compressed, allowing parallel decompression during reads.
 | Input format        | Columnar (direct from Comet operators) | Row-based (via ColumnarToRowExec) |
 | Partitioning logic  | Rust implementation                    | Spark's partitioner               |
 | Supported schemes   | Hash, Range, Single, RoundRobin        | Hash, Range, Single, RoundRobin   |
-| Partition key types | Primitives only (Hash, Range)          | Any type                          |
+| Partition key types | See the hash and range rules above    | Any type                          |
 | Performance         | Higher (no format conversion)          | Lower (columnar→row→columnar)     |
 | Writer variants     | Single path                            | Bypass (hash) and sort-based      |
 

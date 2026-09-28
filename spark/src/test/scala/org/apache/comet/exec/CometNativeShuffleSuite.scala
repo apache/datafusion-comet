@@ -41,8 +41,8 @@ import org.apache.spark.sql.catalyst.plans.logical.LocalRelation
 import org.apache.spark.sql.catalyst.plans.physical.HashPartitioning
 import org.apache.spark.sql.comet.{CometExec, CometHashAggregateExec, CometLocalTableScanExec, CometMetricNode, CometNativeScanExec, CometScanWrapper, CometSparkToColumnarExec, CometTakeOrderedAndProjectExec}
 import org.apache.spark.sql.comet.execution.arrow.CometArrowStream
-import org.apache.spark.sql.comet.execution.shuffle.{CometNativeShuffle, CometShuffleExchangeExec}
-import org.apache.spark.sql.execution.LocalTableScanExec
+import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
+import org.apache.spark.sql.execution.{FileSourceScanExec, LocalTableScanExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.execution.aggregate.ObjectHashAggregateExec
 import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
@@ -500,30 +500,77 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
     }
   }
 
-  test("wide decimal shuffle fallback keeps collection aggregate buffers in Spark") {
+  test(
+    "wide decimal hash shuffle keeps native aggregates unless multiple partitions need fallback") {
     withSQLConf(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       SQLConf.USE_OBJECT_HASH_AGG.key -> "true",
       CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true") {
       withParquetTable((0 until 100).map(i => (i % 3, i % 7)), "decimal_shuffle") {
-        for (precision <- Seq(18, 38); function <- Seq("collect_list", "collect_set")) {
-          val key = s"CAST(_1 AS DECIMAL($precision, 0))"
-          val df =
-            sql(s"SELECT $key, sort_array($function(_2)) FROM decimal_shuffle GROUP BY $key")
-          val plan = df.queryExecution.executedPlan
-          val nativeExpected = precision <= 18
-          assert(
-            plan.collect { case _: CometHashAggregateExec => 1 }.sum ==
-              (if (nativeExpected) 2 else 0),
-            plan.treeString)
-          assert(
-            plan.collect { case _: ObjectHashAggregateExec => 1 }.sum ==
-              (if (nativeExpected) 0 else 2),
-            plan.treeString)
-          // Restoring Spark's aggregate buffers must retain the accelerated input scan.
-          assert(plan.collect { case _: CometNativeScanExec => 1 }.sum == 1, plan.treeString)
-          checkCometExchange(df, if (nativeExpected) 1 else 0, native = true)
-          checkSparkAnswer(df)
+        for ((precision, partitions, mode) <- Seq(
+            (18, 2, "native"),
+            (38, 2, "native"),
+            (38, 1, "native"),
+            (38, 1, "auto"));
+          function <- Seq("collect_list", "collect_set")) {
+          withSQLConf(
+            SQLConf.SHUFFLE_PARTITIONS.key -> partitions.toString,
+            CometConf.COMET_SHUFFLE_MODE.key -> mode) {
+            val key = s"CAST(_1 AS DECIMAL($precision, 0))"
+            val df =
+              sql(s"SELECT $key, sort_array($function(_2)) FROM decimal_shuffle GROUP BY $key")
+            val plan = df.queryExecution.executedPlan
+            val nativeExpected = precision <= 18 || partitions == 1
+            assert(
+              plan.collect { case _: CometHashAggregateExec => 1 }.sum ==
+                (if (nativeExpected) 2 else 0),
+              plan.treeString)
+            assert(
+              plan.collect { case _: ObjectHashAggregateExec => 1 }.sum ==
+                (if (nativeExpected) 0 else 2),
+              plan.treeString)
+            // Restoring Spark's aggregate buffers must retain the accelerated input scan.
+            assert(plan.collect { case _: CometNativeScanExec => 1 }.sum == 1, plan.treeString)
+            val exchanges = checkCometExchange(df, if (nativeExpected) 1 else 0, native = true)
+            // GROUP BY retains HashPartitioning even when there is only one partition.
+            assert(exchanges.forall(_.outputPartitioning.isInstanceOf[HashPartitioning]))
+            checkSparkAnswer(df)
+          }
+        }
+      }
+    }
+  }
+
+  test("wide decimal join keeps native and Spark inputs copartitioned") {
+    withSQLConf(
+      CometConf.COMET_SHUFFLE_MODE.key -> "auto",
+      CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_CONVERT_FROM_JSON_ENABLED.key -> "false",
+      SQLConf.USE_V1_SOURCE_LIST.key -> "parquet,json",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "7",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "false") {
+      withTable("decimal_parquet", "decimal_json") {
+        for ((table, format) <- Seq("decimal_parquet" -> "parquet", "decimal_json" -> "json")) {
+          sql(s"CREATE TABLE $table(id INT, k DECIMAL(38, 0)) USING $format")
+          sql(s"""INSERT INTO $table VALUES
+                 |(1, 1), (2, -1), (3, 123456789012345678901234567890),
+                 |(4, 99999999999999999999999999999999999999)
+                 |""".stripMargin)
+        }
+        for (adaptive <- Seq(false, true)) {
+          withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString) {
+            val df = sql("""SELECT p.id, j.id FROM decimal_parquet p
+                           |JOIN decimal_json j ON p.k = j.k""".stripMargin)
+            checkAnswer(df, Seq(Row(1, 1), Row(2, 2), Row(3, 3), Row(4, 4)))
+            val plan = df.queryExecution.executedPlan
+            val exchanges = collect(plan) { case e: CometShuffleExchangeExec => e }
+            assert(exchanges.size == 2, plan.treeString)
+            assert(exchanges.forall(_.shuffleType == CometColumnarShuffle), plan.treeString)
+            assert(collect(plan) { case _: CometNativeScanExec => 1 }.sum == 1, plan.treeString)
+            assert(collect(plan) { case _: FileSourceScanExec => 1 }.sum == 1, plan.treeString)
+          }
         }
       }
     }

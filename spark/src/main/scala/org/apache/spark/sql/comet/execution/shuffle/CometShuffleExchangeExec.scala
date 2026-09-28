@@ -556,9 +556,10 @@ object CometShuffleExchangeExec
           _: TimestampNTZType | _: DateType =>
         true
       case d: DecimalType =>
-        // Spark hashes wider decimals through BigInteger bytes, which native hashing does not
-        // match. Different partition assignments can change decimal aggregate overflow behavior.
-        d.precision <= 18
+        // Match the SQL hash restriction in serde/HashUtils until #5994 fixes native encoding.
+        // Different partition assignments break mixed native/Spark joins. A single partition
+        // does not hash the key: CometNativeShuffleWriter serializes it as SinglePartition.
+        d.precision <= 18 || s.outputPartitioning.numPartitions == 1
       case dt if isTimeType(dt) =>
         true
       case StructType(fields) if nestedHashPartitioningEnabled =>

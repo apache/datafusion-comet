@@ -50,7 +50,9 @@ JVM shuffle (`CometColumnarExchange`) is used instead of native shuffle (`CometE
    range key always falls back here. `HashPartitioning` keys must be primitive only by default:
    setting `spark.comet.shuffle.native.partitioning.hash.nested.enabled` to `true` keeps struct and
    array keys, and map keys on Spark 4.0 and later, on the native path. The config defaults to
-   `false`, so a complex hash key falls back to JVM columnar shuffle unless it is enabled. See
+   `false`, so a complex hash key falls back to JVM columnar shuffle unless it is enabled.
+   Decimal hash keys with precision greater than 18, including nested decimal leaves, also use
+   JVM shuffle when there is more than one partition and the shuffle mode allows it. See
    [Supported partition key types](native_shuffle.md#when-native-shuffle-is-used) for the exact
    rules. Complex types are fully supported as data columns in both implementations.
 
