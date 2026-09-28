@@ -170,7 +170,13 @@ fn arrays_overlap_list<OffsetSize: OffsetSizeTrait>(
     let left_values = left.values();
     let right_values = right.values();
 
-    if left_values.data_type() != right_values.data_type() {
+    // Nested element types can differ in field nullability, such as a struct built by
+    // `array_repeat` beside one built by `array(...)`. `make_comparator` compares those, so keep
+    // them on the shared comparator below; only flat types need identical types for the fast
+    // paths and otherwise take the generic fallback.
+    let both_nested =
+        needs_comparator(left_values.data_type()) && needs_comparator(right_values.data_type());
+    if left_values.data_type() != right_values.data_type() && !both_nested {
         return arrays_overlap_list_generic(left, right);
     }
 
@@ -1080,6 +1086,37 @@ mod tests {
         }
         list_builder.append(true);
         list_builder.finish()
+    }
+
+    #[test]
+    fn test_struct_overlap_with_different_field_nullability() -> Result<()> {
+        // The same struct values where one side declares `a` non-nullable, as `array_repeat`
+        // produces while `array(...)` widens it to nullable: [{1,2}] vs [{1,2}] => true
+        fn single_struct_list(a_nullable: bool) -> ListArray {
+            let fields = vec![
+                Arc::new(Field::new("a", DataType::Int32, a_nullable)),
+                Arc::new(Field::new("b", DataType::Int32, true)),
+            ];
+            let mut list_builder = ListBuilder::new(StructBuilder::new(
+                fields,
+                vec![Box::new(Int32Builder::new()), Box::new(Int32Builder::new())],
+            ));
+            let sb = list_builder.values();
+            sb.field_builder::<Int32Builder>(0).unwrap().append_value(1);
+            sb.field_builder::<Int32Builder>(1).unwrap().append_value(2);
+            sb.append(true);
+            list_builder.append(true);
+            list_builder.finish()
+        }
+        let left = single_struct_list(false);
+        let right = single_struct_list(true);
+        assert_ne!(left.values().data_type(), right.values().data_type());
+
+        let result = arrays_overlap_list::<i32>(&left, &right)?;
+        let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
+        assert!(result.is_valid(0));
+        assert!(result.value(0));
+        Ok(())
     }
 
     #[test]
