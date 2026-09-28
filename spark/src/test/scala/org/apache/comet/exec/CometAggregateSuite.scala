@@ -264,6 +264,37 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("collect_set of binary decodes Spark's byte-array buffer elements in PartialMerge") {
+    // Spark's CollectSet stores each binary value in its serialized buffer as an UnsafeArrayData
+    // of bytes (bufferElementType ArrayType(ByteType)) and unwraps it in eval, while CollectList
+    // stores plain binary. A native PartialMerge over a Spark partial must unwrap it as well,
+    // rather than return the wrapper's header and padding as the value.
+    withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "false") {
+      for (query <- Seq(
+          "SELECT x, count(DISTINCT y), collect_set(b) " +
+            "FROM VALUES (1, 1, X'ABCD'), (1, 2, X'ABCD') AS t(x, y, b) GROUP BY x",
+          "SELECT x, count(DISTINCT y), sort_array(collect_set(b)), " +
+            "sort_array(collect_list(b)) FROM VALUES (1, 1, X'ABCD'), (1, 2, X''), " +
+            "(1, 3, NULL), (1, 4, X'ABCD'), (2, 1, X'00FF'), (2, 2, unhex(repeat('5A', 70))), " +
+            "(2, 3, X'00FF') AS t(x, y, b) GROUP BY x")) {
+        val (_, cometPlan) = checkSparkAnswerAndOperator(
+          sql(query),
+          Seq(classOf[CometHashAggregateExec]),
+          classOf[ObjectHashAggregateExec],
+          classOf[LocalTableScanExec])
+        val sparkPartials = collect(cometPlan) {
+          case agg: ObjectHashAggregateExec
+              if agg.aggregateExpressions.forall(_.mode == Partial) =>
+            agg
+        }
+        assert(sparkPartials.nonEmpty, s"Expected a Spark partial aggregate; plan:\n$cometPlan")
+        assert(
+          cometPlan.toString.contains("merge_collect_set"),
+          s"Expected the collect_set PartialMerge stage to run natively; plan:\n$cometPlan")
+      }
+    }
+  }
+
   test("min/max floating point with negative zero") {
     val r = new Random(42)
     val schema = StructType(

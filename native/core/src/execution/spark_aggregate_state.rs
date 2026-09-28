@@ -20,10 +20,10 @@
 use std::{borrow::Cow, sync::Arc};
 
 use arrow::array::{
-    builder::{make_builder, ArrayBuilder, ListBuilder},
+    builder::{make_builder, ArrayBuilder, BinaryBuilder, ListBuilder},
     Array, ArrayRef, BinaryArray, GenericByteArray, LargeBinaryArray, OffsetSizeTrait,
 };
-use arrow::datatypes::{DataType, FieldRef, GenericBinaryType};
+use arrow::datatypes::{DataType, Field, FieldRef, GenericBinaryType};
 use datafusion::common::{DataFusionError, Result};
 use datafusion::physical_expr::aggregate::AggregateFunctionExpr;
 use datafusion_comet_shuffle::spark_unsafe::list::{append_to_builder, SparkUnsafeArray};
@@ -60,14 +60,44 @@ impl PartialMergeStateDecoder {
 ///
 /// Spark's `CollectList` / `CollectSet` are `TypedImperativeAggregate`s. When Spark runs the
 /// lower Partial aggregate, each buffer is serialized as a `BinaryType` value containing a
-/// single-field `UnsafeRow`; field 0 is the `UnsafeArrayData` with the collected elements.
+/// single-field `UnsafeRow`; field 0 is the `UnsafeArrayData` with the collected elements, each
+/// stored as the aggregate's `bufferElementType` (see [`SparkBufferElement`]).
 /// DataFusion's collect accumulators expect the merge input to be a list-typed state column, so
 /// mixed Spark-Partial -> Comet-PartialMerge plans must materialize those unsafe bytes into an
 /// Arrow `ListArray` before calling the inner accumulator's `merge_batch`. The single-field
-/// `UnsafeRow` and nested `UnsafeArrayData` layouts used here are unchanged across Spark 3.4-4.2.
+/// `UnsafeRow` and nested `UnsafeArrayData` layouts used here, and the buffer element types, are
+/// unchanged across Spark 3.4-4.2.
 #[derive(Clone, Debug)]
 pub(crate) struct SparkCollectStateDecoder {
     item_field: FieldRef,
+    buffer_element: SparkBufferElement,
+    /// Spark's `bufferElementType`, which the serialized array is validated against.
+    buffer_element_type: DataType,
+}
+
+/// How Spark stores each collected value in the serialized buffer, relative to the native state's
+/// item type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SparkBufferElement {
+    /// Stored as the Spark type that maps to the native item type. Spark 4.2's `CollectSet` keys
+    /// `DoubleType` / `FloatType` values by their `LongType` / `IntegerType` bit patterns, which
+    /// have the same width and bits, so they decode as the float item type unchanged.
+    Item,
+    /// Spark's `CollectSet(BinaryType)` stores every value as an `UnsafeArrayData` of bytes
+    /// (`bufferElementType` is `ArrayType(ByteType)`, built by
+    /// `UnsafeArrayData.fromPrimitiveArray`) so that the JVM set compares contents rather than
+    /// `byte[]` identity, and its `eval` unwraps each value with `ArrayData.toByteArray`.
+    /// `CollectList(BinaryType)` stores plain binary values.
+    ByteArray,
+}
+
+/// An `UnsafeArrayData` whose header and fixed-width element region were bounds-checked.
+struct UnsafeArrayLayout {
+    num_elements: usize,
+    /// Offset of the first element slot, past the element count and the null bitset.
+    header_width: usize,
+    /// Offset just past the last element slot.
+    fixed_end: usize,
 }
 
 impl SparkCollectStateDecoder {
@@ -75,7 +105,8 @@ impl SparkCollectStateDecoder {
         inner_expr: &AggregateFunctionExpr,
         state_fields: &[FieldRef],
     ) -> Result<Option<Self>> {
-        if !matches!(inner_expr.fun().name(), "collect_list" | "collect_set") {
+        let function_name = inner_expr.fun().name();
+        if !matches!(function_name, "collect_list" | "collect_set") {
             return Ok(None);
         }
 
@@ -92,9 +123,22 @@ impl SparkCollectStateDecoder {
             )));
         };
 
-        Ok(Some(Self {
-            item_field: Arc::clone(item_field),
-        }))
+        Ok(Some(Self::new(function_name, Arc::clone(item_field))))
+    }
+
+    fn new(function_name: &str, item_field: FieldRef) -> Self {
+        let (buffer_element, buffer_element_type) = match (function_name, item_field.data_type()) {
+            ("collect_set", DataType::Binary) => (
+                SparkBufferElement::ByteArray,
+                DataType::List(Arc::new(Field::new_list_field(DataType::Int8, true))),
+            ),
+            (_, item_type) => (SparkBufferElement::Item, item_type.clone()),
+        };
+        Self {
+            item_field,
+            buffer_element,
+            buffer_element_type,
+        }
     }
 
     fn decode<'a>(&self, values: &'a [ArrayRef]) -> Result<Cow<'a, [ArrayRef]>> {
@@ -157,21 +201,60 @@ impl SparkCollectStateDecoder {
         row_bytes: &[u8],
         builder: &mut ListBuilder<Box<dyn ArrayBuilder>>,
     ) -> Result<()> {
-        match self.spark_array_from_single_field_unsafe_row(row_bytes)? {
-            Some(array) => {
+        let Some(array_bytes) = Self::single_field_unsafe_row_array(row_bytes)? else {
+            builder.append_null();
+            return Ok(());
+        };
+        let layout = Self::validate_unsafe_array(array_bytes, &self.buffer_element_type, true)?;
+        match self.buffer_element {
+            SparkBufferElement::Item => {
+                let array = SparkUnsafeArray::new(array_bytes.as_ptr() as i64);
                 append_to_builder::<true>(self.item_field.data_type(), builder.values(), &array)
                     .map_err(|e| Self::decode_error(e.to_string()))?;
-                builder.append(true);
             }
-            None => builder.append_null(),
+            SparkBufferElement::ByteArray => {
+                Self::append_byte_array_values(array_bytes, &layout, builder.values())?;
+            }
+        }
+        builder.append(true);
+        Ok(())
+    }
+
+    /// Appends each element of a validated `ArrayType(ArrayType(ByteType))` array as the binary
+    /// value it wraps, as Spark's `CollectSet.eval` does for binary input.
+    fn append_byte_array_values(
+        array_bytes: &[u8],
+        layout: &UnsafeArrayLayout,
+        values: &mut dyn ArrayBuilder,
+    ) -> Result<()> {
+        const NUM_ELEMENTS_WIDTH: usize = 8;
+        const OFFSET_AND_SIZE_WIDTH: usize = 8;
+
+        let values = values
+            .as_any_mut()
+            .downcast_mut::<BinaryBuilder>()
+            .ok_or_else(|| Self::decode_error("expected a Binary builder for collect_set state"))?;
+        for index in 0..layout.num_elements {
+            if Self::is_null(array_bytes, NUM_ELEMENTS_WIDTH, index)? {
+                values.append_null();
+                continue;
+            }
+            let slot_offset = layout.header_width + index * OFFSET_AND_SIZE_WIDTH;
+            let element = Self::variable_value(array_bytes, slot_offset, layout.fixed_end)?;
+            values.append_value(Self::unsafe_byte_array_payload(element)?);
         }
         Ok(())
     }
 
-    fn spark_array_from_single_field_unsafe_row(
-        &self,
-        row_bytes: &[u8],
-    ) -> Result<Option<SparkUnsafeArray>> {
+    /// Returns the bytes held by an `UnsafeArrayData` of `ByteType`: the `numElements` bytes that
+    /// follow its header, which is exactly what Spark's `UnsafeArrayData.toByteArray` copies.
+    fn unsafe_byte_array_payload(bytes: &[u8]) -> Result<&[u8]> {
+        let layout = Self::validate_unsafe_array(bytes, &DataType::Int8, false)?;
+        Ok(&bytes[layout.header_width..layout.fixed_end])
+    }
+
+    /// Returns field 0 of a serialized single-field `UnsafeRow`, or `None` when it is null.
+    fn single_field_unsafe_row_array(row_bytes: &[u8]) -> Result<Option<&[u8]>> {
         const BITSET_WIDTH: usize = 8;
         const FIXED_FIELD_WIDTH: usize = 8;
         const ARRAY_FIELD_INDEX: usize = 0;
@@ -221,16 +304,14 @@ impl SparkCollectStateDecoder {
                 row_bytes.len()
             )));
         }
-        let array_bytes = &row_bytes[offset..end];
-        Self::validate_unsafe_array(array_bytes, self.item_field.data_type(), true)?;
-        Ok(Some(SparkUnsafeArray::new(array_bytes.as_ptr() as i64)))
+        Ok(Some(&row_bytes[offset..end]))
     }
 
     fn validate_unsafe_array(
         bytes: &[u8],
         element_type: &DataType,
         nullable: bool,
-    ) -> Result<usize> {
+    ) -> Result<UnsafeArrayLayout> {
         const NUM_ELEMENTS_WIDTH: usize = 8;
 
         if bytes.len() < NUM_ELEMENTS_WIDTH {
@@ -279,7 +360,11 @@ impl SparkCollectStateDecoder {
             }
         }
 
-        Ok(num_elements)
+        Ok(UnsafeArrayLayout {
+            num_elements,
+            header_width,
+            fixed_end,
+        })
     }
 
     fn validate_unsafe_row(bytes: &[u8], fields: &arrow::datatypes::Fields) -> Result<()> {
@@ -358,9 +443,11 @@ impl SparkCollectStateDecoder {
             &bytes[KEY_SIZE_WIDTH..key_end],
             fields[0].data_type(),
             false,
-        )?;
+        )?
+        .num_elements;
         let value_count =
-            Self::validate_unsafe_array(&bytes[key_end..], fields[1].data_type(), true)?;
+            Self::validate_unsafe_array(&bytes[key_end..], fields[1].data_type(), true)?
+                .num_elements;
         if key_count != value_count {
             return Err(Self::decode_error(format!(
                 "UnsafeMapData key/value counts differ: {key_count} vs {value_count}"
@@ -481,12 +568,77 @@ impl SparkCollectStateDecoder {
 mod tests {
     use super::*;
     use arrow::array::{Int32Array, ListArray, StringArray};
-    use arrow::datatypes::Field;
+
+    /// Spark's `CollectSet(BinaryType).serialize` output for a buffer holding `X'ABCD'`, captured
+    /// from Spark 4.1. `collect.scala` and the unsafe writers produce the same bytes in 3.4-4.2.
+    #[rustfmt::skip]
+    const SPARK_COLLECT_SET_BINARY_ABCD: [u8; 64] = [
+        // UnsafeRow null bitset, then field 0's size (48) and offset (16)
+        0, 0, 0, 0, 0, 0, 0, 0,
+        48, 0, 0, 0, 16, 0, 0, 0,
+        // UnsafeArrayData with one element: count, null bitset, element size (24) and offset (24)
+        1, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0,
+        24, 0, 0, 0, 24, 0, 0, 0,
+        // The element is itself an UnsafeArrayData of two bytes: count, null bitset, payload
+        2, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0,
+        0xAB, 0xCD, 0, 0, 0, 0, 0, 0,
+    ];
+
+    /// Spark's `CollectSet(BinaryType).serialize` output for a buffer holding `X''`: the element
+    /// is an `UnsafeArrayData` with no elements, so it has no null bitset and no payload.
+    #[rustfmt::skip]
+    const SPARK_COLLECT_SET_BINARY_EMPTY: [u8; 48] = [
+        0, 0, 0, 0, 0, 0, 0, 0,
+        32, 0, 0, 0, 16, 0, 0, 0,
+        1, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0,
+        8, 0, 0, 0, 24, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0,
+    ];
+
+    /// Spark's `CollectList(BinaryType).serialize` output for a buffer holding `X'ABCD'`. Unlike
+    /// `collect_set`, the element is the plain binary value (size 2, offset 24).
+    #[rustfmt::skip]
+    const SPARK_COLLECT_LIST_BINARY_ABCD: [u8; 48] = [
+        0, 0, 0, 0, 0, 0, 0, 0,
+        32, 0, 0, 0, 16, 0, 0, 0,
+        1, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0,
+        2, 0, 0, 0, 24, 0, 0, 0,
+        0xAB, 0xCD, 0, 0, 0, 0, 0, 0,
+    ];
 
     fn collect_state_decoder(element_type: DataType) -> SparkCollectStateDecoder {
-        SparkCollectStateDecoder {
-            item_field: Arc::new(Field::new_list_field(element_type, true)),
-        }
+        collect_decoder("collect_list", element_type)
+    }
+
+    fn collect_decoder(function_name: &str, element_type: DataType) -> SparkCollectStateDecoder {
+        SparkCollectStateDecoder::new(
+            function_name,
+            Arc::new(Field::new_list_field(element_type, true)),
+        )
+    }
+
+    fn decode_rows(decoder: &SparkCollectStateDecoder, rows: &[&[u8]]) -> Result<ListArray> {
+        let binary = BinaryArray::from_iter(rows.iter().map(|row| Some(*row)));
+        let input = [Arc::new(binary) as ArrayRef];
+        let decoded = decoder.decode(&input)?;
+        Ok(decoded.as_ref()[0]
+            .as_any()
+            .downcast_ref::<ListArray>()
+            .unwrap()
+            .clone())
+    }
+
+    fn binary_values(list: &ListArray, row: usize) -> Vec<Option<Vec<u8>>> {
+        let values = list.value(row);
+        let values = values.as_any().downcast_ref::<BinaryArray>().unwrap();
+        values
+            .iter()
+            .map(|value| value.map(<[u8]>::to_vec))
+            .collect()
     }
 
     fn unsafe_row_with_array(array: Vec<u8>) -> Vec<u8> {
@@ -522,37 +674,54 @@ mod tests {
         bytes
     }
 
-    fn unsafe_array_utf8(values: &[Option<&str>]) -> Vec<u8> {
+    /// Builds an `UnsafeArrayData` of variable-width values, each padded to a word, as Spark's
+    /// `UnsafeArrayWriter` does.
+    fn unsafe_array_variable(values: &[Option<&[u8]>]) -> Vec<u8> {
         let num_elements = values.len();
-        let bitset_words = num_elements.div_ceil(64);
-        let header_len = 8 + bitset_words * 8;
-        let fixed_len = num_elements * 8;
-        let mut bytes = vec![0_u8; header_len + fixed_len];
+        let header_len = 8 + num_elements.div_ceil(64) * 8;
+        let mut bytes = vec![0_u8; header_len + num_elements * 8];
         bytes[0..8].copy_from_slice(&(num_elements as i64).to_le_bytes());
 
-        let mut null_bits = 0_i64;
         for (idx, value) in values.iter().enumerate() {
-            let slot_offset = header_len + idx * 8;
             match value {
                 Some(value) => {
                     let value_offset = bytes.len();
-                    let value_bytes = value.as_bytes();
-                    bytes.extend_from_slice(value_bytes);
-                    let padded_len = value_bytes.len().next_multiple_of(8);
-                    bytes.resize(value_offset + padded_len, 0);
+                    bytes.extend_from_slice(value);
+                    bytes.resize(value_offset + value.len().next_multiple_of(8), 0);
 
-                    let offset_and_size = ((value_offset as i64) << 32) | value_bytes.len() as i64;
+                    let offset_and_size = ((value_offset as i64) << 32) | value.len() as i64;
+                    let slot_offset = header_len + idx * 8;
                     bytes[slot_offset..slot_offset + 8]
                         .copy_from_slice(&offset_and_size.to_le_bytes());
                 }
-                None => null_bits |= 1_i64 << idx,
+                // Bit `idx` of the little-endian null bitset words.
+                None => bytes[8 + idx / 8] |= 1 << (idx % 8),
             }
-        }
-        if bitset_words > 0 {
-            bytes[8..16].copy_from_slice(&null_bits.to_le_bytes());
         }
 
         bytes
+    }
+
+    fn unsafe_array_utf8(values: &[Option<&str>]) -> Vec<u8> {
+        let values: Vec<_> = values.iter().map(|v| v.map(str::as_bytes)).collect();
+        unsafe_array_variable(&values)
+    }
+
+    /// Mirrors Spark's `UnsafeArrayData.fromPrimitiveArray(byte[])`, which `CollectSet` uses to
+    /// wrap each binary value: element count, zeroed null bitset, then the bytes, padded to a word.
+    fn spark_byte_array(value: &[u8]) -> Vec<u8> {
+        let header_len = 8 + value.len().div_ceil(64) * 8;
+        let mut bytes = vec![0_u8; (header_len + value.len()).next_multiple_of(8)];
+        bytes[0..8].copy_from_slice(&(value.len() as i64).to_le_bytes());
+        bytes[header_len..header_len + value.len()].copy_from_slice(value);
+        bytes
+    }
+
+    /// Builds a serialized Spark `CollectSet(BinaryType)` buffer holding `values`.
+    fn spark_collect_set_binary_row(values: &[&[u8]]) -> Vec<u8> {
+        let wrapped: Vec<Vec<u8>> = values.iter().map(|value| spark_byte_array(value)).collect();
+        let elements: Vec<_> = wrapped.iter().map(|value| Some(value.as_slice())).collect();
+        unsafe_row_with_array(unsafe_array_variable(&elements))
     }
 
     #[test]
@@ -674,6 +843,100 @@ mod tests {
             let binary = BinaryArray::from_iter([Some(row.as_slice())]);
             let input = [Arc::new(binary) as ArrayRef];
             let error = match decoder.decode(&input) {
+                Ok(_) => panic!("{name} was accepted"),
+                Err(error) => error,
+            };
+            assert!(
+                error
+                    .to_string()
+                    .contains("Failed to decode Spark UnsafeRow collect aggregate buffer"),
+                "{name}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn decodes_spark_collect_set_binary_state() {
+        // Each element is Spark's byte-array wrapper; the decoded value must be its payload, not
+        // the wrapper's count, null bitset, and padding.
+        let decoder = collect_decoder("collect_set", DataType::Binary);
+        let list = decode_rows(
+            &decoder,
+            &[
+                &SPARK_COLLECT_SET_BINARY_ABCD,
+                &SPARK_COLLECT_SET_BINARY_EMPTY,
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(binary_values(&list, 0), vec![Some(vec![0xAB, 0xCD])]);
+        assert_eq!(binary_values(&list, 1), vec![Some(vec![])]);
+    }
+
+    #[test]
+    fn decodes_spark_collect_list_binary_state() {
+        let decoder = collect_decoder("collect_list", DataType::Binary);
+        let list = decode_rows(&decoder, &[&SPARK_COLLECT_LIST_BINARY_ABCD]).unwrap();
+
+        assert_eq!(binary_values(&list, 0), vec![Some(vec![0xAB, 0xCD])]);
+    }
+
+    #[test]
+    fn decodes_spark_collect_set_binary_state_with_multi_word_bitsets() {
+        // The helper reproduces Spark's serialized bytes.
+        assert_eq!(
+            spark_collect_set_binary_row(&[&[0xAB, 0xCD]]),
+            SPARK_COLLECT_SET_BINARY_ABCD
+        );
+        assert_eq!(
+            spark_collect_set_binary_row(&[&[]]),
+            SPARK_COLLECT_SET_BINARY_EMPTY
+        );
+
+        // Values of 64 bytes or more give their wrapper arrays a multi-word null bitset, and 71
+        // values give the outer array one too.
+        let values: Vec<Vec<u8>> = (0..70_usize)
+            .chain([200])
+            .map(|len| (0..len).map(|i| (i * 31 + len) as u8).collect())
+            .collect();
+        let slices: Vec<&[u8]> = values.iter().map(Vec::as_slice).collect();
+        let row = spark_collect_set_binary_row(&slices);
+
+        let decoder = collect_decoder("collect_set", DataType::Binary);
+        let list = decode_rows(&decoder, &[&row]).unwrap();
+
+        let expected: Vec<_> = values.into_iter().map(Some).collect();
+        assert_eq!(binary_values(&list, 0), expected);
+    }
+
+    #[test]
+    fn rejects_malformed_spark_collect_set_binary_state() {
+        // Offsets into SPARK_COLLECT_SET_BINARY_ABCD: the outer element's size and offset are at
+        // 32 and 36, and the wrapped byte array's element count is at 40.
+        let with = |position: usize, value: &[u8]| {
+            let mut row = SPARK_COLLECT_SET_BINARY_ABCD.to_vec();
+            row[position..position + value.len()].copy_from_slice(value);
+            row
+        };
+        let cases = [
+            (
+                "byte count past the payload",
+                with(40, &100_i64.to_le_bytes()),
+            ),
+            ("negative byte count", with(40, &(-1_i64).to_le_bytes())),
+            (
+                "wrapper smaller than its header",
+                with(32, &4_i32.to_le_bytes()),
+            ),
+            (
+                "wrapper overlapping the element slots",
+                with(36, &16_i32.to_le_bytes()),
+            ),
+        ];
+
+        let decoder = collect_decoder("collect_set", DataType::Binary);
+        for (name, row) in cases {
+            let error = match decode_rows(&decoder, &[&row]) {
                 Ok(_) => panic!("{name} was accepted"),
                 Err(error) => error,
             };
