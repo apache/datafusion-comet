@@ -42,8 +42,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 /// Cap on opendal's credential cache when the provider does not report an expiry. Prevents the
-/// executor from holding a stale credential for the entire job lifetime.
-const DEFAULT_EXPIRY_WHEN_UNKNOWN: Duration = Duration::from_secs(300);
+/// executor from holding a stale credential for the entire job lifetime. Shared with the IRSA
+/// web-identity provider (`super::web_identity`).
+pub(crate) const DEFAULT_EXPIRY_WHEN_UNKNOWN: Duration = Duration::from_secs(300);
 
 /// Once-per-process latch for the "missing expiry" warning. Bridges are per-scan, so a per-bridge
 /// latch would re-log on every scan.
