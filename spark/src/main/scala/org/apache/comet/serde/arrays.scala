@@ -270,23 +270,22 @@ private object ArrayExtremaSupport extends CometTypeShim {
   def convert(
       expr: Expression,
       inputs: Seq[Attribute],
-      binding: Boolean): Option[ExprOuterClass.Expr] = {
+      binding: Boolean,
+      isMin: Boolean): Option[ExprOuterClass.Expr] = {
     val collations = stringCollations(expr.dataType)
-    val child = exprToProtoInternal(expr.children.head, inputs, binding)
-    if (collations.forall(_ == "UTF8_BINARY") || !supportsCollations(collations)) {
+    exprToProtoInternal(expr.children.head, inputs, binding).map { child =>
+      val builder = ExprOuterClass.ArrayExtrema
+        .newBuilder()
+        .setChild(child)
+        .setIsMin(isMin)
       // Preserve the existing binary comparison when unsupported collations are explicitly
       // opted in. By default those expressions use the JVM dispatcher.
-      scalarFunctionExprToProto(expr.prettyName, child)
-    } else {
-      child.map { input =>
-        val function = ExprOuterClass.ScalarFunc
-          .newBuilder()
-          .setFunc(expr.prettyName)
-          .addArgs(input)
+      if (!collations.forall(_ == "UTF8_BINARY") && supportsCollations(collations)) {
+        builder
           .addAllStringCollations(collations.asJava)
           .setCollationUnicodeVersion(collationUnicodeVersion)
-        ExprOuterClass.Expr.newBuilder().setScalarFunc(function).build()
       }
+      ExprOuterClass.Expr.newBuilder().setArrayExtrema(builder).build()
     }
   }
 }
@@ -303,7 +302,7 @@ object CometArrayMax extends CometExpressionSerde[ArrayMax] with CodegenDispatch
       expr: ArrayMax,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] =
-    ArrayExtremaSupport.convert(expr, inputs, binding)
+    ArrayExtremaSupport.convert(expr, inputs, binding, isMin = false)
 }
 
 object CometArrayMin extends CometExpressionSerde[ArrayMin] with CodegenDispatchFallback {
@@ -318,7 +317,7 @@ object CometArrayMin extends CometExpressionSerde[ArrayMin] with CodegenDispatch
       expr: ArrayMin,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] =
-    ArrayExtremaSupport.convert(expr, inputs, binding)
+    ArrayExtremaSupport.convert(expr, inputs, binding, isMin = true)
 }
 
 object CometArraysOverlap extends CometExpressionSerde[ArraysOverlap] {

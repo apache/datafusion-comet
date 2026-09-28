@@ -149,7 +149,7 @@ object CometArrayExpressionBenchmark extends CometBenchmarkBase {
     }
   }
 
-  def arrayExtremaCollationBenchmark(values: Int): Unit = {
+  def arrayExtremaCollationBenchmark(values: Int, expectNative: Boolean = true): Unit = {
     // Repeated values exercise dictionaries; long prefixes and Unicode exercise comparison work.
     val shapes = Seq(
       ("short ASCII, no nulls", "AbC", 1, 0),
@@ -176,16 +176,22 @@ object CometArrayExpressionBenchmark extends CometBenchmarkBase {
               .map(i => s"CAST(c$i AS STRING COLLATE $collation)")
               .mkString("array(", ", ", ")")
             val query = s"SELECT $function($input) FROM parquetV1Table"
-            // Collation casts may use the JVM dispatcher; the extrema must run natively.
+            // The dispatcher baseline uses the same inputs and verifies its execution path too.
             withSQLConf(
               CometConf.COMET_ENABLED.key -> "true",
               CometConf.COMET_EXEC_ENABLED.key -> "true") {
               val plan = stripAQEPlan(spark.sql(query).queryExecution.executedPlan)
               val explain = new ExtendedExplainInfo()
-              require(
-                explain.getNativeExpressions(plan).contains(function) &&
-                  !explain.getCodegenDispatchExpressions(plan).contains(function),
-                s"$function did not run natively: $plan")
+              if (expectNative || collation == "UTF8_BINARY") {
+                require(
+                  explain.getNativeExpressions(plan).contains(function) &&
+                    !explain.getCodegenDispatchExpressions(plan).contains(function),
+                  s"$function did not run natively: $plan")
+              } else {
+                require(
+                  explain.getCodegenDispatchExpressions(plan).contains(function),
+                  s"$function did not use the dispatcher: $plan")
+              }
             }
             runExpressionBenchmark(s"$function $collation - $shape", values, query)
           }
@@ -195,6 +201,14 @@ object CometArrayExpressionBenchmark extends CometBenchmarkBase {
   }
 
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
+    if (mainArgs.contains("--array-extrema-collation-only")) {
+      require(isSpark40Plus, "Collation benchmarks require Spark 4.0 or later")
+      runBenchmarkWithTable("ArrayExtremaCollation", 256 * 1024) { v =>
+        arrayExtremaCollationBenchmark(v, expectNative = !mainArgs.contains("--expect-dispatch"))
+      }
+      return
+    }
+
     val values = 4 * 1024 * 1024
 
     runBenchmarkWithTable("sortArrayIntAsc", values) { v =>

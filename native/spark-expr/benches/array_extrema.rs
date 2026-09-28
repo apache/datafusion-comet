@@ -197,6 +197,31 @@ fn criterion_benchmark(c: &mut Criterion) {
         group.bench_function(BenchmarkId::new("lcase_min", shape), |b| {
             b.iter(|| black_box(comet.invoke_with_args(black_box(args.clone())).unwrap()))
         });
+
+        for is_min in [true, false] {
+            let comet = ScalarUDF::from(SparkArrayExtrema::new(is_min));
+            let datafusion = if is_min {
+                array_min_udf()
+            } else {
+                array_max_udf()
+            };
+            let evaluate = |udf: &ScalarUDF| {
+                udf.invoke_with_args(args.clone())
+                    .unwrap()
+                    .into_array(input.len())
+                    .unwrap()
+            };
+            assert_eq!(evaluate(&comet).to_data(), evaluate(&datafusion).to_data());
+            let op = if is_min { "min" } else { "max" };
+            for (engine, udf) in [("comet", &comet), ("datafusion", datafusion.as_ref())] {
+                group.bench_function(
+                    BenchmarkId::new(format!("binary_{op}_{engine}"), shape),
+                    |b| {
+                        b.iter(|| black_box(udf.invoke_with_args(black_box(args.clone())).unwrap()))
+                    },
+                );
+            }
+        }
     }
     group.finish();
 }
