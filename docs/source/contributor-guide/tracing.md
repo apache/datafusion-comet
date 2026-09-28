@@ -31,7 +31,7 @@ Native memory is traced as `native_allocated`. Comet wraps whichever global allo
 selected and counts the bytes it has handed out. It counts only what Rust code allocated, so it can be compared against the
 memory pool's reservations without the allocator's own caching in the way. The same figure appears in
 the executor's periodic memory usage log, which does not need tracing; see
-[Sizing the Overhead from the Memory Usage Log](../user-guide/latest/tuning.md#sizing-the-overhead-from-the-memory-usage-log).
+[Sizing the Overhead from the Memory Usage Log](../user-guide/latest/tuning/memory.md#sizing-the-overhead-from-the-memory-usage-log).
 
 Enabling the `jemalloc` feature adds a second measure, `jemalloc_allocated`, which also includes
 jemalloc's own metadata and fragmentation:
