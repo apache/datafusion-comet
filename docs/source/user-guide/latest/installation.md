@@ -260,7 +260,7 @@ Some cluster managers may require additional configuration, see <https://spark.a
 ### Memory tuning
 
 In addition to Apache Spark memory configuration parameters, Comet introduces additional parameters to configure memory
-allocation for native execution. See [Comet Memory Tuning](./tuning.md) for details.
+allocation for native execution. See [Comet Memory Tuning](./tuning/memory.md) for details.
 
 ### Kryo serialization
 

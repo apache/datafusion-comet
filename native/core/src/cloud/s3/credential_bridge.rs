@@ -42,11 +42,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 /// Cap on opendal's credential cache when the provider does not report an expiry. Prevents the
-/// executor from holding a stale credential for the entire job lifetime.
-const DEFAULT_EXPIRY_WHEN_UNKNOWN: Duration = Duration::from_secs(300);
+/// executor from holding a stale credential for the entire job lifetime. Shared with the IRSA
+/// web-identity provider (`super::web_identity`).
+pub(crate) const DEFAULT_EXPIRY_WHEN_UNKNOWN: Duration = Duration::from_secs(300);
 
-/// Once-per-process latch for the "missing expiry" warning. Bridges are per-scan, so a per-bridge
-/// latch would re-log on every scan.
+/// Once-per-process latch for the "missing expiry" warning. Bridges live as long as their entry in
+/// the executor's FileIO cache, so a per-bridge latch would re-log for every new configuration.
 static WARNED_MISSING_EXPIRY: OnceCell<()> = OnceCell::new();
 
 /// Access intent forwarded to the Java SPI. Ordinal must match the JVM `CometS3AccessMode` enum.
@@ -56,8 +57,9 @@ pub enum AccessMode {
     Write = 1,
 }
 
-/// Per-scan credential provider that delegates to the JVM SPI via JNI. `handle` is the JVM-side
-/// identity for the `(provider_class, dispatch_key, catalog_properties)` triple returned by
+/// Credential provider that delegates to the JVM SPI via JNI. Instances live in the executor's
+/// FileIO and object store caches, so one serves many tasks. `handle` is the JVM-side identity
+/// for the `(provider_class, dispatch_key, catalog_properties)` triple returned by
 /// `ensureInitialized`. `bucket_jstr` / `path_jstr` are interned once at construction to avoid
 /// per-call `new_string` allocations on the hot path.
 ///
@@ -339,6 +341,21 @@ struct RawCredentials {
     expiration_epoch_millis: i64,
 }
 
+/// The bridge could not get a credential from the provider, as opposed to S3 rejecting one. It is
+/// the source of the error `get_credential` returns, which `object_store` passes through to the
+/// read unchanged. A `LocationScopedObjectStore` treats it like a 403, because a provider that has
+/// no policy for a location throws, and that can mean the location changed since its snapshot.
+#[derive(Debug)]
+pub(crate) struct CredentialProviderError(pub(crate) String);
+
+impl fmt::Display for CredentialProviderError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for CredentialProviderError {}
+
 #[async_trait]
 impl CredentialProvider for CometS3CredentialBridge {
     type Credential = AwsCredential;
@@ -346,7 +363,7 @@ impl CredentialProvider for CometS3CredentialBridge {
     async fn get_credential(&self) -> object_store::Result<Arc<AwsCredential>> {
         let raw = self.fetch_raw().map_err(|e| object_store::Error::Generic {
             store: "S3",
-            source: e.to_string().into(),
+            source: Box::new(CredentialProviderError(e.to_string())),
         })?;
         Ok(Arc::new(AwsCredential {
             key_id: raw.access_key_id,

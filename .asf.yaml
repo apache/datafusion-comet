@@ -110,6 +110,12 @@ github:
     branch-0.17:
       required_pull_request_reviews:
         required_approving_review_count: 1
+    branch-1.0:
+      required_pull_request_reviews:
+        required_approving_review_count: 1
+    branch-1.1:
+      required_pull_request_reviews:
+        required_approving_review_count: 1
   # GitHub's merge queue. Classic `protected_branches` above has no way to
   # express this, but .asf.yaml rulesets accept a raw Rulesets API payload, so
   # no INFRA ticket is needed. Same approach as apache/iceberg-python and
