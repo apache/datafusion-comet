@@ -213,7 +213,11 @@ public abstract class SpillWriter {
             tracingEnabled);
 
     long written = results[0];
-    checksum = results[1];
+    // Without a checksum the native code returns Long.MIN_VALUE here. Keep -1 in that case, or the
+    // next write by this writer would start computing a checksum that nothing reads.
+    if (checksumEnabled) {
+      checksum = results[1];
+    }
     // results[2] = encode + compression time in nanoseconds (measured by native code)
     if (encodeNanosAcc != null) {
       encodeNanosAcc.addAndGet(results[2]);
