@@ -22,7 +22,6 @@ package org.apache.comet.serde
 import java.util.Locale
 
 import org.apache.spark.sql.catalyst.expressions.{AddMonths, Attribute, Cast, ConvertTimezone, DateAdd, DateDiff, DateFormatClass, DateFromUnixDate, DateSub, DayOfMonth, DayOfWeek, DayOfYear, Days, Expression, FromUTCTimestamp, GetDateField, GetTimestamp, Hour, Hours, LastDay, Literal, MakeDate, MakeDTInterval, MakeInterval, MakeTimestamp, MakeYMInterval, MicrosToTimestamp, MillisToTimestamp, Minute, Month, MonthsBetween, MultiplyDTInterval, NextDay, PreciseTimestampConversion, Quarter, Second, SecondsToTimestamp, TimestampAdd, TimestampDiff, ToUnixTimestamp, ToUTCTimestamp, TruncDate, TruncTimestamp, UnixDate, UnixMicros, UnixMillis, UnixSeconds, UnixTimestamp, WeekDay, WeekOfYear, Year}
-import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{CalendarIntervalType, DataType, DateType, DoubleType, FloatType, IntegerType, LongType, StringType, TimestampNTZType, TimestampType}
 import org.apache.spark.unsafe.types.UTF8String
 
@@ -820,8 +819,9 @@ object CometHours extends CometExpressionSerde[Hours] {
  * For DateType: dates are internally stored as days since epoch, so this is a simple cast to
  * integer (same as CometUnixDate).
  *
- * For TimestampType: uses a timezone-aware Cast(Timestamp to Date) followed by Cast(Date to Int).
- * The first cast respects the session timezone to correctly determine the date boundary.
+ * For TimestampType: uses Cast(Timestamp to Date) in UTC followed by Cast(Date to Int). Spark
+ * cannot evaluate `days` itself, so this counts days in UTC like [[CometHours]] and Iceberg's
+ * `days` transform, rather than in the session timezone.
  */
 object CometDays extends CometExpressionSerde[Days] {
 
@@ -844,9 +844,8 @@ object CometDays extends CometExpressionSerde[Days] {
     val dateExprOpt = expr.child.dataType match {
       case DateType => childExpr
       case TimestampType =>
-        val timezone = SQLConf.get.sessionLocalTimeZone
         childExpr.flatMap { child =>
-          CometCast.castToProto(expr, Some(timezone), DateType, child, CometEvalMode.LEGACY)
+          CometCast.castToProto(expr, Some("UTC"), DateType, child, CometEvalMode.LEGACY)
         }
       case _ => None
     }
