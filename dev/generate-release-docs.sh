@@ -71,12 +71,18 @@ done
 # must pass the check. GenerateDocs wraps the config/cast tables in prettier-ignore, but
 # the surrounding generated Markdown is not guaranteed prettier-clean. prettier honors
 # .prettierignore, so excluded pages (e.g. expressions.md) are left untouched.
+#
+# Pin to `@latest` rather than a bare `npx prettier`. CI installs prettier unpinned
+# (`npm install -g prettier`), so it always checks against the newest release, while a
+# bare `npx prettier` silently reuses whatever version happens to be in the local npx
+# cache. Formatting rules change between versions, so the two can disagree and the
+# committed output then fails the Preflight check even though it looked clean locally.
 if ! command -v npx >/dev/null 2>&1; then
   echo "ERROR: npx not found. Install Node/prettier (see docs/source/contributor-guide/development.md)" >&2
   exit 1
 fi
 echo "Formatting generated Markdown with prettier..."
-npx prettier "${LATEST_USER_GUIDE}/**/*.md" --write
+npx --yes prettier@latest "${LATEST_USER_GUIDE}/**/*.md" --write
 
 echo ""
 echo "Done! Generated documentation content in docs/source/user-guide/latest/"
