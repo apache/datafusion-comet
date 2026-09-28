@@ -200,6 +200,30 @@ under the License.
       <groupId>org.testcontainers</groupId>
       <artifactId>minio</artifactId>
     </dependency>
+    <!--
+      hadoop-aws (provided) compiles the built-in S3 credential adapters against the S3A provider
+      factory. Version-pinned per Spark profile via ${hadoop-aws.version} (3.3.x -> SDK v1,
+      3.4.x -> SDK v2). The matching AWS SDK is added, also provided, in the per-profile blocks
+      below (only one SDK is on the classpath per build). All are on the Spark/Hadoop runtime
+      classpath already, so provided keeps Comet from bundling a second copy.
+    -->
+    <dependency>
+      <groupId>org.apache.hadoop</groupId>
+      <artifactId>hadoop-aws</artifactId>
+      <version>${hadoop-aws.version}</version>
+      <scope>provided</scope>
+      <exclusions>
+        <!-- The SDK is supplied explicitly per profile; skip the giant bundles. -->
+        <exclusion>
+          <groupId>com.amazonaws</groupId>
+          <artifactId>aws-java-sdk-bundle</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>software.amazon.awssdk</groupId>
+          <artifactId>bundle</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
     <!-- AWS SDK modules required by Iceberg's S3FileIO (see parent pom for details) -->
     <dependency>
       <groupId>software.amazon.awssdk</groupId>
@@ -265,6 +289,38 @@ under the License.
     <profile>
       <id>spark-3.4</id>
       <dependencies>
+        <!--
+          AWS SDK v1 for the built-in S3 credential adapters (spark-3.x source set). hadoop-aws
+          3.3.4 links against the full v1 SDK (it ships the aws-java-sdk-bundle), so its S3AUtils
+          references the s3 model (API extraction at compile) and the DynamoDB model (the S3Guard
+          branch of translateException, at runtime). Supply both modules; core comes transitively
+          and gives the adapter com.amazonaws.auth.*. commons-logging is excluded because
+          jcl-over-slf4j already provides those classes (duplicate-class enforcer).
+        -->
+        <dependency>
+          <groupId>com.amazonaws</groupId>
+          <artifactId>aws-java-sdk-s3</artifactId>
+          <version>${aws-java-sdk-v1.version}</version>
+          <scope>provided</scope>
+          <exclusions>
+            <exclusion>
+              <groupId>commons-logging</groupId>
+              <artifactId>commons-logging</artifactId>
+            </exclusion>
+          </exclusions>
+        </dependency>
+        <dependency>
+          <groupId>com.amazonaws</groupId>
+          <artifactId>aws-java-sdk-dynamodb</artifactId>
+          <version>${aws-java-sdk-v1.version}</version>
+          <scope>provided</scope>
+          <exclusions>
+            <exclusion>
+              <groupId>commons-logging</groupId>
+              <artifactId>commons-logging</artifactId>
+            </exclusion>
+          </exclusions>
+        </dependency>
         <dependency>
           <groupId>org.apache.iceberg</groupId>
           <artifactId>iceberg-spark-runtime-${spark.version.short}_${scala.binary.version}</artifactId>
@@ -297,6 +353,38 @@ under the License.
         <delta.version>3.3.2</delta.version>
       </properties>
       <dependencies>
+        <!--
+          AWS SDK v1 for the built-in S3 credential adapters (spark-3.x source set). hadoop-aws
+          3.3.4 links against the full v1 SDK (it ships the aws-java-sdk-bundle), so its S3AUtils
+          references the s3 model (API extraction at compile) and the DynamoDB model (the S3Guard
+          branch of translateException, at runtime). Supply both modules; core comes transitively
+          and gives the adapter com.amazonaws.auth.*. commons-logging is excluded because
+          jcl-over-slf4j already provides those classes (duplicate-class enforcer).
+        -->
+        <dependency>
+          <groupId>com.amazonaws</groupId>
+          <artifactId>aws-java-sdk-s3</artifactId>
+          <version>${aws-java-sdk-v1.version}</version>
+          <scope>provided</scope>
+          <exclusions>
+            <exclusion>
+              <groupId>commons-logging</groupId>
+              <artifactId>commons-logging</artifactId>
+            </exclusion>
+          </exclusions>
+        </dependency>
+        <dependency>
+          <groupId>com.amazonaws</groupId>
+          <artifactId>aws-java-sdk-dynamodb</artifactId>
+          <version>${aws-java-sdk-v1.version}</version>
+          <scope>provided</scope>
+          <exclusions>
+            <exclusion>
+              <groupId>commons-logging</groupId>
+              <artifactId>commons-logging</artifactId>
+            </exclusion>
+          </exclusions>
+        </dependency>
         <dependency>
           <groupId>org.apache.iceberg</groupId>
           <artifactId>iceberg-spark-runtime-${spark.version.short}_${scala.binary.version}</artifactId>
@@ -331,6 +419,13 @@ under the License.
         <delta.version>4.0.0</delta.version>
       </properties>
       <dependencies>
+        <!-- AWS SDK v2 for the built-in S3 credential adapters (spark-4.x source set). -->
+        <dependency>
+          <groupId>software.amazon.awssdk</groupId>
+          <artifactId>auth</artifactId>
+          <version>${amazon-awssdk-v2.version}</version>
+          <scope>provided</scope>
+        </dependency>
         <dependency>
           <groupId>org.apache.iceberg</groupId>
           <artifactId>iceberg-spark-runtime-${spark.version.short}_${scala.binary.version}</artifactId>
@@ -362,6 +457,13 @@ under the License.
         <delta.version>4.1.0</delta.version>
       </properties>
       <dependencies>
+        <!-- AWS SDK v2 for the built-in S3 credential adapters (spark-4.x source set). -->
+        <dependency>
+          <groupId>software.amazon.awssdk</groupId>
+          <artifactId>auth</artifactId>
+          <version>${amazon-awssdk-v2.version}</version>
+          <scope>provided</scope>
+        </dependency>
         <dependency>
           <groupId>org.apache.iceberg</groupId>
           <artifactId>iceberg-spark-runtime-${spark.version.short}_${scala.binary.version}</artifactId>
@@ -386,6 +488,13 @@ under the License.
     <profile>
       <id>spark-4.2</id>
       <dependencies>
+        <!-- AWS SDK v2 for the built-in S3 credential adapters (spark-4.x source set). -->
+        <dependency>
+          <groupId>software.amazon.awssdk</groupId>
+          <artifactId>auth</artifactId>
+          <version>${amazon-awssdk-v2.version}</version>
+          <scope>provided</scope>
+        </dependency>
         <!-- iceberg-spark-runtime-4.2 is not yet published; reuse the 4.0 runtime -->
         <dependency>
           <groupId>org.apache.iceberg</groupId>
