@@ -122,6 +122,7 @@ omitted from the tables below and may be reconsidered based on demand:
 | `WriteFilesExec`                                                                                   | ⚠️     | Spark 4.0+. Experimental native Parquet writes, disabled by default (opt-in). Non-partitioned, non-bucketed writes only, and not when `spark.sql.files.maxRecordsPerFile` is set. |
 | `DataWritingCommandExec`                                                                           | ⚠️     | Spark 3.4/3.5 only. Experimental native Parquet writes, disabled by default (opt-in). Replaced by `WriteFilesExec` on Spark 4.0+ and removed with Spark 3.x support.              |
 | `AppendDataExec`, `OverwriteByExpressionExec`, `OverwritePartitionsDynamicExec`, `ReplaceDataExec` | ⚠️     | Apache Iceberg tables only. Experimental, disabled by default. See [Iceberg Writes](iceberg-writes.md).                                                                           |
+| `MergeRowsExec`                                                                                    | ⚠️     | Spark 3.5 and 4.0 only. Experimental, disabled by default (`spark.comet.exec.mergeRows.enabled`). See [MERGE INTO](compatibility/operators.md#merge-into-mergerowsexec).          |
 
 ## Python and UDF
 

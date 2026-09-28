@@ -245,8 +245,10 @@ impl ExecutionPlan for MergeRowsExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> datafusion::common::Result<SendableRecordBatchStream> {
-        let reservation = MemoryConsumer::new(format!("CometMergeRowsExec[{partition}]"))
-            .register(&context.runtime_env().memory_pool);
+        let reservation = self.config.row_id_ordinal.map(|_| {
+            MemoryConsumer::new(format!("CometMergeRowsExec[{partition}]"))
+                .register(&context.runtime_env().memory_pool)
+        });
         let child_stream = self.child.execute(partition, Arc::clone(&context))?;
         Ok(Box::pin(MergeRowsStream {
             config: Arc::clone(&self.config),
@@ -277,7 +279,7 @@ pub struct MergeRowsStream {
     schema: SchemaRef,
     // Partition-scoped so duplicate matches across Arrow batches are still detected.
     seen: HashSet<i64>,
-    reservation: MemoryReservation,
+    reservation: Option<MemoryReservation>,
     baseline: BaselineMetrics,
 }
 
@@ -472,7 +474,7 @@ fn process_batch(
     batch: RecordBatch,
     config: &MergeConfig,
     seen: &mut HashSet<i64>,
-    reservation: &mut MemoryReservation,
+    reservation: Option<&mut MemoryReservation>,
     schema: &SchemaRef,
 ) -> Result<RecordBatch, DataFusionError> {
     let source_present = eval_bool(&config.is_source_row_present, &batch)?;
@@ -485,6 +487,11 @@ fn process_batch(
     // Vectorized cardinality validation can surface before an unrelated per-row expression error;
     // both paths fail the query, but the error selected can differ from Spark in that rare case.
     if let Some(row_id_ordinal) = config.row_id_ordinal {
+        let reservation = reservation.ok_or_else(|| {
+            DataFusionError::Internal(
+                "MergeRows: cardinality checking requires a memory reservation".to_string(),
+            )
+        })?;
         check_cardinality(&batch, &matched_mask, row_id_ordinal, seen, reservation)?;
     }
 
@@ -525,7 +532,7 @@ impl Stream for MergeRowsStream {
                         batch,
                         &this.config,
                         &mut this.seen,
-                        &mut this.reservation,
+                        this.reservation.as_mut(),
                         &this.schema,
                     );
                     match result {
@@ -559,8 +566,73 @@ mod tests {
     use arrow::array::{Int32Array, StructArray};
     use arrow::datatypes::{Field, Schema};
     use datafusion::execution::memory_pool::{GreedyMemoryPool, MemoryPool, UnboundedMemoryPool};
+    use datafusion::execution::runtime_env::RuntimeEnvBuilder;
     use datafusion::logical_expr::Operator as DFOperator;
     use datafusion::physical_expr::expressions::{binary, col, lit};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(Debug, Default)]
+    struct RegistrationCountingPool {
+        inner: UnboundedMemoryPool,
+        merge_rows_registrations: AtomicUsize,
+    }
+
+    impl std::fmt::Display for RegistrationCountingPool {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "RegistrationCountingPool")
+        }
+    }
+
+    impl MemoryPool for RegistrationCountingPool {
+        fn name(&self) -> &str {
+            "RegistrationCountingPool"
+        }
+
+        fn register(&self, consumer: &MemoryConsumer) {
+            if consumer.name().starts_with("CometMergeRowsExec[") {
+                self.merge_rows_registrations.fetch_add(1, Ordering::SeqCst);
+            }
+            self.inner.register(consumer);
+        }
+
+        fn unregister(&self, consumer: &MemoryConsumer) {
+            self.inner.unregister(consumer);
+            if consumer.name().starts_with("CometMergeRowsExec[") {
+                self.merge_rows_registrations.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
+
+        fn grow(&self, reservation: &MemoryReservation, additional: usize) {
+            self.inner.grow(reservation, additional);
+        }
+
+        fn shrink(&self, reservation: &MemoryReservation, subtractive: usize) {
+            self.inner.shrink(reservation, subtractive);
+        }
+
+        fn try_grow(
+            &self,
+            reservation: &MemoryReservation,
+            additional: usize,
+        ) -> Result<(), DataFusionError> {
+            self.inner.try_grow(reservation, additional)
+        }
+
+        fn reserved(&self) -> usize {
+            self.inner.reserved()
+        }
+    }
+
+    fn task_context_with_registration_counter(
+        pool: &Arc<RegistrationCountingPool>,
+    ) -> Arc<TaskContext> {
+        let memory_pool = Arc::clone(pool) as Arc<dyn MemoryPool>;
+        let runtime = RuntimeEnvBuilder::new()
+            .with_memory_pool(memory_pool)
+            .build_arc()
+            .unwrap();
+        Arc::new(TaskContext::default().with_runtime(runtime))
+    }
 
     fn test_schema() -> SchemaRef {
         Arc::new(Schema::new(vec![
@@ -646,7 +718,7 @@ mod tests {
             batch,
             &config,
             &mut HashSet::new(),
-            &mut test_reservation(),
+            Some(&mut test_reservation()),
             &out_schema(),
         )
         .unwrap();
@@ -678,7 +750,7 @@ mod tests {
             batch,
             &config,
             &mut HashSet::new(),
-            &mut test_reservation(),
+            Some(&mut test_reservation()),
             &out_schema(),
         )
         .unwrap();
@@ -720,7 +792,7 @@ mod tests {
             batch,
             &config,
             &mut HashSet::new(),
-            &mut test_reservation(),
+            Some(&mut test_reservation()),
             &out_schema(),
         )
         .unwrap();
@@ -761,7 +833,7 @@ mod tests {
             batch,
             &config,
             &mut HashSet::new(),
-            &mut test_reservation(),
+            Some(&mut test_reservation()),
             &out_schema(),
         )
         .unwrap();
@@ -808,7 +880,7 @@ mod tests {
             batch,
             &config,
             &mut HashSet::new(),
-            &mut test_reservation(),
+            Some(&mut test_reservation()),
             &out_schema(),
         )
         .unwrap();
@@ -845,7 +917,7 @@ mod tests {
             batch,
             &config,
             &mut HashSet::new(),
-            &mut test_reservation(),
+            Some(&mut test_reservation()),
             &out_schema(),
         )
         .expect("not-matched condition must not be evaluated against the matched row");
@@ -888,6 +960,66 @@ mod tests {
             actual,
             seen.len(),
             seen.capacity()
+        );
+    }
+
+    #[test]
+    fn insert_only_merge_does_not_register_memory_consumer() {
+        use datafusion::datasource::memory::MemorySourceConfig;
+
+        let source = MemorySourceConfig::try_new_exec(&[vec![]], test_schema(), None).unwrap();
+        let exec = MergeRowsExec::try_new(
+            col("source_present", &test_schema()).unwrap(),
+            col("target_present", &test_schema()).unwrap(),
+            vec![],
+            vec![keep_all()],
+            vec![],
+            None,
+            source,
+            out_schema(),
+        )
+        .unwrap();
+        let pool = Arc::new(RegistrationCountingPool::default());
+        let stream = exec
+            .execute(0, task_context_with_registration_counter(&pool))
+            .unwrap();
+
+        assert_eq!(
+            pool.merge_rows_registrations.load(Ordering::SeqCst),
+            0,
+            "insert-only MERGE must not register an unused memory consumer"
+        );
+        drop(stream);
+        assert_eq!(pool.merge_rows_registrations.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn cardinality_merge_registers_memory_consumer() {
+        use datafusion::datasource::memory::MemorySourceConfig;
+
+        let source = MemorySourceConfig::try_new_exec(&[vec![]], test_schema(), None).unwrap();
+        let exec = MergeRowsExec::try_new(
+            col("source_present", &test_schema()).unwrap(),
+            col("target_present", &test_schema()).unwrap(),
+            vec![keep_all()],
+            vec![],
+            vec![],
+            Some(0),
+            source,
+            out_schema(),
+        )
+        .unwrap();
+        let pool = Arc::new(RegistrationCountingPool::default());
+        let stream = exec
+            .execute(0, task_context_with_registration_counter(&pool))
+            .unwrap();
+
+        assert_eq!(pool.merge_rows_registrations.load(Ordering::SeqCst), 1);
+        drop(stream);
+        assert_eq!(
+            pool.merge_rows_registrations.load(Ordering::SeqCst),
+            0,
+            "dropping the stream must unregister the memory consumer"
         );
     }
 
@@ -1016,7 +1148,7 @@ mod tests {
             batch,
             &config,
             &mut HashSet::new(),
-            &mut test_reservation(),
+            Some(&mut test_reservation()),
             &out_schema(),
         )
         .unwrap();
@@ -1298,7 +1430,7 @@ mod tests {
             batch1,
             &config,
             &mut seen,
-            &mut test_reservation(),
+            Some(&mut test_reservation()),
             &out_schema(),
         );
         assert!(first.is_ok());
@@ -1307,7 +1439,7 @@ mod tests {
             batch2,
             &config,
             &mut seen,
-            &mut test_reservation(),
+            Some(&mut test_reservation()),
             &out_schema(),
         );
         assert!(second.is_err());

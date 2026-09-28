@@ -906,7 +906,7 @@ class CometIcebergWriteActionSuite
 
   test("native acceleration: ReplaceData (CoW MERGE) honors the versioned native contract") {
     assumeNativeAcceleration()
-    assume(isSpark35Plus, "MergeRowsExec requires Spark 3.5+")
+
     withIcebergCatalog { warehouseDir =>
       createTable(
         warehouseDir,
@@ -929,7 +929,7 @@ class CometIcebergWriteActionSuite
       }
 
       withSQLConf(CometConf.COMET_EXEC_MERGE_ROWS_ENABLED.key -> "true") {
-        if (isSpark41Plus) {
+        if (isSpark41Plus || !isSpark35Plus) {
           assertNativeWriteDoesNotEngage("native_cow_merge", Seq(1, 2, 3))(runMerge())
         } else {
           val snapshot = withNativeEnabled {
@@ -1019,6 +1019,7 @@ class CometIcebergWriteActionSuite
 
         withSQLConf(
           CometConf.COMET_ENABLED.key -> "false",
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
           "spark.sql.adaptive.coalescePartitions.enabled" -> "false",
           "spark.sql.shuffle.partitions" -> "8") {
           spark.sql(
@@ -1037,6 +1038,7 @@ class CometIcebergWriteActionSuite
         var snapshot: Option[WriteSnapshot] = None
         withSQLConf(
           CometConf.COMET_EXEC_MERGE_ROWS_ENABLED.key -> "true",
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
           "spark.sql.adaptive.coalescePartitions.enabled" -> "false",
           "spark.sql.shuffle.partitions" -> "8") {
           snapshot = Some(withNativeEnabled {
@@ -1086,6 +1088,7 @@ class CometIcebergWriteActionSuite
 
         withSQLConf(
           CometConf.COMET_ENABLED.key -> "false",
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
           "spark.sql.adaptive.coalescePartitions.enabled" -> "false",
           "spark.sql.shuffle.partitions" -> "8") {
           merge(sparkTable)
@@ -1131,19 +1134,32 @@ class CometIcebergWriteActionSuite
           |""".stripMargin)
       }
 
-      val nativeError = intercept[Exception] {
+      val (nativePlans, nativeError) = captureFailedPlans(spark) {
         withSQLConf(
           CometConf.COMET_EXEC_MERGE_ROWS_ENABLED.key -> "true",
-          CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> "false") {
+          CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> "false",
+          "spark.sql.autoBroadcastJoinThreshold" -> "-1") {
           duplicateMerge(nativeTable)
         }
       }
+      val nativeMergeRows = nativePlans.flatMap { plan =>
+        collectWithSubqueries(plan) { case e: CometMergeRowsExec => e }
+      }
+      assert(
+        nativeMergeRows.nonEmpty,
+        "expected cardinality failure to execute through CometMergeRowsExec. Plans:\n" +
+          nativePlans.mkString("\n--\n"))
+      val nativeFailure =
+        nativeError.getOrElse(fail("native cardinality MERGE unexpectedly succeeded"))
+
       val sparkError = intercept[Exception] {
-        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        withSQLConf(
+          CometConf.COMET_ENABLED.key -> "false",
+          "spark.sql.autoBroadcastJoinThreshold" -> "-1") {
           duplicateMerge(sparkTable)
         }
       }
-      Seq("Comet" -> nativeError, "Spark" -> sparkError).foreach { case (engine, error) =>
+      Seq("Comet" -> nativeFailure, "Spark" -> sparkError).foreach { case (engine, error) =>
         assert(
           exceptionChain(error).exists(t =>
             Option(t.getMessage).exists(_.contains("MERGE_CARDINALITY_VIOLATION"))),

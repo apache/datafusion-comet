@@ -177,6 +177,9 @@ jobs:
       - name: Check missing suites
         run: python3 dev/ci/check-suites.py
 
+      - name: Check versioned source parity
+        run: python3 dev/ci/check-versioned-source-parity.py
+
       - name: Check micro benchmark runner
         run: python3 dev/ci/check-benchmark-runner.py
 
