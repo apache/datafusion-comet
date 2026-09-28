@@ -45,6 +45,7 @@ use iceberg_storage_opendal::CustomAwsCredentialLoader;
 use iceberg_storage_opendal::OpenDalStorageFactory;
 
 use crate::cloud::s3::credential_bridge::{AccessMode, CometS3CredentialBridge};
+use crate::cloud::s3::web_identity::take_over_if_irsa;
 use crate::execution::jni_api::get_runtime;
 use crate::execution::operators::ExecutionError;
 use crate::parquet::parquet_support::SparkParquetOptions;
@@ -376,17 +377,34 @@ const STORAGE_PROPERTY_PREFIXES: &[&str] = &["s3.", "gcs.", "adls.", "client."];
 
 /// Wires the configured Comet credential provider into opendal's S3 service, or returns `None`
 /// so opendal falls back to its default credential chain.
-fn build_s3_credential_loader(
+pub(crate) fn build_s3_credential_loader(
     metadata_location: &str,
     catalog_properties: &HashMap<String, String>,
     catalog_name: &str,
 ) -> Option<CustomAwsCredentialLoader> {
     let url = url::Url::parse(metadata_location).ok()?;
     let bucket = url.host_str()?;
-    let provider_class = catalog_properties
+    let Some(provider_class) = catalog_properties
         .get(ICEBERG_PROVIDER_CLASS_PROPERTY)
         .map(|s| s.trim())
-        .filter(|s| !s.is_empty())?;
+        .filter(|s| !s.is_empty())
+    else {
+        // No explicit Comet provider class. On EKS/IRSA, take over credential resolution with the
+        // Comet web-identity provider (retry on STS throttle, no node-role downgrade, shared
+        // jittered cache) instead of leaving it to opendal's default reqsign chain, which
+        // downgrades to the node instance role under throttling. Non-IRSA setups (static keys,
+        // env, profile) keep the default chain via None. We also defer to any credentials
+        // the user configured explicitly in the catalog (static keys or an assume-role arn) --
+        // explicit config always wins, same as a named provider class does.
+        let explicit = has_explicit_s3_credentials(catalog_properties);
+        // Config keys arrive on the Iceberg side under the `s3.` prefix (that is how a catalog
+        // property reaches the FileIO property bag, the same as `s3.comet.credential.provider.class`),
+        // so resolve the bare keys under that prefix.
+        return take_over_if_irsa(explicit, |key| {
+            catalog_properties.get(&format!("s3.{key}")).cloned()
+        })
+        .map(CustomAwsCredentialLoader::new);
+    };
     // Fall back to the bucket when the table has no catalog identity (e.g. HadoopTables loaded by
     // raw path).
     let dispatch_key: &str = if catalog_name.is_empty() {
@@ -412,6 +430,20 @@ fn build_s3_credential_loader(
             None
         }
     }
+}
+
+/// True if the catalog configures S3 credentials explicitly: static access keys
+/// (`s3.access-key-id` + `s3.secret-access-key`) or an assume-role arn (`client.assume-role.arn`).
+/// When it does, the Comet web-identity take-over stands aside so opendal uses what the user asked
+/// for. Key names mirror iceberg-rust's `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` /
+/// `S3_ASSUME_ROLE_ARN`.
+fn has_explicit_s3_credentials(catalog_properties: &HashMap<String, String>) -> bool {
+    let has = |key: &str| {
+        catalog_properties
+            .get(key)
+            .is_some_and(|v| !v.trim().is_empty())
+    };
+    (has("s3.access-key-id") && has("s3.secret-access-key")) || has("client.assume-role.arn")
 }
 
 /// Metrics for IcebergScanExec
@@ -630,6 +662,7 @@ fn adapt_batch_with_expressions(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::io::Write;
     use std::sync::Arc;
 
@@ -639,7 +672,7 @@ mod tests {
     use iceberg::spec::{DataContentType, DataFileFormat, Schema};
     use iceberg_storage_opendal::OpenDalStorageFactory;
 
-    use super::IcebergScanExec;
+    use super::{has_explicit_s3_credentials, IcebergScanExec};
 
     fn fs_file_io() -> FileIO {
         FileIOBuilder::new(Arc::new(OpenDalStorageFactory::Fs)).build()
@@ -795,5 +828,27 @@ mod tests {
             Some(16),
             "expected a 16-byte AAD prefix from the Java blob"
         );
+    }
+
+    #[test]
+    fn explicit_s3_credentials_detected() {
+        let mut props = HashMap::new();
+        assert!(!has_explicit_s3_credentials(&props));
+
+        // Access key without a secret is not a complete static credential.
+        props.insert("s3.access-key-id".to_string(), "AKIA".to_string());
+        assert!(!has_explicit_s3_credentials(&props));
+        props.insert("s3.secret-access-key".to_string(), "secret".to_string());
+        assert!(has_explicit_s3_credentials(&props));
+
+        // Blank values do not count as configured.
+        let mut blank = HashMap::new();
+        blank.insert("client.assume-role.arn".to_string(), "  ".to_string());
+        assert!(!has_explicit_s3_credentials(&blank));
+        blank.insert(
+            "client.assume-role.arn".to_string(),
+            "arn:aws:iam::1:role/r".to_string(),
+        );
+        assert!(has_explicit_s3_credentials(&blank));
     }
 }
