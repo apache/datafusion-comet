@@ -72,3 +72,33 @@ WHERE id = 11
 
 query
 SELECT make_interval(0, 0, 0, 0, 2562048)
+
+statement
+CREATE TABLE test_make_interval_short_circuit(id int, y int, sm smallint, s string) USING parquet
+
+statement
+INSERT INTO test_make_interval_short_circuit VALUES
+  (0, NULL, 1, 'bad'),
+  (1, 1, 2, '2'),
+  (2, 3, 3, 'bad')
+
+-- Spark stops at the first NULL argument without evaluating the rest, so the invalid ANSI cast
+-- never runs on the row whose years is NULL and the result is NULL. Native execution would
+-- evaluate every argument first and fail, so this shape runs through the JVM codegen dispatcher.
+query expect_dispatch(make_interval)
+SELECT id, make_interval(y, CAST(s AS INT))
+FROM test_make_interval_short_circuit
+WHERE id <= 1
+
+-- Where years is not NULL, Spark does evaluate the cast, and so does the dispatcher.
+query expect_error(CAST_INVALID_INPUT)
+SELECT make_interval(y, CAST(s AS INT))
+FROM test_make_interval_short_circuit
+WHERE id = 2
+
+-- Columns, literals and lossless up-casts of them (here SMALLINT to INT, and the decimal literal
+-- to DECIMAL(18, 6)) cannot throw or carry state, so evaluating them eagerly is unobservable and
+-- the expression stays native.
+query expect_native(make_interval)
+SELECT id, make_interval(y, sm, id, 0, 0, 0, 1.5)
+FROM test_make_interval_short_circuit

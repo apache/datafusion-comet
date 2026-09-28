@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import java.util.Locale
 
-import org.apache.spark.sql.catalyst.expressions.{AddMonths, Attribute, ConvertTimezone, DateAdd, DateDiff, DateFormatClass, DateFromUnixDate, DateSub, DayOfMonth, DayOfWeek, DayOfYear, Days, Expression, FromUTCTimestamp, GetDateField, GetTimestamp, Hour, Hours, LastDay, Literal, MakeDate, MakeDTInterval, MakeInterval, MakeTimestamp, MakeYMInterval, MicrosToTimestamp, MillisToTimestamp, Minute, Month, MonthsBetween, MultiplyDTInterval, NextDay, PreciseTimestampConversion, Quarter, Second, SecondsToTimestamp, TimestampAdd, TimestampDiff, ToUnixTimestamp, ToUTCTimestamp, TruncDate, TruncTimestamp, UnixDate, UnixMicros, UnixMillis, UnixSeconds, UnixTimestamp, WeekDay, WeekOfYear, Year}
+import org.apache.spark.sql.catalyst.expressions.{AddMonths, Attribute, BoundReference, Cast, ConvertTimezone, DateAdd, DateDiff, DateFormatClass, DateFromUnixDate, DateSub, DayOfMonth, DayOfWeek, DayOfYear, Days, Expression, FromUTCTimestamp, GetDateField, GetTimestamp, Hour, Hours, LastDay, Literal, MakeDate, MakeDTInterval, MakeInterval, MakeTimestamp, MakeYMInterval, MicrosToTimestamp, MillisToTimestamp, Minute, Month, MonthsBetween, MultiplyDTInterval, NextDay, PreciseTimestampConversion, Quarter, Second, SecondsToTimestamp, TimestampAdd, TimestampDiff, ToUnixTimestamp, ToUTCTimestamp, TruncDate, TruncTimestamp, UnixDate, UnixMicros, UnixMillis, UnixSeconds, UnixTimestamp, WeekDay, WeekOfYear, Year}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{CalendarIntervalType, DataType, DateType, DoubleType, FloatType, IntegerType, LongType, StringType, TimestampNTZType, TimestampType}
 import org.apache.spark.unsafe.types.UTF8String
@@ -884,8 +884,43 @@ object CometMakeYMInterval extends CometCodegenDispatch[MakeYMInterval]
 
 object CometMakeDTInterval extends CometCodegenDispatch[MakeDTInterval]
 
-object CometMakeInterval extends CometExpressionSerde[MakeInterval] {
-  override def getSupportLevel(expr: MakeInterval): SupportLevel = Compatible()
+object CometMakeInterval extends CometExpressionSerde[MakeInterval] with CodegenDispatchFallback {
+
+  private val eagerArgumentReason =
+    "An argument that follows a nullable argument and is not a column reference, a literal, or " +
+      "a lossless up-cast of one, such as an ANSI `CAST` that can fail: Spark stops at the " +
+      "first NULL argument without evaluating the rest, while the native kernel evaluates every " +
+      "argument first"
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(eagerArgumentReason)
+
+  override def getSupportLevel(expr: MakeInterval): SupportLevel =
+    if (argumentsCanBeEvaluatedEagerly(expr)) Compatible()
+    else Unsupported(Some(eagerArgumentReason))
+
+  /**
+   * Spark's `MakeInterval` is a `SeptenaryExpression`: it evaluates its arguments left to right
+   * and returns NULL at the first NULL one, so an argument that follows a nullable argument only
+   * runs on the rows where every earlier argument is non-null. The native scalar function
+   * evaluates every argument over the whole batch before its kernel checks for nulls. Running
+   * such an argument on the extra rows is unobservable only when it cannot throw, carry state or
+   * have a side effect. That holds for a column reference, a literal, and a lossless up-cast of
+   * either, which covers the implicit casts Spark adds to widen integral and decimal arguments.
+   * Anything else routes through the JVM codegen dispatcher, which runs Spark's own nested
+   * evaluation. `foldable` is not a usable test: an unfolded foldable argument can still throw.
+   * Arguments before the first nullable one run on every row in Spark too, so they are
+   * unrestricted.
+   */
+  private def argumentsCanBeEvaluatedEagerly(expr: MakeInterval): Boolean = {
+    def unobservable(arg: Expression): Boolean = arg match {
+      case _: Literal | _: Attribute | _: BoundReference => true
+      case cast: Cast =>
+        Cast.canUpCast(cast.child.dataType, cast.dataType) && unobservable(cast.child)
+      case _ => false
+    }
+    val firstNullable = expr.children.indexWhere(_.nullable)
+    firstNullable < 0 || expr.children.drop(firstNullable + 1).forall(unobservable)
+  }
 
   override def convert(
       expr: MakeInterval,
