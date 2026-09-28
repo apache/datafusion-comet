@@ -131,6 +131,11 @@ a new subclass needs no new case as long as `getValueVector` returns an Arrow ve
 - [ ] **Dictionary handling.** Import uses `CopyMode::UnpackOrClone`: dictionary columns are
       unpacked into new native arrays, everything else is an `Arc` clone. A change here affects both
       correctness and allocation volume.
+- [ ] **Timestamps cross unconverted.** Both directions pass the raw microseconds. JVM producers
+      label `TimestampType` with `CometArrowStream.NATIVE_TIMEZONE`, which is `"UTC"`, and a new
+      producer must use it too rather than the session timezone. A change that shifts values by a
+      timezone at the boundary gives wrong answers. See "How Comet represents timestamps" in
+      `docs/source/contributor-guide/timezones.md`.
 
 ## 5. Memory Accounting
 

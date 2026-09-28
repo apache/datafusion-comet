@@ -30,11 +30,12 @@ bar, and the output format. This skill only covers what is specific to expressio
 
 ## Read the Contributor Guide First
 
-| Doc                                                        | What you need from it                                                                     |
-| ---------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| `docs/source/contributor-guide/adding_a_new_expression.md` | The serde contract, support levels, when to set the return type explicitly, shimming      |
-| `docs/source/contributor-guide/sql-file-tests.md`          | The test framework expression PRs are expected to use, and every directive it supports    |
-| `docs/source/contributor-guide/optimizing_expressions.md`  | The benchmark workflow and the no-regression rule, for PRs that change an existing kernel |
+| Doc                                                        | What you need from it                                                                                                                                       |
+| ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `docs/source/contributor-guide/adding_a_new_expression.md` | The serde contract, support levels, when to set the return type explicitly, shimming                                                                        |
+| `docs/source/contributor-guide/sql-file-tests.md`          | The test framework expression PRs are expected to use, and every directive it supports                                                                      |
+| `docs/source/contributor-guide/optimizing_expressions.md`  | The benchmark workflow and the no-regression rule, for PRs that change an existing kernel                                                                   |
+| `docs/source/contributor-guide/timezones.md`               | The timestamp label rule, where the session timezone comes from, and how to test it, for datetime expressions, casts, and anything that returns a timestamp |
 
 Hold the diff against these. If the PR does something a guide says to do differently, either the PR
 is wrong or the guide is out of date, and you need to say which.
@@ -74,6 +75,8 @@ Location: `spark/src/main/scala/org/apache/comet/serde/`
 - [ ] `getSupportLevel` reflects true compatibility rather than the happy path
 - [ ] Serde lives in the appropriate file (`datetime.scala`, `strings.scala`, `arithmetic.scala`, and so on)
 - [ ] ANSI and `fail_on_error` handling matches the constraints in `adding_a_new_expression.md`
+- [ ] A timezone-aware expression serializes `expr.timeZoneId`, the timezone Spark stamped on it,
+      rather than `SQLConf.get.sessionLocalTimeZone` or the JVM default
 
 ### Registration in `QueryPlanSerde.scala`
 
@@ -103,6 +106,13 @@ Location: `native/spark-expr/src/`, registered in `comet_scalar_funcs.rs`.
 - [ ] No panics. Use `Result`.
 - [ ] Batch operations rather than row-by-row where a kernel exists
 - [ ] Invalid UTF-8 going into a native `StringType` goes through `decode_utf8_spark_lossy`
+- [ ] A `TimestampType` result is labelled `"UTC"`, in `return_type()` or `data_type()` and in the
+      arrays the kernel builds. Not the session timezone, and not `None`.
+- [ ] Local-time work uses the session timezone from the proto. DataFusion's own datetime functions
+      take the timezone from the input's label, so wiring one in for a timezone-aware Spark
+      expression evaluates it in UTC unless the session timezone is passed explicitly.
+- [ ] A UTC fast path matches a fixed list of UTC aliases, as `is_utc_timezone` in
+      `extract_date_part.rs` does, and sends every other timezone ID down the general path
 
 Before accepting a hand-written kernel, ask whether the function already exists upstream in
 DataFusion or the `datafusion-spark` crate. Comet prefers wiring an upstream function over carrying
@@ -160,8 +170,10 @@ single file by appending a substring of its name to the suite argument.
 - [ ] Edge cases tested: empty input, overflow, boundary values, negative values
 - [ ] Both literal and column arguments tested, in every combination for multi-argument
       expressions. They take different code paths.
-- [ ] Timezone handling tested for timestamp and datetime expressions, including a non-UTC session
-      timezone and timestamps with and without timezone
+- [ ] Timestamp and datetime expressions are tested as "Testing timezone-sensitive code" in
+      `timezones.md` describes. That means several session timezones through `ConfigMatrix`,
+      including `Etc/UTC` and a zone with DST, both `TIMESTAMP` and `TIMESTAMP_NTZ` inputs, and a
+      result that is compared or fed to another expression rather than only projected.
 - [ ] SQL syntax gated with `MinSparkVersion` when it only parses on newer Spark
 - [ ] `expect_error` patterns substring-match what both Spark and Comet actually throw
 - [ ] One expression per SQL file
@@ -240,3 +252,5 @@ reference in that doc is the only place they are documented.
 5. **Missing `getSupportLevel`**, divergences left undeclared rather than marked `Incompatible`
 6. **Version-specific Spark behavior implemented once**, with no shim
 7. **Name collides with a DataFusion built-in** and no explicit return type
+8. **Timestamp result mislabelled**, with the session timezone or no timezone instead of `"UTC"`.
+   It only shows once the result is compared or fed to another expression.
