@@ -822,7 +822,7 @@ class CometDeltaNativeScanSuite extends CometDeltaTestBase {
         val numPartitions = scans.head.outputPartitioning.numPartitions
         assert(
           numPartitions > 1,
-          s"expected the single file to be split into more than one native partition, " +
+          "expected the single file to be split into more than one native partition, " +
             s"got $numPartitions")
       }
     }
