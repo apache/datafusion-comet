@@ -31,7 +31,7 @@ import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{StructField, StructType}
 
-import org.apache.comet.{CometConf, ConfigEntry}
+import org.apache.comet.{CometConf, ConfigEntry, DataTypeSupport}
 import org.apache.comet.CometConf.COMET_EXEC_ENABLED
 import org.apache.comet.CometSparkSessionExtensions.{hasFallbackReason, isSpark35Plus, isSpark41Plus, withFallbackReason}
 import org.apache.comet.objectstore.NativeConfig
@@ -141,6 +141,19 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
 
     if (serializeExistenceDefaultValues(scanExec.requiredSchema, scanExec.output).isEmpty) {
       withFallbackReason(scanExec, unsupportedDefaultReason)
+    }
+
+    // Spark's reader raises when a requested field folds to more than one file field. The native
+    // scan resolves nested names only while casting, so a column whose file type equals the
+    // requested one, and whose siblings are therefore the requested ones, is read positionally.
+    // A DataFrame analyzed case-sensitively gets such a schema past the analyzer (#6136). Not in
+    // CometScanTypeChecker, which also gates Iceberg scans that resolve fields by id.
+    if (!SQLConf.get.caseSensitiveAnalysis &&
+      DataTypeSupport.hasCaseInsensitiveDuplicateFieldNames(scanExec.requiredSchema)) {
+      withFallbackReason(
+        scanExec,
+        "Native Parquet scan does not support a read schema whose field names collide " +
+          s"case-insensitively when ${SQLConf.CASE_SENSITIVE.key}=false")
     }
 
     if (scanExec.requiredSchema.exists(field => isVariantType(field.dataType))) {
