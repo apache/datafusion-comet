@@ -105,7 +105,8 @@ ENABLE_COMET=true ENABLE_COMET_ONHEAP=true sbt -J-Xmx4096m -Dspark.test.includeS
 -Dspark.comet.enabled=true -Dspark.comet.debug.enabled=true -Dspark.plugins=org.apache.spark.CometPlugin -DXmx4096m -Dspark.executor.heartbeatInterval=20000 -Dspark.network.timeout=10000 --add-exports=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED
 ```
 
-2. Set `ENABLE_COMET=true` in environment variables
+2. Set `ENABLE_COMET=true` and `ENABLE_COMET_ONHEAP=true` in environment variables. Without
+   `ENABLE_COMET_ONHEAP`, Comet stays disabled, because the tests do not enable off-heap memory.
    ![img.png](img.png)
 3. After the above tests are configured, spark tests can be run with debugging enabled on spark/comet code. Note that Comet is added as a dependency and the classes are readonly while debugging from Spark. Any new changes to Comet are to be built and deployed locally through the command (`PROFILES="-Pspark-3.4" make release`)
 
