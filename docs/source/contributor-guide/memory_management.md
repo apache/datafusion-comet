@@ -195,6 +195,15 @@ the call never returns. Nothing releases them until Spark's final task cleanup, 
 nobody can use for the rest of the task. Any caller that swallows the exception has to reconcile
 that grant, and the only figure available for doing so is the task-wide one above.
 
+**A parked acquire can wake up to a missing task entry.** Spark removes the task's `memoryForTask`
+entry when its balance reaches zero, and an acquire that was waiting in `lock.wait()` and wakes
+afterwards throws a `NoSuchElementException` ("key not found" and the task id) instead of a grant.
+`CometTaskMemoryManager` retries that one case. A missing entry means the task held nothing from
+Spark at that moment, so the failed call has no partial grant to reconcile, and the retry registers
+the task again and waits for its share as the first call would have. After a few attempts it returns
+a zero grant, which the native side treats as a refusal and spills. JVM consumers that call
+`allocatePage` directly are not covered; that gap is tracked in #6304.
+
 **A consumer whose `spill` returns zero takes budget it can never give back.**
 `NativeMemoryConsumer.spill` returns `0`, so Spark can select it as a spill victim and reclaim
 nothing from it; it is only ever a spill trigger. The bytes it holds are real, so other consumers in
