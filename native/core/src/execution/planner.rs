@@ -72,9 +72,7 @@ use datafusion::{
     functions_aggregate::first_last::{FirstValue, LastValue},
     logical_expr::Operator as DataFusionOperator,
     physical_expr::{
-        expressions::{
-            BinaryExpr, CaseExpr, CastExpr, Column, IsNullExpr, Literal as DataFusionLiteral,
-        },
+        expressions::{BinaryExpr, CastExpr, Column, IsNullExpr, Literal as DataFusionLiteral},
         PhysicalExpr, PhysicalSortExpr, ScalarFunctionExpr,
     },
     physical_plan::{
@@ -109,7 +107,6 @@ use datafusion::common::{
 };
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::logical_expr::type_coercion::functions::fields_with_udf;
-use datafusion::logical_expr::type_coercion::other::get_coerce_type_for_case_expression;
 use datafusion::logical_expr::{
     AggregateUDF, ReturnFieldArgs, ScalarUDF, TypeSignature, WindowFrame, WindowFrameBound,
     WindowFrameUnits, WindowFunctionDefinition,
@@ -148,11 +145,11 @@ use datafusion_comet_proto::{
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
 use datafusion_comet_spark_expr::{
-    jvm_udf::JvmScalarUdfExpr, spark_in_list, ApproxPercentile, ArrayInsert, Avg, AvgDecimal, Cast,
-    CheckOverflow, Correlation, Covariance, CreateNamedStruct, DecimalRescaleCheckOverflow,
-    GetArrayStructFields, GetStructField, HllPlusPlus, IfExpr, ListExtract, MaxMinBy, Mode,
-    NormalizeNaNAndZero, Regr, RegrType, SparkCastOptions, Stddev, SumDecimal, ToJson,
-    UnboundColumn, Variance, WideDecimalBinaryExpr, WideDecimalOp,
+    create_case_when, jvm_udf::JvmScalarUdfExpr, spark_in_list, ApproxPercentile, ArrayInsert, Avg,
+    AvgDecimal, Cast, CheckOverflow, Correlation, Covariance, CreateNamedStruct,
+    DecimalRescaleCheckOverflow, GetArrayStructFields, GetStructField, HllPlusPlus, IfExpr,
+    ListExtract, MaxMinBy, Mode, NormalizeNaNAndZero, Regr, RegrType, SparkCastOptions, Stddev,
+    SumDecimal, ToJson, UnboundColumn, Variance, WideDecimalBinaryExpr, WideDecimalOp,
 };
 use itertools::Itertools;
 use jni::objects::{Global, JObject};
@@ -754,7 +751,8 @@ impl PhysicalPlanner {
                     )?),
                 };
 
-                create_case_expr(when_then_pairs, else_phy_expr, &input_schema)
+                create_case_when(when_then_pairs, else_phy_expr, &input_schema)
+                    .map_err(|e| e.into())
             }
             ExprStruct::In(expr) => {
                 let value =
@@ -4722,64 +4720,6 @@ fn parse_file_scan_tasks_from_common(
         .collect();
 
     results
-}
-
-/// Create CASE WHEN expression and add casting as needed
-fn create_case_expr(
-    when_then_pairs: Vec<(Arc<dyn PhysicalExpr>, Arc<dyn PhysicalExpr>)>,
-    else_expr: Option<Arc<dyn PhysicalExpr>>,
-    input_schema: &Schema,
-) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-    let then_types: Vec<DataType> = when_then_pairs
-        .iter()
-        .map(|x| x.1.data_type(input_schema))
-        .collect::<Result<Vec<_>, _>>()?;
-
-    let else_type: Option<DataType> = else_expr
-        .as_ref()
-        .map(|x| Arc::clone(x).data_type(input_schema))
-        .transpose()?
-        .or(Some(DataType::Null));
-
-    if let Some(coerce_type) = get_coerce_type_for_case_expression(&then_types, else_type.as_ref())
-    {
-        let cast_options = SparkCastOptions::new_without_timezone(EvalMode::Legacy, false);
-
-        let when_then_pairs = when_then_pairs
-            .iter()
-            .map(|x| {
-                let t: Arc<dyn PhysicalExpr> = Arc::new(Cast::new(
-                    Arc::clone(&x.1),
-                    coerce_type.clone(),
-                    cast_options.clone(),
-                    None,
-                    None,
-                ));
-                (Arc::clone(&x.0), t)
-            })
-            .collect::<Vec<(Arc<dyn PhysicalExpr>, Arc<dyn PhysicalExpr>)>>();
-
-        let else_phy_expr: Option<Arc<dyn PhysicalExpr>> = else_expr.clone().map(|x| {
-            Arc::new(Cast::new(
-                x,
-                coerce_type.clone(),
-                cast_options.clone(),
-                None,
-                None,
-            )) as Arc<dyn PhysicalExpr>
-        });
-        Ok(Arc::new(CaseExpr::try_new(
-            None,
-            when_then_pairs,
-            else_phy_expr,
-        )?))
-    } else {
-        Ok(Arc::new(CaseExpr::try_new(
-            None,
-            when_then_pairs,
-            else_expr.clone(),
-        )?))
-    }
 }
 
 fn from_protobuf_binary_output_style(
