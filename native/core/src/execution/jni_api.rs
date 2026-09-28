@@ -759,13 +759,12 @@ fn prepare_datafusion_session_context(
             session_config.set_str("datafusion.execution.parquet.reorder_filters", "true");
     }
 
-    // `map_from_arrays`, `map_from_entries` and `str_to_map` build their maps with the
-    // duplicate-key policy Spark's `ArrayBasedMapBuilder` uses. DataFusion spells the same
-    // setting `datafusion.spark.map_key_dedup_policy` and takes the same `EXCEPTION` /
-    // `LAST_WIN` values. Set before the `spark.comet.datafusion.*` testing escape hatch
-    // pass-through below, so an explicit override of the DataFusion key still wins.
+    // The duplicate-key policy of the native map constructors, which DataFusion spells
+    // `datafusion.spark.map_key_dedup_policy` with the same `EXCEPTION` / `LAST_WIN` values (see
+    // the map_funcs expression audit). Set before the `spark.comet.datafusion.*` testing escape
+    // hatch pass-through below, so an explicit override of the DataFusion key still wins.
     if let Some(policy) = spark_config.get(SPARK_MAP_KEY_DEDUP_POLICY) {
-        session_config = session_config.set_str("datafusion.spark.map_key_dedup_policy", policy);
+        session_config.options_mut().spark.map_key_dedup_policy = policy.parse()?;
     }
 
     // Pass through DataFusion configs from Spark.

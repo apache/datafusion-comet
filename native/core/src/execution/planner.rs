@@ -3666,14 +3666,6 @@ impl PhysicalPlanner {
         }
     }
 
-    /// The session's `ConfigOptions`, so a kernel that reads one sees what
-    /// `prepare_datafusion_session_context` set rather than DataFusion's defaults. The map
-    /// builders read `datafusion.spark.map_key_dedup_policy` this way, which Comet forwards from
-    /// `spark.sql.mapKeyDedupPolicy`.
-    fn session_config_options(&self) -> Arc<ConfigOptions> {
-        Arc::clone(self.session_ctx.copied_config().options())
-    }
-
     fn create_scalar_function_expr(
         &self,
         expr: &ScalarFunc,
@@ -3800,7 +3792,10 @@ impl PhysicalPlanner {
             fun_expr,
             args.to_vec(),
             Arc::new(Field::new(fun_name, data_type.clone(), true)),
-            self.session_config_options(),
+            // The session's options rather than DataFusion's defaults, so a kernel that reads one
+            // (the map constructors read `datafusion.spark.map_key_dedup_policy`) sees what
+            // `prepare_datafusion_session_context` set.
+            Arc::clone(self.session_ctx.copied_config().options()),
         ));
 
         // DF53 changed some UDFs (e.g. md5) to return StringViewArray at execution
