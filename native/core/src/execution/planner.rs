@@ -95,6 +95,7 @@ use datafusion_comet_spark_expr::{
     EvalMode, SparkArraysZipFunc, SparkBloomFilterVersion, SparkListAgg, SparkPercentile,
     SumInteger, ToCsv,
 };
+use datafusion_datasource::TableSchema;
 use iceberg::expr::Bind;
 
 use crate::execution::operators::ExecutionError::GeneralError;
@@ -1681,7 +1682,22 @@ impl PhysicalPlanner {
 
                 // Check if this partition has any files (bucketed scan with bucket pruning may have empty partitions)
                 if partition_files.partitioned_file.is_empty() {
-                    let empty_exec = Arc::new(EmptyExec::new(required_schema));
+                    // Match the nonempty scan's projected table schema, including partition
+                    // and constant metadata columns. Fused operators bind against this schema
+                    // even when the bucket has no rows.
+                    let partition_fields: Vec<FieldRef> = partition_schema
+                        .fields()
+                        .iter()
+                        .map(|f| {
+                            Arc::new(Field::new(f.name(), f.data_type().clone(), f.is_nullable()))
+                        })
+                        .collect();
+                    let table_schema = TableSchema::builder(data_schema)
+                        .with_table_partition_cols(partition_fields)
+                        .build();
+                    let output_schema =
+                        Arc::new(table_schema.table_schema().project(&projection_vector)?);
+                    let empty_exec = Arc::new(EmptyExec::new(output_schema));
                     return Ok((
                         vec![],
                         vec![],
@@ -1789,7 +1805,7 @@ impl PhysicalPlanner {
                     self.session_ctx(),
                     common.encryption_enabled,
                     common.use_field_id,
-                    common.ignore_missing_field_id,
+                    common.require_field_ids,
                 )?;
                 Ok((
                     vec![],
@@ -5271,6 +5287,8 @@ fn needs_fields_coercion(sig: &TypeSignature) -> bool {
 
 #[cfg(test)]
 mod tests {
+    mod empty_native_scan;
+
     use futures::{poll, StreamExt};
     use std::{
         sync::{

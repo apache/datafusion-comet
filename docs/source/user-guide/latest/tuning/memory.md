@@ -149,48 +149,58 @@ While Comet native plans are running, each executor logs its native memory usage
 one line every 10 seconds for the whole executor:
 
 ```
-Comet native memory usage: allocated 5412.3 MiB, reserved 3890.0 MiB (16 native plans, 8 memory pools)
+Comet native memory usage: allocated 5412.3 MiB, reserved 3890.0 MiB (16 native plans, 8 memory pools); JVM Arrow allocated 310.4 MiB, 96.2 MiB of it imported from native
 ```
 
 - `allocated` is the memory that Comet's native code has allocated and not yet freed, whether or not
   a pool tracks it.
 - `reserved` is the part that Comet's memory pools track. It is charged against
   `spark.memory.offHeap.size`, so the container already has room for it.
+- `JVM Arrow allocated` is the Arrow memory Comet holds on the JVM side, such as batches read from
+  Comet's in-memory cache, broadcast data, and batches exchanged with native code or Python workers.
+  The part imported from native was allocated by Comet's native code, so `allocated` already counts
+  it, and the rest the JVM allocated itself. A pool reserves the JVM's part only while a native
+  operator holds on to one of its batches, such as a sort buffering its input. The split follows
+  which allocator a buffer is charged to rather than where it was allocated, so treat the JVM's
+  part as an estimate.
 
-The difference between the two, `allocated - reserved`, is Comet's untracked native memory. It is
-the part of Comet's footprint that has to fit in `spark.executor.memoryOverhead`, alongside the
-JVM's own non-heap memory. To size the overhead from it:
+Comet's untracked memory is what Comet holds outside the JVM heap that no pool reserves: `allocated`,
+plus the JVM Arrow figure less the part imported from native, minus `reserved`. It is the part of
+Comet's footprint that has to fit in `spark.executor.memoryOverhead`, alongside the JVM's own
+non-heap memory. To size the overhead from it:
 
-1. Run a representative workload and find the line with the largest difference in each executor's
-   log. Take both figures from the same line: they are sampled together, and figures from different
-   lines describe different moments. Setting `spark.comet.memory.logInterval=1s` for this run makes a
-   short-lived peak less likely to fall between samples.
+1. Run a representative workload and find the line with the most untracked memory in each
+   executor's log. Take all the figures from the same line: they are sampled together, and figures
+   from different lines describe different moments. Setting `spark.comet.memory.logInterval=1s` for
+   this run makes a short-lived peak less likely to fall between samples.
 2. Start from the overhead the executors had before Comet was enabled, which covers the JVM's own
-   non-heap memory, and add the largest difference seen on any executor.
-3. Add a margin on top. The log can miss the true peak between samples, and neither figure includes
-   the allocator's fragmentation and retained pages, memory allocated by native C libraries such as
-   zstd, or Comet's Arrow buffers on the JVM side.
+   non-heap memory, and add the most untracked memory seen on any executor.
+3. Add a margin on top. The log can miss the true peak between samples, and none of the figures
+   includes the allocator's fragmentation and retained pages, or memory allocated by native C
+   libraries such as zstd.
 
-For example, a 16 GiB executor derives an overhead of 1638 MiB. If the largest difference in its
-log is the 1522.3 MiB in the line above, the overhead needs to be at least 1638 + 1523 = 3161 MiB
-before any margin, so `spark.executor.memoryOverhead=4g` would be a reasonable setting.
+For example, a 16 GiB executor derives an overhead of 1638 MiB. If the line above has the most
+untracked memory in its log, that is 5412.3 + (310.4 - 96.2) - 3890.0 = 1736.5 MiB. The overhead
+then needs to be at least 1638 + 1737 = 3375 MiB before any margin, so
+`spark.executor.memoryOverhead=4g` would be a reasonable setting.
 
 The executor also logs a warning when its native memory looks larger than its container allows:
-when the difference, plus everything in use in Spark's off-heap memory pool (which includes Comet's
-reservations), exceeds `spark.memory.offHeap.size` plus the memory overhead. This counts the part of
-the off-heap pool that nothing has acquired at that moment, which untracked memory can occupy until
-Spark hands it out, so a quiet log is not a sign that the overhead is large enough: size it from the
-largest difference as described above. The overhead also has to hold the JVM's own non-heap memory,
-so by the time the warning appears the executor has likely outgrown its container. It warns the first time this
-happens, and again each time it happens after dropping back below. The overhead it uses is
-`spark.executor.memoryOverhead` if set, otherwise `spark.executor.memoryOverheadFactor` of
-`spark.executor.memory` with a minimum of `spark.executor.minMemoryOverhead`, as Spark sizes the
-default container. There is no warning in local mode.
+when the untracked memory, plus everything in use in Spark's off-heap memory pool (which includes
+Comet's reservations), exceeds `spark.memory.offHeap.size` plus the memory overhead. This counts the
+part of the off-heap pool that nothing has acquired at that moment, which untracked memory can
+occupy until Spark hands it out, so a quiet log is not a sign that the overhead is large enough:
+size it from the most untracked memory as described above. The overhead also has to hold the JVM's
+own non-heap memory, so by the time the warning appears the executor has likely outgrown its
+container. It warns the first time this happens, and again each time it happens after dropping back
+below. The overhead it uses is `spark.executor.memoryOverhead` if set, otherwise
+`spark.executor.memoryOverheadFactor` of `spark.executor.memory` with a minimum of
+`spark.executor.minMemoryOverhead`, as Spark sizes the default container. There is no warning in
+local mode.
 
-Look more closely before raising the overhead if the difference keeps growing through a run rather
-than levelling off: native memory that is not being released will exhaust any overhead eventually.
-The executor logs one more line after its last native plan finishes, and an `allocated` figure there
-that grows from one query to the next points the same way.
+Look more closely before raising the overhead if the untracked memory keeps growing through a run
+rather than levelling off: memory that is not being released will exhaust any overhead eventually.
+The executor logs one more line after its last native plan finishes, and an `allocated` or
+`JVM Arrow allocated` figure there that grows from one query to the next points the same way.
 
 `spark.comet.memory.logInterval` is read when an executor starts its first Comet native plan, so set
 it when the application is submitted. Set it to `0` to turn the log off.
