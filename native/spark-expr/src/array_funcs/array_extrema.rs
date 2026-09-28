@@ -165,7 +165,13 @@ impl ScalarUDFImpl for SparkArrayExtrema {
         if self.string_collations.is_empty()
             && !matches!(
                 element_type,
-                DataType::Float32 | DataType::Float64 | DataType::List(_) | DataType::Struct(_)
+                DataType::Float32
+                    | DataType::Float64
+                    | DataType::Utf8
+                    | DataType::LargeUtf8
+                    | DataType::Utf8View
+                    | DataType::List(_)
+                    | DataType::Struct(_)
             )
         {
             return self.datafusion_udf.invoke_with_args(args);
@@ -272,6 +278,10 @@ fn nested_extrema(
 #[inline(never)]
 fn take_extrema_values(values: &ArrayRef, indices: &UInt32Array) -> Result<ArrayRef> {
     match values.data_type() {
+        DataType::Utf8View => {
+            let result = take(values.as_ref(), indices, None)?;
+            Ok(Arc::new(result.as_string_view().gc()))
+        }
         DataType::List(field) if !field.data_type().is_nested() => {
             let lists = values.as_list::<i32>();
             // A selected struct can contain a null list field with hidden child values.
@@ -386,7 +396,7 @@ fn collated_comparator(
     collations: &mut std::slice::Iter<Utf8Collation>,
     unicode_version: u32,
 ) -> Result<DynComparator> {
-    if collations.is_none() {
+    if collations.as_slice().is_empty() {
         return spark_comparator(array.as_ref(), array.as_ref());
     }
     match array.data_type() {

@@ -31,7 +31,13 @@ INSERT INTO test_array_extrema_collation VALUES
   (3, 'A', 'a', double('-0.0'), double('0.0')),
   (4, NULL, 'B', NULL, double('0.0')),
   (5, NULL, NULL, NULL, NULL),
-  (6, 'x ', 'x', 1.0, 2.0)
+  (6, 'x ', 'x', 1.0, 2.0),
+  (7, '\u0130', 'i\u0307', 1.0, 2.0),
+  (8, 'i\u0307', '\u0130', 1.0, 2.0),
+  (9, '\u03c2', '\u03a3', 1.0, 2.0),
+  (10, '\u03a3', '\u03c2', 1.0, 2.0),
+  (11, '\u212a', 'k', 1.0, 2.0),
+  (12, 'k', '\u212a', 1.0, 2.0)
 
 -- Binary strings and floating-point values remain native with the dispatcher enabled.
 query expect_native(array_min,array_max)
@@ -42,6 +48,7 @@ SELECT id, array_min(array(a, b)), array_max(array(a, b)),
 FROM test_array_extrema_collation
 
 -- Case-insensitive ordering differs from binary ordering for 'a' and 'B'.
+-- Non-ASCII ties run in both input orders and must retain the first original value.
 query expect_native(array_min,array_max)
 SELECT id, array_min(array(CAST(a AS STRING COLLATE UTF8_LCASE), CAST(b AS STRING COLLATE UTF8_LCASE))),
        array_max(array(CAST(a AS STRING COLLATE UTF8_LCASE), CAST(b AS STRING COLLATE UTF8_LCASE)))

@@ -19,14 +19,53 @@
 
 package org.apache.comet.serde
 
+import scala.jdk.CollectionConverters._
+
 import org.scalatest.funsuite.AnyFunSuite
 
+import org.apache.spark.sql.catalyst.expressions.{ArrayMax, ArrayMin, AttributeReference}
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark41Plus}
 import org.apache.comet.serde.QueryPlanSerde.supportedDataType
 
 class QueryPlanSerdeSuite extends AnyFunSuite {
+
+  test("array extrema serialize mode and collation in a dedicated message") {
+    val collatedTypes: Seq[(DataType, Seq[String])] = if (isSpark40Plus) {
+      Seq(
+        (
+          StructType(
+            Seq(
+              StructField(
+                "trimmed",
+                ArrayType(DataType.fromDDL("STRING COLLATE UTF8_BINARY_RTRIM"))),
+              StructField("binary", StringType))),
+          Seq("UTF8_BINARY_RTRIM", "UTF8_BINARY")))
+    } else {
+      Seq.empty
+    }
+    val types = Seq((IntegerType, Seq.empty[String])) ++ collatedTypes
+
+    types.foreach { case (elementType, collations) =>
+      val child = AttributeReference("values", ArrayType(elementType), nullable = true)()
+      val expressions = Seq(
+        (CometArrayMin.convert(ArrayMin(child), Seq(child), binding = true), true),
+        (CometArrayMax.convert(ArrayMax(child), Seq(child), binding = true), false))
+      expressions.foreach { case (result, isMin) =>
+        assert(result.isDefined)
+        val proto = result.get
+        assert(proto.hasArrayExtrema)
+        val extrema = proto.getArrayExtrema
+        assert(extrema.getChild.hasBound)
+        assert(extrema.getIsMin == isMin)
+        assert(extrema.getStringCollationsList.asScala.toSeq == collations)
+        if (collations.nonEmpty) {
+          assert(extrema.getCollationUnicodeVersion > 0)
+        }
+      }
+    }
+  }
 
   test("supportedDataType matches each caller boundary") {
     val complex = ArrayType(IntegerType)
