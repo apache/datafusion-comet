@@ -19,10 +19,13 @@
 
 package org.apache.spark.sql.comet.util
 
+import scala.jdk.CollectionConverters._
+
 import org.apache.arrow.c.CDataDictionaryProvider
+import org.apache.arrow.vector.types.pojo.{Field, FieldType}
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.vectorized.ConstantColumnVector
-import org.apache.spark.sql.types.{CalendarIntervalType, IntegerType, StringType, StructField, StructType, TimestampType}
+import org.apache.spark.sql.types.{ArrayType, CalendarIntervalType, IntegerType, StringType, StructField, StructType, TimestampType}
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 
 import org.apache.comet.CometArrowAllocator
@@ -35,6 +38,29 @@ class UtilsSuite extends CometTestBase {
       Utils.toArrowType(CalendarIntervalType, "UTC")
     }
     assert(error.getMessage.contains("requires toArrowField"))
+  }
+
+  test("CalendarIntervalType is recognized by its marker, whatever the child nullability") {
+    val field = Utils.toArrowField("i", CalendarIntervalType, nullable = true, "UTC")
+    def mapChildren(field: Field)(f: Field => Field): Field =
+      new Field(field.getName, field.getFieldType, field.getChildren.asScala.map(f).asJava)
+
+    // Children widened to nullable with the metadata kept are still an interval.
+    val widened = mapChildren(field) { child =>
+      val fieldType = new FieldType(true, child.getType, child.getDictionary, child.getMetadata)
+      new Field(child.getName, fieldType, child.getChildren)
+    }
+    assert(Utils.fromArrowField(widened) === CalendarIntervalType)
+    val list = Utils.toArrowField("l", ArrayType(CalendarIntervalType), nullable = true, "UTC")
+    val widenedList = mapChildren(list)(_ => widened)
+    assert(Utils.fromArrowField(widenedList) === ArrayType(CalendarIntervalType))
+
+    // The same shape without the marker is an ordinary struct.
+    val unmarked = mapChildren(field) { child =>
+      val fieldType = new FieldType(child.isNullable, child.getType, child.getDictionary)
+      new Field(child.getName, fieldType, child.getChildren)
+    }
+    assert(Utils.fromArrowField(unmarked).isInstanceOf[StructType])
   }
 
   test("serializeBatches preserves row count for a zero-column batch") {

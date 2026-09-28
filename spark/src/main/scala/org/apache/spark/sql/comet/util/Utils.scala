@@ -249,17 +249,22 @@ object Utils extends CometTypeShim with Logging {
   /**
    * Returns true only for the Spark-tagged `CalendarIntervalType` struct produced by
    * [[toArrowField]]. Matching the field shape (`months: Int32`, `days: Int32`, `microseconds:
-   * Int64`, all non-nullable) is not sufficient: a user-defined `struct<months:int, days:int,
-   * microseconds:bigint>` has the same shape, so this also requires the
-   * `SPARK::calendarInterval::struct` metadata marker on the `months` child. Only fields carrying
-   * the marker round-trip back to `CalendarIntervalType`; unmarked structs stay plain
-   * `StructType`s.
+   * Int64`) is not sufficient: a user-defined `struct<months:int, days:int, microseconds:bigint>`
+   * has the same shape, so this also requires the `SPARK::calendarInterval::struct` metadata
+   * marker on the `months` child. Only fields carrying the marker round-trip back to
+   * `CalendarIntervalType`; unmarked structs stay plain `StructType`s.
+   *
+   * Child nullability is deliberately not compared. [[toArrowField]] declares the children
+   * non-nullable, but a nullability widening that keeps field metadata must not turn an interval
+   * into a plain struct, whose consumers then fail to read it as an interval. The struct's own
+   * validity decides whether an interval is null, and `ColumnVector.getInterval` reads the three
+   * children under it. The native counterpart is `is_calendar_interval_fields`.
    */
   def isCalendarIntervalStructField(field: Field): Boolean = {
     val children = field.getChildren
     def child(index: Int, name: String, bits: Int): Boolean = {
       val f = children.get(index)
-      f.getName == name && f.getType == new ArrowType.Int(bits, true) && !f.isNullable
+      f.getName == name && f.getType == new ArrowType.Int(bits, true)
     }
     field.getType == ArrowType.Struct.INSTANCE &&
     children.size == 3 &&

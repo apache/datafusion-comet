@@ -111,3 +111,23 @@ SELECT
   hash(array(make_interval(y, y))),
   xxhash64(named_struct('i', make_interval(0, 0, 0, y)))
 FROM test_interval_hash
+
+-- Native collect_list over intervals, consumed by the JVM codegen dispatcher (transform). The
+-- result must be read back as ARRAY<INTERVAL>, and the final stage of the global aggregate must
+-- accept the interval state it reads back from the shuffle. Both failed while the aggregate's
+-- argument normalization widened the interval's children to nullable.
+query
+SELECT transform(collect_list(make_interval(y, y, y, y, y, y)), x -> x)
+FROM test_interval_hash
+WHERE y = 1
+
+query
+SELECT y, transform(collect_list(make_interval(y, 1)), x -> x)
+FROM test_interval_hash
+GROUP BY y
+
+-- The aggregate result also hashes natively as ARRAY<INTERVAL>.
+query
+SELECT hash(collect_list(make_interval(y, y))), xxhash64(collect_list(make_interval(y, y)))
+FROM test_interval_hash
+WHERE y = 1

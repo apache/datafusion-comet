@@ -89,10 +89,10 @@ use datafusion::{
     prelude::SessionContext,
 };
 use datafusion_comet_spark_expr::{
-    create_comet_physical_fun, create_comet_physical_fun_with_eval_mode, BinaryOutputStyle,
-    BloomFilterAgg, BloomFilterMightContain, CometCollectList, CometCollectSet, CsvWriteOptions,
-    EvalMode, SparkArraysZipFunc, SparkBloomFilterVersion, SparkListAgg, SparkPercentile,
-    SumInteger, ToCsv,
+    calendar_interval_type, create_comet_physical_fun, create_comet_physical_fun_with_eval_mode,
+    is_calendar_interval_fields, BinaryOutputStyle, BloomFilterAgg, BloomFilterMightContain,
+    CometCollectList, CometCollectSet, CsvWriteOptions, EvalMode, SparkArraysZipFunc,
+    SparkBloomFilterVersion, SparkListAgg, SparkPercentile, SumInteger, ToCsv,
 };
 use iceberg::expr::Bind;
 
@@ -178,6 +178,13 @@ struct JoinParameters {
 
 /// Return a copy of `data_type` with every nested field marked nullable. Map key fields are left
 /// non-nullable to preserve Arrow's map invariant. Primitive types are returned unchanged.
+///
+/// A Spark `CalendarIntervalType` value, carried as the tagged struct of
+/// [`calendar_interval_type`], is a scalar with a fixed layout rather than a struct, so it is kept
+/// in exactly that layout wherever it appears. Widening its children would make a global
+/// `collect_list` declare a result type that differs from the `ARRAY<INTERVAL>` state its final
+/// stage reads back in the Spark-declared layout, and the final aggregate would then fail
+/// validating its own output batch.
 fn make_all_fields_nullable(data_type: &DataType) -> DataType {
     fn nullable_field(field: &Field, nullable: bool) -> FieldRef {
         Arc::new(
@@ -190,6 +197,7 @@ fn make_all_fields_nullable(data_type: &DataType) -> DataType {
         )
     }
     match data_type {
+        DataType::Struct(fields) if is_calendar_interval_fields(fields) => calendar_interval_type(),
         DataType::Struct(fields) => {
             DataType::Struct(fields.iter().map(|f| nullable_field(f, true)).collect())
         }
@@ -7407,6 +7415,45 @@ mod tests {
             coerced.data_type(plan_schema.as_ref()).unwrap(),
             collect_agg_struct_type(true)
         );
+    }
+
+    /// A `CalendarIntervalType` value keeps its tagged layout through the coercion, bare or
+    /// nested, while ordinary fields around it are still widened. A global `collect_list` reads
+    /// its state back in the Spark-declared `ARRAY<INTERVAL>` layout in the final stage, so a
+    /// widened declaration there would fail the aggregate's output-batch validation.
+    #[test]
+    fn test_collect_agg_coercion_keeps_calendar_interval_layout() {
+        let interval = datafusion_comet_spark_expr::calendar_interval_type();
+        let raw = Arc::new(Column::new("s", 0)) as Arc<dyn PhysicalExpr>;
+        let coerced_type = |data_type: DataType| {
+            let plan_schema = collect_agg_schema(data_type);
+            PhysicalPlanner::coerce_collect_child_nullability(Arc::clone(&raw), &plan_schema)
+                .unwrap()
+                .data_type(plan_schema.as_ref())
+                .unwrap()
+        };
+
+        assert_eq!(coerced_type(interval.clone()), interval);
+
+        let nested = |nullable: bool| {
+            DataType::Struct(Fields::from(vec![
+                Field::new("i", interval.clone(), true),
+                Field::new("n", DataType::Int32, nullable),
+            ]))
+        };
+        assert_eq!(coerced_type(nested(false)), nested(true));
+
+        // An interval whose children were already widened is normalized back to the layout.
+        let DataType::Struct(fields) = &interval else {
+            unreachable!()
+        };
+        let widened = DataType::Struct(
+            fields
+                .iter()
+                .map(|f| Arc::new(f.as_ref().clone().with_nullable(true)))
+                .collect(),
+        );
+        assert_eq!(coerced_type(widened), interval);
     }
 
     /// Primitive arguments carry no field-level nullability, so no cast is inserted.
