@@ -68,6 +68,6 @@ SELECT s, CASE WHEN s > 0 THEN timestamp_seconds(s) ELSE ts END FROM test_ts_sec
 query expect_native(timestamp_seconds)
 SELECT s, coalesce(timestamp_seconds(s), ts) FROM test_ts_seconds_tz
 
--- literal argument
-query
-SELECT CAST(timestamp_seconds(1800) AS STRING), timestamp_seconds(1800) = TIMESTAMP'1970-01-01 00:30:00Z'
+-- literal argument, which takes the scalar path because the suite disables constant folding
+query expect_native(timestamp_seconds)
+SELECT s, CAST(timestamp_seconds(1800) AS STRING), timestamp_seconds(0) = ts FROM test_ts_seconds_tz
