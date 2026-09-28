@@ -1216,10 +1216,16 @@ mod tests {
     fn test_empty_per_bucket_provider_class_opts_out() {
         let adapter = "org.apache.comet.cloud.s3.HadoopS3ACredentialProviderAdapter";
         let mut configs: HashMap<String, String> = HashMap::new();
-        configs.insert(format!("fs.s3a.{PROVIDER_CLASS_PROPERTY}"), adapter.to_string());
+        configs.insert(
+            format!("fs.s3a.{PROVIDER_CLASS_PROPERTY}"),
+            adapter.to_string(),
+        );
 
         // A bucket with no per-bucket override uses the globally configured adapter.
-        assert_eq!(lookup_provider_class(&configs, "other-bucket"), Some(adapter));
+        assert_eq!(
+            lookup_provider_class(&configs, "other-bucket"),
+            Some(adapter)
+        );
 
         // An empty per-bucket value opts that bucket out, even though the global adapter is set, so
         // the native reader resolves it directly (this is the documented anonymous opt-out).
