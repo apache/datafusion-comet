@@ -535,6 +535,45 @@ mod tests {
         );
     }
 
+    #[test]
+    fn regr_merge_empty_partials() {
+        for kind in [
+            RegrType::SXX,
+            RegrType::SYY,
+            RegrType::SXY,
+            RegrType::R2,
+            RegrType::Slope,
+            RegrType::Intercept,
+        ] {
+            for empty_first in [false, true] {
+                let mut merged = acc(kind);
+                let counts = if empty_first { [0, 100] } else { [100, 0] };
+                for count in counts {
+                    let mut partial = acc(kind);
+                    let values = vec![Some(1e155); count];
+                    partial.update_batch(&cols(values.clone(), values)).unwrap();
+                    let state = partial
+                        .state()
+                        .unwrap()
+                        .iter()
+                        .map(|v| v.to_array_of_size(1).unwrap())
+                        .collect::<Vec<_>>();
+                    merged.merge_batch(&state).unwrap();
+                }
+                let ScalarValue::Float64(result) = merged.evaluate().unwrap() else {
+                    panic!("expected a double regression result");
+                };
+                if !empty_first {
+                    assert!(result.unwrap().is_nan(), "{kind:?}");
+                } else if matches!(kind, RegrType::SXX | RegrType::SYY | RegrType::SXY) {
+                    assert_eq!(result, Some(0.0));
+                } else {
+                    assert_eq!(result, None);
+                }
+            }
+        }
+    }
+
     fn perfect_line() -> (Vec<Option<f64>>, Vec<Option<f64>>) {
         // y = 2x + 1
         let x = vec![1.0, 2.0, 3.0, 4.0, 5.0];

@@ -478,6 +478,38 @@ mod groups_tests {
     }
 
     #[test]
+    fn correlation_merge_empty_partials() {
+        for empty_first in [false, true] {
+            let mut scalar = CorrelationAccumulator::try_new(true).unwrap();
+            let mut grouped = CorrelationGroupsAccumulator::new(true);
+            let counts = if empty_first {
+                [0.0, 100.0]
+            } else {
+                [100.0, 0.0]
+            };
+            for count in counts {
+                let mean = if count == 0.0 { 0.0 } else { 1e155 };
+                let state: Vec<ArrayRef> = [count, mean, mean, 0.0, 0.0, 0.0]
+                    .into_iter()
+                    .map(|v| Arc::new(Float64Array::from(vec![v])) as ArrayRef)
+                    .collect();
+                scalar.merge_batch(&state).unwrap();
+                grouped.merge_batch(&state, &[0], 1).unwrap();
+            }
+            let ScalarValue::Float64(scalar) = scalar.evaluate().unwrap() else {
+                panic!("expected a double correlation");
+            };
+            for result in [scalar, evaluate(&mut grouped)[0]] {
+                if empty_first {
+                    assert_eq!(result, None);
+                } else {
+                    assert!(result.unwrap().is_nan());
+                }
+            }
+        }
+    }
+
+    #[test]
     fn perfectly_correlated_single_group() {
         let mut a = acc(true);
         let v1: ArrayRef = Arc::new(Float64Array::from(vec![1.0, 2.0, 3.0, 4.0, 5.0]));

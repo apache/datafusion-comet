@@ -224,9 +224,7 @@ impl Accumulator for VarianceAccumulator {
 
         for i in 0..counts.len() {
             let c = counts.value(i);
-            if c == 0_f64 {
-                continue;
-            }
+            // Even empty partials affect Spark's NaN propagation during merge.
             let (new_count, new_mean, new_m2) = super::welford::variance_merge(
                 self.count,
                 self.mean,
@@ -369,9 +367,7 @@ impl GroupsAccumulator for VarianceGroupsAccumulator {
 
         for (i, &group_index) in group_indices.iter().enumerate() {
             let partial_count = partial_counts.value(i);
-            if partial_count == 0.0 {
-                continue;
-            }
+            // Even empty partials affect Spark's NaN propagation during merge.
             let (new_count, new_mean, new_m2) = super::welford::variance_merge(
                 self.counts[group_index],
                 self.means[group_index],
@@ -520,6 +516,71 @@ mod groups_tests {
                             ScalarValue::Float64(Some(expected))
                         );
                         assert_eq!(evaluate(&mut grouped), vec![Some(expected), None]);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn variance_merge_empty_partials() {
+        for value in [1e154, -1e154, 1e155, -1e155] {
+            for empty_first in [false, true] {
+                for stats in [StatsType::Population, StatsType::Sample] {
+                    for update in [VarianceUpdate::CentralMoment, VarianceUpdate::Pearson] {
+                        let mut scalar = VarianceAccumulator::try_new(stats, true).unwrap();
+                        let mut grouped = VarianceGroupsAccumulator::new(stats, true);
+                        scalar.update = update;
+                        grouped.update = update;
+                        let counts = if empty_first { [0, 100] } else { [100, 0] };
+                        for count in counts {
+                            let values: ArrayRef = Arc::new(Float64Array::from(
+                                (0..101)
+                                    .map(|i| (i < count).then_some(value))
+                                    .collect::<Vec<_>>(),
+                            ));
+                            let mut partial = VarianceAccumulator::try_new(stats, true).unwrap();
+                            partial.update = update;
+                            partial.update_batch(&[Arc::clone(&values)]).unwrap();
+                            let state = partial
+                                .state()
+                                .unwrap()
+                                .iter()
+                                .map(|v| v.to_array_of_size(1).unwrap())
+                                .collect::<Vec<_>>();
+                            scalar.merge_batch(&state).unwrap();
+
+                            let mut partial = VarianceGroupsAccumulator::new(stats, true);
+                            partial.update = update;
+                            let mut group_indices = vec![0; 101];
+                            // Keep a separate all-null group alongside the non-empty group.
+                            group_indices[100] = 1;
+                            partial
+                                .update_batch(&[values], &group_indices, None, 2)
+                                .unwrap();
+                            grouped
+                                .merge_batch(&partial.state(EmitTo::All).unwrap(), &[0, 1], 2)
+                                .unwrap();
+                        }
+                        // Spark evaluates delta * deltaN * n1 * n2 even when n2 is zero.
+                        // For 1e155, the third multiplication overflows before multiplying by
+                        // zero. Empty-first and the smaller-magnitude control remain zero.
+                        let expected_nan = value.abs() == 1e155 && !empty_first;
+                        let ScalarValue::Float64(Some(actual)) = scalar.evaluate().unwrap() else {
+                            panic!("expected a non-null variance");
+                        };
+                        let grouped = evaluate(&mut grouped);
+                        for result in [actual, grouped[0].unwrap()] {
+                            if expected_nan {
+                                assert!(
+                                    result.is_nan(),
+                                    "value={value}, empty_first={empty_first}"
+                                );
+                            } else {
+                                assert_eq!(result, 0.0);
+                            }
+                        }
+                        assert_eq!(grouped[1], None);
                     }
                 }
             }
