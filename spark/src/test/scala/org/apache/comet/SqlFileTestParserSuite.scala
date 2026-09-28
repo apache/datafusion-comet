@@ -159,36 +159,68 @@ class SqlFileTestParserSuite extends AnyFunSuite {
     assert(queries.map(_.sql) === Seq("SELECT abs(a) FROM t", "SELECT hypot(a, b) FROM t"))
   }
 
-  // #5702: NormalizeFloatingNumbers does not rewrite array-function inputs, so a
-  // plain SELECT keeps -0.0 literals intact. The fixtures must skip those literal
-  // cases for the same reason as the column-sourced ones, and must not claim that
-  // Spark and Comet agree on the literal path.
-  test("signed-zero array fixtures skip literals and do not claim Spark agreement") {
-    val names =
-      Seq("array_distinct.sql", "array_except.sql", "array_intersect.sql", "array_union.sql")
+  // #5702: NormalizeFloatingNumbers does not rewrite array-function inputs, so a plain SELECT
+  // keeps -0.0 literals intact, and only Spark releases carrying SPARK-54918 normalize signed zeros
+  // in array_distinct and array_union. The signed-zero cases therefore live in version-gated
+  // fixtures, and only the Spark 4.2+ one may claim that Comet runs them natively and agrees.
+  test("signed-zero array fixtures are version-gated and claim agreement only on Spark 4.2+") {
+    def fixture(name: String): File = {
+      val url = getClass.getClassLoader.getResource(s"sql-tests/expressions/array/$name")
+      assert(url != null, s"missing fixture $name")
+      new File(url.toURI)
+    }
+    def queries(name: String): Seq[SqlQuery] =
+      SqlFileTestParser.parse(fixture(name)).records.collect { case q: SqlQuery => q }
+    def hasSignedZero(sql: String): Boolean = sql.contains("'-0.0'")
+    def isDistinctOrUnion(sql: String): Boolean =
+      sql.contains("array_distinct(") || sql.contains("array_union(")
+
     val stalePhrases = Seq(
       "both Spark and Comet collapse it and agree here",
       "only rewrites literals, not parquet columns")
-    names.foreach { name =>
-      val url = getClass.getClassLoader.getResource(s"sql-tests/expressions/array/$name")
-      assert(url != null, s"missing fixture $name")
-      val file = new File(url.toURI)
-      val text = {
-        val src = scala.io.Source.fromFile(file, "UTF-8")
-        try src.mkString
-        finally src.close()
+    Seq("array_distinct.sql", "array_except.sql", "array_intersect.sql", "array_union.sql")
+      .foreach { name =>
+        val text = {
+          val src = scala.io.Source.fromFile(fixture(name), "UTF-8")
+          try src.mkString
+          finally src.close()
+        }
+        stalePhrases.foreach { phrase =>
+          assert(!text.contains(phrase), s"$name still claims: $phrase")
+        }
+        assert(
+          !text.contains("'-0.0'"),
+          s"$name has signed-zero cases outside the version-gated array_set_signed_zero fixtures")
       }
-      stalePhrases.foreach { phrase =>
-        assert(!text.contains(phrase), s"$name still claims: $phrase")
+
+    // (fixture, MinSparkVersion, MaxSparkVersion, allowed mode for array_distinct/array_union)
+    val gated = Seq(
+      ("array_set_signed_zero_spark_3.sql", None, Some("3.5"), "expect_fallback"),
+      ("array_set_signed_zero_spark_4_0_4_1.sql", Some("4.0"), Some("4.1"), "spark_answer_only"),
+      ("array_set_signed_zero.sql", Some("4.2"), None, "query"))
+    gated.foreach { case (name, minVersion, maxVersion, expectedMode) =>
+      val parsed = SqlFileTestParser.parse(fixture(name))
+      assert(parsed.minSparkVersion == minVersion, s"$name MinSparkVersion")
+      assert(parsed.maxSparkVersion == maxVersion, s"$name MaxSparkVersion")
+      val cases = queries(name).filter(q => isDistinctOrUnion(q.sql))
+      Seq("array_distinct(", "array_union(").foreach { fn =>
+        assert(
+          cases.exists(q =>
+            q.sql.contains(fn) && hasSignedZero(q.sql) && !q.sql.toLowerCase.contains(" from ")),
+          s"$name is missing a signed-zero literal query for $fn")
       }
-      val ignoredLiterals = SqlFileTestParser.parse(file).records.collect {
-        case SqlQuery(sql, Ignore(_), _)
-            if sql.contains("array(") &&
-              (sql.contains("double('-0.0')") || sql.contains("float('-0.0')")) &&
-              !sql.toLowerCase.contains(" from ") =>
-          sql
+      cases.foreach { q =>
+        val modeOk = (expectedMode, q.mode) match {
+          // Spark 3.x keeps signed zeros distinct, so the native path must not run.
+          case ("expect_fallback", ExpectFallback(_)) => true
+          // 4.0.5+ and 4.1.4+ normalize but earlier patch releases do not: compare answers only.
+          case ("spark_answer_only", SparkAnswerOnly) => true
+          // Spark 4.2+ normalizes, so Comet must run these natively and agree.
+          case ("query", CheckCoverageAndAnswer) => true
+          case _ => false
+        }
+        assert(modeOk, s"$name line ${q.line}: ${q.mode} is not $expectedMode for ${q.sql}")
       }
-      assert(ignoredLiterals.nonEmpty, s"$name is missing an ignored signed-zero literal query")
     }
   }
 }
