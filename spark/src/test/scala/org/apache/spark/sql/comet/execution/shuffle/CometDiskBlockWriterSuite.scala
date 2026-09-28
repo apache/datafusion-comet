@@ -40,6 +40,8 @@ import org.apache.spark.sql.types.{BinaryType, IntegerType, MetadataBuilder, Str
 import org.apache.spark.unsafe.UnsafeAlignedOffset
 import org.apache.spark.util.Utils
 
+import org.apache.comet.CometConf
+
 class CometDiskBlockWriterSuite extends AnyFunSuite {
 
   private val schema = StructType(Seq(StructField("a", BinaryType)))
@@ -210,6 +212,32 @@ class CometDiskBlockWriterSuite extends AnyFunSuite {
       conf,
       false,
       new JLinkedList[CometDiskBlockWriter]())
+  }
+
+  test("a writer computes no checksum when shuffle checksums are disabled") {
+    // With spark.shuffle.checksum.enabled=false the bypass merge sort writer never calls
+    // setChecksum, so every write, including the ones after the first spill, must skip it.
+    val conf = new SparkConf()
+      .set("spark.memory.offHeap.enabled", "true")
+      .set("spark.memory.offHeap.size", "1g")
+    val tmm = new TaskMemoryManager(new TestMemoryManager(conf), 0L)
+    val allocator = CometShuffleMemoryAllocator.getInstance(tmm, pageSize)
+    val tempDir = Utils.createTempDir()
+    // Spill every two rows so that the writer writes to its file several times.
+    SQLConf.get.setConfString(CometConf.COMET_SHUFFLE_JVM_SPILL_THRESHOLD.key, "2")
+    try {
+      val writer =
+        newWriter(new File(tempDir, "partition0"), allocator, newTaskContext(tmm, 0L), conf)
+      val toUnsafe = UnsafeProjection.create(schema)
+      (0 until 5).foreach(_ => writer.insertRow(toUnsafe(InternalRow(new Array[Byte](16))), 0))
+      assert(writer.close().length > 0)
+      assert(writer.getOutputRecords == 5)
+      assert(writer.getChecksum == -1)
+    } finally {
+      SQLConf.get.unsetConf(CometConf.COMET_SHUFFLE_JVM_SPILL_THRESHOLD.key)
+      Utils.deleteRecursively(tempDir)
+      tmm.cleanUpAllAllocatedMemory()
+    }
   }
 
   test("a fatal error during write() frees the task's buffered pages") {

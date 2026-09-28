@@ -959,6 +959,34 @@ class CometShuffleEncryptionSuite extends CometTestBase {
   }
 }
 
+class CometShuffleChecksumDisabledSuite extends CometTestBase {
+
+  override protected def sparkConf: SparkConf = {
+    val conf = super.sparkConf
+    conf.set("spark.shuffle.checksum.enabled", "false")
+  }
+
+  test("comet columnar shuffle with shuffle checksums disabled") {
+    // 10 partitions use the bypass merge sort writer, while 300 partitions exceed
+    // spark.shuffle.sort.bypassMergeThreshold and use the sort-based writer. The lower spill
+    // threshold makes every map task spill, so the sort-based writer also merges spill files.
+    Seq(10, 300).foreach { numPartitions =>
+      Seq(Int.MaxValue, 2000).foreach { spillThreshold =>
+        withSQLConf(
+          CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
+          CometConf.COMET_SHUFFLE_JVM_SPILL_THRESHOLD.key -> spillThreshold.toString) {
+          val df = spark
+            .range(0, 100000, 1, 4)
+            .selectExpr("id", "cast(id as string) as s")
+            .repartition(numPartitions, col("id"))
+          checkCometExchange(df, 1, false)
+          checkSparkAnswer(df)
+        }
+      }
+    }
+  }
+}
+
 class CometShuffleManagerSuite extends CometTestBase {
 
   test("should not bypass merge sort if executor cores are too high") {

@@ -287,7 +287,9 @@ public class SpillSorter extends SpillWriter {
           spillInfo.partitionLengths[currentPartition] = written;
 
           // Store the checksum for the current partition.
-          partitionChecksums[currentPartition] = getChecksum();
+          if (partitionChecksums.length > 0) {
+            partitionChecksums[currentPartition] = getChecksum();
+          }
         }
         currentPartition = partition;
       }

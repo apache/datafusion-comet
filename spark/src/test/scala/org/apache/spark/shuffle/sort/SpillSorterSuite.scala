@@ -19,6 +19,8 @@
 
 package org.apache.spark.shuffle.sort
 
+import java.io.File
+import java.util.UUID
 import java.util.concurrent.atomic.AtomicInteger
 
 import org.scalatest.BeforeAndAfterEach
@@ -28,7 +30,10 @@ import org.apache.spark.{SparkConf, TaskContext}
 import org.apache.spark.executor.ShuffleWriteMetrics
 import org.apache.spark.memory.{TaskMemoryManager, TestMemoryManager}
 import org.apache.spark.shuffle.comet.{CometShuffleMemoryAllocator, CometShuffleMemoryAllocatorTrait}
+import org.apache.spark.sql.catalyst.expressions.UnsafeRow
+import org.apache.spark.sql.comet.execution.shuffle.SpillInfo
 import org.apache.spark.sql.types._
+import org.apache.spark.storage.TempShuffleBlockId
 import org.apache.spark.unsafe.Platform
 import org.apache.spark.unsafe.UnsafeAlignedOffset
 
@@ -79,7 +84,8 @@ class SpillSorterSuite extends AnyFunSuite with BeforeAndAfterEach {
       spillCallback: SpillSorter.SpillCallback = () => {},
       spills: java.util.LinkedList[org.apache.spark.sql.comet.execution.shuffle.SpillInfo] =
         new java.util.LinkedList[org.apache.spark.sql.comet.execution.shuffle.SpillInfo](),
-      partitionChecksums: Array[Long] = new Array[Long](10)): SpillSorter = {
+      partitionChecksums: Array[Long] = new Array[Long](10),
+      checksumAlgorithm: String = "adler32"): SpillSorter = {
     val schema = createTestSchema()
     val writeMetrics = new ShuffleWriteMetrics()
     val taskContext = TaskContext.empty()
@@ -92,7 +98,7 @@ class SpillSorterSuite extends AnyFunSuite with BeforeAndAfterEach {
       0.5, // preferDictionaryRatio
       "zstd", // compressionCodec
       1, // compressionLevel
-      "adler32", // checksumAlgorithm
+      checksumAlgorithm,
       partitionChecksums,
       writeMetrics,
       taskContext,
@@ -259,6 +265,43 @@ class SpillSorterSuite extends AnyFunSuite with BeforeAndAfterEach {
     } finally {
       sorter.freeMemory()
       sorter.freeArray()
+    }
+  }
+
+  test("write sorted file across partitions with shuffle checksums disabled") {
+    // With spark.shuffle.checksum.enabled=false the sorter gets an empty checksum array and no
+    // checksum algorithm.
+    val spills = new java.util.LinkedList[SpillInfo]()
+    val sorter = createSpillSorter(
+      spills = spills,
+      partitionChecksums = Array.emptyLongArray,
+      checksumAlgorithm = null)
+    val file = File.createTempFile("spill-sorter", ".data")
+    try {
+      val numPartitions = 3
+      val rowSize = UnsafeRow.calculateBitSetWidthInBytes(1) + 8
+      // Each record is a 4-byte key followed by an UnsafeRow with one int column.
+      val record = new Array[Byte](4 + rowSize)
+      val row = new UnsafeRow(1)
+      row.pointTo(record, Platform.BYTE_ARRAY_OFFSET + 4, rowSize)
+      sorter.initialCurrentPage(numPartitions * 2 * (record.length + UAO_SIZE))
+      for (p <- 0 until numPartitions; i <- 0 until 2) {
+        row.setInt(0, p * 2 + i)
+        sorter.insertRecord(record, Platform.BYTE_ARRAY_OFFSET, record.length, p)
+      }
+
+      sorter.setSpillInfo(
+        new SpillInfo(numPartitions, file, TempShuffleBlockId(UUID.randomUUID())))
+      sorter.writeSortedFileNative(true, false)
+
+      assert(spills.size() === 1)
+      val partitionLengths = spills.getFirst.partitionLengths
+      assert(partitionLengths.forall(_ > 0))
+      assert(partitionLengths.sum === file.length())
+    } finally {
+      sorter.freeMemory()
+      sorter.freeArray()
+      file.delete()
     }
   }
 
