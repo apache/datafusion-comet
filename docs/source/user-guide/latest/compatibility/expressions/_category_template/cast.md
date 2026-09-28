@@ -33,6 +33,9 @@ Cast operations in Comet fall into three levels of support:
 Incompatible and unsupported casts fall back to Spark only when Comet's codegen dispatcher cannot handle them (for
 example, casts involving `VariantType`) or when `spark.comet.exec.scalaUDF.codegen.enabled=false`.
 
+The tables at the end of this page cover casts between primitive types. See [Complex Types](#complex-types) for
+casts involving arrays, structs, and maps.
+
 ## ANSI Mode Support
 
 Enabling ANSI mode does not by itself make a cast fall back to Spark or require
@@ -108,7 +111,8 @@ In Legacy mode, `CAST(date AS INT)`, `CAST(date AS LONG)`, and casts to all othe
 types (Boolean, Byte, Short, Float, Double, Decimal) always return `NULL`. Comet handles
 this by short-circuiting to a null literal during query planning, so no native execution
 is needed. In ANSI and Try modes, Spark rejects these casts at analysis time (before
-execution reaches Comet).
+execution reaches Comet). The short-circuit applies only to a top-level cast. See
+[Complex Types](#complex-types) for `DATE` values inside structs and maps.
 
 ## String to Timestamp
 
@@ -160,6 +164,38 @@ When `spark.sql.legacy.allowNegativeScaleOfDecimal=true`, the cast is compatible
 Spark's behavior of using Java `BigDecimal.toString()` semantics, which produces scientific
 notation (e.g. a value of 12300 stored as `Decimal(7,-2)` with unscaled value 123 is rendered
 as `"1.23E+4"`).
+
+## Complex Types
+
+Comet casts arrays, structs, and maps by casting each element, field, key, and value with the
+rules for primitive types, using the table for the same eval mode. A complex-type cast is
+therefore compatible only when every cast it contains is compatible. For example, casting
+`ARRAY<INT>` to `ARRAY<BIGINT>` has the same support level as casting `INT` to `BIGINT`, and a
+struct cast with one unsupported field cast is unsupported. The rules apply at every level of
+nesting, so casting `ARRAY<STRUCT<a: INT>>` to `ARRAY<STRUCT<a: BIGINT>>` also has the same
+support level as casting `INT` to `BIGINT`.
+
+| From        | To            | Support level                                                                |
+| ----------- | ------------- | ---------------------------------------------------------------------------- |
+| `ARRAY<T>`  | `ARRAY<U>`    | Same as `T` to `U`                                                           |
+| `ARRAY<T>`  | `STRING`      | Same as `T` to `STRING`                                                      |
+| `STRUCT`    | `STRUCT`      | Compatible if every field cast is compatible. Fields are matched by position |
+| `STRUCT`    | `STRING`      | Compatible if the cast from every field to `STRING` is compatible            |
+| `MAP<K, V>` | `MAP<K2, V2>` | Compatible if `K` to `K2` and `V` to `V2` are both compatible                |
+| `MAP<K, V>` | `STRING`      | Unsupported                                                                  |
+
+The following casts are exceptions to these rules:
+
+- `ARRAY<DATE>` can only be cast natively to `ARRAY<INT>` or `ARRAY<STRING>`. Casts to other array
+  types are unsupported.
+- A cast from a `DATE` struct field or map value to a numeric or boolean type is unsupported. In
+  Legacy mode these casts always return `NULL` (see [Date to Numeric Types](#date-to-numeric-types)).
+- When `spark.sql.legacy.castComplexTypesToString.enabled=true`, casts from arrays, structs, and
+  maps to `STRING` are unsupported, because Comet's native cast only produces Spark's default
+  string format.
+
+In Try mode, a cast between maps fails with an error when a key cannot be cast, where Spark returns
+a result ([#5995](https://github.com/apache/datafusion-comet/issues/5995)).
 
 ## Legacy Mode
 
