@@ -652,17 +652,27 @@ class CometCelebornShufflePlanningSuite extends CometTestBase {
       }
     }
 
-    test(s"unsupported native repartition executes Spark fallback with AQE=$adaptive") {
-      withSQLConf(
-        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
-        CometConf.COMET_SHUFFLE_MODE.key -> "native",
-        CometConf.COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_ENABLED.key -> "false") {
-        val nativeRegistrations = manager.nativeRegistrations.get()
-        val query = input.repartition(2)
-        assertSparkExchange(query.queryExecution.executedPlan)
-        checkAnswer(query, (1L to 32L).map(Row(_)))
-        assert(cometExchanges(query.queryExecution.executedPlan).isEmpty)
-        assert(manager.nativeRegistrations.get() == nativeRegistrations)
+    for (wideDecimal <- Seq(false, true)) {
+      test(
+        s"unsupported repartition executes Spark fallback: wideDecimal=$wideDecimal, " +
+          s"AQE=$adaptive") {
+        withSQLConf(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+          CometConf.COMET_SHUFFLE_MODE.key -> "native",
+          CometConf.COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_ENABLED.key -> "false") {
+          val nativeRegistrations = manager.nativeRegistrations.get()
+          val sparkRegistrations = manager.sparkRegistrations.get()
+          val query = if (wideDecimal) {
+            input.repartition(2, col("value").cast("decimal(38, 0)"))
+          } else {
+            input.repartition(2)
+          }
+          assertSparkExchange(query.queryExecution.executedPlan)
+          checkAnswer(query, (1L to 32L).map(Row(_)))
+          assert(cometExchanges(query.queryExecution.executedPlan).isEmpty)
+          assert(manager.nativeRegistrations.get() == nativeRegistrations)
+          assert(manager.sparkRegistrations.get() > sparkRegistrations)
+        }
       }
     }
 

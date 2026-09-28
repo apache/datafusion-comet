@@ -53,12 +53,16 @@ scalar types. Hash partitioning keys must be scalar types unless
 and later) map keys. That setting is disabled by default until the performance of the nested hashing paths has been
 measured. Columns that are not partitioning keys may contain complex types like maps, structs, and arrays.
 
-Hash partitioning on decimal keys with precision greater than 18 falls back because native hashing does not match
-Spark's partition assignments. This can affect decimal aggregate overflow behavior, including `AVG(DISTINCT ...)`.
-With `spark.comet.shuffle.mode=auto`, Comet uses Columnar Shuffle when eligible; with `native`, it uses Spark shuffle.
-The restriction applies recursively to hash partitioning keys, including decimals inside structs, arrays, and maps
-when nested hash partitioning is enabled. Wider decimals remain supported as payload columns, range partitioning
-keys, and in single-partition shuffles.
+Hash partitioning into multiple partitions on decimal keys with precision greater than 18 falls back because native
+hashing does not match Spark's partition assignments. Mixing the two partitioners can silently lose join rows.
+The restriction also applies to decimal leaves in nested hash keys. Wider decimals remain supported as payload
+columns, range partitioning keys, and in single-partition shuffles, including one-partition hash exchanges.
+
+With `spark.comet.shuffle.mode=auto`, Comet uses Columnar Shuffle when eligible, adding a columnar-to-row-to-columnar
+conversion. With `native`, it uses Spark shuffle, which can also restore aggregates such as `collect_list` and
+`collect_set` to Spark to preserve buffer compatibility. Celeborn uses Spark/Celeborn shuffle for unsupported native
+keys because it has no Comet columnar fallback. Spark-compatible native decimal hashing is tracked in
+[#5994](https://github.com/apache/datafusion-comet/issues/5994).
 
 ### Columnar (JVM) Shuffle
 
