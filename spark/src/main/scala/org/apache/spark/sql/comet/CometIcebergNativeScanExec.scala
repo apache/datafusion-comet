@@ -271,9 +271,9 @@ case class CometIcebergNativeScanExec(
     sendDriverMetrics()
     val nativeMetrics = CometMetricNode.fromCometPlan(this)
     val serializedPlan = CometExec.serializeNativePlan(nativeOp)
-    // Key by the same (metadata_location, scan_hash_code) pair PlanDataInjector.injectPlanData
-    // looks up via IcebergPlanDataInjector.getKey (see the scan_hash_code field comment in
-    // operator.proto for why metadata_location alone cannot identify a scan).
+    // Key by metadata_location, scan_hash_code and the op's plan_id, the same key
+    // PlanDataInjector.injectPlanData looks up via IcebergPlanDataInjector.getKey (see
+    // PlanDataInjector.withPlanId for why the content parts alone cannot identify a scan).
     val injectorKey = IcebergPlanDataInjector.getKey(nativeOp).getOrElse(metadataLocation)
     new CometExecRDD(
       sparkContext,

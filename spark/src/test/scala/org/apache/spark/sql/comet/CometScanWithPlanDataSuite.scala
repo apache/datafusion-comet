@@ -29,9 +29,12 @@ import scala.jdk.CollectionConverters._
 
 import org.scalatest.funsuite.AnyFunSuite
 
+import org.apache.spark.rdd.RDD
+import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression}
-import org.apache.spark.sql.execution.SparkPlan
+import org.apache.spark.sql.execution.{BinaryExecNode, SparkPlan}
 
+import org.apache.comet.CometRuntimeException
 import org.apache.comet.serde.OperatorOuterClass.Operator
 
 /**
@@ -80,6 +83,16 @@ class CometScanWithPlanDataSuite extends AnyFunSuite {
     override def perPartitionData: Array[Array[Byte]] = perPart
   }
 
+  /** A non-boundary parent, like a join, that puts two scans in one native plan. */
+  private case class StubParent(left: SparkPlan, right: SparkPlan) extends BinaryExecNode {
+    override def output: Seq[Attribute] = Seq.empty
+    override protected def doExecute(): RDD[InternalRow] =
+      throw new UnsupportedOperationException("not executed")
+    override protected def withNewChildrenInternal(
+        newLeft: SparkPlan,
+        newRight: SparkPlan): StubParent = copy(left = newLeft, right = newRight)
+  }
+
   test(
     "CometScanWithPlanData defaults: no DPP filters and withDynamicPruningFilters is unsupported") {
     val scan = StubScan()
@@ -120,6 +133,33 @@ class CometScanWithPlanDataSuite extends AnyFunSuite {
     val (commonByKey, perPartitionByKey) = PlanDataInjector.findAllPlanData(scan)
     assert(commonByKey.isEmpty)
     assert(perPartitionByKey.isEmpty)
+  }
+
+  test("findAllPlanData keeps one copy when two scans carry the same data under one key") {
+    val left = StubScan("shared-key", Array[Byte](1, 2), Array(Array[Byte](10), Array[Byte](20)))
+    val right = StubScan("shared-key", Array[Byte](1, 2), Array(Array[Byte](10), Array[Byte](20)))
+
+    val (commonByKey, perPartitionByKey) =
+      PlanDataInjector.findAllPlanData(StubParent(left, right))
+
+    assert(commonByKey.keySet == Set("shared-key"))
+    assert(commonByKey("shared-key") sameElements Array[Byte](1, 2))
+    assert(
+      perPartitionByKey("shared-key").map(_.toSeq).toSeq == Seq(Seq[Byte](10), Seq[Byte](20)))
+  }
+
+  test("findAllPlanData rejects two scans with different data under one key") {
+    // Keeping either side would hand both scans the same files and return wrong rows.
+    val base = StubScan("clash-key", Array[Byte](1), Array(Array[Byte](10), Array[Byte](20)))
+    val otherFiles = base.copy(perPart = Array(Array[Byte](10), Array[Byte](30)))
+    val otherCommon = base.copy(common = Array[Byte](2))
+
+    Seq(otherFiles, otherCommon).foreach { other =>
+      val e = intercept[CometRuntimeException] {
+        PlanDataInjector.findAllPlanData(StubParent(base, other))
+      }
+      assert(e.getMessage.contains("clash-key"), s"message should name the key: ${e.getMessage}")
+    }
   }
 
   test("PlanDataInjector registry contains only built-in injectors on a default build") {

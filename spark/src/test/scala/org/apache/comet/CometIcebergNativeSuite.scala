@@ -37,7 +37,7 @@ import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.{CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{InSubqueryExec, ReusedSubqueryExec, SparkPlan, SubqueryExec}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AdaptiveSparkPlanHelper, BroadcastQueryStageExec}
-import org.apache.spark.sql.execution.exchange.{ReusedExchangeExec, ShuffleExchangeExec}
+import org.apache.spark.sql.execution.exchange.{ReusedExchangeExec, ShuffleExchangeExec, ShuffleExchangeLike}
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, StringType, StructType, TimestampType}
@@ -4391,6 +4391,68 @@ class CometIcebergNativeSuite
           s"Scans with different pushed filters must not share an exchange:\n$cometPlan")
 
         spark.sql("DROP TABLE reuse_cat.db.reuse_table")
+      }
+    }
+  }
+
+  test("storage-partitioned self-join with partially clustered distribution (#6278)") {
+    assume(icebergAvailable, "Iceberg not available")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.spj_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.spj_cat.type" -> "hadoop",
+        "spark.sql.catalog.spj_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        // The tiny split size makes every data file its own task, so each bucket spans several
+        // input partitions. Partial clustering then splits one side of the join by file and
+        // replicates the other, giving the two scans different files per partition.
+        spark.sql("""
+          CREATE TABLE spj_cat.db.spj_self (id INT, v STRING) USING iceberg
+          PARTITIONED BY (bucket(4, id))
+          TBLPROPERTIES ('read.split.target-size'='1', 'read.split.open-file-cost'='1',
+            'format-version'='2')
+        """)
+        spark.sql(
+          "INSERT INTO spj_cat.db.spj_self SELECT CAST(id AS INT), concat('a', id) " +
+            "FROM range(0, 40)")
+        spark.sql(
+          "INSERT INTO spj_cat.db.spj_self SELECT CAST(id AS INT), concat('b', id) " +
+            "FROM range(0, 40, 3)")
+        spark.sql(
+          "INSERT INTO spj_cat.db.spj_self SELECT CAST(id AS INT), concat('c', id) " +
+            "FROM range(0, 12)")
+
+        val query =
+          "SELECT a.id, a.v, b.v FROM spj_cat.db.spj_self a JOIN spj_cat.db.spj_self b " +
+            "ON a.id = b.id"
+
+        for (partiallyClustered <- Seq(false, true)) {
+          withSQLConf(
+            SQLConf.V2_BUCKETING_ENABLED.key -> "true",
+            SQLConf.V2_BUCKETING_PUSH_PART_VALUES_ENABLED.key -> "true",
+            SQLConf.V2_BUCKETING_PARTIALLY_CLUSTERED_DISTRIBUTION_ENABLED.key ->
+              partiallyClustered.toString,
+            "spark.sql.requireAllClusterKeysForCoPartition" -> "false",
+            "spark.sql.iceberg.planning.preserve-data-grouping" -> "true",
+            SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+            val (_, cometPlan) = checkSparkAnswerAndOperator(query)
+
+            // Both scans run in one native plan with no exchange between them, which is where
+            // each scan must be handed its own files rather than the other side's.
+            assert(
+              collectIcebergNativeScans(cometPlan).length == 2,
+              s"Expected 2 CometIcebergNativeScanExec. Plan:\n$cometPlan")
+            assert(
+              collect(cometPlan) { case e: ShuffleExchangeLike => e }.isEmpty,
+              s"Expected a storage-partitioned join without a shuffle. Plan:\n$cometPlan")
+          }
+        }
+
+        spark.sql("DROP TABLE spj_cat.db.spj_self")
       }
     }
   }

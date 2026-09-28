@@ -191,9 +191,10 @@ message NativeScan {
   // Single partition's file list (injected at execution time)
   SparkFilePartition file_partition = 2;
 
-  // Hash half of the key under which this scan's planning data is stored and looked up at
-  // execution time; the other half is common.source. Derived once on the driver
-  // (CometNativeScanExec) so executors rebuild the key instead of hashing the common per task.
+  // Hash part of the key under which this scan's planning data is stored and looked up at
+  // execution time; the other parts are common.source and the operator's plan_id. Derived once
+  // on the driver (CometNativeScanExec) so executors rebuild the key instead of hashing the
+  // common per task.
   // JVM-consumed only; the native side ignores it.
   optional int32 source_key_hash = 3;
 }
@@ -352,8 +353,8 @@ message IcebergScanCommon {
 
   // Iceberg's SparkScan.hashCode() (folds in pushed filters, snapshot, branch, and read schema).
   // A self-join/self-merge can read the same table (same metadata_location) twice with different
-  // projections or filters, so PlanDataInjector keys planning data by
-  // (metadata_location, scan_hash_code) rather than metadata_location alone.
+  // projections or filters, so PlanDataInjector keys planning data by metadata_location,
+  // scan_hash_code and the operator's plan_id rather than metadata_location alone.
   int32 scan_hash_code = 15;
 }
 
