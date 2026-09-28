@@ -678,7 +678,16 @@ for both at once, and raises the pod’s memory request by the same amount.</p>
 (<code class="docutils literal notranslate"><span class="pre">CometNativeArrowSource</span></code>), broadcast coalescing, and <code class="docutils literal notranslate"><span class="pre">CometSparkToColumnarExec</span></code>. These are real
 off-heap bytes in container RSS that neither Spark’s <code class="docutils literal notranslate"><span class="pre">TaskMemoryManager</span></code> nor Comet’s native memory
 pool sees. In practice the volume is modest, a batch at a time per stream, but there is no
-ceiling and no backpressure.</p>
+ceiling and no backpressure. The executor’s memory usage log reports the allocator’s total, and
+the part of it charged to the import allocator described below, so that the overhead can be sized
+for it.</p>
+<p>Charging these buffers to Spark’s off-heap pool instead was tried in
+<a class="reference external" href="https://github.com/apache/datafusion-comet/pull/5998">#5998</a> and dropped. Spark cannot make
+Comet’s native consumer release anything, and native operators fill a task’s share before they
+spill, so the JVM allocation that decodes their next input batch is refused first. Refusing it
+fails the task where native would have spilled; not refusing it bounds nothing when the pool is
+full. It needs native reclaim first; see
+<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3873">#3873</a>.</p>
 <p>One further child, <code class="docutils literal notranslate"><span class="pre">CometArrowImportAllocator</span></code> (<code class="docutils literal notranslate"><span class="pre">comet-ffi-imports</span></code>), is what the Arrow C Data
 Interface import path allocates from, so that tracing can report those charges apart from the rest
 of Comet’s Arrow memory. Unlike the others it is process-wide and never closed, because imported
@@ -987,7 +996,8 @@ gap is workload-dependent. The margin that covers it has to come from
 <code class="docutils literal notranslate"><span class="pre">spark.executor.memoryOverhead</span></code>. The deprecated <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.memoryPool.fraction</span></code> cannot provide
 one; see <a class="reference internal" href="#where-comet-s-budget-comes-from">Where Comet’s budget comes from</a>.</p>
 <p>To measure the gap on a real workload, read the executor’s periodic memory usage log, which
-reports the bytes Rust’s allocator has handed out next to the pools’ reservations; see
+reports the bytes Rust’s allocator has handed out next to the pools’ reservations, and the Arrow
+memory Comet holds on the JVM side; see
 <a class="reference internal" href="../user-guide/latest/tuning/memory.html#sizing-the-overhead-from-the-memory-usage-log"><span class="std std-ref">Sizing the Overhead from the Memory Usage Log</span></a>. For a view per event rather
 than per interval, enable tracing and compare <code class="docutils literal notranslate"><span class="pre">native_allocated</span></code> against
 <code class="docutils literal notranslate"><span class="pre">comet_memory_reserved_total</span></code>; see <a class="reference internal" href="tracing.html#analyzing-memory-usage"><span class="std std-ref">Tracing</span></a>.</p>
@@ -1067,7 +1077,8 @@ at runtime, though: no operator, metric, or policy responds to it, so an executo
 its container is still stopped only by the kill.</p></li>
 <li><p><strong>The memory overhead is sized by hand.</strong> The gap has to fit in <code class="docutils literal notranslate"><span class="pre">spark.executor.memoryOverhead</span></code>,
 and the memory usage log measures it, but nothing sizes the overhead from it.</p></li>
-<li><p><strong><code class="docutils literal notranslate"><span class="pre">CometArrowAllocator</span></code> is unbounded</strong> and participates in no budget.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">CometArrowAllocator</span></code> is unbounded</strong> and participates in no budget. The memory usage log
+reports it, but nothing bounds it.</p></li>
 <li><p><strong>Buffer and reservation lifetimes are independent across the FFI boundary.</strong> A batch can be
 resident on either side with no reservation covering it, because reservations are made and
 withdrawn by individual operators while the bytes outlive them.</p></li>
@@ -1093,7 +1104,7 @@ reservations are released only when a native operator decides to spill on its ow
 <td><p>Native plan with per-operator metrics, including spill counts</p></td>
 </tr>
 <tr class="row-even"><td><p><a class="reference internal" href="../user-guide/latest/tuning/memory.html#sizing-the-overhead-from-the-memory-usage-log"><span class="std std-ref">Memory usage log</span></a></p></td>
-<td><p>Executor-wide native allocation vs pool reservations, logged every 10 seconds by default</p></td>
+<td><p>Executor-wide native allocation vs pool reservations, and JVM Arrow memory, logged every 10 seconds by default</p></td>
 </tr>
 <tr class="row-odd"><td><p><a class="reference internal" href="tracing.html#analyzing-memory-usage"><span class="std std-ref">Tracing</span></a></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">native_allocated</span></code> vs <code class="docutils literal notranslate"><span class="pre">comet_memory_reserved_total</span></code> per event; the accounting gap over time</p></td>
@@ -1117,7 +1128,7 @@ memory pool, which is the only one of the three that is recoverable at task leve
 <li><p>Compare <code class="docutils literal notranslate"><span class="pre">allocated</span></code> against <code class="docutils literal notranslate"><span class="pre">reserved</span></code> in the executor’s <code class="docutils literal notranslate"><span class="pre">Comet</span> <span class="pre">native</span> <span class="pre">memory</span> <span class="pre">usage</span></code> log lines
 leading up to the kill, or <code class="docutils literal notranslate"><span class="pre">native_allocated</span></code> against <code class="docutils literal notranslate"><span class="pre">comet_memory_reserved_total</span></code> in a trace.
 A large excess points at undeclared native allocations; a small excess points at the budget
-simply being too small, or at the JVM side.</p></li>
+simply being too small, or at the JVM side, which the same lines report as <code class="docutils literal notranslate"><span class="pre">JVM</span> <span class="pre">Arrow</span> <span class="pre">allocated</span></code>.</p></li>
 <li><p>Check <code class="docutils literal notranslate"><span class="pre">spark.comet.batchSize</span></code> against the schema width. Peak memory scales with
 <code class="docutils literal notranslate"><span class="pre">batch_size</span> <span class="pre">*</span> <span class="pre">columns</span></code>, and wide or deeply nested schemas amplify it.</p></li>
 <li><p>Check whether the operators involved can spill at all. <code class="docutils literal notranslate"><span class="pre">ShuffledHashJoin</span></code> cannot, so

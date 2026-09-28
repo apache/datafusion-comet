@@ -640,7 +640,8 @@ memory the pool is not accounting for.</p>
 <p>Arrow memory on the JVM side is reported separately, because it is off-heap and so invisible to
 <code class="docutils literal notranslate"><span class="pre">jvm_heap_used</span></code>. Comet imports batches from native over the Arrow C Data Interface, and Arrow
 charges a buffer to whichever allocator owns it, so those imports are taken against a dedicated
-child allocator and reported as <code class="docutils literal notranslate"><span class="pre">jvm_arrow_imported</span></code>, within the <code class="docutils literal notranslate"><span class="pre">jvm_arrow_allocated</span></code> total.</p>
+child allocator and reported as <code class="docutils literal notranslate"><span class="pre">jvm_arrow_imported</span></code>, within the <code class="docutils literal notranslate"><span class="pre">jvm_arrow_allocated</span></code> total.
+The executor’s periodic memory usage log reports the same two figures.</p>
 <p>Both are allocator charges. They report what each allocator is accountable for, not where the bytes
 were allocated, and their difference is not a bound on the Arrow memory the JVM allocated itself.
 Ownership and allocation come apart in both directions:</p>
