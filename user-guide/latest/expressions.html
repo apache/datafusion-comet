@@ -853,7 +853,7 @@ for how Comet chooses.</p>
 <p>Comet focuses acceleration on mainstream relational, string, datetime, math, and collection
 expressions. The following function families are <strong>not currently planned</strong> for native acceleration (they are not on the current roadmap): specialized functionality with narrow real-world analytics use and high implementation cost. They fall back to Spark and may be reconsidered based on demand:</p>
 <ul class="simple">
-<li><p><strong>Probabilistic sketches and approximate top-k</strong> (<code class="docutils literal notranslate"><span class="pre">kll_sketch_*</span></code>, <code class="docutils literal notranslate"><span class="pre">hll_*</span></code>, <code class="docutils literal notranslate"><span class="pre">theta_*</span></code>, <code class="docutils literal notranslate"><span class="pre">count_min_sketch</span></code>, <code class="docutils literal notranslate"><span class="pre">bitmap_*</span></code>, <code class="docutils literal notranslate"><span class="pre">approx_top_k*</span></code>): specialized data structures with exact-correctness traps.</p></li>
+<li><p><strong>Probabilistic sketches and approximate top-k</strong> (<code class="docutils literal notranslate"><span class="pre">kll_sketch_*</span></code>, <code class="docutils literal notranslate"><span class="pre">theta_*</span></code>, <code class="docutils literal notranslate"><span class="pre">count_min_sketch</span></code>, <code class="docutils literal notranslate"><span class="pre">bitmap_*</span></code>, <code class="docutils literal notranslate"><span class="pre">approx_top_k*</span></code>): specialized data structures with exact-correctness traps.</p></li>
 <li><p><strong>Geospatial</strong> (<code class="docutils literal notranslate"><span class="pre">st_*</span></code>): brand-new Spark 4.1 functionality, specialized.</p></li>
 <li><p><strong>Avro / Protobuf codecs</strong> (<code class="docutils literal notranslate"><span class="pre">from_avro</span></code>, <code class="docutils literal notranslate"><span class="pre">to_avro</span></code>, <code class="docutils literal notranslate"><span class="pre">from_protobuf</span></code>, <code class="docutils literal notranslate"><span class="pre">to_protobuf</span></code>, <code class="docutils literal notranslate"><span class="pre">schema_of_avro</span></code>): format conversion belongs at the IO layer, not expression evaluation.</p></li>
 <li><p><strong>JVM reflection</strong> (<code class="docutils literal notranslate"><span class="pre">java_method</span></code>, <code class="docutils literal notranslate"><span class="pre">reflect</span></code>, <code class="docutils literal notranslate"><span class="pre">try_reflect</span></code>): niche, and they invoke arbitrary JVM methods (a security concern).</p></li>
@@ -862,6 +862,7 @@ expressions. The following function families are <strong>not currently planned</
 </ul>
 <p>The file-metadata functions <code class="docutils literal notranslate"><span class="pre">input_file_name</span></code>, <code class="docutils literal notranslate"><span class="pre">input_file_block_start</span></code>, and <code class="docutils literal notranslate"><span class="pre">input_file_block_length</span></code> depend on scan-internal per-row file information rather than the expression layer; their support status is covered in the <a class="reference internal" href="compatibility/scans.html"><span class="std std-doc">scan compatibility guide</span></a>.</p>
 <p>Note that <code class="docutils literal notranslate"><span class="pre">median</span></code> and <code class="docutils literal notranslate"><span class="pre">mode</span></code> are supported: they are mainstream exact aggregates. <code class="docutils literal notranslate"><span class="pre">mode</span></code> runs natively only with <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Mode.allowIncompatible=true</span></code>. <code class="docutils literal notranslate"><span class="pre">approx_count_distinct</span></code> is supported because Comet ports Spark’s <code class="docutils literal notranslate"><span class="pre">HyperLogLogPlusPlus</span></code> exactly, so its result is bit-identical to Spark.</p>
+<p>The Apache DataSketches HLL functions (<code class="docutils literal notranslate"><span class="pre">hll_sketch_agg</span></code>, <code class="docutils literal notranslate"><span class="pre">hll_union_agg</span></code>, <code class="docutils literal notranslate"><span class="pre">hll_sketch_estimate</span></code>, <code class="docutils literal notranslate"><span class="pre">hll_union</span></code>) are the one sketch family Comet does accelerate, on Spark 4.0+. The sketches are mutually readable with Spark’s, but the point estimate can differ slightly after a merge, so the native path is off by default and opt-in per expression via <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code> — see the rows below.</p>
 <p>The tables below list every Spark built-in expression with its current status.</p>
 </section>
 <section id="agg-funcs">
@@ -989,6 +990,16 @@ expressions. The following function families are <strong>not currently planned</
 <td><p>✅</p></td>
 <td><p>—</p></td>
 <td><p>Grouping indicator for ROLLUP/CUBE/GROUPING SETS</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">hll_sketch_agg</span></code></p></td>
+<td><p>✅</p></td>
+<td><p>Native</p></td>
+<td><p>Spark 4.0+ only; falls back by default, the native path is opt-in via allowIncompatible (<a class="reference internal" href="#compatibility/expressions/aggregate.md"><span class="xref myst">details</span></a>)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">hll_union_agg</span></code></p></td>
+<td><p>✅</p></td>
+<td><p>Native</p></td>
+<td><p>Spark 4.0+ only; falls back by default, the native path is opt-in via allowIncompatible (<a class="reference internal" href="#compatibility/expressions/aggregate.md"><span class="xref myst">details</span></a>)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">kurtosis</span></code></p></td>
 <td><p>🔜</p></td>
@@ -2683,6 +2694,16 @@ to Spark (<a class="reference external" href="https://github.com/apache/datafusi
 <td><p>✅</p></td>
 <td><p>—</p></td>
 <td><p>Lowers to <code class="docutils literal notranslate"><span class="pre">&lt;=&gt;</span></code> (<code class="docutils literal notranslate"><span class="pre">EqualNullSafe</span></code>)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">hll_sketch_estimate</span></code></p></td>
+<td><p>✅</p></td>
+<td><p>Native</p></td>
+<td><p>Spark 4.0+ only; falls back by default, the native path is opt-in via allowIncompatible (<a class="reference internal" href="#compatibility/expressions/misc.md"><span class="xref myst">details</span></a>)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">hll_union</span></code></p></td>
+<td><p>✅</p></td>
+<td><p>Native</p></td>
+<td><p>Spark 4.0+ only; falls back by default, the native path is opt-in via allowIncompatible (<a class="reference internal" href="#compatibility/expressions/misc.md"><span class="xref myst">details</span></a>)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">is_variant_null</span></code></p></td>
 <td><p>🔜</p></td>

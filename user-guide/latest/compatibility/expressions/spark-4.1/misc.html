@@ -800,6 +800,28 @@ under the License.
 <li><p>Only <code class="docutils literal notranslate"><span class="pre">DecimalType</span></code> is supported</p></li>
 </ul>
 </section>
+<section id="hllsketchestimate">
+<h2>HllSketchEstimate<a class="headerlink" href="#hllsketchestimate" title="Link to this heading">#</a></h2>
+<p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">HllSketchEstimate</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.HllSketchEstimate.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
+<ul class="simple">
+<li><p>Comet uses a Rust DataSketches port; HLL estimates may differ slightly from Spark.</p></li>
+<li><p>Errors surface as plain Comet execution errors rather than Spark’s SparkRuntimeException with condition HLL_INVALID_INPUT_SKETCH_BUFFER (sqlState 22000), so the message and error class differ even though both engines fail.</p></li>
+<li><p>An input sketch in the updatable HLL_4 form carrying auxiliary-map entries is rejected with an error, where Spark reads it: the bundled Rust decoder reads the compact auxiliary layout in both forms and would otherwise return a silently wrong estimate. Comet only ever writes HLL_8, so this affects sketch columns produced elsewhere.</p></li>
+</ul>
+</section>
+<section id="hllunion">
+<h2>HllUnion<a class="headerlink" href="#hllunion" title="Link to this heading">#</a></h2>
+<p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">HllUnion</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.HllUnion.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
+<ul class="simple">
+<li><p>Comet uses a Rust DataSketches port; HLL sketch bytes and estimates may differ slightly from Spark.</p></li>
+<li><p>Errors surface as plain Comet execution errors rather than Spark’s SparkRuntimeException with condition HLL_UNION_DIFFERENT_LG_K / HLL_INVALID_INPUT_SKETCH_BUFFER (sqlState 22000), so the message and error class differ even though both engines fail.</p></li>
+<li><p>An input sketch in the updatable HLL_4 form carrying auxiliary-map entries is rejected with an error, where Spark reads it: the bundled Rust decoder reads the compact auxiliary layout in both forms and would otherwise return a silently wrong estimate. Comet only ever writes HLL_8, so this affects sketch columns produced elsewhere.</p></li>
+</ul>
+<p>The following cases are not supported by Comet and always fall back to Spark, regardless of any <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code> setting:</p>
+<ul class="simple">
+<li><p>The allowDifferentLgConfigK argument must be a foldable literal.</p></li>
+</ul>
+</section>
 <section id="literal">
 <h2>Literal<a class="headerlink" href="#literal" title="Link to this heading">#</a></h2>
 <p>The following cases are not supported by Comet and always fall back to Spark, regardless of any <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code> setting:</p>
@@ -900,6 +922,8 @@ under the License.
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#checkoverflow">CheckOverflow</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#hllsketchestimate">HllSketchEstimate</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#hllunion">HllUnion</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#literal">Literal</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#makedecimal">MakeDecimal</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#scalarsubquery">ScalarSubquery</a></li>

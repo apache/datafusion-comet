@@ -337,6 +337,8 @@ them like any other production setting.
 | `spark.comet.expression.GreaterThanOrEqual.enabled` | Enable Comet acceleration for `GreaterThanOrEqual` | true |
 | `spark.comet.expression.Greatest.enabled` | Enable Comet acceleration for `Greatest` | true |
 | `spark.comet.expression.Hex.enabled` | Enable Comet acceleration for `Hex` | true |
+| `spark.comet.expression.HllSketchEstimate.enabled` | Enable Comet acceleration for `HllSketchEstimate` | true |
+| `spark.comet.expression.HllUnion.enabled` | Enable Comet acceleration for `HllUnion` | true |
 | `spark.comet.expression.Hour.enabled` | Enable Comet acceleration for `Hour` | true |
 | `spark.comet.expression.Hours.enabled` | Enable Comet acceleration for `Hours` | true |
 | `spark.comet.expression.Hypot.enabled` | Enable Comet acceleration for `Hypot` | true |
@@ -530,6 +532,8 @@ them like any other production setting.
 | `spark.comet.expression.CovPopulation.enabled` | Enable Comet acceleration for `CovPopulation` | true |
 | `spark.comet.expression.CovSample.enabled` | Enable Comet acceleration for `CovSample` | true |
 | `spark.comet.expression.First.enabled` | Enable Comet acceleration for `First` | true |
+| `spark.comet.expression.HllSketchAgg.enabled` | Enable Comet acceleration for `HllSketchAgg` | true |
+| `spark.comet.expression.HllUnionAgg.enabled` | Enable Comet acceleration for `HllUnionAgg` | true |
 | `spark.comet.expression.HyperLogLogPlusPlus.enabled` | Enable Comet acceleration for `HyperLogLogPlusPlus` | true |
 | `spark.comet.expression.Last.enabled` | Enable Comet acceleration for `Last` | true |
 | `spark.comet.expression.ListAgg.enabled` | Enable Comet acceleration for `ListAgg` | true |

@@ -823,6 +823,32 @@ under the License.
 <li><p>This function is not deterministic. Results may not match Spark.</p></li>
 </ul>
 </section>
+<section id="hllsketchagg">
+<h2>HllSketchAgg<a class="headerlink" href="#hllsketchagg" title="Link to this heading">#</a></h2>
+<p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">HllSketchAgg</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.HllSketchAgg.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
+<ul class="simple">
+<li><p>Comet uses a Rust DataSketches port; HLL sketch bytes and estimates may differ slightly from Spark.</p></li>
+</ul>
+<p>The following cases are not supported by Comet and always fall back to Spark, regardless of any <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code> setting:</p>
+<ul class="simple">
+<li><p>The lgConfigK argument must be a foldable literal.</p></li>
+<li><p>The lgConfigK argument must be in the range [4, 21].</p></li>
+<li><p>Only int, long, string, and binary input types are supported.</p></li>
+</ul>
+</section>
+<section id="hllunionagg">
+<h2>HllUnionAgg<a class="headerlink" href="#hllunionagg" title="Link to this heading">#</a></h2>
+<p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">HllUnionAgg</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.HllUnionAgg.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
+<ul class="simple">
+<li><p>Comet uses a Rust DataSketches port; HLL sketch bytes and estimates may differ slightly from Spark.</p></li>
+<li><p>Errors surface as plain Comet execution errors rather than Spark’s SparkRuntimeException with condition HLL_UNION_DIFFERENT_LG_K / HLL_INVALID_INPUT_SKETCH_BUFFER (sqlState 22000), so the message and error class differ even though both engines fail.</p></li>
+<li><p>An input sketch in the updatable HLL_4 form carrying auxiliary-map entries is rejected with an error, where Spark reads it: the bundled Rust decoder reads the compact auxiliary layout in both forms and would otherwise return a silently wrong estimate. Comet only ever writes HLL_8, so this affects sketch columns produced elsewhere.</p></li>
+</ul>
+<p>The following cases are not supported by Comet and always fall back to Spark, regardless of any <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code> setting:</p>
+<ul class="simple">
+<li><p>The allowDifferentLgConfigK argument must be a foldable literal.</p></li>
+</ul>
+</section>
 <section id="hyperloglogplusplus">
 <h2>HyperLogLogPlusPlus<a class="headerlink" href="#hyperloglogplusplus" title="Link to this heading">#</a></h2>
 <p>The following cases are not supported by Comet and always fall back to Spark, regardless of any <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code> setting:</p>
@@ -943,6 +969,8 @@ under the License.
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#average">Average</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#collectset">CollectSet</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#first">First</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#hllsketchagg">HllSketchAgg</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#hllunionagg">HllUnionAgg</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#hyperloglogplusplus">HyperLogLogPlusPlus</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#last">Last</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#listagg">ListAgg</a></li>
