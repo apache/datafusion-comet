@@ -32,7 +32,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
-import org.apache.comet.serde.{CometDateFormat, CometTruncDate, CometTruncTimestamp}
+import org.apache.comet.serde.{CometDateFormat, CometTimeZone, CometTruncDate, CometTruncTimestamp}
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
@@ -106,6 +106,33 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     // Non-literal format strings are Incompatible on the native path, so Comet routes them
     // through the codegen dispatcher and still executes natively.
     checkSparkAnswerAndOperator("SELECT c0, trunc(c0, c1) from tbl order by c0, c1")
+  }
+
+  test("session timezone IDs are normalized for native code") {
+    // Spark accepts these through `ZoneId.of(id, ZoneId.SHORT_IDS)`, but native code only parses
+    // IANA names and `+HH`, `+HHMM` or `+HH:MM` offsets.
+    val expected = Seq(
+      "UTC" -> Some("UTC"),
+      "Etc/UTC" -> Some("UTC"),
+      "GMT" -> Some("UTC"),
+      "Z" -> Some("UTC"),
+      "+00:00" -> Some("UTC"),
+      "+8" -> Some("+08:00"),
+      "-08" -> Some("-08:00"),
+      "+08:00:00" -> Some("+08:00"),
+      "GMT+8" -> Some("+08:00"),
+      "UTC+08:00" -> Some("+08:00"),
+      "EST" -> Some("-05:00"),
+      "PST" -> Some("America/Los_Angeles"),
+      "IST" -> Some("Asia/Kolkata"),
+      "America/Los_Angeles" -> Some("America/Los_Angeles"),
+      // native code has no way to express an offset with seconds
+      "+05:45:30" -> None)
+    for ((id, nativeId) <- expected) {
+      assert(CometTimeZone.nativeId(Some(id)) == nativeId, id)
+    }
+    // Spark leaves the timezone unset only on casts that do not use it
+    assert(CometTimeZone.nativeId(None).contains("UTC"))
   }
 
   test("date_trunc (TruncTimestamp) - reading from DataFrame") {

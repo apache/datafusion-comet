@@ -26,7 +26,7 @@ import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, withFallbackReason}
 import org.apache.comet.DataTypeSupport.isComplexType
-import org.apache.comet.serde.{CodegenDispatchFallback, CometExpressionSerde, Compatible, ExprOuterClass, Incompatible, SupportLevel, Unsupported}
+import org.apache.comet.serde.{CodegenDispatchFallback, CometExpressionSerde, CometTimeZone, Compatible, ExprOuterClass, Incompatible, SupportLevel, Unsupported}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProtoInternal, serializeDataType}
 import org.apache.comet.shims.{CometExprShim, CometTypeShim}
@@ -97,6 +97,8 @@ object CometCast
         return unsupported(cast.child.dataType, cast.dataType)
       }
       Compatible()
+    } else if (CometTimeZone.nativeId(cast.timeZoneId).isEmpty) {
+      CometTimeZone.supportLevel(cast.timeZoneId)
     } else {
       isSupported(cast.child.dataType, cast.dataType, cast.timeZoneId, evalMode(cast))
     }
@@ -149,8 +151,8 @@ object CometCast
       dt: DataType,
       childExpr: Expr,
       evalMode: CometEvalMode.Value): Option[Expr] = {
-    serializeDataType(dt) match {
-      case Some(dataType) =>
+    (serializeDataType(dt), CometTimeZone.nativeId(timeZoneId)) match {
+      case (Some(dataType), Some(timeZone)) =>
         val castBuilder = ExprOuterClass.Cast.newBuilder()
         castBuilder.setChild(childExpr)
         castBuilder.setDatatype(dataType)
@@ -159,15 +161,18 @@ object CometCast
           SQLConf.get
             .getConfString(CometConf.getExprAllowIncompatConfigKey(classOf[Cast]), "false")
             .toBoolean)
-        castBuilder.setTimezone(timeZoneId.getOrElse("UTC"))
+        castBuilder.setTimezone(timeZone)
         castBuilder.setIsSpark4Plus(isSpark40Plus)
         Some(
           ExprOuterClass.Expr
             .newBuilder()
             .setCast(castBuilder)
             .build())
-      case _ =>
+      case (None, _) =>
         withFallbackReason(expr, s"Unsupported datatype in castToProto: $dt")
+        None
+      case (_, None) =>
+        withFallbackReason(expr, CometTimeZone.unsupportedReason(timeZoneId))
         None
     }
   }
