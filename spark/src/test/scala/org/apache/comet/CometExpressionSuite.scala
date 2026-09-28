@@ -44,9 +44,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     """Division by zero. Use `try_divide` to tolerate divisor being 0 and return NULL instead"""
 
   private def arithmeticError(error: Throwable): SparkThrowable =
-    Iterator
-      .iterate[Throwable](error)(_.getCause)
-      .takeWhile(_ != null)
+    causeChain(error)
       .collectFirst {
         // SparkArithmeticException is private[spark] in Spark 3.4, so this cross-version test
         // cannot pattern match on its type directly.
