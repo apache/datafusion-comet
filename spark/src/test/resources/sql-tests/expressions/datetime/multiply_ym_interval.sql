@@ -58,6 +58,11 @@ SELECT
 query
 SELECT make_ym_interval(NULL, m) * 2 FROM test_multiply_ym_interval
 
+-- a constant-folded nested interval array whose first branch only holds an empty array
+query
+SELECT array(array(CAST(array() AS ARRAY<INTERVAL YEAR TO MONTH>)), array(array(INTERVAL '1' MONTH)))
+FROM test_multiply_ym_interval
+
 -- 178956970 years and 7 months is Int.MaxValue months. Multiplication overflows regardless of
 -- ANSI mode; the lowercase pattern matches Spark 3.x and 4.x error messages.
 query expect_error(overflow)

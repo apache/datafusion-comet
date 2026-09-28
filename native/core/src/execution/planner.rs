@@ -4932,8 +4932,14 @@ fn literal_to_array_ref(
                 let child_refs: Vec<&dyn Array> = child_arrays.iter().map(|a| a.as_ref()).collect();
                 arrow::compute::concat(&child_refs)?
             } else {
-                // All entries are null or the list is empty
-                new_empty_array(&dt)
+                // All entries are null or empty. The recursive call returns the values of a `dt`
+                // list, so the empty values array takes `dt`'s element type, not `dt` itself;
+                // otherwise this level gains an extra list and cannot be concatenated with a
+                // populated sibling, e.g. [[[]], [[1]]].
+                match &dt {
+                    DataType::List(element) => new_empty_array(element.data_type()),
+                    other => new_empty_array(other),
+                }
             };
 
             // Create and return the parent ListArray
@@ -5110,7 +5116,7 @@ mod tests {
         Array, ArrayRef, DictionaryArray, Float32Array, Float64Array, Int32Array, Int8Array,
         ListArray, RecordBatch, StringArray,
     };
-    use arrow::datatypes::{DataType, Field, FieldRef, Fields, Schema, SchemaRef};
+    use arrow::datatypes::{DataType, Field, FieldRef, Fields, IntervalUnit, Schema, SchemaRef};
     use datafusion::catalog::memory::DataSourceExec;
     use datafusion::common::ScalarValue;
     use datafusion::config::TableParquetOptions;
@@ -6992,6 +6998,59 @@ mod tests {
             "+-------------+",
         ];
         assert_batches_eq!(expected, &[actual]);
+        Ok(())
+    }
+
+    /// A nested list whose children are all empty must decode to the same element type as a
+    /// populated sibling, so the two can be concatenated: `[[[]], [[1]]]`.
+    #[test]
+    fn test_literal_to_list_with_empty_nested_children() -> Result<(), DataFusionError> {
+        for leaf_type in [DataType::Interval(IntervalUnit::YearMonth), DataType::Int32] {
+            let data = ListLiteral {
+                list_values: vec![
+                    // [[]]
+                    ListLiteral {
+                        list_values: vec![ListLiteral::default()],
+                        null_mask: vec![true],
+                        ..Default::default()
+                    },
+                    // [[1]]
+                    ListLiteral {
+                        list_values: vec![ListLiteral {
+                            int_values: vec![1],
+                            null_mask: vec![true],
+                            ..Default::default()
+                        }],
+                        null_mask: vec![true],
+                        ..Default::default()
+                    },
+                ],
+                null_mask: vec![true, true],
+                ..Default::default()
+            };
+            let inner = DataType::List(Arc::new(Field::new("item", leaf_type.clone(), true)));
+            let middle = DataType::List(Arc::new(Field::new("item", inner.clone(), true)));
+            let outer = DataType::List(Arc::new(Field::new("item", middle.clone(), true)));
+
+            let array = literal_to_array_ref(outer, data)?;
+
+            // The outer list's values: two lists whose elements are `inner` lists.
+            assert_eq!(array.data_type(), &middle, "{leaf_type}");
+            let lists = array.as_any().downcast_ref::<ListArray>().unwrap();
+            assert_eq!(lists.len(), 2);
+
+            let first = lists.value(0);
+            let first = first.as_any().downcast_ref::<ListArray>().unwrap();
+            assert_eq!(first.len(), 1);
+            assert!(first.is_valid(0));
+            assert_eq!(first.value(0).len(), 0);
+
+            let second = lists.value(1);
+            let second = second.as_any().downcast_ref::<ListArray>().unwrap();
+            assert_eq!(second.len(), 1);
+            assert_eq!(second.value(0).len(), 1);
+            assert_eq!(second.value(0).data_type(), &leaf_type);
+        }
         Ok(())
     }
 
