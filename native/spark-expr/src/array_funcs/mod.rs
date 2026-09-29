@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+mod array_extrema;
 mod array_insert;
 mod array_position;
 mod array_slice;
@@ -28,6 +29,7 @@ mod nested_float_normalize;
 mod sequence;
 mod size;
 
+pub use array_extrema::SparkArrayExtrema;
 pub use array_insert::ArrayInsert;
 pub use array_position::SparkArrayPositionFunc;
 pub use array_slice::SparkArraySlice;
