@@ -21,6 +21,7 @@ package org.apache.spark
 
 import java.{util => ju}
 import java.util.Collections
+import java.util.concurrent.atomic.AtomicReference
 
 import scala.util.Try
 
@@ -29,7 +30,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.internal.config.{EXECUTOR_MEMORY_OVERHEAD, EXECUTOR_MEMORY_OVERHEAD_FACTOR}
 import org.apache.spark.sql.internal.StaticSQLConf
 
-import org.apache.comet.{COMET_VERSION, CometExecIterator, CometSparkSessionExtensions, NativeBase}
+import org.apache.comet.{COMET_VERSION, CometExecIterator, CometExecutorMemoryUsage, CometSparkSessionExtensions, NativeBase}
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometConf.{COMET_ICEBERG_WRITE_REPORT_DIR, COMET_METRICS_ENABLED, COMET_ONHEAP_ENABLED}
 import org.apache.comet.CometKryoRegistrator
@@ -49,8 +50,13 @@ import org.apache.comet.iceberg.IcebergWriteReportListener
  */
 class CometDriverPlugin extends DriverPlugin with Logging {
 
+  // Set by init, before Spark delivers any message, and read on the RPC thread that delivers them.
+  @volatile private var sparkContext: SparkContext = _
+
   override def init(sc: SparkContext, pluginContext: PluginContext): ju.Map[String, String] = {
     logInfo("CometDriverPlugin init")
+
+    sparkContext = sc
 
     // Expose the Comet build version as a Spark config so it can be queried at runtime, e.g.
     // `spark.conf.get("spark.comet.version")` or `SET spark.comet.version` in SQL. This is set
@@ -82,7 +88,14 @@ class CometDriverPlugin extends DriverPlugin with Logging {
     extraConfs
   }
 
-  override def receive(message: Any): AnyRef = super.receive(message)
+  override def receive(message: Any): AnyRef = message match {
+    // An executor's memory usage sample. Posting it to the listener bus is what writes it to the
+    // event log. A one-way message gets no reply, and Spark logs any reply that is not null.
+    case memoryUsage: CometExecutorMemoryUsage =>
+      sparkContext.listenerBus.post(memoryUsage)
+      null
+    case _ => super.receive(message)
+  }
 
   override def shutdown(): Unit = {
     logInfo("CometDriverPlugin shutdown")
@@ -290,8 +303,13 @@ object CometDriverPlugin extends Logging {
 
 class CometExecutorPlugin extends ExecutorPlugin with Logging {
 
+  private var context: PluginContext = _
+
   override def init(ctx: PluginContext, extraConf: ju.Map[String, String]): Unit = {
     logInfo("CometExecutorPlugin init")
+
+    context = ctx
+    CometExecutorPlugin.current.set(ctx)
 
     super.init(ctx, extraConf)
   }
@@ -299,11 +317,27 @@ class CometExecutorPlugin extends ExecutorPlugin with Logging {
   override def shutdown(): Unit = {
     logInfo("CometExecutorPlugin shutdown")
 
+    // Unless a later plugin in the same JVM, which local mode starts for each SparkContext, has
+    // already replaced it.
+    CometExecutorPlugin.current.compareAndSet(context, null)
+
     NativeBase.releaseNative()
 
     super.shutdown()
   }
 
+}
+
+object CometExecutorPlugin {
+
+  private val current = new AtomicReference[PluginContext]()
+
+  /**
+   * The context of the executor plugin running in this JVM, through which the executor can send
+   * messages to the driver plugin. None when the application does not run the Comet plugin, and
+   * after the executor has shut it down.
+   */
+  private[apache] def pluginContext: Option[PluginContext] = Option(current.get())
 }
 
 /**

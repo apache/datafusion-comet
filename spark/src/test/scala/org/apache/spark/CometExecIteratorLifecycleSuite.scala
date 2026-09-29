@@ -39,8 +39,9 @@ import org.apache.spark.sql.comet.{CometExec, CometExecUtils, CometMetricNode, C
 import org.apache.spark.sql.comet.execution.arrow.CometArrowStream
 import org.apache.spark.sql.functions.{col, udf}
 import org.apache.spark.sql.types.{LongType, StructField, StructType}
+import org.apache.spark.util.JsonProtocol
 
-import org.apache.comet.{CometConf, CometExecIterator, CometNativeException, CometShuffleBlockIterator, Native}
+import org.apache.comet.{CometConf, CometExecIterator, CometExecutorMemoryUsage, CometNativeException, CometShuffleBlockIterator, Native}
 import org.apache.comet.serde.Config.ConfigMap
 import org.apache.comet.serde.OperatorOuterClass
 
@@ -473,6 +474,34 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
         .memoryUsageMessage(idle, noArrow, plansAtLastLog = 3)
         .exists(_.contains("allocated 20.0 MiB, reserved 0.0 MiB (0 native plans")))
     assert(CometExecIterator.memoryUsageMessage(idle, noArrow, plansAtLastLog = 0).isEmpty)
+  }
+
+  test("the memory usage log's event log record reads back from the event log's JSON") {
+    import CometExecIterator.{memoryUsageEvent, JvmArrowMemory}
+    val mib = 1024L * 1024
+    val event = memoryUsageEvent(
+      executorId = "7",
+      time = 1700000000000L,
+      usage = Array(300 * mib, 100 * mib, 2L, 3L),
+      jvmArrow = JvmArrowMemory(allocated = 40 * mib, imported = 10 * mib))
+    assert(
+      event == CometExecutorMemoryUsage(
+        executorId = "7",
+        time = 1700000000000L,
+        nativeAllocated = 300 * mib,
+        poolsReserved = 100 * mib,
+        pools = 2L,
+        plans = 3L,
+        jvmArrowAllocated = 40 * mib,
+        jvmArrowImported = 10 * mib))
+
+    // The event log writes an event it has no format of its own for with Jackson, under its class
+    // name, which is how the history server reads it back, or skips it when Comet is not on its
+    // classpath.
+    val json = JsonProtocol.sparkEventToJsonString(event)
+    assert(json.contains(s""""Event":"${classOf[CometExecutorMemoryUsage].getName}""""), json)
+    assert(json.contains(s""""poolsReserved":${100 * mib}"""), json)
+    assert(JsonProtocol.sparkEventFromJson(json) == event)
   }
 
   test("the memory usage log reads JVM Arrow memory from the allocators, imports apart") {

@@ -157,15 +157,19 @@ Comet native memory usage: allocated 5412.3 MiB, reserved 3890.0 MiB (16 native 
   which allocator a buffer is charged to rather than where it was allocated, so treat the JVM's
   part as an estimate.
 
+When the application writes an event log and runs the Comet plugin, the executors write these
+samples to the event log instead; see [Reading the Memory Usage Log from the Event Log].
+
 Comet's untracked memory is what Comet holds outside the JVM heap that Spark's off-heap pool does
 not account for: `allocated`, plus the JVM Arrow figure less the part imported from native, minus
 `reserved`. It is the part of Comet's footprint that has to fit in `spark.executor.memoryOverhead`,
 alongside the JVM's own non-heap memory. To size the overhead from it:
 
 1. Run a representative workload and find the line with the most untracked memory in each
-   executor's log. Take all the figures from the same line: they are sampled together, and figures
-   from different lines describe different moments. Setting `spark.comet.memory.logInterval=1s` for
-   this run makes a short-lived peak less likely to fall between samples.
+   executor's log, or the event with the most for each executor in the event log. Take all the
+   figures from the same line or event: they are sampled together, and figures from different
+   samples describe different moments. Setting `spark.comet.memory.logInterval=1s` for this run
+   makes a short-lived peak less likely to fall between samples.
 2. Start from the overhead the executors had before Comet was enabled, which covers the JVM's own
    non-heap memory, and add the most untracked memory seen on any executor.
 3. Add a margin on top. The log can miss the true peak between samples, and none of the figures
@@ -189,7 +193,8 @@ below. It derives the overhead the way YARN and Kubernetes size the executor's c
 described in [Configuring Executor Memory Overhead]. For a PySpark application it also counts
 `spark.executor.pyspark.memory` as part of the container when the cluster manager adds it, which
 YARN does, and Kubernetes does in cluster mode. There is no warning in local mode, on a standalone
-cluster, whose workers do not limit an executor's memory, or with any other cluster manager.
+cluster, whose workers do not limit an executor's memory, or with any other cluster manager. The
+warning goes to the executor's log even when the samples go to the event log.
 
 Look more closely before raising the overhead if the untracked memory keeps growing through a run
 rather than levelling off: memory that is not being released will exhaust any overhead eventually.
@@ -198,6 +203,53 @@ The executor logs one more line after its last native plan finishes, and an `all
 
 `spark.comet.memory.logInterval` is read when an executor starts its first Comet native plan, so set
 it when the application is submitted. Set it to `0` to turn the log off.
+
+[Reading the Memory Usage Log from the Event Log]: #reading-the-memory-usage-log-from-the-event-log
+
+### Reading the Memory Usage Log from the Event Log
+
+When `spark.eventLog.enabled` is `true` and the application runs the Comet plugin
+(`spark.plugins=org.apache.spark.CometPlugin`), each executor sends its samples to the driver, which
+writes them to the application's event log. The event log keeps every executor's samples in one
+place, next to the jobs and stages they ran alongside, while executor logs are spread over the
+cluster and often go away with their containers. The executor then logs the line at DEBUG level
+only. Without the plugin, the samples stay in the executor's log at INFO level.
+
+Each sample is one event, on one line of the event log. It carries the figures of the line in bytes,
+the executor that took the sample, and when it did, in milliseconds since the epoch by the
+executor's clock. The line above looks like this as an event, spread over several lines here:
+
+```json
+{
+  "Event": "org.apache.comet.CometExecutorMemoryUsage",
+  "executorId": "3",
+  "time": 1727550000000,
+  "nativeAllocated": 5675212390,
+  "poolsReserved": 4078960640,
+  "pools": 8,
+  "plans": 16,
+  "jvmArrowAllocated": 325478809,
+  "jvmArrowImported": 100873420
+}
+```
+
+`nativeAllocated` is `allocated`, `poolsReserved` is `reserved`, and `jvmArrowAllocated` and
+`jvmArrowImported` are the JVM Arrow figures. With `jq`, for example, this lists the sample with the
+most untracked memory for each executor, in MiB:
+
+```shell
+jq -n -c '[inputs | select(.Event == "org.apache.comet.CometExecutorMemoryUsage")
+    | {executorId, time, untrackedMiB: ((.nativeAllocated - .poolsReserved
+        + ([.jvmArrowAllocated - .jvmArrowImported, 0] | max)) / 1048576 | ceil)}]
+  | group_by(.executorId) | map(max_by(.untrackedMiB))[]' <event log files>
+```
+
+From Spark 4.0, event logs are compressed with zstd and split into several files by default, so
+decompress the files first, for example with `zstd -dc`. The Spark history server does not display
+these events, and one without Comet on its classpath logs once that it dropped them.
+
+Each executor adds one event per interval while it runs native plans, so a short interval on a large
+cluster makes the event log noticeably larger.
 
 ## Batch Size
 

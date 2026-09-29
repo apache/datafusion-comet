@@ -368,7 +368,10 @@ object CometConf extends ShimCometConf {
         "in Comet's memory pools, and the Arrow memory Comet holds on the JVM side. The " +
         "difference between the first two is native memory that the pools are not accounting " +
         "for. The executor logs one line per interval however many tasks are " +
-        "running, and one more after the last plan finishes. It logs a warning when the " +
+        "running, and one more after the last plan finishes. When spark.eventLog.enabled is " +
+        "true and the application runs the Comet plugin, these samples go to the event log " +
+        "as CometExecutorMemoryUsage events instead, and the executor logs them at DEBUG " +
+        "level only. It logs a warning when the " +
         "native memory looks larger than the executor's container allows. This is an executor " +
         "setting, read when an executor starts its first Comet native plan, so it must be set " +
         "when the application is submitted. An invalid value disables the log with a warning. " +

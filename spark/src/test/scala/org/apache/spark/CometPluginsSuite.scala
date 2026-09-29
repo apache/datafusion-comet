@@ -20,14 +20,21 @@
 package org.apache.spark
 
 import java.io.File
+import java.nio.charset.StandardCharsets
+import java.nio.file.Files
+import java.util.concurrent.ConcurrentLinkedQueue
+
+import scala.concurrent.duration._
 
 import org.apache.logging.log4j.Level
+import org.apache.spark.scheduler.{SparkListener, SparkListenerEvent}
 import org.apache.spark.sql.{CometTestBase, SaveMode, SparkSession}
 import org.apache.spark.sql.comet.CometPlan
 import org.apache.spark.sql.comet.execution.shuffle.{CometShuffleExchangeExec, CometShuffleManager}
 import org.apache.spark.sql.internal.StaticSQLConf
+import org.apache.spark.util.{JsonProtocol, Utils}
 
-import org.apache.comet.{COMET_VERSION, CometConf}
+import org.apache.comet.{COMET_VERSION, CometConf, CometExecIterator, CometExecutorMemoryUsage}
 
 class CometPluginsSuite extends CometTestBase {
   override protected def sparkConf: SparkConf = {
@@ -161,6 +168,13 @@ class CometPluginsSuite extends CometTestBase {
     assert(execMemOverhead2 == "2G")
     assert(execMemOverhead3 == "2G")
     assert(execMemOverhead4 == "2G")
+  }
+
+  test("memory usage samples stay in the executor's log without an event log") {
+    import CometExecIterator.JvmArrowMemory
+    // The executor runs the plugin, but the application writes no event log.
+    assert(CometExecutorPlugin.pluginContext.isDefined)
+    assert(!CometExecIterator.sendToEventLog(Array(1L, 0L, 1L, 1L), JvmArrowMemory(0L, 0L)))
   }
 }
 
@@ -416,5 +430,67 @@ class CometPluginsSparkShuffleManagerSuite extends CometTestBase {
         assert(collect(plan) { case op: CometShuffleExchangeExec => op }.isEmpty, plan)
       }
     }
+  }
+}
+
+class CometPluginsEventLogSuite extends CometTestBase {
+
+  private lazy val eventLogDir = Utils.createTempDir()
+
+  override protected def sparkConf: SparkConf = {
+    val conf = super.sparkConf
+    conf.set("spark.plugins", "org.apache.spark.CometPlugin")
+    conf.set("spark.eventLog.enabled", "true")
+    conf.set("spark.eventLog.dir", eventLogDir.toURI.toString)
+    // One plain file, which the test reads directly. Spark 4 compresses and rolls it by default.
+    conf.set("spark.eventLog.compress", "false")
+    conf.set("spark.eventLog.rolling.enabled", "false")
+    conf
+  }
+
+  /** The application's event log, one JSON event per line. */
+  private def eventLogLines(): Seq[String] =
+    eventLogDir
+      .listFiles()
+      .filter(file => file.isFile && !file.getName.startsWith("."))
+      .toSeq
+      .flatMap(file =>
+        new String(Files.readAllBytes(file.toPath), StandardCharsets.UTF_8).split("\n"))
+
+  test("memory usage samples reach the event log through the Comet plugin") {
+    import CometExecIterator.{memoryUsageEvent, JvmArrowMemory}
+    // An allocation no real sample has, to tell this sample apart from any that the memory usage
+    // log running in this JVM sends.
+    val usage = Array(123456789L, 23456789L, 2L, 3L)
+    val jvmArrow = JvmArrowMemory(allocated = 3456789L, imported = 456789L)
+    val received = new ConcurrentLinkedQueue[CometExecutorMemoryUsage]()
+    val listener = new SparkListener {
+      override def onOtherEvent(event: SparkListenerEvent): Unit = event match {
+        case sample: CometExecutorMemoryUsage if sample.nativeAllocated == usage(0) =>
+          received.add(sample)
+        case _ =>
+      }
+    }
+    spark.sparkContext.addSparkListener(listener)
+    try {
+      assert(CometExecIterator.sendToEventLog(usage, jvmArrow))
+      // The driver plugin receives the sample on an RPC thread and posts it from there.
+      eventually(timeout(30.seconds), interval(100.milliseconds)) {
+        assert(received.size() == 1)
+      }
+    } finally {
+      spark.sparkContext.removeSparkListener(listener)
+    }
+    val sample = received.peek()
+    // Local mode runs the executor inside the driver.
+    assert(
+      sample == memoryUsageEvent(SparkContext.DRIVER_IDENTIFIER, sample.time, usage, jvmArrow))
+
+    // The event log writes from a listener bus queue of its own.
+    spark.sparkContext.listenerBus.waitUntilEmpty()
+    val logged = eventLogLines()
+      .filter(_.contains(classOf[CometExecutorMemoryUsage].getName))
+      .map(JsonProtocol.sparkEventFromJson)
+    assert(logged.contains(sample), logged)
   }
 }
