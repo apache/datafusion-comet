@@ -404,15 +404,19 @@ diverge for several structural reasons:
   retained/dirty page cache all add resident bytes that no layer above the allocator can see.
   Freeing memory does not necessarily return pages to the OS.
 - **Non-Rust allocations.** Memory allocated by C dependencies through libc `malloc`, and anything
-  `mmap`ed, never passes through Rust's `GlobalAlloc`, so neither the memory pool nor the
-  allocation counters (`native_allocated`, `jemalloc_allocated`) see it. In a default build the C
-  dependencies are libzstd (`zstd-sys`, behind the Parquet `zstd` codec), libhdfs (`hdfs-sys`,
-  pulled in by the default `hdfs-opendal` feature), and the TLS stack used for cloud object stores
-  (`aws-lc-sys`). Building with the `jemalloc` or `mimalloc` feature adds the allocator itself
-  (`tikv-jemalloc-sys`, `libmimalloc-sys`). It is worth knowing which dependencies are _not_ C,
-  because several names suggest otherwise: the other Parquet codecs are pure Rust in this build,
-  `snap` for Snappy, `lz4_flex` for LZ4 and `zlib-rs` for gzip, as is `libbz2-rs-sys` despite its
-  name, so those allocations do pass through `GlobalAlloc` and are counted.
+  `mmap`ed, never passes through Rust's `GlobalAlloc`, so the allocation counters
+  (`native_allocated`, `jemalloc_allocated`) never see it, and the memory pool tracks it only where
+  an operator charges it by hand. The one place that happens today is the native shuffle writer's
+  zstd context when a task writes to more than one local partition: the writer reserves the
+  context's size for as long as it holds one, so those bytes are in `reserved` but not in
+  `allocated`. In a default build the C dependencies are libzstd (`zstd-sys`, behind the Parquet
+  `zstd` codec and the shuffle writer's `zstd` codec), libhdfs (`hdfs-sys`, pulled in by the default
+  `hdfs-opendal` feature), and the TLS stack used for cloud object stores (`aws-lc-sys`). Building
+  with the `jemalloc` or `mimalloc` feature adds the allocator itself (`tikv-jemalloc-sys`,
+  `libmimalloc-sys`). It is worth knowing which dependencies are _not_ C, because several names
+  suggest otherwise: the other Parquet codecs are pure Rust in this build, `snap` for Snappy,
+  `lz4_flex` for LZ4 and `zlib-rs` for gzip, as is `libbz2-rs-sys` despite its name, so those
+  allocations do pass through `GlobalAlloc` and are counted.
 - **Batches in flight across the FFI boundary.** Reservations stop at the operator that made them.
   Imported JVM batches are reserved only while a reserving operator holds them, and exported native
   batches have usually been released by the time the JVM receives them yet stay resident until the

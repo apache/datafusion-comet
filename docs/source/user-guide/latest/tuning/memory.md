@@ -174,7 +174,12 @@ JVM's own non-heap memory. To size the overhead from it:
    non-heap memory, and add the largest difference seen on any executor.
 3. Add a margin on top. The log can miss the true peak between samples, and neither figure includes
    the allocator's fragmentation and retained pages, memory allocated by native C libraries such as
-   zstd, or Comet's Arrow buffers on the JVM side.
+   zstd, or Comet's Arrow buffers on the JVM side. The zstd context of the native shuffle writer is
+   the exception: when `spark.comet.shuffle.compression.codec` is `zstd`, a shuffle task writing to
+   more than one local partition reserves its context while spilling or writing its output, so that
+   memory is in `reserved` but never in `allocated`, and the difference understates what has to fit
+   in the overhead by one context per such task (about 1.3 MiB at the default level, close to 8 MiB
+   at levels 7 and 8).
 
 For example, a 16 GiB executor derives an overhead of 1638 MiB. If the largest difference in its
 log is the 1522.3 MiB in the line above, the overhead needs to be at least 1638 + 1523 = 3161 MiB
