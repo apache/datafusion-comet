@@ -41,8 +41,7 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 use datafusion_comet_common::decode_string_arrays;
-use datafusion_comet_proto::spark_expression::agg_expr::ExprStruct as AggExprStruct;
-use datafusion_comet_proto::spark_operator::{AggregateMode, Operator, ShuffleScan};
+use datafusion_comet_proto::spark_operator::{Operator, ShuffleScan};
 use datafusion_comet_spark_expr::url_funcs::{CometParseUrl, CometTryParseUrl};
 use datafusion_spark::function::array::array_contains::SparkArrayContains;
 use datafusion_spark::function::array::repeat::SparkArrayRepeat;
@@ -806,40 +805,27 @@ pub extern "system" fn Java_org_apache_comet_Native_setShufflePartitionPusher(
     })
 }
 
-/// Only admit the validated native-shuffle path. A session belongs to one fused Spark plan,
-/// so an unsafe partial aggregate disables skipping for the whole plan, including its children.
-/// This deliberately gives up some opportunities rather than changing execution contexts per op.
-fn configure_skip_partial_aggregation(config: &mut SessionConfig, plan: &Operator) {
-    fn supported(plan: &Operator) -> bool {
-        let supported_aggregate = match &plan.op_struct {
-            Some(OpStruct::HashAgg(agg)) => match AggregateMode::try_from(agg.mode) {
-                // Final never skips. Still inspect its children below.
-                Ok(AggregateMode::Final) => true,
-                Ok(AggregateMode::Partial) => {
-                    agg.expr_modes
-                        .iter()
-                        .all(|mode| *mode == AggregateMode::Partial as i32)
-                        && agg.agg_exprs.iter().all(|expr| {
-                            matches!(&expr.expr_struct, Some(AggExprStruct::Count(count))
-                                if count.children.len() == 1)
-                        })
-                }
-                // PartialMerge is represented as native Partial, but consumes states, not rows.
-                _ => false,
-            },
-            _ => true,
-        };
-        supported_aggregate && plan.children.iter().all(supported)
-    }
-
-    if !matches!(&plan.op_struct, Some(OpStruct::ShuffleWriter(_))) || !supported(plan) {
-        // Enforce safety after config pass-through: a testing override cannot make unsupported
-        // accumulators convertible. DF 55 removed supports_convert_to_state().
-        config
-            .options_mut()
-            .execution
-            .skip_partial_aggregation_probe_ratio_threshold = 1.1;
-    }
+/// Save the requested probe policy, but leave the base context disabled. Only independently
+/// qualified Spark aggregates may enable it; native helper aggregates retain the safe default.
+fn configure_skip_partial_aggregation(
+    config: &mut SessionConfig,
+    plan: &Operator,
+    allow_numerical_differences: bool,
+) {
+    config.set_extension(Arc::new(
+        crate::execution::partial_aggregation::PartialAggregationConfig {
+            probe_ratio_threshold: config
+                .options()
+                .execution
+                .skip_partial_aggregation_probe_ratio_threshold,
+            native_shuffle: matches!(&plan.op_struct, Some(OpStruct::ShuffleWriter(_))),
+            allow_numerical_differences,
+        },
+    ));
+    config
+        .options_mut()
+        .execution
+        .skip_partial_aggregation_probe_ratio_threshold = 1.1;
 }
 
 /// Configure DataFusion session context.
@@ -893,7 +879,11 @@ fn prepare_datafusion_session_context(
         }
     }
 
-    configure_skip_partial_aggregation(&mut session_config, spark_plan);
+    configure_skip_partial_aggregation(
+        &mut session_config,
+        spark_plan,
+        spark_config.get_bool("spark.comet.exec.aggregate.partialBypass.allowNumericalDifferences"),
+    );
 
     let runtime = rt_config.build()?;
 
@@ -1987,38 +1977,29 @@ mod tests {
     use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
     use datafusion::physical_plan::ExecutionPlan;
     use datafusion_comet_proto::spark_expression;
-    use datafusion_comet_proto::spark_expression::{AggExpr, Count, Expr, Sum};
+    use datafusion_comet_proto::spark_expression::Expr;
     use datafusion_comet_proto::spark_operator::{HashAggregate, ShuffleWriter};
     use std::cell::Cell;
     use std::future::Future;
 
     #[test]
-    fn skip_partial_eligibility_is_fail_closed() {
-        let count = AggExpr {
-            expr_struct: Some(AggExprStruct::Count(Count {
-                children: vec![Expr::default()],
-            })),
-            ..Default::default()
-        };
-        let sum = AggExpr {
-            expr_struct: Some(AggExprStruct::Sum(Sum::default())),
-            ..Default::default()
-        };
-        let partial = HashAggregate {
-            grouping_exprs: vec![Expr::default()],
-            agg_exprs: vec![count.clone()],
-            mode: AggregateMode::Partial as i32,
-            ..Default::default()
-        };
-        let writer = |agg: HashAggregate| Operator {
+    fn skip_partial_policy_is_saved_without_enabling_unqualified_operators() {
+        use crate::execution::partial_aggregation::PartialAggregationConfig;
+
+        let writer = Operator {
             op_struct: Some(OpStruct::ShuffleWriter(ShuffleWriter::default())),
             children: vec![Operator {
-                op_struct: Some(OpStruct::HashAgg(agg)),
+                op_struct: Some(OpStruct::HashAgg(HashAggregate::default())),
                 ..Default::default()
             }],
             ..Default::default()
         };
-        let ratio = |plan: &Operator, requested: f64| {
+        for (plan, native_shuffle, requested, numerical_differences) in [
+            (&writer, true, 0.8, false),
+            (&writer, true, 0.5, true),
+            (&writer, true, 1.1, false),
+            (&writer.children[0], false, 0.8, true),
+        ] {
             let mut config = SessionConfig::new();
             config
                 .options_mut()
@@ -2028,7 +2009,7 @@ mod tests {
                 .options_mut()
                 .execution
                 .skip_partial_aggregation_probe_ratio_threshold = requested;
-            configure_skip_partial_aggregation(&mut config, plan);
+            configure_skip_partial_aggregation(&mut config, plan, numerical_differences);
             assert_eq!(
                 config
                     .options()
@@ -2036,71 +2017,17 @@ mod tests {
                     .skip_partial_aggregation_probe_rows_threshold,
                 37
             );
-            config
-                .options()
-                .execution
-                .skip_partial_aggregation_probe_ratio_threshold
-        };
-
-        for agg in [
-            partial.clone(),
-            HashAggregate {
-                agg_exprs: vec![],
-                ..partial.clone()
-            },
-            HashAggregate {
-                agg_exprs: vec![count.clone(), count],
-                ..partial.clone()
-            },
-        ] {
-            let plan = writer(agg);
-            assert_eq!(ratio(&plan, 0.8), 0.8);
-            assert_eq!(ratio(&plan, 0.5), 0.5);
-            assert_eq!(ratio(&plan, 1.1), 1.1);
-            // Non-native shuffle / standalone native blocks stay disabled.
-            assert_eq!(ratio(&plan.children[0], 0.8), 1.1);
-        }
-
-        for agg in [
-            HashAggregate {
-                agg_exprs: vec![sum],
-                ..partial.clone()
-            },
-            HashAggregate {
-                agg_exprs: vec![AggExpr::default()],
-                ..partial.clone()
-            },
-            HashAggregate {
-                agg_exprs: vec![AggExpr {
-                    expr_struct: Some(AggExprStruct::Count(Count {
-                        children: vec![Expr::default(), Expr::default()],
-                    })),
-                    ..Default::default()
-                }],
-                ..partial.clone()
-            },
-            HashAggregate {
-                mode: AggregateMode::PartialMerge as i32,
-                ..partial.clone()
-            },
-            HashAggregate {
-                expr_modes: vec![AggregateMode::PartialMerge as i32],
-                ..partial.clone()
-            },
-            HashAggregate {
-                mode: 99,
-                ..partial.clone()
-            },
-        ] {
-            let plan = writer(agg);
-            assert_eq!(ratio(&plan, 0.8), 1.1);
-            // An eligible sibling or a Final parent must not hide the unsafe child.
-            let mut nested = writer(HashAggregate {
-                mode: AggregateMode::Final as i32,
-                ..partial.clone()
-            });
-            nested.children[0].children = plan.children;
-            assert_eq!(ratio(&nested, 0.8), 1.1);
+            assert_eq!(
+                config
+                    .options()
+                    .execution
+                    .skip_partial_aggregation_probe_ratio_threshold,
+                1.1
+            );
+            let policy = config.get_extension::<PartialAggregationConfig>().unwrap();
+            assert_eq!(policy.probe_ratio_threshold, requested);
+            assert_eq!(policy.native_shuffle, native_shuffle);
+            assert_eq!(policy.allow_numerical_differences, numerical_differences);
         }
     }
 

@@ -22,6 +22,7 @@ pub mod jni_api;
 pub(crate) mod merge_as_partial;
 pub(crate) mod metrics;
 pub mod operators;
+pub(crate) mod partial_aggregation;
 pub(crate) mod planner;
 pub mod serde;
 pub use datafusion_comet_shuffle as shuffle;

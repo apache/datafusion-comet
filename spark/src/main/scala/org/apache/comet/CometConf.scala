@@ -952,6 +952,28 @@ object CometConf extends ShimCometConf {
     .booleanConf
     .createWithDefault(false)
 
+  val COMET_EXEC_PARTIAL_AGGREGATION_BYPASS_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.exec.aggregate.partialBypass.enabled")
+      .category(CATEGORY_TUNING)
+      .doc(
+        "Whether eligible native partial aggregates may bypass local grouping when the " +
+          "observed reduction is too small. Bypassed rows are emitted as intermediate " +
+          "aggregate states for the downstream merge. This may increase shuffle volume.")
+      .booleanConf
+      .createWithDefault(true)
+
+  val COMET_EXEC_PARTIAL_AGGREGATION_BYPASS_ALLOW_NUMERICAL_DIFFERENCES: ConfigEntry[Boolean] =
+    conf("spark.comet.exec.aggregate.partialBypass.allowNumericalDifferences")
+      .category(CATEGORY_TUNING)
+      .doc(
+        "Allow partial aggregation bypass when regrouping inputs may change numerical " +
+          "results or overflow behavior. Applies to floating-point SUM, all AVG (including " +
+          "integer inputs), statistical aggregates, decimal SUM, and ANSI/TRY integer SUM. " +
+          "Differences can include rounding, finite/NaN/infinite values, null results, and " +
+          "errors relative to ordinary Spark aggregation. Disabled by default.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_ENABLE_PARTIAL_HASH_AGGREGATE: ConfigEntry[Boolean] =
     conf("spark.comet.testing.aggregate.partialMode.enabled")
       .internal()

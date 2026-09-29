@@ -107,6 +107,27 @@ by the reader. An attached filter does not guarantee that any row groups are pru
 probe scan's `bytes_scanned` and `row_groups_pruned_statistics` with filtering disabled to assess
 reader savings. Existing join, scan, and intervening filter metrics retain their own meanings.
 
+### Partial Hash Aggregation
+
+These native metric names are exported to the corresponding Spark SQL metrics. They apply to
+partial operators; zero values on final operators do not measure final input volume.
+
+| Metric                                 | Description                                                                                |
+| -------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `input_rows`                           | Grouped input plus rows bypassing local grouping.                                          |
+| `reduction_factor_total`               | Rows processed by ordinary partial aggregation before bypass.                              |
+| `reduction_factor_part`                | Grouped states emitted by ordinary partial aggregation, excluding singleton bypass states. |
+| `skipped_aggregation_rows`             | Rows emitted as states without local grouping. A positive value proves bypass activated.   |
+| `partial_bypass_eligible_partitions`   | Partition executions whose operator is qualified for the adaptive probe.                   |
+| `partial_bypass_ineligible_partitions` | Partition executions excluded by the operator's policy.                                    |
+
+On a successful task, `input_rows = reduction_factor_total + skipped_aggregation_rows`.
+After a single transition, the denominator records the prefix size at the decision. Eligibility
+does not imply activation: low-cardinality groups, ordered input, or too few rows can leave
+`skipped_aggregation_rows` at zero. Native explain output includes the policy reason on
+`CometPartialAggregationExec`. Compare the final-aggregate and shuffle metrics as well as the
+partial operator when evaluating [adaptive partial aggregation](tuning/operators.md#adaptive-partial-aggregation).
+
 ### Exchange
 
 Comet adds some additional metrics:
