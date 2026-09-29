@@ -33,7 +33,6 @@ import org.slf4j.LoggerFactory;
 
 import org.apache.spark.SparkConf;
 import org.apache.spark.TaskContext;
-import org.apache.spark.executor.ShuffleWriteMetrics;
 import org.apache.spark.serializer.SerializationStream;
 import org.apache.spark.serializer.SerializerInstance;
 import org.apache.spark.shuffle.ShuffleWriteMetricsReporter;
@@ -183,7 +182,7 @@ public final class CometDiskBlockWriter {
     spilling = true;
 
     synchronized (CometDiskBlockWriter.this) {
-      totalWritten += activeWriter.doSpilling(false);
+      totalWritten += activeWriter.doSpilling();
       activeWriter.freeMemory();
     }
 
@@ -241,7 +240,7 @@ public final class CometDiskBlockWriter {
   }
 
   FileSegment close() throws IOException {
-    totalWritten += activeWriter.doSpilling(true);
+    totalWritten += activeWriter.doSpilling();
 
     if (outputRecords != insertRecords) {
       throw new RuntimeException(
@@ -318,20 +317,14 @@ public final class CometDiskBlockWriter {
       return rowPartition.getNumRows();
     }
 
-    /** Spills the current in-memory records of this `ArrowIPCWriter` to disk. */
-    long doSpilling(boolean isLast) throws IOException {
-      final ShuffleWriteMetricsReporter writeMetricsToUse;
-
-      if (isLast) {
-        // We're writing the final non-spill file, so we _do_ want to count this as shuffle bytes.
-        writeMetricsToUse = writeMetrics;
-      } else {
-        // We're spilling, so bytes written should be counted towards spill rather than write.
-        // Create a dummy WriteMetrics object to absorb these metrics, since we don't want to count
-        // them towards shuffle bytes written.
-        writeMetricsToUse = new ShuffleWriteMetrics();
-      }
-
+    /**
+     * Writes the current in-memory records of this `ArrowIPCWriter` to the partition file as one
+     * batch. Every batch, whether written on reaching the batch size, under memory pressure, or on
+     * close, is appended to the same file, which becomes part of the map output. So all of them
+     * count toward shuffle bytes written, as in Spark's `BypassMergeSortShuffleWriter`, and none
+     * toward spill.
+     */
+    long doSpilling() throws IOException {
       final long written;
 
       synchronized (file) {
@@ -341,22 +334,11 @@ public final class CometDiskBlockWriter {
                 dataTypes,
                 file,
                 rowPartition,
-                writeMetricsToUse,
+                writeMetrics,
                 preferDictionaryRatio,
                 compressionCodec,
                 compressionLevel,
                 tracingEnabled);
-      }
-
-      // Update metrics
-      synchronized (writeMetrics) {
-        if (!isLast) {
-          writeMetrics.incRecordsWritten(
-              ((ShuffleWriteMetrics) writeMetricsToUse).recordsWritten());
-          taskContext
-              .taskMetrics()
-              .incDiskBytesSpilled(((ShuffleWriteMetrics) writeMetricsToUse).bytesWritten());
-        }
       }
 
       return written;

@@ -85,6 +85,8 @@ class CometDiskBlockWriterSuite extends AnyFunSuite {
       val writersB = new JLinkedList[CometDiskBlockWriter]()
       val serializer = new UnsafeRowSerializer(1).newInstance()
       val fileB = new File(tempDir, "taskB-partition0")
+      val writeMetricsA = new ShuffleWriteMetrics
+      val writeMetricsB = new ShuffleWriteMetrics
       def newTaskAWriter(partition: Int): CometDiskBlockWriter =
         new CometDiskBlockWriter(
           new File(tempDir, s"taskA-partition$partition"),
@@ -92,7 +94,7 @@ class CometDiskBlockWriterSuite extends AnyFunSuite {
           taskContextA,
           serializer,
           schema,
-          new ShuffleWriteMetrics,
+          writeMetricsA,
           conf,
           false,
           writersA)
@@ -105,7 +107,7 @@ class CometDiskBlockWriterSuite extends AnyFunSuite {
         taskContextB,
         serializer,
         schema,
-        new ShuffleWriteMetrics,
+        writeMetricsB,
         conf,
         false,
         writersB)
@@ -165,14 +167,14 @@ class CometDiskBlockWriterSuite extends AnyFunSuite {
       assert(writerA1.getOutputRecords > 0)
       assert(writerA2.getOutputRecords > 0)
 
-      // Task A resolved its memory pressure by spilling its own data...
-      assert(taskContextA.taskMetrics.diskBytesSpilled > 0)
+      // Task A resolved its memory pressure by writing out its own buffered rows...
+      assert(writeMetricsA.bytesWritten > 0)
       assert(writerA0.getOutputRecords > 0)
       // ... and task B's buffered rows were not spilled, not written out, and not charged.
       assert(allocatorB.getUsed == 2 * pageSize)
       assert(writerB.getActiveMemoryUsage == 2 * pageSize)
       assert(writerB.getOutputRecords == 0)
-      assert(taskContextB.taskMetrics.diskBytesSpilled == 0)
+      assert(writeMetricsB.bytesWritten == 0)
       assert(fileB.length() == 0)
 
       val segmentA0 = writerA0.close()
@@ -188,6 +190,14 @@ class CometDiskBlockWriterSuite extends AnyFunSuite {
       assert(segmentA2.length > 0)
       assert(segmentB.length > 0)
       assert(writersA.isEmpty && writersB.isEmpty)
+      // The early flushes went to the partition files, which become the map output, so they
+      // count as shuffle bytes written and not as spill.
+      val filesA = Seq(segmentA0, segmentA1, segmentA2).map(_.file)
+      assert(writeMetricsA.bytesWritten == filesA.map(_.length()).sum)
+      assert(writeMetricsB.bytesWritten == fileB.length())
+      assert(writeMetricsA.recordsWritten == rowsA0 + rowsA1 + rowsA2)
+      assert(taskContextA.taskMetrics.diskBytesSpilled == 0)
+      assert(taskContextB.taskMetrics.diskBytesSpilled == 0)
     } finally {
       Utils.deleteRecursively(tempDir)
       tmmA.cleanUpAllAllocatedMemory()
