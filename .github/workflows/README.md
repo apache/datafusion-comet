@@ -56,15 +56,16 @@ and has to run after the commit is on main, and `pr_build_linux`, because of
 `actions/cache` scoping. A pull request can only restore caches saved on its
 own branch or on `main`, and the queue runs on a throwaway
 `gh-readonly-queue/*` branch whose caches are deleted with it. Without a push
-run, a `Cargo.lock` or `pom.xml` change would leave the cargo-ci, cargo-debug,
-Maven and TPC-H/TPC-DS caches on `main` stale until the next unrelated change.
+run, a `Cargo.lock` or `pom.xml` change would leave the cargo-ci, Maven and
+TPC-H/TPC-DS caches on `main` stale until the next unrelated change.
 
 Warming those caches is the only thing the push run is for, so on `push` the
-Linux build runs in **cache-refresh-only** mode: `build-native`,
-`linux-test-rust` and the two TPC-H/TPC-DS jobs, each stopping once its cache
-entry is written, and nothing else. The lints, the `linux-test` matrix and
-the TPC query runs are skipped, which takes the push tier from 587
-runner-minutes to about 73. Three POLICY outputs express this: `build_linux`
+Linux build runs in **cache-refresh-only** mode: `build-native` and the two
+TPC-H/TPC-DS jobs, each stopping once its cache entry is written, and nothing
+else. The lints, the Rust tests, the `linux-test` matrix and the TPC query runs
+are skipped, which takes the push tier from 587 runner-minutes to about 40.
+`linux-test-rust` writes no cache: a debug `native/target` is 4-5 GB, more than
+the rest of main's entries could leave room for (issue #6387). Three POLICY outputs express this: `build_linux`
 says whether the workflow runs at all, `build_linux_full` whether it runs the
 lints and tests too, and `build_linux_all_profiles` whether the `linux-test`
 matrix covers every Spark profile or only the default one. `ci.yml` folds the

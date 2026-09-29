@@ -495,9 +495,8 @@ CHECKOUT_USES = re.compile(r"uses:\s*actions/checkout@")
 # file has to carry the guard.
 CACHE_REFRESH_WORKFLOW = WORKFLOWS / "pr_build_linux.yml"
 CACHE_REFRESH_JOBS = {
-    "lint": "gates build-native and linux-test-rust, and costs 40 seconds",
+    "lint": "gates build-native, and costs 40 seconds",
     "build-native": "writes the cargo-ci cache (native/target, CI profile)",
-    "linux-test-rust": "writes the cargo-debug cache (native/target, debug)",
     "verify-benchmark-results-tpch": "writes the TPC-H SF=1 dataset and java-maven caches",
     "verify-benchmark-results-tpcds": "writes the TPC-DS SF=1 dataset and java-maven caches",
 }

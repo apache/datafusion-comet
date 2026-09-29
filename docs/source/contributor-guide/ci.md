@@ -47,7 +47,7 @@ flowchart LR
   QUEUE["Queue tier, on top of the PR tier<br>Spark SQL, Spark 4.1<br>Iceberg 1.11<br>macOS build and Comet suites<br>Benchmark check, Delta gate<br>PyArrow UDF, Spark 4.0 / 4.1 / 4.2"]
   NIGHTLY["Nightly tier<br>Comet suites, Spark 3.4 / 3.5 / 4.0 / 4.2<br>Spark SQL, Spark 3.5 / 4.0 / 4.2<br>Iceberg 1.8 / 1.9 / 1.10"]
   S34["Neither tier<br>Spark SQL, Spark 3.4"]
-  CACHE["Cache-refresh-only mode<br>the four cache-writing jobs, plus Lint"]
+  CACHE["Cache-refresh-only mode<br>the three cache-writing jobs, plus Lint"]
 ```
 
 Suite by suite:
@@ -80,10 +80,10 @@ pull request can only restore caches saved on its own branch or on `main`, and t
 temporary branch takes its caches with it when it is deleted.
 
 That push run is for the caches and nothing else, so it runs in **cache-refresh-only** mode: only
-the four jobs that own a cache entry (the native CI build, the Rust tests, and the two TPC-H/TPC-DS
-jobs, the last two stopping before their query passes), plus the short `Lint` job the native jobs
-depend on. The lints and the Comet test matrix are skipped, which is the difference between 587
-runner-minutes a push and about 73. If you add a job to `pr_build_linux.yml`, give it
+the three jobs that own a cache entry (the native CI build and the two TPC-H/TPC-DS jobs, the last
+two stopping before their query passes), plus the short `Lint` job the native build depends on. The
+lints, the Rust tests and the Comet test matrix are skipped, which is the difference between 587
+runner-minutes a push and about 40. If you add a job to `pr_build_linux.yml`, give it
 `if: ${{ !inputs.cache-refresh-only }}` unless it writes a cache that `main` needs;
 `dev/ci/check-ci-config.py` fails the build if you forget.
 
