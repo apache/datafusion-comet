@@ -802,6 +802,8 @@ message Projection {
 
 message Filter {
   spark.spark_expression.Expr predicate = 1;
+  // Explicit opt-in for a deterministic residual. Absent metadata preserves the safe default.
+  bool allow_runtime_filter_pushdown = 2;
 }
 
 message Sort {
