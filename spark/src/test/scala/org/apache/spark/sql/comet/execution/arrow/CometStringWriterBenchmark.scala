@@ -172,7 +172,7 @@ object CometStringWriterBenchmark extends BenchmarkBase {
               val destination = if (grow) "growing" else "preallocated"
               val benchmark = new Benchmark(
                 s"String to Arrow: $backing, $shape, $destination",
-                input.rows.length,
+                input.rows.length.toLong,
                 warmupTime = duration,
                 minTime = duration,
                 output = output)

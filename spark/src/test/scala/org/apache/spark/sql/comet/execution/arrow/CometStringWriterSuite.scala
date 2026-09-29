@@ -43,7 +43,7 @@ class CometStringWriterSuite extends AnyFunSuite with Matchers {
 
   private def offHeapString(source: ArrowBuf, bytes: Array[Byte]): UTF8String = {
     source.setZero(0, source.capacity())
-    source.setBytes(sourceOffset, bytes)
+    source.setBytes(sourceOffset.toLong, bytes)
     val value = UTF8String.fromAddress(null, source.memoryAddress() + sourceOffset, bytes.length)
     value.getBaseObject shouldBe null
     value
@@ -132,7 +132,7 @@ class CometStringWriterSuite extends AnyFunSuite with Matchers {
   test("off-heap empty strings grow offsets and validity without growing the data buffer") {
     Using.resource(new RootAllocator(Long.MaxValue)) { allocator =>
       Using.Manager { use =>
-        val source = use(allocator.buffer(sourceOffset + 1))
+        val source = use(allocator.buffer(sourceOffset + 1L))
         val vector = use(new VarCharVector("text", allocator))
         vector.allocateNew(8, 1)
         val initialDataCapacity = vector.getDataBuffer.capacity()
@@ -209,7 +209,7 @@ class CometStringWriterSuite extends AnyFunSuite with Matchers {
     Using.resource(new RootAllocator(Long.MaxValue)) { allocator =>
       Using.Manager { use =>
         val destination = use(allocator.newChildAllocator("destination", 0, 128 * 1024))
-        val source = use(allocator.buffer(256 * 1024 + sourceOffset))
+        val source = use(allocator.buffer(256L * 1024 + sourceOffset))
         val large = offHeapString(source, Array.fill[Byte](256 * 1024)(42))
         var largeValueRead = false
         val failingRow = new GenericInternalRow(Array[Any](large)) {
@@ -241,7 +241,7 @@ class CometStringWriterSuite extends AnyFunSuite with Matchers {
       Seq(false, true).foreach { growOffsets =>
         Using.resource(new RootAllocator(1024 * 1024)) { allocator =>
           Using.Manager { use =>
-            val source = use(allocator.buffer(sourceOffset + 4))
+            val source = use(allocator.buffer(sourceOffset + 4L))
             val vector = use(new VarCharVector("text", allocator))
             vector.allocateNew(8, 4)
             vector.setSafe(0, Array[Byte](42))
