@@ -950,7 +950,7 @@ mod tests {
             let error = cast_array(
                 input,
                 &output_type,
-                &SparkCastOptions::new_without_timezone(EvalMode::Ansi, false),
+                &SparkCastOptions::new_without_timezone(EvalMode::Ansi),
             )
             .unwrap_err();
 
