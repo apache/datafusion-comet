@@ -450,6 +450,20 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_EXEC_JOIN_DYNAMIC_FILTER_ALLOW_DETERMINISTIC_FILTER_PUSHDOWN: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.join.dynamicFilter.allowDeterministicFilterPushdown")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Allow native join runtime filters to reach Parquet readers through deterministic " +
+          "residual predicates. Requires spark.comet.exec.join.dynamicFilter.enabled. " +
+          "This can skip expression errors on rows eliminated before the residual runs, " +
+          "including division-by-zero and ANSI cast errors. Errors on retained rows and " +
+          "Parquet schema conversion checks are preserved. Nondeterministic predicates, " +
+          "computed projections, and limits remain propagation boundaries. When false, " +
+          "only direct-column IS NOT NULL checks combined with AND can be crossed.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_EXEC_TOPK_FUSION_ENABLED: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.topK.fusion.enabled")
       .category(CATEGORY_EXEC)

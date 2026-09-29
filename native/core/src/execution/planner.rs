@@ -2351,12 +2351,13 @@ impl PhysicalPlanner {
                 // Reader attachment replaces the probe filter's child per execution.
                 // Keep its metrics owned by the same Spark filter node.
                 if join.dynamic_filter_enabled && !join.null_aware_anti_join {
-                    let probe = if join.build_side == BuildSide::BuildLeft as i32 {
-                        &mut join_params.right
+                    let (probe, source) = if join.build_side == BuildSide::BuildLeft as i32 {
+                        (&mut join_params.right, &children[1])
                     } else {
-                        &mut join_params.left
+                        (&mut join_params.left, &children[0])
                     };
-                    *probe = Self::prepare_probe_filter_for_runtime_reader(Arc::clone(probe));
+                    *probe =
+                        Self::prepare_probe_filter_for_runtime_reader(Arc::clone(probe), source);
                 }
 
                 let left = Arc::clone(&join_params.left.native_plan);
@@ -2669,12 +2670,21 @@ impl PhysicalPlanner {
     }
 
     /// Keep the Spark filter's metric identity when its reader is replaced for an execution.
-    fn prepare_probe_filter_for_runtime_reader(plan: Arc<SparkPlan>) -> Arc<SparkPlan> {
+    fn prepare_probe_filter_for_runtime_reader(
+        plan: Arc<SparkPlan>,
+        source: &Operator,
+    ) -> Arc<SparkPlan> {
         let Some(filter) = plan.native_plan.downcast_ref::<FilterExec>() else {
             return plan;
         };
         let mut prepared = plan.as_ref().clone();
-        prepared.native_plan = Arc::new(CometFilterExec::from_datafusion(filter.clone()));
+        let allowed = matches!(
+            &source.op_struct,
+            Some(OpStruct::Filter(filter)) if filter.allow_runtime_filter_pushdown
+        );
+        prepared.native_plan = Arc::new(
+            CometFilterExec::from_datafusion(filter.clone()).with_runtime_filter_pushdown(allowed),
+        );
         Arc::new(prepared)
     }
 
@@ -6198,7 +6208,46 @@ mod tests {
             children: vec![child_op],
             op_struct: Some(OpStruct::Filter(spark_operator::Filter {
                 predicate: Some(expr),
+                ..Default::default()
             })),
+        }
+    }
+
+    #[test]
+    fn probe_filter_permission_follows_its_source_operator() {
+        use crate::execution::operators::CometFilterExec;
+
+        for allowed in [false, true] {
+            let mut source = create_filter(create_scan(), 0);
+            let Some(OpStruct::Filter(filter)) = source.op_struct.as_mut() else {
+                unreachable!();
+            };
+            assert!(!filter.allow_runtime_filter_pushdown);
+            filter.allow_runtime_filter_pushdown = allowed;
+            let (_, _, plan) = PhysicalPlanner::default()
+                .create_plan(&source, &mut vec![], 1)
+                .unwrap();
+            let prepared = PhysicalPlanner::prepare_probe_filter_for_runtime_reader(
+                Arc::clone(&plan),
+                &source,
+            );
+            assert_eq!(
+                prepared
+                    .native_plan
+                    .downcast_ref::<CometFilterExec>()
+                    .unwrap()
+                    .allows_runtime_filter_pushdown(),
+                allowed
+            );
+
+            // A native filter cannot borrow another operator's metadata.
+            let mismatched =
+                PhysicalPlanner::prepare_probe_filter_for_runtime_reader(plan, &create_scan());
+            assert!(!mismatched
+                .native_plan
+                .downcast_ref::<CometFilterExec>()
+                .unwrap()
+                .allows_runtime_filter_pushdown());
         }
     }
 

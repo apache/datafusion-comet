@@ -1379,6 +1379,10 @@ object CometFilterExec extends CometOperatorSerde[FilterExec] {
       val filterBuilder = OperatorOuterClass.Filter
         .newBuilder()
         .setPredicate(cond.get)
+        .setAllowRuntimeFilterPushdown(
+          op.condition.deterministic &&
+            CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_ALLOW_DETERMINISTIC_FILTER_PUSHDOWN
+              .get(op.conf))
       Some(builder.setFilter(filterBuilder).build())
     } else {
       None
