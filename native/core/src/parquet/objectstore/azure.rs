@@ -48,9 +48,14 @@
 //!    it too, and `object_store` would otherwise fall through its credential chain to the
 //!    node's managed identity. A blank SAS token or credential value is an error for the
 //!    same reason: `object_store` would send unsigned requests or fall through the chain.
-//!    The one exception is a blank client id or tenant under `MsiTokenProvider`, which
-//!    Hadoop accepts for a system-assigned identity, so it is absent and the builder
-//!    proceeds to the managed identity endpoint with no client id.
+//!    The exceptions are the keys a provider class accepts blank: the client id and tenant
+//!    under `MsiTokenProvider`, which Hadoop accepts for a system-assigned identity, and
+//!    the keys Hadoop reads with a default, the MSI endpoint and authority under
+//!    `MsiTokenProvider` and the authority and token file under
+//!    `WorkloadIdentityTokenProvider`. Those are absent, so the builder proceeds as it
+//!    does when they are unset: to the default managed identity endpoint and authority
+//!    host, which `object_store` defaults to the same URLs as Hadoop, or to
+//!    `AZURE_FEDERATED_TOKEN_FILE` for the token file.
 //! 2. When the Hadoop keys name nothing at all, the `AZURE_*` variables are applied first
 //!    and the Hadoop keys on top. This is what makes AKS Workload Identity work out of the
 //!    box. Transport settings from the environment apply only in this case, alongside the
@@ -110,8 +115,8 @@
 //! | `fs.azure.account.oauth2.msi.endpoint`                   | `MsiEndpoint`          |
 //! | `fs.azure.account.oauth2.msi.authority`                  | `AuthorityHost`        |
 //! | `fs.azure.account.oauth2.token.file`                     | `FederatedTokenFile`   |
-//! | `fs.azure.sas.<container>.<account>`                     | `SasKey`               |
-//! | `fs.azure.sas.fixed.token`                               | `SasKey` (lower priority) |
+//! | `fs.azure.sas.fixed.token`                               | `SasKey`               |
+//! | `fs.azure.sas.<container>.<account>`                     | `SasKey` (lower priority) |
 //!
 //! Hadoop keys outside this table are not translated; the URL supplies the account and
 //! container.
@@ -142,9 +147,24 @@ const HADOOP_OAUTH_PROVIDER_TYPE: &str = "fs.azure.account.oauth.provider.type";
 const HADOOP_MSI_PROVIDER_CLASS: &str = "MsiTokenProvider";
 const HADOOP_WI_PROVIDER_CLASS: &str = "WorkloadIdentityTokenProvider";
 const HADOOP_CLIENT_CREDS_PROVIDER_CLASS: &str = "ClientCredsTokenProvider";
-/// Keys Hadoop reads for `MsiTokenProvider` in a way that accepts an empty string, which
-/// is how a system-assigned identity is configured. A blank value is absent, not an error.
-const HADOOP_MSI_OPTIONAL_KEYS: &[&str] = &[HADOOP_OAUTH_CLIENT_ID, HADOOP_MSI_TENANT];
+/// Keys Hadoop's `getTokenProvider` reads for a provider class in a way that accepts a
+/// blank value, so a blank value is absent, not an error. `MsiTokenProvider` reads the
+/// client id and tenant as plain strings, which is how a system-assigned identity is
+/// configured, and the MSI endpoint and authority through
+/// `getTrimmedPasswordString(key, default)`, which swaps a blank value for the default
+/// IMDS endpoint and `https://login.microsoftonline.com/`. `WorkloadIdentityTokenProvider`
+/// reads the authority the same way, and the token file with the fixed default path
+/// `/var/run/secrets/azure/tokens/azure-identity-token`. `object_store` defaults the
+/// endpoint and authority host to the same URLs. The native scan takes the token file from
+/// `AZURE_FEDERATED_TOKEN_FILE` instead, which AKS sets to that same path, and fails when
+/// the variable is unset, exactly as when the key is unset.
+const HADOOP_MSI_OPTIONAL_KEYS: &[&str] = &[
+    HADOOP_OAUTH_CLIENT_ID,
+    HADOOP_MSI_TENANT,
+    HADOOP_MSI_ENDPOINT,
+    HADOOP_MSI_AUTHORITY,
+];
+const HADOOP_WI_OPTIONAL_KEYS: &[&str] = &[HADOOP_MSI_AUTHORITY, HADOOP_WI_TOKEN_FILE];
 const HADOOP_AUTH_TYPE: &str = "fs.azure.account.auth.type";
 /// Hadoop credential keys, the `AzureConfigKey` each translates to and the mechanism each
 /// belongs to.
@@ -544,9 +564,9 @@ fn key_provider_problem(
 ///
 /// Blank values are errors rather than absent, so a templated configuration that
 /// substitutes an empty string fails loudly instead of silently using another credential.
-/// The exception is the client id and tenant under `MsiTokenProvider`: Hadoop accepts
-/// empty strings there, and a system-assigned identity sets them that way, so they are
-/// absent and the builder proceeds to the managed identity endpoint with no client id.
+/// The exceptions are the keys the active provider class accepts blank
+/// (`optional_provider_keys`): Hadoop reads them with a default or as plain strings, so
+/// they are absent and the builder proceeds as it does when they are unset.
 fn blank_value_problem(
     configs: &HashMap<String, String>,
     account: Option<&str>,
@@ -555,28 +575,37 @@ fn blank_value_problem(
 ) -> Option<String> {
     if let Some((key, value)) = active_sas_token(configs, account, container) {
         if value.trim().is_empty() {
-            let fallback = if key.starts_with(HADOOP_SAS_FIXED_TOKEN) {
-                String::new()
-            } else {
-                format!(
-                    "; `{HADOOP_SAS_FIXED_TOKEN}` is not used as a fallback when a \
-                     container-scoped SAS key is set"
-                )
-            };
-            return Some(format!("`{key}` is blank{fallback}"));
+            return Some(format!("`{key}` is blank"));
         }
     }
-    let msi_provider = active_provider_class(configs, account)
-        .is_some_and(|(_, class)| is_provider_class(&class, HADOOP_MSI_PROVIDER_CLASS));
+    let optional = optional_provider_keys(configs, account);
     HADOOP_CREDENTIAL_MAPPINGS
         .iter()
         .filter(|(base, _, mechanism)| key_is_read(configs, account, oauth_keys, base, *mechanism))
-        .filter(|(base, _, _)| !(msi_provider && HADOOP_MSI_OPTIONAL_KEYS.contains(base)))
+        .filter(|(base, _, _)| !optional.contains(base))
         .find_map(|(base, _, _)| {
             account_scoped_entry(configs, base, account)
                 .filter(|(_, value)| value.trim().is_empty())
                 .map(|(key, _)| format!("`{key}` is blank"))
         })
+}
+
+/// The keys the active provider class accepts blank, or none when there is no provider
+/// class or one the scan rejects.
+fn optional_provider_keys(
+    configs: &HashMap<String, String>,
+    account: Option<&str>,
+) -> &'static [&'static str] {
+    let Some((_, class)) = active_provider_class(configs, account) else {
+        return &[];
+    };
+    if is_provider_class(&class, HADOOP_MSI_PROVIDER_CLASS) {
+        HADOOP_MSI_OPTIONAL_KEYS
+    } else if is_provider_class(&class, HADOOP_WI_PROVIDER_CLASS) {
+        HADOOP_WI_OPTIONAL_KEYS
+    } else {
+        &[]
+    }
 }
 
 /// Whether an explicit `fs.azure.account.auth.type` is one the translated keys satisfy.
@@ -936,7 +965,7 @@ fn translate_hadoop_configs(
         }
     }
 
-    // The container-scoped SAS token wins over the account-level fixed token. A blank
+    // The account-level fixed token wins over the container-scoped SAS token. A blank
     // token is left out so it never reaches the builder; validation reports it as an
     // error before the store is built.
     if let Some((_, sas)) = active_sas_token(configs, account, container) {
@@ -999,15 +1028,16 @@ fn active_sas_token(
     sas_token(configs, account, container)
 }
 
-/// Resolve the SAS token and the key it came from: the container-scoped
-/// `fs.azure.sas.<container>.<account>[.<endpoint-suffix>]` variants first, then the
-/// account-level `fs.azure.sas.fixed.token` that Hadoop's fixed-token provider reads.
+/// Resolve the SAS token and the key it came from: the account-level
+/// `fs.azure.sas.fixed.token` that Hadoop's `AbfsConfiguration.getSASTokenProvider` reads
+/// first, then the container-scoped `fs.azure.sas.<container>.<account>[.<endpoint-suffix>]`
+/// variants, which belong to the WASB driver and are kept as a fallback.
 fn sas_token(
     configs: &HashMap<String, String>,
     account: Option<&str>,
     container: Option<&str>,
 ) -> Option<(String, String)> {
-    let container_scoped = match (container, account) {
+    let container_scoped = || match (container, account) {
         (Some(container), Some(account)) => {
             let mut candidates: Vec<String> = ENDPOINT_SUFFIXES
                 .iter()
@@ -1018,7 +1048,7 @@ fn sas_token(
         }
         _ => None,
     };
-    container_scoped.or_else(|| account_scoped_entry(configs, HADOOP_SAS_FIXED_TOKEN, account))
+    account_scoped_entry(configs, HADOOP_SAS_FIXED_TOKEN, account).or_else(container_scoped)
 }
 
 /// Extract the storage account name from an `abfs[s]://` URL.
@@ -1794,7 +1824,10 @@ mod tests {
     }
 
     #[test]
-    fn container_scoped_sas_token_wins_over_fixed_token() {
+    fn fixed_sas_token_wins_over_container_scoped_token() {
+        // `AbfsConfiguration.getSASTokenProvider` reads `fs.azure.sas.fixed.token` and never
+        // the container-scoped key, so the driver and the native scan must agree on the
+        // fixed token when both are set.
         let configs = hadoop(&[
             ("fs.azure.sas.data.myacct", "sv=2020-08-04&sig=container"),
             (
@@ -1808,7 +1841,7 @@ mod tests {
             .filter(|(k, _)| *k == AzureConfigKey::SasKey)
             .map(|(_, v)| v.as_str())
             .collect();
-        assert_eq!(sas, vec!["sv=2020-08-04&sig=container"]);
+        assert_eq!(sas, vec!["sv=2020-08-04&sig=fixed"]);
     }
 
     #[test]
@@ -2137,21 +2170,46 @@ mod tests {
     }
 
     #[test]
-    fn blank_container_sas_is_not_replaced_by_fixed_token() {
+    fn blank_container_sas_is_ignored_when_fixed_token_is_set() {
+        // The fixed token is read first, so the container-scoped key is never consulted
+        // and its blank value is no error, as it is none for ABFS.
         let configs = hadoop(&[
             ("fs.azure.sas.data.myacct", "  "),
             ("fs.azure.sas.fixed.token", "sv=2020-08-04&sig=fixed"),
         ]);
-        let translated = translate(&configs, Some("myacct"), Some("data"));
-        assert!(!translated.iter().any(|(k, _)| *k == AzureConfigKey::SasKey));
+        let u = url("abfss://data@myacct.dfs.core.windows.net/path/file.parquet");
+        create_store_with_env(&u, &configs, env_of(&[])).expect("store builds");
+        let builder = builder_for(&configs, &[]);
+        assert_eq!(
+            value(&builder, AzureConfigKey::SasKey).as_deref(),
+            Some("sv=2020-08-04&sig=fixed")
+        );
+    }
+
+    #[test]
+    fn blank_container_sas_is_rejected_without_fixed_token() {
+        let configs = hadoop(&[("fs.azure.sas.data.myacct", "  ")]);
         let err = err_of(&configs);
         assert!(
-            err.contains("fs.azure.sas.data.myacct")
-                && err.contains("fs.azure.sas.fixed.token")
-                && err.contains("fallback"),
+            err.contains("`fs.azure.sas.data.myacct` is blank") && !err.contains("fallback"),
             "unexpected error: {err}"
         );
-        assert_hides(&err, &["sv=2020-08-04&sig=fixed"]);
+    }
+
+    #[test]
+    fn blank_fixed_sas_token_is_rejected_even_with_container_token() {
+        // Hadoop treats a blank fixed token as unset and fails the SAS mechanism, so the
+        // native scan reports the blank key rather than reading the container-scoped one.
+        let configs = hadoop(&[
+            ("fs.azure.sas.fixed.token", ""),
+            ("fs.azure.sas.data.myacct", "sv=2020-08-04&sig=container"),
+        ]);
+        let err = err_of(&configs);
+        assert!(
+            err.contains("`fs.azure.sas.fixed.token` is blank"),
+            "unexpected error: {err}"
+        );
+        assert_hides(&err, &["sv=2020-08-04&sig=container"]);
     }
 
     #[test]
@@ -2924,6 +2982,12 @@ mod tests {
             "/var/run/secrets/azure/tokens/token",
         ),
     ];
+    /// Every endpoint the environment could offer in place of a blank Hadoop one.
+    const AMBIENT_ENDPOINTS: &[(&str, &str)] = &[
+        ("IDENTITY_ENDPOINT", "http://ambient.invalid/token"),
+        ("AZURE_MSI_ENDPOINT", "http://ambient.invalid/msi"),
+        ("AZURE_AUTHORITY_HOST", "https://ambient.invalid/"),
+    ];
 
     /// A complete `ClientCredsTokenProvider` configuration, the way Hadoop reads it.
     fn client_creds_with(extra: &[(&str, &str)]) -> HashMap<String, String> {
@@ -3390,5 +3454,125 @@ mod tests {
         assert_builds_client_secret_store(&configs, "client credentials");
         let builder = builder_for(&configs, AMBIENT_CREDENTIALS);
         assert_eq!(value(&builder, AzureConfigKey::AuthorityHost), None);
+    }
+
+    #[test]
+    fn blank_msi_endpoint_and_authority_are_absent_under_msi_provider() {
+        // Hadoop reads both keys for `MsiTokenProvider` with
+        // `getTrimmedPasswordString(key, default)`, which swaps a blank value for the
+        // default IMDS endpoint and `https://login.microsoftonline.com/`. object_store
+        // defaults both the same way, so the builder proceeds to managed identity with
+        // neither set and nothing borrowed from the environment, not even the endpoints
+        // it offers in place of the blank ones.
+        let env = [AMBIENT_CREDENTIALS, AMBIENT_ENDPOINTS].concat();
+        for key in [
+            "fs.azure.account.oauth2.msi.endpoint",
+            "fs.azure.account.oauth2.msi.authority",
+        ] {
+            for blank in ["", " "] {
+                for configs in [
+                    oauth_provider_with(MSI_PROVIDER, &[(key, blank)]),
+                    hadoop(&[
+                        ("fs.azure.account.oauth.provider.type", MSI_PROVIDER),
+                        (key, blank),
+                    ]),
+                ] {
+                    let u = url("abfss://data@myacct.dfs.core.windows.net/path/file.parquet");
+                    if let Err(err) = create_store_with_env(&u, &configs, env_of(&env)) {
+                        panic!("{key}={blank:?}: store must build: {err}");
+                    }
+                    let builder = builder_for(&configs, &env);
+                    assert_eq!(value(&builder, AzureConfigKey::MsiEndpoint), None, "{key}");
+                    assert_eq!(
+                        value(&builder, AzureConfigKey::AuthorityHost),
+                        None,
+                        "{key}"
+                    );
+                    assert_eq!(value(&builder, AzureConfigKey::Token), None, "{key}");
+                    assert_eq!(
+                        value(&builder, AzureConfigKey::FederatedTokenFile),
+                        None,
+                        "{key}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn blank_authority_and_token_file_are_absent_under_workload_identity_provider() {
+        // `WorkloadIdentityTokenProvider` reads `msi.authority` and `token.file` with the
+        // same defaulting getter, so a blank authority is absent, with nothing borrowed
+        // from `AZURE_AUTHORITY_HOST` in its place, and a blank token file (which Hadoop
+        // replaces with its fixed default path) is taken from `AZURE_FEDERATED_TOKEN_FILE`,
+        // exactly as an unset one.
+        let tenant = ("fs.azure.account.oauth2.msi.tenant", "hadoop-tenant");
+        let u = url("abfss://data@myacct.dfs.core.windows.net/path/file.parquet");
+        let env = [AMBIENT_CREDENTIALS, AMBIENT_ENDPOINTS].concat();
+        for blank in ["", " "] {
+            let configs = oauth_provider_with(
+                WI_PROVIDER,
+                &[
+                    tenant,
+                    (
+                        "fs.azure.account.oauth2.token.file",
+                        "/var/run/secrets/hadoop/token",
+                    ),
+                    ("fs.azure.account.oauth2.msi.authority", blank),
+                ],
+            );
+            if let Err(err) = create_store_with_env(&u, &configs, env_of(&env)) {
+                panic!("msi.authority={blank:?}: store must build: {err}");
+            }
+            let builder = builder_for(&configs, &env);
+            assert_eq!(value(&builder, AzureConfigKey::AuthorityHost), None);
+            assert_eq!(
+                value(&builder, AzureConfigKey::FederatedTokenFile).as_deref(),
+                Some("/var/run/secrets/hadoop/token")
+            );
+            assert_eq!(value(&builder, AzureConfigKey::Token), None);
+
+            let configs = oauth_provider_with(
+                WI_PROVIDER,
+                &[tenant, ("fs.azure.account.oauth2.token.file", blank)],
+            );
+            if let Err(err) = create_store_with_env(&u, &configs, env_of(&env)) {
+                panic!("token.file={blank:?}: store must build: {err}");
+            }
+            let builder = builder_for(&configs, &env);
+            assert_eq!(
+                value(&builder, AzureConfigKey::FederatedTokenFile).as_deref(),
+                Some("/var/run/secrets/azure/tokens/token")
+            );
+            assert_eq!(value(&builder, AzureConfigKey::AuthorityHost), None);
+            assert_eq!(value(&builder, AzureConfigKey::AccessKey), None);
+            // Without a token file in the environment either, the error names both
+            // sources, as it does for an unset key.
+            let err = err_of(&configs);
+            assert!(
+                err.contains("fs.azure.account.oauth2.token.file")
+                    && err.contains("AZURE_FEDERATED_TOKEN_FILE")
+                    && !err.contains("blank"),
+                "token.file={blank:?}: unexpected error: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn blank_defaulted_keys_are_still_rejected_without_a_provider_class() {
+        // With no provider class every OAuth key is read and none is defaulted, so a
+        // blank endpoint, authority or token file is reported by its key as before.
+        for key in [
+            "fs.azure.account.oauth2.msi.endpoint",
+            "fs.azure.account.oauth2.msi.authority",
+            "fs.azure.account.oauth2.token.file",
+        ] {
+            let configs = hadoop(&[(key, "")]);
+            let err = err_of(&configs);
+            assert!(
+                err.contains(key) && err.contains("blank"),
+                "key {key}: unexpected error: {err}"
+            );
+        }
     }
 }
