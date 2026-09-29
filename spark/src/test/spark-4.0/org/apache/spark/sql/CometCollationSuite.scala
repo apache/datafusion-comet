@@ -28,7 +28,7 @@ import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.types.StringType
 
-import org.apache.comet.{CometConf, CometExplainInfo}
+import org.apache.comet.{CometConf, CometExplainInfo, ExtendedExplainInfo}
 import org.apache.comet.serde.OperatorOuterClass
 
 class CometCollationSuite extends CometTestBase {
@@ -321,17 +321,39 @@ class CometCollationSuite extends CometTestBase {
       "Only the default datetime format pattern `yyyy-MM-dd HH:mm:ss` is supported")
   }
 
-  test("make_timestamp rejects non-UTF8_BINARY collated timezone (issue #4646)") {
-    checkDatetimeFallback(
-      "SELECT make_timestamp(2024, 6, 15, 10, 30, 45.0, _9 COLLATE utf8_lcase) " +
-        "FROM datetime_collation_tbl",
-      "make_timestamp does not support non-UTF8_BINARY collations")
-  }
-
-  test("to_unix_timestamp rejects non-UTF8_BINARY collated format (issue #4646)") {
-    checkDatetimeFallback(
-      "SELECT to_unix_timestamp(_3, _6 COLLATE utf8_lcase) FROM datetime_collation_tbl",
-      "to_unix_timestamp does not support non-UTF8_BINARY collations")
+  for ((exprName, functionName, arguments) <- Seq(
+      ("MakeTimestamp", "make_timestamp", "2024, 6, 15, 10, 30, 45.0, _9 COLLATE utf8_lcase"),
+      ("ToUnixTimestamp", "to_unix_timestamp", "_3, _6 COLLATE utf8_lcase"))) {
+    for (codegenEnabled <- Seq("false", "true")) {
+      test(
+        s"$functionName with collated arguments has no native opt-in " +
+          s"(codegen=$codegenEnabled, issue #6080)") {
+        withDatetimeCollationTable {
+          for (allowIncompatible <- Seq("false", "true")) {
+            withSQLConf(
+              CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> codegenEnabled,
+              CometConf.getExprAllowIncompatConfigKey(exprName) -> allowIncompatible,
+              "spark.sql.optimizer.excludedRules" ->
+                "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+              val query = s"SELECT $functionName($arguments) FROM datetime_collation_tbl"
+              val (_, cometPlan) = if (codegenEnabled == "true") {
+                checkSparkAnswerAndImpl(query, native = Seq.empty, dispatched = Seq(functionName))
+              } else {
+                checkSparkAnswerAndFallbackReason(
+                  query,
+                  s"$functionName: ${CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key}=false")
+              }
+              val explain = new ExtendedExplainInfo().generateExtendedInfo(cometPlan)
+              assert(!explain.contains("allowIncompatible"), explain)
+              assert(
+                !explain.contains(s"A native implementation of $exprName is available"),
+                explain)
+              assert(!explain.contains("does not support non-UTF8_BINARY collations"), explain)
+            }
+          }
+        }
+      }
+    }
   }
 
   test("convert_timezone rejects non-UTF8_BINARY collated timezone (issue #4646)") {

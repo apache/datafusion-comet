@@ -56,7 +56,7 @@ import com.google.common.base.Objects
 import com.google.protobuf.CodedOutputStream
 
 import org.apache.comet.{CometConf, CometExecIterator, CometRuntimeException, ConfigEntry, ContribServices}
-import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleEnabled, withFallbackReason}
+import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleEnabled, isSpark35Plus, withFallbackReason}
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.rules.CometExecRule
 import org.apache.comet.serde.{CometOperatorSerde, Compatible, OperatorOuterClass, QueryContextInterner, SupportLevel, Unsupported}
@@ -137,7 +137,7 @@ private[comet] object PlanDataInjector extends Logging {
    * xxhash64 and runs at memory speed over the byte array.
    */
   def planFingerprint(planBytes: Array[Byte]): Long =
-    XXH64.hashUnsafeBytes(planBytes, Platform.BYTE_ARRAY_OFFSET, planBytes.length, 42L)
+    XXH64.hashUnsafeBytes(planBytes, Platform.BYTE_ARRAY_OFFSET.toLong, planBytes.length, 42L)
 
   /**
    * A prepared common message together with the exact finalized bytes it was prepared from.
@@ -290,8 +290,9 @@ private[comet] object PlanDataInjector extends Logging {
   // SparkContext in the JVM, so a recreated context would otherwise keep stacking new scan keys
   // under ids the last context already used. The shuffle managers call this from
   // unregisterShuffle.
-  private[comet] def releasePreparedShuffle(shuffleId: Int): Unit =
-    shufflePreparedCommons.remove(Integer.valueOf(shuffleId))
+  private[comet] def releasePreparedShuffle(shuffleId: Int): Unit = {
+    val _ = shufflePreparedCommons.remove(Integer.valueOf(shuffleId))
+  }
 
   // Both stores are JVM-wide statics that assume one active SparkContext per JVM, so the shuffle
   // managers drop them together from stop, before the next context can fill them.
@@ -753,8 +754,8 @@ object CometExec {
  * Built once on the driver from the SparkPlan tree, then consumed by either
  * [[CometNativeExec.executeColumnarWithContext]] (to build a [[CometExecRDD]]) or the
  * native-shuffle path (to drive [[CometNativeShuffleWriter]]). Captures broadcast partition
- * alignment, plan-data, subqueries, and encryption options so each consumer doesn't re-walk the
- * tree.
+ * alignment, plan-data, subqueries, encryption options, and per-partition file paths so each
+ * consumer doesn't re-walk the tree.
  */
 private[comet] case class NativeExecContext(
     inputs: Seq[RDD[_]],
@@ -770,7 +771,9 @@ private[comet] case class NativeExecContext(
     // binary when this context rides on the non-transient CometShuffleDependency.nativeShuffleSpec.
     @transient perPartitionByKey: Map[String, Array[Array[Byte]]],
     shuffleScanIndices: Set[Int],
-    hasScanInput: Boolean) {
+    hasScanInput: Boolean,
+    // Like plan data, file paths are sliced onto each task's Partition on the driver.
+    @transient perPartitionFilePaths: Array[Seq[String]] = Array.empty) {
   // Catch shape divergence (e.g. broadcast scans with different partition counts after DPP
   // filtering) at construction so consumers don't trip ArrayIndexOutOfBoundsException at
   // partition idx access time.
@@ -849,13 +852,15 @@ abstract class CometNativeExec extends CometExec {
       ctx.subqueries,
       ctx.broadcastedHadoopConfForEncryption,
       ctx.encryptedFilePaths,
-      ctx.shuffleScanIndices) {
+      ctx.shuffleScanIndices,
+      perPartitionFilePaths = ctx.perPartitionFilePaths) {
       override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
-        val res = super.compute(split, context)
+        // Register before super.compute creates the CometExecIterator, so this listener runs
+        // after the iterator's close has published the final scan metrics.
         if (ctx.hasScanInput) {
           Option(context).foreach(nativeMetrics.reportScanInputMetrics)
         }
-        res
+        super.compute(split, context)
       }
     }
   }
@@ -1041,6 +1046,23 @@ abstract class CometNativeExec extends CometExec {
       throw new CometRuntimeException(s"No input for CometNativeExec:\n $this")
     }
 
+    // Fused scans do not run CometNativeScanExec.doExecuteColumnar, so carry their file paths
+    // through this execution boundary for read-error diagnostics. Only include scans in this
+    // native block and combine paths at the same partition index, never across partitions.
+    val scanFilePaths = sparkPlans.collect { case scan: CometNativeScanExec =>
+      scan.perPartitionFilePaths
+    }
+    val perPartitionFilePaths = if (scanFilePaths.isEmpty) {
+      Array.empty[Seq[String]]
+    } else {
+      require(
+        scanFilePaths.forall(_.length == firstNonBroadcastPlanNumPartitions),
+        "Native scan file paths must match the execution partition count")
+      Array.tabulate[Seq[String]](firstNonBroadcastPlanNumPartitions) { idx =>
+        scanFilePaths.flatMap(_(idx)).toVector
+      }
+    }
+
     NativeExecContext(
       inputs = inputs.toSeq,
       numPartitions = firstNonBroadcastPlanNumPartitions,
@@ -1050,7 +1072,15 @@ abstract class CometNativeExec extends CometExec {
       commonByKey = commonByKey,
       perPartitionByKey = perPartitionByKey,
       shuffleScanIndices = shuffleScanIndices,
-      hasScanInput = sparkPlans.exists(_.isInstanceOf[CometNativeScanExec]))
+      // A leaf Comet scan (`CometNativeScanExec`, `CometIcebergNativeScanExec`) can
+      // contribute `bytes_scanned` / `output_rows` to Spark's task-level input metrics,
+      // which drive the Input column on the UI's Stages and Executors tabs.
+      // Matching on `CometLeafExec` rather than `CometNativeScanExec` keeps every scan
+      // reported once the scan is fused into a larger native block, where only the block
+      // root's `compute` runs. `reportScanInputMetrics` self-filters on the `bytes_scanned`
+      // metric, so leaves that don't track it are a no-op.
+      hasScanInput = sparkPlans.exists(_.isInstanceOf[CometLeafExec]),
+      perPartitionFilePaths = perPartitionFilePaths)
   }
 
   /**
@@ -2234,11 +2264,12 @@ object CometHashAggregateExec
     // Without codegen Spark buffers an ungrouped aggregate in an UnsafeRow, which latches a
     // decimal sum that leaves the precision, while the native accumulator keeps it unbounded.
     // Spark turns codegen off by config, for an imperative aggregate, for a non-leaf
-    // CodegenFallback expression, or when the output or an input exceeds its field limit.
+    // CodegenFallback expression, or when the output or an input exceeds its field limit. The
+    // NO_CODEGEN factory mode turns whole-stage codegen off only from Spark 3.5 (SPARK-44236).
     val codegenOff = !op.conf.wholeStageEnabled ||
-      op.conf
+      (isSpark35Plus && op.conf
         .getConfString(SQLConf.CODEGEN_FACTORY_MODE.key)
-        .equalsIgnoreCase(CodegenObjectFactoryMode.NO_CODEGEN.toString) ||
+        .equalsIgnoreCase(CodegenObjectFactoryMode.NO_CODEGEN.toString)) ||
       op.aggregateExpressions.exists(_.aggregateFunction.isInstanceOf[ImperativeAggregate]) ||
       WholeStageCodegenExec.isTooManyFields(op.conf, op.schema) ||
       op.children.exists(child => WholeStageCodegenExec.isTooManyFields(op.conf, child.schema)) ||

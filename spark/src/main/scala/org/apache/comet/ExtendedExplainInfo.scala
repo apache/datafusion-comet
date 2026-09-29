@@ -42,16 +42,22 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
   def generateExtendedInfo(plan: SparkPlan): String = {
     CometConf.COMET_EXTENDED_EXPLAIN_FORMAT.get() match {
       case CometConf.COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE =>
-        // Generates the extended info in a verbose manner, printing each node along with the
-        // extended information in a tree display.
-        val planStats = new CometCoverageStats()
-        val outString = new StringBuilder()
-        generateTreeString(getActualPlan(plan), 0, Seq(), 0, outString, planStats)
-        s"${outString.toString()}\n$planStats"
+        generateVerboseInfo(plan)
       case CometConf.COMET_EXTENDED_EXPLAIN_FORMAT_FALLBACK =>
         // Generates the extended info as a list of fallback reasons
         getFallbackReasons(plan).mkString("\n").trim
     }
+  }
+
+  /**
+   * The `verbose` format regardless of `spark.comet.explain.format`: each node along with its
+   * extended information in a tree display, followed by the coverage summary.
+   */
+  def generateVerboseInfo(plan: SparkPlan): String = {
+    val planStats = new CometCoverageStats()
+    val outString = new StringBuilder()
+    generateTreeString(getActualPlan(plan), 0, Seq(), 0, outString, planStats)
+    s"${outString.toString()}\n$planStats"
   }
 
   def getFallbackReasons(plan: SparkPlan): Seq[String] = {

@@ -43,7 +43,7 @@ import org.apache.spark.sql.types.{ArrayType, DataTypes, StructField, StructType
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
-import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark41Plus}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark41Plus}
 import org.apache.comet.rules.CometExecRule
 import org.apache.comet.serde.RegrSparkVersions
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, ParquetGenerator, SchemaGenOptions}
@@ -207,6 +207,32 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                  sort_array(collect_set(_2)),
                  size(collect_list(_2))
           FROM tbl GROUP BY _1"""))
+      }
+    }
+  }
+
+  for (grouped <- Seq(false, true)) {
+    test(s"collect_list/collect_set over typed nested NULL (grouped=$grouped)") {
+      // A folded typed NULL reaches native collection normalization as a scalar. Both scalar
+      // and grouped accumulators must ignore the NULL and return empty collections with the
+      // declared nested element type. Require executed native Partial/Final aggregates so that
+      // constant folding or Spark fallback cannot hide the normalization path.
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.SHUFFLE_PARTITIONS.key -> "2") {
+        withParquetTable(Seq((0, 1), (0, 2), (1, 3)), "tbl") {
+          val typedNull = "CAST(NULL AS ARRAY<STRUCT<a: INT, b: STRUCT<x: INT>>>)"
+          val projection = if (grouped) "_1, " else ""
+          val grouping = if (grouped) " GROUP BY _1" else ""
+          val (_, cometPlan) = checkSparkAnswerAndOperator(
+            sql(s"SELECT ${projection}collect_list($typedNull), collect_set($typedNull) " +
+              s"FROM tbl$grouping"))
+          val aggregates = collect(cometPlan) { case aggregate: CometHashAggregateExec =>
+            aggregate
+          }
+          assert(aggregates.exists(_.modes.contains(Partial)))
+          assert(aggregates.exists(_.modes.contains(Final)))
+        }
       }
     }
   }
@@ -1963,11 +1989,18 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               Row(null))
           }
           withSQLConf(SQLConf.CODEGEN_FACTORY_MODE.key -> "NO_CODEGEN") {
-            assertDecimalSumFallsBackLikeSpark(
-              sql("SELECT SUM(v) FROM dec_no_codegen"),
-              reason,
-              ansiEnabled,
-              Row(null))
+            val df = sql("SELECT SUM(v) FROM dec_no_codegen")
+            if (isSpark35Plus) {
+              assertDecimalSumFallsBackLikeSpark(df, reason, ansiEnabled, Row(null))
+            } else {
+              // Before SPARK-44236 (3.5) the factory mode leaves whole-stage codegen on, so
+              // Spark recovers the sum and the aggregate stays native.
+              checkSparkAnswerAndOperator(df)
+              val answer = df.collect().toSeq
+              assert(
+                answer == Seq(Row(recoveredSum.bigDecimal.setScale(38))),
+                s"NO_CODEGEN on Spark 3.4 returned $answer, expected $recoveredSum")
+            }
           }
         }
       }

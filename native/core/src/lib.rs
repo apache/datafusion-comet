@@ -63,7 +63,8 @@ pub mod debug;
 // Global allocator selection. `backend` names the allocator the feature set asks for: jemalloc
 // where it builds, otherwise mimalloc, otherwise the system allocator. The three cfgs partition
 // every feature combination, so exactly one `backend` exists and a combination matching none would
-// fail to compile rather than install nothing and leave the accounting metric reading zero.
+// fail to compile. Whichever it is, it is installed wrapped in the `AccountingAllocator`, which
+// counts the bytes Rust code holds for the memory usage log and the `native_allocated` metric.
 
 /// jemalloc, on targets where it builds, unless mimalloc was also requested.
 #[cfg(all(
@@ -107,17 +108,15 @@ mod backend {
     pub const NAME: &str = "system";
 }
 
-/// The name of the allocator backend this build selected: `"jemalloc"`, `"mimalloc"` or
-/// `"system"`. The selection is decided here and nowhere else, so the `alloc_overhead` benchmark's
-/// liveness check reads it from here rather than re-deriving it from the feature set.
+/// The allocator backend this build selected, its name (`"jemalloc"`, `"mimalloc"` or
+/// `"system"`), and an instance of it. The selection is decided here and nowhere else, so the
+/// `alloc_overhead` benchmark takes the backend from here to measure it with and without the
+/// accounting wrapper.
 #[doc(hidden)]
-pub use backend::NAME as ALLOCATOR_BACKEND;
+pub use backend::{
+    Backend as AllocatorBackend, BACKEND as BACKEND_ALLOCATOR, NAME as ALLOCATOR_BACKEND,
+};
 
-#[cfg(not(feature = "alloc-accounting"))]
-#[global_allocator]
-static GLOBAL: backend::Backend = backend::BACKEND;
-
-#[cfg(feature = "alloc-accounting")]
 #[global_allocator]
 static GLOBAL: alloc_accounting::AccountingAllocator<backend::Backend> =
     alloc_accounting::AccountingAllocator::new(backend::BACKEND);

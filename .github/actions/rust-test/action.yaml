@@ -84,16 +84,13 @@ runs:
         export LD_LIBRARY_PATH=${JAVA_HOME}/lib/server:${LD_LIBRARY_PATH}
         RUST_BACKTRACE=1 cargo nextest run
 
-    # The `alloc-accounting` feature is off by default, so nothing else in CI compiles the
-    # allocator wrapper, its backend selection, or the benchmark's liveness guards. Lint them with
-    # the accounting wrapper over jemalloc, run the accounting tests with the wrapper installed, and
-    # check the system-allocator arm.
-    - name: Check and test the alloc-accounting feature
+    # The steps above lint and test the accounting allocator over the system allocator. Lint and
+    # test it over jemalloc too, since that is a different allocator backend and nothing else in CI
+    # builds it.
+    - name: Check and test the jemalloc allocator backend
       shell: bash
       run: |
         cd native
         export LD_LIBRARY_PATH=${JAVA_HOME}/lib/server:${LD_LIBRARY_PATH}
-        cargo clippy --color=never -p datafusion-comet --all-targets --features jemalloc,alloc-accounting -- -D warnings
-        RUST_BACKTRACE=1 cargo nextest run -p datafusion-comet --lib --features jemalloc,alloc-accounting alloc_accounting
-        cargo check -p datafusion-comet --features alloc-accounting
-
+        cargo clippy --color=never -p datafusion-comet --all-targets --features jemalloc -- -D warnings
+        RUST_BACKTRACE=1 cargo nextest run -p datafusion-comet --lib --features jemalloc alloc_accounting

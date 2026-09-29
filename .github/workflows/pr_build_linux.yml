@@ -240,6 +240,54 @@ jobs:
             /root/.m2/repository
           key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-lint
 
+  # Compiles main and test sources with -Pstrict-warnings, which promotes scalac warnings to
+  # errors, so a change that reintroduces a cleared warning (an Int widened into a Long metric,
+  # a discarded builder result) fails here rather than accumulating. Spark 3.5 only: the profile
+  # passes on the Scala 2.12 profiles, and the Scala 2.13 remainder is tracked in
+  # https://github.com/apache/datafusion-comet/issues/5893.
+  strict-scala-warnings:
+    needs: lint
+    name: Strict Scala warnings (Spark 3.5, JDK 17)
+    if: ${{ !inputs.cache-refresh-only && inputs.profiles != 'nightly' }}
+    runs-on: ubuntu-24.04
+    container:
+      image: amd64/rust
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Rust & Java toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: ${{ env.RUST_VERSION }}
+          jdk-version: 17
+
+      - name: Restore Maven dependencies
+        id: maven-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ~/.m2/repository
+            /root/.m2/repository
+          key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-strict-warnings
+          restore-keys: |
+            ${{ runner.os }}-java-maven-
+
+      - name: Compile with strict warnings
+        run: ./mvnw -B test-compile -Pspark-3.5 -Pstrict-warnings -DskipTests
+
+      # Saved only on main: an entry written from a pull request or a
+      # `gh-readonly-queue/*` branch cannot be restored by any later run, and
+      # it evicts main's from the shared budget. See "Large caches are written
+      # on main only" in README.md.
+      - name: Save Maven dependencies
+        if: ${{ github.ref == 'refs/heads/main' && steps.maven-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ~/.m2/repository
+            /root/.m2/repository
+          key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-strict-warnings
+
   # Compile-only verification for Spark 4.1. Tests are intentionally skipped: the spark-4.1
   # profile is currently a build target only, and several runtime/test failures are tracked
   # in follow-up PRs. Excluded from lint-java because semanticdb-scalac_2.13.17 is not yet
@@ -479,12 +527,15 @@ jobs:
               org.apache.spark.sql.comet.ParquetDatetimeRebaseV2Suite
               org.apache.spark.sql.comet.ParquetEncryptionITCase
               org.apache.comet.exec.CometNativeReaderSuite
+              org.apache.comet.CometVariantProjectionSuite
+              org.apache.spark.sql.CometVariantShreddingSuite
               org.apache.comet.CometIcebergNativeSuite
               org.apache.comet.CometIcebergEncryptionSuite
               org.apache.comet.CometIcebergRewriteActionSuite
               org.apache.comet.CometIcebergWriteActionSuite
               org.apache.comet.CometIcebergWriteDetectionSuite
               org.apache.comet.CometIcebergSystemFunctionSuite
+              org.apache.comet.CometIcebergResidualPushdownSuite
               org.apache.comet.iceberg.IcebergReflectionSuite
               org.apache.comet.serde.operator.IcebergWriteProtoTranslationSuite
               org.apache.comet.csv.CometCsvNativeReadSuite
@@ -507,21 +558,25 @@ jobs:
               org.apache.spark.sql.comet.execution.shuffle.CometCelebornShuffleReaderSuite
               org.apache.spark.sql.comet.execution.shuffle.CometCelebornShufflePlanningSuite
               org.apache.spark.sql.comet.execution.shuffle.CometNativeShuffleInputRDDSuite
+              org.apache.spark.sql.comet.execution.shuffle.CometNativeShuffleWriterSuite
+              org.apache.spark.sql.comet.execution.shuffle.CometNativePositionalRoundRobinSuite
               org.apache.spark.sql.comet.execution.shuffle.CometDiskBlockWriterSuite
               org.apache.comet.exec.CometShuffleEncryptionSuite
               org.apache.comet.exec.CometShuffleManagerSuite
               org.apache.comet.exec.CometAsyncShuffleSuite
               org.apache.comet.exec.DisableAQECometShuffleSuite
               org.apache.comet.exec.DisableAQECometAsyncShuffleSuite
-              org.apache.spark.shuffle.comet.CometBoundedShuffleMemoryAllocatorSuite
+              org.apache.spark.shuffle.comet.CometUnboundedShuffleMemoryAllocatorSuite
               org.apache.spark.shuffle.sort.SpillSorterSuite
           - name: "exec"
             value: |
               org.apache.comet.exec.CometAggregateSuite
               org.apache.comet.exec.CometExec3_4PlusSuite
               org.apache.comet.exec.CometExecSuite
+              org.apache.comet.exec.CometTopKSuite
               org.apache.comet.exec.CometEmptyRelationExecSuite
               org.apache.comet.exec.CometInMemoryCacheSuite
+              org.apache.comet.exec.CometInMemoryCachePruningSuite
               org.apache.comet.exec.CometInMemoryCacheKryoSuite
               org.apache.comet.exec.CometGenerateExecSuite
               org.apache.comet.exec.CometWindowExecSuite
@@ -534,13 +589,17 @@ jobs:
               org.apache.comet.QueryContextInternerSuite
               org.apache.comet.CometSetOpWithGroupBySuite
               org.apache.comet.CometSparkSessionExtensionsSuite
+              org.apache.spark.sql.comet.CometSessionExtensionsSuite
               org.apache.spark.CometPluginsSuite
               org.apache.spark.CometRuntimeShutdownSuite
               org.apache.spark.CometTaskMemoryManagerSuite
               org.apache.spark.CometExecIteratorLifecycleSuite
               org.apache.spark.CometPluginsDefaultSuite
               org.apache.spark.CometPluginsMemoryOverheadWarningSuite
+              org.apache.spark.CometPluginsMemoryPoolFractionWarningSuite
               org.apache.spark.CometPluginsUnifiedModeSuite
+              org.apache.spark.CometPluginsExtensionOnlySuite
+              org.apache.spark.CometPluginsSparkShuffleManagerSuite
               org.apache.comet.rules.CometScanRuleSuite
               org.apache.comet.rules.CometScanContribSuite
               org.apache.comet.rules.CometScanSchemeFallbackSuite
@@ -570,6 +629,7 @@ jobs:
               org.apache.comet.serde.operator.CometNativeScanSuite
               org.apache.spark.sql.CometToPrettyStringSuite
               org.apache.spark.sql.CometCollationSuite
+              org.apache.spark.sql.CometSortCollationSuite
               org.apache.comet.CometFuzzAggregateSuite
               org.apache.spark.sql.comet.execution.arrow.CometArrowStreamSuite
               org.apache.spark.sql.CometSparkInternalFunctionsSuite
@@ -614,6 +674,7 @@ jobs:
               org.apache.comet.CometUuidExpressionSuite
               org.apache.comet.serde.CometScalarFunctionSuite
               org.apache.comet.serde.CometLiteralSuite
+              org.apache.comet.serde.QueryPlanSerdeSuite
               org.apache.comet.CometFallbackInvarianceSuite
       fail-fast: false
     name: ${{ matrix.profile.name }} [${{ matrix.suite.name }}]

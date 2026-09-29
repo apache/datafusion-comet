@@ -191,9 +191,9 @@ redirects = {
     "gluten_comparison.html": "about/gluten_comparison.html",
     "user-guide/overview.html": "../index.html",
     "user-guide/gluten_comparison.html": "../about/gluten_comparison.html",
-    "user-guide/compatibility.html": "latest/compatibility.html",
+    "user-guide/compatibility.html": "latest/compatibility/index.html",
     "user-guide/configs.html": "latest/configs.html",
-    "user-guide/datasource.html": "latest/datasource.html",
+    "user-guide/datasources.html": "latest/datasources.html",
     "user-guide/datatypes.html": "latest/datatypes.html",
     "user-guide/expressions.html": "latest/expressions.html",
     "user-guide/iceberg.html": "latest/iceberg.html",
@@ -203,6 +203,8 @@ redirects = {
     "user-guide/operators.html": "latest/operators.html",
     "user-guide/source.html": "latest/source.html",
     "user-guide/tuning.html": "latest/tuning.html",
+    # The compatibility guide became a directory of pages in #4055.
+    "user-guide/latest/compatibility.html": "compatibility/index.html",
 }
 
 

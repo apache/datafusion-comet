@@ -18,7 +18,7 @@
 use super::*;
 use arrow::{
     array::{Int64Array, ListArray},
-    buffer::OffsetBuffer,
+    buffer::{NullBuffer, OffsetBuffer},
     datatypes::{Field, Fields},
 };
 use parquet::variant::{
@@ -232,6 +232,46 @@ fn assert_spark_unicode_output(output: &StructArray) {
 }
 
 #[test]
+fn shredded_scalar_bytes_match_spark_and_residual_bytes_remain_wide() {
+    // Golden bytes from Spark VariantBuilder.appendLong, including each width boundary.
+    for (number, width) in [(1_i64, 1), (-129, 2), (32768, 4), (2147483648, 8)] {
+        let metadata: ArrayRef = Arc::new(BinaryArray::from(vec![&[1, 1, 0, 1, b'z'][..]]));
+        let mut wide = vec![0x18];
+        wide.extend_from_slice(&number.to_le_bytes());
+        for typed in [true, false] {
+            let physical: ArrayRef = Arc::new(StructArray::new(
+                vec![
+                    Field::new("metadata", DataType::Binary, false),
+                    Field::new("value", DataType::Binary, true),
+                    Field::new("typed_value", DataType::Int64, true),
+                ]
+                .into(),
+                vec![
+                    Arc::clone(&metadata),
+                    Arc::new(BinaryArray::from(vec![(!typed).then_some(wide.as_slice())])),
+                    Arc::new(Int64Array::from(vec![typed.then_some(number)])),
+                ],
+                None,
+            ));
+            let output = normalize_variant_array(&physical, &target_field(false)).unwrap();
+            let output = output.as_struct();
+            assert_eq!(output.column(1).as_binary::<i32>().value(0), [1, 0, 0]);
+            let mut expected = vec![match width {
+                1 => 0x0c,
+                2 => 0x10,
+                4 => 0x14,
+                _ => 0x18,
+            }];
+            expected.extend_from_slice(&number.to_le_bytes()[..width]);
+            assert_eq!(
+                output.column(0).as_binary::<i32>().value(0),
+                if typed { &expected } else { &wide }
+            );
+        }
+    }
+}
+
+#[test]
 fn normalize_full_shredding_reorders_children_and_preserves_parent_nulls() {
     let mut builder = VariantArrayBuilder::new(3);
     builder.append_variant(Variant::from(1_i64));
@@ -269,8 +309,8 @@ fn normalize_full_shredding_reorders_children_and_preserves_parent_nulls() {
     assert!(output.is_null(1));
 
     let variant = VariantArray::try_new(output).unwrap();
-    assert_eq!(variant.value(0), Variant::from(10_i64));
-    assert_eq!(variant.value(2), Variant::from(30_i64));
+    assert_eq!(variant.value(0), Variant::Int8(10));
+    assert_eq!(variant.value(2), Variant::Int8(30));
 }
 
 #[test]
@@ -317,12 +357,127 @@ fn normalize_fully_shredded_object_orders_for_spark() {
 }
 
 #[test]
+fn normalize_shredded_objects_extend_metadata_and_preserve_missing_fields() {
+    let mut builder = VariantBuilder::new();
+    builder.new_object().with_field("z", 9_i64).finish();
+    let (metadata, residual) = builder.finish();
+    let empty_metadata = [1, 0, 0];
+    let field_a: ArrayRef = Arc::new(StructArray::new(
+        vec![
+            Field::new("value", DataType::Binary, true),
+            Field::new("typed_value", DataType::Int64, true),
+        ]
+        .into(),
+        vec![
+            Arc::new(BinaryArray::from(vec![None, None, None, Some(&[0_u8][..])])),
+            Arc::new(Int64Array::from(vec![None, None, Some(1), None])),
+        ],
+        None,
+    ));
+    let field_b: ArrayRef = Arc::new(StructArray::new(
+        vec![Field::new("typed_value", DataType::Int64, true)].into(),
+        vec![Arc::new(Int64Array::from(vec![None, None, None, Some(2)]))],
+        None,
+    ));
+    let typed: ArrayRef = Arc::new(StructArray::new(
+        vec![
+            Field::new("a", field_a.data_type().clone(), false),
+            Field::new("b", field_b.data_type().clone(), false),
+        ]
+        .into(),
+        vec![field_a, field_b],
+        None,
+    ));
+    let input: ArrayRef = Arc::new(StructArray::new(
+        vec![
+            Field::new("metadata", DataType::Binary, true),
+            Field::new("value", DataType::Binary, true),
+            Field::new("typed_value", typed.data_type().clone(), false),
+        ]
+        .into(),
+        vec![
+            Arc::new(BinaryArray::from(vec![
+                None,
+                Some(empty_metadata.as_slice()),
+                Some(metadata.as_slice()),
+                Some(empty_metadata.as_slice()),
+            ])),
+            Arc::new(BinaryArray::from(vec![
+                None,
+                None,
+                Some(residual.as_slice()),
+                None,
+            ])),
+            typed,
+        ],
+        Some(NullBuffer::from(vec![false, true, true, true])),
+    ));
+    let output = normalize_variant_array(&input, &target_field(true)).unwrap();
+    let output = VariantArray::try_new(output.as_ref()).unwrap();
+    assert!(output.is_null(0));
+    for (row, expected) in [
+        (1, vec![]),
+        (
+            2,
+            vec![("a", Variant::Int8(1)), ("z", Variant::from(9_i64))],
+        ),
+        (3, vec![("a", Variant::Null), ("b", Variant::Int8(2))]),
+    ] {
+        let Variant::Object(object) = output.value(row) else {
+            panic!("expected object")
+        };
+        assert_eq!(object.iter().collect::<Vec<_>>(), expected);
+    }
+}
+
+#[test]
+fn normalize_rejects_missing_required_shredding_states() {
+    let wrap = |typed: ArrayRef| -> ArrayRef {
+        Arc::new(StructArray::new(
+            vec![
+                Field::new("metadata", DataType::Binary, false),
+                Field::new("typed_value", typed.data_type().clone(), true),
+            ]
+            .into(),
+            vec![Arc::new(BinaryArray::from(vec![&[1_u8, 0, 0][..]])), typed],
+            None,
+        ))
+    };
+    let missing: ArrayRef = Arc::new(Int64Array::from(vec![None]));
+    let mut inputs = vec![wrap(Arc::clone(&missing))];
+    for nulls in [None, Some(NullBuffer::new_null(1))] {
+        let state: ArrayRef = Arc::new(StructArray::new(
+            vec![Field::new("typed_value", DataType::Int64, true)].into(),
+            vec![Arc::clone(&missing)],
+            nulls.clone(),
+        ));
+        inputs.push(wrap(Arc::new(ListArray::new(
+            Arc::new(Field::new("item", state.data_type().clone(), true)),
+            OffsetBuffer::from_lengths([1]),
+            Arc::clone(&state),
+            None,
+        ))));
+        if nulls.is_some() {
+            inputs.push(wrap(Arc::new(StructArray::new(
+                vec![Field::new("a", state.data_type().clone(), true)].into(),
+                vec![state],
+                None,
+            ))));
+        }
+    }
+    for input in inputs {
+        let error = normalize_variant_array(&input, &target_field(false)).unwrap_err();
+        assert!(error.to_string().contains("MALFORMED_VARIANT"), "{error}");
+    }
+}
+
+#[test]
 fn canonical_and_shredded_values_normalize_equally() {
     let mut builder = VariantArrayBuilder::new(6);
-    builder.new_object().with_field("known", 1_i64).finish();
+    builder.new_object().with_field("known", 1_i8).finish();
     builder
         .new_object()
-        .with_field("known", 2_i64)
+        .with_field("known", 2_i8)
         .with_field("extra", 3_i64)
         .finish();
     builder
@@ -344,7 +499,7 @@ fn canonical_and_shredded_values_normalize_equally() {
     )
     .unwrap();
 
-    let prepared = prepare_variant_for_unshredding(&shredded).unwrap();
+    let prepared = prepare_variant_for_unshredding(&shredded, None).unwrap();
     assert!(Arc::ptr_eq(
         shredded.value_column(),
         prepared.value_column()
@@ -371,7 +526,7 @@ fn canonical_and_shredded_values_normalize_equally() {
 }
 
 #[test]
-fn normalize_unshredded_variant_orders_for_spark_and_is_idempotent() {
+fn normalize_unshredded_variant_preserves_bytes_and_is_idempotent() {
     let keys = unicode_object_keys();
     let mut builder = VariantBuilder::new().with_field_names(keys.iter().map(String::as_str));
     let mut object = builder.new_object();
@@ -397,11 +552,14 @@ fn normalize_unshredded_variant_orders_for_spark_and_is_idempotent() {
     );
 
     let first = normalize_variant_array(&physical, &target_field(false)).unwrap();
-    assert_spark_unicode_output(first.as_struct());
     let first_value = first.as_struct().column(0).as_binary::<i32>().value(0);
+    assert_eq!(first_value, value);
+    assert_eq!(
+        first.as_struct().column(1).as_binary::<i32>().value(0),
+        metadata
+    );
 
     let second = normalize_variant_array(&first, &target_field(false)).unwrap();
-    assert_spark_unicode_output(second.as_struct());
     assert_eq!(
         second.as_struct().column(0).as_binary::<i32>().value(0),
         first_value
@@ -459,7 +617,8 @@ fn unchanged_values_reuse_buffers_and_still_validate() {
         );
     }
     let (output, changed) =
-        rewrite_residual_values(&values, metadata.as_binary::<i32>(), &[Some(0), None]).unwrap();
+        rewrite_residual_values(&values, metadata.as_binary::<i32>(), None, &[Some(0), None])
+            .unwrap();
     assert!(!changed);
     assert!(Arc::ptr_eq(&values, &output));
 
@@ -478,6 +637,7 @@ fn unchanged_values_reuse_buffers_and_still_validate() {
     assert!(rewrite_residual_values(
         &values,
         missing_metadata.as_binary::<i32>(),
+        None,
         &[Some(0), Some(1)],
     )
     .is_err());
@@ -511,6 +671,7 @@ fn lazy_rewrites_preserve_prefix_nulls_and_suffix() {
     let (output, changed) = rewrite_residual_values(
         &mixed,
         metadata.as_binary::<i32>(),
+        None,
         &[Some(0), None, Some(2), None],
     )
     .unwrap();
@@ -525,25 +686,30 @@ fn lazy_rewrites_preserve_prefix_nulls_and_suffix() {
     );
 }
 
-// Run explicitly with --ignored --nocapture; fixture construction is outside the timed loop.
+// Run explicitly with --release --features jemalloc -- --ignored --nocapture.
+// Fixture construction is outside the timed loop; every row repeats its dictionary.
 #[test]
 #[ignore]
 fn benchmark_variant_buffer_reuse() {
     use std::{hint::black_box, time::Instant};
     let rows = 4096;
     let payload = "x".repeat(4096);
-    let mut strings = VariantArrayBuilder::new(rows);
     let mut objects = VariantArrayBuilder::new(rows);
+    let mut empty_keys = VariantArrayBuilder::new(rows);
     for _ in 0..rows {
-        strings.append_variant(Variant::from(payload.as_str()));
         objects
             .new_object()
-            .with_field("known", 1_i64)
+            .with_field("known", 1_i8)
             .with_field("payload", payload.as_str())
             .finish();
+        empty_keys
+            .new_object()
+            .with_field("known", 1_i8)
+            .with_field("", payload.as_str())
+            .finish();
     }
-    let strings = strings.build();
     let objects = objects.build();
+    let empty_keys = empty_keys.build();
     let shredded = shred_variant(
         &objects,
         &DataType::Struct(Fields::from(vec![Field::new(
@@ -553,30 +719,67 @@ fn benchmark_variant_buffer_reuse() {
         )])),
     )
     .unwrap();
-    let target = target_field(false);
-    let DataType::Struct(fields) = target.data_type() else {
-        unreachable!()
-    };
-    let strings: ArrayRef = Arc::new(StructArray::new(
-        fields.clone(),
+    let full = shred_variant(
+        &objects,
+        &DataType::Struct(Fields::from(vec![
+            Field::new("known", DataType::Int64, true),
+            Field::new("payload", DataType::Utf8, true),
+        ])),
+    )
+    .unwrap();
+    let empty_metadata: ArrayRef = Arc::new(BinaryArray::from_iter_values((0..rows).map(|row| {
+        let mut metadata = binary_value(empty_keys.metadata_column(), row)
+            .unwrap()
+            .to_vec();
+        metadata[0] &= !0x10;
+        metadata
+    })));
+    let empty: ArrayRef = Arc::new(StructArray::new(
         vec![
-            cast(strings.value_column().as_ref(), &DataType::Binary).unwrap(),
-            cast(strings.metadata_column().as_ref(), &DataType::Binary).unwrap(),
+            Field::new("metadata", DataType::Binary, false),
+            Field::new(
+                "value",
+                empty_keys.value_column().data_type().clone(),
+                false,
+            ),
+            Field::new("typed_value", DataType::Int64, true),
+        ]
+        .into(),
+        vec![
+            empty_metadata,
+            Arc::clone(empty_keys.value_column()),
+            Arc::new(Int64Array::from(vec![None; rows])),
         ],
         None,
     ));
-    let shredded: ArrayRef = Arc::new(shredded.into_inner());
-    for (name, input) in [("canonical", strings), ("partially_shredded", shredded)] {
+    let target = target_field(false);
+    let cases: [(&str, ArrayRef); 4] = [
+        ("canonical", Arc::new(objects.into_inner())),
+        ("partially_shredded", Arc::new(shredded.into_inner())),
+        ("fully_shredded", Arc::new(full.into_inner())),
+        ("empty_key", empty),
+    ];
+    for (name, input) in cases {
         for _ in 0..3 {
             black_box(normalize_variant_array(&input, &target).unwrap());
         }
+        #[cfg(all(feature = "jemalloc", not(feature = "mimalloc")))]
+        let allocated = tikv_jemalloc_ctl::thread::allocatedp::read().unwrap();
+        #[cfg(all(feature = "jemalloc", not(feature = "mimalloc")))]
+        let before = allocated.get();
         let start = Instant::now();
         for _ in 0..30 {
             black_box(normalize_variant_array(black_box(&input), &target).unwrap());
         }
+        let elapsed = start.elapsed();
+        #[cfg(all(feature = "jemalloc", not(feature = "mimalloc")))]
+        eprintln!(
+            "{name}: {} allocator bytes/row",
+            (allocated.get() - before) / (30 * rows as u64)
+        );
         eprintln!(
             "{name}: {:.3} ms/batch, {rows} rows, 4096-byte payload",
-            start.elapsed().as_secs_f64() * 1000.0 / 30.0
+            elapsed.as_secs_f64() * 1000.0 / 30.0
         );
     }
 }
@@ -638,14 +841,21 @@ fn normalize_nested_list_residuals_use_their_root_metadata() {
         }
         object.finish();
         let (metadata, value) = builder.finish();
-        let metadata_array: ArrayRef = Arc::new(BinaryArray::from(vec![Some(metadata.as_slice())]));
-        let value: ArrayRef = Arc::new(BinaryArray::from(vec![Some(value.as_slice())]));
-        let value = reorder_variant_values(&value, &metadata_array, None).unwrap();
-        (metadata, value.as_binary::<i32>().value(0).to_vec())
+        let mut spark_metadata = WritableMetadataBuilder::from_iter(keys.iter().copied());
+        spark_metadata.finish();
+        let mut spark_metadata = spark_metadata.into_inner();
+        spark_metadata[0] &= !0x10;
+        let value = variant_bytes(
+            &VariantMetadata::new(&spark_metadata),
+            Variant::new(&metadata, &value),
+            VariantObjectKeyOrder::SparkUtf16,
+        )
+        .unwrap();
+        (spark_metadata, value)
     }
 
-    let (metadata0, value0) = legacy_row(&["a", "\u{e000}", "😀"]);
-    let (metadata1, value1) = legacy_row(&["b", "zz", "\u{ffff}", "𐀀"]);
+    let (metadata0, value0) = legacy_row(&["a", "\u{e000}", "😀", ""]);
+    let (metadata1, value1) = legacy_row(&["b", "zz", "\u{ffff}", "𐀀", ""]);
     let states: ArrayRef = Arc::new(
         StructArray::try_new(
             Fields::from(vec![Field::new("value", DataType::Binary, true)]),
@@ -691,7 +901,61 @@ fn normalize_nested_list_residuals_use_their_root_metadata() {
         let Variant::Object(object) = list.get(0).unwrap() else {
             panic!("expected object")
         };
-        assert_eq!(object.get(key).unwrap().as_int64(), Some(index as i64 + 2));
+        // Output slots follow Spark UTF-16 ordering, so Arrow's UTF-8 binary search cannot
+        // be used to look up supplementary characters in the normalized object.
+        let fields = object.iter().collect::<std::collections::HashMap<_, _>>();
+        assert_eq!(fields[key].as_int64(), Some(index as i64 + 2));
+        assert_eq!(fields[""].as_int64(), Some(index as i64 + 3));
+    }
+}
+
+#[test]
+fn normalize_spark_empty_key_metadata_rejects_other_malformed_encodings() {
+    // Spark dictionary ["z", "", "a"], deliberately requiring field ID remapping.
+    let metadata = [1, 3, 0, 1, 1, 2, b'z', b'a'];
+    let mut builder = VariantBuilder::new();
+    let mut object = builder.new_object();
+    object.insert("z", 1_i64);
+    object.insert("", 2_i64);
+    object.insert("a", 3_i64);
+    object.finish();
+    let (canonical_metadata, canonical_value) = builder.finish();
+    let value = variant_bytes(
+        &VariantMetadata::new(&metadata),
+        Variant::new(&canonical_metadata, &canonical_value),
+        VariantObjectKeyOrder::ArrowUtf8,
+    )
+    .unwrap();
+    let normalize = |metadata: &[u8]| {
+        let physical: ArrayRef = Arc::new(StructArray::new(
+            vec![
+                Field::new("value", DataType::Binary, false),
+                Field::new("metadata", DataType::Binary, false),
+            ]
+            .into(),
+            vec![
+                Arc::new(BinaryArray::from(vec![value.as_slice()])),
+                Arc::new(BinaryArray::from(vec![metadata])),
+            ],
+            None,
+        ));
+        normalize_variant_array(&physical, &target_field(false))
+    };
+    let output = normalize(&metadata).unwrap();
+    let output = VariantArray::try_new(output.as_ref()).unwrap();
+    assert_eq!(
+        output.value(0),
+        Variant::new(&canonical_metadata, &canonical_value)
+    );
+
+    for malformed in [
+        vec![1, 3, 0, 1, 1, 2, 0xff, b'a'],    // Invalid UTF-8.
+        vec![1, 3, 0, 2, 1, 2, b'z', b'a'],    // Decreasing offsets.
+        vec![1, 3, 0, 1, 1, 2, b'z', b'z'],    // Duplicate dictionary keys.
+        vec![1, 3, 0, 1, 1, 3, b'z', b'a'],    // Out-of-bounds offset.
+        vec![1, 3, 0, 1, 1, 2, b'z', b'a', 0], // Unexpected trailing bytes.
+    ] {
+        assert!(normalize(&malformed).is_err(), "accepted {malformed:?}");
     }
 }
 

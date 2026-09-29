@@ -1,0 +1,88 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="390" viewBox="0 0 960 390" role="img" aria-labelledby="title desc">
+  <title id="title">How Comet uses executor memory</title>
+  <desc id="desc">An executor container holds the JVM heap, the off-heap memory pool, and the memory overhead. Spark and Comet both use the JVM heap and share the off-heap memory pool. The memory overhead holds the JVM's own overhead and the rest of Comet's native memory, which the pool does not track.</desc>
+  <style>
+    .sans { font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
+    .mono { font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  </style>
+  <defs>
+    <clipPath id="poolClip">
+      <rect x="322" y="134" width="286" height="96" rx="8"/>
+    </clipPath>
+    <marker id="arrowHead" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#444"/>
+    </marker>
+  </defs>
+
+  <rect width="960" height="390" fill="#ffffff"/>
+
+  <!-- Executor container -->
+  <rect x="20" y="20" width="920" height="244" rx="16" fill="#F5F6F8" stroke="#A0A4AA" stroke-width="1.5" stroke-dasharray="7 5"/>
+  <text class="sans" x="40" y="48" font-size="15" font-weight="700" fill="#555">Executor container</text>
+
+  <!-- JVM heap -->
+  <rect x="40" y="62" width="250" height="184" rx="12" fill="#ffffff" stroke="#555" stroke-width="2"/>
+  <text class="sans" x="165" y="92" font-size="18" font-weight="700" fill="#222" text-anchor="middle">JVM heap</text>
+  <text class="mono" x="165" y="116" font-size="13.5" fill="#A84808" text-anchor="middle">spark.executor.memory</text>
+  <rect x="56" y="134" width="124" height="96" rx="8" fill="#FDE7A7" stroke="#D9AE2E" stroke-width="1.5"/>
+  <text class="sans" x="118" y="188" font-size="16" font-weight="700" fill="#333" text-anchor="middle">Spark</text>
+  <rect x="190" y="134" width="84" height="96" rx="8" fill="#C8EBB5" stroke="#6BAF4E" stroke-width="1.5"/>
+  <text class="sans" x="232" y="188" font-size="16" font-weight="700" fill="#333" text-anchor="middle">Comet</text>
+
+  <!-- Off-heap memory pool: one budget, split between Spark and Comet -->
+  <rect x="306" y="62" width="318" height="184" rx="12" fill="#ffffff" stroke="#555" stroke-width="2"/>
+  <text class="sans" x="465" y="92" font-size="18" font-weight="700" fill="#222" text-anchor="middle">Off-heap memory pool</text>
+  <text class="mono" x="465" y="116" font-size="13.5" fill="#A84808" text-anchor="middle">spark.memory.offHeap.size</text>
+  <g clip-path="url(#poolClip)">
+    <rect x="322" y="134" width="143" height="96" fill="#FDE7A7"/>
+    <rect x="465" y="134" width="143" height="96" fill="#C8EBB5"/>
+  </g>
+  <rect x="322" y="134" width="286" height="96" rx="8" fill="none" stroke="#8a8a8a" stroke-width="1.5"/>
+  <line x1="465" y1="134" x2="465" y2="230" stroke="#777" stroke-width="1.5" stroke-dasharray="4 4"/>
+  <text class="sans" x="393" y="180" font-size="16" font-weight="700" fill="#333" text-anchor="middle">Spark</text>
+  <text class="sans" x="537" y="180" font-size="16" font-weight="700" fill="#333" text-anchor="middle">Comet</text>
+  <line x1="443" y1="210" x2="487" y2="210" stroke="#444" stroke-width="2" marker-start="url(#arrowHead)" marker-end="url(#arrowHead)"/>
+  <circle cx="602" cy="84" r="13" fill="#E8650A"/>
+  <text class="sans" x="602" y="89" font-size="14" font-weight="700" fill="#fff" text-anchor="middle">1</text>
+
+  <!-- Memory overhead -->
+  <rect x="640" y="62" width="280" height="184" rx="12" fill="#ffffff" stroke="#555" stroke-width="2"/>
+  <text class="sans" x="780" y="92" font-size="18" font-weight="700" fill="#222" text-anchor="middle">Memory overhead</text>
+  <text class="mono" x="780" y="116" font-size="13.5" fill="#A84808" text-anchor="middle">spark.executor.memoryOverhead</text>
+  <rect x="656" y="134" width="104" height="96" rx="8" fill="#FDE7A7" stroke="#D9AE2E" stroke-width="1.5"/>
+  <text class="sans" x="708" y="178" font-size="16" font-weight="700" fill="#333" text-anchor="middle">JVM</text>
+  <text class="sans" x="708" y="198" font-size="13" fill="#555" text-anchor="middle">overhead</text>
+  <rect x="770" y="134" width="134" height="96" rx="8" fill="#C8EBB5" stroke="#6BAF4E" stroke-width="1.5"/>
+  <text class="sans" x="837" y="188" font-size="16" font-weight="700" fill="#333" text-anchor="middle">Comet</text>
+  <circle cx="898" cy="84" r="13" fill="#E8650A"/>
+  <text class="sans" x="898" y="89" font-size="14" font-weight="700" fill="#fff" text-anchor="middle">2</text>
+
+  <!-- Legend -->
+  <g class="sans" font-size="14" fill="#444">
+    <rect x="44" y="291" width="18" height="18" rx="4" fill="#FDE7A7" stroke="#D9AE2E" stroke-width="1.5"/>
+    <text x="72" y="305">Spark</text>
+    <rect x="44" y="321" width="18" height="18" rx="4" fill="#C8EBB5" stroke="#6BAF4E" stroke-width="1.5"/>
+    <text x="72" y="335">Comet</text>
+  </g>
+
+  <!-- Callouts -->
+  <g class="sans">
+    <circle cx="319" cy="296" r="12" fill="#E8650A"/>
+    <text x="319" y="301" font-size="13" font-weight="700" fill="#fff" text-anchor="middle">1</text>
+    <text x="338" y="301" font-size="15" font-weight="700" fill="#222">Shared with Spark</text>
+    <text font-size="14" fill="#444">
+      <tspan x="338" y="324">Comet's sorts, joins, aggregations</tspan>
+      <tspan x="338" y="344">and shuffles reserve memory from</tspan>
+      <tspan x="338" y="364">the same pool that Spark uses.</tspan>
+    </text>
+
+    <circle cx="653" cy="296" r="12" fill="#E8650A"/>
+    <text x="653" y="301" font-size="13" font-weight="700" fill="#fff" text-anchor="middle">2</text>
+    <text x="672" y="301" font-size="15" font-weight="700" fill="#222">Not tracked by the pool</text>
+    <text font-size="14" fill="#444">
+      <tspan x="672" y="324">Comet also needs native memory</tspan>
+      <tspan x="672" y="344">outside the JVM. Make sure</tspan>
+      <tspan x="672" y="364">memoryOverhead has room for it.</tspan>
+    </text>
+  </g>
+</svg>

@@ -1,6 +1,6 @@
 ---
 name: review-comet-pr
-description: Use when reviewing a DataFusion Comet pull request. Covers the workflow that applies to every PR and routes to the area-specific review skills for expressions, FFI, memory management, and shuffle. Provides guidance to a human reviewer rather than posting comments.
+description: Use when reviewing a DataFusion Comet pull request. Covers the workflow that applies to every PR and routes to the area-specific review skills for expressions, FFI, memory management, shuffle, and Iceberg writes. Provides guidance to a human reviewer rather than posting comments.
 argument-hint: <pr-number>
 ---
 
@@ -36,12 +36,13 @@ sibling skill whose area the PR touches. More than one usually applies. A shuffl
 spilling is also a memory change. An expression that returns a new array type may also be an FFI
 change.
 
-| The PR touches                                                                                                                                                          | Also use                     |
-| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------- |
-| `spark/src/main/scala/org/apache/comet/serde/`, `QueryPlanSerde.scala`, `native/spark-expr/`, `expr.proto`, `comet_scalar_funcs.rs`                                     | `review-comet-expression-pr` |
-| `CometExecIterator`, `CometNativeArrowSource`, `NativeUtil`, `CometVector` subclasses, `jni_api.rs`, `scan.rs`, `aligned_stream_reader.rs`, anything using `FFI_Arrow*` | `review-comet-ffi-pr`        |
-| `native/core/src/execution/memory_pools/`, `CometTaskMemoryManager`, `CometShuffleMemoryAllocator`, `MemoryConsumer` / `try_grow` / `reserve` call sites, pool configs  | `review-comet-memory-pr`     |
-| `native/shuffle/`, `spark/src/main/scala/org/apache/spark/sql/comet/execution/shuffle/`, `spark/src/main/java/org/apache/spark/shuffle/`, `CometShuffleExchangeExec`    | `review-comet-shuffle-pr`    |
+| The PR touches                                                                                                                                                                             | Also use                        |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------- |
+| `spark/src/main/scala/org/apache/comet/serde/`, `QueryPlanSerde.scala`, `native/spark-expr/`, `expr.proto`, `comet_scalar_funcs.rs`                                                        | `review-comet-expression-pr`    |
+| `CometExecIterator`, `CometNativeArrowSource`, `NativeUtil`, `CometVector` subclasses, `jni_api.rs`, `scan.rs`, `aligned_stream_reader.rs`, anything using `FFI_Arrow*`                    | `review-comet-ffi-pr`           |
+| `native/core/src/execution/memory_pools/`, `CometTaskMemoryManager`, `CometShuffleMemoryAllocator`, `MemoryConsumer` / `try_grow` / `reserve` call sites, pool configs                     | `review-comet-memory-pr`        |
+| `native/shuffle/`, `spark/src/main/scala/org/apache/spark/sql/comet/execution/shuffle/`, `spark/src/main/java/org/apache/spark/shuffle/`, `CometShuffleExchangeExec`                       | `review-comet-shuffle-pr`       |
+| `IcebergWriteStrategy`, `IcebergWriteExec`, `IcebergCommitExec`, `CometIcebergWriteExec`, `CometIcebergNativeWrite`, `iceberg_write.rs`, `iceberg_partition_path.rs`, the iceberg-rust pin | `review-comet-iceberg-write-pr` |
 
 For a new operator, read `docs/source/contributor-guide/adding_a_new_operator.md` alongside this
 skill. There is no dedicated operator review skill yet.

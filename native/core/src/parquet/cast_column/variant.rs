@@ -20,15 +20,16 @@ use arrow::{
         make_array, Array, ArrayRef, AsArray, BinaryArray, BinaryBuilder, ListLikeArray,
         StructArray,
     },
-    buffer::NullBuffer,
     compute::{cast, cast_with_options},
     datatypes::{DataType, FieldRef, TimeUnit, DECIMAL128_MAX_PRECISION},
     error::ArrowError,
 };
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
+use datafusion_comet_common::SparkError;
 use parquet::variant::{
-    unshred_variant, ListBuilder, MetadataBuilder, ObjectBuilder, ParentState,
-    ReadOnlyMetadataBuilder, ValueBuilder, Variant, VariantArray, VariantMetadata,
+    unshred_variant, ListBuilder, MetadataBuilder, ObjectBuilder, ObjectFieldBuilder, ParentState,
+    ReadOnlyMetadataBuilder, ValueBuilder, Variant, VariantArray, VariantBuilderExt,
+    VariantDecimal4, VariantDecimal8, VariantMetadata, WritableMetadataBuilder,
 };
 use std::{
     panic::{catch_unwind, AssertUnwindSafe},
@@ -57,22 +58,49 @@ pub(super) fn normalize_variant_array(
     }
 
     // VariantArray resolves metadata/value/typed_value by name, so the reader's child order is
-    // irrelevant. Legacy Spark residuals must be put in Arrow order before the single upstream
-    // unshred call; the whole output is then put back in the order expected by released Spark 4.
+    // irrelevant. Legacy Spark residuals must be put in Arrow order before unshredding;
+    // shredded output is then rebuilt with Spark's byte encoding.
     let array = normalize_variant_storage(array)?;
     let variant = VariantArray::try_new(array.as_ref())?;
-    let prepared = prepare_variant_for_unshredding(&variant)?;
-    let unshredded = unshred_variant(&prepared)?;
-    let value = unshredded.value_column();
-    let value = cast(value.as_ref(), &DataType::Binary)?;
-    let metadata = cast(unshredded.metadata_column().as_ref(), &DataType::Binary)?;
-    let value = reorder_variant_values(&value, &metadata, unshredded.inner().nulls())?;
-
-    Ok(Arc::new(StructArray::try_new(
-        fields.clone(),
-        vec![value, metadata],
-        unshredded.inner().nulls().cloned(),
-    )?))
+    let normalize = |metadata: Option<&ArrayRef>| -> DataFusionResult<ArrayRef> {
+        let extended = extend_shredded_metadata(&variant, metadata)?;
+        let prepared = prepare_variant_for_unshredding(&variant, extended.as_ref().or(metadata))?;
+        let unshredded = unshred_variant(&prepared).map_err(|error| match error {
+            ArrowError::InvalidArgumentError(_) => {
+                DataFusionError::from(SparkError::MalformedVariant)
+            }
+            error => error.into(),
+        })?;
+        let (value, metadata) = if variant.typed_value_column().is_some() {
+            let value = cast(unshredded.value_column().as_ref(), &DataType::Binary)?;
+            let metadata = cast(unshredded.metadata_column().as_ref(), &DataType::Binary)?;
+            rebuild_spark_variant(&variant, &value, &metadata)?
+        } else {
+            // Spark passes unshredded bytes through, including dictionary order, unused keys,
+            // and wide scalar encodings. Preparation above still validates legacy input.
+            let mut value = cast(variant.value_column().as_ref(), &DataType::Binary)?;
+            let metadata = cast(variant.metadata_column().as_ref(), &DataType::Binary)?;
+            if variant.inner().null_count() != 0 {
+                value = arrow::compute::nullif(
+                    value.as_ref(),
+                    &arrow::compute::is_null(variant.inner())?,
+                )?;
+            }
+            (value, metadata)
+        };
+        Ok(Arc::new(StructArray::try_new(
+            fields.clone(),
+            vec![value, metadata],
+            unshredded.inner().nulls().cloned(),
+        )?))
+    };
+    match normalize(None) {
+        Ok(array) => Ok(array),
+        Err(error) => match canonicalize_spark_empty_key_metadata(&variant)? {
+            Some(metadata) => normalize(Some(&metadata)),
+            None => Err(error),
+        },
+    }
 }
 
 /// Arrow Variant compute rejects some storage types that Spark's Parquet reader accepts.
@@ -178,7 +206,9 @@ fn normalize_variant_storage(array: &ArrayRef) -> DataFusionResult<ArrayRef> {
 fn rewrite_shredding_state(
     state: &StructArray,
     metadata: &BinaryArray,
+    target_metadata: Option<&BinaryArray>,
     metadata_rows: &[Option<usize>],
+    allow_missing: bool,
 ) -> DataFusionResult<(ArrayRef, bool)> {
     if state.len() != metadata_rows.len() {
         return Err(DataFusionError::Execution(
@@ -195,9 +225,40 @@ fn rewrite_shredding_state(
     let mut columns = state.columns().to_vec();
     let mut changed = false;
 
+    let value_index = state
+        .fields()
+        .iter()
+        .position(|field| field.name() == "value");
+    let typed = state.column_by_name("typed_value");
+    for (index, row) in metadata_rows.iter().enumerate() {
+        if row.is_some()
+            && (state.is_null(index)
+                || (!allow_missing
+                    && value_index.is_none_or(|column| state.column(column).is_null(index))
+                    && typed.is_none_or(|column| column.is_null(index))))
+        {
+            return Err(SparkError::MalformedVariant.into());
+        }
+    }
+
+    // Spark gives scalar/array typed_value precedence over a redundant residual. Arrow
+    // rejects both being present, so remove the ignored residual before validating it.
+    if let (Some(index), Some(typed)) = (value_index, typed) {
+        if !matches!(typed.data_type(), DataType::Struct(_))
+            && (0..state.len()).any(|row| {
+                active_rows[row].is_some() && typed.is_valid(row) && columns[index].is_valid(row)
+            })
+        {
+            let present = arrow::compute::is_not_null(typed)?;
+            columns[index] = arrow::compute::nullif(columns[index].as_ref(), &present)?;
+            fields[index] = Arc::new(fields[index].as_ref().clone().with_nullable(true));
+            changed = true;
+        }
+    }
+
     if let Some(index) = fields.iter().position(|field| field.name() == "value") {
         let (value, value_changed) =
-            rewrite_residual_values(&columns[index], metadata, &active_rows)?;
+            rewrite_residual_values(&columns[index], metadata, target_metadata, &active_rows)?;
         if value_changed {
             fields[index] = Arc::new(
                 fields[index]
@@ -220,7 +281,7 @@ fn rewrite_shredding_state(
             .map(|(row, metadata)| columns[index].is_valid(row).then_some(*metadata).flatten())
             .collect::<Vec<_>>();
         let (typed_value, typed_changed) =
-            rewrite_typed_value(&columns[index], metadata, &typed_rows)?;
+            rewrite_typed_value(&columns[index], metadata, target_metadata, &typed_rows)?;
         if typed_changed {
             fields[index] = Arc::new(
                 fields[index]
@@ -249,6 +310,7 @@ fn rewrite_shredding_state(
 fn rewrite_residual_values(
     value: &ArrayRef,
     metadata: &BinaryArray,
+    target_metadata: Option<&BinaryArray>,
     metadata_rows: &[Option<usize>],
 ) -> DataFusionResult<(ArrayRef, bool)> {
     let binary = cast(value.as_ref(), &DataType::Binary)?;
@@ -276,18 +338,33 @@ fn rewrite_residual_values(
 
         let rebuilt = catch_unwind(AssertUnwindSafe(
             || -> Result<Option<Vec<u8>>, ArrowError> {
-                let metadata = VariantMetadata::try_new(metadata.value(*metadata_row))?;
+                let source = metadata.value(*metadata_row);
+                let target = target_metadata
+                    .map(|metadata| metadata.value(*metadata_row))
+                    .filter(|target| *target != source)
+                    .map(VariantMetadata::try_new)
+                    .transpose()?;
+                let metadata = if target.is_some() {
+                    // The empty-key workaround validated every original dictionary entry.
+                    VariantMetadata::new(source)
+                } else {
+                    VariantMetadata::try_new(source)?
+                };
                 let variant = Variant::new_with_metadata(metadata.clone(), binary.value(index));
-                if is_compatible_variant(&variant, VariantObjectKeyOrder::ArrowUtf8) {
+                let arrow_ordered =
+                    is_compatible_variant(&variant, VariantObjectKeyOrder::ArrowUtf8);
+                if arrow_ordered && target.is_none() {
                     return Ok(None);
                 }
-                if !is_compatible_variant(&variant, VariantObjectKeyOrder::SparkUtf16) {
+                if !arrow_ordered
+                    && !is_compatible_variant(&variant, VariantObjectKeyOrder::SparkUtf16)
+                {
                     return Err(ArrowError::InvalidArgumentError(
                         "Variant residual is neither UTF-8 nor Spark UTF-16 ordered".to_string(),
                     ));
                 }
                 Ok(Some(variant_bytes(
-                    &metadata,
+                    target.as_ref().unwrap_or(&metadata),
                     variant,
                     VariantObjectKeyOrder::ArrowUtf8,
                 )?))
@@ -338,6 +415,7 @@ fn rewrite_list_typed_value<L: ListLikeArray>(
     array: &ArrayRef,
     list: &L,
     metadata: &BinaryArray,
+    target_metadata: Option<&BinaryArray>,
     metadata_rows: &[Option<usize>],
 ) -> DataFusionResult<(ArrayRef, bool)> {
     let child_rows = list_metadata_rows(list, metadata_rows)?;
@@ -347,7 +425,8 @@ fn rewrite_list_typed_value<L: ListLikeArray>(
             list.values().data_type()
         ))
     })?;
-    let (values, changed) = rewrite_shredding_state(values, metadata, &child_rows)?;
+    let (values, changed) =
+        rewrite_shredding_state(values, metadata, target_metadata, &child_rows, false)?;
     if !changed {
         return Ok((Arc::clone(array), false));
     }
@@ -395,6 +474,7 @@ fn rewrite_list_typed_value<L: ListLikeArray>(
 fn rewrite_typed_value(
     typed_value: &ArrayRef,
     metadata: &BinaryArray,
+    target_metadata: Option<&BinaryArray>,
     metadata_rows: &[Option<usize>],
 ) -> DataFusionResult<(ArrayRef, bool)> {
     match typed_value.data_type() {
@@ -412,7 +492,7 @@ fn rewrite_typed_value(
                     ))
                 })?;
                 let (child, child_changed) =
-                    rewrite_shredding_state(child, metadata, metadata_rows)?;
+                    rewrite_shredding_state(child, metadata, target_metadata, metadata_rows, true)?;
                 if child_changed {
                     fields[index] = Arc::new(
                         fields[index]
@@ -440,46 +520,503 @@ fn rewrite_typed_value(
             typed_value,
             typed_value.as_list::<i32>(),
             metadata,
+            target_metadata,
             metadata_rows,
         ),
         DataType::LargeList(_) => rewrite_list_typed_value(
             typed_value,
             typed_value.as_list::<i64>(),
             metadata,
+            target_metadata,
             metadata_rows,
         ),
         DataType::ListView(_) => rewrite_list_typed_value(
             typed_value,
             typed_value.as_list_view::<i32>(),
             metadata,
+            target_metadata,
             metadata_rows,
         ),
         DataType::LargeListView(_) => rewrite_list_typed_value(
             typed_value,
             typed_value.as_list_view::<i64>(),
             metadata,
+            target_metadata,
             metadata_rows,
         ),
         _ => Ok((Arc::clone(typed_value), false)),
     }
 }
 
-fn prepare_variant_for_unshredding(variant: &VariantArray) -> DataFusionResult<VariantArray> {
-    if variant.typed_value_column().is_none() {
-        return Ok(variant.clone());
-    }
-
+fn prepare_variant_for_unshredding(
+    variant: &VariantArray,
+    target_metadata: Option<&ArrayRef>,
+) -> DataFusionResult<VariantArray> {
     let metadata = cast(variant.metadata_column().as_ref(), &DataType::Binary)?;
     let metadata = metadata.as_binary::<i32>();
     let metadata_rows = (0..variant.len())
         .map(|index| variant.inner().is_valid(index).then_some(index))
         .collect::<Vec<_>>();
-    let (array, changed) = rewrite_shredding_state(variant.inner(), metadata, &metadata_rows)?;
+    let (array, changed) = rewrite_shredding_state(
+        variant.inner(),
+        metadata,
+        target_metadata.map(|metadata| metadata.as_binary::<i32>()),
+        &metadata_rows,
+        false,
+    )?;
+    if let Some(metadata) = target_metadata {
+        let array = array.as_struct();
+        let mut fields = array.fields().to_vec();
+        let mut columns = array.columns().to_vec();
+        let index = fields
+            .iter()
+            .position(|field| field.name() == "metadata")
+            .unwrap();
+        fields[index] = Arc::new(
+            fields[index]
+                .as_ref()
+                .clone()
+                .with_data_type(DataType::Binary),
+        );
+        columns[index] = Arc::clone(metadata);
+        return Ok(VariantArray::try_new(&StructArray::try_new(
+            fields.into(),
+            columns,
+            array.nulls().cloned(),
+        )?)?);
+    }
     if changed {
         Ok(VariantArray::try_new(array.as_ref())?)
     } else {
         Ok(variant.clone())
     }
+}
+
+/// Spark accepts shredded object keys absent from metadata, although Parquet requires them.
+/// Add the missing keys and use the existing residual rewrite to remap field IDs.
+/// Arrow's panic is tracked by https://github.com/apache/arrow-rs/issues/11069.
+/// Returning an error will still require this Spark compatibility repair. Removal policy:
+/// https://github.com/apache/datafusion-comet/issues/5477.
+fn extend_shredded_metadata(
+    variant: &VariantArray,
+    metadata: Option<&ArrayRef>,
+) -> DataFusionResult<Option<ArrayRef>> {
+    fn collect_keys<'a>(typed: &'a DataType, keys: &mut Vec<&'a str>) {
+        let children = match typed {
+            DataType::Struct(fields) => {
+                keys.extend(fields.iter().map(|field| field.name().as_str()));
+                fields.iter().collect::<Vec<_>>()
+            }
+            DataType::List(field)
+            | DataType::LargeList(field)
+            | DataType::ListView(field)
+            | DataType::LargeListView(field) => vec![field],
+            _ => return,
+        };
+        for field in children {
+            if let DataType::Struct(state) = field.data_type() {
+                if let Some(typed) = state.iter().find(|field| field.name() == "typed_value") {
+                    collect_keys(typed.data_type(), keys);
+                }
+            }
+        }
+    }
+
+    let mut keys = Vec::new();
+    if let Some(typed) = variant.typed_value_column() {
+        collect_keys(typed.data_type(), &mut keys);
+    }
+    if keys.is_empty() {
+        return Ok(None);
+    }
+    keys.sort_unstable();
+    keys.dedup();
+    let metadata = cast(
+        metadata.unwrap_or(variant.metadata_column()).as_ref(),
+        &DataType::Binary,
+    )?;
+    let metadata = metadata.as_binary::<i32>();
+    let mut output: Option<BinaryBuilder> = None;
+    for index in 0..variant.len() {
+        if variant.inner().is_null(index) {
+            if let Some(output) = &mut output {
+                output.append_option(metadata.is_valid(index).then(|| metadata.value(index)));
+            }
+            continue;
+        }
+        if metadata.is_null(index) {
+            return Err(SparkError::MalformedVariant.into());
+        }
+        let dictionary = VariantMetadata::try_new(metadata.value(index))?;
+        if keys.iter().any(|key| dictionary.get_entry(key).is_none()) {
+            let mut names = dictionary
+                .iter()
+                .chain(keys.iter().copied())
+                .collect::<Vec<_>>();
+            names.sort_unstable();
+            names.dedup();
+            let mut builder = WritableMetadataBuilder::from_iter(names);
+            builder.finish();
+            output
+                .get_or_insert_with(|| binary_prefix_builder(metadata, index))
+                .append_value(builder.into_inner());
+        } else if let Some(output) = &mut output {
+            output.append_value(metadata.value(index));
+        }
+    }
+    Ok(output.map(|mut output| Arc::new(output.finish()) as ArrayRef))
+}
+
+/// Spark writes unsorted dictionaries with equal offsets for empty object keys. Arrow's
+/// validator rejects these, so retry with sorted metadata and remap every residual field ID.
+/// TODO: Remove this workaround once an arrow-rs release includes
+/// https://github.com/apache/arrow-rs/pull/10352; tracked by
+/// https://github.com/apache/datafusion-comet/issues/5477.
+fn canonicalize_spark_empty_key_metadata(
+    variant: &VariantArray,
+) -> DataFusionResult<Option<ArrayRef>> {
+    let metadata = cast(variant.metadata_column().as_ref(), &DataType::Binary)?;
+    let metadata = metadata.as_binary::<i32>();
+    let mut output: Option<BinaryBuilder> = None;
+    for index in 0..variant.len() {
+        let replacement = if variant.inner().is_null(index)
+            || metadata.is_null(index)
+            || VariantMetadata::try_new(metadata.value(index)).is_ok()
+        {
+            None
+        } else {
+            let replacement = catch_unwind(AssertUnwindSafe(
+                || -> Result<Option<Vec<u8>>, ArrowError> {
+                    let bytes = metadata.value(index);
+                    let original = VariantMetadata::new(bytes);
+                    let mut names = original.iter_try().collect::<Result<Vec<_>, _>>()?;
+                    if !names.contains(&"") {
+                        return Ok(None);
+                    }
+                    // Accept only Spark's encoding of otherwise valid, unique field names.
+                    let mut source = WritableMetadataBuilder::from_iter(names.iter().copied());
+                    source.finish();
+                    let mut source = source.into_inner();
+                    source[0] &= !0x10;
+                    if source != bytes {
+                        return Ok(None);
+                    }
+                    names.sort_unstable();
+                    if names.windows(2).any(|names| names[0] == names[1]) {
+                        return Ok(None);
+                    }
+                    let mut metadata = WritableMetadataBuilder::from_iter(names);
+                    metadata.finish();
+                    let metadata = metadata.into_inner();
+                    VariantMetadata::try_new(&metadata)?;
+                    Ok(Some(metadata))
+                },
+            ));
+            let Ok(Ok(Some(replacement))) = replacement else {
+                return Ok(None);
+            };
+            Some(replacement)
+        };
+        if replacement.is_some() && output.is_none() {
+            output = Some(binary_prefix_builder(metadata, index));
+        }
+        if let Some(output) = &mut output {
+            if metadata.is_null(index) {
+                output.append_null();
+            } else {
+                output.append_value(
+                    replacement
+                        .as_deref()
+                        .unwrap_or_else(|| metadata.value(index)),
+                );
+            }
+        }
+    }
+    Ok(output.map(|mut output| Arc::new(output.finish()) as ArrayRef))
+}
+
+/// Spark's ShreddingUtils.rebuild uses a fresh dictionary in traversal order, with its sorted
+/// flag unset. Keep Arrow's builders for the wire format and adapt only object-key ordering.
+/// UTF-16 ordering removal is tracked by https://github.com/apache/datafusion-comet/issues/5474.
+#[derive(Debug, Default)]
+struct SparkOutputMetadata {
+    dictionary: WritableMetadataBuilder,
+    sort_keys: Vec<String>,
+}
+
+impl MetadataBuilder for SparkOutputMetadata {
+    fn try_upsert_field_name(&mut self, name: &str) -> Result<u32, ArrowError> {
+        let id = self.dictionary.upsert_field_name(name);
+        if id as usize == self.sort_keys.len() {
+            self.sort_keys.push(spark_sort_key(name));
+        }
+        Ok(id)
+    }
+
+    fn field_name(&self, id: usize) -> &str {
+        &self.sort_keys[id]
+    }
+
+    fn num_field_names(&self) -> usize {
+        self.sort_keys.len()
+    }
+
+    fn truncate_field_names(&mut self, size: usize) {
+        self.sort_keys.truncate(size);
+        self.dictionary.truncate_field_names(size);
+    }
+
+    fn finish(&mut self) -> usize {
+        self.dictionary.finish()
+    }
+}
+
+struct SparkValueBuilder<'a> {
+    value: &'a mut ValueBuilder,
+    metadata: &'a mut SparkOutputMetadata,
+}
+
+impl VariantBuilderExt for SparkValueBuilder<'_> {
+    type State<'a>
+        = ()
+    where
+        Self: 'a;
+
+    fn append_null(&mut self) {
+        self.append_value(Variant::Null);
+    }
+
+    fn append_value<'m, 'v>(&mut self, value: impl Into<Variant<'m, 'v>>) {
+        ValueBuilder::append_variant(
+            ParentState::variant(self.value, self.metadata),
+            value.into(),
+        );
+    }
+
+    fn try_new_list(&mut self) -> Result<ListBuilder<'_, ()>, ArrowError> {
+        Ok(ListBuilder::new(
+            ParentState::variant(self.value, self.metadata),
+            true,
+        ))
+    }
+
+    fn try_new_object(&mut self) -> Result<ObjectBuilder<'_, ()>, ArrowError> {
+        Ok(ObjectBuilder::new(
+            ParentState::variant(self.value, self.metadata),
+            true,
+        ))
+    }
+}
+
+fn spark_sort_key(name: &str) -> String {
+    name.encode_utf16()
+        .map(|unit| char::from_u32(0x10000 + u32::from(unit)).unwrap())
+        .collect()
+}
+
+fn binary_value(array: &ArrayRef, row: usize) -> Result<&[u8], ArrowError> {
+    match array.data_type() {
+        DataType::Binary => Ok(array.as_binary::<i32>().value(row)),
+        DataType::LargeBinary => Ok(array.as_binary::<i64>().value(row)),
+        DataType::BinaryView => Ok(array.as_binary_view().value(row)),
+        data_type => Err(ArrowError::InvalidArgumentError(format!(
+            "Expected Variant binary storage, got {data_type}"
+        ))),
+    }
+}
+
+fn spark_typed_scalar<'m, 'v>(value: Variant<'m, 'v>) -> Variant<'m, 'v> {
+    match value {
+        Variant::Int8(_) | Variant::Int16(_) | Variant::Int32(_) | Variant::Int64(_) => {
+            let value = value.as_int64().unwrap();
+            if let Ok(value) = i8::try_from(value) {
+                Variant::Int8(value)
+            } else if let Ok(value) = i16::try_from(value) {
+                Variant::Int16(value)
+            } else if let Ok(value) = i32::try_from(value) {
+                Variant::Int32(value)
+            } else {
+                Variant::Int64(value)
+            }
+        }
+        Variant::Decimal16(decimal) => {
+            if let Ok(decimal) = VariantDecimal4::try_from(decimal) {
+                Variant::Decimal4(decimal)
+            } else if let Ok(decimal) = VariantDecimal8::try_from(decimal) {
+                Variant::Decimal8(decimal)
+            } else {
+                value
+            }
+        }
+        Variant::Decimal8(decimal) => VariantDecimal4::try_from(decimal)
+            .map(Variant::Decimal4)
+            .unwrap_or(value),
+        Variant::String(s) => Variant::from(s),
+        Variant::Float(v) if v.is_nan() => Variant::Float(f32::NAN),
+        Variant::Double(v) if v.is_nan() => Variant::Double(f64::NAN),
+        _ => value,
+    }
+}
+
+/// Arrow provides the decoded typed values and validates the shredding states. The original
+/// state retains Spark's traversal order and distinguishes typed scalars (which Spark narrows)
+/// from residual scalars (whose existing encoding Spark preserves).
+fn append_spark_variant(
+    builder: &mut impl VariantBuilderExt,
+    value: Variant<'_, '_>,
+    state: Option<(&StructArray, usize)>,
+    source_metadata: &VariantMetadata<'_>,
+) -> Result<(), ArrowError> {
+    let typed = state.and_then(|(state, row)| {
+        state
+            .column_by_name("typed_value")
+            .filter(|typed| typed.is_valid(row))
+            .map(|typed| (typed, row))
+    });
+    let residual = state.and_then(|(state, row)| {
+        state
+            .column_by_name("value")
+            .filter(|value| value.is_valid(row))
+            .map(|value| (value, row))
+    });
+    let value = if typed.is_none() {
+        match residual {
+            Some((value, row)) => {
+                Variant::new_with_metadata(source_metadata.clone(), binary_value(value, row)?)
+            }
+            None => value,
+        }
+    } else {
+        value
+    };
+    match value {
+        Variant::Object(object) => {
+            let mut builder = builder.try_new_object()?;
+            if let Some((typed, row)) = typed {
+                let fields = typed.as_struct();
+                for (field, child) in fields.fields().iter().zip(fields.columns()) {
+                    let child = child.as_struct();
+                    if ["typed_value", "value"].iter().any(|name| {
+                        child
+                            .column_by_name(name)
+                            .is_some_and(|value| value.is_valid(row))
+                    }) {
+                        let value = object.get(field.name()).ok_or_else(|| {
+                            ArrowError::InvalidArgumentError("Missing unshredded field".into())
+                        })?;
+                        append_spark_variant(
+                            &mut ObjectFieldBuilder::new(field.name(), &mut builder),
+                            value,
+                            Some((child, row)),
+                            source_metadata,
+                        )?;
+                    }
+                }
+                if let Some((value, row)) = residual {
+                    let Variant::Object(residual) = Variant::new_with_metadata(
+                        source_metadata.clone(),
+                        binary_value(value, row)?,
+                    ) else {
+                        return Err(ArrowError::InvalidArgumentError(
+                            "Expected residual object".into(),
+                        ));
+                    };
+                    for entry in residual.iter_try() {
+                        let (name, value) = entry?;
+                        append_spark_variant(
+                            &mut ObjectFieldBuilder::new(name, &mut builder),
+                            value,
+                            None,
+                            source_metadata,
+                        )?;
+                    }
+                }
+            } else {
+                for entry in object.iter_try() {
+                    let (name, value) = entry?;
+                    append_spark_variant(
+                        &mut ObjectFieldBuilder::new(name, &mut builder),
+                        value,
+                        None,
+                        source_metadata,
+                    )?;
+                }
+            }
+            builder.finish();
+        }
+        Variant::List(list) => {
+            let mut builder = builder.try_new_list()?;
+            let elements = typed.map(|(typed, row)| {
+                macro_rules! elements {
+                    ($list:expr) => {{
+                        let list = $list;
+                        (list.values().as_struct(), list.element_range(row))
+                    }};
+                }
+                match typed.data_type() {
+                    DataType::List(_) => elements!(typed.as_list::<i32>()),
+                    DataType::LargeList(_) => elements!(typed.as_list::<i64>()),
+                    DataType::ListView(_) => elements!(typed.as_list_view::<i32>()),
+                    DataType::LargeListView(_) => elements!(typed.as_list_view::<i64>()),
+                    _ => unreachable!("validated shredded list"),
+                }
+            });
+            for (index, value) in list.iter().enumerate() {
+                let state = elements
+                    .as_ref()
+                    .map(|(states, range)| (*states, range.start + index));
+                append_spark_variant(&mut builder, value, state, source_metadata)?;
+            }
+            builder.finish();
+        }
+        value => builder.append_value(if typed.is_some() {
+            spark_typed_scalar(value)
+        } else {
+            value
+        }),
+    }
+    Ok(())
+}
+
+fn rebuild_spark_variant(
+    source: &VariantArray,
+    value: &ArrayRef,
+    metadata: &ArrayRef,
+) -> DataFusionResult<(ArrayRef, ArrayRef)> {
+    let mut values = BinaryBuilder::new();
+    let mut dictionaries = BinaryBuilder::new();
+    for row in 0..source.len() {
+        if source.is_null(row) {
+            values.append_null();
+            dictionaries.append_null();
+            continue;
+        }
+        let rebuilt = catch_unwind(AssertUnwindSafe(|| -> Result<_, ArrowError> {
+            let value = Variant::try_new(binary_value(metadata, row)?, binary_value(value, row)?)?;
+            // The preparation pass already validated/canonicalized legacy input metadata.
+            let original = VariantMetadata::new(binary_value(source.metadata_column(), row)?);
+            let mut output = ValueBuilder::new();
+            let mut dictionary = SparkOutputMetadata::default();
+            append_spark_variant(
+                &mut SparkValueBuilder {
+                    value: &mut output,
+                    metadata: &mut dictionary,
+                },
+                value,
+                Some((source.inner(), row)),
+                &original,
+            )?;
+            dictionary.finish();
+            let mut metadata = dictionary.dictionary.into_inner();
+            metadata[0] &= !0x10;
+            Ok((output.into_inner(), metadata))
+        }))
+        .map_err(|_| SparkError::MalformedVariant)?
+        .map_err(|_| SparkError::MalformedVariant)?;
+        values.append_value(rebuilt.0);
+        dictionaries.append_value(rebuilt.1);
+    }
+    Ok((Arc::new(values.finish()), Arc::new(dictionaries.finish())))
 }
 
 /// Supplies sort-only field names whose Rust ordering matches Java `String.compareTo` ordering.
@@ -492,15 +1029,7 @@ struct SparkMetadataBuilder<'a, 'm> {
 
 impl<'a, 'm> SparkMetadataBuilder<'a, 'm> {
     fn new(metadata: &'a VariantMetadata<'m>) -> Self {
-        let sort_keys = metadata
-            .iter()
-            .map(|field_name| {
-                field_name
-                    .encode_utf16()
-                    .map(|unit| char::from_u32(0x10000 + u32::from(unit)).unwrap())
-                    .collect()
-            })
-            .collect();
+        let sort_keys = metadata.iter().map(spark_sort_key).collect();
         Self {
             metadata,
             sort_keys,
@@ -616,14 +1145,16 @@ fn variant_bytes(
     Ok(value_builder.into_inner())
 }
 
-/// Released Spark 4 profiles search object fields in Java UTF-16 order. Convert whole-value output
-/// to that order until #5474 can remove this rewrite after every supported profile includes
-/// SPARK-58949. Values already in the requested order remain byte-for-byte unchanged.
+/// Released Spark 4 profiles search object fields in Java UTF-16 order. Values already in that
+/// order remain byte-for-byte unchanged.
+/// TODO: Remove this output rewrite once every supported Spark profile includes SPARK-58949.
+/// Retain input conversion for historical Spark files with UTF-16 object-key ordering.
 /// https://github.com/apache/datafusion-comet/issues/5474
+#[cfg(test)]
 fn reorder_variant_values(
     value: &ArrayRef,
     metadata: &ArrayRef,
-    parent_nulls: Option<&NullBuffer>,
+    parent_nulls: Option<&arrow::buffer::NullBuffer>,
 ) -> DataFusionResult<ArrayRef> {
     let original = value;
     let value = value.as_binary::<i32>();
@@ -641,9 +1172,7 @@ fn reorder_variant_values(
             continue;
         }
         if value.is_null(index) {
-            return Err(DataFusionError::Execution(format!(
-                "Variant value is null at row {index}"
-            )));
+            return Err(SparkError::MalformedVariant.into());
         }
         if metadata.is_null(index) {
             return Err(DataFusionError::Execution(format!(
