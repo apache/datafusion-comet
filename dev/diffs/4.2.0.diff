@@ -77,6 +77,48 @@ index 46558134f41..862c9a6eb9e 100644
        <!-- SPARK-16484 add `datasketches-java` for support Datasketches HllSketch -->
        <dependency>
          <groupId>org.apache.datasketches</groupId>
+diff --git a/project/SparkBuild.scala b/project/SparkBuild.scala
+index 7c5e49f3a69..28f83381fa0 100644
+--- a/project/SparkBuild.scala
++++ b/project/SparkBuild.scala
+@@ -455,9 +455,11 @@ object SparkBuild extends PomBuild {
+ 
+   /* Spark SQL Core settings */
+   enable(SQL.settings)(sql)
++  enable(CometTestSettings.settings)(sql)
+ 
+   /* Hive console settings */
+   enable(Hive.settings)(hive)
++  enable(CometTestSettings.settings)(hive)
+ 
+   enable(HiveThriftServer.settings)(hiveThriftServer)
+ 
+@@ -1426,6 +1428,25 @@ object SQL {
+   }
+ }
+ 
++/**
++ * Comet disables itself when its shuffle manager is not registered. When Comet is enabled, make
++ * that shuffle manager the default for every test SparkConf in the modules that have Comet on
++ * their classpath, so that suites which build their own SparkSession or SparkContext run Comet
++ * too, not just the ones that go through SharedSparkSession or TestHive.
++ */
++object CometTestSettings {
++  private val cometEnabled =
++    sys.env.get("ENABLE_COMET").forall(v => v == "1" || v.equalsIgnoreCase("true"))
++
++  lazy val settings: Seq[Setting[_]] =
++    if (cometEnabled && !sys.props.contains("spark.shuffle.manager")) {
++      Seq((Test / javaOptions) +=
++        "-Dspark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++    } else {
++      Seq.empty
++    }
++}
++
+ object Hive {
+ 
+   lazy val settings = Seq(
 diff --git a/sql/core/pom.xml b/sql/core/pom.xml
 index 82810f181ac..21a83831188 100644
 --- a/sql/core/pom.xml
@@ -1248,6 +1290,20 @@ index 7f695e90df8..57fea6f8324 100644
  
      withSQLConf(
        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "1") {
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/MapStatusEndToEndSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/MapStatusEndToEndSuite.scala
+index 0708b2c9392..d6ff2e1555c 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/MapStatusEndToEndSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/MapStatusEndToEndSuite.scala
+@@ -36,7 +36,8 @@ class MapStatusEndToEndSuite extends QueryTest {
+     SparkSession.clearDefaultSession()
+   }
+ 
+-  test("Propagate checksum from executor to driver") {
++  test("Propagate checksum from executor to driver",
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/6414")) {
+     assert(spark.sparkContext.conf.get(SQLConf.LEAF_NODE_DEFAULT_PARALLELISM.key) == "5")
+     assert(spark.conf.get(SQLConf.LEAF_NODE_DEFAULT_PARALLELISM.key) == "5")
+     assert(spark.sparkContext.conf.get(SQLConf.CLASSIC_SHUFFLE_DEPENDENCY_FILE_CLEANUP_ENABLED.key)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/PlanStabilitySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/PlanStabilitySuite.scala
 index 6cd49948630..b6fcb716a2a 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/PlanStabilitySuite.scala
@@ -1402,6 +1458,50 @@ index 395cb67f441..33ac6ed19af 100644
        }
      }
    }
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala
+index bfcf583a705..6c177bff0e3 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala
+@@ -217,7 +217,15 @@ class SparkSessionExtensionSuite extends PlanTest with SQLHelper with AdaptiveSp
+     }
+   }
+ 
++  // Comet: Comet's own columnar rules take over these plans, so the rules the tests below
++  // inject never see the Spark operators they act on or check for.
++  private def assumeCometDisabled(): Unit = {
++    assume(!org.apache.spark.sql.classic.SparkSession.isCometEnabled,
++      "Skipped when Comet is enabled: Comet replaces the operators the injected rules act on")
++  }
++
+   test("inject adaptive query prep rule") {
++    assumeCometDisabled()
+     val extensions = create { extensions =>
+       // inject rule that will run during AQE query stage preparation and will add custom tags
+       // to the plan
+@@ -311,6 +319,7 @@ class SparkSessionExtensionSuite extends PlanTest with SQLHelper with AdaptiveSp
+   }
+ 
+   private def testInjectColumnar(enableAQE: Boolean): Unit = {
++    assumeCometDisabled()
+     def collectPlanSteps(plan: SparkPlan): Seq[Int] = plan match {
+       case a: AdaptiveSparkPlanExec =>
+         assert(a.toString.startsWith("AdaptiveSparkPlan isFinalPlan=true"))
+@@ -366,6 +375,7 @@ class SparkSessionExtensionSuite extends PlanTest with SQLHelper with AdaptiveSp
+   }
+ 
+   test("reset column vectors") {
++    assumeCometDisabled()
+     val session = SparkSession.builder()
+       .master("local[1]")
+       .config(COLUMN_BATCH_SIZE.key, 2)
+@@ -553,6 +563,7 @@ class SparkSessionExtensionSuite extends PlanTest with SQLHelper with AdaptiveSp
+   }
+ 
+   test("SPARK-38697: Extend SparkSessionExtensions to inject rules into AQE Optimizer") {
++    assumeCometDisabled()
+     def executedPlan(df: Dataset[java.lang.Long]): SparkPlan = {
+       assert(df.queryExecution.executedPlan.isInstanceOf[AdaptiveSparkPlanExec])
+       stripAQEPlan(df.queryExecution.executedPlan)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionJobTaggingAndCancellationSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionJobTaggingAndCancellationSuite.scala
 index d7b2511eac2..d5f5b940b94 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionJobTaggingAndCancellationSuite.scala
@@ -1850,6 +1950,84 @@ index ce549da03b4..47adf7cf94d 100644
  
      // Fail to read ancient datetime values.
      withSQLConf(SQLConf.PARQUET_REBASE_MODE_IN_READ.key -> EXCEPTION.toString) {
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/CoalesceShufflePartitionsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/CoalesceShufflePartitionsSuite.scala
+index 3ef22ccb77e..54f67b45387 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/execution/CoalesceShufflePartitionsSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/CoalesceShufflePartitionsSuite.scala
+@@ -56,6 +56,11 @@ class CoalesceShufflePartitionsSuite extends SparkFunSuite with SQLConfHelper
+     }
+   }
+ 
++  // Comet: AQE coalesces post-shuffle partitions by map output size, and Comet's shuffle
++  // writes Arrow IPC blocks whose sizes differ from Spark's, so the expected partition
++  // counts below only hold for Spark's shuffle.
++  private def isCometEnabled: Boolean = org.apache.spark.sql.classic.SparkSession.isCometEnabled
++
+   val numInputPartitions: Int = 10
+ 
+   def withSparkSession(
+@@ -166,9 +171,11 @@ class CoalesceShufflePartitionsSuite extends SparkFunSuite with SQLConfHelper
+             assert(shuffleReads.isEmpty)
+ 
+           case None =>
+-            assert(shuffleReads.length === 2)
+-            shuffleReads.foreach { read =>
+-              assert(read.outputPartitioning.numPartitions === 2)
++            if (!isCometEnabled) {
++              assert(shuffleReads.length === 2)
++              shuffleReads.foreach { read =>
++                assert(read.outputPartitioning.numPartitions === 2)
++              }
+             }
+         }
+       }
+@@ -221,9 +228,11 @@ class CoalesceShufflePartitionsSuite extends SparkFunSuite with SQLConfHelper
+             assert(shuffleReads.isEmpty)
+ 
+           case None =>
+-            assert(shuffleReads.length === 2)
+-            shuffleReads.foreach { read =>
+-              assert(read.outputPartitioning.numPartitions === 2)
++            if (!isCometEnabled) {
++              assert(shuffleReads.length === 2)
++              shuffleReads.foreach { read =>
++                assert(read.outputPartitioning.numPartitions === 2)
++              }
+             }
+         }
+       }
+@@ -271,9 +280,11 @@ class CoalesceShufflePartitionsSuite extends SparkFunSuite with SQLConfHelper
+             assert(shuffleReads.isEmpty)
+ 
+           case None =>
+-            assert(shuffleReads.length === 2)
+-            shuffleReads.foreach { read =>
+-              assert(read.outputPartitioning.numPartitions === 3)
++            if (!isCometEnabled) {
++              assert(shuffleReads.length === 2)
++              shuffleReads.foreach { read =>
++                assert(read.outputPartitioning.numPartitions === 3)
++              }
+             }
+         }
+       }
+@@ -530,10 +541,12 @@ class CoalesceShufflePartitionsSuite extends SparkFunSuite with SQLConfHelper
+       // Shuffle partition coalescing of the join is performed independent of the non-grouping
+       // aggregate on the other side of the union.
+       val finalPlan = stripAQEPlan(resultDf.queryExecution.executedPlan)
+-      assert(
+-        finalPlan.collect {
+-          case r @ CoalescedShuffleRead() => r
+-        }.size == 2)
++      if (!isCometEnabled) {
++        assert(
++          finalPlan.collect {
++            case r @ CoalescedShuffleRead() => r
++          }.size == 2)
++      }
+     }
+     withSparkSession(test, 100, None)
+   }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/DataSourceScanExecRedactionSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/DataSourceScanExecRedactionSuite.scala
 index 60bf3a21e96..7693107f107 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/DataSourceScanExecRedactionSuite.scala
@@ -3429,6 +3607,29 @@ index b8f3ea3c6f3..bbd44221288 100644
      withTempPath { workDir =>
        val workDirPath = workDir.getAbsolutePath
        val input = spark.range(5).toDF("id")
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/joins/BroadcastJoinSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/joins/BroadcastJoinSuite.scala
+index 52746720eba..15df5e78440 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/execution/joins/BroadcastJoinSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/joins/BroadcastJoinSuite.scala
+@@ -21,7 +21,7 @@ import scala.reflect.ClassTag
+ 
+ import org.apache.spark.AccumulatorSuite
+ import org.apache.spark.internal.config.EXECUTOR_MEMORY
+-import org.apache.spark.sql.{QueryTest, Row}
++import org.apache.spark.sql.{IgnoreComet, QueryTest, Row}
+ import org.apache.spark.sql.catalyst.expressions.{AttributeReference, BitwiseAnd, BitwiseOr, Cast, Expression, Literal, ShiftLeft}
+ import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
+ import org.apache.spark.sql.catalyst.plans.Inner
+@@ -487,7 +487,8 @@ abstract class BroadcastJoinSuiteBase extends QueryTest
+     }
+   }
+ 
+-  test("broadcast join where streamed side's output partitioning is PartitioningCollection") {
++  test("broadcast join where streamed side's output partitioning is PartitioningCollection",
++    IgnoreComet("Comet replaces the join and shuffle operators this test inspects")) {
+     withSQLConf(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "500") {
+       val t1 = (0 until 100).map(i => (i % 5, i % 13)).toDF("i1", "j1")
+       val t2 = (0 until 100).map(i => (i % 5, i % 14)).toDF("i2", "j2")
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/metric/MetricsFailureInjectionSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/metric/MetricsFailureInjectionSuite.scala
 index 2ae2ea6339f..30c8959a057 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/metric/MetricsFailureInjectionSuite.scala
