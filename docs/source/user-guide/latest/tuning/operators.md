@@ -133,3 +133,37 @@ nested cases fall back to Spark, and they can be forced back onto the native pat
 `sort_array` is separate. It sorts array elements rather than ordering rows, and its elements are compared with Arrow's
 raw total ordering, so `spark.comet.exec.strictFloatingPoint=true` makes it fall back even for a scalar floating-point
 element type. Use `spark.comet.expression.SortArray.allowIncompatible=true` to keep it native.
+
+## Reusing Broadcast Hash Builds (Experimental)
+
+`spark.comet.broadcast.reuse.enabled=true` allows tasks in one executor to share a prepared
+native hash table for the same Spark broadcast. This avoids repeating Arrow decoding and hash-table
+construction on a cache hit. It requires `org.apache.spark.CometPlugin` in `spark.plugins` and Spark
+off-heap memory. The feature is disabled by default.
+
+The implementation covers non-spilling inner broadcast joins with direct column keys,
+matching key types, and fixed-width or plain UTF8 build columns. Residual join conditions remain
+local to each consuming task. Dictionary, view, binary, and nested build columns remain unsupported.
+Unsupported joins keep ordinary task-local execution. Tasks can share a build when they use the
+same broadcast, build schema, and ordered build keys, even if their probe schemas differ.
+
+`spark.comet.broadcast.reuse.maxMemory` defaults to `1g`. It caps native prepared-build allocations
+through Spark off-heap storage memory while tasks are preparing or using a build. When the last
+task releases that build, its storage charge is returned. A later task wave may prepare the same
+broadcast again; a later query without a broadcast hash join inherits no idle build charge.
+The first flat-schema broadcast input marked for reuse fixes the executor's cap, even if its join
+later proves ineligible and creates no build. A later input with a different cap uses ordinary
+execution. Cache admission never waits for another join to release its memory. When admission
+fails, Comet discards the partial preparation and opens a fresh uncached input for that task.
+Preparation must also admit the temporary overlap between decoded native batches and DataFusion's
+compact build batch; the memory needed to prepare a build can exceed its final retained size.
+
+This cap does not bound the existing driver broadcast representation or JVM decoder allocations.
+The first task still decodes the existing broadcast format; bounded broadcast construction and
+admission before JVM decoding are separate work.
+
+Spark join metrics expose cache hits, successful preparations, admission fallbacks, preparation
+rows/bytes, and preparation time. Probe metrics remain per task. A successful preparation should
+normally be followed by cache hits from other tasks using that broadcast. Validate elapsed query
+time and executor memory with the feature both enabled and disabled before enabling it broadly;
+reuse counts alone do not establish a query speedup.

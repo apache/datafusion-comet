@@ -1235,7 +1235,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                 // so we should always execute partition 0.
                 let stream = root_op.native_plan.execute(0, task_ctx)?;
 
-                if exec_context.scans.is_empty() && exec_context.shuffle_scans.is_empty() {
+                if exec_context.input_sources.is_empty() {
+                    // Lazy broadcasts are JVM inputs too; keep their callbacks on the task thread.
                     // No JVM data sources — spawn onto tokio so the executor
                     // thread parks in blocking_recv instead of busy-polling.
                     exec_context.batch_producer =

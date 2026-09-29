@@ -25,6 +25,9 @@ pub use iceberg_scan::*;
 pub use scan::*;
 
 mod aligned_stream_reader;
+mod broadcast;
+mod broadcast_cache;
+pub(crate) use broadcast::{clear_broadcast_cache, reuse_broadcast_build, BroadcastInputExec};
 mod copy;
 mod dynamic_filter;
 pub(crate) use dynamic_filter::DynamicFilterJoinExec;

@@ -165,6 +165,20 @@ pub extern "system" fn Java_org_apache_comet_NativeBase_release(_e: EnvUnowned, 
     execution::jni_api::release_runtime();
 }
 
+#[no_mangle]
+/// Retires broadcast lookups on every plugin shutdown without changing runtime ownership.
+/// Call after native task shutdown and before retiring the JVM storage owner. Existing leases
+/// retain their buffers; repeated calls are safe. JNI failures are returned as Java exceptions.
+pub extern "system" fn Java_org_apache_comet_NativeBase_clearBroadcastCache(
+    e: EnvUnowned,
+    _class: JClass,
+) {
+    try_unwrap_or_throw(&e, |_| {
+        execution::operators::clear_broadcast_cache();
+        Ok(())
+    })
+}
+
 const LOG_PATTERN: &str = "{d(%y/%m/%d %H:%M:%S)} {l} {f}: {m}{n}";
 
 /// JNI method to check if a specific feature is enabled in the native Rust code.
