@@ -1783,6 +1783,69 @@ mod tests {
         assert_eq!(stub.releases.load(SeqCst), 2, "the free and the one anchor");
     }
 
+    /// The pool hands its anchor back to Spark from its drop. A replacement pool created for the
+    /// task's next plan while that release is on its way holds nothing from Spark, so its first
+    /// acquire parks on the old byte and the release then removes the task's entry from under
+    /// it. The registry must make the next plan wait for the release to land instead.
+    #[test]
+    fn the_next_plan_of_a_task_waits_for_the_dying_pool_to_hand_back_its_anchor() {
+        use crate::execution::memory_pools::acquire_task_shared_pool;
+
+        let stub = Arc::new(StubTaskMemory::new(100));
+        let pool = acquire_task_shared_pool(-2002, || pool_with(&stub, 1_000));
+        let res = MemoryConsumer::new("first plan").register(&pool);
+        res.try_grow(1).unwrap();
+        res.free();
+        drop(res);
+        assert_eq!(stub.outstanding(), 1, "only the anchor remains");
+        // Three active tasks and nothing free: a 33 byte maximum and a 16 byte minimum share.
+        stub.task_holds(OTHER_TASK, 74);
+        stub.task_holds(THIRD_TASK, 25);
+        assert_eq!(stub.memory_free(), 0);
+
+        // The last plan lets go of the pool; its anchor release is held at the JNI hop.
+        stub.release_gate.arm();
+        let dropping = thread::spawn(move || drop(pool));
+        stub.release_gate.wait_entered("anchor release");
+
+        let (created_tx, created) = channel();
+        let next_stub = Arc::clone(&stub);
+        let next_plan = thread::spawn(move || {
+            let pool = acquire_task_shared_pool(-2002, || pool_with(&next_stub, 1_000));
+            let _ = created_tx.send(());
+            let res = MemoryConsumer::new("next plan").register(&pool);
+            let result = res.try_grow(10);
+            res.free();
+            result
+        });
+        assert!(
+            created.recv_timeout(Duration::from_millis(300)).is_err(),
+            "the next plan got a pool while the previous one was still handing back its anchor"
+        );
+
+        stub.release_gate.disarm();
+        stub.release_gate.open();
+        dropping.join().unwrap();
+        created
+            .recv_timeout(TEST_TIMEOUT)
+            .expect("the next plan never got a pool once the anchor was back");
+
+        // The new pool's anchor takes the byte the old one freed, so its 10 byte request parks
+        // below the minimum share and wakes, with the task's entry intact, when a neighbour
+        // hands bytes back.
+        stub.wait_parked("next plan's grow");
+        stub.other_task_releases(25);
+        next_plan
+            .join()
+            .expect("the next plan's grow crashed")
+            .expect("the next plan's grow failed");
+        assert_eq!(
+            stub.outstanding(),
+            0,
+            "the new pool returned its anchor too"
+        );
+    }
+
     /// A shrink hands its bytes back to Spark before the pool stops counting them. While that
     /// release is still on its way, a grow of the same consumer that only fits if the shrunk
     /// bytes were free is refused at the fair limit without a JVM call, instead of reaching

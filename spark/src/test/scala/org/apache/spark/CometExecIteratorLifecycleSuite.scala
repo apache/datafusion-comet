@@ -279,8 +279,12 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
           assert(manager.acquireMemory(leakBytes) == leakBytes)
         }
 
+        // Listen on the package logger, as CometPluginsSuite does. For a logger with no config of
+        // its own, withLogAppender creates one that outlives the test and does not pass events
+        // up, so listening on CometExecIterator directly would hide its warnings from later
+        // appenders on org.apache.comet.
         val appender = new LogAppender("non-zero memory usage at close")
-        withLogAppender(appender, Seq(classOf[CometExecIterator].getName), Some(Level.WARN)) {
+        withLogAppender(appender, Seq("org.apache.comet"), Some(Level.WARN)) {
           try {
             var rows = 0
             while (sorting.hasNext) {

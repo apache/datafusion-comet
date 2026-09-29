@@ -330,7 +330,9 @@ entry when the task's balance reaches zero, and an acquire parked inside
 passes both checks, or the first `grow`, takes one extra byte from Spark before its own request,
 and the pool keeps that byte until it drops. While it is held, no release, the pool's own or a
 sibling consumer's such as the shuffle allocator, can zero the balance under a parked acquire, and
-the task stays in Spark's active set, so `NativeMemoryConsumer.getUsed` reports at least 1. Creating
+the task stays in Spark's active set, so `NativeMemoryConsumer.getUsed` reports at least 1. The byte
+goes back to Spark when the pool drops, and a plan of the same task that asks for a pool while that
+release is in flight waits for it to land, as described under task-shared pools below. Creating
 the pool makes no JVM call: a plan that never allocates natively never touches Spark's memory
 manager and never counts as an active task there. Spark declines the byte with a zero grant when the
 task is already at its share. The pool then runs without it and each grow retries it, as a request
@@ -401,9 +403,14 @@ per task.
 disappears when the last plan (and its last reservation) drops. There is no explicit release call to
 forget, and a `createPlan` that fails partway through cleans up on unwind.
 
-`TaskSharedMemoryPool::drop` has to handle one race: an `acquire` can observe an expired `Weak` and
-insert a replacement before the dying pool reaches the registry lock. The drop therefore compares
-pointers and only removes an entry that is still its own.
+Dropping the pool and replacing it must not overlap. The fair pool hands its anchor byte back to
+Spark from its drop, and a replacement created before that release lands holds nothing from Spark
+yet, so its first acquire could park inside Spark and wake to a task entry the release has removed.
+The registry entry therefore stays in place, with an expired `Weak`, until the pool has finished
+dropping, anchor release included. `acquire_task_shared_pool` treats an expired entry as a pool that
+is still tearing down and waits for it to go before creating the replacement. A guard field,
+dropped after the pool, removes the entry, and only when its `Weak` is expired, so the entry of a
+live pool is never removed.
 
 ## How DataFusion consumes the pool
 
