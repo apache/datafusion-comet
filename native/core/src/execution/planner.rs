@@ -118,6 +118,7 @@ use datafusion::physical_expr::expressions::{Literal, StatsType};
 use datafusion::physical_expr::window::WindowExpr;
 use datafusion::physical_expr::LexOrdering;
 
+use crate::execution::expressions::arithmetic::CheckedBinaryExpr;
 use crate::parquet::parquet_exec::init_datasource_exec;
 use arrow::array::{
     new_empty_array, Array, ArrayRef, BinaryBuilder, BooleanArray, Date32Array, Decimal128Array,
@@ -150,9 +151,9 @@ use datafusion_comet_proto::{
 use datafusion_comet_spark_expr::{
     jvm_udf::JvmScalarUdfExpr, spark_in_list, ApproxPercentile, ArrayInsert, Avg, AvgDecimal, Cast,
     CheckOverflow, Correlation, Covariance, CreateNamedStruct, DecimalRescaleCheckOverflow,
-    GetArrayStructFields, GetStructField, HllPlusPlus, IfExpr, ListExtract, MaxMinBy, Mode,
-    NormalizeNaNAndZero, Regr, RegrType, SparkCastOptions, Stddev, SumDecimal, ToJson,
-    UnboundColumn, Variance, WideDecimalBinaryExpr, WideDecimalOp,
+    GetArrayStructFields, GetStructField, HllPlusPlus, HllSketchAgg, HllUnionAgg, IfExpr,
+    ListExtract, MaxMinBy, Mode, NormalizeNaNAndZero, Regr, RegrType, SparkCastOptions, Stddev,
+    SumDecimal, ToJson, UnboundColumn, Variance, WideDecimalBinaryExpr, WideDecimalOp,
 };
 use itertools::Itertools;
 use jni::objects::{Global, JObject};
@@ -667,18 +668,35 @@ impl PhysicalPlanner {
                     self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
                 let data_type = to_arrow_datatype(expr.datatype.as_ref().unwrap());
                 let fail_on_error = expr.fail_on_error;
+                let query_context = spark_expr.expr_id.and_then(|expr_id| {
+                    let registry = &self.query_context_registry;
+                    registry.get(expr_id)
+                });
 
                 // WideDecimalBinaryExpr already handles overflow — skip redundant check
-                // but only if its output type matches CheckOverflow's declared type
-                if child.downcast_ref::<WideDecimalBinaryExpr>().is_some() {
+                // but only if its output type matches CheckOverflow's declared type. A binary
+                // expression with query context is wrapped in CheckedBinaryExpr, so look
+                // through any such wrappers.
+                let is_wide_decimal = unwrap_checked(&child)
+                    .downcast_ref::<WideDecimalBinaryExpr>()
+                    .is_some();
+                if is_wide_decimal {
                     let child_type = child.data_type(&input_schema)?;
                     if child_type == data_type {
-                        return Ok(child);
+                        return if query_context.is_some()
+                            && child.downcast_ref::<CheckedBinaryExpr>().is_none()
+                        {
+                            Ok(Arc::new(CheckedBinaryExpr::new(child, query_context)))
+                        } else {
+                            Ok(child)
+                        };
                     }
                 }
 
                 // Fuse Cast(Decimal128→Decimal128) + CheckOverflow into single rescale+check
-                // Only fuse when the Cast target type matches the CheckOverflow output type
+                // Only fuse when the Cast target type matches the CheckOverflow output type.
+                // Spark 3.4+ does not currently emit this shape, but keep its errors typed and
+                // contextualized in case a future serializer makes the fusion reachable.
                 if let Some(cast) = child.downcast_ref::<Cast>() {
                     if let (
                         DataType::Decimal128(p_out, s_out),
@@ -687,23 +705,33 @@ impl PhysicalPlanner {
                     {
                         let cast_target = cast.data_type(&input_schema)?;
                         if cast_target == data_type {
-                            return Ok(Arc::new(DecimalRescaleCheckOverflow::new(
-                                Arc::clone(&cast.child),
-                                s_in,
-                                *p_out,
-                                *s_out,
-                                fail_on_error,
-                            )));
+                            let fused: Arc<dyn PhysicalExpr> =
+                                Arc::new(DecimalRescaleCheckOverflow::new(
+                                    Arc::clone(&cast.child),
+                                    s_in,
+                                    *p_out,
+                                    *s_out,
+                                    fail_on_error,
+                                ));
+                            return if query_context.is_some() {
+                                Ok(Arc::new(CheckedBinaryExpr::new(fused, query_context)))
+                            } else {
+                                Ok(fused)
+                            };
                         }
                     }
                 }
 
-                // Look up query context from registry if expr_id is present
-                let query_context = spark_expr.expr_id.and_then(|expr_id| {
-                    let registry = &self.query_context_registry;
-                    registry.get(expr_id)
-                });
-
+                // Generated child protos may not carry an expression id of their own, so retain
+                // the outer CheckOverflow context as a fallback for bare child SparkErrors.
+                let child = if query_context.is_some()
+                    && child.downcast_ref::<CheckedBinaryExpr>().is_none()
+                {
+                    Arc::new(CheckedBinaryExpr::new(child, query_context.clone()))
+                        as Arc<dyn PhysicalExpr>
+                } else {
+                    child
+                };
                 Ok(Arc::new(CheckOverflow::new(
                     child,
                     data_type,
@@ -1110,9 +1138,14 @@ impl PhysicalPlanner {
                     DataFusionOperator::Multiply => WideDecimalOp::Multiply,
                     _ => unreachable!(),
                 };
-                Ok(Arc::new(WideDecimalBinaryExpr::new(
+                let expr: Arc<dyn PhysicalExpr> = Arc::new(WideDecimalBinaryExpr::new(
                     left, right, wide_op, p_out, s_out, eval_mode,
-                )))
+                ));
+                if query_context.is_some() {
+                    Ok(Arc::new(CheckedBinaryExpr::new(expr, query_context)))
+                } else {
+                    Ok(expr)
+                }
             }
             (
                 DataFusionOperator::Divide,
@@ -1137,13 +1170,18 @@ impl PhysicalPlanner {
                     Some(options.check_divide_overflow),
                     eval_mode,
                 )?;
-                Ok(Arc::new(ScalarFunctionExpr::new(
+                let expr: Arc<dyn PhysicalExpr> = Arc::new(ScalarFunctionExpr::new(
                     func_name,
                     fun_expr,
                     vec![left, right],
                     Arc::new(Field::new(func_name, data_type, true)),
                     Arc::new(ConfigOptions::default()),
-                )))
+                ));
+                if query_context.is_some() {
+                    Ok(Arc::new(CheckedBinaryExpr::new(expr, query_context)))
+                } else {
+                    Ok(expr)
+                }
             }
             // Date +/- Int8/Int16/Int32: DataFusion 52's arrow-arith kernels only
             // support Date32 +/- Interval types, not raw integers. Use the Spark
@@ -1210,9 +1248,11 @@ impl PhysicalPlanner {
                         Arc::new(ConfigOptions::default()),
                     ));
 
-                    // Wrap with CheckedBinaryExpr to add query_context to errors
-                    use crate::execution::expressions::arithmetic::CheckedBinaryExpr;
-                    Ok(Arc::new(CheckedBinaryExpr::new(scalar_expr, query_context)))
+                    if query_context.is_some() {
+                        Ok(Arc::new(CheckedBinaryExpr::new(scalar_expr, query_context)))
+                    } else {
+                        Ok(scalar_expr)
+                    }
                 } else {
                     Ok(Arc::new(BinaryExpr::new(left, op, right)))
                 }
@@ -3180,6 +3220,11 @@ impl PhysicalPlanner {
                 ));
                 Self::create_aggr_func_expr("bloom_filter_agg", schema, vec![child], func)
             }
+            AggExprStruct::HllSketchAgg(expr) => {
+                let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
+                let func = AggregateUDF::new_from_impl(HllSketchAgg::new(expr.lg_config_k));
+                Self::create_aggr_func_expr("hll_sketch_agg", schema, vec![child], func)
+            }
             AggExprStruct::CollectSet(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
                 let child = Self::coerce_collect_child_nullability(child, &schema)?;
@@ -3196,6 +3241,12 @@ impl PhysicalPlanner {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
                 let func = AggregateUDF::new_from_impl(HllPlusPlus::new(expr.precision));
                 Self::create_aggr_func_expr("approx_count_distinct", schema, vec![child], func)
+            }
+            AggExprStruct::HllUnionAgg(expr) => {
+                let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
+                let func =
+                    AggregateUDF::new_from_impl(HllUnionAgg::new(expr.allow_different_lg_config_k));
+                Self::create_aggr_func_expr("hll_union_agg", schema, vec![child], func)
             }
             AggExprStruct::ListAgg(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
@@ -4129,6 +4180,16 @@ fn rewrite_physical_expr(
     );
 
     Ok(expr.rewrite(&mut rewriter).data()?)
+}
+
+/// Strip any [`CheckedBinaryExpr`] wrappers so callers can inspect the expression
+/// they decorate, however many context-wrapping layers the planner emitted.
+fn unwrap_checked(expr: &Arc<dyn PhysicalExpr>) -> &Arc<dyn PhysicalExpr> {
+    let mut current = expr;
+    while let Some(checked) = current.downcast_ref::<CheckedBinaryExpr>() {
+        current = checked.child();
+    }
+    current
 }
 
 pub fn from_protobuf_eval_mode(value: i32) -> Result<EvalMode, prost::UnknownEnumValue> {
@@ -7436,6 +7497,75 @@ mod tests {
             PhysicalPlanner::coerce_collect_child_nullability(Arc::clone(&raw), &plan_schema)
                 .unwrap();
         assert!(Arc::ptr_eq(&raw, &coerced));
+    }
+
+    /// Normalizing an already-matching typed-null scalar or array must preserve its shared
+    /// storage, and both scalar collect accumulators must discard the null and return an empty
+    /// list. Duplicate field names with different types detect accidental name-based struct
+    /// conversion; matching runtime types must take DataFusion's identity cast path instead.
+    #[test]
+    fn test_collect_agg_preserves_matching_nested_nulls() {
+        use datafusion::logical_expr::ColumnarValue;
+        use datafusion::physical_expr::expressions::Literal;
+
+        let struct_type = DataType::Struct(Fields::from(vec![
+            Field::new("a", DataType::Int32, true),
+            Field::new(
+                "a",
+                DataType::Struct(Fields::from(vec![Field::new("x", DataType::Int32, true)])),
+                true,
+            ),
+        ]));
+        let null_list = Arc::new(ListArray::new_null(
+            Arc::new(Field::new("item", struct_type, true)),
+            1,
+        ));
+        let null_array = Arc::clone(&null_list) as ArrayRef;
+        let schema = collect_agg_schema(null_array.data_type().clone());
+        let batch =
+            RecordBatch::try_new(Arc::clone(&schema), vec![Arc::clone(&null_array)]).unwrap();
+
+        for raw in [
+            Arc::new(Literal::new(ScalarValue::List(Arc::clone(&null_list))))
+                as Arc<dyn PhysicalExpr>,
+            Arc::new(Column::new("s", 0)) as Arc<dyn PhysicalExpr>,
+        ] {
+            let child = PhysicalPlanner::coerce_collect_child_nullability(raw, &schema).unwrap();
+            let value = child.evaluate(&batch).unwrap();
+            match &value {
+                ColumnarValue::Scalar(ScalarValue::List(list)) => {
+                    assert!(Arc::ptr_eq(list, &null_list));
+                }
+                ColumnarValue::Array(array) => assert!(Arc::ptr_eq(array, &null_array)),
+                other => panic!("expected a list scalar or array, got {other:?}"),
+            }
+            let arg = value.into_array(batch.num_rows()).unwrap();
+
+            for func in [
+                AggregateUDF::new_from_impl(CometCollectList::new()),
+                AggregateUDF::new_from_impl(CometCollectSet::new()),
+            ] {
+                let agg = PhysicalPlanner::create_aggr_func_expr(
+                    "collect",
+                    Arc::clone(&schema),
+                    vec![Arc::clone(&child)],
+                    func,
+                )
+                .unwrap();
+                let mut acc = agg.create_accumulator().unwrap();
+                acc.update_batch(&[Arc::clone(&arg)]).unwrap();
+                assert_eq!(
+                    acc.state().unwrap()[0].data_type(),
+                    *agg.state_fields().unwrap()[0].data_type()
+                );
+                let ScalarValue::List(result) = acc.evaluate().unwrap() else {
+                    panic!("expected a list result");
+                };
+                assert_eq!(result.len(), 1);
+                assert!(!result.is_null(0));
+                assert!(result.value(0).is_empty());
+            }
+        }
     }
 
     #[test]

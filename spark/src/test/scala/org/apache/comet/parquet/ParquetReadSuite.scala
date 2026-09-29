@@ -2427,7 +2427,10 @@ abstract class ParquetReadSuite extends CometTestBase {
 
   // Spark checks each file on its own. A directory holding one file with ids and one without
   // raises on the second, and with `ignoreMissing` the file without ids reads as nulls because
-  // no root field of it carries the requested id.
+  // no root field of it carries the requested id. Each side is written as one file. Spread over
+  // the session's cores, each write would also leave an empty `part-00000`, and on Spark 3.x a
+  // file without ids read after an empty one in the same task raises inside one more
+  // `SparkException`, so the error the job reports would depend on which task failed first.
   test("a file without ids next to a file with ids is checked on its own") {
     withSQLConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
       withTempPath { dir =>
@@ -2436,11 +2439,13 @@ abstract class ParquetReadSuite extends CometTestBase {
         val readSchema = new StructType().add("a", IntegerType, true, withId(1))
         spark
           .createDataFrame(spark.sparkContext.parallelize(Seq(Row(100), Row(200))), idSchema)
+          .repartition(1)
           .write
           .mode("overwrite")
           .parquet(dir.getCanonicalPath)
         spark
           .createDataFrame(spark.sparkContext.parallelize(Seq(Row(1), Row(2))), plainSchema)
+          .repartition(1)
           .write
           .mode("append")
           .parquet(dir.getCanonicalPath)

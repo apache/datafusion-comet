@@ -24,12 +24,17 @@ import java.lang.ref.WeakReference
 import java.util.Properties
 import java.util.concurrent.atomic.AtomicBoolean
 
+import scala.reflect.ClassTag
+
+import org.apache.arrow.memory.RootAllocator
 import org.apache.spark.executor.TaskMetrics
 import org.apache.spark.memory.{TaskMemoryManager, TestMemoryManager}
+import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.catalyst.expressions.PrettyAttribute
-import org.apache.spark.sql.comet.{CometExec, CometExecUtils, CometMetricNode}
+import org.apache.spark.sql.comet.{CometExec, CometExecUtils, CometMetricNode, CometNativeScanExec, CometProjectExec, CometSortExec}
 import org.apache.spark.sql.comet.execution.arrow.CometArrowStream
+import org.apache.spark.sql.functions.{col, udf}
 import org.apache.spark.sql.types.{LongType, StructField, StructType}
 
 import org.apache.comet.{CometConf, CometExecIterator, CometShuffleBlockIterator, Native}
@@ -220,6 +225,96 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
     }
   }
 
+  test("a plan fed only by native scans returns its memory when its consumer stops early") {
+    // See issue #2453. The sort keeps its sorted runs in memory, and the merge that reads them
+    // spawns a Tokio task for each run.
+    assertMemoryReturnedWhenTheConsumerStopsEarly(expectSpill = false)
+  }
+
+  test("a plan fed only by native scans returns its memory when it spilled and stops early") {
+    // With a tiny pool the sort spills, and the merge that reads the spill files back holds its
+    // memory in the plan's own stream.
+    withSQLConf(
+      CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key -> "0.002",
+      CometConf.COMET_RESPECT_DATAFUSION_CONFIGS.key -> "true",
+      "spark.comet.datafusion.execution.sort_spill_reservation_bytes" -> "65536") {
+      assertMemoryReturnedWhenTheConsumerStopsEarly(expectSpill = true)
+    }
+  }
+
+  /**
+   * Sorts one file natively, reads a single row of the result and stops, as a JVM limit does, and
+   * checks that the task holds no memory once the native plan has been closed.
+   *
+   * Spark frees whatever a task still holds when the task ends, and can hand it to another task
+   * at once. Memory the native plan returns after that is memory it was still using while Spark
+   * counted it as free, and Spark logs "release called on N bytes but task only has 0 bytes" when
+   * it arrives.
+   */
+  private def assertMemoryReturnedWhenTheConsumerStopsEarly(expectSpill: Boolean): Unit = {
+    withTempPath { path =>
+      // One file keeps every row in one task, so the sort still holds most of them when the
+      // consumer stops.
+      spark
+        .range(0, 100000, 1, 1)
+        .selectExpr("id", "CAST(id AS STRING) AS s")
+        .write
+        .parquet(path.getAbsolutePath)
+      withParquetTable(path.getAbsolutePath, "tbl") {
+        withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "1024") {
+          // Stalls on one row of the sort's second batch, so the plan is still producing that
+          // batch when the consumer stops after the first. The native projection calls it on the
+          // thread running the plan.
+          val stallInSecondBatch = udf { (id: Long) =>
+            if (id == 98000L) Thread.sleep(500)
+            id
+          }
+          val sorted = sql("SELECT * FROM tbl SORT BY id DESC")
+            .select(stallInSecondBatch(col("id")).as("id"), col("s"))
+          val plan = sorted.queryExecution.executedPlan
+          // With no JVM input, the plan runs on a Tokio task rather than the Spark task thread.
+          val sorts = plan.collect { case sort: CometSortExec => sort }
+          assert(sorts.nonEmpty, s"Expected a native sort:\n$plan")
+          assert(
+            plan.find(_.isInstanceOf[CometProjectExec]).isDefined,
+            s"Expected the UDF in a native projection:\n$plan")
+          assert(
+            plan.find(_.isInstanceOf[CometNativeScanExec]).isDefined,
+            s"Expected a native scan:\n$plan")
+
+          val heldWhileReading = spark.sparkContext.longAccumulator
+          val heldOnceClosed = spark.sparkContext.longAccumulator
+          val rowsRead = new RunAfterParentTaskCompletion(
+            sorted.queryExecution.toRdd,
+            context =>
+              heldOnceClosed.add(context.taskMemoryManager().getMemoryConsumptionForThisTask))
+            .mapPartitions { rows =>
+              val read = if (rows.hasNext) {
+                rows.next()
+                1L
+              } else {
+                0L
+              }
+              heldWhileReading.add(
+                TaskContext.get().taskMemoryManager().getMemoryConsumptionForThisTask)
+              Iterator.single(read)
+            }
+            .collect()
+            .sum
+
+          assert(rowsRead == 1)
+          val spilled = sorts.map(_.metrics("spilled_bytes").value).sum
+          assert((spilled > 0) == expectSpill, s"The sort spilled $spilled bytes")
+          // Guards against a vacuous pass: the sort must hold memory when the consumer stops.
+          assert(heldWhileReading.value > 0, "The native sort held no memory while it was read")
+          assert(
+            heldOnceClosed.value == 0,
+            s"The task still held ${heldOnceClosed.value} bytes after its native plan was closed")
+        }
+      }
+    }
+  }
+
   test("getMemoryUsage counts live plans and reports native allocation") {
     val nativeLib = new Native()
     // Other suites' plans can still be live, so the plan count is compared as a delta.
@@ -251,41 +346,97 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
   }
 
   test("the memory usage log reports while plans run and once after the last one finishes") {
+    import CometExecIterator.JvmArrowMemory
     val mib = 1024L * 1024
     val busy = Array(300 * mib, 100 * mib, 2L, 3L)
+    val jvmArrow = JvmArrowMemory(allocated = 40 * mib, imported = 10 * mib)
     assert(
       CometExecIterator
-        .memoryUsageMessage(busy, plansAtLastLog = 0)
-        .contains("Comet native memory usage: allocated 300.0 MiB, reserved 100.0 MiB " +
-          "(3 native plans, 2 memory pools)"))
+        .memoryUsageMessage(busy, jvmArrow, plansAtLastLog = 0)
+        .contains(
+          "Comet native memory usage: allocated 300.0 MiB, reserved 100.0 MiB " +
+            "(3 native plans, 2 memory pools); JVM Arrow allocated 40.0 MiB, 10.0 MiB of it " +
+            "imported from native"))
 
     // The line after the last plan finishes shows the allocation the plans left behind.
     val idle = Array(20 * mib, 0L, 0L, 0L)
+    val noArrow = JvmArrowMemory(0L, 0L)
     assert(
       CometExecIterator
-        .memoryUsageMessage(idle, plansAtLastLog = 3)
+        .memoryUsageMessage(idle, noArrow, plansAtLastLog = 3)
         .exists(_.contains("allocated 20.0 MiB, reserved 0.0 MiB (0 native plans")))
-    assert(CometExecIterator.memoryUsageMessage(idle, plansAtLastLog = 0).isEmpty)
+    assert(CometExecIterator.memoryUsageMessage(idle, noArrow, plansAtLastLog = 0).isEmpty)
+  }
+
+  test("the memory usage log reads JVM Arrow memory from the allocators, imports apart") {
+    import CometExecIterator.JvmArrowMemory
+    val root = new RootAllocator(Long.MaxValue)
+    try {
+      val imports = root.newChildAllocator("imports", 0, Long.MaxValue)
+      val others = root.newChildAllocator("others", 0, Long.MaxValue)
+      val owned = others.buffer(1024 * 1024)
+      val imported = imports.buffer(256 * 1024)
+      try {
+        val memory = JvmArrowMemory.of(root, imports)
+        assert(memory == JvmArrowMemory(allocated = 1280 * 1024, imported = 256 * 1024))
+        assert(memory.allocatedByJvm == 1024 * 1024)
+      } finally {
+        imported.close()
+        owned.close()
+        imports.close()
+        others.close()
+      }
+    } finally {
+      root.close()
+    }
+    // The two figures are read one after the other, so an import can land in between.
+    assert(JvmArrowMemory(allocated = 10L, imported = 20L).allocatedByJvm == 0L)
   }
 
   test("the memory usage log warns when the native footprint exceeds the container") {
-    import CometExecIterator.nativeMemoryLimitWarning
+    import CometExecIterator.{nativeMemoryLimitWarning, JvmArrowMemory}
     val mib = 1024L * 1024
     // A 4 GiB off-heap pool with a 1 GiB overhead, and a pool running at 0.8 of the off-heap size.
     val limit = 5120 * mib
-    val reserved = 3000 * mib
-    // 1500 MiB untracked is more than the overhead, but fits in what the pool left free, since
-    // Spark's off-heap pool holds only the reservation.
-    assert(nativeMemoryLimitWarning(Array(4500 * mib, reserved, 1L, 1L), reserved, limit).isEmpty)
+    val noArrow = JvmArrowMemory(0L, 0L)
+    // Spark's off-heap pool holds only Comet's reservation unless told otherwise.
+    def warning(
+        allocated: Long,
+        reserved: Long = 3000 * mib,
+        jvmArrow: JvmArrowMemory = noArrow,
+        sparkOffHeapUsed: Option[Long] = None): Option[String] =
+      nativeMemoryLimitWarning(
+        Array(allocated, reserved, 1L, 1L),
+        jvmArrow,
+        sparkOffHeapUsed.getOrElse(reserved),
+        limit)
+
+    // 1500 MiB untracked is more than the overhead, but fits in what the pool left free.
+    assert(warning(4500 * mib).isEmpty)
     // 2500 MiB untracked does not fit: 2500 + 3000 = 5500 MiB.
-    val warning = nativeMemoryLimitWarning(Array(5500 * mib, reserved, 1L, 1L), reserved, limit)
-    assert(warning.exists(_.contains("(2500.0 MiB) plus Spark's off-heap memory in use (3000.0")))
-    assert(warning.exists(_.contains("is 5500.0 MiB, more than the 5120.0 MiB")))
-    // Spark's own off-heap use counts against the same limit.
+    val native = warning(5500 * mib)
+    assert(native.exists(_.contains("(2500.0 MiB, native and JVM Arrow) plus Spark's off-heap")))
     assert(
-      nativeMemoryLimitWarning(Array(4500 * mib, reserved, 1L, 1L), 4000 * mib, limit).isDefined)
+      native.exists(_.contains("memory in use (3000.0 MiB, including Comet's reservations)")))
+    assert(native.exists(_.contains("is 5500.0 MiB, more than the 5120.0 MiB")))
+    // Spark's own off-heap use counts against the same limit.
+    assert(warning(4500 * mib, sparkOffHeapUsed = Some(4000 * mib)).isDefined)
+    // So does Arrow memory the JVM allocated itself: 1500 + 700 + 3000 = 5200 MiB.
+    val jvm = warning(4500 * mib, jvmArrow = JvmArrowMemory(900 * mib, imported = 200 * mib))
+    assert(jvm.exists(_.contains("(2200.0 MiB, native and JVM Arrow)")))
+    assert(jvm.exists(_.contains("is 5200.0 MiB, more than the 5120.0 MiB")))
+    // Imported buffers were allocated by native code, so the allocation already counts them.
+    assert(
+      warning(4500 * mib, jvmArrow = JvmArrowMemory(900 * mib, imported = 900 * mib)).isEmpty)
+    // A batch the JVM allocated and a native operator holds on to is reserved as well, so it
+    // counts once: 1000 + 2500 - 3500 leaves nothing untracked, and 3500 MiB in all fits.
+    assert(
+      warning(
+        1000 * mib,
+        reserved = 3500 * mib,
+        jvmArrow = JvmArrowMemory(2500 * mib, 0L)).isEmpty)
     // Reservations can exceed the allocation, since operators reserve before they allocate.
-    assert(nativeMemoryLimitWarning(Array(100 * mib, reserved, 1L, 1L), reserved, limit).isEmpty)
+    assert(warning(100 * mib).isEmpty)
   }
 
   test("the memory pool limit reads a bare off-heap size as bytes, as Spark does") {
@@ -350,5 +501,23 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
     assert(memoryUsageLogInterval(Some("-5s")) == 0L)
     assert(memoryUsageLogInterval(Some("false")) == 0L)
     assert(memoryUsageLogInterval(Some("10 seconds please")) == 0L)
+  }
+}
+
+/**
+ * Adds `onTaskEnd` as a task completion listener before it computes `prev`. Spark runs completion
+ * listeners in the reverse order they were added, so `onTaskEnd` runs after every listener that
+ * computing `prev` adds, such as the one that closes a native plan.
+ */
+private class RunAfterParentTaskCompletion[T: ClassTag](
+    prev: RDD[T],
+    onTaskEnd: TaskContext => Unit)
+    extends RDD[T](prev) {
+
+  override protected def getPartitions: Array[Partition] = firstParent[T].partitions
+
+  override def compute(split: Partition, context: TaskContext): Iterator[T] = {
+    context.addTaskCompletionListener[Unit](onTaskEnd)
+    firstParent[T].iterator(split, context)
   }
 }
