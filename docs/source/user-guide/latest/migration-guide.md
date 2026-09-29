@@ -90,6 +90,16 @@ already exists restores the old effect.
   `spark.comet.exec.memoryPool=greedy_unified`, which leaves every limit to Spark. See
   [Configuring Comet Memory](tuning/memory.md#configuring-comet-memory).
 
+The native Parquet scan now honors `fs.s3a.path.style.access` for a custom `fs.s3a.endpoint`. Comet
+`1.0.0` addressed every such endpoint path-style whatever the setting said. Comet `1.1.0` follows
+Hadoop S3A: with the setting unset or `false`, a read of `s3a://bucket/key` through
+`fs.s3a.endpoint=http://minio.internal:9000` now goes to `http://bucket.minio.internal:9000/key`
+instead of `http://minio.internal:9000/bucket/key`, and a MinIO or Ceph RGW deployment whose DNS
+does not resolve the bucket host fails with a DNS error. Set `fs.s3a.path.style.access=true` to keep
+the old addressing. See
+[Additional S3 Configuration Options](datasources.md#additional-s3-configuration-options) for when
+Comet still addresses path-style on its own.
+
 A malformed value of `spark.comet.maxTempDirectorySize` or `spark.comet.explain.native.enabled` now
 fails the query instead of being replaced by the default. `spark.comet.debug.enabled`,
 `spark.comet.explain.native.enabled` and `spark.comet.tracing.enabled` now also take effect in
