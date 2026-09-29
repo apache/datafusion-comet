@@ -209,11 +209,11 @@ traffic accounting after cancellation.
 
 The native S3 connector records these `scan_io_` counters per scan without changing retry policy:
 
-| Metric suffix        | Meaning                                                    |
-| -------------------- | ---------------------------------------------------------- |
-| `http_observed_gets` | Logical GETs reaching the instrumented HTTP connector.      |
-| `http_attempts`      | HTTP-service calls for those GETs, including retries.       |
-| `http_retries`       | Calls after the first attempt for each observed GET.        |
+| Metric suffix        | Meaning                                                |
+| -------------------- | ------------------------------------------------------ |
+| `http_observed_gets` | Logical GETs reaching the instrumented HTTP connector. |
+| `http_attempts`      | HTTP-service calls for those GETs, including retries.  |
+| `http_retries`       | Calls after the first attempt for each observed GET.   |
 
 At a settled snapshot, attempts equal observed GETs plus retries. Request extensions preserve
 scan attribution across HTTP-status retries and interrupted-body resumes, even with shared S3
