@@ -296,7 +296,7 @@ object CometScalaUDFCodegen {
   private[codegen] def recordCompiledSignature(
       specs: IndexedSeq[ArrowColumnSpec],
       outputType: DataType): Unit = {
-    compiledSignatures.add((specs.map(_.vectorClass), outputType))
+    val _ = compiledSignatures.add((specs.map(_.vectorClass), outputType))
   }
 
   /**

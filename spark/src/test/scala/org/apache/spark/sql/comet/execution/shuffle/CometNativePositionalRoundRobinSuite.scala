@@ -75,7 +75,7 @@ class CometNativePositionalRoundRobinSuite extends CometTestBase with AdaptiveSp
     withTempPath { dir =>
       val path = dir.getAbsolutePath
       spark
-        .range(rows)
+        .range(rows.toLong)
         .selectExpr("id", "cast(id % 7 as string) as s", "id % 3 as g")
         .write
         .parquet(path)

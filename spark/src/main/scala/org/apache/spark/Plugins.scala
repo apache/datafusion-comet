@@ -253,13 +253,13 @@ object CometDriverPlugin extends Logging {
     val listeners = conf.get(listenerKey, "")
     if (listeners.isEmpty) {
       logInfo(s"Setting $listenerKey=$listenerClass")
-      conf.set(listenerKey, listenerClass)
+      val _ = conf.set(listenerKey, listenerClass)
     } else {
       val currentListeners = listeners.split(",").map(_.trim)
       if (!currentListeners.contains(listenerClass)) {
         val newValue = s"$listeners,$listenerClass"
         logInfo(s"Setting $listenerKey=$newValue")
-        conf.set(listenerKey, newValue)
+        val _ = conf.set(listenerKey, newValue)
       }
     }
   }
@@ -270,13 +270,13 @@ object CometDriverPlugin extends Logging {
     val extensions = conf.get(extensionKey, "")
     if (extensions.isEmpty) {
       logInfo(s"Setting $extensionKey=$extensionClass")
-      conf.set(extensionKey, extensionClass)
+      val _ = conf.set(extensionKey, extensionClass)
     } else {
       val currentExtensions = extensions.split(",").map(_.trim)
       if (!currentExtensions.contains(extensionClass)) {
         val newValue = s"$extensions,$extensionClass"
         logInfo(s"Setting $extensionKey=$newValue")
-        conf.set(extensionKey, newValue)
+        val _ = conf.set(extensionKey, newValue)
       }
     }
   }

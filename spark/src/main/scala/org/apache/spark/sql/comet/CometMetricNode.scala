@@ -119,7 +119,7 @@ case class CometMetricNode(metrics: Map[String, SQLMetric], children: Seq[CometM
    */
   def reportScanInputMetrics(ctx: TaskContext): Unit = {
     val seenMetrics = CometMetricNode.taskSeenMetrics(ctx).scanInput
-    ctx.addTaskCompletionListener[Unit] { _ =>
+    val _ = ctx.addTaskCompletionListener[Unit] { _ =>
       val scanLeaves = leafNodes.filter(_.metrics.contains("bytes_scanned"))
       def claimed(leaf: CometMetricNode, metricName: String): Long =
         leaf.metrics.get(metricName).fold(0L)(CometMetricNode.claimMetricValue(_, seenMetrics))
@@ -151,7 +151,7 @@ case class CometMetricNode(metrics: Map[String, SQLMetric], children: Seq[CometM
    * spill reports share.
    */
   def reportNativeWriteOutputMetrics(ctx: TaskContext): Unit = {
-    ctx.addTaskCompletionListener[Unit] { _ =>
+    val _ = ctx.addTaskCompletionListener[Unit] { _ =>
       metrics.get("bytes_written").foreach { m =>
         ctx.taskMetrics().outputMetrics.setBytesWritten(m.value)
       }
@@ -176,7 +176,7 @@ case class CometMetricNode(metrics: Map[String, SQLMetric], children: Seq[CometM
    */
   def reportSpillMetrics(ctx: TaskContext): Unit = {
     val seenMetrics = CometMetricNode.taskSeenMetrics(ctx)
-    ctx.addTaskCompletionListener[Unit] { _ =>
+    val _ = ctx.addTaskCompletionListener[Unit] { _ =>
       val diskBytesSpilled = sumMetricValues("spilled_bytes", seenMetrics.disk)
       if (diskBytesSpilled > 0L) {
         ctx.taskMetrics().incDiskBytesSpilled(diskBytesSpilled)
@@ -262,7 +262,9 @@ object CometMetricNode {
       val created =
         SeenMetrics(new IdentityHashMap(), new IdentityHashMap(), new IdentityHashMap())
       seenMetricsByTask.put(attemptId, created)
-      ctx.addTaskCompletionListener[Unit](_ => seenMetricsByTask.remove(attemptId))
+      ctx.addTaskCompletionListener[Unit](_ => {
+        val _ = seenMetricsByTask.remove(attemptId)
+      })
       created
     }
   }

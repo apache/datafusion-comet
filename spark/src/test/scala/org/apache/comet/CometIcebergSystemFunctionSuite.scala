@@ -483,7 +483,7 @@ class CometIcebergSystemFunctionSuite
         maybeNull(randomDecimal38()),
         maybeNull(randomString()),
         maybeNull(randomBinary()),
-        maybeNull(LocalDate.ofEpochDay(random.nextInt(40000) - 20000)),
+        maybeNull(LocalDate.ofEpochDay((random.nextInt(40000) - 20000).toLong)),
         maybeNull(instant(randomMicros())),
         maybeNull(localDateTime(randomMicros())))
     }

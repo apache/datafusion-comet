@@ -98,7 +98,7 @@ object CometConcatWsBenchmark extends CometBenchmarkBase {
                 // scalastyle:on println
               }
               runBenchmark(name) {
-                runExpressionBenchmark(name, rows, query, cometConfigs)
+                runExpressionBenchmark(name, rows.toLong, query, cometConfigs)
               }
             }
           }

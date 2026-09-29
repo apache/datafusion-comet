@@ -89,7 +89,7 @@ object CometCastBooleanBenchmark extends CometBenchmarkBase {
             """))
 
           (boolToStringConfigs ++ boolToNumericConfigs).foreach { config =>
-            runExpressionBenchmark(config.name, v, config.query, config.extraCometConfigs)
+            runExpressionBenchmark(config.name, v.toLong, config.query, config.extraCometConfigs)
           }
         }
       }
@@ -115,7 +115,7 @@ object CometCastBooleanBenchmark extends CometBenchmarkBase {
             """))
 
           numericToBoolConfigs.foreach { config =>
-            runExpressionBenchmark(config.name, v, config.query, config.extraCometConfigs)
+            runExpressionBenchmark(config.name, v.toLong, config.query, config.extraCometConfigs)
           }
         }
       }

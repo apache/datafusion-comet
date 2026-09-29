@@ -88,7 +88,9 @@ class CometCelebornLocalFetchFailureSuite extends CometTestBase {
 }
 
 /** Injects one local block loss only after Spark accepts another result partition. */
-class CometCelebornLocalFetchFailureTestManager(conf: SparkConf, isDriver: Boolean)
+private[shuffle] class CometCelebornLocalFetchFailureTestManager(
+    conf: SparkConf,
+    isDriver: Boolean)
     extends CometCelebornFallbackTestShuffleManager(conf, isDriver) {
 
   // This local-mode fixture keeps state in its SparkContext-owned shuffle manager.

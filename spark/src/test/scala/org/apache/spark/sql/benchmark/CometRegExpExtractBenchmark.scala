@@ -112,14 +112,14 @@ object CometRegExpExtractBenchmark extends CometBenchmarkBase {
             val extractQuery =
               s"select regexp_extract(c1, '${p.pattern}', ${p.idx}) from parquetV1Table"
             runBenchmark(extractName) {
-              runModes("RegExpExtract", extractName, v, extractQuery)
+              runModes("RegExpExtract", extractName, v.toLong, extractQuery)
             }
 
             val extractAllName = s"regexp_extract_all / ${p.name}"
             val extractAllQuery =
               s"select regexp_extract_all(c1, '${p.pattern}', ${p.idx}) from parquetV1Table"
             runBenchmark(extractAllName) {
-              runModes("RegExpExtractAll", extractAllName, v, extractAllQuery)
+              runModes("RegExpExtractAll", extractAllName, v.toLong, extractAllQuery)
             }
           }
         }
