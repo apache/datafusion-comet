@@ -123,6 +123,10 @@ jobs:
             spark/src/test/resources/pyspark/test_pyarrow_udf.py
           /tmp/venv/bin/python -m pytest -v \
             spark/src/test/resources/pyspark/test_pyarrow_udf_dictionary_shuffle.py
+          if [ "${{ matrix.native_python_udf }}" = "true" ]; then
+            /tmp/venv/bin/python -m pytest -v \
+              spark/src/test/resources/pyspark/test_native_arrow_udf_files.py
+          fi
 
       # Saved only on main: an entry written from a pull request or a
       # `gh-readonly-queue/*` branch cannot be restored by any later run, and

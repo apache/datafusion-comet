@@ -26,11 +26,9 @@ import scala.sys.process._
 import org.apache.spark.api.python.{PythonEvalType, SimplePythonFunction}
 import org.apache.spark.sql.{CometTestBase, Row}
 import org.apache.spark.sql.execution.python.UserDefinedPythonFunction
-import org.apache.spark.sql.functions.{array, lit, map, struct, when}
+import org.apache.spark.sql.functions.{array, expr, lit, map, struct, when}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, CalendarIntervalType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, StructField, StructType, TimestampNTZType, TimestampType, TimeType, VariantType, YearMonthIntervalType}
-
-import com.google.protobuf.ByteString
 
 import org.apache.comet.{CometConf, NativeBase}
 
@@ -104,6 +102,11 @@ class CometArrowPythonUdfSuite extends CometTestBase {
       }
       assert(nativeUdfs.exists(_.nativeOp.getArrowPythonUdf.getFunctionsCount == 2))
       checkAnswer(twoResults, Seq(Row(-1L, -2L), Row(-2L, -3L), Row(-3L, -4L), Row(-4L, -5L)))
+
+      val withSubquery = spark.range(4).select(udf(expr("id + (SELECT max(id) FROM range(8))")))
+      val subqueryPlan = withSubquery.queryExecution.executedPlan
+      assert(subqueryPlan.collect { case _: CometArrowEvalPythonExec => true }.nonEmpty)
+      checkAnswer(withSubquery, Seq(Row(-7L), Row(-8L), Row(-9L), Row(-10L)))
     }
 
     withSQLConf(CometConf.COMET_NATIVE_ARROW_PYTHON_UDF_ENABLED.key -> "false") {
@@ -154,15 +157,34 @@ class CometArrowPythonUdfSuite extends CometTestBase {
       assert(native == differentPlanId)
       assert(native.hashCode() == differentPlanId.hashCode())
 
-      val differentFunction = native.nativeOp.getArrowPythonUdf
-        .getFunctions(0)
-        .toBuilder
-        .setCommand(ByteString.copyFromUtf8("different_arrow_udf_command"))
-        .build()
-      val differentOpBuilder = native.nativeOp.toBuilder
-      differentOpBuilder.getArrowPythonUdfBuilder.setFunctions(0, differentFunction)
-      val differentUdf = native.copy(nativeOp = differentOpBuilder.build())
-      assert(native != differentUdf)
+      val otherFunction = SimplePythonFunction(
+        "different_arrow_udf_command".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+        Collections.emptyMap[String, String](),
+        Collections.emptyList[String](),
+        "python3",
+        "3.13",
+        Collections.emptyList(),
+        null)
+      val otherUdf = UserDefinedPythonFunction(
+        "secret_arrow",
+        otherFunction,
+        LongType,
+        PythonEvalType.SQL_SCALAR_ARROW_UDF,
+        udfDeterministic = true)
+      val otherPlan = source.select(otherUdf(source.col("id"))).queryExecution.executedPlan
+      val otherNative = otherPlan.collectFirst { case op: CometArrowEvalPythonExec => op }.get
+      assert(native.copy(udfs = otherNative.udfs) != native)
+
+      val differentBatchSize = native.nativeOp.toBuilder
+      differentBatchSize.getArrowPythonUdfBuilder.setMaxRecordsPerBatch(
+        native.nativeOp.getArrowPythonUdf.getMaxRecordsPerBatch + 1)
+      assert(native.copy(nativeOp = differentBatchSize.build()) != native)
+
+      val sameFunctionPlan = source.select(udf(source.col("id"))).queryExecution.executedPlan
+      val sameFunctionNative =
+        sameFunctionPlan.collectFirst { case op: CometArrowEvalPythonExec => op }.get
+      assert(native.udfs != sameFunctionNative.udfs)
+      assert(native.sameResult(sameFunctionNative))
     }
   }
 

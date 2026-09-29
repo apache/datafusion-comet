@@ -131,6 +131,9 @@ The initial native path accepts scalar `@arrow_udf` calls with regular or named 
 multiple independent UDFs in one `ArrowEvalPythonExec`. Chained Python UDFs, broadcast variables,
 Python includes, per-function environment overrides other than Spark's default
 `PYTHONHASHSEED=0`, and `spark.sql.execution.arrow.useLargeVarTypes=true` stay on Spark's path.
+Queries also stay on Spark's Python worker path when the Spark context has files added through
+`addPyFile` or `addFile`, because the embedded interpreter does not receive Spark's per-task file
+setup.
 The embedded interpreter starts with the same default hash seed as Spark's Python workers.
 Iterator Arrow UDFs,
 ordinary `udf(..., useArrow=True)`, scalar pandas UDFs, and `mapInArrow` are separate execution

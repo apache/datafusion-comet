@@ -22,6 +22,7 @@ package org.apache.spark.sql.comet
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.api.python.PythonEvalType
+import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeSet, Expression, NamedArgumentExpression, NamedExpression, PythonUDF}
 import org.apache.spark.sql.execution.{PartitioningPreservingUnaryExecNode, SparkPlan}
 import org.apache.spark.sql.execution.python.ArrowEvalPythonExec
@@ -74,6 +75,9 @@ object CometArrowEvalPythonExec extends CometOperatorSerde[ArrowEvalPythonExec] 
     }
     if (op.conf.pythonUDFProfiler.nonEmpty) {
       return Unsupported(Some("Arrow UDF profiling is not supported in-process"))
+    }
+    if (SparkSession.active.sparkContext.listFiles().nonEmpty) {
+      return Unsupported(Some("Spark-added files are not supported in-process"))
     }
     if (op.udfs.exists(_.children.exists(expr => !hasCompatibleArrowSchema(expr.dataType))) ||
       op.resultAttrs.exists(attr => !hasCompatibleArrowSchema(attr.dataType))) {
@@ -146,6 +150,7 @@ object CometArrowEvalPythonExec extends CometOperatorSerde[ArrowEvalPythonExec] 
       op,
       op.output,
       op.resultAttrs,
+      op.udfs,
       op.child,
       SerializedPlan(None))
 }
@@ -155,6 +160,7 @@ case class CometArrowEvalPythonExec(
     override val originalPlan: SparkPlan,
     override val output: Seq[Attribute],
     resultAttrs: Seq[Attribute],
+    udfs: Seq[PythonUDF],
     child: SparkPlan,
     override val serializedPlanOpt: SerializedPlan)
     extends CometUnaryExec
@@ -170,14 +176,25 @@ case class CometArrowEvalPythonExec(
     case other: CometArrowEvalPythonExec =>
       output == other.output &&
       resultAttrs == other.resultAttrs &&
+      udfs == other.udfs &&
       child == other.child &&
-      nativeOp.getArrowPythonUdf == other.nativeOp.getArrowPythonUdf &&
-      serializedPlanOpt == other.serializedPlanOpt
+      nativeOp.getArrowPythonUdf.getMaxRecordsPerBatch ==
+        other.nativeOp.getArrowPythonUdf.getMaxRecordsPerBatch &&
+        nativeOp.getArrowPythonUdf.getMaxBytesPerBatch ==
+        other.nativeOp.getArrowPythonUdf.getMaxBytesPerBatch &&
+        serializedPlanOpt == other.serializedPlanOpt
     case _ => false
   }
 
   override def hashCode(): Int =
-    Objects.hashCode(output, resultAttrs, child, nativeOp.getArrowPythonUdf, serializedPlanOpt)
+    Objects.hashCode(
+      output,
+      resultAttrs,
+      udfs,
+      child,
+      nativeOp.getArrowPythonUdf.getMaxRecordsPerBatch: java.lang.Integer,
+      nativeOp.getArrowPythonUdf.getMaxBytesPerBatch: java.lang.Long,
+      serializedPlanOpt)
 
   override protected def outputExpressions: Seq[NamedExpression] = output
 
