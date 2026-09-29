@@ -403,8 +403,11 @@ up. Older Spark patches within the same minor are not separately supported.
 Comet targets a minor release every four to six weeks. Patch releases are made on demand, only
 when a critical bug or security fix needs to ship before the next minor release.
 
-Only the most recent minor release receives patch releases. Comet does not currently backport
-fixes to older minor releases; users are expected to upgrade forward.
+Patch releases normally come from the most recent minor release, and users are expected to upgrade
+forward. The maintainers may still backport an important fix to an older minor release, for
+example a correctness or security fix for users who cannot upgrade yet. The contributor guide's
+[Backporting to Release Branches](../contributor-guide/backporting.md) page describes how fixes
+reach a release branch.
 
 ## Native Library Coupling
 
