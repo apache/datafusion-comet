@@ -34,7 +34,7 @@ object CometPaddingExpressionBenchmark extends CometBenchmarkBase {
         prepareTable(
           dir,
           spark
-            .range(rows)
+            .range(rows.toLong)
             .selectExpr(
               "CAST(id AS STRING) AS s",
               "CAST(id % 32 + 8 AS INT) AS len",
@@ -48,7 +48,7 @@ object CometPaddingExpressionBenchmark extends CometBenchmarkBase {
             runBenchmark(name) {
               runExpressionBenchmark(
                 name,
-                rows,
+                rows.toLong,
                 s"SELECT $function($arguments) FROM parquetV1Table")
             }
           }
