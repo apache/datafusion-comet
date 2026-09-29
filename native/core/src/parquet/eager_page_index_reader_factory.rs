@@ -60,7 +60,7 @@
 //! The second is the Variant footer rewrite, `with_spark_arrow_schema`, which replaces the
 //! Arrow schema hint in the footer for scans that project Variant.
 
-use arrow::datatypes::{DataType, FieldRef, Schema};
+use arrow::datatypes::{DataType, Field, FieldRef, Fields, Schema};
 use async_trait::async_trait;
 use bytes::Bytes;
 use datafusion::common::Result as DFResult;
@@ -93,6 +93,7 @@ use parquet::file::metadata::{
     FooterTail, PageIndexPolicy, ParquetMetaData, ParquetMetaDataReader,
 };
 use parquet::schema::types::{ColumnDescPtr, SchemaDescriptor, Type as ParquetType};
+use parquet::variant::VariantType;
 use std::fmt::{Debug, Display, Formatter};
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -364,6 +365,189 @@ fn spark_enum_schema(schema: &SchemaDescriptor) -> ParquetResult<Option<Schema>>
     )))
 }
 
+/// `arrow_schema::extension`'s keys for an extension type's name and metadata. The `arrow` facade
+/// does not re-export that module, and `Field` offers no way to drop an extension type, so
+/// clearing one means removing these two keys, as elsewhere in this crate.
+const EXTENSION_TYPE_NAME_KEY: &str = "ARROW:extension:name";
+const EXTENSION_TYPE_METADATA_KEY: &str = "ARROW:extension:metadata";
+
+/// Pair `hinted` with `physical` and take the Variant marker from `physical` wherever the two
+/// disagree, returning `None` when every marker already agrees. `physical` is what the Parquet
+/// annotations alone say, so this makes the annotation the marker's only source of truth.
+///
+/// The two schemas describe the same Parquet leaves, so fields pair up by position, which is how
+/// `complex.rs` pairs them when it applies the hint. A hint may still name a different container
+/// (`LargeList` for a `List`) or a different field count, and where the shapes disagree the walk
+/// leaves that subtree's markers alone rather than guessing: the reader honors the hint's shape,
+/// and a hint that far from the file is not one this rewrite can speak for.
+fn align_variant_markers(hinted: &Schema, physical: &Schema) -> Option<Schema> {
+    if hinted.fields().len() != physical.fields().len() {
+        return None;
+    }
+    let mut changed = false;
+    let fields = hinted
+        .fields()
+        .iter()
+        .zip(physical.fields())
+        .map(|(hinted, physical)| align_variant_field(hinted, physical, &mut changed))
+        .collect::<Fields>();
+    changed.then(|| Schema::new_with_metadata(fields, hinted.metadata().clone()))
+}
+
+/// Puts a realigned child back into the container it came from, leaving the container kind as the
+/// hint declared it.
+type RebuildContainer = fn(FieldRef, &DataType) -> DataType;
+
+/// The single child of a container field, paired with the rebuild that puts a new child back in
+/// the same container. `None` for a field that holds no nested field.
+fn variant_marker_child(data_type: &DataType) -> Option<(&FieldRef, RebuildContainer)> {
+    let rebuild: RebuildContainer = |child, original| match original {
+        DataType::List(_) => DataType::List(child),
+        DataType::LargeList(_) => DataType::LargeList(child),
+        DataType::ListView(_) => DataType::ListView(child),
+        DataType::LargeListView(_) => DataType::LargeListView(child),
+        DataType::FixedSizeList(_, len) => DataType::FixedSizeList(child, *len),
+        DataType::Map(_, sorted) => DataType::Map(child, *sorted),
+        other => other.clone(),
+    };
+    match data_type {
+        DataType::List(child)
+        | DataType::LargeList(child)
+        | DataType::ListView(child)
+        | DataType::LargeListView(child)
+        | DataType::FixedSizeList(child, _)
+        | DataType::Map(child, _) => Some((child, rebuild)),
+        _ => None,
+    }
+}
+
+/// One field of [`align_variant_markers`]. Sets `changed` when it moves a marker, so the caller
+/// can leave the footer alone when the hint and the annotations already agree.
+fn align_variant_field(hinted: &FieldRef, physical: &FieldRef, changed: &mut bool) -> FieldRef {
+    let data_type = match (hinted.data_type(), physical.data_type()) {
+        (DataType::Struct(hinted_fields), DataType::Struct(physical_fields))
+            if hinted_fields.len() == physical_fields.len() =>
+        {
+            DataType::Struct(
+                hinted_fields
+                    .iter()
+                    .zip(physical_fields)
+                    .map(|(hinted, physical)| align_variant_field(hinted, physical, changed))
+                    .collect(),
+            )
+        }
+        (hinted_type, physical_type) => {
+            match (
+                variant_marker_child(hinted_type),
+                variant_marker_child(physical_type),
+            ) {
+                (Some((hinted_child, rebuild)), Some((physical_child, _))) => rebuild(
+                    align_variant_field(hinted_child, physical_child, changed),
+                    hinted_type,
+                ),
+                _ => hinted_type.clone(),
+            }
+        }
+    };
+
+    let annotated = physical.has_valid_extension_type::<VariantType>();
+    if annotated == hinted.has_valid_extension_type::<VariantType>() {
+        return Arc::new(hinted.as_ref().clone().with_data_type(data_type));
+    }
+    *changed = true;
+    let field = Field::new(hinted.name(), data_type, hinted.is_nullable());
+    if annotated {
+        Arc::new(
+            field
+                .with_metadata(hinted.metadata().clone())
+                .with_extension_type(VariantType),
+        )
+    } else {
+        let mut metadata = hinted.metadata().clone();
+        metadata.remove(EXTENSION_TYPE_NAME_KEY);
+        metadata.remove(EXTENSION_TYPE_METADATA_KEY);
+        Arc::new(field.with_metadata(metadata))
+    }
+}
+
+/// Make the file's VARIANT annotations, not its `ARROW:schema` hint, decide which fields the
+/// reader hands back as Variant.
+///
+/// `complex.rs`'s `convert_field` copies a hinted field's metadata verbatim and never derives the
+/// extension type from the Parquet logical type, so with a hint present the marker the reader
+/// produces is the hint's, whatever the file is annotated as. `schema_adapter`'s
+/// `check_variant_annotation` reads that marker as the file's annotation, and Spark's converter
+/// reads the Parquet schema alone, so a hint that disagrees makes Comet reject a column Spark
+/// reads (hint marked, group not annotated) or read one Spark rejects (the reverse). arrow-rs's
+/// own `ArrowWriter` writes the first shape when built without the `variant_experimental`
+/// feature, where `logical_type_for_struct` returns `None` but the hint still records the
+/// extension.
+///
+/// A file with no hint already takes its markers from the annotations, and Spark's writer emits
+/// no hint, so the common path costs one scan of the key-value metadata. Rebuild only the
+/// returned metadata; the shared cache retains the original footer.
+fn with_reconciled_variant_markers(
+    metadata: Arc<ParquetMetaData>,
+) -> ParquetResult<Arc<ParquetMetaData>> {
+    let file = metadata.file_metadata();
+    let key_values = file.key_value_metadata();
+    if !key_values.is_some_and(|key_values| {
+        key_values
+            .iter()
+            .any(|key_value| key_value.key == ARROW_SCHEMA_META_KEY)
+    }) {
+        return Ok(metadata);
+    }
+
+    // The hint applied, which is the schema the reader itself computes, against the annotations
+    // alone. Re-encoding the first with only its markers moved keeps every other way the hint
+    // shapes the read, dictionary-encoded columns among them.
+    let hinted = parquet_to_arrow_schema(file.schema_descr(), key_values)?;
+    let physical = parquet_to_arrow_schema(file.schema_descr(), None)?;
+    let Some(reconciled) = align_variant_markers(&hinted, &physical) else {
+        return Ok(metadata);
+    };
+    Ok(with_arrow_schema_hint(&metadata, Some(reconciled)))
+}
+
+/// Replace the footer's `ARROW:schema` hint with `schema`, or drop the hint when `None`.
+/// Rebuilds only the returned metadata, leaving the cached footer as it was read.
+fn with_arrow_schema_hint(
+    metadata: &Arc<ParquetMetaData>,
+    schema: Option<Schema>,
+) -> Arc<ParquetMetaData> {
+    let file = metadata.file_metadata();
+    let mut key_values = file
+        .key_value_metadata()
+        .into_iter()
+        .flatten()
+        .filter(|key_value| key_value.key != ARROW_SCHEMA_META_KEY)
+        .cloned()
+        .collect::<Vec<_>>();
+    if let Some(schema) = schema {
+        key_values.push(KeyValue {
+            key: ARROW_SCHEMA_META_KEY.to_string(),
+            value: Some(encode_arrow_schema(&schema)),
+        });
+    }
+
+    let file = FileMetaData::new(
+        file.version(),
+        file.num_rows(),
+        file.created_by().map(str::to_owned),
+        Some(key_values),
+        file.schema_descr_ptr(),
+        file.column_orders().cloned(),
+    );
+    Arc::new(
+        ParquetMetaDataBuilder::new(file)
+            .set_row_groups(metadata.row_groups().to_vec())
+            .set_column_index(metadata.column_index().cloned())
+            .set_offset_index(metadata.offset_index().cloned())
+            .build(),
+    )
+}
+
 /// Arrow restores advisory `ARROW:schema` types that can differ from Spark's physical Parquet
 /// interpretation. Replace that hint with physical inference and the ENUM string mapping.
 /// Rebuild only the returned metadata; the shared cache retains the original footer.
@@ -380,35 +564,7 @@ fn with_spark_arrow_schema(metadata: Arc<ParquetMetaData>) -> ParquetResult<Arc<
         return Ok(metadata);
     }
 
-    let mut key_values = file
-        .key_value_metadata()
-        .into_iter()
-        .flatten()
-        .filter(|key_value| key_value.key != ARROW_SCHEMA_META_KEY)
-        .cloned()
-        .collect::<Vec<_>>();
-    if let Some(schema) = enum_schema {
-        key_values.push(KeyValue {
-            key: ARROW_SCHEMA_META_KEY.to_string(),
-            value: Some(encode_arrow_schema(&schema)),
-        });
-    }
-
-    let file = FileMetaData::new(
-        file.version(),
-        file.num_rows(),
-        file.created_by().map(str::to_owned),
-        Some(key_values),
-        file.schema_descr_ptr(),
-        file.column_orders().cloned(),
-    );
-    Ok(Arc::new(
-        ParquetMetaDataBuilder::new(file)
-            .set_row_groups(metadata.row_groups().to_vec())
-            .set_column_index(metadata.column_index().cloned())
-            .set_offset_index(metadata.offset_index().cloned())
-            .build(),
-    ))
+    Ok(with_arrow_schema_hint(&metadata, enum_schema))
 }
 
 impl AsyncFileReader for EagerPageIndexReader {
@@ -553,7 +709,7 @@ impl AsyncFileReader for EagerPageIndexReader {
             if spark_variant_schema {
                 with_spark_arrow_schema(metadata)
             } else {
-                Ok(metadata)
+                with_reconciled_variant_markers(metadata)
             }
         }
         .boxed()

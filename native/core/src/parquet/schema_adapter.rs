@@ -1851,6 +1851,9 @@ impl PhysicalExpr for RejectOnNonEmpty {
 #[cfg(test)]
 pub(crate) mod test {
     use crate::parquet::cast_column::CometCastColumnExpr;
+    use crate::parquet::eager_page_index_reader_factory::{
+        EagerPageIndexReaderFactory, ScanIoSource,
+    };
     use crate::parquet::parquet_support::SparkParquetOptions;
     use crate::parquet::schema_adapter::{
         check_conversion, is_pure_structural_narrowing, ConversionCheck,
@@ -1876,9 +1879,11 @@ pub(crate) mod test {
     use datafusion::datasource::physical_plan::{FileGroup, FileScanConfigBuilder, ParquetSource};
     use datafusion::datasource::source::DataSourceExec;
     use datafusion::execution::object_store::ObjectStoreUrl;
+    use datafusion::execution::runtime_env::RuntimeEnv;
     use datafusion::execution::TaskContext;
     use datafusion::physical_expr::expressions::Column;
     use datafusion::physical_expr::PhysicalExpr;
+    use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
     use datafusion::physical_plan::{ExecutionPlan, SendableRecordBatchStream};
     use datafusion_comet_spark_expr::test_common::file_util::get_temp_filename;
     use datafusion_comet_spark_expr::EvalMode;
@@ -1886,10 +1891,11 @@ pub(crate) mod test {
     use futures::StreamExt;
     use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
     use parquet::arrow::arrow_writer::ArrowWriterOptions;
-    use parquet::arrow::ArrowWriter;
     use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
+    use parquet::arrow::{ArrowWriter, ARROW_SCHEMA_META_KEY};
     use parquet::basic::{LogicalType, Repetition, Type as PhysicalType};
     use parquet::data_type::{ByteArray, ByteArrayType};
+    use parquet::file::metadata::KeyValue;
     use parquet::file::writer::SerializedFileWriter;
     use parquet::schema::printer::print_schema;
     use parquet::schema::types::Type as ParquetType;
@@ -4505,6 +4511,21 @@ pub(crate) mod test {
         writer.write(&batch)?;
         writer.close()?;
 
+        probe_variant_annotation_file(&filename, &file_schema, options).await
+    }
+
+    /// The reading half of `probe_variant_annotation`: reads back the Parquet schema `filename`
+    /// actually holds, derives the requested schema from `file_schema` per `options`, and scans
+    /// the file through a `ProbeFactory`. Split out so a test can hand it a file the `ArrowWriter`
+    /// alone cannot produce, such as one whose `ARROW:schema` hint disagrees with its annotations.
+    async fn probe_variant_annotation_file(
+        filename: &str,
+        file_schema: &SchemaRef,
+        options: ProbeOptions,
+    ) -> Result<VariantProbe, DataFusionError> {
+        let filename = filename.to_string();
+        let file_schema = Arc::clone(file_schema);
+
         let mut printed = Vec::new();
         let reader = ParquetRecordBatchReaderBuilder::try_new(File::open(&filename)?)?;
         print_schema(&mut printed, reader.parquet_schema().root_schema());
@@ -4532,7 +4553,26 @@ pub(crate) mod test {
             seen: Arc::clone(&seen),
         });
 
-        let parquet_source = ParquetSource::new(requested);
+        // Install the reader factory `init_datasource_exec` installs, gated the way it gates it:
+        // the footer rewrites that decide which fields the reader marks as Variant live there, so
+        // a probe without it would read a hint the real scan never sees.
+        let projects_variant = requested
+            .fields()
+            .iter()
+            .any(|field| field.has_valid_extension_type::<VariantType>());
+        let runtime = Arc::new(RuntimeEnv::default());
+        let store = runtime.object_store(ObjectStoreUrl::local_filesystem())?;
+        let reader_factory = Arc::new(
+            EagerPageIndexReaderFactory::new(
+                store,
+                runtime.cache_manager.get_file_metadata_cache(),
+                ScanIoSource::Local,
+                &ExecutionPlanMetricsSet::new(),
+            )
+            .with_spark_variant_schema(projects_variant),
+        );
+        let parquet_source =
+            ParquetSource::new(requested).with_parquet_file_reader_factory(reader_factory);
         let files = FileGroup::new(vec![PartitionedFile::from_path(filename)?]);
         let file_scan_config = FileScanConfigBuilder::new(
             ObjectStoreUrl::local_filesystem(),
@@ -5080,6 +5120,136 @@ pub(crate) mod test {
             s.field_with_name("v").ok().map(|f| Arc::new(f.clone()))
         });
         Ok(())
+    }
+
+    /// The test above writes a file whose hint and annotation agree. They need not: the physical
+    /// side of `check_variant_annotation` is the reader's Arrow field, and `convert_field` in
+    /// parquet-rs's `arrow/schema/complex.rs` copies each field's metadata straight from the
+    /// `ARROW:schema` hint, never deriving the extension type from the Parquet logical type when a
+    /// hint is present. A plain-struct request leaves `projects_variant` false, so
+    /// `init_datasource_exec` keeps that hint, and the marker this check reads then comes from the
+    /// hint rather than from the file.
+    ///
+    /// arrow-rs's own `ArrowWriter` produces such a file when built without the
+    /// `variant_experimental` feature: `logical_type_for_struct` returns `None`, so the group
+    /// carries no annotation, while the hint still records `arrow.parquet.variant`. Spark reads
+    /// only the Parquet schema, infers `struct<value binary, metadata binary>` and reads the
+    /// column, and so does Comet on main. The check must not reject it.
+    #[tokio::test]
+    async fn hint_marking_an_unannotated_group_is_read_as_a_struct() -> Result<(), DataFusionError>
+    {
+        let filename =
+            write_with_foreign_hint(&unmarked_storage_schema(), &marked_storage_schema())?;
+        let probe = probe_variant_annotation_file(
+            &filename,
+            &unmarked_storage_schema(),
+            ProbeOptions::default(),
+        )
+        .await?;
+        assert!(
+            !probe.parquet_schema.contains("VARIANT"),
+            "this file must carry no annotation for the test to mean anything. Parquet schema:\n{}",
+            probe.parquet_schema
+        );
+        assert_eq!(
+            probe.scan?, 1,
+            "a group the writer never annotated must read as a plain struct, as Spark reads it"
+        );
+        Ok(())
+    }
+
+    /// The other half of the same disagreement: the group is annotated but the hint does not mark
+    /// it, so the hint would hide the annotation from `check_variant_annotation` and hand back the
+    /// storage bytes Spark refuses to return. The rejection must follow the file, not the hint.
+    #[tokio::test]
+    async fn annotated_group_the_hint_leaves_unmarked_is_still_rejected(
+    ) -> Result<(), DataFusionError> {
+        let filename =
+            write_with_foreign_hint(&marked_storage_schema(), &unmarked_storage_schema())?;
+        let probe = probe_variant_annotation_file(
+            &filename,
+            &unmarked_storage_schema(),
+            ProbeOptions::default(),
+        )
+        .await?;
+        assert!(
+            probe.parquet_schema.contains("VARIANT"),
+            "this file must carry the annotation for the test to mean anything. Parquet schema:\n{}",
+            probe.parquet_schema
+        );
+        assert_variant_annotation_rejected(&probe, "v", plain_variant_storage_sql());
+        Ok(())
+    }
+
+    /// The Variant storage group with the `arrow.parquet.variant` marker, which parquet-rs's
+    /// writer turns into the VARIANT annotation.
+    fn marked_storage_schema() -> SchemaRef {
+        Arc::new(Schema::new(vec![variant_field("v")]))
+    }
+
+    /// The same group with no marker, so the writer annotates nothing.
+    fn unmarked_storage_schema() -> SchemaRef {
+        Arc::new(Schema::new(vec![Field::new(
+            "v",
+            DataType::Struct(variant_storage_fields()),
+            true,
+        )]))
+    }
+
+    /// Write one row of `data_schema` to a temp file that carries no hint of its own, then attach
+    /// the `ARROW:schema` hint arrow-rs writes for `hint_schema`. The annotation follows
+    /// `data_schema` and the hint follows `hint_schema`, so the two disagree on their Variant
+    /// markers — a file no single `ArrowWriter` call produces, and the shape `convert_field`
+    /// resolves in the hint's favor. The hint is harvested from a throwaway file rather than
+    /// hand-built, so its bytes are the reader's own encoding.
+    fn write_with_foreign_hint(
+        data_schema: &SchemaRef,
+        hint_schema: &SchemaRef,
+    ) -> Result<String, DataFusionError> {
+        let write = |schema: &SchemaRef, skip_hint: bool| -> Result<String, DataFusionError> {
+            let filename = get_temp_filename();
+            let filename = filename.as_path().as_os_str().to_str().unwrap().to_string();
+            let mut writer = ArrowWriter::try_new_with_options(
+                File::create(&filename)?,
+                Arc::clone(schema),
+                ArrowWriterOptions::new().with_skip_arrow_metadata(skip_hint),
+            )?;
+            writer.write(&RecordBatch::try_new(
+                Arc::clone(schema),
+                vec![Arc::new(variant_storage_array())],
+            )?)?;
+            writer.close()?;
+            Ok(filename)
+        };
+
+        let donor = write(hint_schema, false)?;
+        let hint = ParquetRecordBatchReaderBuilder::try_new(File::open(&donor)?)?
+            .metadata()
+            .file_metadata()
+            .key_value_metadata()
+            .into_iter()
+            .flatten()
+            .find(|key_value| key_value.key == ARROW_SCHEMA_META_KEY)
+            .and_then(|key_value| key_value.value.clone())
+            .expect("arrow-rs wrote no ARROW:schema hint to harvest");
+
+        let filename = get_temp_filename();
+        let filename = filename.as_path().as_os_str().to_str().unwrap().to_string();
+        let mut writer = ArrowWriter::try_new_with_options(
+            File::create(&filename)?,
+            Arc::clone(data_schema),
+            ArrowWriterOptions::new().with_skip_arrow_metadata(true),
+        )?;
+        writer.write(&RecordBatch::try_new(
+            Arc::clone(data_schema),
+            vec![Arc::new(variant_storage_array())],
+        )?)?;
+        writer.append_key_value_metadata(KeyValue::new(
+            ARROW_SCHEMA_META_KEY.to_string(),
+            Some(hint),
+        ));
+        writer.close()?;
+        Ok(filename)
     }
 
     /// A Variant nested inside a struct: the `ns struct<nv variant>` case.
