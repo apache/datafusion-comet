@@ -584,15 +584,17 @@ object CometExecIterator extends Logging {
    * A warning if the executor's native footprint exceeds `limitBytes`, the container's memory
    * outside the JVM heap; see [[nativeMemoryLimit]].
    *
-   * The footprint is the memory Comet holds outside the JVM heap that its pools do not track,
+   * The footprint is the memory Comet holds outside the JVM heap that Spark does not account for,
    * `allocated + jvmArrow.allocatedByJvm - reserved`, plus `sparkOffHeapUsed`, everything in use
    * in Spark's off-heap pool, which includes Comet's reservations as well as Spark's own off-heap
    * execution and storage memory. The JVM's Arrow memory is added before the reservations are
    * subtracted, because a native operator that holds on to a batch the JVM allocated, such as a
    * sort buffering its input, reserves it: those bytes are in `reserved` and in the JVM figure
-   * but not in `allocated`, and are counted once. Comparing the sum rather than the untracked
-   * part against the overhead alone counts the part of `spark.memory.offHeap.size` that nothing
-   * has acquired at that moment, which untracked memory can occupy until Spark hands it out. The
+   * but not in `allocated`, and are counted once. Neither `reserved` nor `sparkOffHeapUsed`
+   * includes memory that a pool recorded beyond what Spark granted it, so that memory is counted
+   * as untracked; see [[Native.getMemoryUsage]]. Comparing the sum rather than the untracked part
+   * against the overhead alone counts the part of `spark.memory.offHeap.size` that nothing has
+   * acquired at that moment, which untracked memory can occupy until Spark hands it out. The
    * limit also has to hold the JVM's own non-heap memory, so by the time the footprint exceeds it
    * the executor has likely outgrown its container.
    */
@@ -604,7 +606,7 @@ object CometExecIterator extends Logging {
     val untracked = math.max(usage(0) + jvmArrow.allocatedByJvm - usage(1), 0L)
     val footprint = untracked + sparkOffHeapUsed
     if (footprint > limitBytes) {
-      Some(s"Comet memory not tracked by any memory pool (${toMiB(untracked)}, native and JVM " +
+      Some(s"Comet memory that Spark does not account for (${toMiB(untracked)}, native and JVM " +
         s"Arrow) plus Spark's off-heap memory in use (${toMiB(sparkOffHeapUsed)}, including " +
         s"Comet's reservations) is ${toMiB(footprint)}, more than the ${toMiB(limitBytes)} the " +
         "executor's container has outside the JVM heap (spark.memory.offHeap.size plus the " +
