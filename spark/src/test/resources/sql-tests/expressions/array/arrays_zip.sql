@@ -141,12 +141,10 @@ INSERT INTO test_arrays_zip VALUES (array(1), array(10, 20)), (array(2, 3), arra
 query
 select arrays_zip(a, b) FROM test_arrays_zip
 
--- expect_fallback: `arrays_zip` with duplicate field names is not supported
-query
+query expect_fallback(`arrays_zip` with duplicate field names is not supported)
 select arrays_zip(a, a) FROM test_arrays_zip
 
--- expect_fallback: `arrays_zip` with duplicate field names is not supported
-query
+query expect_fallback(`arrays_zip` with duplicate field names is not supported)
 select arrays_zip(b, b) FROM test_arrays_zip
 
 query
