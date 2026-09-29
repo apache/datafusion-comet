@@ -737,8 +737,8 @@ abstract class ParquetReadSuite extends CometTestBase {
         opt match {
           case Some(i) =>
             record.add(0, i % 2 == 0)
-            record.add(1, i.toByte)
-            record.add(2, i.toShort)
+            record.add(1, i.toByte.toInt)
+            record.add(2, i.toShort.toInt)
             record.add(3, i)
             record.add(4, i.toLong)
             record.add(5, i.toFloat)
@@ -1154,7 +1154,7 @@ abstract class ParquetReadSuite extends CometTestBase {
         var b = record.addGroup("b")
         b.add("b1", 1)
         b.add("b2", 1)
-        var c = record.addGroup("c")
+        val c = record.addGroup("c")
         c.add("c1", 1)
         c.add("c2", 1)
         writer.write(record)
@@ -1224,7 +1224,7 @@ abstract class ParquetReadSuite extends CometTestBase {
         var b = record.addGroup("b")
         b.add("b1", 1)
         b.add("b2", 1)
-        var c = record.addGroup("c")
+        val c = record.addGroup("c")
         c.add("c1", 1)
         c.add("c2", 1)
         writer.write(record)
@@ -1901,7 +1901,7 @@ abstract class ParquetReadSuite extends CometTestBase {
   }
 
   private def withId(id: Int) =
-    new MetadataBuilder().putLong(ParquetUtils.FIELD_ID_METADATA_KEY, id).build()
+    new MetadataBuilder().putLong(ParquetUtils.FIELD_ID_METADATA_KEY, id.toLong).build()
 
   // Based on Spark ParquetIOSuite.test("vectorized reader: array of nested struct")
   test("array of nested struct with and without field id") {
@@ -2427,7 +2427,10 @@ abstract class ParquetReadSuite extends CometTestBase {
 
   // Spark checks each file on its own. A directory holding one file with ids and one without
   // raises on the second, and with `ignoreMissing` the file without ids reads as nulls because
-  // no root field of it carries the requested id.
+  // no root field of it carries the requested id. Each side is written as one file. Spread over
+  // the session's cores, each write would also leave an empty `part-00000`, and on Spark 3.x a
+  // file without ids read after an empty one in the same task raises inside one more
+  // `SparkException`, so the error the job reports would depend on which task failed first.
   test("a file without ids next to a file with ids is checked on its own") {
     withSQLConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
       withTempPath { dir =>
@@ -2436,11 +2439,13 @@ abstract class ParquetReadSuite extends CometTestBase {
         val readSchema = new StructType().add("a", IntegerType, true, withId(1))
         spark
           .createDataFrame(spark.sparkContext.parallelize(Seq(Row(100), Row(200))), idSchema)
+          .repartition(1)
           .write
           .mode("overwrite")
           .parquet(dir.getCanonicalPath)
         spark
           .createDataFrame(spark.sparkContext.parallelize(Seq(Row(1), Row(2))), plainSchema)
+          .repartition(1)
           .write
           .mode("append")
           .parquet(dir.getCanonicalPath)

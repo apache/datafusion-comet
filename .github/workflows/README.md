@@ -43,6 +43,12 @@ required one, so a red 3.4 there changes nothing. It is the next push with
 the label still applied that runs 3.4 under `Required Checks`, and with the
 queue run gone that push is the only thing that makes a 3.4 failure blocking.
 
+`spark_4_2` is in the nightly tier despite Spark 4.2 support being
+experimental. Nightly is what keeps `dev/diffs/4.2.0.diff` honest: the diff
+files for the supported versions are updated together whenever a Comet change
+needs one, and a 4.2 suite that only ran on request would let its diff rot
+unnoticed between requests.
+
 Heavy jobs have no `push` tier. The queue already tested the exact tree that
 lands, so re-running them on push to main would double the cost of every
 merge. Two jobs are still on `push`: `docs`, because it deploys to `asf-site`
@@ -113,6 +119,7 @@ tiers partition the list and that the `pr` tier is exactly the default profile.
                                         (other profiles)
                                       spark_3_5           run-spark-3.5-tests
                                       spark_4_0           run-spark-4.0-tests
+                                      spark_4_2           run-spark-4.2-tests
                                       iceberg_1_8         run-iceberg-tests
                                       iceberg_1_9         run-iceberg-tests
                                       iceberg_1_10        run-iceberg-tests
@@ -152,11 +159,12 @@ tiers partition the list and that the `pr` tier is exactly the default profile.
 | `pr_benchmark_check` | merge group, **or** PR with `run-benchmark-check`                                                                                                                                                                                                      | benchmark sources only              |
 | `delta_build_gate`   | merge group, **or** PR with `run-delta-build-gate`                                                                                                                                                                                                     | main sources, poms, `contrib/delta` |
 | `pyarrow_udf_test`   | merge group, **or** PR with `run-pyarrow-udf-tests`                                                                                                                                                                                                    | map-in-batch and Python runner code |
-| `docs`               | push to main, paths matched                                                                                                                                                                                                                            | `.asf.yaml`, `docs/**`, `docs.yaml` |
+| `docs`               | push to main, paths matched, **or** dispatch on `main`                                                                                                                                                                                                 | `.asf.yaml`, `docs/**`, `docs.yaml` |
 | `spark_3_5`          | nightly, **or** PR with `run-spark-3.5-tests`                                                                                                                                                                                                          | Spark 3.5 sources                   |
 | `spark_4_1`          | merge group, **or** PR with `run-spark-4.1-tests`; the `sql_hive` shards alone with `run-spark-4.1-hive-tests`                                                                                                                                         | Spark 4.1 sources                   |
 | `spark_3_4`          | PR with `run-spark-3.4-tests`, or dispatch                                                                                                                                                                                                             | Spark 3.4 sources                   |
 | `spark_4_0`          | nightly, **or** PR with `run-spark-4.0-tests`                                                                                                                                                                                                          | Spark 4.0 sources                   |
+| `spark_4_2`          | nightly, **or** PR with `run-spark-4.2-tests`                                                                                                                                                                                                          | Spark 4.2 sources                   |
 | `iceberg_1_11`       | merge group, **or** PR with `run-iceberg-tests`                                                                                                                                                                                                        | Iceberg sources                     |
 | `iceberg_1_8`        | nightly, **or** PR with `run-iceberg-tests`                                                                                                                                                                                                            | Iceberg sources                     |
 | `iceberg_1_9`        | nightly, **or** PR with `run-iceberg-tests`                                                                                                                                                                                                            | Iceberg sources                     |
@@ -168,6 +176,15 @@ A heavy job appears in the PR's checks list as a `skipped` entry whenever
 its path filter or event criteria don't match. Skipped checks count as
 passing for branch protection, so a name that can report `skipped` is not
 safe to make a required check.
+
+A pull request whose base is a release branch (`branch-N.M`) is the one
+exception to the table: it runs every job the table puts in the PR, merge
+group or nightly tier, because a release branch has no merge queue and no
+nightly to run the last two later. `docs` stays push-only and `spark_3_4`
+still needs its label, so a `labeled` run there adds `spark_3_4` or nothing.
+`changes` hands the base branch to `compute-changes.py` as `PR_BASE_REF`.
+`check-ci-config.py` pins that wiring, because a dropped variable reads as an
+empty string and would route the pull request as if it targeted `main`.
 
 ### Label events
 
@@ -274,16 +291,16 @@ umbrella doesn't watch, or operate independently of the rest of CI:
 
 ## Reusable workflows (called by `ci.yml`)
 
-| File                              | Called from `ci.yml` job(s)                                  |
-| --------------------------------- | ------------------------------------------------------------ |
-| `pr_build_linux.yml`              | `pr_build_linux`                                             |
-| `pr_build_macos.yml`              | `pr_build_macos`                                             |
-| `pr_benchmark_check.yml`          | `pr_benchmark_check`                                         |
-| `delta_build_gate.yml`            | `delta_build_gate`                                           |
-| `pyarrow_udf_test.yml`            | `pyarrow_udf_test`                                           |
-| `docs.yaml`                       | `docs`                                                       |
-| `spark_sql_test_reusable.yml`     | `spark_3_4`, `spark_3_5`, `spark_4_0`, `spark_4_1`           |
-| `iceberg_spark_test_reusable.yml` | `iceberg_1_8`, `iceberg_1_9`, `iceberg_1_10`, `iceberg_1_11` |
+| File                              | Called from `ci.yml` job(s)                                     |
+| --------------------------------- | --------------------------------------------------------------- |
+| `pr_build_linux.yml`              | `pr_build_linux`                                                |
+| `pr_build_macos.yml`              | `pr_build_macos`                                                |
+| `pr_benchmark_check.yml`          | `pr_benchmark_check`                                            |
+| `delta_build_gate.yml`            | `delta_build_gate`                                              |
+| `pyarrow_udf_test.yml`            | `pyarrow_udf_test`                                              |
+| `docs.yaml`                       | `docs`                                                          |
+| `spark_sql_test_reusable.yml`     | `spark_3_4`, `spark_3_5`, `spark_4_0`, `spark_4_1`, `spark_4_2` |
+| `iceberg_spark_test_reusable.yml` | `iceberg_1_8`, `iceberg_1_9`, `iceberg_1_10`, `iceberg_1_11`    |
 
 ## Changing what runs when
 
