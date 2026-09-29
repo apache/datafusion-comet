@@ -825,6 +825,28 @@ class CometRegExpJvmSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("regexp_replace: invalid group reference in a filter surfaces the original exception") {
+    // DataFusion's parquet RowFilter flattens a predicate's error to a string, which would lose
+    // the Java throwable. A filter that calls into the JVM must therefore stay out of the scan
+    // even with row-level pushdown on, so it fails in the Filter above the scan instead.
+    assume(isSpark40Plus)
+    withSQLConf(CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.key -> "true") {
+      withSubjects("first last") {
+        val df = sql(
+          "SELECT COUNT(*) FROM t " +
+            "WHERE regexp_replace(s, '(?<first>[a-zA-Z]+) (?<last>[a-zA-Z]+)', '$3 $1') " +
+            "IS NOT NULL")
+        val names = causeChain(intercept[Throwable](df.collect())).map(_.getClass.getName)
+        assert(
+          names.contains("org.apache.spark.SparkRuntimeException"),
+          s"expected SparkRuntimeException in the cause chain, got: $names")
+        assert(
+          !names.contains("org.apache.comet.CometNativeException"),
+          s"native exception leaked across the boundary: $names")
+      }
+    }
+  }
+
   // ========== regexp_instr tests ==========
 
   test("regexp_instr: basic position finding") {
