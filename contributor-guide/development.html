@@ -1142,8 +1142,16 @@ cargo<span class="w"> </span>clippy<span class="w"> </span>--color<span class="o
 </div>
 <p>Make sure to resolve any Clippy warnings before submitting your pull request, as the CI/CD pipeline will fail if warnings are present.</p>
 </section>
+<section id="compile-with-strict-scala-warnings-recommended">
+<h3>4. Compile With Strict Scala Warnings (Recommended)<a class="headerlink" href="#compile-with-strict-scala-warnings-recommended" title="Link to this heading">#</a></h3>
+<p>The <code class="docutils literal notranslate"><span class="pre">Strict</span> <span class="pre">Scala</span> <span class="pre">warnings</span></code> job runs on every pull request and in the merge queue. It compiles the main and test sources with scalac warnings promoted to errors, so anything it reports fails the build — an <code class="docutils literal notranslate"><span class="pre">Int</span></code> widened into a <code class="docutils literal notranslate"><span class="pre">Long</span></code> metric, or a discarded builder result, for example. Reproduce it locally with:</p>
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span>./mvnw<span class="w"> </span>test-compile<span class="w"> </span>-Pspark-3.5<span class="w"> </span>-Pstrict-warnings<span class="w"> </span>-DskipTests
+</pre></div>
+</div>
+<p>Use the Spark 3.5 profile: it is the one the job runs, and the default build profile will not reproduce it. The default is Spark 4.1 on Scala 2.13, where <code class="docutils literal notranslate"><span class="pre">-Pstrict-warnings</span></code> still fails on warnings unrelated to your change (tracked in <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5893">#5893</a>), and where the compiler reports a different set — an adapted argument list, for instance, is flagged under Scala 2.12 but not under 2.13.</p>
+</section>
 <section id="run-tests">
-<h3>4. Run Tests<a class="headerlink" href="#run-tests" title="Link to this heading">#</a></h3>
+<h3>5. Run Tests<a class="headerlink" href="#run-tests" title="Link to this heading">#</a></h3>
 <p>Run the relevant tests for your changes:</p>
 <div class="highlight-sh notranslate"><div class="highlight"><pre><span></span><span class="c1"># Run all tests</span>
 make<span class="w"> </span><span class="nb">test</span>
@@ -1157,7 +1165,7 @@ make<span class="w"> </span>test-jvm
 </div>
 </section>
 <section id="register-new-test-suites-in-ci">
-<h3>5. Register New Test Suites in CI<a class="headerlink" href="#register-new-test-suites-in-ci" title="Link to this heading">#</a></h3>
+<h3>6. Register New Test Suites in CI<a class="headerlink" href="#register-new-test-suites-in-ci" title="Link to this heading">#</a></h3>
 <p>Comet’s CI does not automatically discover test suites. Instead, test suites are explicitly listed
 in the GitHub Actions workflow files so they can be grouped by category and run as separate parallel
 jobs. This reduces overall CI time.</p>
@@ -1350,8 +1358,9 @@ make<span class="w"> </span><span class="nb">test</span><span class="w">     </s
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#format-your-code">1. Format Your Code</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#build-and-verify">2. Build and Verify</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#run-clippy-recommended">3. Run Clippy (Recommended)</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#run-tests">4. Run Tests</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#register-new-test-suites-in-ci">5. Register New Test Suites in CI</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#compile-with-strict-scala-warnings-recommended">4. Compile With Strict Scala Warnings (Recommended)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#run-tests">5. Run Tests</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#register-new-test-suites-in-ci">6. Register New Test Suites in CI</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#pre-pr-summary">Pre-PR Summary</a></li>
 </ul>
 </li>
