@@ -19,3 +19,15 @@
 pub use datafusion_comet_common::{
     decimal_overflow_error, SparkError, SparkErrorWithContext, SparkResult,
 };
+
+use arrow::error::ArrowError;
+use datafusion::common::DataFusionError;
+
+/// Arrow's `try_*` kernels require closure errors to be `ArrowError`, so a `SparkError`
+/// travels through `ExternalError`. Unwrap it again so JNI sees the direct `SparkError`.
+pub(crate) fn unwrap_arrow_external_error(error: ArrowError) -> DataFusionError {
+    match error {
+        ArrowError::ExternalError(error) => DataFusionError::External(error),
+        error => error.into(),
+    }
+}
