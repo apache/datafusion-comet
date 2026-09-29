@@ -19,18 +19,13 @@ under the License.
 
 # Memory Tuning
 
-It is necessary to specify how much memory Comet can use in addition to memory already allocated to Spark. In some
-cases, it may be possible to reduce the amount of memory allocated to Spark so that overall memory allocation is
-the same or lower than the original configuration. In other cases, enabling Comet may require allocating more memory
-than before. See the [Determining How Much Memory to Allocate] section for more details.
-
 Comet needs two things configured: an off-heap pool for it to draw its reservations from, and enough executor memory
 overhead to cover the part of its footprint that no pool tracks. See [Configuring Comet Memory] and
-[Configuring Executor Memory Overhead].
+[Configuring Executor Memory Overhead]. To find out how much memory Comet uses on a real workload, see
+[Sizing the Overhead from the Memory Usage Log].
 
 ![Spark and Comet both use the JVM heap and share the off-heap memory pool, and the rest of Comet's native memory has to fit in the executor's memory overhead](../../../_static/images/comet-executor-memory.svg)
 
-[Determining How Much Memory to Allocate]: #determining-how-much-memory-to-allocate
 [Configuring Comet Memory]: #configuring-comet-memory
 [Configuring Executor Memory Overhead]: #configuring-executor-memory-overhead
 
@@ -41,6 +36,10 @@ specified by `spark.memory.offHeap.size`. The pool is a shared _budget_ rather t
 allocator: Comet's native operators allocate from the Rust heap rather than from JVM off-heap
 memory, but every reservation they make is charged against this same pool, so Comet and Spark's own
 off-heap consumers draw down one number.
+
+A larger pool lets the operators that can spill, such as sorts, aggregations and the shuffle writer, keep more in
+memory before they spill to disk. An operator that cannot spill fails the task when it cannot reserve the memory it
+needs.
 
 Comet's memory pool only tracks memory that an operator explicitly reserves, which in practice means the batches
 an operator deliberately accumulates: the sort buffer, the build side of a hash join, hash aggregation state, and the
@@ -85,29 +84,17 @@ native plans). This pool works best when you know beforehand
 the query has multiple operators that will likely all need to spill. Sometimes it will cause spills even
 when there is sufficient memory in order to leave enough memory for other operators.
 
-Comet 0.15.0 through 1.0.0 capped the memory of all of a task's operators combined at one operator's share, because of a
-bug ([#5961](https://github.com/apache/datafusion-comet/issues/5961)). Tasks with several operators can now reserve more
-memory before they spill than they could in those releases. The difference is largest on executors that run few tasks
-at once, where Spark's own limit on each task is loosest. If you sized executor memory against one of those releases,
-check that executors still have enough headroom; see [Sizing the Overhead from the Memory Usage Log].
-
 The `greedy_unified` pool type implements a greedy first-come first-serve limit. This pool works well for queries that do not
 need to spill or have a single spillable operator.
 
 ## Configuring Executor Memory Overhead
 
-Enabling off-heap memory is not sufficient on its own. Comet also needs room in
-`spark.executor.memoryOverhead`.
-
-`spark.memory.offHeap.size` is a budget, and the cluster manager already sizes the executor
-container to include it, so the memory that Comet's operators explicitly reserve has room. What does
-not have room is everything Comet allocates without reserving it — the untracked categories listed
-under [Configuring Comet Memory]. Those allocations are made by the Rust global allocator and live
-in the native heap, outside the JVM heap and outside Spark's off-heap allocations, and nothing in
-the container sizing accounts for them. The same applies to Comet's JVM-side Arrow buffers.
-
-`spark.executor.memoryOverhead` is the only slack the container has for this, and the JVM's own
-non-heap usage — metaspace, code cache, thread stacks, GC structures — is already drawing on it.
+Enabling off-heap memory is not sufficient on its own. The cluster manager sizes the executor
+container to include `spark.memory.offHeap.size`, so the memory that Comet's operators reserve has
+room, but nothing in the container's size accounts for the memory that no pool tracks (see
+[Configuring Comet Memory]). That memory has to fit in `spark.executor.memoryOverhead`, which the
+JVM's own non-heap memory, such as metaspace, code cache, thread stacks and GC structures, is
+already drawing on.
 
 Work out what the executor already gets before choosing a value. When
 `spark.executor.memoryOverhead` is unset, Spark derives the overhead as
@@ -207,32 +194,6 @@ The executor logs one more line after its last native plan finishes, and an `all
 
 `spark.comet.memory.logInterval` is read when an executor starts its first Comet native plan, so set
 it when the application is submitted. Set it to `0` to turn the log off.
-
-## Determining How Much Memory to Allocate
-
-Generally, increasing the amount of memory allocated to Comet will improve query performance by reducing the
-amount of time spent spilling to disk, especially for aggregate, join, and shuffle operations. Allocating insufficient
-memory can result in out-of-memory errors. This is no different from allocating memory in Spark and the amount of
-memory will vary for different workloads, so some experimentation will be required.
-
-Here is a real-world example, based on running benchmarks derived from TPC-H, running on a single executor against
-local Parquet files using the 100 GB data set.
-
-Baseline Spark Performance
-
-- Spark completes the benchmark in 632 seconds with 8 cores and 8 GB RAM
-- With less than 8 GB RAM, performance degrades due to spilling
-- Spark can complete the benchmark with as little as 3 GB of RAM, but with worse performance (744 seconds)
-
-Comet Performance
-
-- Comet requires at least 5 GB of RAM, but performance at this level
-  is around 340 seconds, which is significantly faster than Spark with any amount of RAM
-- Comet running in off-heap with 8 cores completes the benchmark in 295 seconds, more than 2x faster than Spark
-- It is worth noting that running Comet with only 4 cores and 4 GB RAM completes the benchmark in 520 seconds,
-  providing better performance than Spark for half the resource
-
-It may be possible to reduce Comet's memory overhead by reducing batch sizes or increasing number of partitions.
 
 ## Batch Size
 

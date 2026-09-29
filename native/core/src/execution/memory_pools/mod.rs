@@ -18,6 +18,7 @@
 mod config;
 mod fair_pool;
 pub mod logging_pool;
+mod plan_pool;
 mod spark_memory;
 mod task_shared;
 mod unified_pool;
@@ -31,6 +32,7 @@ use std::sync::Arc;
 use unified_pool::CometUnifiedMemoryPool;
 
 pub(crate) use config::*;
+pub(crate) use plan_pool::PlanMemoryPool;
 pub(crate) use task_shared::*;
 
 /// Creates the memory pool for a native plan.
