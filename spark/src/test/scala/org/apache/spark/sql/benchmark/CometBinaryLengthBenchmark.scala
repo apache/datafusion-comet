@@ -57,7 +57,7 @@ object CometBinaryLengthBenchmark extends CometBenchmarkBase {
 
           cases.foreach { case (name, query) =>
             runBenchmark(name) {
-              runExpressionBenchmark(name, v, query)
+              runExpressionBenchmark(name, v.toLong, query)
             }
           }
         }
