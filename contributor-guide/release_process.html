@@ -713,7 +713,9 @@ the Spark SQL and Iceberg suites. The Spark SQL suite for Spark 3.4 runs only wi
 <h3>Update Version in main<a class="headerlink" href="#update-version-in-main" title="Link to this heading">#</a></h3>
 <p>Create a PR against the main branch to prepare for developing the next release:</p>
 <ul class="simple">
-<li><p>Update the Rust crate version to <code class="docutils literal notranslate"><span class="pre">0.14.0</span></code>.</p></li>
+<li><p>Update the Rust crate version to <code class="docutils literal notranslate"><span class="pre">0.14.0</span></code> in <code class="docutils literal notranslate"><span class="pre">native/Cargo.toml</span></code> and in each <code class="docutils literal notranslate"><span class="pre">contrib/*/native/Cargo.toml</span></code>.
+The contrib crates sit outside the <code class="docutils literal notranslate"><span class="pre">native/</span></code> workspace, so they do not inherit its version. Then run
+<code class="docutils literal notranslate"><span class="pre">cargo</span> <span class="pre">update</span> <span class="pre">--workspace</span></code> in <code class="docutils literal notranslate"><span class="pre">native/</span></code> and in each contrib crate that has its own <code class="docutils literal notranslate"><span class="pre">Cargo.lock</span></code>.</p></li>
 <li><p>Update the Maven version to <code class="docutils literal notranslate"><span class="pre">0.14.0-SNAPSHOT</span></code> in the same set of files listed above (the <code class="docutils literal notranslate"><span class="pre">pom.xml</span></code> files,
 the Spark test diffs under <code class="docutils literal notranslate"><span class="pre">dev/diffs</span></code>, and the Iceberg test diffs under <code class="docutils literal notranslate"><span class="pre">dev/diffs/iceberg</span></code>).</p></li>
 </ul>

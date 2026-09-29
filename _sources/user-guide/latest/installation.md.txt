@@ -36,7 +36,7 @@ users must [build from source](source.md).
 
 ### Supported Spark Versions
 
-Comet 1.1.0-SNAPSHOT supports the following versions of Apache Spark. Refer to the [Spark Version Compatibility] page
+Comet 1.2.0-SNAPSHOT supports the following versions of Apache Spark. Refer to the [Spark Version Compatibility] page
 in the [Compatibility Guide] for more information, such as known limitations per Spark version.
 
 [Spark Version Compatibility]: compatibility/spark-versions.md
@@ -92,7 +92,7 @@ have not been voted on, and should not be used in production. Older snapshots ar
 periodically.
 
 A new snapshot is published each night that new commits land on the `main` branch. Every snapshot carries the same
-version, `1.1.0-SNAPSHOT`, so Maven-based tooling resolves the most recent one automatically. The
+version, `1.2.0-SNAPSHOT`, so Maven-based tooling resolves the most recent one automatically. The
 [Publish Snapshot](https://github.com/apache/datafusion-comet/actions/workflows/publish_snapshot.yml) workflow log
 records the commit each snapshot was built from.
 
@@ -104,7 +104,7 @@ The following artifacts are published:
 - `comet-spark-spark4.1_2.13`
 
 To download a snapshot jar, browse to the artifact directory in the snapshot repository, for example
-[comet-spark-spark4.1_2.13/1.1.0-SNAPSHOT](https://repository.apache.org/content/repositories/snapshots/org/apache/datafusion/comet-spark-spark4.1_2.13/1.1.0-SNAPSHOT/),
+[comet-spark-spark4.1_2.13/1.2.0-SNAPSHOT](https://repository.apache.org/content/repositories/snapshots/org/apache/datafusion/comet-spark-spark4.1_2.13/1.2.0-SNAPSHOT/),
 and pick the jar with the newest timestamp. Then use it as described in
 [Run Spark Shell with Comet enabled](#run-spark-shell-with-comet-enabled).
 
@@ -113,7 +113,7 @@ Alternatively, let Spark resolve the newest snapshot directly:
 ```shell
 $SPARK_HOME/bin/spark-shell \
     --repositories https://repository.apache.org/content/repositories/snapshots/ \
-    --packages org.apache.datafusion:comet-spark-spark4.1_2.13:1.1.0-SNAPSHOT \
+    --packages org.apache.datafusion:comet-spark-spark4.1_2.13:1.2.0-SNAPSHOT \
     --conf spark.plugins=org.apache.spark.CometPlugin \
     --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
     --conf spark.comet.explain.fallback.enabled=true \
@@ -140,7 +140,7 @@ See the [Comet Kubernetes Guide](kubernetes.md) guide.
 Make sure `SPARK_HOME` points to the same Spark version as Comet was built for.
 
 ```shell
-export COMET_JAR=spark/target/comet-spark-spark4.1_2.13-1.1.0-SNAPSHOT.jar
+export COMET_JAR=spark/target/comet-spark-spark4.1_2.13-1.2.0-SNAPSHOT.jar
 
 $SPARK_HOME/bin/spark-shell \
     --jars $COMET_JAR \
@@ -165,7 +165,7 @@ scala> (0 until 10).toDF("a").write.mode("overwrite").parquet("/tmp/test")
 Comet will log output similar to this on Spark 4.0 and later:
 
 ```shell
-INFO core/src/lib.rs: Comet native library version 1.1.0-SNAPSHOT initialized
+INFO core/src/lib.rs: Comet native library version 1.2.0-SNAPSHOT initialized
 WARN CometExecRule: Comet cannot execute some parts of this plan natively (set spark.comet.explain.fallback.enabled=false to disable this logging):
   Execute InsertIntoHadoopFsRelationCommand
 +- WriteFiles [COMET: Native support for operator WriteFilesExec is disabled. Set spark.comet.parquet.write.enabled=true to enable it.]
@@ -229,7 +229,7 @@ explicitly contain Comet otherwise Spark may use a different class-loader for th
 components which will then fail at runtime. For example:
 
 ```shell
---driver-class-path spark/target/comet-spark-spark4.1_2.13-1.1.0-SNAPSHOT.jar
+--driver-class-path spark/target/comet-spark-spark4.1_2.13-1.2.0-SNAPSHOT.jar
 ```
 
 Some cluster managers may require additional configuration, see <https://spark.apache.org/docs/latest/cluster-overview.html>
