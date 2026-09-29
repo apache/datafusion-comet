@@ -116,10 +116,8 @@ divergence:
   example `byte overflow`) where Spark raises `BINARY_ARITHMETIC_OVERFLOW`, and integral
   `ARITHMETIC_OVERFLOW` messages omit Spark's `try_` suggestion
   ([#6217](https://github.com/apache/datafusion-comet/issues/6217)).
-- Wide-decimal arithmetic overflow, decimal divide-by-zero, and decimal-to-decimal cast overflow
-  raise raw Arrow errors that bypass `SparkErrorConverter` and surface as `CometNativeException`
-  rather than `SparkArithmeticException` with the proper error class and query context
-  ([#5072](https://github.com/apache/datafusion-comet/issues/5072)).
+- Wide-decimal arithmetic overflow reports a different value in the error message than Spark
+  ([#5211](https://github.com/apache/datafusion-comet/issues/5211)).
 - Spark 4.2 introduced additional ANSI arithmetic overflow behavior differences that Comet does
   not yet track ([#4967](https://github.com/apache/datafusion-comet/issues/4967)).
 
