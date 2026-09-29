@@ -301,7 +301,7 @@ impl PhysicalExpr for NegativeExpr {
             unbounded()
         } else {
             // `ScalarValue::arithmetic_negate` has no negation for the minimum of a signed
-            // integer, nor for the null bound of a decimal or interval range. Widening
+            // integer, and none at all for `Duration`, so every duration range widens. Widening
             // stays sound where the reflection is out of reach; propagating the error instead
             // would fail the plan, since `EquivalenceProperties::discover_new_orderings` does
             // not absorb it.
@@ -751,8 +751,8 @@ mod tests {
     }
 
     /// An unbounded decimal range is made of null decimal bounds, which
-    /// `ScalarValue::arithmetic_negate` may not support. Widening to the full range keeps the
-    /// ordering claim without turning a decimal negation into a planning error:
+    /// `ScalarValue::arithmetic_negate` returns unchanged, so the range stays the full range and
+    /// the ordering claim survives without turning a decimal negation into a planning error:
     /// `EquivalenceProperties::discover_new_orderings` propagates an error out of this hook with
     /// `?`, so `add_equal_conditions` below would fail the plan instead.
     #[test]
@@ -902,6 +902,28 @@ mod tests {
                     "{data_type:?} ansi={fail_on_error}: the type minimum must error, not wrap"
                 );
             }
+        }
+
+        // `ScalarValue::arithmetic_negate` has no `Duration` arm, so even a comfortably bounded
+        // duration range widens to unbounded rather than reflecting.
+        let data_type = DataType::Duration(TimeUnit::Second);
+        let seconds = Interval::try_new(
+            ScalarValue::DurationSecond(Some(5)),
+            ScalarValue::DurationSecond(Some(10)),
+        )
+        .unwrap();
+        for fail_on_error in [false, true] {
+            let props = negate_properties(
+                child_properties(ordered(false, true), seconds.clone()),
+                fail_on_error,
+            )
+            .unwrap();
+            assert_eq!(
+                props.sort_properties,
+                ordered(true, true),
+                "ansi={fail_on_error}"
+            );
+            assert_eq!(props.range, unbounded(&data_type), "ansi={fail_on_error}");
         }
     }
 
