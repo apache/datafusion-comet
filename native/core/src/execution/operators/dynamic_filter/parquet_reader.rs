@@ -41,7 +41,7 @@ use schema_adapter::RuntimeFilterSchemaAdapterFactory;
 /// or changing the predicate. Every accepted leaf is deterministic, infallible,
 /// and only discards rows, so reader pruning cannot suppress expression errors
 /// or alter stateful evaluation. All other expressions remain a boundary.
-fn is_direct_column_null_checks(predicate: &Arc<dyn PhysicalExpr>) -> bool {
+pub(super) fn is_direct_column_null_checks(predicate: &Arc<dyn PhysicalExpr>) -> bool {
     if let Some(binary) = predicate.downcast_ref::<BinaryExpr>() {
         return binary.op() == &Operator::And
             && is_direct_column_null_checks(binary.left())
@@ -61,6 +61,14 @@ pub(super) fn try_attach_parquet_reader_filter(
     if input.fetch().is_some() {
         log::debug!("Join dynamic filter reader pushdown skipped: probe has a fetch limit");
         return Ok(None);
+    }
+    // An ancestor join may already filter decoded batches below this join. Keep
+    // that consumer while attaching this join's own predicate to its reader.
+    if let Some(filter) = input.downcast_ref::<super::DynamicFilterExec>() {
+        return Ok(
+            try_attach_parquet_reader_filter(&filter.input, predicate, config)?
+                .map(|reader| filter.with_execution_input(reader)),
+        );
     }
     // Spark inserts IS NOT NULL residuals above equijoin inputs, including AND
     // chains of inferred null checks. A reader predicate can cross those direct

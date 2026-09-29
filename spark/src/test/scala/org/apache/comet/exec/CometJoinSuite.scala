@@ -31,7 +31,7 @@ import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.analysis.UnresolvedRelation
 import org.apache.spark.sql.catalyst.expressions.{And, AttributeReference, IsNotNull}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight}
-import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometBroadcastNestedLoopJoinExec, CometFilterExec, CometHashJoinExec, CometNativeScanExec, CometSortMergeJoinExec, CometUnionExec}
+import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometBroadcastNestedLoopJoinExec, CometFilterExec, CometHashJoinExec, CometNativeScanExec, CometProjectExec, CometSortMergeJoinExec, CometUnionExec}
 import org.apache.spark.sql.execution.{LocalTableScanExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec}
 import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException
@@ -421,6 +421,60 @@ class CometJoinSuite extends CometTestBase {
                 } else {
                   assert(!join.metrics.contains("dynamic_filter_join_rows_pruned"))
                   unfilteredProbeRows = probeRows
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("join dynamic filter rejects rows before an intermediate join") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.LEAF_NODE_DEFAULT_PARALLELISM.key -> "1",
+      CometConf.COMET_BATCH_SIZE.key -> "128") {
+      withParquetTable((0 until 1000).map(i => (i, i.toLong)), "early_fact") {
+        withParquetTable((0 until 2000).map(i => (i % 1000, i)), "early_dimension") {
+          withParquetTable(Seq((42, 1), (42, 2)), "early_selection") {
+            for (buildLeft <- Seq(false, true); enabled <- Seq(false, true)) {
+              val from = if (buildLeft) {
+                "early_dimension d JOIN early_fact f"
+              } else {
+                "early_fact f JOIN early_dimension d"
+              }
+              val query = "SELECT /*+ BROADCAST(d), BROADCAST(s) */ " +
+                "f._1 AS selected_key, f._2 AS payload, d._2 AS detail, s._2 AS selection " +
+                s"FROM $from ON f._1 = d._1 " +
+                "JOIN early_selection s ON f._1 = s._1"
+              withSQLConf(
+                CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_ENABLED.key -> enabled.toString) {
+                val (_, plan) = checkSparkAnswerAndOperator(
+                  sql(query),
+                  Seq(classOf[CometBroadcastHashJoinExec]))
+                checkAnswer(
+                  sql(query),
+                  Seq(
+                    Row(42, 42L, 42, 1),
+                    Row(42, 42L, 42, 2),
+                    Row(42, 42L, 1042, 1),
+                    Row(42, 42L, 1042, 2)))
+                val joins = collect(plan) { case join: CometBroadcastHashJoinExec => join }
+                assert(joins.size == 2, s"Expected two native broadcast joins:\n$plan")
+                val outputs = joins.map(_.metrics("output_rows").value).sorted
+                assert(outputs == (if (enabled) Seq(2L, 4L) else Seq(4L, 2000L)))
+                if (enabled) {
+                  assert(
+                    joins.map(_.metrics("dynamic_filter_early_rows_pruned").value).sum == 999L)
+                  assert(
+                    joins
+                      .map(_.metrics("dynamic_filter_early_rows_evaluated").value)
+                      .sum == 1000L)
+                  val projections = collect(plan) { case project: CometProjectExec => project }
+                  assert(projections.nonEmpty)
+                  assert(projections.forall(_.metrics("output_rows").value > 0L))
                 }
               }
             }

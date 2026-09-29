@@ -42,8 +42,8 @@ use crate::execution::{
     expressions::list_positions::ListPositionsExpr,
     expressions::subquery::Subquery,
     operators::{
-        CometFilterExec, ExecutionError, ExpandExec, ExplodeExec, ParquetCompression,
-        ParquetWriterExec, SampleExec, ScanExec, ShuffleScanExec,
+        CometFilterExec, CometProjectionExec, ExecutionError, ExpandExec, ExplodeExec,
+        ParquetCompression, ParquetWriterExec, SampleExec, ScanExec, ShuffleScanExec,
     },
     planner::expression_registry::ExpressionRegistry,
     planner::operator_registry::OperatorRegistry,
@@ -2356,7 +2356,7 @@ impl PhysicalPlanner {
                     } else {
                         &mut join_params.left
                     };
-                    *probe = Self::prepare_probe_filter_for_runtime_reader(Arc::clone(probe));
+                    *probe = Self::prepare_probe_filter_for_runtime_reader(Arc::clone(probe))?;
                 }
 
                 let left = Arc::clone(&join_params.left.native_plan);
@@ -2668,14 +2668,36 @@ impl PhysicalPlanner {
         }
     }
 
-    /// Keep the Spark filter's metric identity when its reader is replaced for an execution.
-    fn prepare_probe_filter_for_runtime_reader(plan: Arc<SparkPlan>) -> Arc<SparkPlan> {
-        let Some(filter) = plan.native_plan.downcast_ref::<FilterExec>() else {
-            return plan;
-        };
+    /// Keep Spark metric identities for the small set of nodes whose children
+    /// runtime-filter placement can replace. Stop at native/Spark tree boundaries.
+    fn prepare_probe_filter_for_runtime_reader(
+        plan: Arc<SparkPlan>,
+    ) -> Result<Arc<SparkPlan>, ExecutionError> {
+        let native = &plan.native_plan;
+        if !native.is::<FilterExec>() && !native.is::<ProjectionExec>() {
+            return Ok(plan);
+        }
         let mut prepared = plan.as_ref().clone();
-        prepared.native_plan = Arc::new(CometFilterExec::from_datafusion(filter.clone()));
-        Arc::new(prepared)
+        let mut native = Arc::clone(native);
+        if let [child] = plan.children.as_slice() {
+            if native.children().len() == 1 && Arc::ptr_eq(native.children()[0], &child.native_plan)
+            {
+                let child = Self::prepare_probe_filter_for_runtime_reader(Arc::clone(child))?;
+                native = native.replace_children(
+                    vec![Arc::clone(&child.native_plan)],
+                    ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+                )?;
+                prepared.children = vec![child];
+            }
+        }
+        prepared.native_plan = if let Some(filter) = native.downcast_ref::<FilterExec>() {
+            Arc::new(CometFilterExec::from_datafusion(filter.clone()))
+        } else if let Some(projection) = native.downcast_ref::<ProjectionExec>() {
+            Arc::new(CometProjectionExec::from_datafusion(projection.clone()))
+        } else {
+            native
+        };
+        Ok(Arc::new(prepared))
     }
 
     /// Attach after choosing the final build side, including the projection emitted

@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+mod early_benchmark;
 mod schema_errors;
 mod timestamp_errors;
 
@@ -1562,5 +1563,309 @@ fn wrapper_preserves_join_statistics_and_distribution() {
                 vec![]
             }
         );
+    }
+}
+
+fn chain_join(
+    build: Arc<dyn ExecutionPlan>,
+    probe: Arc<dyn ExecutionPlan>,
+    build_key: usize,
+    probe_key: usize,
+) -> HashJoinExec {
+    let left = Arc::new(Column::new(
+        build.schema().field(build_key).name(),
+        build_key,
+    ));
+    let right = Arc::new(Column::new(
+        probe.schema().field(probe_key).name(),
+        probe_key,
+    ));
+    HashJoinExec::try_new(
+        build,
+        probe,
+        vec![(left, right)],
+        None,
+        &JoinType::Inner,
+        None,
+        PartitionMode::Partitioned,
+        NullEquality::NullEqualsNothing,
+        false,
+    )
+    .unwrap()
+}
+
+#[tokio::test]
+async fn ancestor_filter_prunes_before_intermediate_join_and_keeps_metric_owners() {
+    use crate::execution::operators::CometProjectionExec;
+    let ctx = SessionContext::new();
+    let fact = input(
+        vec![Some(0), Some(1), Some(2), Some(2), Some(3), None],
+        &DataType::Int32,
+        0,
+    );
+    let dimension = input(
+        vec![Some(0), Some(1), Some(2), Some(2), Some(3)],
+        &DataType::Int32,
+        0,
+    );
+    let ancestor_build = input(vec![Some(2), Some(2)], &DataType::Int32, 0);
+    let inner = chain_join(dimension, fact, 0, 0);
+    let inner = Arc::new(
+        DynamicFilterJoinExec::try_new(&inner, ctx.copied_config().options())
+            .unwrap()
+            .unwrap(),
+    );
+    let projection = Arc::new(CometProjectionExec::from_datafusion(
+        ProjectionExec::try_new(
+            vec![
+                (
+                    Arc::new(Column::new("payload", 3)) as Arc<dyn PhysicalExpr>,
+                    "payload".into(),
+                ),
+                (
+                    Arc::new(Column::new("key", 2)) as Arc<dyn PhysicalExpr>,
+                    "key".into(),
+                ),
+            ],
+            Arc::clone(&inner) as Arc<dyn ExecutionPlan>,
+        )
+        .unwrap(),
+    ));
+    let outer = chain_join(
+        ancestor_build,
+        Arc::clone(&projection) as Arc<dyn ExecutionPlan>,
+        0,
+        1,
+    );
+    let expected = collect(
+        Arc::new(outer.builder().reset_state().build().unwrap()),
+        ctx.task_ctx(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(row_count(&expected), 8);
+    // Start fresh metric owners after executing the ordinary reference plan.
+    let before_inner = inner.metrics().unwrap().output_rows().unwrap_or(0);
+    let before_projection = projection.metrics().unwrap().output_rows().unwrap_or(0);
+    let outer = Arc::new(
+        DynamicFilterJoinExec::try_new(&outer, ctx.copied_config().options())
+            .unwrap()
+            .unwrap(),
+    ) as Arc<dyn ExecutionPlan>;
+    for execution in 1..=2 {
+        let actual = collect(Arc::clone(&outer), ctx.task_ctx()).await.unwrap();
+        assert_eq!(
+            batches_to_sort_string(&actual),
+            batches_to_sort_string(&expected)
+        );
+        assert_eq!(
+            metric(&outer, "dynamic_filter_early_rows_evaluated"),
+            6 * execution
+        );
+        assert_eq!(
+            metric(&outer, "dynamic_filter_early_rows_pruned"),
+            4 * execution
+        );
+        assert_eq!(
+            inner.metrics().unwrap().output_rows().unwrap(),
+            before_inner + 4 * execution
+        );
+        assert_eq!(
+            projection.metrics().unwrap().output_rows().unwrap(),
+            before_projection + 4 * execution
+        );
+    }
+}
+
+#[tokio::test]
+async fn early_filter_preserves_probe_limit_selection() {
+    use datafusion::physical_plan::limit::LocalLimitExec;
+    let ctx = SessionContext::new();
+    let fact = Arc::new(LocalLimitExec::new(
+        input(vec![Some(0), Some(1), Some(2)], &DataType::Int32, 0),
+        2,
+    ));
+    let dimension = input(vec![Some(0), Some(1), Some(2)], &DataType::Int32, 0);
+    let inner = chain_join(dimension, fact, 0, 0);
+    let inner = Arc::new(
+        DynamicFilterJoinExec::try_new(&inner, ctx.copied_config().options())
+            .unwrap()
+            .unwrap(),
+    );
+    let outer = chain_join(input(vec![Some(2)], &DataType::Int32, 0), inner, 0, 2);
+    let expected = collect(
+        Arc::new(outer.builder().reset_state().build().unwrap()),
+        ctx.task_ctx(),
+    )
+    .await
+    .unwrap();
+    let outer = Arc::new(
+        DynamicFilterJoinExec::try_new(&outer, ctx.copied_config().options())
+            .unwrap()
+            .unwrap(),
+    ) as Arc<dyn ExecutionPlan>;
+    let actual = collect(Arc::clone(&outer), ctx.task_ctx()).await.unwrap();
+    assert_eq!(row_count(&expected), 0);
+    assert_eq!(row_count(&actual), 0);
+    // The early consumer sees exactly the two already-selected rows.
+    assert_eq!(metric(&outer, "dynamic_filter_early_rows_evaluated"), 2);
+    assert_eq!(metric(&outer, "dynamic_filter_early_rows_pruned"), 2);
+}
+
+#[tokio::test]
+async fn early_filter_does_not_hide_computed_projection_errors() {
+    use crate::execution::operators::CometProjectionExec;
+    let ctx = SessionContext::new();
+    let inner = chain_join(
+        input(vec![Some(0), Some(2)], &DataType::Int32, 0),
+        input(vec![Some(0), Some(2)], &DataType::Int32, 0),
+        0,
+        0,
+    );
+    let inner = Arc::new(
+        DynamicFilterJoinExec::try_new(&inner, ctx.copied_config().options())
+            .unwrap()
+            .unwrap(),
+    );
+    let projection = Arc::new(CometProjectionExec::from_datafusion(
+        ProjectionExec::try_new(
+            vec![
+                (
+                    Arc::new(BinaryExpr::new(
+                        lit(10i32),
+                        Operator::Divide,
+                        Arc::new(Column::new("key", 2)),
+                    )) as Arc<dyn PhysicalExpr>,
+                    "quotient".into(),
+                ),
+                (
+                    Arc::new(Column::new("key", 2)) as Arc<dyn PhysicalExpr>,
+                    "key".into(),
+                ),
+            ],
+            inner,
+        )
+        .unwrap(),
+    ));
+    let outer = chain_join(input(vec![Some(2)], &DataType::Int32, 0), projection, 0, 1);
+    for enabled in [false, true] {
+        let plan = PhysicalPlanner::apply_join_dynamic_filter(
+            Arc::new(outer.builder().reset_state().build().unwrap()),
+            enabled,
+            ctx.copied_config().options(),
+        )
+        .unwrap();
+        let error = collect(plan, ctx.task_ctx()).await.unwrap_err();
+        assert!(error.to_string().to_lowercase().contains("zero"), "{error}");
+    }
+}
+
+#[test]
+fn early_filter_stops_at_build_columns_and_join_residuals() {
+    use super::super::early::place_early_filter;
+    use datafusion::physical_plan::joins::utils::JoinFilter;
+    let config = ConfigOptions::default();
+    let metrics = ExecutionPlanMetricsSet::new();
+    let inner = plain_join();
+    let wrapped = Arc::new(
+        DynamicFilterJoinExec::try_new(&inner, &config)
+            .unwrap()
+            .unwrap(),
+    ) as Arc<dyn ExecutionPlan>;
+    // Column 1 belongs to this intermediate join's build; do not filter its probe.
+    let predicate = Arc::new(DynamicFilterPhysicalExpr::new(
+        vec![Arc::new(Column::new("key", 1))],
+        lit(true),
+    ));
+    assert!(Arc::ptr_eq(
+        &wrapped,
+        &place_early_filter(&wrapped, predicate, &metrics).unwrap()
+    ));
+    let filtered = inner
+        .builder()
+        .with_filter(Some(JoinFilter::new(
+            lit(true),
+            vec![],
+            Arc::new(Schema::empty()),
+        )))
+        .build()
+        .unwrap();
+    let wrapped = Arc::new(
+        DynamicFilterJoinExec::try_new(&filtered, &config)
+            .unwrap()
+            .unwrap(),
+    ) as Arc<dyn ExecutionPlan>;
+    let predicate = Arc::new(DynamicFilterPhysicalExpr::new(
+        vec![Arc::new(Column::new("key", 2))],
+        lit(true),
+    ));
+    assert!(Arc::ptr_eq(
+        &wrapped,
+        &place_early_filter(&wrapped, predicate, &metrics).unwrap()
+    ));
+}
+
+#[tokio::test]
+async fn early_consumers_release_ancestor_domains_when_cancelled() {
+    for after_output in [false, true] {
+        let (session, pool) = limited_session(8 * 1024 * 1024);
+        let inner = chain_join(
+            input((0..4096).map(Some).collect(), &DataType::Int32, 0),
+            input((0..4096).map(Some).collect(), &DataType::Int32, 0),
+            0,
+            0,
+        );
+        let inner = Arc::new(DynamicFilterJoinExec::new(&inner, ConfigOptions::default()).unwrap());
+        let outer = chain_join(
+            input(vec![Some(3)], &DataType::Int32, 0),
+            Arc::clone(&inner) as Arc<dyn ExecutionPlan>,
+            0,
+            2,
+        );
+        let outer = DynamicFilterJoinExec::new(&outer, ConfigOptions::default()).unwrap();
+        let runtime = outer.build_runtime_join().unwrap();
+        let predicate = Arc::downgrade(&produced_join_filter(&runtime.join));
+        let final_consumer = runtime
+            .join
+            .right()
+            .downcast_ref::<DynamicFilterExec>()
+            .unwrap();
+        let intermediate = final_consumer
+            .input
+            .downcast_ref::<DynamicFilterJoinExec>()
+            .unwrap();
+        let early_consumer = intermediate
+            .template
+            .right()
+            .downcast_ref::<DynamicFilterExec>()
+            .unwrap();
+        let early_predicate = Arc::downgrade(&early_consumer.predicate);
+        let mut stream = outer
+            .execute_runtime_join(runtime.join, 0, session.task_ctx())
+            .unwrap();
+        assert!(predicate.upgrade().is_some());
+        if after_output {
+            loop {
+                if stream.next().await.unwrap().unwrap().num_rows() > 0 {
+                    break;
+                }
+            }
+            assert!(pool.reserved() > 0);
+            assert!(
+                outer
+                    .metrics()
+                    .unwrap()
+                    .sum_by_name("dynamic_filter_early_rows_pruned")
+                    .unwrap()
+                    .as_usize()
+                    > 0
+            );
+        }
+        drop(stream);
+        assert_eq!(pool.reserved(), 0);
+        assert!(predicate.upgrade().is_none());
+        assert!(early_predicate.upgrade().is_none());
+        assert!(inner.template.dynamic_expressions_produced().is_empty());
+        assert!(outer.template.dynamic_expressions_produced().is_empty());
     }
 }
