@@ -645,21 +645,21 @@ under the License.
 <section id="array-max">
 <h2>array_max<a class="headerlink" href="#array-max" title="Link to this heading">#</a></h2>
 <ul class="simple">
-<li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
-<li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">ArrayMax(child)</span> <span class="pre">extends</span> <span class="pre">UnaryExpression</span> <span class="pre">with</span> <span class="pre">ImplicitCastInputTypes</span></code>; skips NULL elements; for float/double Spark’s <code class="docutils literal notranslate"><span class="pre">SQLOrderingUtil</span></code> treats NaN as greater than any non-NaN. Wired as <code class="docutils literal notranslate"><span class="pre">CometScalarFunction(&quot;array_max&quot;)</span></code>.</p></li>
-<li><p>Spark 4.0.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">NullIntolerant</span></code> -&gt; <code class="docutils literal notranslate"><span class="pre">nullIntolerant</span></code> field refactor.</p></li>
-<li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
-<li><p>Float/double arrays containing NaN match Spark: NaN is treated as greater than any non-NaN value.</p></li>
+<li><p>Spark 3.4.3 (audited 2026-08-22): identical to 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-08-22): <code class="docutils literal notranslate"><span class="pre">ArrayMax</span></code> skips NULL elements and returns NULL for an empty or all-NULL array. <code class="docutils literal notranslate"><span class="pre">SQLOrderingUtil</span></code> treats all NaNs as equal and greater than non-NaN values, and signed zeros as equal. The first equal maximum is retained. Nested arrays and structs compare lexicographically, with NULL fields or elements ordered first.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-08-22): <code class="docutils literal notranslate"><span class="pre">NullIntolerant</span></code> becomes a <code class="docutils literal notranslate"><span class="pre">nullIntolerant</span></code> field. Extrema semantics are unchanged; string ordering can use non-default collations.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-08-22): identical to 4.0.1.</p></li>
+<li><p>Current status: <code class="docutils literal notranslate"><span class="pre">CometArrayMax</span></code> uses the native <code class="docutils literal notranslate"><span class="pre">SparkArrayExtrema</span></code> UDF. Typed float/double scans and recursive array/struct comparisons follow Spark’s ordering and preserve the original first equal element, including its zero sign and NaN representation. This path is used in both strict and non-strict floating-point modes without the JVM codegen dispatcher. Other scalar element types retain the existing DataFusion implementation. Non-UTF8_BINARY string collations, including nested fields, use Spark’s JVM codegen dispatcher inside the Comet pipeline by default. If the dispatcher is disabled, these cases fall back to Spark unless incompatible native execution is explicitly enabled (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4496">#4496</a>).</p></li>
 </ul>
 </section>
 <section id="array-min">
 <h2>array_min<a class="headerlink" href="#array-min" title="Link to this heading">#</a></h2>
 <ul class="simple">
-<li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
-<li><p>Spark 3.5.8 (audited 2026-05-27): mirror of <code class="docutils literal notranslate"><span class="pre">ArrayMax</span></code> with <code class="docutils literal notranslate"><span class="pre">evalInternal</span></code> returning the minimum. Same NULL-skip and NaN-ordering semantics. Wired as <code class="docutils literal notranslate"><span class="pre">CometScalarFunction(&quot;array_min&quot;)</span></code>.</p></li>
-<li><p>Spark 4.0.1 (audited 2026-05-27): same trait refactor as <code class="docutils literal notranslate"><span class="pre">array_max</span></code>.</p></li>
-<li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
-<li><p>Float/double arrays containing NaN match Spark, mirroring <code class="docutils literal notranslate"><span class="pre">array_max</span></code>.</p></li>
+<li><p>Spark 3.4.3 (audited 2026-08-22): identical to 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-08-22): mirrors <code class="docutils literal notranslate"><span class="pre">ArrayMax</span></code>, retaining the first equal minimum. The NULL, NaN, signed-zero, and nested comparison rules are the same.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-08-22): same trait refactor and collation support as <code class="docutils literal notranslate"><span class="pre">array_max</span></code>, with no change in floating-point extrema semantics.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-08-22): identical to 4.0.1.</p></li>
+<li><p>Current status: <code class="docutils literal notranslate"><span class="pre">CometArrayMin</span></code> shares the native <code class="docutils literal notranslate"><span class="pre">SparkArrayExtrema</span></code> implementation and support boundary with <code class="docutils literal notranslate"><span class="pre">array_max</span></code>. Both floating-point modes use Spark-compatible native ordering, preserving the original first equal minimum. Non-default string collations use the same JVM codegen dispatch and dispatcher-disabled fallback as <code class="docutils literal notranslate"><span class="pre">array_max</span></code> (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4496">#4496</a>).</p></li>
 </ul>
 </section>
 <section id="array-position">

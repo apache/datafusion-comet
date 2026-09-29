@@ -47,6 +47,18 @@ By default, `ArrayJoin` is evaluated in the JVM using Spark's own code-generated
 - array_join does not propagate non-UTF8_BINARY collations to the output string (https://github.com/apache/datafusion-comet/issues/2190)
 - array_join evaluates its delimiter and null replacement eagerly, while Spark short-circuits past them (https://github.com/apache/datafusion-comet/issues/3178)
 
+## ArrayMax
+
+For applicable cases that are not selected for native execution automatically, `ArrayMax` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline) by default. Set `spark.comet.expression.ArrayMax.allowIncompatible=true` to explicitly select Comet's native implementation, which has the following differences from Spark:
+
+- Array extrema use binary string ordering for non-UTF8_BINARY collations (https://github.com/apache/datafusion-comet/issues/4496).
+
+## ArrayMin
+
+For applicable cases that are not selected for native execution automatically, `ArrayMin` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline) by default. Set `spark.comet.expression.ArrayMin.allowIncompatible=true` to explicitly select Comet's native implementation, which has the following differences from Spark:
+
+- Array extrema use binary string ordering for non-UTF8_BINARY collations (https://github.com/apache/datafusion-comet/issues/4496).
+
 ## ArraysZip
 
 The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:

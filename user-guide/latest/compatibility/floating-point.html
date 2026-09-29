@@ -823,6 +823,12 @@ longer forces a fallback for them: scalar <code class="docutils literal notransl
 keys, and range partitioning keys all stay native under strict mode. Floating-point values nested
 in arrays, structs, or maps still fall back under strict mode, because their ordering is the raw
 total ordering described above.</p>
+<p><code class="docutils literal notranslate"><span class="pre">array_min</span></code> and <code class="docutils literal notranslate"><span class="pre">array_max</span></code> use Spark-compatible native comparisons in both strict and non-strict
+floating-point modes. Signed zeros compare equal, and all NaN representations compare equal and
+greater than non-NaN values. The original first equal element is retained: for example,
+<code class="docutils literal notranslate"><span class="pre">array_min(array(0.0D,</span> <span class="pre">-0.0D))</span></code> returns <code class="docutils literal notranslate"><span class="pre">0.0</span></code>, while reversing those elements returns <code class="docutils literal notranslate"><span class="pre">-0.0</span></code>.
+The same ordering applies recursively to floating-point fields in arrays and structs. These
+expressions do not require Spark’s codegen dispatcher for floating-point compatibility.</p>
 </section>
 </section>
 

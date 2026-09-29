@@ -823,6 +823,20 @@ under the License.
 <li><p>array_join evaluates its delimiter and null replacement eagerly, while Spark short-circuits past them (https://github.com/apache/datafusion-comet/issues/3178)</p></li>
 </ul>
 </section>
+<section id="arraymax">
+<h2>ArrayMax<a class="headerlink" href="#arraymax" title="Link to this heading">#</a></h2>
+<p>For applicable cases that are not selected for native execution automatically, <code class="docutils literal notranslate"><span class="pre">ArrayMax</span></code> is evaluated in the JVM using Spark’s own code-generated implementation (run inside the Comet pipeline) by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.ArrayMax.allowIncompatible=true</span></code> to explicitly select Comet’s native implementation, which has the following differences from Spark:</p>
+<ul class="simple">
+<li><p>Array extrema use binary string ordering for non-UTF8_BINARY collations (https://github.com/apache/datafusion-comet/issues/4496).</p></li>
+</ul>
+</section>
+<section id="arraymin">
+<h2>ArrayMin<a class="headerlink" href="#arraymin" title="Link to this heading">#</a></h2>
+<p>For applicable cases that are not selected for native execution automatically, <code class="docutils literal notranslate"><span class="pre">ArrayMin</span></code> is evaluated in the JVM using Spark’s own code-generated implementation (run inside the Comet pipeline) by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.ArrayMin.allowIncompatible=true</span></code> to explicitly select Comet’s native implementation, which has the following differences from Spark:</p>
+<ul class="simple">
+<li><p>Array extrema use binary string ordering for non-UTF8_BINARY collations (https://github.com/apache/datafusion-comet/issues/4496).</p></li>
+</ul>
+</section>
 <section id="arrayszip">
 <h2>ArraysZip<a class="headerlink" href="#arrayszip" title="Link to this heading">#</a></h2>
 <p>The following cases are not supported by Comet and always fall back to Spark, regardless of any <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code> setting:</p>
@@ -906,6 +920,8 @@ under the License.
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#arrayexcept">ArrayExcept</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#arrayintersect">ArrayIntersect</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#arrayjoin">ArrayJoin</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#arraymax">ArrayMax</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#arraymin">ArrayMin</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#arrayszip">ArraysZip</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#sequence">Sequence</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#shuffle">Shuffle</a></li>
