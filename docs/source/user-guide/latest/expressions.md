@@ -161,8 +161,8 @@ The tables below list every Spark built-in expression with its current status.
 | `array_insert` | ✅ | Native |  |
 | `array_intersect` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default; the incompatible native path is opt-in via allowIncompatible ([details](compatibility/expressions/array.md)) |
 | `array_join` | ✅ | Hybrid | Native for literal or column delimiter and null replacement; other cases and non-UTF8_BINARY collations use the JVM codegen dispatcher ([details](compatibility/expressions/array.md)) |
-| `array_max` | ✅ | Native | NaN ordering may differ ([details](compatibility/floating-point.md)) |
-| `array_min` | ✅ | Native | May return `-0.0` where Spark returns `0.0` when both zeros are present |
+| `array_max` | ✅ | Hybrid | Native Spark-compatible floating-point and nested ordering; non-default string collations use the JVM codegen dispatcher ([details](compatibility/expressions/array.md)) |
+| `array_min` | ✅ | Hybrid | Native Spark-compatible floating-point and nested ordering; non-default string collations use the JVM codegen dispatcher ([details](compatibility/expressions/array.md)) |
 | `array_position` | ✅ | Native | Binary/struct/map/null elements fall back |
 | `array_prepend` | ✅ | — |  |
 | `array_remove` | ✅ | Native |  |
@@ -425,7 +425,7 @@ to Spark ([#2837](https://github.com/apache/datafusion-comet/issues/2837)). Enab
 | `*` | ✅ | Native | DayTime interval multiplication routes through the JVM codegen dispatcher; YearMonth and Calendar interval multiplication fall back |
 | `+` | ✅ | Native | Adding a calendar, year-month or day-time interval to a date or timestamp routes through the JVM codegen dispatcher. `date + INTERVAL '<n>' DAY` is rewritten by Spark to `date_add` and stays native; a DAY-precision interval column added to a date is rewritten to `DateAdd` over `ExtractANSIIntervalDays`, which has no serde, so that projection falls back to Spark |
 | `-` | ✅ | Native | `date - date`, `timestamp - timestamp` and subtracting an interval from a date or timestamp route through the JVM codegen dispatcher; `timestamp - timestamp` falls back to Spark in legacy interval mode (`spark.sql.legacy.interval.enabled=true`) because its calendar-interval result can exceed what the dispatcher output can carry. `date - INTERVAL '<n>' DAY` is rewritten by Spark to `date_add` and stays native; a DAY-precision interval column subtracted from a date is rewritten to `DateAdd` over `ExtractANSIIntervalDays`, which has no serde, so that projection falls back to Spark |
-| `/` | ✅ | Native |  |
+| `/` | ✅ | Native | DayTime interval division routes through the JVM codegen dispatcher; YearMonth and Calendar interval division fall back |
 | `abs` | ✅ | Hybrid | Interval types route through the JVM codegen dispatcher; numeric types run natively |
 | `acos` | ✅ | Native |  |
 | `acosh` | ✅ | Native |  |
