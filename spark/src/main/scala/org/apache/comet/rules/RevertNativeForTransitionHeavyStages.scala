@@ -66,8 +66,7 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession, wholePlan
           .map(reverted => exchange.withNewChildren(Seq(reverted)))
           .getOrElse(plan)
       case _ =>
-        // Result stage: its output is collected as rows, so no consumer requires columnar input
-        // and the reverted stage needs no trailing R2C.
+        // Result stage: its output is collected as rows.
         revertStageIfNeeded(plan, outputColumnar = false).getOrElse(plan)
     }
   }
@@ -83,7 +82,8 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession, wholePlan
   }
 
   /**
-   * Reverts the stage if C2R count exceeds threshold. Wraps in R2C if exchange needs columnar.
+   * Reverts the stage if C2R count exceeds threshold, restoring the stage's output format when
+   * the reverted root does not satisfy it.
    */
   private def revertStageIfNeeded(
       stagePlan: SparkPlan,
@@ -111,10 +111,13 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession, wholePlan
               s"restore its Spark plan: ${e.getMessage}")
           return None
       }
+    val revertedWithReason = withFallbackReason(reverted, reason)
     val result = if (outputColumnar && !reverted.supportsColumnar) {
-      RowToColumnarExec(withFallbackReason(reverted, reason))
+      RowToColumnarExec(revertedWithReason)
+    } else if (!outputColumnar && reverted.supportsColumnar) {
+      ColumnarToRowExec(revertedWithReason)
     } else {
-      withFallbackReason(reverted, reason)
+      revertedWithReason
     }
     Some(result)
   }

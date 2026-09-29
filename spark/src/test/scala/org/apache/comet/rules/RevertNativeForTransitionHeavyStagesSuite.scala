@@ -161,6 +161,12 @@ class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
     plan.collect { case _: ColumnarToRowTransition => true }.size
   }
 
+  private def unwrapCodegen(plan: SparkPlan): SparkPlan = plan match {
+    case wholeStage: WholeStageCodegenExec => unwrapCodegen(wholeStage.child)
+    case inputAdapter: InputAdapter => unwrapCodegen(inputAdapter.child)
+    case other => other
+  }
+
   private def collectCometAggregates(plan: SparkPlan): Seq[CometHashAggregateExec] = {
     val current = plan match {
       case aggregate: CometHashAggregateExec => Seq(aggregate)
@@ -662,36 +668,70 @@ class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
     }
   }
 
-  test("transition-heavy revert preserves native exchange for DISTRIBUTE BY") {
+  test("transition-heavy revert restores row output for a columnar Spark scan") {
     withSQLConf(
       CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "true",
       CometConf.COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS.key -> "0",
-      CometConf.COMET_SHUFFLE_MODE.key -> "native",
-      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true") {
       withParquetTable((0 until 100).map(i => (i, i % 10)), "tbl") {
-        val query = "SELECT _1, _2 FROM tbl DISTRIBUTE BY _2"
-        var sparkAnswer: Seq[Row] = Seq.empty
-        withSQLConf(
-          CometConf.COMET_ENABLED.key -> "false",
-          CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "false") {
-          sparkAnswer = sql(query).collect().toSeq
-        }
-        val df = sql(query)
-        checkCometAnswer(df, sparkAnswer)
-        val executedPlan = stripAQEPlan(df.queryExecution.executedPlan)
-        val exchange = executedPlan
-          .collectFirst { case node: CometShuffleExchangeExec => node }
-          .getOrElse(fail(s"expected a native shuffle:\n$executedPlan"))
+        val (_, plan) = checkSparkAnswer("SELECT _1, _2 FROM tbl")
+        val executedPlan = stripAQEPlan(plan)
+        val resultStageRoot = unwrapCodegen(executedPlan)
 
-        assert(
-          countC2RNodes(executedPlan) > 0,
-          s"the result transition above the exchange must be preserved:\n$executedPlan")
-        assert(
-          exchange.collect { case scan: CometNativeScanExec => scan }.nonEmpty,
-          s"the map stage must retain its native scan:\n$executedPlan")
-        assert(
-          exchange.collect { case scan: FileSourceScanExec => scan }.isEmpty,
-          s"fallback must not replace the scan below the exchange:\n$executedPlan")
+        val scan = resultStageRoot match {
+          case transition: ColumnarToRowExec =>
+            unwrapCodegen(transition.child) match {
+              case child: FileSourceScanExec => child
+              case other =>
+                fail(s"expected a vectorized Spark scan under ColumnarToRow, got:\n$other")
+            }
+          case other =>
+            fail(
+              "expected ColumnarToRow over a vectorized Spark scan, got " +
+                s"${other.getClass.getName}:\n$other")
+        }
+        assert(scan.supportsColumnar, s"the reverted scan must use its columnar path:\n$scan")
+        assert(countCometExecs(executedPlan) == 0, s"the stage must be reverted:\n$executedPlan")
+      }
+    }
+  }
+
+  for (adaptive <- Seq(false, true)) {
+    test(s"transition-heavy revert preserves native exchange for DISTRIBUTE BY: AQE=$adaptive") {
+      withSQLConf(
+        CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS.key -> "0",
+        CometConf.COMET_SHUFFLE_MODE.key -> "native",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString) {
+        withParquetTable((0 until 100).map(i => (i, i % 10)), "tbl") {
+          val query = "SELECT _1, _2 FROM tbl DISTRIBUTE BY _2"
+          var sparkAnswer: Seq[Row] = Seq.empty
+          withSQLConf(
+            CometConf.COMET_ENABLED.key -> "false",
+            CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "false") {
+            sparkAnswer = sql(query).collect().toSeq
+          }
+          val df = sql(query)
+          checkCometAnswer(df, sparkAnswer)
+          val executedPlan = stripAQEPlan(df.queryExecution.executedPlan)
+          val resultStageRoot = unwrapCodegen(executedPlan)
+
+          assert(
+            resultStageRoot.isInstanceOf[ColumnarToRowTransition],
+            s"the result stage must end with a columnar-to-row transition:\n$executedPlan")
+
+          if (!adaptive) {
+            val exchange = executedPlan
+              .collectFirst { case node: CometShuffleExchangeExec => node }
+              .getOrElse(fail(s"expected a native shuffle:\n$executedPlan"))
+            assert(
+              exchange.collect { case scan: CometNativeScanExec => scan }.nonEmpty,
+              s"the map stage must retain its native scan:\n$executedPlan")
+            assert(
+              exchange.collect { case scan: FileSourceScanExec => scan }.isEmpty,
+              s"fallback must not replace the scan below the exchange:\n$executedPlan")
+          }
+        }
       }
     }
   }
