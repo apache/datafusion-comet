@@ -3639,7 +3639,7 @@ class CometIcebergNativeSuite
   }
 
   test("REST catalog with native Iceberg scan") {
-    assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4142")
+    assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4969")
     assume(icebergAvailable, "Iceberg not available in classpath")
 
     withRESTCatalog { (restUri, _, warehouseDir) =>
@@ -4285,6 +4285,49 @@ class CometIcebergNativeSuite
           assertScanInputMetrics(scans, bytesRead, recordsRead)
         } finally {
           spark.sql("DROP TABLE test_cat.db.shuffle_metrics_test")
+        }
+      }
+    }
+  }
+
+  test("Iceberg native scan left unconsumed by a limit still reports task input metrics") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        createInputMetricsTable("test_cat.db.task_metrics_limit_test")
+        try {
+          // This Iceberg scan is its own native block with no JVM input, so its metrics publish
+          // per batch and this covers the registration site rather than the listener order. A
+          // fused Iceberg scan reports from the same CometNativeExec site as a fused Parquet
+          // scan, whose order CometTaskMetricsSuite's broadcast join limit test guards.
+          val query = "SELECT * FROM test_cat.db.task_metrics_limit_test LIMIT 3"
+          Seq("-1", CometConf.COMET_METRICS_UPDATE_INTERVAL.defaultValueString).foreach {
+            interval =>
+              withSQLConf(CometConf.COMET_METRICS_UPDATE_INTERVAL.key -> interval) {
+                val df = spark.sql(query)
+                val (bytesRead, recordsRead) = taskInputMetrics(df.collect())
+                assert(
+                  collectIcebergNativeScans(df.queryExecution.executedPlan).nonEmpty,
+                  "Expected CometIcebergNativeScanExec in plan")
+                assert(
+                  bytesRead > 0,
+                  s"bytesRead should be > 0 at interval $interval, got $bytesRead")
+                assert(
+                  recordsRead >= 3 && recordsRead <= inputMetricsRows,
+                  s"recordsRead should cover at least the limit at interval $interval, " +
+                    s"got $recordsRead")
+              }
+          }
+        } finally {
+          spark.sql("DROP TABLE test_cat.db.task_metrics_limit_test")
         }
       }
     }

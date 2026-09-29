@@ -103,8 +103,11 @@ use std::{
 };
 use tokio::runtime::{Handle, Runtime};
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 
-use crate::execution::memory_pools::{create_memory_pool, parse_memory_pool_config};
+use crate::execution::memory_pools::{
+    create_memory_pool, parse_memory_pool_config, PlanMemoryPool,
+};
 use crate::execution::operators::{ScanExec, ShuffleScanExec};
 use crate::execution::shuffle::{
     decode_remote_shuffle_batch, read_ipc_compressed, CompressionCodec, ShuffleWriterExec,
@@ -417,14 +420,17 @@ pub fn get_runtime() -> Handle {
 
 /// Tears down the global Tokio runtime, if it has been initialized.
 ///
-/// The runtime is moved out of the global slot and shut down in the background so the
-/// calling (JNI) thread is not blocked waiting for worker threads to finish. Any handles
-/// previously returned by [`get_runtime`] will start failing their spawns once the runtime
-/// is gone, so this must only be called when no native execution is in flight.
+/// The runtime is moved out of the global slot, so the next [`init_runtime`] or
+/// [`get_runtime`] call builds a new one. Shutting it down blocks the calling (JNI) thread
+/// until the runtime's threads have stopped, for at most 3 seconds. Tasks still running on it
+/// are dropped at their next yield, and any handles previously returned by [`get_runtime`]
+/// will start failing their spawns, so this must only be called when no native execution is
+/// in flight.
 ///
 /// Must not be called from within the runtime's own worker threads, otherwise the shutdown
 /// would deadlock/panic.
 pub fn release_runtime() {
+    crate::execution::operators::clear_file_io_cache();
     let runtime = TOKIO_RUNTIME.lock().take();
     if let Some(runtime) = runtime {
         runtime.shutdown_timeout(Duration::from_secs(3));
@@ -504,8 +510,10 @@ struct ExecutionContext {
     pub input_sources: Vec<Arc<Global<JObject<'static>>>>,
     /// The record batch stream to pull results from
     pub stream: Option<SendableRecordBatchStream>,
-    /// Receives batches from a spawned tokio task (async I/O path)
-    pub batch_receiver: Option<mpsc::Receiver<DataFusionResult<RecordBatch>>>,
+    /// Runs the plan when it has no JVM input (async I/O path)
+    batch_producer: Option<BatchProducer>,
+    /// The pool every reservation the plan makes goes through
+    plan_memory: Arc<PlanMemoryPool>,
     /// Native metrics
     pub metrics: Arc<Global<JObject<'static>>>,
     // The interval in milliseconds to update metrics
@@ -646,6 +654,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             } else {
                 memory_pool
             };
+            let plan_memory = Arc::new(PlanMemoryPool::new(memory_pool));
 
             // Get local directories for storing spill files
             let num_local_dirs = local_dirs.len(env)?;
@@ -662,7 +671,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             // dictionaries will be dropped as well.
             let session = prepare_datafusion_session_context(
                 batch_size as usize,
-                memory_pool,
+                Arc::clone(&plan_memory) as Arc<dyn MemoryPool>,
                 local_dirs_vec,
                 max_temp_directory_size,
                 task_cpus as usize,
@@ -721,7 +730,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 shuffle_scans: vec![],
                 input_sources,
                 stream: None,
-                batch_receiver: None,
+                batch_producer: None,
+                plan_memory,
                 metrics,
                 metrics_update_interval,
                 metrics_last_update_time: Instant::now(),
@@ -1081,6 +1091,88 @@ where
     .await
 }
 
+/// Runs a plan that has no JVM input on a Tokio task, which sends the plan's batches to the Spark
+/// task thread.
+struct BatchProducer {
+    batches: mpsc::Receiver<DataFusionResult<RecordBatch>>,
+    /// The plan's stream, and with it every reservation the stream holds. The task locks it only
+    /// while polling it, so `stop` can take it whenever the task is waiting.
+    stream: Arc<Mutex<Option<SendableRecordBatchStream>>>,
+    task: JoinHandle<()>,
+}
+
+impl BatchProducer {
+    fn spawn(runtime: &Handle, stream: SendableRecordBatchStream) -> Self {
+        // Channel capacity of 2 allows the producer to work one batch
+        // ahead while the consumer processes the current one via JNI,
+        // without buffering excessive memory. Increasing this would
+        // trade memory for latency hiding if JNI/FFI overhead dominates;
+        // decreasing to 1 would serialize production and consumption.
+        let (tx, batches) = mpsc::channel(2);
+        let stream = Arc::new(Mutex::new(Some(stream)));
+        let polled = Arc::clone(&stream);
+        let task = runtime.spawn(async move {
+            let result = std::panic::AssertUnwindSafe(async {
+                // Ends once `stop` has taken the stream.
+                let next = || {
+                    poll_fn(|cx| match polled.lock().as_mut() {
+                        Some(stream) => stream.poll_next_unpin(cx),
+                        None => Poll::Ready(None),
+                    })
+                };
+                while let Some(batch) = next().await {
+                    if tx.send(batch).await.is_err() {
+                        break;
+                    }
+                }
+            })
+            .catch_unwind()
+            .await;
+
+            if let Err(panic) = result {
+                let msg = match panic.downcast_ref::<&str>() {
+                    Some(s) => s.to_string(),
+                    None => match panic.downcast_ref::<String>() {
+                        Some(s) => s.clone(),
+                        None => "unknown panic".to_string(),
+                    },
+                };
+                let _ = tx
+                    .send(Err(DataFusionError::Execution(format!(
+                        "native panic: {msg}"
+                    ))))
+                    .await;
+            }
+        });
+        Self {
+            batches,
+            stream,
+            task,
+        }
+    }
+
+    /// Stops the task and drops the plan's stream on the calling thread.
+    ///
+    /// The stream is dropped here rather than by cancelling the task, because a cancellation only
+    /// runs once a Tokio worker is free, and every worker can be tied up, for instance waiting in
+    /// Spark's `acquireMemory` for the memory this stream holds. Taking the stream waits only for
+    /// a poll the task is already in, so at most for the work the stream does between two await
+    /// points.
+    fn stop(self) -> CometResult<()> {
+        let Self {
+            batches,
+            stream,
+            task,
+        } = self;
+        drop(batches);
+        task.abort();
+        let stream = stream.lock().take();
+        // A panic here is reported as it is when `releasePlan` drops a JVM-fed plan's stream.
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(stream)))
+            .map_err(CometError::from)
+    }
+}
+
 /// Accept serialized query plan and the addresses of Arrow Arrays from Spark,
 /// then execute the query. Return addresses of arrow vector.
 /// # Safety
@@ -1152,41 +1244,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                 if exec_context.scans.is_empty() && exec_context.shuffle_scans.is_empty() {
                     // No JVM data sources — spawn onto tokio so the executor
                     // thread parks in blocking_recv instead of busy-polling.
-                    //
-                    // Channel capacity of 2 allows the producer to work one batch
-                    // ahead while the consumer processes the current one via JNI,
-                    // without buffering excessive memory. Increasing this would
-                    // trade memory for latency hiding if JNI/FFI overhead dominates;
-                    // decreasing to 1 would serialize production and consumption.
-                    let (tx, rx) = mpsc::channel(2);
-                    let mut stream = stream;
-                    get_runtime().spawn(async move {
-                        let result = std::panic::AssertUnwindSafe(async {
-                            while let Some(batch) = stream.next().await {
-                                if tx.send(batch).await.is_err() {
-                                    break;
-                                }
-                            }
-                        })
-                        .catch_unwind()
-                        .await;
-
-                        if let Err(panic) = result {
-                            let msg = match panic.downcast_ref::<&str>() {
-                                Some(s) => s.to_string(),
-                                None => match panic.downcast_ref::<String>() {
-                                    Some(s) => s.clone(),
-                                    None => "unknown panic".to_string(),
-                                },
-                            };
-                            let _ = tx
-                                .send(Err(DataFusionError::Execution(format!(
-                                    "native panic: {msg}"
-                                ))))
-                                .await;
-                        }
-                    });
-                    exec_context.batch_receiver = Some(rx);
+                    exec_context.batch_producer =
+                        Some(BatchProducer::spawn(&get_runtime(), stream));
                 } else {
                     exec_context.stream = Some(stream);
                 }
@@ -1196,8 +1255,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                 pull_input_batches(exec_context)?;
             }
 
-            if let Some(rx) = &mut exec_context.batch_receiver {
-                match rx.blocking_recv() {
+            if let Some(producer) = &mut exec_context.batch_producer {
+                match producer.batches.blocking_recv() {
                     Some(Ok(batch)) => {
                         update_metrics(env, exec_context)?;
                         return prepare_output(
@@ -1282,11 +1341,19 @@ pub extern "system" fn Java_org_apache_comet_Native_releasePlan(
             "Comet execution context shouldn't be null!"
         );
 
-        // Reclaim ownership of the context up front so that it is always freed, even if updating
-        // metrics below fails. Dropping it releases the memory pool and every JNI global ref the
-        // context holds.
+        // Reclaim ownership of the context up front so that it is always freed, even if a step
+        // below fails. Dropping it releases the memory pool and every JNI global ref the context
+        // holds.
         let mut execution_context: Box<ExecutionContext> =
             Box::from_raw(exec_context as *mut ExecutionContext);
+
+        // A plan with no JVM input runs on a Tokio task. Stop it and drop its stream first, so the
+        // stream's memory is returned before the Spark task can end, and the metrics flushed below
+        // include what the stream records as it is dropped.
+        let producer_stopped = execution_context
+            .batch_producer
+            .take()
+            .map_or(Ok(()), BatchProducer::stop);
 
         // Unregister this context's pool and, when tracing, emit the remaining total for the
         // thread. Every context registers, but only a traced one writes counters, so the
@@ -1299,10 +1366,33 @@ pub extern "system" fn Java_org_apache_comet_Native_releasePlan(
             );
         }
 
-        // Flush metrics last, as it is the only fallible step here.
-        update_metrics(env, &mut execution_context)
+        let metrics_flushed = update_metrics(env, &mut execution_context);
+
+        // Once this returns the Spark task can end, and Spark hands whatever the task still holds
+        // to other tasks. Dropping the plan aborts the tasks its operators spawned, and they give
+        // back what they hold the next time they yield, so wait for them.
+        let id = execution_context.id;
+        let plan_memory = Arc::clone(&execution_context.plan_memory);
+        drop(execution_context);
+        let held = plan_memory.wait_until_released(Instant::now() + PLAN_MEMORY_RELEASE_TIMEOUT);
+        if held > 0 {
+            warn!(
+                "Native plan {id} still holds {held} bytes {PLAN_MEMORY_RELEASE_TIMEOUT:?} after \
+                 it was released. They go back to Spark only when whatever holds them drops them, \
+                 which can be after the Spark task has ended and its memory has been given to \
+                 another task."
+            );
+        }
+
+        producer_stopped.and(metrics_flushed)
     })
 }
+
+/// How long `releasePlan` waits for a released plan's reservations to be returned. The tasks
+/// holding them have been aborted and stop the next time they yield, so this is only reached if
+/// something keeps a reservation it never gives back, where waiting longer would only stall the
+/// Spark task.
+const PLAN_MEMORY_RELEASE_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Runs `update_metrics` once the configured interval has passed and, with tracing on, samples
 /// this thread's pool reservation at the same cadence.
@@ -1900,6 +1990,7 @@ mod tests {
     use datafusion::execution::FunctionRegistry;
     use datafusion::execution::TaskContext;
     use datafusion::logical_expr::ReturnFieldArgs;
+    use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
     use datafusion::physical_plan::ExecutionPlan;
     use datafusion_comet_proto::spark_expression;
     use datafusion_comet_proto::spark_expression::{AggExpr, Count, Expr, Sum};
@@ -2481,5 +2572,203 @@ mod tests {
             .unwrap();
         assert!(next.is_some());
         assert_eq!(pulls, 1);
+    }
+
+    fn empty_batch() -> RecordBatch {
+        RecordBatch::new_empty(Arc::new(Schema::empty()))
+    }
+
+    fn plan_stream(
+        stream: impl Stream<Item = DataFusionResult<RecordBatch>> + Send + 'static,
+    ) -> SendableRecordBatchStream {
+        Box::pin(RecordBatchStreamAdapter::new(
+            Arc::new(Schema::empty()),
+            stream,
+        ))
+    }
+
+    /// See issue #2453. A consumer that stops early can leave the producer waiting on its input,
+    /// still holding the stream.
+    #[test]
+    fn stopping_a_batch_producer_drops_its_stream_while_it_waits_on_input() {
+        let runtime = single_worker_runtime();
+        let pool: Arc<dyn MemoryPool> = Arc::new(UnboundedMemoryPool::default());
+        let reservation = MemoryConsumer::new("sort").register(&pool);
+        reservation.grow(4096);
+        let mut first = Some(empty_batch());
+        // Yields one batch, then waits for input that never arrives.
+        let stream = futures::stream::poll_fn(move |_| {
+            let _held = &reservation;
+            match first.take() {
+                Some(batch) => Poll::Ready(Some(Ok(batch))),
+                None => Poll::Pending,
+            }
+        });
+
+        let mut producer = BatchProducer::spawn(runtime.handle(), plan_stream(stream));
+        assert!(producer.batches.blocking_recv().unwrap().is_ok());
+        producer.stop().unwrap();
+        assert_eq!(pool.reserved(), 0, "the stream outlived its producer");
+    }
+
+    /// The producer can be in the middle of producing a batch, such as one evaluating a JVM UDF,
+    /// when the consumer stops.
+    #[test]
+    fn stopping_a_batch_producer_waits_for_the_poll_it_is_in() {
+        let runtime = single_worker_runtime();
+        let pool: Arc<dyn MemoryPool> = Arc::new(UnboundedMemoryPool::default());
+        let reservation = MemoryConsumer::new("sort").register(&pool);
+        reservation.grow(4096);
+        let (polling_tx, polling_rx) = std::sync::mpsc::channel();
+        let (finish_tx, finish_rx) = std::sync::mpsc::channel::<()>();
+        let mut polls = 0;
+        // Produces its second batch without yielding, until the test lets it finish.
+        let stream = futures::stream::poll_fn(move |_| {
+            let _held = &reservation;
+            polls += 1;
+            if polls == 2 {
+                polling_tx.send(()).unwrap();
+                finish_rx.recv().unwrap();
+            }
+            Poll::Ready(Some(Ok(empty_batch())))
+        });
+
+        let mut producer = BatchProducer::spawn(runtime.handle(), plan_stream(stream));
+        assert!(producer.batches.blocking_recv().unwrap().is_ok());
+        polling_rx.recv().unwrap();
+        let finished = Arc::new(AtomicBool::new(false));
+        let finishing = {
+            let finished = Arc::clone(&finished);
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(50));
+                finished.store(true, Ordering::Release);
+                finish_tx.send(()).unwrap();
+            })
+        };
+        producer.stop().unwrap();
+        assert!(
+            finished.load(Ordering::Acquire),
+            "stop returned while the producer was still polling the stream"
+        );
+        assert_eq!(pool.reserved(), 0, "the stream outlived its producer");
+        finishing.join().unwrap();
+    }
+
+    /// Dropping a JVM-fed plan's stream happens inside `releasePlan`, so a panic there reaches
+    /// the JVM. One in the producer's stream has to as well.
+    #[test]
+    fn stopping_a_batch_producer_returns_a_panic_from_dropping_its_stream() {
+        struct PanicOnDrop;
+        impl Drop for PanicOnDrop {
+            fn drop(&mut self) {
+                panic!("the stream failed to drop");
+            }
+        }
+
+        let runtime = single_worker_runtime();
+        let guard = PanicOnDrop;
+        let stream = futures::stream::poll_fn(move |_| {
+            let _guard = &guard;
+            Poll::<Option<DataFusionResult<RecordBatch>>>::Pending
+        });
+        let producer = BatchProducer::spawn(runtime.handle(), plan_stream(stream));
+        match producer.stop() {
+            Err(CometError::Panic { msg }) => assert!(msg.contains("the stream failed to drop")),
+            other => panic!("expected the panic, got {other:?}"),
+        }
+    }
+
+    /// A sort's merge reads each sorted run through a task it spawns, and dropping the merge only
+    /// aborts those tasks. Stopping the producer therefore does not return all of the plan's
+    /// memory, and `releasePlan` also waits on the plan's pool.
+    #[test]
+    fn a_task_the_plan_spawned_keeps_its_memory_until_it_next_yields() {
+        // One worker runs the spawned task, which blocks it, and the other polls the plan's stream.
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .build()
+            .unwrap();
+        let plan_memory = Arc::new(PlanMemoryPool::new(
+            Arc::new(UnboundedMemoryPool::default()),
+        ));
+        let pool = Arc::clone(&plan_memory) as Arc<dyn MemoryPool>;
+        let reservation = MemoryConsumer::new("sorted run").register(&pool);
+        reservation.grow(4096);
+        let (working_tx, working_rx) = std::sync::mpsc::channel();
+        let (finish_tx, finish_rx) = std::sync::mpsc::channel::<()>();
+        let mut runs = tokio::task::JoinSet::new();
+        runs.spawn_on(
+            async move {
+                let _held = reservation;
+                // Stands in for sorting the run, which does not yield.
+                working_tx.send(()).unwrap();
+                finish_rx.recv().unwrap();
+                futures::future::pending::<()>().await;
+            },
+            runtime.handle(),
+        );
+        working_rx.recv().unwrap();
+        // The plan's stream owns the task, and aborts it when dropped.
+        let stream = futures::stream::poll_fn(move |_| {
+            let _runs = &runs;
+            Poll::<Option<DataFusionResult<RecordBatch>>>::Pending
+        });
+
+        BatchProducer::spawn(runtime.handle(), plan_stream(stream))
+            .stop()
+            .unwrap();
+        assert_eq!(
+            plan_memory.wait_until_released(Instant::now()),
+            4096,
+            "the aborted task should still be sorting"
+        );
+        finish_tx.send(()).unwrap();
+        assert_eq!(
+            plan_memory.wait_until_released(Instant::now() + Duration::from_secs(10)),
+            0
+        );
+    }
+
+    /// Every Tokio worker can be tied up, for instance in Spark's `acquireMemory` waiting for
+    /// memory the stopped plan holds. Stopping the producer must not need a free worker then, or
+    /// neither task ever finishes.
+    #[test]
+    fn stopping_a_batch_producer_does_not_need_a_free_worker() {
+        let runtime = single_worker_runtime();
+        let pool: Arc<dyn MemoryPool> = Arc::new(UnboundedMemoryPool::default());
+        let reservation = MemoryConsumer::new("sort").register(&pool);
+        reservation.grow(4096);
+        let mut first = Some(empty_batch());
+        let stream = futures::stream::poll_fn(move |_| {
+            let _held = &reservation;
+            match first.take() {
+                Some(batch) => Poll::Ready(Some(Ok(batch))),
+                None => Poll::Pending,
+            }
+        });
+        let mut producer = BatchProducer::spawn(runtime.handle(), plan_stream(stream));
+        assert!(producer.batches.blocking_recv().unwrap().is_ok());
+
+        // Holds the only worker until the stopped plan's memory comes back, as another task
+        // waiting in `acquireMemory` does. It gives up eventually so a failure cannot hang the
+        // suite.
+        let (waiting_tx, waiting_rx) = std::sync::mpsc::channel();
+        let waiting_on = Arc::clone(&pool);
+        runtime.spawn(async move {
+            waiting_tx.send(()).unwrap();
+            let give_up = Instant::now() + Duration::from_secs(20);
+            while waiting_on.reserved() > 0 && Instant::now() < give_up {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        });
+        waiting_rx.recv().unwrap();
+
+        let (stopped_tx, stopped_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || stopped_tx.send(producer.stop()).unwrap());
+        stopped_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("stopping the producer waited for a free worker")
+            .unwrap();
+        assert_eq!(pool.reserved(), 0, "the stream outlived its producer");
     }
 }

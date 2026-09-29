@@ -22,6 +22,7 @@ package org.apache.comet
 import scala.util.Random
 
 import org.apache.hadoop.fs.Path
+import org.apache.spark.SparkThrowable
 import org.apache.spark.sql.{Column, CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, FromUnixTime, In, InSet, Literal, StructsToJson, TruncDate, TruncTimestamp}
 import org.apache.spark.sql.catalyst.optimizer.{ConvertToLocalRelation, OptimizeIn, SimplifyExtractValueOps}
@@ -41,6 +42,17 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   val DIVIDE_BY_ZERO_EXCEPTION_MSG =
     """Division by zero. Use `try_divide` to tolerate divisor being 0 and return NULL instead"""
+
+  private def arithmeticError(error: Throwable): SparkThrowable =
+    causeChain(error)
+      .collectFirst {
+        // SparkArithmeticException is private[spark] in Spark 3.4, so this cross-version test
+        // cannot pattern match on its type directly.
+        case error: SparkThrowable
+            if error.getClass.getName == "org.apache.spark.SparkArithmeticException" =>
+          error
+      }
+      .getOrElse(fail(s"Expected SparkArithmeticException, got $error"))
 
   // Temporary test to verify checkSparkAnswer failure output labels Comet/Spark correctly.
   ignore("check output labels on mismatch") {
@@ -503,6 +515,57 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               checkSparkAnswerAndOperator(cometDf)
             }
           }
+        }
+      }
+    }
+  }
+
+  test("ANSI decimal divide by zero raises a Spark error") {
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+      withTable("decimal_div_zero") {
+        sql("CREATE TABLE decimal_div_zero (a DECIMAL(10, 2), b DECIMAL(10, 2)) USING PARQUET")
+        sql("INSERT INTO decimal_div_zero VALUES (1.00, 0.00)")
+
+        Seq("a / b", "a div b").foreach { expression =>
+          val df = sql(s"SELECT $expression FROM decimal_div_zero")
+          checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+          checkSparkAnswerMaybeThrows(df) match {
+            case (Some(sparkException), Some(cometException)) =>
+              val expected = arithmeticError(sparkException)
+              val actual = arithmeticError(cometException)
+              assert(actual.getErrorClass == expected.getErrorClass)
+              assert(actual.getSqlState == expected.getSqlState)
+              assert(
+                actual.getQueryContext.map(_.fragment()).toSeq ==
+                  expected.getQueryContext.map(_.fragment()).toSeq)
+            case errors => fail(s"Expected Spark and Comet divide-by-zero errors, got $errors")
+          }
+        }
+      }
+    }
+  }
+
+  test("ANSI cast overflow reports the cast's own context") {
+    // The child divide proto carries its own expr_id and context, while the outer Cast proto is
+    // built fresh by its serde and must still receive the cast's own context. Pins the
+    // conditional expr_id assignment in QueryPlanSerde.exprToProtoInternal.
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+      withTable("cast_div_overflow") {
+        sql("CREATE TABLE cast_div_overflow (a DECIMAL(10, 2), b DECIMAL(10, 2)) USING PARQUET")
+        sql("INSERT INTO cast_div_overflow VALUES (100.00, 1.00)")
+
+        val df = sql("SELECT CAST(a / b AS DECIMAL(3, 2)) FROM cast_div_overflow")
+        checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+        checkSparkAnswerMaybeThrows(df) match {
+          case (Some(sparkException), Some(cometException)) =>
+            val expected = arithmeticError(sparkException)
+            val actual = arithmeticError(cometException)
+            assert(actual.getErrorClass == expected.getErrorClass)
+            assert(actual.getSqlState == expected.getSqlState)
+            assert(
+              actual.getQueryContext.map(_.fragment()).toSeq ==
+                expected.getQueryContext.map(_.fragment()).toSeq)
+          case errors => fail(s"Expected Spark and Comet cast-overflow errors, got $errors")
         }
       }
     }
@@ -1702,14 +1765,23 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     // 1.1e19 * 1.1e19 = 1.21e38 overflows DECIMAL(38,0). With ANSI mode on, both Spark and
     // Comet must throw — Comet must not panic or silently return null. Spark reports
     // NUMERIC_VALUE_OUT_OF_RANGE; Comet's WideDecimalBinaryExpr catches the overflow first
-    // and surfaces it as an arithmetic overflow error.
+    // and must surface the same structured Spark error.
     withSQLConf(CometConf.COMET_ENABLED.key -> "true", SQLConf.ANSI_ENABLED.key -> "true") {
       withParquetTable(Seq((BigDecimal("11000000000000000000"), 0)), "tbl") {
         val res = sql("SELECT _1 * _1 FROM tbl")
+        checkCometOperators(stripAQEPlan(res.queryExecution.executedPlan))
         checkSparkAnswerMaybeThrows(res) match {
           case (Some(sparkExc), Some(cometExc)) =>
-            assert(sparkExc.getMessage.contains("NUMERIC_VALUE_OUT_OF_RANGE"))
-            assert(cometExc.getMessage.toLowerCase.contains("overflow"))
+            val expected = arithmeticError(sparkExc)
+            val actual = arithmeticError(cometExc)
+            // Spark formats its pre-toPrecision Decimal, while Comet formats the rescaled i256
+            // value (https://github.com/apache/datafusion-comet/issues/5211). This regression
+            // covers the structured error fields and query context.
+            assert(actual.getErrorClass == expected.getErrorClass)
+            assert(actual.getSqlState == expected.getSqlState)
+            assert(
+              actual.getQueryContext.map(_.fragment()).toSeq ==
+                expected.getQueryContext.map(_.fragment()).toSeq)
           case _ =>
             fail("Expected exception for decimal overflow in ANSI mode")
         }
@@ -2674,7 +2746,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("unary negative integer overflow test") {
-    assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4142")
+    assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4967")
     def withAnsiMode(enabled: Boolean)(f: => Unit): Unit = {
       withSQLConf(
         SQLConf.ANSI_ENABLED.key -> enabled.toString,
@@ -3294,7 +3366,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("ANSI support for add") {
-    assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4142")
+    assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4967")
     val data = Seq((Integer.MAX_VALUE, 1), (Integer.MIN_VALUE, -1))
     withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
       withParquetTable(data, "tbl") {
@@ -3310,7 +3382,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("ANSI support for subtract") {
-    assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4142")
+    assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4967")
     val data = Seq((Integer.MIN_VALUE, 1))
     withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
       withParquetTable(data, "tbl") {
@@ -3325,7 +3397,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("ANSI support for multiply") {
-    assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4142")
+    assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4967")
     val data = Seq((Integer.MAX_VALUE, 10))
     withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
       withParquetTable(data, "tbl") {
@@ -3920,6 +3992,157 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         assert(
           !explain.contains("native implementation of DateFormatClass"),
           "Expected no opt-in hint for UTC session: native already runs without config change")
+      }
+    }
+  }
+
+  test("hll_sketch_agg and hll_sketch_estimate (incompatible, opt-in)") {
+    assume(isSpark40Plus)
+    // HLL is approximate: Comet's Rust DataSketches estimator differs slightly from
+    // Spark's after a merge, so these functions are Incompatible. Opt in, assert the
+    // query runs natively (no fallback), and that the estimate is within HLL error of
+    // the TRUE distinct count (700). Do NOT compare bit-exactly to Spark.
+    withSQLConf(
+      "spark.comet.expression.HllSketchAgg.allowIncompatible" -> "true",
+      "spark.comet.expression.HllSketchEstimate.allowIncompatible" -> "true") {
+      withParquetTable((0 until 1000).map(i => (i % 700, i)), "tbl") {
+        def checkEstimate(query: String): Unit = {
+          val df = sql(query)
+          checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+          val est = df.collect().head.getLong(0)
+          assert(
+            math.abs(est - 700).toDouble / 700 <= 0.05,
+            s"estimate $est not within 5% of the true distinct count 700 for: $query")
+        }
+        checkEstimate("SELECT hll_sketch_estimate(hll_sketch_agg(_1)) FROM tbl")
+        checkEstimate("SELECT hll_sketch_estimate(hll_sketch_agg(_1, 14)) FROM tbl")
+        checkEstimate("SELECT hll_sketch_estimate(hll_sketch_agg(cast(_1 as string))) FROM tbl")
+      }
+    }
+  }
+
+  test("hll_union_agg and hll_union (incompatible, opt-in)") {
+    assume(isSpark40Plus)
+    withSQLConf(
+      "spark.comet.expression.HllSketchAgg.allowIncompatible" -> "true",
+      "spark.comet.expression.HllSketchEstimate.allowIncompatible" -> "true",
+      "spark.comet.expression.HllUnionAgg.allowIncompatible" -> "true",
+      "spark.comet.expression.HllUnion.allowIncompatible" -> "true") {
+      withParquetTable((0 until 1000).map(i => (i % 3, i)), "tbl") {
+        // hll_union_agg: union the per-group sketches -> ~1000 distinct.
+        val aggDf = sql(
+          "SELECT hll_sketch_estimate(hll_union_agg(s)) FROM " +
+            "(SELECT _1 AS g, hll_sketch_agg(_2) AS s FROM tbl GROUP BY _1)")
+        checkCometOperators(stripAQEPlan(aggDf.queryExecution.executedPlan))
+        val aggEst = aggDf.collect().head.getLong(0)
+        assert(math.abs(aggEst - 1000).toDouble / 1000 <= 0.05, s"union_agg estimate $aggEst")
+
+        // hll_union: union two disjoint group sketches -> ~667 distinct.
+        val unionDf = sql(
+          "SELECT hll_sketch_estimate(hll_union(a.s, b.s)) FROM " +
+            "(SELECT hll_sketch_agg(_2) AS s FROM tbl WHERE _1 = 0) a, " +
+            "(SELECT hll_sketch_agg(_2) AS s FROM tbl WHERE _1 = 1) b")
+        checkCometOperators(stripAQEPlan(unionDf.queryExecution.executedPlan))
+        val unionEst = unionDf.collect().head.getLong(0)
+        assert(math.abs(unionEst - 667).toDouble / 667 <= 0.05, s"union estimate $unionEst")
+      }
+    }
+  }
+
+  test("hll_union_agg rejects different lgConfigK when not allowed") {
+    assume(isSpark40Plus)
+    withTempPath { dir =>
+      val sketchPath = dir.getCanonicalPath
+      // Materialize one lgConfigK=10 and one lgConfigK=12 sketch into Parquet, written by Spark
+      // (the HllSketchAgg opt-in is deliberately absent here), so the query under test is a plain
+      // scan plus aggregate. Building the two sketches inline with UNION ALL instead is not
+      // version-stable: on Spark 4.2 MergeSubplans folds the two non-grouping aggregates into one
+      // CTE projecting a struct with duplicate field names, which Comet does not accelerate, so
+      // hll_union_agg falls back and the native check under test never runs.
+      withParquetTable((0 until 100).map(i => Tuple1(i)), "tbl") {
+        sql("SELECT hll_sketch_agg(_1, 10) AS s FROM tbl")
+          .union(sql("SELECT hll_sketch_agg(_1, 12) AS s FROM tbl"))
+          .write
+          .parquet(sketchPath)
+      }
+      withSQLConf("spark.comet.expression.HllUnionAgg.allowIncompatible" -> "true") {
+        // Unioning the two sketches (allowDifferentLgConfigK defaults false) must throw in BOTH
+        // Spark and Comet.
+        val df = spark.read.parquet(sketchPath).selectExpr("hll_union_agg(s)")
+        checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+        val (sparkErr, cometErr) = checkSparkAnswerMaybeThrows(df)
+        assert(sparkErr.isDefined, "expected Spark to throw on different lgConfigK")
+        assert(cometErr.isDefined, "expected Comet to throw on different lgConfigK")
+        // Both arms raising is not enough: if Comet had fallen back for the whole plan, the
+        // second run would raise Spark's exception too and this test would pass without the
+        // native check ever running. The two messages differ - Spark raises
+        // HLL_UNION_DIFFERENT_LG_K - so asserting on Comet's own wording pins the native path.
+        assert(
+          cometErr.get.getMessage.contains("to enable unions of different lgConfigK"),
+          s"expected Comet's native lgConfigK error, got: ${cometErr.get.getMessage}")
+      }
+    }
+  }
+
+  test("hll_union with a NULL allowDifferentLgConfigK returns NULL") {
+    assume(isSpark40Plus)
+    // HllUnion is a TernaryExpression evaluated through nullSafeEval, so a NULL in *any* of the
+    // three arguments - the allowDifferentLgConfigK flag included - makes the whole call NULL.
+    // Returning a sketch would be a categorically wrong answer rather than an approximation,
+    // which is not something the Incompatible opt-in covers.
+    //
+    // The serde only accepts a foldable third argument, and Spark marks HllUnion
+    // `nullIntolerant`, so with the default optimizer NullPropagation rewrites a foldable NULL
+    // flag to a NULL literal before Comet ever sees the expression. Excluding that rule is what
+    // makes the native kernel responsible for the NULL, which is the behaviour under test; a
+    // user who excludes NullPropagation must still get Spark's answer.
+    //
+    // (HllUnionAgg needs no equivalent guard: its `convert` falls back when `right.eval()` is
+    // not a Boolean, and Spark's `null.asInstanceOf[Boolean]` coerces to false, so the two agree
+    // whichever way the flag arrives.)
+    withSQLConf(
+      "spark.sql.optimizer.excludedRules" ->
+        "org.apache.spark.sql.catalyst.optimizer.NullPropagation",
+      "spark.comet.expression.HllSketchAgg.allowIncompatible" -> "true",
+      "spark.comet.expression.HllSketchEstimate.allowIncompatible" -> "true",
+      "spark.comet.expression.HllUnion.allowIncompatible" -> "true") {
+      withParquetTable((0 until 300).map(i => (i % 2, i)), "tbl") {
+        val query =
+          "SELECT hll_sketch_estimate(hll_union(a.s, b.s, cast(null as boolean))) FROM " +
+            "(SELECT hll_sketch_agg(_2) AS s FROM tbl WHERE _1 = 0) a, " +
+            "(SELECT hll_sketch_agg(_2) AS s FROM tbl WHERE _1 = 1) b"
+        val df = sql(query)
+        val plan = stripAQEPlan(df.queryExecution.executedPlan)
+        // Without these the test would pass on a plan where hll_union was folded away or fell
+        // back to Spark, neither of which exercises the native null check.
+        checkCometOperators(plan)
+        assert(
+          plan.toString().contains("hll_union"),
+          s"expected hll_union to survive into the native plan, got:\n$plan")
+        assert(
+          df.collect().head.isNullAt(0),
+          "a NULL allowDifferentLgConfigK must make hll_union return NULL")
+        checkSparkAnswer(query)
+      }
+    }
+  }
+
+  test("hll_sketch_agg over all-null input estimates to 0, not NULL") {
+    assume(isSpark40Plus)
+    // Spark's HllSketchAgg/HllSketchEstimate are declared non-nullable: an empty or
+    // all-null group still produces a serialized empty sketch, and hll_sketch_estimate
+    // reads that as 0, never NULL. Guard against regressing to Binary(None) here.
+    withSQLConf(
+      "spark.comet.expression.HllSketchAgg.allowIncompatible" -> "true",
+      "spark.comet.expression.HllSketchEstimate.allowIncompatible" -> "true") {
+      withParquetTable((0 until 100).map(_ => Tuple1(null.asInstanceOf[Integer])), "tbl") {
+        val df = sql("SELECT hll_sketch_estimate(hll_sketch_agg(_1)) FROM tbl")
+        checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+        val row = df.collect().head
+        assert(!row.isNullAt(0), "expected a non-null estimate for an all-null group")
+        assert(
+          row.getLong(0) == 0,
+          s"expected estimate 0 for an all-null group, got ${row.getLong(0)}")
       }
     }
   }

@@ -30,7 +30,7 @@
 [package]
 name = "comet-contrib-delta"
 description = "delta-kernel-rs integration for Comet (build-gate stub; native read path lands in a later unit). Linked into libcomet via core's `contrib-delta` Cargo feature flag."
-version = "0.18.0"
+version = "1.2.0"
 edition = "2021"
 rust-version = "1.86.0"
 publish = false

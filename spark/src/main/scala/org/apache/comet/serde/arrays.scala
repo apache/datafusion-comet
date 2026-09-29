@@ -240,7 +240,30 @@ object CometArrayIntersect
   }
 }
 
-object CometArrayMax extends CometExpressionSerde[ArrayMax] {
+private object ArrayExtremaSupport extends CometTypeShim {
+  val incompatReason: String =
+    "Array extrema use binary string ordering for non-UTF8_BINARY collations " +
+      "(https://github.com/apache/datafusion-comet/issues/4496)."
+
+  def getSupportLevel(elementType: DataType): SupportLevel = {
+    if (hasNonDefaultStringCollation(elementType)) {
+      // The dispatcher runs Spark's own comparison with the original collation IDs, including
+      // strings nested in arrays or structs. Keep the native bytewise comparison opt-in only.
+      Incompatible(Some(incompatReason))
+    } else {
+      Compatible()
+    }
+  }
+}
+
+object CometArrayMax extends CometExpressionSerde[ArrayMax] with CodegenDispatchFallback {
+  override def hasConditionalNativeDefault: Boolean = true
+
+  override def getIncompatibleReasons(): Seq[String] = Seq(ArrayExtremaSupport.incompatReason)
+
+  override def getSupportLevel(expr: ArrayMax): SupportLevel =
+    ArrayExtremaSupport.getSupportLevel(expr.dataType)
+
   override def convert(
       expr: ArrayMax,
       inputs: Seq[Attribute],
@@ -253,7 +276,14 @@ object CometArrayMax extends CometExpressionSerde[ArrayMax] {
   }
 }
 
-object CometArrayMin extends CometExpressionSerde[ArrayMin] {
+object CometArrayMin extends CometExpressionSerde[ArrayMin] with CodegenDispatchFallback {
+  override def hasConditionalNativeDefault: Boolean = true
+
+  override def getIncompatibleReasons(): Seq[String] = Seq(ArrayExtremaSupport.incompatReason)
+
+  override def getSupportLevel(expr: ArrayMin): SupportLevel =
+    ArrayExtremaSupport.getSupportLevel(expr.dataType)
+
   override def convert(
       expr: ArrayMin,
       inputs: Seq[Attribute],

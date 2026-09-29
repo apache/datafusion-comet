@@ -85,7 +85,8 @@ Spark 4.1.3 is supported with Java 17/21 and Scala 2.13.
 Spark 4.2.0 is provided as experimental support with Java 17 and Scala 2.13.
 
 ```{warning}
-Spark 4.2 support is experimental. Comet's own test suites run nightly for this version, but
-Apache Spark's SQL test suite does not run against it yet. It is intended for early evaluation only
-and should not be used in production.
+Spark 4.2 support is experimental. Comet's own test suites and Apache Spark's SQL test suite both
+run nightly for this version rather than on every pull request, so a regression is caught within a
+day but does not block a merge. It is intended for early evaluation only and should not be used in
+production.
 ```

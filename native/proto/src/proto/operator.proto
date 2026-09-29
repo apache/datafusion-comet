@@ -163,8 +163,11 @@ message NativeScanCommon {
   // schema actually carries parquet.field.id metadata. When false the native
   // scan keeps its existing name-based path with no extra work.
   bool use_field_id = 15;
-  // True when spark.sql.parquet.fieldId.read.ignoreMissing is set.
-  bool ignore_missing_field_id = 16;
+  // True when the requested schema carries a field id and
+  // spark.sql.parquet.fieldId.read.ignoreMissing is not set. The native scan
+  // then refuses a file whose Parquet schema carries no field id, as Spark's
+  // ParquetReadSupport does whether or not the read flag is set.
+  bool require_field_ids = 16;
   // Whether widening type promotion is allowed (e.g. INT32 -> INT64,
   // FLOAT -> DOUBLE). Set from Comet's per-Spark-version constant in
   // ShimCometConf (false on 3.x, true on 4.x). When false, reading a column
