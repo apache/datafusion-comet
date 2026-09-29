@@ -52,10 +52,14 @@ import org.apache.comet.vector.NativeUtil
  * and length, so `CachedBatchIpc.Projection.load` copies out just the selected columns' byte
  * ranges. The cache manager still owns storage and eviction; this class only changes the cached
  * payload.
+ *
+ * `sizeInBytes` is not the payload's size. It is inherited from `SimpleMetricsCachedBatch`, which
+ * sums the per-column sizes in `stats`, and those are decoded sizes. Spark's planner reads it as
+ * the size of a materialized cached relation, as it does for Spark's own cache formats, which
+ * also report decoded sizes. See `statsRow`.
  */
 private case class CometCachedBatch(
     override val numRows: Int,
-    override val sizeInBytes: Long,
     override val stats: InternalRow,
     bytes: ChunkedByteBuffer)
     extends SimpleMetricsCachedBatch
@@ -350,11 +354,13 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
       values(base + 1) = upper(c)
       values(base + 2) = nulls(c)
       values(base + 3) = numRows
-      // The stored size of the column's own Arrow buffers, taken from the message's buffer
-      // layout, so it is exact rather than an estimate. Cache pruning uses
-      // bounds/null-count/row-count rather than this field, but Spark reserves it and reports it,
-      // so record the real value. The per-batch message framing is not attributed to any column,
-      // so these sum to slightly less than sizeInBytes.
+      // The column's decoded size: the plain length of its own Arrow buffers before compression,
+      // which is what Spark's own Arrow cache format records here. SimpleMetricsCachedBatch sums
+      // these into sizeInBytes, which Spark's planner reads as the size of a materialized cached
+      // relation, for the broadcast threshold and the shuffled hash join build side among others.
+      // The compressed payload can be several times smaller, and a relation reported at that size
+      // would be planned differently from the same relation in Spark's cache format, for example
+      // broadcast where Spark's cache would have it shuffled.
       values(base + 4) = columnSizes(c)
       c += 1
     }
@@ -423,7 +429,6 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
 
       CometCachedBatch(
         numRows = numRows,
-        sizeInBytes = bytes.size,
         stats = statsRow(lower, upper, nulls, numRows, columnSizes),
         bytes = bytes)
     }
