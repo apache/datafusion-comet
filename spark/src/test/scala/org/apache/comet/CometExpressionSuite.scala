@@ -22,6 +22,7 @@ package org.apache.comet
 import scala.util.Random
 
 import org.apache.hadoop.fs.Path
+import org.apache.spark.SparkThrowable
 import org.apache.spark.sql.{Column, CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, FromUnixTime, In, InSet, Literal, StructsToJson, TruncDate, TruncTimestamp}
 import org.apache.spark.sql.catalyst.optimizer.{ConvertToLocalRelation, OptimizeIn, SimplifyExtractValueOps}
@@ -33,7 +34,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.sql.types._
 
-import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark41Plus, isSpark42Plus}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark41Plus, isSpark42Plus}
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
@@ -3288,6 +3289,121 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             .select(array(struct(struct(col("_4"), col("_8")).alias("nested"))).alias("arr"))
 
           checkSparkAnswerAndOperator(complex.select(col("arr.nested._4")))
+        }
+      }
+    }
+  }
+
+  for ((sqlType, min, max, errorClass) <- Seq(
+      ("TINYINT", Byte.MinValue.toLong, Byte.MaxValue.toLong, "BINARY_ARITHMETIC_OVERFLOW"),
+      ("SMALLINT", Short.MinValue.toLong, Short.MaxValue.toLong, "BINARY_ARITHMETIC_OVERFLOW"),
+      ("INT", Int.MinValue.toLong, Int.MaxValue.toLong, "ARITHMETIC_OVERFLOW"),
+      ("BIGINT", Long.MinValue, Long.MaxValue, "ARITHMETIC_OVERFLOW"))) {
+    test(s"ANSI integral overflow fidelity - $sqlType") {
+      val expectedErrorClass =
+        if (errorClass == "BINARY_ARITHMETIC_OVERFLOW" && !isSpark35Plus) {
+          "_LEGACY_ERROR_TEMP_2044"
+        } else {
+          errorClass
+        }
+      val cases = Seq(
+        ("+", "try_add", max, 1L),
+        ("+", "try_add", min, -1L),
+        ("-", "try_subtract", min, 1L),
+        ("-", "try_subtract", max, -1L),
+        ("*", "try_multiply", max, 2L),
+        ("*", "try_multiply", min, -1L))
+      withSQLConf(
+        SQLConf.ANSI_ENABLED.key -> "true",
+        CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
+        // Read operands from Parquet: literal-only arithmetic is folded by Spark before Comet.
+        withParquetTable(
+          cases.zipWithIndex.map { case ((_, _, l, r), id) =>
+            (id, l, r)
+          },
+          "overflow_input") {
+          for (((symbol, function, l, r), id) <- cases.zipWithIndex;
+            (lhs, rhs) <- Seq(("_2", "_3"), (l.toString, "_3"), ("_2", r.toString))) {
+            val query = s"SELECT CAST($lhs AS $sqlType) $symbol CAST($rhs AS $sqlType) " +
+              s"FROM overflow_input WHERE _1 = $id"
+            val df = sql(query)
+            assert(df.schema.head.dataType == DataType.fromDDL(sqlType))
+            checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+            val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+            def structured(error: Option[Throwable]): SparkThrowable with Throwable = {
+              val failure = error.getOrElse(fail(s"Expected overflow: $query"))
+              causeChain(failure)
+                .collect { case e: SparkThrowable with Throwable =>
+                  e
+                }
+                .lastOption
+                .getOrElse(fail(s"Expected SparkThrowable: $failure"))
+            }
+            val expected = structured(sparkError)
+            val actual = structured(cometError)
+            assert(expected.getErrorClass == expectedErrorClass, query)
+            assert(actual.getClass == expected.getClass, query)
+            assert(actual.getErrorClass == expected.getErrorClass, query)
+            assert(actual.getSqlState == expected.getSqlState, query)
+            assert(actual.getMessageParameters == expected.getMessageParameters, query)
+            // Spark 3.x's Byte/Short error has no functionName parameter; the shim must
+            // preserve that version's contract rather than imposing the Spark 4.x message.
+            if (errorClass == "ARITHMETIC_OVERFLOW" || isSpark40Plus) {
+              assert(actual.getMessage.contains(function), query)
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("ANSI integral overflow fidelity - unary operations have no try suggestion") {
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "true",
+      CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
+      withParquetTable(Seq((Int.MinValue, Long.MinValue)), "overflow_input") {
+        for (expr <- Seq("abs(_1)", "abs(_2)", "-_1", "-_2")) {
+          val actual =
+            checkSparkError(sql(s"SELECT $expr FROM overflow_input"), "ARITHMETIC_OVERFLOW")
+          assert(!actual.getMessage.contains("try_"))
+        }
+      }
+    }
+  }
+
+  test("ANSI integral overflow fidelity - valid, NULL, TRY and legacy results") {
+    withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
+      withParquetTable(
+        Seq((Option(1), Option(2)), (None, Option(2)), (Option(1), None)),
+        "overflow_input") {
+        for (sqlType <- Seq("TINYINT", "SMALLINT", "INT", "BIGINT");
+          ansi <- Seq("true", "false")) {
+          withSQLConf(SQLConf.ANSI_ENABLED.key -> ansi) {
+            val l = s"CAST(_1 AS $sqlType)"
+            val r = s"CAST(_2 AS $sqlType)"
+            checkSparkAnswerAndOperator(s"SELECT $l + $r, $l - $r, $l * $r FROM overflow_input")
+          }
+        }
+      }
+      for ((sqlType, max) <- Seq(
+          ("TINYINT", Byte.MaxValue.toLong),
+          ("SMALLINT", Short.MaxValue.toLong),
+          ("INT", Int.MaxValue.toLong),
+          ("BIGINT", Long.MaxValue))) {
+        withParquetTable(Seq((max, 1L)), "overflow_input") {
+          val l = s"CAST(_1 AS $sqlType)"
+          val r = s"CAST(_2 AS $sqlType)"
+          withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+            checkSparkAnswerAndOperator(
+              s"SELECT try_add($l, $r), " +
+                s"try_subtract(-$l, CAST(2 AS $sqlType)), " +
+                s"try_multiply($l, CAST(2 AS $sqlType)) FROM overflow_input")
+          }
+          withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
+            checkSparkAnswerAndOperator(
+              s"SELECT $l + $r, " +
+                s"-$l - CAST(2 AS $sqlType), $l * CAST(2 AS $sqlType) FROM overflow_input")
+          }
         }
       }
     }

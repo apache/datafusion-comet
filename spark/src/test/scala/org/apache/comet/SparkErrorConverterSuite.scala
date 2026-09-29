@@ -21,7 +21,41 @@ package org.apache.comet
 
 import org.scalatest.funsuite.AnyFunSuite
 
+import org.apache.spark.SparkThrowable
+
 class SparkErrorConverterSuite extends AnyFunSuite {
+
+  test("ArithmeticOverflow preserves the suggested function") {
+    for (function <- Seq("try_add", "try_subtract", "try_multiply")) {
+      val error = SparkErrorConverter
+        .convertErrorType(
+          "ArithmeticOverflow",
+          "ARITHMETIC_OVERFLOW",
+          Map("fromType" -> "long", "functionName" -> function),
+          Array.empty,
+          null)
+        .getOrElse(fail("Expected arithmetic overflow"))
+      assert(error.isInstanceOf[ArithmeticException])
+      assert(error.asInstanceOf[SparkThrowable].getErrorClass == "ARITHMETIC_OVERFLOW")
+      assert(
+        error.getMessage.contains(
+          s"Use '$function' to tolerate overflow and return NULL instead."))
+    }
+  }
+
+  test("ArithmeticOverflow without a suggested function remains compatible") {
+    // Accept both older payloads without the key and unary errors with an empty function.
+    for (params <- Seq(
+        Map("fromType" -> "integer"),
+        Map("fromType" -> "integer", "functionName" -> ""))) {
+      val error = SparkErrorConverter
+        .convertErrorType("ArithmeticOverflow", "ARITHMETIC_OVERFLOW", params, Array.empty, null)
+        .getOrElse(fail("Expected arithmetic overflow"))
+      assert(error.asInstanceOf[SparkThrowable].getErrorClass == "ARITHMETIC_OVERFLOW")
+      assert(error.asInstanceOf[SparkThrowable].getMessageParameters.get("alternative") == "")
+      assert(!error.getMessage.contains("try_"))
+    }
+  }
 
   test("CannotReadFile converts to a FAILED_READ_FILE SparkException naming the file") {
     val ex = SparkErrorConverter
