@@ -201,7 +201,7 @@ if you see frequent spilling or out-of-memory errors on wide tables; increase it
 narrow tables when memory is plentiful.
 
 `spark.comet.shuffle.jvm.batchSize` controls the batch size used when the JVM columnar shuffle writer
-flushes sorted spill files. It must not exceed `spark.comet.batchSize`.
+flushes sorted spill files. Comet caps it at `spark.comet.batchSize`.
 
 ## Limiting Spill Disk Usage
 

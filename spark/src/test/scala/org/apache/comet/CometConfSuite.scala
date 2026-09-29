@@ -199,4 +199,35 @@ class CometConfSuite extends AnyFunSuite {
 
     assert(CometConf.COMET_EXPLAIN_FALLBACK_LOG_ENABLED.get(conf))
   }
+
+  test("JVM shuffle batch size is capped at spark.comet.batchSize") {
+    val conf = new SQLConf
+    assert(CometConf.jvmShuffleBatchSize(conf) == 8192)
+
+    // Smaller than the default JVM shuffle batch size (#6286)
+    conf.setConfString(CometConf.COMET_BATCH_SIZE.key, "4096")
+    assert(CometConf.jvmShuffleBatchSize(conf) == 4096)
+
+    conf.setConfString(CometConf.COMET_SHUFFLE_JVM_BATCH_SIZE.key, "16384")
+    assert(CometConf.jvmShuffleBatchSize(conf) == 4096)
+
+    conf.setConfString(CometConf.COMET_SHUFFLE_JVM_BATCH_SIZE.key, "1024")
+    assert(CometConf.jvmShuffleBatchSize(conf) == 1024)
+  }
+
+  test("config checks do not read other configs") {
+    // createWithDefault runs the checks on the default while CometConf initializes, which on an
+    // executor happens inside the first task to use it. A check that reads another config makes
+    // the class fail to initialize whenever that task's confs fail the check (#6286).
+    val conf = new SQLConf {
+      override def getConfString(key: String): String = fail(s"A config check read $key")
+      override def getConfString(key: String, defaultValue: String): String =
+        fail(s"A config check read $key")
+    }
+    SQLConf.withExistingConf(conf) {
+      CometConf.allConfs.toList.filter(_.defaultValue.isDefined).foreach { entry =>
+        entry.valueConverter(entry.defaultValueString)
+      }
+    }
+  }
 }

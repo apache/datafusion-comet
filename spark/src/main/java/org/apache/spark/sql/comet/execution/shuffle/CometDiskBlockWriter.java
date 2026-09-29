@@ -144,7 +144,7 @@ public final class CometDiskBlockWriter {
     this.file = file;
     this.tracingEnabled = tracingEnabled;
 
-    this.columnarBatchSize = (int) CometConf$.MODULE$.COMET_SHUFFLE_JVM_BATCH_SIZE().get();
+    this.columnarBatchSize = CometConf$.MODULE$.jvmShuffleBatchSize();
     this.compressionCodec = CometConf$.MODULE$.COMET_SHUFFLE_COMPRESSION_CODEC().get();
     this.compressionLevel = (int) CometConf$.MODULE$.COMET_SHUFFLE_COMPRESSION_ZSTD_LEVEL().get();
 

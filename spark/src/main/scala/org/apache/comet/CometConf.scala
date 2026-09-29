@@ -690,13 +690,10 @@ object CometConf extends ShimCometConf {
     conf("spark.comet.shuffle.jvm.batchSize")
       .withAlternative("spark.comet.columnar.shuffle.batch.size")
       .category(CATEGORY_SHUFFLE)
-      .doc("Batch size when writing out sorted spill files on the native side. Note that " +
-        "this should not be larger than batch size (i.e., `spark.comet.batchSize`). Otherwise " +
-        "it will produce larger batches than expected in the native operator after shuffle.")
+      .doc("Batch size when writing out sorted spill files on the native side. It is capped " +
+        s"at `${COMET_BATCH_SIZE.key}`, so that the native operator after the shuffle does not " +
+        "get larger batches than that.")
       .intConf
-      .checkValue(
-        v => v <= COMET_BATCH_SIZE.get(),
-        "Should not be larger than batch size `spark.comet.batchSize`")
       .createWithDefault(8192)
 
   val COMET_SHUFFLE_NATIVE_WRITE_BUFFER_SIZE: ConfigEntry[Long] =
@@ -1227,6 +1224,16 @@ object CometConf extends ShimCometConf {
   def getBooleanConf(name: String, defaultValue: Boolean, conf: SQLConf): Boolean = {
     conf.getConfString(name, defaultValue.toString).toLowerCase(Locale.ROOT) == "true"
   }
+
+  /**
+   * Rows per batch for JVM columnar shuffle: `spark.comet.shuffle.jvm.batchSize`, capped at
+   * `spark.comet.batchSize`. This is not a check on the entry because a check must not read other
+   * configs (see `TypedConfigBuilder.checkValue`).
+   */
+  def jvmShuffleBatchSize(conf: SQLConf): Int =
+    math.min(COMET_SHUFFLE_JVM_BATCH_SIZE.get(conf), COMET_BATCH_SIZE.get(conf))
+
+  def jvmShuffleBatchSize(): Int = jvmShuffleBatchSize(SQLConf.get)
 }
 
 object ConfigHelpers {
@@ -1291,7 +1298,12 @@ private class TypedConfigBuilder[T](
     new TypedConfigBuilder(parent, s => fn(converter(s)), stringConverter)
   }
 
-  /** Checks if the user-provided value for the config matches the validator. */
+  /**
+   * Checks if the user-provided value for the config matches the validator. The validator also
+   * runs on the default while `CometConf` initializes, which on an executor happens inside the
+   * first task to use it, so it must not read other configs. Constrain one config by another
+   * where they are read.
+   */
   def checkValue(validator: T => Boolean, errorMsg: String): TypedConfigBuilder[T] = {
     transform { v =>
       if (!validator(v)) {

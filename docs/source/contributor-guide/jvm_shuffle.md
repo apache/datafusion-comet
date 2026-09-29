@@ -200,17 +200,18 @@ writes the same Arrow IPC block format as native shuffle, so direct read applies
   refuses a page. Nothing bounds these allocations, and memory pressure never triggers a spill.
   That mode exists only so the Spark SQL tests can run against Comet. See
   [Memory Management](memory_management.md).
-- Row count still triggers spilling in either mode. `CometDiskBlockWriter` spills at
-  `min(spark.comet.shuffle.jvm.spillThreshold, spark.comet.shuffle.jvm.batchSize)`.
+- Row count still triggers spilling in either mode. `CometDiskBlockWriter` spills at the smaller
+  of `spark.comet.shuffle.jvm.spillThreshold` and the JVM shuffle batch size, which is
+  `spark.comet.shuffle.jvm.batchSize` capped at `spark.comet.batchSize`.
   `CometShuffleExternalSorter` spills at `spark.comet.shuffle.jvm.spillThreshold` alone, which
   defaults to `Int.MaxValue`, so on the sort path that trigger is effectively off by default.
 - `CometDiskBlockWriter` coordinates spilling across all partition writers (largest first)
 
 ## Configuration
 
-| Config                                   | Description                                       |
-| ---------------------------------------- | ------------------------------------------------- |
-| `spark.comet.shuffle.jvm.batchSize`      | Rows per Arrow batch                              |
-| `spark.comet.shuffle.jvm.spillThreshold` | Row count threshold for spill                     |
-| `spark.comet.shuffle.compression.codec`  | Compression codec, `lz4` by default               |
-| `spark.comet.shuffle.directRead.enabled` | Decode blocks natively on read, `true` by default |
+| Config                                   | Description                                             |
+| ---------------------------------------- | ------------------------------------------------------- |
+| `spark.comet.shuffle.jvm.batchSize`      | Rows per Arrow batch, capped at `spark.comet.batchSize` |
+| `spark.comet.shuffle.jvm.spillThreshold` | Row count threshold for spill                           |
+| `spark.comet.shuffle.compression.codec`  | Compression codec, `lz4` by default                     |
+| `spark.comet.shuffle.directRead.enabled` | Decode blocks natively on read, `true` by default       |
