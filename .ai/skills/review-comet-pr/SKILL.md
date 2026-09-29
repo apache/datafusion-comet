@@ -47,6 +47,11 @@ change.
 For a new operator, read `docs/source/contributor-guide/adding_a_new_operator.md` alongside this
 skill. There is no dedicated operator review skill yet.
 
+For a PR that deals with timestamps or the session timezone, read
+`docs/source/contributor-guide/timezones.md` as well, whichever areas it touches. Timezone handling
+cuts across the serde, the native kernels, the scans and the JVM/native boundary, so no area skill
+owns it. "Timestamps and timezones" in step 5 says what to check.
+
 If the PR falls outside all of these, for example build, CI, docs only, or release tooling, this
 skill on its own is the review.
 
@@ -103,6 +108,40 @@ Comet supports several Spark versions. Version-specific behavior belongs in the 
 `spark/src/main/spark-{3.4,3.5,3.x,4.0,4.1,4.2}/org/apache/comet/shims/`, not in branches on a
 version string in shared code, and not in native Rust. If the PR adds a shim for one 4.x version,
 check that the sibling 4.x source sets got it too.
+
+### Timestamps and timezones
+
+Timezone bugs are easy to miss in review and in tests. A mislabelled timestamp column passes any
+test that only projects it, and a result computed in the wrong timezone looks plausible. A PR deals
+with timezones if it touches a datetime expression, a cast to or from a timestamp, how a scan reads
+timestamps, the timestamp type at the JVM/native boundary, or anything that reads the session
+timezone. Searching the diff flags most of these PRs:
+
+```shell
+gh pr diff <pr> --repo apache/datafusion-comet | grep -inE 'time_?zone|zoneid|chrono_tz|timestamp(ntz)?type|timestampmicro|timestamp\('
+```
+
+For such a PR, hold the diff against "The invariant" and "Guidelines" in
+`docs/source/contributor-guide/timezones.md`. Look for these first:
+
+- A `TimestampType` value labelled with the session timezone, or with no timezone. Inside a native
+  plan every `TimestampType` value is labelled exactly `"UTC"`, and every `TimestampNTZType` value
+  has no timezone. Check the declared type and the arrays the code builds, not only the values.
+- A timezone taken from the JVM default or the host. An expression uses the `timeZoneId` Spark
+  stamped on it, not `SQLConf.get.sessionLocalTimeZone`.
+- A path gated on a UTC session. `Etc/UTC` is the session default on Ubuntu and Debian images, so
+  check what the gate does with it, and that the output there is still labelled `"UTC"` rather than
+  `"Etc/UTC"`.
+- A timezone applied to a `TimestampNTZType` value, other than to convert it to `TimestampType`.
+- Tests that use a single session timezone, or only project the result. "Testing timezone-sensitive
+  code" in the same page says what to ask for.
+
+`timezones.md` also describes specific code: where the `"UTC"` label is set, which serdes serialize
+a timezone, what `array_with_timezone` does, how the Parquet scan adapts timestamps, and which
+expressions go through the codegen dispatcher. A PR that changes any of these updates the page in
+the same PR. The page also documents some known limitations as current behavior, such as the
+timezone IDs native code cannot parse. A fix for one of the bugs tracked in
+[#6335](https://github.com/apache/datafusion-comet/issues/6335) usually changes that text too.
 
 ### Configuration
 
