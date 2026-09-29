@@ -19,7 +19,7 @@
 
 use arrow::error::ArrowError;
 use datafusion::common::DataFusionError;
-use datafusion_comet_common::{SparkError, SparkErrorWithContext};
+use datafusion_comet_common::{error_chain, SparkError, SparkErrorWithContext};
 use jni::errors::{Exception, ToException};
 use regex::Regex;
 
@@ -477,38 +477,21 @@ enum SparkPayload<'a> {
     Bare(&'a SparkError),
 }
 
-/// Recursively unwrap `DataFusionError::Context` and `DataFusionError::External` layers
-/// until a Spark-typed payload is found, or return `None`.
+/// Returns the first Spark-typed payload found in `err`'s `source()` chain, or `None`.
 ///
-/// DataFusion 53+ wraps errors with `.context(...)` which produces
-/// `DataFusionError::Context(description, Box<inner>)`. The JNI bridge must look
-/// through this extra layer — and through any doubly-nested `External` — to reach
-/// the `SparkError` / `SparkErrorWithContext` that carries the structured exception.
+/// The payload is usually wrapped by DataFusion (`External`, `Context`, `Shared`, ...) and, for
+/// predicates pushed into the parquet reader, also by Arrow and Parquet errors. Each layer is
+/// checked for a Java throwable first, then a `SparkErrorWithContext`, then a bare `SparkError`.
 fn extract_spark_payload(err: &DataFusionError) -> Option<SparkPayload<'_>> {
-    match err {
-        DataFusionError::External(e) => {
-            if let Some(CometError::JavaException { throwable, .. }) =
-                e.downcast_ref::<CometError>()
-            {
-                return Some(SparkPayload::JavaException(throwable));
-            }
-            if let Some(ctx) = e.downcast_ref::<SparkErrorWithContext>() {
-                return Some(SparkPayload::WithContext(ctx));
-            }
-            if let Some(spark) = e.downcast_ref::<SparkError>() {
-                return Some(SparkPayload::Bare(spark));
-            }
-            // Recurse: External may wrap another DataFusionError (double-wrapping).
-            if let Some(inner_df) = e.downcast_ref::<DataFusionError>() {
-                return extract_spark_payload(inner_df);
-            }
-            None
+    error_chain(err).find_map(|e| {
+        if let Some(CometError::JavaException { throwable, .. }) = e.downcast_ref::<CometError>() {
+            Some(SparkPayload::JavaException(throwable))
+        } else if let Some(ctx) = e.downcast_ref::<SparkErrorWithContext>() {
+            Some(SparkPayload::WithContext(ctx))
+        } else {
+            e.downcast_ref::<SparkError>().map(SparkPayload::Bare)
         }
-        // DataFusion 53 adds context via `.context(description)` which wraps the error in
-        // Context(description, Box<inner>). Strip the context wrapper and recurse.
-        DataFusionError::Context(_, inner) => extract_spark_payload(inner),
-        _ => None,
-    }
+    })
 }
 
 fn throw_exception(env: &mut Env, error: &CometError, backtrace: Option<String>) {
@@ -533,13 +516,8 @@ fn throw_exception(env: &mut Env, error: &CometError, backtrace: Option<String>)
                         throwable,
                     },
             } => env.throw(throwable),
-            // Handle all DataFusion errors, including Context-wrapped chains.
-            // `extract_spark_payload` recurses through Context / nested External layers to
-            // find the Spark-typed payload, so this arm covers:
-            //   - DataFusionError::External(SparkErrorWithContext)      (normal path)
-            //   - DataFusionError::External(SparkError)                 (no query context)
-            //   - DataFusionError::Context(_, External(SparkError))     (DF53 context wrapping)
-            //   - DataFusionError::External(External(SparkError))       (double wrapping)
+            // Handle DataFusion errors carrying a Spark-typed payload at any depth of the
+            // `source()` chain (see `extract_spark_payload`).
             CometError::DataFusion { msg: _, source } => {
                 match extract_spark_payload(source) {
                     Some(SparkPayload::JavaException(throwable)) => {
@@ -1493,6 +1471,59 @@ mod tests {
             try_classify_file_read_error(&shared).is_some(),
             "Shared-wrapped ObjectStore error should classify"
         );
+    }
+
+    #[test]
+    fn extract_spark_payload_through_shared() {
+        // Join futures hand every consumer a `Shared` clone of the build-side error.
+        let e = DataFusionError::Shared(Arc::new(DataFusionError::from(SparkError::DivideByZero)));
+        assert!(matches!(
+            extract_spark_payload(&e),
+            Some(SparkPayload::Bare(SparkError::DivideByZero))
+        ));
+    }
+
+    #[test]
+    fn extract_spark_payload_through_parquet_row_filter() {
+        // Shape produced by a pushed-down parquet row filter once DataFusion keeps the typed
+        // error (apache/datafusion#24638): the parquet reader wraps the ArrowError it gets
+        // from the predicate, which wraps the DataFusionError from the expression.
+        let predicate_err =
+            DataFusionError::from(SparkErrorWithContext::new(SparkError::DivideByZero))
+                .context("Error evaluating filter predicate");
+        let e = DataFusionError::ParquetError(Box::new(parquet::errors::ParquetError::External(
+            Box::new(ArrowError::ExternalError(Box::new(predicate_err))),
+        )));
+        match extract_spark_payload(&e) {
+            Some(SparkPayload::WithContext(ctx)) => {
+                assert!(matches!(ctx.error, SparkError::DivideByZero))
+            }
+            _ => panic!("expected SparkErrorWithContext in {e:?}"),
+        }
+    }
+
+    #[test]
+    fn extract_spark_payload_prefers_outermost_payload() {
+        // A `SparkErrorWithContext` found before a bare `SparkError` keeps its SQL context.
+        let e = DataFusionError::from(SparkErrorWithContext::new(SparkError::DivideByZero))
+            .context("outer");
+        assert!(matches!(
+            extract_spark_payload(&e),
+            Some(SparkPayload::WithContext(_))
+        ));
+    }
+
+    #[test]
+    fn extract_spark_payload_ignores_stringified_errors() {
+        // DataFusion 54/55 formats a failing row-filter predicate into a string, so the typed
+        // payload cannot be recovered and the error falls through to generic handling.
+        let e = DataFusionError::ArrowError(
+            Box::new(ArrowError::ComputeError(
+                "Error evaluating filter predicate: External(DivideByZero)".to_string(),
+            )),
+            None,
+        );
+        assert!(extract_spark_payload(&e).is_none());
     }
 
     #[test]

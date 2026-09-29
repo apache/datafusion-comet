@@ -26,6 +26,7 @@ use arrow::record_batch::RecordBatch;
 use datafusion::common::DataFusionError;
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_expr::PhysicalExpr;
+use datafusion_comet_common::error_chain;
 use datafusion_comet_spark_expr::{QueryContext, SparkError, SparkErrorWithContext};
 
 /// Wrapper expression that catches and wraps SparkError with QueryContext
@@ -92,14 +93,18 @@ impl PhysicalExpr for CheckedBinaryExpr {
     fn evaluate(&self, batch: &RecordBatch) -> datafusion::common::Result<ColumnarValue> {
         match self.child.evaluate(batch) {
             Err(e) if self.query_context.is_some() => {
-                if let Some(spark_err) = extract_spark_error(&e) {
-                    let wrapped = SparkErrorWithContext::with_context(
-                        spark_err.clone(),
-                        Arc::clone(self.query_context.as_ref().unwrap()),
-                    );
-                    Err(DataFusionError::External(Box::new(wrapped)))
-                } else {
-                    Err(e)
+                let spark_err = error_chain(&e)
+                    .find_map(|e| e.downcast_ref::<SparkError>())
+                    .cloned();
+                match spark_err {
+                    Some(spark_err) => {
+                        let wrapped = SparkErrorWithContext::with_context(
+                            spark_err,
+                            Arc::clone(self.query_context.as_ref().unwrap()),
+                        );
+                        Err(DataFusionError::External(Box::new(wrapped)))
+                    }
+                    None => Err(e),
                 }
             }
             other => other,
@@ -165,24 +170,6 @@ use arrow::datatypes::SchemaRef;
 use datafusion::logical_expr::Operator as DataFusionOperator;
 use datafusion_comet_proto::spark_expression::Expr;
 use datafusion_comet_spark_expr::{create_modulo_expr, create_negate_expr, EvalMode};
-
-/// Recursively unwrap `DataFusionError::Context` / nested `External` layers to find
-/// a bare `SparkError`.  Mirrors `extract_spark_payload` in `jni-bridge/src/errors.rs`.
-fn extract_spark_error(err: &DataFusionError) -> Option<&SparkError> {
-    match err {
-        DataFusionError::External(e) => {
-            if let Some(spark) = e.downcast_ref::<SparkError>() {
-                return Some(spark);
-            }
-            if let Some(inner_df) = e.downcast_ref::<DataFusionError>() {
-                return extract_spark_error(inner_df);
-            }
-            None
-        }
-        DataFusionError::Context(_, inner) => extract_spark_error(inner),
-        _ => None,
-    }
-}
 
 use crate::execution::{
     expressions::extract_expr,

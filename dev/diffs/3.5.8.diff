@@ -1027,6 +1027,38 @@ index 3cf2bfd17ab..5bcf9478e9b 100644
      val sc = spark.sparkContext
      val hiveVersion = "2.3.9"
      // transitive=false, only download specified jar
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SQLQueryTestSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SQLQueryTestSuite.scala
+index 71af1fd69c3..46340ba5740 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/SQLQueryTestSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/SQLQueryTestSuite.scala
+@@ -872,9 +872,25 @@ class SQLQueryTestSuite extends QueryTest with SharedSparkSession with SQLHelper
+         s"Schema did not match for query #$i\n${expected.sql}: $output") {
+         output.schema
+       }
+-      assertResult(expected.output, s"Result did not match" +
++      // With parquet filter pushdown, DataFusion 54/55 formats an error raised while
++      // evaluating a pushed-down predicate into a string, so a divide-by-zero from a
++      // `ScalaUDF` dispatched into the native plan surfaces as `CometNativeException`
++      // instead of `SparkArithmeticException`. Collapse both sides to a placeholder in that
++      // case only. Remove once Comet uses a DataFusion release that includes
++      // https://github.com/apache/datafusion/pull/24638.
++      val (expectedOut, actualOut) = if (isCometEnabled &&
++          expected.output.startsWith("org.apache.spark.SparkArithmeticException") &&
++          expected.output.contains("\"DIVIDE_BY_ZERO\"") &&
++          output.output.startsWith("org.apache.comet.CometNativeException") &&
++          output.output.contains("Error evaluating filter predicate") &&
++          output.output.contains("DivideByZero")) {
++        ("[DIVIDE_BY_ZERO]", "[DIVIDE_BY_ZERO]")
++      } else {
++        (expected.output, output.output)
++      }
++      assertResult(expectedOut, s"Result did not match" +
+         s" for query #$i\n${expected.sql}") {
+-        output.output
++        actualOut
+       }
+     }
+   }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
 index 04702201f82..c5ab5443ff7 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
