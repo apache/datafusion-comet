@@ -24,7 +24,7 @@ ruleset in `.asf.yaml`. That splits CI into three tiers:
   and one Iceberg version, both the default profile's.
 - **Nightly tier** (`nightly`): the regression sweep of everything else, once
   a day against `main` as it stands. The Comet test suites against the other
-  four Spark profiles, Spark SQL on Spark 3.5 and 4.0, and Iceberg
+  four Spark profiles, Spark SQL on Spark 3.5, 4.0 and 4.2, and Iceberg
   1.8/1.9/1.10. See [Nightly tier](#nightly-tier) below for how a failure
   surfaces.
 
@@ -42,12 +42,6 @@ publish the advisory `Required Checks (label run)` name rather than the
 required one, so a red 3.4 there changes nothing. It is the next push with
 the label still applied that runs 3.4 under `Required Checks`, and with the
 queue run gone that push is the only thing that makes a 3.4 failure blocking.
-
-`spark_4_2` is in the nightly tier despite Spark 4.2 support being
-experimental. Nightly is what keeps `dev/diffs/4.2.0.diff` honest: the diff
-files for the supported versions are updated together whenever a Comet change
-needs one, and a 4.2 suite that only ran on request would let its diff rot
-unnoticed between requests.
 
 Heavy jobs have no `push` tier. The queue already tested the exact tree that
 lands, so re-running them on push to main would double the cost of every
