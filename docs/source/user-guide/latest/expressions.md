@@ -161,8 +161,8 @@ The tables below list every Spark built-in expression with its current status.
 | `array_insert` | ✅ | Native |  |
 | `array_intersect` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default; the incompatible native path is opt-in via allowIncompatible ([details](compatibility/expressions/array.md)) |
 | `array_join` | ✅ | Hybrid | Native for literal or column delimiter and null replacement; other cases and non-UTF8_BINARY collations use the JVM codegen dispatcher ([details](compatibility/expressions/array.md)) |
-| `array_max` | ✅ | Native | NaN ordering may differ ([details](compatibility/floating-point.md)) |
-| `array_min` | ✅ | Native | May return `-0.0` where Spark returns `0.0` when both zeros are present |
+| `array_max` | ✅ | Hybrid | Native Spark-compatible floating-point and nested ordering; non-default string collations use the JVM codegen dispatcher ([details](compatibility/expressions/array.md)) |
+| `array_min` | ✅ | Hybrid | Native Spark-compatible floating-point and nested ordering; non-default string collations use the JVM codegen dispatcher ([details](compatibility/expressions/array.md)) |
 | `array_position` | ✅ | Native | Binary/struct/map/null elements fall back |
 | `array_prepend` | ✅ | — |  |
 | `array_remove` | ✅ | Native |  |
@@ -425,7 +425,7 @@ to Spark ([#2837](https://github.com/apache/datafusion-comet/issues/2837)). Enab
 | `*` | ✅ | Native | DayTime interval multiplication routes through the JVM codegen dispatcher; YearMonth and Calendar interval multiplication fall back |
 | `+` | ✅ | Native |  |
 | `-` | ✅ | Native |  |
-| `/` | ✅ | Native |  |
+| `/` | ✅ | Native | DayTime interval division routes through the JVM codegen dispatcher; YearMonth and Calendar interval division fall back |
 | `abs` | ✅ | Hybrid | Interval types route through the JVM codegen dispatcher; numeric types run natively |
 | `acos` | ✅ | Native |  |
 | `acosh` | ✅ | Native |  |
