@@ -1752,5 +1752,5 @@ class RecordingStatsTracker extends WriteTaskStatsTracker {
   override def closeFile(filePath: String): Unit = {}
   override def newRow(filePath: String, row: InternalRow): Unit = rows += ((filePath, row))
   override def getFinalStats(taskCommitTime: Long): WriteTaskStats =
-    BasicWriteTaskStats(Seq.empty, 0, 0, rows.size)
+    BasicWriteTaskStats(Seq.empty, 0, 0, rows.size.toLong)
 }
