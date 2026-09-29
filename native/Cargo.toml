@@ -53,6 +53,12 @@ datafusion-comet-jni-bridge = { path = "jni-bridge" }
 datafusion-comet-proto = { path = "proto" }
 datafusion-comet-shuffle = { path = "shuffle" }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# Pinned exactly rather than left to the default caret range. `hll_sketch.rs` carries a
+# workaround for a compact-decoding bug in 0.3.0 and a guard against a mis-read aux layout,
+# both written against that release's `Array4`/`Array6`/`Array8` code. A silent bump to a
+# future 0.3.x could fix or move either one, so the version moves only with a deliberate
+# change that re-checks those two tests.
+datasketches = { version = "=0.3.0", features = ["hll"] }
 futures = "0.3.32"
 num = "0.4"
 rand = "0.10"
