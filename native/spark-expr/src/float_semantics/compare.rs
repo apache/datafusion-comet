@@ -67,14 +67,18 @@ fn comparator(left: &dyn Array, right: &dyn Array, equality: bool) -> Result<Dyn
         };
         return Ok(make_comparator(left, right, options)?);
     }
-    match left.data_type() {
-        DataType::Float32 => Ok(float_comparator::<Float32Type>(left, right)),
-        DataType::Float64 => Ok(float_comparator::<Float64Type>(left, right)),
-        DataType::List(_) => list_comparator::<i32>(left, right, equality),
-        DataType::LargeList(_) => list_comparator::<i64>(left, right, equality),
-        DataType::FixedSizeList(_, _) => fixed_size_list_comparator(left, right, equality),
-        DataType::Struct(_) => struct_comparator(left, right, equality),
-        dt => internal_err!("Unsupported type for Spark comparison: {dt}"),
+    match (left.data_type(), right.data_type()) {
+        (DataType::Float32, DataType::Float32) => Ok(float_comparator::<Float32Type>(left, right)),
+        (DataType::Float64, DataType::Float64) => Ok(float_comparator::<Float64Type>(left, right)),
+        (DataType::List(_), DataType::List(_)) => list_comparator::<i32>(left, right, equality),
+        (DataType::LargeList(_), DataType::LargeList(_)) => {
+            list_comparator::<i64>(left, right, equality)
+        }
+        (DataType::FixedSizeList(_, _), DataType::FixedSizeList(_, _)) => {
+            fixed_size_list_comparator(left, right, equality)
+        }
+        (DataType::Struct(_), DataType::Struct(_)) => struct_comparator(left, right, equality),
+        (l, r) => internal_err!("Unsupported types for Spark comparison: {l} and {r}"),
     }
 }
 
@@ -182,8 +186,8 @@ mod tests {
     use super::*;
     use crate::float_semantics::{NEGATIVE_NAN, PAYLOAD_NAN};
     use arrow::array::{
-        ArrayRef, FixedSizeListArray, Float64Array, Int32Array, LargeListArray, ListArray,
-        StructArray,
+        ArrayRef, DictionaryArray, FixedSizeListArray, Float64Array, Int32Array, LargeListArray,
+        ListArray, StructArray,
     };
     use arrow::buffer::{NullBuffer, OffsetBuffer};
     use arrow::datatypes::Field;
@@ -334,7 +338,37 @@ mod tests {
     fn mismatched_types_are_rejected() {
         let floats: ArrayRef = Arc::new(Float64Array::from(vec![1.0]));
         let ints: ArrayRef = Arc::new(Int32Array::from(vec![1]));
-        assert!(spark_comparator(floats.as_ref(), ints.as_ref()).is_err());
-        assert!(spark_equality(floats.as_ref(), ints.as_ref()).is_err());
+        // A dictionary passes the logical type check, so it must not reach a downcast either.
+        let dictionary: ArrayRef = Arc::new(DictionaryArray::new(
+            Int32Array::from(vec![0]),
+            Arc::clone(&floats),
+        ));
+        let list = |values: &ArrayRef| -> ArrayRef {
+            let field = Arc::new(Field::new("item", values.data_type().clone(), true));
+            Arc::new(ListArray::new(
+                field,
+                OffsetBuffer::from_lengths([1]),
+                Arc::clone(values),
+                None,
+            ))
+        };
+        let (float_list, dictionary_list) = (list(&floats), list(&dictionary));
+        for (left, right) in [
+            (&floats, &ints),
+            (&floats, &dictionary),
+            (&dictionary, &floats),
+            (&float_list, &dictionary_list),
+            (&dictionary_list, &float_list),
+        ] {
+            let types = format!("{} and {}", left.data_type(), right.data_type());
+            assert!(
+                spark_comparator(left.as_ref(), right.as_ref()).is_err(),
+                "{types}"
+            );
+            assert!(
+                spark_equality(left.as_ref(), right.as_ref()).is_err(),
+                "{types}"
+            );
+        }
     }
 }
