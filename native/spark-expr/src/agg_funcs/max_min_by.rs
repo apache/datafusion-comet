@@ -43,27 +43,10 @@ use std::sync::Arc;
 ///
 /// # Float orderings
 ///
-/// A floating-point ordering column is canonicalized with [`normalize_floats`] so that Arrow's
-/// row-format byte order reproduces Spark's comparison for this aggregate.
-///
-/// Spark compares the ordering with `SQLOrderingUtil.compareDoubles`/`compareFloats`, wired in via
-/// `PhysicalDoubleType.ordering`/`PhysicalFloatType.ordering`. That is
-/// `if (x == y) 0 else java.lang.Double.compare(x, y)`, which has two consequences Arrow's row
-/// format does not share:
-///
-/// * `-0.0` and `0.0` tie, because the `x == y` short-circuit is IEEE equality. Arrow encodes
-///   floats by flipping the bits off the sign, a total order placing `-0.0` strictly below `0.0`.
-/// * every `NaN` is one value and sorts above `+Infinity`, because `Double.compare` goes through
-///   `doubleToLongBits`. Arrow uses the raw bits, so a sign-bit-set `NaN` would sort below
-///   `-Infinity` instead.
-///
-/// Folding `-0.0` into `0.0` and every `NaN` into the canonical `NaN` makes the row bytes agree
-/// with `compareDoubles` on both counts. This is verified identical on Spark 3.4 through master.
-///
-/// Note this is the opposite of what `mode` needs: `mode` keys a hash map via
-/// `OpenHashSet`'s `equals` (`java.lang.Double.equals`), which distinguishes `-0.0` from `0.0`, so
-/// it must *not* fold them. Same two input values, different Spark comparison path, opposite
-/// correct behaviour.
+/// Spark compares the ordering with `SQLOrderingUtil.compareDoubles`, while the accumulators rank
+/// it in Arrow's row format, which orders floats by IEEE 754 total order. The ordering column goes
+/// through [`normalize_floats`] first, which makes the two agree. This is verified identical on
+/// Spark 3.4 through master.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MaxMinBy {
     name: String,

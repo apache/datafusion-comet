@@ -33,13 +33,17 @@
 //!   [`hash_input`].
 //!
 //! A native expression must follow the rule of the Spark function it replaces, so build it from
-//! these helpers rather than a local copy. Non-canonical NaNs are not a corner case: on x86-64
+//! these helpers rather than a local copy. Where an Arrow kernel sorts, row-encodes or hashes the
+//! values, normalize them first: once `-0.0` is folded and NaN canonicalized, Arrow's total order
+//! agrees with `compareDoubles`. Where Comet compares values itself, or has to return the original
+//! bits as `array_min` does, use [`compare_floats`], [`float_lt`], [`float_gt`],
+//! [`spark_comparator`] or [`spark_equality`]. Non-canonical NaNs are not a corner case: on x86-64
 //! every NaN that arithmetic produces at run time, such as `sqrt(-1)`, has the sign bit set.
 
 mod compare;
 mod normalize;
 
-pub use compare::spark_comparator;
+pub use compare::{spark_comparator, spark_equality};
 pub use normalize::{
     has_float_leaf, normalize_floats, normalize_nested_floats, NormalizeNaNAndZero,
     NormalizeNestedFloats,
@@ -76,9 +80,30 @@ pub fn canonicalize_nan<T: Float>(v: T) -> T {
 /// equal, and NaN is greater than every other value, including positive infinity.
 #[inline]
 pub fn compare_floats<T: Float>(left: T, right: T) -> Ordering {
-    // IEEE 754 already treats the two zeros as equal. Only a NaN leaves the values unordered.
-    left.partial_cmp(&right)
-        .unwrap_or_else(|| left.is_nan().cmp(&right.is_nan()))
+    // In this form a caller's `.is_eq()` compiles to the equality test alone, which a
+    // `partial_cmp` with a NaN fallback does not.
+    if left == right || (left.is_nan() && right.is_nan()) {
+        Ordering::Equal
+    } else if left > right || left.is_nan() {
+        Ordering::Greater
+    } else {
+        Ordering::Less
+    }
+}
+
+/// Whether `left` sorts before `right` in Spark's SQL ordering, the same as
+/// `compare_floats(left, right).is_lt()`. As a single test it compiles to a well-predicted branch
+/// in a scan for a minimum, where the three-way comparison is several times slower.
+#[inline]
+pub fn float_lt<T: Float>(left: T, right: T) -> bool {
+    left < right || (!left.is_nan() && right.is_nan())
+}
+
+/// Whether `left` sorts after `right` in Spark's SQL ordering, the same as
+/// `compare_floats(left, right).is_gt()`. See [`float_lt`].
+#[inline]
+pub fn float_gt<T: Float>(left: T, right: T) -> bool {
+    left > right || (left.is_nan() && !right.is_nan())
 }
 
 /// The value that Spark's `Murmur3Hash` and `XxHash64` hash in place of a float. `-0.0` hashes as
@@ -96,55 +121,55 @@ pub fn hash_input<T: Float>(v: T) -> T {
     }
 }
 
+/// A NaN with the sign bit set, which arithmetic produces on x86-64.
+#[cfg(test)]
+const NEGATIVE_NAN: f64 = f64::from_bits(0xfff8_0000_0000_0000);
+/// A signaling NaN with a payload.
+#[cfg(test)]
+const PAYLOAD_NAN: f64 = f64::from_bits(0x7ff0_0000_0000_0001);
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// A NaN with the sign bit set, which arithmetic produces on x86-64.
-    const NEGATIVE_NAN: f64 = f64::from_bits(0xfff8_0000_0000_0000);
-    /// A signaling NaN with a payload.
-    const PAYLOAD_NAN: f64 = f64::from_bits(0x7ff0_0000_0000_0001);
     const NEGATIVE_NAN_F32: f32 = f32::from_bits(0xffc0_0000);
 
     #[test]
-    fn normalize_float_folds_negative_zero_and_nan() {
-        for (value, expected) in [
-            (-0.0, 0.0),
-            (0.0, 0.0),
-            (NEGATIVE_NAN, f64::NAN),
-            (PAYLOAD_NAN, f64::NAN),
-            (f64::NEG_INFINITY, f64::NEG_INFINITY),
-            (-1.5, -1.5),
-        ] {
-            assert_eq!(normalize_float(value).to_bits(), expected.to_bits());
+    fn per_value_rules() {
+        // Each row: the input, then what `normalize_float`, `canonicalize_nan` and `hash_input`
+        // return for it.
+        let rows = [
+            (-0.0, 0.0, -0.0, 0.0),
+            (0.0, 0.0, 0.0, 0.0),
+            (-1.5, -1.5, -1.5, -1.5),
+            (
+                f64::NEG_INFINITY,
+                f64::NEG_INFINITY,
+                f64::NEG_INFINITY,
+                f64::NEG_INFINITY,
+            ),
+            // `hash_input` does not canonicalize NaN yet (#6385).
+            (NEGATIVE_NAN, f64::NAN, f64::NAN, NEGATIVE_NAN),
+            (PAYLOAD_NAN, f64::NAN, f64::NAN, PAYLOAD_NAN),
+        ];
+        for (value, normalized, canonical, hashed) in rows {
+            assert_eq!(normalize_float(value).to_bits(), normalized.to_bits());
+            assert_eq!(canonicalize_nan(value).to_bits(), canonical.to_bits());
+            assert_eq!(hash_input(value).to_bits(), hashed.to_bits());
         }
-        assert_eq!(normalize_float(-0.0f32).to_bits(), 0.0f32.to_bits());
-        assert_eq!(
-            normalize_float(NEGATIVE_NAN_F32).to_bits(),
-            f32::NAN.to_bits()
-        );
+        let rows = [
+            (-0.0, 0.0, -0.0, 0.0),
+            (NEGATIVE_NAN_F32, f32::NAN, f32::NAN, NEGATIVE_NAN_F32),
+        ];
+        for (value, normalized, canonical, hashed) in rows {
+            assert_eq!(normalize_float(value).to_bits(), normalized.to_bits());
+            assert_eq!(canonicalize_nan(value).to_bits(), canonical.to_bits());
+            assert_eq!(hash_input(value).to_bits(), hashed.to_bits());
+        }
     }
 
     #[test]
-    fn canonicalize_nan_keeps_the_sign_of_zero() {
-        for (value, expected) in [
-            (-0.0, -0.0),
-            (0.0, 0.0),
-            (NEGATIVE_NAN, f64::NAN),
-            (PAYLOAD_NAN, f64::NAN),
-            (-1.5, -1.5),
-        ] {
-            assert_eq!(canonicalize_nan(value).to_bits(), expected.to_bits());
-        }
-        assert_eq!(canonicalize_nan(-0.0f32).to_bits(), (-0.0f32).to_bits());
-        assert_eq!(
-            canonicalize_nan(NEGATIVE_NAN_F32).to_bits(),
-            f32::NAN.to_bits()
-        );
-    }
-
-    #[test]
-    fn compare_floats_matches_compare_doubles() {
+    fn comparisons_match_compare_doubles() {
         // Ascending under `compareDoubles`, with values that compare equal grouped together.
         let groups = [
             vec![f64::NEG_INFINITY],
@@ -156,8 +181,12 @@ mod tests {
         ];
         for (i, left) in groups.iter().enumerate() {
             for (j, right) in groups.iter().enumerate() {
-                for (&l, &r) in left.iter().flat_map(|l| right.iter().map(move |r| (l, r))) {
-                    assert_eq!(compare_floats(l, r), i.cmp(&j), "{l:?} vs {r:?}");
+                for &l in left {
+                    for &r in right {
+                        assert_eq!(compare_floats(l, r), i.cmp(&j), "{l:?} vs {r:?}");
+                        assert_eq!(float_lt(l, r), i < j, "{l:?} < {r:?}");
+                        assert_eq!(float_gt(l, r), i > j, "{l:?} > {r:?}");
+                    }
                 }
             }
         }
@@ -166,14 +195,5 @@ mod tests {
             Ordering::Greater
         );
         assert_eq!(compare_floats(-0.0f32, 0.0f32), Ordering::Equal);
-    }
-
-    #[test]
-    fn hash_input_folds_negative_zero() {
-        assert_eq!(hash_input(-0.0f64).to_bits(), 0);
-        assert_eq!(hash_input(-0.0f32).to_bits(), 0);
-        assert_eq!(hash_input(0.0f64).to_bits(), 0);
-        assert_eq!(hash_input(-1.5f64), -1.5);
-        assert_eq!(hash_input(f64::NEG_INFINITY), f64::NEG_INFINITY);
     }
 }

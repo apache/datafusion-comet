@@ -28,7 +28,6 @@ use datafusion::logical_expr::{
     Accumulator, AggregateUDFImpl, EmitTo, GroupsAccumulator, ReversedUDAF, Signature,
 };
 use datafusion::physical_expr::expressions::format_state_name;
-use std::cmp::Ordering;
 use std::mem::{size_of, size_of_val};
 use std::sync::Arc;
 
@@ -306,7 +305,7 @@ fn spark_percentile(values: &mut [f64], percentile: f64) -> Option<f64> {
 
     let (_, higher_value, _) = values.select_nth_unstable_by(higher, |x, y| compare_floats(*x, *y));
     let higher_value = *higher_value;
-    if compare_floats(lower_value, higher_value) == Ordering::Equal {
+    if compare_floats(lower_value, higher_value).is_eq() {
         return Some(lower_value);
     }
 

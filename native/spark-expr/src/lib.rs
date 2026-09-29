@@ -60,8 +60,10 @@ pub mod jvm_udf;
 
 mod conditional_funcs;
 mod conversion_funcs;
-pub mod float_semantics;
-pub use float_semantics::{NormalizeNaNAndZero, NormalizeNestedFloats};
+mod float_semantics;
+pub use float_semantics::{
+    canonicalize_nan, normalize_floats, NormalizeNaNAndZero, NormalizeNestedFloats,
+};
 mod hll_scalar;
 pub use hll_scalar::spark_hll_sketch_estimate;
 pub use hll_scalar::spark_hll_union;

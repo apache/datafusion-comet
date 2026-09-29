@@ -18,7 +18,7 @@
 use std::cmp::Ordering;
 use std::sync::Arc;
 
-use crate::float_semantics::{compare_floats, spark_comparator};
+use crate::float_semantics::{float_gt, float_lt, spark_comparator};
 use arrow::array::{
     make_array, new_empty_array, Array, ArrayRef, AsArray, BooleanArray, ListArray,
     MutableArrayData, PrimitiveArray, PrimitiveBuilder, StructArray, UInt32Array,
@@ -130,11 +130,6 @@ where
     let values = array.values().as_primitive::<T>();
     let buffer = values.values();
     let nulls = values.nulls();
-    let ordering = if is_min {
-        Ordering::Less
-    } else {
-        Ordering::Greater
-    };
     let mut result = PrimitiveBuilder::<T>::with_capacity(array.len());
     for (row, offsets) in array.offsets().windows(2).enumerate() {
         let mut best: Option<T::Native> = None;
@@ -145,8 +140,11 @@ where
                 if nulls.is_some_and(|nulls| nulls.is_null(start + index)) {
                     continue;
                 }
-                let replace =
-                    best.is_none_or(|current| compare_floats(candidate, current) == ordering);
+                let replace = match best {
+                    None => true,
+                    Some(current) if is_min => float_lt(candidate, current),
+                    Some(current) => float_gt(candidate, current),
+                };
                 if replace {
                     // Copy the winning value, never normalize its zero sign or NaN bits.
                     best = Some(candidate);

@@ -31,17 +31,35 @@ use std::ops::Range;
 /// Subtrees without a float leaf use Arrow's comparator, which orders them the same way. The two
 /// arrays must have the same type, ignoring field names and nullability.
 pub fn spark_comparator(left: &dyn Array, right: &dyn Array) -> Result<DynComparator> {
-    if !DFSchema::datatype_is_logically_equal(left.data_type(), right.data_type()) {
-        return internal_err!(
+    check_types(left, right)?;
+    comparator(left, right, false)
+}
+
+/// Builds a test of whether `left[i]` equals `right[j]` in the ordering of [`spark_comparator`].
+/// Lists of different lengths are unequal without comparing their elements.
+pub fn spark_equality(
+    left: &dyn Array,
+    right: &dyn Array,
+) -> Result<Box<dyn Fn(usize, usize) -> bool + Send + Sync>> {
+    check_types(left, right)?;
+    let compare = comparator(left, right, true)?;
+    Ok(Box::new(move |i, j| compare(i, j).is_eq()))
+}
+
+fn check_types(left: &dyn Array, right: &dyn Array) -> Result<()> {
+    if DFSchema::datatype_is_logically_equal(left.data_type(), right.data_type()) {
+        Ok(())
+    } else {
+        internal_err!(
             "Spark comparison requires matching types, got {} and {}",
             left.data_type(),
             right.data_type()
-        );
+        )
     }
-    comparator(left, right)
 }
 
-fn comparator(left: &dyn Array, right: &dyn Array) -> Result<DynComparator> {
+/// With `equality` set, the comparator only has to tell equal from unequal values.
+fn comparator(left: &dyn Array, right: &dyn Array, equality: bool) -> Result<DynComparator> {
     if !has_float_leaf(left.data_type()) {
         let options = SortOptions {
             descending: false,
@@ -52,10 +70,10 @@ fn comparator(left: &dyn Array, right: &dyn Array) -> Result<DynComparator> {
     match left.data_type() {
         DataType::Float32 => Ok(float_comparator::<Float32Type>(left, right)),
         DataType::Float64 => Ok(float_comparator::<Float64Type>(left, right)),
-        DataType::List(_) => list_comparator::<i32>(left, right),
-        DataType::LargeList(_) => list_comparator::<i64>(left, right),
-        DataType::FixedSizeList(_, _) => fixed_size_list_comparator(left, right),
-        DataType::Struct(_) => struct_comparator(left, right),
+        DataType::List(_) => list_comparator::<i32>(left, right, equality),
+        DataType::LargeList(_) => list_comparator::<i64>(left, right, equality),
+        DataType::FixedSizeList(_, _) => fixed_size_list_comparator(left, right, equality),
+        DataType::Struct(_) => struct_comparator(left, right, equality),
         dt => internal_err!("Unsupported type for Spark comparison: {dt}"),
     }
 }
@@ -72,42 +90,56 @@ where
 fn list_comparator<O: OffsetSizeTrait>(
     left: &dyn Array,
     right: &dyn Array,
+    equality: bool,
 ) -> Result<DynComparator> {
     let (l, r) = (left.as_list::<O>(), right.as_list::<O>());
-    let compare = comparator(l.values().as_ref(), r.values().as_ref())?;
+    let compare = comparator(l.values().as_ref(), r.values().as_ref(), equality)?;
     let (l, r) = (l.offsets().clone(), r.offsets().clone());
     Ok(nulls_first(left, right, move |i, j| {
         let left = l[i].as_usize()..l[i + 1].as_usize();
         let right = r[j].as_usize()..r[j + 1].as_usize();
-        lexicographic(&compare, left, right)
+        lexicographic(&compare, left, right, equality)
     }))
 }
 
-fn fixed_size_list_comparator(left: &dyn Array, right: &dyn Array) -> Result<DynComparator> {
+fn fixed_size_list_comparator(
+    left: &dyn Array,
+    right: &dyn Array,
+    equality: bool,
+) -> Result<DynComparator> {
     let (l, r) = (left.as_fixed_size_list(), right.as_fixed_size_list());
-    let compare = comparator(l.values().as_ref(), r.values().as_ref())?;
+    let compare = comparator(l.values().as_ref(), r.values().as_ref(), equality)?;
     let (l, r) = (l.value_length() as usize, r.value_length() as usize);
     Ok(nulls_first(left, right, move |i, j| {
-        lexicographic(&compare, i * l..(i + 1) * l, j * r..(j + 1) * r)
+        lexicographic(&compare, i * l..(i + 1) * l, j * r..(j + 1) * r, equality)
     }))
 }
 
-/// Compares two runs of child values element by element, then by length.
-fn lexicographic(compare: &DynComparator, left: Range<usize>, right: Range<usize>) -> Ordering {
+/// Compares two runs of child values element by element, then by length. When only equality
+/// matters, runs of different lengths are unequal without comparing any elements.
+fn lexicographic(
+    compare: &DynComparator,
+    left: Range<usize>,
+    right: Range<usize>,
+    equality: bool,
+) -> Ordering {
     let lengths = left.len().cmp(&right.len());
+    if equality && lengths.is_ne() {
+        return lengths;
+    }
     left.zip(right)
         .map(|(i, j)| compare(i, j))
         .find(|ordering| ordering.is_ne())
         .unwrap_or(lengths)
 }
 
-fn struct_comparator(left: &dyn Array, right: &dyn Array) -> Result<DynComparator> {
+fn struct_comparator(left: &dyn Array, right: &dyn Array, equality: bool) -> Result<DynComparator> {
     let fields = left
         .as_struct()
         .columns()
         .iter()
         .zip(right.as_struct().columns())
-        .map(|(l, r)| comparator(l.as_ref(), r.as_ref()))
+        .map(|(l, r)| comparator(l.as_ref(), r.as_ref(), equality))
         .collect::<Result<Vec<_>>>()?;
     Ok(nulls_first(left, right, move |i, j| {
         fields
@@ -148,6 +180,7 @@ fn nulls_first(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::float_semantics::{NEGATIVE_NAN, PAYLOAD_NAN};
     use arrow::array::{
         ArrayRef, FixedSizeListArray, Float64Array, Int32Array, LargeListArray, ListArray,
         StructArray,
@@ -193,7 +226,7 @@ mod tests {
     fn floats_compare_as_spark_orders_them_at_every_depth() -> Result<()> {
         let left = vec![
             Some(-0.0),
-            Some(f64::from_bits(0xfff8_0000_0000_0000)),
+            Some(NEGATIVE_NAN),
             None,
             Some(1.0),
             Some(f64::INFINITY),
@@ -202,7 +235,7 @@ mod tests {
             Some(0.0),
             Some(f64::INFINITY),
             None,
-            Some(f64::from_bits(0x7ff0_0000_0000_0001)),
+            Some(PAYLOAD_NAN),
             Some(f64::NEG_INFINITY),
             Some(-1.0),
         ];
@@ -216,14 +249,13 @@ mod tests {
         let nested_right = nestings(Arc::new(Float64Array::from(right.clone())));
         for (l_array, r_array) in nested_left.iter().zip(&nested_right) {
             let compare = spark_comparator(l_array.as_ref(), r_array.as_ref())?;
+            let equal = spark_equality(l_array.as_ref(), r_array.as_ref())?;
             for (i, &l) in left.iter().enumerate() {
                 for (j, &r) in right.iter().enumerate() {
-                    assert_eq!(
-                        compare(i, j),
-                        expected(l, r),
-                        "{l:?} vs {r:?} in {}",
-                        l_array.data_type()
-                    );
+                    let expected = expected(l, r);
+                    let context = format!("{l:?} vs {r:?} in {}", l_array.data_type());
+                    assert_eq!(compare(i, j), expected, "{context}");
+                    assert_eq!(equal(i, j), expected.is_eq(), "{context}");
                 }
             }
         }
@@ -267,6 +299,11 @@ mod tests {
         assert_eq!(compare(3, 3), Ordering::Equal);
         assert_eq!(compare(3, 2), Ordering::Less);
         assert_eq!(compare(2, 3), Ordering::Greater);
+        let equal = spark_equality(left.as_ref(), right.as_ref())?;
+        let pairs = [(0, 0), (1, 1), (2, 2), (3, 3), (3, 2), (2, 3), (0, 1)];
+        for (i, j) in pairs {
+            assert_eq!(equal(i, j), compare(i, j).is_eq(), "({i}, {j})");
+        }
         Ok(())
     }
 
@@ -285,10 +322,7 @@ mod tests {
             ]))
         };
         let left = structs(vec![-0.0, f64::NAN, 1.0], vec![2, 1, 1]);
-        let right = structs(
-            vec![0.0, f64::from_bits(0xfff8_0000_0000_0000), 2.0],
-            vec![1, 1, 0],
-        );
+        let right = structs(vec![0.0, NEGATIVE_NAN, 2.0], vec![1, 1, 0]);
         let compare = spark_comparator(left.as_ref(), right.as_ref())?;
         assert_eq!(compare(0, 0), Ordering::Greater);
         assert_eq!(compare(1, 1), Ordering::Equal);
@@ -301,5 +335,6 @@ mod tests {
         let floats: ArrayRef = Arc::new(Float64Array::from(vec![1.0]));
         let ints: ArrayRef = Arc::new(Int32Array::from(vec![1]));
         assert!(spark_comparator(floats.as_ref(), ints.as_ref()).is_err());
+        assert!(spark_equality(floats.as_ref(), ints.as_ref()).is_err());
     }
 }

@@ -18,7 +18,7 @@
 //! Spark equality for nested floating-point values without materializing normalized columns.
 
 use crate::float_semantics::{
-    has_float_leaf, normalize_nested_floats, spark_comparator, NormalizeNestedFloats,
+    has_float_leaf, normalize_nested_floats, spark_equality, NormalizeNestedFloats,
 };
 use arrow::array::{Array, ArrayRef, AsArray, BooleanArray};
 use arrow::buffer::{BooleanBuffer, NullBuffer};
@@ -70,7 +70,7 @@ impl Operand {
             BooleanArray::new_null(len)
         } else {
             // Inner nulls take part in structural equality. Outer SQL nulls are handled here.
-            let compare = spark_comparator(self.array.as_ref(), other.array.as_ref())?;
+            let equal = spark_equality(self.array.as_ref(), other.array.as_ref())?;
             let nulls = match (self.scalar, other.scalar) {
                 (true, true) => None,
                 (true, false) => other.array.nulls().cloned(),
@@ -78,11 +78,10 @@ impl Operand {
                 (false, false) => NullBuffer::union(self.array.nulls(), other.array.nulls()),
             };
             let values = BooleanBuffer::collect_bool(len, |row| {
-                compare(
+                equal(
                     if self.scalar { 0 } else { row },
                     if other.scalar { 0 } else { row },
                 )
-                .is_eq()
             });
             BooleanArray::new(values, nulls)
         };
