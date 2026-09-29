@@ -689,15 +689,25 @@ object CometConf extends ShimCometConf {
     conf("spark.comet.shuffle.jvm.batchSize")
       .withAlternative("spark.comet.columnar.shuffle.batch.size")
       .category(CATEGORY_SHUFFLE)
-      .doc("Batch size when writing out sorted spill files on the native side. Note that " +
-        "this should not be larger than batch size (i.e., `spark.comet.batchSize`). Otherwise " +
-        "it will produce larger batches than expected in the native operator after shuffle.")
+      .doc(
+        "Batch size when writing out sorted spill files on the native side. A value larger " +
+          "than the batch size (i.e., `spark.comet.batchSize`) is capped at the batch size, so " +
+          "that the native operators after the shuffle do not receive larger batches than " +
+          "expected.")
       .intConf
       .checkValue(v => v > 0, "Batch size must be positive")
-      .checkValue(
-        v => v <= COMET_BATCH_SIZE.get(),
-        "Should not be larger than batch size `spark.comet.batchSize`")
       .createWithDefault(8192)
+
+  /**
+   * The batch size that the JVM columnar shuffle writes with: `spark.comet.shuffle.jvm.batchSize`
+   * capped at `spark.comet.batchSize`. The cap is applied where the values are read rather than
+   * in a validator on the entry, because validators also check the default while `CometConf`
+   * initializes. On an executor that happens inside a task, under the session's confs.
+   */
+  def jvmShuffleBatchSize(): Int = jvmShuffleBatchSize(SQLConf.get)
+
+  def jvmShuffleBatchSize(conf: SQLConf): Int =
+    math.min(COMET_SHUFFLE_JVM_BATCH_SIZE.get(conf), COMET_BATCH_SIZE.get(conf))
 
   val COMET_SHUFFLE_NATIVE_WRITE_BUFFER_SIZE: ConfigEntry[Long] =
     conf("spark.comet.shuffle.native.writeBufferSize")
