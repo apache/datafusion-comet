@@ -128,7 +128,9 @@ class CometExecIterator(
       protobufQueryPlan,
       protobufSparkConfigs,
       numParts,
-      nativeMetrics,
+      // A copy per native plan, so plans that share the tree within one task add up their
+      // metrics instead of overwriting each other (see CometMetricNode.set).
+      nativeMetrics.newInstance(),
       metricsUpdateInterval = COMET_METRICS_UPDATE_INTERVAL.get(),
       cometTaskMemoryManager,
       localDiskDirs,

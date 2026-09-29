@@ -44,7 +44,7 @@ import org.apache.spark.unsafe.Platform
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark41Plus}
-import org.apache.comet.serde.OperatorOuterClass
+import org.apache.comet.serde.{Metric, OperatorOuterClass}
 
 class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
@@ -125,6 +125,58 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       assert(ctx.taskMetrics.diskBytesSpilled == 25L)
       assert(ctx.taskMetrics.memoryBytesSpilled == 11L)
     }
+  }
+
+  test("native metric updates from plan instances run in one task add up") {
+    val bytes = new SQLMetric("size", -1L)
+    val rows = new SQLMetric("sum")
+    val peakMemory = new SQLMetric("size", -1L)
+    val childRows = new SQLMetric("sum")
+    // Every instance of the tree updates these accumulators, like the parent partitions a
+    // coalesce computes one after another in a single task.
+    val tree = CometMetricNode(
+      Map("bytes_scanned" -> bytes, "output_rows" -> rows, "peak_mem_used" -> peakMemory),
+      Seq(CometMetricNode(Map("output_rows" -> childRows))))
+
+    // Native code reports absolute values for its own plan, several times while it runs.
+    def report(instance: CometMetricNode, b: Long, r: Long, peak: Long, child: Long): Unit =
+      instance.set_all_from_bytes(
+        nativeMetricUpdate(
+          Map("bytes_scanned" -> b, "output_rows" -> r, "peak_mem_used" -> peak),
+          nativeMetricUpdate(Map("output_rows" -> child))).toByteArray)
+    def values: (Long, Long, Long, Long) =
+      (bytes.value, rows.value, peakMemory.value, childRows.value)
+
+    val first = tree.newInstance()
+    report(first, 100L, 10L, 5L, 7L)
+    report(first, 250L, 20L, 8L, 9L)
+    assert(values == ((250L, 20L, 8L, 9L)))
+
+    // Counters add to what the first instance reported, and peak memory keeps the maximum.
+    val second = tree.newInstance()
+    report(second, 100L, 10L, 3L, 4L)
+    report(second, 300L, 40L, 3L, 6L)
+    assert(values == ((550L, 60L, 8L, 15L)))
+  }
+
+  test("native metric updates keep a first zero and count a dip and recovery once") {
+    val bytes = new SQLMetric("size", -1L)
+    val rows = new SQLMetric("sum")
+    val instance =
+      CometMetricNode(Map("bytes_scanned" -> bytes, "output_rows" -> rows)).newInstance()
+    def report(b: Long, r: Long): Unit =
+      instance.set_all_from_bytes(
+        nativeMetricUpdate(Map("bytes_scanned" -> b, "output_rows" -> r)).toByteArray)
+
+    // A size metric starts at -1 (unset); a reported zero marks it as set.
+    report(0L, 0L)
+    assert(bytes.value == 0L && !bytes.isZero)
+
+    report(100L, 50L)
+    report(80L, 40L)
+    report(120L, 60L)
+    assert(bytes.value == 120L)
+    assert(rows.value == 60L)
   }
 
   // The unit tests below build their contexts with TaskContext.empty(), which always carries
@@ -1287,6 +1339,149 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("coalesced native scan reports rows and bytes from every partition it reads") {
+    val totalRows = 10000
+    withTempPath { dir =>
+      spark
+        .createDataFrame((0 until totalRows).map(i => (i, s"elem_$i")))
+        .repartition(4)
+        .write
+        .parquet(dir.getAbsolutePath)
+      spark.read.parquet(dir.getAbsolutePath).createOrReplaceTempView("coalesce_scan_tbl")
+
+      // One scan partition per file: the plain query runs four native scan plans in four
+      // tasks, and the coalesced query runs the same four plans one after another in one task.
+      val fileSize = dir.listFiles().filter(_.getName.endsWith(".parquet")).map(_.length()).max
+      val onePartitionPerFile = Seq(
+        SQLConf.FILES_MAX_PARTITION_BYTES.key -> fileSize.toString,
+        SQLConf.FILES_OPEN_COST_IN_BYTES.key -> "0",
+        SQLConf.FILES_MIN_PARTITION_NUM.key -> "1")
+      val plainQuery = "SELECT * FROM coalesce_scan_tbl"
+      val coalescedQuery = "SELECT /*+ COALESCE(1) */ * FROM coalesce_scan_tbl"
+
+      // Returns the task input bytes and records, the number of tasks, the scan's SQL
+      // output_rows and bytes_scanned, and the executed plan.
+      def run(query: String, confs: Seq[(String, String)]) = {
+        val store = spark.sparkContext.statusStore
+        val stagesBefore = store.stageList(null).map(_.stageId).toSet
+        val (bytesRead, recordsRead, plan) =
+          collectInputMetrics(query, (CometConf.COMET_ENABLED.key -> "true") +: confs: _*)
+        val numTasks =
+          store.stageList(null).filterNot(s => stagesBefore.contains(s.stageId)).map(_.numTasks)
+        val scan = collectFirst(plan) { case s: CometNativeScanExec => s }
+        assert(scan.isDefined, s"Expected CometNativeScanExec in plan:\n${plan.treeString}")
+        val scanRows = scan.get.metrics("output_rows").value
+        val scanBytes = scan.get.metrics("bytes_scanned").value
+        (bytesRead, recordsRead, numTasks.sum, scanRows, scanBytes, plan)
+      }
+
+      Seq("-1", CometConf.COMET_METRICS_UPDATE_INTERVAL.defaultValueString).foreach { interval =>
+        val confs =
+          onePartitionPerFile :+ (CometConf.COMET_METRICS_UPDATE_INTERVAL.key -> interval)
+
+        val (plainBytesRead, plainRecordsRead, plainTasks, plainRows, plainScanBytes, plainPlan) =
+          run(plainQuery, confs)
+        val plainScan = collectFirst(plainPlan) { case s: CometNativeScanExec => s }.get
+        assert(
+          plainScan.outputPartitioning.numPartitions == 4,
+          s"Expected one scan partition per file:\n${plainPlan.treeString}")
+        assert(plainTasks == 4, s"Expected 4 tasks at interval $interval, got $plainTasks")
+        assert(plainRows == totalRows, s"output_rows at interval $interval: $plainRows")
+        assert(plainScanBytes > 0, s"bytes_scanned at interval $interval: $plainScanBytes")
+        assert(plainRecordsRead == totalRows, s"recordsRead at interval $interval")
+
+        val (bytesRead, recordsRead, tasks, rows, scanBytes, plan) = run(coalescedQuery, confs)
+        assert(
+          find(plan)(_.isInstanceOf[CometCoalesceExec]).isDefined,
+          s"Expected CometCoalesceExec in plan:\n${plan.treeString}")
+        assert(tasks == 1, s"Expected 1 task at interval $interval, got $tasks")
+        assert(rows == totalRows, s"output_rows at interval $interval: $rows")
+        assert(
+          scanBytes == plainScanBytes,
+          s"bytes_scanned at interval $interval: coalesced=$scanBytes, plain=$plainScanBytes")
+        assert(recordsRead == totalRows, s"recordsRead at interval $interval: $recordsRead")
+        assert(
+          bytesRead == plainBytesRead,
+          s"bytesRead at interval $interval: coalesced=$bytesRead, plain=$plainBytesRead")
+      }
+
+      val (_, sparkRecords, _) = collectInputMetrics(
+        coalescedQuery,
+        (CometConf.COMET_ENABLED.key -> "false") +: onePartitionPerFile: _*)
+      assert(sparkRecords == totalRows, s"Spark recordsRead: $sparkRecords")
+    }
+  }
+
+  test("native blocks that feed each other through a JVM input count each operator's rows once") {
+    val totalRows = 10000
+    withTempPath { dir =>
+      spark
+        .createDataFrame((0 until totalRows).map(i => (i, s"elem_$i")))
+        .repartition(1)
+        .write
+        .parquet(dir.getAbsolutePath)
+      spark.read.parquet(dir.getAbsolutePath).createOrReplaceTempView("nested_blocks_tbl")
+      val evenRows = totalRows / 2
+
+      def outputRows(plans: Seq[SparkPlan]): Seq[Long] = plans.map(_.metrics("output_rows").value)
+      // Rows the scan read, whether it returned them or pruned them with a pushed-down filter.
+      def scanRows(plan: SparkPlan): Seq[Long] = collect(plan) { case s: CometNativeScanExec =>
+        s.metrics("output_rows").value + s.metrics.get("pushdown_rows_pruned").fold(0L)(_.value)
+      }
+      def filters(plan: SparkPlan): Seq[SparkPlan] =
+        collect(plan) { case f: CometFilterExec => f }
+      def aggregates(plan: SparkPlan): Seq[SparkPlan] =
+        collect(plan) { case a: CometHashAggregateExec => a }
+
+      // A native project above a coalesce reads the scan and filter block through a JVM input.
+      val coalesced = spark
+        .table("nested_blocks_tbl")
+        .filter($"_1" % 2 === 0)
+        .coalesce(1)
+        .selectExpr("_1 + 1 AS x")
+      assert(coalesced.collect().length == evenRows)
+      val coalescedPlan = stripAQEPlan(coalesced.queryExecution.executedPlan)
+      val project = collectFirst(coalescedPlan) {
+        case p: CometProjectExec if p.child.isInstanceOf[CometCoalesceExec] => p
+      }
+      assert(
+        project.isDefined,
+        s"Expected a project over a coalesce:\n${coalescedPlan.treeString}")
+      assert(scanRows(coalescedPlan) == Seq(totalRows.toLong), coalescedPlan.treeString)
+      assert(outputRows(filters(coalescedPlan)) == Seq(evenRows.toLong), coalescedPlan.treeString)
+      assert(outputRows(project.toSeq) == Seq(evenRows.toLong), coalescedPlan.treeString)
+
+      // A partial aggregate above a union reads two scan and filter blocks through a JVM input,
+      // one per task.
+      val unioned = sql(
+        "SELECT count(*), sum(_1) FROM (" +
+          "SELECT _1 FROM nested_blocks_tbl WHERE _1 % 2 = 0 UNION ALL " +
+          "SELECT _1 FROM nested_blocks_tbl WHERE _1 % 2 = 1)")
+      assert(unioned.collect().head.getLong(0) == totalRows)
+      val unionedPlan = stripAQEPlan(unioned.queryExecution.executedPlan)
+      assert(
+        find(unionedPlan)(_.isInstanceOf[CometUnionExec]).isDefined,
+        s"Expected CometUnionExec in plan:\n${unionedPlan.treeString}")
+      assert(scanRows(unionedPlan) == Seq(totalRows.toLong, totalRows.toLong))
+      assert(outputRows(filters(unionedPlan)) == Seq(evenRows.toLong, evenRows.toLong))
+      // One partial row from each of the union's two partitions, then the final row.
+      assert(outputRows(aggregates(unionedPlan)).sorted == Seq(1L, 2L), unionedPlan.treeString)
+
+      // The final aggregate reads the partial aggregate's output through a shuffle.
+      val grouped = sql(
+        "SELECT _1 % 10 AS k, count(*) FROM nested_blocks_tbl WHERE _1 % 2 = 0 GROUP BY _1 % 10")
+      assert(grouped.collect().length == 5)
+      val groupedPlan = stripAQEPlan(grouped.queryExecution.executedPlan)
+      assert(
+        find(groupedPlan)(_.isInstanceOf[CometShuffleExchangeExec]).isDefined,
+        s"Expected CometShuffleExchangeExec in plan:\n${groupedPlan.treeString}")
+      assert(scanRows(groupedPlan) == Seq(totalRows.toLong), groupedPlan.treeString)
+      assert(outputRows(filters(groupedPlan)) == Seq(evenRows.toLong), groupedPlan.treeString)
+      // A single map task, so the partial and final aggregates both produce the five groups.
+      assert(outputRows(aggregates(groupedPlan)) == Seq(5L, 5L), groupedPlan.treeString)
+    }
+  }
+
   test("task input metrics keep rows read from a cached JVM input in the same task") {
     withTempPath { dir =>
       spark
@@ -1414,6 +1609,16 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         }
       }
     }
+  }
+
+  /** Builds one metrics update in the form native code sends through JNI. */
+  private def nativeMetricUpdate(
+      metrics: Map[String, Long],
+      children: Metric.NativeMetricNode*): Metric.NativeMetricNode = {
+    val builder = Metric.NativeMetricNode.newBuilder()
+    metrics.foreach { case (name, value) => builder.putMetrics(name, value) }
+    children.foreach(child => builder.addChildren(child))
+    builder.build()
   }
 
   /** The task input bytes a query reports on its own with Comet enabled. */
