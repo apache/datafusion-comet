@@ -21,7 +21,7 @@ package org.apache.comet
 
 import java.lang.management.ManagementFactory
 import java.util.Locale
-import java.util.concurrent.{Executors, ThreadFactory, TimeUnit}
+import java.util.concurrent.{ConcurrentHashMap, Executors, ThreadFactory, TimeUnit}
 import java.util.concurrent.atomic.AtomicBoolean
 
 import scala.util.control.NonFatal
@@ -98,7 +98,8 @@ class CometExecIterator(
   private val nativeUtil = new NativeUtil()
   private val taskAttemptId = TaskContext.get().taskAttemptId()
   private val taskCPUs = TaskContext.get().cpus()
-  private val cometTaskMemoryManager = new CometTaskMemoryManager(id, taskAttemptId)
+  private val taskMemory = CometExecIterator.taskMemory(TaskContext.get(), id)
+  private val cometTaskMemoryManager = taskMemory.manager
 
   private val plan = {
     val conf = SparkEnv.get.conf
@@ -217,6 +218,9 @@ class CometExecIterator(
   private var prevBatch: ColumnarBatch = null
   private var currentBatch: ColumnarBatch = null
   private var closed: Boolean = false
+
+  // Open until close(), which the listener below makes sure is called.
+  taskMemory.planOpened()
 
   // Register a task completion listener to ensure native resources are released
   // when the task is done.
@@ -350,9 +354,12 @@ class CometExecIterator(
       }
 
       attempt {
-        val memInUse = cometTaskMemoryManager.getUsed
-        if (memInUse != 0) {
-          logWarning(s"CometExecIterator closed with non-zero memory usage : $memInUse")
+        // The manager holds the memory of every native plan in the task, so this only checks it
+        // once the task's last open plan has closed.
+        taskMemory.planClosed().filter(_ != 0).foreach { memInUse =>
+          logWarning(
+            s"CometExecIterator closed with non-zero memory usage : $memInUse bytes, held by " +
+              s"task $taskAttemptId after its last native plan closed")
         }
       }
 
@@ -369,6 +376,49 @@ class CometExecIterator(
 }
 
 object CometExecIterator extends Logging {
+
+  /** The [[TaskMemory]] of each task running native plans, until the task completes. */
+  private val taskMemories = new ConcurrentHashMap[TaskContext, TaskMemory]()
+
+  /**
+   * The memory manager that every native plan in a task acquires memory from Spark through, and
+   * how many of those plans are open.
+   *
+   * All of a task's native plans reserve memory in one native memory pool, which acquires it
+   * through the manager passed with whichever plan created the pool. So the plans share one
+   * manager too, and what it holds belongs to the whole task. Memory that a plan failed to return
+   * can only be told apart from memory another plan is still using once none of them is open.
+   */
+  final class TaskMemory(val manager: CometTaskMemoryManager) {
+    private var openPlans = 0
+
+    def planOpened(): Unit = synchronized {
+      openPlans += 1
+    }
+
+    /** Returns the bytes the task still holds if this closed the last of its open plans. */
+    def planClosed(): Option[Long] = synchronized {
+      openPlans -= 1
+      if (openPlans == 0) Some(manager.getUsed) else None
+    }
+  }
+
+  /**
+   * Returns the [[TaskMemory]] of `context`'s task, creating it for the task's first native plan,
+   * `planId`.
+   */
+  def taskMemory(context: TaskContext, planId: Long): TaskMemory = {
+    Option(taskMemories.get(context)).getOrElse {
+      val created = new TaskMemory(new CometTaskMemoryManager(planId, context.taskAttemptId()))
+      Option(taskMemories.putIfAbsent(context, created)).getOrElse {
+        // Added once the entry is in place, since a completed task runs a new listener at once.
+        context.addTaskCompletionListener[Unit] { _ =>
+          taskMemories.remove(context)
+        }
+        created
+      }
+    }
+  }
 
   private val memoryUsageLogStarted = new AtomicBoolean(false)
 

@@ -68,8 +68,13 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
     try {
       f
     } finally {
-      taskMemoryManager.cleanUpAllAllocatedMemory()
-      TaskContext.unset()
+      try {
+        // Runs the task completion listeners, as the end of a real task does.
+        taskContext.markTaskCompleted(None)
+      } finally {
+        taskMemoryManager.cleanUpAllAllocatedMemory()
+        TaskContext.unset()
+      }
     }
   }
 
@@ -343,6 +348,105 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
       }
     }
     assert(nativeLib.getMemoryUsage()(3) == plansBefore, "a released plan must not be counted")
+  }
+
+  test("a native plan that closes while another plan in its task holds memory does not warn") {
+    withTempPath { path =>
+      spark
+        .range(0, 100000, 1, 1)
+        .selectExpr("id", "CAST(id AS STRING) AS s")
+        .write
+        .parquet(path.getAbsolutePath)
+      withParquetTable(path.getAbsolutePath, "tbl") {
+        val first = sql("SELECT id FROM tbl WHERE id < 10")
+        val second = sql("SELECT * FROM tbl SORT BY id DESC")
+        for (df <- Seq(first, second)) {
+          val plan = df.queryExecution.executedPlan
+          assert(
+            plan.find(_.isInstanceOf[CometNativeScanExec]).isDefined,
+            s"Expected a native scan:\n$plan")
+        }
+        val sorted = second.queryExecution.executedPlan
+        assert(sorted.find(_.isInstanceOf[CometSortExec]).isDefined, s"Expected a sort:\n$sorted")
+
+        var heldBySort = Array.empty[Long]
+        val warnings = nonZeroMemoryUsageWarnings {
+          // Zipping runs both plans in one task. The first is created first, so the task's native
+          // memory pool is created along with it.
+          heldBySort = first.queryExecution.toRdd
+            .zipPartitions(second.queryExecution.toRdd) { (firstRows, secondRows) =>
+              // The sort takes in all of its input to produce its first row, and holds on to it.
+              assert(secondRows.hasNext)
+              val held = TaskContext.get().taskMemoryManager().getMemoryConsumptionForThisTask
+              // Reading the first plan to its end closes it while the sort holds its memory.
+              firstRows.foreach(_ => ())
+              Iterator.single(held)
+            }
+            .collect()
+        }
+        // Guards against a vacuous pass: the sort must hold memory when the first plan closes.
+        assert(heldBySort.length == 1 && heldBySort.head > 0, heldBySort.mkString(", "))
+        assert(warnings.isEmpty, warnings.mkString("\n"))
+      }
+    }
+  }
+
+  test("the last native plan in a task to close warns about the memory the task still holds") {
+    withTaskContext(4600000L) {
+      val first = planWithoutInput(4600001L)
+      val second = planWithoutInput(4600002L)
+      // Stands in for native memory that outlives the plans that reserved it: every native plan
+      // in the task acquires memory through the task's manager.
+      val manager = CometExecIterator.taskMemory(TaskContext.get(), 4600003L).manager
+      assert(manager.acquireMemory(1234L) == 1234L)
+      try {
+        val whileAnotherPlanIsOpen = nonZeroMemoryUsageWarnings(first.close())
+        assert(whileAnotherPlanIsOpen.isEmpty, whileAnotherPlanIsOpen.mkString("\n"))
+        val warnings = nonZeroMemoryUsageWarnings(second.close())
+        assert(
+          warnings.size == 1 && warnings.head.contains(": 1234 bytes, held by task 4600000"),
+          warnings.mkString("\n"))
+      } finally {
+        manager.releaseMemory(1234L)
+      }
+    }
+  }
+
+  test("a task's memory manager is released when the task ends, even with a plan left open") {
+    val managerRef = withTaskContext(4700000L) {
+      // Closed by the end of the task.
+      planWithoutInput(4700001L)
+      new WeakReference(CometExecIterator.taskMemory(TaskContext.get(), 4700002L).manager)
+    }
+    assert(survivorsAfterGc(Seq(managerRef)) == 0, "the task's memory manager outlived the task")
+  }
+
+  /** A native plan with no input, in the current task. */
+  private def planWithoutInput(id: Long): CometExecIterator = {
+    val limitOp =
+      CometExecUtils.getLimitNativePlan(Seq(PrettyAttribute("test", LongType)), 100).get
+    new CometExecIterator(
+      id = id,
+      inputObjects = Array.empty[Object],
+      numOutputCols = 1,
+      protobufQueryPlan = limitOp.toByteArray,
+      nativeMetrics = CometMetricNode(Map.empty),
+      numParts = 1,
+      partitionIndex = 0)
+  }
+
+  /** The warnings about a native plan closing with memory still in use that `f` logs. */
+  private def nonZeroMemoryUsageWarnings(f: => Unit): Seq[String] = {
+    import org.apache.logging.log4j.Level
+    // Listen on the package logger. For a logger with no config of its own, withLogAppender
+    // creates one that outlives the test and does not pass events up, which would hide
+    // CometExecIterator's warnings from later appenders on org.apache.comet.
+    val appender = new LogAppender("non-zero memory usage warnings")
+    withLogAppender(appender, Seq("org.apache.comet"), Some(Level.WARN))(f)
+    appender.loggingEvents
+      .map(_.getMessage.getFormattedMessage)
+      .filter(_.contains("closed with non-zero memory usage"))
+      .toSeq
   }
 
   test("the memory usage log reports while plans run and once after the last one finishes") {

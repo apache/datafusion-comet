@@ -340,6 +340,12 @@ forget, and a `createPlan` that fails partway through cleans up on unwind.
 insert a replacement before the dying pool reaches the registry lock. The drop therefore compares
 pointers and only removes an entry that is still its own.
 
+The pool acquires memory from Spark through the `CometTaskMemoryManager` passed with the plan that
+created it, so the JVM side shares one manager per task as well: `CometExecIterator.taskMemory`
+hands every native plan in a task the same one and drops it when the task completes. Its `getUsed`
+covers the whole task, so `CometExecIterator.close()` warns about memory still in use only when
+the task's last open native plan closes.
+
 ## How DataFusion consumes the pool
 
 Native operators reserve through DataFusion's `MemoryConsumer` / `MemoryReservation` API:
