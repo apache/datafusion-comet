@@ -15,19 +15,23 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Helpers for planning DataFusion higher-order functions (HOFs) coming
-//! from Spark.
+//! Lambda Function Support and Physical Adapters for Comet.
 //!
-//! The planner needs three things that don't belong in `planner.rs`:
-//! 1. A stack of *lambda scopes* so nested `NamedLambdaVariable`s resolve
-//!    by Spark `exprId` (immune to name shadowing / column collisions).
-//! 2. A stack of scopes, popped on the `Ok`/`Err` paths of `with_scope`.
-//!    Not unwind-safe: a panic unwinds through the whole planner and is
-//!    caught at the JNI boundary (`try_unwrap_or_throw`), which tears down
-//!    the planner and its scope stack together, so no stale scope survives.
-//! 3. A tiny `PhysicalExpr` wrapper that keeps *unused* lambda parameters
-//!    visible in `children()` so `LambdaExpr::new`'s projection compaction
-//!    stays consistent with the runtime batch layout.
+//! This module provides the infrastructure required to execute Spark higher-order functions
+//! (such as `array_filter`) within the native DataFusion runtime:
+//!
+//! 1. **Scope Management (`LambdaScope`):**
+//!    Tracks nested lambda parameter bindings by their Spark `expr_id`, preventing name
+//!    shadowing or collisions across nested higher-order invocations.
+//!
+//! 2. **Empty Batch Runtime Guard (`EmptyBatchGuardExpr`):**
+//!    Wraps the lambda body to early-exit with an empty array when `batch.num_rows() == 0`.
+//!    This preserves Spark's ANSI guarantee that predicates are never evaluated on empty arrays.
+//!
+//! 3. **Strict Short-Circuiting (`ShortCircuitBinaryExpr`):**
+//!    Replaces standard DataFusion `BinaryExpr` for `AND` / `OR` inside lambda bodies.
+//!    Enforces SQL Three-Valued Logic (3VL) by evaluating the RHS strictly on rows requiring it
+//!    via `evaluate_selection`, preventing unwanted side-effects and runtime errors on skipped elements.
 
 use std::cell::RefCell;
 use std::collections::HashMap;

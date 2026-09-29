@@ -3898,7 +3898,7 @@ impl PhysicalPlanner {
             .as_ref()
             .ok_or_else(|| GeneralError("lambda has no body".to_string()))?;
 
-        // Plan the body under this scope; the guard pops on any `?` / drop.
+        // Plan the body under this scope; `with_scope` manages pushing and popping the scope.
         let body_expr = self
             .lambda_scopes
             .with_scope(scope, || self.create_expr(lambda_body, body_schema))?;
