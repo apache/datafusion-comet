@@ -339,7 +339,7 @@ gh run view "$run" --repo apache/datafusion-comet --json jobs \
         | group_by(.conclusion)[] | "\(length)\t\(.[0].conclusion)"'
 ```
 
-A healthy run over a day of normal merges reports about 47 successes — seven Spark SQL shards for
+A healthy run over a day of normal merges reports about 53 successes — nine Spark SQL shards for
 each of 3.5, 4.0 and 4.2, plus the Iceberg shards — with the handful of skips being the suites that
 belong to the queue tier rather than the nightly one — Spark 3.4, Spark 4.1
 and Iceberg 1.11. If everything is skipped, open the run's `Detect changes` job: it logs the
@@ -405,12 +405,12 @@ the sbt projects the selected rows need.
 changing Comet or the run tests the previously installed JAR and goes green regardless.
 
 When more than one Spark row is selected they all run **at once**, each in its own copy of the
-prepared tree, which is what CI does: seven matrix rows, seven runners, seven extracted trees.
+prepared tree, which is what CI does: nine matrix rows, nine runners, nine extracted trees.
 Because each row owns a tree there is no shared sbt server, `target/` or metastore tmpdir, so the
 per-row settings stay identical to CI's. On APFS and btrfs the copies are copy-on-write, so a 4 GB
 tree costs kilobytes until the rows write their own reports.
 
-Seven concurrent sbt processes would interleave unreadably, so each row logs to
+Nine concurrent sbt processes would interleave unreadably, so each row logs to
 `$COMET_LOCAL_CI_HOME/logs-spark-<version>/<row>.log`, named on the line that reports the row
 starting. Each row then reports again when it finishes, with its elapsed time, and a failing row
 prints the last 20 lines of its log. Follow a row live with `tail -f`. The trees persist so the
@@ -421,8 +421,8 @@ Four caveats:
 
 - The sandbox lives under `/tmp`, so a reboot or a tmp reaper means downloading and compiling again.
   Point `COMET_LOCAL_CI_HOME` somewhere durable to keep it.
-- Running every row at once wants the memory and disk for it: seven sbt processes each forking a
-  test JVM, and seven trees diverging from their copy-on-write base. Select fewer rows, or one, on a
+- Running every row at once wants the memory and disk for it: nine sbt processes each forking a
+  test JVM, and nine trees diverging from their copy-on-write base. Select fewer rows, or one, on a
   smaller machine.
 - Preparing deletes `org/apache/parquet` from your local Maven repository as the workflows do, and
   additionally sweeps the **whole** repository for POMs with no sibling JAR. That is a shared cache,
