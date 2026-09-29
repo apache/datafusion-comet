@@ -95,6 +95,18 @@ fails the query instead of being replaced by the default. `spark.comet.debug.ena
 `spark.comet.explain.native.enabled` and `spark.comet.tracing.enabled` now also take effect in
 Comet's native code when they are written in upper case, such as `TRUE`.
 
+### Memory Pool Limits
+
+In Comet 0.15.0 through 1.0.0, the `fair_unified` memory pool, which is the default for
+`spark.comet.exec.memoryPool`, capped the memory of all of a task's operators combined at one
+operator's share, because of a bug ([#5961](https://github.com/apache/datafusion-comet/issues/5961)).
+Comet 1.1.0 limits each operator to its own share instead, so tasks with several operators can
+reserve more memory before they spill than they could in those releases. The difference is largest
+on executors that run few tasks at once, where Spark's own limit on each task is loosest. If you
+sized executor memory against one of those releases, check that executors still have enough
+headroom; see
+[Sizing the Overhead from the Memory Usage Log](tuning/memory.md#sizing-the-overhead-from-the-memory-usage-log).
+
 ### Conditions for Enabling Comet
 
 Comet needs Spark's off-heap memory to be enabled. `CometPlugin` already disabled Comet when
