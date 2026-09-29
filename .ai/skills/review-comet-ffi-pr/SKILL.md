@@ -122,11 +122,13 @@ a new subclass needs no new case as long as `getValueVector` returns an Arrow ve
       stream with the stock `ArrowArrayStreamReader`. The `realigns_under_aligned_decimal128` test
       in `scan.rs` guards this. A PR that downgrades arrow, or that imports through anything other
       than those two functions, must keep that test passing.
-- [ ] **Native to JVM: exported offsets must be zero.** Arrow Java ignores `ArrowArray.offset` on
-      import, so `prepare_output` `take`s any top-level column with a non-zero offset before
-      `move_to_spark` ([#2051](https://github.com/apache/datafusion-comet/issues/2051)). A new
-      export path needs the same normalization. Nested children and the JVM UDF bridge inputs are
-      not covered yet ([#6288](https://github.com/apache/datafusion-comet/issues/6288)).
+- [ ] **Native to JVM: exported offsets must be zero.** Arrow Java ignores `ArrowArray.offset` at
+      every level on import, so every array native exports to the JVM first goes through
+      `zero_offsets` (in `native/common/src/ffi_offsets.rs`). `move_to_spark` applies it to
+      executed batches and decoded shuffle blocks, and `JvmScalarUdfExpr` to the inputs of the
+      JVM UDF bridge. A new export path has to call it too, or a sliced boolean, top-level or
+      nested, reaches the JVM misaligned
+      ([#6288](https://github.com/apache/datafusion-comet/issues/6288)).
 - [ ] **Schema reconciliation stays truthful.** `CometArrowStream.reconcileStreamSchema` advertises
       the stream's schema from the actual `CometVector` types in the first batch rather than the
       consumer's Spark-declared types, so that the cast in native `build_record_batch` fires. A PR
@@ -170,9 +172,8 @@ FFI bugs rarely reproduce in a small unit test. Ask what evidence the PR offers:
 - The **JVM to Native** and **Native to JVM** architecture diagrams, if a stage is added, removed,
   or renamed.
 - The list of `ArrowReader` implementations, if the PR adds an input shape.
-- The **Offset Normalization** section, if the PR changes how `prepare_output` or another export
-  path handles a non-zero offset, including a fix for
-  [#6288](https://github.com/apache/datafusion-comet/issues/6288).
+- The **Array Offsets** section, if the PR adds a native to JVM export path or changes what
+  `zero_offsets` does.
 - The **Schema Reconciliation** and **Ownership and Lifecycle** paragraphs, which state invariants
   rather than describing code. These are the easiest to leave quietly wrong.
 - Class and file paths named in the prose, if the PR moves anything.

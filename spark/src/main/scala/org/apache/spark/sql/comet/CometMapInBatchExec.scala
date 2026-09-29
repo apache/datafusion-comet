@@ -91,7 +91,7 @@ case class CometMapInBatchExec(
 
     def processPartition(batches: Iterator[ColumnarBatch]): Iterator[ColumnarBatch] = {
       val context = TaskContext.get()
-      val counting = batches.map { b => numInputRows += b.numRows(); b }
+      val counting = batches.map { b => numInputRows += b.numRows().toLong; b }
 
       val columnarBatchIter = computeArrowPython(
         resolvedRunnerInputs,
@@ -113,7 +113,7 @@ case class CometMapInBatchExec(
           outputAttrs.indices.map(i => structVector.getChild(i)).toArray
         val flattenedBatch = new ColumnarBatch(outputVectors)
         flattenedBatch.setNumRows(batch.numRows())
-        numOutputRows += flattenedBatch.numRows()
+        numOutputRows += flattenedBatch.numRows().toLong
         numOutputBatches += 1
         flattenedBatch
       }

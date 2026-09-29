@@ -206,10 +206,11 @@ When the JVM needs results from native execution:
    `CometArrowAllocator` and passes their memory addresses to
    `Native.executePlan(stage, partition, plan, arrayAddrs, schemaAddrs)`.
 2. `executePlan` (in `jni_api.rs`) polls the native plan for its next `RecordBatch`, and `prepare_output` exports
-   each column into its pair with `move_to_spark` (in `execution/utils.rs`). `move_to_spark` writes an
-   `FFI_ArrowArray` over the column's `ArrayData`, and an `FFI_ArrowSchema` built from its data type and field
-   metadata, into the JVM-allocated structs. `executePlan` returns the batch's row count, or `-1` at the end of the
-   output. With `spark.comet.debug.enabled` set, `prepare_output` first runs `validate_full` on every column.
+   each column into its pair with `move_to_spark` (in `execution/utils.rs`). `move_to_spark` zeroes the column's
+   offsets (see [Array Offsets](#array-offsets)), then writes an `FFI_ArrowArray` over the result, and an
+   `FFI_ArrowSchema` built from its data type and field metadata, into the JVM-allocated structs. `executePlan`
+   returns the batch's row count, or `-1` at the end of the output. With `spark.comet.debug.enabled` set,
+   `prepare_output` first runs `validate_full` on every column.
 3. At the end of the output, `NativeUtil` releases the unused structs. Otherwise `NativeUtil.importVector` imports
    each column with `ArrowImporter.importVector`, wraps it with `CometVector.getVector`, and returns the vectors as
    a `ColumnarBatch`.
@@ -218,19 +219,17 @@ When the JVM needs results from native execution:
 `SchemaImporter`. Arrow Java's own `Data.importField` creates a new `SchemaImporter` for each field, and each one
 numbers dictionaries from 0, so two dictionary-encoded columns would collide in the shared `CDataDictionaryProvider`.
 
-### Offset Normalization
+### Array Offsets
 
-Arrow Java's C Data import ignores `ArrowArray.offset`
-([apache/arrow-java#88](https://github.com/apache/arrow-java/issues/88)), so it reads an array exported with a
-non-zero offset from the start of its buffers. arrow-rs folds a slice into the buffers for most types, so a sliced
-`Int64Array`, `StringArray`, or `StructArray` exports offset 0. A sliced `BooleanArray` is the exception: it keeps
-its bit offset in `ArrayData::offset`. So before exporting a column whose `offset()` is non-zero, `prepare_output`
-`take`s it into a new array with offset 0 ([#2051](https://github.com/apache/datafusion-comet/issues/2051)).
-
-The check looks at top-level columns only. A struct column has offset 0 even when its children are sliced, so a
-sliced boolean nested in a struct still reaches the JVM with a non-zero offset, and the JVM misreads it. The JVM UDF
-bridge (`JvmScalarUdfExpr` in `native/spark-expr/src/jvm_udf/mod.rs`) exports its argument arrays with no
-normalization at all. Both gaps are tracked in [#6288](https://github.com/apache/datafusion-comet/issues/6288).
+Arrow Java's C Data import ignores `ArrowArray.offset` at every level
+([apache/arrow-java#88](https://github.com/apache/arrow-java/issues/88)) and reads each buffer from its start. arrow-rs
+folds a slice into the buffers for almost every type, but a sliced `BooleanArray` keeps its bit offset, and a struct
+exports offset 0 even when its children are sliced. So every array native exports to the JVM first goes through
+`zero_offsets` (in `native/common/src/ffi_offsets.rs`), which re-slices boolean bitmaps to start at bit 0 at every
+level and shares every other buffer. `move_to_spark` applies it to executed batches and decoded shuffle blocks, and
+`JvmScalarUdfExpr` applies it to the inputs of the JVM UDF bridge. A new native to JVM export path has to call it too,
+or sliced booleans reach the JVM misaligned
+([#6288](https://github.com/apache/datafusion-comet/issues/6288)).
 
 ### Ownership and Lifecycle
 
