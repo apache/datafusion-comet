@@ -360,6 +360,12 @@ match op.op_struct.as_ref() {
 }
 ```
 
+`ProjectionBuilder` prunes a DataFusion filter's output for column-only projections, including
+empty projections such as the input to `count(*)`. Each required output column is filtered once,
+then the projection restores its order, duplicates and aliases. The predicate still sees its
+original input schema. Both native plans remain for metrics, including when they share a Spark
+plan ID. Computed projections and projections that use every input column are unchanged.
+
 #### Implement the Operator
 
 Create the operator implementation, either in an existing file or a new file in `native/core/src/execution/operators/`:
