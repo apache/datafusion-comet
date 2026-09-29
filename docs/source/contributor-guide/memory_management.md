@@ -142,7 +142,10 @@ consumer of the task released its last bytes in the meantime, and Spark then thr
 `NoSuchElementException` ("key not found") instead of a grant
 ([SPARK-59827](https://issues.apache.org/jira/browse/SPARK-59827)). The allocator retries that
 case, since the failed call was granted nothing, and after three attempts throws
-`SparkOutOfMemoryError`, which the shuffle writers handle like any other refused page.
+`SparkOutOfMemoryError`, which the shuffle writers handle like any other refused page. Only the
+shuffle allocator's callers are guarded this way. Spark's operators in the same task, such as its
+sorters and aggregates, can still hit the exception until Spark re-registers a waiting task in
+`ExecutionMemoryPool` ([apache/spark#59103](https://github.com/apache/spark/pull/59103)).
 
 Which allocator each call site uses, and who ends up charged for the bytes:
 
