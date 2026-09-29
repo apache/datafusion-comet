@@ -223,14 +223,15 @@ impl SparkMemory {
         self.overcommit.load(Relaxed)
     }
 
+    /// Asks Spark for the pool's anchor, `size` bytes the overcommit ledger never records, and
+    /// returns how many it granted. Spark can block it like any other acquire.
+    pub(super) fn acquire_anchor(&self, size: usize) -> CometResult<i64> {
+        wait_on_spark(|| self.manager.acquire_anchor(size))
+    }
+
     /// Asks Spark for `size` bytes and returns how many it granted.
-    ///
-    /// Spark can block the call until other tasks release memory, so it runs in `block_in_place`.
-    /// On a Tokio worker that hands the worker's other tasks to another thread while the call
-    /// blocks, so they keep running. One of them may be what would release the memory, such as a
-    /// task of a released plan that only needs to be cancelled.
     fn ask_spark(&self, size: usize) -> CometResult<i64> {
-        tokio::task::block_in_place(|| self.manager.acquire(size))
+        wait_on_spark(|| self.manager.acquire(size))
     }
 
     /// Takes up to `size` bytes off the overcommit in one atomic step and returns how many.
@@ -241,6 +242,14 @@ impl SparkMemory {
             .unwrap();
         debt.min(size)
     }
+}
+
+/// Makes an acquire call to Spark, which can block it until other tasks release memory, so it
+/// runs in `block_in_place`. On a Tokio worker that hands the worker's other tasks to another
+/// thread while the call blocks, so they keep running. One of them may be what would release the
+/// memory, such as a task of a released plan that only needs to be cancelled.
+fn wait_on_spark(acquire: impl FnOnce() -> CometResult<i64>) -> CometResult<i64> {
+    tokio::task::block_in_place(acquire)
 }
 
 /// Clamps Spark's reply to an acquire: it never grants more than asked, and never a negative.

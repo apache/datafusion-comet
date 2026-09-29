@@ -168,7 +168,7 @@ impl CometFairMemoryPool {
             return Ok(());
         }
         // The lock is not held across the call.
-        if !Self::anchor_granted(self.spark.manager().acquire_anchor(ANCHOR_BYTES)?) {
+        if !Self::anchor_granted(self.spark.acquire_anchor(ANCHOR_BYTES)?) {
             return Ok(());
         }
         {
@@ -1575,6 +1575,40 @@ mod tests {
         drop(pool);
         assert_eq!(stub.outstanding(), 0, "anchor is returned at drop");
         assert_eq!(stub.releases.load(SeqCst), 2, "the free and the anchor");
+    }
+
+    /// Spark can block the anchor acquire like any other, and the first grow of a pool makes it
+    /// on a Tokio worker. The worker's other tasks have to keep running meanwhile, since one of
+    /// them may be what would release the memory.
+    #[test]
+    fn a_blocked_anchor_acquire_leaves_its_worker_running_other_tasks() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .build()
+            .unwrap();
+        let fake = FakeSpark::with(100);
+        let pool: Arc<dyn MemoryPool> =
+            Arc::new(CometFairMemoryPool::with_spark(fake.memory(), 1_000));
+        let reservation = MemoryConsumer::new("consumer").register(&pool);
+        let (blocked_tx, blocked_rx) = channel();
+        let (released_tx, released_rx) = channel::<()>();
+        // The first Spark call of the first grow is the anchor. Spark waits until a task that
+        // needs the only worker releases memory.
+        fake.during_next_acquire(move || {
+            blocked_tx.send(()).unwrap();
+            released_rx
+                .recv_timeout(Duration::from_secs(10))
+                .expect("the worker ran nothing else while the anchor acquire blocked");
+        });
+        let growing = runtime.spawn(async move { reservation.try_grow(10).map(|()| reservation) });
+        blocked_rx.recv().unwrap();
+        runtime.spawn(async move { released_tx.send(()).unwrap() });
+
+        let reservation = runtime.block_on(growing).unwrap().unwrap();
+        assert_eq!(fake.held(), ANCHOR_BYTES + 10, "anchor plus the grant");
+        drop(reservation);
+        drop(pool);
+        assert_eq!(fake.held(), 0);
     }
 
     /// The anchor goes through Spark's anchor calls, which the JVM counts apart from the usage
