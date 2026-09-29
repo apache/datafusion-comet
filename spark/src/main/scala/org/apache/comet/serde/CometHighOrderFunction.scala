@@ -22,37 +22,48 @@ package org.apache.comet.serde
 import scala.jdk.CollectionConverters._
 import scala.util.control.NonFatal
 
-import org.apache.spark.sql.catalyst.expressions.{Abs, Add, AssertTrue, Attribute, CaseWhen, Cast, Coalesce, Divide, ElementAt, Expression, GetArrayItem, HigherOrderFunction, If, IntegralDivide, LambdaFunction => SparkLambdaFunction, Multiply, NamedLambdaVariable => SparkNamedLambdaVariable, RaiseError, Remainder, Subtract, UnaryMinus}
-import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, CaseWhen, Coalesce, Expression, HigherOrderFunction, If, LambdaFunction => SparkLambdaFunction, NamedLambdaVariable => SparkNamedLambdaVariable}
+import org.apache.spark.sql.types.{ArrayType, BooleanType, MapType, StructType}
 
 import org.apache.comet.CometConf
-import org.apache.comet.serde.CometHighOrderFunction.{containsJvmDispatch, hasGuardedFallibleBranch, namedLambdaVariable2Proto}
+import org.apache.comet.serde.CometHighOrderFunction.{capturesComplexOuterAttribute, containsJvmDispatch, hasUnsupportedConditionals, namedLambdaVariable2Proto}
 import org.apache.comet.serde.ExprOuterClass.{HigherOrderFunc, LambdaFunction, NamedLambdaVariable}
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, serializeDataType}
 
 /**
- * Generic expression serializer for Spark higher-order functions (e.g., `filter`, `transform`).
+ * Generic expression serializer for Spark higher-order functions (e.g. `filter`, `transform`).
  *
- * This class implements a three-tier execution hierarchy:
- *   1. '''Native DataFusion execution:''' Produced when
- *      `COMET_EXEC_HIGHER_ORDER_FUNCTION_NATIVE_ENABLED` is enabled and the lambda structure
- *      meets native runtime constraints. 2. '''JVM codegen dispatch:''' Emits a `JvmScalarUdf`
- *      fallback via `CometScalaUDF.emitJvmCodegenDispatch` if the native path cannot be taken,
- *      provided `COMET_SCALA_UDF_CODEGEN_ENABLED` is enabled. 3. '''Vanilla Spark:''' Final
- *      fallback if neither native DataFusion nor codegen dispatch is available.
+ * This class implements a three-tier execution hierarchy: '''Native DataFusion execution:'''
+ * Attempted when `COMET_EXEC_HIGHER_ORDER_FUNCTION_NATIVE_ENABLED` is enabled and the expression
+ * satisfies native execution constraints. 2. '''JVM codegen dispatch:''' Emits a `JvmScalarUdf`
+ * fallback via `CometScalaUDF.emitJvmCodegenDispatch` when the native path cannot be taken,
+ * provided `COMET_SCALA_UDF_CODEGEN_ENABLED` is enabled. 3. '''Vanilla Spark:''' Final fallback
+ * to vanilla Spark if neither native execution nor codegen dispatch is available.
  *
- * ===Short-Circuiting and Safety Guarantees===
- *   - '''Boolean short-circuiting (AND / OR):''' Handled natively in Rust via
+ * ===Native Execution & Safety Guarantees===
+ *   - '''Boolean Short-Circuiting (AND / OR):''' Handled fully natively in Rust via
  *     `ShortCircuitBinaryExpr`. It enforces strict SQL Three-Valued Logic (3VL) per-element
  *     masking via `evaluate_selection`, ensuring that stateful functions
- *     (`monotonically_increasing_id`, `rand`) and fallible operations (`DIV`, `abs`,
- *     `element_at`) are never evaluated on skipped elements.
- *   - '''Conditional expressions (CASE WHEN, IF, COALESCE):''' Guarded branches containing
- *     fallible operations are checked via [[hasGuardedFallibleBranch]] and safely routed to JVM
- *     codegen dispatch.
- *   - '''Speculative serialization:''' Lambda traversal is wrapped in a `NonFatal` catch to
- *     decline the native path if eager expression evaluation (e.g. `CometCast` evaluating literal
- *     arguments) fails during plan generation under ANSI mode.
+ *     (`monotonically_increasing_id`, `rand`) and fallible operations (e.g., division by zero or
+ *     out-of-bounds indexing under ANSI) are never evaluated on skipped elements.
+ *   - '''Empty Batch Protection:''' The native lambda body is wrapped in `EmptyBatchGuardExpr` to
+ *     short-circuit on zero-row inputs (`[]`, `NULL`), preventing scalar runtime evaluation.
+ *   - '''Speculative Serialization:''' AST traversal is wrapped in a `NonFatal` catch to safely
+ *     decline the native path if eager expression evaluation (e.g., `CometCast` evaluating
+ *     literal arguments in unreachable branches under ANSI mode) throws an exception during plan
+ *     generation.
+ *
+ * ===Degradation to JVM Codegen Dispatch===
+ * The serializer gracefully degrades to JVM codegen dispatch under the following conditions:
+ *   - '''Complex Outer Captures:''' When the lambda body captures outer attributes of nested
+ *     types (`ArrayType`, `MapType`, `StructType`). This avoids quadratic memory replication in
+ *     DataFusion's `take_arrays` broadcast mechanism. Scalar captures (`Int`, `String`, etc.)
+ *     remain fully native.
+ *   - '''Boolean Conditionals:''' When conditional expressions (`CASE WHEN`, `IF`, `COALESCE`)
+ *     return `BooleanType` and serve as predicates, due to known native evaluation discrepancies
+ *     in DataFusion. Scalar conditionals (e.g., `coalesce(x, 0) > 0`) remain fully native.
+ *   - '''Unsupported Shapes:''' When the expression uses multi-argument lambdas with indices
+ *     (e.g., `(x, i) -> ...`) or subexpressions requiring JVM dispatch (e.g., `rlike`).
  */
 case class CometHighOrderFunction[T <: HigherOrderFunction](name: String)
     extends CometExpressionSerde[T] {
@@ -85,7 +96,7 @@ case class CometHighOrderFunction[T <: HigherOrderFunction](name: String)
     val functionsProto = expr.functions
       .map {
         case slf: SparkLambdaFunction =>
-          if (hasGuardedFallibleBranch(slf.function)) {
+          if (hasUnsupportedConditionals(slf.function) || capturesComplexOuterAttribute(slf)) {
             return None
           }
           exprToProtoInternal(slf.function, inputs, binding)
@@ -147,41 +158,37 @@ object CometHighOrderFunction {
     }
 
   /**
-   * Checks whether an expression can throw a runtime exception during evaluation.
+   * Checks whether the lambda captures any outer attributes of complex types (Array, Map,
+   * Struct).
+   *
+   * DataFusion's `evaluate_single_list_lambda` replicates captured columns for each list element
+   * via `take_arrays`, causing quadratic memory amplification (e.g. copying an entire outer array
+   * for every element of the filtered array). Complex captures degrade to JVM codegen dispatch.
    */
-  private def isFallibleExpr(expr: Expression): Boolean = {
-    val ansi = SQLConf.get.ansiEnabled
-    expr.exists {
-      case _: Divide | _: IntegralDivide | _: Remainder => true
-      case c: Cast if ansi => !c.evalMode.toString.contains("TRY")
-      case _: Add | _: Subtract | _: Multiply | _: UnaryMinus | _: Abs if ansi => true
-      case _: GetArrayItem | _: ElementAt => true
-      case _: RaiseError | _: AssertTrue => true
+  def capturesComplexOuterAttribute(lambda: SparkLambdaFunction): Boolean = {
+    val lambdaParamIds = lambda.arguments.map(_.exprId).toSet
+
+    lambda.function.exists {
+      case attr: AttributeReference if !lambdaParamIds.contains(attr.exprId) =>
+        attr.dataType match {
+          case _: ArrayType | _: MapType | _: StructType => true
+          case _ => false
+        }
       case _ => false
     }
   }
 
   /**
-   * Checks whether conditional expressions (CASE WHEN, IF, COALESCE) contain guarded fallible
-   * branches that require JVM codegen fallback.
+   * Checks whether the lambda body contains conditional expressions (CASE WHEN, IF, COALESCE)
+   * used as boolean predicates, which currently produce incorrect results in native DataFusion.
    *
-   * Note: AND and OR are handled natively with strict per-element masking in Rust (via
-   * StrictBooleanExpr) and do not require fallback.
+   * Scalar conditionals (e.g. `coalesce(x, 0) > 0`) remain fully native.
    */
-  def hasGuardedFallibleBranch(expr: Expression): Boolean = {
+  def hasUnsupportedConditionals(expr: Expression): Boolean = {
     expr.exists {
-      // CASE WHEN: THEN and ELSE branches
-      case CaseWhen(branches, elseValue) =>
-        branches.map(_._2).exists(isFallibleExpr) || elseValue.exists(isFallibleExpr)
-
-      // IF: true and false branches
-      case If(_, trueValue, falseValue) =>
-        isFallibleExpr(trueValue) || isFallibleExpr(falseValue)
-
-      // COALESCE: tail arguments
-      case Coalesce(children) if children.length > 1 =>
-        children.tail.exists(isFallibleExpr)
-
+      case c: CaseWhen if c.dataType == BooleanType => true
+      case i: If if i.dataType == BooleanType => true
+      case c: Coalesce if c.dataType == BooleanType => true
       case _ => false
     }
   }

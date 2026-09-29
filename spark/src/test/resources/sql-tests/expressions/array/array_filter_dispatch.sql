@@ -46,3 +46,44 @@ INSERT INTO test_guarded_case VALUES (array(-1, 0));
 query
 SELECT filter(a, x -> CASE WHEN x > 0 THEN CAST('bad' AS INT) > 0 ELSE false END) FROM test_guarded_case;
 
+-- Capturing outer complex types (like array 'b') causes quadratic memory replication
+-- in DataFusion's `take_arrays`. This query must safely degrade to JVM codegen dispatch.
+statement
+CREATE TABLE test_captured_array(a ARRAY<INT>, b ARRAY<INT>) USING parquet;
+
+statement
+INSERT INTO test_captured_array VALUES (array(1, -1, 2), array(10, 20));
+
+query
+SELECT filter(a, x -> x >= 0 AND size(b) > 0) FROM test_captured_array;
+
+-- Verifies that COALESCE in lambda bodies produces correct results via codegen fallback
+-- (avoiding native DataFusion COALESCE evaluation discrepancy).
+statement
+CREATE TABLE test_coalesce_lambda(a ARRAY<INT>) USING parquet;
+
+statement
+INSERT INTO test_coalesce_lambda VALUES (array(1, 2, null, 4));
+
+query
+SELECT filter(a, x -> coalesce(x % 2 = 0, false)) FROM test_coalesce_lambda;
+
+-- Verifies that CASE WHEN in lambda bodies produces correct results via codegen fallback.
+statement
+CREATE TABLE test_case_when_lambda(a ARRAY<INT>) USING parquet;
+
+statement
+INSERT INTO test_case_when_lambda VALUES (array(1, 2, 3));
+
+query
+SELECT filter(a, x -> CASE WHEN x = 1 THEN true ELSE x > 2 END) FROM test_case_when_lambda;
+
+-- Verifies that IF in lambda bodies produces correct results via codegen fallback.
+statement
+CREATE TABLE test_if_lambda(a ARRAY<INT>) USING parquet;
+
+statement
+INSERT INTO test_if_lambda VALUES (array(1, 2, 3));
+
+query
+SELECT filter(a, x -> if(x = 2, false, true)) FROM test_if_lambda;
