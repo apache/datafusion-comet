@@ -408,4 +408,37 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
     assert(memoryUsageLogInterval(Some("false")) == 0L)
     assert(memoryUsageLogInterval(Some("10 seconds please")) == 0L)
   }
+
+  test("the native runtime gets a worker thread for every core the executor runs tasks on") {
+    import CometExecIterator.numDriverOrExecutorCores
+    def cores(master: String, executorCores: Option[String] = None): Option[Int] =
+      numDriverOrExecutorCores(master, executorCores, availableProcessors = 12)
+
+    // Local mode runs tasks on the master's threads and ignores spark.executor.cores.
+    assert(cores("local") == Some(1))
+    assert(cores("local[4]") == Some(4))
+    assert(cores("local[*]") == Some(12))
+    assert(cores("local[4, 3]") == Some(4))
+    assert(cores("local[*,3]") == Some(12))
+    assert(cores("local[4]", executorCores = Some("2")) == Some(4))
+
+    // Elsewhere spark.executor.cores is the executor's core count when it is set.
+    assert(cores("spark://host:7077", executorCores = Some("3")) == Some(3))
+    assert(cores("local-cluster[2, 3, 1024]", executorCores = Some("1")) == Some(1))
+    assert(cores("yarn", executorCores = Some("8")) == Some(8))
+    assert(cores("k8s://https://host:6443", executorCores = Some("8")) == Some(8))
+    assert(cores("mesos://host:5050", executorCores = Some("8")) == Some(8))
+
+    // Without it, a standalone executor takes every core its worker offers: the master's cores
+    // per worker in local-cluster mode, and by default all of the machine's processors.
+    assert(cores("local-cluster[2, 3, 1024]") == Some(3))
+    assert(cores("local-cluster[2,3,1024]") == Some(3))
+    assert(cores("spark://host:7077") == Some(12))
+    assert(cores("spark://host1:7077,host2:7077") == Some(12))
+    // YARN and Kubernetes executors default to one core.
+    assert(cores("yarn") == Some(1))
+    assert(cores("k8s://https://host:6443") == Some(1))
+    // Other cluster managers do not tell.
+    assert(cores("mesos://host:5050").isEmpty)
+  }
 }

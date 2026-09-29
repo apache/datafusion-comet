@@ -680,26 +680,69 @@ object CometExecIterator extends Logging {
     }
   }
 
+  private val unknownCoresWarned = new AtomicBoolean(false)
+
+  /**
+   * The number of cores this JVM runs tasks on, which sizes the native runtime's worker threads.
+   * Falls back to 1, with a warning logged once, if the master does not tell.
+   */
   private def numDriverOrExecutorCores(conf: SparkConf): Int = {
-    def convertToInt(threads: String): Int = {
-      if (threads == "*") Runtime.getRuntime.availableProcessors() else threads.toInt
-    }
-
-    // If running in local mode, get number of threads from the spark.master setting.
-    // See https://spark.apache.org/docs/latest/submitting-applications.html#master-urls
-    // for supported formats
-
-    // `local[*]` means using all available cores and `local[2]` means using 2 cores.
-    val LOCAL_N_REGEX = """local\[([0-9]+|\*)\]""".r
-    // Also handle format `local[num-worker-threads, max-failures]
-    val LOCAL_N_FAILURES_REGEX = """local\[([0-9]+|\*)\s*,\s*([0-9]+)\]""".r
-
     val master = conf.get("spark.master")
+    numDriverOrExecutorCores(
+      master,
+      conf.getOption("spark.executor.cores"),
+      Runtime.getRuntime.availableProcessors()).getOrElse {
+      if (unknownCoresWarned.compareAndSet(false, true)) {
+        logWarning(
+          s"Comet cannot tell how many cores this executor has from spark.master=$master when " +
+            "spark.executor.cores is not set, so its native runtime starts one worker thread. " +
+            "Native plans that read no input from the JVM run on the worker threads, so " +
+            "concurrent tasks share this one. Set spark.executor.cores, or the " +
+            "COMET_WORKER_THREADS environment variable, to the executor's core count. " +
+            s"${CometConf.TUNING_GUIDE}.")
+      }
+      1
+    }
+  }
+
+  // Master URL formats, as SparkContext parses them. See
+  // https://spark.apache.org/docs/latest/submitting-applications.html#master-urls
+  // `local[*]` means using all available cores and `local[2]` means using 2 cores.
+  private val LOCAL_N_REGEX = """local\[([0-9]+|\*)\]""".r
+  // `local[num-worker-threads, max-failures]`
+  private val LOCAL_N_FAILURES_REGEX = """local\[([0-9]+|\*)\s*,\s*([0-9]+)\]""".r
+  // `local-cluster[num-workers, cores-per-worker, memory-per-worker-mib]`
+  private val LOCAL_CLUSTER_REGEX =
+    """local-cluster\[\s*([0-9]+)\s*,\s*([0-9]+)\s*,\s*([0-9]+)\s*]""".r
+
+  /**
+   * The number of cores the driver (in local mode) or an executor runs tasks on, given the master
+   * URL, `spark.executor.cores` and the number of processors available to the JVM. Every task
+   * takes `spark.task.cpus` of these cores, so this is at least the number of tasks that run at
+   * once. None if it cannot be determined.
+   */
+  def numDriverOrExecutorCores(
+      master: String,
+      executorCores: Option[String],
+      availableProcessors: Int): Option[Int] = {
+    def localThreads(threads: String): Int =
+      if (threads == "*") availableProcessors else threads.toInt
+
     master match {
-      case "local" => 1
-      case LOCAL_N_REGEX(threads) => convertToInt(threads)
-      case LOCAL_N_FAILURES_REGEX(threads, _) => convertToInt(threads)
-      case _ => conf.get("spark.executor.cores", "1").toInt
+      // Local mode runs tasks on the master's threads and ignores spark.executor.cores.
+      case "local" => Some(1)
+      case LOCAL_N_REGEX(threads) => Some(localThreads(threads))
+      case LOCAL_N_FAILURES_REGEX(threads, _) => Some(localThreads(threads))
+      case _ if executorCores.isDefined => executorCores.map(_.toInt)
+      // Without spark.executor.cores, a standalone executor takes every core its worker offers,
+      // but Spark does not set spark.executor.cores on the executor. A local-cluster worker
+      // offers the master's cores per worker, and a standalone worker offers all of the
+      // machine's processors unless it is started with a different number.
+      case LOCAL_CLUSTER_REGEX(_, coresPerWorker, _) => Some(coresPerWorker.toInt)
+      case _ if master.startsWith("spark://") => Some(availableProcessors)
+      // The default of spark.executor.cores on YARN and Kubernetes.
+      case _ if master == "yarn" || master.startsWith("k8s://") => Some(1)
+      case _ => None
     }
   }
 
