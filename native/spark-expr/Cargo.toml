@@ -51,6 +51,7 @@ base64 = "0.23.0"
 # float/double to decimal conversion
 ryu = "1.0"
 uuid = "1.23.3"
+datasketches = { workspace = true }
 
 [dev-dependencies]
 arrow = {workspace = true}
@@ -97,6 +98,10 @@ harness = false
 
 [[bench]]
 name = "aggregate"
+harness = false
+
+[[bench]]
+name = "approx_percentile"
 harness = false
 
 [[bench]]
@@ -433,4 +438,8 @@ harness = false
 
 [[bench]]
 name = "utf8_decode"
+harness = false
+
+[[bench]]
+name = "nested_comparison"
 harness = false

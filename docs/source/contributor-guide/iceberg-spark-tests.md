@@ -35,6 +35,17 @@ Here is an overview of the changes that the diffs make to Iceberg:
   native scan in every Comet-configured session. The flag is off by default for users, so Iceberg's own suites
   are the only place the split plan (`IcebergCommit -> IcebergWrite`) is exercised against Iceberg's write,
   commit, and row-level-operation tests. See [#5259]
+- Enable Comet's native (iceberg-rust) Parquet writer (`spark.comet.iceberg.write.enabled`) in the same sessions.
+  The native writer is experimental and off by default for users, so this is where it runs against Iceberg's
+  write, commit, and row-level-operation tests.
+- Enable `spark.comet.exec.localTableScan.enabled` in the same sessions. `CometIcebergNativeWrite` sets
+  `requiresNativeChildren`, so without this flag a write fed by an inline `VALUES` list keeps Spark's row-based
+  `LocalTableScanExec`, the conversion is declined, and the write silently runs on the JVM writer. Many Iceberg
+  suites seed their data that way, so leaving it off hides the native writer from most of the write surface.
+- Enable fallback logging (`spark.comet.explainFallback.enabled`) so that every operator Comet declines is
+  reported in the test output together with the reason it was declined. The output goes to the JUnit XML
+  reports rather than the CI job log; see [Which writer ran each Iceberg write](#which-writer-ran-each-iceberg-write)
+  for how CI reports native write coverage.
 
 [#3739]: https://github.com/apache/datafusion-comet/pull/3739
 [#5259]: https://github.com/apache/datafusion-comet/issues/5259
@@ -145,3 +156,28 @@ path, reflection code (`org.apache.comet.iceberg.IcebergReflection`), or other l
 can differ across Iceberg versions. The Comet test suites in the Linux build do not exercise Iceberg's
 own Spark tests, so without the label the first Iceberg 1.11 verdict is the merge queue's, and the
 first verdict on the older Iceberg versions is the nightly run's, after the change has landed.
+
+### Which writer ran each Iceberg write
+
+A passing Iceberg job does not show that Comet's native writer ran. `CometIcebergNativeWrite` falls back
+to Iceberg's JVM writer without failing the write, no upstream test asserts which writer ran, and Gradle
+does not copy the fallback warnings into the job log. So the core and extensions jobs set
+`COMET_ICEBERG_WRITE_REPORT_DIR`, the environment variable behind the test-only config
+`spark.comet.testing.icebergWriteReport.dir`. When it is set, the Comet driver plugin registers
+`IcebergWriteReportListener`, which writes one JSON line for each Iceberg write the tests run. Each line
+records one of three writers:
+
+- `native`: Comet's native writer (`CometIcebergWriteExec`).
+- `jvm`: Comet's split operator planned the write but kept Iceberg's JVM writer (`IcebergWriteExec`).
+  The line includes the reasons Comet recorded for not converting it.
+- `spark`: Spark's own V2 write operator ran the write, so Comet's split operator never saw it. Examples
+  are `WriteDelta` for merge-on-read, `WriteToDataSourceV2` for a streaming micro-batch, and on Spark
+  3.4 the CTAS and RTAS execs, which write the table themselves.
+
+`dev/ci/summarize-iceberg-writes.py` turns these records into a table on the job's summary page. It
+shows the count and share of each writer, the most common fallback reasons, and the Spark write
+operators. Each shard and the extensions job gets its own table. The shard coverage job adds one for
+all shards together, counting only the latest attempt of each shard. A shard whose latest attempt
+recorded no writes is named above the table rather than counted from an earlier attempt. The raw
+records are uploaded with the job's other reports. The summary never fails a job.
+`dev/local-ci.sh iceberg` prints the same summary after each shard and after the extensions target.

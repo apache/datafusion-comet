@@ -45,7 +45,7 @@ flowchart LR
 
   PRTIER["PR tier<br>Linux build, lint, Rust tests<br>TPC-H / TPC-DS<br>Comet suites, Spark 4.1"]
   QUEUE["Queue tier, on top of the PR tier<br>Spark SQL, Spark 4.1<br>Iceberg 1.11<br>macOS build and Comet suites<br>Benchmark check, Delta gate<br>PyArrow UDF, Spark 4.0 / 4.1 / 4.2"]
-  NIGHTLY["Nightly tier<br>Comet suites, Spark 3.4 / 3.5 / 4.0 / 4.2<br>Spark SQL, Spark 3.5 / 4.0<br>Iceberg 1.8 / 1.9 / 1.10"]
+  NIGHTLY["Nightly tier<br>Comet suites, Spark 3.4 / 3.5 / 4.0 / 4.2<br>Spark SQL, Spark 3.5 / 4.0 / 4.2<br>Iceberg 1.8 / 1.9 / 1.10"]
   S34["Neither tier<br>Spark SQL, Spark 3.4"]
   CACHE["Cache-refresh-only mode<br>the four cache-writing jobs, plus Lint"]
 ```
@@ -64,7 +64,7 @@ Suite by suite:
 | Delta contrib build gate                          | with label   | yes         | no      |
 | PyArrow UDF tests, Spark 4.0 / 4.1 / 4.2          | with label   | yes         | no      |
 | Comet test suites, Spark 3.4 / 3.5 / 4.0 / 4.2    | with label   | no          | yes     |
-| Spark SQL tests, Spark 3.5 / 4.0                  | with label   | no          | yes     |
+| Spark SQL tests, Spark 3.5 / 4.0 / 4.2            | with label   | no          | yes     |
 | Iceberg Spark SQL tests, Iceberg 1.8 / 1.9 / 1.10 | with label   | no          | yes     |
 | Spark SQL tests, Spark 3.4                        | with label   | no          | no      |
 
@@ -105,6 +105,9 @@ Which tier a job belongs to is the `POLICY` table in `dev/ci/compute-changes.py`
 filters are the `FILTERS` table in the same file, and `dev/ci/check-ci-config.py` holds the test
 cases that pin both down.
 
+A pull request against a release branch runs all three tiers at once; see
+[Release branches](#release-branches).
+
 ## Opting a pull request into a suite the PR tier skips
 
 Each suite outside the PR tier has a label that runs it on a pull request:
@@ -121,6 +124,7 @@ Each suite outside the PR tier has a label that runs it on a pull request:
 | `run-spark-3.4-tests`      | Spark SQL tests against Spark 3.4                     |
 | `run-spark-3.5-tests`      | Spark SQL tests against Spark 3.5                     |
 | `run-spark-4.0-tests`      | Spark SQL tests against Spark 4.0                     |
+| `run-spark-4.2-tests`      | Spark SQL tests against Spark 4.2                     |
 | `run-iceberg-tests`        | Iceberg Spark SQL tests against every Iceberg version |
 
 For a queue-tier suite the label only brings the run forward; the queue would have run it anyway
@@ -135,9 +139,10 @@ gh pr edit <number> --add-label run-spark-3.5-tests
 ```
 
 Applying a label starts a new run immediately at the pull request's current commit. That run
-executes only the suite the label gates; the PR tier already ran at that commit and is not
-repeated. Its aggregate verdict is published as `Required Checks (label run)` rather than
-`Required Checks`, so it can be read alongside the commit run without replacing it.
+belongs to the separate `Comet CI (label run)` workflow and executes only the suite the label
+gates; the PR tier already ran at that commit and is not repeated. Its aggregate verdict is
+published as `Label run / Required Checks (label run)` rather than `Required Checks`, so it can be
+read alongside the commit run without replacing it.
 
 For a queue-tier suite, that separate name costs nothing: the merge queue runs the suite again
 before the change lands, so a failure a label run surfaced still blocks the merge later. A
@@ -239,7 +244,7 @@ re-armed automatically.
 
 `ci.yml` also runs on a schedule, at 06:00 UTC every day, against what landed on `main` since the
 last successful scheduled run. That run executes only the nightly tier: the Comet test suites against the Spark
-profiles other than 4.1, the Spark SQL suites for Spark 3.5 and 4.0, and the Iceberg suites for
+profiles other than 4.1, the Spark SQL suites for Spark 3.5, 4.0 and 4.2, and the Iceberg suites for
 1.8, 1.9 and 1.10, each only when the day's changes touched files it covers. The queue already ran
 everything else against the same tree, so nothing in the queue tier is repeated. A day with no
 merges, or with only documentation changes, runs nothing.
@@ -264,16 +269,40 @@ stays in one place. When you pick up a nightly failure:
 Dispatching `ci.yml` from the Actions page with **Run workflow** runs every tier, including the
 nightly suites, if you need a result before the next scheduled run.
 
+## Miri safety checks
+
+`miri.yml` runs nightly and supports manual dispatch. It runs the shuffle crate's
+`spark_unsafe::` tests and the expression crate's `hash_funcs::` tests in separate jobs,
+so a failure in one does not cancel the other. These cover Comet's unsafe row decoding
+and hash kernels. The job also fails if its filter selects no passing tests. A failed
+scheduled run opens or updates the same `ci-nightly-failure` issue used by nightly CI.
+
+Run either suite locally after installing nightly Rust with the Miri component:
+
+```sh
+cd native
+cargo +nightly miri setup
+MIRIFLAGS="-Zmiri-disable-isolation" cargo +nightly miri test --locked \
+  -p datafusion-comet-shuffle --lib 'spark_unsafe::'
+MIRIFLAGS="-Zmiri-disable-isolation" cargo +nightly miri test --locked \
+  -p datafusion-comet-spark-expr --lib 'hash_funcs::'
+```
+
+Miri cannot execute the JVM, cloud clients, or compression libraries through FFI.
+Running the whole workspace reaches those dependencies or dependency errors in
+platform synchronization before completing the safety checks. Regular Rust CI still runs the
+full tests. When adding unsafe code, add suitable tests to the Miri matrix as well;
+these focused suites do not cover every unsafe operation in Comet.
+
 ## Checking that the scheduled runs are healthy
 
-A scheduled run has no pull request to turn red, so when one breaks, nothing puts it in front of
-anyone. Comet has three daily schedules plus a weekly one, and two of the daily ones report nothing
-when they fail:
+A scheduled run has no pull request to turn red, so check both whether it ran and whether it
+reported a failure. Comet has three daily schedules plus a weekly one:
 
 | Workflow               | Cron (UTC)   | Reports a failure?                    |
 | ---------------------- | ------------ | ------------------------------------- |
 | `publish_snapshot.yml` | `0 3 * * *`  | no                                    |
-| `miri.yml`             | `0 4 * * *`  | no                                    |
+| `miri.yml`             | `0 4 * * *`  | yes                                   |
 | `ci.yml` nightly tier  | `0 6 * * *`  | yes, a `ci-nightly-failure` issue     |
 | `codeql.yml`           | `16 4 * * 1` | yes, to the repository's Security tab |
 
@@ -293,9 +322,9 @@ Read the output for two different things:
   with no activity for 60 days, and it does not announce either. Confirm the workflow is still
   enabled with `gh api repos/apache/datafusion-comet/actions/workflows --jq '.workflows[] | "\(.state)\t\(.path)"'`,
   and re-enable it from the Actions page if it is `disabled_inactivity`.
-- **A run of failures.** One red night is a flake or a real regression, and for `ci.yml` there is an
-  issue open about it. Several consecutive red nights on `miri.yml` or `publish_snapshot.yml` means
-  nobody has looked; treat the streak, not the newest run, as the thing to explain.
+- **A run of failures.** One red night is a flake or a real regression. `ci.yml` and `miri.yml`
+  open or update a failure issue; `publish_snapshot.yml` does not. Investigate repeated failures
+  even when a report already exists; treat the streak, not the newest run, as the thing to explain.
 
 For the `ci.yml` nightly, green on its own does not mean the suites ran. Path filters and the diff
 base are both allowed to select nothing — a documentation-only day legitimately runs no suite at
@@ -310,11 +339,47 @@ gh run view "$run" --repo apache/datafusion-comet --json jobs \
         | group_by(.conclusion)[] | "\(length)\t\(.[0].conclusion)"'
 ```
 
-A healthy run over a day of normal merges reports about 40 successes, with the handful of skips
-being the suites that belong to the queue tier rather than the nightly one — Spark 3.4, Spark 4.1
+A healthy run over a day of normal merges reports about 47 successes — seven Spark SQL shards for
+each of 3.5, 4.0 and 4.2, plus the Iceberg shards — with the handful of skips being the suites that
+belong to the queue tier rather than the nightly one — Spark 3.4, Spark 4.1
 and Iceberg 1.11. If everything is skipped, open the run's `Detect changes` job: it logs the
 `Nightly base:` commit it diffed against and the list of changed files, which is enough to tell a
 genuinely quiet day from a base that has drifted.
+
+## Release branches
+
+Release branches (`branch-N.M`) start with the workflow files `main` had when they were cut, but have
+no merge queue and no nightly run. The merge queue covers only `main`, `ci.yml` runs on push only for `main`, and GitHub
+fires scheduled workflows only on the default branch, so a release branch gets no scheduled `ci.yml`,
+Miri or CodeQL run, and nothing runs after a pull request merges.
+
+On `main`, the tiers hold the expensive suites back for the queue and the nightly run, which still
+test every change. A release branch has neither, so holding a suite back there would mean never
+running it. A pull request that targets a release branch, such as a backport, therefore runs the PR,
+queue and nightly tiers together. Release branches get few pull requests, so this costs little. The
+path filters still apply, so a documentation-only change runs none of the heavy suites. The Spark
+SQL suite for Spark 3.4 still needs its `run-spark-3.4-tests` label, and the other `run-*` labels
+have nothing to add there.
+
+A release branch runs the workflow files committed on it, so a change to these rules on `main`
+reaches a release branch only if it is backported. `branch-1.0` predates the tiers and follows its
+own, older rules.
+
+Each pull request is tested against the release branch as it was when its run started, and with no
+merge queue, nothing tests the result of merging it. Two backports that pass on their own can still
+break the branch once both have landed. To run every suite against a release branch as it stands,
+dispatch `ci.yml` on it. A dispatch runs every job in that branch's own `ci.yml`, including `docs`,
+which publishes the website. So first check that the `if:` of the branch's `docs` job requires
+`github.ref == 'refs/heads/main'`. A branch without that guard publishes its own docs over the site.
+
+```sh
+git show apache/branch-N.M:.github/workflows/ci.yml | sed -n '/^  docs:/,/uses:/p'
+gh workflow run ci.yml --repo apache/datafusion-comet --ref branch-N.M
+```
+
+The release process does this before tagging each release candidate; see
+[Run the Full CI Suite](release_process.md#run-the-full-ci-suite). A failed dispatched run opens no
+`ci-nightly-failure` issue.
 
 ## Reproducing a suite failure locally
 

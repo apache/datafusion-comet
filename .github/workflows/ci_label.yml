@@ -1,0 +1,56 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+# Label runs: applying a `run-*` label to a pull request runs the suite that
+# label gates at the current commit, without a new push. The pipeline is
+# ci.yml itself; POLICY in dev/ci/compute-changes.py reads the `labeled`
+# action from the event context, which a called workflow shares with its
+# caller, and runs only what the new label gates.
+#
+# This is a separate workflow, and not a `labeled` type on ci.yml's own
+# `pull_request` trigger, because of how GitHub treats two runs of one
+# workflow at the same commit: it evaluates the pull request's required checks
+# against only one of them. A pull request opened with a label already
+# applied fires `opened` and `labeled` together, and when the label run was
+# the one picked, `Required Checks` showed as "Expected" forever and the merge
+# queue never accepted the pull request (issue #6159). Runs of this workflow
+# get their own check suite, so they cannot hide the commit run's verdict.
+# Nothing here publishes a required name either: every check is nested under
+# the calling job's name, and the aggregator reports as
+# `Required Checks (label run)`.
+name: Comet CI (label run)
+
+# No `concurrency` here. ci.yml declares its own group, keyed on this
+# workflow's name and the label, and the same group on the caller as well
+# would deadlock the two against each other.
+on:
+  pull_request:
+    types: [labeled]
+
+jobs:
+  ci:
+    name: Label run
+    # A called workflow's jobs can hold no more than the caller grants, and
+    # GitHub checks that for every job when the run starts, including the
+    # ones this event skips. This is the union of what ci.yml's jobs request:
+    # `changes` and `nightly_report` read the Actions API, and
+    # `nightly_report` files issues (it only runs on the schedule).
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+    uses: ./.github/workflows/ci.yml

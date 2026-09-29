@@ -23,10 +23,24 @@ Spark normalizes NaN and zero for floating point numbers for several cases. See 
 However, one exception is comparison. Spark does not normalize NaN and zero when comparing values
 because they are handled well in Spark (e.g., `SQLOrderingUtil.compareFloats`). But the comparison
 functions of arrow-rs used by DataFusion do not normalize NaN and zero (e.g., [arrow::compute::kernels::cmp::eq](https://docs.rs/arrow/latest/arrow/compute/kernels/cmp/fn.eq.html#)).
-So Comet adds additional normalization expression of NaN and zero for comparisons, and may still have differences
-to Spark in some cases, especially when the data contains both positive and negative zero. This is likely an edge
-case that is not of concern for many users. If it is a concern, setting `spark.comet.exec.strictFloatingPoint=true`
-will make relevant operations fall back to Spark.
+For top-level `FLOAT` and `DOUBLE` comparisons, Comet normalizes both operands before native
+execution, including noncanonical NaN literals. Top-level `IN`, `InSet`, and `NOT IN` membership
+also normalize dynamic candidates and lists containing NaN. When every candidate is a non-NaN
+literal, Comet keeps DataFusion's static filter and pruning path, enumerating both signed-zero
+forms when a list contains zero.
+
+This scalar membership handling does not yet recurse into floating-point leaves nested in arrays
+or structs; see [#6019](https://github.com/apache/datafusion-comet/issues/6019).
+
+## Nested equality and membership
+
+For arrays and structs containing `FLOAT` or `DOUBLE`, native `=`, `<>`, `IN`, and `NOT IN`
+compare signed zeros as equal and all NaN representations as equal, matching Spark. This also
+covers single-candidate membership that Spark rewrites into equality.
+
+Equality and dynamic membership compare nested elements directly and stop at the first mismatch.
+Constant membership sets use normalized comparison values for static lookup. These operations
+preserve SQL null semantics and do not change the values returned by projections.
 
 ## Ordering: NaN and signed zero (`-0.0` vs `+0.0`)
 

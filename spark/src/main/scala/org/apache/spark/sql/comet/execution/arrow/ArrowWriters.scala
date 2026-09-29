@@ -165,9 +165,21 @@ class ArrowWriter(val root: VectorSchemaRoot, fields: Array[ArrowFieldWriter]) {
     count = input.numElements()
   }
 
+  // Driven by the writer's fields rather than by the input's width, because a producer may hand
+  // over a batch wider than the schema it is written under. Iceberg's vectorized reader does:
+  // it reads with the schema its delete filter required, which carries `_pos` after the projected
+  // columns when a data file has position deletes, and trims the extras back only when the file
+  // also has equality deletes. Those extras are trailing -- `removeExtraColumns` keeps the leading
+  // `expectedSchema` prefix when it does trim -- so writing the first `fields.length` columns
+  // writes exactly the columns the schema describes. A batch with fewer columns than the schema
+  // has no such reading and is refused rather than written short.
   def writeColumns(input: ColumnarBatch, startRow: Int, numRows: Int): Unit = {
+    require(
+      input.numCols() >= fields.length,
+      s"Cannot write ${fields.length} columns from a batch of ${input.numCols()} " +
+        (if (input.numCols() == 1) "column" else "columns"))
     var columnIndex = 0
-    while (columnIndex < input.numCols()) {
+    while (columnIndex < fields.length) {
       fields(columnIndex).writeColumnSlice(input.column(columnIndex), startRow, numRows)
       columnIndex += 1
     }

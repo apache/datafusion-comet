@@ -23,7 +23,8 @@ import scala.collection.mutable.ListBuffer
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.internal.Logging
-import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Expression, Literal}
+import org.apache.spark.sql.catalyst.analysis.Resolver
+import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, Expression, Literal}
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
 import org.apache.spark.sql.comet.{CometNativeExec, CometNativeScanExec, CometScanExec}
 import org.apache.spark.sql.execution.{FileSourceScanExec, InSubqueryExec, SubqueryAdaptiveBroadcastExec}
@@ -51,6 +52,30 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
   // like "file_size" could collide with a real column of the same name. Prefix to avoid it.
   private[comet] val constantMetadataFieldPrefix = "_comet_metadata_"
 
+  private val unsupportedDefaultReason =
+    "Full native scan disabled because one or more column default values are not supported"
+
+  private[comet] def serializeExistenceDefaultValues(
+      schema: StructType,
+      output: Seq[Attribute]): Option[(Seq[Expr], Seq[java.lang.Long])] = {
+    val defaults = getExistenceDefaultValues(schema).iterator
+      .zip(schema.fields.iterator)
+      .zipWithIndex
+      .collect {
+        case ((value, field), index) if value != null =>
+          val expression = if (isVariantType(field.dataType)) {
+            // Spark's vectorized reader cannot materialize a non-null Variant default.
+            None
+          } else {
+            Some(Literal.create(value, field.dataType))
+          }
+          expression.flatMap(exprToProto(_, output)).map(_ -> java.lang.Long.valueOf(index))
+      }
+      .toSeq
+    // Never drop a value independently of its index: that would shift every later default.
+    if (defaults.forall(_.isDefined)) Some(defaults.flatten.unzip) else None
+  }
+
   /**
    * Build synthetic constant-metadata field names, uniquified against `reservedNames` (physical
    * data and partition schema names): DataFusion substitutes partition constants BY NAME, so a
@@ -72,6 +97,27 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
       StructField(name, attr.dataType, attr.nullable)
     }
   }
+
+  /**
+   * The data schema the native scan actually serializes.
+   *
+   * Spark's required schema can prune a Variant column, including a Variant nested under an
+   * unrequested struct, while the complete relation schema still contains it. Keep ordinary
+   * fields unchanged and retain the pruned required field for a requested Variant-bearing root,
+   * including a struct whose Variant child was pruned. Entirely unread Variant roots never enter
+   * the native schema.
+   */
+  private def nativeDataSchema(
+      dataSchema: StructType,
+      requiredSchema: StructType,
+      resolver: Resolver): StructType =
+    StructType(dataSchema.fields.flatMap { field =>
+      if (containsVariantType(field.dataType)) {
+        requiredSchema.fields.find(requiredField => resolver(requiredField.name, field.name))
+      } else {
+        Some(field)
+      }
+    })
 
   /** Determine whether the scan is supported and tag the Spark plan with any fallback reasons */
   def isSupported(scanExec: FileSourceScanExec): Boolean = {
@@ -113,6 +159,47 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
         .contains("true")) {
 
       withFallbackReason(scanExec, "Full native scan disabled because ignoreMissingFiles enabled")
+    }
+
+    if (serializeExistenceDefaultValues(scanExec.requiredSchema, scanExec.output).isEmpty) {
+      withFallbackReason(scanExec, unsupportedDefaultReason)
+    }
+
+    if (scanExec.requiredSchema.exists(field => isVariantType(field.dataType))) {
+      // Spark's strict legacy reader owns malformed-layout errors (SPARK-47546).
+      // TODO: Remove this guard once the native reader implements Spark's strict Variant layout
+      // validation and malformed-input errors when allowReadingShredded=false.
+      if (!SQLConf.get.getConfString("spark.sql.variant.allowReadingShredded").toBoolean) {
+        withFallbackReason(scanExec, "Native Variant scans require allowReadingShredded=true")
+      }
+      // These settings change the interpretation of shredded timestamp children, whose types
+      // are not visible in the logical Variant schema at planning time.
+      // TODO: Remove this guard once the native reader receives these settings and applies
+      // Spark's timestamp inference to shredded Variant children.
+      if (SQLConf.get.legacyParquetNanosAsLong || !SQLConf.get.parquetInferTimestampNTZEnabled) {
+        withFallbackReason(
+          scanExec,
+          "Native Variant scans require default Parquet timestamp inference")
+      }
+    }
+
+    // The native scan serializes whole schemas rather than just the required columns, so every
+    // field it serializes must have a proto representation. Types that have none (e.g. GEOMETRY /
+    // GEOGRAPHY) would otherwise crash schema serialization; fall back instead. Validate the same
+    // pruned data schema `convert` serializes, and the full partition schema, which is never
+    // pruned.
+    val serializedFields =
+      nativeDataSchema(
+        scanExec.relation.dataSchema,
+        scanExec.requiredSchema,
+        scanExec.conf.resolver).fields ++ scanExec.relation.partitionSchema.fields
+    serializedFields.foreach { field =>
+      if (serializeDataType(field.dataType).isEmpty) {
+        withFallbackReason(
+          scanExec,
+          s"Native scan does not support data type ${field.dataType.simpleString} " +
+            s"in column ${field.name}")
+      }
     }
 
     // the scan is supported if no fallback reasons were added to the node
@@ -168,23 +255,13 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
         commonBuilder.addAllDataFilters(dataFilters.asJava)
       }
 
-      val possibleDefaultValues = getExistenceDefaultValues(scan.requiredSchema)
-      if (possibleDefaultValues.exists(_ != null)) {
-        // Our schema has default values. Serialize two lists, one with the default values
-        // and another with the indexes in the schema so the native side can map missing
-        // columns to these default values.
-        val (defaultValues, indexes) = possibleDefaultValues.iterator.zipWithIndex
-          .filter { case (expr, _) => expr != null }
-          .map { case (expr, index) =>
-            // ResolveDefaultColumnsUtil.getExistenceDefaultValues has evaluated these
-            // expressions and they should now just be literals.
-            (Literal(expr), index.toLong.asInstanceOf[java.lang.Long])
-          }
-          .toList
-          .unzip
-        commonBuilder.addAllDefaultValues(
-          defaultValues.flatMap(exprToProto(_, scan.output)).asJava)
-        commonBuilder.addAllDefaultValuesIndexes(indexes.asJava)
+      serializeExistenceDefaultValues(scan.requiredSchema, scan.output) match {
+        case Some((defaultValues, indexes)) =>
+          commonBuilder.addAllDefaultValues(defaultValues.asJava)
+          commonBuilder.addAllDefaultValuesIndexes(indexes.asJava)
+        case None =>
+          withFallbackReason(scan, unsupportedDefaultReason)
+          return None
       }
 
       // Extract object store options from first file (S3 configs apply to all files in scan).
@@ -211,26 +288,16 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
       val partitionSchema = schema2Proto(partitionSchemaFields)
       val requiredSchema = schema2Proto(scan.requiredSchema)
 
-      // Spark's required schema can prune a Variant column, including one nested under an
-      // unrequested struct, while the complete relation schema still contains that unsupported
-      // type. Exclude unread roots and replace requested roots with their already-validated,
-      // pruned required fields so Variant never enters the native reader data schema. A requested
-      // Variant is rejected by CometScanRule and CometExecRule before reaching this point.
-      val nativeDataSchema = StructType(scan.relation.dataSchema.fields.flatMap { field =>
-        if (containsVariantType(field.dataType)) {
-          scan.requiredSchema.fields.find(requiredField =>
-            scan.conf.resolver(requiredField.name, field.name))
-        } else {
-          Some(field)
-        }
-      })
-      val dataSchema = schema2Proto(nativeDataSchema)
+      // Serialize the same pruned schema `isSupported` validated; see `nativeDataSchema`.
+      val prunedDataSchema =
+        nativeDataSchema(scan.relation.dataSchema, scan.requiredSchema, scan.conf.resolver)
+      val dataSchema = schema2Proto(prunedDataSchema)
 
       val dataSchemaIndexes = scan.requiredSchema.map(field => {
-        nativeDataSchema.fieldIndex(field.name)
+        prunedDataSchema.fieldIndex(field.name)
       })
-      val partitionSchemaIndexes = nativeDataSchema.fields.length until
-        (nativeDataSchema.length + partitionSchemaFields.length)
+      val partitionSchemaIndexes = prunedDataSchema.fields.length until
+        (prunedDataSchema.length + partitionSchemaFields.length)
 
       val projectionVector = (dataSchemaIndexes ++ partitionSchemaIndexes).map(idx =>
         idx.toLong.asInstanceOf[java.lang.Long])
@@ -261,12 +328,13 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
       // Field-ID matching: only ask the native side to do extra work when the conf is on AND
       // the requested schema actually carries IDs. Spark's ParquetReadSupport applies the same
       // gate before invoking matchIdField.
-      val useFieldId =
-        scan.conf.getConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED) &&
-          ParquetUtils.hasFieldIds(scan.requiredSchema)
+      val hasFieldIds = ParquetUtils.hasFieldIds(scan.requiredSchema)
+      val useFieldId = scan.conf.getConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED) && hasFieldIds
       commonBuilder.setUseFieldId(useFieldId)
-      commonBuilder.setIgnoreMissingFieldId(
-        scan.conf.getConf(SQLConf.IGNORE_MISSING_PARQUET_FIELD_ID))
+      // Spark's ParquetReadSupport refuses a file without field ids whenever the requested
+      // schema carries one, whatever the read flag says, unless ignoreMissing is set.
+      commonBuilder.setRequireFieldIds(
+        hasFieldIds && !scan.conf.getConf(SQLConf.IGNORE_MISSING_PARQUET_FIELD_ID))
 
       commonBuilder.setAllowTypePromotion(CometConf.COMET_SCHEMA_EVOLUTION_ENABLED)
       commonBuilder.setAllowTimestampLtzToNtz(CometConf.COMET_ALLOW_TIMESTAMP_LTZ_AS_NTZ)

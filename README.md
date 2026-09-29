@@ -104,7 +104,8 @@ $SPARK_HOME/bin/spark-shell \
     --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
     --conf spark.comet.explain.fallback.enabled=true \
     --conf spark.memory.offHeap.enabled=true \
-    --conf spark.memory.offHeap.size=4g
+    --conf spark.memory.offHeap.size=4g \
+    --conf spark.executor.memoryOverhead=2g
 ```
 
 For full installation instructions, published jar downloads, and configuration reference, see the
