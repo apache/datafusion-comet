@@ -154,12 +154,20 @@ jobs:
         run: |
           cd apache-iceberg
           rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
-          ENABLE_COMET=true ENABLE_COMET_ONHEAP=true ./gradlew -DsparkVersions=${{ inputs.spark-short }} -DscalaVersion=${{ inputs.scala }} -DflinkVersions= -DkafkaVersions= \
+          # COMET_ICEBERG_WRITE_REPORT_DIR records which writer ran each Iceberg
+          # write; see dev/ci/summarize-iceberg-writes.py.
+          ENABLE_COMET=true ENABLE_COMET_ONHEAP=true COMET_ICEBERG_WRITE_REPORT_DIR="$PWD/build/comet-iceberg-writes" \
+            ./gradlew -DsparkVersions=${{ inputs.spark-short }} -DscalaVersion=${{ inputs.scala }} -DflinkVersions= -DkafkaVersions= \
             :iceberg-spark:iceberg-spark-${{ inputs.spark-short }}_${{ inputs.scala }}:test \
             --init-script ../dev/ci/iceberg-test-shards.gradle \
             -PcometShardTask=:iceberg-spark:iceberg-spark-${{ inputs.spark-short }}_${{ inputs.scala }}:test \
             -PcometShardIndex=${{ matrix.shard }} -PcometShardCount=${{ needs.build-native.outputs.shard-count }} \
             -Pquick=true -x javadoc
+      - name: Summarize Iceberg writes
+        if: ${{ !cancelled() }}
+        run: |
+          python3 dev/ci/summarize-iceberg-writes.py --title "iceberg-spark shard ${{ matrix.shard }}" \
+            apache-iceberg/build/comet-iceberg-writes
       - name: Upload Iceberg shard inventory and test reports
         if: ${{ !cancelled() }}
         # iceberg-spark-shard-coverage downloads the inventory, so a flaky
@@ -170,6 +178,7 @@ jobs:
           path: |
             apache-iceberg/**/build/comet-shards/*.json
             apache-iceberg/**/build/test-results/test/*.xml
+            apache-iceberg/build/comet-iceberg-writes/*.jsonl
           retention-days: 7
 
   iceberg-spark-shard-coverage:
@@ -190,6 +199,11 @@ jobs:
         run: |
           python3 dev/ci/check-iceberg-shards.py --manifests iceberg-shard-reports \
             --task :iceberg-spark:iceberg-spark-${{ inputs.spark-short }}_${{ inputs.scala }}:test
+      - name: Summarize Iceberg writes across shards
+        if: ${{ !cancelled() }}
+        run: |
+          python3 dev/ci/summarize-iceberg-writes.py --title "iceberg-spark, all shards" \
+            iceberg-shard-reports
 
   iceberg-spark-extensions:
     needs: build-native
@@ -222,9 +236,23 @@ jobs:
         run: |
           cd apache-iceberg
           rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
-          ENABLE_COMET=true ENABLE_COMET_ONHEAP=true ./gradlew -DsparkVersions=${{ inputs.spark-short }} -DscalaVersion=${{ inputs.scala }} -DflinkVersions= -DkafkaVersions= \
+          ENABLE_COMET=true ENABLE_COMET_ONHEAP=true COMET_ICEBERG_WRITE_REPORT_DIR="$PWD/build/comet-iceberg-writes" \
+            ./gradlew -DsparkVersions=${{ inputs.spark-short }} -DscalaVersion=${{ inputs.scala }} -DflinkVersions= -DkafkaVersions= \
             :iceberg-spark:iceberg-spark-extensions-${{ inputs.spark-short }}_${{ inputs.scala }}:test \
             -Pquick=true -x javadoc
+      - name: Summarize Iceberg writes
+        if: ${{ !cancelled() }}
+        run: |
+          python3 dev/ci/summarize-iceberg-writes.py --title "iceberg-spark-extensions" \
+            apache-iceberg/build/comet-iceberg-writes
+      - name: Upload Iceberg write report
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/upload-artifact-retry
+        with:
+          name: iceberg-spark-extensions-writes-${{ inputs.iceberg-full }}-spark-${{ inputs.spark-full }}-scala-${{ inputs.scala }}-jdk${{ inputs.java }}-attempt-${{ github.run_attempt }}
+          path: apache-iceberg/build/comet-iceberg-writes/*.jsonl
+          if-no-files-found: ignore
+          retention-days: 7
 
   iceberg-spark-runtime:
     needs: build-native

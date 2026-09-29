@@ -190,8 +190,20 @@ writes the same Arrow IPC block format as native shuffle, so direct read applies
 
 ## Memory Management
 
-- `CometShuffleMemoryAllocator`: Custom allocator for off-heap memory pages
-- Memory is allocated in pages; when allocation fails, writers spill to disk
+- `CometShuffleMemoryAllocator.getInstance` returns the allocator for the task. Pages are always
+  `Unsafe`-allocated, because their addresses are handed to native code, but what bounds them
+  depends on Spark's memory mode.
+- Off-heap mode gets `CometUnifiedShuffleMemoryAllocator`, an ordinary Spark `MemoryConsumer`
+  drawing from `spark.memory.offHeap.size`. When it cannot acquire a page the writer spills to
+  disk.
+- On-heap mode gets `CometUnboundedShuffleMemoryAllocator`, which keeps no budget and so never
+  refuses a page. Nothing bounds these allocations, and memory pressure never triggers a spill.
+  That mode exists only so the Spark SQL tests can run against Comet. See
+  [Memory Management](memory_management.md).
+- Row count still triggers spilling in either mode. `CometDiskBlockWriter` spills at
+  `min(spark.comet.shuffle.jvm.spillThreshold, spark.comet.shuffle.jvm.batchSize)`.
+  `CometShuffleExternalSorter` spills at `spark.comet.shuffle.jvm.spillThreshold` alone, which
+  defaults to `Int.MaxValue`, so on the sort path that trigger is effectively off by default.
 - `CometDiskBlockWriter` coordinates spilling across all partition writers (largest first)
 
 ## Configuration

@@ -41,7 +41,7 @@ import org.apache.spark.sql.execution.adaptive.ShuffleQueryStageExec
 import org.apache.spark.sql.execution.exchange.{ENSURE_REQUIREMENTS, ShuffleExchangeExec, ShuffleExchangeLike, ShuffleOrigin}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics, SQLShuffleReadMetricsReporter, SQLShuffleWriteMetricsReporter}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, CalendarIntervalType, DataType, DateType, DayTimeIntervalType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, NullType, ShortType, StringType, StructField, StructType, TimestampNTZType, TimestampType, YearMonthIntervalType}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, StructField, StructType, TimestampNTZType, TimestampType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.MutablePair
 import org.apache.spark.util.collection.unsafe.sort.{PrefixComparators, RecordComparator}
@@ -49,7 +49,7 @@ import org.apache.spark.util.random.XORShiftRandom
 
 import com.google.common.base.Objects
 
-import org.apache.comet.{CometConf, CometExplainInfo, DataTypeSupport}
+import org.apache.comet.{CometConf, CometExplainInfo}
 import org.apache.comet.CometConf.{COMET_SHUFFLE_ENABLED, COMET_SHUFFLE_MODE}
 import org.apache.comet.CometSparkSessionExtensions.{cometCelebornShuffleFallbackReason, hasFallbackReason, isCometCelebornShuffleManagerEnabled, isCometShuffleManagerEnabled, isSpark40Plus, withFallbackReasons}
 import org.apache.comet.serde.{Compatible, OperatorOuterClass, QueryPlanSerde, SupportLevel, Unsupported}
@@ -583,33 +583,6 @@ object CometShuffleExchangeExec
         false
     }
 
-    /**
-     * Determine which data types are supported as data columns in native shuffle.
-     *
-     * Native shuffle relies on the Arrow IPC writer to serialize batches to disk, so it should
-     * support all types that Comet supports.
-     */
-    def supportedSerializableDataType(dt: DataType): Boolean = dt match {
-      case _: BooleanType | _: ByteType | _: ShortType | _: IntegerType | _: LongType |
-          _: FloatType | _: DoubleType | _: StringType | _: BinaryType | _: TimestampType |
-          _: TimestampNTZType | _: DecimalType | _: DateType | _: NullType |
-          _: YearMonthIntervalType | _: DayTimeIntervalType | CalendarIntervalType =>
-        true
-      case dt if isTimeType(dt) =>
-        true
-      case StructType(fields) =>
-        fields.nonEmpty && fields.forall(f => supportedSerializableDataType(f.dataType)) &&
-        // Java Arrow keys struct children by name, so the FFI import of a decoded batch
-        // fails on duplicate field names
-        !DataTypeSupport.hasDuplicateFieldNames(fields)
-      case ArrayType(elementType, _) =>
-        supportedSerializableDataType(elementType)
-      case MapType(keyType, valueType, _) =>
-        supportedSerializableDataType(keyType) && supportedSerializableDataType(valueType)
-      case _ =>
-        false
-    }
-
     val reasons = scala.collection.mutable.ListBuffer.empty[String]
 
     if (!isCometNativeShuffleMode(s.conf)) {
@@ -620,7 +593,13 @@ object CometShuffleExchangeExec
     val inputs = s.child.output
 
     for (input <- inputs) {
-      if (!supportedSerializableDataType(input.dataType)) {
+      if (!QueryPlanSerde.supportedDataType(
+          input.dataType,
+          allowComplex = true,
+          allowIntervals = true,
+          // Java Arrow keys struct children by name, so the FFI import of a decoded batch
+          // fails on duplicate field names.
+          allowDuplicateStructFieldNames = false)) {
         reasons += s"unsupported shuffle data type ${input.dataType} for input $input"
         return reasons.toSeq
       }
@@ -704,31 +683,6 @@ object CometShuffleExchangeExec
    */
   private def columnarShuffleFailureReasons(s: ShuffleExchangeExec): Seq[String] = {
 
-    /**
-     * Determine which data types are supported as data columns in columnar shuffle.
-     *
-     * Comet columnar shuffle used native code to convert Spark unsafe rows to Arrow batches, see
-     * shuffle/row.rs
-     */
-    def supportedSerializableDataType(dt: DataType): Boolean = dt match {
-      case _: BooleanType | _: ByteType | _: ShortType | _: IntegerType | _: LongType |
-          _: FloatType | _: DoubleType | _: StringType | _: BinaryType | _: TimestampType |
-          _: TimestampNTZType | _: DecimalType | _: DateType | _: NullType =>
-        true
-      case dt if isTimeType(dt) =>
-        true
-      case StructType(fields) =>
-        fields.nonEmpty && fields.forall(f => supportedSerializableDataType(f.dataType)) &&
-        // Java Arrow stream reader cannot work on duplicate field name
-        !DataTypeSupport.hasDuplicateFieldNames(fields)
-      case ArrayType(elementType, _) =>
-        supportedSerializableDataType(elementType)
-      case MapType(keyType, valueType, _) =>
-        supportedSerializableDataType(keyType) && supportedSerializableDataType(valueType)
-      case _ =>
-        false
-    }
-
     val reasons = scala.collection.mutable.ListBuffer.empty[String]
 
     if (!isCometJVMShuffleMode(s.conf)) {
@@ -749,7 +703,14 @@ object CometShuffleExchangeExec
     val inputs = s.child.output
 
     for (input <- inputs) {
-      if (!supportedSerializableDataType(input.dataType)) {
+      if (!QueryPlanSerde.supportedDataType(
+          input.dataType,
+          allowComplex = true,
+          // The native row-to-Arrow converter (spark_unsafe/row.rs) has no CalendarInterval
+          // support, so calendar intervals must fall back to Spark shuffle.
+          allowCalendarInterval = false,
+          // Java Arrow stream reader cannot work on duplicate field names.
+          allowDuplicateStructFieldNames = false)) {
         reasons += s"unsupported shuffle data type ${input.dataType} for input $input"
         return reasons.toSeq
       }

@@ -32,7 +32,7 @@ import org.apache.arrow.vector.types.pojo.ArrowType
 import org.apache.spark.CometDriverPlugin
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.{CometTestBase, DataFrame, QueryTest, Row}
-import org.apache.spark.sql.catalyst.expressions.{And, Attribute, AttributeReference, Expression, GreaterThanOrEqual, LessThan, Literal}
+import org.apache.spark.sql.catalyst.expressions.{And, Attribute, AttributeReference, EqualTo, Expression, GreaterThan, GreaterThanOrEqual, LessThan, Literal}
 import org.apache.spark.sql.columnar.{CachedBatch, SimpleMetricsCachedBatch}
 import org.apache.spark.sql.comet.{CometBroadcastHashJoinExec, CometInMemoryTableScanExec, CometSortExec, CometSortMergeJoinExec}
 import org.apache.spark.sql.comet.execution.arrow.{ArrowCachedBatchSerializer, CometCachedBatchHelper}
@@ -101,6 +101,20 @@ class CometInMemoryCacheSuite extends CometTestBase {
       .map(_.getClass.getName)
       .distinct()
       .collect()
+  }
+
+  // Disabling Comet does not bypass an existing cache: both readers would still consume the
+  // same serialized values. Materialize every Spark reference before registering the cache.
+  private def uncachedSparkAnswer(query: String): Array[Row] = {
+    var expected = Array.empty[Row]
+    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+      val df = spark.sql(query)
+      assert(
+        df.queryExecution.withCachedData.collect { case r: InMemoryRelation => r }.isEmpty,
+        "the reference answer must not read a cached relation")
+      expected = df.collect()
+    }
+    expected
   }
 
   // The tests below are ported from Spark 4.1.2's AdaptiveQueryExecSuite; see each source link.
@@ -301,7 +315,7 @@ class CometInMemoryCacheSuite extends CometTestBase {
           Array("org.apache.spark.sql.comet.execution.arrow.CometCachedBatch")))
 
       val df = spark.sql("SELECT key, count(*) FROM abc GROUP BY key")
-      checkSparkAnswer(df)
+      checkAnswer(df, (0L until 1000L).map(i => Row(i, 1L)))
 
       val plan = df.queryExecution.executedPlan.toString()
       assert(plan.contains("CometInMemoryTableScan"))
@@ -342,7 +356,7 @@ class CometInMemoryCacheSuite extends CometTestBase {
       "spark.comet.sparkToColumnar.enabled" -> "true") {
 
       val df = spark.sql("SELECT key, count(*) FROM comet_cache_disabled GROUP BY key")
-      checkSparkAnswer(df)
+      checkAnswer(df, (0L until 1000L).map(i => Row(i, 1L)))
 
       val plan = df.queryExecution.executedPlan.toString()
       assert(!plan.contains("CometInMemoryTableScan"))
@@ -561,6 +575,19 @@ class CometInMemoryCacheSuite extends CometTestBase {
           .sql(s"SELECT id AS key, $column FROM range(1000)")
           .createOrReplaceTempView("default_cached_batch")
 
+        val columnarQuery = """
+          SELECT key, payload
+          FROM default_cached_batch
+          WHERE key >= 10 AND key < 20
+        """
+        val rowQuery = """
+          SELECT payload
+          FROM default_cached_batch
+          WHERE key >= 10 AND key < 20
+        """
+        val expectedColumnar = uncachedSparkAnswer(columnarQuery)
+        val expectedRows = uncachedSparkAnswer(rowQuery)
+
         spark.catalog.cacheTable("default_cached_batch")
         spark.table("default_cached_batch").count()
 
@@ -570,24 +597,16 @@ class CometInMemoryCacheSuite extends CometTestBase {
           s"$column was cached in Comet's format")
 
         // Columnar read path, delegated to Spark's serializer.
-        val columnarDf = spark.sql("""
-          SELECT key, payload
-          FROM default_cached_batch
-          WHERE key >= 10 AND key < 20
-        """)
-        checkSparkAnswer(columnarDf)
+        val columnarDf = spark.sql(columnarQuery)
+        checkAnswer(columnarDf, expectedColumnar.toSeq)
         assert(
           !columnarDf.queryExecution.executedPlan.toString().contains("CometInMemoryTableScan"))
 
         // Row read path: disabling the vectorized cache reader makes Spark use
         // convertCachedBatchToInternalRow.
         withSQLConf(SQLConf.CACHE_VECTORIZED_READER_ENABLED.key -> "false") {
-          val rowDf = spark.sql("""
-            SELECT payload
-            FROM default_cached_batch
-            WHERE key >= 10 AND key < 20
-          """)
-          checkSparkAnswer(rowDf)
+          val rowDf = spark.sql(rowQuery)
+          checkAnswer(rowDf, expectedRows.toSeq)
           assert(!rowDf.queryExecution.executedPlan.toString().contains("CometInMemoryTableScan"))
         }
 
@@ -620,7 +639,7 @@ class CometInMemoryCacheSuite extends CometTestBase {
         FROM multi_partition_cache
         GROUP BY id % 100
       """)
-      checkSparkAnswer(grouped)
+      checkAnswer(grouped, (0L until 100L).map(i => Row(i, 10L)))
 
       val groupedPlan = grouped.queryExecution.executedPlan.toString()
       assert(groupedPlan.contains("CometInMemoryTableScan"))
@@ -645,7 +664,7 @@ class CometInMemoryCacheSuite extends CometTestBase {
       empty.count()
 
       val emptyDf = spark.sql("SELECT * FROM empty_cache")
-      checkSparkAnswer(emptyDf)
+      checkCometAnswer(emptyDf, Seq.empty[Row])
 
       val emptyPlan = emptyDf.queryExecution.executedPlan.toString()
       assert(emptyPlan.contains("CometInMemoryTableScan"))
@@ -679,7 +698,7 @@ class CometInMemoryCacheSuite extends CometTestBase {
           Array("org.apache.spark.sql.comet.execution.arrow.CometCachedBatch")))
 
       val df = spark.sql("SELECT key FROM project_cache")
-      checkSparkAnswer(df)
+      checkAnswer(df, (0L until 1000L).map(Row(_)))
 
       val plan = df.queryExecution.executedPlan.toString()
       assert(plan.contains("CometInMemoryTableScan"))
@@ -717,7 +736,7 @@ class CometInMemoryCacheSuite extends CometTestBase {
           Array("org.apache.spark.sql.comet.execution.arrow.CometCachedBatch")))
 
       val df = spark.sql("SELECT group, count(*) FROM shuffle_cache GROUP BY group")
-      checkSparkAnswer(df)
+      checkAnswer(df, (0L until 100L).map(i => Row(i, 10L)))
 
       val plan = df.queryExecution.executedPlan.toString()
       assert(plan.contains("CometInMemoryTableScan"))
@@ -804,7 +823,7 @@ class CometInMemoryCacheSuite extends CometTestBase {
             spark.catalog.dropTempView("typed_stats_input")
           }
 
-          withSparkColumnarCache("typed_stats_columnar")(path => df.write.parquet(path)) {
+          withSparkColumnarCache("typed_stats_columnar")(path => df.write.parquet(path)) { _ =>
             val relation = spark.sharedState.cacheManager
               .lookupCachedData(spark.table("typed_stats_columnar"))
               .get
@@ -871,7 +890,7 @@ class CometInMemoryCacheSuite extends CometTestBase {
         df.unpersist(blocking = true)
         spark.catalog.dropTempView("extreme_stats_input")
       }
-      withSparkColumnarCache("extreme_stats_columnar")(path => df.write.parquet(path)) {
+      withSparkColumnarCache("extreme_stats_columnar")(path => df.write.parquet(path)) { _ =>
         checkStats("extreme_stats_columnar")
       }
     }
@@ -941,7 +960,7 @@ class CometInMemoryCacheSuite extends CometTestBase {
         FROM prune_cache
         WHERE key >= 900 AND key < 905
       """)
-      checkSparkAnswer(df)
+      checkAnswer(df, (900L until 905L).map(i => Row(i, i % 7)))
 
       val plan = df.queryExecution.executedPlan.toString()
       assert(plan.contains("CometInMemoryTableScan"))
@@ -980,12 +999,8 @@ class CometInMemoryCacheSuite extends CometTestBase {
 
         val df =
           spark.sql("SELECT key, value FROM prune_conf_cache WHERE key >= 900 AND key < 905")
-        checkSparkAnswer(df)
-
-        // checkSparkAnswer takes its argument by name and executes its own copies of the query,
-        // so this df's plan instance has not run and its metrics are all still zero. Force this
-        // exact plan before reading them, or the comparison below passes vacuously with 0 == 0.
-        df.collect()
+        // Run this exact plan once so its metrics describe the checked result.
+        QueryTest.checkAnswer(df, (900L until 905L).map(i => Row(i, i % 7)), checkToRDD = false)
 
         val scans = df.queryExecution.executedPlan.collect {
           case s: org.apache.spark.sql.comet.CometInMemoryTableScanExec => s
@@ -1049,7 +1064,7 @@ class CometInMemoryCacheSuite extends CometTestBase {
         s"expected all ${info.numPartitions} partitions cached, got ${info.numCachedPartitions}")
 
       val df = spark.sql("SELECT key, value FROM disk_cache WHERE key >= 900 AND key < 905")
-      checkSparkAnswer(df)
+      checkAnswer(df, (900L until 905L).map(i => Row(i, i % 7)))
       val plan = df.queryExecution.executedPlan.toString()
       assert(plan.contains("CometInMemoryTableScan"))
 
@@ -1082,6 +1097,10 @@ class CometInMemoryCacheSuite extends CometTestBase {
           (2, java.sql.Timestamp.valueOf("1970-01-01 00:00:00")),
           (3, null))
         rows.toDF("id", "ts").createOrReplaceTempView("ts_cache")
+        val valuesQuery = "SELECT id, ts FROM ts_cache ORDER BY id"
+        val stringsQuery = "SELECT id, CAST(ts AS STRING) AS s FROM ts_cache ORDER BY id"
+        val expectedValues = uncachedSparkAnswer(valuesQuery)
+        val expectedStrings = uncachedSparkAnswer(stringsQuery)
 
         spark.catalog.cacheTable("ts_cache")
         assert(spark.table("ts_cache").count() == 3)
@@ -1127,9 +1146,8 @@ class CometInMemoryCacheSuite extends CometTestBase {
             s"got ${labels.mkString("[", ",", "]")}")
 
         // The label change must not move any values.
-        checkSparkAnswer(spark.sql("SELECT id, ts FROM ts_cache ORDER BY id"))
-        checkSparkAnswer(
-          spark.sql("SELECT id, CAST(ts AS STRING) AS s FROM ts_cache ORDER BY id"))
+        checkAnswer(spark.sql(valuesQuery), expectedValues.toSeq)
+        checkAnswer(spark.sql(stringsQuery), expectedStrings.toSeq)
 
         spark.catalog.clearCache()
       }
@@ -1185,7 +1203,7 @@ class CometInMemoryCacheSuite extends CometTestBase {
       spark.table("count_cache").count()
 
       val df = spark.sql("SELECT count(*) FROM count_cache")
-      checkSparkAnswer(df)
+      checkAnswer(df, Seq(Row(1000L)))
 
       val plan = df.queryExecution.executedPlan.toString()
       assert(plan.contains("CometInMemoryTableScan"))
@@ -1234,7 +1252,7 @@ class CometInMemoryCacheSuite extends CometTestBase {
 
       // Expected values come from the uncached query so a wrong-but-consistent cached answer
       // cannot make this pass.
-      val expected = spark.sql(query).orderBy("l").collect()
+      val expected = uncachedSparkAnswer(s"$query ORDER BY l")
 
       spark.sql(query).createOrReplaceTempView("all_types_cache")
       spark.catalog.cacheTable("all_types_cache")
@@ -1307,7 +1325,7 @@ class CometInMemoryCacheSuite extends CometTestBase {
     val predicate = "startswith(s, 'i\u0307')"
     withNativeCache {
       // Collected before the relation is cached, so the cache cannot stand in for it.
-      val expected = spark.sql(s"SELECT id FROM ($query) WHERE $predicate ORDER BY id").collect()
+      val expected = uncachedSparkAnswer(s"SELECT id FROM ($query) WHERE $predicate ORDER BY id")
       assert(expected.length == 5)
 
       spark.sql(query).createOrReplaceTempView("collated_prefix_cache")
@@ -1446,45 +1464,61 @@ class CometInMemoryCacheSuite extends CometTestBase {
 
       spark.catalog.clearCache()
 
-      spark
-        .sql("""
-        SELECT *
-        FROM VALUES
-          (0, CAST('NaN' AS DOUBLE), CAST('NaN' AS FLOAT)),
-          (1, 1.0D, CAST(1.0 AS FLOAT)),
-          (2, -0.0D, CAST(-0.0 AS FLOAT)),
-          (3, 0.0D, CAST(0.0 AS FLOAT))
-        AS t(id, d, f)
-      """)
-        .createOrReplaceTempView("nan_prune_cache")
+      // A single row-input partition gives two deterministic two-row cached batches.
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        spark
+          .sql("""
+          SELECT *
+          FROM VALUES
+            (0, CAST('NaN' AS DOUBLE), CAST('NaN' AS FLOAT)),
+            (1, 1.0D, CAST(1.0 AS FLOAT)),
+            (2, CAST('-0.0' AS DOUBLE), CAST('-0.0' AS FLOAT)),
+            (3, 0.0D, CAST(0.0 AS FLOAT))
+          AS t(id, d, f)
+        """)
+          .coalesce(1)
+          .createOrReplaceTempView("nan_prune_cache")
 
-      spark.catalog.cacheTable("nan_prune_cache")
-      spark.table("nan_prune_cache").count()
+        spark.catalog.cacheTable("nan_prune_cache")
+        spark.table("nan_prune_cache").count()
+      }
 
-      val doubleDf = spark.sql("""
-        SELECT id
-        FROM nan_prune_cache
-        WHERE isnan(d)
-      """)
-      checkSparkAnswer(doubleDf)
+      val relation = spark.sharedState.cacheManager
+        .lookupCachedData(spark.table("nan_prune_cache"))
+        .get
+        .cachedRepresentation
+      val batches = relation.cacheBuilder.cachedColumnBuffers
+      assert(batches.count() == 2, "the NaN/finite and signed-zero rows need separate batches")
 
-      val floatDf = spark.sql("""
-        SELECT id
-        FROM nan_prune_cache
-        WHERE isnan(f)
-      """)
-      checkSparkAnswer(floatDf)
+      Seq(
+        ("d", Literal(Double.NaN), Literal(0.0d), Literal(1.0d)),
+        ("f", Literal(Float.NaN), Literal(0.0f), Literal(1.0f))).foreach {
+        case (column, nan, zero, one) =>
+          val attr = relation.output.find(_.name == column).get
+          val nanSql = s"CAST('NaN' AS ${nan.dataType.sql})"
+          // These comparisons become statistics filters. isnan alone would leave all batches
+          // eligible and could not catch an incorrectly recorded NaN upper bound.
+          val comparisons = Seq(
+            (s"$column = $nanSql", EqualTo(attr, nan), Seq(Row(0)), 1L),
+            (s"$column > 1", GreaterThan(attr, one), Seq(Row(0)), 1L),
+            (s"$column < $nanSql", LessThan(attr, nan), Seq(Row(1), Row(2), Row(3)), 2L),
+            (s"$column = 0", EqualTo(attr, zero), Seq(Row(2), Row(3)), 1L),
+            (s"$column > $nanSql", GreaterThan(attr, nan), Seq.empty[Row], 0L),
+            (s"$column < 0", LessThan(attr, zero), Seq.empty[Row], 0L))
+          comparisons.foreach { case (predicate, expression, expected, expectedBatches) =>
+            withClue(s"predicate: $predicate: ") {
+              val filter = relation.cacheBuilder.serializer
+                .buildFilter(Seq(expression), relation.output)
+              assert(batches.mapPartitionsWithIndex(filter).count() == expectedBatches)
 
-      val zeroDf = spark.sql("""
-        SELECT id
-        FROM nan_prune_cache
-        WHERE d = 0.0D OR f = CAST(0.0 AS FLOAT)
-      """)
-      checkSparkAnswer(zeroDf)
-
-      val plan = doubleDf.queryExecution.executedPlan.toString()
-      assert(plan.contains("CometInMemoryTableScan"))
-      assert(!plan.contains("CometSparkColumnarToColumnar"))
+              val df = spark.sql(s"SELECT id FROM nan_prune_cache WHERE $predicate")
+              checkAnswer(df, expected)
+              val plan = df.queryExecution.executedPlan.toString()
+              assert(plan.contains("CometInMemoryTableScan"))
+              assert(!plan.contains("CometSparkColumnarToColumnar"))
+            }
+          }
+      }
 
       spark.catalog.clearCache()
     }
@@ -1496,10 +1530,10 @@ class CometInMemoryCacheSuite extends CometTestBase {
    * CometVector. Spark's InMemoryRelation strips the ColumnarToRow above that scan because
    * supportsColumnarInput is true for the schema, so the serializer receives non-Arrow columnar
    * batches. Asserts the relation really was stored in Comet's format before handing control to
-   * `f`.
+   * `f`, along with Spark's result collected before caching.
    */
   private def withSparkColumnarCache(view: String, extraConfs: (String, String)*)(
-      write: String => Unit)(f: => Unit): Unit = {
+      write: String => Unit)(f: Seq[Row] => Unit): Unit = {
     withTempPath { path =>
       write(path.toString)
 
@@ -1511,6 +1545,7 @@ class CometInMemoryCacheSuite extends CometTestBase {
             SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "true") ++ extraConfs: _*) {
 
           spark.read.parquet(path.toString).createOrReplaceTempView(view)
+          val expected = uncachedSparkAnswer(s"SELECT * FROM $view")
           spark.catalog.cacheTable(view)
           spark.table(view).count()
 
@@ -1518,7 +1553,7 @@ class CometInMemoryCacheSuite extends CometTestBase {
             cachedBatchTypes(view).sameElements(
               Array("org.apache.spark.sql.comet.execution.arrow.CometCachedBatch")))
 
-          f
+          f(expected.toSeq)
         }
       }
     }
@@ -1541,14 +1576,25 @@ class CometInMemoryCacheSuite extends CometTestBase {
           "timestamp_micros(id * 1000000) as ts")
         .write
         .parquet(path)
-    } {
+    } { expected =>
       assert(spark.table("spark_columnar_cache").count() == 1000)
 
-      checkSparkAnswer(
-        spark.sql("SELECT * FROM spark_columnar_cache WHERE key >= 10 AND key < 20 ORDER BY key"))
-      checkSparkAnswer(
-        spark.sql("SELECT sum(key), sum(d), sum(dec), count(s), count(n), max(dt), max(ts) " +
-          "FROM spark_columnar_cache"))
+      checkAnswer(
+        spark.sql("SELECT * FROM spark_columnar_cache WHERE key >= 10 AND key < 20 ORDER BY key"),
+        expected.filter(row => row.getLong(0) >= 10 && row.getLong(0) < 20).sortBy(_.getLong(0)))
+      checkAnswer(
+        spark.sql(
+          "SELECT sum(key), sum(d), sum(dec), count(s), count(n), max(dt), max(ts) " +
+            "FROM spark_columnar_cache"),
+        Seq(
+          Row(
+            499500L,
+            499500.0d,
+            BigDecimal(499500),
+            1000L,
+            0L,
+            java.sql.Date.valueOf(java.time.LocalDate.of(2020, 1, 1).plusDays(999)),
+            java.sql.Timestamp.from(java.time.Instant.ofEpochSecond(999)))))
     }
   }
 
@@ -1568,10 +1614,10 @@ class CometInMemoryCacheSuite extends CometTestBase {
           "cast(cast(id as string) as binary) as b")
         .write
         .parquet(path)
-    } {
+    } { expected =>
       assert(spark.table("spark_columnar_complex").count() == 200)
 
-      checkSparkAnswer(spark.sql("SELECT key, a, st, m, b FROM spark_columnar_complex"))
+      checkAnswer(spark.sql("SELECT key, a, st, m, b FROM spark_columnar_complex"), expected)
     }
   }
 
@@ -1745,8 +1791,8 @@ class CometInMemoryCacheSuite extends CometTestBase {
         // stores the wrong values: with and without Comet, both sides read the one cached payload.
         val full = s"SELECT * FROM $view ORDER BY id"
         val projected = s"SELECT s FROM $view WHERE id >= 3990 ORDER BY s"
-        val expectedFull = spark.sql(full).collect()
-        val expectedProjected = spark.sql(projected).collect()
+        val expectedFull = uncachedSparkAnswer(full)
+        val expectedProjected = uncachedSparkAnswer(projected)
         spark.catalog.cacheTable(view)
 
         assert(
@@ -1758,8 +1804,10 @@ class CometInMemoryCacheSuite extends CometTestBase {
         // nothing -- the three shapes the read path distinguishes.
         assert(spark.sql(full).collect() === expectedFull, s"codec $codec read the wrong values")
         assert(spark.sql(projected).collect() === expectedProjected)
-        checkSparkAnswer(spark.sql(s"SELECT * FROM $view"))
-        checkSparkAnswer(spark.sql(s"SELECT s FROM $view WHERE id >= 3990"))
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          checkAnswer(spark.sql(full), expectedFull.toSeq)
+          checkAnswer(spark.sql(projected), expectedProjected.toSeq)
+        }
         assert(spark.sql(s"SELECT count(*) FROM $view").collect()(0).getLong(0) == 4000)
         // Pruning reads the statistics rather than the payload, so exercise it too.
         assert(spark.sql(s"SELECT id FROM $view WHERE id >= 3990").collect().length == 10)
@@ -1812,8 +1860,8 @@ class CometInMemoryCacheSuite extends CometTestBase {
     // another column, it is a NullVector inside an ordinary payload instead.
     val query = "SELECT id, NULL AS n FROM range(0, 1000, 1, 2)"
     // Collected before anything is cached, so the cache cannot stand in for the reference.
-    val expectedNulls = spark.sql(s"SELECT n FROM ($query)").collect()
-    val expectedPairs = spark.sql(s"SELECT id, n FROM ($query) ORDER BY id").collect()
+    val expectedNulls = uncachedSparkAnswer(s"SELECT n FROM ($query)")
+    val expectedPairs = uncachedSparkAnswer(s"SELECT id, n FROM ($query) ORDER BY id")
     assert(expectedNulls.length == 1000)
 
     Seq("none", "zstd").foreach { codec =>
@@ -2059,7 +2107,7 @@ class CometInMemoryCacheSuite extends CometTestBase {
       // Collected before the relation is cached. Once it is, Spark answers this same query from the
       // cache too, so a reference taken afterwards would compare the cache with itself.
       val expected =
-        projections.map(cols => spark.sql(orderedByJson(cols, s"($query)")).collect())
+        projections.map(cols => uncachedSparkAnswer(orderedByJson(cols, s"($query)")))
       expected.foreach(rows => assert(rows.length == projectionCacheRows))
 
       spark.sql(query).createOrReplaceTempView("nested_value_cache")
@@ -2093,7 +2141,7 @@ class CometInMemoryCacheSuite extends CometTestBase {
     val projections =
       Seq(Seq("id", "sc", "ar", "mp", "deep", "tail"), Seq("tail", "mp", "id"), Seq("deep", "sc"))
     // Collected before the fixture caches the relation, for the reason given in the test above.
-    val expected = projections.map(cols => spark.sql(orderedByJson(cols, s"($source)")).collect())
+    val expected = projections.map(cols => uncachedSparkAnswer(orderedByJson(cols, s"($source)")))
     expected.foreach(rows => assert(rows.length == projectionCacheRows))
 
     withNestedProjectionCache(Some(tinyChunkSize)) { (relation, batches) =>
@@ -2192,7 +2240,7 @@ class CometInMemoryCacheSuite extends CometTestBase {
         scan.get.scanOutput.isEmpty,
         s"expected no scanned columns, got ${scan.get.scanOutput.map(_.name).mkString(",")}")
 
-      checkSparkAnswer(df)
+      checkAnswer(df, Seq(Row(500L)))
       spark.catalog.clearCache()
     }
   }
@@ -2213,15 +2261,19 @@ class CometInMemoryCacheSuite extends CometTestBase {
 
       // 3 left rows joined to 2 right rows, summing only the right side: 3 * (0 + 1) == 3.
       // Leaking the left id column into the scan output made this read 10 + 11 + 12 twice.
-      checkSparkAnswer(spark.sql("""
+      checkAnswer(
+        spark.sql("""
           |SELECT /*+ BROADCAST(r) */ sum(r.id)
           |FROM cached_left l JOIN range(2) r ON true
-        """.stripMargin))
+        """.stripMargin),
+        Seq(Row(3L)))
 
-      checkSparkAnswer(spark.sql("""
+      checkAnswer(
+        spark.sql("""
           |SELECT /*+ BROADCAST(r) */ r.id
           |FROM cached_left l JOIN range(2) r ON true
-        """.stripMargin))
+        """.stripMargin),
+        Seq.fill(3)(Seq(Row(0L), Row(1L))).flatten)
 
       spark.catalog.clearCache()
     }
@@ -2558,7 +2610,7 @@ class CometInMemoryCacheSuite extends CometTestBase {
       assert(relation.output.length == 2)
 
       val df = spark.sql("SELECT s1, s2 FROM dictionary_cache")
-      checkSparkAnswer(df)
+      checkAnswer(df, (0 until 2000).map(i => Row(s"a_${i % 3}", s"b_${i % 4}")))
 
       val distinct =
         spark.sql("SELECT DISTINCT s1, s2 FROM dictionary_cache ORDER BY s1, s2").collect()
@@ -2575,7 +2627,7 @@ class CometInMemoryCacheSuite extends CometTestBase {
 
       val df = spark.sql(
         "SELECT /*+ BROADCAST(c) */ c.s1, c.s2 FROM range(1) r JOIN dictionary_cache c ON true")
-      checkSparkAnswer(df)
+      checkAnswer(df, (0 until 2000).map(i => Row(s"a_${i % 3}", s"b_${i % 4}")))
       assert(df.count() == 2000)
     }
   }
@@ -2602,7 +2654,7 @@ class CometInMemoryCacheSuite extends CometTestBase {
       val df = spark.sql(
         "SELECT k, count(*) AS c FROM reuse_cache GROUP BY k " +
           "UNION ALL SELECT k, count(*) AS c FROM reuse_cache GROUP BY k")
-      checkSparkAnswer(df)
+      checkAnswer(df, Seq.fill(2)((0L until 10L).map(k => Row(k, 40L))).flatten)
 
       val plan = df.queryExecution.executedPlan
       val exchanges = plan.collect { case e: Exchange => e }

@@ -48,6 +48,8 @@ The following features are not supported and cause Comet to fall back to Spark:
   does not replicate. By default Comet falls back to Spark in this case. Set
   `spark.comet.scan.allowDisabledParquetVectorizedReader=true` to opt in to running the
   Comet Parquet scan regardless.
+- A read schema that repeats a Parquet field id, at the top level or within a struct, when
+  `spark.sql.parquet.fieldId.read.enabled=true`.
 
 The following limitation may produce incorrect results without falling back to Spark:
 

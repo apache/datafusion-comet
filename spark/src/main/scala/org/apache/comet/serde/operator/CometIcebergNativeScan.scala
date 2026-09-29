@@ -75,6 +75,9 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       val AND = "And"
       val OR = "Or"
       val NOT = "Not"
+      // The only UnboundTerm shape this serde converts. The others, UnboundTransform and (on
+      // Iceberg versions that have it) UnboundExtract, are declined; see icebergExprToProto.
+      val NAMED_REFERENCE = "NamedReference"
     }
   }
 
@@ -643,31 +646,48 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
   }
 
   /**
-   * Converts an Iceberg residual Expression into an IcebergPredicate for native row-group
-   * pruning.
+   * Converts an Iceberg residual Expression into an IcebergPredicate for the native scan.
    *
    * Residuals come from Iceberg's ResidualEvaluator (partial evaluation of the scan filter
-   * against each file's partition data). This is only a pruning hint: the CometFilter above the
-   * scan enforces correctness, so any node or literal we cannot represent yields None (no
-   * pushdown). Predicates over `pageIndexUnsupportedColumns` also yield None (iceberg-rust cannot
-   * use those columns in the page index). Uses reflection because Iceberg's expression classes
+   * against each file's partition data). iceberg-rust prunes row groups and pages with the
+   * predicate and also filters rows by it, so what this returns may be weaker than the residual
+   * but never stronger. Iceberg keeps every predicate that can survive into a residual in the
+   * scan's postScanFilters, so the filter above the scan re-applies whatever is not pushed, but
+   * it cannot restore rows the scan dropped. Uses reflection because Iceberg's expression classes
    * are not on Spark's classpath at planning time; residuals are unbound predicates carrying a
    * NamedReference (column name) and a literal.
+   *
+   * Not pushing a residual therefore takes one of two forms, kept deliberately distinct:
+   *
+   *   - `None` is a decision. Every point that returns it has established that this serde does
+   *     not model the node, term shape, operation, column or literal in front of it, so the
+   *     predicate is left to the post-scan filter.
+   *   - An exception means reflection over Iceberg's expression API did something unexpected, so
+   *     no such decision was reached. It propagates instead of folding into `None`, which would
+   *     make the two indistinguishable; see [[serializeResidual]].
    */
   def icebergExprToProto(
       icebergExpr: Any,
       output: Seq[Attribute],
       pageIndexUnsupportedColumns: Set[String]): Option[OperatorOuterClass.IcebergPredicate] = {
-    try {
-      val exprClass = icebergExpr.getClass
-      val attributeMap = output.map(attr => attr.name -> attr).toMap
+    val exprClass = icebergExpr.getClass
+    val attributeMap = output.map(attr => attr.name -> attr).toMap
 
-      if (exprClass.getName.endsWith(Constants.ExpressionTypes.UNBOUND_PREDICATE)) {
-        val operation = IcebergReflection.getMethod(exprClass, "op").invoke(icebergExpr).toString
-        val term = IcebergReflection.getMethod(exprClass, "term").invoke(icebergExpr)
-        val ref = IcebergReflection.getMethod(term.getClass, "ref").invoke(term)
+    if (exprClass.getName.endsWith(Constants.ExpressionTypes.UNBOUND_PREDICATE)) {
+      val operation = IcebergReflection.getMethod(exprClass, "op").invoke(icebergExpr).toString
+      val term = IcebergReflection.getMethod(exprClass, "term").invoke(icebergExpr)
+
+      // Only a bare column reference converts. UnboundTransform (and UnboundExtract, on Iceberg
+      // versions that have it) answers ref() with its *source* column, so reading the name off
+      // it would push `bucket(4, id) = 2` as `id = 2` and drop every matching row whose id is
+      // not 2. CometScanRule declines a non-identity transform at planning time, but only when
+      // the residual is a bare predicate rather than one under AND/OR/NOT, so the term shape is
+      // checked here too rather than assumed.
+      if (!term.getClass.getName.endsWith(Constants.ExpressionTypes.NAMED_REFERENCE)) {
+        None
+      } else {
         val columnName =
-          IcebergReflection.getMethod(ref.getClass, "name").invoke(ref).asInstanceOf[String]
+          IcebergReflection.getMethod(term.getClass, "name").invoke(term).asInstanceOf[String]
 
         // Iceberg names a nested reference by its dotted path ("struct.field"), which never matches
         // a top-level scan output attribute, so a residual on a nested field drops here. That miss
@@ -694,54 +714,68 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
             }
           }
         }
-      } else if (exprClass.getName.endsWith(Constants.ExpressionTypes.AND)) {
-        val left = icebergExprToProto(
-          IcebergReflection.getMethod(exprClass, "left").invoke(icebergExpr),
-          output,
-          pageIndexUnsupportedColumns)
-        val right = icebergExprToProto(
-          IcebergReflection.getMethod(exprClass, "right").invoke(icebergExpr),
-          output,
-          pageIndexUnsupportedColumns)
-        (left, right) match {
-          // Push the residual only if it converts whole. Dropping a conjunct is safe in positive
-          // position but strengthens the predicate under a NOT (De Morgan), which would wrongly
-          // prune, and tracking polarity across arbitrary nesting is error prone. So an
-          // unconvertible conjunct elides the whole residual; the post-scan CometFilter is exact.
-          case (Some(l), Some(r)) => Some(logicalPredicate(isAnd = true, l, r))
-          case _ => None
-        }
-      } else if (exprClass.getName.endsWith(Constants.ExpressionTypes.OR)) {
-        val left = icebergExprToProto(
-          IcebergReflection.getMethod(exprClass, "left").invoke(icebergExpr),
-          output,
-          pageIndexUnsupportedColumns)
-        val right = icebergExprToProto(
-          IcebergReflection.getMethod(exprClass, "right").invoke(icebergExpr),
-          output,
-          pageIndexUnsupportedColumns)
-        // Dropping a disjunct would strengthen the predicate and wrongly prune, so require both.
-        (left, right) match {
-          case (Some(l), Some(r)) => Some(logicalPredicate(isAnd = false, l, r))
-          case _ => None
-        }
-      } else if (exprClass.getName.endsWith(Constants.ExpressionTypes.NOT)) {
-        val child = IcebergReflection.getMethod(exprClass, "child").invoke(icebergExpr)
-        icebergExprToProto(child, output, pageIndexUnsupportedColumns).map(notPredicate)
-      } else {
-        None
       }
-    } catch {
-      // Reflection over Iceberg's expression classes can fail on an unexpected shape (e.g. an
-      // Iceberg version change). A residual is only a pruning hint, so skip pushdown rather than
-      // fail the scan, but log it: a persistent warning here signals a real API drift to fix.
-      case e: Exception =>
-        logWarning(
-          "Skipping Iceberg residual pushdown; could not convert expression: " +
-            s"${e.getMessage}")
-        None
+    } else if (exprClass.getName.endsWith(Constants.ExpressionTypes.AND)) {
+      val left = icebergExprToProto(
+        IcebergReflection.getMethod(exprClass, "left").invoke(icebergExpr),
+        output,
+        pageIndexUnsupportedColumns)
+      val right = icebergExprToProto(
+        IcebergReflection.getMethod(exprClass, "right").invoke(icebergExpr),
+        output,
+        pageIndexUnsupportedColumns)
+      (left, right) match {
+        // Push the residual only if it converts whole. Dropping a conjunct is safe in positive
+        // position but strengthens the predicate under a NOT (De Morgan), which would wrongly
+        // prune, and tracking polarity across arbitrary nesting is error prone. So an
+        // unconvertible conjunct elides the whole residual; the post-scan CometFilter is exact.
+        case (Some(l), Some(r)) => Some(logicalPredicate(isAnd = true, l, r))
+        case _ => None
+      }
+    } else if (exprClass.getName.endsWith(Constants.ExpressionTypes.OR)) {
+      val left = icebergExprToProto(
+        IcebergReflection.getMethod(exprClass, "left").invoke(icebergExpr),
+        output,
+        pageIndexUnsupportedColumns)
+      val right = icebergExprToProto(
+        IcebergReflection.getMethod(exprClass, "right").invoke(icebergExpr),
+        output,
+        pageIndexUnsupportedColumns)
+      // Dropping a disjunct would strengthen the predicate and wrongly prune, so require both.
+      (left, right) match {
+        case (Some(l), Some(r)) => Some(logicalPredicate(isAnd = false, l, r))
+        case _ => None
+      }
+    } else if (exprClass.getName.endsWith(Constants.ExpressionTypes.NOT)) {
+      val child = IcebergReflection.getMethod(exprClass, "child").invoke(icebergExpr)
+      icebergExprToProto(child, output, pageIndexUnsupportedColumns).map(notPredicate)
+    } else {
+      // Anything else, such as Expressions.alwaysTrue or alwaysFalse, or a node type a future
+      // Iceberg introduces, carries no pushdown this serde can express.
+      None
     }
   }
+
+  /**
+   * Converts a FileScanTask's residual with [[icebergExprToProto]], failing the query if that
+   * throws. The converter returns None only for a residual it deliberately leaves to the
+   * post-scan filter, so a failure means this serde has misread Iceberg's expression API. Serde
+   * runs after CometScanRule committed the scan to native execution, so there is no fallback to
+   * take.
+   */
+  private[operator] def serializeResidual(
+      residual: Any,
+      output: Seq[Attribute],
+      pageIndexUnsupportedColumns: Set[String]): Option[OperatorOuterClass.IcebergPredicate] =
+    try {
+      icebergExprToProto(residual, output, pageIndexUnsupportedColumns)
+    } catch {
+      case e: Exception =>
+        val msg = "Iceberg reflection failure: Failed to convert residual expression " +
+          s"'$residual' from FileScanTask: ${e.getMessage}"
+        logError(msg)
+        throw new RuntimeException(msg, e)
+    }
 
   private def unaryPredicate(
       column: String,
@@ -1193,18 +1227,10 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                 }
 
                 val residualExprOpt =
-                  try {
-                    icebergExprToProto(
-                      residualMethod.invoke(task),
-                      output,
-                      pageIndexUnsupportedColumns)
-                  } catch {
-                    case e: Exception =>
-                      logWarning(
-                        "Failed to extract residual expression from FileScanTask: " +
-                          s"${e.getMessage}")
-                      None
-                  }
+                  serializeResidual(
+                    residualMethod.invoke(task),
+                    output,
+                    pageIndexUnsupportedColumns)
 
                 residualExprOpt.foreach { residual =>
                   val residualIdx = residualToPoolIndex.getOrElseUpdate(
