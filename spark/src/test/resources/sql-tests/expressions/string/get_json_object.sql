@@ -247,15 +247,17 @@ SELECT get_json_object(concat('[{"a":1,"b":', repeat('9', 1000), '}]'), '$[*].a'
        get_json_object(concat('[{"a":1,"b":1e', repeat('0', 999), '}]'), '$[*].a'),
        get_json_object(concat('[{"a":1,"b":1e', repeat('0', 1000), '}]'), '$[*].a')
 
--- Jackson's ReaderBasedJsonParser uses 4000 UTF-16-unit buffers. A float
--- reaching a buffer edge takes a parser branch that accepts one more digit
--- when only a fraction or exponent is present.
+-- A 1001-digit float at a Jackson reader-buffer edge is not compared here:
+-- Spark's result can change when a previous parse leaves a larger buffer in
+-- Jackson's thread-local recycler. The opt-in native path uses a fixed rule.
+
+-- Spark 3.5+ rejects a document deeper than Jackson's default 1000-level
+-- nesting limit, including a subtree skipped by the wildcard path. Spark 3.4
+-- has no default limit.
 query
-SELECT get_json_object(concat('{"a":1,"pad":"', repeat('x', 2977), '","n":1.', repeat('1', 1000), '}'), '$.a'),
-       get_json_object(concat('{"a":1,"pad":"', repeat('x', 2978), '","n":1.', repeat('1', 1000), '}'), '$.a'),
-       get_json_object(concat('{"a":1,"pad":"', repeat('x', 3980), '","n":1.', repeat('1', 1000), '}'), '$.a'),
-       get_json_object(concat('{"a":1,"pad":"', repeat('🎉', 1489), '","n":1.', repeat('1', 1000), '}'), '$.a'),
-       get_json_object(concat('{"a":1,"pad":"', repeat('x', 2978), '","n":1e', repeat('0', 1000), '}'), '$.a')
+SELECT get_json_object(concat('[{"a":1,"skip":', repeat('[', 998), '0', repeat(']', 998), '}]'), '$[*].a'),
+       get_json_object(concat('[{"a":1,"skip":', repeat('[', 999), '0', repeat(']', 999), '}]'), '$[*].a'),
+       get_json_object(concat('[{"skip":', repeat('[', 999), '0', repeat(']', 999), ',"a":1}]'), '$[*].a')
 
 -- A truncated long string ending in an escape must produce SQL NULL.
 query

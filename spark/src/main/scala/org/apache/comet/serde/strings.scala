@@ -700,6 +700,8 @@ object CometGetJsonObject
     Seq(
       "Spark allows single-quoted JSON and unescaped control characters" +
         " which Comet does not support",
+      "Very long numbers near Jackson's 1000-digit limit can depend on Spark's" +
+        " recycled parser buffer, which Comet cannot reproduce from the input alone",
       "When a returned object or array contains duplicate keys, Spark preserves them" +
         " while Comet's native JSON materialization keeps only the last value")
 
