@@ -198,16 +198,17 @@ The pull request's own checks do not have to be finished, though it is polite no
 request whose PR tier is red.
 
 GitHub then builds a temporary branch named `gh-readonly-queue/main/...` containing the pull
-request's commits squashed on top of the current `main`, batched with up to four other queued pull
-requests, and runs `ci.yml` against it with a `merge_group` event. When `Required Checks` on that
-branch is green, every pull request in the batch merges. If it is red, GitHub removes the pull
-request whose entry failed, rebuilds the remaining entries without it, and records the removal on
-the pull request's timeline.
+request's commits squashed on top of `main` and of every entry ahead of it in the queue, and runs
+`ci.yml` against it with a `merge_group` event. Up to four entries build at once. An entry merges
+once `Required Checks` on its branch is green and every entry ahead of it has merged; up to five
+green entries land together. If an entry's build is red, GitHub removes that pull request,
+rebuilds the entries behind it without it, and records the removal on the pull request's
+timeline.
 
 The queue tests the merge result rather than the pull request head. That is the point of it: a
 semantic conflict between two pull requests that each pass in isolation is caught before either
 lands. It also means a pull request can be evicted for a failure it did not cause on its own,
-because `main` moved or because another entry in the batch broke the combined tree.
+because `main` moved or because an entry ahead of it broke the combined tree.
 
 ## When a queue run fails
 
@@ -230,8 +231,8 @@ through these in order:
 
 3. **Reproduce it on the pull request.** Merge `main` into the branch so the pull request head
    matches what the queue tested, then apply the label for the suite that failed. If the labeled
-   run passes, the failure came from the batch, not from this change, and re-queuing is the right
-   next step. If it fails, fix it on the branch like any other CI failure.
+   run passes, the failure came from the entries ahead of it, not from this change, and
+   re-queuing is the right next step. If it fails, fix it on the branch like any other CI failure.
 
 4. **Check for flakiness.** A test that is flaky in the queue tier blocks everyone's merges, not
    just one pull request. If a queue failure looks like a flake, do not just re-queue: file or

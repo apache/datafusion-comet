@@ -525,11 +525,15 @@ head, so a semantic conflict between two PRs that each pass in isolation is
 caught before either lands.
 
 The `merge_queue` rule parameters in `.asf.yaml` are the tuning dials, and
-`max_entries_to_build: 2` is the one that matters. Every entry gets its own
+`max_entries_to_build: 4` is the one that matters. Every entry gets its own
 `merge_group` build — [merge limits do not combine
 builds](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-a-merge-queue) —
 so this caps how many pipelines are in flight, and with them how fast the queue
-drains: roughly 19 merges a day at the ~2.5h pipeline we see today.
+drains. With the ~90 minute pipeline of September 2026, a queue that never runs
+dry merges roughly 58 PRs a day at 4, against roughly 30 at 2. Each entry's
+build is based on the queue commit of the entry ahead (`merge_group.base_sha`),
+so it runs only the suites its own changes select; `ALLGREEN` is what makes
+that sufficient.
 `max_entries_to_merge: 5` only says how many already-green entries land in one
 merge operation, and saves no CI at all. The saving in this design comes from
 the PR tier being small, not from batching inside the queue.
