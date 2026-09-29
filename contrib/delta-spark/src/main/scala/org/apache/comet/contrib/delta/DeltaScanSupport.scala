@@ -408,7 +408,9 @@ object DeltaScanSupport {
     }
 
     // Reuse core's generic native-scan gates (ignoreCorruptFiles/ignoreMissingFiles, AQE DPP on
-    // Spark 3.4, exec enabled); tags its own fallback reasons.
+    // Spark 3.4, exec enabled, existence default values, the Variant read confs, and a proto
+    // representation for every serialized data and partition type); tags its own fallback
+    // reasons.
     if (!CometNativeScan.isSupported(scanExec)) {
       return Some("Core native scan gates rejected the scan (see reasons above)")
     }
