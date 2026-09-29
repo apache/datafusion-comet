@@ -90,15 +90,36 @@ Keep your deployment's existing Celeborn authentication, storage, and recovery s
    Supported operators can appear as Comet nodes, while the shuffle appears as a plain
    `Exchange`. This is the expected result with the currently released Celeborn 0.6.x and
    0.7.x clients.
-2. Inspect shuffle read/write bytes, records, and time in the Spark UI. To confirm that
-   Celeborn is storing the shuffle data, also check Celeborn client and worker activity for
-   the application. Spark's remote-read byte counters alone cannot confirm this: they also
-   count local shuffle files fetched from another executor. Celeborn's fallback policy may
-   select local Spark shuffle for some exchanges.
+2. Inspect shuffle read/write bytes, records, and time in the Spark UI. Spark's remote-read
+   byte counters alone cannot confirm that Celeborn stored the data: they also count local
+   shuffle files fetched from another executor. Celeborn's fallback policy may select local
+   Spark shuffle for some exchanges; use the check below to identify those shuffles.
 
 If an operator you expected Comet to accelerate remains on Spark, use
 `spark.comet.explain.fallback.enabled=true` to see the reasons in the driver log. See
 [Understanding Comet Plans](understanding-comet-plans.md) for details.
+
+### Checking for Local Fallback
+
+For the Spark 3.5 / Celeborn 0.7.0 setup above, enable INFO logging for
+`org.apache.spark.scheduler.DAGScheduler` on the driver before running the query, then:
+
+1. Open the query in the Spark UI's SQL tab, follow its associated jobs, and identify the
+   shuffle-writing stage you want to check.
+2. Find that stage in the driver log. For example,
+   `Submitting ShuffleMapStage 5 (MapPartitionsRDD[17] ...)` identifies its input RDD as 17.
+   Find the corresponding
+   `Registering RDD 17 (...) as input to shuffle 3` message. In this example, stage 5 writes
+   shuffle 3. Match the IDs within the same application; the messages need not be adjacent.
+3. Check Celeborn's driver logs for
+   `Fallback to vanilla Spark SortShuffleManager for shuffle: 3`.
+   This confirms that shuffle 3 selected local Spark shuffle. If fallback occurs with dynamic
+   allocation enabled and no external shuffle service, Celeborn instead logs an ERROR
+   containing `fallback to vanilla Spark SortShuffleManager for shuffle: 3`.
+
+The IDs above are examples. Use the shuffle ID you found in step 2 when checking Celeborn's
+[fallback messages](https://github.com/apache/celeborn/blob/v0.7.0/client-spark/spark-3/src/main/java/org/apache/spark/shuffle/celeborn/SparkShuffleManager.java#L222-L234).
+The absence of a fallback message does not prove that data was stored in Celeborn.
 
 ## Troubleshooting
 
