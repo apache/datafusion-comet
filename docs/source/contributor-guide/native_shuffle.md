@@ -231,8 +231,8 @@ in the plan. An unsupported output type therefore means the stage is not convert
 not that it is served over the FFI read path instead.
 
 **The protobuf is the source of truth for which slots are direct read, not the config.**
-`findShuffleScanIndices` (`operators.scala`) walks the serialized plan, counting scan slots in order
-and collecting the indices that carry a `ShuffleScan`. JVM-side input dispatch reads that set rather
+`findBlockScanIndices` (`operators.scala`) walks the serialized plan, counting scan slots in order
+and collecting the indices that carry a `ShuffleScan` or `BroadcastScan`. JVM-side input dispatch reads that set rather
 than re-checking the config, so the two cannot disagree. Anything changing the serde condition has to
 leave that walk consistent with it.
 
@@ -240,9 +240,10 @@ leave that walk consistent with it.
 
 `CometExecRDD.resolveInputObjects` fills one input slot per scan input, in scan-input order:
 
-- A slot in `shuffleScanIndices` gets a `CometShuffleBlockIterator`, obtained from
+- A shuffle slot in `blockScanIndices` gets a `CometShuffleBlockIterator`, obtained from
   `CometShuffledBatchRDD.computeAsShuffleBlockIterator`. A slot marked as a shuffle scan whose RDD is
   not a `CometShuffledBatchRDD` throws `CometRuntimeException`.
+- A broadcast slot in `blockScanIndices` gets a compressed-block iterator from the broadcast RDD.
 - Every other slot gets the `ArrowArrayStream` exported by the ordinary FFI path.
 
 `CometShuffleBlockIterator` reads a 16-byte header per block: an 8-byte compressed length, which
@@ -254,7 +255,7 @@ native memory for the decoded data.
 
 ### Native side
 
-`ShuffleScanExec` (`native/core/src/execution/operators/shuffle_scan.rs`) pulls blocks through the
+`BlockScanExec` (`native/core/src/execution/operators/shuffle_scan.rs`) pulls shuffle or broadcast blocks through the
 iterator's `hasNext()` and `getBuffer()` JNI methods and decodes them with `read_ipc_compressed`.
 Two details matter when changing it:
 
@@ -262,6 +263,8 @@ Two details matter when changing it:
   worker threads. A change that moves the JNI call into the stream's `poll_next` breaks this.
 - Dictionary-encoded columns are unpacked to their value type by `unpack_dictionary`, so the schema
   the plan sees matches the declared `ShuffleScan` fields.
+- Broadcast string arrays are normalized to Spark's invalid-UTF-8 behavior before dictionary
+  unpacking; shuffle blocks retain their existing decode path.
 
 Blocks are validated before decoding when `CometShuffleBlockIterator.requiresValidation()` is true,
 which happens when the underlying stream implements `CometShuffleReadFailureHandler` so a corrupt

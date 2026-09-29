@@ -23,6 +23,7 @@ import java.sql.Date
 import java.time.{Duration, Period}
 
 import scala.collection.mutable.ListBuffer
+import scala.jdk.CollectionConverters._
 import scala.util.Random
 
 import org.scalactic.source.Position
@@ -362,6 +363,7 @@ class CometExecSuite extends CometTestBase {
       withSQLConf(
         SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        CometConf.COMET_BROADCAST_DIRECT_READ_ENABLED.key -> "true",
         SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
         spark.read.parquet(s"$path/fact").createOrReplaceTempView("fact_reuse")
         spark.read.parquet(s"$path/dim").createOrReplaceTempView("dim_reuse")
@@ -1201,6 +1203,7 @@ class CometExecSuite extends CometTestBase {
       withSQLConf(
         SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+        CometConf.COMET_BROADCAST_DIRECT_READ_ENABLED.key -> "true",
         SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
         spark.read.parquet(s"$path/fact").createOrReplaceTempView("aqe_fact_dual")
         spark.read.parquet(s"$path/dim").createOrReplaceTempView("aqe_dim_dual")
@@ -1237,6 +1240,7 @@ class CometExecSuite extends CometTestBase {
       withSQLConf(
         SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+        CometConf.COMET_BROADCAST_DIRECT_READ_ENABLED.key -> "true",
         SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
 
         val df = sql("""SELECT /*+ BROADCAST(f)*/
@@ -2256,6 +2260,7 @@ class CometExecSuite extends CometTestBase {
 
   test("CometBroadcastExchangeExec") {
     withSQLConf(CometConf.COMET_EXEC_BROADCAST_FORCE_ENABLED.key -> "true") {
+      assert(!CometConf.COMET_BROADCAST_DIRECT_READ_ENABLED.get())
       withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl_a") {
         withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl_b") {
           val df = sql(
@@ -2266,6 +2271,14 @@ class CometExecSuite extends CometTestBase {
             case _: CometBroadcastExchangeExec => true
             case _ => false
           }.get.asInstanceOf[CometBroadcastExchangeExec]
+
+          val sameMode = nativeBroadcast.copy()
+          val otherMode = nativeBroadcast.copy(directRead = !nativeBroadcast.directRead)
+          assert(nativeBroadcast == sameMode)
+          assert(nativeBroadcast.hashCode() == sameMode.hashCode())
+          assert(nativeBroadcast != otherMode)
+          assert(nativeBroadcast.hashCode() != otherMode.hashCode())
+          assert(nativeBroadcast.canonicalized != otherMode.canonicalized)
 
           val numParts = nativeBroadcast.executeColumnar().getNumPartitions
 
@@ -2301,6 +2314,79 @@ class CometExecSuite extends CometTestBase {
           val metrics = nativeBroadcast.metrics
           assert(metrics("numCoalescedBatches").value == 0L)
           assert(metrics("numCoalescedRows").value == 0L)
+        }
+      }
+    }
+  }
+
+  test("broadcast direct read bypasses the Arrow stream input") {
+    def containsBroadcastScan(op: org.apache.comet.serde.OperatorOuterClass.Operator): Boolean =
+      op.hasBroadcastScan || op.getChildrenList.asScala.exists(containsBroadcastScan)
+
+    Seq(false, true).foreach { adaptiveEnabled =>
+      withSQLConf(
+        CometConf.COMET_EXEC_BROADCAST_FORCE_ENABLED.key -> "true",
+        CometConf.COMET_BROADCAST_DIRECT_READ_ENABLED.key -> "true",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptiveEnabled.toString) {
+        withParquetTable((0 until 20).map(i => (i, s"left-$i")), "direct_broadcast_left") {
+          withParquetTable((0 until 5).map(i => (i, s"right-$i")), "direct_broadcast_right") {
+            val df = sql(
+              "SELECT /*+ BROADCAST(r) */ l._1, l._2, r._2 " +
+                "FROM direct_broadcast_left l JOIN direct_broadcast_right r ON l._1 = r._1")
+
+            checkSparkAnswerAndOperator(df)
+
+            val nativePlans = stripAQEPlan(df.queryExecution.executedPlan).collect {
+              case native: CometNativeExec => native.nativeOp
+            }
+            assert(
+              nativePlans.exists(containsBroadcastScan),
+              s"Expected BroadcastScan with AQE=$adaptiveEnabled in native plan:\n" +
+                df.queryExecution.executedPlan)
+          }
+        }
+      }
+    }
+  }
+
+  test("broadcast direct read decodes malformed UTF-8 like Spark") {
+    def containsBroadcastScan(op: org.apache.comet.serde.OperatorOuterClass.Operator): Boolean =
+      op.hasBroadcastScan || op.getChildrenList.asScala.exists(containsBroadcastScan)
+
+    withSQLConf(
+      CometConf.COMET_EXEC_BROADCAST_FORCE_ENABLED.key -> "true",
+      CometConf.COMET_BROADCAST_DIRECT_READ_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      withParquetTable((0 until 5).map(i => (i, i)), "direct_broadcast_utf8_probe") {
+        val df = sql(
+          "SELECT /*+ BROADCAST(v) */ length(v.s) FROM direct_broadcast_utf8_probe p " +
+            "JOIN VALUES (1, CAST(X'80' AS STRING)) AS v(k, s) ON p._1 = v.k")
+        checkSparkAnswerAndOperator(df)
+        assert(df.collect().toSeq == Seq(Row(1)))
+
+        val nativePlans = stripAQEPlan(df.queryExecution.executedPlan).collect {
+          case native: CometNativeExec => native.nativeOp
+        }
+        assert(
+          nativePlans.exists(containsBroadcastScan),
+          s"Expected BroadcastScan in native plan:\n${df.queryExecution.executedPlan}")
+      }
+    }
+  }
+
+  test("broadcast direct read handles an empty build side") {
+    withSQLConf(
+      CometConf.COMET_EXEC_BROADCAST_FORCE_ENABLED.key -> "true",
+      CometConf.COMET_BROADCAST_DIRECT_READ_ENABLED.key -> "true",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      withParquetTable((0 until 5).map(i => (i, i + 1)), "direct_broadcast_probe") {
+        withParquetTable((0 until 5).map(i => (i, i + 1)), "direct_broadcast_build") {
+          val df = sql(
+            "SELECT /*+ BROADCAST(b) */ * FROM direct_broadcast_probe p " +
+              "JOIN (SELECT * FROM direct_broadcast_build WHERE _1 < 0) b ON p._1 = b._1")
+          checkSparkAnswerAndOperator(df)
+          assert(df.collect().isEmpty)
         }
       }
     }

@@ -770,7 +770,7 @@ private[comet] case class NativeExecContext(
     // slice, never this map. Keeping it off the wire stops it from bloating the broadcast task
     // binary when this context rides on the non-transient CometShuffleDependency.nativeShuffleSpec.
     @transient perPartitionByKey: Map[String, Array[Array[Byte]]],
-    shuffleScanIndices: Set[Int],
+    blockScanIndices: Set[Int],
     hasScanInput: Boolean,
     // Like plan data, file paths are sliced onto each task's Partition on the driver.
     @transient perPartitionFilePaths: Array[Seq[String]] = Array.empty) {
@@ -852,7 +852,7 @@ abstract class CometNativeExec extends CometExec {
       ctx.subqueries,
       ctx.broadcastedHadoopConfForEncryption,
       ctx.encryptedFilePaths,
-      ctx.shuffleScanIndices,
+      ctx.blockScanIndices,
       perPartitionFilePaths = ctx.perPartitionFilePaths) {
       override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
         // Register before super.compute creates the CometExecIterator, so this listener runs
@@ -940,12 +940,10 @@ abstract class CometNativeExec extends CometExec {
       case _ => false
     }
 
-    // The protobuf is the source of truth for whether a slot is a ShuffleScan or a regular
-    // Scan: `CometExchangeSink.shouldUseShuffleScan` only fires for AQE wrappers
-    // (`ShuffleQueryStageExec`), so a bare non-AQE `CometShuffleExchangeExec` always serializes
-    // as a regular Scan regardless of `COMET_SHUFFLE_DIRECT_READ_ENABLED`. Driving the JVM
-    // dispatch from `shuffleScanIndices` instead of the conf keeps the two aligned.
-    val shuffleScanIndices = findShuffleScanIndices(nativeOp)
+    // The protobuf is the source of truth for whether a slot uses the direct block protocol or a
+    // regular Arrow stream. Driving JVM dispatch from the serialized plan instead of the conf
+    // keeps both sides aligned through AQE and exchange-reuse wrappers.
+    val blockScanIndices = findBlockScanIndices(nativeOp)
 
     def isBroadcastInput(plan: SparkPlan): Boolean = plan match {
       case _: CometBroadcastExchangeExec => true
@@ -978,15 +976,17 @@ abstract class CometNativeExec extends CometExec {
           s.doExecuteAsArrowStream()
         case _ =>
           asBroadcastExchange(plan) match {
+            case Some(c) if blockScanIndices.contains(scanSlot) =>
+              c.executeAsBlockIterator(partitionCount)
             case Some(c) =>
               CometArrowStream.wrapColumnarBatchRDD(
                 c.executeColumnar(partitionCount),
                 c.schema,
                 CometArrowStream.NATIVE_TIMEZONE,
                 c.nodeName)
-            case None if isShuffleScanInput(plan) && shuffleScanIndices.contains(scanSlot) =>
+            case None if isShuffleScanInput(plan) && blockScanIndices.contains(scanSlot) =>
               // Direct-read shuffle: `CometShuffledBatchRDD` reaches native via
-              // CometShuffleBlockIterator. Other shuffle slots fall through and get wrapped.
+              // CometBlockIterator. Other shuffle slots fall through and get wrapped.
               plan.executeColumnar()
             case None =>
               CometArrowStream.wrapColumnarBatchRDD(
@@ -1071,7 +1071,7 @@ abstract class CometNativeExec extends CometExec {
       encryptedFilePaths = encryptedFilePaths,
       commonByKey = commonByKey,
       perPartitionByKey = perPartitionByKey,
-      shuffleScanIndices = shuffleScanIndices,
+      blockScanIndices = blockScanIndices,
       // A leaf Comet scan (`CometNativeScanExec`, `CometIcebergNativeScanExec`) can
       // contribute `bytes_scanned` / `output_rows` to Spark's task-level input metrics,
       // which drive the Input column on the UI's Stages and Executors tabs.
@@ -1128,13 +1128,14 @@ abstract class CometNativeExec extends CometExec {
 
   /**
    * Walk the protobuf operator tree depth-first to find which input indices correspond to
-   * ShuffleScan vs Scan leaf nodes. Each Scan or ShuffleScan leaf consumes one input in order.
+   * block-based (ShuffleScan or BroadcastScan) vs Arrow-stream Scan leaf nodes. Each scan leaf
+   * consumes one input in order.
    */
-  private def findShuffleScanIndices(plan: OperatorOuterClass.Operator): Set[Int] = {
+  private def findBlockScanIndices(plan: OperatorOuterClass.Operator): Set[Int] = {
     var scanIndex = 0
     val indices = mutable.Set.empty[Int]
     def walk(op: OperatorOuterClass.Operator): Unit = {
-      if (op.hasShuffleScan) {
+      if (op.hasShuffleScan || op.hasBroadcastScan) {
         indices += scanIndex
         scanIndex += 1
       } else if (op.hasScan) {

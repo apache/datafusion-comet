@@ -1215,7 +1215,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
    * depth `O(log n)` instead of the natural left-deep `O(n)`. A query with many ANDed/ORed
    * predicates otherwise builds a proto nested deeper than protobuf's default recursion limit
    * (100), which overflows when the serialized plan is re-parsed -- on the JVM
-   * (`OperatorOuterClass.Operator.parseFrom`, e.g. `findShuffleScanIndices` / explain) and in the
+   * (`OperatorOuterClass.Operator.parseFrom`, e.g. `findBlockScanIndices` / explain) and in the
    * Rust prost decoder. Comet evaluates `And`/`Or` vectorially (both sides always evaluated, no
    * row-level short-circuit), so rebalancing the associative chain is semantically identical --
    * it only changes the proto's shape.

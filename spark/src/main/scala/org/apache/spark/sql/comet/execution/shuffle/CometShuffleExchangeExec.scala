@@ -139,7 +139,7 @@ case class CometShuffleExchangeExec(
           sparkContext,
           ctx.inputs,
           ctx.numPartitions,
-          ctx.shuffleScanIndices,
+          ctx.blockScanIndices,
           CometMetricNode(metrics, Seq(nativeChildMetricNode)),
           ctx.perPartitionByKey,
           positionalRoundRobin.isDefined)
@@ -858,7 +858,7 @@ object CometShuffleExchangeExec
       rdd.sparkContext,
       Seq(streamRDD),
       rdd.getNumPartitions,
-      shuffleScanIndices = Set.empty,
+      blockScanIndices = Set.empty,
       spillMetricNode = CometMetricNode(metrics, Seq(childMetricNode)))
 
     val ctx = NativeExecContext(
@@ -869,7 +869,7 @@ object CometShuffleExchangeExec
       encryptedFilePaths = Seq.empty,
       commonByKey = Map.empty,
       perPartitionByKey = Map.empty,
-      shuffleScanIndices = Set.empty,
+      blockScanIndices = Set.empty,
       hasScanInput = false)
 
     // The Scan placeholder has no per-operator metrics, so the metric tree for the unified plan
