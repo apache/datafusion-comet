@@ -254,13 +254,50 @@ new-version bring-up are:
 
 ### CI for the Spark SQL Tests
 
-Spark SQL tests do not run from the main PR build workflows. They have
-their own dedicated workflow file:
+Spark SQL tests do not run from the main PR build workflows. They are driven
+by the umbrella workflow, which calls a reusable workflow once per Spark
+version:
 
-- `.github/workflows/spark_sql_test.yml`
+- `.github/workflows/ci.yml` holds one `spark_X_Y` job per version.
+- `.github/workflows/spark_sql_test_reusable.yml` holds the job logic.
 
-Add the new version to the matrix (`spark-short`, `spark-full`, `java`).
-Use the closest existing entry as a template.
+Add a `spark_X_Y` job to `ci.yml` passing `spark-short`, `spark-full`, and
+`java`, using the closest existing job as a template. Its `if:` is only
+`needs.changes.outputs.spark_X_Y == 'true'`: which events may run the job is
+`POLICY` in `dev/ci/compute-changes.py`, never an event check in `ci.yml`. A
+brand-new version starts out on demand only, `["label:run-spark-X.Y-tests"]`,
+meaning the label on a pull request or a `workflow_dispatch`, gating no merge.
+Move it to `"nightly"` as soon as the suite passes, and do not leave it on
+demand as a way of being cautious: the version's `dev/diffs` file is updated
+only when someone runs the suite, so an on-demand version's diff silently
+falls behind the others every time a Comet change needs a diff update. A job
+graduates to `"queue"` only if its version becomes the default profile.
+
+Four more registrations are needed. The first three are silent when missed;
+the fourth fails preflight, which is what tells you about the other three.
+
+- In `dev/ci/compute-changes.py`, add a matching `spark_X_Y` entry to
+  `FILTERS` **and** to `POLICY`. A `FILTERS` key with no `POLICY` entry makes
+  the `changes` job raise `KeyError` on every event that is not a dispatch.
+  Build the `FILTERS` list by copying the nearest version's whole list and
+  changing only the `dev/diffs` path and the `!spark/src/main/spark-*`
+  exclusions. Dropping an entry that looks incidental, such as one of the
+  shared `.github/actions/**` paths, produces a job that skips exactly when
+  the shared input it needed changed, and while the new version lives on a
+  branch every upstream addition to those lists merges cleanly without
+  reaching it.
+- In `ci.yml`, expose `spark_X_Y` as an output of the `changes` job, otherwise
+  the `if:` gate reads an empty string on every event.
+- In `ci.yml`, add the job to `required_checks.needs`, otherwise it can fail
+  without blocking the merge queue.
+- In `dev/ci/check-ci-config.py`, add the job to `BUILD_JOBS`, to the tier set
+  that feeds `ALL_JOBS`, and add a `POLICY_CASES` entry per gating label.
+  `check_event_policy` compares `POLICY` against those cases exactly, so a new
+  job fails that check until it is declared there.
+
+There is no label allowlist to update: the `preflight` job deliberately
+carries no `if:`, so a `labeled` event always reaches `changes`, and `POLICY`
+decides from there.
 
 Before merging, run `make format`, run clippy
 (`cd native && cargo clippy --all-targets --workspace -- -D warnings`), and

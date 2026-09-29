@@ -15,13 +15,16 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
+-- Config: spark.comet.exec.scalaUDF.codegen.enabled=false
+-- Config: spark.comet.expression.ArrayMin.allowIncompatible=false
+
 statement
 CREATE TABLE test_array_min(arr array<int>) USING parquet
 
 statement
 INSERT INTO test_array_min VALUES (array(1, 2, 3)), (array(3, 1, 2)), (array()), (NULL), (array(NULL, 1, 2)), (array(-1, -2, -3))
 
-query spark_answer_only
+query
 SELECT array_min(arr) FROM test_array_min
 
 -- literal arguments
@@ -49,8 +52,8 @@ INSERT INTO test_array_min_double VALUES
 query
 SELECT array_min(arr) FROM test_array_min_double
 
--- Spark treats +0.0 and -0.0 as equal and returns +0.0; Comet returns -0.0.
--- Surfaced by https://github.com/apache/datafusion-comet/issues/5271
+-- Regression for https://github.com/apache/datafusion-comet/issues/5401:
+-- Spark preserves the first equal zero (+0.0 here), and native execution must do the same.
 statement
 CREATE TABLE test_array_min_dbl_negzero(arr array<double>) USING parquet
 
@@ -58,7 +61,7 @@ statement
 INSERT INTO test_array_min_dbl_negzero VALUES
   (array(0.0, double('-0.0'), 1.0))
 
-query ignore(array_min signed-zero: Spark +0.0, Comet -0.0)
+query
 SELECT array_min(arr) FROM test_array_min_dbl_negzero
 
 -- ===== FLOAT arrays with NaN/Infinity/-0.0 =====
@@ -79,8 +82,8 @@ INSERT INTO test_array_min_float VALUES
 query
 SELECT array_min(arr) FROM test_array_min_float
 
--- Spark treats +0.0 and -0.0 as equal and returns +0.0; Comet returns -0.0.
--- Surfaced by https://github.com/apache/datafusion-comet/issues/5271
+-- Regression for https://github.com/apache/datafusion-comet/issues/5401:
+-- Spark preserves the first equal zero (+0.0 here), and native execution must do the same.
 statement
 CREATE TABLE test_array_min_flt_negzero(arr array<float>) USING parquet
 
@@ -88,5 +91,5 @@ statement
 INSERT INTO test_array_min_flt_negzero VALUES
   (array(CAST(0.0 AS FLOAT), float('-0.0')))
 
-query ignore(array_min signed-zero: Spark +0.0, Comet -0.0)
+query
 SELECT array_min(arr) FROM test_array_min_flt_negzero
