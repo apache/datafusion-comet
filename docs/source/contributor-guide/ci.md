@@ -74,10 +74,11 @@ a change lands, evaluated against the merge result rather than the pull request 
 runs one Spark version and one Iceberg version, the ones the default build profile targets. The
 **nightly tier** runs the other Spark and Iceberg versions once a day against `main` as it stands;
 see [Nightly runs](#nightly-runs) below. Nothing in the queue tier runs again
-on push to `main`, because the queue already tested the exact tree that landed. The one exception
-is the Linux build, which also runs on push so that the dependency caches on `main` stay fresh: a
-pull request can only restore caches saved on its own branch or on `main`, and the queue's
-temporary branch takes its caches with it when it is deleted.
+on push to `main`, because the queue already tested the exact tree that landed. The exceptions are
+the Linux and macOS builds, which also run on push so that the dependency caches on `main` stay
+fresh: a pull request can only restore caches saved on its own branch or on `main`, and the queue's
+temporary branch takes its caches with it when it is deleted. On push the macOS build runs only its
+native build, and only when `main` has no cache entry yet for the current dependency set.
 
 That push run is for the caches and nothing else, so it runs in **cache-refresh-only** mode: only
 the three jobs that own a cache entry (the native CI build and the two TPC-H/TPC-DS jobs, the last
