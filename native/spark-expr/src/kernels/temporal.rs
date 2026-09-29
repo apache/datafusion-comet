@@ -18,7 +18,8 @@
 //! temporal kernels
 
 use chrono::{
-    DateTime, Datelike, Duration, LocalResult, NaiveDate, NaiveDateTime, TimeZone, Timelike, Utc,
+    DateTime, Datelike, Duration, LocalResult, NaiveDate, NaiveDateTime, Offset, TimeZone,
+    Timelike, Utc,
 };
 
 use std::sync::Arc;
@@ -90,6 +91,7 @@ macro_rules! return_compute_error_with {
 // The number of days between the beginning of the proleptic gregorian calendar (0001-01-01)
 // and the beginning of the Unix Epoch (1970-01-01)
 const DAYS_TO_UNIX_EPOCH: i32 = 719_163;
+const MICROS_PER_MINUTE: i64 = 60_000_000;
 
 // Optimized date truncation functions that work directly with days since epoch
 // These avoid the overhead of converting to/from NaiveDateTime
@@ -811,11 +813,87 @@ fn datafusion_timestamp_trunc_requires_nanos(granularity: &str, has_timezone: bo
     }
 }
 
+/// Returns whether a timezone has a zero UTC offset at every instant.
+///
+/// Keep this list conservative: an unlisted timezone takes the zone-aware path, which is always
+/// correct even when its current offset happens to be zero.
+fn is_utc_timezone(timezone: &str) -> bool {
+    matches!(
+        timezone,
+        "UTC" | "Etc/UTC" | "Etc/GMT" | "GMT" | "Z" | "+00:00" | "-00:00" | "00:00"
+    )
+}
+
+/// Truncate timezone-aware timestamps to the local minute boundary.
+///
+/// DataFusion floors the stored UTC microseconds directly. That is only equivalent to Spark's
+/// local-time truncation when the timezone offset is a whole number of minutes. Historical offsets
+/// can include seconds, so resolve the offset for each instant before finding the local remainder.
+/// If truncation crosses an offset transition, re-resolve the truncated local datetime just like
+/// `ZonedDateTime.truncatedTo` rather than retaining the input instant's offset.
+fn timestamp_trunc_minute_tz(
+    array: &TimestampMicrosecondArray,
+    timezone: &str,
+) -> Result<TimestampMicrosecondArray, SparkError> {
+    as_timestamp_tz_with_op::<&TimestampMicrosecondArray, TimestampMicrosecondType, _>(
+        ArrayIter::new(array),
+        TimestampMicrosecondBuilder::with_capacity(array.len()),
+        timezone,
+        |dt| {
+            let micros = dt.timestamp_micros();
+            let timezone = dt.timezone();
+            let original_offset_secs = dt.offset().fix().local_minus_utc();
+            let offset_micros = i64::from(original_offset_secs) * 1_000_000;
+            let candidate = micros - (micros + offset_micros).rem_euclid(MICROS_PER_MINUTE);
+            let candidate_dt =
+                as_datetime_with_timezone::<TimestampMicrosecondType>(candidate, timezone)
+                    .expect("truncated minute candidate must be a valid datetime");
+            let candidate_offset_secs = candidate_dt.offset().fix().local_minus_utc();
+
+            if candidate_offset_secs == original_offset_secs {
+                return candidate;
+            }
+
+            let truncated_local = dt
+                .naive_local()
+                .with_second(0)
+                .and_then(|local| local.with_nanosecond(0))
+                .expect("truncated local minute must be a valid datetime");
+            match timezone.from_local_datetime(&truncated_local) {
+                LocalResult::Single(resolved) => resolved.timestamp_micros(),
+                LocalResult::Ambiguous(earlier, later) => {
+                    // ZonedDateTime retains the original offset when it is valid in an overlap.
+                    if earlier.offset().fix().local_minus_utc() == original_offset_secs {
+                        earlier.timestamp_micros()
+                    } else if later.offset().fix().local_minus_utc() == original_offset_secs {
+                        later.timestamp_micros()
+                    } else {
+                        earlier.timestamp_micros()
+                    }
+                }
+                LocalResult::None => {
+                    // The candidate lies immediately before a forward transition. Java advances
+                    // a nonexistent local time by the gap, which is equivalent to resolving it
+                    // with the candidate's pre-transition offset.
+                    naive_to_micros(truncated_local) - i64::from(candidate_offset_secs) * 1_000_000
+                }
+            }
+        },
+    )
+}
+
 fn timestamp_trunc_upstream(
     array: &TimestampMicrosecondArray,
     format: &str,
 ) -> Result<TimestampMicrosecondArray, SparkError> {
     let granularity = normalize_timestamp_trunc_format(format)?;
+
+    if granularity == "minute" {
+        if let Some(timezone) = array.timezone().filter(|tz| !is_utc_timezone(tz)) {
+            return timestamp_trunc_minute_tz(array, timezone);
+        }
+    }
+
     let requires_nanos =
         datafusion_timestamp_trunc_requires_nanos(granularity, array.timezone().is_some());
 
@@ -1562,6 +1640,37 @@ mod tests {
                 Some("2018-11-04T03:30:15.123456Z"),
             ],
             &[Some("2018-11-03T03:00:00Z"), Some("2018-11-04T03:00:00Z")],
+        );
+    }
+
+    #[test]
+    fn test_timestamp_trunc_minute_with_historical_offset_seconds() {
+        // Africa/Monrovia used UTC-00:44:30 in 1960. The input instant is local 10:30:45,
+        // which Spark truncates to local 10:30:00 (11:14:30 UTC), not a UTC minute boundary.
+        assert_timestamp_trunc(
+            "MINUTE",
+            Some("Africa/Monrovia"),
+            &[Some("1960-06-15T11:15:15Z"), None],
+            &[Some("1960-06-15T11:14:30Z"), None],
+        );
+
+        // Asia/Aden changed from UTC+03:06:52 to UTC+03:00 within the local 23:53 minute.
+        // Truncating the post-transition 23:53:30 must re-resolve local 23:53:00 with the
+        // pre-transition offset, matching ZonedDateTime.truncatedTo.
+        assert_timestamp_trunc(
+            "MINUTE",
+            Some("Asia/Aden"),
+            &[Some("1947-03-13T20:53:30.123Z")],
+            &[Some("1947-03-13T20:46:08Z")],
+        );
+
+        // Monrovia's 1972 transition skipped local 00:00:00 through 00:44:29. Truncating
+        // 00:44:45 targets the gap, which ZonedDateTime shifts forward by 44 minutes 30 seconds.
+        assert_timestamp_trunc(
+            "MINUTE",
+            Some("Africa/Monrovia"),
+            &[Some("1972-01-07T00:44:45Z")],
+            &[Some("1972-01-07T01:28:30Z")],
         );
     }
 
