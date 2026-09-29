@@ -123,3 +123,81 @@ async fn placeholder_updates_and_errors_are_not_hidden() {
     let error = collect(wrapper, task).await.unwrap_err();
     assert!(error.to_string().contains("must evaluate to a Boolean"));
 }
+
+#[tokio::test]
+async fn early_filter_bypasses_only_after_nonempty_evaluated_batches_and_resets_per_stream() {
+    use datafusion::physical_expr::expressions::IsNotNullExpr;
+    let ctx = SessionContext::new();
+    let plan = input((0..10).map(Some).collect(), &DataType::Int32, 0);
+    let key = Arc::new(Column::new("key", 0)) as Arc<dyn PhysicalExpr>;
+    let predicate = Arc::new(DynamicFilterPhysicalExpr::new(
+        vec![Arc::clone(&key)],
+        lit(true),
+    ));
+    let metrics = ExecutionPlanMetricsSet::new();
+    let filter = Arc::new(
+        DynamicFilterExec::new(
+            plan,
+            Arc::clone(&predicate),
+            metrics,
+            "dynamic_filter_early",
+        )
+        .adaptive(),
+    ) as Arc<dyn ExecutionPlan>;
+    // An unpopulated producer does not use up the adaptation samples.
+    let mut stream = filter.execute(0, ctx.task_ctx()).unwrap();
+    assert_eq!(stream.next().await.unwrap().unwrap().num_rows(), 2);
+    assert_eq!(stream.next().await.unwrap().unwrap().num_rows(), 2);
+    predicate
+        .update(Arc::new(IsNotNullExpr::new(Arc::clone(&key))))
+        .unwrap();
+    while let Some(batch) = stream.next().await {
+        assert_eq!(batch.unwrap().num_rows(), 2);
+    }
+    assert_eq!(metric(&filter, "dynamic_filter_early_rows_evaluated"), 4);
+    assert_eq!(metric(&filter, "dynamic_filter_early_rows_bypassed"), 6);
+    // Adaptation belongs to a stream, and the downstream join remains responsible
+    // for matching rows if a later producer update would become more selective.
+    predicate
+        .update(Arc::new(BinaryExpr::new(key, Operator::Eq, lit(7i32))))
+        .unwrap();
+    let rows = collect(Arc::clone(&filter), ctx.task_ctx()).await.unwrap();
+    assert_eq!(rows.iter().map(RecordBatch::num_rows).sum::<usize>(), 1);
+    assert_eq!(metric(&filter, "dynamic_filter_early_rows_evaluated"), 14);
+    assert_eq!(metric(&filter, "dynamic_filter_early_rows_pruned"), 9);
+}
+
+#[tokio::test]
+async fn empty_batches_do_not_disable_early_filtering() {
+    use datafusion::physical_expr::expressions::IsNotNullExpr;
+    let ctx = SessionContext::new();
+    let schema = Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, true)]));
+    let first = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Int32Array::from(vec![Some(1)]))],
+    )
+    .unwrap();
+    let last = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Int32Array::from(vec![None::<i32>]))],
+    )
+    .unwrap();
+    let plan = memory_exec(vec![first, RecordBatch::new_empty(schema), last]);
+    let key = Arc::new(Column::new("key", 0)) as Arc<dyn PhysicalExpr>;
+    let predicate = Arc::new(DynamicFilterPhysicalExpr::new(
+        vec![Arc::clone(&key)],
+        Arc::new(IsNotNullExpr::new(key)),
+    ));
+    let filter = Arc::new(
+        DynamicFilterExec::new(
+            plan,
+            predicate,
+            ExecutionPlanMetricsSet::new(),
+            "dynamic_filter_early",
+        )
+        .adaptive(),
+    ) as Arc<dyn ExecutionPlan>;
+    let output = collect(Arc::clone(&filter), ctx.task_ctx()).await.unwrap();
+    assert_eq!(output.iter().map(RecordBatch::num_rows).sum::<usize>(), 1);
+    assert_eq!(metric(&filter, "dynamic_filter_early_rows_pruned"), 1);
+}

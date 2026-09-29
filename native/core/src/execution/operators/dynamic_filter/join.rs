@@ -45,6 +45,7 @@ use datafusion::physical_plan::{
 };
 use futures::StreamExt;
 
+use super::early::place_early_filter;
 use super::parquet_reader::try_attach_parquet_reader_filter;
 use super::DynamicFilterExec;
 
@@ -84,19 +85,38 @@ impl DynamicFilterJoinExec {
         })
     }
 
+    pub(super) fn template(&self) -> &HashJoinExec {
+        &self.template
+    }
+
+    pub(super) fn with_execution_probe(
+        &self,
+        probe: Arc<dyn ExecutionPlan>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        Ok(Arc::new(Self {
+            template: self
+                .template
+                .builder()
+                .reset_state()
+                .with_new_children(vec![Arc::clone(self.template.left()), probe])?
+                .build()?,
+            config: self.config.clone(),
+            metrics: self.metrics.clone(),
+        }))
+    }
+
     fn build_runtime_join(&self) -> Result<RuntimeDynamicFilterJoin> {
         let predicate = Arc::new(DynamicFilterPhysicalExpr::new(
             vec![Arc::clone(&self.template.on()[0].1)],
             lit(true),
         ));
-        let reader = try_attach_parquet_reader_filter(
-            self.template.right(),
-            Arc::clone(&predicate),
-            &self.config,
-        )?;
+        let probe =
+            place_early_filter(self.template.right(), Arc::clone(&predicate), &self.metrics)?;
+        let reader =
+            try_attach_parquet_reader_filter(&probe, Arc::clone(&predicate), &self.config)?;
         let reader_filter_attached = reader.is_some();
         let consumer = Arc::new(DynamicFilterExec::new(
-            reader.unwrap_or_else(|| Arc::clone(self.template.right())),
+            reader.unwrap_or(probe),
             Arc::clone(&predicate),
             self.metrics.clone(),
             "dynamic_filter_join",
