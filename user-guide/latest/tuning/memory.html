@@ -883,8 +883,11 @@ one line every 10 seconds for the whole executor:</p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">allocated</span></code> is the memory that Comet’s native code has allocated and not yet freed, whether or not
 a pool tracks it.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">reserved</span></code> is the part that Comet’s memory pools track. It is charged against
-<code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code>, so the container already has room for it.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">reserved</span></code> is the part that Comet’s memory pools have reserved from Spark’s off-heap memory. It is
+charged against <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code>, so the container already has room for it. A pool
+sometimes has to track memory that Spark could not grant, such as a spilled batch read back from
+disk while the off-heap memory is full. <code class="docutils literal notranslate"><span class="pre">reserved</span></code> leaves that memory out, since nothing charges it
+against <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code>.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">JVM</span> <span class="pre">Arrow</span> <span class="pre">allocated</span></code> is the Arrow memory Comet holds on the JVM side, such as batches read from
 Comet’s in-memory cache, broadcast data, and batches exchanged with native code or Python workers.
 The part imported from native was allocated by Comet’s native code, so <code class="docutils literal notranslate"><span class="pre">allocated</span></code> already counts
@@ -893,10 +896,10 @@ operator holds on to one of its batches, such as a sort buffering its input. The
 which allocator a buffer is charged to rather than where it was allocated, so treat the JVM’s
 part as an estimate.</p></li>
 </ul>
-<p>Comet’s untracked memory is what Comet holds outside the JVM heap that no pool reserves: <code class="docutils literal notranslate"><span class="pre">allocated</span></code>,
-plus the JVM Arrow figure less the part imported from native, minus <code class="docutils literal notranslate"><span class="pre">reserved</span></code>. It is the part of
-Comet’s footprint that has to fit in <code class="docutils literal notranslate"><span class="pre">spark.executor.memoryOverhead</span></code>, alongside the JVM’s own
-non-heap memory. To size the overhead from it:</p>
+<p>Comet’s untracked memory is what Comet holds outside the JVM heap that Spark’s off-heap pool does
+not account for: <code class="docutils literal notranslate"><span class="pre">allocated</span></code>, plus the JVM Arrow figure less the part imported from native, minus
+<code class="docutils literal notranslate"><span class="pre">reserved</span></code>. It is the part of Comet’s footprint that has to fit in <code class="docutils literal notranslate"><span class="pre">spark.executor.memoryOverhead</span></code>,
+alongside the JVM’s own non-heap memory. To size the overhead from it:</p>
 <ol class="arabic simple">
 <li><p>Run a representative workload and find the line with the most untracked memory in each
 executor’s log. Take all the figures from the same line: they are sampled together, and figures

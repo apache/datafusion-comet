@@ -991,7 +991,9 @@ JVM closes them (see <a class="reference internal" href="#crossing-the-ffi-bound
 (see <a class="reference internal" href="#the-unified-pools">The unified pools</a>). <code class="docutils literal notranslate"><span class="pre">reserved()</span></code> includes it, but Spark’s memory
 manager does not, so until it is repaid Spark can hand the same bytes to another consumer or task.
 The <code class="docutils literal notranslate"><span class="pre">overcommit</span></code> figure in the pool’s <code class="docutils literal notranslate"><span class="pre">Display</span></code> output and <code class="docutils literal notranslate"><span class="pre">try_grow</span></code> errors shows how much is
-outstanding.</p></li>
+outstanding. The executor’s memory usage log leaves it out of the <code class="docutils literal notranslate"><span class="pre">reserved</span></code> figure it reports,
+so that the log counts it as untracked: like an undeclared allocation, it needs room beyond what
+Spark has handed out. Tracing’s <code class="docutils literal notranslate"><span class="pre">comet_memory_reserved_total</span></code> still includes it.</p></li>
 </ul>
 <p>The practical consequence is that <code class="docutils literal notranslate"><span class="pre">reserved()</span></code> is a lower bound on Comet’s real footprint, and the
 gap is workload-dependent. The margin that covers it has to come from
