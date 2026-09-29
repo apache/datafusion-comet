@@ -172,7 +172,12 @@ public final class CometDiskBlockWriter {
     return this.activeWriter.getChecksum();
   }
 
-  private void doSpill() throws IOException {
+  /**
+   * Writes the active writer's buffered rows to the partition file as one batch and frees their
+   * memory. The batch always counts as shuffle bytes written. A write that relieves memory pressure
+   * is also reported as a spill, the way a sort-based spill is.
+   */
+  private void doSpill(boolean underMemoryPressure) throws IOException {
     // We only allow spilling request from `NativeDiskBlockArrowIPCWriter`.
     if (spilling || activeWriter.numRecords() == 0) {
       return;
@@ -182,8 +187,13 @@ public final class CometDiskBlockWriter {
     spilling = true;
 
     synchronized (CometDiskBlockWriter.this) {
-      totalWritten += activeWriter.doSpilling();
-      activeWriter.freeMemory();
+      final long written = activeWriter.doSpilling();
+      totalWritten += written;
+      final long freed = activeWriter.freeMemory();
+      if (underMemoryPressure) {
+        taskContext.taskMetrics().incDiskBytesSpilled(written);
+        taskContext.taskMetrics().incMemoryBytesSpilled(freed);
+      }
     }
 
     spilling = false;
@@ -216,10 +226,9 @@ public final class CometDiskBlockWriter {
       if (activeWriter.numRecords() >= numElementsForSpillThreshold
           || activeWriter.numRecords() >= columnarBatchSize) {
         int threshold = Math.min(numElementsForSpillThreshold, columnarBatchSize);
-        logger.info(
-            "Spilling data because number of spilledRecords crossed the threshold " + threshold);
-        // Spill the current writer
-        doSpill();
+        logger.debug("Writing a batch to the partition file because it reached {} rows", threshold);
+        // Not a spill: the batch is written to the map output because it is full.
+        doSpill(false);
         if (activeWriter.numRecords() != 0) {
           throw new RuntimeException(
               "activeWriter.numRecords()(" + activeWriter.numRecords() + ") != 0");
@@ -320,9 +329,9 @@ public final class CometDiskBlockWriter {
     /**
      * Writes the current in-memory records of this `ArrowIPCWriter` to the partition file as one
      * batch. Every batch, whether written on reaching the batch size, under memory pressure, or on
-     * close, is appended to the same file, which becomes part of the map output. So all of them
-     * count toward shuffle bytes written, as in Spark's `BypassMergeSortShuffleWriter`, and none
-     * toward spill.
+     * close, is appended to the same file, which is copied as is into the map output. So every
+     * batch counts toward shuffle bytes written, records written, and write time, as in Spark's
+     * `BypassMergeSortShuffleWriter`.
      */
     long doSpilling() throws IOException {
       final long written;
@@ -355,7 +364,7 @@ public final class CometDiskBlockWriter {
         // initialCurrentPage() requires this writer to have released its current page, even when
         // spilling a larger sibling would free enough memory for the allocation on its own.
         long totalFreed = getActiveMemoryUsage();
-        CometDiskBlockWriter.this.doSpill();
+        CometDiskBlockWriter.this.doSpill(true);
         if (totalFreed >= required) {
           return;
         }
@@ -382,7 +391,7 @@ public final class CometDiskBlockWriter {
           }
           long used = writer.getActiveMemoryUsage();
 
-          writer.doSpill();
+          writer.doSpill(true);
 
           totalFreed += used;
         }

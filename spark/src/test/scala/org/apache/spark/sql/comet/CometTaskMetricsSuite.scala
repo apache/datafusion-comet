@@ -648,7 +648,7 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("JVM hash shuffle reports every written batch as shuffle bytes, not spill") {
+  test("JVM hash shuffle counts batch-size writes as shuffle bytes written, not spill") {
     val expectedRecords = 20000L
     withParquetTable((0 until expectedRecords.toInt).map(i => (i, s"row-$i")), "tbl") {
       // A small batch size makes each partition writer flush several batches to its partition
@@ -696,7 +696,7 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         assert(shuffleWriteStages.nonEmpty, "No JVM shuffle write stage was recorded")
         assert(shuffleWriteStages.map(_.shuffleWriteRecords).sum == expectedRecords)
         assert(shuffleWriteStages.map(_.shuffleWriteBytes).sum == mapOutputBytes)
-        // Nothing went to a separate spill file.
+        // Without memory pressure, no batch was spilled.
         assert(shuffleWriteStages.map(_.memoryBytesSpilled).sum == 0L)
         assert(shuffleWriteStages.map(_.diskBytesSpilled).sum == 0L)
       }
