@@ -215,8 +215,7 @@ object IcebergReflection extends Logging {
         case _: NoSuchFieldException =>
           None
         case e: Exception =>
-          logError(
-            s"Iceberg reflection failure: outer SparkWrite from BatchWrite: ${e.getMessage}")
+          logWarning("Iceberg reflection failure: outer SparkWrite from BatchWrite", e)
           None
       }
     }
@@ -232,8 +231,7 @@ object IcebergReflection extends Logging {
       Option(field.get(plan))
     } catch {
       case e: Exception =>
-        logError(
-          s"Iceberg reflection failure: $fieldName on ${plan.getClass.getName}: ${e.getMessage}")
+        logWarning(s"Iceberg reflection failure: $fieldName on ${plan.getClass.getName}", e)
         None
     }
 
@@ -427,8 +425,7 @@ object IcebergReflection extends Logging {
         Some(tableMethod.invoke(scan))
       } catch {
         case e: Exception =>
-          logError(
-            s"Iceberg reflection failure: Failed to get table from SparkScan: ${e.getMessage}")
+          logWarning("Iceberg reflection failure: Failed to get table from SparkScan", e)
           None
       }
     }
@@ -454,7 +451,7 @@ object IcebergReflection extends Logging {
       case Some(method) =>
         Some(method.invoke(scan).asInstanceOf[java.util.List[_]])
       case None =>
-        logError(
+        logWarning(
           "Iceberg reflection failure: Failed to get tasks from SparkScan: " +
             s"tasks() not found on ${scan.getClass.getName}")
         None
@@ -481,13 +478,13 @@ object IcebergReflection extends Logging {
           }
         } catch {
           case e: ReflectiveOperationException =>
-            logError(
-              "Iceberg reflection failure: Failed to flatten tasks from SparkStagedScan: " +
-                s"${e.getMessage}")
+            logWarning(
+              "Iceberg reflection failure: Failed to flatten tasks from SparkStagedScan",
+              e)
             None
         }
       case None =>
-        logError(
+        logWarning(
           "Iceberg reflection failure: Failed to flatten tasks from SparkStagedScan: " +
             s"taskGroups() not found on ${scan.getClass.getName}")
         None
@@ -515,18 +512,18 @@ object IcebergReflection extends Logging {
               Some(formatVersionMethod.invoke(metadata).asInstanceOf[Int])
             }
             .orElse {
-              logError(
+              logWarning(
                 "Iceberg reflection failure: Failed to get format version: " +
                   "current() method not found in operations class hierarchy")
               None
             }
         } catch {
           case e: Exception =>
-            logError(s"Iceberg reflection failure: Failed to get format version: ${e.getMessage}")
+            logWarning("Iceberg reflection failure: Failed to get format version", e)
             None
         }
       case e: Exception =>
-        logError(s"Iceberg reflection failure: Failed to get format version: ${e.getMessage}")
+        logWarning("Iceberg reflection failure: Failed to get format version", e)
         None
     }
   }
@@ -540,7 +537,7 @@ object IcebergReflection extends Logging {
       Some(ioMethod.invoke(table))
     } catch {
       case e: Exception =>
-        logError(s"Iceberg reflection failure: Failed to get FileIO from table: ${e.getMessage}")
+        logWarning("Iceberg reflection failure: Failed to get FileIO from table", e)
         None
     }
   }
@@ -561,7 +558,7 @@ object IcebergReflection extends Logging {
         findMethodInHierarchy(fileIO.getClass, "io", classOf[String]) match {
           case Some(ioMethod) => Option(ioMethod.invoke(fileIO, location)).map(_.getClass)
           case None =>
-            logError(
+            logWarning(
               s"Iceberg reflection failure: ${fileIO.getClass.getName} has no io(String) method")
             None
         }
@@ -572,9 +569,9 @@ object IcebergReflection extends Logging {
             case ite: java.lang.reflect.InvocationTargetException => ite.getCause
             case other => other
           }
-          logError(
-            "Iceberg reflection failure: Failed to resolve the FileIO delegate for " +
-              s"$location: $cause")
+          logWarning(
+            s"Iceberg reflection failure: Failed to resolve the FileIO delegate for $location",
+            cause)
           None
       }
     }
@@ -591,9 +588,7 @@ object IcebergReflection extends Logging {
       Option(encryptionMethod.invoke(table))
     } catch {
       case e: Exception =>
-        logError(
-          "Iceberg reflection failure: Failed to get EncryptionManager from table: " +
-            s"${e.getMessage}")
+        logWarning("Iceberg reflection failure: Failed to get EncryptionManager from table", e)
         None
     }
   }
@@ -633,7 +628,7 @@ object IcebergReflection extends Logging {
       Some(schemaMethod.invoke(table))
     } catch {
       case e: Exception =>
-        logError(s"Iceberg reflection failure: Failed to get schema from table: ${e.getMessage}")
+        logWarning("Iceberg reflection failure: Failed to get schema from table", e)
         None
     }
   }
@@ -654,7 +649,7 @@ object IcebergReflection extends Logging {
         .toSeq
     } catch {
       case e: Exception =>
-        logDebug(s"Iceberg reflection: table.schemas() not available: ${e.getMessage}")
+        logDebug("Iceberg reflection: table.schemas() not available", e)
         Seq.empty
     }
   }
@@ -773,8 +768,7 @@ object IcebergReflection extends Logging {
       Some(specMethod.invoke(table))
     } catch {
       case e: Exception =>
-        logError(
-          s"Iceberg reflection failure: Failed to get partition spec from table: ${e.getMessage}")
+        logWarning("Iceberg reflection failure: Failed to get partition spec from table", e)
         None
     }
   }
@@ -825,14 +819,14 @@ object IcebergReflection extends Logging {
       val operations = getDeclaredMethod(table.getClass, "operations").invoke(table)
 
       findMethodInHierarchy(operations.getClass, "current").map(_.invoke(operations)).orElse {
-        logError(
+        logWarning(
           "Iceberg reflection failure: Failed to get table metadata: " +
             "current() method not found in operations class hierarchy")
         None
       }
     } catch {
       case e: Exception =>
-        logError(s"Iceberg reflection failure: Failed to get table metadata: ${e.getMessage}")
+        logWarning("Iceberg reflection failure: Failed to get table metadata", e)
         None
     }
   }
@@ -860,8 +854,7 @@ object IcebergReflection extends Logging {
         Option(metadataFileLocationMethod.invoke(metadata).asInstanceOf[String])
       } catch {
         case e: Exception =>
-          logError(
-            s"Iceberg reflection failure: Failed to get metadata location: ${e.getMessage}")
+          logWarning("Iceberg reflection failure: Failed to get metadata location", e)
           None
       }
     }
@@ -882,7 +875,7 @@ object IcebergReflection extends Logging {
         Some(propertiesMethod.invoke(metadata).asInstanceOf[java.util.Map[String, String]])
       } catch {
         case e: Exception =>
-          logError(s"Iceberg reflection failure: Failed to get table properties: ${e.getMessage}")
+          logWarning("Iceberg reflection failure: Failed to get table properties", e)
           None
       }
     }
@@ -953,9 +946,7 @@ object IcebergReflection extends Logging {
       }
     } catch {
       case e: Exception =>
-        logError(
-          "Iceberg reflection failure: Failed to get field info for ID " +
-            s"$fieldId: ${e.getMessage}")
+        logWarning(s"Iceberg reflection failure: Failed to get field info for ID $fieldId", e)
         None
     }
   }
@@ -981,7 +972,7 @@ object IcebergReflection extends Logging {
           Some(schemaMethod.invoke(scan))
         } catch {
           case e: Exception =>
-            logError(s"Failed to get projection/expectedSchema from SparkScan: ${e.getMessage}")
+            logWarning("Failed to get projection/expectedSchema from SparkScan", e)
             None
         }
       }
@@ -1016,13 +1007,13 @@ object IcebergReflection extends Logging {
           Some(name -> fieldId)
         } catch {
           case e: Exception =>
-            logWarning(s"Failed to extract field ID from column: ${e.getMessage}")
+            logWarning("Failed to extract field ID from column", e)
             None
         }
       }.toMap
     } catch {
       case e: Exception =>
-        logWarning(s"Failed to build field ID mapping from schema: ${e.getMessage}")
+        logWarning("Failed to build field ID mapping from schema", e)
         Map.empty[String, Int]
     }
   }
@@ -1056,8 +1047,7 @@ object IcebergReflection extends Logging {
       }.toSet
     } catch {
       case e: Exception =>
-        logWarning(
-          s"Failed to inspect schema for page-index-unsupported columns: ${e.getMessage}")
+        logWarning("Failed to inspect schema for page-index-unsupported columns", e)
         Set.empty[String]
     }
   }
@@ -1196,8 +1186,7 @@ object IcebergReflection extends Logging {
           // this and `.orElse` onto the alternative.
           None
         case e: Exception =>
-          logError(
-            s"Iceberg reflection failure: Failed to read SparkWrite.$fieldName: ${e.getMessage}")
+          logWarning(s"Iceberg reflection failure: Failed to read SparkWrite.$fieldName", e)
           None
       }
     }
@@ -1284,9 +1273,10 @@ object IcebergReflection extends Logging {
       Some(result.asInstanceOf[java.lang.Integer].intValue())
     } catch {
       case e: Exception =>
-        logError(
-          "Iceberg reflection failure: SparkWriteConf.outputSortOrderId failed " +
-            s"(${e.getMessage}); falling back to table.sortOrder().orderId()")
+        logWarning(
+          "Iceberg reflection failure: SparkWriteConf.outputSortOrderId failed; falling back " +
+            "to table.sortOrder().orderId()",
+          e)
         None
     }
   }
@@ -1303,9 +1293,7 @@ object IcebergReflection extends Logging {
       Option(specs.get(java.lang.Integer.valueOf(specId)))
     } catch {
       case e: Exception =>
-        logError(
-          "Iceberg reflection failure: Failed to look up partition spec " +
-            s"$specId: ${e.getMessage}")
+        logWarning(s"Iceberg reflection failure: Failed to look up partition spec $specId", e)
         None
     }
 
@@ -1318,7 +1306,7 @@ object IcebergReflection extends Logging {
       Some(method.invoke(null, schema.asInstanceOf[AnyRef]).asInstanceOf[String])
     } catch {
       case e: Exception =>
-        logError(s"Iceberg reflection failure: SchemaParser.toJson: ${e.getMessage}")
+        logWarning("Iceberg reflection failure: SchemaParser.toJson", e)
         None
     }
 
@@ -1334,7 +1322,7 @@ object IcebergReflection extends Logging {
       Some(method.invoke(null, spec.asInstanceOf[AnyRef]).asInstanceOf[String])
     } catch {
       case e: Exception =>
-        logError(s"Iceberg reflection failure: PartitionSpecParser.toJson: ${e.getMessage}")
+        logWarning("Iceberg reflection failure: PartitionSpecParser.toJson", e)
         None
     }
 
@@ -1387,10 +1375,7 @@ object IcebergReflection extends Logging {
       Option(locationProviderMethod.invoke(table).asInstanceOf[AnyRef])
     } catch {
       case e: Exception =>
-        logError(
-          "Iceberg reflection failure: Failed to get LocationProvider from table: " +
-            s"${e.getMessage}",
-          e)
+        logWarning("Iceberg reflection failure: Failed to get LocationProvider from table", e)
         None
     }
 
@@ -1403,7 +1388,7 @@ object IcebergReflection extends Logging {
         Some(location.stripSuffix("/"))
       } catch {
         case e: Exception =>
-          logError(s"Iceberg reflection failure: Failed to get data location: ${e.getMessage}", e)
+          logWarning("Iceberg reflection failure: Failed to get data location", e)
           None
       }
     }
@@ -1429,7 +1414,7 @@ object IcebergReflection extends Logging {
       Some(names.toSeq)
     } catch {
       case e: Exception =>
-        logError(s"Iceberg reflection failure: Schema.columns(): ${e.getMessage}")
+        logWarning("Iceberg reflection failure: Schema.columns()", e)
         None
     }
 
@@ -1514,9 +1499,7 @@ object IcebergReflection extends Logging {
       }
     } catch {
       case e: Exception =>
-        logError(
-          "Iceberg reflection failure: Failed to look up sort order " +
-            s"$sortOrderId: ${e.getMessage}")
+        logWarning(s"Iceberg reflection failure: Failed to look up sort order $sortOrderId", e)
         None
     }
 
@@ -1659,7 +1642,7 @@ object IcebergReflection extends Logging {
       cls.getMethod("version").invoke(null).asInstanceOf[String]
     } catch {
       case e: Exception =>
-        logWarning(s"Iceberg reflection failure: IcebergBuild.version: ${e.getMessage}")
+        logWarning("Iceberg reflection failure: IcebergBuild.version", e)
         "unknown"
     }
 
@@ -1769,7 +1752,7 @@ object IcebergReflection extends Logging {
     } finally {
       try reader.getClass.getMethod("close").invoke(reader)
       catch {
-        case e: Exception => logWarning(s"Failed to close ManifestReader: ${e.getMessage}")
+        case e: Exception => logWarning("Failed to close ManifestReader", e)
       }
     }
   }
@@ -1849,7 +1832,7 @@ object IcebergReflection extends Logging {
       Some(method.invoke(null, table.asInstanceOf[AnyRef]))
     } catch {
       case e: Exception =>
-        logError(s"Iceberg reflection failure: MetricsConfig.forTable: ${e.getMessage}")
+        logWarning("Iceberg reflection failure: MetricsConfig.forTable", e)
         None
     }
 
@@ -2081,8 +2064,8 @@ object IcebergReflection extends Logging {
       case e: Exception =>
         logWarning(
           s"Iceberg reflection: Table.name() not callable on ${table.getClass.getName}. " +
-            "Native S3 credential dispatch will fall back to bucket-keyed isolation: " +
-            s"${e.getMessage}")
+            "Native S3 credential dispatch will fall back to bucket-keyed isolation",
+          e)
         None
     }
   }
@@ -2092,7 +2075,7 @@ object IcebergReflection extends Logging {
       SparkSession.active.sessionState.catalogManager.listCatalogs(None)
     } catch {
       case e: Exception =>
-        logDebug(s"Could not list V2 catalogs from SparkSession: ${e.getMessage}")
+        logDebug("Could not list V2 catalogs from SparkSession", e)
         Nil
     }
 }
@@ -2135,7 +2118,7 @@ case class CometIcebergNativeScanMetadata(
     catalogName: Option[String],
     fileFormat: String)
 
-object CometIcebergNativeScanMetadata extends Logging {
+object CometIcebergNativeScanMetadata {
 
   /**
    * Extracts all Iceberg metadata needed for native scan execution.

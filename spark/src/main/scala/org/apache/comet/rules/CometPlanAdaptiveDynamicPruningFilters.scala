@@ -19,7 +19,6 @@
 
 package org.apache.comet.rules
 
-import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions.{Alias, BindReferences, DynamicPruningExpression, Expression, Literal}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans.logical.{Aggregate, LogicalPlan}
@@ -63,8 +62,7 @@ case object CometPlanAdaptiveDynamicPruningFilters
     extends Rule[SparkPlan]
     with AdaptiveSparkPlanHelper
     with ShimSubqueryBroadcast
-    with ShimPrepareExecutedPlan
-    with Logging {
+    with ShimPrepareExecutedPlan {
 
   override def apply(plan: SparkPlan): SparkPlan = {
     if (!conf.dynamicPartitionPruningEnabled) {

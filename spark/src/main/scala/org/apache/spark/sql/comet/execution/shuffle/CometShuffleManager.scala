@@ -294,7 +294,7 @@ class CometShuffleManager(conf: SparkConf) extends ShuffleManager with Logging {
   }
 }
 
-object CometShuffleManager extends Logging {
+object CometShuffleManager {
 
   def shouldBypassMergeSort(conf: SparkConf, dep: ShuffleDependency[_, _, _]): Boolean = {
     // We cannot bypass sorting if we need to do map-side aggregation.

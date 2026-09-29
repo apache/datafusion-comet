@@ -160,10 +160,7 @@ class CometScalaUDFCodegen extends CometUDF with Logging {
               .deserialize[Expression](ByteBuffer.wrap(bytes), loader)
           } catch {
             case NonFatal(t) =>
-              logError(
-                "CometScalaUDFCodegen: closure-deserialize failed " +
-                  s"(bytes=${bytes.length}, specs=$specs)",
-                t)
+              logError(s"Closure deserialization failed (bytes=${bytes.length}, specs=$specs)", t)
               throw t
           }
         val compiled = CometBatchKernelCodegen.compile(boundExpr, specs)

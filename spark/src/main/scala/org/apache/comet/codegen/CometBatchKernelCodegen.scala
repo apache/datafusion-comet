@@ -208,14 +208,13 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
       } catch {
         case t: Throwable =>
           logError(
-            s"CometBatchKernelCodegen: compile failed for ${boundExpr.getClass.getSimpleName}. " +
+            s"Compile failed for ${boundExpr.getClass.getSimpleName}. " +
               s"Generated source follows:\n${CodeFormatter.format(src.code)}",
             t)
           throw t
       }
     logDebug(
-      s"CometBatchKernelCodegen: compiled ${boundExpr.getClass.getSimpleName} " +
-        s"-> ${boundExpr.dataType}  inputs=" +
+      s"Compiled ${boundExpr.getClass.getSimpleName} -> ${boundExpr.dataType}  inputs=" +
         inputSchema
           .map(s => s"${s.vectorClass.getSimpleName}${if (s.nullable) "?" else ""}")
           .mkString(","))
