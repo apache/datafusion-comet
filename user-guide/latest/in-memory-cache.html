@@ -799,7 +799,10 @@ of Comet’s configuration:</p>
 </div>
 <p>It has to be set before the <code class="docutils literal notranslate"><span class="pre">SparkContext</span></code> starts. Comet’s driver plugin chooses
 <code class="docutils literal notranslate"><span class="pre">spark.sql.cache.serializer</span></code> once, while the context is initializing, so a session that started
-with the default goes on using Spark’s cache format however the config is set afterwards.</p>
+with the default goes on using Spark’s cache format however the config is set afterwards. The
+plugin installs Comet’s serializer only if <code class="docutils literal notranslate"><span class="pre">spark.comet.enabled</span></code> and <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.enabled</span></code>
+are enabled at that point too, because an application that starts without native execution could
+not scan Comet’s format natively.</p>
 <section id="what-changes-when-it-is-enabled">
 <h2>What changes when it is enabled<a class="headerlink" href="#what-changes-when-it-is-enabled" title="Link to this heading">#</a></h2>
 <p>With Comet’s serializer installed as <code class="docutils literal notranslate"><span class="pre">spark.sql.cache.serializer</span></code>:</p>
