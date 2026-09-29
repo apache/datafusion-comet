@@ -113,7 +113,9 @@ The runtime is stored in a `Mutex<Option<Runtime>>` static and created lazily on
 is torn down on plugin shutdown (via `release_runtime`) so that the tokio worker threads exit
 and the JVM can shut down cleanly:
 
-- **Worker threads:** `num_cpus` by default, configurable via `COMET_WORKER_THREADS`
+- **Worker threads:** one per executor core by default (`spark.executor.cores`, or the thread
+  count of a `local[N]` or `local[*]` master, and one when `spark.executor.cores` is not set
+  outside local mode), configurable via `COMET_WORKER_THREADS`
 - **Max blocking threads:** 512 by default, configurable via `COMET_MAX_BLOCKING_THREADS`
 - All async I/O (S3, HTTP, Parquet reads) runs on worker threads as non-blocking futures
 
