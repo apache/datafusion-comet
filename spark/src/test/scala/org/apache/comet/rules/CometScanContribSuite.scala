@@ -25,6 +25,7 @@ import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.util.ServiceLoader
 
+import scala.annotation.nowarn
 import scala.collection.mutable.ArrayBuffer
 import scala.jdk.CollectionConverters._
 
@@ -33,6 +34,7 @@ import org.scalatest.funsuite.AnyFunSuite
 import org.apache.logging.log4j.LogManager
 import org.apache.logging.log4j.core.LogEvent
 import org.apache.logging.log4j.core.appender.AbstractAppender
+import org.apache.logging.log4j.core.config.Property
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.InternalRow
@@ -418,6 +420,7 @@ class RecordingClaimingScanContrib extends ClaimingScanContrib {
 class NotAContribAtAll
 
 /** Implements the service but cannot be constructed; `next` throws. */
+@nowarn("msg=dead code")
 class ThrowingCtorScanContrib extends CometScanContrib {
   throw new IllegalStateException("contrib constructor blew up")
 }
@@ -475,7 +478,8 @@ class VersionSkewedScanContrib extends CometScanContrib {
  * Minimal Log4j2 appender that records every event it receives, verbatim, for
  * [[CometScanContribSuite.withCapturedLogEvents]] to inspect after the fact.
  */
-private class CapturingAppender(name: String) extends AbstractAppender(name, null, null, false) {
+private class CapturingAppender(name: String)
+    extends AbstractAppender(name, null, null, false, Property.EMPTY_ARRAY) {
   val events: ArrayBuffer[LogEvent] = ArrayBuffer.empty
 
   override def append(event: LogEvent): Unit = events.synchronized {
