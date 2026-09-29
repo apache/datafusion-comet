@@ -226,7 +226,7 @@ mod test {
     #[test]
     fn test_create_struct_rejects_inconsistent_field_metadata() {
         let value: Arc<dyn PhysicalExpr> = Arc::new(Literal::new(ScalarValue::Int32(Some(1))));
-        assert!(CreateNamedStruct::try_new(vec![value.clone()], vec![], vec![false]).is_err());
+        assert!(CreateNamedStruct::try_new(vec![Arc::clone(&value)], vec![], vec![false]).is_err());
         assert!(CreateNamedStruct::try_new(vec![value], vec!["a".to_string()], vec![]).is_err());
     }
 
