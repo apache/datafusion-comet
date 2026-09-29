@@ -298,14 +298,30 @@ public abstract class NativeBase {
   /** Release native resources through JNI */
   static native void release();
 
-  /** Release native resources */
+  /**
+   * Retire native broadcast cache lookups without releasing the runtime. Active native leases keep
+   * their buffers; call after task shutdown and before retiring their executor storage owner.
+   * Repeated calls are safe and native failures propagate to the caller.
+   */
+  public static native void clearBroadcastCache();
+
+  /**
+   * Release the native runtime at most once, but retire broadcast cache ownership on every plugin
+   * shutdown. A later SparkContext may have populated another cache even after runtime release was
+   * recorded. Cache retirement still runs if release fails; unloaded libraries require no cleanup.
+   * Load or JNI failures propagate to the caller, which must finish executor-owner retirement.
+   */
   public static void releaseNative() throws Throwable {
     if (!isLoaded()) {
       return;
     }
 
-    if (released.compareAndSet(false, true)) {
-      release();
+    try {
+      if (released.compareAndSet(false, true)) {
+        release();
+      }
+    } finally {
+      clearBroadcastCache();
     }
   }
 

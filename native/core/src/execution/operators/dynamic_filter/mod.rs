@@ -207,9 +207,72 @@ impl ExecutionPlan for DynamicFilterExec {
     }
 
     fn metrics(&self) -> Option<MetricsSet> {
-        Some(self.metrics.clone_inner())
+        let metrics = ExecutionPlanMetricsSet::new();
+        for metric in self.metrics.clone_inner().iter() {
+            metrics.register(Arc::clone(metric));
+        }
+        if self.metric_prefix == "dynamic_filter_union" {
+            // Reader and join metrics can be registered after execute() starts. Forward live
+            // handles here instead of snapshotting an unexecuted branch's empty metric set.
+            for metric in self.input.metrics().unwrap_or_default().iter() {
+                metrics.register(Arc::clone(metric));
+            }
+        }
+        Some(metrics.clone_inner())
     }
 }
 
 #[cfg(test)]
 mod tests;
+
+pub(crate) struct AppliedUnionFilters {
+    pub plan: Arc<dyn ExecutionPlan>,
+    pub forwarded_domains: Vec<Arc<super::union_filter::UnionFilterDomain>>,
+}
+
+/// Attach transported domains only to this authorized native pipeline. Hold the bundle in its
+/// ExecutionContext until both the stream and rewritten plan have been released.
+pub(crate) fn apply_union_filter_bundle(
+    input: Arc<dyn ExecutionPlan>,
+    bundle: &super::union_filter::UnionFilterBundle,
+    config: &datafusion::common::config::ConfigOptions,
+) -> Result<AppliedUnionFilters> {
+    use super::union_filter::remap_domain;
+    let mut input = input;
+    let mut nested = vec![];
+    for domain in &bundle.domains {
+        let metrics = ExecutionPlanMetricsSet::new();
+        let predicate = match remap_domain(domain, &input.schema()) {
+            Ok(predicate) => predicate,
+            Err(_) => continue,
+        };
+        let mut targets = vec![];
+        let attachment = parquet_reader::try_attach_parquet_reader_filter_with_transport(
+            &input,
+            Arc::clone(&predicate),
+            config,
+            &mut targets,
+        )?;
+        let outcome = if attachment.is_none() {
+            "dynamic_filter_union_branches_skipped"
+        } else if targets.is_empty() {
+            "dynamic_filter_union_branches_attached"
+        } else {
+            "dynamic_filter_union_branches_forwarded"
+        };
+        MetricBuilder::new(&metrics).counter(outcome, 0).add(1);
+        for target in targets {
+            nested.push(target.publish(Arc::clone(&domain.build)));
+        }
+        input = Arc::new(DynamicFilterExec::new(
+            attachment.unwrap_or(input),
+            predicate,
+            metrics.clone(),
+            "dynamic_filter_union",
+        ));
+    }
+    Ok(AppliedUnionFilters {
+        plan: input,
+        forwarded_domains: nested,
+    })
+}

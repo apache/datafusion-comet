@@ -54,10 +54,39 @@ adaptations cannot fail. Nested column pruning still reads only the requested st
 with supplied file statistics also skip reader attachment. These cases still use runtime filtering
 on decoded batches.
 
-Filters stay within the task's native plan and do not propagate across Spark exchanges or JVM/Arrow
-boundaries. A shuffled hash join can still filter probe batches after shuffle, but it cannot send
+By default, filters stay within the task's native plan and do not propagate across Spark exchanges
+or JVM/Arrow boundaries. The separate Union setting below enables a scoped exception. A shuffled hash join can still filter probe batches after shuffle, but it cannot send
 its filter back to an earlier scan stage. Compare the [runtime-filter and scan metrics](../metrics.md#hash-joins)
 with the setting disabled to distinguish reduced hash-probe work from reader I/O savings.
+
+### Runtime Filters Across UNION ALL
+
+With both `spark.comet.exec.join.dynamicFilter.enabled=true` and
+`spark.comet.exec.join.dynamicFilter.union.enabled=true`, an eligible broadcast inner join
+can send its completed key filter into the native readers of a `UNION ALL` probe input.
+Both settings default to false.
+
+For example, when a small set of selected account IDs joins the union of current and archived
+transactions, each transaction reader can discard row groups outside those IDs. The original
+join still checks every match and preserves duplicates. Spark retains its original Union
+partitions and its single broadcast exchange; Comet opens each branch lazily after the join's
+build is ready.
+
+This path accepts one direct signed integer join key and no join residual. Build columns must
+be fixed-width scalars or plain UTF-8 strings; other build schemas keep ordinary execution.
+Branches can rename or reorder columns and retain direct-column null checks. Computed projections, other residual
+filters, limits, and intermediate joins stop reader propagation. Such branches can still be
+filtered after their native output is produced. Existing per-file schema-conversion safeguards
+remain in force. Missing or incomplete filters never delay opening a branch.
+
+A filter holds a lease on the same prepared build that the original join probes. This keeps its
+storage charged until every consumer finishes, including early termination. Task-attempt and
+native-root checks prevent a filter from reaching unrelated executions. Nested Union owners
+release child plans and Arrow streams before releasing the leases.
+
+This draft depends on the prepared-build support in [PR #6037](https://github.com/apache/datafusion-comet/pull/6037)
+and a compatible DataFusion release containing its prepared-build API. Runtime Union filtering
+does not require enabling executor-wide broadcast reuse.
 
 ## Adaptive Partial Aggregation
 
@@ -133,3 +162,37 @@ nested cases fall back to Spark, and they can be forced back onto the native pat
 `sort_array` is separate. It sorts array elements rather than ordering rows, and its elements are compared with Arrow's
 raw total ordering, so `spark.comet.exec.strictFloatingPoint=true` makes it fall back even for a scalar floating-point
 element type. Use `spark.comet.expression.SortArray.allowIncompatible=true` to keep it native.
+
+## Reusing Broadcast Hash Builds (Experimental)
+
+`spark.comet.broadcast.reuse.enabled=true` allows tasks in one executor to share a prepared
+native hash table for the same Spark broadcast. This avoids repeating Arrow decoding and hash-table
+construction on a cache hit. It requires `org.apache.spark.CometPlugin` in `spark.plugins` and Spark
+off-heap memory. The feature is disabled by default.
+
+The implementation covers non-spilling inner broadcast joins with direct column keys,
+matching key types, and fixed-width or plain UTF8 build columns. Residual join conditions remain
+local to each consuming task. Dictionary, view, binary, and nested build columns remain unsupported.
+Unsupported joins keep ordinary task-local execution. Tasks can share a build when they use the
+same broadcast, build schema, and ordered build keys, even if their probe schemas differ.
+
+`spark.comet.broadcast.reuse.maxMemory` defaults to `1g`. It caps native prepared-build allocations
+through Spark off-heap storage memory while tasks are preparing or using a build. When the last
+task releases that build, its storage charge is returned. A later task wave may prepare the same
+broadcast again; a later query without a broadcast hash join inherits no idle build charge.
+The first flat-schema broadcast input marked for reuse fixes the executor's cap, even if its join
+later proves ineligible and creates no build. A later input with a different cap uses ordinary
+execution. Cache admission never waits for another join to release its memory. When admission
+fails, Comet discards the partial preparation and opens a fresh uncached input for that task.
+Preparation must also admit the temporary overlap between decoded native batches and DataFusion's
+compact build batch; the memory needed to prepare a build can exceed its final retained size.
+
+This cap does not bound the existing driver broadcast representation or JVM decoder allocations.
+The first task still decodes the existing broadcast format; bounded broadcast construction and
+admission before JVM decoding are separate work.
+
+Spark join metrics expose cache hits, successful preparations, admission fallbacks, preparation
+rows/bytes, and preparation time. Probe metrics remain per task. A successful preparation should
+normally be followed by cache hits from other tasks using that broadcast. Validate elapsed query
+time and executor memory with the feature both enabled and disabled before enabling it broadly;
+reuse counts alone do not establish a query speedup.

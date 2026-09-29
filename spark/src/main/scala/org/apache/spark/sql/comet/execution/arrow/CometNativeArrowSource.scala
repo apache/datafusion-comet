@@ -29,6 +29,7 @@ import org.apache.arrow.vector.types.pojo.{Field, FieldType, Schema}
 import org.apache.spark.TaskContext
 import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
+import org.apache.spark.sql.comet.CometUnionInput
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.types.StructType
@@ -224,7 +225,8 @@ object CometArrowStream extends Logging {
    * buffers are released. The task-completion listener registered here runs strictly after that
    * (Spark fires listeners in reverse registration order, and the listener that drops the native
    * plan is registered later by `CometExecIterator`), so `allocator.close` finds zero outstanding
-   * bytes.
+   * bytes. Lazy Union branches instead register with their input owner, which closes them after
+   * the outer iterator has also released its exported output batches.
    */
   def stream(
       name: String,
@@ -248,7 +250,7 @@ object CometArrowStream extends Logging {
     }
     if (context != null) {
       val streamRef = arrowStream
-      context.addTaskCompletionListener[Unit] { _ =>
+      CometUnionInput.addCleanup(context) {
         streamRef.close()
         allocator.close()
       }
@@ -283,7 +285,7 @@ object CometArrowStream extends Logging {
           throw t
       }
     if (context != null) {
-      context.addTaskCompletionListener[Unit] { _ =>
+      CometUnionInput.addCleanup(context) {
         reader.close()
         allocator.close()
       }

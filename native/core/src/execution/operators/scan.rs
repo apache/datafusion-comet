@@ -51,6 +51,7 @@ pub struct ScanExec {
     /// The C Stream Interface reader. `None` only in unit tests that seed input via
     /// `set_input_batch`.
     pub input_source: Option<Arc<Mutex<AlignedArrowStreamReader>>>,
+    pub(crate) union_input: Option<Arc<super::union_filter::UnionInput>>,
     pub input_source_description: String,
     pub data_types: Vec<DataType>,
     pub schema: SchemaRef,
@@ -89,6 +90,7 @@ impl ScanExec {
         Ok(Self {
             exec_context_id,
             input_source,
+            union_input: None,
             input_source_description: input_source_description.to_string(),
             data_types,
             batch: Arc::new(Mutex::new(None)),
@@ -119,6 +121,32 @@ impl ScanExec {
     /// Pulls the next input batch from the upstream `ArrowArrayStreamReader` unless one is
     /// already buffered, then wakes the stream waiting for it.
     pub fn get_next_batch(&mut self) -> Result<(), CometError> {
+        if let Some(input) = &self.union_input {
+            if !input.requested() {
+                return Ok(());
+            }
+            let mut current = self
+                .batch
+                .try_lock()
+                .map_err(|_| CometError::Internal("Union input batch contended".into()))?;
+            if current.is_some() {
+                return Ok(());
+            }
+            *current = Some(match input.next()? {
+                None => InputBatch::EOF,
+                Some(batch) => InputBatch::new(
+                    batch
+                        .columns()
+                        .iter()
+                        .map(import_column)
+                        .collect::<Result<Vec<_>, _>>()?,
+                    Some(batch.num_rows()),
+                ),
+            });
+            drop(current);
+            self.waker.wake();
+            return Ok(());
+        }
         if self.input_source.is_none() {
             // This is a unit test. Input batches are seeded via `set_input_batch`.
             return Ok(());
@@ -179,7 +207,7 @@ impl ScanExec {
 /// Spark-rendered form (arrow's `from_ffi` imports string buffers unchecked), then copy/unpack.
 /// Decoding runs before unpacking so a `Dictionary(_, Utf8)` decodes its compact values, not the
 /// expanded ones.
-fn import_column(col: &ArrayRef) -> Result<ArrayRef, CometError> {
+pub(super) fn import_column(col: &ArrayRef) -> Result<ArrayRef, CometError> {
     let decoded = decode_string_arrays(col)?;
     Ok(copy_or_unpack_array(&decoded, &CopyMode::UnpackOrClone)?)
 }
@@ -334,6 +362,9 @@ impl Stream for ScanStream<'_> {
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let mut timer = self.baseline_metrics.elapsed_compute().timer();
+        if let Some(input) = &self.scan.union_input {
+            input.request();
+        }
         let mut scan_batch = self.scan.batch.try_lock().unwrap();
 
         let result = match &*scan_batch {

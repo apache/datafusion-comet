@@ -29,6 +29,7 @@ import scala.util.Using
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 
+import org.apache.arrow.c.ArrowArrayStream
 import org.apache.arrow.memory.{AllocationListener, RootAllocator}
 import org.apache.arrow.vector.{BaseFixedWidthVector, BaseValueVector, BigIntVector, BitVector, DecimalVector, IntervalMonthDayNanoVector, IntVector, VarCharVector, VectorLoader, VectorSchemaRoot, VectorUnloader}
 import org.apache.arrow.vector.complex.ListVector
@@ -36,13 +37,18 @@ import org.apache.arrow.vector.dictionary.{Dictionary => ArrowDictionary}
 import org.apache.arrow.vector.dictionary.DictionaryProvider.MapDictionaryProvider
 import org.apache.arrow.vector.ipc.ArrowReader
 import org.apache.arrow.vector.types.pojo.{ArrowType, DictionaryEncoding, Field, FieldType, Schema}
+import org.apache.spark.TaskContext
+import org.apache.spark.broadcast.Broadcast
+import org.apache.spark.comet.CometTaskContextShim
 import org.apache.spark.sql.catalyst.expressions.{GenericInternalRow, SpecializedGetters}
 import org.apache.spark.sql.catalyst.util.GenericArrayData
+import org.apache.spark.sql.comet.CometBroadcastInput
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.vectorized.{ConstantColumnVector, Dictionary, OffHeapColumnVector, OnHeapColumnVector}
 import org.apache.spark.sql.types.{ArrayType, BooleanType, ByteType, CalendarIntervalType, DataType, DateType, DayTimeIntervalType, Decimal, DecimalType, DoubleType, FloatType, IntegerType, LongType, ShortType, StringType, StructField, StructType, TimestampNTZType, TimestampType, YearMonthIntervalType}
 import org.apache.spark.sql.vectorized.{ColumnarArray, ColumnarBatch, ColumnVector}
 import org.apache.spark.unsafe.types.{CalendarInterval, UTF8String}
+import org.apache.spark.util.io.ChunkedByteBuffer
 
 import org.apache.comet.vector.{CometPlainVector, CometVector, NativeUtil}
 
@@ -53,6 +59,55 @@ import org.apache.comet.vector.{CometPlainVector, CometVector, NativeUtil}
  * suite covers the boundary contract independently of any specific function.
  */
 class CometArrowStreamSuite extends AnyFunSuite with Matchers {
+
+  private class TestBroadcast(id: Long, read: () => Array[ChunkedByteBuffer])
+      extends Broadcast[Array[ChunkedByteBuffer]](id) {
+    override protected def getValue(): Array[ChunkedByteBuffer] = read()
+    override protected def doUnpersist(blocking: Boolean): Unit = ()
+    override protected def doDestroy(blocking: Boolean): Unit = ()
+  }
+
+  test("broadcast marker stays lazy, replays streams, and closes after native cleanup") {
+    val task = TaskContext.empty()
+    var reads = 0
+    val broadcast = new TestBroadcast(
+      72L,
+      () => {
+        TaskContext.get() should be theSameInstanceAs task
+        reads += 1
+        Array.empty[ChunkedByteBuffer]
+      })
+    val schema = StructType(Seq(StructField("key", LongType)))
+    val unopened = new CometBroadcastInput(broadcast, schema, "test-broadcast", task, null)
+    val input = new CometBroadcastInput(broadcast, schema, "test-broadcast", task, null)
+    unopened.getBroadcastId() shouldBe 72L
+    reads shouldBe 0
+
+    val prior = TaskContext.get()
+    CometTaskContextShim.set(task)
+    try {
+      var first: ArrowArrayStream = null
+      var second: ArrowArrayStream = null
+      // This models the native-plan listener installed after constructing the input but before
+      // openStream. Both exports must still exist when native cleanup begins.
+      task.addTaskCompletionListener[Unit] { _ =>
+        first.snapshot().release should not be 0L
+        second.snapshot().release should not be 0L
+      }
+      first = input.openStream()
+      second = input.openStream()
+      first.memoryAddress() should not be second.memoryAddress()
+      reads shouldBe 2
+      TaskContext.get() should be theSameInstanceAs task
+      task.markTaskCompleted(None)
+      reads shouldBe 2
+      intercept[NullPointerException](first.memoryAddress())
+    } finally {
+      input.close()
+      unopened.close()
+      if (prior == null) CometTaskContextShim.unset() else CometTaskContextShim.set(prior)
+    }
+  }
 
   private def expectedSchema(types: (String, ArrowType)*): Schema = {
     val fields = types.map { case (name, t) =>
