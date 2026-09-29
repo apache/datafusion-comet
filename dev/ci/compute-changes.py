@@ -480,7 +480,7 @@ POLICY = {
     # own branch or on main, and nowhere else. The queue runs on a throwaway
     # gh-readonly-queue/* branch, so whatever it saves is deleted with that
     # branch. Without a push run, a Cargo.lock or pom.xml change would leave
-    # main's cargo-ci, cargo-debug, Maven and TPC-H/TPC-DS caches stale
+    # main's cargo-ci, Maven and TPC-H/TPC-DS caches stale
     # forever, and every later pull request would pay the delta on top of the
     # restore-keys prefix match.
     #
