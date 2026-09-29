@@ -2425,6 +2425,117 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
+  // With the read flag on, the ids must also match. DataFusion's INT96 coercion rebuilds every
+  // struct, list and map of a file holding an INT96 timestamp without its field id, while Spark
+  // matches the id on the raw Parquet group, so a container whose id went missing would read as
+  // null. Each root column is read on its own, so a wrong answer names the column. The year 2500
+  // timestamps sit outside the nanosecond range, which the INT96 decode has to keep. The last
+  // case writes TIMESTAMP_MICROS, which the coercion leaves alone. Before Spark 4.1 the
+  // vectorized reader rejects a nested struct renamed in the read schema, since its column
+  // vector compares the names, so that read is compared with Spark from 4.1 on. The pinned rows
+  // hold everywhere.
+  test(
+    "field ids on struct, list and map containers holding INT96 timestamps resolve with the " +
+      "read flag on") {
+    val ts = Timestamp.valueOf("2020-01-01 00:00:00")
+    val farTs = Timestamp.valueOf("2500-01-01 00:00:00")
+    def id(fieldId: Option[Int]): Metadata = fieldId.map(withId).getOrElse(Metadata.empty)
+    def leaves(aId: Option[Int] = None, tsId: Option[Int] = None): StructType =
+      new StructType()
+        .add("a", IntegerType, true, id(aId))
+        .add("ts", TimestampType, true, id(tsId))
+    def deep(inner: String, ids: Seq[Int]): StructType = new StructType().add(
+      inner,
+      new StructType().add("x", IntegerType, true, withId(ids(1))).add("ts", TimestampType),
+      true,
+      withId(ids(0)))
+
+    val containerOnly = new StructType()
+      .add("s", leaves(), true, withId(1))
+      .add("l", ArrayType(TimestampType), true, withId(2))
+      .add("m", MapType(StringType, TimestampType), true, withId(3))
+    val containerOnlyRows = Seq(
+      Row(Row(1, ts), Seq(ts, farTs), Map("k" -> ts)),
+      Row(Row(2, farTs), Seq(farTs), Map("f" -> farTs)))
+
+    def withChildIds(base: Int): StructType = leaves(Some(base + 1), Some(base + 2))
+    val containerAndChildren = new StructType()
+      .add("s", withChildIds(10), true, withId(1))
+      .add("l", ArrayType(withChildIds(20)), true, withId(2))
+      .add("m", MapType(StringType, withChildIds(30)), true, withId(3))
+    val structRows = Seq(
+      Row(Row(1, ts), Seq(Row(2, ts), Row(3, farTs)), Map("k" -> Row(4, ts))),
+      Row(Row(5, farTs), Seq(Row(6, farTs)), Map("f" -> Row(7, farTs))))
+
+    def severalDepths(root: String, inner: String): StructType = new StructType()
+      .add(root, deep(inner, Seq(11, 12)), true, withId(1))
+      .add("l", ArrayType(deep(inner, Seq(21, 22))), true, withId(2))
+      .add("m", MapType(StringType, deep(inner, Seq(31, 32))), true, withId(3))
+    val severalDepthsRows = Seq(
+      Row(Row(Row(1, ts)), Seq(Row(Row(2, farTs))), Map("k" -> Row(Row(3, ts)))),
+      Row(Row(Row(4, farTs)), Seq(Row(Row(5, ts))), Map("f" -> Row(Row(6, farTs)))))
+
+    val farOnly = new StructType().add("s", leaves(), true, withId(1))
+    val farOnlyRows =
+      Seq(Row(Row(1, farTs)), Row(Row(2, Timestamp.valueOf("9999-12-31 23:59:59"))))
+
+    // (label, output timestamp type, write schema, read schema, rows)
+    val cases = Seq(
+      ("id only on the container", "INT96", containerOnly, containerOnly, containerOnlyRows),
+      (
+        "ids on the container and its children",
+        "INT96",
+        containerAndChildren,
+        containerAndChildren,
+        structRows),
+      (
+        "ids at several depths",
+        "INT96",
+        severalDepths("s", "inner"),
+        severalDepths("s", "inner"),
+        severalDepthsRows),
+      (
+        "containers renamed in the read schema",
+        "INT96",
+        severalDepths("s", "inner"),
+        severalDepths("renamed", "renamed_inner"),
+        severalDepthsRows),
+      ("a timestamp outside the nanosecond range", "INT96", farOnly, farOnly, farOnlyRows),
+      (
+        "TIMESTAMP_MICROS control",
+        "TIMESTAMP_MICROS",
+        containerOnly,
+        containerOnly,
+        containerOnlyRows))
+
+    for ((label, timestampType, writeSchema, readSchema, rows) <- cases) {
+      withSQLConf(
+        SQLConf.PARQUET_FIELD_ID_WRITE_ENABLED.key -> "true",
+        SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true",
+        SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> timestampType) {
+        withTempPath { dir =>
+          spark
+            .createDataFrame(spark.sparkContext.parallelize(rows), writeSchema)
+            .write
+            .mode("overwrite")
+            .parquet(dir.getCanonicalPath)
+          readSchema.fieldNames.zipWithIndex.foreach { case (column, index) =>
+            withClue(s"$label, column $column: ") {
+              def read(): DataFrame =
+                spark.read.schema(readSchema).parquet(dir.getCanonicalPath).select(column)
+              if (readSchema == writeSchema || isSpark41Plus) {
+                checkSparkAnswerAndOperator(read())
+              } else {
+                checkCometOperators(stripAQEPlan(read().queryExecution.executedPlan))
+              }
+              checkAnswer(read(), rows.map(row => Row(row.get(index))))
+            }
+          }
+        }
+      }
+    }
+  }
+
   // Spark checks each file on its own. A directory holding one file with ids and one without
   // raises on the second, and with `ignoreMissing` the file without ids reads as nulls because
   // no root field of it carries the requested id. Each side is written as one file. Spread over

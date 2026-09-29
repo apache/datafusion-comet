@@ -196,7 +196,8 @@ pub(crate) fn init_datasource_exec(
             parquet_source.metrics(),
         )
         .with_spark_variant_schema(projects_variant)
-        .with_require_field_ids(require_field_ids),
+        .with_require_field_ids(require_field_ids)
+        .with_use_field_id(use_field_id),
     );
     parquet_source = parquet_source.with_parquet_file_reader_factory(reader_factory);
 
@@ -1336,6 +1337,192 @@ mod tests {
         assert!(bloom_bytes > 0);
         assert_eq!(scan_metric(&scan, "scan_io_data_bytes"), 0);
         assert!(scan_metric(&scan, "scan_io_metadata_bytes") >= bloom_bytes);
+    }
+
+    /// Write `message` with two rows. Every leaf must be optional or repeated and holds one
+    /// value in each row, at its maximum definition level: `int32` leaves hold 1 and 2, `int96`
+    /// leaves the Unix epoch.
+    fn write_int96_file(message: &str) -> String {
+        use parquet::basic::Type as PhysicalType;
+        use parquet::data_type::{Int32Type, Int96, Int96Type};
+        use parquet::file::writer::SerializedFileWriter;
+        use parquet::schema::parser::parse_message_type;
+        use parquet::schema::types::SchemaDescriptor;
+
+        let schema = Arc::new(parse_message_type(message).unwrap());
+        let descriptor = SchemaDescriptor::new(Arc::clone(&schema));
+        let filename = get_temp_filename().to_str().unwrap().to_string();
+        let mut writer =
+            SerializedFileWriter::new(File::create(&filename).unwrap(), schema, Default::default())
+                .unwrap();
+        let mut row_group = writer.next_row_group().unwrap();
+        for column in descriptor.columns() {
+            let levels = [column.max_def_level(); 2];
+            let repetition = [0; 2];
+            let repetition = (column.max_rep_level() > 0).then_some(&repetition[..]);
+            let mut column_writer = row_group.next_column().unwrap().unwrap();
+            match column.physical_type() {
+                PhysicalType::INT32 => column_writer.typed::<Int32Type>().write_batch(
+                    &[1, 2],
+                    Some(&levels),
+                    repetition,
+                ),
+                PhysicalType::INT96 => {
+                    let mut epoch = Int96::new();
+                    epoch.set_data(0, 0, 2_440_588);
+                    column_writer.typed::<Int96Type>().write_batch(
+                        &[epoch, epoch],
+                        Some(&levels),
+                        repetition,
+                    )
+                }
+                other => panic!("unexpected leaf type {other}"),
+            }
+            .unwrap();
+            column_writer.close().unwrap();
+        }
+        row_group.close().unwrap();
+        writer.close().unwrap();
+        filename
+    }
+
+    /// Scan `filename` with Parquet field id matching on, as Spark's
+    /// `spark.sql.parquet.fieldId.read.enabled` asks, and return the single output batch.
+    async fn scan_with_field_ids(filename: String, required_schema: SchemaRef) -> RecordBatch {
+        let session_ctx = Arc::new(SessionContext::new());
+        let scan = init_datasource_exec(
+            required_schema,
+            None,
+            None,
+            ObjectStoreUrl::local_filesystem(),
+            ObjectStoreBackend::Local,
+            vec![vec![PartitionedFile::from_path(filename).unwrap()]],
+            None,
+            None,
+            None,
+            "UTC",
+            false,
+            false,
+            false,
+            false,
+            &session_ctx,
+            false,
+            true,
+            true,
+        )
+        .unwrap();
+        let mut stream = scan.execute(0, session_ctx.task_ctx()).unwrap();
+        let batch = stream.next().await.unwrap().unwrap();
+        assert!(stream.next().await.is_none());
+        batch
+    }
+
+    fn with_field_id(field: Field, id: i32) -> Field {
+        field.with_metadata(HashMap::from([(
+            parquet::arrow::PARQUET_FIELD_ID_META_KEY.to_string(),
+            id.to_string(),
+        )]))
+    }
+
+    fn int96_timestamp_field() -> Field {
+        Field::new(
+            "ts",
+            DataType::Timestamp(arrow::datatypes::TimeUnit::Microsecond, Some("UTC".into())),
+            true,
+        )
+    }
+
+    fn int_values(array: &dyn arrow::array::Array) -> Vec<Option<i32>> {
+        use arrow::array::AsArray;
+        array
+            .as_primitive::<arrow::datatypes::Int32Type>()
+            .iter()
+            .collect()
+    }
+
+    /// DataFusion's INT96 coercion rebuilds a struct holding an INT96 leaf without its field
+    /// id. The id sits only on the root struct here, so the root match by id has to see it.
+    #[tokio::test]
+    async fn field_id_on_a_root_struct_holding_int96_resolves() {
+        use arrow::array::AsArray;
+
+        let filename = write_int96_file(
+            "message schema { optional group s = 1 { optional int32 a; optional int96 ts; } }",
+        );
+        let children = vec![
+            Field::new("a", DataType::Int32, true),
+            int96_timestamp_field(),
+        ];
+        let required = Arc::new(Schema::new(vec![with_field_id(
+            Field::new("s", DataType::Struct(children.into()), true),
+            1,
+        )]));
+
+        let batch = scan_with_field_ids(filename, required).await;
+        let s = batch.column(0).as_struct();
+        assert_eq!(int_values(s.column(0)), vec![Some(1), Some(2)]);
+        assert_eq!(
+            s.column(1)
+                .as_primitive::<arrow::datatypes::TimestampMicrosecondType>()
+                .iter()
+                .collect::<Vec<_>>(),
+            vec![Some(0), Some(0)]
+        );
+    }
+
+    /// The same coercion drops the id of a struct nested in another one. The requested schema
+    /// renames the nested struct, so only its id can match it, and that match runs on each
+    /// decoded batch.
+    #[tokio::test]
+    async fn field_id_on_a_nested_struct_holding_int96_resolves() {
+        use arrow::array::AsArray;
+
+        let filename = write_int96_file(
+            "message schema { optional group s = 1 { optional group inner = 2 { \
+             optional int32 x = 3; optional int96 ts; } } }",
+        );
+        let inner = vec![
+            with_field_id(Field::new("x", DataType::Int32, true), 3),
+            int96_timestamp_field(),
+        ];
+        let required = Arc::new(Schema::new(vec![with_field_id(
+            Field::new(
+                "s",
+                DataType::Struct(
+                    vec![with_field_id(
+                        Field::new("renamed_inner", DataType::Struct(inner.into()), true),
+                        2,
+                    )]
+                    .into(),
+                ),
+                true,
+            ),
+            1,
+        )]));
+
+        let batch = scan_with_field_ids(filename, required).await;
+        let inner = batch.column(0).as_struct().column(0).as_struct();
+        assert_eq!(int_values(inner.column(0)), vec![Some(1), Some(2)]);
+    }
+
+    /// A legacy repeated primitive without a LIST annotation reads as an Arrow list that
+    /// carries the primitive's id, and the coercion drops that id like any other list's.
+    #[tokio::test]
+    async fn field_id_on_a_legacy_repeated_primitive_next_to_int96_resolves() {
+        use arrow::array::AsArray;
+
+        let filename =
+            write_int96_file("message schema { repeated int32 x = 5; optional int96 ts; }");
+        let item = Arc::new(Field::new("element", DataType::Int32, true));
+        let required = Arc::new(Schema::new(vec![with_field_id(
+            Field::new("x", DataType::List(item), true),
+            5,
+        )]));
+
+        let batch = scan_with_field_ids(filename, required).await;
+        let x = batch.column(0).as_list::<i32>();
+        assert_eq!(int_values(x.values().as_ref()), vec![Some(1), Some(2)]);
+        assert_eq!(x.value_offsets(), &[0, 1, 2]);
     }
 
     #[tokio::test]

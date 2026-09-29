@@ -24,5 +24,6 @@ pub mod schema_adapter;
 pub mod util;
 
 mod cast_column;
+mod field_id_stamp;
 mod name_fold;
 pub(crate) mod objectstore;

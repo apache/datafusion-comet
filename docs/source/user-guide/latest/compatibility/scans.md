@@ -78,6 +78,11 @@ The following limitations raise an error at scan time rather than falling back t
   duplicate names; inference across files can depend on merge order.
   Resolution is tracked in [#5884](https://github.com/apache/datafusion-comet/issues/5884),
   with mixed-type behavior in [#5964](https://github.com/apache/datafusion-comet/issues/5964).
+- Reading an encrypted Parquet file with `spark.sql.parquet.fieldId.read.enabled=true` when a
+  struct, list or map carrying a field id sits in a file with an `INT96` timestamp. Comet
+  restores those field ids through the file footer, which it cannot rewrite while Parquet
+  decryption is configured ([#6131](https://github.com/apache/datafusion-comet/issues/6131)).
+  Set `spark.comet.scan.enabled=false` to read such a file with Spark.
 - Invalid UTF-8 bytes in `STRING` columns. Spark permits arbitrary byte sequences in a `STRING`
   column (for example from `CAST(X'C1' AS STRING)`), but Comet's native execution path is built on
   Arrow, whose string type is strictly UTF-8. Reading a Parquet file whose `STRING` column contains

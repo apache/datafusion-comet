@@ -16,6 +16,7 @@
 // under the License.
 
 use crate::parquet::cast_column::CometCastColumnExpr;
+use crate::parquet::field_id_stamp::restore_field_ids;
 use crate::parquet::name_fold::{fold_name, fold_names, fold_schema_names};
 use crate::parquet::parquet_support::{
     duplicate_parquet_field_error, field_id, field_names_with_id, match_struct_fields,
@@ -862,6 +863,24 @@ impl PhysicalExprAdapterFactory for SparkPhysicalExprAdapterFactory {
         logical_file_schema: SchemaRef,
         physical_file_schema: SchemaRef,
     ) -> DataFusionResult<Arc<dyn PhysicalExprAdapter>> {
+        // DataFusion's INT96 coercion drops the field ids of struct, list and map fields. Put
+        // them back first, so every id match below sees the file's ids (#6131). A root column
+        // whose type changed decodes without the nested ids, so `rewrite` relabels it.
+        let (physical_file_schema, restored_columns) = if self.parquet_options.use_field_id {
+            let restored = restore_field_ids(&physical_file_schema);
+            let changed = restored
+                .fields()
+                .iter()
+                .zip(physical_file_schema.fields())
+                .enumerate()
+                .filter(|(_, (after, before))| after.data_type() != before.data_type())
+                .map(|(index, _)| index)
+                .collect();
+            (restored, changed)
+        } else {
+            (physical_file_schema, HashSet::new())
+        };
+
         // Remap physical schema field names to match logical names by Parquet field id
         // (when the logical schema carries IDs and `use_field_id` is set) and/or by
         // case-insensitive name match. The DefaultPhysicalExprAdapter uses exact name
@@ -991,6 +1010,7 @@ impl PhysicalExprAdapterFactory for SparkPhysicalExprAdapterFactory {
             id_duplicate_roots,
             logical_folded,
             physical_folded,
+            restored_columns,
         }))
     }
 }
@@ -1049,6 +1069,9 @@ struct SparkPhysicalExprAdapter {
     /// `physical_file_schema` field names pre-folded once, parallel to
     /// `physical_file_schema.fields()`. See `logical_folded`.
     physical_folded: Vec<String>,
+    /// Indices of the physical columns whose type gained nested field ids from
+    /// `restore_field_ids`. The decoder still produces them without those ids.
+    restored_columns: HashSet<usize>,
 }
 
 impl PhysicalExprAdapter for SparkPhysicalExprAdapter {
@@ -1117,6 +1140,7 @@ impl PhysicalExprAdapter for SparkPhysicalExprAdapter {
             }
         };
         let expr = self.wrap_direct_variant_column(expr)?;
+        let expr = self.wrap_restored_column(expr)?;
 
         // For case-insensitive mode: remap column names from logical back to
         // original physical names. The default adapter was given a remapped
@@ -1175,6 +1199,34 @@ impl SparkPhysicalExprAdapter {
             .with_parquet_options(self.parquet_options.clone()),
         );
         checked_decoded_expr(physical_field.data_type(), cast)
+    }
+
+    /// A bare column whose nested field ids were restored decodes without them, and the batch
+    /// the scan builds must match its schema exactly. `CometCastColumnExpr` relabels the
+    /// decoded array to the restored type.
+    fn wrap_restored_column(
+        &self,
+        expr: Arc<dyn PhysicalExpr>,
+    ) -> DataFusionResult<Arc<dyn PhysicalExpr>> {
+        let Some(column) = expr.downcast_ref::<Column>() else {
+            return Ok(expr);
+        };
+        if !self.restored_columns.contains(&column.index()) {
+            return Ok(expr);
+        }
+        let Ok(logical_field) = self.logical_file_schema.field_with_name(column.name()) else {
+            return Ok(expr);
+        };
+        let physical_field = Arc::clone(&self.physical_file_schema.fields()[column.index()]);
+        Ok(Arc::new(
+            CometCastColumnExpr::try_new(
+                expr,
+                physical_field,
+                Arc::new(logical_field.clone()),
+                None,
+            )?
+            .with_parquet_options(self.parquet_options.clone()),
+        ))
     }
 
     /// Wrap ALL Column expressions that have type mismatches with CometCastColumnExpr.

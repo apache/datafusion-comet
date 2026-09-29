@@ -283,6 +283,25 @@ impl PhysicalExpr for CometCastColumnExpr {
     fn evaluate(&self, batch: &RecordBatch) -> DataFusionResult<ColumnarValue> {
         let value = self.expr.evaluate(batch)?;
 
+        // Under field-id matching the physical field may carry nested ids that
+        // `restore_field_ids` put back and the decoder, built from DataFusion's INT96-coerced
+        // schema, leaves off. Relabel the decoded array to the physical type first, so the
+        // conversion below resolves nested fields by those ids (#6131).
+        let physical_type = self.input_physical_field.data_type();
+        let value = match value {
+            ColumnarValue::Array(array)
+                if self
+                    .parquet_options
+                    .as_ref()
+                    .is_some_and(|options| options.use_field_id)
+                    && array.data_type() != physical_type
+                    && array.data_type().equals_datatype(physical_type) =>
+            {
+                ColumnarValue::Array(relabel_array(array, physical_type))
+            }
+            other => other,
+        };
+
         if self.target_field.has_valid_extension_type::<VariantType>() {
             return match value {
                 ColumnarValue::Array(array) => Ok(ColumnarValue::Array(normalize_variant_array(

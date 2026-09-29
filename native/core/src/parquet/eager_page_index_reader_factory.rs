@@ -45,7 +45,7 @@
 //!
 //! Filed upstream as apache/datafusion#23978. Once the opener merges its deferred page-index
 //! load back into `FileMetadataCache` instead of bypassing it, the eager policy can go, but the
-//! factory cannot: `get_metadata` is the one per-file hook that sees the raw footer, and two
+//! factory cannot: `get_metadata` is the one per-file hook that sees the raw footer, and three
 //! other things hang off it.
 //!
 //! The first is Spark's missing field id check. `ParquetReadSupport` refuses to open a file
@@ -57,9 +57,15 @@
 //! the INT96 coercion also rebuilt container fields without their metadata, so a struct id could
 //! vanish on the way to Arrow as well.
 //!
-//! The second is the Variant footer rewrite, `with_spark_arrow_schema`, which replaces the
-//! Arrow schema hint in the footer for scans that project Variant.
+//! The second is the Variant footer rewrite, `spark_arrow_schema_key_values`, which replaces
+//! the Arrow schema hint in the footer for scans that project Variant.
+//!
+//! The third is the field id stamp for scans that match by field id. Until the INT96 coercion
+//! keeps container metadata, `field_id_stamp` records the raw ids in the returned footer so
+//! the schema adapter can put them back (#6131). Both rewrites change only the metadata this
+//! reader returns, never the copy in the shared cache.
 
+use crate::parquet::field_id_stamp::{with_field_ids_stamp, StampChange, FIELD_IDS_KEY};
 use arrow::datatypes::{DataType, FieldRef, Schema};
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -181,6 +187,8 @@ pub struct EagerPageIndexReaderFactory {
     // Refuse a file whose Parquet schema carries no field id, as Spark's `ParquetReadSupport`
     // does when the requested schema carries one and `ignoreMissing` is not set.
     require_field_ids: bool,
+    // Stamp the raw field ids into the returned footer for a scan that matches by field id.
+    use_field_id: bool,
 }
 
 impl EagerPageIndexReaderFactory {
@@ -210,6 +218,7 @@ impl EagerPageIndexReaderFactory {
             scan_io_metrics,
             spark_variant_schema: false,
             require_field_ids: false,
+            use_field_id: false,
         }
     }
 
@@ -224,11 +233,19 @@ impl EagerPageIndexReaderFactory {
         self.require_field_ids = enabled;
         self
     }
+
+    /// For a scan that matches by field id. When the INT96 coercion would drop the ids of a
+    /// file's struct, list and map fields, each reader stamps the raw ids into the footer it
+    /// returns. Off by default.
+    pub fn with_use_field_id(mut self, enabled: bool) -> Self {
+        self.use_field_id = enabled;
+        self
+    }
 }
 
 /// True when `node` or any node under it carries a field id, the way Spark's
 /// `containsFieldIds` answers it over the raw Parquet schema, message root included.
-fn contains_field_ids(node: &ParquetType) -> bool {
+pub(crate) fn contains_field_ids(node: &ParquetType) -> bool {
     node.get_basic_info().has_id()
         || (node.is_group()
             && node
@@ -263,6 +280,7 @@ impl ParquetFileReaderFactory for EagerPageIndexReaderFactory {
             metadata_size_hint,
             spark_variant_schema: self.spark_variant_schema,
             require_field_ids: self.require_field_ids,
+            use_field_id: self.use_field_id,
         }))
     }
 }
@@ -279,6 +297,7 @@ struct EagerPageIndexReader {
     metadata_size_hint: Option<usize>,
     spark_variant_schema: bool,
     require_field_ids: bool,
+    use_field_id: bool,
 }
 
 // Arrow infers ENUM as Binary, losing the distinction from raw binary that Spark needs.
@@ -366,10 +385,9 @@ fn spark_enum_schema(schema: &SchemaDescriptor) -> ParquetResult<Option<Schema>>
 
 /// Arrow restores advisory `ARROW:schema` types that can differ from Spark's physical Parquet
 /// interpretation. Replace that hint with physical inference and the ENUM string mapping.
-/// Rebuild only the returned metadata; the shared cache retains the original footer.
+/// Returns the new footer key-value list, or `None` when the footer needs no change.
 /// https://github.com/apache/datafusion-comet/issues/5477
-fn with_spark_arrow_schema(metadata: Arc<ParquetMetaData>) -> ParquetResult<Arc<ParquetMetaData>> {
-    let file = metadata.file_metadata();
+fn spark_arrow_schema_key_values(file: &FileMetaData) -> ParquetResult<Option<Vec<KeyValue>>> {
     let has_arrow_schema = file.key_value_metadata().is_some_and(|key_values| {
         key_values
             .iter()
@@ -377,7 +395,7 @@ fn with_spark_arrow_schema(metadata: Arc<ParquetMetaData>) -> ParquetResult<Arc<
     });
     let enum_schema = spark_enum_schema(file.schema_descr())?;
     if !has_arrow_schema && enum_schema.is_none() {
-        return Ok(metadata);
+        return Ok(None);
     }
 
     let mut key_values = file
@@ -393,7 +411,13 @@ fn with_spark_arrow_schema(metadata: Arc<ParquetMetaData>) -> ParquetResult<Arc<
             value: Some(encode_arrow_schema(&schema)),
         });
     }
+    Ok(Some(key_values))
+}
 
+/// `metadata` with its footer key-value list replaced. Rebuild only the returned metadata; the
+/// shared cache retains the original footer.
+fn with_key_values(metadata: &ParquetMetaData, key_values: Vec<KeyValue>) -> Arc<ParquetMetaData> {
+    let file = metadata.file_metadata();
     let file = FileMetaData::new(
         file.version(),
         file.num_rows(),
@@ -402,13 +426,13 @@ fn with_spark_arrow_schema(metadata: Arc<ParquetMetaData>) -> ParquetResult<Arc<
         file.schema_descr_ptr(),
         file.column_orders().cloned(),
     );
-    Ok(Arc::new(
+    Arc::new(
         ParquetMetaDataBuilder::new(file)
             .set_row_groups(metadata.row_groups().to_vec())
             .set_column_index(metadata.column_index().cloned())
             .set_offset_index(metadata.offset_index().cloned())
             .build(),
-    ))
+    )
 }
 
 impl AsyncFileReader for EagerPageIndexReader {
@@ -479,6 +503,7 @@ impl AsyncFileReader for EagerPageIndexReader {
         let scan_io_metrics = Arc::clone(&self.scan_io_metrics);
         let spark_variant_schema = self.spark_variant_schema;
         let require_field_ids = self.require_field_ids;
+        let use_field_id = self.use_field_id;
         async move {
             let file_decryption_properties = options
                 .and_then(|o| o.file_decryption_properties())
@@ -550,11 +575,42 @@ impl AsyncFileReader for EagerPageIndexReader {
                     },
                 )));
             }
-            if spark_variant_schema {
-                with_spark_arrow_schema(metadata)
+            let file = metadata.file_metadata();
+            let key_values = if spark_variant_schema {
+                spark_arrow_schema_key_values(file)?
             } else {
-                Ok(metadata)
+                None
+            };
+            let (key_values, stamp_change) = if use_field_id {
+                with_field_ids_stamp(file, key_values)?
+            } else {
+                (key_values, StampChange::Unchanged)
+            };
+            let Some(key_values) = key_values else {
+                return Ok(metadata);
+            };
+            // Variant scans with decryption properties were refused above, so the stamp asks
+            // for this rebuild. A rebuilt footer loses the decryptor its column chunks may need,
+            // so refuse rather than match without the dropped ids.
+            if !cache_enabled {
+                let reason = match stamp_change {
+                    StampChange::Removed => format!(
+                        "its footer carries the key {FIELD_IDS_KEY}, which Comet reserves and \
+                         removes by rewriting the footer"
+                    ),
+                    StampChange::Added | StampChange::Unchanged => "a struct, list or map with \
+                        a field id sits in a file with an INT96 timestamp, and Comet restores \
+                        those ids by rewriting the footer"
+                        .to_string(),
+                };
+                return Err(ParquetError::General(format!(
+                    "Cannot match Parquet field ids in {} while Parquet decryption properties \
+                     are configured: {reason}, which it cannot do for a decrypted read. Set \
+                     spark.comet.scan.enabled=false to read it with Spark",
+                    object_meta.location
+                )));
             }
+            Ok(with_key_values(&metadata, key_values))
         }
         .boxed()
     }
@@ -1183,6 +1239,200 @@ mod tests {
         assert!(metadata_for(false, without_ids).await.is_ok());
     }
 
+    /// A one-row file whose struct `s` carries field id 1 and holds an INT96 leaf.
+    const INT96_STRUCT: &str = "message schema { optional group s = 1 { optional int96 ts; } }";
+
+    /// A one-row file of `message`, whose single leaf must be INT96, encrypted with `key` when
+    /// one is given and carrying `key_values` in its footer.
+    fn int96_file(message: &str, key: Option<&[u8]>, key_values: Option<Vec<KeyValue>>) -> Vec<u8> {
+        use parquet::data_type::{Int96, Int96Type};
+        use parquet::encryption::encrypt::FileEncryptionProperties;
+        use parquet::file::writer::SerializedFileWriter;
+        use parquet::schema::parser::parse_message_type;
+
+        let schema = Arc::new(parse_message_type(message).unwrap());
+        let max_def_level = SchemaDescriptor::new(Arc::clone(&schema))
+            .column(0)
+            .max_def_level();
+        let mut properties = WriterProperties::builder().set_key_value_metadata(key_values);
+        if let Some(key) = key {
+            properties = properties.with_file_encryption_properties(
+                FileEncryptionProperties::builder(key.to_vec())
+                    .build()
+                    .unwrap(),
+            );
+        }
+        let properties = properties.build();
+        let mut bytes = Vec::new();
+        let mut writer =
+            SerializedFileWriter::new(&mut bytes, schema, Arc::new(properties)).unwrap();
+        let mut row_group = writer.next_row_group().unwrap();
+        let mut column = row_group.next_column().unwrap().unwrap();
+        column
+            .typed::<Int96Type>()
+            .write_batch(&[Int96::new()], Some(&[max_def_level]), None)
+            .unwrap();
+        column.close().unwrap();
+        row_group.close().unwrap();
+        writer.close().unwrap();
+        bytes
+    }
+
+    async fn put_file(store: &InMemory, location: &str, bytes: Vec<u8>) -> PartitionedFile {
+        let size = bytes.len() as u64;
+        store
+            .put(&Path::from(location), Bytes::from(bytes).into())
+            .await
+            .unwrap();
+        PartitionedFile::new(location.to_string(), size)
+    }
+
+    fn field_ids_stamp_of(metadata: &ParquetMetaData) -> Option<String> {
+        metadata
+            .file_metadata()
+            .key_value_metadata()?
+            .iter()
+            .find(|kv| kv.key == crate::parquet::field_id_stamp::FIELD_IDS_KEY)
+            .and_then(|kv| kv.value.clone())
+    }
+
+    /// A scan that matches by field id gets the stamp in the footer it is handed, other scans
+    /// do not, and the shared cache keeps the footer as written.
+    #[tokio::test]
+    async fn get_metadata_stamps_field_ids_only_when_matching_by_id() {
+        use datafusion::datasource::physical_plan::parquet::metadata::CachedParquetMetaData;
+
+        let store = Arc::new(InMemory::new());
+        let file = put_file(
+            &store,
+            "int96.parquet",
+            int96_file(INT96_STRUCT, None, None),
+        )
+        .await;
+        let runtime = datafusion::execution::runtime_env::RuntimeEnv::default();
+        let metadata_cache = runtime.cache_manager.get_file_metadata_cache();
+        let metrics = ExecutionPlanMetricsSet::new();
+        let metadata_for = |use_field_id: bool| {
+            let factory = EagerPageIndexReaderFactory::new(
+                Arc::clone(&store) as Arc<dyn ObjectStore>,
+                Arc::clone(&metadata_cache),
+                ScanIoSource::Local,
+                &metrics,
+            )
+            .with_use_field_id(use_field_id);
+            let mut reader = factory
+                .create_reader(0, file.clone(), None, &metrics)
+                .unwrap();
+            async move { reader.get_metadata(None).await.unwrap() }
+        };
+
+        assert_eq!(
+            field_ids_stamp_of(metadata_for(true).await.as_ref()).as_deref(),
+            Some(r#"[["s",1],["ts",null]]"#)
+        );
+        assert_eq!(field_ids_stamp_of(metadata_for(false).await.as_ref()), None);
+        let cached = metadata_cache.get(&Path::from("int96.parquet")).unwrap();
+        let cached = cached
+            .file_metadata
+            .as_any()
+            .downcast_ref::<CachedParquetMetaData>()
+            .unwrap()
+            .parquet_metadata();
+        assert_eq!(field_ids_stamp_of(cached), None);
+    }
+
+    /// With decryption properties configured, a rebuilt footer would lose the decryptor, so a
+    /// scan that would need the stamp refuses the file by name instead of reading the struct
+    /// as null. Other scans read it.
+    #[tokio::test]
+    async fn get_metadata_refuses_to_stamp_an_encrypted_file() {
+        let key = b"0123456789012345";
+        let store = Arc::new(InMemory::new());
+        let file = put_file(
+            &store,
+            "encrypted.parquet",
+            int96_file(INT96_STRUCT, Some(key), None),
+        )
+        .await;
+        assert_refused_under_decryption(
+            &store,
+            file,
+            key,
+            "Cannot match Parquet field ids in encrypted.parquet while Parquet decryption \
+             properties are configured: a struct, list or map with a field id",
+        )
+        .await;
+    }
+
+    /// A file that needs no stamp but carries the reserved key in its footer needs a rebuild
+    /// too, to remove the key, and is refused for that reason.
+    #[tokio::test]
+    async fn get_metadata_refuses_to_remove_a_carried_stamp_under_decryption() {
+        let key = b"0123456789012345";
+        let store = Arc::new(InMemory::new());
+        let forged = KeyValue::new(FIELD_IDS_KEY.to_string(), "[]".to_string());
+        let file = put_file(
+            &store,
+            "carried.parquet",
+            int96_file(
+                "message schema { optional int96 ts = 1; }",
+                Some(key),
+                Some(vec![forged]),
+            ),
+        )
+        .await;
+        assert_refused_under_decryption(
+            &store,
+            file,
+            key,
+            "Cannot match Parquet field ids in carried.parquet while Parquet decryption \
+             properties are configured: its footer carries the key comet.parquet.field_ids",
+        )
+        .await;
+    }
+
+    /// With decryption properties set, a reader that matches by field id refuses `file` with an
+    /// error containing `expected`, and one that does not reads it.
+    async fn assert_refused_under_decryption(
+        store: &Arc<InMemory>,
+        file: PartitionedFile,
+        key: &[u8],
+        expected: &str,
+    ) {
+        use parquet::encryption::decrypt::FileDecryptionProperties;
+
+        let runtime = datafusion::execution::runtime_env::RuntimeEnv::default();
+        let metrics = ExecutionPlanMetricsSet::new();
+        let options = ArrowReaderOptions::new().with_file_decryption_properties(
+            FileDecryptionProperties::builder(key.to_vec())
+                .build()
+                .unwrap(),
+        );
+        let metadata_for = |use_field_id: bool| {
+            let factory = EagerPageIndexReaderFactory::new(
+                Arc::clone(store) as Arc<dyn ObjectStore>,
+                runtime.cache_manager.get_file_metadata_cache(),
+                ScanIoSource::Local,
+                &metrics,
+            )
+            .with_use_field_id(use_field_id);
+            let mut reader = factory
+                .create_reader(0, file.clone(), None, &metrics)
+                .unwrap();
+            let options = options.clone();
+            async move { reader.get_metadata(Some(&options)).await }
+        };
+
+        let err = metadata_for(true)
+            .await
+            .expect_err("the footer rebuild must be refused");
+        assert!(
+            err.to_string().contains(expected),
+            "unexpected error: {err}"
+        );
+        assert!(metadata_for(false).await.is_ok());
+    }
+
     #[test]
     fn variant_policy_preserves_footer_metadata_and_indexes() {
         let schema = Arc::new(Schema::new_with_metadata(
@@ -1212,7 +1462,10 @@ mod tests {
         )
         .unwrap();
         let original = Arc::new(reader.metadata().clone());
-        let rewritten = with_spark_arrow_schema(Arc::clone(&original)).unwrap();
+        let key_values = spark_arrow_schema_key_values(original.file_metadata())
+            .unwrap()
+            .unwrap();
+        let rewritten = with_key_values(&original, key_values);
         assert!(original.column_index().is_some());
         assert!(original.offset_index().is_some());
         assert_eq!(rewritten.column_index(), original.column_index());
@@ -1232,9 +1485,9 @@ mod tests {
             rewritten.file_metadata().key_value_metadata().unwrap(),
             &vec![KeyValue::new("application".to_string(), "keep".to_string())]
         );
-        assert!(Arc::ptr_eq(
-            &rewritten,
-            &with_spark_arrow_schema(Arc::clone(&rewritten)).unwrap()
-        ));
+        assert_eq!(
+            spark_arrow_schema_key_values(rewritten.file_metadata()).unwrap(),
+            None
+        );
     }
 }
