@@ -29,7 +29,7 @@ under the License.
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Comet Contributor Guide &#8212; Apache DataFusion Comet  documentation</title>
+    <title>Backporting to Release Branches &#8212; Apache DataFusion Comet  documentation</title>
   
   
   
@@ -63,13 +63,13 @@ under the License.
     <script src="../_static/documentation_options.js?v=5929fcd5"></script>
     <script src="../_static/doctools.js?v=9a2dae69"></script>
     <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script>DOCUMENTATION_OPTIONS.pagename = 'contributor-guide/index';</script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'contributor-guide/backporting';</script>
     <script async="true" defer="true" src="https://buttons.github.io/buttons.js"></script>
     <script src="../_static/comet-ux.js?v=97577a30"></script>
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
-    <link rel="next" title="Contributing to Apache DataFusion Comet" href="contributing.html" />
-    <link rel="prev" title="Comet Kubernetes Support" href="../user-guide/0.13/kubernetes.html" />
+    <link rel="next" title="Apache DataFusion Comet: Release Process" href="release_process.html" />
+    <link rel="prev" title="Bug Triage Guide" href="bug_triage.html" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
@@ -173,7 +173,7 @@ under the License.
 
 
 <li class="nav-item current active">
-  <a class="nav-link nav-internal" href="#">
+  <a class="nav-link nav-internal" href="index.html">
     Contributor Guide
   </a>
 </li>
@@ -251,6 +251,10 @@ under the License.
   
 
   
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
 </div>
 
     </header>
@@ -285,7 +289,7 @@ under the License.
 
 
 <li class="nav-item current active">
-  <a class="nav-link nav-internal" href="#">
+  <a class="nav-link nav-internal" href="index.html">
     Contributor Guide
   </a>
 </li>
@@ -459,9 +463,9 @@ under the License.
 <li class="toctree-l1"><a class="reference internal" href="config_conventions.html">Configuration Conventions</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Project Mechanics</span></p>
-<ul class="nav bd-sidenav">
+<ul class="current nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="bug_triage.html">Bug Triage</a></li>
-<li class="toctree-l1"><a class="reference internal" href="backporting.html">Backporting</a></li>
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">Backporting</a></li>
 <li class="toctree-l1"><a class="reference internal" href="release_process.html">Release Process</a></li>
 <li class="toctree-l1"><a class="reference internal" href="roadmap.html">Roadmap</a></li>
 <li class="toctree-l1"><a class="reference external" href="https://github.com/apache/datafusion-comet">Github and Issue Tracker</a></li>
@@ -507,7 +511,10 @@ under the License.
         <i class="fa-solid fa-home"></i>
       </a>
     </li>
-    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Comet Contributor Guide</span></li>
+    
+    <li class="breadcrumb-item"><a href="index.html" class="nav-link">Comet Contributor Guide</a></li>
+    
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Backporting to Release Branches</span></li>
   </ul>
 </nav>
 </div>
@@ -542,30 +549,145 @@ KIND, either express or implied.  See the License for the
 specific language governing permissions and limitations
 under the License.
 -->
-<section id="comet-contributor-guide">
-<h1>Comet Contributor Guide<a class="headerlink" href="#comet-contributor-guide" title="Link to this heading">#</a></h1>
-<p>The Comet contributor guide is for developers working on Comet itself. It covers the project
-architecture, the JVM and native code layout, the Arrow FFI bridge, JVM and native shuffle, and
-how data and plans flow between Spark and the DataFusion execution engine.</p>
-<p>It also documents day-to-day workflows including building and testing locally, debugging,
-benchmarking, profiling, tracing, running the SQL test suites, adding new operators and
-expressions, triaging bugs, backporting fixes to release branches, and the Comet release process.</p>
-<p>New contributors should start with the Getting Started page. Select a topic from the navigation
-menu to read more.</p>
-<div class="toctree-wrapper compound">
+<section id="backporting-to-release-branches">
+<h1>Backporting to Release Branches<a class="headerlink" href="#backporting-to-release-branches" title="Link to this heading">#</a></h1>
+<p>Comet releases are built from release branches (<code class="docutils literal notranslate"><span class="pre">branch-N.M</span></code>), which are cut from <code class="docutils literal notranslate"><span class="pre">main</span></code> when a
+minor release is prepared. A fix lands on <code class="docutils literal notranslate"><span class="pre">main</span></code> first and is then backported to the release
+branches that need it. This page covers which branches take backports, what qualifies, how to open
+a backport, and how to check before a release that no fix has been missed.</p>
+<section id="which-branches-take-backports">
+<h2>Which Branches Take Backports<a class="headerlink" href="#which-branches-take-backports" title="Link to this heading">#</a></h2>
+<p>Backports normally go to the branch of the most recent release. From the moment the next release
+branch is cut until its <code class="docutils literal notranslate"><span class="pre">.0</span></code> release ships, the new branch takes them too, so that it doesn’t ship
+without the fixes that landed on <code class="docutils literal notranslate"><span class="pre">main</span></code> after the cut.</p>
+<p>An older release line can still take a backport when the maintainers decide a fix is worth it, for
+example a correctness or security fix for users who can’t upgrade yet. There is no fixed cutoff.
+Whichever branches a fix goes to, it also goes to every newer one; see
+<a class="reference internal" href="#newer-branches-get-the-fix-too">Newer Branches Get the Fix Too</a>.</p>
+<p>A release branch that takes backports has a <code class="docutils literal notranslate"><span class="pre">backport-N.M</span></code> label, created when the branch is cut.
+Committers add it to a pull request on <code class="docutils literal notranslate"><span class="pre">main</span></code> to mark it as a candidate for that branch, and add a
+label for each branch that needs the fix. Anyone can suggest a backport in a comment on the pull
+request.</p>
+</section>
+<section id="what-to-backport">
+<h2>What to Backport<a class="headerlink" href="#what-to-backport" title="Link to this heading">#</a></h2>
+<p>A patch release contains only bug fixes (see
+<a class="reference internal" href="../about/versioning_policy.html#patch-releases"><span class="std std-ref">Patch Releases</span></a>). A pull request is a candidate when
+it fixes a bug that the release branch has, such as wrong results, a crash or hang, a failure to
+read or write data, a security problem, or a regression. Fixes for the branch’s own build, CI and
+flaky tests also qualify, because the branch has no other way to get them.</p>
+<p>Judge a pull request by the issue it closes rather than by its title. Authors choose the prefix, so
+<code class="docutils literal notranslate"><span class="pre">fix:</span></code> pull requests sometimes close issues labelled <code class="docutils literal notranslate"><span class="pre">enhancement</span></code>, and a <code class="docutils literal notranslate"><span class="pre">feat:</span></code> pull request can
+fix a correctness bug.</p>
+<p>A feature, a performance change or a refactor is an exception on a branch that has already shipped
+a release, so its backport pull request has to explain why it is worth the risk. A new branch has
+more room before its first release, and the release manager decides what else it takes.</p>
+</section>
+<section id="newer-branches-get-the-fix-too">
+<h2>Newer Branches Get the Fix Too<a class="headerlink" href="#newer-branches-get-the-fix-too" title="Link to this heading">#</a></h2>
+<p>A fix must never be in one release line and missing from a newer one. Users upgrade forward, so
+anyone moving from the older line to the newer one would lose the fix and see a regression.</p>
+<p>A fix that goes to a release branch therefore goes to every newer release branch as well:</p>
+<ul class="simple">
+<li><p>If it merged to <code class="docutils literal notranslate"><span class="pre">main</span></code> before a newer branch was cut, that branch already has it.
+<code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">merge-base</span> <span class="pre">--is-ancestor</span> <span class="pre">&lt;commit&gt;</span> <span class="pre">apache/branch-N.M</span></code> confirms this.</p></li>
+<li><p>If it merged after the cut, the newer branch needs its own backport. Open both backports
+together, and don’t merge the older one until the newer one is ready to merge.</p></li>
+<li><p>Label the source pull request for every branch the fix goes to, so the whole set can be seen in
+one place.</p></li>
+</ul>
+<p>For example, <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6025">#6025</a> merged to <code class="docutils literal notranslate"><span class="pre">main</span></code> after
+<code class="docutils literal notranslate"><span class="pre">branch-1.1</span></code> was cut. It went to <code class="docutils literal notranslate"><span class="pre">branch-1.1</span></code> in
+<a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6323">#6323</a>, and then to <code class="docutils literal notranslate"><span class="pre">branch-1.0</span></code> in
+<a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6325">#6325</a>.</p>
+</section>
+<section id="changes-that-start-on-a-release-branch">
+<h2>Changes That Start on a Release Branch<a class="headerlink" href="#changes-that-start-on-a-release-branch" title="Link to this heading">#</a></h2>
+<p>Some changes are made on a release branch directly. They include the release mechanics (the
+version bump, change log and generated docs), fixes for code that has since changed on <code class="docutils literal notranslate"><span class="pre">main</span></code>, and
+CI or build fixes found while backporting. Except for release mechanics, work out whether <code class="docutils literal notranslate"><span class="pre">main</span></code>
+and the newer release branches need the same change. If they do, open it against <code class="docutils literal notranslate"><span class="pre">main</span></code> and
+backport it from there like any other fix. If they don’t, say why in the pull request. For example,
+<a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6285">#6285</a> makes the Spark 3.4 and 3.5 jars on
+<code class="docutils literal notranslate"><span class="pre">branch-1.0</span></code> run on Java 11, and its description explains that <code class="docutils literal notranslate"><span class="pre">main</span></code> dropped Java 11 in 1.1.0.</p>
+<p>Open such a change as its own pull request, not as part of the backport of an unrelated fix. The
+squash merge folds it into the fix’s commit, where neither the
+<a class="reference internal" href="#checking-release-branches-before-a-release">check below</a> nor anyone reading the branch’s history
+will notice that <code class="docutils literal notranslate"><span class="pre">main</span></code> lacks it. A CI fix that makes the Iceberg jobs test the Comet jar they build
+went to <code class="docutils literal notranslate"><span class="pre">branch-1.0</span></code> this way, inside the backport of an unrelated fix
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6277">#6277</a>), instead of going to <code class="docutils literal notranslate"><span class="pre">main</span></code>.</p>
+</section>
+<section id="opening-a-backport">
+<h2>Opening a Backport<a class="headerlink" href="#opening-a-backport" title="Link to this heading">#</a></h2>
+<ol class="arabic simple">
+<li><p>Cherry-pick the source pull request’s commit from <code class="docutils literal notranslate"><span class="pre">main</span></code> with <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">cherry-pick</span> <span class="pre">-x</span> <span class="pre">&lt;commit&gt;</span></code>. The
+<code class="docutils literal notranslate"><span class="pre">-x</span></code> records <code class="docutils literal notranslate"><span class="pre">(cherry</span> <span class="pre">picked</span> <span class="pre">from</span> <span class="pre">commit</span> <span class="pre">&lt;commit&gt;)</span></code> in the message, which the
+<a class="reference internal" href="#checking-release-branches-before-a-release">check below</a> relies on. You can prepare a backport
+from a pull request that has not merged yet, but pick its squash commit again once it merges, so
+that the message names the commit on <code class="docutils literal notranslate"><span class="pre">main</span></code>.</p></li>
+<li><p>Backport one source pull request per pull request. When fixes depend on each other, put them in
+one pull request as separate commits, in the order they merged to <code class="docutils literal notranslate"><span class="pre">main</span></code>.</p></li>
+<li><p>Title it <code class="docutils literal notranslate"><span class="pre">&lt;type&gt;:</span> <span class="pre">[branch-N.M]</span> <span class="pre">&lt;source</span> <span class="pre">title&gt;</span> <span class="pre">(#&lt;source</span> <span class="pre">number&gt;)</span></code>, for example
+<code class="docutils literal notranslate"><span class="pre">fix:</span> <span class="pre">[branch-1.1]</span> <span class="pre">decline</span> <span class="pre">native</span> <span class="pre">Iceberg</span> <span class="pre">writes</span> <span class="pre">with</span> <span class="pre">a</span> <span class="pre">custom</span> <span class="pre">location</span> <span class="pre">provider</span> <span class="pre">(#6216)</span></code>, so
+the change log names both pull requests.</p></li>
+<li><p>Fill in the pull request template as usual. Link the source pull request and its issue, list the
+backports to other release branches or say why a branch doesn’t need one, and describe every
+adaptation: anything that differs from the source commit, such as a conflict resolution, a
+dropped file, or a test moved to a suite that exists on the branch.</p></li>
+</ol>
+<section id="testing-a-backport">
+<h3>Testing a Backport<a class="headerlink" href="#testing-a-backport" title="Link to this heading">#</a></h3>
+<p>A cherry-pick that applies cleanly can still fail on the branch, because the fix may rely on code
+that landed on <code class="docutils literal notranslate"><span class="pre">main</span></code> after the cut. Build every target, including the tests (<code class="docutils literal notranslate"><span class="pre">./mvnw</span> <span class="pre">test-compile</span></code>,
+and <code class="docutils literal notranslate"><span class="pre">cargo</span> <span class="pre">check</span> <span class="pre">--all-targets</span></code> in <code class="docutils literal notranslate"><span class="pre">native/</span></code>), then run the tests the fix added. Where practical,
+also confirm that those tests fail on the branch without the fix, which shows that the branch had
+the bug and that the tests catch it. <a class="reference internal" href="ci.html#release-branches"><span class="std std-ref">Release branches</span></a> describes what CI
+runs on a pull request against a release branch.</p>
+<p>Some differences between a release branch and <code class="docutils literal notranslate"><span class="pre">main</span></code> are easy to miss:</p>
+<ul class="simple">
+<li><p>On a release branch, <code class="docutils literal notranslate"><span class="pre">docs/source/user-guide/latest/configs.md</span></code> holds the generated tables
+rather than template markers (see
+<a class="reference internal" href="release_process.html#generate-release-documentation"><span class="std std-ref">Generate Release Documentation</span></a>). A backport
+that changes a configuration’s description or default has to update its row there.</p></li>
+<li><p>Only <code class="docutils literal notranslate"><span class="pre">docs/source/user-guide/latest/</span></code> is published from a release branch, so changes to the
+contributor guide or <code class="docutils literal notranslate"><span class="pre">docs/source/conf.py</span></code> need no backport.</p></li>
+<li><p>CI builds with the latest stable Rust. When a new Rust release adds Clippy lints, <code class="docutils literal notranslate"><span class="pre">main</span></code> gets a
+commit that fixes them, and a release branch needs the same commit before its pull requests pass.</p></li>
+</ul>
+</section>
+</section>
+<section id="checking-release-branches-before-a-release">
+<h2>Checking Release Branches Before a Release<a class="headerlink" href="#checking-release-branches-before-a-release" title="Link to this heading">#</a></h2>
+<p>Before tagging a release candidate, check that no fix on an older release branch is missing from a
+newer one. For a new minor release, check the new branch against each older release branch that is
+still taking backports. For a patch release, check its branch against every newer release branch,
+so that a fix doesn’t ship in the older line first.</p>
+<p>This checks <code class="docutils literal notranslate"><span class="pre">branch-1.0</span></code> against <code class="docutils literal notranslate"><span class="pre">branch-1.1</span></code>:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nv">old</span><span class="o">=</span>branch-1.0<span class="w"> </span><span class="nv">new</span><span class="o">=</span>branch-1.1
+git<span class="w"> </span>fetch<span class="w"> </span>apache
+<span class="nv">newcut</span><span class="o">=</span><span class="k">$(</span>git<span class="w"> </span>merge-base<span class="w"> </span>apache/<span class="nv">$new</span><span class="w"> </span>apache/main<span class="k">)</span>
+git<span class="w"> </span>rev-list<span class="w"> </span>--reverse<span class="w"> </span><span class="s2">"</span><span class="k">$(</span>git<span class="w"> </span>merge-base<span class="w"> </span>apache/<span class="nv">$old</span><span class="w"> </span>apache/main<span class="k">)</span><span class="s2">..apache/</span><span class="nv">$old</span><span class="s2">"</span><span class="w"> </span><span class="p">|</span><span class="w"> </span><span class="k">while</span><span class="w"> </span><span class="nb">read</span><span class="w"> </span>-r<span class="w"> </span>c<span class="p">;</span><span class="w"> </span><span class="k">do</span>
+<span class="w">  </span><span class="nv">srcs</span><span class="o">=</span><span class="k">$(</span>git<span class="w"> </span>log<span class="w"> </span>-1<span class="w"> </span>--format<span class="o">=</span>%B<span class="w"> </span><span class="s2">"</span><span class="nv">$c</span><span class="s2">"</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>sed<span class="w"> </span>-n<span class="w"> </span><span class="s1">'s/.*cherry picked from commit \([0-9a-f]\{40\}\).*/\1/p'</span><span class="k">)</span>
+<span class="w">  </span><span class="o">[</span><span class="w"> </span>-n<span class="w"> </span><span class="s2">"</span><span class="nv">$srcs</span><span class="s2">"</span><span class="w"> </span><span class="o">]</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s2">"check by hand: </span><span class="k">$(</span>git<span class="w"> </span>log<span class="w"> </span>-1<span class="w"> </span>--format<span class="o">=</span><span class="s1">'%h %s'</span><span class="w"> </span><span class="s2">"</span><span class="nv">$c</span><span class="s2">"</span><span class="k">)</span><span class="s2">"</span>
+<span class="w">  </span><span class="nb">echo</span><span class="w"> </span><span class="s2">"</span><span class="nv">$srcs</span><span class="s2">"</span><span class="w"> </span><span class="p">|</span><span class="w"> </span><span class="k">while</span><span class="w"> </span><span class="nb">read</span><span class="w"> </span>-r<span class="w"> </span>s<span class="p">;</span><span class="w"> </span><span class="k">do</span>
+<span class="w">    </span><span class="o">[</span><span class="w"> </span>-n<span class="w"> </span><span class="s2">"</span><span class="nv">$s</span><span class="s2">"</span><span class="w"> </span><span class="o">]</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="k">continue</span>
+<span class="w">    </span>git<span class="w"> </span>merge-base<span class="w"> </span>--is-ancestor<span class="w"> </span><span class="s2">"</span><span class="nv">$s</span><span class="s2">"</span><span class="w"> </span><span class="s2">"</span><span class="nv">$newcut</span><span class="s2">"</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="k">continue</span>
+<span class="w">    </span>git<span class="w"> </span>log<span class="w"> </span>--format<span class="o">=</span>%B<span class="w"> </span><span class="s2">"</span><span class="nv">$newcut</span><span class="s2">..apache/</span><span class="nv">$new</span><span class="s2">"</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>-q<span class="w"> </span><span class="s2">"cherry picked from commit </span><span class="nv">$s</span><span class="s2">"</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="k">continue</span>
+<span class="w">    </span><span class="nb">echo</span><span class="w"> </span><span class="s2">"missing from </span><span class="nv">$new</span><span class="s2">: </span><span class="k">$(</span>git<span class="w"> </span>log<span class="w"> </span>-1<span class="w"> </span>--format<span class="o">=</span><span class="s1">'%h %s'</span><span class="w"> </span><span class="s2">"</span><span class="nv">$s</span><span class="s2">"</span><span class="k">)</span><span class="s2">"</span>
+<span class="w">  </span><span class="k">done</span>
+<span class="k">done</span>
+</pre></div>
 </div>
-<div class="toctree-wrapper compound">
-</div>
-<div class="toctree-wrapper compound">
-</div>
-<div class="toctree-wrapper compound">
-</div>
-<div class="toctree-wrapper compound">
-</div>
-<div class="toctree-wrapper compound">
-</div>
-<div class="toctree-wrapper compound">
-</div>
+<p>A source commit counts as present when it merged to <code class="docutils literal notranslate"><span class="pre">main</span></code> before <code class="docutils literal notranslate"><span class="pre">branch-1.1</span></code> was cut, or when
+<code class="docutils literal notranslate"><span class="pre">branch-1.1</span></code> has its own backport of it. Each <code class="docutils literal notranslate"><span class="pre">missing</span> <span class="pre">from</span></code> line needs a backport before the
+release. A <code class="docutils literal notranslate"><span class="pre">check</span> <span class="pre">by</span> <span class="pre">hand</span></code> line is a commit with no <code class="docutils literal notranslate"><span class="pre">-x</span></code> trailer: release mechanics, changes that
+started on the release branch, and backports made without <code class="docutils literal notranslate"><span class="pre">-x</span></code>. Find its source pull request from
+the title and check that one the same way.</p>
+<p>The check reads only the commit messages. It cannot see a change added to a backport next to the
+fix it names, and it counts a fix as present even if <code class="docutils literal notranslate"><span class="pre">main</span></code> reverted or rewrote it before the newer
+branch was cut. To confirm that a fix survived, check that the tests it added still exist on the
+newer branch.</p>
+</section>
 </section>
 
 
@@ -579,20 +701,20 @@ menu to read more.</p>
                   
 <div class="prev-next-area">
     <a class="left-prev"
-       href="../user-guide/0.13/kubernetes.html"
+       href="bug_triage.html"
        title="previous page">
       <i class="fa-solid fa-angle-left"></i>
       <div class="prev-next-info">
         <p class="prev-next-subtitle">previous</p>
-        <p class="prev-next-title">Comet Kubernetes Support</p>
+        <p class="prev-next-title">Bug Triage Guide</p>
       </div>
     </a>
     <a class="right-next"
-       href="contributing.html"
+       href="release_process.html"
        title="next page">
       <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">Contributing to Apache DataFusion Comet</p>
+        <p class="prev-next-title">Apache DataFusion Comet: Release Process</p>
       </div>
       <i class="fa-solid fa-angle-right"></i>
     </a>
@@ -602,6 +724,32 @@ menu to read more.</p>
             </div>
             
             
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#which-branches-take-backports">Which Branches Take Backports</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#what-to-backport">What to Backport</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#newer-branches-get-the-fix-too">Newer Branches Get the Fix Too</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#changes-that-start-on-a-release-branch">Changes That Start on a Release Branch</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#opening-a-backport">Opening a Backport</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#testing-a-backport">Testing a Backport</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#checking-release-branches-before-a-release">Checking Release Branches Before a Release</a></li>
+</ul>
+  </nav></div>
+
+</div></div>
               
             
           </div>
@@ -639,7 +787,7 @@ menu to read more.</p>
       <div class="comet-footer__col">
         <div class="comet-footer__col-title">Documentation</div>
         <a href="../user-guide/index.html">User Guide</a>
-        <a href="#">Contributor Guide</a>
+        <a href="index.html">Contributor Guide</a>
         <a href="../changelog/index.html">Changelog</a>
       </div>
 

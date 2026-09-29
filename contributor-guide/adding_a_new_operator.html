@@ -465,6 +465,7 @@ under the License.
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Project Mechanics</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="bug_triage.html">Bug Triage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="backporting.html">Backporting</a></li>
 <li class="toctree-l1"><a class="reference internal" href="release_process.html">Release Process</a></li>
 <li class="toctree-l1"><a class="reference internal" href="roadmap.html">Roadmap</a></li>
 <li class="toctree-l1"><a class="reference external" href="https://github.com/apache/datafusion-comet">Github and Issue Tracker</a></li>
@@ -689,7 +690,9 @@ manages the boundary between JVM and native execution.</p>
 </ol>
 <section id="simple-example-filter">
 <h4>Simple Example (Filter)<a class="headerlink" href="#simple-example-filter" title="Link to this heading">#</a></h4>
-<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="k">object</span><span class="w"> </span><span class="nc">CometFilterExec</span><span class="w"> </span><span class="k">extends</span><span class="w"> </span><span class="nc">CometOperatorSerde</span><span class="p">[</span><span class="nc">FilterExec</span><span class="p">]</span><span class="w"> </span><span class="p">{</span>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="k">import</span><span class="w"> </span><span class="nn">com</span><span class="p">.</span><span class="nn">google</span><span class="p">.</span><span class="nn">common</span><span class="p">.</span><span class="nn">base</span><span class="p">.</span><span class="nc">Objects</span>
+
+<span class="k">object</span><span class="w"> </span><span class="nc">CometFilterExec</span><span class="w"> </span><span class="k">extends</span><span class="w"> </span><span class="nc">CometOperatorSerde</span><span class="p">[</span><span class="nc">FilterExec</span><span class="p">]</span><span class="w"> </span><span class="p">{</span>
 
 <span class="w">  </span><span class="k">override</span><span class="w"> </span><span class="k">def</span><span class="w"> </span><span class="nf">enabledConfig</span><span class="p">:</span><span class="w"> </span><span class="nc">Option</span><span class="p">[</span><span class="nc">ConfigEntry</span><span class="p">[</span><span class="nc">Boolean</span><span class="p">]]</span><span class="w"> </span><span class="o">=</span>
 <span class="w">    </span><span class="nc">Some</span><span class="p">(</span><span class="nc">CometConf</span><span class="p">.</span><span class="nc">COMET_EXEC_FILTER_ENABLED</span><span class="p">)</span>
@@ -706,7 +709,6 @@ manages the boundary between JVM and native execution.</p>
 <span class="w">        </span><span class="p">.</span><span class="n">setPredicate</span><span class="p">(</span><span class="n">cond</span><span class="p">.</span><span class="n">get</span><span class="p">)</span>
 <span class="w">      </span><span class="nc">Some</span><span class="p">(</span><span class="n">builder</span><span class="p">.</span><span class="n">setFilter</span><span class="p">(</span><span class="n">filterBuilder</span><span class="p">).</span><span class="n">build</span><span class="p">())</span>
 <span class="w">    </span><span class="p">}</span><span class="w"> </span><span class="k">else</span><span class="w"> </span><span class="p">{</span>
-<span class="w">      </span><span class="n">withInfo</span><span class="p">(</span><span class="n">op</span><span class="p">,</span><span class="w"> </span><span class="n">op</span><span class="p">.</span><span class="n">condition</span><span class="p">,</span><span class="w"> </span><span class="n">op</span><span class="p">.</span><span class="n">child</span><span class="p">)</span>
 <span class="w">      </span><span class="nc">None</span>
 <span class="w">    </span><span class="p">}</span>
 <span class="w">  </span><span class="p">}</span>
@@ -731,13 +733,31 @@ manages the boundary between JVM and native execution.</p>
 
 <span class="w">  </span><span class="k">override</span><span class="w"> </span><span class="k">protected</span><span class="w"> </span><span class="k">def</span><span class="w"> </span><span class="nf">withNewChildInternal</span><span class="p">(</span><span class="n">newChild</span><span class="p">:</span><span class="w"> </span><span class="nc">SparkPlan</span><span class="p">):</span><span class="w"> </span><span class="nc">SparkPlan</span><span class="w"> </span><span class="o">=</span>
 <span class="w">    </span><span class="bp">this</span><span class="p">.</span><span class="n">copy</span><span class="p">(</span><span class="n">child</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">newChild</span><span class="p">)</span>
+
+<span class="w">  </span><span class="k">override</span><span class="w"> </span><span class="k">def</span><span class="w"> </span><span class="nf">stringArgs</span><span class="p">:</span><span class="w"> </span><span class="nc">Iterator</span><span class="p">[</span><span class="nc">Any</span><span class="p">]</span><span class="w"> </span><span class="o">=</span>
+<span class="w">    </span><span class="nc">Iterator</span><span class="p">(</span><span class="n">output</span><span class="p">,</span><span class="w"> </span><span class="n">condition</span><span class="p">,</span><span class="w"> </span><span class="n">child</span><span class="p">)</span>
+
+<span class="w">  </span><span class="k">override</span><span class="w"> </span><span class="k">def</span><span class="w"> </span><span class="nf">equals</span><span class="p">(</span><span class="n">obj</span><span class="p">:</span><span class="w"> </span><span class="nc">Any</span><span class="p">):</span><span class="w"> </span><span class="nc">Boolean</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">obj</span><span class="w"> </span><span class="k">match</span><span class="w"> </span><span class="p">{</span>
+<span class="w">      </span><span class="k">case</span><span class="w"> </span><span class="n">other</span><span class="p">:</span><span class="w"> </span><span class="nc">CometFilterExec</span><span class="w"> </span><span class="o">=&gt;</span>
+<span class="w">        </span><span class="bp">this</span><span class="p">.</span><span class="n">output</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="n">other</span><span class="p">.</span><span class="n">output</span><span class="w"> </span><span class="o">&amp;&amp;</span>
+<span class="w">        </span><span class="bp">this</span><span class="p">.</span><span class="n">condition</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="n">other</span><span class="p">.</span><span class="n">condition</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="bp">this</span><span class="p">.</span><span class="n">child</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="n">other</span><span class="p">.</span><span class="n">child</span><span class="w"> </span><span class="o">&amp;&amp;</span>
+<span class="w">        </span><span class="bp">this</span><span class="p">.</span><span class="n">serializedPlanOpt</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="n">other</span><span class="p">.</span><span class="n">serializedPlanOpt</span>
+<span class="w">      </span><span class="k">case</span><span class="w"> </span><span class="n">_</span><span class="w"> </span><span class="o">=&gt;</span>
+<span class="w">        </span><span class="kc">false</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">  </span><span class="p">}</span>
+
+<span class="w">  </span><span class="k">override</span><span class="w"> </span><span class="k">def</span><span class="w"> </span><span class="nf">hashCode</span><span class="p">():</span><span class="w"> </span><span class="nc">Int</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nc">Objects</span><span class="p">.</span><span class="n">hashCode</span><span class="p">(</span><span class="n">output</span><span class="p">,</span><span class="w"> </span><span class="n">condition</span><span class="p">,</span><span class="w"> </span><span class="n">child</span><span class="p">)</span>
 <span class="p">}</span>
 </pre></div>
 </div>
 </section>
 <section id="more-complex-example-project">
 <h4>More Complex Example (Project)<a class="headerlink" href="#more-complex-example-project" title="Link to this heading">#</a></h4>
-<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="k">object</span><span class="w"> </span><span class="nc">CometProjectExec</span><span class="w"> </span><span class="k">extends</span><span class="w"> </span><span class="nc">CometOperatorSerde</span><span class="p">[</span><span class="nc">ProjectExec</span><span class="p">]</span><span class="w"> </span><span class="p">{</span>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="k">import</span><span class="w"> </span><span class="nn">com</span><span class="p">.</span><span class="nn">google</span><span class="p">.</span><span class="nn">common</span><span class="p">.</span><span class="nn">base</span><span class="p">.</span><span class="nc">Objects</span>
+
+<span class="k">object</span><span class="w"> </span><span class="nc">CometProjectExec</span><span class="w"> </span><span class="k">extends</span><span class="w"> </span><span class="nc">CometOperatorSerde</span><span class="p">[</span><span class="nc">ProjectExec</span><span class="p">]</span><span class="w"> </span><span class="p">{</span>
 
 <span class="w">  </span><span class="k">override</span><span class="w"> </span><span class="k">def</span><span class="w"> </span><span class="nf">enabledConfig</span><span class="p">:</span><span class="w"> </span><span class="nc">Option</span><span class="p">[</span><span class="nc">ConfigEntry</span><span class="p">[</span><span class="nc">Boolean</span><span class="p">]]</span><span class="w"> </span><span class="o">=</span>
 <span class="w">    </span><span class="nc">Some</span><span class="p">(</span><span class="nc">CometConf</span><span class="p">.</span><span class="nc">COMET_EXEC_PROJECT_ENABLED</span><span class="p">)</span>
@@ -754,7 +774,6 @@ manages the boundary between JVM and native execution.</p>
 <span class="w">        </span><span class="p">.</span><span class="n">addAllProjectList</span><span class="p">(</span><span class="n">exprs</span><span class="p">.</span><span class="n">map</span><span class="p">(</span><span class="n">_</span><span class="p">.</span><span class="n">get</span><span class="p">).</span><span class="n">asJava</span><span class="p">)</span>
 <span class="w">      </span><span class="nc">Some</span><span class="p">(</span><span class="n">builder</span><span class="p">.</span><span class="n">setProjection</span><span class="p">(</span><span class="n">projectBuilder</span><span class="p">).</span><span class="n">build</span><span class="p">())</span>
 <span class="w">    </span><span class="p">}</span><span class="w"> </span><span class="k">else</span><span class="w"> </span><span class="p">{</span>
-<span class="w">      </span><span class="n">withInfo</span><span class="p">(</span><span class="n">op</span><span class="p">,</span><span class="w"> </span><span class="n">op</span><span class="p">.</span><span class="n">projectList</span><span class="p">:</span><span class="w"> </span><span class="n">_*</span><span class="p">)</span>
 <span class="w">      </span><span class="nc">None</span>
 <span class="w">    </span><span class="p">}</span>
 <span class="w">  </span><span class="p">}</span>
@@ -778,9 +797,56 @@ manages the boundary between JVM and native execution.</p>
 
 <span class="w">  </span><span class="k">override</span><span class="w"> </span><span class="k">protected</span><span class="w"> </span><span class="k">def</span><span class="w"> </span><span class="nf">withNewChildInternal</span><span class="p">(</span><span class="n">newChild</span><span class="p">:</span><span class="w"> </span><span class="nc">SparkPlan</span><span class="p">):</span><span class="w"> </span><span class="nc">SparkPlan</span><span class="w"> </span><span class="o">=</span>
 <span class="w">    </span><span class="bp">this</span><span class="p">.</span><span class="n">copy</span><span class="p">(</span><span class="n">child</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">newChild</span><span class="p">)</span>
+
+<span class="w">  </span><span class="k">override</span><span class="w"> </span><span class="k">def</span><span class="w"> </span><span class="nf">stringArgs</span><span class="p">:</span><span class="w"> </span><span class="nc">Iterator</span><span class="p">[</span><span class="nc">Any</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nc">Iterator</span><span class="p">(</span><span class="n">output</span><span class="p">,</span><span class="w"> </span><span class="n">projectList</span><span class="p">,</span><span class="w"> </span><span class="n">child</span><span class="p">)</span>
+
+<span class="w">  </span><span class="k">override</span><span class="w"> </span><span class="k">def</span><span class="w"> </span><span class="nf">equals</span><span class="p">(</span><span class="n">obj</span><span class="p">:</span><span class="w"> </span><span class="nc">Any</span><span class="p">):</span><span class="w"> </span><span class="nc">Boolean</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">obj</span><span class="w"> </span><span class="k">match</span><span class="w"> </span><span class="p">{</span>
+<span class="w">      </span><span class="k">case</span><span class="w"> </span><span class="n">other</span><span class="p">:</span><span class="w"> </span><span class="nc">CometProjectExec</span><span class="w"> </span><span class="o">=&gt;</span>
+<span class="w">        </span><span class="bp">this</span><span class="p">.</span><span class="n">output</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="n">other</span><span class="p">.</span><span class="n">output</span><span class="w"> </span><span class="o">&amp;&amp;</span>
+<span class="w">        </span><span class="bp">this</span><span class="p">.</span><span class="n">projectList</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="n">other</span><span class="p">.</span><span class="n">projectList</span><span class="w"> </span><span class="o">&amp;&amp;</span>
+<span class="w">        </span><span class="bp">this</span><span class="p">.</span><span class="n">child</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="n">other</span><span class="p">.</span><span class="n">child</span><span class="w"> </span><span class="o">&amp;&amp;</span>
+<span class="w">        </span><span class="bp">this</span><span class="p">.</span><span class="n">serializedPlanOpt</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="n">other</span><span class="p">.</span><span class="n">serializedPlanOpt</span>
+<span class="w">      </span><span class="k">case</span><span class="w"> </span><span class="n">_</span><span class="w"> </span><span class="o">=&gt;</span>
+<span class="w">        </span><span class="kc">false</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">  </span><span class="p">}</span>
+
+<span class="w">  </span><span class="k">override</span><span class="w"> </span><span class="k">def</span><span class="w"> </span><span class="nf">hashCode</span><span class="p">():</span><span class="w"> </span><span class="nc">Int</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nc">Objects</span><span class="p">.</span><span class="n">hashCode</span><span class="p">(</span><span class="n">output</span><span class="p">,</span><span class="w"> </span><span class="n">projectList</span><span class="p">,</span><span class="w"> </span><span class="n">child</span><span class="p">)</span>
+
+<span class="w">  </span><span class="k">override</span><span class="w"> </span><span class="k">protected</span><span class="w"> </span><span class="k">def</span><span class="w"> </span><span class="nf">outputExpressions</span><span class="p">:</span><span class="w"> </span><span class="nc">Seq</span><span class="p">[</span><span class="nc">NamedExpression</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">projectList</span>
 <span class="p">}</span>
 </pre></div>
 </div>
+</section>
+<section id="plan-identity-and-exchange-reuse">
+<h4>Plan Identity and Exchange Reuse<a class="headerlink" href="#plan-identity-and-exchange-reuse" title="Link to this heading">#</a></h4>
+<p>Spark’s <code class="docutils literal notranslate"><span class="pre">ReuseExchangeAndSubquery</span></code> identifies equivalent plans through canonicalization and may
+reuse one exchange for both branches. If <code class="docutils literal notranslate"><span class="pre">equals</span></code> omits a parameter that changes results, different
+operators can appear equivalent and silently return the wrong rows. If it includes execution state,
+equivalent operators can fail to reuse an exchange.</p>
+<p>For operators such as Filter and Project, compare the children, output and every parameter that
+affects results in <code class="docutils literal notranslate"><span class="pre">equals</span></code>, and include those semantic fields in <code class="docutils literal notranslate"><span class="pre">hashCode</span></code>. Capture semantic flags
+on the Comet operator itself: a value stored only in the protobuf or original Spark plan cannot
+participate in this field-based identity. Keep <code class="docutils literal notranslate"><span class="pre">equals</span></code> and <code class="docutils literal notranslate"><span class="pre">hashCode</span></code> consistent: equal operators
+must have equal hashes. Do not rely on the default case-class implementations.</p>
+<p>The examples above follow the implementations in
+<a class="reference external" href="https://github.com/apache/datafusion-comet/blob/main/spark/src/main/scala/org/apache/spark/sql/comet/operators.scala"><code class="docutils literal notranslate"><span class="pre">operators.scala</span></code></a>:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">nativeOp</span></code> is the protobuf representation and <code class="docutils literal notranslate"><span class="pre">originalPlan</span></code> is the source Spark plan; neither is
+compared by these operators. <code class="docutils literal notranslate"><span class="pre">CometNativeExec.canonicalizePlans</span></code> clears the non-child Spark plan
+references, including their <code class="docutils literal notranslate"><span class="pre">originalPlan</span></code>.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">serializedPlanOpt</span></code> holds the bytes for a native execution block. These operators compare it in
+<code class="docutils literal notranslate"><span class="pre">equals</span></code>, but omit it from <code class="docutils literal notranslate"><span class="pre">hashCode</span></code>; <code class="docutils literal notranslate"><span class="pre">CometNativeExec.doCanonicalize</span></code> clears the block’s serialized
+plan. The bytes therefore do not distinguish canonicalized plans.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">stringArgs</span></code> controls the plan’s displayed arguments. Show the semantic fields and children
+rather than serialization state; this method does not define equality.</p></li>
+</ul>
+<p>Some operators use a different convention. <code class="docutils literal notranslate"><span class="pre">CometNativeScanExec</span></code> compares <code class="docutils literal notranslate"><span class="pre">originalPlan</span></code> to retain
+scan identity, and its <code class="docutils literal notranslate"><span class="pre">doCanonicalize</span></code> canonicalizes that plan while removing unused dynamic
+pruning filters. <code class="docutils literal notranslate"><span class="pre">CometBroadcastExchangeExec</span></code> also compares <code class="docutils literal notranslate"><span class="pre">originalPlan</span></code> before canonicalization,
+but its <code class="docutils literal notranslate"><span class="pre">doCanonicalize</span></code> clears that reference and retains the canonicalized child. Follow each
+operator’s equality and canonicalization together rather than copying an exclusion in isolation.</p>
 </section>
 <section id="using-getsupportlevel">
 <h4>Using getSupportLevel<a class="headerlink" href="#using-getsupportlevel" title="Link to this heading">#</a></h4>
@@ -920,6 +986,20 @@ manages the boundary between JVM and native execution.</p>
 <li><p>Results match Spark’s native execution</p></li>
 <li><p>Your operator is actually being used (not falling back)</p></li>
 </ol>
+</section>
+<section id="plan-identity-regression-tests">
+<h4>Plan Identity Regression Tests<a class="headerlink" href="#plan-identity-regression-tests" title="Link to this heading">#</a></h4>
+<p>If the operator has a result-affecting parameter beyond its children and output, add an
+exchange-reuse regression. Build two branches that differ in that parameter, verify that both
+execute with Comet, and assert the expected distinct results and that <code class="docutils literal notranslate"><span class="pre">sameResult</span></code> is false.
+Also test equivalent branches with fresh expression IDs or aliases: <code class="docutils literal notranslate"><span class="pre">sameResult</span></code> should be true,
+<code class="docutils literal notranslate"><span class="pre">semanticHash</span></code> values should match, and the executed plan should contain a reused exchange. Cover AQE both enabled and disabled when applicable.</p>
+<p>Use the “aggregate canonicalization preserves result expressions and equivalent reuse” tests in
+<a class="reference external" href="https://github.com/apache/datafusion-comet/blob/main/spark/src/test/scala/org/apache/comet/exec/CometAggregateSuite.scala"><code class="docutils literal notranslate"><span class="pre">CometAggregateSuite</span></code></a>
+as a model. Inspect the executed plans: an optimizer rewrite can make the branches differ for an
+unrelated reason, allowing a test to pass even when the intended field is missing from <code class="docutils literal notranslate"><span class="pre">equals</span></code>.
+Choose inputs and query shapes that preserve the parameter difference, and traverse adaptive and
+query-stage wrappers when checking the native operator and reused exchange.</p>
 </section>
 <section id="rust-unit-tests">
 <h4>Rust Unit Tests<a class="headerlink" href="#rust-unit-tests" title="Link to this heading">#</a></h4>
@@ -1195,6 +1275,7 @@ manages the boundary between JVM and native execution.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#step-2-create-a-cometoperatorserde-implementation">Step 2: Create a CometOperatorSerde Implementation</a><ul class="nav section-nav flex-column">
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#simple-example-filter">Simple Example (Filter)</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#more-complex-example-project">More Complex Example (Project)</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#plan-identity-and-exchange-reuse">Plan Identity and Exchange Reuse</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#using-getsupportlevel">Using getSupportLevel</a></li>
 </ul>
 </li>
@@ -1211,6 +1292,7 @@ manages the boundary between JVM and native execution.</p>
 </li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#step-6-add-tests">Step 6: Add Tests</a><ul class="nav section-nav flex-column">
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#scala-integration-tests">Scala Integration Tests</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#plan-identity-regression-tests">Plan Identity Regression Tests</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#rust-unit-tests">Rust Unit Tests</a></li>
 </ul>
 </li>

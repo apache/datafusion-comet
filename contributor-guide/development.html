@@ -465,6 +465,7 @@ under the License.
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Project Mechanics</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="bug_triage.html">Bug Triage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="backporting.html">Backporting</a></li>
 <li class="toctree-l1"><a class="reference internal" href="release_process.html">Release Process</a></li>
 <li class="toctree-l1"><a class="reference internal" href="roadmap.html">Roadmap</a></li>
 <li class="toctree-l1"><a class="reference external" href="https://github.com/apache/datafusion-comet">Github and Issue Tracker</a></li>
@@ -634,7 +635,9 @@ to unwrap decryption keys during Parquet reads. It uses a stored <code class="do
 is torn down on plugin shutdown (via <code class="docutils literal notranslate"><span class="pre">release_runtime</span></code>) so that the tokio worker threads exit
 and the JVM can shut down cleanly:</p>
 <ul class="simple">
-<li><p><strong>Worker threads:</strong> <code class="docutils literal notranslate"><span class="pre">num_cpus</span></code> by default, configurable via <code class="docutils literal notranslate"><span class="pre">COMET_WORKER_THREADS</span></code></p></li>
+<li><p><strong>Worker threads:</strong> one per executor core by default (<code class="docutils literal notranslate"><span class="pre">spark.executor.cores</span></code>, or the thread
+count of a <code class="docutils literal notranslate"><span class="pre">local[N]</span></code> or <code class="docutils literal notranslate"><span class="pre">local[*]</span></code> master, and one when <code class="docutils literal notranslate"><span class="pre">spark.executor.cores</span></code> is not set
+outside local mode), configurable via <code class="docutils literal notranslate"><span class="pre">COMET_WORKER_THREADS</span></code></p></li>
 <li><p><strong>Max blocking threads:</strong> 512 by default, configurable via <code class="docutils literal notranslate"><span class="pre">COMET_MAX_BLOCKING_THREADS</span></code></p></li>
 <li><p>All async I/O (S3, HTTP, Parquet reads) runs on worker threads as non-blocking futures</p></li>
 </ul>

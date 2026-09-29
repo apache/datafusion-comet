@@ -69,7 +69,7 @@ under the License.
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
     <link rel="next" title="Comet Roadmap" href="roadmap.html" />
-    <link rel="prev" title="Bug Triage Guide" href="bug_triage.html" />
+    <link rel="prev" title="Backporting to Release Branches" href="backporting.html" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
@@ -465,6 +465,7 @@ under the License.
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Project Mechanics</span></p>
 <ul class="current nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="bug_triage.html">Bug Triage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="backporting.html">Backporting</a></li>
 <li class="toctree-l1 current active"><a class="current reference internal" href="#">Release Process</a></li>
 <li class="toctree-l1"><a class="reference internal" href="roadmap.html">Roadmap</a></li>
 <li class="toctree-l1"><a class="reference external" href="https://github.com/apache/datafusion-comet">Github and Issue Tracker</a></li>
@@ -565,6 +566,7 @@ instructions on each step.</p>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Generate release documentation</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Update Maven version in release branch</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Update version in main for next development cycle</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Check for fixes missing from the release branches</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Generate the change log and PR it against the release branch</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Run the full CI suite on the release branch</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Build the jars</p></li>
@@ -644,6 +646,12 @@ git<span class="w"> </span>push<span class="w"> </span>apache<span class="w"> </
 </div>
 <p>Creating the branch is the only direct push to it. After protecting the branch (next step), all later changes
 to the release branch (documentation, version bump, changelog) go through pull requests targeting it.</p>
+<p>Also create the branch’s backport label. Committers add it to pull requests on <code class="docutils literal notranslate"><span class="pre">main</span></code> that should be backported to
+the branch; see <a class="reference internal" href="backporting.html"><span class="std std-doc">Backporting to Release Branches</span></a>.</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>gh<span class="w"> </span>label<span class="w"> </span>create<span class="w"> </span>backport-0.13<span class="w"> </span>--repo<span class="w"> </span>apache/datafusion-comet<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--description<span class="w"> </span><span class="s2">"Candidate for backporting to 0.13 release branch"</span>
+</pre></div>
+</div>
 </section>
 <section id="protect-the-release-branch">
 <h3>Protect the Release Branch<a class="headerlink" href="#protect-the-release-branch" title="Link to this heading">#</a></h3>
@@ -719,6 +727,14 @@ The contrib crates sit outside the <code class="docutils literal notranslate"><s
 <li><p>Update the Maven version to <code class="docutils literal notranslate"><span class="pre">0.14.0-SNAPSHOT</span></code> in the same set of files listed above (the <code class="docutils literal notranslate"><span class="pre">pom.xml</span></code> files,
 the Spark test diffs under <code class="docutils literal notranslate"><span class="pre">dev/diffs</span></code>, and the Iceberg test diffs under <code class="docutils literal notranslate"><span class="pre">dev/diffs/iceberg</span></code>).</p></li>
 </ul>
+</section>
+<section id="check-for-missing-backports">
+<h3>Check for Missing Backports<a class="headerlink" href="#check-for-missing-backports" title="Link to this heading">#</a></h3>
+<p>Before generating the change log, check that the new branch has every fix from the older release branches that are
+still taking backports, and backport any that are missing. For a patch release, check the release branch against
+every newer release branch instead, so that a fix doesn’t ship in the older release line first.
+<a class="reference internal" href="backporting.html#checking-release-branches-before-a-release"><span class="std std-ref">Checking Release Branches Before a Release</span></a> shows
+how.</p>
 </section>
 <section id="generate-the-change-log">
 <h3>Generate the Change Log<a class="headerlink" href="#generate-the-change-log" title="Link to this heading">#</a></h3>
@@ -1074,12 +1090,12 @@ contributor can drive this process.</p>
                   
 <div class="prev-next-area">
     <a class="left-prev"
-       href="bug_triage.html"
+       href="backporting.html"
        title="previous page">
       <i class="fa-solid fa-angle-left"></i>
       <div class="prev-next-info">
         <p class="prev-next-subtitle">previous</p>
-        <p class="prev-next-title">Bug Triage Guide</p>
+        <p class="prev-next-title">Backporting to Release Branches</p>
       </div>
     </a>
     <a class="right-next"
@@ -1118,6 +1134,7 @@ contributor can drive this process.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#generate-release-documentation">Generate Release Documentation</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#update-maven-version">Update Maven Version</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#update-version-in-main">Update Version in main</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#check-for-missing-backports">Check for Missing Backports</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#generate-the-change-log">Generate the Change Log</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#run-the-full-ci-suite">Run the Full CI Suite</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#build-the-jars">Build the jars</a><ul class="nav section-nav flex-column">
