@@ -42,8 +42,8 @@ on:
         default: false
         type: boolean
       modules:
-        # Which matrix rows to run. `core` is catalyst plus the three sql_core
-        # shards, `hive` is the three sql_hive shards, `all` is both. The
+        # Which matrix rows to run. `core` is catalyst plus the four sql_core
+        # shards, `hive` is the four sql_hive shards, `all` is both. The
         # umbrella uses this to keep the Spark 4.1 hive shards out of the PR
         # tier without a second call (and a second 40-minute build) for the
         # queue: one call, and the rows the tier does not want are left out
