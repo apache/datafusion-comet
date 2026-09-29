@@ -21,7 +21,7 @@ package org.apache.comet.expressions
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Expression, Literal}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, MapType, NullType, StructType, TimestampNTZType, TimestampType}
+import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, MapType, NullType, NumericType, StructType, TimestampNTZType, TimestampType}
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, withFallbackReason}
@@ -246,6 +246,16 @@ object CometCast
           }
         }
         Compatible()
+      case (from_map: MapType, to_map: MapType)
+          if evalMode == CometEvalMode.TRY && !keyCastCannotFail(
+            from_map.keyType,
+            to_map.keyType) =>
+        // Under TRY a key cast that throws becomes a null key, and Spark keeps the row. Arrow's map
+        // format requires a non-nullable key field, so neither the native cast nor the codegen
+        // dispatcher can hold that result, and `canHandle` refuses the dispatch. Key casts that
+        // cannot throw stay on the native path. Maps nested in the value are checked when the
+        // value cast recurses back into this arm.
+        Unsupported(Some(tryCastNullMapKeyReason))
       case (from_map: MapType, to_map: MapType) =>
         // Native cast_map_to_map recursively casts keys and values, so support is
         // determined by whether both inner casts are individually supported.
@@ -471,6 +481,70 @@ object CometCast
           DataTypes.DoubleType | _: DecimalType if evalMode == CometEvalMode.LEGACY =>
         Compatible()
       case _ => Unsupported(Some(s"Cast from DateType to $toType is not supported"))
+    }
+
+  private[comet] val tryCastNullMapKeyReason: String =
+    "TRY_CAST of a map key that can fail produces a null key, which Arrow's map format " +
+      "cannot hold (https://github.com/apache/datafusion-comet/issues/5995)"
+
+  /**
+   * Whether evaluating `cast` can produce a map with a null key. Under TRY a key cast that throws
+   * becomes a null key, and Spark's `Cast.castMap` builds the result without rejecting it, so any
+   * TRY cast that changes a map's key type at any depth can, unless the key cast cannot fail.
+   * Arrow's map format requires a non-nullable key field, so no Comet path can hold that value.
+   */
+  private[comet] def canProduceNullMapKey(cast: Cast): Boolean =
+    evalMode(cast) == CometEvalMode.TRY && mayNullMapKey(cast.child.dataType, cast.dataType)
+
+  private def mayNullMapKey(fromType: DataType, toType: DataType): Boolean =
+    (fromType, toType) match {
+      case (MapType(fromKey, fromValue, _), MapType(toKey, toValue, _)) =>
+        !keyCastCannotFail(fromKey, toKey) || mayNullMapKey(fromValue, toValue)
+      case (ArrayType(fromElement, _), ArrayType(toElement, _)) =>
+        mayNullMapKey(fromElement, toElement)
+      case (StructType(fromFields), StructType(toFields)) =>
+        fromFields.zip(toFields).exists { case (from, to) =>
+          mayNullMapKey(from.dataType, to.dataType)
+        }
+      case _ => false
+    }
+
+  private val numericWidening =
+    Seq(
+      DataTypes.ByteType,
+      DataTypes.ShortType,
+      DataTypes.IntegerType,
+      DataTypes.LongType,
+      DataTypes.FloatType,
+      DataTypes.DoubleType)
+
+  private def integralDigits(dataType: DataType): Option[Int] = dataType match {
+    case DataTypes.ByteType => Some(3)
+    case DataTypes.ShortType => Some(5)
+    case DataTypes.IntegerType => Some(10)
+    case DataTypes.LongType => Some(20)
+    case _ => None
+  }
+
+  /**
+   * Key casts that cannot throw, so cannot become a null key under TRY. Deliberately narrower
+   * than Spark's `Cast.canUpCast`, which also admits date and timestamp conversions that overflow
+   * `Math.multiplyExact` for extreme values. Anything not listed is treated as able to fail.
+   */
+  private def keyCastCannotFail(fromType: DataType, toType: DataType): Boolean =
+    (fromType, toType) match {
+      case _ if fromType == toType => true
+      case (from, to) if numericWidening.contains(from) && numericWidening.contains(to) =>
+        numericWidening.indexOf(from) < numericWidening.indexOf(to)
+      case (from, to: DecimalType) if integralDigits(from).isDefined =>
+        to.precision - to.scale >= integralDigits(from).get
+      case (from: DecimalType, to: DecimalType) =>
+        to.scale >= from.scale && to.precision - to.scale >= from.precision - from.scale
+      case (
+            _: NumericType | DataTypes.BooleanType | DataTypes.DateType | DataTypes.TimestampType,
+            DataTypes.StringType) =>
+        true
+      case _ => false
     }
 
   private def unsupported(fromType: DataType, toType: DataType): Unsupported = {
