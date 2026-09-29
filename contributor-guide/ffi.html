@@ -781,6 +781,18 @@ until then.</p>
 </pre></div>
 </div>
 </section>
+<section id="array-offsets">
+<h3>Array Offsets<a class="headerlink" href="#array-offsets" title="Link to this heading">#</a></h3>
+<p>Arrow Java’s C Data import ignores <code class="docutils literal notranslate"><span class="pre">ArrowArray.offset</span></code> at every level
+(<a class="reference external" href="https://github.com/apache/arrow-java/issues/88">apache/arrow-java#88</a>) and reads each buffer from its start. arrow-rs
+folds a slice into the buffers for almost every type, but a sliced <code class="docutils literal notranslate"><span class="pre">BooleanArray</span></code> keeps its bit offset, and a struct
+exports offset 0 even when its children are sliced. So every array native exports to the JVM first goes through
+<code class="docutils literal notranslate"><span class="pre">zero_offsets</span></code> (in <code class="docutils literal notranslate"><span class="pre">native/common/src/ffi_offsets.rs</span></code>), which re-slices boolean bitmaps to start at bit 0 at every
+level and shares every other buffer. <code class="docutils literal notranslate"><span class="pre">move_to_spark</span></code> applies it to executed batches and decoded shuffle blocks, and
+<code class="docutils literal notranslate"><span class="pre">JvmScalarUdfExpr</span></code> applies it to the inputs of the JVM UDF bridge. A new native to JVM export path has to call it too,
+or sliced booleans reach the JVM misaligned
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6288">#6288</a>).</p>
+</section>
 <section id="wrapper-object-lifecycle-native-jvm">
 <h3>Wrapper Object Lifecycle (Native → JVM)<a class="headerlink" href="#wrapper-object-lifecycle-native-jvm" title="Link to this heading">#</a></h3>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>Time    Native Memory              JVM Heap              Data location
@@ -950,6 +962,7 @@ t4      Batch handle released      ArrowBuf freed        Data freed
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#native-jvm-data-flow-cometexeciterator">Native → JVM Data Flow (CometExecIterator)</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#id1">Architecture</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#ffi-transfer-process">FFI Transfer Process</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#array-offsets">Array Offsets</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#wrapper-object-lifecycle-native-jvm">Wrapper Object Lifecycle (Native → JVM)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#release-callbacks">Release Callbacks</a></li>
 </ul>
