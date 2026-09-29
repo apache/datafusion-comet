@@ -77,7 +77,7 @@ object CometTopKBenchmark extends CometBenchmarkBase {
     withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
       val payload = (0 until payloadColumns).map(i => s"id * ${17 + i * 2} AS payload_$i")
       spark
-        .range(0, rows, 1, partitions)
+        .range(0, rows.toLong, 1, partitions)
         .selectExpr((Seq(s"${keyExpression(layout, rows)} AS k") ++ payload): _*)
         .write
         .option("compression", "snappy")
@@ -177,7 +177,7 @@ object CometTopKBenchmark extends CometBenchmarkBase {
             runBenchmark(name) {
               val benchmark = new Benchmark(
                 name,
-                rows,
+                rows.toLong,
                 minNumIters = iterations,
                 warmupTime = 500.millis,
                 minTime = 500.millis,
