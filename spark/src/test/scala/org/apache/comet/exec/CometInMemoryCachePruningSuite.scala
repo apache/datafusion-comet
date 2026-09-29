@@ -139,6 +139,7 @@ class CometInMemoryCachePruningSuite extends CometTestBase {
     "d > -2.0D AND d < 2.0D",
     "d IS NULL",
     "d IS NOT NULL",
+    "n = 5",
     "n IS NULL",
     "s = '中'",
     "s >= '\ue000'",
