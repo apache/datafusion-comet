@@ -28,6 +28,7 @@ import org.apache.spark.sql.execution.adaptive.QueryStageExec
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
+import org.apache.comet.CometSparkSessionExtensions.isSpark35Plus
 
 class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
 
@@ -233,6 +234,89 @@ class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
         assert(
           countCometExecs(executedPlan) == 0,
           s"Revert should have removed all CometExec nodes:\n${executedPlan.treeString}")
+      }
+    }
+  }
+
+  test("AQE DPP remains executable when transition reversion restores a V1 scan") {
+    assume(isSpark35Plus, "Comet AQE DPP query-stage optimizer rules require Spark 3.5+")
+    import testImplicits._
+
+    withTempDir { dir =>
+      val factPath = s"${dir.getAbsolutePath}/fact"
+      val dimPath = s"${dir.getAbsolutePath}/dim"
+      withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "false") {
+        (0 until 400)
+          .map(i => (i, i % 10, s"f$i"))
+          .toDF("fact_id", "fact_key", "fact_str")
+          .write
+          .partitionBy("fact_key")
+          .parquet(factPath)
+        (0 until 10)
+          .map(i => (i, i, s"d$i"))
+          .toDF("dim_id", "dim_key", "dim_str")
+          .write
+          .parquet(dimPath)
+      }
+
+      withTempView("revert_dpp_fact", "revert_dpp_dim") {
+        withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> "parquet") {
+          spark.read.parquet(factPath).createOrReplaceTempView("revert_dpp_fact")
+          spark.read.parquet(dimPath).createOrReplaceTempView("revert_dpp_dim")
+
+          val query =
+            """SELECT f.fact_id, f.fact_str, d.dim_str
+              |FROM revert_dpp_fact f JOIN revert_dpp_dim d
+              |  ON f.fact_key = d.dim_key
+              |WHERE d.dim_id < 10""".stripMargin
+
+          for {
+            adaptive <- Seq(false, true)
+            transitionRevert <- Seq(false, true)
+            projectEnabled <- Seq(false, true)
+          } {
+            withClue(
+              s"AQE=$adaptive, transitionRevert=$transitionRevert, " +
+                s"projectEnabled=$projectEnabled: ") {
+              withSQLConf(
+                SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+                SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true",
+                CometConf.COMET_ENABLED.key -> "true",
+                CometConf.COMET_EXEC_ENABLED.key -> "true",
+                "spark.comet.exec.project.enabled" -> projectEnabled.toString,
+                CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key ->
+                  transitionRevert.toString,
+                CometConf.COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS.key -> "0") {
+                val df = sql(query)
+                assert(df.collect().length == 400)
+
+                if (adaptive && transitionRevert) {
+                  val executedPlan = stripAQEPlan(df.queryExecution.executedPlan)
+                  val scans = executedPlan.collect { case scan: FileSourceScanExec => scan }
+                  assert(
+                    scans.nonEmpty,
+                    s"Transition reversion should restore Spark V1 scans:\n$executedPlan")
+                  assert(
+                    scans.exists(_.partitionFilters.exists(_.exists {
+                      case inSub: InSubqueryExec =>
+                        inSub.plan.isInstanceOf[CometSubqueryBroadcastExec] ||
+                        inSub.plan.isInstanceOf[SubqueryBroadcastExec]
+                      case _ => false
+                    })),
+                    s"Reverted scan should retain the executable DPP subquery:\n$executedPlan")
+                  assert(
+                    !scans.exists(_.partitionFilters.exists(_.exists {
+                      case inSub: InSubqueryExec =>
+                        inSub.plan.isInstanceOf[SubqueryAdaptiveBroadcastExec]
+                      case _ => false
+                    })),
+                    "Reverted scan must not restore an unexecutable AQE DPP placeholder:\n" +
+                      executedPlan)
+                }
+              }
+            }
+          }
+        }
       }
     }
   }

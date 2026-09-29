@@ -1246,7 +1246,7 @@ mod tests {
         assert!(values.iter().all(|value| value.is_none()));
     }
     fn legacy_opts() -> SparkCastOptions {
-        SparkCastOptions::new(EvalMode::Legacy, "UTC", false)
+        SparkCastOptions::new(EvalMode::Legacy, "UTC")
     }
 
     /// Build a `Map<Utf8, Int32>` MapArray (Parquet-style "key_value" field names).
@@ -1410,7 +1410,7 @@ mod tests {
         let casted = cast_array(
             map_array,
             &to_type,
-            &SparkCastOptions::new(EvalMode::Legacy, "UTC", false),
+            &SparkCastOptions::new(EvalMode::Legacy, "UTC"),
         )
         .unwrap();
 

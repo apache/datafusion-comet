@@ -393,7 +393,7 @@ mod tests {
         let schema = Schema::new(vec![Arc::clone(&input_field)]);
         let batch = RecordBatch::try_new(Arc::new(schema), vec![Arc::new(struct_arr)]).unwrap();
 
-        let mut opts = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        let mut opts = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
         opts.use_field_id = true;
 
         let col_expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new("s", 0));

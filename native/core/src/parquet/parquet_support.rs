@@ -2127,7 +2127,7 @@ mod tests {
         ));
         let to_type = struct_type_with_field_id(vec![("f", DataType::Int32, 1)]);
 
-        let mut opts = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        let mut opts = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
         opts.use_field_id = true;
 
         let err = parquet_convert_array(from, &to_type, &opts).unwrap_err();
@@ -2167,7 +2167,7 @@ mod tests {
         ));
         let to_type = struct_type_with_field_id(vec![("f", DataType::Int32, 2)]);
 
-        let mut opts = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        let mut opts = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
         opts.use_field_id = true;
 
         let result = parquet_convert_array(from, &to_type, &opts).unwrap();
