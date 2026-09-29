@@ -27,6 +27,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import scala.util.control.NonFatal
 
 import org.apache.arrow.c.ArrowArrayStream
+import org.apache.arrow.memory.BufferAllocator
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark._
 import org.apache.spark.broadcast.Broadcast
@@ -384,12 +385,13 @@ object CometExecIterator extends Logging {
    * Starts the executor's native memory usage log when the first native plan is created, unless
    * `spark.comet.memory.logInterval` is 0.
    *
-   * Both figures the log reports, the bytes the native allocator has handed out and the bytes
-   * reserved in Comet's memory pools, are executor-wide, so one daemon thread logs one line per
-   * interval for the whole executor, however many tasks are running. It runs on a timer rather
-   * than between batches, because a plan can spend its whole run inside one `executePlan` call: a
-   * plan rooted at a native shuffle writer consumes all of its input before it returns, and a
-   * plan fed directly by native scans parks the task thread until its next batch is ready.
+   * Every figure the log reports is executor-wide: the bytes the native allocator has handed out,
+   * the bytes reserved in Comet's memory pools, and the Arrow memory Comet holds on the JVM side.
+   * So one daemon thread logs one line per interval for the whole executor, however many tasks
+   * are running. It runs on a timer rather than between batches, because a plan can spend its
+   * whole run inside one `executePlan` call: a plan rooted at a native shuffle writer consumes
+   * all of its input before it returns, and a plan fed directly by native scans parks the task
+   * thread until its next batch is ready.
    */
   private def startMemoryUsageLog(): Unit = {
     if (memoryUsageLogStarted.compareAndSet(false, true)) {
@@ -505,10 +507,11 @@ object CometExecIterator extends Logging {
   private def logMemoryUsage(nativeLib: Native, limitBytes: Option[Long]): Unit = {
     try {
       val usage = nativeLib.getMemoryUsage()
-      memoryUsageMessage(usage, plansAtLastMemoryUsageLog).foreach(logInfo(_))
+      val jvmArrow = JvmArrowMemory.current()
+      memoryUsageMessage(usage, jvmArrow, plansAtLastMemoryUsageLog).foreach(logInfo(_))
       plansAtLastMemoryUsageLog = usage(3)
       val warning = limitBytes.flatMap(
-        nativeMemoryLimitWarning(usage, CometTaskMemoryManager.sparkOffHeapUsed(), _))
+        nativeMemoryLimitWarning(usage, jvmArrow, CometTaskMemoryManager.sparkOffHeapUsed(), _))
       // Warn when the footprint first exceeds the limit, not at every interval while it stays
       // there: the INFO line above keeps reporting it.
       if (!limitExceededAtLastLog) {
@@ -525,19 +528,55 @@ object CometExecIterator extends Logging {
   }
 
   /**
-   * The memory usage log line for `usage`, as returned by [[Native.getMemoryUsage]], or None to
-   * stay quiet. The log reports while native plans are running, and once more after the last of
-   * them finishes, so that allocation that outlives them is visible, then waits for plans to run
-   * again.
+   * The Arrow memory Comet holds on the JVM side, read from its allocators' own accounting:
+   * `allocated` for the whole `CometArrowAllocator` tree, and `imported` for the part of it
+   * charged to `CometArrowImportAllocator`, which the Arrow C Data Interface import path
+   * allocates from. These are the figures tracing reports as `jvm_arrow_allocated` and
+   * `jvm_arrow_imported`.
    */
-  def memoryUsageMessage(usage: Array[Long], plansAtLastLog: Long): Option[String] = {
+  case class JvmArrowMemory(allocated: Long, imported: Long) {
+
+    /**
+     * An estimate of the Arrow memory the JVM allocated itself, which none of the native figures
+     * include. Imported buffers are left out because native code allocated them, so the native
+     * allocator already counts them. Both figures are allocator charges rather than measures of
+     * where the bytes came from, and ownership transfers move charges between allocators, so the
+     * split is not exact; see `CometArrowImportAllocator`.
+     */
+    def allocatedByJvm: Long = math.max(allocated - imported, 0L)
+  }
+
+  object JvmArrowMemory {
+
+    def current(): JvmArrowMemory = of(CometArrowAllocator, CometArrowImportAllocator)
+
+    def of(root: BufferAllocator, imports: BufferAllocator): JvmArrowMemory = {
+      // The import allocator is read first, so an import that lands between the two reads is
+      // counted in the total but not in the imported part. That overstates the JVM's own
+      // allocation rather than understating it.
+      val imported = imports.getAllocatedMemory
+      JvmArrowMemory(root.getAllocatedMemory, imported)
+    }
+  }
+
+  /**
+   * The memory usage log line for `usage`, as returned by [[Native.getMemoryUsage]], and
+   * `jvmArrow`, or None to stay quiet. The log reports while native plans are running, and once
+   * more after the last of them finishes, so that allocation that outlives them is visible, then
+   * waits for plans to run again.
+   */
+  def memoryUsageMessage(
+      usage: Array[Long],
+      jvmArrow: JvmArrowMemory,
+      plansAtLastLog: Long): Option[String] = {
     val (allocated, reserved, pools, plans) = (usage(0), usage(1), usage(2), usage(3))
     if (plans == 0 && plansAtLastLog == 0) {
       None
     } else {
       Some(
         s"Comet native memory usage: allocated ${toMiB(allocated)}, reserved " +
-          s"${toMiB(reserved)} ($plans native plans, $pools memory pools)")
+          s"${toMiB(reserved)} ($plans native plans, $pools memory pools); JVM Arrow allocated " +
+          s"${toMiB(jvmArrow.allocated)}, ${toMiB(jvmArrow.imported)} of it imported from native")
     }
   }
 
@@ -545,30 +584,33 @@ object CometExecIterator extends Logging {
    * A warning if the executor's native footprint exceeds `limitBytes`, the container's memory
    * outside the JVM heap; see [[nativeMemoryLimit]].
    *
-   * The footprint is the native memory Comet's pools do not track, `allocated - reserved`, plus
-   * `sparkOffHeapUsed`, everything in use in Spark's off-heap pool, which includes Comet's
-   * reservations as well as Spark's own off-heap execution and storage memory. Comparing the sum
-   * rather than the untracked part against the overhead alone counts the part of
-   * `spark.memory.offHeap.size` that nothing has acquired at that moment, which untracked memory
-   * can occupy until Spark hands it out. The limit also has to hold the JVM's own non-heap
-   * memory, so by the time the footprint exceeds it the executor has likely outgrown its
-   * container.
+   * The footprint is the memory Comet holds outside the JVM heap that its pools do not track,
+   * `allocated + jvmArrow.allocatedByJvm - reserved`, plus `sparkOffHeapUsed`, everything in use
+   * in Spark's off-heap pool, which includes Comet's reservations as well as Spark's own off-heap
+   * execution and storage memory. The JVM's Arrow memory is added before the reservations are
+   * subtracted, because a native operator that holds on to a batch the JVM allocated, such as a
+   * sort buffering its input, reserves it: those bytes are in `reserved` and in the JVM figure
+   * but not in `allocated`, and are counted once. Comparing the sum rather than the untracked
+   * part against the overhead alone counts the part of `spark.memory.offHeap.size` that nothing
+   * has acquired at that moment, which untracked memory can occupy until Spark hands it out. The
+   * limit also has to hold the JVM's own non-heap memory, so by the time the footprint exceeds it
+   * the executor has likely outgrown its container.
    */
   def nativeMemoryLimitWarning(
       usage: Array[Long],
+      jvmArrow: JvmArrowMemory,
       sparkOffHeapUsed: Long,
       limitBytes: Long): Option[String] = {
-    val untracked = math.max(usage(0) - usage(1), 0L)
+    val untracked = math.max(usage(0) + jvmArrow.allocatedByJvm - usage(1), 0L)
     val footprint = untracked + sparkOffHeapUsed
     if (footprint > limitBytes) {
-      Some(
-        s"Comet native memory not tracked by any memory pool (${toMiB(untracked)}) plus " +
-          s"Spark's off-heap memory in use (${toMiB(sparkOffHeapUsed)}, including Comet's " +
-          s"reservations) is ${toMiB(footprint)}, more than the ${toMiB(limitBytes)} the " +
-          "executor's container has outside the JVM heap (spark.memory.offHeap.size plus the " +
-          "memory overhead), which also has to hold the JVM's own non-heap memory. The cluster " +
-          "manager may kill this executor for exceeding its container limit. Raise " +
-          s"spark.executor.memoryOverhead. ${CometConf.TUNING_GUIDE}.")
+      Some(s"Comet memory not tracked by any memory pool (${toMiB(untracked)}, native and JVM " +
+        s"Arrow) plus Spark's off-heap memory in use (${toMiB(sparkOffHeapUsed)}, including " +
+        s"Comet's reservations) is ${toMiB(footprint)}, more than the ${toMiB(limitBytes)} the " +
+        "executor's container has outside the JVM heap (spark.memory.offHeap.size plus the " +
+        "memory overhead), which also has to hold the JVM's own non-heap memory. The cluster " +
+        "manager may kill this executor for exceeding its container limit. Raise " +
+        s"spark.executor.memoryOverhead. ${CometConf.TUNING_GUIDE}.")
     } else {
       None
     }

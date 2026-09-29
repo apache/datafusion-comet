@@ -46,6 +46,7 @@ Development Guide <development>
 
 Comet Plugin Overview <plugin_overview>
 Arrow FFI <ffi>
+Timezone Handling <timezones>
 JVM Shuffle <jvm_shuffle>
 Native Shuffle <native_shuffle>
 Memory Management <memory_management>
