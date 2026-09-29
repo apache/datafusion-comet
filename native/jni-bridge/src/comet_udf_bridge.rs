@@ -41,7 +41,9 @@ impl<'a> CometUdfBridge<'a> {
             method_evaluate: env.get_static_method_id(
                 JNIString::new(Self::JVM_CLASS),
                 jni::jni_str!("evaluate"),
-                jni::jni_sig!("(Ljava/lang/String;[J[JJJILorg/apache/spark/TaskContext;)V"),
+                jni::jni_sig!(
+                    "(Ljava/lang/String;[J[JJJILorg/apache/spark/TaskContext;Ljava/lang/ClassLoader;)V"
+                ),
             )?,
             method_evaluate_ret: ReturnType::Primitive(Primitive::Void),
             class,

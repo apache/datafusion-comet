@@ -51,8 +51,12 @@ trait CometTPCQueryBase extends Logging {
       .set(
         "spark.shuffle.manager",
         "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
+      // Off-heap memory is disabled, so Comet runs in on-heap mode, which must be enabled
+      // explicitly or Comet stays disabled.
+      .set("spark.comet.exec.onHeap.enabled", "true")
 
-    val sparkSession = SparkSession.builder
+    val sparkSession = SparkSession
+      .builder()
       .config(conf)
       .withExtensions(new CometSparkSessionExtensions)
       .getOrCreate()
@@ -98,7 +102,7 @@ trait CometTPCQueryBase extends Logging {
         // Recover partitions but don't fail if a table is not partitioned.
         Try {
           cometSpark.sql(s"ALTER TABLE $tableName RECOVER PARTITIONS")
-        }.getOrElse {
+        }.failed.foreach { _ =>
           logInfo(s"Recovering partitions of table $tableName failed")
         }
       }

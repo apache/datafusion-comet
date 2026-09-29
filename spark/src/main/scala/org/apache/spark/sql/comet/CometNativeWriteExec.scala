@@ -188,7 +188,7 @@ case class CometNativeWriteExec(
       val taskAttemptId = org.apache.spark.TaskContext.get().taskAttemptId()
 
       // Setup task-level commit protocol if provided
-      val (workDir, taskContext, commitMsg) = capturedCommitter
+      val (workDir, taskContext, _) = capturedCommitter
         .map { committer =>
           val taskContext =
             createTaskContext(capturedJobTrackerID, partitionId, taskAttemptId.toInt)
@@ -289,7 +289,7 @@ case class CometNativeWriteExec(
                   // Commit the task and add message to accumulator
                   val message = committer.commitTask(ctx)
                   capturedAccumulator.add(message)
-                  logInfo(s"Task ${ctx.getTaskAttemptID} committed successfully")
+                  logDebug(s"Task ${ctx.getTaskAttemptID} committed successfully")
                 } else {
                   // Abort the task
                   committer.abortTask(ctx)

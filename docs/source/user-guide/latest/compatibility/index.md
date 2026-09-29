@@ -68,7 +68,8 @@ which document their per-expression configs and the specific differences to expe
 
 This is distinct from expressions that have **no** codegen-dispatch path: there, the
 incompatible cases fall back to Spark by default, and `allowIncompatible=true` runs the native
-(incompatible) path instead. `cast` is the main example; see the
+(incompatible) path instead. Aggregate functions such as `mode` are the main example, because the
+codegen dispatcher covers only scalar expressions; see the
 [expression reference](../expressions.md) for which expressions have incompatible cases.
 
 ## Strings with non-UTF-8 bytes
@@ -102,3 +103,46 @@ string paths is tracked by
 Separately, Comet's native Parquet scan currently rejects string columns whose stored bytes are not
 valid UTF-8 rather than reading them like Spark
 ([#4121](https://github.com/apache/datafusion-comet/issues/4121)).
+
+## ANSI-mode error classes and messages
+
+Under `spark.sql.ansi.enabled=true`, several native error paths raise the error at the correct
+input but with a different exception type, error class, SQLSTATE, or message text than Spark.
+Code that catches `SparkException` and only asserts on message substrings is unaffected; code that
+inspects the exception class, `getCondition()`, or the parameterised error class will observe
+divergence:
+
+- Byte / Short `Add`, `Subtract`, and `Multiply` overflow raises `ARITHMETIC_OVERFLOW` (for
+  example `byte overflow`) where Spark raises `BINARY_ARITHMETIC_OVERFLOW`, and integral
+  `ARITHMETIC_OVERFLOW` messages omit Spark's `try_` suggestion
+  ([#6217](https://github.com/apache/datafusion-comet/issues/6217)).
+- Wide-decimal arithmetic overflow reports a different value in the error message than Spark
+  ([#5211](https://github.com/apache/datafusion-comet/issues/5211)).
+- Spark 4.2 introduced additional ANSI arithmetic overflow behavior differences that Comet does
+  not yet track ([#4967](https://github.com/apache/datafusion-comet/issues/4967)).
+
+## Known result-value divergences
+
+The following native paths silently return values that differ from Spark for edge-case inputs.
+Most also have entries in the per-category expression pages linked above; they are collected here
+so users hunting an unexpected value have a single place to check:
+
+- `CAST(string AS timestamp)` and `CAST(string AS timestamp_ntz)` trim Unicode whitespace.
+  Spark trims only the bytes `0x00`-`0x20` and `0x7F`, so a value padded with an ASCII control byte
+  parses in Spark and returns `NULL` in Comet, while a value padded with non-ASCII whitespace such
+  as `U+3000` returns `NULL` in Spark and parses in Comet
+  ([#5149](https://github.com/apache/datafusion-comet/issues/5149)).
+- Native `RANGE` window frames with an explicit `PRECEDING` / `FOLLOWING` offset diverge from
+  Spark when the boundary arithmetic overflows for `DATE` or `DECIMAL` `ORDER BY` columns
+  ([#5022](https://github.com/apache/datafusion-comet/issues/5022)).
+- Ungrouped decimal `SUM` keeps an unbounded intermediate and checks the result precision only
+  when a partial is written out or the sum is evaluated, which matches Spark's whole-stage codegen
+  path. Without codegen Spark buffers the aggregate in an `UnsafeRow` and latches as soon as a
+  running sum leaves the precision. Comet falls back at precision 38 when codegen is disabled by
+  `spark.sql.codegen.wholeStage`, by `spark.sql.codegen.factoryMode=NO_CODEGEN` on Spark 3.5+,
+  by an imperative sibling aggregate, by an expression Spark cannot compile such as a lambda function,
+  or by the `spark.sql.codegen.maxFields` limit on the aggregate's own output and inputs, but not
+  when Spark abandons codegen at runtime, after a compile failure under
+  `spark.sql.codegen.fallback` or when the generated code exceeds
+  `spark.sql.codegen.hugeMethodLimit`, where an intermediate overflow that later cancels out
+  returns `NULL` (or raises under ANSI) in Spark but the recovered value in Comet.

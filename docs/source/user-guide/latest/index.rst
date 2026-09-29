@@ -39,6 +39,7 @@ to read more.
 
    Installing Comet <installation>
    Configuration Settings <configs>
+   Upgrading Comet <migration-guide>
 
 .. toctree::
    :maxdepth: 1
@@ -71,9 +72,22 @@ to read more.
    :hidden:
 
    Understanding Comet Plans <understanding-comet-plans>
-   Tuning Guide <tuning>
    Metrics Guide <metrics>
+   In-Memory Cache <in-memory-cache>
    PyArrow UDF Acceleration <pyarrow-udfs>
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Tuning
+   :hidden:
+
+   Overview <tuning>
+   Memory <tuning/memory>
+   Shuffle <tuning/shuffle>
+   Celeborn Shuffle <tuning/celeborn>
+   Scans <tuning/scans>
+   Operators <tuning/operators>
+   Row/Columnar Transitions <tuning/transitions>
 
 .. toctree::
    :maxdepth: 1
@@ -81,6 +95,7 @@ to read more.
    :hidden:
 
    Iceberg Guide <iceberg>
+   Iceberg Writes <iceberg-writes>
    S3 Credential Providers <s3-credential-providers>
    Kubernetes Guide <kubernetes>
 

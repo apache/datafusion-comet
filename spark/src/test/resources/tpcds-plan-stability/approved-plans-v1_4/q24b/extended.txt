@@ -1,7 +1,7 @@
-CometNativeColumnarToRow
+CometColumnarToRow
 +- CometFilter
    :  +- Subquery
-   :     +- CometNativeColumnarToRow
+   :     +- CometColumnarToRow
    :        +- CometHashAggregate
    :           +- CometExchange
    :              +- CometHashAggregate
@@ -9,7 +9,7 @@ CometNativeColumnarToRow
    :                    +- CometExchange
    :                       +- CometHashAggregate
    :                          +- CometProject
-   :                             +-  CometBroadcastHashJoin [COMET-INFO: A native implementation of Upper is available. Set spark.comet.caseConversion.enabled=true to enable it. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html)]
+   :                             +-  CometBroadcastHashJoin [COMET-INFO: A native implementation of Upper is available. Set spark.comet.caseConversion.enabled=true to enable it. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html), JVM codegen dispatcher: upper]
    :                                :- CometProject
    :                                :  +- CometBroadcastHashJoin
    :                                :     :- CometProject
@@ -51,7 +51,7 @@ CometNativeColumnarToRow
                +- CometExchange
                   +- CometHashAggregate
                      +- CometProject
-                        +-  CometBroadcastHashJoin [COMET-INFO: A native implementation of Upper is available. Set spark.comet.caseConversion.enabled=true to enable it. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html)]
+                        +-  CometBroadcastHashJoin [COMET-INFO: A native implementation of Upper is available. Set spark.comet.caseConversion.enabled=true to enable it. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html), JVM codegen dispatcher: upper]
                            :- CometProject
                            :  +- CometBroadcastHashJoin
                            :     :- CometProject
@@ -87,4 +87,4 @@ CometNativeColumnarToRow
                                  +- CometFilter
                                     +- CometNativeScan parquet spark_catalog.default.customer_address
 
-Comet accelerated 85 out of 86 eligible operators (98%). Final plan contains 2 transitions between Spark and Comet.
+Comet accelerated 85 out of 86 eligible operators (98%). Final plan contains 2 transitions between Spark and Comet. Accelerated expressions: 14 native, 1 codegen dispatch.

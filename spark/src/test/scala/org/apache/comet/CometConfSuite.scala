@@ -121,4 +121,111 @@ class CometConfSuite extends AnyFunSuite {
 
     assert(CometConf.COMET_FORCE_SHJ.get(conf))
   }
+
+  test("COMET_SHUFFLE_ENABLED reads the deprecated exec.shuffle.enabled key as an alias") {
+    val conf = new SQLConf
+    conf.setConfString(s"${CometConf.COMET_EXEC_CONFIG_PREFIX}.shuffle.enabled", "false")
+
+    assert(!CometConf.COMET_SHUFFLE_ENABLED.get(conf))
+  }
+
+  test("COMET_SHUFFLE_JVM_SPILL_THRESHOLD reads the deprecated dots-in-segment key") {
+    val conf = new SQLConf
+    conf.setConfString("spark.comet.columnar.shuffle.spill.threshold", "12345")
+
+    assert(CometConf.COMET_SHUFFLE_JVM_SPILL_THRESHOLD.get(conf) == 12345)
+  }
+
+  test("COMET_SHUFFLE_JVM_PREFER_DICTIONARY_RATIO reads the deprecated top-level key") {
+    val conf = new SQLConf
+    conf.setConfString("spark.comet.shuffle.preferDictionary.ratio", "3.5")
+
+    assert(CometConf.COMET_SHUFFLE_JVM_PREFER_DICTIONARY_RATIO.get(conf) == 3.5)
+  }
+
+  test("COMET_EXPLAIN_CODEGEN_ENABLED reads deprecated explainCodegen.enabled as an alias") {
+    val conf = new SQLConf
+    conf.setConfString("spark.comet.explainCodegen.enabled", "true")
+
+    assert(CometConf.COMET_EXPLAIN_CODEGEN_ENABLED.get(conf))
+  }
+
+  test("COMET_EXPLAIN_FALLBACK_ENABLED reads deprecated explainFallback.enabled as an alias") {
+    val conf = new SQLConf
+    conf.setConfString("spark.comet.explainFallback.enabled", "true")
+
+    assert(CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.get(conf))
+  }
+
+  test("remote shuffle frame and admission limits have bounded defaults") {
+    val conf = new SQLConf
+
+    assert(CometConf.COMET_SHUFFLE_RSS_MAX_FRAME_BYTES.get(conf) == 64L * 1024 * 1024)
+    assert(CometConf.COMET_SHUFFLE_RSS_MAX_IN_FLIGHT_BYTES.get(conf) == 512L * 1024 * 1024)
+  }
+
+  test("remote shuffle frame limit rejects incomplete frames and oversized JVM requests") {
+    val conf = new SQLConf
+    val entry = CometConf.COMET_SHUFFLE_RSS_MAX_FRAME_BYTES
+
+    conf.setConfString(entry.key, "19b")
+    assertThrows[IllegalArgumentException](entry.get(conf))
+
+    conf.setConfString(entry.key, s"${Int.MaxValue - 15}b")
+    assertThrows[IllegalArgumentException](entry.get(conf))
+
+    conf.setConfString(entry.key, "20b")
+    assert(entry.get(conf) == 20)
+  }
+
+  test("remote shuffle admission limit reserves complete native, JNI, and client frames") {
+    val conf = new SQLConf
+    val entry = CometConf.COMET_SHUFFLE_RSS_MAX_IN_FLIGHT_BYTES
+
+    conf.setConfString(entry.key, "75b")
+    assertThrows[IllegalArgumentException](entry.get(conf))
+
+    conf.setConfString(entry.key, s"${Int.MaxValue.toLong + 1}b")
+    assertThrows[IllegalArgumentException](entry.get(conf))
+
+    conf.setConfString(entry.key, "76b")
+    assert(entry.get(conf) == 76)
+  }
+
+  test("JVM shuffle batch size must be positive") {
+    val conf = new SQLConf
+    val entry = CometConf.COMET_SHUFFLE_JVM_BATCH_SIZE
+
+    // A batch size of 0 never advances the native loop that writes sorted spill files.
+    Seq("0", "-1").foreach { v =>
+      conf.setConfString(entry.key, v)
+      assertThrows[IllegalArgumentException](entry.get(conf))
+    }
+
+    conf.setConfString(entry.key, "1")
+    assert(entry.get(conf) == 1)
+  }
+
+  test("memory pool type is accepted in any case and lowercased") {
+    val conf = new SQLConf
+    val entry = CometConf.COMET_OFFHEAP_MEMORY_POOL_TYPE
+
+    conf.setConfString(entry.key, "Greedy_Unified")
+    assert(entry.get(conf) == "greedy_unified")
+
+    conf.setConfString(entry.key, "FAIR_UNIFIED")
+    assert(entry.get(conf) == "fair_unified")
+
+    conf.setConfString(entry.key, "fair")
+    val e = intercept[IllegalArgumentException](entry.get(conf))
+    assert(e.getMessage.contains("fair_unified, greedy_unified"))
+  }
+
+  test(
+    "COMET_EXPLAIN_FALLBACK_LOG_ENABLED reads deprecated logFallbackReasons.enabled as alias") {
+    val conf = new SQLConf
+    conf.setConfString("spark.comet.logFallbackReasons.enabled", "true")
+
+    assert(CometConf.COMET_EXPLAIN_FALLBACK_LOG_ENABLED.get(conf))
+  }
 }

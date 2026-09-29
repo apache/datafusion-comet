@@ -66,10 +66,19 @@ impl OperatorBuilder for ProjectionBuilder {
             Arc::clone(&child.native_plan),
         )?);
 
-        Ok((
-            scans,
-            shuffle_scans,
-            Arc::new(SparkPlan::new(spark_plan.plan_id, projection, vec![child])),
-        ))
+        let spark_plan = if child.plan_id == spark_plan.plan_id {
+            let mut additional_native_plans = vec![Arc::clone(&child.native_plan)];
+            additional_native_plans.extend(child.additional_native_plans.iter().cloned());
+            Arc::new(SparkPlan::new_with_additional(
+                spark_plan.plan_id,
+                projection,
+                child.children.clone(),
+                additional_native_plans,
+            ))
+        } else {
+            Arc::new(SparkPlan::new(spark_plan.plan_id, projection, vec![child]))
+        };
+
+        Ok((scans, shuffle_scans, spark_plan))
     }
 }

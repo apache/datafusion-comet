@@ -19,7 +19,7 @@ under the License.
 
 # S3 Credential Providers
 
-Comet's native S3 readers normally fetch credentials from the standard AWS credential chain (static keys, instance profiles, environment variables, etc.). Some clusters use a vendor-managed mechanism instead, where credentials are issued per request based on a JWT or per S3 path. For those clusters, Comet supports loading a vendor-supplied bridge class that routes every native credential request through the vendor's Java code.
+Comet's native S3 readers and native Iceberg writer normally fetch credentials from the standard AWS credential chain (static keys, instance profiles, environment variables, etc.). Some clusters use a vendor-managed mechanism instead, where credentials are issued per request based on a JWT or per S3 path. For those clusters, Comet supports loading a vendor-supplied bridge class that routes every native credential request through the vendor's Java code.
 
 ## Do I need this?
 
@@ -35,6 +35,47 @@ You probably do, if any of these are true:
 - You have a Spark `CloudCredentialsProvider` that issues a JWT for a vendor STS service.
 - You have a custom Iceberg `client.factory` that injects a configured S3 client.
 - Spark queries against your S3 paths work, but the same queries with Comet enabled fail with 403.
+
+## Built-in adapters
+
+If a native Parquet scan fails with `Unsupported credential provider: <class>` (for example `com.amazonaws.auth.DefaultAWSCredentialsProviderChain`), the class you named in `fs.s3a.aws.credentials.provider` is one that plain Spark/Hadoop accepts but Comet's native reader does not reimplement. Comet ships two built-in `CometS3CredentialProvider` adapters that fix this with a one-line config change; you leave your existing `fs.s3a.aws.credentials.provider` untouched.
+
+These adapters cover the Parquet native scan path only. Enabling one is opt-in: naming it is what activates it. Note the native side forwards the `fs.s3a.*` config to `initialize()` for _any_ provider class named on the Parquet path, not just these two adapters: a vendor `CometS3CredentialProvider` that received an empty map in Comet 1.0 now receives the `fs.s3a.*` subset (including static keys), and one cached instance per distinct `fs.s3a.*` config rather than one per bucket. This is additive, but a provider that logs the map or treats an empty map as "the Parquet path" should be aware of it.
+
+The adapters and the AWS SDK are loaded through the class loader that loaded Comet, so `hadoop-aws` and the matching AWS SDK must be visible from there — put them on the same classpath as Comet (`spark.executor.extraClassPath` / `spark.driver.extraClassPath`, or `$SPARK_HOME/jars`), not only via `--packages`. If they are only on the user-jar loader, credential resolution fails at planning with `NoClassDefFoundError` before the adapter can report anything useful.
+
+### `HadoopS3ACredentialProviderAdapter` (recommended)
+
+Delegates to Hadoop S3A's own provider construction, so it accepts everything the `fs.s3a.aws.credentials.provider` chain accepts (the default chain, web-identity, assumed-role, per-bucket config). This is the general answer for the failure above. It does **not** cover `fs.s3a.custom.signers` — the native reader signs SigV4 itself with whatever the chain returns and never invokes a custom signer, so a signer's identity would not be applied; a custom-signer setup needs a vendor bridge (see "Do I need this?"). And it **refuses** `fs.s3a.delegation.token.binding`: Spark would use the delegation-token provider and bypass the chain, so rather than resolve a different identity the adapter fails with a message naming that key.
+
+```
+spark.hadoop.fs.s3a.comet.credential.provider.class=org.apache.comet.cloud.s3.HadoopS3ACredentialProviderAdapter
+# leave your existing config as-is, for example:
+spark.hadoop.fs.s3a.aws.credentials.provider=com.amazonaws.auth.DefaultAWSCredentialsProviderChain
+```
+
+It needs no extra config: it reads the standard `fs.s3a.aws.credentials.provider` (and the per-bucket `fs.s3a.bucket.<bucket>.aws.credentials.provider`) itself, and Comet forwards the full `fs.s3a.*` config to it, so a provider chain (including static keys and assumed-role) resolves the same way it would under Spark.
+
+Anonymous access is the one exception. A bucket whose chain resolves to `AnonymousAWSCredentialsProvider` (common for public datasets) is not supported: the SPI has no way to express "anonymous", so the adapter fails with an error naming the bucket rather than reading it unsigned. To read such a bucket, opt it out of the adapter with an empty per-bucket class so the native reader accesses it directly:
+
+```
+spark.hadoop.fs.s3a.bucket.<public-bucket>.comet.credential.provider.class=
+```
+
+### `AwsSdkCredentialProviderAdapter`
+
+Wraps a single raw AWS SDK credential-provider class that is not registered through S3A. Name the delegate in a separate key:
+
+```
+spark.hadoop.fs.s3a.comet.credential.provider.class=org.apache.comet.cloud.s3.AwsSdkCredentialProviderAdapter
+spark.hadoop.fs.s3a.comet.credential.adapter.class=<FQCN of your credential provider>
+# per-bucket variant:
+spark.hadoop.fs.s3a.bucket.<bucket>.comet.credential.adapter.class=<FQCN>
+```
+
+### Which one, and which Spark version
+
+Use `HadoopS3ACredentialProviderAdapter` unless you have a plain SDK provider not wired through S3A. Both class names are the same on every Comet build; each build automatically uses the AWS SDK its Hadoop line ships (v1 on the Spark 3.4/3.5 builds, v2 on 4.0+), so you configure one name and get the right implementation.
 
 ## Enabling a bridge
 
@@ -88,6 +129,8 @@ Without the config set, no credential-related log lines appear at startup; nativ
 
 ## Troubleshooting
 
+**`Generic S3 error: Unsupported credential provider: <class>`** (native Parquet scan). The class in `fs.s3a.aws.credentials.provider` is one Hadoop S3A accepts but Comet's native reader does not reimplement. Name `HadoopS3ACredentialProviderAdapter` as the Comet provider class (see [Built-in adapters](#built-in-adapters)) and leave your existing config alone.
+
 **`CometS3CredentialProvider class not found: <name>`**. The class named in the config is not on the executor classpath. Re-check `--jars` / `spark.jars`. On YARN or Kubernetes, confirm the JAR actually reached the executor and not only the driver.
 
 **`<class> does not implement org.apache.comet.cloud.s3.CometS3CredentialProvider`**. The configured class exists but does not implement the SPI. Double-check the FQCN against the vendor's documentation.
@@ -100,17 +143,49 @@ Without the config set, no credential-related log lines appear at startup; nativ
 
 **Credentials silently going stale during long-running jobs.** When a vendor returns `expirationEpochMillis=0`, the bridge substitutes a 5-minute expiry before handing the credential to `opendal`, so `opendal`'s cache cannot hold a stale credential indefinitely. Returning a real expiry is preferred; the 5-minute fallback is a safety net, not a knob.
 
+## EKS / IRSA: STS throttling protection (native Iceberg reads and writes)
+
+This is automatic; there is nothing to configure to get the protection, and it does not involve a bridge class. It applies to native Iceberg **reads and writes** (both build their `FileIO` through the same path). The raw-Parquet path is unaffected: it uses the AWS SDK default chain, which already retries and stops on a provider error rather than downgrading.
+
+On EKS with [IAM Roles for Service Accounts (IRSA)](https://docs.aws.amazon.com/eks/latest/userguide/iam-roles-for-service-accounts.html), executors assume the application role by calling STS `AssumeRoleWithWebIdentity`. Under a large concurrent startup burst (many executors times many cores, all fetching credentials at once), STS can throttle that call. On the Iceberg path, opendal's default credential chain does not retry the throttle and falls through to the EKS node instance role, which usually lacks bucket access, so every native read then fails with a hard `403 AccessDenied` even though the throttle was transient.
+
+When Comet detects IRSA (both `AWS_WEB_IDENTITY_TOKEN_FILE` and `AWS_ROLE_ARN` are set), a region is set, and the catalog configures no explicit credentials, the native Iceberg reader resolves web-identity credentials itself instead of using opendal's default chain. It builds the STS client from the AWS SDK's fully-resolved config, so region, `AWS_USE_FIPS_ENDPOINT`, `AWS_USE_DUALSTACK_ENDPOINT`, and any profile/custom STS endpoint are honored. The provider:
+
+- retries the throttled `AssumeRoleWithWebIdentity` call with the AWS SDK's exponential backoff and jitter (a throttle that outlasts the retries becomes an error that Spark's task retry then picks up),
+- never falls back to the node instance role, and
+- caches one assumed-role credential per executor process, shared across all reader threads and scans, so a startup burst makes one STS call per executor rather than one per thread. If a refresh is throttled while the current credential is still valid, it keeps serving that credential.
+
+**STS endpoint selection** uses the global `sts.amazonaws.com` endpoint only in the plain commercial case, and leaves everything else to the AWS SDK. The global endpoint is used when your region is in the standard commercial partition, FIPS and dual-stack are both off, no custom STS endpoint is set, and `AWS_STS_REGIONAL_ENDPOINTS` is `legacy` or unset. That matches the previous behavior, so a network that only reaches the global endpoint keeps working. In every other case the SDK's own regional endpoint is used: FIPS (`AWS_USE_FIPS_ENDPOINT`) always uses the regional FIPS endpoint since there is no global FIPS STS endpoint (an accompanying `AWS_STS_REGIONAL_ENDPOINTS=legacy` is ignored and a warning is logged), dual-stack (`AWS_USE_DUALSTACK_ENDPOINT`) uses the dual-stack regional endpoint, a custom STS endpoint (`AWS_ENDPOINT_URL_STS` or a profile) is honored, `AWS_STS_REGIONAL_ENDPOINTS=regional` stays regional, and the China, GovCloud, ISO and EUSC regions (and any region Comet does not recognize as commercial) use their own regional endpoints.
+
+It stands aside whenever a higher-precedence credential source is configured -- a Comet bridge class or catalog static keys / `client.assume-role.arn`, static credentials in the environment (`AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY`), or a configured profile (`AWS_PROFILE`, or a shared credentials / config file such as `~/.aws/credentials` or `~/.aws/config`) -- and when no region is set (`AWS_REGION` / `AWS_DEFAULT_REGION`). These all rank ahead of web-identity in opendal's default chain or need its no-region fallback, so the take-over only changes the otherwise-default behavior and never switches away from an identity -- or a profile-configured STS endpoint -- you set explicitly. On an EKS/IRSA pod none of these apply, so the take-over still engages there.
+
+Tuning is rarely needed. Set these as catalog properties under the `s3.` prefix (the same namespace as the credential-provider SPI key):
+
+| Property (per Iceberg catalog)                         | Default | Meaning                                                                               |
+| ------------------------------------------------------ | ------- | ------------------------------------------------------------------------------------- |
+| `s3.comet.credential.webIdentity.enabled`              | `true`  | Set `false` to opt out and use opendal's default chain.                               |
+| `s3.comet.credential.webIdentity.maxAttempts`          | `5`     | STS attempts before the assume-role call is treated as failed.                        |
+| `s3.comet.credential.webIdentity.minTtlSeconds`        | `300`   | Refresh this many seconds before expiry (floored to 120s).                            |
+| `s3.comet.credential.webIdentity.refreshJitterSeconds` | `60`    | Random slack added on top of `minTtlSeconds` so executors do not all refresh at once. |
+
+For example, to opt out of the take-over or raise the retry count for one catalog:
+
+```
+spark.sql.catalog.<catalog>.s3.comet.credential.webIdentity.enabled=false
+spark.sql.catalog.<catalog>.s3.comet.credential.webIdentity.maxAttempts=8
+```
+
+Use the `s3.` prefix. Comet forwards the unfiltered catalog property bag, so a bare, unprefixed key does technically reach the native reader, but the settings are looked up under `s3.` (matching the credential-provider SPI key), so only the prefixed spelling takes effect.
+
 ## Iceberg: explicit S3 region required
 
-With the bridge configured, Comet wires a custom credential loader into `iceberg-storage-opendal`. `opendal`'s built-in S3 region auto-detection only runs when no custom loader is configured, so on the bridge path the region (and endpoint for non-AWS) must be set explicitly on the Spark catalog:
+`iceberg-storage-opendal` does not auto-detect a bucket's region, with or without the bridge. When neither the catalog (`s3.region` or `client.region`) nor the executor environment (`AWS_REGION` / `AWS_DEFAULT_REGION`) supplies a region, Comet uses `us-east-1`. That suits most non-AWS S3-compatible services but fails for AWS buckets in other regions, so set the region (and the endpoint for non-AWS) explicitly on the Spark catalog:
 
 ```
 spark.sql.catalog.<catalog>.s3.region        = us-east-1
 spark.sql.catalog.<catalog>.s3.endpoint      = https://...   (non-AWS only)
 spark.sql.catalog.<catalog>.s3.path-style-access = true      (path-style endpoints only)
 ```
-
-If you hit `region is missing. Please find it by S3::detect_region() or set them in env`, this is the missing config.
 
 ## Writing a bridge
 
@@ -138,7 +213,7 @@ The class must have a public no-arg constructor. `getCredentialsForPath` may be 
 
 Comet keys provider instances by `(FQCN, dispatchKey, catalogProperties)`. The dispatch key is the Spark V2 catalog name on the Iceberg path and the S3 bucket name on the Parquet path. The first time a given key is seen on an executor, Comet reflects the class, calls `initialize(Map)` exactly once, and caches the instance for the JVM lifetime. Two catalogs sharing one provider FQCN therefore get isolated instances with their own `initialize` maps. Including `catalogProperties` in the key matters in multi-tenant JVMs (Spark Connect, Thrift Server, `SparkSession.newSession()`) where two sessions can otherwise collide on the same `(FQCN, dispatchKey)` and have the second session silently use the first session's credentials.
 
-`initialize` should be cheap and non-blocking. Defer real credential fetches (REST round-trips, STS calls) to the first `getCredentialsForPath` invocation. On the Iceberg path the supplied `catalogProperties` carries the unfiltered FileIO bag, including REST-vended fields like `credentials.uri`, OAuth tokens, and any vendor-custom keys you set on the catalog config. The map may contain secrets, so do not log it.
+`initialize` should be cheap and non-blocking. Defer real credential fetches (REST round-trips, STS calls) to the first `getCredentialsForPath` invocation. On the Iceberg path the supplied `catalogProperties` carries the unfiltered FileIO bag, including REST-vended fields like `credentials.uri`, OAuth tokens, and any vendor-custom keys you set on the catalog config. On the Parquet path it carries the `fs.s3a.*` config subset (including static keys such as `fs.s3a.access.key`); in Comet 1.0 this map was empty on the Parquet path. The map may contain secrets, so do not log it.
 
 `close()` is invoked from a JVM shutdown hook installed by the dispatcher. The default no-op is fine for stateless providers. Override it to release HTTP clients, scheduled-refresh executors, or STS connection pools. Shutdown hooks are best-effort: a `SIGKILL` or abrupt JVM termination skips them, so do not depend on `close()` for correctness.
 
@@ -200,6 +275,35 @@ public CometS3Credentials getCredentialsForPath(CometS3CredentialContext ctx) th
     return new CometS3Credentials(c.accessKeyId(), c.secretAccessKey(), token, 0L);
 }
 ```
+
+### Credentials per location
+
+On the Parquet path, a `CometS3CredentialProvider` gets one credential per bucket: Comet requests it with the path of the first file it reads from the bucket and uses it for every file there. If your policies differ by location within a bucket, for example one policy for `warehouse/sales` and another for `warehouse/finance`, implement `CometS3LocationScopedCredentialProvider` and tell Comet where those locations are:
+
+```java
+public final class MyLocationProvider implements CometS3LocationScopedCredentialProvider {
+    @Override
+    public List<String> getPolicyLocations(String bucket) throws Exception {
+        return policyService.locationsWithPolicies(bucket); // ["warehouse/sales", "warehouse/finance"]
+    }
+
+    @Override
+    public CometS3Credentials getCredentialsForPath(CometS3CredentialContext ctx) throws Exception {
+        // ctx.getPath() is a returned location with a leading slash, or "/" for the bucket root.
+        return sessionForLocation(ctx.getBucket(), ctx.getPath(), ctx.getMode());
+    }
+}
+```
+
+Comet serves each request with the credential of the longest location that covers its path. A location covers a path when the path is the location itself or lies below it, compared one `/`-separated segment at a time, so `warehouse/sales` covers `warehouse/sales/part-0.parquet` but not `warehouse/sales_eu/part-0.parquet`. The bucket root covers every path that no returned location covers, and an empty list serves the whole bucket with the root's credential. Write locations the way `CometS3CredentialContext.getPath()` writes paths: percent-encoded, without the scheme or bucket name. A literal `%` must be written as `%25`; other characters may be left unencoded, and a leading or trailing `/` is optional. When several locations decode to the same path, Comet keeps the first.
+
+Comet requests a location's credential by calling `getCredentialsForPath` with the location as the path, as you returned it but with a leading slash. Every request under a location shares that credential, so it must authorize every path the location is the longest match for, and your cache can key on the location. Locations apply to Comet's native Parquet reads only; Iceberg reads call `getCredentialsForPath` as they do for any provider.
+
+**When Comet asks.** Comet calls `getPolicyLocations` when it creates the store for a bucket on an executor and keeps the answer for later reads of that bucket with the same S3 configuration. Reads that start at the same moment may each create a store and call it. If a read then fails with 403, or because `getCredentialsForPath` threw for the location Comet sent it to, Comet asks again, once for all the reads that failed on the same answer, and retries each read once if its path now falls under a different location. So a location added while a job runs is picked up even when you vend no credential for the bucket root, and a location you drop stops being used once its credential fails. A location added or removed without a read failing on it is not seen until the executor creates a new store. Make `getPolicyLocations` thread-safe and independent of where it runs; it may be called on the driver or on executors.
+
+**Failures.** If `getPolicyLocations` throws or returns `null`, or returns a location that is `null` or invalid, the read fails. A location is invalid if, once decoded, it is not valid UTF-8 or has a segment that is empty, `.`, `..`, or contains a control character, so a URI such as `s3://bucket/a` is invalid too. Comet does not fall back to a broader credential.
+
+**Backward compatibility.** Providers that implement only `CometS3CredentialProvider` are unaffected. Comet calls nothing new on them and keeps one credential per bucket, as before.
 
 ### Composing multiple credential backends
 
@@ -267,10 +371,10 @@ public final class IcebergRESTVendedS3Provider implements CometS3CredentialProvi
 
 ### Access mode
 
-| Value   | Used for                                                                   |
-| ------- | -------------------------------------------------------------------------- |
-| `READ`  | All native scan paths (raw Parquet, Iceberg). Comet today only sends READ. |
-| `WRITE` | Reserved for future native write paths.                                    |
+| Value   | Used for                                                                                                                                                                                       |
+| ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `READ`  | All native scan paths (raw Parquet, Iceberg).                                                                                                                                                  |
+| `WRITE` | The native Iceberg writer (see [Iceberg Writes](iceberg-writes.md)). If the configured provider fails to initialize, the write fails rather than falling back to the default credential chain. |
 
 A `WRITE` credential is not implicitly read-capable. Vendors that need read-during-write workflows include the required read permissions in the IAM policy attached to their `WRITE` credentials.
 

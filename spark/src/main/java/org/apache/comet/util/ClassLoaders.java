@@ -25,6 +25,25 @@ public final class ClassLoaders {
   private ClassLoaders() {}
 
   /**
+   * The ClassLoader to use for {@link java.util.ServiceLoader} discovery of optional, out-of-tree
+   * contribs.
+   *
+   * <p>Comet is typically installed on {@code spark.driver.extraClassPath} while a contrib is
+   * supplied through {@code --jars}, which puts the contrib on Spark's user-jar loader -- a CHILD
+   * of the loader that defined Comet. Passing Comet's own defining loader would therefore make a
+   * separately-shipped contrib invisible and the registry would silently ignore it. The thread
+   * context ClassLoader is the one Spark wires user jars onto, so discovery must start there and
+   * fall back to {@code fallback} only when no context loader is set.
+   *
+   * @param fallback loader to use when the thread has no context ClassLoader, normally the calling
+   *     class's own defining loader
+   */
+  public static ClassLoader contextOrDefault(ClassLoader fallback) {
+    ClassLoader contextLoader = Thread.currentThread().getContextClassLoader();
+    return contextLoader != null ? contextLoader : fallback;
+  }
+
+  /**
    * Loads a class using the thread context ClassLoader if available, falling back to the system
    * ClassLoader. Spark wires user JARs onto the context ClassLoader, so vendor classes named in
    * Spark configs are reachable through this path.
@@ -38,6 +57,22 @@ public final class ClassLoaders {
     }
     // scalastyle:off classforname
     return Class.forName(className);
+    // scalastyle:on classforname
+  }
+
+  /**
+   * Loads a class using an explicitly captured ClassLoader, falling back to {@link
+   * #loadClass(String)} when none was captured. Callers that run on threads without a thread
+   * context ClassLoader (e.g. native worker threads) should capture the loader earlier, on a thread
+   * that has it, and pass it here.
+   */
+  public static Class<?> loadClass(String className, ClassLoader classLoader)
+      throws ClassNotFoundException {
+    if (classLoader == null) {
+      return loadClass(className);
+    }
+    // scalastyle:off classforname
+    return Class.forName(className, true, classLoader);
     // scalastyle:on classforname
   }
 }

@@ -45,7 +45,9 @@ use datafusion::physical_plan::common::collect;
 use datafusion::physical_plan::metrics::{MetricValue, MetricsSet};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::{ParquetReadOptions, SessionContext};
-use datafusion_comet_shuffle::{CometPartitioning, CompressionCodec, ShuffleWriterExec};
+use datafusion_comet_shuffle::{
+    CometPartitioning, CompressionCodec, RoundRobinStrategy, ShuffleWriterExec,
+};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -98,13 +100,17 @@ struct Args {
     #[arg(long, default_value_t = 0)]
     warmup: usize,
 
-    /// Output directory for shuffle data/index files
+    /// Output directory for the shuffle data file
     #[arg(long, default_value = "/tmp/comet_shuffle_bench")]
     output_dir: PathBuf,
 
     /// Write buffer size in bytes
     #[arg(long, default_value_t = 1048576)]
     write_buffer_size: usize,
+
+    /// Maximum bytes buffered in memory before spilling (unset = spill on memory pressure only)
+    #[arg(long)]
+    max_buffer_bytes: Option<usize>,
 
     /// Limit rows processed per iteration (0 = no limit)
     #[arg(long, default_value_t = 0)]
@@ -122,7 +128,6 @@ fn main() {
     // Create output directory
     fs::create_dir_all(&args.output_dir).expect("Failed to create output directory");
     let data_file = args.output_dir.join("data.out");
-    let index_file = args.output_dir.join("index.out");
 
     let (schema, total_rows) = read_parquet_metadata(&args.input, args.limit);
 
@@ -185,7 +190,6 @@ fn main() {
                 &hash_col_indices,
                 &args,
                 data_file.to_str().unwrap(),
-                index_file.to_str().unwrap(),
             )
         };
         let data_size = fs::metadata(&data_file).map(|m| m.len()).unwrap_or(0);
@@ -249,7 +253,6 @@ fn main() {
     }
 
     let _ = fs::remove_file(&data_file);
-    let _ = fs::remove_file(&index_file);
 }
 
 fn print_shuffle_metrics(metrics: &MetricsSet, total_wall_time_secs: f64) {
@@ -394,7 +397,6 @@ fn run_shuffle_write(
     hash_col_indices: &[usize],
     args: &Args,
     data_file: &str,
-    index_file: &str,
 ) -> (f64, Option<MetricsSet>, Option<MetricsSet>) {
     let partitioning = build_partitioning(
         &args.partitioning,
@@ -413,9 +415,9 @@ fn run_shuffle_write(
             args.batch_size,
             args.memory_limit,
             args.write_buffer_size,
+            args.max_buffer_bytes,
             args.limit,
             data_file.to_string(),
-            index_file.to_string(),
         )
         .await
         .unwrap();
@@ -436,9 +438,9 @@ async fn execute_shuffle_write(
     batch_size: usize,
     memory_limit: Option<usize>,
     write_buffer_size: usize,
+    max_buffer_bytes: Option<usize>,
     limit: usize,
     data_file: String,
-    index_file: String,
 ) -> datafusion::common::Result<(MetricsSet, MetricsSet)> {
     let config = SessionConfig::new().with_batch_size(batch_size);
     let mut runtime_builder = RuntimeEnvBuilder::new();
@@ -477,9 +479,9 @@ async fn execute_shuffle_write(
         partitioning,
         codec,
         data_file,
-        index_file,
         false,
         write_buffer_size,
+        max_buffer_bytes,
     )
     .expect("Failed to create ShuffleWriterExec");
 
@@ -530,7 +532,6 @@ fn run_concurrent_shuffle_writes(
             let task_dir = args.output_dir.join(format!("task_{task_id}"));
             fs::create_dir_all(&task_dir).expect("Failed to create task output directory");
             let data_file = task_dir.join("data.out").to_str().unwrap().to_string();
-            let index_file = task_dir.join("index.out").to_str().unwrap().to_string();
 
             let input_str = input_path.to_str().unwrap().to_string();
             let codec = codec.clone();
@@ -543,6 +544,7 @@ fn run_concurrent_shuffle_writes(
             let batch_size = args.batch_size;
             let memory_limit = args.memory_limit;
             let write_buffer_size = args.write_buffer_size;
+            let max_buffer_bytes = args.max_buffer_bytes;
             let limit = args.limit;
 
             handles.push(tokio::spawn(async move {
@@ -553,9 +555,9 @@ fn run_concurrent_shuffle_writes(
                     batch_size,
                     memory_limit,
                     write_buffer_size,
+                    max_buffer_bytes,
                     limit,
                     data_file,
-                    index_file,
                 )
                 .await
                 .unwrap()
@@ -583,7 +585,9 @@ fn build_partitioning(
 ) -> CometPartitioning {
     match scheme {
         "single" => CometPartitioning::SinglePartition,
-        "round-robin" => CometPartitioning::RoundRobin(num_partitions, 0),
+        "round-robin" => {
+            CometPartitioning::RoundRobin(num_partitions, RoundRobinStrategy::default())
+        }
         "hash" => {
             let exprs: Vec<Arc<dyn datafusion::physical_expr::PhysicalExpr>> = hash_col_indices
                 .iter()

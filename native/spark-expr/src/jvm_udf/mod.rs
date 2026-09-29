@@ -28,6 +28,7 @@ use datafusion::common::Result as DFResult;
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_expr::PhysicalExpr;
 
+use datafusion_comet_common::{decode_string_arrays, zero_offsets};
 use datafusion_comet_jni_bridge::errors::{CometError, ExecutionError};
 use datafusion_comet_jni_bridge::JVMClasses;
 use jni::objects::{Global, JObject, JValue};
@@ -48,6 +49,11 @@ pub struct JvmScalarUdfExpr {
     /// Spark task is available; the bridge then leaves whatever `TaskContext.get()` already
     /// returns in place.
     task_context: Option<Arc<Global<JObject<'static>>>>,
+    /// Context `ClassLoader` of the driving Spark task thread, captured at `createPlan` time and
+    /// threaded here by the planner. See `CometUdfBridge.evaluate`, which installs it for the
+    /// duration of the call. `None` when no driving Spark task is available (unit tests, direct
+    /// native driver runs); the bridge then installs nothing.
+    class_loader: Option<Arc<Global<JObject<'static>>>>,
 }
 
 impl JvmScalarUdfExpr {
@@ -57,6 +63,7 @@ impl JvmScalarUdfExpr {
         return_type: DataType,
         return_nullable: bool,
         task_context: Option<Arc<Global<JObject<'static>>>>,
+        class_loader: Option<Arc<Global<JObject<'static>>>>,
     ) -> Self {
         debug_assert!(
             !class_name.is_empty(),
@@ -68,6 +75,7 @@ impl JvmScalarUdfExpr {
             return_type,
             return_nullable,
             task_context,
+            class_loader,
         }
     }
 }
@@ -133,10 +141,15 @@ impl PhysicalExpr for JvmScalarUdfExpr {
             .collect::<DFResult<_>>()?;
 
         // The JVM writes into the out_array/out_schema slots and reads from the in_ slots.
+        // Arrow Java ignores `ArrowArray.offset` on import, so every level has to start at 0.
         let in_ffi_arrays: Vec<Box<FFI_ArrowArray>> = arrays
             .iter()
-            .map(|arr| Box::new(FFI_ArrowArray::new(&arr.to_data())))
-            .collect();
+            .map(|arr| {
+                let data = arr.to_data();
+                let data = zero_offsets(&data).map_err(|e| CometError::Arrow { source: e })?;
+                Ok(Box::new(FFI_ArrowArray::new(&data)))
+            })
+            .collect::<Result<_, CometError>>()?;
         let in_ffi_schemas: Vec<Box<FFI_ArrowSchema>> = arrays
             .iter()
             .map(|arr| {
@@ -197,14 +210,17 @@ impl PhysicalExpr for JvmScalarUdfExpr {
                 .set_region(env, 0, &in_sch_ptrs)
                 .map_err(|e| CometError::JNI { source: e })?;
 
-            // Resolve the TaskContext reference once before building the arg array so the
-            // borrow lives until `call_static_method_unchecked` returns. When no TaskContext
-            // was propagated, pass a null object so the bridge's null-guard leaves the thread-
-            // local alone.
-            let null_task_context = JObject::null();
+            // Resolve the TaskContext and ClassLoader references once before building the arg
+            // array so the borrows live until `call_static_method_unchecked` returns. Absent
+            // values are passed as a null object, which the bridge's null-guards skip.
+            let null_obj = JObject::null();
             let task_context_ref: &JObject = match &self.task_context {
                 Some(gref) => gref.as_obj(),
-                None => &null_task_context,
+                None => &null_obj,
+            };
+            let class_loader_ref: &JObject = match &self.class_loader {
+                Some(gref) => gref.as_obj(),
+                None => &null_obj,
             };
             let ret = unsafe {
                 env.call_static_method_unchecked(
@@ -219,6 +235,7 @@ impl PhysicalExpr for JvmScalarUdfExpr {
                         JValue::Long(out_sch_ptr).as_jni(),
                         JValue::Int(batch.num_rows() as i32).as_jni(),
                         JValue::Object(task_context_ref).as_jni(),
+                        JValue::Object(class_loader_ref).as_jni(),
                     ],
                 )
             };
@@ -238,7 +255,10 @@ impl PhysicalExpr for JvmScalarUdfExpr {
         // exactly once when the Box drops at end of scope.
         let result_data = unsafe { from_ffi(*out_array, &out_schema) }
             .map_err(|e| CometError::Arrow { source: e })?;
-        Ok(ColumnarValue::Array(make_array(result_data)))
+        let imported = make_array(result_data);
+        let decoded =
+            decode_string_arrays(&imported).map_err(|e| CometError::Arrow { source: e })?;
+        Ok(ColumnarValue::Array(decoded))
     }
 
     fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
@@ -255,6 +275,7 @@ impl PhysicalExpr for JvmScalarUdfExpr {
             self.return_type.clone(),
             self.return_nullable,
             self.task_context.clone(),
+            self.class_loader.clone(),
         )))
     }
 }

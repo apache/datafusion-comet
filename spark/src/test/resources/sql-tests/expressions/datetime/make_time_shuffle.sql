@@ -17,8 +17,8 @@
 
 -- MinSparkVersion: 4.1
 -- Config: spark.sql.timeType.enabled=true
--- Config: spark.comet.native.shuffle.partitioning.roundrobin.enabled=true
--- ConfigMatrix: spark.comet.exec.shuffle.mode=native,jvm
+-- Config: spark.comet.shuffle.native.partitioning.roundrobin.enabled=true
+-- ConfigMatrix: spark.comet.shuffle.mode=native,jvm
 
 statement
 CREATE TABLE test_make_time_shuffle(hours int, minutes int, secs decimal(16,6)) USING parquet

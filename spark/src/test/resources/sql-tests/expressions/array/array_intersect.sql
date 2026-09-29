@@ -16,6 +16,7 @@
 -- under the License.
 
 -- Config: spark.comet.expression.ArrayIntersect.allowIncompatible=true
+-- Config: spark.comet.exec.scalaUDF.codegen.enabled=true
 
 -- DataFusion's array_intersect emits elements in the order of the longer input
 -- (it uses the shorter side as the hash lookup), while Spark emits elements in
@@ -30,7 +31,7 @@ CREATE TABLE test_array_intersect(a array<int>, b array<int>) USING parquet
 statement
 INSERT INTO test_array_intersect VALUES (array(1, 2, 3), array(2, 3, 4)), (array(1, 2), array(3, 4)), (array(), array(1)), (NULL, array(1)), (array(1, NULL), array(NULL, 2))
 
-query
+query expect_native(array_intersect)
 SELECT array_intersect(a, b) FROM test_array_intersect
 
 -- column + literal
@@ -120,7 +121,8 @@ INSERT INTO test_intersect_long VALUES (array(9223372036854775807, 1, -922337203
 query
 SELECT a, b, array_intersect(a, b) FROM test_intersect_long
 
--- float arrays with NaN, Infinity, -Infinity
+-- Float arrays with NaN, Infinity, and -Infinity. Signed-zero membership cases are
+-- isolated below (see the SPARK-54918 note).
 statement
 CREATE TABLE test_intersect_float(a array<float>, b array<float>) USING parquet
 
@@ -132,13 +134,12 @@ INSERT INTO test_intersect_float VALUES
   (array(float('NaN'), 1.0), array(2.0, 3.0)),
   (array(1.0, 2.0), array(float('NaN'))),
   (array(float('NaN'), NULL), array(float('NaN'), NULL)),
-  (array(float('Infinity'), 1.0, float('-Infinity')), array(float('Infinity'), float('-Infinity'))),
-  (array(cast(0.0 as float), cast(-0.0 as float)), array(cast(0.0 as float)))
+  (array(float('Infinity'), 1.0, float('-Infinity')), array(float('Infinity'), float('-Infinity')))
 
 query
 SELECT a, b, array_intersect(a, b) FROM test_intersect_float
 
--- double arrays with NaN, Infinity, -Infinity
+-- Double arrays with NaN, Infinity, and -Infinity. Signed-zero cases isolated below.
 statement
 CREATE TABLE test_intersect_dbl(a array<double>, b array<double>) USING parquet
 
@@ -151,11 +152,50 @@ INSERT INTO test_intersect_dbl VALUES
   (array(1.0, 2.0), array(double('NaN'))),
   (array(double('NaN'), NULL), array(double('NaN'), NULL)),
   (array(double('Infinity'), 1.0, double('-Infinity')), array(double('Infinity'), double('-Infinity'))),
-  (array(0.0, -0.0), array(0.0)),
   (array(1.0, 2.0, NULL), array(1.0, NULL))
 
 query
 SELECT a, b, array_intersect(a, b) FROM test_intersect_dbl
+
+-- negative zero (literal). Same signed-zero membership divergence as the
+-- column-sourced cases below: NormalizeFloatingNumbers does not rewrite
+-- array-function inputs, so a plain SELECT keeps the -0.0 literal intact.
+query ignore(https://issues.apache.org/jira/browse/SPARK-54918)
+SELECT array_intersect(array(double('-0.0')), array(double('0.0'))),
+       array_intersect(array(double('0.0')), array(double('-0.0'))),
+       array_intersect(array(double('-0.0')), array(double('-0.0')))
+
+-- Signed-zero membership. Spark keeps -0.0 distinct from 0.0 while Comet (DataFusion)
+-- collapses them, so array_intersect([-0.0], [0.0]) is [] in Spark but [0.0] in Comet,
+-- and array_intersect([-0.0], [-0.0]) is [-0.0] in Spark but [0.0] in Comet.
+-- The divergence is not limited to parquet columns; the literal case above is
+-- skipped for the same reason. Skip until Spark normalizes these zeros
+-- (Spark 4.2+, SPARK-54918).
+statement
+CREATE TABLE test_intersect_flt_negzero(a array<float>, b array<float>) USING parquet
+
+statement
+INSERT INTO test_intersect_flt_negzero VALUES
+  (array(cast(0.0 as float), float('-0.0')), array(cast(0.0 as float))),
+  (array(float('-0.0')), array(float('0.0'))),
+  (array(float('0.0')), array(float('-0.0'))),
+  (array(float('-0.0')), array(float('-0.0')))
+
+query ignore(https://issues.apache.org/jira/browse/SPARK-54918)
+SELECT a, b, array_intersect(a, b) FROM test_intersect_flt_negzero
+
+statement
+CREATE TABLE test_intersect_dbl_negzero(a array<double>, b array<double>) USING parquet
+
+statement
+INSERT INTO test_intersect_dbl_negzero VALUES
+  (array(0.0, double('-0.0')), array(0.0)),
+  (array(double('-0.0')), array(double('0.0'))),
+  (array(double('0.0')), array(double('-0.0'))),
+  (array(double('-0.0')), array(double('-0.0')))
+
+query ignore(https://issues.apache.org/jira/browse/SPARK-54918)
+SELECT a, b, array_intersect(a, b) FROM test_intersect_dbl_negzero
 
 -- decimal arrays
 statement
@@ -227,3 +267,26 @@ SELECT array_intersect(array(1, NULL, 3), b) FROM test_array_intersect
 -- conditional (CASE WHEN) arrays
 query
 SELECT array_intersect(CASE WHEN a IS NOT NULL THEN a ELSE array(0) END, b) FROM test_array_intersect
+
+-- Without native opt-in, preserve Spark's left-input order even when the right array is longer.
+statement
+INSERT INTO test_array_intersect VALUES (array(2, 1), array(3, 1, 2))
+
+statement
+SET spark.comet.expression.ArrayIntersect.allowIncompatible=false
+
+query expect_dispatch(array_intersect)
+SELECT array_intersect(a, b) FROM test_array_intersect
+
+statement
+SET spark.comet.exec.scalaUDF.codegen.enabled=false
+
+query expect_fallback(array_intersect: spark.comet.exec.scalaUDF.codegen.enabled=false)
+SELECT array_intersect(a, b) FROM test_array_intersect
+
+-- Native opt-in works even with the dispatcher disabled. Normalize the permitted order difference.
+statement
+SET spark.comet.expression.ArrayIntersect.allowIncompatible=true
+
+query expect_native(array_intersect)
+SELECT sort_array(array_intersect(a, b)) FROM test_array_intersect

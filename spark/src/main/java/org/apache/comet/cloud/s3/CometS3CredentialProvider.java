@@ -21,6 +21,8 @@ package org.apache.comet.cloud.s3;
 
 import java.util.Map;
 
+import org.apache.comet.annotation.Public;
+
 /**
  * SPI for supplying AWS credentials to Comet's native S3 readers, which bypass Hadoop S3A. See the
  * user guide (operator setup, vendor contract) and the contributor-guide design notes for the
@@ -29,12 +31,14 @@ import java.util.Map;
  * <p>{@link #getCredentialsForPath} may be invoked concurrently from many native worker threads;
  * implementations must be thread-safe. It returns credentials or throws (no fall-through).
  */
+@Public
 public interface CometS3CredentialProvider extends AutoCloseable {
 
   /**
    * Called once per Comet-cached instance before any {@link #getCredentialsForPath} call. Must be
    * cheap and non-blocking. On the Iceberg path the map carries the unfiltered FileIO bag; on the
-   * Parquet path it is empty.
+   * Parquet path it carries the {@code fs.s3a.*} config subset (including any static keys, so a
+   * provider chain resolves the same way it would under Spark).
    *
    * @param catalogProperties may contain secrets, do not log
    */

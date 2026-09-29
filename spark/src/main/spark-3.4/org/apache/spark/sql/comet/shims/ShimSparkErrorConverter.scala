@@ -158,10 +158,32 @@ trait ShimSparkErrorConverter {
         Some(QueryExecutionErrors.exceedMapSizeLimitError(params("size").toString.toInt))
 
       case "CollectionSizeLimitExceeded" =>
-        // createArrayWithElementsExceedLimitError takes (count: Any) in Spark 3.4
+        // createArrayWithElementsExceedLimitError takes (count: Any) in Spark 3.4; pass the
+        // decimal string through since the reported length can exceed Long range.
         Some(
           QueryExecutionErrors.createArrayWithElementsExceedLimitError(
-            params("numElements").toString.toLong))
+            params("numElements").toString))
+
+      case "SequenceIllegalBoundaries" =>
+        // Spark 3.x codegen throws a plain IllegalArgumentException for sequence boundaries.
+        Some(
+          new IllegalArgumentException(
+            s"Illegal sequence boundaries: ${params("start")} to ${params("stop")} " +
+              s"by ${params("step")}"))
+
+      case "SequenceBatchTooLarge" =>
+        // Comet-specific per-batch limit for native `sequence`. Point the user at
+        // spark.comet.batchSize since Spark itself has no equivalent guard.
+        Some(
+          new SparkException(
+            "Comet's native `sequence` kernel cannot materialize a batch with " +
+              s"${params("totalElements")} total elements: it exceeds the per-batch " +
+              "limit or the allocator refused the reservation. Lower " +
+              "`spark.comet.batchSize` so fewer rows are grouped per batch.",
+            null))
+
+      case "Internal" =>
+        Some(SparkException.internalError(params("message").toString))
 
       case "NotNullAssertViolation" =>
         Some(
@@ -177,6 +199,16 @@ trait ShimSparkErrorConverter {
       case "CannotParseTimestamp" =>
         Some(
           QueryExecutionErrors.ansiDateTimeParseError(new Exception(params("message").toString)))
+
+      case "IllegalDayOfWeek" =>
+        Some(
+          QueryExecutionErrors
+            .ansiIllegalArgumentError(s"Illegal input for day of week: ${params("string")}"))
+
+      case "DatetimeFieldOutOfBounds" =>
+        Some(
+          QueryExecutionErrors.ansiDateTimeError(
+            new java.time.DateTimeException(params("rangeMessage").toString)))
 
       case "InvalidFractionOfSecond" =>
         Some(QueryExecutionErrors.invalidFractionOfSecondError())

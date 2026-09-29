@@ -19,6 +19,47 @@ under the License.
 
 # Operator Compatibility
 
+## Empty Relations
+
+On Spark 4.0 and later, Comet supports `EmptyRelationExec` as a native input. It is enabled by
+default and can be disabled with `spark.comet.exec.emptyRelation.enabled=false`. The operator
+preserves Spark's output attributes and zero partitions; the eliminated logical subtree is not
+executed.
+
+Supported parent joins and aggregates remain eligible for native execution. Global aggregates
+still return one row (`COUNT = 0`, `SUM = NULL`), and grouped aggregates return no rows. Independent
+operator restrictions and aggregate buffer compatibility checks still apply.
+Parquet writes whose input plans contain an empty relation use Spark's writer to preserve
+readable empty output files and their schema metadata.
+
+## In-Memory Cache
+
+Comet can store cached relations (`df.cache()`, `CACHE TABLE`) in Arrow format and scan them
+natively. This is experimental and disabled by default; see [In-Memory Cache](../in-memory-cache.md)
+for how to enable it. Comet does not replace a `spark.sql.cache.serializer` that the application
+has already set. Relations whose schema Comet's Arrow writer does not support are cached in
+Spark's default format, and their scans fall back to Spark. Reads that feed Spark operators rather
+than Comet operators can be slower than Spark's cache.
+
+With Kryo and `spark.kryo.registrationRequired=true`, Comet needs its Kryo registrator whether or
+not the cache is enabled; see [Kryo serialization](../installation.md#kryo-serialization).
+
+## Sampling
+
+Comet runs `SampleExec` natively when sampling is performed without replacement, which covers
+`DataFrame.sample`, SQL `TABLESAMPLE`, and `DataFrame.randomSplit`. The native implementation
+reproduces Spark's per-row `XORShiftRandom` draw sequence, so for a given seed it selects the same
+rows as Spark.
+
+Because the sampler consumes one random value per row, sampling directly above a scan, filter, or
+projection reproduces Spark's selection. Above an operator where Comet may emit rows in a different
+order than Spark, such as a join or an aggregate, the result is still a valid sample of the same
+expected size, but not necessarily the same rows.
+
+Sampling with replacement (`df.sample(withReplacement = true, ...)`) falls back to Spark, because
+it draws from a Poisson distribution that Comet does not implement natively
+([#5109](https://github.com/apache/datafusion-comet/issues/5109)).
+
 ## Window Functions
 
 Comet runs `WindowExec` natively and it is enabled by default (`spark.comet.exec.window.enabled`). A broad set of
@@ -51,18 +92,30 @@ incorrect result. When any single window expression in a `WindowExec` falls back
   ([#4835](https://github.com/apache/datafusion-comet/issues/4835)).
 - `lag` / `lead` with a non-literal default value ([#4268](https://github.com/apache/datafusion-comet/issues/4268)).
 - A `ROWS` offset that is not an integer or long, or a `RANGE` offset that is not numeric.
-- `GROUPS` frames ([#4836](https://github.com/apache/datafusion-comet/issues/4836)). `DISTINCT` aggregates over a
-  window are not supported by Spark either.
 - Any `PARTITION BY` or `ORDER BY` expression that Comet cannot serialize.
 
-`WindowGroupLimitExec` (window-based limit pushdown) is not yet supported and falls back to Spark
-([#4837](https://github.com/apache/datafusion-comet/issues/4837)).
+`WindowGroupLimitExec` (window-based limit pushdown for `ROW_NUMBER`, `RANK`, and `DENSE_RANK`)
+runs natively; it is controlled by `spark.comet.exec.windowGroupLimit.enabled` (default: true).
+
+**Falls back to Spark:**
+
+- Any `PARTITION BY` or `ORDER BY` key whose type carries a non-default `StringType` collation
+  (e.g. `UTF8_LCASE`). The native operator detects partitions and order-key peer groups by
+  comparing Arrow row-encoded keys for byte equality, which splits peers that Spark ties.
+
+**Known incompatibilities:**
+
+- Floating-point values nested in array or struct `ORDER BY` keys are compared with Arrow's raw
+  total ordering, so ranks can differ from Spark when the data mixes `-0.0` and `+0.0` or more
+  than one NaN representation ([#5507](https://github.com/apache/datafusion-comet/issues/5507)).
+  Scalar `FLOAT` and `DOUBLE` keys are normalized and match Spark; see
+  [floating-point ordering](./floating-point.md).
 
 ## Round-Robin Partitioning
 
 Comet's native shuffle implementation of round-robin partitioning (`df.repartition(n)`) is not compatible with
 Spark's implementation and is disabled by default. It can be enabled by setting
-`spark.comet.native.shuffle.partitioning.roundrobin.enabled=true`.
+`spark.comet.shuffle.native.partitioning.roundrobin.enabled=true`.
 
 **Why the incompatibility exists:**
 

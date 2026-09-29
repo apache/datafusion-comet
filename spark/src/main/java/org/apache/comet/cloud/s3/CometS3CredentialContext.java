@@ -21,12 +21,15 @@ package org.apache.comet.cloud.s3;
 
 import java.util.Objects;
 
+import org.apache.comet.annotation.Public;
+
 /**
  * Per-request context passed to {@link
  * CometS3CredentialProvider#getCredentialsForPath(CometS3CredentialContext)}. New fields can be
  * added here without changing the SPI method signature, so vendors compiled against earlier
  * versions stay binary-compatible.
  */
+@Public
 public final class CometS3CredentialContext {
 
   private final String bucket;

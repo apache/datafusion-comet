@@ -26,7 +26,7 @@ CREATE TABLE test_sort_array_strict_double(arr array<double>) USING parquet
 
 statement
 INSERT INTO test_sort_array_strict_double VALUES
-  (array(CAST('Infinity' AS DOUBLE), CAST('-Infinity' AS DOUBLE), CAST('NaN' AS DOUBLE), 3.0, 1.0, NULL, -0.0, 0.0)),
+  (array(CAST('Infinity' AS DOUBLE), CAST('-Infinity' AS DOUBLE), CAST('NaN' AS DOUBLE), 3.0, 1.0, NULL, double('-0.0'), 0.0)),
   (array(CAST('NaN' AS DOUBLE), CAST('NaN' AS DOUBLE), -5.0, 2.0)),
   (array()),
   (NULL)
@@ -42,7 +42,7 @@ CREATE TABLE test_sort_array_strict_float(arr array<float>) USING parquet
 
 statement
 INSERT INTO test_sort_array_strict_float VALUES
-  (array(CAST('Infinity' AS FLOAT), CAST('-Infinity' AS FLOAT), CAST('NaN' AS FLOAT), CAST(3.0 AS FLOAT), CAST(NULL AS FLOAT), CAST(-0.0 AS FLOAT), CAST(0.0 AS FLOAT))),
+  (array(CAST('Infinity' AS FLOAT), CAST('-Infinity' AS FLOAT), CAST('NaN' AS FLOAT), CAST(3.0 AS FLOAT), CAST(NULL AS FLOAT), float('-0.0'), CAST(0.0 AS FLOAT))),
   (array()),
   (NULL)
 
@@ -54,4 +54,4 @@ SELECT sort_array(arr, false) FROM test_sort_array_strict_float
 
 -- nested float arrays also dispatch
 query
-SELECT sort_array(array(CAST('NaN' AS DOUBLE), -0.0, 0.0, 1.0, CAST('-Infinity' AS DOUBLE)))
+SELECT sort_array(array(CAST('NaN' AS DOUBLE), double('-0.0'), 0.0, 1.0, CAST('-Infinity' AS DOUBLE)))

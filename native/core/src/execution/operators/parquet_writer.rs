@@ -34,12 +34,13 @@ use crate::parquet::parquet_support::is_hdfs_scheme;
 #[cfg(feature = "hdfs-opendal")]
 use crate::parquet::parquet_support::{create_hdfs_operator, prepare_object_store_with_configs};
 use arrow::datatypes::{Schema, SchemaRef};
-use arrow::record_batch::RecordBatch;
+use arrow::record_batch::{RecordBatch, RecordBatchOptions};
 use async_trait::async_trait;
 use datafusion::{
+    common::tree_node::TreeNodeRecursion,
     error::{DataFusionError, Result},
     execution::context::TaskContext,
-    physical_expr::EquivalenceProperties,
+    physical_expr::{EquivalenceProperties, PhysicalExpr},
     physical_plan::{
         execution_plan::{Boundedness, EmissionType},
         metrics::{ExecutionPlanMetricsSet, MetricsSet},
@@ -83,6 +84,7 @@ impl ParquetCompression {
 }
 
 /// Enum representing different types of Arrow writers based on storage backend
+#[allow(clippy::large_enum_variant)]
 enum ParquetWriter {
     /// Writer for local file system
     LocalFile(ArrowWriter<File>),
@@ -92,9 +94,9 @@ enum ParquetWriter {
     /// The opendal::Writer is created lazily on first write
     #[cfg(feature = "hdfs-opendal")]
     Remote(
-        ArrowWriter<Cursor<Vec<u8>>>,
+        Box<ArrowWriter<Cursor<Vec<u8>>>>,
         Option<opendal::Writer>,
-        Operator,
+        Box<Operator>,
         String,
     ),
 }
@@ -218,10 +220,14 @@ impl ParquetWriter {
 pub struct ParquetWriterExec {
     /// Input execution plan
     input: Arc<dyn ExecutionPlan>,
-    /// Output file path (final destination)
+    /// Where this task writes. When `work_dir` is set (the Spark 3.x `CometNativeWriteExec`
+    /// path) this is the write's output directory and is unused; the file name is derived from
+    /// `work_dir`. Otherwise (Spark 4.0+, `CometWriteFilesExec`) it is the exact path of the file
+    /// to write, chosen by the JVM commit protocol and used verbatim - this operator then never
+    /// derives file names of its own.
     output_path: String,
-    /// Working directory for temporary files (used by FileCommitProtocol)
-    work_dir: String,
+    /// Working directory for temporary files (used by FileCommitProtocol). Spark 3.x only.
+    work_dir: Option<String>,
     /// Job ID for tracking this write operation
     job_id: Option<String>,
     /// Task attempt ID for this specific task
@@ -232,6 +238,8 @@ pub struct ParquetWriterExec {
     partition_id: i32,
     /// Column names to use in the output Parquet file
     column_names: Vec<String>,
+    /// Catalyst's target schema, including nullability and Parquet field metadata.
+    output_schema: Option<SchemaRef>,
     /// Object store configuration options
     object_store_options: HashMap<String, String>,
     /// Metrics
@@ -246,12 +254,13 @@ impl ParquetWriterExec {
     pub fn try_new(
         input: Arc<dyn ExecutionPlan>,
         output_path: String,
-        work_dir: String,
+        work_dir: Option<String>,
         job_id: Option<String>,
         task_attempt_id: Option<i32>,
         compression: ParquetCompression,
         partition_id: i32,
         column_names: Vec<String>,
+        output_schema: Option<SchemaRef>,
         object_store_options: HashMap<String, String>,
     ) -> Result<Self> {
         // Preserve the input's partitioning so each partition writes its own file
@@ -273,6 +282,7 @@ impl ParquetWriterExec {
             compression,
             partition_id,
             column_names,
+            output_schema,
             object_store_options,
             metrics: ExecutionPlanMetricsSet::new(),
             cache,
@@ -307,7 +317,7 @@ impl ParquetWriterExec {
             #[cfg(feature = "hdfs-opendal")]
             {
                 // Use prepare_object_store_with_configs to create and register the object store
-                let (_object_store_url, object_store_path) = prepare_object_store_with_configs(
+                let (_object_store_url, object_store_path, _) = prepare_object_store_with_configs(
                     _runtime_env,
                     output_file_path.to_string(),
                     object_store_options,
@@ -338,9 +348,9 @@ impl ParquetWriterExec {
                 // HDFS writer will be created lazily on first write
                 // Use the path from prepare_object_store_with_configs
                 Ok(ParquetWriter::Remote(
-                    arrow_parquet_buffer_writer,
+                    Box::new(arrow_parquet_buffer_writer),
                     None,
-                    op,
+                    Box::new(op),
                     object_store_path.to_string(),
                 ))
             }
@@ -439,6 +449,13 @@ impl ExecutionPlan for ParquetWriterExec {
         vec![&self.input]
     }
 
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
+    }
+
     fn with_new_children(
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
@@ -453,6 +470,7 @@ impl ExecutionPlan for ParquetWriterExec {
                 self.compression.clone(),
                 self.partition_id,
                 self.column_names.clone(),
+                self.output_schema.clone(),
                 self.object_store_options.clone(),
             )?)),
             _ => Err(DataFusionError::Internal(
@@ -483,24 +501,31 @@ impl ExecutionPlan for ParquetWriterExec {
 
         assert_eq!(input_schema.fields().len(), column_names.len());
 
-        // Replace the generic column names (col_0, col_1, etc.) with the actual names
-        let fields: Vec<_> = input_schema
-            .fields()
-            .iter()
-            .enumerate()
-            .map(|(i, field)| Arc::new(field.as_ref().clone().with_name(&column_names[i])))
-            .collect();
-        let output_schema = Arc::new(arrow::datatypes::Schema::new(fields));
+        // The input schema comes from the placeholder Scan and marks every top-level field
+        // nullable. Use Catalyst's target schema so Parquet repetition and field IDs match Spark.
+        // Keep the column-name-only path for plans serialized before output_schema was added.
+        let output_schema = self.output_schema.clone().unwrap_or_else(|| {
+            let fields: Vec<_> = input_schema
+                .fields()
+                .iter()
+                .enumerate()
+                .map(|(i, field)| Arc::new(field.as_ref().clone().with_name(&column_names[i])))
+                .collect();
+            Arc::new(Schema::new(fields))
+        });
 
-        // Generate part file name for this partition
-        // If using FileCommitProtocol (work_dir is set), include task_attempt_id in the filename
-        let part_file = if let Some(attempt_id) = task_attempt_id {
-            format!(
-                "{}/part-{:05}-{:05}.parquet",
-                work_dir, self.partition_id, attempt_id
-            )
-        } else {
-            format!("{}/part-{:05}.parquet", work_dir, self.partition_id)
+        let part_file = match &work_dir {
+            // Spark 4.0+ hands over the exact file to write, chosen by the JVM commit protocol.
+            None => self.output_path.clone(),
+            // Spark 3.x hands over a working directory instead and expects the writer to name the
+            // file; that branch goes away with Spark 3.x support.
+            Some(work_dir) => match task_attempt_id {
+                Some(attempt_id) => format!(
+                    "{}/part-{:05}-{:05}.parquet",
+                    work_dir, self.partition_id, attempt_id
+                ),
+                None => format!("{}/part-{:05}.parquet", work_dir, self.partition_id),
+            },
         };
 
         // Configure writer properties
@@ -533,13 +558,18 @@ impl ExecutionPlan for ParquetWriterExec {
 
                 // Rename columns in the batch to match output schema
                 let renamed_batch = if !column_names.is_empty() {
-                    RecordBatch::try_new(Arc::clone(&schema_for_write), batch.columns().to_vec())
-                        .map_err(|e| {
-                            DataFusionError::Execution(format!(
-                                "Failed to rename batch columns: {}",
-                                e
-                            ))
-                        })?
+                    // Collection field IDs exist on the target schema, not on arrays produced by
+                    // the placeholder Scan. Both schemas use the same Catalyst data types, and
+                    // disabling field-name matching still recursively validates nested nullability;
+                    // only nested field names and metadata are ignored.
+                    RecordBatch::try_new_with_options(
+                        Arc::clone(&schema_for_write),
+                        batch.columns().to_vec(),
+                        &RecordBatchOptions::new().with_match_field_names(false),
+                    )
+                    .map_err(|e| {
+                        DataFusionError::Execution(format!("Failed to rename batch columns: {}", e))
+                    })?
                 } else {
                     batch
                 };
@@ -589,8 +619,14 @@ impl ExecutionPlan for ParquetWriterExec {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{Int32Array, StringArray};
-    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::array::{Array, Int32Array, ListArray, StringArray};
+    use arrow::datatypes::{DataType, Field, Int32Type, Schema};
+    use datafusion::datasource::memory::MemorySourceConfig;
+    use datafusion::datasource::source::DataSourceExec;
+    use datafusion::prelude::SessionContext;
+    use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
+    use parquet::basic::Repetition;
+    use parquet::file::reader::{FileReader, SerializedFileReader};
     use std::sync::Arc;
 
     #[test]
@@ -616,6 +652,195 @@ mod tests {
             ParquetCompression::Gzip.to_parquet().unwrap(),
             Compression::GZIP(GzipLevel::default())
         );
+    }
+
+    /// Spark 4.0+ hands over the exact file to write rather than a working directory. The writer
+    /// must use that path verbatim - Spark's commit protocol owns naming and staging, and
+    /// committers that track individual files depend on the name it chose.
+    #[tokio::test]
+    async fn test_parquet_writer_uses_output_path_verbatim_without_work_dir() -> Result<()> {
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, true)]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )?;
+
+        let memory_source = MemorySourceConfig::try_new(&[vec![batch]], Arc::clone(&schema), None)?;
+        let input = Arc::new(DataSourceExec::new(Arc::new(memory_source)));
+        let temp_dir = tempfile::tempdir()?;
+        // A name the writer could never have derived itself, matching Spark's convention.
+        let file_name = "part-00007-11111111-2222-3333-4444-555555555555-c000.parquet";
+        let output_path = format!("file://{}/{}", temp_dir.path().display(), file_name);
+
+        let writer = ParquetWriterExec::try_new(
+            input,
+            output_path,
+            None, // work_dir: Spark 4.0+ path
+            None,
+            None,
+            ParquetCompression::None,
+            // A non-zero partition id must not leak into the file name.
+            3,
+            vec!["id".to_string()],
+            None,
+            HashMap::new(),
+        )?;
+
+        let mut stream = writer.execute(0, SessionContext::new().task_ctx())?;
+        while stream.try_next().await?.is_some() {}
+
+        let written = temp_dir.path().join(file_name);
+        assert!(
+            written.exists(),
+            "expected the writer to use the given path verbatim, found: {:?}",
+            std::fs::read_dir(temp_dir.path())?
+                .filter_map(|e| e.ok().map(|e| e.file_name()))
+                .collect::<Vec<_>>()
+        );
+
+        let reader = SerializedFileReader::new(File::open(written)?)?;
+        assert_eq!(reader.metadata().file_metadata().num_rows(), 3);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_parquet_writer_preserves_catalyst_schema_in_footer() -> Result<()> {
+        let values = ListArray::from_iter_primitive::<Int32Type, _, _>([
+            Some(vec![Some(1), None]),
+            Some(vec![Some(2)]),
+        ]);
+        let input_schema = Arc::new(Schema::new(vec![
+            Field::new("col_0", DataType::Int32, true),
+            Field::new("col_1", values.data_type().clone(), true),
+        ]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&input_schema),
+            vec![Arc::new(Int32Array::from(vec![1, 2])), Arc::new(values)],
+        )?;
+
+        let DataType::List(input_element) = input_schema.field(1).data_type() else {
+            panic!("expected list input");
+        };
+        let list_element = input_element
+            .as_ref()
+            .clone()
+            .with_metadata(HashMap::from([(
+                PARQUET_FIELD_ID_META_KEY.to_string(),
+                "23".to_string(),
+            )]));
+        let output_schema = Arc::new(Schema::new(vec![
+            Field::new("required_id", DataType::Int32, false).with_metadata(HashMap::from([(
+                PARQUET_FIELD_ID_META_KEY.to_string(),
+                "11".to_string(),
+            )])),
+            Field::new("values", DataType::List(Arc::new(list_element)), true).with_metadata(
+                HashMap::from([(PARQUET_FIELD_ID_META_KEY.to_string(), "22".to_string())]),
+            ),
+        ]));
+
+        let memory_source = MemorySourceConfig::try_new(&[vec![batch]], input_schema, None)?;
+        let input = Arc::new(DataSourceExec::new(Arc::new(memory_source)));
+        let temp_dir = tempfile::tempdir()?;
+        let work_dir = format!("file://{}", temp_dir.path().display());
+        let writer = ParquetWriterExec::try_new(
+            input,
+            work_dir.clone(),
+            Some(work_dir),
+            None,
+            None,
+            ParquetCompression::None,
+            0,
+            vec!["required_id".to_string(), "values".to_string()],
+            Some(output_schema),
+            HashMap::new(),
+        )?;
+
+        let mut stream = writer.execute(0, SessionContext::new().task_ctx())?;
+        while stream.try_next().await?.is_some() {}
+
+        let file = File::open(temp_dir.path().join("part-00000.parquet"))?;
+        let reader = SerializedFileReader::new(file)?;
+        let fields = reader
+            .metadata()
+            .file_metadata()
+            .schema_descr()
+            .root_schema()
+            .get_fields();
+        let required_id = fields[0].get_basic_info();
+        assert_eq!(required_id.repetition(), Repetition::REQUIRED);
+        assert_eq!(required_id.id(), 11);
+
+        let list = &fields[1];
+        assert_eq!(list.get_basic_info().repetition(), Repetition::OPTIONAL);
+        assert_eq!(list.get_basic_info().id(), 22);
+        let element = list.get_fields()[0].get_fields()[0].get_basic_info();
+        assert_eq!(element.repetition(), Repetition::OPTIONAL);
+        assert_eq!(element.id(), 23);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_parquet_writer_rejects_mismatched_nested_nullability() -> Result<()> {
+        let values = ListArray::from_iter_primitive::<Int32Type, _, _>([
+            Some(vec![Some(1)]),
+            Some(vec![Some(2)]),
+        ]);
+        let DataType::List(input_element) = values.data_type() else {
+            panic!("expected list input");
+        };
+        assert!(input_element.is_nullable());
+
+        let input_schema = Arc::new(Schema::new(vec![Field::new(
+            "col_0",
+            values.data_type().clone(),
+            true,
+        )]));
+        let batch = RecordBatch::try_new(Arc::clone(&input_schema), vec![Arc::new(values)])?;
+
+        let target_element = Field::new("element", DataType::Int32, false).with_metadata(
+            HashMap::from([(PARQUET_FIELD_ID_META_KEY.to_string(), "23".to_string())]),
+        );
+        let output_schema = Arc::new(Schema::new(vec![Field::new(
+            "values",
+            DataType::List(Arc::new(target_element)),
+            true,
+        )]));
+
+        let memory_source = MemorySourceConfig::try_new(&[vec![batch]], input_schema, None)?;
+        let input = Arc::new(DataSourceExec::new(Arc::new(memory_source)));
+        let temp_dir = tempfile::tempdir()?;
+        let work_dir = format!("file://{}", temp_dir.path().display());
+        let writer = ParquetWriterExec::try_new(
+            input,
+            work_dir.clone(),
+            Some(work_dir),
+            None,
+            None,
+            ParquetCompression::None,
+            0,
+            vec!["values".to_string()],
+            Some(output_schema),
+            HashMap::new(),
+        )?;
+
+        let mut stream = writer.execute(0, SessionContext::new().task_ctx())?;
+        let error = stream
+            .try_next()
+            .await
+            .expect_err("mismatched nested nullability must be rejected");
+        let message = error.to_string();
+        assert!(
+            message.contains("Failed to rename batch columns"),
+            "unexpected error: {message}"
+        );
+        assert!(
+            message.contains("column types must match schema types"),
+            "unexpected error: {message}"
+        );
+
+        Ok(())
     }
 
     /// Helper function to create a test RecordBatch with 1000 rows of (int, string) data
@@ -656,11 +881,9 @@ mod tests {
 
         // Create OpenDAL HDFS operator
         let builder = Hdfs::default().name_node(namenode);
-        let op = Operator::new(builder)
-            .map_err(|e| {
-                DataFusionError::Execution(format!("Failed to create HDFS operator: {}", e))
-            })?
-            .finish();
+        let op = Operator::new(builder).map_err(|e| {
+            DataFusionError::Execution(format!("Failed to create HDFS operator: {}", e))
+        })?;
 
         let mut hdfs_writer = op.writer(output_path).await.map_err(|e| {
             DataFusionError::Execution(format!("Failed to create HDFS writer: {}", e))
@@ -707,11 +930,9 @@ mod tests {
 
         // Create OpenDAL HDFS operator
         let builder = Hdfs::default().name_node(namenode);
-        let op = Operator::new(builder)
-            .map_err(|e| {
-                DataFusionError::Execution(format!("Failed to create HDFS operator: {}", e))
-            })?
-            .finish();
+        let op = Operator::new(builder).map_err(|e| {
+            DataFusionError::Execution(format!("Failed to create HDFS operator: {}", e))
+        })?;
 
         // Create a single HDFS writer for the entire file
         let mut hdfs_writer = op.writer(output_path).await.map_err(|e| {
@@ -832,10 +1053,6 @@ mod tests {
     #[cfg(feature = "hdfs-opendal")]
     #[ignore = "This test requires a running HDFS cluster"]
     async fn test_parquet_writer_exec_with_memory_input() -> Result<()> {
-        use datafusion::datasource::memory::MemorySourceConfig;
-        use datafusion::datasource::source::DataSourceExec;
-        use datafusion::prelude::SessionContext;
-
         // Create 5 batches for the DataSourceExec input
         let mut batches = Vec::new();
         for i in 1..=5 {
@@ -858,12 +1075,13 @@ mod tests {
         let parquet_writer = ParquetWriterExec::try_new(
             memory_exec,
             output_path,
-            work_dir,
+            Some(work_dir),
             None,      // job_id
             Some(123), // task_attempt_id
             ParquetCompression::None,
             0, // partition_id
             column_names,
+            None,           // output_schema
             HashMap::new(), // object_store_options
         )?;
 
