@@ -101,6 +101,21 @@ fn criterion_benchmark(c: &mut Criterion) {
     });
 
     let values = (0..1000)
+        .map(|i| format!("{}.25", 10_000_000 + i))
+        .collect::<Vec<_>>()
+        .join(",");
+    let float_docs = ColumnarValue::Array(Arc::new(StringArray::from(
+        (0..64)
+            .map(|_| format!(r#"{{"a":[{values}]}}"#))
+            .collect::<Vec<_>>(),
+    )));
+    group.bench_function("many_float_wildcard", |b| {
+        b.iter(|| {
+            black_box(spark_get_json_object(&[float_docs.clone(), wildcard_path.clone()]).unwrap());
+        });
+    });
+
+    let values = (0..1000)
         .map(|i| format!(r#""value{i}""#))
         .collect::<Vec<_>>()
         .join(",");

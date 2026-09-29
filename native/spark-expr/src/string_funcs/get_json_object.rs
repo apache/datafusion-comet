@@ -15,16 +15,18 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::conversion_funcs::write_java_float_string;
 use arrow::array::{Array, ArrayRef, StringArray, StringBuilder};
 use datafusion::common::{
     cast::as_generic_string_array, exec_err, Result as DataFusionResult, ScalarValue,
 };
 use datafusion::logical_expr::ColumnarValue;
 use serde::de::{DeserializeSeed, Error as _, IgnoredAny, MapAccess, SeqAccess, Visitor};
-use serde::{Deserialize, Deserializer};
-use serde_json::Value;
+use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::{ser::Formatter, Value};
 use smallvec::{smallvec, SmallVec};
 use std::fmt;
+use std::io;
 use std::sync::Arc;
 
 const MAX_NUMBER_DIGITS: usize = 1000;
@@ -495,6 +497,52 @@ struct PathResult {
     matched: bool,
 }
 
+/// Adapt Java's fmt-based floating-point writer to serde_json's io writer
+/// without allocating a temporary String for each selected number.
+struct IoFmtWriter<'a, W: io::Write + ?Sized> {
+    writer: &'a mut W,
+    error: Option<io::Error>,
+}
+
+impl<W: io::Write + ?Sized> fmt::Write for IoFmtWriter<'_, W> {
+    fn write_str(&mut self, text: &str) -> fmt::Result {
+        self.writer.write_all(text.as_bytes()).map_err(|error| {
+            self.error = Some(error);
+            fmt::Error
+        })
+    }
+}
+
+/// Jackson's copyCurrentStructure renders floating-point tokens through
+/// Double.toString, including numbers inside selected objects and arrays.
+struct SparkJsonFormatter;
+
+impl Formatter for SparkJsonFormatter {
+    fn write_f64<W: io::Write + ?Sized>(&mut self, writer: &mut W, value: f64) -> io::Result<()> {
+        let mut adapter = IoFmtWriter {
+            writer,
+            error: None,
+        };
+        write_java_float_string(value, &mut adapter).map_err(|_| {
+            adapter
+                .error
+                .unwrap_or_else(|| io::Error::other("floating-point formatting failed"))
+        })
+    }
+}
+
+fn write_spark_json_value<W: io::Write>(writer: W, value: &Value) -> serde_json::Result<()> {
+    let mut serializer = serde_json::Serializer::with_formatter(writer, SparkJsonFormatter);
+    value.serialize(&mut serializer)
+}
+
+fn serialize_spark_json_value(value: &Value) -> serde_json::Result<String> {
+    let mut bytes = Vec::new();
+    write_spark_json_value(&mut bytes, value)?;
+    String::from_utf8(bytes)
+        .map_err(|error| serde_json::Error::io(io::Error::new(io::ErrorKind::InvalidData, error)))
+}
+
 impl PathResult {
     fn join(mut writes: SmallVec<[String; 1]>, separator: &str) -> String {
         if writes.len() == 1 {
@@ -507,16 +555,16 @@ impl PathResult {
     /// A single verbatim write of a matched value, honoring the output style:
     /// a string in Raw style is written unquoted (Spark's scalar-unwrap arm),
     /// everything else keeps JSON serialization.
-    fn write(value: Value, style: Style) -> Self {
+    fn write<E: serde::de::Error>(value: Value, style: Style) -> Result<Self, E> {
         match value {
-            Value::String(s) if style == Style::Raw => Self {
+            Value::String(s) if style == Style::Raw => Ok(Self {
                 writes: smallvec![s],
                 matched: true,
-            },
-            value => Self {
-                writes: smallvec![value.to_string()],
+            }),
+            value => Ok(Self {
+                writes: smallvec![serialize_spark_json_value(&value).map_err(E::custom)?],
                 matched: true,
-            },
+            }),
         }
     }
 
@@ -560,7 +608,7 @@ fn append_terminal_value<E: serde::de::Error>(
             if *leaves != 0 {
                 output.push(b',');
             }
-            serde_json::to_writer(&mut *output, &value).map_err(E::custom)?;
+            write_spark_json_value(&mut *output, &value).map_err(E::custom)?;
             *leaves += 1;
         }
     }
@@ -606,9 +654,9 @@ impl<'de> DeserializeSeed<'de> for PathSeed<'_> {
 
     fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
         if self.segments.is_empty() {
-            return Value::deserialize(deserializer).map(|value| {
+            return Value::deserialize(deserializer).and_then(|value| {
                 if self.reject_direct_null && value.is_null() {
-                    return PathResult::default();
+                    return Ok(PathResult::default());
                 }
                 match value {
                     // Flatten style splices an array leaf into the parent
@@ -621,12 +669,14 @@ impl<'de> DeserializeSeed<'de> for PathSeed<'_> {
                         for element in arr {
                             flatten_into(element, &mut leaves);
                         }
-                        let writes: SmallVec<[String; 1]> =
-                            leaves.into_iter().map(|v| v.to_string()).collect();
-                        PathResult {
+                        let writes: SmallVec<[String; 1]> = leaves
+                            .into_iter()
+                            .map(|v| serialize_spark_json_value(&v).map_err(D::Error::custom))
+                            .collect::<Result<_, _>>()?;
+                        Ok(PathResult {
                             matched: !writes.is_empty(),
                             writes,
-                        }
+                        })
                     }
                     value => PathResult::write(value, self.style),
                 }
@@ -1126,6 +1176,37 @@ mod tests {
             evaluate_path(r#"[1,"a"]"#, &path),
             Some(r#"[1,"a"]"#.to_string())
         );
+    }
+
+    #[test]
+    fn test_selected_floats_use_spark_number_format() {
+        let cases = [
+            (r#"{"a":0.0001}"#, "$.a", "1.0E-4"),
+            (r#"{"a":12345678.9}"#, "$.a", "1.23456789E7"),
+            (r#"{"a":10000000.0}"#, "$.a", "1.0E7"),
+            (r#"{"a":0.001}"#, "$.a", "0.001"),
+            (r#"{"a":-0.0}"#, "$.a", "-0.0"),
+            (r#"{"a":{"x":0.0001}}"#, "$.a", r#"{"x":1.0E-4}"#),
+            (
+                r#"{"a":[0.0001,12345678.9]}"#,
+                "$.a",
+                "[1.0E-4,1.23456789E7]",
+            ),
+            ("[0.0001,12345678.9]", "$[*]", "[1.0E-4,1.23456789E7]"),
+            (
+                "[[0.0001],[12345678.9]]",
+                "$[*][*]",
+                "[1.0E-4,1.23456789E7]",
+            ),
+            (r#"{"a":[[0.0001]]}"#, "$.a[0][*]", "[1.0E-4]"),
+        ];
+        for (json, path, expected) in cases {
+            assert_eq!(
+                evaluate_path(json, &parse_json_path(path).unwrap()).as_deref(),
+                Some(expected),
+                "json={json}, path={path}"
+            );
+        }
     }
 
     #[test]

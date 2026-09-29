@@ -42,6 +42,16 @@ SELECT get_json_object('{"name":"John","age":30}', '$.name')
 query
 SELECT get_json_object('{"name":"John","age":30}', '$.age')
 
+-- Jackson copies selected floating-point tokens through Double.toString,
+-- including tokens inside returned objects, arrays, and wildcard results.
+query
+SELECT get_json_object('{"a":0.0001}', '$.a'),
+       get_json_object('{"a":12345678.9}', '$.a'),
+       get_json_object('{"a":{"x":0.0001}}', '$.a'),
+       get_json_object('{"a":[0.0001,12345678.9]}', '$.a'),
+       get_json_object('[0.0001,12345678.9]', '$[*]'),
+       get_json_object('[[0.0001],[12345678.9]]', '$[*][*]')
+
 -- nested field
 query
 SELECT get_json_object('{"user":{"profile":{"name":"Alice"}}}', '$.user.profile.name')

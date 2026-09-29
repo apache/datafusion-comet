@@ -702,6 +702,10 @@ object CometGetJsonObject
         " which Comet does not support",
       "Very long numbers near Jackson's 1000-digit limit can depend on Spark's" +
         " recycled parser buffer, which Comet cannot reproduce from the input alone",
+      "Selected JSON integers outside the 64-bit range and very long numbers" +
+        " can lose precision or fail during Comet's native JSON materialization",
+      "Some selected floating-point values can differ from Spark at decimal" +
+        " parsing or Java-version formatting boundaries",
       "When a returned object or array contains duplicate keys, Spark preserves them" +
         " while Comet's native JSON materialization keeps only the last value")
 
