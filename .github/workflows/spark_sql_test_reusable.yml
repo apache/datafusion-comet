@@ -183,7 +183,7 @@ jobs:
                  'hive/Test/compile' 2>&1 | tee "$log"; then
               exit 0
             fi
-            if ! grep -qE 'ResolveException|download error|Connection reset' "$log"; then
+            if ! grep -qE 'could not retrieve sbt|ResolveException|Error downloading|download error|Connection reset' "$log"; then
               echo "::error::sbt failed for a non-resolution reason; not retrying."
               exit 1
             fi
@@ -257,6 +257,8 @@ jobs:
           skip-native-build: true
           skip-spark-clone: true
       - name: Run Spark tests
+        # Bash rather than the container default `sh`, for the retry below.
+        shell: bash
         run: |
           cd apache-spark
           rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
@@ -271,13 +273,38 @@ jobs:
           if [ -n "${{ matrix.module.metaspace }}" ]; then
             export METASPACE_SIZE="${{ matrix.module.metaspace }}"
           fi
-          # Cap parallel forked test JVMs at 1 so that even when
-          # SparkParallelTestGrouping is enabled we don't blow the
-          # 7 GB runner budget.
-          NOLINT_ON_COMPILE=true ENABLE_COMET=true ENABLE_COMET_ONHEAP=true ENABLE_COMET_LOG_FALLBACK_REASONS=${{ inputs.collect-fallback-logs }} \
-            build/sbt -Dsbt.log.noformat=true -mem $SBT_MEM \
-              'set Global / concurrentRestrictions := Seq(Tags.limit(Tags.ForkedTestGroup, 1))' \
-              ${{ matrix.module.args1 }} "${{ matrix.module.args2 }}"
+          # Before any test runs, the sbt launcher fetches sbt itself and sbt
+          # resolves its own dependencies and the build's plugins, all from Maven
+          # Central, and a connection reset there fails the row in seconds. The
+          # build job's pre-compile step retries those failures; this is the same
+          # retry for this job's own sbt. Once a test result has been printed, a
+          # failure belongs to the tests and is never retried.
+          log=$(mktemp)
+          for attempt in 1 2 3; do
+            # Cap parallel forked test JVMs at 1 so that even when
+            # SparkParallelTestGrouping is enabled we don't blow the
+            # 7 GB runner budget.
+            if NOLINT_ON_COMPILE=true ENABLE_COMET=true ENABLE_COMET_ONHEAP=true ENABLE_COMET_LOG_FALLBACK_REASONS=${{ inputs.collect-fallback-logs }} \
+                build/sbt -Dsbt.log.noformat=true -mem $SBT_MEM \
+                  'set Global / concurrentRestrictions := Seq(Tags.limit(Tags.ForkedTestGroup, 1))' \
+                  ${{ matrix.module.args1 }} "${{ matrix.module.args2 }}" 2>&1 | tee "$log"; then
+              break
+            fi
+            if grep -qE '^\[info\] - |Tests: succeeded|Run completed in' "$log"; then
+              exit 1
+            fi
+            if ! grep -qE 'could not retrieve sbt|ResolveException|Error downloading|download error|Connection reset' "$log"; then
+              echo "::error::sbt failed before any test ran, for a reason other than a download; not retrying."
+              exit 1
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "::error::sbt could not download its dependencies after $attempt attempts."
+              exit 1
+            fi
+            delay=$((10 * (1 << (attempt - 1)) + RANDOM % 5))
+            echo "::warning::sbt failed to download a dependency before any test ran; retrying in ${delay}s."
+            sleep "$delay"
+          done
           if [ "${{ inputs.collect-fallback-logs }}" = "true" ]; then
             find . -type f -name "unit-tests.log" -print0 | xargs -0 grep -h "Comet cannot accelerate" | sed 's/.*Comet cannot accelerate/Comet cannot accelerate/' | sort -u > fallback.log
           fi
