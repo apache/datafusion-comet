@@ -2546,14 +2546,32 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         withSQLConf(
           SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
           SQLConf.SHUFFLE_PARTITIONS.key -> writers.toString,
+          CometConf.COMET_BATCH_SIZE.key -> "128",
           CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
           CometConf.COMET_SHUFFLE_MODE.key -> "native",
           CometConf.COMET_EXEC_AGGREGATE_SKIP_PARTIAL_ENABLED.key -> "true",
           CometConf.COMET_RESPECT_DATAFUSION_CONFIGS.key -> "true",
           "spark.comet.datafusion.execution.skip_partial_aggregation_probe_rows_threshold" -> "100",
           "spark.comet.datafusion.execution.skip_partial_aggregation_probe_ratio_threshold" -> "0.8") {
-          checkSparkAnswerAndOperator(
+          val (_, distinctPlan) = checkSparkAnswerAndOperator(
             "SELECT count(*) FROM (SELECT DISTINCT k FROM skip_partial_distinct)")
+          val groupingOnly = stripAQEPlan(distinctPlan).collect {
+            case aggregate: CometHashAggregateExec if aggregate.aggregateExpressions.isEmpty =>
+              aggregate
+          }
+          assert(groupingOnly.nonEmpty, "Expected grouping-only native aggregate stages")
+          assert(
+            groupingOnly.flatMap(_.metrics.get("skipped_aggregation_rows")).map(_.value).sum > 0L,
+            "Expected the eligible grouping-only partial stage to skip rows")
+          val requiredDeduplication = groupingOnly.filter { aggregate =>
+            aggregate.originalPlan
+              .asInstanceOf[BaseAggregateExec]
+              .requiredChildDistributionExpressions
+              .isDefined
+          }
+          assert(requiredDeduplication.nonEmpty, "Expected a post-shuffle deduplication stage")
+          assert(requiredDeduplication.forall(!_.nativeOp.getHashAgg.getAllowPartialBypass))
+          assert(requiredDeduplication.forall(_.metrics("skipped_aggregation_rows").value == 0L))
           checkSparkAnswerAndOperator("SELECT count(DISTINCT k) FROM skip_partial_distinct")
         }
       }
@@ -2587,75 +2605,167 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("skip partial aggregation admits only supported native shuffle plans") {
-    withTempDir { dir =>
-      val path = new Path(dir.toURI.toString, "input").toUri.toString
-      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        spark
-          .range(0L, 16384L, 1L, 8)
-          .selectExpr(
-            "id AS k",
-            "CASE WHEN id % 5 = 0 THEN NULL ELSE id % 17 END AS v",
-            "CASE WHEN id % 7 = 0 THEN NULL ELSE id % 11 END AS w")
-          .write
-          .parquet(path)
-      }
-      withParquetTable(path, "skip_partial_eligibility") {
-        withSQLConf(
-          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
-          SQLConf.SHUFFLE_PARTITIONS.key -> "8",
-          CometConf.COMET_BATCH_SIZE.key -> "128",
-          CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
-          CometConf.COMET_SHUFFLE_MODE.key -> "native",
-          CometConf.COMET_EXEC_AGGREGATE_SKIP_PARTIAL_ENABLED.key -> "true",
-          CometConf.COMET_RESPECT_DATAFUSION_CONFIGS.key -> "true",
-          "spark.comet.datafusion.execution.skip_partial_aggregation_probe_rows_threshold" -> "100") {
-          def aggregates(query: String): Seq[CometHashAggregateExec] = {
-            val (_, plan) = checkSparkAnswerAndOperator(query)
-            val result = stripAQEPlan(plan).collect { case aggregate: CometHashAggregateExec =>
-              aggregate
+  for (adaptive <- Seq(false, true)) {
+    test(s"skip partial aggregation uses per-operator eligibility (AQE=$adaptive)") {
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "input").toUri.toString
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          spark
+            .range(0L, 16384L, 1L, 8)
+            .selectExpr(
+              "CASE WHEN id % 97 = 0 THEN NULL WHEN id % 17 = 0 THEN 0 ELSE id END AS k",
+              "CASE WHEN id % 5 = 0 THEN NULL ELSE id % 17 END AS v",
+              "CASE WHEN id % 7 = 0 THEN NULL ELSE id % 11 END AS w")
+            .write
+            .parquet(path)
+        }
+        withParquetTable(path, "skip_partial_eligibility") {
+          withSQLConf(
+            SQLConf.ANSI_ENABLED.key -> "false",
+            SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+            SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "false",
+            SQLConf.SHUFFLE_PARTITIONS.key -> "8",
+            CometConf.COMET_BATCH_SIZE.key -> "128",
+            CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+            CometConf.COMET_SHUFFLE_MODE.key -> "native",
+            CometConf.COMET_EXEC_AGGREGATE_SKIP_PARTIAL_ENABLED.key -> "true",
+            CometConf.COMET_RESPECT_DATAFUSION_CONFIGS.key -> "true",
+            "spark.comet.datafusion.execution.skip_partial_aggregation_probe_rows_threshold" -> "100") {
+            def aggregates(
+                query: String,
+                approximate: Boolean = false): Seq[CometHashAggregateExec] = {
+              val (_, plan) = if (approximate) {
+                checkSparkAnswerAndOperatorWithTolerance(s"$query ORDER BY k")
+              } else {
+                checkSparkAnswerAndOperator(query)
+              }
+              val result = collect(plan) { case aggregate: CometHashAggregateExec => aggregate }
+                .filter(_.metrics.contains("skipped_aggregation_rows"))
+              assert(
+                result.exists(_.modes.contains(Partial)),
+                s"Expected a native partial aggregate with skip metrics for $query")
+              result
             }
-            assert(result.nonEmpty)
-            result
-          }
-          def skipped(aggregate: CometHashAggregateExec): Long =
-            aggregate.metrics.get("skipped_aggregation_rows").map(_.value).getOrElse(0L)
+            def skipped(aggregate: CometHashAggregateExec): Long =
+              aggregate.metrics.get("skipped_aggregation_rows").map(_.value).getOrElse(0L)
 
-          val countQuery = "SELECT sum(n) FROM " +
-            "(SELECT k, count(*) n FROM skip_partial_eligibility GROUP BY k)"
-          // No ratio override: the eligible plan uses DataFusion's adaptive default.
-          assert(aggregates(countQuery).map(skipped).sum > 0L)
-          // The Comet config gates skipping, whatever the DataFusion thresholds say.
-          withSQLConf(
-            CometConf.COMET_EXEC_AGGREGATE_SKIP_PARTIAL_ENABLED.key -> "false",
-            "spark.comet.datafusion.execution.skip_partial_aggregation_probe_ratio_threshold" -> "0.8") {
-            assert(aggregates(countQuery).map(skipped).sum == 0L)
-          }
-          assert(
-            aggregates("SELECT sum(n) FROM " +
-              "(SELECT k % 2, count(*) n FROM skip_partial_eligibility GROUP BY k % 2)")
-              .map(skipped)
-              .sum == 0L)
-
-          withSQLConf(
-            "spark.comet.datafusion.execution.skip_partial_aggregation_probe_ratio_threshold" -> "1.1") {
-            assert(aggregates(countQuery).map(skipped).sum == 0L)
-          }
-          withSQLConf(
-            "spark.comet.datafusion.execution.skip_partial_aggregation_probe_ratio_threshold" -> "0.8") {
-            for (expression <- Seq("sum(v)", "count(v, w)", "count(*) + sum(v)")) {
-              val result = aggregates(
-                "SELECT sum(n) FROM " +
-                  s"(SELECT k, $expression n FROM skip_partial_eligibility GROUP BY k)")
-              assert(result.map(skipped).sum == 0L, s"Unexpected skipping for $expression")
+            val countQuery = "SELECT sum(k * n) FROM " +
+              "(SELECT k, count(*) n FROM skip_partial_eligibility GROUP BY k)"
+            // No ratio override: the eligible plan uses DataFusion's adaptive default.
+            val bypassed = aggregates(countQuery).filter(skipped(_) > 0L)
+            assert(bypassed.nonEmpty)
+            bypassed.foreach { aggregate =>
+              assert(aggregate.metrics("partial_bypass_eligible_partitions").value > 0L)
+              assert(aggregate.metrics("partial_bypass_ineligible_partitions").value == 0L)
+              assert(aggregate.metrics("reduction_factor_part").value > 0L)
+              assert(
+                aggregate.metrics("input_rows").value ==
+                  aggregate.metrics("reduction_factor_total").value + skipped(aggregate))
             }
-            val mixed =
-              aggregates("SELECT count(DISTINCT k), count(*) FROM skip_partial_eligibility")
-                .filter(_.modes.contains(PartialMerge))
-            assert(mixed.nonEmpty, "Expected a PartialMerge stage in the DISTINCT plan")
-            assert(mixed.map(skipped).sum == 0L)
-            withSQLConf(CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
+            assert(
+              aggregates("SELECT sum(g * n) FROM " +
+                "(SELECT k % 2 g, count(*) n FROM skip_partial_eligibility GROUP BY k % 2)")
+                .map(skipped)
+                .sum == 0L)
+
+            withSQLConf(
+              "spark.comet.datafusion.execution.skip_partial_aggregation_probe_ratio_threshold" -> "1.1") {
               assert(aggregates(countQuery).map(skipped).sum == 0L)
+            }
+            withSQLConf(
+              "spark.comet.datafusion.execution.skip_partial_aggregation_probe_ratio_threshold" -> "0.8") {
+              // Exercise each conversion family once; AQE repeats a mixed-aggregate case.
+              val expressions = if (adaptive) {
+                Seq("count(*) + sum(v) + min(v) + max(w)")
+              } else {
+                Seq(
+                  "count(v, w)",
+                  "bit_and(v)",
+                  "bit_or(v)",
+                  "bit_xor(v)",
+                  "percentile(v, 0.5)",
+                  "sort_array(collect_set(v))",
+                  "count(*) + sum(v) + min(v) + max(w)",
+                  "count(v) FILTER (WHERE w > 3)",
+                  "sum(v) FILTER (WHERE w > 3)",
+                  "min(v) FILTER (WHERE w IS NULL)",
+                  "max(v) FILTER (WHERE w > 100)")
+              }
+              for (expression <- expressions) {
+                val result =
+                  aggregates(s"SELECT k, $expression n FROM skip_partial_eligibility GROUP BY k")
+                assert(result.map(skipped).sum > 0L, s"Expected partial bypass for $expression")
+                assert(result.filter(_.modes.contains(Final)).map(skipped).sum == 0L)
+              }
+              withSQLConf(CometConf.COMET_EXEC_AGGREGATE_SKIP_PARTIAL_ENABLED.key -> "false") {
+                val disabled = aggregates(countQuery)
+                assert(disabled.map(skipped).sum == 0L)
+                assert(disabled.forall(!_.nativeOp.getHashAgg.getAllowPartialBypass))
+              }
+              val numericalExpressions = if (adaptive) {
+                Seq("count(*) + sum(v) + min(v) + max(w) + avg(v)")
+              } else {
+                Seq(
+                  "avg(CAST(v AS DECIMAL(15, 2)))",
+                  "sum(CAST(v AS DECIMAL(38, 2)))",
+                  "avg(CAST(v AS DECIMAL(28, 6))) FILTER (WHERE w > 3)",
+                  "avg(v) FILTER (WHERE w > 3)",
+                  "sum(CAST(v AS DOUBLE))",
+                  "count(*) + sum(v) + min(v) + max(w) + avg(v)",
+                  "stddev_pop(v)",
+                  "try_sum(v)")
+              }
+              for (expression <- numericalExpressions) {
+                val query = s"SELECT k, $expression n FROM skip_partial_eligibility GROUP BY k"
+                withSQLConf(
+                  CometConf.COMET_EXEC_PARTIAL_AGGREGATION_BYPASS_ALLOW_NUMERICAL_DIFFERENCES.key -> "false") {
+                  assert(
+                    aggregates(query, approximate = expression == "stddev_pop(v)")
+                      .map(skipped)
+                      .sum == 0L,
+                    expression)
+                }
+                withSQLConf(
+                  CometConf.COMET_EXEC_PARTIAL_AGGREGATION_BYPASS_ALLOW_NUMERICAL_DIFFERENCES.key -> "true") {
+                  assert(
+                    aggregates(query, approximate = expression == "stddev_pop(v)")
+                      .map(skipped)
+                      .sum > 0L,
+                    expression)
+                }
+              }
+              withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+                val query = "SELECT k, sum(v) FROM skip_partial_eligibility GROUP BY k"
+                withSQLConf(
+                  CometConf.COMET_EXEC_PARTIAL_AGGREGATION_BYPASS_ALLOW_NUMERICAL_DIFFERENCES.key -> "false") {
+                  assert(aggregates(query).map(skipped).sum == 0L)
+                }
+                withSQLConf(
+                  CometConf.COMET_EXEC_PARTIAL_AGGREGATION_BYPASS_ALLOW_NUMERICAL_DIFFERENCES.key -> "true") {
+                  assert(aggregates(query).map(skipped).sum > 0L)
+                }
+              }
+              val mixed =
+                aggregates(
+                  "SELECT k % 8192 AS g, count(DISTINCT k % 2), sum(w), count(v, w) " +
+                    "FROM skip_partial_eligibility GROUP BY k % 8192")
+              val deduplication = mixed.filter { aggregate =>
+                aggregate.modes == Seq(PartialMerge) &&
+                aggregate.originalPlan
+                  .asInstanceOf[BaseAggregateExec]
+                  .requiredChildDistributionExpressions
+                  .isDefined
+              }
+              assert(deduplication.nonEmpty, "Expected the one-DISTINCT deduplication stage")
+              assert(deduplication.forall(!_.nativeOp.getHashAgg.getAllowPartialBypass))
+              assert(deduplication.map(skipped).sum == 0L)
+              val mixedProducer = mixed.filter(a => a.modes.toSet == Set(Partial, PartialMerge))
+              assert(mixedProducer.nonEmpty, "Expected a mixed-mode partial producer")
+              assert(mixedProducer.forall(_.nativeOp.getHashAgg.getAllowPartialBypass))
+              assert(mixedProducer.map(skipped).sum > 0L)
+              withSQLConf(CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
+                assert(aggregates(countQuery).map(skipped).sum == 0L)
+              }
             }
           }
         }

@@ -61,25 +61,64 @@ with the setting disabled to distinguish reduced hash-probe work from reader I/O
 
 ## Adaptive Partial Aggregation
 
-Set `spark.comet.exec.aggregate.skipPartial.enabled=true` to let Comet bypass partial hash
-aggregation for high-cardinality grouping when it is not reducing the number of rows enough. This
-experimental optimization is disabled by default. It currently applies only to fused native
-shuffle-writer plans whose partial aggregates are grouping-only or single-argument `COUNT`.
-Low-cardinality inputs continue to aggregate normally. The SQL metric
-`rows bypassing partial aggregation` shows whether skipping occurred.
+For high-cardinality grouping, Comet can bypass partial hash aggregation when it is not
+reducing the number of rows enough. After draining the accumulated groups, each subsequent
+row becomes a normal partial state, preserving its grouping key. Final aggregation still
+merges these states. Low-cardinality inputs continue to aggregate normally.
 
-DataFusion makes the decision separately in each task. It starts checking after the first 100,000
-input rows, and as soon as the number of groups divided by the number of input rows exceeds `0.8`,
-it stops aggregating and sends the rest of the task's rows to the shuffle as they are. It does not
-check again, so a task whose keys repeat after a mostly distinct start, such as several snapshot
-files of the same keys packed into one split, can shuffle many times more rows than it would with
-skipping disabled. Compare the shuffle write metrics with the setting enabled and disabled before
-enabling it for a workload.
+Qualification is per aggregate operator within a fused native shuffle-writer plan. An
+unsupported operator does not disable its eligible siblings or children. Grouping-only,
+multi-argument `COUNT`, `MIN`, `MAX`, bitwise aggregates, exact `percentile`, `collect_set`, and
+legacy integer `SUM` are supported.
+Filters are applied while producing singleton states; rejected or null inputs still preserve
+their group with an empty state. Eligible `PartialMerge` expressions pass their existing states
+through, including mixed Partial/PartialMerge producers. Distribution-required deduplication
+stages, global aggregates, order-sensitive aggregates, and non-native-shuffle boundaries stay
+on ordinary aggregation. Configuration overrides cannot defeat those restrictions.
 
-Eligibility is conservative for the whole fused native plan: any unsupported partial accumulator,
-Spark `PartialMerge`, or mixed-mode aggregate disables skipping in that plan. Multi-argument
-`COUNT` and other accumulators are not admitted. Distribution-required grouping-only stages
-still fully deduplicate, and non-native-shuffle plans retain ordinary aggregation.
+`spark.comet.exec.aggregate.skipPartial.enabled` controls the optimization and defaults to
+`false`. Numeric aggregates with association-sensitive arithmetic additionally require:
+
+```sql
+SET spark.comet.exec.aggregate.partialBypass.allowNumericalDifferences=true;
+```
+
+This **opt-in changes the numerical contract** for two groups of aggregates:
+
+- Floating-point `SUM`, non-decimal `AVG` (including integer inputs, which use floating-point
+  state), variance, standard deviation, covariance and correlation. Regrouping inputs can
+  change rounding and finite/infinite/NaN results.
+- Decimal `SUM`/`AVG` and ANSI/TRY integer `SUM`. Regrouping can change intermediate overflow,
+  so a query may return NULL or throw where ordinary aggregation succeeds, or vice versa.
+
+For example, with `DECIMAL(38,38)` state, partials for `[0.8]` and `[0.4, -0.4]` can merge
+successfully, whereas singleton states may overflow at `0.8 + 0.4` before cancellation.
+The converters support these aggregates and preserve their state format and arithmetic; the
+flag controls whether to accept the effects of changing association. With its default `false`,
+an operator containing any of these aggregates stays on ordinary aggregation. Enabling it
+never overrides the structural restrictions above.
+
+Once bypass starts, aggregation does not resume within that task. A task whose keys repeat after a
+mostly distinct prefix can therefore shuffle many more rows. Compare shuffle write metrics with
+the setting enabled and disabled before enabling it for a workload.
+
+The generic converter uses each aggregate's ordinary one-row update/state contract, with
+temporary groups chunked to 1,024 rows. Decimal `SUM` and `AVG` have direct converters, including
+a shared-buffer fast path for non-null, unfiltered input. Output state buffers still grow with
+the input batch; bypass is not a guarantee that every hash-table allocation is immediately
+released by the underlying DataFusion stream.
+
+Short output batches can be combined before shuffle. The buffer admits memory for both its
+retained inputs and concatenation output, and retains at most 8 MiB of input array-size estimates.
+It flushes when admission fails; full, oversized, or refused individual batches pass through
+without copying. One already-read input can remain pending while the preceding output is emitted,
+so this limit describes accumulated fragments rather than the whole pipeline's peak memory.
+
+The SQL metrics `rows bypassing partial aggregation`, `partial aggregate input rows`, and `output rows` show
+actual activation and volume. The partial reduction numerator/denominator report grouped
+prefix output/input, excluding bypassed rows. Eligible/ineligible partition counters and the
+native plan's `CometPartialAggregationExec` reason explain qualification. A qualifying operator
+may still never bypass, for example when it continues to reduce its input effectively.
 
 To experiment with the thresholds, also enable `spark.comet.exec.respectDataFusionConfigs`,
 a development and testing option that defaults to `false`. For example, the following
@@ -93,9 +132,18 @@ SET spark.comet.datafusion.execution.skip_partial_aggregation_probe_ratio_thresh
 ```
 
 A lower row threshold allows an earlier decision; a lower ratio threshold makes
-skipping more likely. These settings only tune eligible plans. They cannot enable skipping
-while `spark.comet.exec.aggregate.skipPartial.enabled` is `false`, or for unsupported
-accumulators and modes.
+skipping more likely. Skipping can increase the number of partial states emitted
+and the amount of shuffle data, so measure the effect on your workload.
+
+To disable skipping without changing development settings:
+
+```sql
+SET spark.comet.exec.aggregate.skipPartial.enabled=false;
+```
+
+Setting the DataFusion ratio threshold above one also disables skipping. Measure whole-query
+time together with final-aggregate work, shuffle bytes, peak memory and spill; a faster partial
+operator alone does not establish a net improvement.
 
 ## Local TopK Fusion
 

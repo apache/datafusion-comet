@@ -360,6 +360,14 @@ Native operators reserve through DataFusion's `MemoryConsumer` / `MemoryReservat
 
 An operator that never calls `try_grow` is invisible to the pool no matter how much memory it uses.
 
+`PartialAggregationExec` can coalesce short aggregate-state batches before shuffle. Its
+`CometPartialOutput` consumer reserves twice the accumulated input array-size estimate, covering
+retained inputs and concatenation output, before buffering them. Accumulated input estimates are
+capped at 8 MiB. Failed admission flushes the buffer or passes an individual batch through; full
+and oversized batches also pass through without copying. Dropping the stream releases the
+reservation. One already-read input can remain pending during a flush, and downstream ownership
+ends the buffer's reservation, so the cap is not a bound on all pipeline memory or container RSS.
+
 ## Crossing the FFI boundary
 
 Batches move between the JVM and native over the Arrow C Data and C Stream interfaces, which are

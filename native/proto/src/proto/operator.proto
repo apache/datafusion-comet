@@ -828,6 +828,10 @@ message HashAggregate {
   // Offset in the child's output where aggregate buffer attributes start.
   // Used by PartialMerge to locate state fields in the input.
   int32 initial_input_buffer_offset = 7;
+  // Spark permits this producer to emit repeated partial states. Native planning must still
+  // validate the aggregate implementations and the enclosing execution boundary.
+  // Absent in older plans, which conservatively retain ordinary aggregation.
+  bool allow_partial_bypass = 9;
 }
 
 message Limit {
