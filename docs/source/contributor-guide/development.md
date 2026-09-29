@@ -43,12 +43,30 @@ onto a tokio worker thread and batches are delivered to the executor thread via 
 The executor thread parks in `blocking_recv()` until the next batch is ready. This avoids
 busy-polling on I/O-bound workloads.
 
-**JVM data source path (ScanExec present):** The executor thread calls `block_on()` and polls the
-DataFusion stream directly, interleaving `pull_input_batches()` calls on `Poll::Pending` to feed
-data from the JVM into ScanExec operators.
+**JVM data source path (ScanExec or ShuffleScanExec present):** The executor thread calls
+`block_on()` and polls the DataFusion stream directly. On `Poll::Pending` it calls
+`pull_input_batches()` to feed data from the JVM into the ScanExec and ShuffleScanExec operators,
+whose streams register the poll's waker and are woken by the refill. The stream is polled with a
+waker that also sets a flag. If the flag is still clear when the pull returns, the stream is
+waiting on native I/O, and the thread parks until a waker fires instead of busy-polling. If it is
+set, the loop polls again. It checks the flag rather than trusting the thread's parker because the
+pull can run another Comet plan on the same thread, and that plan's `block_on()` shares the parker
+and can consume the wake-up meant for the outer loop.
 
-In both cases, DataFusion operators execute on **tokio worker threads**, not on the Spark executor
-task thread. All Spark tasks on an executor share one tokio runtime.
+On the async I/O path, DataFusion operators execute on **tokio worker threads**. On the JVM data
+source path, `block_on()` polls them on the Spark executor task thread, and any tasks they spawn
+run on the shared runtime. All Spark tasks on an executor share one tokio runtime.
+
+When Spark closes a plan, `releasePlan` drops the plan's stream on the executor task thread on
+both paths. On the async I/O path it takes the stream from the task polling it, which waits only
+for a poll already in progress. Waiting for that task to be cancelled instead would wait for a
+free worker, and every worker can be tied up, for instance waiting in Spark's `acquireMemory` for
+the memory the stream holds. `releasePlan` then drops the plan and waits, for up to a second,
+until every memory reservation the plan made has been returned. Tasks that operators spawn, such as
+the ones a sort's merge reads its sorted runs through, are only aborted when the plan is dropped,
+and they return what they hold the next time they yield. This matters because Spark frees whatever
+a task still holds when the task ends and can hand that memory to another task, so memory a plan
+returns later was still in use while Spark counted it as free.
 
 ### Rules for native code
 
@@ -76,7 +94,10 @@ thereafter.
 call `acquireMemory()` / `releaseMemory()` via JNI whenever DataFusion operators grow or shrink
 memory reservations. This happens on whatever thread the operator is executing on. These calls
 are thread-safe (they use stored `GlobalRef`s, not thread-locals), but they do trigger
-`AttachCurrentThread`.
+`AttachCurrentThread`. Spark blocks `acquireMemory()` when the task has to wait for other tasks to
+release memory, so `SparkMemory` makes the call inside `tokio::task::block_in_place`. A worker
+blocked there hands its other tasks to another thread, and they keep running, including any that
+would release the memory.
 
 **Scalar subqueries call into the JVM.** `Subquery::evaluate()` calls static methods on
 `CometScalarSubquery` via JNI. These use a static `HashMap`, not thread-locals, so they are
@@ -566,6 +587,12 @@ Comet is a multi-language project with native code written in Rust and JVM code 
 It is possible to debug both native and JVM code concurrently as described in the [DEBUGGING guide](debugging)
 
 ## Submitting a Pull Request
+
+Use `git push` for normal updates to your PR branch. If you need to force push after a rebase
+or amend, use `git push --force-with-lease` instead of `git push --force` (or `-f`). This reduces
+the risk of accidentally overwriting another maintainer's commits when multiple people push
+to the same PR branch. If the lease check rejects the push, inspect and integrate the remote
+changes before retrying; do not switch to `--force` to bypass the check.
 
 Before submitting a pull request, follow this checklist to ensure your changes are ready:
 

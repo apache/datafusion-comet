@@ -325,11 +325,26 @@ case class CometScanRule(session: SparkSession)
           s"${COMET_SCAN_ALLOW_DISABLED_PARQUET_VECTORIZED_READER.key}=true to opt in")
       return None
     }
+    // Check the projected and partition schemas before the scan-level checks so that an
+    // unsupported column type is reported as such (e.g. "Unsupported s of type VariantType")
+    // rather than as the coarser serialization failure that CometNativeScan.isSupported would
+    // report for the same column.
+    if (!isSchemaSupported(scanExec, r)) {
+      return None
+    }
     if (!CometNativeScan.isSupported(scanExec)) {
       return None
     }
     if (encryptionEnabled(hadoopConf) && !isEncryptionConfigSupported(hadoopConf)) {
       withFallbackReason(scanExec, "Native Parquet scan does not support encryption")
+      return None
+    }
+    // TODO: Remove this fallback once DataFusion can ignore embedded Arrow schema hints and
+    // preserve Spark's ENUM inference without losing Parquet decryption state.
+    // https://github.com/apache/datafusion-comet/issues/5477
+    if (encryptionEnabled(hadoopConf) &&
+      scanExec.requiredSchema.exists(field => isVariantType(field.dataType))) {
+      withFallbackReason(scanExec, "Native Parquet Variant scans do not support encryption")
       return None
     }
     // input_file_name, input_file_block_start, and input_file_block_length read from
@@ -352,9 +367,6 @@ case class CometScanRule(session: SparkSession)
     if (scanExec.requiredSchema.fieldNames.contains(
         ShimFileFormat.ROW_INDEX_TEMPORARY_COLUMN_NAME)) {
       withFallbackReason(scanExec, "Native Parquet scan does not support row index generation")
-      return None
-    }
-    if (!isSchemaSupported(scanExec, r)) {
       return None
     }
     Some(CometScanExec(scanExec, session))
@@ -1020,8 +1032,17 @@ case class CometScanRule(session: SparkSession)
   private def isSchemaSupported(scanExec: FileSourceScanExec, r: HadoopFsRelation): Boolean = {
     val fallbackReasons = new ListBuffer[String]()
     val typeChecker = CometScanTypeChecker()
+    // Admit Variant only at a required root in ordinary Parquet. Recursive and Iceberg type
+    // checks continue to use CometScanTypeChecker's stricter support rules.
+    val requiredSchemaChecker = new CometScanTypeChecker {
+      override def isTypeSupported(
+          dt: DataType,
+          name: String,
+          reasons: ListBuffer[String]): Boolean =
+        isVariantType(dt) || typeChecker.isTypeSupported(dt, name, reasons)
+    }
     val schemaSupported =
-      typeChecker.isSchemaSupported(scanExec.requiredSchema, fallbackReasons)
+      requiredSchemaChecker.isSchemaSupported(scanExec.requiredSchema, fallbackReasons)
     if (!schemaSupported) {
       withFallbackReason(
         scanExec,

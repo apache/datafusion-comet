@@ -149,7 +149,11 @@ jobs:
           skip-native-build: true
 
       - name: Pre-compile Spark Test classes
+        # Bash rather than the container default `sh`: the retry below needs
+        # pipefail, $RANDOM, and shell arithmetic.
+        shell: bash
         run: |
+          set -o pipefail
           cd apache-spark
           # Mirror the workaround from `Run Spark tests` below: Comet's mvn
           # install populates partial Parquet entries (main JAR + POM but no
@@ -163,10 +167,34 @@ jobs:
           # plus any Test/compile pulled in by `dependsOn(... % "test->test")`,
           # which is enough to satisfy `sql/testOnly`, `hive/testOnly`, and
           # `catalyst/test` in the downstream test jobs.
-          NOLINT_ON_COMPILE=true build/sbt -Dsbt.log.noformat=true -mem 3072 \
-            'catalyst/Test/compile' \
-            'sql/Test/compile' \
-            'hive/Test/compile'
+          #
+          # This is also the step that resolves Spark's entire plugin and
+          # dependency graph from Maven Central on a cold runner, so it is
+          # where a Central hiccup is most likely to kill the job before
+          # anything has been built. Retry that, and only that: a genuine
+          # compile error still fails on the first attempt instead of burning
+          # three more ~12 minute runs. Zinc's incremental analysis means a
+          # retry resumes rather than recompiling from scratch.
+          log=$(mktemp)
+          for attempt in 1 2 3; do
+            if NOLINT_ON_COMPILE=true build/sbt -Dsbt.log.noformat=true -mem 3072 \
+                 'catalyst/Test/compile' \
+                 'sql/Test/compile' \
+                 'hive/Test/compile' 2>&1 | tee "$log"; then
+              exit 0
+            fi
+            if ! grep -qE 'ResolveException|download error|Connection reset' "$log"; then
+              echo "::error::sbt failed for a non-resolution reason; not retrying."
+              exit 1
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "::error::sbt could not resolve dependencies after $attempt attempts."
+              exit 1
+            fi
+            delay=$((10 * (1 << (attempt - 1)) + RANDOM % 5))
+            echo "::warning::Dependency resolution failed; retrying in ${delay}s."
+            sleep "$delay"
+          done
 
       - name: Pack apache-spark/ (sources + compiled output)
         run: |

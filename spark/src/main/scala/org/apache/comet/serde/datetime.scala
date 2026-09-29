@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import java.util.Locale
 
-import org.apache.spark.sql.catalyst.expressions.{AddMonths, Attribute, Cast, ConvertTimezone, DateAdd, DateDiff, DateFormatClass, DateFromUnixDate, DateSub, DayOfMonth, DayOfWeek, DayOfYear, Days, Expression, FromUTCTimestamp, GetDateField, GetTimestamp, Hour, Hours, LastDay, Literal, MakeDate, MakeDTInterval, MakeInterval, MakeTimestamp, MakeYMInterval, MicrosToTimestamp, MillisToTimestamp, Minute, Month, MonthsBetween, MultiplyDTInterval, NextDay, PreciseTimestampConversion, Quarter, Second, SecondsToTimestamp, TimestampAdd, TimestampDiff, ToUnixTimestamp, ToUTCTimestamp, TruncDate, TruncTimestamp, UnixDate, UnixMicros, UnixMillis, UnixSeconds, UnixTimestamp, WeekDay, WeekOfYear, Year}
+import org.apache.spark.sql.catalyst.expressions.{AddMonths, Attribute, Cast, ConvertTimezone, DateAdd, DateDiff, DateFormatClass, DateFromUnixDate, DateSub, DayOfMonth, DayOfWeek, DayOfYear, Days, DivideDTInterval, Expression, FromUTCTimestamp, GetDateField, GetTimestamp, Hour, Hours, LastDay, Literal, MakeDate, MakeDTInterval, MakeInterval, MakeTimestamp, MakeYMInterval, MicrosToTimestamp, MillisToTimestamp, Minute, Month, MonthsBetween, MultiplyDTInterval, NextDay, PreciseTimestampConversion, Quarter, Second, SecondsToTimestamp, TimestampAdd, TimestampDiff, ToUnixTimestamp, ToUTCTimestamp, TruncDate, TruncTimestamp, UnixDate, UnixMicros, UnixMillis, UnixSeconds, UnixTimestamp, WeekDay, WeekOfYear, Year}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{CalendarIntervalType, DataType, DateType, DoubleType, FloatType, IntegerType, LongType, StringType, TimestampNTZType, TimestampType}
 import org.apache.spark.unsafe.types.UTF8String
@@ -257,15 +257,12 @@ private[serde] object DatetimeCollation extends CometTypeShim {
     expr.children.exists(c => hasNonDefaultStringCollation(c.dataType))
 }
 
-object CometUnixTimestamp extends CometExpressionSerde[UnixTimestamp] {
-
-  private val collationReason = DatetimeCollation.reason("unix_timestamp")
+object CometUnixTimestamp
+    extends CometExpressionSerde[UnixTimestamp]
+    with CodegenDispatchFallback {
 
   override def getUnsupportedReasons(): Seq[String] = Seq(
-    "Only `DateType`, `TimestampType`, and `TimestampNTZType` inputs are supported.")
-
-  override def getIncompatibleReasons(): Seq[String] =
-    DatetimeCollation.incompatibleReasons("unix_timestamp")
+    "String inputs, including collated strings, have no native implementation.")
 
   private def isSupportedInputType(expr: UnixTimestamp): Boolean = {
     expr.children.head.dataType match {
@@ -276,16 +273,10 @@ object CometUnixTimestamp extends CometExpressionSerde[UnixTimestamp] {
   }
 
   override def getSupportLevel(expr: UnixTimestamp): SupportLevel = {
-    // The input type is screened ahead of the collation check on purpose. A non-date/timestamp
-    // input has no native path at all, so it must report `Unsupported` rather than
-    // `Incompatible`: the latter is waved straight through to `convert` when
-    // `spark.comet.expression.UnixTimestamp.allowIncompatible=true`, and the native kernel then
-    // raises an execution error on the string child instead of falling back to Spark.
+    // Strings have no native path, even when incompatible expressions are allowed.
     if (!isSupportedInputType(expr)) {
       val inputType = expr.children.head.dataType
       Unsupported(Some(s"unix_timestamp does not support input type: $inputType"))
-    } else if (DatetimeCollation.hasNonDefaultCollation(expr)) {
-      Incompatible(Some(collationReason))
     } else {
       Compatible()
     }
@@ -458,12 +449,22 @@ object CometMakeDate extends CometExpressionSerde[MakeDate] {
   }
 }
 
+/**
+ * `timestamp_seconds` lowers to the native `seconds_to_timestamp` kernel for integer, long, float
+ * and double inputs. Decimal, byte and short inputs have no native implementation, so
+ * `CodegenDispatchFallback` keeps them in the Comet pipeline by running Spark's own
+ * `SecondsToTimestamp.doGenCode` in the JVM codegen dispatcher, which matches Spark exactly.
+ *
+ * Decimal input is not a plain multiply: Spark computes `longValueExact()` on the scaled value,
+ * which raises rather than rounds when a nonzero digit remains past microsecond precision, and
+ * raises when the result overflows a long.
+ */
 object CometSecondsToTimestamp
-    extends CometScalarFunction[SecondsToTimestamp]("seconds_to_timestamp") {
+    extends CometScalarFunction[SecondsToTimestamp]("seconds_to_timestamp")
+    with CodegenDispatchFallback {
 
   override def getUnsupportedReasons(): Seq[String] = Seq(
-    "Only `IntegerType`, `LongType`, `FloatType`, and `DoubleType` inputs are supported." +
-      " `DecimalType`, `ByteType`, and `ShortType` fall back to Spark.")
+    "`DecimalType`, `ByteType`, and `ShortType` inputs")
 
   override def getSupportLevel(expr: SecondsToTimestamp): SupportLevel =
     expr.child.dataType match {
@@ -873,23 +874,7 @@ object CometAddMonths extends CometCodegenDispatch[AddMonths]
 
 object CometMonthsBetween extends CometCodegenDispatch[MonthsBetween]
 
-object CometMakeTimestamp
-    extends CometCodegenDispatch[MakeTimestamp]
-    with CodegenDispatchFallback {
-
-  private val collationReason = DatetimeCollation.reason("make_timestamp")
-
-  override def getIncompatibleReasons(): Seq[String] =
-    DatetimeCollation.incompatibleReasons("make_timestamp")
-
-  override def getSupportLevel(expr: MakeTimestamp): SupportLevel = {
-    if (DatetimeCollation.hasNonDefaultCollation(expr)) {
-      Incompatible(Some(collationReason))
-    } else {
-      Compatible()
-    }
-  }
-}
+object CometMakeTimestamp extends CometCodegenDispatch[MakeTimestamp]
 
 object CometMicrosToTimestamp extends CometCodegenDispatch[MicrosToTimestamp]
 
@@ -901,29 +886,15 @@ object CometUnixMillis extends CometCodegenDispatch[UnixMillis]
 
 object CometUnixMicros extends CometCodegenDispatch[UnixMicros]
 
-object CometToUnixTimestamp
-    extends CometCodegenDispatch[ToUnixTimestamp]
-    with CodegenDispatchFallback {
-
-  private val collationReason = DatetimeCollation.reason("to_unix_timestamp")
-
-  override def getIncompatibleReasons(): Seq[String] =
-    DatetimeCollation.incompatibleReasons("to_unix_timestamp")
-
-  override def getSupportLevel(expr: ToUnixTimestamp): SupportLevel = {
-    if (DatetimeCollation.hasNonDefaultCollation(expr)) {
-      Incompatible(Some(collationReason))
-    } else {
-      Compatible()
-    }
-  }
-}
+object CometToUnixTimestamp extends CometCodegenDispatch[ToUnixTimestamp]
 
 object CometGetTimestamp extends CometCodegenDispatch[GetTimestamp]
 
 object CometMakeYMInterval extends CometCodegenDispatch[MakeYMInterval]
 
 object CometMakeDTInterval extends CometCodegenDispatch[MakeDTInterval]
+
+object CometDivideDTInterval extends CometCodegenDispatch[DivideDTInterval]
 
 object CometMakeInterval extends CometExpressionSerde[MakeInterval] with CodegenDispatchFallback {
   private val incompatReason =

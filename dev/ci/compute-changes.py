@@ -172,6 +172,10 @@ FILTERS = {
         ".asf.yaml",
         ".github/workflows/docs.yaml",
         "docs/**",
+        # The docs deploy renders and then verifies the site's mermaid diagrams with this
+        # script, so a change to it has to be exercised by a real build, not just by the
+        # preflight run that renders the fences.
+        "dev/ci/check-mermaid.py",
         # Generated docs (configs.md, per-version expression compatibility pages) are
         # built from these Scala sources by GenerateDocs, so changes to them must
         # republish the site even when no docs/ file is touched.
@@ -280,6 +284,34 @@ FILTERS = {
         "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala",
         "spark/pom.xml",
         "dev/diffs/4.1.3.diff",
+        "pom.xml",
+        "rust-toolchain.toml",
+        ".github/workflows/ci.yml",
+        ".github/workflows/spark_sql_test_reusable.yml",
+        "dev/ci/spark-sql-modules.py",
+        ".github/actions/setup-builder/**",
+        ".github/actions/setup-spark-builder/**",
+        ".github/actions/upload-artifact-retry/**",
+        ".github/actions/download-artifact-retry/**",
+        ".github/actions/maven-bootstrap/**",
+        ".mvn/**",
+        "mvnw",
+    ],
+    "spark_4_2": [
+        "native/**/src/**",
+        "native/**/Cargo.toml",
+        "native/Cargo.lock",
+        "common/src/main/**",
+        "common/pom.xml",
+        "spark/src/main/**",
+        "!spark/src/main/spark-3.4/**",
+        "!spark/src/main/spark-3.5/**",
+        "!spark/src/main/spark-3.x/**",
+        "!spark/src/main/spark-4.0/**",
+        "!spark/src/main/spark-4.1/**",
+        "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala",
+        "spark/pom.xml",
+        "dev/diffs/4.2.0.diff",
         "pom.xml",
         "rust-toolchain.toml",
         ".github/workflows/ci.yml",
@@ -431,6 +463,17 @@ FILTERS["build_linux_all_profiles"] = FILTERS["build_linux"]
 # Adding "push" back to a test job would make every merge run it twice, once
 # in the queue and once after, which is the thing the queue was adopted to
 # avoid.
+#
+# A pull request that targets a release branch (`branch-N.M`) is the one
+# exception: it runs every "pr", "queue" and "nightly" job. On main the tiers
+# spread the suites over three events, and every change still meets all of
+# them. A release branch has only the pull request: the merge queue covers the
+# default branch alone, ci.yml runs on push only for main, and GitHub fires
+# `schedule` only on the default branch. A tier there would not defer a suite,
+# it would drop it. And the tiers exist because of main's volume, which a
+# release branch does not have: branch-1.0 took 28 pull requests in its first
+# two months. "push" jobs (the site deploy) and label-only jobs (Spark 3.4)
+# keep their rules on a release branch.
 POLICY = {
     # The one test job that also runs on push to main, and only because of
     # actions/cache scoping: a pull request can restore caches saved on its
@@ -485,8 +528,8 @@ POLICY = {
     # anyone who wants to check a change against 3.4 still can.
     "spark_3_4": ["label:run-spark-3.4-tests"],
     # Spark 4.1 is the default build profile and the one Spark SQL suite the
-    # queue runs; 3.5 and 4.0 run nightly, or on a pull request with their
-    # label.
+    # queue runs; 3.5, 4.0 and 4.2 run nightly, or on a pull request with
+    # their label.
     "spark_3_5": ["nightly", "label:run-spark-3.5-tests"],
     "spark_4_0": ["nightly", "label:run-spark-4.0-tests"],
     # No Spark SQL suite runs on a plain pull request. Spark 4.1 was the last
@@ -504,6 +547,14 @@ POLICY = {
         "label:run-spark-4.1-tests",
         "label:run-spark-4.1-hive-tests",
     ],
+    # Spark 4.2 support is experimental, but the suite passes, so it sits in
+    # the nightly tier with the other non-default versions rather than being
+    # reachable only on demand. Nightly is the right tier for it twice over:
+    # a 4.2 regression blocks nobody's merge, and running it every night is
+    # what keeps the 4.2 diff in `dev/diffs` from silently rotting as the
+    # other diffs are updated -- the failure mode an on-demand suite hides
+    # until someone thinks to ask for it.
+    "spark_4_2": ["nightly", "label:run-spark-4.2-tests"],
     # Same shape for Iceberg: 1.11 is the only Spark 4.1 coverage, so it is
     # the one Iceberg version the queue runs; the three older versions run
     # nightly. One label opts a pull request into all four.
@@ -514,6 +565,13 @@ POLICY = {
 }
 
 
+# Release branches are named `branch-<major>.<minor>`, as in branch-0.17 and
+# branch-1.0. A pull request against one runs these tiers; see the end of the
+# comment above POLICY.
+RELEASE_BRANCH = re.compile(r"branch-\d+\.\d+")
+RELEASE_BRANCH_TIERS = ("pr", "queue", "nightly")
+
+
 def gating_labels(job):
     return [t[len("label:"):] for t in POLICY[job] if t.startswith("label:")]
 
@@ -521,9 +579,9 @@ def gating_labels(job):
 def event_allows(job, event):
     """Does `event` permit `job` to run, ignoring which files changed?
 
-    `event` is {"name", "action", "label", "labels"}: the workflow event name,
-    the pull_request action, the label just added on a `labeled` event, and the
-    labels currently on the pull request.
+    `event` is {"name", "action", "label", "labels", "base"}: the workflow event
+    name, the pull_request action, the label just added on a `labeled` event,
+    the labels currently on the pull request, and the branch it targets.
     """
     tiers = POLICY[job]
     name = event.get("name")
@@ -538,6 +596,8 @@ def event_allows(job, event):
         return "nightly" in tiers
     if name != "pull_request":
         return False
+    if RELEASE_BRANCH.fullmatch(event.get("base", "")):
+        return release_branch_allows(job, event)
 
     gates = gating_labels(job)
     if gates:
@@ -556,6 +616,19 @@ def event_allows(job, event):
     return True
 
 
+def release_branch_allows(job, event):
+    """event_allows for a pull request that targets a release branch."""
+    tiers = POLICY[job]
+    gates = gating_labels(job)
+    automatic = any(tier in tiers for tier in RELEASE_BRANCH_TIERS)
+    # The opened/synchronize run already ran every automatic job at this
+    # commit, so a `labeled` run adds only a job that nothing else runs there,
+    # which leaves the label-only Spark 3.4 suite.
+    if event.get("action") == "labeled":
+        return not automatic and event.get("label") in gates
+    return automatic or any(label in event.get("labels", []) for label in gates)
+
+
 def compute(files, event):
     """Return {job: bool}, folding the path filter and the event policy."""
     return {
@@ -571,6 +644,7 @@ def event_from_env():
         "action": os.environ.get("EVENT_ACTION", ""),
         "label": os.environ.get("LABEL_NAME", ""),
         "labels": json.loads(labels) if labels.strip() else [],
+        "base": os.environ.get("PR_BASE_REF", ""),
     }
 
 

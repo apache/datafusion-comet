@@ -15,6 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
+mod schema_errors;
+mod timestamp_errors;
+
 use super::*;
 use std::fmt::Display;
 use std::hash::{Hash, Hasher};

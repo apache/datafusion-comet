@@ -37,8 +37,8 @@ use datafusion::{
     physical_expr::*,
     physical_plan::{ExecutionPlan, *},
 };
-use datafusion_comet_common::cast_and_stamp_schema;
-use futures::Stream;
+use datafusion_comet_common::{cast_and_stamp_schema, decode_string_arrays};
+use futures::{task::AtomicWaker, Stream};
 use jni::objects::{Global, JByteBuffer, JObject};
 use std::{
     pin::Pin,
@@ -87,6 +87,8 @@ pub struct BlockScanExec {
     pub schema: SchemaRef,
     /// The current input batch, populated by get_next_batch() before poll_next().
     pub batch: Arc<Mutex<Option<InputBatch>>>,
+    /// Woken when `batch` is refilled, so a poll that found it empty is repeated.
+    waker: Arc<AtomicWaker>,
     /// Cache of plan properties.
     cache: Arc<PlanProperties>,
     /// Metrics collector.
@@ -162,6 +164,7 @@ impl BlockScanExec {
             input_source,
             data_types,
             batch: Arc::new(Mutex::new(None)),
+            waker: Arc::new(AtomicWaker::new()),
             cache,
             metrics: metrics_set,
             baseline_metrics,
@@ -174,31 +177,36 @@ impl BlockScanExec {
     /// Feeds input batch into this scan. Only used in unit tests.
     pub fn set_input_batch(&mut self, input: InputBatch) {
         *self.batch.try_lock().unwrap() = Some(input);
+        self.waker.wake();
     }
 
-    /// Pull next input batch from JVM. Called externally before poll_next()
-    /// because JNI calls cannot happen from within poll_next on tokio threads.
+    /// Pulls the next input batch from the JVM unless one is already buffered, then wakes the
+    /// stream waiting for it. Called externally before poll_next() because JNI calls cannot
+    /// happen from within poll_next on tokio threads.
     pub fn get_next_batch(&mut self) -> Result<(), CometError> {
         if self.input_source.is_none() {
             // Unit test mode - no JNI calls needed.
             return Ok(());
         }
-        let mut timer = self.baseline_metrics.elapsed_compute().timer();
 
         let mut current_batch = self.batch.try_lock().unwrap();
-        if current_batch.is_none() {
-            let next_batch = Self::get_next(
-                self.exec_context_id,
-                self.input_source.as_ref().unwrap().as_obj(),
-                &self.data_types,
-                &self.decode_time,
-                self.requires_validation,
-                self.kind,
-            )?;
-            *current_batch = Some(next_batch);
+        if current_batch.is_some() {
+            return Ok(());
         }
 
+        let mut timer = self.baseline_metrics.elapsed_compute().timer();
+        let next_batch = Self::get_next(
+            self.exec_context_id,
+            self.input_source.as_ref().unwrap().as_obj(),
+            &self.data_types,
+            &self.decode_time,
+            self.requires_validation,
+            self.kind,
+        )?;
+        *current_batch = Some(next_batch);
         timer.stop();
+        drop(current_batch);
+        self.waker.wake();
 
         Ok(())
     }
@@ -247,7 +255,9 @@ impl BlockScanExec {
 
             // Decode the compressed IPC data
             let mut timer = decode_time.timer();
-            let batch = match decode_shuffle_batch(slice, data_types, requires_validation) {
+            let batch = match decode_shuffle_batch(slice, data_types, requires_validation)
+                .and_then(|batch| decode_broadcast_strings(batch, kind))
+            {
                 Ok(batch) => batch,
                 Err(failure) => {
                     // Remote inputs must invalidate the failed shuffle generation even when
@@ -296,6 +306,32 @@ fn decode_shuffle_batch(
         decode_remote_shuffle_batch(bytes, expected_types)
     } else {
         check_column_count(read_ipc_compressed(bytes)?, expected_types.len())
+    }
+}
+
+fn decode_broadcast_strings(
+    batch: RecordBatch,
+    kind: BlockScanKind,
+) -> DataFusionResult<RecordBatch> {
+    if !matches!(kind, BlockScanKind::Broadcast) {
+        return Ok(batch);
+    }
+
+    let mut changed = false;
+    let columns = batch
+        .columns()
+        .iter()
+        .map(|column| {
+            let decoded = decode_string_arrays(column)?;
+            changed |= !Arc::ptr_eq(column, &decoded);
+            Ok(decoded)
+        })
+        .collect::<Result<Vec<_>, arrow::error::ArrowError>>()?;
+
+    if changed {
+        Ok(RecordBatch::try_new(batch.schema(), columns)?)
+    } else {
+        Ok(batch)
     }
 }
 
@@ -418,21 +454,19 @@ impl BlockScanStream {
 impl Stream for BlockScanStream {
     type Item = DataFusionResult<arrow::array::RecordBatch>;
 
-    fn poll_next(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let mut timer = self.baseline_metrics.elapsed_compute().timer();
         let mut scan_batch = self.shuffle_scan.batch.try_lock().unwrap();
 
-        let input_batch = &*scan_batch;
-        let input_batch = if let Some(batch) = input_batch {
-            batch
-        } else {
-            timer.stop();
-            return Poll::Pending;
-        };
-
-        let result = match input_batch {
-            InputBatch::EOF => Poll::Ready(None),
-            InputBatch::Batch(columns, num_rows) => {
+        let result = match &*scan_batch {
+            None => {
+                self.shuffle_scan.waker.register(cx.waker());
+                Poll::Pending
+            }
+            // EOF stays buffered: a re-poll ends the stream again and `get_next_batch` has
+            // nothing to pull.
+            Some(InputBatch::EOF) => Poll::Ready(None),
+            Some(InputBatch::Batch(columns, num_rows)) => {
                 self.baseline_metrics.record_output(*num_rows);
                 // Reconcile the decoded block with the catalyst-declared schema rather than
                 // stamping it on, so that nested field nullability drift is absorbed here the way
@@ -447,8 +481,9 @@ impl Stream for BlockScanStream {
                 Poll::Ready(Some(maybe_batch))
             }
         };
-
-        *scan_batch = None;
+        if matches!(result, Poll::Ready(Some(_))) {
+            *scan_batch = None;
+        }
 
         timer.stop();
 
@@ -465,7 +500,10 @@ impl RecordBatchStream for BlockScanStream {
 #[cfg(test)]
 mod tests {
     use crate::execution::shuffle::{CompressionCodec, ShuffleBlockWriter, ShuffleCodecContext};
-    use arrow::array::{Int32Array, RecordBatchOptions, StringArray, UInt32Array};
+    use arrow::array::{
+        make_array, ArrayData, Int32Array, RecordBatchOptions, StringArray, UInt32Array,
+    };
+    use arrow::buffer::Buffer;
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
     use datafusion::physical_plan::metrics::Time;
@@ -487,6 +525,31 @@ mod tests {
             .unwrap();
         // The iterator has already checked the 8-byte frame length and 8-byte field count.
         output.into_inner()[16..].to_vec()
+    }
+
+    #[test]
+    fn broadcast_normalizes_invalid_strings_without_changing_shuffle_batches() {
+        // IPC import can expose unchecked Spark strings; a lone 0x80 must become U+FFFD.
+        let invalid = make_array(unsafe {
+            ArrayData::builder(DataType::Utf8)
+                .len(1)
+                .add_buffer(Buffer::from_slice_ref(&[0_i32, 1]))
+                .add_buffer(Buffer::from(vec![0x80]))
+                .build_unchecked()
+        });
+        let schema = Arc::new(Schema::new(vec![Field::new("s", DataType::Utf8, true)]));
+        let batch = RecordBatch::try_new(schema, vec![invalid]).unwrap();
+        let shuffle =
+            super::decode_broadcast_strings(batch.clone(), super::BlockScanKind::Shuffle).unwrap();
+        assert!(Arc::ptr_eq(&shuffle.columns()[0], &batch.columns()[0]));
+
+        let broadcast =
+            super::decode_broadcast_strings(batch, super::BlockScanKind::Broadcast).unwrap();
+        let strings = broadcast.columns()[0]
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(strings.value(0), "\u{FFFD}");
     }
 
     #[test]
@@ -826,5 +889,41 @@ mod tests {
             assert!(err.contains("col[0]"), "{err}");
             assert!(err.contains("col_0: expected Struct"), "{err}");
         });
+    }
+
+    #[test]
+    fn refill_wakes_the_pending_poll_and_eof_stays_buffered() {
+        use super::*;
+        use crate::execution::planner::TEST_EXEC_CONTEXT_ID;
+        use datafusion::physical_plan::ExecutionPlan;
+        use futures::task::{waker, ArcWake};
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct Woken(AtomicBool);
+        impl ArcWake for Woken {
+            fn wake_by_ref(arc_self: &Arc<Self>) {
+                arc_self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        let woken = Arc::new(Woken(AtomicBool::new(false)));
+        let waker = waker(Arc::clone(&woken));
+        let mut cx = Context::from_waker(&waker);
+
+        let mut scan =
+            BlockScanExec::new(TEST_EXEC_CONTEXT_ID, None, vec![DataType::Int32]).unwrap();
+        let mut stream = scan.execute(0, Arc::new(TaskContext::default())).unwrap();
+
+        assert!(stream.as_mut().poll_next(&mut cx).is_pending());
+        assert!(!woken.0.load(Ordering::SeqCst));
+        scan.set_input_batch(InputBatch::EOF);
+        assert!(woken.0.load(Ordering::SeqCst));
+        assert!(matches!(
+            stream.as_mut().poll_next(&mut cx),
+            Poll::Ready(None)
+        ));
+        assert!(matches!(
+            stream.as_mut().poll_next(&mut cx),
+            Poll::Ready(None)
+        ));
     }
 }
