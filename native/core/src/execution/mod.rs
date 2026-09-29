@@ -23,6 +23,8 @@ pub(crate) mod merge_as_partial;
 pub(crate) mod metrics;
 pub mod operators;
 pub(crate) mod planner;
+#[cfg(feature = "python-udf")]
+pub mod python_udf;
 pub mod serde;
 pub use datafusion_comet_shuffle as shuffle;
 mod memory_pools;

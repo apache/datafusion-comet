@@ -295,6 +295,20 @@ public abstract class NativeBase {
    */
   static native void init(String logConfPath, String logLevel);
 
+  private static native boolean nativeSupportsPythonUdf();
+
+  /** Whether this native library was built with the in-process Python UDF feature. */
+  public static boolean supportsPythonUdf() {
+    if (!loaded) {
+      return false;
+    }
+    try {
+      return nativeSupportsPythonUdf();
+    } catch (UnsatisfiedLinkError ignored) {
+      return false;
+    }
+  }
+
   /** Release native resources through JNI */
   static native void release();
 

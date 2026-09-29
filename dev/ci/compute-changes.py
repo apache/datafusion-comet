@@ -132,11 +132,16 @@ FILTERS = {
     ],
     # A real Python worker against each Spark 4.x Arrow runner. The list is
     # deliberately narrow: the suite builds Comet three times, once per Spark
-    # version, and only the map-in-batch wiring can change its verdict.
+    # version, and covers map-in-batch wiring and the native scalar Arrow UDF.
     "pyarrow_udf": [
         "pom.xml",
         "common/pom.xml",
         "native/shuffle/src/spark_unsafe/row.rs",
+        "native/core/src/execution/python_udf.rs",
+        "native/core/src/execution/operators/arrow_python_udf.rs",
+        "spark/src/main/spark-4.1+/org/apache/spark/sql/comet/CometArrowEvalPythonExec.scala",
+        "spark/src/main/spark-4.1+/org/apache/spark/sql/comet/shims/ShimCometArrowEvalPythonExec.scala",
+        "spark/src/test/spark-4.1+/org/apache/spark/sql/comet/CometArrowPythonUdfSuite.scala",
         "spark/pom.xml",
         "spark/src/main/java/org/apache/comet/vector/**",
         "spark/src/main/java/org/apache/spark/sql/comet/execution/shuffle/SpillWriter.java",
@@ -157,6 +162,7 @@ FILTERS = {
         "spark/src/main/spark-4.x/org/apache/spark/sql/execution/python/CometArrowPythonRunnerBase.scala",
         "spark/src/test/resources/pyspark/conftest.py",
         "spark/src/test/resources/pyspark/test_pyarrow_udf.py",
+        "spark/src/test/resources/pyspark/test_native_arrow_udf_files.py",
         "spark/src/test/resources/pyspark/test_pyarrow_udf_dictionary_shuffle.py",
         "spark/src/test/spark-3.5/org/apache/spark/sql/comet/CometMapInBatchSuite.scala",
         "spark/src/test/spark-4.x/org/apache/spark/sql/comet/CometMapInBatchSuite.scala",

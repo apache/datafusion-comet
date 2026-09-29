@@ -25,6 +25,10 @@ pub use iceberg_scan::*;
 pub use scan::*;
 
 mod aligned_stream_reader;
+#[cfg(feature = "python-udf")]
+mod arrow_python_udf;
+#[cfg(feature = "python-udf")]
+pub use arrow_python_udf::{ArrowPythonUdfExec, ArrowPythonUdfSpec};
 mod copy;
 mod dynamic_filter;
 pub(crate) use dynamic_filter::DynamicFilterJoinExec;
