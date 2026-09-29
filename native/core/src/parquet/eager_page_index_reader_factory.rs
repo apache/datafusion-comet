@@ -98,6 +98,8 @@ use std::ops::Range;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 
+use crate::parquet::objectstore::http_metrics::HttpRequestMetrics;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ScanIoSource {
     ObjectStore,
@@ -107,6 +109,9 @@ pub(crate) enum ScanIoSource {
 
 #[derive(Debug)]
 struct ScanIoMetrics {
+    http_observed_gets: Count,
+    http_attempts: Count,
+    http_retries: Count,
     data_bytes: Count,
     metadata_bytes: Count,
     footer_reads: Count,
@@ -121,6 +126,9 @@ struct ScanIoMetrics {
 impl ScanIoMetrics {
     fn new(metrics: &ExecutionPlanMetricsSet) -> Self {
         Self {
+            http_observed_gets: count_counter(metrics, "scan_io_http_observed_gets"),
+            http_attempts: count_counter(metrics, "scan_io_http_attempts"),
+            http_retries: count_counter(metrics, "scan_io_http_retries"),
             data_bytes: byte_counter(metrics, "scan_io_data_bytes"),
             metadata_bytes: byte_counter(metrics, "scan_io_metadata_bytes"),
             footer_reads: count_counter(metrics, "scan_io_footer_reads"),
@@ -715,9 +723,21 @@ impl ObjectStore for ScanIoObjectStore {
         self.inner.put_multipart_opts(location, options).await
     }
 
-    async fn get_opts(&self, location: &Path, options: GetOptions) -> ObjectStoreResult<GetResult> {
+    async fn get_opts(
+        &self,
+        location: &Path,
+        mut options: GetOptions,
+    ) -> ObjectStoreResult<GetResult> {
         if options.head {
             return self.inner.get_opts(location, options).await;
+        }
+        if matches!(self.role, ScanIoStoreRole::ObjectStore) {
+            HttpRequestMetrics::new(
+                self.scan_io_metrics.http_observed_gets.clone(),
+                self.scan_io_metrics.http_attempts.clone(),
+                self.scan_io_metrics.http_retries.clone(),
+            )
+            .track(&mut options);
         }
 
         let requested = match options.range.as_ref() {

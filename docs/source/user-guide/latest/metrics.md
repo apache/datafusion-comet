@@ -205,6 +205,23 @@ metadata and remote totals instead of dividing by zero. Cancellation can leave l
 work outside the final metric snapshot; these counters are not a guarantee of complete network
 traffic accounting after cancellation.
 
+### S3 HTTP attempts and retries
+
+The native S3 connector records these `scan_io_` counters per scan without changing retry policy:
+
+| Metric suffix        | Meaning                                                    |
+| -------------------- | ---------------------------------------------------------- |
+| `http_observed_gets` | Logical GETs reaching the instrumented HTTP connector.      |
+| `http_attempts`      | HTTP-service calls for those GETs, including retries.       |
+| `http_retries`       | Calls after the first attempt for each observed GET.        |
+
+At a settled snapshot, attempts equal observed GETs plus retries. Request extensions preserve
+scan attribution across HTTP-status retries and interrupted-body resumes, even with shared S3
+clients. These counts exclude HEAD, credential requests, bucket-region discovery, and any
+redirects or protocol retries internal to reqwest; they are not all wire transmissions.
+Compare observed GETs with logical `object_store_get_calls` before interpreting zero retries.
+An uninstrumented transport contributes no HTTP coverage, not proof that it never retried.
+
 ## Task-Level Input Metrics on Spark 4.1+
 
 Comet's native scans populate `inputMetrics.bytesRead` from the existing `bytes_scanned`
