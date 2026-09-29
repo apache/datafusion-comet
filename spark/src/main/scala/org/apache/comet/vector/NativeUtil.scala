@@ -292,29 +292,6 @@ class NativeUtil extends AutoCloseable {
     }
   }
 
-  /**
-   * Takes zero-copy slices of the input batch with given start index and maximum number of rows.
-   *
-   * @param batch
-   *   Input batch
-   * @param startIndex
-   *   Start index of the slice
-   * @param maxNumRows
-   *   Maximum number of rows in the slice
-   * @return
-   *   A new batch with the sliced vectors
-   */
-  def takeRows(batch: ColumnarBatch, startIndex: Int, maxNumRows: Int): ColumnarBatch = {
-    val arrayVectors = mutable.ArrayBuffer.empty[CometVector]
-
-    for (i <- 0 until batch.numCols()) {
-      val column = batch.column(i).asInstanceOf[CometVector]
-      arrayVectors += column.slice(startIndex, maxNumRows)
-    }
-
-    new ColumnarBatch(arrayVectors.toArray, maxNumRows)
-  }
-
   override def close(): Unit = {
     // closing the dictionary provider also closes the dictionary arrays
     dictionaryProvider.close()

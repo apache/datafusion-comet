@@ -33,7 +33,6 @@ mod delta_scan;
 mod lance_scan;
 
 use crate::execution::operators::init_csv_datasource_exec;
-use crate::execution::operators::AlignedArrowStreamReader;
 use crate::execution::operators::DynamicFilterJoinExec;
 use crate::execution::operators::IcebergScanExec;
 use crate::execution::operators::IcebergWriteExec;
@@ -55,7 +54,7 @@ use arrow::compute::CastOptions;
 use arrow::datatypes::{
     DataType, Field, FieldRef, Fields, Schema, TimeUnit, DECIMAL128_MAX_PRECISION,
 };
-use arrow::ffi_stream::FFI_ArrowArrayStream;
+use arrow::ffi_stream::{ArrowArrayStreamReader, FFI_ArrowArrayStream};
 use datafusion::functions_aggregate::bit_and_or_xor::{bit_and_udaf, bit_or_udaf, bit_xor_udaf};
 use datafusion::functions_aggregate::count::count_udaf;
 use datafusion::functions_aggregate::min_max::max_udaf;
@@ -1819,7 +1818,7 @@ impl PhysicalPlanner {
 
                 // Consumes the first input source for the scan. The Java side passes an
                 // `org.apache.arrow.c.ArrowArrayStream` whose `memoryAddress` points at the C
-                // struct; native takes ownership via `AlignedArrowStreamReader::from_raw`.
+                // struct; native takes ownership via `ArrowArrayStreamReader::from_raw`.
                 let input_source = if self.exec_context_id == TEST_EXEC_CONTEXT_ID
                     && inputs.is_empty()
                 {
@@ -1831,7 +1830,7 @@ impl PhysicalPlanner {
                         jni_call!(env, arrow_array_stream(java_stream.as_obj()).memory_address() -> i64)
                     })?;
                     let reader = unsafe {
-                        AlignedArrowStreamReader::from_raw(address as *mut FFI_ArrowArrayStream)
+                        ArrowArrayStreamReader::from_raw(address as *mut FFI_ArrowArrayStream)
                     }
                     .map_err(|e| {
                         GeneralError(format!("Failed to import ArrowArrayStream from JVM: {e}"))

@@ -358,9 +358,9 @@ which side of the boundary the bytes came from.
 
 **JVM → native (`ScanExec`).** The JVM allocates the Arrow buffers from a child of
 `CometArrowAllocator` and exports the whole per-partition iterator once as an `ArrowArrayStream`.
-`ScanExec` imports each batch through `AlignedArrowStreamReader` with `CopyMode::UnpackOrClone`:
-dictionary columns are unpacked into new native arrays, everything else is an `Arc` clone of the
-imported buffers. Those bytes stay where Java Arrow put them and are pinned for as long as any native
+`ScanExec` imports each batch through arrow-rs's `ArrowArrayStreamReader` and keeps every column as
+an `Arc` clone of the imported buffers; the JVM decodes dictionaries before export, so there is
+nothing to unpack. Those bytes stay where Java Arrow put them and are pinned for as long as any native
 reference survives. They are invisible to Spark's `TaskMemoryManager`, and `CometArrowAllocator` is
 unbounded, so nobody charged for them at allocation time. Whether they are charged _later_ depends
 on who holds them. DataFusion's `ExternalSorter` reserves `get_reserved_bytes_for_record_batch` for
