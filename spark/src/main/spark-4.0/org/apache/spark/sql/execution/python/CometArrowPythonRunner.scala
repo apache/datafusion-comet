@@ -21,9 +21,10 @@ package org.apache.spark.sql.execution.python
 
 import java.io.DataOutputStream
 
+import org.apache.spark.SparkException
 import org.apache.spark.api.python.{BasePythonRunner, ChainedPythonFunctions}
 import org.apache.spark.sql.execution.metric.SQLMetric
-import org.apache.spark.sql.types.StructType
+import org.apache.spark.sql.types.{DataType, StructType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 /**
@@ -36,6 +37,7 @@ class CometArrowPythonRunner(
     evalType: Int,
     argOffsets: Array[Array[Int]],
     override val schema: StructType,
+    override val outputSchema: DataType,
     override val workerConf: Map[String, String],
     override val pythonMetrics: Map[String, SQLMetric],
     jobArtifactUUID: Option[String],
@@ -51,4 +53,11 @@ class CometArrowPythonRunner(
 
   override protected def writeUDF(dataOut: DataOutputStream): Unit =
     PythonUDFRunner.writeUDFs(dataOut, funcs, argOffsets, jobArtifactUUID)
+
+  // Spark 4.0 has no error condition for this; raise the message Spark 4.1 uses.
+  override protected def outputSchemaMismatchError(
+      operation: String,
+      expected: String,
+      actual: String): Throwable =
+    new SparkException(s"Invalid schema from $operation: expected $expected, got $actual.")
 }
