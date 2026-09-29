@@ -16,12 +16,14 @@
 // under the License.
 
 mod error;
+mod ffi_offsets;
 mod query_context;
 mod schema;
 pub mod tracing;
 mod utils;
 
 pub use error::{decimal_overflow_error, SparkError, SparkErrorWithContext, SparkResult};
+pub use ffi_offsets::zero_offsets;
 pub use query_context::{create_query_context_map, QueryContext, QueryContextMap};
 pub use schema::{cast_and_stamp_schema, widen_nested_nullability};
 pub use utils::{bytes_to_i128, decode_utf8_spark_lossy};
