@@ -1005,8 +1005,11 @@ impl PhysicalExprAdapterFactory for SparkPhysicalExprAdapterFactory {
                 // Pair each physical column with the logical field the adapter narrows it to,
                 // through the folded names computed above (the remap already renamed id-matched
                 // columns to their logical names), so the wrapper -- which sits beneath the
-                // nested narrowing -- never checks a nested leaf the narrowing drops. An
-                // unpaired physical column keeps every leaf; nothing references it anyway.
+                // nested narrowing -- never checks a nested leaf the narrowing drops, and reads
+                // each timestamp leaf under the policy of its REQUESTED type (TIMESTAMP_NTZ
+                // never rebases, TIMESTAMP always takes a spec), as Spark's updater factory
+                // does. An unpaired physical column keeps every leaf under its physical type's
+                // policy; nothing references it anyway.
                 // First match wins on a folded-name collision, the same tie-break as
                 // `wrap_all_type_mismatches` and `remap_physical_schema`.
                 let mut logical_index: HashMap<&str, usize> = HashMap::new();

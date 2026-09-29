@@ -937,6 +937,251 @@ mod tests {
         );
     }
 
+    /// The one value of a raw timestamp column, written through the low-level writer.
+    enum RawTimestamp {
+        Int64(i64),
+        /// Midnight of the day with this Julian Day Number, INT96-encoded.
+        Int96Midnight(u32),
+    }
+
+    /// Writes a parquet file holding the single column `ts` of `message_type` (footer key-value
+    /// pairs from `key_values`, none by default: a non-Spark writer) with the one value
+    /// `value`, then scans it with `ts` requested as `requested` under the given session read
+    /// modes. Returns the column's microsecond values.
+    async fn scan_single_timestamp_column(
+        message_type: &str,
+        value: RawTimestamp,
+        key_values: Option<Vec<KeyValue>>,
+        requested: DataType,
+        allow_timestamp_ltz_to_ntz: bool,
+        datetime_rebase_mode: &str,
+        int96_rebase_mode: &str,
+    ) -> Result<Vec<i64>, String> {
+        use parquet::data_type::{Int64Type, Int96, Int96Type};
+        use parquet::file::writer::SerializedFileWriter;
+        use parquet::schema::parser::parse_message_type;
+
+        let filename = get_temp_filename()
+            .as_path()
+            .as_os_str()
+            .to_str()
+            .unwrap()
+            .to_string();
+        let parquet_schema = Arc::new(parse_message_type(message_type).unwrap());
+        let props = WriterProperties::builder()
+            .set_key_value_metadata(key_values)
+            .build();
+        let file = File::create(&filename).unwrap();
+        let mut writer = SerializedFileWriter::new(file, parquet_schema, Arc::new(props)).unwrap();
+        let mut row_group = writer.next_row_group().unwrap();
+        let mut col = row_group.next_column().unwrap().unwrap();
+        match value {
+            RawTimestamp::Int64(micros) => {
+                col.typed::<Int64Type>()
+                    .write_batch(&[micros], None, None)
+                    .unwrap();
+            }
+            RawTimestamp::Int96Midnight(julian_day) => {
+                let mut int96 = Int96::new();
+                int96.set_data(0, 0, julian_day);
+                col.typed::<Int96Type>()
+                    .write_batch(&[int96], None, None)
+                    .unwrap();
+            }
+        }
+        col.close().unwrap();
+        row_group.close().unwrap();
+        writer.close().unwrap();
+
+        let schema = Arc::new(Schema::new(vec![Field::new("ts", requested, false)]));
+        let partitioned_file = PartitionedFile::from_path(filename).unwrap();
+        let session_ctx = Arc::new(SessionContext::new());
+        let scan = init_datasource_exec(
+            Arc::clone(&schema),
+            None,
+            None,
+            ObjectStoreUrl::local_filesystem(),
+            ObjectStoreBackend::Local,
+            vec![vec![partitioned_file]],
+            None,
+            None,
+            None,
+            "UTC",
+            true,
+            false,
+            false,
+            allow_timestamp_ltz_to_ntz,
+            &session_ctx,
+            false,
+            false,
+            false,
+            true,
+            datetime_rebase_mode,
+            int96_rebase_mode,
+        )
+        .unwrap();
+
+        let mut stream = scan.execute(0, session_ctx.task_ctx()).unwrap();
+        let mut values = Vec::new();
+        while let Some(batch) = stream.next().await {
+            let batch = batch.map_err(|e| e.to_string())?;
+            let ts = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<arrow::array::TimestampMicrosecondArray>()
+                .unwrap();
+            values.extend(ts.values().iter().copied());
+        }
+        Ok(values)
+    }
+
+    /// Julian `1500-01-01T00:00:00` as a legacy writer stores it: the hybrid day count is
+    /// numerically the proleptic day of `1500-01-10`, so a UTC rebase restores `ANCIENT_MICROS`.
+    const HYBRID_1500_MICROS: i64 = -171_655 * 86_400_000_000;
+    /// Proleptic `1800-01-01T00:00:00Z` as a Julian Day Number and in micros since the epoch:
+    /// 62091 days before the epoch, ancient by Spark's 1900-01-01 timestamp cutoff.
+    const JDN_1800_01_01: u32 = 2_378_497;
+    const MICROS_1800_01_01: i64 = (JDN_1800_01_01 as i64 - 2_440_588) * 86_400_000_000;
+
+    const TZ_FREE_INT64_MICROS: &str = "message m { required int64 ts (TIMESTAMP(MICROS,false)); }";
+    const ADJUSTED_INT64_MICROS: &str = "message m { required int64 ts (TIMESTAMP(MICROS,true)); }";
+    const INT96: &str = "message m { required int96 ts; }";
+
+    fn ltz_micros() -> DataType {
+        DataType::Timestamp(arrow::datatypes::TimeUnit::Microsecond, Some("UTC".into()))
+    }
+
+    fn ntz_micros() -> DataType {
+        DataType::Timestamp(arrow::datatypes::TimeUnit::Microsecond, None)
+    }
+
+    #[tokio::test]
+    async fn tz_free_int64_timestamps_requested_as_ltz_follow_the_datetime_spec() {
+        // Spark's INT64 branch keys on the requested type and checks only the unit
+        // (isTimestampTypeMatched), so a TIMESTAMP(MICROS, isAdjustedToUTC=false) column read
+        // as TIMESTAMP takes LongWithRebaseUpdater under the datetime spec: EXCEPTION refuses
+        // the ancient value, CORRECTED passes it verbatim, and LEGACY rebases it (exactly with
+        // a UTC writer zone, refused without one, since the JVM default zone is unknown here).
+        let err = scan_single_timestamp_column(
+            TZ_FREE_INT64_MICROS,
+            RawTimestamp::Int64(HYBRID_1500_MICROS),
+            None,
+            ltz_micros(),
+            false,
+            "EXCEPTION",
+            "CORRECTED",
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("rebase"), "unexpected error: {err}");
+        assert!(err.contains("'ts'"), "unexpected error: {err}");
+
+        assert_eq!(
+            scan_single_timestamp_column(
+                TZ_FREE_INT64_MICROS,
+                RawTimestamp::Int64(HYBRID_1500_MICROS),
+                None,
+                ltz_micros(),
+                false,
+                "CORRECTED",
+                "EXCEPTION",
+            )
+            .await
+            .unwrap(),
+            vec![HYBRID_1500_MICROS]
+        );
+
+        let err = scan_single_timestamp_column(
+            TZ_FREE_INT64_MICROS,
+            RawTimestamp::Int64(HYBRID_1500_MICROS),
+            None,
+            ltz_micros(),
+            false,
+            "LEGACY",
+            "CORRECTED",
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("timezone tables"), "unexpected error: {err}");
+
+        assert_eq!(
+            scan_single_timestamp_column(
+                TZ_FREE_INT64_MICROS,
+                RawTimestamp::Int64(HYBRID_1500_MICROS),
+                Some(vec![KeyValue::new(
+                    "org.apache.spark.timeZone".to_string(),
+                    "UTC".to_string(),
+                )]),
+                ltz_micros(),
+                false,
+                "LEGACY",
+                "CORRECTED",
+            )
+            .await
+            .unwrap(),
+            vec![ANCIENT_MICROS]
+        );
+
+        // Read as TIMESTAMP_NTZ, the same column takes LongUpdater: no rebase in any mode.
+        assert_eq!(
+            scan_single_timestamp_column(
+                TZ_FREE_INT64_MICROS,
+                RawTimestamp::Int64(HYBRID_1500_MICROS),
+                None,
+                ntz_micros(),
+                false,
+                "EXCEPTION",
+                "EXCEPTION",
+            )
+            .await
+            .unwrap(),
+            vec![HYBRID_1500_MICROS]
+        );
+    }
+
+    #[tokio::test]
+    async fn timestamps_requested_as_ntz_are_never_rebased() {
+        // Spark 4.x reads an INT96 column as TIMESTAMP_NTZ through BinaryToSQLTimestampUpdater
+        // and an adjusted INT64 column through LongUpdater; neither consults a rebase mode
+        // (Spark 3.x refuses the pairing before any rebase decision, which Comet's
+        // allow_timestamp_ltz_to_ntz gate reproduces).
+        for (datetime_mode, int96_mode) in [
+            ("EXCEPTION", "EXCEPTION"),
+            ("CORRECTED", "CORRECTED"),
+            ("LEGACY", "LEGACY"),
+        ] {
+            assert_eq!(
+                scan_single_timestamp_column(
+                    INT96,
+                    RawTimestamp::Int96Midnight(JDN_1800_01_01),
+                    None,
+                    ntz_micros(),
+                    true,
+                    datetime_mode,
+                    int96_mode,
+                )
+                .await
+                .unwrap_or_else(|e| panic!("{datetime_mode}/{int96_mode}: {e}")),
+                vec![MICROS_1800_01_01],
+                "{datetime_mode}/{int96_mode}"
+            );
+        }
+        assert_eq!(
+            scan_single_timestamp_column(
+                ADJUSTED_INT64_MICROS,
+                RawTimestamp::Int64(ANCIENT_MICROS),
+                None,
+                ntz_micros(),
+                true,
+                "EXCEPTION",
+                "EXCEPTION",
+            )
+            .await
+            .unwrap(),
+            vec![ANCIENT_MICROS]
+        );
+    }
+
     // Regression test for #4990: a fresh `TableParquetOptions::new()` ignored session-level
     // `datafusion.execution.parquet.*` settings entirely, so `spark.comet.datafusion.
     // execution.parquet.*` (behind `respectDataFusionConfigs`) and `spark.comet.parquet.

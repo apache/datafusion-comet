@@ -40,7 +40,10 @@ calendar-rebase policy from the file's own writer metadata
 (`org.apache.spark.legacyDateTime` and friends), the same way Spark's reader
 does, selecting the `datetimeRebaseModeInRead` spec for dates and INT64
 timestamps and the `int96RebaseModeInRead` spec for INT96 timestamps, at any
-nesting depth: dates written with the legacy hybrid Julian/Gregorian calendar
+nesting depth. As in Spark, the spec follows the type a column is read as: a
+timestamp column read as `TIMESTAMP_NTZ` is never rebased (a `DATE` column read
+as `TIMESTAMP_NTZ` keeps the date spec), and a column read as `TIMESTAMP` takes
+the datetime spec even when the file marks it as not adjusted to UTC. Dates written with the legacy hybrid Julian/Gregorian calendar
 are rebased exactly, timestamps are rebased exactly when the file records a
 fixed UTC writer time zone, and ancient values whose calendar cannot be
 applied natively (non-UTC legacy writer zones, or files that do not declare a

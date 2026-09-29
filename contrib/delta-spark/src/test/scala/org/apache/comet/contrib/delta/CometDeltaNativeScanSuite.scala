@@ -3305,6 +3305,129 @@ class CometDeltaNativeScanSuite extends CometDeltaTestBase {
     }
   }
 
+  /** Proleptic 1800-01-01T00:00:00Z in days and micros: before Spark's 1900-01-01 cutoff. */
+  private val Days1800 = -62091
+  private val Micros1800 = Days1800.toLong * 86400000000L
+
+  test("non-Spark tz-free INT64 timestamps read as TIMESTAMP follow the datetime read mode") {
+    // Spark's ParquetVectorUpdaterFactory keys on the requested type and checks only the unit
+    // of an INT64 timestamp annotation, so a TIMESTAMP(MICROS, isAdjustedToUTC=false) column
+    // read as TIMESTAMP goes through LongWithRebaseUpdater under datetimeRebaseModeInRead:
+    // EXCEPTION refuses the ancient value, CORRECTED reads it verbatim.
+    withTempPath { dir =>
+      val path = dir.getAbsolutePath
+      writeRawParquetFile(
+        path,
+        """message m {
+          |  required int32 id;
+          |  optional int64 ts (TIMESTAMP(MICROS,false));
+          |}""".stripMargin) { factory =>
+        Seq(
+          factory.newGroup().append("id", 1).append("ts", Micros1800),
+          factory.newGroup().append("id", 2))
+      }
+      val table = "comet_tzfree_as_ltz_" + java.util.UUID.randomUUID().toString.replace("-", "")
+      withTable(table) {
+        spark.sql(s"CREATE TABLE $table (id INT, ts TIMESTAMP) USING PARQUET LOCATION '$path'")
+        spark.sql(s"CONVERT TO DELTA $table NO STATISTICS")
+        withSQLConf(
+          SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC",
+          "spark.sql.parquet.datetimeRebaseModeInRead" -> "EXCEPTION",
+          "spark.sql.parquet.int96RebaseModeInRead" -> "CORRECTED") {
+          val e = intercept[Exception] {
+            spark.read.format("delta").load(path).collect()
+          }
+          val messages = causeMessages(e)
+          assert(
+            messages.contains("Native scan cannot rebase") && messages.contains("'ts'"),
+            s"expected the native calendar-rebase error on ts, got:\n$messages")
+          // Spark's own reader refuses the same value under EXCEPTION.
+          withSQLConf(DeltaScanConf.COMET_DELTA_NATIVE_ENABLED.key -> "false") {
+            val sparkError = intercept[Exception] {
+              spark.read.format("delta").load(path).collect()
+            }
+            // SparkUpgradeException is private[spark], so match it by name.
+            val causes = Iterator.iterate(sparkError: Throwable)(_.getCause).takeWhile(_ != null)
+            assert(
+              causes.exists(_.getClass.getName == "org.apache.spark.SparkUpgradeException"),
+              s"expected Spark's own rebase error, got:\n${causeMessages(sparkError)}")
+          }
+        }
+        withSQLConf(
+          SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC",
+          "spark.sql.parquet.datetimeRebaseModeInRead" -> "CORRECTED",
+          "spark.sql.parquet.int96RebaseModeInRead" -> "EXCEPTION") {
+          val df = spark.read.format("delta").load(path)
+          checkDeltaNativeScanAnswer(df)
+          val rows = df.selectExpr("id", "cast(ts as string)").collect().sortBy(_.getInt(0))
+          assert(rows(0).getString(1) == "1800-01-01 00:00:00", s"got ${rows(0)}")
+          assert(rows(1).isNullAt(1), s"got ${rows(1)}")
+        }
+        // LEGACY without a recorded writer zone needs the JVM's default zone, which the native
+        // scan cannot know: it refuses rather than guessing.
+        withSQLConf(
+          SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC",
+          "spark.sql.parquet.datetimeRebaseModeInRead" -> "LEGACY",
+          "spark.sql.parquet.int96RebaseModeInRead" -> "CORRECTED") {
+          val e = intercept[Exception] {
+            spark.read.format("delta").load(path).collect()
+          }
+          val messages = causeMessages(e)
+          assert(
+            messages.contains("Native scan cannot rebase") &&
+              messages.contains("timezone tables"),
+            s"expected the native writer-zone error on ts, got:\n$messages")
+        }
+      }
+    }
+  }
+
+  test("INT96 and adjusted INT64 timestamps read as TIMESTAMP_NTZ are never rebased") {
+    // Spark 4.x reads INT96 as TIMESTAMP_NTZ through BinaryToSQLTimestampUpdater and adjusted
+    // INT64 through LongUpdater; neither consults a rebase mode, so ancient values read as
+    // stored even under EXCEPTION. Spark 3.x refuses these pairings up front (SPARK-36182).
+    assume(isSpark40Plus)
+    withTempPath { dir =>
+      val path = dir.getAbsolutePath
+      writeRawParquetFile(
+        path,
+        """message m {
+          |  required int32 id;
+          |  optional int96 ts96;
+          |  optional int64 ts64 (TIMESTAMP(MICROS,true));
+          |}""".stripMargin) { factory =>
+        Seq(
+          factory
+            .newGroup()
+            .append("id", 1)
+            .append("ts96", int96Midnight(Days1800))
+            .append("ts64", Micros1800),
+          factory.newGroup().append("id", 2))
+      }
+      val table = "comet_ltz_as_ntz_" + java.util.UUID.randomUUID().toString.replace("-", "")
+      withTable(table) {
+        spark.sql(
+          s"CREATE TABLE $table (id INT, ts96 TIMESTAMP_NTZ, ts64 TIMESTAMP_NTZ) USING PARQUET " +
+            s"LOCATION '$path'")
+        spark.sql(s"CONVERT TO DELTA $table NO STATISTICS")
+        withSQLConf(
+          SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC",
+          "spark.sql.parquet.datetimeRebaseModeInRead" -> "EXCEPTION",
+          "spark.sql.parquet.int96RebaseModeInRead" -> "EXCEPTION") {
+          val df = spark.read.format("delta").load(path)
+          checkDeltaNativeScanAnswer(df)
+          val rows = df
+            .selectExpr("id", "cast(ts96 as string)", "cast(ts64 as string)")
+            .collect()
+            .sortBy(_.getInt(0))
+          assert(rows(0).getString(1) == "1800-01-01 00:00:00", s"got ${rows(0)}")
+          assert(rows(0).getString(2) == "1800-01-01 00:00:00", s"got ${rows(0)}")
+          assert(rows(1).isNullAt(1) && rows(1).isNullAt(2), s"got ${rows(1)}")
+        }
+      }
+    }
+  }
+
   private val NestedRawSchema = """message m {
       |  required int32 id;
       |  optional group s {
