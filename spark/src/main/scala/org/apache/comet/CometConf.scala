@@ -336,7 +336,7 @@ object CometConf extends ShimCometConf {
     conf("spark.comet.exec.sortMergeJoinWithJoinFilter.enabled")
       .category(CATEGORY_ENABLE_EXEC)
       .doc("Support for Sort Merge Join with filter. " +
-        "Deprecated: this config will be removed in a future release.")
+        "Deprecated: this config will be removed in a future major release.")
       .booleanConf
       .createWithDefault(true)
 
@@ -362,9 +362,10 @@ object CometConf extends ShimCometConf {
     .category(CATEGORY_TUNING)
     .doc(
       "How often each executor logs its native memory usage at INFO level while Comet native " +
-        "plans are running: the bytes the native allocator has handed out, and the bytes " +
-        "reserved in Comet's memory pools. The difference is native memory that the pools are " +
-        "not accounting for. The executor logs one line per interval however many tasks are " +
+        "plans are running: the bytes the native allocator has handed out, the bytes reserved " +
+        "in Comet's memory pools, and the Arrow memory Comet holds on the JVM side. The " +
+        "difference between the first two is native memory that the pools are not accounting " +
+        "for. The executor logs one line per interval however many tasks are " +
         "running, and one more after the last plan finishes. It logs a warning when the " +
         "native memory looks larger than the executor's container allows. This is an executor " +
         "setting, read when an executor starts its first Comet native plan, so it must be set " +
@@ -444,6 +445,17 @@ object CometConf extends ShimCometConf {
           "per input, including both Spark build sides. The probe filter remains active " +
           "when reader pruning is unavailable. Unsupported joins retain their existing " +
           "execution path. Filters do not cross Spark exchanges or JVM/Arrow boundaries.")
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_EXEC_TOPK_FUSION_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.topK.fusion.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Experimental opt-in: run an eligible local TopK in the same native execution as its " +
+          "Parquet scan. Supports one direct signed integer sort key. This changes the local " +
+          "execution pipeline and can reduce scan/TopK overlap, so it may be slower for some " +
+          "workloads.")
       .booleanConf
       .createWithDefault(false)
 
@@ -916,12 +928,12 @@ object CometConf extends ShimCometConf {
     conf("spark.comet.exec.memoryPool.fraction")
       .category(CATEGORY_TUNING)
       .doc(
-        "Deprecated: this config will be removed in a future release. It does not leave room " +
-          "in spark.memory.offHeap.size for native memory that Comet's memory pools do not " +
-          "track, because Spark hands out the whole off-heap pool whatever this is set to. Size " +
-          "spark.executor.memoryOverhead for that memory instead. Only applies to off-heap " +
-          "mode, where the fair_unified pool limits each memory consumer in a task to this " +
-          "fraction of the off-heap size divided by the task's consumers, and the " +
+        "Deprecated: this config will be removed in a future major release. It does not " +
+          "leave room in spark.memory.offHeap.size for native memory that Comet's memory " +
+          "pools do not track, because Spark hands out the whole off-heap pool whatever this " +
+          "is set to. Size spark.executor.memoryOverhead for that memory instead. Only applies " +
+          "to off-heap mode, where the fair_unified pool limits each memory consumer in a task " +
+          "to this fraction of the off-heap size divided by the task's consumers, and the " +
           s"greedy_unified pool ignores it. $TUNING_GUIDE.")
       .doubleConf
       .createWithDefault(1.0)

@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import java.util.Locale
 
-import org.apache.spark.sql.catalyst.expressions.{AddMonths, Attribute, Cast, ConvertTimezone, DateAdd, DateDiff, DateFormatClass, DateFromUnixDate, DateSub, DayOfMonth, DayOfWeek, DayOfYear, Days, Expression, FromUTCTimestamp, GetDateField, GetTimestamp, Hour, Hours, LastDay, Literal, MakeDate, MakeDTInterval, MakeInterval, MakeTimestamp, MakeYMInterval, MicrosToTimestamp, MillisToTimestamp, Minute, Month, MonthsBetween, MultiplyDTInterval, NextDay, PreciseTimestampConversion, Quarter, Second, SecondsToTimestamp, TimestampAdd, TimestampDiff, ToUnixTimestamp, ToUTCTimestamp, TruncDate, TruncTimestamp, UnixDate, UnixMicros, UnixMillis, UnixSeconds, UnixTimestamp, WeekDay, WeekOfYear, Year}
+import org.apache.spark.sql.catalyst.expressions.{AddMonths, Attribute, Cast, ConvertTimezone, DateAdd, DateDiff, DateFormatClass, DateFromUnixDate, DateSub, DayOfMonth, DayOfWeek, DayOfYear, Days, DivideDTInterval, Expression, FromUTCTimestamp, GetDateField, GetTimestamp, Hour, Hours, LastDay, Literal, MakeDate, MakeDTInterval, MakeInterval, MakeTimestamp, MakeYMInterval, MicrosToTimestamp, MillisToTimestamp, Minute, Month, MonthsBetween, MultiplyDTInterval, NextDay, PreciseTimestampConversion, Quarter, Second, SecondsToTimestamp, TimestampAdd, TimestampDiff, ToUnixTimestamp, ToUTCTimestamp, TruncDate, TruncTimestamp, UnixDate, UnixMicros, UnixMillis, UnixSeconds, UnixTimestamp, WeekDay, WeekOfYear, Year}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{CalendarIntervalType, DataType, DateType, DoubleType, FloatType, IntegerType, LongType, StringType, TimestampNTZType, TimestampType}
 import org.apache.spark.unsafe.types.UTF8String
@@ -448,12 +448,22 @@ object CometMakeDate extends CometExpressionSerde[MakeDate] {
   }
 }
 
+/**
+ * `timestamp_seconds` lowers to the native `seconds_to_timestamp` kernel for integer, long, float
+ * and double inputs. Decimal, byte and short inputs have no native implementation, so
+ * `CodegenDispatchFallback` keeps them in the Comet pipeline by running Spark's own
+ * `SecondsToTimestamp.doGenCode` in the JVM codegen dispatcher, which matches Spark exactly.
+ *
+ * Decimal input is not a plain multiply: Spark computes `longValueExact()` on the scaled value,
+ * which raises rather than rounds when a nonzero digit remains past microsecond precision, and
+ * raises when the result overflows a long.
+ */
 object CometSecondsToTimestamp
-    extends CometScalarFunction[SecondsToTimestamp]("seconds_to_timestamp") {
+    extends CometScalarFunction[SecondsToTimestamp]("seconds_to_timestamp")
+    with CodegenDispatchFallback {
 
   override def getUnsupportedReasons(): Seq[String] = Seq(
-    "Only `IntegerType`, `LongType`, `FloatType`, and `DoubleType` inputs are supported." +
-      " `DecimalType`, `ByteType`, and `ShortType` fall back to Spark.")
+    "`DecimalType`, `ByteType`, and `ShortType` inputs")
 
   override def getSupportLevel(expr: SecondsToTimestamp): SupportLevel =
     expr.child.dataType match {
@@ -880,6 +890,8 @@ object CometGetTimestamp extends CometCodegenDispatch[GetTimestamp]
 object CometMakeYMInterval extends CometCodegenDispatch[MakeYMInterval]
 
 object CometMakeDTInterval extends CometCodegenDispatch[MakeDTInterval]
+
+object CometDivideDTInterval extends CometCodegenDispatch[DivideDTInterval]
 
 object CometMakeInterval extends CometExpressionSerde[MakeInterval] with CodegenDispatchFallback {
   private val incompatReason =

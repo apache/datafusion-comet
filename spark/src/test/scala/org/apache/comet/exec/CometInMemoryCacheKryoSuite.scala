@@ -20,7 +20,7 @@
 package org.apache.comet.exec
 
 import org.apache.spark.SparkConf
-import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.{CometTestBase, Row}
 import org.apache.spark.sql.execution.columnar.CometInMemoryRelationHelper
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.storage.StorageLevel
@@ -113,6 +113,13 @@ class CometInMemoryCacheKryoSuite extends CometTestBase {
               .selectExpr(statsColumns: _*)
               .createOrReplaceTempView("kryo_cache")
 
+            val query = "SELECT * FROM kryo_cache WHERE c_dec_short >= 100 AND c_string > '1'"
+            // Disabling Comet after caching would still read the same serialized payload.
+            var expected = Seq.empty[Row]
+            withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+              expected = spark.sql(query).collect().toSeq
+            }
+
             spark.catalog.cacheTable("kryo_cache", level)
             assert(spark.table("kryo_cache").count() == 200)
 
@@ -124,9 +131,7 @@ class CometInMemoryCacheKryoSuite extends CometTestBase {
             // Read the payload back rather than only the row count, so a Kryo round trip that
             // silently mangles the Arrow bytes fails too. The predicate also exercises the
             // statistics row, which is what carries UTF8String and Decimal through Kryo.
-            checkSparkAnswer(
-              spark.sql("SELECT c_long, c_string, c_dec_long, c_ts FROM kryo_cache " +
-                "WHERE c_dec_short >= 100 AND c_string > '1'"))
+            checkAnswer(spark.sql(query), expected)
           } finally {
             spark.catalog.clearCache()
           }
@@ -180,7 +185,9 @@ class CometInMemoryCacheKryoSuite extends CometTestBase {
           cachedBatchTypes("kryo_cache_fallback").sameElements(
             Array("org.apache.spark.sql.execution.columnar.DefaultCachedBatch")))
 
-        checkSparkAnswer(spark.sql("SELECT id FROM kryo_cache_fallback WHERE id > 90"))
+        checkAnswer(
+          spark.sql("SELECT id FROM kryo_cache_fallback WHERE id > 90"),
+          (91L until 100L).map(Row(_)))
       } finally {
         spark.catalog.clearCache()
       }
