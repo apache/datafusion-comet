@@ -63,3 +63,10 @@ guarded by DeltaScanContribSuite, which checks every DeltaScanConf entry's key, 
 | `spark.comet.scan.delta.dv.maxDeletedRowsPerFile` | Upper bound on a single file's deletion-vector cardinality (deleted row count) the native Delta scan will claim. Applying a deletion vector expands it into per-row selectors that are held in memory. This bound caps one file's selectors, not what a task holds: the selectors for every file in a partition stay held until the task finishes. The bound is a deliberately pessimistic planning-time proxy for that memory (deletion vector cardinality, not the exact selector count), so a large but contiguous deletion is declined the same as a large alternating one. Scans whose deletion vectors exceed this bound for any file fall back to Spark's reader. | 1000000 |
 | `spark.comet.scan.delta.enabled` | Whether to enable native Delta table scans. When enabled, DSv1 Delta table reads planned by delta-spark are executed through Comet's native Parquet scan, inheriting row-group pruning, page-index pruning, and filter pushdown, with deletion vectors applied inside the scan. Experimental: defaults to false, so adding the contrib jar does not by itself change how any query is read. | false |
 <!-- prettier-ignore-end -->
+
+When Spark splits a Parquet file into several tasks, each native Delta scan builds
+deletion-vector row selectors only for the row groups owned by its split. Deletion
+positions remain relative to the entire file, and positions beyond the file's row
+count are still rejected. Each split still fetches and decodes the full deletion
+vector and uses the existing conservative whole-file memory admission bound before
+building selectors. The per-file cardinality limit above is unchanged.
