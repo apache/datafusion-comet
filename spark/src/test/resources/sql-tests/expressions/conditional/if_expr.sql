@@ -38,7 +38,7 @@ SELECT IF(true, 1, 2), IF(false, 1, 2), IF(NULL, 1, 2)
 query expect_native(if)
 SELECT IF(cond, a, 9), IF(cond, 9, a) FROM test_if
 
--- NULL literals and computed branches keep the existing short-circuit paths.
+-- NULL literals and computed branches preserve branch selection.
 query expect_native(if)
 SELECT IF(cond, a, NULL), IF(cond, NULL, b), IF(cond, a + 1, b - 1) FROM test_if
 

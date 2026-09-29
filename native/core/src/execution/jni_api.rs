@@ -28,8 +28,7 @@ use crate::{
 };
 use std::collections::HashSet;
 
-use arrow::array::{Array, RecordBatch, UInt32Array};
-use arrow::compute::{take, TakeOptions};
+use arrow::array::{Array, RecordBatch};
 use arrow::datatypes::DataType as ArrowDataType;
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
 use datafusion::execution::disk_manager::DiskManagerMode;
@@ -420,10 +419,12 @@ pub fn get_runtime() -> Handle {
 
 /// Tears down the global Tokio runtime, if it has been initialized.
 ///
-/// The runtime is moved out of the global slot and shut down in the background so the
-/// calling (JNI) thread is not blocked waiting for worker threads to finish. Any handles
-/// previously returned by [`get_runtime`] will start failing their spawns once the runtime
-/// is gone, so this must only be called when no native execution is in flight.
+/// The runtime is moved out of the global slot, so the next [`init_runtime`] or
+/// [`get_runtime`] call builds a new one. Shutting it down blocks the calling (JNI) thread
+/// until the runtime's threads have stopped, for at most 3 seconds. Tasks still running on it
+/// are dropped at their next yield, and any handles previously returned by [`get_runtime`]
+/// will start failing their spawns, so this must only be called when no native execution is
+/// in flight.
 ///
 /// Must not be called from within the runtime's own worker threads, otherwise the shutdown
 /// would deadlock/panic.
@@ -982,27 +983,9 @@ fn prepare_output(
             let array_ref = results.get(i).ok_or(CometError::IndexOutOfBounds(i))?;
             let field = output_schema.field(i);
 
-            if array_ref.offset() != 0 {
-                // https://github.com/apache/datafusion-comet/issues/2051
-                // Bug with non-zero offset FFI, so take to a new array which will have an offset of 0.
-                // We expect this to be a cold code path, hence the check_bounds: true and assert_eq.
-                let indices = UInt32Array::from((0..num_rows as u32).collect::<Vec<u32>>());
-                let new_array = take(
-                    array_ref,
-                    &indices,
-                    Some(TakeOptions { check_bounds: true }),
-                )?;
-
-                assert_eq!(new_array.offset(), 0);
-
-                new_array
-                    .to_data()
-                    .move_to_spark(field, array_addrs[i], schema_addrs[i])?;
-            } else {
-                array_ref
-                    .to_data()
-                    .move_to_spark(field, array_addrs[i], schema_addrs[i])?;
-            }
+            array_ref
+                .to_data()
+                .move_to_spark(field, array_addrs[i], schema_addrs[i])?;
             i += 1;
         }
     }
