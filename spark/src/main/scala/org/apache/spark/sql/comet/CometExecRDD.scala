@@ -142,7 +142,7 @@ private[spark] class CometExecRDD(
     subqueries.foreach(sub => CometScalarSubquery.setSubquery(it.id, sub))
 
     Option(context).foreach { ctx =>
-      ctx.addTaskCompletionListener[Unit] { _ =>
+      CometUnionInput.addCleanup(ctx) {
         subqueries.foreach(sub => CometScalarSubquery.removeSubquery(it.id, sub))
       }
     }
@@ -171,13 +171,9 @@ object CometExecRDD {
 
   /**
    * Resolve the per-partition native input slots for `createPlan`, in scan-input order. A slot is
-   * either a `CometShuffleBlockIterator` (for slots in `shuffleScanIndices`), a lazy
-   * `CometBroadcastInput` with an executor memory owner, or the single `ArrowArrayStream`
-   * exported by another input. A broadcast without a supported owner opens an ordinary stream.
-   * Returned alongside the shuffle-block iterators that `CometExecIterator` must drive. Shared by
-   * [[CometExecRDD.compute]] and the native-shuffle path so both classify and resolve slots
-   * identically. Resolution may allocate streams and register their task cleanup listeners; it
-   * never opens the payload of a successfully admitted broadcast marker.
+   * a `CometShuffleBlockIterator`, a lazy `CometBroadcastInput` or `CometUnionInput`, or an
+   * `ArrowArrayStream`. Broadcasts without a supported memory owner open ordinary streams. Shared
+   * by [[CometExecRDD.compute]] and the native-shuffle path; lazy inputs stay unopened.
    */
   def resolveInputObjects(
       inputRDDs: Seq[RDD[_]],
@@ -200,6 +196,8 @@ object CometExecRDD {
                 s"Slot $idx is marked as a shuffle scan but the input RDD is " +
                   s"${other.getClass.getName}, expected CometShuffledBatchRDD")
           }
+        } else if (rdd.isInstanceOf[CometUnionInputRDD]) {
+          rdd.iterator(part, context).next().asInstanceOf[CometUnionInput]
         } else if (rdd.isInstanceOf[CometBroadcastInputRDD]) {
           val input = rdd.iterator(part, context).next().asInstanceOf[CometBroadcastInput]
           // Unsupported executor memory configuration must remain an ordinary Scan input.

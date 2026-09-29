@@ -485,6 +485,19 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_EXEC_JOIN_DYNAMIC_FILTER_UNION_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.join.dynamicFilter.union.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Carry completed native broadcast-join filters across UNION ALL inputs into eligible " +
+          "branch readers. Requires join.dynamicFilter.enabled. Supports a single direct signed " +
+          "integer key with no join residual. Keeps the join, Union partitioning and broadcast " +
+          "exchange in place; filters retain their accounted build storage for the current " +
+          "task attempt. Existing native reader eligibility barriers still apply. Missing or " +
+          "ineligible filters proceed without reader pruning.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_SCALA_UDF_CODEGEN_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.scalaUDF.codegen.enabled")
       .category(CATEGORY_EXEC)

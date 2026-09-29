@@ -48,7 +48,7 @@ class CometBroadcastInput private[comet] (
   private val streams = ArrayBuffer.empty[CometBroadcastArrowStream]
   private var closed = false
 
-  context.addTaskCompletionListener[Unit](_ => close())
+  CometUnionInput.addCleanup(context)(close())
 
   def getBroadcastId(): Long = broadcast.id
 

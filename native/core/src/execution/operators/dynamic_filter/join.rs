@@ -45,7 +45,10 @@ use datafusion::physical_plan::{
 };
 use futures::StreamExt;
 
-use super::super::broadcast::reuse_broadcast_build_with_metrics;
+use super::super::broadcast::reuse_broadcast_build_with_transport;
+use super::super::union_filter::{
+    prepare_union_join, transport_build_supported, UnionFilterTarget,
+};
 use super::parquet_reader::try_attach_parquet_reader_filter;
 use super::DynamicFilterExec;
 
@@ -58,6 +61,7 @@ pub(crate) struct DynamicFilterJoinExec {
     template: HashJoinExec,
     config: ConfigOptions,
     metrics: ExecutionPlanMetricsSet,
+    union_transport: bool,
 }
 
 /// Per-execution join state. The permanent plan keeps no live filter; this value
@@ -65,6 +69,7 @@ pub(crate) struct DynamicFilterJoinExec {
 struct RuntimeDynamicFilterJoin {
     join: HashJoinExec,
     reader_filter_attached: bool,
+    union_targets: Vec<UnionFilterTarget>,
 }
 
 impl DynamicFilterJoinExec {
@@ -82,7 +87,13 @@ impl DynamicFilterJoinExec {
             template: join.builder().reset_state().build()?,
             config,
             metrics: ExecutionPlanMetricsSet::new(),
+            union_transport: false,
         })
+    }
+
+    pub(crate) fn with_union_transport(mut self, enabled: bool) -> Self {
+        self.union_transport = enabled;
+        self
     }
 
     fn build_runtime_join(&self) -> Result<RuntimeDynamicFilterJoin> {
@@ -90,12 +101,23 @@ impl DynamicFilterJoinExec {
             vec![Arc::clone(&self.template.on()[0].1)],
             lit(true),
         ));
-        let reader = try_attach_parquet_reader_filter(
-            self.template.right(),
-            Arc::clone(&predicate),
-            &self.config,
-        )?;
-        let reader_filter_attached = reader.is_some();
+        let mut union_targets = vec![];
+        let reader =
+            if self.union_transport && transport_build_supported(&self.template.left().schema()) {
+                super::parquet_reader::try_attach_parquet_reader_filter_with_transport(
+                    self.template.right(),
+                    Arc::clone(&predicate),
+                    &self.config,
+                    &mut union_targets,
+                )?
+            } else {
+                try_attach_parquet_reader_filter(
+                    self.template.right(),
+                    Arc::clone(&predicate),
+                    &self.config,
+                )?
+            };
+        let reader_filter_attached = reader.is_some() && union_targets.is_empty();
         let consumer = Arc::new(DynamicFilterExec::new(
             reader.unwrap_or_else(|| Arc::clone(self.template.right())),
             Arc::clone(&predicate),
@@ -114,14 +136,26 @@ impl DynamicFilterJoinExec {
         Ok(RuntimeDynamicFilterJoin {
             join,
             reader_filter_attached,
+            union_targets,
         })
     }
 
+    #[cfg(test)]
     fn execute_runtime_join(
         &self,
         join: HashJoinExec,
         partition: usize,
         context: Arc<TaskContext>,
+    ) -> Result<SendableRecordBatchStream> {
+        self.execute_runtime_join_with_transport(join, partition, context, vec![])
+    }
+
+    fn execute_runtime_join_with_transport(
+        &self,
+        join: HashJoinExec,
+        partition: usize,
+        context: Arc<TaskContext>,
+        targets: Vec<UnionFilterTarget>,
     ) -> Result<SendableRecordBatchStream> {
         // DataFusion can materialize one IN-list literal per build row,
         // despite admitting the list by packed-array bytes and distinct-key count.
@@ -149,9 +183,22 @@ impl DynamicFilterJoinExec {
         let join: Arc<dyn ExecutionPlan> = Arc::new(join);
         // Attach reuse only after creating this execution's producer and filter.
         // Cached execution publishes counters after its asynchronous cache lookup.
-        let execution =
-            reuse_broadcast_build_with_metrics(Arc::clone(&join), self.metrics.clone())?;
-        let result = execution.execute(partition, context);
+        let execution = reuse_broadcast_build_with_transport(
+            Arc::clone(&join),
+            self.metrics.clone(),
+            targets.clone(),
+        )?;
+        let result = if Arc::ptr_eq(&execution, &join) && !targets.is_empty() {
+            prepare_union_join(
+                join.downcast_ref::<HashJoinExec>().unwrap(),
+                partition,
+                context,
+                targets,
+                self.metrics.clone(),
+            )
+        } else {
+            execution.execute(partition, context)
+        };
         if Arc::ptr_eq(&execution, &join) {
             // An ordinary join registers synchronously, including on error.
             for metric in join.metrics().unwrap_or_default().iter() {
@@ -233,13 +280,15 @@ impl ExecutionPlan for DynamicFilterJoinExec {
             .with_new_children(children)?
             .build()?;
         match Self::try_new(&join, &self.config)? {
-            Some(wrapper) => Ok(Arc::new(wrapper)),
+            Some(wrapper) => Ok(Arc::new(wrapper.with_union_transport(self.union_transport))),
             None => Ok(Arc::new(join)),
         }
     }
 
     fn reset_state(self: Arc<Self>) -> Result<Arc<dyn ExecutionPlan>> {
-        Ok(Arc::new(Self::new(&self.template, self.config.clone())?))
+        let mut reset = Self::new(&self.template, self.config.clone())?;
+        reset.union_transport = self.union_transport;
+        Ok(Arc::new(reset))
     }
 
     fn execute(
@@ -256,7 +305,12 @@ impl ExecutionPlan for DynamicFilterJoinExec {
         MetricBuilder::new(&self.metrics)
             .counter(attachment_metric, partition)
             .add(1);
-        self.execute_runtime_join(runtime.join, partition, context)
+        self.execute_runtime_join_with_transport(
+            runtime.join,
+            partition,
+            context,
+            runtime.union_targets,
+        )
     }
 
     fn metrics(&self) -> Option<MetricsSet> {

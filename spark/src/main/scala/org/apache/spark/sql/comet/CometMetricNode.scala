@@ -29,6 +29,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 
+import org.apache.comet.CometConf
 import org.apache.comet.serde.Metric
 
 /**
@@ -119,7 +120,7 @@ case class CometMetricNode(metrics: Map[String, SQLMetric], children: Seq[CometM
    */
   def reportScanInputMetrics(ctx: TaskContext): Unit = {
     val seenMetrics = CometMetricNode.taskSeenMetrics(ctx).scanInput
-    val _ = ctx.addTaskCompletionListener[Unit] { _ =>
+    CometUnionInput.addCleanup(ctx) {
       val scanLeaves = leafNodes.filter(_.metrics.contains("bytes_scanned"))
       def claimed(leaf: CometMetricNode, metricName: String): Long =
         leaf.metrics.get(metricName).fold(0L)(CometMetricNode.claimMetricValue(_, seenMetrics))
@@ -151,7 +152,7 @@ case class CometMetricNode(metrics: Map[String, SQLMetric], children: Seq[CometM
    * spill reports share.
    */
   def reportNativeWriteOutputMetrics(ctx: TaskContext): Unit = {
-    val _ = ctx.addTaskCompletionListener[Unit] { _ =>
+    CometUnionInput.addCleanup(ctx) {
       metrics.get("bytes_written").foreach { m =>
         ctx.taskMetrics().outputMetrics.setBytesWritten(m.value)
       }
@@ -176,7 +177,7 @@ case class CometMetricNode(metrics: Map[String, SQLMetric], children: Seq[CometM
    */
   def reportSpillMetrics(ctx: TaskContext): Unit = {
     val seenMetrics = CometMetricNode.taskSeenMetrics(ctx)
-    val _ = ctx.addTaskCompletionListener[Unit] { _ =>
+    CometUnionInput.addCleanup(ctx) {
       val diskBytesSpilled = sumMetricValues("spilled_bytes", seenMetrics.disk)
       if (diskBytesSpilled > 0L) {
         ctx.taskMetrics().incDiskBytesSpilled(diskBytesSpilled)
@@ -282,7 +283,25 @@ object CometMetricNode {
       "output_rows" -> SQLMetrics.createMetric(sc, "number of output rows"),
       "elapsed_compute" -> SQLMetrics.createNanoTimingMetric(
         sc,
-        "total time (in ms) spent in this operator"))
+        "total time (in ms) spent in this operator")) ++ unionFilterMetrics(sc)
+  }
+
+  def unionFilterMetrics(sc: SparkContext): Map[String, SQLMetric] = {
+    if (!CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_ENABLED.get() ||
+      !CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_UNION_ENABLED.get()) {
+      return Map.empty
+    }
+    Seq(
+      "branches_attached" -> "Union branches with a reader filter",
+      "branches_forwarded" -> "Union branches forwarding a filter to nested Union inputs",
+      "branches_skipped" -> "Union branches without reader attachment",
+      "rows_evaluated" -> "Union branch rows evaluated by the filter",
+      "rows_pruned" -> "Union branch rows rejected by the filter",
+      "rows_bypassed" -> "Union branch rows bypassing the filter").map {
+      case (name, description) =>
+        s"dynamic_filter_union_$name" -> SQLMetrics.createMetric(sc, description)
+    }.toMap + ("dynamic_filter_union_eval_time" ->
+      SQLMetrics.createNanoTimingMetric(sc, "Time evaluating Union filters"))
   }
 
   def aggregateMetrics(sc: SparkContext): Map[String, SQLMetric] = {
@@ -302,7 +321,7 @@ object CometMetricNode {
    * regardless of which scan implementation is used.
    */
   def baseScanMetrics(sc: SparkContext): Map[String, SQLMetric] = {
-    Map(
+    unionFilterMetrics(sc) ++ Map(
       "numOutputRows" -> SQLMetrics.createMetric(sc, "number of output rows"),
       "scanTime" -> SQLMetrics.createNanoTimingMetric(sc, "scan time"))
   }
@@ -339,7 +358,7 @@ object CometMetricNode {
    * SQL Metrics from the native Datafusion reader.
    */
   def nativeScanMetrics(sc: SparkContext): Map[String, SQLMetric] = {
-    Map(
+    unionFilterMetrics(sc) ++ Map(
       "output_rows" -> SQLMetrics.createMetric(sc, "number of output rows"),
       "time_elapsed_opening" ->
         SQLMetrics.createNanoTimingMetric(sc, "Wall clock time elapsed for file opening"),
@@ -462,7 +481,7 @@ object CometMetricNode {
    * NestedLoopJoinExec).
    */
   def joinMetrics(sc: SparkContext): Map[String, SQLMetric] = {
-    Map(
+    unionFilterMetrics(sc) ++ Map(
       "build_time" ->
         SQLMetrics.createNanoTimingMetric(sc, "Total time for collecting build-side of join"),
       "build_input_batches" ->
@@ -501,7 +520,7 @@ object CometMetricNode {
    * SQL Metrics for DataFusion SortMergeJoin
    */
   def sortMergeJoinMetrics(sc: SparkContext): Map[String, SQLMetric] = {
-    Map(
+    unionFilterMetrics(sc) ++ Map(
       "peak_mem_used" ->
         SQLMetrics.createSizeMetric(sc, "Memory used by build-side"),
       "input_batches" ->
