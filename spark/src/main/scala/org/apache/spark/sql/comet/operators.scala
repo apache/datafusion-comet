@@ -2488,17 +2488,24 @@ trait CometHashJoin {
         case FullOuter => JoinType.FullOuter
         case LeftSemi => JoinType.LeftSemi
         case LeftAnti => JoinType.LeftAnti
-        // Native only for equi-join keys that are bare column refs / literals: Spark short-
-        // circuits on first match and can skip key evaluation, but DF evaluates all keys eagerly
-        // over the batch, so a computed key (e.g. a throwing cast) could error on skipped rows.
-        case ExistenceJoin(_)
-            if CometConf.COMET_EXEC_EXISTENCE_JOIN_ENABLED.get(join.conf) &&
-              join.condition.isEmpty &&
-              (join.leftKeys ++ join.rightKeys).forall {
-                case _: Attribute | _: Literal => true
-                case _ => false
-              } =>
-          JoinType.Existence
+        case ExistenceJoin(_) if CometConf.COMET_EXEC_EXISTENCE_JOIN_ENABLED.get(join.conf) =>
+          // Native only for equi-key joins with bare column/literal keys and no residual.
+          if (join.condition.isDefined) {
+            withFallbackReason(
+              join,
+              "ExistenceJoin with a residual (non-equi) condition is not supported natively")
+            return None
+          } else if (!(join.leftKeys ++ join.rightKeys).forall {
+              case _: Attribute | _: Literal => true
+              case _ => false
+            }) {
+            withFallbackReason(
+              join,
+              "ExistenceJoin with a computed (non-column) join key is not supported natively")
+            return None
+          } else {
+            JoinType.Existence
+          }
         case _ =>
           // Spark doesn't support other join types
           withFallbackReason(join, s"Unsupported join type ${join.joinType}")

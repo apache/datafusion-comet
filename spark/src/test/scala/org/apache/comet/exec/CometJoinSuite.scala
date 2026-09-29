@@ -1609,8 +1609,7 @@ class CometJoinSuite extends CometTestBase {
   }
 
   test("ExistenceJoin via SortMergeJoin falls back to Spark") {
-    // Existence SMJ is not executed natively (DataFusion 55.1.0 BitwiseSortMergeJoin buffers
-    // output before emitting, risking OOM), so it falls back to Spark; verify result parity.
+    // Existence sort-merge joins are not executed natively; verify the fallback.
     withSQLConf(
       CometConf.COMET_EXEC_EXISTENCE_JOIN_ENABLED.key -> "true",
       SQLConf.PREFER_SORTMERGEJOIN.key -> "true",
@@ -1621,7 +1620,7 @@ class CometJoinSuite extends CometTestBase {
           val df = sql(
             "SELECT * FROM tbl_a a " +
               "WHERE a._2 = 'US' OR EXISTS (SELECT 1 FROM tbl_b b WHERE b._1 = a._1)")
-          checkSparkAnswer(df)
+          checkSparkAnswerAndFallbackReason(df, "Unsupported join type")
         }
       }
     }
@@ -1639,7 +1638,7 @@ class CometJoinSuite extends CometTestBase {
           val df = sql(
             "SELECT * FROM tbl_a a WHERE a._2 = 'US' OR EXISTS " +
               "(SELECT /*+ BROADCAST(b) */ 1 FROM tbl_b b WHERE b._1 = a._1 AND b._2 > a._1)")
-          checkSparkAnswer(df)
+          checkSparkAnswerAndFallbackReason(df, "residual (non-equi)")
         }
       }
     }
@@ -1657,7 +1656,7 @@ class CometJoinSuite extends CometTestBase {
           val df = sql(
             "SELECT * FROM tbl_a a WHERE a._2 = 'US' OR EXISTS " +
               "(SELECT /*+ BROADCAST(b) */ 1 FROM tbl_b b WHERE b._1 = a._1 + 1)")
-          checkSparkAnswer(df)
+          checkSparkAnswerAndFallbackReason(df, "computed (non-column)")
         }
       }
     }

@@ -20,7 +20,7 @@
 package org.apache.comet.rules
 
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide, JoinSelectionHelper}
-import org.apache.spark.sql.catalyst.plans.LeftSemi
+import org.apache.spark.sql.catalyst.plans.{ExistenceJoin, LeftSemi}
 import org.apache.spark.sql.catalyst.plans.logical.Join
 import org.apache.spark.sql.execution.{SortExec, SparkPlan}
 import org.apache.spark.sql.execution.joins.{ShuffledHashJoinExec, SortMergeJoinExec}
@@ -67,8 +67,10 @@ object RewriteJoin extends JoinSelectionHelper {
   def rewrite(plan: SparkPlan): SparkPlan = plan match {
     case smj: SortMergeJoinExec =>
       getSmjBuildSide(smj) match {
-        case Some(BuildRight) if smj.joinType == LeftSemi =>
+        case Some(BuildRight)
+            if smj.joinType == LeftSemi || smj.joinType.isInstanceOf[ExistenceJoin] =>
           // LeftSemi https://github.com/apache/datafusion-comet/issues/2667
+          // ExistenceJoin https://github.com/apache/datafusion-comet/issues/2697
           withFallbackReason(
             smj,
             "Cannot rewrite SortMergeJoin to HashJoin: " +

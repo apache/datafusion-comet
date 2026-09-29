@@ -94,7 +94,7 @@ WHERE l.region = 'US'
    OR EXISTS (SELECT /*+ SHUFFLE_HASH(r) */ 1 FROM ex_right r WHERE r.k = l.k)
 ORDER BY l.id
 
-query
+query expect_fallback(Unsupported join type)
 SELECT * FROM ex_left l
 WHERE l.region = 'US'
    OR EXISTS (SELECT /*+ MERGE(r) */ 1 FROM ex_right r WHERE r.k = l.k)
@@ -110,7 +110,7 @@ WHERE l.region = 'US'
    OR EXISTS (SELECT /*+ BROADCAST(r) */ 1 FROM ex_right_empty r WHERE r.k = l.k)
 ORDER BY l.id
 
-query
+query expect_fallback(Unsupported join type)
 SELECT * FROM ex_left l
 WHERE l.region = 'US'
    OR EXISTS (SELECT /*+ MERGE(r) */ 1 FROM ex_right_empty r WHERE r.k = l.k)
@@ -165,7 +165,7 @@ WHERE l.region = 'US'
    OR NOT EXISTS (SELECT /*+ SHUFFLE_HASH(r) */ 1 FROM ex_right r WHERE r.k = l.k)
 ORDER BY l.id
 
-query
+query expect_fallback(Unsupported join type)
 SELECT * FROM ex_left l
 WHERE l.region = 'US'
    OR NOT EXISTS (SELECT /*+ MERGE(r) */ 1 FROM ex_right r WHERE r.k = l.k)
@@ -182,7 +182,7 @@ WHERE l.region = 'US'
    OR EXISTS (SELECT /*+ SHUFFLE_HASH(r) */ 1 FROM ex_right_dups r WHERE r.k = l.k)
 ORDER BY l.id
 
-query
+query expect_fallback(Unsupported join type)
 SELECT * FROM ex_left l
 WHERE l.region = 'US'
    OR EXISTS (SELECT /*+ MERGE(r) */ 1 FROM ex_right_dups r WHERE r.k = l.k)

@@ -239,7 +239,9 @@ object CometConf extends ShimCometConf {
     createExecEnabledConfig(
       "existenceJoin",
       defaultValue = true,
-      notes = Some("Enables native ExistenceJoin (EXISTS/NOT EXISTS/IN combined with OR)."))
+      notes = Some(
+        "Native ExistenceJoin (EXISTS/NOT EXISTS/IN combined with OR); sort-merge joins, " +
+          "residual conditions, computed keys, and NOT IN fall back to Spark"))
   val COMET_EXEC_AGGREGATE_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("aggregate", defaultValue = true)
   val COMET_EXEC_COLLECT_LIMIT_ENABLED: ConfigEntry[Boolean] =
