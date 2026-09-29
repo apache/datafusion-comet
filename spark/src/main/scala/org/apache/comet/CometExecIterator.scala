@@ -456,15 +456,30 @@ object CometExecIterator extends Logging {
     }
 
   /**
-   * The executor's memory overhead in bytes, sized the way Spark sizes the default resource
-   * profile's container: `spark.executor.memoryOverhead` if set, otherwise
-   * `spark.executor.memoryOverheadFactor` of `spark.executor.memory`, but at least
-   * `spark.executor.minMemoryOverhead`. None in local mode, where there is no container, or if
-   * the settings do not parse. An executor running a non-default resource profile may have a
+   * Whether the cluster manager for `master` runs each executor in a container whose memory it
+   * sizes from the memory overhead settings: YARN and Kubernetes. Local mode, local-cluster
+   * included, has no executor container, and a standalone worker starts its executors with no
+   * memory limit and never reads those settings. Comet does not know how any other cluster
+   * manager sizes its executors.
+   */
+  def isContainerSizedFromOverhead(master: String): Boolean =
+    master == "yarn" || master.startsWith("k8s://")
+
+  /**
+   * The executor's memory overhead in bytes, sized the way YARN and Kubernetes size the default
+   * resource profile's container: `spark.executor.memoryOverhead` if set, otherwise a factor of
+   * `spark.executor.memory`, but at least `spark.executor.minMemoryOverhead` (a fixed 384 MiB
+   * before Spark 4.0 added that setting). The factor is `spark.executor.memoryOverheadFactor`,
+   * 0.1 by default, except that Kubernetes falls back to `spark.kubernetes.memoryOverheadFactor`
+   * when it is unset. In cluster mode spark-submit always sets that for the driver, to 0.4 for a
+   * PySpark or SparkR application that did not set it, and the executors get the driver's value.
+   * None where no container is sized from the overhead (see [[isContainerSizedFromOverhead]]), or
+   * if the settings do not parse. An executor running a non-default resource profile may have a
    * different overhead.
    */
   def executorMemoryOverhead(conf: SparkConf): Option[Long] = {
-    if (conf.get("spark.master", "").startsWith("local")) {
+    val master = conf.get("spark.master", "")
+    if (!isContainerSizedFromOverhead(master)) {
       None
     } else {
       try {
@@ -472,8 +487,20 @@ object CometExecIterator extends Logging {
           case Some(_) => conf.getSizeAsMb("spark.executor.memoryOverhead")
           case None =>
             val executorMiB = conf.getSizeAsMb("spark.executor.memory", "1g")
-            val factor = conf.getDouble("spark.executor.memoryOverheadFactor", 0.1)
-            val minimumMiB = conf.getSizeAsMb("spark.executor.minMemoryOverhead", "384m")
+            val kubernetesFactor = if (master.startsWith("k8s://")) {
+              conf.getOption("spark.kubernetes.memoryOverheadFactor")
+            } else {
+              None
+            }
+            val factor = conf
+              .getOption("spark.executor.memoryOverheadFactor")
+              .orElse(kubernetesFactor)
+              .fold(0.1)(_.toDouble)
+            val minimumMiB = if (CometSparkSessionExtensions.isSpark40Plus) {
+              conf.getSizeAsMb("spark.executor.minMemoryOverhead", "384m")
+            } else {
+              384L
+            }
             math.max((executorMiB * factor).toLong, minimumMiB)
         }
         Some(ByteUnit.MiB.toBytes(overheadMiB))
@@ -484,11 +511,13 @@ object CometExecIterator extends Logging {
   }
 
   /**
-   * The memory the executor's container has for native memory: `spark.memory.offHeap.size` plus
-   * the memory overhead; see [[executorMemoryOverhead]]. None, so that nothing is compared
-   * against it, in local mode, when off-heap memory is disabled (a testing-only mode in which
-   * Comet's reservations do not come from Spark's off-heap pool), or if the settings do not
-   * parse.
+   * The memory the executor's container has outside the JVM heap: `spark.memory.offHeap.size`,
+   * plus the memory overhead (see [[executorMemoryOverhead]]), plus
+   * `spark.executor.pyspark.memory` for an application that spark-submit marked as Python, with
+   * `spark.yarn.isPython` for YARN and with `spark.kubernetes.resource.type` in Kubernetes
+   * cluster mode. None, so that nothing is compared against it, where the overhead is None, when
+   * off-heap memory is disabled (a testing-only mode in which Comet's reservations do not come
+   * from Spark's off-heap pool), or if the settings do not parse.
    */
   def nativeMemoryLimit(conf: SparkConf): Option[Long] = {
     if (!CometSparkSessionExtensions.isOffHeapEnabled(conf)) {
@@ -496,7 +525,16 @@ object CometExecIterator extends Logging {
     } else {
       executorMemoryOverhead(conf).flatMap { overhead =>
         try {
-          Some(overhead + conf.getSizeAsBytes("spark.memory.offHeap.size", "0"))
+          val pythonApp = if (conf.get("spark.master", "") == "yarn") {
+            conf.getBoolean("spark.yarn.isPython", false)
+          } else {
+            conf.get("spark.kubernetes.resource.type", "") == "python"
+          }
+          val pysparkMiB =
+            if (pythonApp) conf.getSizeAsMb("spark.executor.pyspark.memory", "0") else 0L
+          Some(
+            overhead + conf.getSizeAsBytes("spark.memory.offHeap.size", "0") +
+              ByteUnit.MiB.toBytes(pysparkMiB))
         } catch {
           case NonFatal(_) => None
         }
@@ -608,9 +646,10 @@ object CometExecIterator extends Logging {
         s"Arrow) plus Spark's off-heap memory in use (${toMiB(sparkOffHeapUsed)}, including " +
         s"Comet's reservations) is ${toMiB(footprint)}, more than the ${toMiB(limitBytes)} the " +
         "executor's container has outside the JVM heap (spark.memory.offHeap.size plus the " +
-        "memory overhead), which also has to hold the JVM's own non-heap memory. The cluster " +
-        "manager may kill this executor for exceeding its container limit. Raise " +
-        s"spark.executor.memoryOverhead. ${CometConf.TUNING_GUIDE}.")
+        "memory overhead, and spark.executor.pyspark.memory for a PySpark application), which " +
+        "also has to hold the JVM's own non-heap memory. The cluster manager may kill this " +
+        "executor for exceeding its container limit. Raise spark.executor.memoryOverhead. " +
+        s"${CometConf.TUNING_GUIDE}.")
     } else {
       None
     }

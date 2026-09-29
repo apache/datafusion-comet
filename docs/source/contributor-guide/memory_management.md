@@ -455,10 +455,14 @@ On Kubernetes, Spark sizes the executor pod from `ResourceProfile`:
 ```text
 pod memory request = pod memory limit
                    = spark.executor.memory
-                   + spark.executor.memoryOverhead   (default max(0.1 * executor.memory, 384 MiB))
+                   + spark.executor.memoryOverhead   (default max(factor * executor.memory, 384 MiB))
                    + spark.memory.offHeap.size
-                   + pyspark memory                  (Python applications only)
+                   + spark.executor.pyspark.memory   (Python applications in cluster mode only)
 ```
+
+The factor is `spark.executor.memoryOverheadFactor` or, when that is unset,
+`spark.kubernetes.memoryOverheadFactor`. Both default to 0.1, but in cluster mode spark-submit sets
+the Kubernetes factor to 0.4 for a PySpark or SparkR application that did not set it.
 
 Both the request and the limit are set to this same value, so the pod's cgroup `memory.max` is a
 hard ceiling on the sum of everything in the container. That cgroup counts, among other things:

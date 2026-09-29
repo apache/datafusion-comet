@@ -251,8 +251,8 @@ class CometPluginsMemoryOverheadWarningSuite extends CometTestBase {
     assert(!warningsFor(conf).exists(_.contains(warning)))
   }
 
-  test("does not warn in local mode") {
-    Seq("local", "local[4]", "local-cluster[2,1,1024]").foreach { master =>
+  test("does not warn in local mode or on a standalone cluster") {
+    Seq("local", "local[4]", "local-cluster[2,1,1024]", "spark://host:7077").foreach { master =>
       assert(!warningsFor(cometConf(master)).exists(_.contains(warning)), master)
     }
   }

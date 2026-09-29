@@ -29,7 +29,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.internal.config.{EXECUTOR_MEMORY_OVERHEAD, EXECUTOR_MEMORY_OVERHEAD_FACTOR}
 import org.apache.spark.sql.internal.StaticSQLConf
 
-import org.apache.comet.{COMET_VERSION, CometSparkSessionExtensions, NativeBase}
+import org.apache.comet.{COMET_VERSION, CometExecIterator, CometSparkSessionExtensions, NativeBase}
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometConf.{COMET_ICEBERG_WRITE_REPORT_DIR, COMET_METRICS_ENABLED, COMET_ONHEAP_ENABLED}
 import org.apache.comet.CometKryoRegistrator
@@ -172,10 +172,11 @@ object CometDriverPlugin extends Logging {
     val cometExecEnabled = getBooleanConf(conf, CometConf.COMET_EXEC_ENABLED)
     val cometShuffleEnabled = getBooleanConf(conf, CometConf.COMET_SHUFFLE_ENABLED)
     val cometActive = cometEnabled && (cometExecEnabled || cometShuffleEnabled)
-    // Local mode, local-cluster included, has no executor container to size
-    val localMode = conf.get("spark.master", "").startsWith("local")
+    // Only YARN and Kubernetes size executors from the overhead, not local mode or standalone
+    val sizedFromOverhead =
+      CometExecIterator.isContainerSizedFromOverhead(conf.get("spark.master", ""))
 
-    if (cometActive && !localMode && !isExecutorMemoryOverheadSet(conf)) {
+    if (cometActive && sizedFromOverhead && !isExecutorMemoryOverheadSet(conf)) {
       logWarning(
         s"Neither ${EXECUTOR_MEMORY_OVERHEAD.key} nor ${EXECUTOR_MEMORY_OVERHEAD_FACTOR.key} is " +
           "set. Comet allocates outside the JVM heap, and the part of that which no memory pool " +

@@ -99,11 +99,12 @@ already drawing on.
 Work out what the executor already gets before choosing a value. When
 `spark.executor.memoryOverhead` is unset, Spark derives the overhead as
 `max(spark.executor.memoryOverheadFactor * spark.executor.memory, 384 MiB)`. The factor defaults to
-`0.1`, except for PySpark and SparkR applications submitted to Kubernetes in cluster mode, where it
-defaults to `0.4`. On Spark 4.0 and later the floor is configurable through
-`spark.executor.minMemoryOverhead`. Setting `spark.executor.memoryOverhead` **replaces** the derived
-value rather than adding to it, so a value below what is derived today shrinks the container instead
-of growing it.
+`0.1`. On Kubernetes, when `spark.executor.memoryOverheadFactor` is unset, Spark uses
+`spark.kubernetes.memoryOverheadFactor` instead, which also defaults to `0.1`, except for PySpark
+and SparkR applications submitted in cluster mode, where it defaults to `0.4`. On Spark 4.0 and
+later the floor is configurable through `spark.executor.minMemoryOverhead`. Setting
+`spark.executor.memoryOverhead` **replaces** the derived value rather than adding to it, so a value
+below what is derived today shrinks the container instead of growing it.
 
 For a small executor, `2g` is a reasonable starting point. A 4 GiB executor derives only 409 MiB, so
 this is a real increase:
@@ -126,7 +127,9 @@ Raise the value further if executors are killed by the cluster manager (on Kuber
 To measure how much Comet needs rather than guessing, see [Sizing the Overhead from the Memory Usage Log].
 
 Note that on Kubernetes and YARN the overhead is added to the container size, so raising it reduces
-how many executors fit on a node.
+how many executors fit on a node. A standalone cluster ignores the overhead: its workers start
+executors without a memory limit and count only `spark.executor.memory` against the memory they
+offer.
 
 [Sizing the Overhead from the Memory Usage Log]: #sizing-the-overhead-from-the-memory-usage-log
 
@@ -179,10 +182,11 @@ occupy until Spark hands it out, so a quiet log is not a sign that the overhead 
 size it from the most untracked memory as described above. The overhead also has to hold the JVM's
 own non-heap memory, so by the time the warning appears the executor has likely outgrown its
 container. It warns the first time this happens, and again each time it happens after dropping back
-below. The overhead it uses is `spark.executor.memoryOverhead` if set, otherwise
-`spark.executor.memoryOverheadFactor` of `spark.executor.memory` with a minimum of
-`spark.executor.minMemoryOverhead`, as Spark sizes the default container. There is no warning in
-local mode.
+below. It derives the overhead the way YARN and Kubernetes size the executor's container, as
+described in [Configuring Executor Memory Overhead]. For a PySpark application it also counts
+`spark.executor.pyspark.memory` as part of the container when the cluster manager adds it, which
+YARN does, and Kubernetes does in cluster mode. There is no warning in local mode, on a standalone
+cluster, whose workers do not limit an executor's memory, or with any other cluster manager.
 
 Look more closely before raising the overhead if the untracked memory keeps growing through a run
 rather than levelling off: memory that is not being released will exhaust any overhead eventually.
