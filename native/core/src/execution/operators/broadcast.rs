@@ -465,7 +465,7 @@ fn utf8_copy_bytes(rows: usize, values: usize) -> Result<usize> {
 
 /// Bound copied bytes, not source capacity: slices share their original
 /// buffers but own only their rows after copying.
-fn broadcast_copy_bytes(batch: &RecordBatch, schema: &Schema) -> Result<usize> {
+pub(super) fn broadcast_copy_bytes(batch: &RecordBatch, schema: &Schema) -> Result<usize> {
     let mut bound = 0_usize;
     for (column, field) in batch.columns().iter().zip(schema.fields()) {
         if column.data_type() != field.data_type() {
@@ -505,7 +505,7 @@ fn broadcast_copy_bytes(batch: &RecordBatch, schema: &Schema) -> Result<usize> {
 
 /// Validate every column and admit all copies before allocating any of them.
 /// Count aliases separately: each output column owns an independent copy.
-fn copy_broadcast_columns(
+pub(super) fn copy_broadcast_columns(
     batch: &RecordBatch,
     schema: &Schema,
     reservation: &mut MemoryReservation,
@@ -567,6 +567,7 @@ struct CachedBroadcastJoinExec {
     source: Arc<BroadcastInputExec>,
     cache: Arc<PreparedCache>,
     metrics: ExecutionPlanMetricsSet,
+    union_targets: Vec<super::union_filter::UnionFilterTarget>,
 }
 
 impl DisplayAs for CachedBroadcastJoinExec {
@@ -627,6 +628,7 @@ impl ExecutionPlan for CachedBroadcastJoinExec {
         let source = Arc::clone(&self.source);
         let cache = Arc::clone(&self.cache);
         let metrics = self.metrics.clone();
+        let union_targets = self.union_targets.clone();
         let hits =
             MetricBuilder::new(&self.metrics).counter("broadcast_build_cache_hits", partition);
         let misses =
@@ -703,6 +705,25 @@ impl ExecutionPlan for CachedBroadcastJoinExec {
                 }
                 Err(error) => return Err(error),
             };
+            // A failed cache admission keeps the task-local transport path sound.
+            if lease.is_none() && !union_targets.is_empty() {
+                return super::union_filter::prepare_union_join(
+                    &join,
+                    partition,
+                    context,
+                    union_targets,
+                    metrics,
+                );
+            }
+            let domains = lease
+                .as_ref()
+                .map(|build| {
+                    union_targets
+                        .iter()
+                        .map(|target| target.publish(Arc::clone(build)))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
             let result = execution.execute(partition, context);
             for metric in execution.metrics().unwrap_or_default().iter() {
                 metrics.register(Arc::clone(metric));
@@ -712,6 +733,7 @@ impl ExecutionPlan for CachedBroadcastJoinExec {
                 Some(prepared) => Ok(Box::pin(PreparedProbeStream {
                     stream,
                     _lease: prepared,
+                    _domains: domains,
                 }) as SendableRecordBatchStream),
                 None => Ok(stream),
             }
@@ -727,6 +749,7 @@ impl ExecutionPlan for CachedBroadcastJoinExec {
 struct PreparedProbeStream {
     stream: SendableRecordBatchStream,
     _lease: Arc<PreparedHashJoinBuild>,
+    _domains: Vec<Arc<super::union_filter::UnionFilterDomain>>,
 }
 
 impl Stream for PreparedProbeStream {
@@ -750,18 +773,23 @@ impl RecordBatchStream for PreparedProbeStream {
 pub(crate) fn reuse_broadcast_build(
     plan: Arc<dyn ExecutionPlan>,
 ) -> Result<Arc<dyn ExecutionPlan>> {
-    reuse_broadcast_build_with_metrics(plan, ExecutionPlanMetricsSet::new())
+    reuse_broadcast_build_with_transport(plan, ExecutionPlanMetricsSet::new(), vec![])
 }
 
 /// Attaches reuse while registering asynchronous execution counters in the
 /// caller's metric set. The set owns no execution state. An ineligible direct
 /// join returns the same Arc so the caller can forward ordinary metrics itself.
-pub(crate) fn reuse_broadcast_build_with_metrics(
+pub(crate) fn reuse_broadcast_build_with_transport(
     plan: Arc<dyn ExecutionPlan>,
     metrics: ExecutionPlanMetricsSet,
+    union_targets: Vec<super::union_filter::UnionFilterTarget>,
 ) -> Result<Arc<dyn ExecutionPlan>> {
     if let Some(projection) = plan.downcast_ref::<ProjectionExec>() {
-        let child = reuse_broadcast_build_with_metrics(Arc::clone(projection.input()), metrics)?;
+        let child = reuse_broadcast_build_with_transport(
+            Arc::clone(projection.input()),
+            metrics,
+            union_targets,
+        )?;
         return if Arc::ptr_eq(&child, projection.input()) {
             Ok(plan)
         } else {
@@ -801,6 +829,7 @@ pub(crate) fn reuse_broadcast_build_with_metrics(
         cache: cache(source.generation),
         source,
         metrics,
+        union_targets,
     }))
 }
 

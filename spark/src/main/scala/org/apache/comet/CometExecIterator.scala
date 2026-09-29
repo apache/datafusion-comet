@@ -32,7 +32,7 @@ import org.apache.spark._
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.internal.Logging
 import org.apache.spark.network.util.ByteUnit
-import org.apache.spark.sql.comet.CometMetricNode
+import org.apache.spark.sql.comet.{CometMetricNode, CometUnionInput}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.vectorized._
 import org.apache.spark.util.SerializableConfiguration
@@ -218,9 +218,8 @@ class CometExecIterator(
 
   // Register a task completion listener to ensure native resources are released
   // when the task is done.
-  TaskContext.get().addTaskCompletionListener[Unit] { _ =>
-    this.close()
-  }
+  CometUnionInput.addCleanup(TaskContext.get())(close())
+  CometUnionInput.registerExecution(plan)
 
   CometExecIterator.startMemoryUsageLog()
 
@@ -262,8 +261,11 @@ class CometExecIterator(
     }
   }
 
+  private val deferCloseToUnion = CometUnionInput.isBranchExecution
+  private var exhausted = false
+
   override def hasNext: Boolean = {
-    if (closed) return false
+    if (closed || exhausted) return false
 
     if (nextBatch.isDefined) {
       return true
@@ -283,7 +285,10 @@ class CometExecIterator(
 
     if (nextBatch.isEmpty) {
       readPartitionOffsetsBeforeClose()
-      close()
+      exhausted = true
+      // An outer native operator may still retain this branch's Arrow buffers and build
+      // leases. Its Union owner already registered close() and releases us after its plan.
+      if (!deferCloseToUnion) close()
       false
     } else {
       true
@@ -338,6 +343,10 @@ class CometExecIterator(
       // execution context frees this plan's task-shared memory pool reference and several JNI
       // global refs.
       attempt(nativeLib.releasePlan(plan))
+      inputObjects.foreach {
+        case union: CometUnionInput => attempt(union.closeAfterExecution())
+        case _ =>
+      }
 
       // Run the diagnostics even when teardown failed: a failed teardown is exactly when the
       // non-zero memory usage warning below is most informative.

@@ -1049,6 +1049,19 @@ abstract class CometNativeExec extends CometExec {
      */
     def asArrowStreamRDD(plan: SparkPlan, partitionCount: Int, scanSlot: Int): RDD[_] =
       plan match {
+        case union: CometUnionExec
+            if CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_ENABLED.get(conf) &&
+              CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_UNION_ENABLED.get(conf) =>
+          def branchRoots(branch: SparkPlan): Seq[Long] = branch match {
+            case native: CometNativeExec => Seq(native.nativeOp.getPlanId)
+            case nested: CometUnionExec => nested.children.flatMap(branchRoots)
+            case _ => Seq.empty
+          }
+          new CometUnionInputRDD(
+            union.executeColumnar(),
+            union.schema,
+            union.nodeName,
+            union.children.flatMap(branchRoots).toArray)
         case s: CometNativeArrowSource =>
           s.doExecuteAsArrowStream()
         case _ =>
@@ -2645,6 +2658,21 @@ case class CometHashAggregateExec(
 
 trait CometHashJoin {
 
+  private def unionFilterTransportEnabled(join: HashJoin): Boolean = {
+    val keysSupported = (join.leftKeys, join.rightKeys) match {
+      case (Seq(left: Attribute), Seq(right: Attribute)) if left.dataType == right.dataType =>
+        left.dataType match {
+          case ByteType | ShortType | IntegerType | LongType => true
+          case _ => false
+        }
+      case _ => false
+    }
+    join.isInstanceOf[BroadcastHashJoinExec] && join.joinType == Inner &&
+    join.condition.isEmpty && keysSupported &&
+    CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_ENABLED.get(join.conf) &&
+    CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_UNION_ENABLED.get(join.conf)
+  }
+
   // Only BroadcastHashJoinExec can be null-aware (NOT IN subqueries).
   protected def isNullAware(join: HashJoin): Boolean = join match {
     case bhj: BroadcastHashJoinExec => bhj.isNullAwareAntiJoin
@@ -2751,6 +2779,7 @@ trait CometHashJoin {
         else OperatorOuterClass.BuildSide.BuildRight)
         .setNullAwareAntiJoin(isNullAwareAntiJoin)
         .setDynamicFilterEnabled(CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_ENABLED.get(join.conf))
+        .setUnionFilterTransportEnabled(unionFilterTransportEnabled(join))
       condition.foreach(joinBuilder.setCondition)
       Some(builder.setHashJoin(joinBuilder).build())
     } else {

@@ -517,9 +517,14 @@ fn collect_op_names<'a>(op: &'a Operator, names: &mut std::collections::BTreeSet
 }
 
 /// Comet native execution context. Kept alive across JNI calls.
+use super::operators::union_filter::{UnionFilterBundle, UnionFilterDomain};
+
 struct ExecutionContext {
     /// The id of the execution context.
     pub id: i64,
+    task_attempt_id: i64,
+    union_filter: Option<Arc<UnionFilterBundle>>,
+    forwarded_union_domains: Vec<Arc<UnionFilterDomain>>,
     /// The deserialized Spark plan
     pub spark_plan: Operator,
     /// The number of partitions
@@ -747,6 +752,9 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
 
             let exec_context = Box::new(ExecutionContext {
                 id,
+                task_attempt_id,
+                union_filter: None,
+                forwarded_union_domains: vec![],
                 spark_plan,
                 partition_count: partition_count as usize,
                 root_op: None,
@@ -777,6 +785,70 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
 
             Ok(Box::into_raw(exec_context) as i64)
         })
+    })
+}
+
+/// Retain a Union domain bundle for a JVM stream owner. Handles are owned boxes, not registry keys.
+/// # Safety
+/// `handle` must address a live Arc<UnionFilterBundle> supplied by openStream or retain.
+#[no_mangle]
+pub unsafe extern "system" fn Java_org_apache_comet_Native_retainUnionRuntimeFilter(
+    e: EnvUnowned,
+    _class: JClass,
+    handle: jlong,
+) -> jlong {
+    try_unwrap_or_throw(&e, |_env| {
+        if handle == 0 {
+            return Err(CometError::NullPointer(
+                "Union runtime filter is null".into(),
+            ));
+        }
+        let bundle = &*(handle as *const Arc<UnionFilterBundle>);
+        Ok(Box::into_raw(Box::new(Arc::clone(bundle))) as jlong)
+    })
+}
+
+/// # Safety
+/// `handle` must be an owned handle returned by retain, released exactly once.
+#[no_mangle]
+pub unsafe extern "system" fn Java_org_apache_comet_Native_releaseUnionRuntimeFilter(
+    e: EnvUnowned,
+    _class: JClass,
+    handle: jlong,
+) {
+    try_unwrap_or_throw(&e, |_env| {
+        if handle != 0 {
+            drop(Box::from_raw(handle as *mut Arc<UnionFilterBundle>));
+        }
+        Ok::<_, CometError>(())
+    })
+}
+
+/// Attach completed domains before a child native pipeline starts.
+/// # Safety
+/// Both addresses must be live; the caller owns their lifetimes through this call.
+#[no_mangle]
+pub unsafe extern "system" fn Java_org_apache_comet_Native_setUnionRuntimeFilter(
+    e: EnvUnowned,
+    _class: JClass,
+    plan: jlong,
+    handle: jlong,
+) {
+    try_unwrap_or_throw(&e, |_env| {
+        if plan == 0 || handle == 0 {
+            return Err(CometError::NullPointer(
+                "Union runtime filter context is null".into(),
+            ));
+        }
+        let context = get_execution_context(plan);
+        let bundle = &*(handle as *const Arc<UnionFilterBundle>);
+        // Invalid or late registration is an optional-filter miss, never a query failure.
+        if context.root_op.is_none()
+            && bundle.accepts(context.spark_plan.plan_id, context.task_attempt_id)
+        {
+            context.union_filter = Some(Arc::clone(bundle));
+        }
+        Ok::<_, CometError>(())
     })
 }
 
@@ -1280,6 +1352,27 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                     &mut exec_context.input_sources.clone(),
                     exec_context.partition_count,
                 )?;
+                // A separate Union branch is planned without its parent join. Prepare the
+                // same metric-preserving projection/filter wrappers as an in-pipeline probe,
+                // preserving Spark metric ownership before the reader walker runs.
+                let root_op = if let Some(bundle) = exec_context
+                    .union_filter
+                    .as_ref()
+                    .filter(|bundle| !bundle.domains.is_empty())
+                {
+                    let root_op = PhysicalPlanner::prepare_union_branch_for_runtime_reader(root_op);
+                    let mut root = root_op.as_ref().clone();
+                    let attachment = super::operators::apply_union_filter_bundle(
+                        Arc::clone(&root.native_plan),
+                        bundle,
+                        exec_context.session_ctx.copied_config().options(),
+                    )?;
+                    root.native_plan = attachment.plan;
+                    exec_context.forwarded_union_domains = attachment.forwarded_domains;
+                    Arc::new(root)
+                } else {
+                    root_op
+                };
                 let physical_plan_time = start.elapsed();
 
                 exec_context.plan_creation_time += physical_plan_time;
@@ -1431,7 +1524,18 @@ pub extern "system" fn Java_org_apache_comet_Native_releasePlan(
         // back what they hold the next time they yield, so wait for them.
         let id = execution_context.id;
         let plan_memory = Arc::clone(&execution_context.plan_memory);
+        let union_inputs = execution_context
+            .scans
+            .iter()
+            .filter_map(|scan| scan.union_input.clone())
+            .collect::<Vec<_>>();
         drop(execution_context);
+        let mut union_inputs_closed = Ok(());
+        for input in union_inputs {
+            // Try every owner even if an earlier callback failed. Branch plans and bundle
+            // leases must close before waiting for this plan's reservations to return.
+            union_inputs_closed = union_inputs_closed.and(input.close());
+        }
         let held = plan_memory.wait_until_released(Instant::now() + PLAN_MEMORY_RELEASE_TIMEOUT);
         if held > 0 {
             warn!(
@@ -1442,7 +1546,9 @@ pub extern "system" fn Java_org_apache_comet_Native_releasePlan(
             );
         }
 
-        producer_stopped.and(metrics_flushed)
+        producer_stopped
+            .and(metrics_flushed)
+            .and(union_inputs_closed)
     })
 }
 

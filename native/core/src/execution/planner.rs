@@ -41,8 +41,8 @@ use crate::execution::operators::TopKReaderFilterExec;
 use crate::execution::operators::{reuse_broadcast_build, BroadcastInputExec};
 use crate::execution::{
     operators::{
-        ExecutionError, MergeActionContext, MergeInstructionExec, MergeRowsExec, ScanExec,
-        ShuffleScanExec,
+        CometProjectionExec, ExecutionError, MergeActionContext, MergeInstructionExec,
+        MergeRowsExec, ScanExec, ShuffleScanExec,
     },
     planner::expression_registry::ExpressionRegistry,
     planner::operator_registry::OperatorRegistry,
@@ -1951,6 +1951,23 @@ impl PhysicalPlanner {
                             )),
                         ));
                     }
+                    if let Some(union_input) = super::operators::union_filter::UnionInput::try_new(
+                        Arc::clone(&java_stream),
+                        data_types.clone(),
+                    )? {
+                        let mut lazy_scan =
+                            ScanExec::new(self.exec_context_id, None, &scan.source, data_types)?;
+                        lazy_scan.union_input = Some(union_input);
+                        return Ok((
+                            vec![lazy_scan.clone()],
+                            vec![],
+                            Arc::new(SparkPlan::new(
+                                spark_plan.plan_id,
+                                Arc::new(lazy_scan),
+                                vec![],
+                            )),
+                        ));
+                    }
                     let address: i64 = JVMClasses::with_env(|env| unsafe {
                         jni_call!(env, arrow_array_stream(java_stream.as_obj()).memory_address() -> i64)
                     })?;
@@ -2461,7 +2478,11 @@ impl PhysicalPlanner {
                     } else {
                         &mut join_params.left
                     };
-                    *probe = Self::prepare_probe_filter_for_runtime_reader(Arc::clone(probe));
+                    *probe = if join.union_filter_transport_enabled {
+                        Self::prepare_union_branch_for_runtime_reader(Arc::clone(probe))
+                    } else {
+                        Self::prepare_probe_filter_for_runtime_reader(Arc::clone(probe))
+                    };
                 }
 
                 let left = Arc::clone(&join_params.left.native_plan);
@@ -2497,9 +2518,10 @@ impl PhysicalPlanner {
                 // (which matches DataFusion's default), and swap_inputs would turn LeftAnti
                 // into RightAnti, which DataFusion rejects with null_aware=true.
                 if join.build_side == BuildSide::BuildLeft as i32 || join.null_aware_anti_join {
-                    let hash_join = Self::apply_join_dynamic_filter(
+                    let hash_join = Self::apply_join_dynamic_filter_with_transport(
                         hash_join,
                         join.dynamic_filter_enabled && !join.null_aware_anti_join,
+                        join.union_filter_transport_enabled,
                         self.session_ctx.copied_config().options(),
                     )?;
                     let hash_join = reuse_broadcast_build(hash_join)?;
@@ -2515,9 +2537,10 @@ impl PhysicalPlanner {
                 } else {
                     let swapped_hash_join =
                         hash_join.as_ref().swap_inputs(PartitionMode::Partitioned)?;
-                    let swapped_hash_join = Self::apply_join_dynamic_filter(
+                    let swapped_hash_join = Self::apply_join_dynamic_filter_with_transport(
                         swapped_hash_join,
                         join.dynamic_filter_enabled,
+                        join.union_filter_transport_enabled,
                         self.session_ctx.copied_config().options(),
                     )?;
                     let swapped_hash_join = reuse_broadcast_build(swapped_hash_join)?;
@@ -2757,19 +2780,72 @@ impl PhysicalPlanner {
         Arc::new(prepared)
     }
 
+    /// Keep Spark metric identities while preparing an opt-in Union branch's safe reader path.
+    pub(crate) fn prepare_union_branch_for_runtime_reader(plan: Arc<SparkPlan>) -> Arc<SparkPlan> {
+        let filter = plan.native_plan.downcast_ref::<FilterExec>();
+        let projection = plan.native_plan.downcast_ref::<ProjectionExec>();
+        if filter.is_none() && projection.is_none() {
+            return plan;
+        }
+        let mut prepared = plan.as_ref().clone();
+        let child = if plan.children.len() == 1
+            && plan.native_plan.children().len() == 1
+            && Arc::ptr_eq(
+                plan.native_plan.children()[0],
+                &plan.children[0].native_plan,
+            ) {
+            let child =
+                Self::prepare_union_branch_for_runtime_reader(Arc::clone(&plan.children[0]));
+            prepared.children = vec![Arc::clone(&child)];
+            Arc::clone(&child.native_plan)
+        } else {
+            Arc::clone(plan.native_plan.children()[0])
+        };
+        let rewritten = if let Some(filter) = filter {
+            CometFilterExec::from_datafusion(filter.clone()).with_execution_input(child)
+        } else {
+            CometProjectionExec::from_datafusion(projection.unwrap().clone())
+                .with_execution_input(child)
+        };
+        match rewritten {
+            Ok(native_plan) => {
+                prepared.native_plan = native_plan;
+                Arc::new(prepared)
+            }
+            Err(error) => {
+                log::debug!("Runtime filter branch preparation skipped: {error}");
+                plan
+            }
+        }
+    }
+
     /// Attach after choosing the final build side, including the projection emitted
     /// by `swap_inputs`, without running DataFusion's physical optimizer.
+    #[cfg(test)]
     pub(crate) fn apply_join_dynamic_filter(
         plan: Arc<dyn ExecutionPlan>,
         enabled: bool,
+        config: &ConfigOptions,
+    ) -> Result<Arc<dyn ExecutionPlan>, ExecutionError> {
+        Self::apply_join_dynamic_filter_with_transport(plan, enabled, false, config)
+    }
+
+    fn apply_join_dynamic_filter_with_transport(
+        plan: Arc<dyn ExecutionPlan>,
+        enabled: bool,
+        union_transport: bool,
         config: &ConfigOptions,
     ) -> Result<Arc<dyn ExecutionPlan>, ExecutionError> {
         if !enabled {
             return Ok(plan);
         }
         if let Some(projection) = plan.downcast_ref::<ProjectionExec>() {
-            let child =
-                Self::apply_join_dynamic_filter(Arc::clone(projection.input()), enabled, config)?;
+            let child = Self::apply_join_dynamic_filter_with_transport(
+                Arc::clone(projection.input()),
+                enabled,
+                union_transport,
+                config,
+            )?;
             return if !Arc::ptr_eq(&child, projection.input()) {
                 Ok(plan.replace_children(
                     vec![child],
@@ -2787,7 +2863,7 @@ impl PhysicalPlanner {
             return Ok(plan);
         };
         match DynamicFilterJoinExec::try_new(join, config)? {
-            Some(wrapper) => Ok(Arc::new(wrapper)),
+            Some(wrapper) => Ok(Arc::new(wrapper.with_union_transport(union_transport))),
             None => Ok(plan),
         }
     }
@@ -5726,6 +5802,7 @@ mod tests {
             sql_text_pool: vec![],
             children: vec![op_scan.clone(), op_scan.clone()],
             op_struct: Some(OpStruct::HashJoin(spark_operator::HashJoin {
+                union_filter_transport_enabled: false,
                 left_join_keys: vec![create_bound_reference(0)],
                 right_join_keys: vec![create_bound_reference(0)],
                 join_type: 0,
@@ -5761,6 +5838,7 @@ mod tests {
                 let operator = Operator {
                     children: vec![create_scan(), create_scan()],
                     op_struct: Some(OpStruct::HashJoin(spark_operator::HashJoin {
+                        union_filter_transport_enabled: false,
                         left_join_keys: vec![create_bound_reference(0)],
                         right_join_keys: vec![create_bound_reference(0)],
                         join_type: spark_operator::JoinType::Inner as i32,

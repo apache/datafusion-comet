@@ -29,6 +29,7 @@ import org.apache.arrow.vector.types.pojo.{Field, FieldType, Schema}
 import org.apache.spark.TaskContext
 import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
+import org.apache.spark.sql.comet.CometUnionInput
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.types.StructType
@@ -232,7 +233,9 @@ object CometArrowStream extends Logging {
    * frees only the C struct, leaving the reader open and pinned for the life of the executor by
    * the JNI global ref that arrow-java holds on the stream's private data. Taking the stream
    * leaves a null release callback in the JVM's struct, and arrow-java's `release` skips a null
-   * callback, so a stream native took is still released only once.
+   * callback, so a stream native took is still released only once. Lazy Union branches instead
+   * register with their input owner, which closes them after the outer iterator has also released
+   * its exported output batches.
    */
   def stream(
       name: String,
@@ -256,8 +259,8 @@ object CometArrowStream extends Logging {
     }
     if (context != null) {
       val streamRef = arrowStream
-      context.addTaskCompletionListener[Unit] { _ =>
-        // Release before close: `close` frees the struct that `release` reads.
+      CometUnionInput.addCleanup(context) {
+        // Release before close also handles streams native never took.
         streamRef.release()
         streamRef.close()
         allocator.close()
@@ -293,7 +296,7 @@ object CometArrowStream extends Logging {
           throw t
       }
     if (context != null) {
-      context.addTaskCompletionListener[Unit] { _ =>
+      CometUnionInput.addCleanup(context) {
         reader.close()
         allocator.close()
       }

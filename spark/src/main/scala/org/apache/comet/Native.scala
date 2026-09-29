@@ -79,6 +79,17 @@ class Native extends NativeBase {
       classLoader: ClassLoader): Long
   // scalastyle:on
 
+  /** Retain a Union filter lease while a lazy input's Arrow callbacks can open branch plans. */
+  @native def retainUnionRuntimeFilter(handle: Long): Long
+
+  /** Release one retained Union filter lease. The caller must consume its handle exactly once. */
+  @native def releaseUnionRuntimeFilter(handle: Long): Unit
+
+  /**
+   * Bind an attempt-scoped Union filter to an authorized branch before native execution starts.
+   */
+  @native def setUnionRuntimeFilter(plan: Long, handle: Long): Unit
+
   /**
    * Bind a task-owned remote shuffle callback to an existing native query plan.
    *

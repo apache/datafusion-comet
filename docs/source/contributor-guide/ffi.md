@@ -260,6 +260,26 @@ resident until the JVM closes it. See [Crossing the FFI boundary](memory_managem
 | --------- | -------------------------------- | ---------------------------------------------------------- |
 | All cases | Native allocates, JVM references | JVM must call `close()` to trigger native release callback |
 
+## Lazy Union Inputs
+
+An opt-in `CometUnionInput` is a task-scoped lazy iterator marker. Its native scan sets a
+request flag, and the driving JNI thread opens the Spark iterator only after the join build
+has published its completed filter. Native worker threads never open Spark Union iterators.
+
+`openStream` borrows an address containing an `Arc<UnionFilterBundle>`. The JVM marker retains
+its own owned handle before that callback returns. A bundle contains completed predicates,
+leases on their accounted prepared builds, the task attempt, and the permitted native branch
+root IDs. Each branch registers its handle before native planning; registration checks both
+identities. The handle is released exactly once by the marker's close operation.
+
+Branch EOF does not close its native execution while the enclosing Union can retain its Arrow
+buffers. EOF remains sticky, and the enclosing owner holds the registered cleanup. After the
+outer outputs and native context drop, native teardown releases the C stream and invokes the
+marker's cleanup on the driving thread. That cleanup closes children in reverse order and
+releases the filter leases. Only then does native teardown wait for its memory reservations.
+A failed cleanup still allows other owners to close; pending Java exceptions are captured and
+cleared between callbacks and the first failure is rethrown after cleanup.
+
 ## Further Reading
 
 - [Arrow C Data Interface Specification](https://arrow.apache.org/docs/format/CDataInterface.html)

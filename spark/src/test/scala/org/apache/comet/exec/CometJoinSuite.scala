@@ -21,6 +21,8 @@ package org.apache.comet.exec
 
 import java.util.concurrent.{CountDownLatch, TimeUnit}
 
+import scala.concurrent.duration.DurationInt
+
 import org.scalactic.source.Position
 import org.scalatest.Tag
 
@@ -33,7 +35,7 @@ import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.analysis.UnresolvedRelation
 import org.apache.spark.sql.catalyst.expressions.{And, AttributeReference, DynamicPruningExpression, IsNotNull}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight}
-import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometBroadcastNestedLoopJoinExec, CometFilterExec, CometHashJoinExec, CometNativeScanExec, CometSortMergeJoinExec, CometUnionExec}
+import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometBroadcastNestedLoopJoinExec, CometFilterExec, CometHashJoinExec, CometNativeScanExec, CometSortExec, CometSortMergeJoinExec, CometUnionExec}
 import org.apache.spark.sql.execution.{LocalTableScanExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec}
 import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException
@@ -41,8 +43,8 @@ import org.apache.spark.sql.execution.exchange.{ReusedExchangeExec, ShuffleExcha
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, IntegerType, MetadataBuilder, StructField, StructType}
 
-import org.apache.comet.{CometConf, NativeBase}
-import org.apache.comet.CometSparkSessionExtensions.isSpark35Plus
+import org.apache.comet.{CometArrowAllocator, CometConf, NativeBase}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark41Plus}
 
 class CometJoinSuite extends CometTestBase {
 
@@ -427,6 +429,523 @@ class CometJoinSuite extends CometTestBase {
                 } else {
                   assert(!join.metrics.contains("dynamic_filter_join_rows_pruned"))
                   unfilteredProbeRows = probeRows
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  private def unionFilterMetric(plan: SparkPlan, name: String): Long =
+    collect(plan) { case node: SparkPlan =>
+      node.metrics.get(s"dynamic_filter_union_$name")
+    }.flatten.groupBy(_.id).values.map(values => math.max(0L, values.head.value)).sum
+
+  for ((buildLeft, adaptive) <- Seq((false, false), (true, true))) {
+    test(s"union join filter reaches both readers: buildLeft=$buildLeft, AQE=$adaptive") {
+      withTempPath { firstPath =>
+        withTempPath { secondPath =>
+          withSQLConf(
+            CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_ENABLED.key -> "true",
+            CometConf.COMET_BROADCAST_REUSE_ENABLED.key -> "false",
+            CometConf.COMET_BATCH_SIZE.key -> "16",
+            SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+            SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+            SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+            SQLConf.LEAF_NODE_DEFAULT_PARALLELISM.key -> "1") {
+            // Different physical column order and output names require branch-local key binding.
+            // Retain the same rows in both branches to verify UNION ALL multiplicity.
+            val rows = spark.range(0, 10000, 1, 1)
+            rows
+              .selectExpr(
+                "id AS unused",
+                "id AS payload",
+                "CASE WHEN id = 0 THEN CAST(NULL AS INT) ELSE CAST(id AS INT) END AS probe_key")
+              .write
+              .option("parquet.block.size", "1024")
+              .parquet(firstPath.getCanonicalPath)
+            rows
+              .selectExpr("CAST(id AS INT) AS other_key", "id AS unused", "id AS other_payload")
+              .write
+              .option("parquet.block.size", "1024")
+              .parquet(secondPath.getCanonicalPath)
+            for (path <- Seq(firstPath, secondPath);
+              file <- path.listFiles().filter(_.getName.endsWith(".parquet"))) {
+              val reader = ParquetFileReader.open(
+                HadoopInputFile
+                  .fromPath(new Path(file.getAbsolutePath), spark.sessionState.newHadoopConf()))
+              try assert(reader.getRowGroups.size() > 1)
+              finally reader.close()
+            }
+            withParquetTable(firstPath.getCanonicalPath, "union_probe_a") {
+              withParquetTable(secondPath.getCanonicalPath, "union_probe_b") {
+                withParquetTable(
+                  Seq((Some(2500), 11L), (Some(2500), 12L), (Some(2600), 13L), (None, 14L)),
+                  "union_build") {
+                  val probe = "(SELECT probe_key AS k, payload AS v FROM union_probe_a " +
+                    "UNION ALL SELECT other_key, other_payload FROM union_probe_b) p"
+                  val from =
+                    if (buildLeft) s"union_build b JOIN $probe ON b._1 = p.k"
+                    else s"$probe JOIN union_build b ON p.k = b._1"
+                  val query = s"SELECT /*+ BROADCAST(b) */ p.k, p.v, b._2 FROM $from"
+                  var baselineBytes = 0L
+                  var baselinePartitions = 0
+                  var baselineSchema: StructType = null
+                  for (enabled <- Seq(false, true)) {
+                    withSQLConf(CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_UNION_ENABLED.key ->
+                      enabled.toString) {
+                      val df = sql(query)
+                      val (_, plan) = checkSparkAnswerAndOperator(
+                        df,
+                        Seq(classOf[CometBroadcastHashJoinExec], classOf[CometUnionExec]),
+                        classOf[ReusedExchangeExec])
+                      val joins = collect(plan) { case j: CometBroadcastHashJoinExec => j }
+                      assert(joins.size == 1, plan.toString)
+                      assert(
+                        joins.forall(_.buildSide == (if (buildLeft) BuildLeft else BuildRight)))
+                      assert(joins.map(_.metrics("output_rows").value).sum == 6L)
+                      // Both Union partitions build the three non-null rows in one batch.
+                      val joinMetrics = joins.head.metrics
+                      assert(joinMetrics("build_input_rows").value == 6L)
+                      assert(joinMetrics("build_input_batches").value == 2L)
+                      assert(joinMetrics("build_mem_used").value > 0L)
+                      assert(joinMetrics("build_time").value > 0L)
+                      val probeScans = collect(plan) {
+                        case scan: CometNativeScanExec
+                            if scan.output.exists(a => Set("probe_key", "other_key")(a.name)) =>
+                          scan
+                      }
+                      assert(probeScans.size == 2, plan.toString)
+                      val bytes = probeScans.map(_.metrics("bytes_scanned").value).sum
+                      val partitions = df.rdd.getNumPartitions
+                      if (enabled) {
+                        assert(df.schema == baselineSchema)
+                        assert(partitions == baselinePartitions)
+                        assert(unionFilterMetric(plan, "branches_attached") == 2L, plan.toString)
+                        assert(unionFilterMetric(plan, "branches_skipped") == 0L)
+                        assert(
+                          probeScans.forall(_.metrics("row_groups_pruned_statistics").value > 0L))
+                        assert(
+                          bytes > 0L && bytes < baselineBytes,
+                          s"Expected less reader I/O: baseline=$baselineBytes, enabled=$bytes")
+                        info(s"Union reader bytes: baseline=$baselineBytes, enabled=$bytes, " +
+                          s"buildLeft=$buildLeft, AQE=$adaptive")
+                        // The single original join and its broadcast remain above Union, even after AQE.
+                        val broadcasts = collect(plan) { case e: CometBroadcastExchangeExec => e }
+                        assert(broadcasts.nonEmpty, plan.toString)
+                        assert(broadcasts.map(_.id).distinct.size == 1, plan.toString)
+                      } else {
+                        assert(
+                          joins.head.metrics("dynamic_filter_join_filters_attached").value == 0L)
+                        baselineBytes = bytes
+                        baselinePartitions = partitions
+                        baselineSchema = df.schema
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("union join filter releases lazy JVM branches after early termination") {
+    withSQLConf(
+      CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_UNION_ENABLED.key -> "true",
+      CometConf.COMET_BROADCAST_REUSE_ENABLED.key -> "false",
+      CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "false",
+      CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
+      CometConf.COMET_BATCH_SIZE.key -> "8192",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+        ("org.apache.spark.sql.catalyst.optimizer.PushDownPredicates," +
+          "org.apache.spark.sql.catalyst.optimizer.PushPredicateThroughNonJoin," +
+          "org.apache.spark.sql.catalyst.optimizer.PushProjectionThroughUnion")) {
+      val probe = "(SELECT id AS k, id+1 AS v FROM range(0,10000,1,1) " +
+        "UNION ALL SELECT id AS k, id+2 AS v FROM range(0,10000,1,1)) p"
+      // Keep a native consumer above Union, both with and without a transported domain.
+      val queries = Seq(
+        (
+          s"SELECT /*+ BROADCAST(b) */ p.k, p.v FROM $probe " +
+            "JOIN (SELECT id AS k FROM range(0,10000,1,1)) b ON p.k = b.k",
+          1),
+        (s"SELECT p.k, p.v FROM $probe WHERE p.v > 0", 1),
+        // Sort retains batches after the inner native Filter reaches EOF.
+        (
+          s"SELECT u.k, u.v FROM (SELECT p.k, p.v FROM $probe WHERE p.v > 0 " +
+            "UNION ALL SELECT id, id+3 FROM range(0,10000,1,1)) u SORT BY k, v",
+          2))
+      for ((query, unionCount) <- queries) {
+        val before = CometArrowAllocator.getAllocatedMemory
+        val df = sql(query)
+        val plan = df.queryExecution.executedPlan
+        assert(collect(plan) { case _: CometUnionExec =>
+          1
+        }.size == unionCount)
+        if (unionCount == 2) {
+          assert(collect(plan) { case _: CometSortExec => 1 }.nonEmpty, plan.toString)
+        }
+        assert(df.take(1).toSeq == Seq(Row(0L, 1L)))
+        assert(CometArrowAllocator.getAllocatedMemory == before)
+      }
+    }
+  }
+
+  test("union join filter cancellation releases lazy branches before a fresh query") {
+    withSQLConf(
+      CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_UNION_ENABLED.key -> "true",
+      CometConf.COMET_BROADCAST_REUSE_ENABLED.key -> "false",
+      CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "false",
+      CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      CometJoinSuite.unionEntered = new CountDownLatch(1)
+      CometJoinSuite.unionRelease = new CountDownLatch(1)
+      spark.udf.register(
+        "union_cancel_gate",
+        (id: Long) => {
+          Predef.require(org.apache.spark.TaskContext.get() != null)
+          CometJoinSuite.unionEntered.countDown()
+          Predef.require(CometJoinSuite.unionRelease.await(30, TimeUnit.SECONDS))
+          id
+        })
+      def query(key: Long): DataFrame = sql(
+        "SELECT /*+ BROADCAST(b) */ p.k, p.v FROM (" +
+          "SELECT id % 2 AS k, union_cancel_gate(id) AS v FROM range(0,100,1,1) " +
+          "UNION ALL SELECT id % 2 AS k, union_cancel_gate(id) AS v " +
+          s"FROM range(0,100,1,1)) p JOIN " +
+          s"(SELECT id AS k FROM range($key,${key + 1},1,1)) b ON p.k = b.k")
+      val cancelled = query(0L)
+      val plan = cancelled.queryExecution.executedPlan
+      assert(collect(plan) { case _: CometUnionExec => 1 }.size == 1)
+      assert(collect(plan) { case join: CometBroadcastHashJoinExec =>
+        join.nativeOp.getHashJoin.getUnionFilterTransportEnabled
+      } == Seq(true))
+      val failure = new java.util.concurrent.atomic.AtomicReference[Throwable]()
+      val group = java.util.UUID.randomUUID().toString
+      val before = CometArrowAllocator.getAllocatedMemory
+      val runner = new Thread(() => {
+        spark.sparkContext.setJobGroup(group, "cancel lazy Union", interruptOnCancel = true)
+        try cancelled.collect()
+        catch { case error: Throwable => failure.set(error) }
+        finally spark.sparkContext.clearJobGroup()
+      })
+      runner.setDaemon(true)
+      runner.start()
+      try {
+        assert(CometJoinSuite.unionEntered.await(30, TimeUnit.SECONDS))
+        spark.sparkContext.cancelJobGroup(group)
+        runner.join(30000)
+        assert(!runner.isAlive)
+        assert(failure.get() != null)
+      } finally {
+        CometJoinSuite.unionRelease.countDown()
+        spark.sparkContext.cancelJobGroup(group)
+        runner.join(30000)
+      }
+      try {
+        // Driver cancellation can complete before executor task cleanup. Wait for that
+        // cleanup before starting a fresh query; a leaked branch still fails this bound.
+        eventually(timeout(30.seconds), interval(100.millis)) {
+          assert(CometArrowAllocator.getAllocatedMemory == before)
+        }
+        // A fresh build selects the other keys after the failed attempt's lease is released.
+        val rows = query(1L).collect()
+        assert(rows.length == 100)
+        assert(rows.forall(row => row.getLong(0) == 1L && row.getLong(1) % 2L == 1L))
+        assert(CometArrowAllocator.getAllocatedMemory == before)
+      } finally {
+        CometJoinSuite.unionEntered = null
+        CometJoinSuite.unionRelease = null
+      }
+    }
+  }
+
+  test("union join filter preserves a fallible branch and filters the eligible branch") {
+    withSQLConf(
+      CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_ENABLED.key -> "true",
+      SQLConf.ANSI_ENABLED.key -> "true",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.EXCHANGE_REUSE_ENABLED.key -> "true",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.LEAF_NODE_DEFAULT_PARALLELISM.key -> "1") {
+      withParquetTable(Seq((1, 10), (2, 20)), "union_safe_probe") {
+        withParquetTable(Seq(Tuple1(1)), "union_fallible_build") {
+          for (raw <- Seq("bad", "40")) {
+            withParquetTable(Seq((1, "30"), (2, raw)), "union_fallible_probe") {
+              val query = "SELECT /*+ BROADCAST(b) */ p.k, p.payload FROM " +
+                "(SELECT _1 AS k, _2 AS payload FROM union_safe_probe UNION ALL " +
+                "SELECT _1, CAST(_2 AS INT) FROM union_fallible_probe) p " +
+                "JOIN union_fallible_build b ON p.k = b._1"
+              for (enabled <- Seq(false, true)) {
+                withSQLConf(CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_UNION_ENABLED.key ->
+                  enabled.toString) {
+                  val df = sql(query)
+                  val plan = if (raw == "bad") {
+                    // Preserve existing native evaluation before join rejection. Spark's
+                    // codegen can defer a non-key cast, so do not require its error here.
+                    val before = CometArrowAllocator.getAllocatedMemory
+                    val failure = intercept[Exception](df.collect())
+                    assert(causeChain(failure).exists(e =>
+                      Option(e.getMessage).exists(_.contains("CAST_INVALID_INPUT"))))
+                    assert(CometArrowAllocator.getAllocatedMemory == before)
+                    df.queryExecution.executedPlan
+                  } else {
+                    checkSparkAnswerAndOperator(df, classOf[ReusedExchangeExec])._2
+                  }
+                  val joins = collect(plan) { case j: CometBroadcastHashJoinExec => j }
+                  assert(joins.size == 1, plan.toString)
+                  if (enabled && raw != "bad") {
+                    assert(unionFilterMetric(plan, "branches_attached") == 1L)
+                    assert(unionFilterMetric(plan, "branches_skipped") == 1L)
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("union join filter retains branch limits before membership rejection") {
+    withSQLConf(
+      CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_ENABLED.key -> "true",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.LEAF_NODE_DEFAULT_PARALLELISM.key -> "1") {
+      withTempPath { path =>
+        Seq((0, 10), (1, 20)).toDF("k", "payload").coalesce(1).write.parquet(path.toString)
+        withParquetTable(path.toString, "union_limit_probe") {
+          withParquetTable(Seq(Tuple1(1)), "union_limit_build") {
+            val query = "SELECT /*+ BROADCAST(b) */ p.k, p.payload FROM " +
+              "((SELECT * FROM union_limit_probe LIMIT 1) UNION ALL " +
+              "(SELECT * FROM union_limit_probe LIMIT 1)) p " +
+              "JOIN union_limit_build b ON p.k = b._1"
+            for (enabled <- Seq(false, true)) {
+              withSQLConf(CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_UNION_ENABLED.key ->
+                enabled.toString) {
+                val (_, plan) =
+                  checkSparkAnswerAndOperator(sql(query), classOf[ReusedExchangeExec])
+                assert(collect(plan) { case _: CometBroadcastHashJoinExec => 1 }.size == 1)
+                assert(unionFilterMetric(plan, "branches_attached") == 0L)
+                assert(collect(plan) { case scan: CometNativeScanExec => scan }
+                  .forall(_.metrics("row_groups_pruned_statistics").value == 0L))
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("union join filter reaches sequential bucketed readers within one task") {
+    assume(isSpark41Plus, "Partition-aware Union execution requires Spark 4.1")
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.LEAF_NODE_DEFAULT_PARALLELISM.key -> "1",
+      // Inferred null checks change Filter output nullability while its bucket partitioning
+      // retains the scan attributes, so Spark cannot prove equal Union partitioning.
+      SQLConf.CONSTRAINT_PROPAGATION_ENABLED.key -> "false",
+      "spark.sql.sources.bucketing.enabled" -> "true",
+      "spark.sql.sources.bucketing.autoBucketedScan.enabled" -> "false",
+      "spark.sql.unionOutputPartitioning" -> "true",
+      CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "false",
+      CometConf.COMET_BROADCAST_REUSE_ENABLED.key -> "false",
+      CometConf.COMET_BATCH_SIZE.key -> "16") {
+      withTable("union_bucket_a", "union_bucket_b") {
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          for (table <- Seq("union_bucket_a", "union_bucket_b")) {
+            spark
+              .range(0, 10000, 1, numPartitions = 1)
+              .selectExpr("CAST(id AS INT) AS k", "CAST(id AS INT) AS payload")
+              .coalesce(1)
+              .write
+              .format("parquet")
+              .option("parquet.block.size", "1024")
+              .bucketBy(1, "k")
+              .sortBy("k")
+              .saveAsTable(table)
+          }
+        }
+        withParquetTable(Seq(Tuple1(2500), Tuple1(2500), Tuple1(2600)), "union_bucket_build") {
+          val query = "SELECT /*+ BROADCAST(b) */ p.k, p.payload FROM " +
+            "(SELECT k, payload FROM union_bucket_a UNION ALL " +
+            "SELECT k, payload FROM union_bucket_b) p " +
+            "JOIN union_bucket_build b ON p.k = b._1"
+          val expectedSchema = withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            sql(query).schema
+          }
+          var baselineBytes = 0L
+          for (enabled <- Seq(false, true)) {
+            withSQLConf(
+              CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_UNION_ENABLED.key ->
+                enabled.toString) {
+              val df = sql(query)
+              val (_, plan) = checkSparkAnswerAndOperator(df)
+              assert(df.schema == expectedSchema)
+              val joins = collect(plan) { case join: CometBroadcastHashJoinExec => join }
+              val unions = collect(plan) { case union: CometUnionExec => union }
+              assert(joins.size == 1 && unions.size == 1, plan.toString)
+              assert(joins.head.metrics("output_rows").value == 6L)
+              val union = unions.head
+              assert(union.children.size == 2)
+              assert(
+                union.children.forall(child => child.outputPartitioning.numPartitions == 1),
+                union.toString)
+              assert(
+                union.outputPartitioning.numPartitions == 1,
+                s"${union.outputPartitioning}; ${union.children.map(_.outputPartitioning)}")
+              assert(union.executeColumnar().getNumPartitions == 1)
+              val scans = collect(union) { case scan: CometNativeScanExec => scan }
+              assert(scans.size == 2, plan.toString)
+              assert(
+                scans.forall(scan =>
+                  scan.originalPlan.bucketedScan &&
+                    scan.outputPartitioning.numPartitions == 1),
+                plan.toString)
+              val bytes = scans.map(_.metrics("bytes_scanned").value).sum
+              if (enabled) {
+                assert(unionFilterMetric(plan, "branches_attached") == 2L)
+                assert(unionFilterMetric(plan, "branches_skipped") == 0L)
+                assert(scans.forall(_.metrics("row_groups_pruned_statistics").value > 0L))
+                assert(bytes > 0L && bytes < baselineBytes)
+                info(s"Sequential Union reader bytes: baseline=$baselineBytes, enabled=$bytes")
+              } else baselineBytes = bytes
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("union join filter forwards a completed domain through nested Union owners") {
+    withSQLConf(
+      CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_ENABLED.key -> "true",
+      CometConf.COMET_BROADCAST_REUSE_ENABLED.key -> "false",
+      CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "false",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+        ("org.apache.spark.sql.catalyst.optimizer.PushDownPredicates," +
+          "org.apache.spark.sql.catalyst.optimizer.PushPredicateThroughNonJoin," +
+          "org.apache.spark.sql.catalyst.optimizer.CombineUnions")) {
+      withTempPath { path =>
+        spark
+          .range(0, 10000, 1, 1)
+          .selectExpr("CAST(id AS INT) AS k", "id AS v")
+          .write
+          .option("parquet.block.size", "1024")
+          .parquet(path.toString)
+        withParquetTable(path.toString, "union_nested_input") {
+          withParquetTable(Seq(Tuple1(2500), Tuple1(2600)), "union_nested_keys") {
+            val query = "SELECT /*+ BROADCAST(b) */ p.k, p.v FROM (" +
+              "SELECT k, v FROM (SELECT k, v FROM union_nested_input UNION ALL " +
+              "SELECT k, v FROM union_nested_input) inner_union WHERE v IS NOT NULL " +
+              "UNION ALL SELECT k, v FROM union_nested_input) p " +
+              "JOIN union_nested_keys b ON p.k = b._1"
+            var baselineBytes = 0L
+            for (enabled <- Seq(false, true)) {
+              withSQLConf(CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_UNION_ENABLED.key ->
+                enabled.toString) {
+                val (_, plan) = checkSparkAnswerAndOperator(sql(query))
+                assert(collect(plan) { case _: CometUnionExec => 1 }.size == 2, plan.toString)
+                assert(collect(plan) { case _: CometBroadcastHashJoinExec => 1 }.size == 1)
+                val scans = collect(plan) {
+                  case scan: CometNativeScanExec if scan.output.exists(_.name == "v") => scan
+                }
+                assert(scans.size == 3)
+                val bytes = scans.map(_.metrics("bytes_scanned").value).sum
+                if (enabled) {
+                  assert(unionFilterMetric(plan, "branches_forwarded") == 2L)
+                  assert(unionFilterMetric(plan, "branches_attached") == 3L)
+                  assert(unionFilterMetric(plan, "branches_skipped") == 0L)
+                  assert(bytes > 0 && bytes < baselineBytes)
+                } else baselineBytes = bytes
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("union join filter preserves nested results across an intermediate join boundary") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.LEAF_NODE_DEFAULT_PARALLELISM.key -> "1",
+      "spark.sql.unionOutputPartitioning" -> "false",
+      CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "false",
+      CometConf.COMET_BROADCAST_REUSE_ENABLED.key -> "false",
+      CometConf.COMET_BATCH_SIZE.key -> "16") {
+      withTempPath { path =>
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          spark
+            .range(0, 10000, 1, numPartitions = 1)
+            .selectExpr("CAST(id AS INT) AS k", "CAST(id AS INT) AS payload")
+            .write
+            .option("parquet.block.size", "1024")
+            .parquet(path.getCanonicalPath)
+        }
+        withParquetTable(path.getCanonicalPath, "nested_union_probe") {
+          withParquetTable(Seq(Tuple1(2500), Tuple1(2600)), "nested_union_inner_build") {
+            withParquetTable(
+              Seq(Tuple1(2600), Tuple1(2600), Tuple1(2700)),
+              "nested_union_outer_build") {
+              val query = "SELECT /*+ BROADCAST(ob) */ u.k, u.payload FROM (" +
+                "SELECT /*+ BROADCAST(ib) */ p.k, p.payload FROM " +
+                "(SELECT k, payload FROM nested_union_probe UNION ALL " +
+                "SELECT k, payload FROM nested_union_probe) p " +
+                "JOIN nested_union_inner_build ib ON p.k = ib._1 UNION ALL " +
+                "SELECT k, payload FROM nested_union_probe) u " +
+                "JOIN nested_union_outer_build ob ON u.k = ob._1"
+              val expected = Seq.fill(6)(Row(2600, 2600)) :+ Row(2700, 2700)
+              val schema = withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+                sql(query).schema
+              }
+              var baselineBytes = 0L
+              for (enabled <- Seq(false, true)) {
+                withSQLConf(CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_UNION_ENABLED.key ->
+                  enabled.toString) {
+                  val df = sql(query)
+                  checkAnswer(df, expected)
+                  assert(df.schema == schema)
+                  val plan = df.queryExecution.executedPlan
+                  val joins = collect(plan) { case join: CometBroadcastHashJoinExec => join }
+                  val unions = collect(plan) { case union: CometUnionExec => union }
+                  assert(joins.size == 2 && unions.size == 2, plan.toString)
+                  val outer = unions
+                    .find(union =>
+                      collect(union) { case _: CometUnionExec =>
+                        1
+                      }.size == 2)
+                    .get
+                  assert(outer.executeColumnar().getNumPartitions == 3)
+                  val scans = collect(outer) {
+                    case scan: CometNativeScanExec if scan.output.exists(_.name == "payload") =>
+                      scan
+                  }
+                  assert(scans.size == 3, plan.toString)
+                  val bytes = scans.map(_.metrics("bytes_scanned").value).sum
+                  if (enabled) {
+                    // The outer domain stays above the intermediate join. Its own domain
+                    // reaches the two inner readers; the third branch takes the outer domain.
+                    assert(unionFilterMetric(plan, "branches_attached") == 3L)
+                    assert(unionFilterMetric(plan, "branches_forwarded") == 0L)
+                    assert(unionFilterMetric(plan, "branches_skipped") == 2L)
+                    assert(scans.forall(_.metrics("row_groups_pruned_statistics").value > 0L))
+                    assert(bytes > 0L && bytes < baselineBytes)
+                    info(s"Nested Union reader bytes: baseline=$baselineBytes, enabled=$bytes")
+                  } else baselineBytes = bytes
                 }
               }
             }
@@ -2007,4 +2526,6 @@ class CometJoinSuite extends CometTestBase {
 
 object CometJoinSuite {
   @volatile var probeGate: CountDownLatch = _
+  @volatile var unionEntered: CountDownLatch = _
+  @volatile var unionRelease: CountDownLatch = _
 }
