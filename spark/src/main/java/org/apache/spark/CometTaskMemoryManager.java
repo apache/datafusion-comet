@@ -80,13 +80,17 @@ public class CometTaskMemoryManager {
     }
     long acquired = internal.acquireExecutionMemory(size, nativeMemoryConsumer);
     long newUsed = used.addAndGet(acquired);
-    if (acquired < size) {
-      // This thread holds the short grant until native code hands it back, and another acquire
-      // of this task can be waiting inside Spark for those bytes while it holds the
-      // TaskMemoryManager monitor. So nothing here may take that monitor, which rules out
-      // TaskMemoryManager.showMemoryUsage. getMemoryConsumptionForThisTask takes only the memory
-      // manager's monitor, which a waiting acquire gives up.
-      logger.warn(
+    // A partial grant is routine, not an error: the native pool either refuses the reservation,
+    // which tells the operator to spill, or carries the shortfall as overcommit. A refusal that
+    // fails the task says in its error what Spark granted and which consumers hold the most.
+    //
+    // Nothing here may take the TaskMemoryManager monitor, which rules out showMemoryUsage.
+    // Another acquire of this task can hold that monitor while it waits inside Spark for memory,
+    // and this thread holds the partial grant until native code hands it back.
+    // getMemoryConsumptionForThisTask takes only the memory manager's monitor, which a waiting
+    // acquire gives up.
+    if (acquired < size && logger.isDebugEnabled()) {
+      logger.debug(
           "Task {} requested {} bytes but only received {} bytes. Current allocation is {} and "
               + "the total memory consumption is {} bytes.",
           taskAttemptId,
