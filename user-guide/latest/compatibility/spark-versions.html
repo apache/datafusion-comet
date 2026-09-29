@@ -858,9 +858,10 @@ persisting, or read the file with Comet disabled for that query.</p></li>
 <p>Spark 4.2.0 is provided as experimental support with Java 17 and Scala 2.13.</p>
 <div class="admonition warning">
 <p class="admonition-title">Warning</p>
-<p>Spark 4.2 support is experimental. Comet’s own test suites run nightly for this version, but
-Apache Spark’s SQL test suite does not run against it yet. It is intended for early evaluation only
-and should not be used in production.</p>
+<p>Spark 4.2 support is experimental. Comet’s own test suites and Apache Spark’s SQL test suite both
+run nightly for this version rather than on every pull request, so a regression is caught within a
+day but does not block a merge. It is intended for early evaluation only and should not be used in
+production.</p>
 </div>
 </section>
 </section>

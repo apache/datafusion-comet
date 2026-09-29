@@ -311,6 +311,7 @@ them like any other production setting.
 | `spark.comet.expression.DayOfYear.enabled` | Enable Comet acceleration for `DayOfYear` | true |
 | `spark.comet.expression.Days.enabled` | Enable Comet acceleration for `Days` | true |
 | `spark.comet.expression.Divide.enabled` | Enable Comet acceleration for `Divide` | true |
+| `spark.comet.expression.DivideDTInterval.enabled` | Enable Comet acceleration for `DivideDTInterval` | true |
 | `spark.comet.expression.ElementAt.enabled` | Enable Comet acceleration for `ElementAt` | true |
 | `spark.comet.expression.Elt.enabled` | Enable Comet acceleration for `Elt` | true |
 | `spark.comet.expression.Empty2Null.enabled` | Enable Comet acceleration for `Empty2Null` | true |

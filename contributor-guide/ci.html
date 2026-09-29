@@ -561,7 +561,7 @@ mechanics behind the configuration are documented in
 preflight checks first (license headers, Markdown formatting, workflow linting, the CI config
 checks), computes which heavy jobs the changed files are relevant to, and fans out to those jobs.
 Which jobs run also depends on the event:</p>
-<object data="../_images/mermaid-013012468fa27c9e9fdb0a14196d357c619c68a8.svg" type="image/svg+xml">
+<object data="../_images/mermaid-94327707e90a580b1e5f7b5fcb5974635945f9dc.svg" type="image/svg+xml">
             <p class="warning">flowchart LR
   PR([pull request]) --&gt; PRTIER
   PR -. with label .-&gt; QUEUE
@@ -574,7 +574,7 @@ Which jobs run also depends on the event:</p>
 
   PRTIER[&quot;PR tier&lt;br&gt;Linux build, lint, Rust tests&lt;br&gt;TPC-H / TPC-DS&lt;br&gt;Comet suites, Spark 4.1&quot;]
   QUEUE[&quot;Queue tier, on top of the PR tier&lt;br&gt;Spark SQL, Spark 4.1&lt;br&gt;Iceberg 1.11&lt;br&gt;macOS build and Comet suites&lt;br&gt;Benchmark check, Delta gate&lt;br&gt;PyArrow UDF, Spark 4.0 / 4.1 / 4.2&quot;]
-  NIGHTLY[&quot;Nightly tier&lt;br&gt;Comet suites, Spark 3.4 / 3.5 / 4.0 / 4.2&lt;br&gt;Spark SQL, Spark 3.5 / 4.0&lt;br&gt;Iceberg 1.8 / 1.9 / 1.10&quot;]
+  NIGHTLY[&quot;Nightly tier&lt;br&gt;Comet suites, Spark 3.4 / 3.5 / 4.0 / 4.2&lt;br&gt;Spark SQL, Spark 3.5 / 4.0 / 4.2&lt;br&gt;Iceberg 1.8 / 1.9 / 1.10&quot;]
   S34[&quot;Neither tier&lt;br&gt;Spark SQL, Spark 3.4&quot;]
   CACHE[&quot;Cache-refresh-only mode&lt;br&gt;the four cache-writing jobs, plus Lint&quot;]</p></object>
 <p>Suite by suite:</p>
@@ -637,7 +637,7 @@ Which jobs run also depends on the event:</p>
 <td><p>no</p></td>
 <td><p>yes</p></td>
 </tr>
-<tr class="row-even"><td><p>Spark SQL tests, Spark 3.5 / 4.0</p></td>
+<tr class="row-even"><td><p>Spark SQL tests, Spark 3.5 / 4.0 / 4.2</p></td>
 <td><p>with label</p></td>
 <td><p>no</p></td>
 <td><p>yes</p></td>
@@ -730,7 +730,10 @@ cases that pin both down.</p>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">run-spark-4.0-tests</span></code></p></td>
 <td><p>Spark SQL tests against Spark 4.0</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">run-iceberg-tests</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">run-spark-4.2-tests</span></code></p></td>
+<td><p>Spark SQL tests against Spark 4.2</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">run-iceberg-tests</span></code></p></td>
 <td><p>Iceberg Spark SQL tests against every Iceberg version</p></td>
 </tr>
 </tbody>
@@ -838,7 +841,7 @@ re-armed automatically.</p>
 <h2>Nightly runs<a class="headerlink" href="#nightly-runs" title="Link to this heading">#</a></h2>
 <p><code class="docutils literal notranslate"><span class="pre">ci.yml</span></code> also runs on a schedule, at 06:00 UTC every day, against what landed on <code class="docutils literal notranslate"><span class="pre">main</span></code> since the
 last successful scheduled run. That run executes only the nightly tier: the Comet test suites against the Spark
-profiles other than 4.1, the Spark SQL suites for Spark 3.5 and 4.0, and the Iceberg suites for
+profiles other than 4.1, the Spark SQL suites for Spark 3.5, 4.0 and 4.2, and the Iceberg suites for
 1.8, 1.9 and 1.10, each only when the day’s changes touched files it covers. The queue already ran
 everything else against the same tree, so nothing in the queue tier is repeated. A day with no
 merges, or with only documentation changes, runs nothing.</p>
@@ -943,8 +946,9 @@ gh<span class="w"> </span>run<span class="w"> </span>view<span class="w"> </span
 <span class="s1">        | group_by(.conclusion)[] | "\(length)\t\(.[0].conclusion)"'</span>
 </pre></div>
 </div>
-<p>A healthy run over a day of normal merges reports about 40 successes, with the handful of skips
-being the suites that belong to the queue tier rather than the nightly one — Spark 3.4, Spark 4.1
+<p>A healthy run over a day of normal merges reports about 47 successes — seven Spark SQL shards for
+each of 3.5, 4.0 and 4.2, plus the Iceberg shards — with the handful of skips being the suites that
+belong to the queue tier rather than the nightly one — Spark 3.4, Spark 4.1
 and Iceberg 1.11. If everything is skipped, open the run’s <code class="docutils literal notranslate"><span class="pre">Detect</span> <span class="pre">changes</span></code> job: it logs the
 <code class="docutils literal notranslate"><span class="pre">Nightly</span> <span class="pre">base:</span></code> commit it diffed against and the list of changed files, which is enough to tell a
 genuinely quiet day from a base that has drifted.</p>

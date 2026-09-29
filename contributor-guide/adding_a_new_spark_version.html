@@ -778,13 +778,49 @@ test or cluster, and do not disable whole suites.</p></li>
 </section>
 <section id="ci-for-the-spark-sql-tests">
 <h3>CI for the Spark SQL Tests<a class="headerlink" href="#ci-for-the-spark-sql-tests" title="Link to this heading">#</a></h3>
-<p>Spark SQL tests do not run from the main PR build workflows. They have
-their own dedicated workflow file:</p>
+<p>Spark SQL tests do not run from the main PR build workflows. They are driven
+by the umbrella workflow, which calls a reusable workflow once per Spark
+version:</p>
 <ul class="simple">
-<li><p><code class="docutils literal notranslate"><span class="pre">.github/workflows/spark_sql_test.yml</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">.github/workflows/ci.yml</span></code> holds one <code class="docutils literal notranslate"><span class="pre">spark_X_Y</span></code> job per version.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">.github/workflows/spark_sql_test_reusable.yml</span></code> holds the job logic.</p></li>
 </ul>
-<p>Add the new version to the matrix (<code class="docutils literal notranslate"><span class="pre">spark-short</span></code>, <code class="docutils literal notranslate"><span class="pre">spark-full</span></code>, <code class="docutils literal notranslate"><span class="pre">java</span></code>).
-Use the closest existing entry as a template.</p>
+<p>Add a <code class="docutils literal notranslate"><span class="pre">spark_X_Y</span></code> job to <code class="docutils literal notranslate"><span class="pre">ci.yml</span></code> passing <code class="docutils literal notranslate"><span class="pre">spark-short</span></code>, <code class="docutils literal notranslate"><span class="pre">spark-full</span></code>, and
+<code class="docutils literal notranslate"><span class="pre">java</span></code>, using the closest existing job as a template. Its <code class="docutils literal notranslate"><span class="pre">if:</span></code> is only
+<code class="docutils literal notranslate"><span class="pre">needs.changes.outputs.spark_X_Y</span> <span class="pre">==</span> <span class="pre">'true'</span></code>: which events may run the job is
+<code class="docutils literal notranslate"><span class="pre">POLICY</span></code> in <code class="docutils literal notranslate"><span class="pre">dev/ci/compute-changes.py</span></code>, never an event check in <code class="docutils literal notranslate"><span class="pre">ci.yml</span></code>. A
+brand-new version starts out on demand only, <code class="docutils literal notranslate"><span class="pre">[&quot;label:run-spark-X.Y-tests&quot;]</span></code>,
+meaning the label on a pull request or a <code class="docutils literal notranslate"><span class="pre">workflow_dispatch</span></code>, gating no merge.
+Move it to <code class="docutils literal notranslate"><span class="pre">&quot;nightly&quot;</span></code> as soon as the suite passes, and do not leave it on
+demand as a way of being cautious: the version’s <code class="docutils literal notranslate"><span class="pre">dev/diffs</span></code> file is updated
+only when someone runs the suite, so an on-demand version’s diff silently
+falls behind the others every time a Comet change needs a diff update. A job
+graduates to <code class="docutils literal notranslate"><span class="pre">&quot;queue&quot;</span></code> only if its version becomes the default profile.</p>
+<p>Four more registrations are needed. The first three are silent when missed;
+the fourth fails preflight, which is what tells you about the other three.</p>
+<ul class="simple">
+<li><p>In <code class="docutils literal notranslate"><span class="pre">dev/ci/compute-changes.py</span></code>, add a matching <code class="docutils literal notranslate"><span class="pre">spark_X_Y</span></code> entry to
+<code class="docutils literal notranslate"><span class="pre">FILTERS</span></code> <strong>and</strong> to <code class="docutils literal notranslate"><span class="pre">POLICY</span></code>. A <code class="docutils literal notranslate"><span class="pre">FILTERS</span></code> key with no <code class="docutils literal notranslate"><span class="pre">POLICY</span></code> entry makes
+the <code class="docutils literal notranslate"><span class="pre">changes</span></code> job raise <code class="docutils literal notranslate"><span class="pre">KeyError</span></code> on every event that is not a dispatch.
+Build the <code class="docutils literal notranslate"><span class="pre">FILTERS</span></code> list by copying the nearest version’s whole list and
+changing only the <code class="docutils literal notranslate"><span class="pre">dev/diffs</span></code> path and the <code class="docutils literal notranslate"><span class="pre">!spark/src/main/spark-*</span></code>
+exclusions. Dropping an entry that looks incidental, such as one of the
+shared <code class="docutils literal notranslate"><span class="pre">.github/actions/**</span></code> paths, produces a job that skips exactly when
+the shared input it needed changed, and while the new version lives on a
+branch every upstream addition to those lists merges cleanly without
+reaching it.</p></li>
+<li><p>In <code class="docutils literal notranslate"><span class="pre">ci.yml</span></code>, expose <code class="docutils literal notranslate"><span class="pre">spark_X_Y</span></code> as an output of the <code class="docutils literal notranslate"><span class="pre">changes</span></code> job, otherwise
+the <code class="docutils literal notranslate"><span class="pre">if:</span></code> gate reads an empty string on every event.</p></li>
+<li><p>In <code class="docutils literal notranslate"><span class="pre">ci.yml</span></code>, add the job to <code class="docutils literal notranslate"><span class="pre">required_checks.needs</span></code>, otherwise it can fail
+without blocking the merge queue.</p></li>
+<li><p>In <code class="docutils literal notranslate"><span class="pre">dev/ci/check-ci-config.py</span></code>, add the job to <code class="docutils literal notranslate"><span class="pre">BUILD_JOBS</span></code>, to the tier set
+that feeds <code class="docutils literal notranslate"><span class="pre">ALL_JOBS</span></code>, and add a <code class="docutils literal notranslate"><span class="pre">POLICY_CASES</span></code> entry per gating label.
+<code class="docutils literal notranslate"><span class="pre">check_event_policy</span></code> compares <code class="docutils literal notranslate"><span class="pre">POLICY</span></code> against those cases exactly, so a new
+job fails that check until it is declared there.</p></li>
+</ul>
+<p>There is no label allowlist to update: the <code class="docutils literal notranslate"><span class="pre">preflight</span></code> job deliberately
+carries no <code class="docutils literal notranslate"><span class="pre">if:</span></code>, so a <code class="docutils literal notranslate"><span class="pre">labeled</span></code> event always reaches <code class="docutils literal notranslate"><span class="pre">changes</span></code>, and <code class="docutils literal notranslate"><span class="pre">POLICY</span></code>
+decides from there.</p>
 <p>Before merging, run <code class="docutils literal notranslate"><span class="pre">make</span> <span class="pre">format</span></code>, run clippy
 (<code class="docutils literal notranslate"><span class="pre">cd</span> <span class="pre">native</span> <span class="pre">&amp;&amp;</span> <span class="pre">cargo</span> <span class="pre">clippy</span> <span class="pre">--all-targets</span> <span class="pre">--workspace</span> <span class="pre">--</span> <span class="pre">-D</span> <span class="pre">warnings</span></code>), and
 confirm every skip introduced in this PR has a linked GitHub issue.</p>
