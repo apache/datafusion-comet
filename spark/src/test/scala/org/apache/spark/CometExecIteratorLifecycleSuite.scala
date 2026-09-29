@@ -24,6 +24,7 @@ import java.lang.ref.WeakReference
 import java.util.Properties
 import java.util.concurrent.atomic.AtomicBoolean
 
+import org.apache.arrow.memory.RootAllocator
 import org.apache.spark.executor.TaskMetrics
 import org.apache.spark.memory.{TaskMemoryManager, TestMemoryManager}
 import org.apache.spark.sql.CometTestBase
@@ -251,41 +252,97 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
   }
 
   test("the memory usage log reports while plans run and once after the last one finishes") {
+    import CometExecIterator.JvmArrowMemory
     val mib = 1024L * 1024
     val busy = Array(300 * mib, 100 * mib, 2L, 3L)
+    val jvmArrow = JvmArrowMemory(allocated = 40 * mib, imported = 10 * mib)
     assert(
       CometExecIterator
-        .memoryUsageMessage(busy, plansAtLastLog = 0)
-        .contains("Comet native memory usage: allocated 300.0 MiB, reserved 100.0 MiB " +
-          "(3 native plans, 2 memory pools)"))
+        .memoryUsageMessage(busy, jvmArrow, plansAtLastLog = 0)
+        .contains(
+          "Comet native memory usage: allocated 300.0 MiB, reserved 100.0 MiB " +
+            "(3 native plans, 2 memory pools); JVM Arrow allocated 40.0 MiB, 10.0 MiB of it " +
+            "imported from native"))
 
     // The line after the last plan finishes shows the allocation the plans left behind.
     val idle = Array(20 * mib, 0L, 0L, 0L)
+    val noArrow = JvmArrowMemory(0L, 0L)
     assert(
       CometExecIterator
-        .memoryUsageMessage(idle, plansAtLastLog = 3)
+        .memoryUsageMessage(idle, noArrow, plansAtLastLog = 3)
         .exists(_.contains("allocated 20.0 MiB, reserved 0.0 MiB (0 native plans")))
-    assert(CometExecIterator.memoryUsageMessage(idle, plansAtLastLog = 0).isEmpty)
+    assert(CometExecIterator.memoryUsageMessage(idle, noArrow, plansAtLastLog = 0).isEmpty)
+  }
+
+  test("the memory usage log reads JVM Arrow memory from the allocators, imports apart") {
+    import CometExecIterator.JvmArrowMemory
+    val root = new RootAllocator(Long.MaxValue)
+    try {
+      val imports = root.newChildAllocator("imports", 0, Long.MaxValue)
+      val others = root.newChildAllocator("others", 0, Long.MaxValue)
+      val owned = others.buffer(1024 * 1024)
+      val imported = imports.buffer(256 * 1024)
+      try {
+        val memory = JvmArrowMemory.of(root, imports)
+        assert(memory == JvmArrowMemory(allocated = 1280 * 1024, imported = 256 * 1024))
+        assert(memory.allocatedByJvm == 1024 * 1024)
+      } finally {
+        imported.close()
+        owned.close()
+        imports.close()
+        others.close()
+      }
+    } finally {
+      root.close()
+    }
+    // The two figures are read one after the other, so an import can land in between.
+    assert(JvmArrowMemory(allocated = 10L, imported = 20L).allocatedByJvm == 0L)
   }
 
   test("the memory usage log warns when the native footprint exceeds the container") {
-    import CometExecIterator.nativeMemoryLimitWarning
+    import CometExecIterator.{nativeMemoryLimitWarning, JvmArrowMemory}
     val mib = 1024L * 1024
     // A 4 GiB off-heap pool with a 1 GiB overhead, and a pool running at 0.8 of the off-heap size.
     val limit = 5120 * mib
-    val reserved = 3000 * mib
-    // 1500 MiB untracked is more than the overhead, but fits in what the pool left free, since
-    // Spark's off-heap pool holds only the reservation.
-    assert(nativeMemoryLimitWarning(Array(4500 * mib, reserved, 1L, 1L), reserved, limit).isEmpty)
+    val noArrow = JvmArrowMemory(0L, 0L)
+    // Spark's off-heap pool holds only Comet's reservation unless told otherwise.
+    def warning(
+        allocated: Long,
+        reserved: Long = 3000 * mib,
+        jvmArrow: JvmArrowMemory = noArrow,
+        sparkOffHeapUsed: Option[Long] = None): Option[String] =
+      nativeMemoryLimitWarning(
+        Array(allocated, reserved, 1L, 1L),
+        jvmArrow,
+        sparkOffHeapUsed.getOrElse(reserved),
+        limit)
+
+    // 1500 MiB untracked is more than the overhead, but fits in what the pool left free.
+    assert(warning(4500 * mib).isEmpty)
     // 2500 MiB untracked does not fit: 2500 + 3000 = 5500 MiB.
-    val warning = nativeMemoryLimitWarning(Array(5500 * mib, reserved, 1L, 1L), reserved, limit)
-    assert(warning.exists(_.contains("(2500.0 MiB) plus Spark's off-heap memory in use (3000.0")))
-    assert(warning.exists(_.contains("is 5500.0 MiB, more than the 5120.0 MiB")))
-    // Spark's own off-heap use counts against the same limit.
+    val native = warning(5500 * mib)
+    assert(native.exists(_.contains("(2500.0 MiB, native and JVM Arrow) plus Spark's off-heap")))
     assert(
-      nativeMemoryLimitWarning(Array(4500 * mib, reserved, 1L, 1L), 4000 * mib, limit).isDefined)
+      native.exists(_.contains("memory in use (3000.0 MiB, including Comet's reservations)")))
+    assert(native.exists(_.contains("is 5500.0 MiB, more than the 5120.0 MiB")))
+    // Spark's own off-heap use counts against the same limit.
+    assert(warning(4500 * mib, sparkOffHeapUsed = Some(4000 * mib)).isDefined)
+    // So does Arrow memory the JVM allocated itself: 1500 + 700 + 3000 = 5200 MiB.
+    val jvm = warning(4500 * mib, jvmArrow = JvmArrowMemory(900 * mib, imported = 200 * mib))
+    assert(jvm.exists(_.contains("(2200.0 MiB, native and JVM Arrow)")))
+    assert(jvm.exists(_.contains("is 5200.0 MiB, more than the 5120.0 MiB")))
+    // Imported buffers were allocated by native code, so the allocation already counts them.
+    assert(
+      warning(4500 * mib, jvmArrow = JvmArrowMemory(900 * mib, imported = 900 * mib)).isEmpty)
+    // A batch the JVM allocated and a native operator holds on to is reserved as well, so it
+    // counts once: 1000 + 2500 - 3500 leaves nothing untracked, and 3500 MiB in all fits.
+    assert(
+      warning(
+        1000 * mib,
+        reserved = 3500 * mib,
+        jvmArrow = JvmArrowMemory(2500 * mib, 0L)).isEmpty)
     // Reservations can exceed the allocation, since operators reserve before they allocate.
-    assert(nativeMemoryLimitWarning(Array(100 * mib, reserved, 1L, 1L), reserved, limit).isEmpty)
+    assert(warning(100 * mib).isEmpty)
   }
 
   test("the memory pool limit reads a bare off-heap size as bytes, as Spark does") {
