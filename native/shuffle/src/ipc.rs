@@ -18,7 +18,7 @@
 use arrow::array::{ArrayRef, RecordBatch};
 use arrow::buffer::{Buffer, MutableBuffer};
 use arrow::datatypes::{Schema, SchemaRef};
-use arrow::ipc::convert::fb_to_schema;
+use arrow::ipc::convert::try_fb_to_schema;
 use arrow::ipc::reader::{read_dictionary_impl, RecordBatchDecoder};
 use arrow::ipc::{root_as_message, Message, MessageHeader};
 use arrow_data::UnsafeFlag;
@@ -135,7 +135,7 @@ fn estimated_retained_size(schema_message: &[u8], schema: &Schema) -> usize {
         .saturating_add(
             schema
                 .metadata()
-                .capacity()
+                .len()
                 .saturating_mul(std::mem::size_of::<(String, String)>()),
         );
     for (key, value) in schema.metadata() {
@@ -293,7 +293,10 @@ fn read_single_batch<'b, S: BlockSource<'b>>(
             let schema = message
                 .header_as_schema()
                 .ok_or_else(|| decode_error("failed to parse schema from message header"))?;
-            let schema = Arc::new(fb_to_schema(schema));
+            let schema = Arc::new(
+                try_fb_to_schema(schema)
+                    .map_err(|error| decode_error(&format!("invalid schema: {error}")))?,
+            );
             // A schema message has no body. Only bodiless ones are cached, so a hit never has a
             // body to skip; anything else is read past as StreamReader does, without caching.
             match body_length(&message)? {
