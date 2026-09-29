@@ -239,4 +239,43 @@ class CometScanRuleSuite extends CometTestBase {
     }
   }
 
+  test("encrypted scans that match Parquet field ids fall back to Spark") {
+    // The native reader restores container field ids that the INT96 coercion drops by rewriting
+    // the footer, which it cannot do for a decrypted read. The planner cannot see which files
+    // need that, so any encrypted read that matches by id goes to Spark. The file below holds a
+    // container id next to an INT96 timestamp, which the native reader would refuse. See
+    // https://github.com/apache/datafusion-comet/issues/6131.
+    val idOne = new MetadataBuilder().putLong("parquet.field.id", 1L).build()
+    val withIds = new StructType()
+      .add("s", new StructType().add("a", IntegerType).add("ts", TimestampType), true, idOne)
+    val withoutIds = new StructType()
+      .add("s", new StructType().add("a", IntegerType).add("ts", TimestampType))
+    val rows = Seq(Row(Row(1, java.sql.Timestamp.valueOf("2020-01-01 00:00:00"))), Row(null))
+    withSQLConf(
+      "parquet.crypto.factory.class" ->
+        "org.apache.parquet.crypto.keytools.PropertiesDrivenCryptoFactory",
+      "parquet.encryption.kms.client.class" ->
+        "org.apache.parquet.crypto.keytools.mocks.InMemoryKMS",
+      "parquet.encryption.key.list" -> "fieldIdKey: MDEyMzQ1Njc4OTAxMjM0NQ==",
+      "parquet.encryption.uniform.key" -> "fieldIdKey",
+      SQLConf.PARQUET_FIELD_ID_WRITE_ENABLED.key -> "true",
+      SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> "INT96") {
+      withTempPath { dir =>
+        val path = dir.getCanonicalPath
+        spark.createDataFrame(spark.sparkContext.parallelize(rows), withIds).write.parquet(path)
+
+        withSQLConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
+          checkSparkAnswerAndFallbackReason(
+            spark.read.schema(withIds).parquet(path),
+            "Native Parquet scans that match field ids do not support encryption")
+          // Without ids in the read schema the scan matches by name, so it stays native.
+          checkSparkAnswerAndOperator(spark.read.schema(withoutIds).parquet(path))
+        }
+        withSQLConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "false") {
+          checkSparkAnswerAndOperator(spark.read.schema(withIds).parquet(path))
+        }
+      }
+    }
+  }
+
 }

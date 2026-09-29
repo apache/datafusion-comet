@@ -38,6 +38,7 @@ import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefa
 import org.apache.spark.sql.comet.{CometBatchScanExec, CometScanExec}
 import org.apache.spark.sql.execution.{FileSourceScanExec, InSubqueryExec, SparkPlan, SubqueryAdaptiveBroadcastExec}
 import org.apache.spark.sql.execution.datasources.HadoopFsRelation
+import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.datasources.v2.csv.CSVScan
 import org.apache.spark.sql.internal.SQLConf
@@ -345,6 +346,18 @@ case class CometScanRule(session: SparkSession)
     if (encryptionEnabled(hadoopConf) &&
       scanExec.requiredSchema.exists(field => isVariantType(field.dataType))) {
       withFallbackReason(scanExec, "Native Parquet Variant scans do not support encryption")
+      return None
+    }
+    // The native reader restores container field ids that DataFusion's INT96 coercion drops by
+    // rewriting the footer, which it cannot do for a decrypted read. Whether a file needs that
+    // is unknown here, so fall back whenever the scan would match by field id (the same gate
+    // CometNativeScan uses to set useFieldId).
+    // https://github.com/apache/datafusion-comet/issues/6131
+    if (encryptionEnabled(hadoopConf) && readFieldId(conf) &&
+      ParquetUtils.hasFieldIds(scanExec.requiredSchema)) {
+      withFallbackReason(
+        scanExec,
+        "Native Parquet scans that match field ids do not support encryption")
       return None
     }
     // input_file_name, input_file_block_start, and input_file_block_length read from

@@ -50,6 +50,11 @@ The following features are not supported and cause Comet to fall back to Spark:
   Comet Parquet scan regardless.
 - A read schema that repeats a Parquet field id, at the top level or within a struct, when
   `spark.sql.parquet.fieldId.read.enabled=true`.
+- A read schema that carries Parquet field ids when `spark.sql.parquet.fieldId.read.enabled=true`
+  and Parquet encryption is configured. When a file has an `INT96` timestamp, Comet restores the
+  field ids of its structs, lists and maps through the file footer, which it cannot rewrite for a
+  decrypted read. Which files need this is not known when the query is planned, so every such
+  scan falls back ([#6131](https://github.com/apache/datafusion-comet/issues/6131)).
 
 The following limitation may produce incorrect results without falling back to Spark:
 
@@ -78,11 +83,6 @@ The following limitations raise an error at scan time rather than falling back t
   duplicate names; inference across files can depend on merge order.
   Resolution is tracked in [#5884](https://github.com/apache/datafusion-comet/issues/5884),
   with mixed-type behavior in [#5964](https://github.com/apache/datafusion-comet/issues/5964).
-- Reading an encrypted Parquet file with `spark.sql.parquet.fieldId.read.enabled=true` when a
-  struct, list or map carrying a field id sits in a file with an `INT96` timestamp. Comet
-  restores those field ids through the file footer, which it cannot rewrite while Parquet
-  decryption is configured ([#6131](https://github.com/apache/datafusion-comet/issues/6131)).
-  Set `spark.comet.scan.enabled=false` to read such a file with Spark.
 - Invalid UTF-8 bytes in `STRING` columns. Spark permits arbitrary byte sequences in a `STRING`
   column (for example from `CAST(X'C1' AS STRING)`), but Comet's native execution path is built on
   Arrow, whose string type is strictly UTF-8. Reading a Parquet file whose `STRING` column contains
