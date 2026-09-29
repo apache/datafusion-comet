@@ -877,10 +877,8 @@ divergence:</p>
 example <code class="docutils literal notranslate"><span class="pre">byte</span> <span class="pre">overflow</span></code>) where Spark raises <code class="docutils literal notranslate"><span class="pre">BINARY_ARITHMETIC_OVERFLOW</span></code>, and integral
 <code class="docutils literal notranslate"><span class="pre">ARITHMETIC_OVERFLOW</span></code> messages omit Spark’s <code class="docutils literal notranslate"><span class="pre">try_</span></code> suggestion
 (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6217">#6217</a>).</p></li>
-<li><p>Wide-decimal arithmetic overflow, decimal divide-by-zero, and decimal-to-decimal cast overflow
-raise raw Arrow errors that bypass <code class="docutils literal notranslate"><span class="pre">SparkErrorConverter</span></code> and surface as <code class="docutils literal notranslate"><span class="pre">CometNativeException</span></code>
-rather than <code class="docutils literal notranslate"><span class="pre">SparkArithmeticException</span></code> with the proper error class and query context
-(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5072">#5072</a>).</p></li>
+<li><p>Wide-decimal arithmetic overflow reports a different value in the error message than Spark
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5211">#5211</a>).</p></li>
 <li><p>Spark 4.2 introduced additional ANSI arithmetic overflow behavior differences that Comet does
 not yet track (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4967">#4967</a>).</p></li>
 </ul>
