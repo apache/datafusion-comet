@@ -321,8 +321,11 @@ jobs:
           elif [[ "$EVENT_NAME" == "pull_request" ]]; then
             git diff --name-only "$PR_BASE_SHA"..."$PR_HEAD_SHA" > changed_files.txt
           elif [[ "$EVENT_NAME" == "merge_group" ]]; then
-            # The queue branch is built on top of base_sha, so this covers every
-            # entry batched into this merge group, not just the newest one.
+            # base_sha is the queue commit of the entry ahead of this one, and
+            # main only for the entry at the front, so this covers this entry's
+            # own changes. The entries ahead were diffed by their own
+            # merge_group runs; the queue's ALLGREEN strategy is what makes
+            # that enough (see the Merge Queue ruleset in .asf.yaml).
             git diff --name-only "$MQ_BASE_SHA"..."$MQ_HEAD_SHA" > changed_files.txt
           else
             # push to main; first push to a branch has all-zero before sha
