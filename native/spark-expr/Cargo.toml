@@ -439,3 +439,7 @@ harness = false
 [[bench]]
 name = "nested_comparison"
 harness = false
+
+[[bench]]
+name = "if_expr"
+harness = false
