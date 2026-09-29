@@ -22,6 +22,9 @@ use url::Url;
 
 use crate::cloud::s3::credential_bridge::{AccessMode, CometS3CredentialBridge};
 use crate::execution::jni_api::get_runtime;
+use crate::parquet::objectstore::location_scoped::{
+    LocationScopedObjectStore, LocationSource, LocationStoreFactory,
+};
 use async_trait::async_trait;
 use aws_config::{
     ecs::EcsCredentialsProvider, environment::EnvironmentVariableCredentialsProvider,
@@ -35,7 +38,7 @@ use aws_credential_types::{
     Credentials,
 };
 use object_store::{
-    aws::{AmazonS3Builder, AmazonS3ConfigKey, AwsCredential},
+    aws::{AmazonS3, AmazonS3Builder, AmazonS3ConfigKey, AwsCredential, AwsCredentialProvider},
     path::Path,
     CredentialProvider, ObjectStore, ObjectStoreScheme,
 };
@@ -46,6 +49,10 @@ use std::{
 };
 
 /// Creates an S3 object store using options specified as Hadoop S3A configurations.
+///
+/// When the configured `CometS3CredentialProvider` implements
+/// `CometS3LocationScopedCredentialProvider`, the store is a [`LocationScopedObjectStore`] that
+/// serves each of the provider's policy locations with its own credential.
 ///
 /// # Arguments
 ///
@@ -71,18 +78,18 @@ pub fn create_store(
     }
     let path = Path::parse(path)?;
 
-    let mut builder = AmazonS3Builder::new()
-        .with_url(url.to_string())
-        .with_allow_http(true);
     let bucket = url.host_str().ok_or_else(|| object_store::Error::Generic {
         store: "S3",
         source: "Missing bucket name in S3 URL".into(),
     })?;
 
-    // Parquet path: catalog_properties is empty; vendors here read from Hadoop conf.
-    let empty_props: HashMap<String, String> = HashMap::new();
-    builder = match lookup_provider_class(configs, bucket) {
+    let credentials = match lookup_provider_class(configs, bucket) {
         Some(provider_class) => {
+            // Parquet path: forward the full fs.s3a.* config subset so the SPI provider sees the
+            // same config Spark would (e.g. the built-in adapters read fs.s3a.aws.credentials.provider
+            // and any static keys a chain resolves through). Only built when a bridge is actually
+            // configured. See s3-credential-provider-design.md.
+            let forwarded_props = forward_catalog_properties(configs);
             // Fail rather than fall back to the default chain, which could resolve to the wrong
             // identity for a user who explicitly named a provider.
             let bridge = CometS3CredentialBridge::new(
@@ -91,54 +98,160 @@ pub fn create_store(
                 bucket,
                 url.path(),
                 AccessMode::Read,
-                &empty_props,
+                &forwarded_props,
             )
             .map_err(|e| object_store::Error::Generic {
                 store: "S3",
                 source: format!("CometS3CredentialBridge init failed for {bucket}: {e}").into(),
             })?;
-            builder.with_credentials(Arc::new(bridge))
+            let locations =
+                bridge
+                    .policy_locations()
+                    .map_err(|e| object_store::Error::Generic {
+                        store: "S3",
+                        source: format!("Failed to get policy locations for {bucket}: {e}").into(),
+                    })?;
+            if let Some(locations) = locations {
+                let template = S3StoreTemplate::new(url, configs, bucket)?;
+                let store = location_scoped_store(template, bucket, bridge, locations)?;
+                return Ok((Box::new(store), path));
+            }
+            S3Credentials::Provider(Arc::new(bridge))
         }
         None => {
             match get_runtime().block_on(build_credential_provider(configs, bucket, min_ttl))? {
-                Some(provider) => builder.with_credentials(Arc::new(provider)),
-                None => builder.with_skip_signature(true),
+                Some(provider) => S3Credentials::Provider(Arc::new(provider)),
+                None => S3Credentials::SkipSignature,
             }
         }
     };
 
-    let s3_configs = extract_s3_config_options(configs, bucket);
-    debug!("S3 configs for bucket {bucket}: {s3_configs:?}");
-
-    // When using the default AWS S3 endpoint (no custom endpoint configured), a valid region
-    // is required. If no region is explicitly configured, attempt to auto-resolve it by
-    // making a HeadBucket request to determine the bucket's region.
-    if !s3_configs.contains_key(&AmazonS3ConfigKey::Endpoint)
-        && !s3_configs.contains_key(&AmazonS3ConfigKey::Region)
-    {
-        let region = get_runtime()
-            .block_on(resolve_bucket_region(bucket))
-            .map_err(|e| object_store::Error::Generic {
-                store: "S3",
-                source: format!(
-                    "Failed to resolve region: {e}. If '{bucket}' is on a non-AWS S3-compatible \
-                     service, set fs.s3a.endpoint (and optionally fs.s3a.endpoint.region, \
-                     fs.s3a.path.style.access) or the per-bucket variants \
-                     fs.s3a.bucket.{bucket}.endpoint[.region] so Comet skips the AWS HEAD probe."
-                )
-                .into(),
-            })?;
-        debug!("resolved region: {region:?}");
-        builder = builder.with_config(AmazonS3ConfigKey::Region, region.to_string());
-    }
-
-    for (key, value) in s3_configs {
-        builder = builder.with_config(key, value);
-    }
-
-    let object_store = builder.build()?;
+    let object_store = S3StoreTemplate::new(url, configs, bucket)?.build(credentials)?;
 
     Ok((Box::new(object_store), path))
+}
+
+/// How a store built from an [`S3StoreTemplate`] signs its requests.
+enum S3Credentials {
+    Provider(AwsCredentialProvider),
+    SkipSignature,
+}
+
+/// Builder settings shared by every store for one bucket. Creating a template may block on a
+/// region lookup; building a store from it does not, so location-scoped stores can be built from
+/// async code on a Tokio worker.
+struct S3StoreTemplate {
+    url: String,
+    region: Option<String>,
+    s3_configs: HashMap<AmazonS3ConfigKey, String>,
+}
+
+impl S3StoreTemplate {
+    fn new(
+        url: &Url,
+        configs: &HashMap<String, String>,
+        bucket: &str,
+    ) -> Result<Self, object_store::Error> {
+        let s3_configs = extract_s3_config_options(configs, bucket);
+        debug!("S3 configs for bucket {bucket}: {s3_configs:?}");
+
+        // When using the default AWS S3 endpoint (no custom endpoint configured), a valid region
+        // is required. If no region is explicitly configured, attempt to auto-resolve it by
+        // making a HeadBucket request to determine the bucket's region.
+        let region = if !s3_configs.contains_key(&AmazonS3ConfigKey::Endpoint)
+            && !s3_configs.contains_key(&AmazonS3ConfigKey::Region)
+        {
+            let region = get_runtime()
+                .block_on(resolve_bucket_region(bucket))
+                .map_err(|e| object_store::Error::Generic {
+                    store: "S3",
+                    source: format!(
+                        "Failed to resolve region: {e}. If '{bucket}' is on a non-AWS S3-compatible \
+                         service, set fs.s3a.endpoint (and optionally fs.s3a.endpoint.region, \
+                         fs.s3a.path.style.access) or the per-bucket variants \
+                         fs.s3a.bucket.{bucket}.endpoint[.region] so Comet skips the AWS HEAD probe."
+                    )
+                    .into(),
+                })?;
+            debug!("resolved region: {region:?}");
+            Some(region)
+        } else {
+            None
+        };
+
+        Ok(Self {
+            url: url.to_string(),
+            region,
+            s3_configs,
+        })
+    }
+
+    fn build(&self, credentials: S3Credentials) -> Result<AmazonS3, object_store::Error> {
+        let builder = AmazonS3Builder::new()
+            .with_url(self.url.clone())
+            .with_allow_http(true);
+        let mut builder = match credentials {
+            S3Credentials::Provider(provider) => builder.with_credentials(provider),
+            S3Credentials::SkipSignature => builder.with_skip_signature(true),
+        };
+        if let Some(region) = &self.region {
+            builder = builder.with_config(AmazonS3ConfigKey::Region, region.clone());
+        }
+        for (key, value) in &self.s3_configs {
+            builder = builder.with_config(*key, value.clone());
+        }
+        builder.build()
+    }
+}
+
+/// Builds the store for a `CometS3LocationScopedCredentialProvider`. `bridge` was created on this
+/// thread, which registered the provider. It fetches the locations again after a 403 or a failure
+/// to get a location's credential, and each location's bridge is derived from it on first use,
+/// often on a Tokio worker, so every location shares the bucket's provider registration without
+/// another `ensureInitialized` call.
+fn location_scoped_store(
+    template: S3StoreTemplate,
+    bucket: &str,
+    bridge: CometS3CredentialBridge,
+    locations: Vec<String>,
+) -> Result<LocationScopedObjectStore, object_store::Error> {
+    let bridge = Arc::new(bridge);
+
+    let source_bridge = Arc::clone(&bridge);
+    let source_bucket = bucket.to_string();
+    let source: LocationSource = Arc::new(move || {
+        let locations =
+            source_bridge
+                .policy_locations()
+                .map_err(|e| object_store::Error::Generic {
+                    store: "S3",
+                    source: format!("Failed to get policy locations for {source_bucket}: {e}")
+                        .into(),
+                })?;
+        locations.ok_or_else(|| object_store::Error::Generic {
+            store: "S3",
+            source: format!("The provider for {source_bucket} stopped returning policy locations")
+                .into(),
+        })
+    });
+
+    let factory_bucket = bucket.to_string();
+    let factory: LocationStoreFactory = Arc::new(move |credential_path: &str| {
+        let location_bridge =
+            bridge
+                .for_path(credential_path)
+                .map_err(|e| object_store::Error::Generic {
+                    store: "S3",
+                    source: format!(
+                        "CometS3CredentialBridge init failed for {factory_bucket}: {e}"
+                    )
+                    .into(),
+                })?;
+        let store = template.build(S3Credentials::Provider(Arc::new(location_bridge)))?;
+        Ok(Arc::new(store) as Arc<dyn ObjectStore>)
+    });
+
+    LocationScopedObjectStore::new(bucket.to_string(), locations, source, factory)
 }
 
 /// Process-wide cache of resolved S3 bucket regions, keyed by bucket name.
@@ -332,6 +445,22 @@ fn lookup_provider_class<'a>(
     bucket: &str,
 ) -> Option<&'a str> {
     get_config_trimmed(configs, bucket, PROVIDER_CLASS_PROPERTY).filter(|s| !s.is_empty())
+}
+
+/// Builds the `catalog_properties` map forwarded to the SPI on the Parquet path: the full
+/// `fs.s3a.*` subset. This matches the Iceberg path, which forwards its full property bag, so an
+/// adapter delegating to Hadoop's provider construction sees exactly the config Spark would --
+/// including the static keys a provider chain may resolve through. Stripping them would let a
+/// chain like `SimpleAWSCredentialsProvider,customProvider` silently resolve through a different
+/// entry than Spark, reading data as a different principal. These keys already cross JNI for the
+/// non-adapter path (see `build_credential_provider`). HashMap equality is order-independent, so
+/// the dispatcher instance-cache key stays stable regardless of iteration order.
+fn forward_catalog_properties(configs: &HashMap<String, String>) -> HashMap<String, String> {
+    configs
+        .iter()
+        .filter(|(k, _)| k.starts_with("fs.s3a."))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect()
 }
 
 // Hadoop S3A credential provider constants
@@ -995,6 +1124,26 @@ mod tests {
         );
     }
 
+    /// A location-scoped store builds each location's store on first use, usually inside an async
+    /// read on a Tokio worker, so building from a template must not block on the runtime. The
+    /// template resolves the region when it is created; this bucket's region is already cached, so
+    /// no request is made.
+    #[test]
+    fn builds_from_a_template_inside_the_runtime() {
+        let bucket = "comet-template-test-bucket";
+        region_cache()
+            .write()
+            .unwrap()
+            .insert(bucket.to_string(), "us-west-2".to_string());
+        let url = Url::parse(&format!("s3a://{bucket}/warehouse/sales/part-0.parquet")).unwrap();
+        // With no endpoint or region configured, creating the template resolves the region.
+        let template = S3StoreTemplate::new(&url, &HashMap::new(), bucket).unwrap();
+        assert_eq!(template.region.as_deref(), Some("us-west-2"));
+
+        let store = get_runtime().block_on(async { template.build(S3Credentials::SkipSignature) });
+        assert!(store.is_ok(), "{:?}", store.err());
+    }
+
     #[test]
     fn test_get_config_trimmed() {
         let configs = TestConfigBuilder::new()
@@ -1021,6 +1170,71 @@ mod tests {
         assert_eq!(secret_key, Some("test_secret_key"));
         let session_token = get_config_trimmed(&configs, "test-bucket-2", "session.token");
         assert_eq!(session_token, Some("test_session_token"));
+    }
+
+    #[test]
+    fn test_forward_catalog_properties_forwards_fs_s3a_subset() {
+        let mut configs: HashMap<String, String> = HashMap::new();
+        configs.insert(
+            "fs.s3a.aws.credentials.provider".to_string(),
+            "com.amazonaws.auth.DefaultAWSCredentialsProviderChain".to_string(),
+        );
+        configs.insert("fs.s3a.endpoint".to_string(), "s3.example.com".to_string());
+        // The activation key itself must survive forwarding.
+        configs.insert(
+            format!("fs.s3a.{PROVIDER_CLASS_PROPERTY}"),
+            "org.apache.comet.cloud.s3.HadoopS3ACredentialProviderAdapter".to_string(),
+        );
+        // Static keys are forwarded too: a Hadoop provider chain may resolve through them, and
+        // stripping them would change which principal wins vs Spark.
+        configs.insert("fs.s3a.access.key".to_string(), "AK".to_string());
+        configs.insert("fs.s3a.secret.key".to_string(), "SK".to_string());
+        configs.insert("fs.s3a.session.token".to_string(), "ST".to_string());
+        configs.insert(
+            "fs.s3a.bucket.b.secret.key".to_string(),
+            "bucket-secret".to_string(),
+        );
+        // A non-fs.s3a key that can actually reach this bag (extractObjectStoreOptions also passes
+        // the fs.comet.* scheme keys) is dropped: the adapters read fs.s3a.* only.
+        configs.insert(
+            "fs.comet.s3Compliant.schemes".to_string(),
+            "blob".to_string(),
+        );
+
+        let forwarded = forward_catalog_properties(&configs);
+
+        assert!(forwarded.contains_key("fs.s3a.aws.credentials.provider"));
+        assert!(forwarded.contains_key("fs.s3a.endpoint"));
+        assert!(forwarded.contains_key(&format!("fs.s3a.{PROVIDER_CLASS_PROPERTY}")));
+        assert!(forwarded.contains_key("fs.s3a.access.key"));
+        assert!(forwarded.contains_key("fs.s3a.secret.key"));
+        assert!(forwarded.contains_key("fs.s3a.session.token"));
+        assert!(forwarded.contains_key("fs.s3a.bucket.b.secret.key"));
+        assert!(!forwarded.contains_key("fs.comet.s3Compliant.schemes"));
+    }
+
+    #[test]
+    fn test_empty_per_bucket_provider_class_opts_out() {
+        let adapter = "org.apache.comet.cloud.s3.HadoopS3ACredentialProviderAdapter";
+        let mut configs: HashMap<String, String> = HashMap::new();
+        configs.insert(
+            format!("fs.s3a.{PROVIDER_CLASS_PROPERTY}"),
+            adapter.to_string(),
+        );
+
+        // A bucket with no per-bucket override uses the globally configured adapter.
+        assert_eq!(
+            lookup_provider_class(&configs, "other-bucket"),
+            Some(adapter)
+        );
+
+        // An empty per-bucket value opts that bucket out, even though the global adapter is set, so
+        // the native reader resolves it directly (this is the documented anonymous opt-out).
+        configs.insert(
+            format!("fs.s3a.bucket.public-data.{PROVIDER_CLASS_PROPERTY}"),
+            "".to_string(),
+        );
+        assert_eq!(lookup_provider_class(&configs, "public-data"), None);
     }
 
     #[test]

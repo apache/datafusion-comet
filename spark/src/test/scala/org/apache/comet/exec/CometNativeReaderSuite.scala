@@ -36,7 +36,7 @@ import org.apache.spark.sql.functions.{array, col}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
-import org.apache.comet.CometConf
+import org.apache.comet.{CometConf, CometNativeException}
 import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
 
 class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper {
@@ -117,6 +117,11 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
             val messages = causeMessages(error)
             assert(messages.contains("duplicate Parquet field name 'dup'"), messages)
             assert(!messages.toLowerCase.contains("case-insensitive"), messages)
+            // The refusal is Comet's own execution error, the class the root duplicate check
+            // raises too, and never Spark's INTERNAL_ERROR, which is reserved for engine bugs.
+            val chain = causeChain(error)
+            assert(chain.exists(_.isInstanceOf[CometNativeException]), messages)
+            assert(!messages.contains("INTERNAL_ERROR"), messages)
           }
         }
       }

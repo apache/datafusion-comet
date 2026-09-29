@@ -62,6 +62,9 @@ trait CometBenchmarkBase
       .set(
         "spark.shuffle.manager",
         "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
+      // Off-heap memory is disabled, so Comet runs in on-heap mode, which must be enabled
+      // explicitly or Comet stays disabled.
+      .set("spark.comet.exec.onHeap.enabled", "true")
 
     val sparkSession = SparkSession
       .builder()
