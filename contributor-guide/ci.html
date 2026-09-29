@@ -562,7 +562,7 @@ mechanics behind the configuration are documented in
 preflight checks first (license headers, Markdown formatting, workflow linting, the CI config
 checks), computes which heavy jobs the changed files are relevant to, and fans out to those jobs.
 Which jobs run also depends on the event:</p>
-<object data="../_images/mermaid-94327707e90a580b1e5f7b5fcb5974635945f9dc.svg" type="image/svg+xml">
+<object data="../_images/mermaid-f5b40459e5fe9b892b845c9198fe1c9420e05d14.svg" type="image/svg+xml">
             <p class="warning">flowchart LR
   PR([pull request]) --&gt; PRTIER
   PR -. with label .-&gt; QUEUE
@@ -577,7 +577,7 @@ Which jobs run also depends on the event:</p>
   QUEUE[&quot;Queue tier, on top of the PR tier&lt;br&gt;Spark SQL, Spark 4.1&lt;br&gt;Iceberg 1.11&lt;br&gt;macOS build and Comet suites&lt;br&gt;Benchmark check, Delta gate&lt;br&gt;PyArrow UDF, Spark 4.0 / 4.1 / 4.2&quot;]
   NIGHTLY[&quot;Nightly tier&lt;br&gt;Comet suites, Spark 3.4 / 3.5 / 4.0 / 4.2&lt;br&gt;Spark SQL, Spark 3.5 / 4.0 / 4.2&lt;br&gt;Iceberg 1.8 / 1.9 / 1.10&quot;]
   S34[&quot;Neither tier&lt;br&gt;Spark SQL, Spark 3.4&quot;]
-  CACHE[&quot;Cache-refresh-only mode&lt;br&gt;the four cache-writing jobs, plus Lint&quot;]</p></object>
+  CACHE[&quot;Cache-refresh-only mode&lt;br&gt;the three cache-writing jobs, plus Lint&quot;]</p></object>
 <p>Suite by suite:</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
@@ -667,10 +667,10 @@ is the Linux build, which also runs on push so that the dependency caches on <co
 pull request can only restore caches saved on its own branch or on <code class="docutils literal notranslate"><span class="pre">main</span></code>, and the queue’s
 temporary branch takes its caches with it when it is deleted.</p>
 <p>That push run is for the caches and nothing else, so it runs in <strong>cache-refresh-only</strong> mode: only
-the four jobs that own a cache entry (the native CI build, the Rust tests, and the two TPC-H/TPC-DS
-jobs, the last two stopping before their query passes), plus the short <code class="docutils literal notranslate"><span class="pre">Lint</span></code> job the native jobs
-depend on. The lints and the Comet test matrix are skipped, which is the difference between 587
-runner-minutes a push and about 73. If you add a job to <code class="docutils literal notranslate"><span class="pre">pr_build_linux.yml</span></code>, give it
+the three jobs that own a cache entry (the native CI build and the two TPC-H/TPC-DS jobs, the last
+two stopping before their query passes), plus the short <code class="docutils literal notranslate"><span class="pre">Lint</span></code> job the native build depends on. The
+lints, the Rust tests and the Comet test matrix are skipped, which is the difference between 587
+runner-minutes a push and about 40. If you add a job to <code class="docutils literal notranslate"><span class="pre">pr_build_linux.yml</span></code>, give it
 <code class="docutils literal notranslate"><span class="pre">if:</span> <span class="pre">${{</span> <span class="pre">!inputs.cache-refresh-only</span> <span class="pre">}}</span></code> unless it writes a cache that <code class="docutils literal notranslate"><span class="pre">main</span></code> needs;
 <code class="docutils literal notranslate"><span class="pre">dev/ci/check-ci-config.py</span></code> fails the build if you forget.</p>
 <p>Spark 3.4 is the one suite in neither tier. <a class="reference internal" href="../user-guide/latest/compatibility/spark-versions.html#spark-3-4"><span class="std std-ref">Spark 3.4 support is deprecated</span></a>,
