@@ -23,12 +23,12 @@
 set -e
 
 REPO=$1
-BRANCH=$2
+COMMIT=$2
 ARCH=$3
 
 function usage {
   local NAME=$(basename $0)
-  echo "Usage: ${NAME} [git repo] [branch] [arm64 | amd64]"
+  echo "Usage: ${NAME} [git repo] [commit] [arm64 | amd64]"
   exit 1
 }
 
@@ -44,11 +44,11 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null && pwd)"
 
-echo "Building architecture: ${ARCH} for ${REPO}/${BRANCH}"
+echo "Building architecture: ${ARCH} for ${REPO} at commit ${COMMIT}"
 rm -fr comet
 git clone "$REPO" comet
 cd comet
-git checkout "$BRANCH"
+git checkout "$COMMIT"
 
 # build comet binaries
 
