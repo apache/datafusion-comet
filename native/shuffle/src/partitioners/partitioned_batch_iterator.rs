@@ -15,12 +15,16 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::RecordBatch;
-use arrow::compute::{concat_batches, interleave_record_batch};
+use arrow::array::{cast::AsArray, Array, ArrayRef, BooleanArray, RecordBatch};
+use arrow::buffer::{BooleanBuffer, NullBuffer};
+use arrow::compute::{concat_batches, interleave, interleave_record_batch};
+use arrow::datatypes::DataType;
+use arrow::error::ArrowError;
 #[cfg(test)]
 use datafusion::common::utils::proxy::VecAllocExt;
 use datafusion::common::DataFusionError;
 use datafusion::physical_plan::metrics::Time;
+use std::sync::Arc;
 
 /// A contiguous run of rows within one buffered batch, bound for one output partition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,6 +95,8 @@ pub(super) struct PartitionedBatchesProducer {
     buffered_batches: Vec<RecordBatch>,
     partition_indices: PartitionIndices,
     batch_size: usize,
+    // Every partition borrows the same immutable schema. Check it once per flush.
+    has_boolean_columns: bool,
 }
 
 impl PartitionedBatchesProducer {
@@ -99,10 +105,18 @@ impl PartitionedBatchesProducer {
         indices: PartitionIndices,
         batch_size: usize,
     ) -> Self {
+        let has_boolean_columns = buffered_batches.first().is_some_and(|batch| {
+            batch
+                .schema_ref()
+                .fields()
+                .iter()
+                .any(|field| field.data_type() == &DataType::Boolean)
+        });
         Self {
             partition_indices: indices,
             buffered_batches,
             batch_size,
+            has_boolean_columns,
         }
     }
 
@@ -135,6 +149,7 @@ impl PartitionedBatchesProducer {
                 refs,
                 self.batch_size,
                 interleave_time,
+                self.has_boolean_columns,
             )),
             PartitionIndices::Runs(runs) => PartitionedBatchIterator::Runs(RunIterator::new(
                 &runs[partition_id],
@@ -168,6 +183,7 @@ impl Iterator for PartitionedBatchIterator<'_> {
 
 /// Produces a partition's output by gathering individually named rows.
 pub(crate) struct RowIterator<'a> {
+    has_boolean_columns: bool,
     record_batches: &'a [&'a RecordBatch],
     batch_size: usize,
     indices: &'a [(u32, u32)],
@@ -185,10 +201,12 @@ impl<'a> RowIterator<'a> {
         record_batches: &'a [&'a RecordBatch],
         batch_size: usize,
         interleave_time: &'a Time,
+        has_boolean_columns: bool,
     ) -> Self {
         if indices.is_empty() {
             // Avoid unnecessary allocations when the partition is empty
             return Self {
+                has_boolean_columns,
                 record_batches: &[],
                 batch_size,
                 indices: &[],
@@ -198,6 +216,7 @@ impl<'a> RowIterator<'a> {
             };
         }
         Self {
+            has_boolean_columns,
             record_batches,
             batch_size,
             indices,
@@ -224,7 +243,11 @@ impl Iterator for RowIterator<'_> {
                 .map(|(i_batch, i_row)| (*i_batch as usize, *i_row as usize)),
         );
         let mut timer = self.interleave_time.timer();
-        let result = interleave_record_batch(self.record_batches, &self.chunk_scratch);
+        let result = if self.has_boolean_columns {
+            interleave_shuffle_batches(self.record_batches, &self.chunk_scratch)
+        } else {
+            interleave_record_batch(self.record_batches, &self.chunk_scratch)
+        };
         timer.stop();
         match result {
             Ok(batch) => {
@@ -237,6 +260,51 @@ impl Iterator for RowIterator<'_> {
             ))),
         }
     }
+}
+
+/// Gather scattered Boolean state without rebuilding Arrow's MutableArrayData
+/// descriptors for every reducer. Clustered selections retain Arrow's range copies.
+/// The producer supplies matching immutable batches and valid row indices, just as
+/// for the ordinary Arrow interleave path.
+fn interleave_shuffle_batches(
+    batches: &[&RecordBatch],
+    indices: &[(usize, usize)],
+) -> Result<RecordBatch, ArrowError> {
+    let schema = batches[0].schema_ref();
+    // Arrow already copies clustered bitmap ranges efficiently. A false positive only
+    // selects that existing path; the probe is not used to copy or validate indices.
+    // A four-row stride detects eight-row runs regardless of their starting alignment.
+    let clustered = (0..indices.len().saturating_sub(4)).step_by(4).any(|i| {
+        indices[i].0 == indices[i + 4].0 && indices[i].1.checked_add(4) == Some(indices[i + 4].1)
+    });
+    if clustered {
+        return interleave_record_batch(batches, indices);
+    }
+    let columns = (0..schema.fields().len())
+        .map(|column| {
+            if schema.field(column).data_type() != &DataType::Boolean {
+                let arrays: Vec<&dyn Array> =
+                    batches.iter().map(|b| b.column(column).as_ref()).collect();
+                return interleave(&arrays, indices);
+            }
+            let booleans: Vec<_> = batches
+                .iter()
+                .map(|b| b.column(column).as_boolean())
+                .collect();
+            let values = BooleanBuffer::collect_bool(indices.len(), |i| {
+                let (batch, row) = indices[i];
+                booleans[batch].value(row)
+            });
+            let nulls = booleans.iter().any(|a| a.null_count() != 0).then(|| {
+                NullBuffer::new(BooleanBuffer::collect_bool(indices.len(), |i| {
+                    let (batch, row) = indices[i];
+                    booleans[batch].is_valid(row)
+                }))
+            });
+            Ok(Arc::new(BooleanArray::new(values, nulls)) as ArrayRef)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    RecordBatch::try_new(Arc::clone(schema), columns)
 }
 
 /// Produces a partition's output by copying contiguous runs of rows.
@@ -343,7 +411,7 @@ impl Iterator for RunIterator<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::Int32Array;
+    use arrow::array::{Decimal128Array, Int32Array, Int64Array};
     use arrow::datatypes::{DataType, Field, Schema};
     use std::sync::Arc;
 
@@ -359,6 +427,101 @@ mod tests {
                 .unwrap()
             })
             .collect()
+    }
+
+    /// Compare mixed aggregate states against Arrow across non-byte-aligned slices, null
+    /// patterns, contiguous and reordered rows, and chunks smaller than a bitmap word.
+    #[test]
+    fn boolean_interleave_matches_arrow_for_sliced_nullable_states() {
+        for nullable in [false, true] {
+            let schema = Arc::new(Schema::new(vec![
+                Field::new("key", DataType::Int64, false),
+                Field::new("sum", DataType::Decimal128(38, 2), true),
+                Field::new("is_empty", DataType::Boolean, nullable),
+                Field::new("all_null", DataType::Boolean, true),
+            ]));
+            let batches: Vec<_> = (0..4)
+                .map(|source| {
+                    let bools = BooleanArray::from(
+                        (0..97)
+                            .map(|row| {
+                                if nullable && source % 2 == 0 && (row + source) % 5 == 0 {
+                                    None
+                                } else {
+                                    Some((row + source) % 3 == 0)
+                                }
+                            })
+                            .collect::<Vec<_>>(),
+                    );
+                    let decimals = Decimal128Array::from(
+                        (0..97)
+                            .map(|row| {
+                                ((row + source) % 7 != 0).then_some((source * 100 + row) as i128)
+                            })
+                            .collect::<Vec<_>>(),
+                    )
+                    .with_precision_and_scale(38, 2)
+                    .unwrap();
+                    RecordBatch::try_new(
+                        Arc::clone(&schema),
+                        vec![
+                            Arc::new(Int64Array::from_iter_values(0..97)),
+                            Arc::new(decimals),
+                            Arc::new(bools),
+                            Arc::new(BooleanArray::new_null(97)),
+                        ],
+                    )
+                    .unwrap()
+                    .slice(source + 1, 79)
+                })
+                .collect();
+            let refs: Vec<_> = batches.iter().collect();
+            let mut selections = vec![
+                (0..257)
+                    .map(|i| ((i * 3 % 4) as u32, (i * 17 % 79) as u32))
+                    .collect::<Vec<_>>(),
+                (0..79).map(|row| (1, row)).collect(),
+                (0..4)
+                    .flat_map(|batch| (3..20).chain(31..47).map(move |row| (batch, row)))
+                    .collect(),
+            ];
+            // Stable hash partitioning can place scattered rows before eight-row runs.
+            for prefix in [1, 4] {
+                selections.push(
+                    (0..2 * prefix)
+                        .step_by(2)
+                        .chain((2 * prefix..79).filter(|row| ((row - 2 * prefix) / 8) % 2 == 0))
+                        .map(|row| (0, row))
+                        .collect(),
+                );
+            }
+            for indices in selections {
+                for chunk_size in [1, 7, 64, 8192] {
+                    let time = Time::default();
+                    let producer = PartitionedBatchesProducer::new(
+                        batches.clone(),
+                        PartitionIndices::Rows(vec![indices.clone()]),
+                        chunk_size,
+                    );
+                    let input_refs = producer.batch_refs();
+                    let actual = producer
+                        .produce(&input_refs, 0, &time)
+                        .collect::<datafusion::common::Result<Vec<_>>>()
+                        .unwrap();
+                    for (actual, chunk) in actual.iter().zip(indices.chunks(chunk_size)) {
+                        let selected: Vec<_> = chunk
+                            .iter()
+                            .map(|&(b, r)| (b as usize, r as usize))
+                            .collect();
+                        assert_eq!(*actual, interleave_record_batch(&refs, &selected).unwrap());
+                    }
+                    assert_eq!(
+                        actual.iter().map(RecordBatch::num_rows).sum::<usize>(),
+                        indices.len()
+                    );
+                }
+            }
+        }
     }
 
     /// Chunked index conversion must interleave exactly like converting the whole partition's
