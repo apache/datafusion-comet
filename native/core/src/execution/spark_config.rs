@@ -25,6 +25,10 @@ pub(crate) const COMET_DEBUG_MEMORY: &str = "spark.comet.debug.memory";
 pub(crate) const COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED: &str =
     "spark.comet.parquet.rowFilterPushdown.enabled";
 pub(crate) const SPARK_EXECUTOR_CORES: &str = "spark.executor.cores";
+#[cfg(feature = "oom-guard")]
+pub(crate) const COMET_MEMORY_GUARD_ENABLED: &str = "spark.comet.exec.memoryGuard.enabled";
+#[cfg(feature = "oom-guard")]
+pub(crate) const COMET_MEMORY_GUARD_SIZE: &str = "spark.comet.exec.memoryGuard.size";
 
 /// Comet configs read through this trait must be resolved by the JVM first:
 /// `CometExecIterator.serializeCometSQLConfs` sends booleans as `true` or `false` and sizes as a

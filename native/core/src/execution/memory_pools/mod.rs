@@ -18,6 +18,10 @@
 mod config;
 mod fair_pool;
 pub mod logging_pool;
+#[cfg(feature = "oom-guard")]
+pub(crate) mod oom_guard;
+#[cfg(feature = "oom-guard")]
+mod real_usage_pool;
 mod spark_memory;
 mod task_shared;
 mod unified_pool;
@@ -30,6 +34,8 @@ use std::sync::Arc;
 use unified_pool::CometUnifiedMemoryPool;
 
 pub(crate) use config::*;
+#[cfg(feature = "oom-guard")]
+pub(crate) use real_usage_pool::RealUsageMemoryPool;
 pub(crate) use task_shared::*;
 
 /// Creates the memory pool for a native plan.

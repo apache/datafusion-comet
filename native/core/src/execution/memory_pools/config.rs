@@ -24,6 +24,16 @@ pub(crate) enum MemoryPoolType {
     Unbounded,
 }
 
+#[cfg(feature = "oom-guard")]
+impl MemoryPoolType {
+    /// True when this pool's `reserved()` reflects a single task's usage, so a per-task
+    /// fair-share comparison is meaningful. Only the task-shared unified pools qualify.
+    /// `Unbounded` is created per plan, so its `reserved()` misses the task's other plans.
+    pub(crate) fn has_per_task_budget(&self) -> bool {
+        !matches!(self, MemoryPoolType::Unbounded)
+    }
+}
+
 pub(crate) struct MemoryPoolConfig {
     pub(crate) pool_type: MemoryPoolType,
     pub(crate) pool_size: usize,
@@ -40,7 +50,7 @@ impl MemoryPoolConfig {
 
 pub(crate) fn parse_memory_pool_config(
     off_heap_mode: bool,
-    memory_pool_type: String,
+    memory_pool_type: &str,
     memory_limit: i64,
 ) -> CometResult<MemoryPoolConfig> {
     if !off_heap_mode {
@@ -53,7 +63,7 @@ pub(crate) fn parse_memory_pool_config(
     }
 
     let pool_size = memory_limit as usize;
-    match memory_pool_type.as_str() {
+    match memory_pool_type {
         "fair_unified" => Ok(MemoryPoolConfig::new(
             MemoryPoolType::FairUnified,
             pool_size,
@@ -63,6 +73,13 @@ pub(crate) fn parse_memory_pool_config(
             // memory therefore does not need a size to be explicitly set. The pool size
             // shared with Spark is set by `spark.memory.offHeap.size`.
             Ok(MemoryPoolConfig::new(MemoryPoolType::GreedyUnified, 0))
+        }
+        "unbounded" => {
+            // No accounting of its own. In off-heap mode this is what
+            // `spark.comet.exec.memoryGuard.enabled` forces, so the real-usage gate
+            // wrapped around it is the only thing rejecting growth, instead of
+            // delegating per-task accounting to Spark's TaskMemoryManager.
+            Ok(MemoryPoolConfig::new(MemoryPoolType::Unbounded, 0))
         }
         _ => Err(CometError::Config(format!(
             "Unsupported memory pool type: {memory_pool_type}"
