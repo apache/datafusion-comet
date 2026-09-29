@@ -34,7 +34,7 @@ import org.apache.arrow.memory.ArrowBuf
 import org.apache.arrow.vector.ipc.ArrowReader
 import org.apache.arrow.vector.types.pojo.{Field, Schema}
 import org.apache.hadoop.fs.Path
-import org.apache.spark.SparkEnv
+import org.apache.spark.{SparkEnv, TaskContext}
 import org.apache.spark.sql.{CometTestBase, DataFrame, Dataset, Row}
 import org.apache.spark.sql.catalyst.expressions.AttributeReference
 import org.apache.spark.sql.catalyst.plans.logical.LocalRelation
@@ -280,12 +280,18 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
   test(
     "failed RSS callback registration closes every Arrow and shuffle input and preserves its error") {
     val planBytes = rssShufflePlanBytes
+    val arrowInputsClosed = spark.sparkContext.longAccumulator("arrowInputsClosed")
 
     val results = spark.sparkContext
       .parallelize(Seq(17), 1)
       .mapPartitions { _ =>
         var readerClosed = false
         var ownedBuffer: ArrowBuf = null
+        // The task-completion listener that exports the Arrow input releases it. Registered
+        // before that one, this listener runs after it.
+        TaskContext.get().addTaskCompletionListener[Unit] { _ =>
+          if (readerClosed && ownedBuffer.refCnt() == 0) arrowInputsClosed.add(1)
+        }
         val arrowInput = CometArrowStream
           .stream(
             "native-rss-registration-failure-test",
@@ -333,13 +339,12 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
             shuffleBlockIterators = shuffleInputs,
             shufflePartitionPusher = Some(null))
           iterator.close()
-          Iterator.single((false, false, false, false))
+          Iterator.single((false, false, false))
         } catch {
           case failure: Throwable =>
             Iterator.single(
               (
                 failure.getMessage.contains("Remote shuffle callback must not be null"),
-                readerClosed && ownedBuffer.refCnt() == 0,
                 closedInputs.toSet == Set("failing", "remaining"),
                 failure.getSuppressed.exists(
                   _.getMessage.contains("shuffle input cleanup sentinel"))))
@@ -347,7 +352,8 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
       }
       .collect()
 
-    assert(results.sameElements(Array((true, true, true, true))))
+    assert(results.sameElements(Array((true, true, true))))
+    assert(arrowInputsClosed.value == 1, "the Arrow input was not released by task end")
   }
 
   test("native shuffle plan preserves local partition writer and legacy output path") {

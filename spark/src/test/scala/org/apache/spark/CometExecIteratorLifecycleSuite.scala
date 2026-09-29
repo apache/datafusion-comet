@@ -22,11 +22,14 @@ package org.apache.spark
 import java.io.ByteArrayInputStream
 import java.lang.ref.WeakReference
 import java.util.Properties
-import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger}
 
 import scala.reflect.ClassTag
 
+import org.apache.arrow.c.ArrowArrayStream
 import org.apache.arrow.memory.RootAllocator
+import org.apache.arrow.vector.ipc.ArrowReader
+import org.apache.arrow.vector.types.pojo.{ArrowType, Field, Schema}
 import org.apache.spark.executor.TaskMetrics
 import org.apache.spark.memory.{TaskMemoryManager, TestMemoryManager}
 import org.apache.spark.rdd.RDD
@@ -37,7 +40,7 @@ import org.apache.spark.sql.comet.execution.arrow.CometArrowStream
 import org.apache.spark.sql.functions.{col, udf}
 import org.apache.spark.sql.types.{LongType, StructField, StructType}
 
-import org.apache.comet.{CometConf, CometExecIterator, CometShuffleBlockIterator, Native}
+import org.apache.comet.{CometConf, CometExecIterator, CometNativeException, CometShuffleBlockIterator, Native}
 import org.apache.comet.serde.Config.ConfigMap
 import org.apache.comet.serde.OperatorOuterClass
 
@@ -501,6 +504,82 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
     assert(memoryUsageLogInterval(Some("-5s")) == 0L)
     assert(memoryUsageLogInterval(Some("false")) == 0L)
     assert(memoryUsageLogInterval(Some("10 seconds please")) == 0L)
+  }
+
+  /**
+   * Exports an empty input stream the way a native plan's JVM input is exported, over a reader
+   * that counts how many times it is closed. Only the stream's release callback closes it.
+   */
+  private def closeCountingInput(closes: AtomicInteger): ArrowArrayStream =
+    CometArrowStream
+      .stream(
+        "input-release-test",
+        allocator =>
+          new ArrowReader(allocator) {
+            override protected def readSchema(): Schema =
+              new Schema(
+                java.util.Collections
+                  .singletonList(Field.nullable("test", new ArrowType.Int(64, true))))
+
+            override def loadNextBatch(): Boolean = false
+
+            override def bytesRead(): Long = 0L
+
+            override protected def closeReadSource(): Unit = closes.incrementAndGet()
+          })
+      .next()
+
+  private def iteratorOver(input: ArrowArrayStream, planBytes: Array[Byte]): CometExecIterator =
+    new CometExecIterator(
+      id = CometExec.newIterId,
+      inputObjects = Array[Object](input),
+      numOutputCols = 1,
+      protobufQueryPlan = planBytes,
+      nativeMetrics = CometMetricNode(Map.empty),
+      numParts = 1,
+      partitionIndex = 0)
+
+  private def limitPlanBytes: Array[Byte] =
+    CometExecUtils.getLimitNativePlan(Seq(PrettyAttribute("test", LongType)), 100).get.toByteArray
+
+  test("an input stream native took is released once, when its plan is released") {
+    withTaskContext(4600000L) {
+      val closes = new AtomicInteger()
+      val iter = iteratorOver(closeCountingInput(closes), limitPlanBytes)
+      // The first executePlan takes the stream, and exhausting the empty input closes the
+      // iterator, whose releasePlan drops the native reader and so releases the stream.
+      assert(!iter.hasNext)
+      assert(closes.get() == 1, s"the input reader closed ${closes.get()} times on plan release")
+      // Taking the stream left a released struct on the JVM side, so the release at task end
+      // must not close the reader a second time.
+      TaskContext.get().markTaskCompleted(None)
+      assert(closes.get() == 1, s"the input reader closed ${closes.get()} times by task end")
+    }
+  }
+
+  test("an input stream native never took is released when the task ends") {
+    withTaskContext(4700000L) {
+      val closes = new AtomicInteger()
+      // Never polled, as when the task is killed before its first hasNext, so native never takes
+      // the stream.
+      iteratorOver(closeCountingInput(closes), limitPlanBytes)
+      TaskContext.get().markTaskCompleted(None)
+      assert(closes.get() == 1, s"the input reader closed ${closes.get()} times")
+    }
+  }
+
+  test("an input stream is released when the task ends after its plan fails to be created") {
+    withTaskContext(4800000L) {
+      val closes = new AtomicInteger()
+      val input = closeCountingInput(closes)
+      val thrown = intercept[CometNativeException](iteratorOver(input, Array[Byte](1, 2, 3)))
+      // Guard against a vacuous pass: createPlan must have failed on the plan bytes.
+      assert(
+        thrown.getMessage.contains("Fail to deserialize to native operator"),
+        s"expected a plan deserialization failure, got: $thrown")
+      TaskContext.get().markTaskCompleted(None)
+      assert(closes.get() == 1, s"the input reader closed ${closes.get()} times")
+    }
   }
 }
 
