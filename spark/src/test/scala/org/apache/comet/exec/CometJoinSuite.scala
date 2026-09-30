@@ -1629,8 +1629,11 @@ class CometJoinSuite extends CometTestBase {
   test("ExistenceJoin with residual condition falls back to Spark") {
     // A non-equi residual predicate is evaluated over the whole candidate batch by DataFusion's
     // LeftMark join (no first-match short-circuit), so Comet keeps it on Spark; verify parity.
+    // AQE is disabled because a declined broadcast join loses its fallback reason from the
+    // AQE-final plan; see https://github.com/apache/datafusion-comet/issues/6442.
     withSQLConf(
       CometConf.COMET_EXEC_EXISTENCE_JOIN_ENABLED.key -> "true",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "10MB",
       SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "10MB") {
       withParquetTable((0 until 100).map(i => (i, if (i % 3 == 0) "US" else "EU")), "tbl_a") {
@@ -1647,8 +1650,11 @@ class CometJoinSuite extends CometTestBase {
   test("ExistenceJoin with computed join key falls back to Spark") {
     // A computed join key (not a bare column reference) is evaluated eagerly over the batch by
     // the native join, so Comet keeps it on Spark; verify parity.
+    // AQE is disabled because a declined broadcast join loses its fallback reason from the
+    // AQE-final plan; see https://github.com/apache/datafusion-comet/issues/6442.
     withSQLConf(
       CometConf.COMET_EXEC_EXISTENCE_JOIN_ENABLED.key -> "true",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "10MB",
       SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "10MB") {
       withParquetTable((0 until 100).map(i => (i, if (i % 3 == 0) "US" else "EU")), "tbl_a") {
