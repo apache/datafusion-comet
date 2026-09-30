@@ -550,6 +550,34 @@ class CometMapExpressionSuite extends CometTestBase {
     }
   }
 
+  // A folded `map('z', 0)` has `valueContainsNull = false`, and a `MAP<STRING, INT>` column has
+  // `valueContainsNull = true`. Spark's `If` treats the two as one type and adds no cast, so the
+  // native planner has to cast the branch whose Arrow type differs from the common type (#6334).
+  // Each INSERT writes its own files and a batch never spans files, so there are batches in which
+  // every row takes the THEN branch, batches in which every row takes the ELSE branch, and batches
+  // that mix the two. The ones in which every row takes the ELSE branch failed with "column types
+  // must match schema types". `if_nested_nullability.sql` covers the constructor path.
+  test("IF with a folded map literal branch and a map column (multirow)") {
+    withTable("t") {
+      sql("CREATE TABLE t(c BOOLEAN, m MAP<STRING, INT>) USING parquet")
+      // Write the rows in Spark, so that only the queries below run in Comet
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        // c is true and m is not NULL in every row
+        sql("INSERT INTO t VALUES (true, map('a', 1)), (true, map('b', CAST(NULL AS INT)))")
+        // c is false or NULL and m is NULL in every row
+        sql("INSERT INTO t VALUES (false, NULL), (NULL, NULL)")
+        // pairs of rows that take different branches
+        val mixed =
+          (0 until 10).map(i => if (i % 2 == 0) s"(true, map('k', $i))" else "(false, NULL)")
+        sql(s"INSERT INTO t VALUES ${mixed.mkString(", ")}")
+      }
+      Seq("IF(c, m, map('z', 0))", "IF(c, map('z', 0), m)", "IF(m IS NULL, map('z', 0), m)")
+        .foreach { expr =>
+          checkSparkAnswerAndOperator(s"SELECT $expr AS r FROM t")
+        }
+    }
+  }
+
   // The native lookup compares a whole batch of map entries in one pass and then reads each row's
   // window out of the resulting mask. A native OFFSET slices the batch, and Arrow keeps a sliced
   // MapArray's original entry offsets, so the visible entries start part way into the keys child --
