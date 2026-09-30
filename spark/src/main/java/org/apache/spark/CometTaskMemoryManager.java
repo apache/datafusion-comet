@@ -31,13 +31,14 @@ import org.apache.spark.memory.TaskMemoryManager;
 
 /**
  * A adapter class that is used by Comet native to acquire & release memory through Spark's unified
- * memory manager. This assumes Spark's off-heap memory mode is enabled.
+ * memory manager. This assumes Spark's off-heap memory mode is enabled. All the native plans in a
+ * task share one (see {@code CometExecIterator.taskMemory}).
  */
 public class CometTaskMemoryManager {
 
   private static final Logger logger = LoggerFactory.getLogger(CometTaskMemoryManager.class);
 
-  /** The id uniquely identifies the native plan this memory manager is associated to */
+  /** The id of the native plan this memory manager was created for, the first in its task. */
   private final long id;
 
   private final long taskAttemptId;
@@ -71,8 +72,17 @@ public class CometTaskMemoryManager {
     }
     long acquired = internal.acquireExecutionMemory(size, nativeMemoryConsumer);
     long newUsed = used.addAndGet(acquired);
-    if (acquired < size) {
-      logger.warn(
+    // A partial grant is routine, not an error: the native pool either refuses the reservation,
+    // which tells the operator to spill, or carries the shortfall as overcommit. A refusal that
+    // fails the task says in its error what Spark granted and which consumers hold the most.
+    //
+    // Nothing here may take the TaskMemoryManager monitor, which rules out showMemoryUsage.
+    // Another acquire of this task can hold that monitor while it waits inside Spark for memory,
+    // and this thread holds the partial grant until native code hands it back.
+    // getMemoryConsumptionForThisTask takes only the memory manager's monitor, which a waiting
+    // acquire gives up.
+    if (acquired < size && logger.isDebugEnabled()) {
+      logger.debug(
           "Task {} requested {} bytes but only received {} bytes. Current allocation is {} and "
               + "the total memory consumption is {} bytes.",
           taskAttemptId,
@@ -80,8 +90,6 @@ public class CometTaskMemoryManager {
           acquired,
           newUsed,
           internal.getMemoryConsumptionForThisTask());
-      // If memory manager is not able to acquire the requested size, log memory usage
-      internal.showMemoryUsage();
     }
     return acquired;
   }

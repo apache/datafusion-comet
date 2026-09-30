@@ -265,7 +265,9 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_EXEC)
       .doc("Whether to enable Comet native execution for in-memory cached tables. Its value at " +
         "startup also decides whether CometDriverPlugin installs Comet's cache serializer, " +
-        "which stores cached data in Arrow format. Because spark.sql.cache.serializer is a " +
+        "which stores cached data in Arrow format. The plugin installs it only if " +
+        "spark.comet.enabled and spark.comet.exec.enabled are also enabled at startup. " +
+        "Because spark.sql.cache.serializer is a " +
         "static config, the cached format is fixed for the application, and disabling this " +
         "at runtime only sends cached scans back to Spark's execution path. Relations whose " +
         "schema Comet's Arrow writer does not support are always cached in Spark's default " +
@@ -336,7 +338,7 @@ object CometConf extends ShimCometConf {
     conf("spark.comet.exec.sortMergeJoinWithJoinFilter.enabled")
       .category(CATEGORY_ENABLE_EXEC)
       .doc("Support for Sort Merge Join with filter. " +
-        "Deprecated: this config will be removed in a future release.")
+        "Deprecated: this config will be removed in a future major release.")
       .booleanConf
       .createWithDefault(true)
 
@@ -362,9 +364,10 @@ object CometConf extends ShimCometConf {
     .category(CATEGORY_TUNING)
     .doc(
       "How often each executor logs its native memory usage at INFO level while Comet native " +
-        "plans are running: the bytes the native allocator has handed out, and the bytes " +
-        "reserved in Comet's memory pools. The difference is native memory that the pools are " +
-        "not accounting for. The executor logs one line per interval however many tasks are " +
+        "plans are running: the bytes the native allocator has handed out, the bytes reserved " +
+        "in Comet's memory pools, and the Arrow memory Comet holds on the JVM side. The " +
+        "difference between the first two is native memory that the pools are not accounting " +
+        "for. The executor logs one line per interval however many tasks are " +
         "running, and one more after the last plan finishes. It logs a warning when the " +
         "native memory looks larger than the executor's container allows. This is an executor " +
         "setting, read when an executor starts its first Comet native plan, so it must be set " +
@@ -444,6 +447,17 @@ object CometConf extends ShimCometConf {
           "per input, including both Spark build sides. The probe filter remains active " +
           "when reader pruning is unavailable. Unsupported joins retain their existing " +
           "execution path. Filters do not cross Spark exchanges or JVM/Arrow boundaries.")
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_EXEC_TOPK_FUSION_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.topK.fusion.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Experimental opt-in: run an eligible local TopK in the same native execution as its " +
+          "Parquet scan. Supports one direct signed integer sort key. This changes the local " +
+          "execution pipeline and can reduce scan/TopK overlap, so it may be slower for some " +
+          "workloads.")
       .booleanConf
       .createWithDefault(false)
 
@@ -678,14 +692,25 @@ object CometConf extends ShimCometConf {
     conf("spark.comet.shuffle.jvm.batchSize")
       .withAlternative("spark.comet.columnar.shuffle.batch.size")
       .category(CATEGORY_SHUFFLE)
-      .doc("Batch size when writing out sorted spill files on the native side. Note that " +
-        "this should not be larger than batch size (i.e., `spark.comet.batchSize`). Otherwise " +
-        "it will produce larger batches than expected in the native operator after shuffle.")
+      .doc(
+        "Batch size when writing out sorted spill files on the native side. A value larger " +
+          "than the batch size (i.e., `spark.comet.batchSize`) is capped at the batch size, so " +
+          "that the native operators after the shuffle do not receive larger batches than " +
+          "expected.")
       .intConf
-      .checkValue(
-        v => v <= COMET_BATCH_SIZE.get(),
-        "Should not be larger than batch size `spark.comet.batchSize`")
+      .checkValue(v => v > 0, "Batch size must be positive")
       .createWithDefault(8192)
+
+  /**
+   * The batch size that the JVM columnar shuffle writes with: `spark.comet.shuffle.jvm.batchSize`
+   * capped at `spark.comet.batchSize`. The cap is applied where the values are read rather than
+   * in a validator on the entry, because validators also check the default while `CometConf`
+   * initializes. On an executor that happens inside a task, under the session's confs.
+   */
+  def jvmShuffleBatchSize(): Int = jvmShuffleBatchSize(SQLConf.get)
+
+  def jvmShuffleBatchSize(conf: SQLConf): Int =
+    math.min(COMET_SHUFFLE_JVM_BATCH_SIZE.get(conf), COMET_BATCH_SIZE.get(conf))
 
   val COMET_SHUFFLE_NATIVE_WRITE_BUFFER_SIZE: ConfigEntry[Long] =
     conf("spark.comet.shuffle.native.writeBufferSize")
@@ -910,18 +935,20 @@ object CometConf extends ShimCometConf {
           "off-heap mode. Available pool types are `greedy_unified` and `fair_unified`. " +
           s"$TUNING_GUIDE.")
       .stringConf
+      .transform(_.toLowerCase(Locale.ROOT))
+      .checkValues(Set("fair_unified", "greedy_unified"))
       .createWithDefault("fair_unified")
 
   val COMET_OFFHEAP_MEMORY_POOL_FRACTION: ConfigEntry[Double] =
     conf("spark.comet.exec.memoryPool.fraction")
       .category(CATEGORY_TUNING)
       .doc(
-        "Deprecated: this config will be removed in a future release. It does not leave room " +
-          "in spark.memory.offHeap.size for native memory that Comet's memory pools do not " +
-          "track, because Spark hands out the whole off-heap pool whatever this is set to. Size " +
-          "spark.executor.memoryOverhead for that memory instead. Only applies to off-heap " +
-          "mode, where the fair_unified pool limits each memory consumer in a task to this " +
-          "fraction of the off-heap size divided by the task's consumers, and the " +
+        "Deprecated: this config will be removed in a future major release. It does not " +
+          "leave room in spark.memory.offHeap.size for native memory that Comet's memory " +
+          "pools do not track, because Spark hands out the whole off-heap pool whatever this " +
+          "is set to. Size spark.executor.memoryOverhead for that memory instead. Only applies " +
+          "to off-heap mode, where the fair_unified pool limits each memory consumer in a task " +
+          "to this fraction of the off-heap size divided by the task's consumers, and the " +
           s"greedy_unified pool ignores it. $TUNING_GUIDE.")
       .doubleConf
       .createWithDefault(1.0)
@@ -950,6 +977,19 @@ object CometConf extends ShimCometConf {
       .doc("This setting is used in unit tests")
       .booleanConf
       .createWithDefault(true)
+
+  val COMET_ICEBERG_WRITE_REPORT_DIR: ConfigEntry[String] =
+    conf("spark.comet.testing.icebergWriteReport.dir")
+      .internal()
+      .category(CATEGORY_TESTING)
+      .doc("Test-only. When set, the Comet driver plugin registers a query listener that " +
+        "records every Iceberg write the application runs, the writer that ran it (Comet's " +
+        "native writer, the JVM writer behind Comet's split operator, or Spark's own V2 write) " +
+        "and the reasons Comet recorded for not writing natively, as JSON lines in this " +
+        "directory. `dev/ci/summarize-iceberg-writes.py` summarizes them. The Iceberg Spark " +
+        "test jobs set it through the environment variable so the Iceberg diffs need no change.")
+      .stringConf
+      .createWithEnvVarOrDefault("COMET_ICEBERG_WRITE_REPORT_DIR", "")
 
   val COMET_SPARK_TO_ARROW_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.sparkToColumnar.enabled")
