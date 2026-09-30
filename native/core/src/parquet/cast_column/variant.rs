@@ -26,6 +26,7 @@ use arrow::{
 };
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
 use datafusion_comet_common::SparkError;
+use datafusion_comet_spark_expr::canonicalize_nan;
 use parquet::variant::{
     unshred_variant, ListBuilder, MetadataBuilder, ObjectBuilder, ObjectFieldBuilder, ParentState,
     ReadOnlyMetadataBuilder, ValueBuilder, Variant, VariantArray, VariantBuilderExt,
@@ -852,8 +853,8 @@ fn spark_typed_scalar<'m, 'v>(value: Variant<'m, 'v>) -> Variant<'m, 'v> {
             .map(Variant::Decimal4)
             .unwrap_or(value),
         Variant::String(s) => Variant::from(s),
-        Variant::Float(v) if v.is_nan() => Variant::Float(f32::NAN),
-        Variant::Double(v) if v.is_nan() => Variant::Double(f64::NAN),
+        Variant::Float(v) => Variant::Float(canonicalize_nan(v)),
+        Variant::Double(v) => Variant::Double(canonicalize_nan(v)),
         _ => value,
     }
 }

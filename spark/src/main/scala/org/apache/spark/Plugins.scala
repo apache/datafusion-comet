@@ -102,13 +102,18 @@ object CometDriverPlugin extends Logging {
   /** Spark config key under which the loaded Comet version is exposed at runtime. */
   val COMET_VERSION_CONFIG = "spark.comet.version"
 
-  // Use Comet's cache serializer only for the native in-memory cache path.
+  // Use Comet's cache serializer only when the native in-memory cache scan can run, which needs
+  // Comet and its native execution as well as the cache config. spark.sql.cache.serializer is
+  // static, so an application that starts with Comet or native execution off would otherwise
+  // store every cache in Comet's format, with only Spark operators to read it.
   // If the application already set spark.sql.cache.serializer, leave that value
   // unchanged so Comet does not replace a user-selected cache format.
   private[apache] def maybeSetCacheSerializer(
       conf: SparkConf,
       extraConfs: ju.HashMap[String, String]): Unit = {
-    if (conf.getBoolean(CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key, false)) {
+    if (getBooleanConf(conf, CometConf.COMET_ENABLED) &&
+      getBooleanConf(conf, CometConf.COMET_EXEC_ENABLED) &&
+      getBooleanConf(conf, CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED)) {
       val serializerKey = StaticSQLConf.SPARK_CACHE_SERIALIZER.key
       val serializerValue =
         "org.apache.spark.sql.comet.execution.arrow.ArrowCachedBatchSerializer"
