@@ -18,12 +18,9 @@
 mod checkoverflow;
 mod decimal_rescale_check;
 mod make_decimal;
-mod normalize_nan;
 mod unscaled_value;
 
 pub use checkoverflow::CheckOverflow;
 pub use decimal_rescale_check::DecimalRescaleCheckOverflow;
 pub use make_decimal::spark_make_decimal;
-pub(crate) use normalize_nan::normalize_float;
-pub use normalize_nan::NormalizeNaNAndZero;
 pub use unscaled_value::spark_unscaled_value;

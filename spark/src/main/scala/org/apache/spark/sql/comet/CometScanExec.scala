@@ -228,7 +228,7 @@ case class CometScanExec(
       driverMetrics("staticFilesSize") = filesSize
     }
     if (relation.partitionSchema.nonEmpty) {
-      driverMetrics("numPartitions") = partitions.length
+      driverMetrics("numPartitions") = partitions.length.toLong
     }
   }
 
