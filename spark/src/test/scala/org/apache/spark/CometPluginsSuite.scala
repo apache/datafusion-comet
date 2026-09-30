@@ -474,12 +474,29 @@ class CometPluginsEventLogSuite extends SparkFunSuite {
     }
   }
 
-  private def indicesWhere(events: Seq[SparkListenerEvent])(
-      p: SparkListenerEvent => Boolean): Seq[Int] =
-    events.indices.filter(i => p(events(i)))
+  private val marker =
+    memoryUsageEvent("marker", 0L, Array(0L, 0L, 0L, 0L), JvmArrowMemory(0L, 0L))
 
-  private def applicationEnds(events: Seq[SparkListenerEvent]): Seq[Int] =
-    indicesWhere(events)(_.isInstanceOf[SparkListenerApplicationEnd])
+  /**
+   * Posts `event`, and a marker once every listener has handled it. The bus hands an event to one
+   * queue at a time, so what the driver plugin's listener records on `event` can reach the event
+   * log ahead of `event` itself. It always reaches it ahead of the marker.
+   */
+  private def postAndMark(sc: SparkContext, event: SparkListenerEvent): Unit = {
+    sc.listenerBus.post(event)
+    sc.listenerBus.waitUntilEmpty()
+    sc.listenerBus.post(marker)
+  }
+
+  /**
+   * Asserts that the event log records exactly one sample `isSample` accepts, ahead of the marker
+   * and so not at the application's end.
+   */
+  private def assertRecordedOnceBeforeMarker(events: Seq[SparkListenerEvent])(
+      isSample: SparkListenerEvent => Boolean): Unit = {
+    val recorded = events.indices.filter(i => isSample(events(i)))
+    assert(recorded.size == 1 && recorded(0) < events.indexOf(marker), events)
+  }
 
   test("the driver records what the memory usage log sent it when the application ends") {
     // An allocation no real sample has, to tell this sample apart from any that the memory usage
@@ -497,20 +514,14 @@ class CometPluginsEventLogSuite extends SparkFunSuite {
           memoryUsageEvent("barrier", 0L, Array(0L, 0L, 0L, 0L), jvmArrow)) == null)
       // The end as the listener sees it, which alone records what the driver holds on Spark 3.4
       // and 3.5. From Spark 4.0 the plugin's shutdown would record it too, when the context stops.
-      sc.listenerBus.post(SparkListenerApplicationEnd(System.currentTimeMillis()))
-      sc.listenerBus.waitUntilEmpty()
+      postAndMark(sc, SparkListenerApplicationEnd(System.currentTimeMillis()))
     }
-    val recorded = indicesWhere(events) {
+    assertRecordedOnceBeforeMarker(events) {
       // Local mode runs the executor inside the driver.
       case sample: CometExecutorMemoryUsage =>
         sample == memoryUsageEvent(SparkContext.DRIVER_IDENTIFIER, sample.time, usage, jvmArrow)
       case _ => false
     }
-    val ends = applicationEnds(events)
-    // Once, between the end the test posted and the one the context posted when it stopped.
-    assert(
-      recorded.size == 1 && ends.size == 2 && ends(0) < recorded(0) && recorded(0) < ends(1),
-      events)
   }
 
   test("the driver records what an executor sent since its last summary when it goes away") {
@@ -521,13 +532,9 @@ class CometPluginsEventLogSuite extends SparkFunSuite {
       JvmArrowMemory(0L, 0L))
     val events = eventLog() { (sc, pluginContext) =>
       pluginContext.ask(sample)
-      sc.listenerBus.post(SparkListenerExecutorRemoved(sample.time, sample.executorId, "test"))
-      sc.listenerBus.waitUntilEmpty()
+      postAndMark(sc, SparkListenerExecutorRemoved(sample.time, sample.executorId, "test"))
     }
-    val recorded = indicesWhere(events)(_ == sample)
-    val ends = applicationEnds(events)
-    // Once, before the application's end, which would otherwise record it.
-    assert(recorded.size == 1 && ends.nonEmpty && recorded(0) < ends(0), events)
+    assertRecordedOnceBeforeMarker(events)(_ == sample)
   }
 
   test("the driver records an idle executor's samples at its first heartbeat a minute later") {
@@ -539,13 +546,9 @@ class CometPluginsEventLogSuite extends SparkFunSuite {
     val events = eventLog(classOf[ManualClockCometPlugin]) { (sc, pluginContext) =>
       pluginContext.ask(sample)
       ManualClockCometPlugin.clock.advance(TimeUnit.MINUTES.toMillis(1))
-      sc.listenerBus.post(SparkListenerExecutorMetricsUpdate(sample.executorId, Seq.empty))
-      sc.listenerBus.waitUntilEmpty()
+      postAndMark(sc, SparkListenerExecutorMetricsUpdate(sample.executorId, Seq.empty))
     }
-    val recorded = indicesWhere(events)(_ == sample)
-    val ends = applicationEnds(events)
-    // Once, before the application's end, which would otherwise record it.
-    assert(recorded.size == 1 && ends.nonEmpty && recorded(0) < ends(0), events)
+    assertRecordedOnceBeforeMarker(events)(_ == sample)
   }
 }
 
