@@ -70,6 +70,10 @@ properties:
   release actually publishes. Use the exact Scala patch version Spark
   publishes, not a looser pin; a mismatch causes `NoSuchMethodError` at
   runtime.
+- `semanticdb.version`: `semanticdb-scalac` is published separately for each
+  Scala patch version, so check that `org.scalameta:semanticdb-scalac_<scala.version>`
+  exists at this version. Without it, `make format` and the Lint Java CI job
+  cannot run scalafix on the new profile.
 - `shims.majorVerSrc` and `shims.minorVerSrc`: the directory names the
   build helper plugin will add to the source path. By convention the
   major-version directory groups shims that are identical across the family
@@ -109,11 +113,13 @@ logic and to skip tests. Add the matching helper for the new version
 
 ### Add a Compile-Only CI Job
 
-Edit `.github/workflows/pr_build_linux.yml` and `pr_build_macos.yml` to add
-the new Spark version to the `build-spark` (or equivalent compile-only) job
-matrix. Do not add it to the heavier test matrices yet. A compile-only job
-keeps the CI cost of stage 1 small and prevents test failures on the new
-version from blocking unrelated PRs.
+Edit `.github/workflows/pr_build_linux.yml` to add the new Spark version to
+the `lint-java` matrix, which compiles each listed profile and runs scalafix
+on every pull request. If `semanticdb-scalac` is not yet published for the new
+Scala version, add a separate compile-only job instead until it is. Do not add
+the version to the heavier test matrices yet. Compiling only keeps the CI cost
+of stage 1 small and prevents test failures on the new version from blocking
+unrelated PRs.
 
 When CI capacity is constrained (the macOS runners in particular), it is
 acceptable to drop an older minor version from the macOS PR matrix while a

@@ -30,7 +30,7 @@ ruleset in `.asf.yaml`. That splits CI into three tiers:
 
 Every queue-only and nightly job has a `run-*` label that opts a pull request
 into it early, listed in the diagram below. The Lint Java matrix compiles
-Spark 3.4/3.5/4.0 on every pull request, so a shim that fails to build is
+every Spark profile on every pull request, so a shim that fails to build is
 caught there; only the runtime suites wait for the queue or the nightly.
 
 `spark_3_4` is in none of the tiers. Spark 3.4 is deprecated, so its Spark SQL
