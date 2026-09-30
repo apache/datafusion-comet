@@ -215,11 +215,16 @@ Points where Comet adapts iceberg-rust to match iceberg-java:
   `LocationGenerator::generate_location` cannot return an error.
 - **Partition values.** `PartitionValueCalculator` (`iceberg_partition_value.rs`) replaces
   iceberg-rust's calculator of the same name, and `PartitionSplitter` replaces its
-  `RecordBatchPartitionSplitter`. `year` and `month` go through Comet's `iceberg_years` /
-  `iceberg_months` kernels, the ones the sort in front of a clustered write runs. iceberg-rust
-  computes them with Arrow's `date_part`, which returns NULL past `chrono`'s calendar
-  ([#6145](https://github.com/apache/datafusion-comet/issues/6145)). Every other transform stays on
-  iceberg-rust.
+  `RecordBatchPartitionSplitter`. `year`, `month`, `day` and `hour` of a date or timestamp go
+  through Comet's `iceberg_years` / `iceberg_months` / `iceberg_days` / `iceberg_hours` kernels, the
+  ones the sort in front of a clustered write runs (`day` of a date is the date itself and stays on
+  iceberg-rust). iceberg-rust computes `year` and `month` with Arrow's `date_part`, which returns
+  NULL past `chrono`'s calendar ([#6145](https://github.com/apache/datafusion-comet/issues/6145)).
+  All four of its transforms floor a pre-1970 timestamp that lies exactly 999999 microseconds into a
+  unit, which iceberg-java puts in the unit before
+  ([#6426](https://github.com/apache/datafusion-comet/issues/6426)), and its `day` puts some
+  timestamps from the last second before a pre-1970 midnight in the next day. Every other transform
+  stays on iceberg-rust.
 - **File names.** `file_name_prefix` embeds the partition id, the task attempt id and the operation
   id, so a retried or speculative attempt never reuses another attempt's file names.
 - **Row pacing.** iceberg-java's rolling writer checks the target file size every 1000 rows of the

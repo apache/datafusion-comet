@@ -174,6 +174,24 @@ class CometIcebergSystemFunctionSuite
     }
   }
 
+  test("years, months, days, and hours match Iceberg on pre-1970 timestamps ending in .999999") {
+    // The random corpus almost never lands on such a value, and its boundary rows sit a
+    // microsecond before a boundary rather than after it.
+    withIcebergCatalog {
+      withPreEpochTable {
+        val transformed = for {
+          column <- Seq("ts", "ntz")
+          function <- Seq("years", "months", "days", "hours")
+        } yield s"$catalog.system.$function($column)"
+        checkSparkAnswerAndOperator(s"SELECT id, ${transformed.mkString(", ")} FROM pre_epoch")
+        checkSparkAnswerAndOperator(
+          s"SELECT id FROM pre_epoch WHERE $catalog.system.days(ts) = DATE '1968-12-31'")
+        checkSparkAnswerAndOperator(
+          s"SELECT id FROM pre_epoch WHERE $catalog.system.hours(ts) = -2")
+      }
+    }
+  }
+
   test("system functions in filters stay native") {
     withSourceTable {
       checkSparkAnswerAndOperator(
@@ -259,6 +277,44 @@ class CometIcebergSystemFunctionSuite
         }
       } finally {
         sql(s"DROP TABLE IF EXISTS $table")
+      }
+    }
+  }
+
+  test("native partitioned write puts pre-1970 timestamps ending in .999999 where Iceberg does") {
+    // The sort in front of the write runs the native kernels and the native writer computes each
+    // row's partition value, so both have to follow Iceberg for the table to hold the partitions
+    // iceberg-java would have written. A spec takes one time transform per source column, hence a
+    // column per transform.
+    withIcebergCatalog {
+      withPreEpochTable {
+        val table = s"$catalog.db.pre_epoch_partitions"
+        sql(s"""
+          CREATE TABLE $table (id INT, y TIMESTAMP, m TIMESTAMP, d TIMESTAMP, h TIMESTAMP)
+          USING iceberg
+          PARTITIONED BY (years(y), months(m), days(d), hours(h))""")
+        try {
+          val plans = capturePlans(spark) {
+            sql(s"INSERT INTO $table SELECT id, ts, ts, ts, ts FROM pre_epoch")
+          }
+          assert(
+            plans.exists(plan =>
+              collectWithSubqueries(plan) { case w: CometIcebergWriteExec => w }.nonEmpty),
+            s"expected a native Iceberg write in the captured plans:\n${plans.mkString("\n--\n")}")
+
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            val expected = sql(
+              s"SELECT id, $catalog.system.years(y), $catalog.system.months(m), " +
+                s"$catalog.system.days(d), $catalog.system.hours(h) FROM $table").collect()
+            checkAnswer(
+              sql(
+                "SELECT id, _partition.y_year, _partition.m_month, _partition.d_day, " +
+                  s"_partition.h_hour FROM $table"),
+              expected)
+          }
+        } finally {
+          sql(s"DROP TABLE IF EXISTS $table")
+        }
       }
     }
   }
@@ -421,13 +477,50 @@ class CometIcebergSystemFunctionSuite
     }
   }
 
-  /** Runs `f` with the Iceberg catalog registered and the source parquet table in scope. */
-  private def withSourceTable(f: => Unit): Unit = withTempIcebergDir { warehouseDir =>
+  /** Runs `f` with the Iceberg catalog registered. */
+  private def withIcebergCatalog(f: => Unit): Unit = withTempIcebergDir { warehouseDir =>
     withSQLConf(
       s"spark.sql.catalog.$catalog" -> "org.apache.iceberg.spark.SparkCatalog",
       s"spark.sql.catalog.$catalog.type" -> "hadoop",
-      s"spark.sql.catalog.$catalog.warehouse" -> warehouseDir.getAbsolutePath) {
-      withParquetTable(sourcePath, source)(f)
+      s"spark.sql.catalog.$catalog.warehouse" -> warehouseDir.getAbsolutePath)(f)
+  }
+
+  /** Runs `f` with the Iceberg catalog registered and the source parquet table in scope. */
+  private def withSourceTable(f: => Unit): Unit =
+    withIcebergCatalog(withParquetTable(sourcePath, source)(f))
+
+  /**
+   * Timestamps just after pre-1970 unit boundaries, where Iceberg does not floor. Its
+   * `DateTimeUtil` places a pre-1970 timestamp whose microsecond of second is 999999 by the
+   * second before it, so right after a boundary it gets the unit before: 1969-01-01
+   * 00:00:00.999999 is in year -2, month -13, day 1968-12-31, and hour -8761, where a floor gives
+   * -1, -12, 1969-01-01, and -8760.
+   */
+  private val preEpochTimestamps = Seq(
+    "1969-01-01 00:00:00.999999", // a year, month, day, and hour boundary
+    "1969-12-01 00:00:00.999999", // a month, day, and hour boundary
+    "1969-12-31 00:00:00.999999", // a day and hour boundary
+    "1969-12-31 23:00:00.999999", // an hour boundary
+    "1969-12-31 22:30:00",
+    "1968-12-31 12:00:00",
+    // After the epoch, where Iceberg floors.
+    "1970-01-01 01:00:00.999999")
+
+  /**
+   * Runs `f` with a parquet table `pre_epoch (id, ts, ntz)` holding `preEpochTimestamps` as both
+   * timestamp types. The session timezone is UTC, so that the `TIMESTAMP` values sit on the same
+   * boundaries as the `TIMESTAMP_NTZ` ones.
+   */
+  private def withPreEpochTable(f: => Unit): Unit = withSQLConf(
+    SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC",
+    SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> "TIMESTAMP_MICROS") {
+    withTable("pre_epoch") {
+      sql("CREATE TABLE pre_epoch (id INT, ts TIMESTAMP, ntz TIMESTAMP_NTZ) USING parquet")
+      val rows = preEpochTimestamps.zipWithIndex.map { case (timestamp, i) =>
+        s"(${i + 1}, TIMESTAMP '$timestamp', TIMESTAMP_NTZ '$timestamp')"
+      }
+      sql(s"INSERT INTO pre_epoch VALUES ${rows.mkString(", ")}")
+      f
     }
   }
 
