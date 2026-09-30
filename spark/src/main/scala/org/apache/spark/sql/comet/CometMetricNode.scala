@@ -287,9 +287,26 @@ object CometMetricNode {
 
   def aggregateMetrics(sc: SparkContext): Map[String, SQLMetric] = {
     Map(
+      "input_rows" -> SQLMetrics.createMetric(sc, "partial aggregate input rows"),
+      "reduction_factor_part" -> SQLMetrics.createMetric(
+        sc,
+        "groups emitted during partial aggregation"),
+      "reduction_factor_total" -> SQLMetrics.createMetric(
+        sc,
+        "rows considered for partial aggregation"),
+      "partial_bypass_eligible_partitions" -> SQLMetrics.createMetric(
+        sc,
+        "partitions eligible for partial aggregation bypass"),
+      "partial_bypass_ineligible_partitions" -> SQLMetrics.createMetric(
+        sc,
+        "partitions ineligible for partial aggregation bypass"),
       "skipped_aggregation_rows" -> SQLMetrics.createMetric(
         sc,
-        "rows bypassing partial aggregation"),
+        "rows bypassing partial aggregation")) ++ aggregateResourceMetrics(sc)
+  }
+
+  private def aggregateResourceMetrics(sc: SparkContext): Map[String, SQLMetric] = {
+    Map(
       "spill_count" -> SQLMetrics.createMetric(sc, "number of spills"),
       "spilled_bytes" -> SQLMetrics.createSizeMetric(sc, "total spilled bytes"),
       "spilled_rows" -> SQLMetrics.createMetric(sc, "number of spilled rows"),

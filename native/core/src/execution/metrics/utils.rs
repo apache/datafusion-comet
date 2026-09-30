@@ -81,12 +81,30 @@ pub(crate) fn to_native_metric_node(
         .iter()
         .for_each(|m| insert_metric_value(&mut native_metric_node.metrics, m.value()));
 
+    derive_partial_input_rows(&mut native_metric_node.metrics);
+
     for child_plan in children {
         let child_node = to_native_metric_node(child_plan)?;
         native_metric_node.children.push(child_node);
     }
 
     Ok(native_metric_node)
+}
+
+// DataFusion's reduction denominator stops at bypass. Include the later bypassed rows
+// when reporting the full input count, without replacing an operator's own input metric.
+fn derive_partial_input_rows(metrics: &mut HashMap<String, i64>) {
+    if let Some(grouped_rows) = metrics.get("reduction_factor_total") {
+        let input_rows = grouped_rows.saturating_add(
+            metrics
+                .get("skipped_aggregation_rows")
+                .copied()
+                .unwrap_or(0),
+        );
+        metrics
+            .entry("input_rows".to_string())
+            .or_insert(input_rows);
+    }
 }
 
 /// Expand a `MetricValue` into one or more `(name, i64)` entries.
@@ -140,6 +158,22 @@ mod tests {
             .iter()
             .for_each(|metric| insert_metric_value(&mut values, metric.value()));
         values
+    }
+
+    #[test]
+    fn partial_input_includes_bypassed_rows_without_overriding_existing_input() {
+        let mut values = HashMap::from([
+            ("reduction_factor_total".to_string(), 100),
+            ("skipped_aggregation_rows".to_string(), 37),
+        ]);
+        derive_partial_input_rows(&mut values);
+        assert_eq!(values.get("input_rows"), Some(&137));
+        values.insert("input_rows".to_string(), 200);
+        derive_partial_input_rows(&mut values);
+        assert_eq!(values.get("input_rows"), Some(&200));
+        let mut absent = HashMap::new();
+        derive_partial_input_rows(&mut absent);
+        assert!(!absent.contains_key("input_rows"));
     }
 
     #[test]

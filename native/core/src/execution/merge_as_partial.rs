@@ -31,14 +31,14 @@ use std::hash::{Hash, Hasher};
 
 use arrow::array::{ArrayRef, BooleanArray};
 use arrow::datatypes::{DataType, FieldRef};
-use datafusion::common::Result;
+use datafusion::common::{exec_err, Result};
 use datafusion::logical_expr::function::AccumulatorArgs;
 use datafusion::logical_expr::function::StateFieldsArgs;
 use datafusion::logical_expr::{
-    Accumulator, AggregateUDF, AggregateUDFImpl, EmitTo, GroupsAccumulator, ReversedUDAF,
-    Signature, Volatility,
+    Accumulator, AggregateUDFImpl, EmitTo, GroupsAccumulator, ReversedUDAF, Signature, Volatility,
 };
 use datafusion::physical_expr::aggregate::AggregateFunctionExpr;
+use datafusion::physical_expr::GroupsAccumulatorAdapter;
 use datafusion::scalar::ScalarValue;
 
 /// An AggregateUDF wrapper that gives merge semantics in Partial mode.
@@ -48,14 +48,12 @@ use datafusion::scalar::ScalarValue;
 /// and redirects it to `merge_batch` on the inner accumulator, effectively
 /// implementing PartialMerge: merge inputs, output state.
 ///
-/// We store the inner AggregateUDF (not the AggregateFunctionExpr) to avoid keeping
-/// references to UnboundColumn expressions that would panic if evaluated.
+/// Retain the original expression as the accumulator factory so its input types,
+/// argument count and other options are not replaced by intermediate-state metadata.
+/// Its expressions are never evaluated; updates receive the already-bound state inputs.
 #[derive(Debug)]
 pub struct MergeAsPartialUDF {
-    /// The inner aggregate UDF, cloned from the original expression.
-    inner_udf: AggregateUDF,
-    /// Pre-computed return type from the original expression.
-    return_type: DataType,
+    inner_expr: AggregateFunctionExpr,
     /// Pre-computed state fields from the original expression.
     cached_state_fields: Vec<FieldRef>,
     /// Cached signature that accepts state field types.
@@ -81,7 +79,6 @@ impl Hash for MergeAsPartialUDF {
 impl MergeAsPartialUDF {
     pub fn new(inner_expr: &AggregateFunctionExpr) -> Result<Self> {
         let name = format!("merge_as_partial_{}", inner_expr.name());
-        let return_type = inner_expr.field().data_type().clone();
         let cached_state_fields = inner_expr.state_fields()?;
 
         // Use a permissive signature since we accept state field types which
@@ -89,8 +86,7 @@ impl MergeAsPartialUDF {
         let signature = Signature::variadic_any(Volatility::Immutable);
 
         Ok(Self {
-            inner_udf: inner_expr.fun().clone(),
-            return_type,
+            inner_expr: inner_expr.clone(),
             cached_state_fields,
             signature,
             name,
@@ -110,7 +106,7 @@ impl AggregateUDFImpl for MergeAsPartialUDF {
     fn return_type(&self, _arg_types: &[DataType]) -> Result<DataType> {
         // In Partial mode, return_type isn't used for output schema (state_fields is).
         // Return the inner function's return type for consistency.
-        Ok(self.return_type.clone())
+        Ok(self.inner_expr.field().data_type().clone())
     }
 
     fn state_fields(&self, _args: StateFieldsArgs) -> Result<Vec<FieldRef>> {
@@ -119,26 +115,28 @@ impl AggregateUDFImpl for MergeAsPartialUDF {
         Ok(self.cached_state_fields.clone())
     }
 
-    fn accumulator(&self, args: AccumulatorArgs) -> Result<Box<dyn Accumulator>> {
-        // args.exprs are state-typed (match this wrapper's signature), not the
-        // inner aggregate's original inputs. Safe for built-ins (SUM/COUNT/
-        // MIN/MAX/AVG) which build accumulators from return_type; aggregates
-        // that inspect args.exprs types would need reconsideration.
-        let inner_acc = self.inner_udf.accumulator(args)?;
+    fn accumulator(&self, _args: AccumulatorArgs) -> Result<Box<dyn Accumulator>> {
+        let inner_acc = self.inner_expr.create_accumulator()?;
         Ok(Box::new(MergeAsPartialAccumulator { inner: inner_acc }))
     }
 
-    fn groups_accumulator_supported(&self, args: AccumulatorArgs) -> bool {
-        // See `accumulator`: args.exprs are state-typed.
-        self.inner_udf.groups_accumulator_supported(args)
+    fn groups_accumulator_supported(&self, _args: AccumulatorArgs) -> bool {
+        // Scalar-only functions still have a direct state-input passthrough.
+        true
     }
 
     fn create_groups_accumulator(
         &self,
-        args: AccumulatorArgs,
+        _args: AccumulatorArgs,
     ) -> Result<Box<dyn GroupsAccumulator>> {
-        // See `accumulator`: args.exprs are state-typed.
-        let inner_acc = self.inner_udf.create_groups_accumulator(args)?;
+        let inner_acc = if self.inner_expr.groups_accumulator_supported() {
+            self.inner_expr.create_groups_accumulator()?
+        } else {
+            let factory = self.inner_expr.clone();
+            Box::new(GroupsAccumulatorAdapter::new(move || {
+                factory.create_accumulator()
+            }))
+        };
         Ok(Box::new(MergeAsPartialGroupsAccumulator {
             inner: inner_acc,
         }))
@@ -210,10 +208,10 @@ impl GroupsAccumulator for MergeAsPartialGroupsAccumulator {
         opt_filter: Option<&BooleanArray>,
         total_num_groups: usize,
     ) -> Result<()> {
-        // Redirect update to merge — this is the key trick. Spark's PartialMerge mode
-        // never applies a filter (filters apply once, at the Partial stage), so there's
-        // nothing to forward into merge_batch, which no longer accepts one.
-        debug_assert!(opt_filter.is_none());
+        if opt_filter.is_some() {
+            return exec_err!("PartialMerge cannot apply a filter to already aggregated states");
+        }
+        // Redirect update to merge — this is the key trick.
         self.inner
             .merge_batch(values, group_indices, total_num_groups)
     }
@@ -230,10 +228,15 @@ impl GroupsAccumulator for MergeAsPartialGroupsAccumulator {
 
     fn convert_to_state(
         &self,
-        _values: &[ArrayRef],
-        _opt_filter: Option<&BooleanArray>,
+        values: &[ArrayRef],
+        opt_filter: Option<&BooleanArray>,
     ) -> Result<Vec<ArrayRef>> {
-        datafusion::common::not_impl_err!("Input batch conversion to state not implemented")
+        if opt_filter.is_some() {
+            return exec_err!("PartialMerge cannot apply a filter to already aggregated states");
+        }
+        // Input is already in the inner aggregate's intermediate-state schema.
+        // Keep each state's weight and buffers when local grouping is bypassed.
+        Ok(values.to_vec())
     }
 
     fn evaluate(&mut self, emit_to: EmitTo) -> Result<ArrayRef> {
@@ -246,5 +249,173 @@ impl GroupsAccumulator for MergeAsPartialGroupsAccumulator {
 
     fn size(&self) -> usize {
         self.inner.size()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::sync::Arc;
+
+    use arrow::array::{Array, Int64Array, ListArray};
+    use arrow::datatypes::{Field, Schema};
+    use datafusion::functions_aggregate::count::count_udaf;
+    use datafusion::logical_expr::AggregateUDF;
+    use datafusion::physical_expr::aggregate::AggregateExprBuilder;
+    use datafusion::physical_expr::expressions::Column;
+    use datafusion::physical_expr::PhysicalExpr;
+    use datafusion_comet_spark_expr::CometCollectSet;
+
+    fn merge_expression(original: &AggregateFunctionExpr) -> AggregateFunctionExpr {
+        let fields = original.state_fields().unwrap();
+        let schema = Arc::new(Schema::new(fields));
+        let args = schema
+            .fields()
+            .iter()
+            .enumerate()
+            .map(|(index, field)| {
+                Arc::new(Column::new(field.name(), index)) as Arc<dyn PhysicalExpr>
+            })
+            .collect();
+        AggregateExprBuilder::new(
+            Arc::new(AggregateUDF::new_from_impl(
+                MergeAsPartialUDF::new(original).unwrap(),
+            )),
+            args,
+        )
+        .schema(schema)
+        .alias(original.name())
+        .build()
+        .unwrap()
+    }
+
+    #[test]
+    fn collect_set_merge_preserves_original_element_type_for_both_factories() {
+        let schema = Arc::new(Schema::new(vec![Field::new("v", DataType::Int64, true)]));
+        let original = AggregateExprBuilder::new(
+            Arc::new(AggregateUDF::new_from_impl(CometCollectSet::new())),
+            vec![Arc::new(Column::new("v", 0))],
+        )
+        .schema(schema)
+        .alias("values")
+        .build()
+        .unwrap();
+        let merge = merge_expression(&original);
+        assert_eq!(
+            merge.state_fields().unwrap(),
+            original.state_fields().unwrap()
+        );
+        assert!(merge.groups_accumulator_supported());
+
+        let mut partial = original.create_groups_accumulator().unwrap();
+        partial
+            .update_batch(
+                &[Arc::new(Int64Array::from(vec![
+                    Some(1),
+                    Some(2),
+                    Some(2),
+                    None,
+                ]))],
+                &[0, 0, 1, 1],
+                None,
+                2,
+            )
+            .unwrap();
+        let states = partial.state(EmitTo::All).unwrap();
+        let expected = vec![1, 2];
+
+        let mut grouped = merge.create_groups_accumulator().unwrap();
+        grouped.update_batch(&states, &[0, 0], None, 1).unwrap();
+        let result = grouped.evaluate(EmitTo::All).unwrap();
+        assert_eq!(sorted_values(&result), expected);
+
+        let mut scalar = merge.create_accumulator().unwrap();
+        scalar.update_batch(&states).unwrap();
+        let result = scalar.evaluate().unwrap().to_array().unwrap();
+        assert_eq!(sorted_values(&result), expected);
+    }
+
+    fn sorted_values(result: &ArrayRef) -> Vec<i64> {
+        let values = result
+            .as_any()
+            .downcast_ref::<ListArray>()
+            .unwrap()
+            .value(0);
+        let mut values = values
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap()
+            .values()
+            .to_vec();
+        values.sort_unstable();
+        values
+    }
+
+    #[test]
+    fn multiargument_count_merge_preserves_scalar_factory_and_state_schema() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("v", DataType::Int64, true),
+            Field::new("w", DataType::Int64, true),
+        ]));
+        let original = AggregateExprBuilder::new(
+            count_udaf(),
+            vec![Arc::new(Column::new("v", 0)), Arc::new(Column::new("w", 1))],
+        )
+        .schema(schema)
+        .alias("both")
+        .build()
+        .unwrap();
+        let merge = merge_expression(&original);
+        assert!(!original.groups_accumulator_supported());
+        assert!(merge.groups_accumulator_supported());
+        assert_eq!(
+            merge.state_fields().unwrap(),
+            original.state_fields().unwrap()
+        );
+
+        let mut partial = original.create_accumulator().unwrap();
+        partial
+            .update_batch(&[
+                Arc::new(Int64Array::from(vec![Some(1), None, Some(3)])),
+                Arc::new(Int64Array::from(vec![Some(1), Some(2), None])),
+            ])
+            .unwrap();
+        let states = partial
+            .state()
+            .unwrap()
+            .into_iter()
+            .map(|state| state.to_array().unwrap())
+            .collect::<Vec<_>>();
+        let mut accumulator = merge.create_accumulator().unwrap();
+        accumulator.update_batch(&states).unwrap();
+        accumulator.update_batch(&states).unwrap();
+        assert_eq!(
+            accumulator.state().unwrap(),
+            vec![ScalarValue::Int64(Some(2))]
+        );
+        assert_eq!(accumulator.evaluate().unwrap(), ScalarValue::Int64(Some(2)));
+
+        let state_schema = Arc::new(Schema::new(merge.state_fields().unwrap()));
+        let wrapped = crate::execution::partial_aggregation::wrap_aggregate_expr(
+            Arc::new(merge),
+            state_schema,
+        )
+        .unwrap();
+        let mut grouped = wrapped.create_groups_accumulator().unwrap();
+        grouped.update_batch(&states, &[0], None, 1).unwrap();
+        grouped.update_batch(&states, &[0], None, 1).unwrap();
+        let converted = grouped.convert_to_state(&states, None).unwrap();
+        assert!(Arc::ptr_eq(&converted[0], &states[0]));
+        let filter = BooleanArray::from(vec![false]);
+        assert!(grouped.convert_to_state(&states, Some(&filter)).is_err());
+        assert!(grouped
+            .update_batch(&states, &[0], Some(&filter), 1)
+            .is_err());
+        let output = grouped.state(EmitTo::All).unwrap();
+        assert_eq!(
+            output[0].as_any().downcast_ref::<Int64Array>().unwrap(),
+            &Int64Array::from(vec![2])
+        );
     }
 }
