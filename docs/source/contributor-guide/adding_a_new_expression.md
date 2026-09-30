@@ -409,6 +409,7 @@ For full documentation on the test file format, including directives like `Confi
 - **Cover both column references and literals.** Comet often uses different code paths for each. The Comet SQL Tests suite automatically disables constant folding, so all-literal queries are evaluated natively.
 - **Include edge cases** such as `NULL`, empty strings, boundary values, `NaN`, and multibyte UTF-8 characters.
 - **Keep one file per expression** to make failures easy to locate.
+- **Pin the mechanism when it depends on the input.** If your serde routes some input types natively and others through the JVM codegen dispatcher, say so with `expect_native(...)` and `expect_dispatch(...)`. A plain `query` cannot tell the two apart, so without these a later change that swaps one for the other passes silently. See [Comet SQL Tests](sql-file-tests.md).
 
 ##### Comet Scala Tests (alternative)
 
@@ -435,6 +436,34 @@ test("unhex") {
   }
 }
 ```
+
+`checkSparkAnswerAndOperator` verifies that results match Spark and that Comet did not fall back
+for the operator. It does not distinguish _how_ Comet evaluated the expression. Comet has two
+accelerated paths, a native DataFusion expression and the JVM codegen dispatcher (Spark's own
+`doGenCode` compiled into an Arrow batch kernel), and both produce Spark-matching results by
+construction.
+
+If your serde picks between them, for example returning `Unsupported` for one input type and
+relying on `CodegenDispatchFallback` to keep it in the pipeline, use `checkSparkAnswerAndImpl` so
+the choice is asserted rather than assumed:
+
+```scala
+test("bit_length dispatches on binary and stays native on string") {
+  withTable("t") {
+    sql("CREATE TABLE t (b BINARY, s STRING) USING parquet")
+    sql("INSERT INTO t VALUES (X'48656c6c6f', 'hello'), (NULL, NULL)")
+
+    checkSparkAnswerAndImpl(sql("SELECT bit_length(b) FROM t"), dispatched = Seq("bit_length"))
+    checkSparkAnswerAndImpl(sql("SELECT bit_length(s) FROM t"), native = Seq("bit_length"))
+  }
+}
+```
+
+Names are the expression's `prettyName` lowercased. Naming an expression asserts both that it ran
+through the expected mechanism and that it did not run through the other one, so a serde that
+later gains a native path (or loses its dispatcher route) fails here instead of passing unnoticed.
+Prefer the SQL file equivalents, `expect_native(...)` and `expect_dispatch(...)`, when the test
+fits in a fixture.
 
 When writing Comet Scala Tests with literal values (e.g., `SELECT my_func('literal')`), Spark's constant folding optimizer may evaluate the expression at planning time, bypassing Comet. To prevent this, disable constant folding:
 

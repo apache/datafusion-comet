@@ -105,7 +105,7 @@ case class CometSparkToColumnarExec(child: SparkPlan)
             CometArrowStream
               .countingIterator(
                 sparkBatches,
-                (b: ColumnarBatch) => numInputRows.add(b.numRows())),
+                (b: ColumnarBatch) => numInputRows.add(b.numRows().toLong)),
             maxBatchInt,
             onConversionNs))
       }
@@ -141,6 +141,7 @@ object CometSparkToColumnarExec extends CometSink[SparkPlan] with DataTypeSuppor
       dt: DataType,
       name: String,
       fallbackReasons: ListBuffer[String]): Boolean = dt match {
+    case ArrayType(StringType, _) => true
     case _: ArrayType | _: MapType => false
     case _ => super.isTypeSupported(dt, name, fallbackReasons)
   }

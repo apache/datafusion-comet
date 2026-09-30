@@ -25,12 +25,13 @@ import org.apache.spark.sql.catalyst.util.sideBySide
 import org.apache.spark.sql.comet.{CometCollectLimitExec, CometColumnarToRowExec, CometIcebergWriteExec, CometMapInBatchExec, CometNativeColumnarToRowExec, CometNativeWriteExec, CometPlan, CometSparkToColumnarExec}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.comet.shims.{MapInBatchInfo, ShimCometMapInBatch}
+import org.apache.spark.sql.comet.util.Utils.containsVariantType
 import org.apache.spark.sql.execution.{ColumnarToRowExec, RowToColumnarExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.QueryStageExec
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.CometSparkSessionExtensions.{withFallbackReason, withInfo}
 import org.apache.comet.serde.NativeOptIn
 import org.apache.comet.shims.ShimSQLConf
 
@@ -257,7 +258,18 @@ case class EliminateRedundantTransitions(session: SparkSession)
       } else {
         matchMapInArrow(plan)
           .orElse(matchMapInPandas(plan))
-          .flatMap(info => extractColumnarChild(info.child).map(child => (info, child)))
+          .flatMap { info =>
+            // TODO: Remove this guard once Comet Python operators preserve Variant identity
+            // and Spark's Arrow layout for both input and output.
+            // https://github.com/apache/datafusion-comet/issues/5437
+            if ((info.output ++ info.child.output).exists(attr =>
+                containsVariantType(attr.dataType))) {
+              withFallbackReason(plan, "Comet Python operators do not support type VariantType")
+              None
+            } else {
+              extractColumnarChild(info.child).map(child => (info, child))
+            }
+          }
       }
     }
   }
@@ -266,10 +278,19 @@ case class EliminateRedundantTransitions(session: SparkSession)
    * Creates an appropriate columnar to row transition operator.
    *
    * If native columnar to row conversion is enabled and the schema is supported, uses
-   * CometNativeColumnarToRowExec. Otherwise falls back to CometColumnarToRowExec.
+   * CometNativeColumnarToRowExec. Variant uses Spark's conversion; other unsupported schemas use
+   * CometColumnarToRowExec.
    */
   private def createColumnarToRowExec(child: SparkPlan): SparkPlan = {
     val schema = child.schema
+    // TODO: Remove this fallback once Comet columnar-to-row conversion supports Variant getters
+    // and Spark's Variant UnsafeRow encoding.
+    // https://github.com/apache/datafusion-comet/issues/5436
+    if (containsVariantType(schema)) {
+      return withFallbackReason(
+        ColumnarToRowExec(child),
+        "Native columnar-to-row conversion does not support type VariantType")
+    }
     val useNative = CometConf.COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED.get() &&
       CometNativeColumnarToRowExec.supportsSchema(schema)
 

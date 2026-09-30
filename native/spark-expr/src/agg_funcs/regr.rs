@@ -72,13 +72,13 @@ pub struct Regr {
     name: String,
     signature: Signature,
     regr_type: RegrType,
-    /// Only consulted for `Slope` / `Intercept`. When `true` (Spark 3.5+),
-    /// `VariancePop(x)` counts only rows where both `y` and `x` are non-null.
-    /// When `false` (Spark 3.4), it counts every row where `x` is non-null.
+    /// Only consulted for `Slope` / `Intercept`. When `true` (Spark 3.5.2 and
+    /// 4.0.0 onward), `VariancePop(x)` counts only rows where both `y` and `x`
+    /// are non-null. When `false`, it counts every row where `x` is non-null.
     filter_var_by_pair_nulls: bool,
-    /// Only consulted for `R2`. When `true` (Spark 3.5+), a constant dependent
-    /// variable evaluates to `1.0` and a constant independent variable to `null`.
-    /// When `false` (Spark 3.4), those two cases are reversed.
+    /// Only consulted for `R2`. When `true` (Spark 3.5.9, 4.0.3, 4.1.2 and 4.2.0
+    /// onward), a constant dependent variable evaluates to `1.0` and a constant
+    /// independent variable to `null`. When `false`, those two cases are reversed.
     r2_constant_dependent_is_perfect_fit: bool,
 }
 
@@ -282,13 +282,13 @@ impl Accumulator for RegrCovAccumulator {
 /// count, mean1, mean2, algo_const, m2(y), m2(x).
 ///
 /// Spark's degenerate-case handling (see `RegrR2.evaluateExpression`) was
-/// swapped by SPARK-55969, which shipped in 3.5.9, 4.0.3 and 4.1.0. In both
-/// eras one degenerate case returns `null` and the other returns `1.0` (a
+/// swapped by SPARK-55969, which shipped in 3.5.9, 4.0.3, 4.1.2 and 4.2.0. In
+/// both eras one degenerate case returns `null` and the other returns `1.0` (a
 /// perfect fit), but which is which differs:
-/// - before SPARK-55969 (Spark 3.4): constant dependent `y` (`m2(y) == 0`) ->
-///   `null`; constant independent `x` (`m2(x) == 0`) -> `1.0`.
-/// - after (the Spark 3.5+ versions Comet builds against): constant dependent
-///   `y` -> `1.0`; constant independent `x` -> `null`.
+/// - before SPARK-55969 (Spark 3.4 and earlier patches of 3.5, 4.0 and 4.1):
+///   constant dependent `y` (`m2(y) == 0`) -> `null`; constant independent `x`
+///   (`m2(x) == 0`) -> `1.0`.
+/// - after: constant dependent `y` -> `1.0`; constant independent `x` -> `null`.
 ///
 /// `m2(y) == 0` also covers fewer than two rows. DataFusion returns `null` in
 /// both degenerate cases.
@@ -368,10 +368,10 @@ impl Accumulator for RegrR2Accumulator {
         // The two degenerate cases (constant dependent y, constant independent x)
         // return null and 1.0 respectively, but SPARK-55969 swapped which is which.
         let (null_case, perfect_fit_case) = if self.constant_dependent_is_perfect_fit {
-            // Spark 3.5+: constant x -> null, constant y -> 1.0.
+            // After SPARK-55969: constant x -> null, constant y -> 1.0.
             (m2_x == 0.0, m2_y == 0.0)
         } else {
-            // Spark 3.4: constant y -> null, constant x -> 1.0.
+            // Before SPARK-55969: constant y -> null, constant x -> 1.0.
             (m2_y == 0.0, m2_x == 0.0)
         };
         if null_case {

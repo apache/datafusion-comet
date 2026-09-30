@@ -41,15 +41,19 @@ runs:
         cd native
         cargo install cargo-machete --version 0.7.0 && cargo machete
 
-    - name: Cache Maven dependencies
-      uses: actions/cache@v4
+    # Borrows the Maven repository the TPC-H/TPC-DS jobs keep warm on main, a
+    # superset of what `common` needs. This job no longer runs on push to main
+    # (see linux-test-rust in ../../workflows/pr_build_linux.yml), so an entry
+    # of its own would never be refreshed.
+    - name: Restore Maven dependencies
+      uses: actions/cache/restore@v4
       with:
         path: |
           ~/.m2/repository
           /root/.m2/repository
-        key: ${{ runner.os }}-rust-maven-${{ hashFiles('**/pom.xml') }}
+        key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}
         restore-keys: |
-          ${{ runner.os }}-rust-maven-
+          ${{ runner.os }}-java-maven-
 
     - name: Build common module (pre-requisite for Rust tests)
       shell: bash
@@ -70,3 +74,13 @@ runs:
         export LD_LIBRARY_PATH=${JAVA_HOME}/lib/server:${LD_LIBRARY_PATH}
         RUST_BACKTRACE=1 cargo nextest run
 
+    # The steps above lint and test the accounting allocator over the system allocator. Lint and
+    # test it over jemalloc too, since that is a different allocator backend and nothing else in CI
+    # builds it.
+    - name: Check and test the jemalloc allocator backend
+      shell: bash
+      run: |
+        cd native
+        export LD_LIBRARY_PATH=${JAVA_HOME}/lib/server:${LD_LIBRARY_PATH}
+        cargo clippy --color=never -p datafusion-comet --all-targets --features jemalloc -- -D warnings
+        RUST_BACKTRACE=1 cargo nextest run -p datafusion-comet --lib --features jemalloc alloc_accounting

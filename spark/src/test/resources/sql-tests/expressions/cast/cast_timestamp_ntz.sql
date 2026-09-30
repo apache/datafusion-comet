@@ -114,3 +114,14 @@ SELECT try_cast('invalid' as timestamp_ntz), try_cast('T12:34' as timestamp_ntz)
 -- TRY_CAST: valid inputs
 query
 SELECT try_cast('2020-01-01 12:34:56' as timestamp_ntz)
+
+-- TRY_CAST preserves valid rows when other dates overflow the microsecond range.
+statement
+CREATE TABLE test_date_ntz_overflow(days int) USING parquet
+
+statement
+INSERT INTO test_date_ntz_overflow VALUES (0), (106751992), (NULL), (-1), (-106751992)
+
+query
+SELECT days, try_cast(date_from_unix_date(days) AS timestamp_ntz)
+FROM test_date_ntz_overflow ORDER BY days

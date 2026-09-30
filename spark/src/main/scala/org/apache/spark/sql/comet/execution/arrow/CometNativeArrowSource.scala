@@ -198,14 +198,14 @@ object CometArrowStream extends Logging {
    * batch can still be nullable per Spark's contract (the next batch may have one), and a column
    * whose actual buffer carries validity bits must stay nullable even if Spark thought otherwise.
    * Taking only `raw.isNullable` here would advertise non-nullable when the next batch does carry
-   * a null and crash native validation.
+   * a null and crash native validation. Both inputs are borrowed and unchanged; the returned
+   * field owns no buffers. Missing dictionary metadata or provider entries propagate the shared
+   * accessor's named column error.
    */
   private def actualFieldOf(col: CometVector, expected: Field): Field = {
     val raw = col match {
       case d: CometDictionaryVector =>
-        val indices = d.getValueVector
-        val dict = d.provider.lookup(indices.getField.getDictionary.getId)
-        dict.getVector.getField
+        d.getDictionary.getVector.getField
       case _ => col.getValueVector.getField
     }
     val nullable = expected.isNullable || raw.isNullable

@@ -81,6 +81,12 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
   /**
    * Type surface the kernel covers on both input and output sides. Recursive: complex types are
    * supported when their children are.
+   *
+   * Duplicate struct field names are excluded, an output-side rule: Arrow addresses a
+   * `StructVector`'s children by name, so `named_struct('x', 10, 'x', 20)` collapses into a
+   * single child and the generated writer NPEs on the missing ordinal-1 vector.
+   * `CometCreateNamedStruct` declines them on the native path for the same reason, but a struct
+   * nested inside a dispatcher-built value (a `CreateMap` value) never reaches that check.
    */
   def isSupportedDataType(dt: DataType): Boolean = dt match {
     case BooleanType | ByteType | ShortType | IntegerType | LongType => true
@@ -91,7 +97,11 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
     case dt if isTimeType(dt) => true
     case _: YearMonthIntervalType | _: DayTimeIntervalType | CalendarIntervalType => true
     case ArrayType(inner, _) => isSupportedDataType(inner)
-    case st: StructType => st.fields.forall(f => isSupportedDataType(f.dataType))
+    case st: StructType =>
+      // `fieldNames` rebuilds an array on each call, so read it once.
+      val names = st.fieldNames
+      names.distinct.length == names.length &&
+      st.fields.forall(f => isSupportedDataType(f.dataType))
     case mt: MapType => isSupportedDataType(mt.keyType) && isSupportedDataType(mt.valueType)
     case _ => false
   }

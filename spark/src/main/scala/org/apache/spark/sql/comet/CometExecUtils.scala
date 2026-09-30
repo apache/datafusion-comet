@@ -24,7 +24,8 @@ import scala.reflect.ClassTag
 
 import org.apache.spark.{Partition, SparkContext, TaskContext}
 import org.apache.spark.rdd.RDD
-import org.apache.spark.sql.catalyst.expressions.{Attribute, NamedExpression, SortOrder}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, NamedExpression, SortOrder}
+import org.apache.spark.sql.catalyst.optimizer.NormalizeFloatingNumbers
 import org.apache.spark.sql.comet.execution.arrow.CometArrowStream
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.SparkPlan
@@ -35,6 +36,18 @@ import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
 
 object CometExecUtils {
+
+  /**
+   * Expose Spark's package-private recursive floating-point normalizer to Comet serde.
+   *
+   * Compatibility note: `NormalizeFloatingNumbers.normalize` is `private[sql]` with no stability
+   * guarantee. It has existed with this signature in every Spark version Comet supports (3.4
+   * through 4.2). Because this is a direct compile-time reference (not reflection), any rename or
+   * signature change in a future Spark version fails the build for that profile loudly; if that
+   * happens, shim this method per Spark version like other `Shim*` classes.
+   */
+  def normalizeFloatingNumbers(expr: Expression): Expression =
+    NormalizeFloatingNumbers.normalize(expr)
 
   /**
    * Create an empty RDD with the given number of partitions.
@@ -69,29 +82,18 @@ object CometExecUtils {
     }
   }
 
-  /**
-   * Prepare Projection + TopK native plan for CometTakeOrderedAndProjectExec.
-   */
+  /** Wrap a native input plan in the requested output projection. */
   def getProjectionNativePlan(
       projectList: Seq[NamedExpression],
-      outputAttributes: Seq[Attribute],
-      sortOrder: Seq[SortOrder],
-      child: SparkPlan,
-      limit: Int,
-      offset: Int = 0): Option[Operator] = {
-    getTopKNativePlan(outputAttributes, sortOrder, child, limit, offset).flatMap { topK =>
-      val exprs = projectList.map(exprToProto(_, child.output))
-
-      if (exprs.forall(_.isDefined)) {
-        val projectBuilder = OperatorOuterClass.Projection.newBuilder()
-        projectBuilder.addAllProjectList(exprs.map(_.get).asJava)
-        val opBuilder = OperatorOuterClass.Operator
-          .newBuilder()
-          .addChildren(topK)
-        Some(opBuilder.setProjection(projectBuilder).build())
-      } else {
-        None
-      }
+      inputAttributes: Seq[Attribute],
+      input: Operator): Option[Operator] = {
+    val exprs = projectList.map(exprToProto(_, inputAttributes))
+    if (exprs.forall(_.isDefined)) {
+      val projection = OperatorOuterClass.Projection.newBuilder()
+      projection.addAllProjectList(exprs.map(_.get).asJava)
+      Some(Operator.newBuilder().addChildren(input).setProjection(projection).build())
+    } else {
+      None
     }
   }
 

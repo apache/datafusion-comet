@@ -169,9 +169,15 @@ object CometUnhex extends CometExpressionSerde[Unhex] with MathExprBase {
   }
 }
 
-object CometAbs extends CometExpressionSerde[Abs] with MathExprBase {
+/**
+ * `abs` lowers to the native `abs` kernel for numeric inputs. Interval inputs have no native
+ * implementation, so `CodegenDispatchFallback` keeps them in the Comet pipeline by running
+ * Spark's own `Abs.doGenCode` in the JVM codegen dispatcher, which matches Spark exactly.
+ */
+object CometAbs extends CometExpressionSerde[Abs] with MathExprBase with CodegenDispatchFallback {
 
-  val unsupportedReason: String = "Only integral, floating-point, and decimal types are supported"
+  private val unsupportedReason: String =
+    "`INTERVAL YEAR TO MONTH` and `INTERVAL DAY TO SECOND` inputs"
 
   override def getUnsupportedReasons(): Seq[String] = Seq(unsupportedReason)
 

@@ -100,7 +100,13 @@ implementation depends on the source of the data:
 - `ColumnarBatchArrowReader`: an Arrow-backed `ColumnarBatch` (transfers `VectorSchemaRoot` ownership)
 
 The exported `ArrowArrayStream`s are boxed into the `Array[Object]` that `CometExecIterator` / `CometExecRDD` pass
-to native `createPlan` (one slot per scan input; shuffle inputs pass a `CometShuffleBlockIterator` instead).
+to native `createPlan`, one slot per scan input.
+
+Not every slot is an Arrow stream. When a native operator consumes Comet shuffle output and
+`spark.comet.shuffle.directRead.enabled` is set, that slot carries a `CometShuffleBlockIterator` instead, and the
+compressed shuffle blocks are decoded inside the native plan by `ShuffleScanExec` rather than crossing this FFI
+boundary at all. `CometExecRDD.resolveInputObjects` classifies the slots, driven by which scan slots the serialized
+plan marked as `ShuffleScan`. See [Direct Read](native_shuffle.md#direct-read-shufflescan) for that path.
 
 On the native side, `planner.rs` reads each stream's `memoryAddress` and takes ownership through
 `AlignedArrowStreamReader::from_raw`, importing the schema once. `ScanExec::get_next_batch` then pulls each batch
@@ -132,7 +138,7 @@ JVM Heap:                           Native Memory:
 │ ColumnarBatch    │               │ FFI_ArrowArray   │
 │ ┌──────────────┐ │               │ ┌──────────────┐ │
 │ │ ArrowBuf     │─┼──────────────>│ │ buffers[0]   │ │
-│ │ (off-heap)   │ │               │ │ (pointer)    │ │
+│ │ (handle)     │ │               │ │ (pointer)    │ │
 │ └──────────────┘ │               │ └──────────────┘ │
 └──────────────────┘               └──────────────────┘
         │                                   │
@@ -250,10 +256,22 @@ pub extern "system" fn Java_..._exportVector(
 }
 ```
 
+### Array Offsets
+
+Arrow Java's C Data import ignores `ArrowArray.offset` at every level
+([apache/arrow-java#88](https://github.com/apache/arrow-java/issues/88)) and reads each buffer from its start. arrow-rs
+folds a slice into the buffers for almost every type, but a sliced `BooleanArray` keeps its bit offset, and a struct
+exports offset 0 even when its children are sliced. So every array native exports to the JVM first goes through
+`zero_offsets` (in `native/common/src/ffi_offsets.rs`), which re-slices boolean bitmaps to start at bit 0 at every
+level and shares every other buffer. `move_to_spark` applies it to executed batches and decoded shuffle blocks, and
+`JvmScalarUdfExpr` applies it to the inputs of the JVM UDF bridge. A new native to JVM export path has to call it too,
+or sliced booleans reach the JVM misaligned
+([#6288](https://github.com/apache/datafusion-comet/issues/6288)).
+
 ### Wrapper Object Lifecycle (Native → JVM)
 
 ```
-Time    Native Memory              JVM Heap              Off-heap/Native
+Time    Native Memory              JVM Heap              Data location
 ────────────────────────────────────────────────────────────────────────
 t0      RecordBatch produced       -                     Data in native
         in DataFusion
