@@ -2231,7 +2231,7 @@ index 8e88049f51e..f8e2194a8ac 100644
          case _ =>
            throw new AnalysisException("Can not match ParquetTable in the query.")
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
-index ecec7d7b217..f6a4c746226 100644
+index ecec7d7b217..7c841068e4a 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
 @@ -185,7 +185,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
@@ -2254,17 +2254,7 @@ index ecec7d7b217..f6a4c746226 100644
      withAllParquetReaders {
        withTempPath { path =>
          // Repeated values for dictionary encoding.
-@@ -1087,7 +1089,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
-     testMigration(fromTsType = "TIMESTAMP_MICROS", toTsType = "INT96")
-   }
- 
--  test("SPARK-34212 Parquet should read decimals correctly") {
-+  test("SPARK-34212 Parquet should read decimals correctly",
-+    IgnoreComet("https://github.com/apache/datafusion-comet/issues/4354")) {
-     def readParquet(schema: String, path: File): DataFrame = {
-       spark.read.schema(schema).parquet(path.toString)
-     }
-@@ -1103,7 +1106,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
+@@ -1103,7 +1105,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
          checkAnswer(readParquet(schema, path), df)
        }
  
@@ -2274,7 +2264,7 @@ index ecec7d7b217..f6a4c746226 100644
          val schema1 = "a DECIMAL(3, 2), b DECIMAL(18, 3), c DECIMAL(37, 3)"
          checkAnswer(readParquet(schema1, path), df)
          val schema2 = "a DECIMAL(3, 0), b DECIMAL(18, 1), c DECIMAL(37, 1)"
-@@ -1125,7 +1129,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
+@@ -1125,7 +1128,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
        val df = sql(s"SELECT 1 a, 123456 b, ${Int.MaxValue.toLong * 10} c, CAST('1.2' AS BINARY) d")
        df.write.parquet(path.toString)
  
@@ -2284,7 +2274,7 @@ index ecec7d7b217..f6a4c746226 100644
          checkAnswer(readParquet("a DECIMAL(3, 2)", path), sql("SELECT 1.00"))
          checkAnswer(readParquet("b DECIMAL(3, 2)", path), Row(null))
          checkAnswer(readParquet("b DECIMAL(11, 1)", path), sql("SELECT 123456.0"))
-@@ -1169,7 +1174,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
+@@ -1169,7 +1173,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
      }
    }
  
@@ -2294,15 +2284,6 @@ index ecec7d7b217..f6a4c746226 100644
      withTempPath { path =>
        Seq(0).toDF("a").write.parquet(path.toString)
        // The vectorized and non-vectorized readers will produce different exceptions, we don't need
-@@ -1184,7 +1190,7 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
-             .where(s"a < ${Long.MaxValue}")
-             .collect()
-         }
--        assert(exception.getCause.getCause.isInstanceOf[SchemaColumnConvertNotSupportedException])
-+        assert(exception.getMessage.contains("Column: [a], Expected: bigint, Found: INT32"))
-       }
-     }
-   }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRebaseDatetimeSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRebaseDatetimeSuite.scala
 index 4f906411345..6cc69f7e915 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRebaseDatetimeSuite.scala
