@@ -623,8 +623,12 @@ mod tests {
         let right_utf8 = Arc::new(StringArray::from(vec![Some("sitting")])) as ArrayRef;
 
         let res1 = spark_levenshtein(&[
-            ColumnarValue::Array(left_large.clone()),
-            ColumnarValue::Array(right_utf8.clone()),
+            ColumnarValue::Array(std::sync::Arc::<dyn arrow::array::Array>::clone(
+                &left_large,
+            )),
+            ColumnarValue::Array(std::sync::Arc::<dyn arrow::array::Array>::clone(
+                &right_utf8,
+            )),
         ])
         .unwrap();
         let arr1 = res1.into_array(1).unwrap();
