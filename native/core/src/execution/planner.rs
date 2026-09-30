@@ -152,8 +152,8 @@ use datafusion_comet_spark_expr::{
     AvgDecimal, Cast, CheckOverflow, Correlation, Covariance, CreateNamedStruct,
     DecimalRescaleCheckOverflow, GetArrayStructFields, GetStructField, HllPlusPlus, HllSketchAgg,
     HllUnionAgg, IfExpr, ListExtract, MaxMinBy, Mode, NormalizeNaNAndZero, Regr, RegrType,
-    SparkCastOptions, Stddev, SumDecimal, ToJson, UnboundColumn, Variance, WideDecimalBinaryExpr,
-    WideDecimalOp,
+    SparkCastOptions, SparkMinMax, Stddev, SumDecimal, ToJson, UnboundColumn, Variance,
+    WideDecimalBinaryExpr, WideDecimalOp,
 };
 use itertools::Itertools;
 use jni::objects::{Global, JObject};
@@ -2879,9 +2879,10 @@ impl PhysicalPlanner {
             AggExprStruct::Min(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
                 let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
+                let func = min_max_udaf(&datatype, false);
                 let child = Arc::new(CastExpr::new(child, datatype.clone(), None));
 
-                AggregateExprBuilder::new(min_udaf(), vec![child])
+                AggregateExprBuilder::new(func, vec![child])
                     .schema(schema)
                     .alias("min")
                     .with_ignore_nulls(false)
@@ -2892,9 +2893,10 @@ impl PhysicalPlanner {
             AggExprStruct::Max(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
                 let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
+                let func = min_max_udaf(&datatype, true);
                 let child = Arc::new(CastExpr::new(child, datatype.clone(), None));
 
-                AggregateExprBuilder::new(max_udaf(), vec![child])
+                AggregateExprBuilder::new(func, vec![child])
                     .schema(schema)
                     .alias("max")
                     .with_ignore_nulls(false)
@@ -3522,11 +3524,19 @@ impl PhysicalPlanner {
             }
             Some(AggExprStruct::Min(expr)) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
-                Ok((by_name("min")?, vec![child]))
+                if is_float(&child.data_type(&schema)?) {
+                    Ok((udaf(SparkMinMax::new(false)), vec![child]))
+                } else {
+                    Ok((by_name("min")?, vec![child]))
+                }
             }
             Some(AggExprStruct::Max(expr)) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
-                Ok((by_name("max")?, vec![child]))
+                if is_float(&child.data_type(&schema)?) {
+                    Ok((udaf(SparkMinMax::new(true)), vec![child]))
+                } else {
+                    Ok((by_name("max")?, vec![child]))
+                }
             }
             Some(AggExprStruct::Sum(expr)) => {
                 // For ever-expanding frames, use Comet's Spark-compatible Sum UDAFs
@@ -3975,6 +3985,22 @@ impl PhysicalPlanner {
             .with_distinct(false)
             .build()
             .map_err(|e| e.into())
+    }
+}
+
+fn is_float(data_type: &DataType) -> bool {
+    matches!(data_type, DataType::Float32 | DataType::Float64)
+}
+
+/// `min` or `max` over `data_type`: Spark's version for floats, which DataFusion orders
+/// differently, and DataFusion's for every other type.
+fn min_max_udaf(data_type: &DataType, is_max: bool) -> Arc<AggregateUDF> {
+    if is_float(data_type) {
+        Arc::new(AggregateUDF::new_from_impl(SparkMinMax::new(is_max)))
+    } else if is_max {
+        max_udaf()
+    } else {
+        min_udaf()
     }
 }
 

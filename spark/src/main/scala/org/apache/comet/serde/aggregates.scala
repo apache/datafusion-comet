@@ -1434,15 +1434,13 @@ object AggSerde {
     }
   }
 
-  /** Shared support level for `Min` / `Max` based on the result data type. */
+  /**
+   * Shared support level for `Min` / `Max` based on the result data type. Floats follow Spark's
+   * ordering natively, so strict floating-point mode does not apply to them.
+   */
   def minMaxSupportLevel(dt: DataType): SupportLevel = {
     if (!minMaxDataTypeSupported(dt)) {
       Unsupported(Some(s"Unsupported data type: $dt"))
-    } else if ((dt == FloatType || dt == DoubleType) &&
-      COMET_EXEC_STRICT_FLOATING_POINT.get()) {
-      // https://github.com/apache/datafusion-comet/issues/2448
-      Unsupported(
-        Some(s"floating-point not supported when ${COMET_EXEC_STRICT_FLOATING_POINT.key}=true"))
     } else {
       Compatible()
     }

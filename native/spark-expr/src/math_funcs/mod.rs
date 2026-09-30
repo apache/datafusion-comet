@@ -20,6 +20,7 @@ mod ceil;
 pub(crate) mod checked_arithmetic;
 mod div;
 mod floor;
+mod greatest_least;
 pub mod internal;
 pub(crate) mod log;
 pub mod modulo_expr;
@@ -37,6 +38,7 @@ pub use checked_arithmetic::{checked_add, checked_div, checked_mul, checked_sub}
 pub use div::spark_decimal_div;
 pub use div::spark_decimal_integral_div;
 pub use floor::spark_floor;
+pub use greatest_least::SparkGreatestLeast;
 pub use internal::*;
 pub use log::spark_log;
 pub use modulo_expr::{create_modulo_expr, spark_modulo};
