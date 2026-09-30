@@ -192,6 +192,94 @@ class CometConfSuite extends AnyFunSuite {
     assert(entry.get(conf) == 76)
   }
 
+  test("JVM shuffle batch size must be positive") {
+    val conf = new SQLConf
+    val entry = CometConf.COMET_SHUFFLE_JVM_BATCH_SIZE
+
+    // A batch size of 0 never advances the native loop that writes sorted spill files.
+    Seq("0", "-1").foreach { v =>
+      conf.setConfString(entry.key, v)
+      assertThrows[IllegalArgumentException](entry.get(conf))
+    }
+
+    conf.setConfString(entry.key, "1")
+    assert(entry.get(conf) == 1)
+  }
+
+  test("CometConf initializes when spark.comet.batchSize is below the JVM shuffle batch size") {
+    // Defines its own copy of every org.apache.comet class, so that loading CometConf through it
+    // runs CometConf's initializer again. Everything else comes from the parent.
+    val loader = new ClassLoader(getClass.getClassLoader) {
+      override def loadClass(name: String, resolve: Boolean): Class[_] = {
+        if (!name.startsWith("org.apache.comet.")) {
+          super.loadClass(name, resolve)
+        } else {
+          getClassLoadingLock(name).synchronized {
+            Option(findLoadedClass(name)).getOrElse {
+              val in = getParent.getResourceAsStream(name.replace('.', '/') + ".class")
+              if (in == null) throw new ClassNotFoundException(name)
+              val bytes =
+                try in.readAllBytes()
+                finally in.close()
+              defineClass(name, bytes, 0, bytes.length)
+            }
+          }
+        }
+      }
+    }
+
+    // An executor first loads CometConf inside a task, where SQLConf.get holds the session's
+    // confs. The initializer must not depend on them.
+    val conf = new SQLConf
+    conf.setConfString(CometConf.COMET_BATCH_SIZE.key, "4096")
+    val cometConfClass =
+      try {
+        SQLConf.withExistingConf(conf) {
+          // scalastyle:off classforname
+          Class.forName(CometConf.getClass.getName, true, loader)
+          // scalastyle:on classforname
+        }
+      } catch {
+        // ScalaTest aborts the whole run on this error, so report it as a failure instead.
+        case e: ExceptionInInitializerError => fail("CometConf failed to initialize", e.getCause)
+      }
+    assert(cometConfClass ne CometConf.getClass)
+  }
+
+  test("JVM shuffle batch size is capped at spark.comet.batchSize where it is read") {
+    val conf = new SQLConf
+    val entry = CometConf.COMET_SHUFFLE_JVM_BATCH_SIZE
+    conf.setConfString(CometConf.COMET_BATCH_SIZE.key, "4096")
+
+    // The JVM shuffle writers read the conf that is current on the task thread. The default is
+    // capped there, while the entry itself keeps it.
+    SQLConf.withExistingConf(conf) {
+      assert(entry.get() == 8192)
+      assert(CometConf.jvmShuffleBatchSize() == 4096)
+    }
+
+    // A larger value set explicitly is capped too, and a smaller one is used as it is.
+    conf.setConfString(entry.key, "16384")
+    assert(CometConf.jvmShuffleBatchSize(conf) == 4096)
+    conf.setConfString(entry.key, "1024")
+    assert(CometConf.jvmShuffleBatchSize(conf) == 1024)
+  }
+
+  test("memory pool type is accepted in any case and lowercased") {
+    val conf = new SQLConf
+    val entry = CometConf.COMET_OFFHEAP_MEMORY_POOL_TYPE
+
+    conf.setConfString(entry.key, "Greedy_Unified")
+    assert(entry.get(conf) == "greedy_unified")
+
+    conf.setConfString(entry.key, "FAIR_UNIFIED")
+    assert(entry.get(conf) == "fair_unified")
+
+    conf.setConfString(entry.key, "fair")
+    val e = intercept[IllegalArgumentException](entry.get(conf))
+    assert(e.getMessage.contains("fair_unified, greedy_unified"))
+  }
+
   test(
     "COMET_EXPLAIN_FALLBACK_LOG_ENABLED reads deprecated logFallbackReasons.enabled as alias") {
     val conf = new SQLConf
