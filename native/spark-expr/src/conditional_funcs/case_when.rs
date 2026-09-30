@@ -63,9 +63,12 @@ pub fn create_case_when(
     else {
         return Ok(Arc::new(CaseWhenExpr::try_new(when_then, else_expr)?));
     };
+    // The branches share a Spark type, so any difference is in the Arrow representation. For a
+    // timestamp that is the timezone label, and the cast only relabels it, but Comet's cast still
+    // needs a timezone. Every `TimestampType` value in a native plan is labelled UTC.
+    let cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC", false);
     // A branch that already has the common type is not wrapped in a cast, which would do nothing
     // but hide what the branch is from the evaluation.
-    let cast_options = SparkCastOptions::new_without_timezone(EvalMode::Legacy, false);
     let coerce = |expr: Arc<dyn PhysicalExpr>, data_type: &DataType| -> Arc<dyn PhysicalExpr> {
         if data_type == &coerce_type {
             expr
@@ -767,7 +770,7 @@ mod tests {
         TimestampMicrosecondArray,
     };
     use arrow::compute::cast;
-    use arrow::datatypes::{Field, TimeUnit};
+    use arrow::datatypes::{Field, TimeUnit, TimestampMicrosecondType};
     use datafusion::physical_expr::expressions::{col, lit};
     use rand::rngs::StdRng;
     use rand::{RngExt, SeedableRng};
@@ -1232,6 +1235,38 @@ mod tests {
             result.as_ref(),
             &Int64Array::from(vec![Some(10), None, Some(30)]) as &dyn Array
         );
+    }
+
+    /// CASE branches that share a Spark timestamp type but carry different Arrow timezone labels
+    /// are reconciled by relabelling them, which used to panic because the cast had no timezone.
+    #[test]
+    fn case_reconciles_timestamp_timezone_labels() {
+        let utc = DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()));
+        for then_label in [Some("Etc/UTC"), None] {
+            let then_type = DataType::Timestamp(TimeUnit::Microsecond, then_label.map(Into::into));
+            let schema = Schema::new(vec![
+                Field::new("b", DataType::Boolean, true),
+                Field::new("t", then_type, true),
+                Field::new("e", utc.clone(), true),
+            ]);
+            let batch = RecordBatch::try_new(
+                Arc::new(schema.clone()),
+                vec![
+                    Arc::new(BooleanArray::from(vec![true, false])),
+                    Arc::new(
+                        TimestampMicrosecondArray::from(vec![1, 2]).with_timezone_opt(then_label),
+                    ),
+                    Arc::new(TimestampMicrosecondArray::from(vec![10, 20]).with_timezone("UTC")),
+                ],
+            )
+            .unwrap();
+            let c = |name: &str| col(name, &schema).unwrap();
+            let case = create_case_when(vec![(c("b"), c("t"))], Some(c("e")), &schema).unwrap();
+            let result = case.evaluate(&batch).unwrap().into_array(2).unwrap();
+            assert_eq!(result.data_type(), &utc, "{then_label:?}");
+            let values = result.as_primitive::<TimestampMicrosecondType>();
+            assert_eq!(values.values().to_vec(), vec![1, 20], "{then_label:?}");
+        }
     }
 
     #[test]
