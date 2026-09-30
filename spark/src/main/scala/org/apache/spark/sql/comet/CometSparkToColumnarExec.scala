@@ -105,7 +105,7 @@ case class CometSparkToColumnarExec(child: SparkPlan)
             CometArrowStream
               .countingIterator(
                 sparkBatches,
-                (b: ColumnarBatch) => numInputRows.add(b.numRows())),
+                (b: ColumnarBatch) => numInputRows.add(b.numRows().toLong)),
             maxBatchInt,
             onConversionNs))
       }

@@ -24,12 +24,10 @@
 //! results are bit-identical to Spark.
 
 use crate::agg_funcs::hll_plus_plus_const::{BIAS_DATA, RAW_ESTIMATE_DATA, THRESHOLDS};
+use crate::float_semantics::normalize_floats;
 use crate::hash_funcs::create_xxhash64_hashes;
-use crate::math_funcs::internal::normalize_float;
-use arrow::array::{
-    Array, ArrayRef, AsArray, BooleanArray, Float32Array, Float64Array, Int64Array,
-};
-use arrow::datatypes::{DataType, Field, FieldRef, Float32Type, Float64Type};
+use arrow::array::{Array, ArrayRef, AsArray, BooleanArray, Int64Array};
+use arrow::datatypes::{DataType, Field, FieldRef};
 use datafusion::common::{not_impl_err, Result, ScalarValue};
 use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion::logical_expr::{
@@ -117,25 +115,6 @@ impl AggregateUDFImpl for HllPlusPlus {
         _args: AccumulatorArgs,
     ) -> Result<Box<dyn GroupsAccumulator>> {
         Ok(Box::new(HllPlusPlusGroupsAccumulator::new(self.p)))
-    }
-}
-
-/// Normalize a float/double column the way Spark's `NormalizeNaNAndZero` does before hashing:
-/// every NaN becomes the canonical NaN and `-0.0` becomes `0.0`. Returns the input unchanged for
-/// non-floating-point types.
-fn normalize_floats(array: &ArrayRef) -> ArrayRef {
-    match array.data_type() {
-        DataType::Float32 => {
-            let normalized: Float32Array =
-                array.as_primitive::<Float32Type>().unary(normalize_float);
-            Arc::new(normalized)
-        }
-        DataType::Float64 => {
-            let normalized: Float64Array =
-                array.as_primitive::<Float64Type>().unary(normalize_float);
-            Arc::new(normalized)
-        }
-        _ => Arc::clone(array),
     }
 }
 
