@@ -1588,8 +1588,8 @@ fn extract_offset_suffix(value: &str) -> Option<(&str, Tz)> {
     None
 }
 
-/// The timestamp string shapes the parser recognises, listed in the order they are matched.
-/// The shapes are mutually exclusive, so at most one can apply to any given string.
+/// The timestamp string shapes the parser recognises. The shapes are mutually exclusive, so at
+/// most one can apply to any given string.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum TimestampPattern {
     Year,
@@ -1640,7 +1640,7 @@ impl TimestampPattern {
         )
     }
 
-    /// Every shape, in the order they are matched.
+    /// Every shape, in declaration order.
     #[cfg(test)]
     const ALL: [TimestampPattern; 14] = [
         Self::Year,
