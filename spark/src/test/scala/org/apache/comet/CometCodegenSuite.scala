@@ -966,6 +966,60 @@ class CometCodegenSuite
     }
   }
 
+  // Arrow Java ignores ArrowArray.offset on import, so the bridge has to zero a sliced boolean's
+  // offset before handing it over, at the top level and inside a struct.
+  // https://github.com/apache/datafusion-comet/issues/6288
+  private def withSlicedGroups(f: => Unit): Unit = {
+    withTempPath { dir =>
+      spark
+        .range(0, 4000)
+        .selectExpr(
+          "id % 2000 AS k",
+          "id % 2000 % 3 = 0 AS b",
+          "CAST(id % 2000 AS STRING) AS s",
+          "named_struct('x', IF(id % 5 = 0, NULL, id % 2000 % 3 = 0)) AS st")
+        .write
+        .parquet(dir.getCanonicalPath)
+      // The hash aggregate slices its emitted groups into batch-size chunks, so with one
+      // partition every output batch after the first is a slice.
+      withSQLConf(
+        SQLConf.SHUFFLE_PARTITIONS.key -> "1",
+        CometConf.COMET_BATCH_SIZE.key -> "100") {
+        withParquetTable(dir.getCanonicalPath, "g")(f)
+      }
+    }
+  }
+
+  test("boolean ScalaUDF argument sliced by an aggregate keeps its values") {
+    spark.udf.register("flip", (x: Boolean) => !x)
+    withSlicedGroups {
+      assertCodegenRan {
+        checkSparkAnswerAndOperator(
+          sql("SELECT k, flip(b) FROM (SELECT k, b, count(*) FROM g GROUP BY k, b)"))
+      }
+    }
+  }
+
+  test("dispatched regexp_replace reads a sliced boolean with its own values") {
+    withSlicedGroups {
+      assertCodegenRan {
+        checkSparkAnswerAndOperator(sql("""SELECT k, regexp_replace(IF(b, s, 'zz'), '1', 'y')
+            |FROM (SELECT k, b, s, count(*) FROM g GROUP BY k, b, s)""".stripMargin))
+      }
+    }
+  }
+
+  test("struct ScalaUDF input with a sliced boolean child keeps its values") {
+    spark.udf.register("flip", (x: Boolean) => !x)
+    withSlicedGroups {
+      // `st.x` is dispatched along with the UDF, so the kernel's input is the whole struct.
+      assertCodegenRan {
+        checkSparkAnswerAndOperator(
+          sql("SELECT k, flip(st.x) FROM (SELECT k, st, count(*) FROM g GROUP BY k, st)"))
+      }
+    }
+  }
+
   test("multi-arg ScalaUDF over string + literal routes through dispatcher") {
     spark.udf.register(
       "prepend",

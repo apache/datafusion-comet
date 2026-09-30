@@ -19,9 +19,12 @@
 
 package org.apache.comet.csv
 
+import java.nio.charset.StandardCharsets
+import java.nio.file.Files
+
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{IntegerType, StringType, StructType}
+import org.apache.spark.sql.types.{IntegerType, StringType, StructType, TimestampType}
 
 import org.apache.comet.CometConf
 
@@ -84,6 +87,36 @@ class CometCsvNativeReadSuite extends CometTestBase {
       checkSparkAnswerAndFallbackReason(
         df,
         "Comet supports only single-character delimiters, but got: ',,'")
+    }
+  }
+
+  test("Native csv read - timestamps fall back unless the CSV timezone is UTC") {
+    withTempDir { dir =>
+      Files.write(
+        dir.toPath.resolve("part-0.csv"),
+        "id,ts\n0,2024-01-15 18:30:45\n1,2024-06-30T23:30:00\n".getBytes(StandardCharsets.UTF_8))
+      val schema = new StructType().add("id", IntegerType).add("ts", TimestampType)
+      def read(options: Map[String, String] = Map.empty) =
+        spark.read.option("header", "true").options(options).schema(schema).csv(dir.toString)
+
+      withSQLConf(
+        CometConf.COMET_CSV_V2_NATIVE_ENABLED.key -> "true",
+        SQLConf.USE_V1_SOURCE_LIST.key -> "") {
+        withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Los_Angeles") {
+          checkSparkAnswerAndFallbackReason(
+            read(),
+            "Comet's native CSV reader parses timestamps in UTC, but the CSV timezone is " +
+              "America/Los_Angeles")
+          checkSparkAnswerAndOperator(read(Map("timeZone" -> "UTC")))
+        }
+        withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC") {
+          checkSparkAnswerAndOperator(read())
+          checkSparkAnswerAndFallbackReason(
+            read(Map("timeZone" -> "Asia/Tokyo")),
+            "Comet's native CSV reader parses timestamps in UTC, but the CSV timezone is " +
+              "Asia/Tokyo")
+        }
+      }
     }
   }
 }
