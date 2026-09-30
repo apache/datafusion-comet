@@ -48,6 +48,8 @@ The following features are not supported and cause Comet to fall back to Spark:
   does not replicate. By default Comet falls back to Spark in this case. Set
   `spark.comet.scan.allowDisabledParquetVectorizedReader=true` to opt in to running the
   Comet Parquet scan regardless.
+- A read schema that repeats a Parquet field id, at the top level or within a struct, when
+  `spark.sql.parquet.fieldId.read.enabled=true`.
 
 The following limitation may produce incorrect results without falling back to Spark:
 
@@ -62,6 +64,20 @@ The following limitation may produce incorrect results without falling back to S
 
 The following limitations raise an error at scan time rather than falling back to Spark:
 
+- Selecting a field by name when multiple physical siblings match, including inside structs,
+  arrays, and maps. Comet raises a duplicate-field error instead of resolving the collision.
+  Checks cover referenced columns, including predicates; unselected roots do not prevent
+  reading a unique field by name or field ID. Exact-name projections of unique children in
+  structs and arrays of structs remain supported. Casts that cannot use this pruning reject
+  byte-identical duplicate siblings anywhere in the decoded physical subtree, including maps.
+  Field-ID resolution retains precedence, but selecting a byte-identically duplicated physical
+  root name still raises a duplicate-field error, even when the requested field is renamed.
+  Names in separate groups do not collide. Spark may read a duplicate-bearing file with an
+  explicit schema in case-sensitive mode, but its choice of sibling depends on the field shape
+  and can produce unexpected values. Spark rejects schema inference from a single file with
+  duplicate names; inference across files can depend on merge order.
+  Resolution is tracked in [#5884](https://github.com/apache/datafusion-comet/issues/5884),
+  with mixed-type behavior in [#5964](https://github.com/apache/datafusion-comet/issues/5964).
 - Invalid UTF-8 bytes in `STRING` columns. Spark permits arbitrary byte sequences in a `STRING`
   column (for example from `CAST(X'C1' AS STRING)`), but Comet's native execution path is built on
   Arrow, whose string type is strictly UTF-8. Reading a Parquet file whose `STRING` column contains

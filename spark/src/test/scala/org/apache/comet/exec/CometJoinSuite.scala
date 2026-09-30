@@ -25,19 +25,22 @@ import org.scalatest.Tag
 import org.apache.hadoop.fs.Path
 import org.apache.parquet.hadoop.ParquetFileReader
 import org.apache.parquet.hadoop.util.HadoopInputFile
+import org.apache.spark.SparkException
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.analysis.UnresolvedRelation
-import org.apache.spark.sql.catalyst.expressions.{And, AttributeReference, IsNotNull}
+import org.apache.spark.sql.catalyst.expressions.{And, AttributeReference, DynamicPruningExpression, IsNotNull}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight}
 import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometBroadcastNestedLoopJoinExec, CometFilterExec, CometHashJoinExec, CometNativeScanExec, CometSortMergeJoinExec, CometUnionExec}
 import org.apache.spark.sql.execution.{LocalTableScanExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec}
-import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
+import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException
+import org.apache.spark.sql.execution.exchange.{ReusedExchangeExec, ShuffleExchangeLike}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, IntegerType, MetadataBuilder, StructField, StructType}
 
 import org.apache.comet.CometConf
+import org.apache.comet.CometSparkSessionExtensions.isSpark35Plus
 
 class CometJoinSuite extends CometTestBase {
 
@@ -520,6 +523,62 @@ class CometJoinSuite extends CometTestBase {
     }
   }
 
+  test("join dynamic filter preserves Parquet schema conversion errors") {
+    withTempPath { probePath =>
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+        SQLConf.LEAF_NODE_DEFAULT_PARALLELISM.key -> "1",
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "true") {
+        spark
+          .range(100, 104, 1, 1)
+          .selectExpr("CAST(id AS INT) AS probe_key", "id AS payload")
+          .write
+          .parquet(probePath.getCanonicalPath)
+        withTempView("dynamic_schema_probe") {
+          // INT64 -> INT32 is invalid even when the stored values fit. Keep the
+          // payload projected so discarding the nonmatching keys cannot hide it.
+          spark.read
+            .schema("probe_key INT, payload INT")
+            .parquet(probePath.getCanonicalPath)
+            .createOrReplaceTempView("dynamic_schema_probe")
+          withParquetTable(Seq(Tuple1(0)), "dynamic_schema_build") {
+            for ((comet, dynamicFilter) <- Seq((false, false), (true, false), (true, true))) {
+              withSQLConf(
+                CometConf.COMET_ENABLED.key -> comet.toString,
+                CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_ENABLED.key -> dynamicFilter.toString) {
+                val df = sql(
+                  "SELECT /*+ BROADCAST(b) */ p.probe_key, p.payload " +
+                    "FROM dynamic_schema_probe p JOIN dynamic_schema_build b " +
+                    "ON p.probe_key = b._1")
+                val plan = df.queryExecution.executedPlan
+                if (comet) {
+                  val joins = collect(plan) { case join: CometBroadcastHashJoinExec => join }
+                  assert(joins.size == 1, s"Expected one native broadcast hash join:\n$plan")
+                  assert(joins.head.buildSide == BuildRight)
+                  assert(joins.head.nativeOp.getHashJoin.getDynamicFilterEnabled == dynamicFilter)
+                  val probes = collect(plan) {
+                    case scan: CometNativeScanExec if scan.output.exists(_.name == "payload") =>
+                      scan
+                  }
+                  assert(probes.size == 1, s"Expected one native probe scan:\n$plan")
+                }
+                withClue(s"comet=$comet, dynamicFilter=$dynamicFilter: ") {
+                  val error = intercept[SparkException](df.collect())
+                  val chain = causeChain(error)
+                  assert(
+                    chain.exists(_.isInstanceOf[SchemaColumnConvertNotSupportedException]),
+                    s"Expected a Parquet schema conversion error, found $chain")
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
   test("join dynamic filter preserves seeded rand probe order") {
     withTempPath { probePath =>
       withSQLConf(
@@ -605,7 +664,7 @@ class CometJoinSuite extends CometTestBase {
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
       withParquetTable(
-        (0 until 100).map(i => (Some(i), i.toLong)) :+ (None, -1L),
+        (0 until 100).map(i => (Some(i), i.toLong)) :+ ((None, -1L)),
         "dynamic_probe") {
         for (build <- Seq(
             Seq((Some(10), 1L), (None, 2L), (Some(10), 3L), (Some(90), 4L)),
@@ -1510,6 +1569,76 @@ class CometJoinSuite extends CometTestBase {
               "SELECT /*+ BROADCAST(tbl_a) */ * FROM tbl_a LEFT OUTER JOIN tbl_b" +
                 " ON tbl_a._1 > tbl_b._1")
           checkSparkAnswer(df)
+        }
+      }
+    }
+  }
+
+  test("scans of one bucketed table in a single native plan each read their own files") {
+    withTable("bucketed_self", "bucketed_dim") {
+      val rows = for {
+        p <- 1 to 3
+        i <- 0 until 20
+      } yield (i % 10, s"p${p}_$i", p)
+      rows
+        .toDF("k", "v", "p")
+        .write
+        .format("parquet")
+        .partitionBy("p")
+        .bucketBy(4, "k")
+        .saveAsTable("bucketed_self")
+      Seq((1, "one"), (2, "two"), (3, "three"))
+        .toDF("p", "x")
+        .write
+        .format("parquet")
+        .saveAsTable("bucketed_dim")
+
+      // A bucketed sort-merge self-join needs no exchange, so both scans run in one native plan
+      // and must each get their own files, though they read the same table and columns.
+      def assertScansShareOneNativePlan(plan: SparkPlan): Seq[CometNativeScanExec] = {
+        val join = collectFirst(plan) { case j: CometSortMergeJoinExec => j }
+          .getOrElse(fail(s"Expected a native sort-merge join:\n$plan"))
+        val scans = collect(join) { case s: CometNativeScanExec => s }
+        assert(scans.size == 2, s"Expected both scans under the join:\n$plan")
+        assert(
+          collect(join) { case e: ShuffleExchangeLike => e }.isEmpty,
+          s"Expected no exchange between the join and its scans:\n$plan")
+        scans
+      }
+
+      for (adaptive <- Seq(false, true)) {
+        withSQLConf(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+          SQLConf.BUCKETING_ENABLED.key -> "true",
+          SQLConf.AUTO_BUCKETED_SCAN_ENABLED.key -> "false",
+          SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+          SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+          CometConf.COMET_EXEC_SORT_MERGE_JOIN_ENABLED.key -> "true") {
+          // In a full outer join neither side gets an inferred isnotnull data filter, so only
+          // the partition filters tell the two scans apart.
+          val (_, fullOuter) = checkSparkAnswerAndOperator(
+            "SELECT a.k, a.v, b.v FROM (SELECT * FROM bucketed_self WHERE p = 1) a " +
+              "FULL OUTER JOIN (SELECT * FROM bucketed_self WHERE p = 2) b ON a.k = b.k")
+          assertScansShareOneNativePlan(fullOuter)
+
+          // Without filter pushdown the scans carry no data filters, and dynamic partition
+          // pruning picks a different partition for each side. Spark 3.4 only runs this with
+          // AQE off: CometScanRule.transformV1Scan leaves a V1 scan with AQE dynamic pruning in
+          // Spark there (case 2 in CometSpark34AqeDppFallbackRule).
+          if (!adaptive || isSpark35Plus) {
+            withSQLConf(SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED.key -> "false") {
+              val (_, pruned) = checkSparkAnswer(
+                "SELECT /*+ BROADCAST(d1), BROADCAST(d2) */ a.k, a.v, b.v " +
+                  "FROM bucketed_self a JOIN bucketed_self b ON a.k = b.k " +
+                  "JOIN bucketed_dim d1 ON a.p = d1.p JOIN bucketed_dim d2 ON b.p = d2.p " +
+                  "WHERE d1.x = 'one' AND d2.x = 'two'")
+              assertScansShareOneNativePlan(pruned).foreach { scan =>
+                assert(
+                  scan.partitionFilters.exists(_.isInstanceOf[DynamicPruningExpression]),
+                  s"Expected each scan to be pruned dynamically:\n$pruned")
+              }
+            }
+          }
         }
       }
     }

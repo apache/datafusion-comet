@@ -55,6 +55,83 @@ class CometIcebergNativeScanSuite extends AnyFunSuite with Matchers {
       .nonEmpty shouldBe true
   }
 
+  /** The scan output the residual tests below convert against. */
+  private val intColumn = Seq(AttributeReference("value", IntegerType)())
+
+  private def serialize(residual: Any) =
+    CometIcebergNativeScan.serializeResidual(residual, intColumn, Set.empty)
+
+  private def causes(t: Throwable): Iterator[Throwable] =
+    Iterator.iterate(t)(_.getCause).takeWhile(_ != null)
+
+  /**
+   * Shaped like an Iceberg `UnboundPredicate` as far as the residual converter is concerned -- it
+   * dispatches on the class-name suffix -- but its accessor throws, the way reflection would
+   * against an Iceberg whose expression API has moved. It must stay a named class: a local or
+   * anonymous one gets a runtime name that no longer ends in `UnboundPredicate`.
+   */
+  class ThrowingUnboundPredicate {
+    def op(): AnyRef = throw new IllegalStateException("residual op() blew up")
+  }
+
+  /** Same shape, but the accessor is not declared at all. */
+  class AccessorlessUnboundPredicate
+
+  // Serde keeps its two ways of not pushing a residual apart. A reflection failure fails the
+  // query: serde runs after CometScanRule has committed the scan to native execution, so there
+  // is no fallback left. A residual the converter declines on purpose is left to the post-scan
+  // filter. These go through serializeResidual, so a swallowing catch in either it or the
+  // converter underneath turns them red.
+  test("a residual whose reflection fails is fatal, not a silent drop") {
+    val thrown = intercept[RuntimeException](serialize(new ThrowingUnboundPredicate))
+    thrown.getMessage should include("Iceberg reflection failure")
+    causes(thrown).exists(_.getMessage == "residual op() blew up") shouldBe true
+  }
+
+  test("a residual whose accessor is missing is fatal, not a silent drop") {
+    val thrown = intercept[RuntimeException](serialize(new AccessorlessUnboundPredicate))
+    causes(thrown).exists(_.isInstanceOf[NoSuchMethodException]) shouldBe true
+  }
+
+  test("residuals the converter declines are still dropped rather than raised") {
+    val declined = Seq(
+      // No native predicate models NOT_IN.
+      Expressions.notIn("value", Integer.valueOf(1), Integer.valueOf(2)),
+      // Not a node type the converter maps.
+      Expressions.alwaysTrue(),
+      Expressions.alwaysFalse(),
+      // Iceberg spells a nested field as a dotted path, which is never a scan output attribute.
+      Expressions.equal("outer.value", Integer.valueOf(1)),
+      // A conjunct that does not convert elides the whole residual.
+      Expressions.and(
+        Expressions.equal("value", Integer.valueOf(1)),
+        Expressions.notIn("value", Integer.valueOf(2))))
+    for (expr <- declined) {
+      withClue(s"$expr: ") {
+        serialize(expr).isEmpty shouldBe true
+      }
+    }
+    // iceberg-rust cannot use these columns in the page index; the post-scan filter has them.
+    CometIcebergNativeScan
+      .serializeResidual(Expressions.equal("value", Integer.valueOf(1)), intColumn, Set("value"))
+      .isEmpty shouldBe true
+    // The same predicate converts when nothing declines it, so the cases above are not vacuous.
+    serialize(Expressions.equal("value", Integer.valueOf(1))).nonEmpty shouldBe true
+  }
+
+  test("a transform residual is declined rather than read as its source column") {
+    // UnboundTransform answers ref() with the source column, so converting the term like a bare
+    // reference would push bucket(4, value) = 1 as value = 1 and drop matching rows.
+    // CometScanRule declines a non-identity transform during planning, but only when the
+    // residual is a bare predicate, so a nested one has to be declined here. The end-to-end
+    // wrong answer is pinned in CometIcebergResidualPushdownSuite.
+    val bucketed =
+      Expressions.equal(Expressions.bucket[Integer]("value", 4), Integer.valueOf(1))
+    serialize(bucketed).isEmpty shouldBe true
+    val nested = Expressions.and(bucketed, Expressions.equal("value", Integer.valueOf(1)))
+    serialize(nested).isEmpty shouldBe true
+  }
+
   private def translate(
       props: Map[String, String],
       targetBucket: Option[String]): Map[String, String] =

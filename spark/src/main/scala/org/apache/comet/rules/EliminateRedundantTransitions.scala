@@ -19,18 +19,21 @@
 
 package org.apache.comet.rules
 
+import java.util.IdentityHashMap
+
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.sideBySide
 import org.apache.spark.sql.comet.{CometCollectLimitExec, CometColumnarToRowExec, CometIcebergWriteExec, CometMapInBatchExec, CometNativeColumnarToRowExec, CometNativeWriteExec, CometPlan, CometSparkToColumnarExec}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.comet.shims.{MapInBatchInfo, ShimCometMapInBatch}
+import org.apache.spark.sql.comet.util.Utils.containsVariantType
 import org.apache.spark.sql.execution.{ColumnarToRowExec, RowToColumnarExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.QueryStageExec
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.CometSparkSessionExtensions.{withFallbackReason, withInfo}
 import org.apache.comet.serde.NativeOptIn
 import org.apache.comet.shims.ShimSQLConf
 
@@ -74,6 +77,19 @@ case class EliminateRedundantTransitions(session: SparkSession)
   }
 
   private def _apply(plan: SparkPlan): SparkPlan = {
+    // `hasCometNativeChild` scans the subtree below every `ColumnarToRowExec` it is asked about,
+    // so stacked transitions rescan the same nodes and the combined cost is quadratic in the plan
+    // size. The scan stops at the first Comet operator it finds, which keeps the common case
+    // cheap, but a stack of transitions over a Comet-free subtree walks all of it every time. The
+    // memo below makes that linear.
+    //
+    // It is keyed on identity rather than equality because `SparkPlan` equality and hashing are
+    // themselves subtree walks, and it is scoped to a single rule invocation because the rule
+    // instance lives for the whole session and must not retain plans. `transformUp` reuses the
+    // identity of subtrees it does not rewrite, so a rebuilt node still hits the memo one level
+    // down.
+    val containsCometPlanMemo = new IdentityHashMap[SparkPlan, java.lang.Boolean]()
+
     val eliminatedPlan = stripIcebergWriteInputTransition(plan) transformUp {
       case ColumnarToRowExec(shuffleExchangeExec: CometShuffleExchangeExec)
           if plan.conf.adaptiveExecutionEnabled =>
@@ -91,7 +107,7 @@ case class EliminateRedundantTransitions(session: SparkSession)
       // Write should be final operation in the plan
       case ColumnarToRowExec(nativeWrite: CometNativeWriteExec) =>
         nativeWrite
-      case c @ ColumnarToRowExec(child) if hasCometNativeChild(child) =>
+      case c @ ColumnarToRowExec(child) if hasCometNativeChild(child, containsCometPlanMemo) =>
         val op = createColumnarToRowExec(child)
         if (c.logicalLink.isEmpty) {
           op.unsetTagValue(SparkPlan.LOGICAL_PLAN_TAG)
@@ -161,11 +177,32 @@ case class EliminateRedundantTransitions(session: SparkSession)
     }
   }
 
-  private def hasCometNativeChild(op: SparkPlan): Boolean = {
+  /**
+   * True if the subtree rooted at `op` contains a Comet operator. `QueryStageExec` and
+   * `ReusedExchangeExec` are leaves for tree traversal, so the plan they wrap is unwrapped
+   * explicitly, and only at the root of the checked subtree.
+   */
+  private def hasCometNativeChild(
+      op: SparkPlan,
+      memo: IdentityHashMap[SparkPlan, java.lang.Boolean]): Boolean = {
     op match {
-      case c: QueryStageExec => hasCometNativeChild(c.plan)
-      case c: ReusedExchangeExec => hasCometNativeChild(c.child)
-      case _ => op.exists(_.isInstanceOf[CometPlan])
+      case c: QueryStageExec => hasCometNativeChild(c.plan, memo)
+      case c: ReusedExchangeExec => hasCometNativeChild(c.child, memo)
+      case _ => containsCometPlan(op, memo)
+    }
+  }
+
+  /** Memoized equivalent of `op.exists(_.isInstanceOf[CometPlan])`. */
+  private def containsCometPlan(
+      op: SparkPlan,
+      memo: IdentityHashMap[SparkPlan, java.lang.Boolean]): Boolean = {
+    val cached = memo.get(op)
+    if (cached != null) {
+      cached.booleanValue()
+    } else {
+      val result = op.isInstanceOf[CometPlan] || op.children.exists(containsCometPlan(_, memo))
+      memo.put(op, result)
+      result
     }
   }
 
@@ -257,7 +294,18 @@ case class EliminateRedundantTransitions(session: SparkSession)
       } else {
         matchMapInArrow(plan)
           .orElse(matchMapInPandas(plan))
-          .flatMap(info => extractColumnarChild(info.child).map(child => (info, child)))
+          .flatMap { info =>
+            // TODO: Remove this guard once Comet Python operators preserve Variant identity
+            // and Spark's Arrow layout for both input and output.
+            // https://github.com/apache/datafusion-comet/issues/5437
+            if ((info.output ++ info.child.output).exists(attr =>
+                containsVariantType(attr.dataType))) {
+              withFallbackReason(plan, "Comet Python operators do not support type VariantType")
+              None
+            } else {
+              extractColumnarChild(info.child).map(child => (info, child))
+            }
+          }
       }
     }
   }
@@ -266,10 +314,19 @@ case class EliminateRedundantTransitions(session: SparkSession)
    * Creates an appropriate columnar to row transition operator.
    *
    * If native columnar to row conversion is enabled and the schema is supported, uses
-   * CometNativeColumnarToRowExec. Otherwise falls back to CometColumnarToRowExec.
+   * CometNativeColumnarToRowExec. Variant uses Spark's conversion; other unsupported schemas use
+   * CometColumnarToRowExec.
    */
   private def createColumnarToRowExec(child: SparkPlan): SparkPlan = {
     val schema = child.schema
+    // TODO: Remove this fallback once Comet columnar-to-row conversion supports Variant getters
+    // and Spark's Variant UnsafeRow encoding.
+    // https://github.com/apache/datafusion-comet/issues/5436
+    if (containsVariantType(schema)) {
+      return withFallbackReason(
+        ColumnarToRowExec(child),
+        "Native columnar-to-row conversion does not support type VariantType")
+    }
     val useNative = CometConf.COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED.get() &&
       CometNativeColumnarToRowExec.supportsSchema(schema)
 
