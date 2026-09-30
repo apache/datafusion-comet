@@ -46,7 +46,7 @@ INSERT INTO nested_float_keys VALUES
 
 -- Sort. Row 8's keys hold a null element, which Spark orders below every other value whatever
 -- the key's null order. Arrow ties the order of nested nulls to NULLS FIRST or LAST, so these
--- queries keep the default null order, where the two agree.
+-- queries keep the default null order, where the two agree (#6476).
 query
 SELECT id FROM nested_float_keys ORDER BY array(IF(s, -d, d)), id DESC
 
@@ -79,7 +79,7 @@ SELECT id FROM nested_float_keys ORDER BY named_struct('x', IF(s, -f, f)), id DE
 -- Window order keys: peers share a rank, and the default RANGE frame of a running sum spans
 -- all of them. The running sums leave out row 8: DataFusion finds a RANGE frame's end by ordering
 -- a null element above every value, while the sort puts it first, so the frame of every row
--- after it would run to the end of the partition, with or without floats.
+-- after it would run to the end of the partition, with or without floats (#6477).
 query
 SELECT id,
   RANK() OVER (ORDER BY array(IF(s, -d, d))) AS r,
