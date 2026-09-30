@@ -26,7 +26,7 @@ import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, withFallbackReason}
 import org.apache.comet.DataTypeSupport.isComplexType
-import org.apache.comet.serde.{CodegenDispatchFallback, CometExpressionSerde, Compatible, ExprOuterClass, Incompatible, SupportLevel, Unsupported}
+import org.apache.comet.serde.{CodegenDispatchFallback, CometExpressionSerde, CometTimeZone, Compatible, ExprOuterClass, Incompatible, SupportLevel, Unsupported}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProtoInternal, serializeDataType}
 import org.apache.comet.shims.{CometExprShim, CometTypeShim}
@@ -97,6 +97,8 @@ object CometCast
         return unsupported(cast.child.dataType, cast.dataType)
       }
       Compatible()
+    } else if (CometTimeZone.nativeId(cast.timeZoneId).isEmpty) {
+      CometTimeZone.supportLevel(cast.timeZoneId)
     } else {
       isSupported(cast.child.dataType, cast.dataType, cast.timeZoneId, evalMode(cast))
     }
@@ -149,8 +151,8 @@ object CometCast
       dt: DataType,
       childExpr: Expr,
       evalMode: CometEvalMode.Value): Option[Expr] = {
-    serializeDataType(dt) match {
-      case Some(dataType) =>
+    (serializeDataType(dt), CometTimeZone.nativeId(timeZoneId)) match {
+      case (Some(dataType), Some(timeZone)) =>
         val castBuilder = ExprOuterClass.Cast.newBuilder()
         castBuilder.setChild(childExpr)
         castBuilder.setDatatype(dataType)
@@ -159,15 +161,18 @@ object CometCast
           SQLConf.get
             .getConfString(CometConf.getExprAllowIncompatConfigKey(classOf[Cast]), "false")
             .toBoolean)
-        castBuilder.setTimezone(timeZoneId.getOrElse("UTC"))
+        castBuilder.setTimezone(timeZone)
         castBuilder.setIsSpark4Plus(isSpark40Plus)
         Some(
           ExprOuterClass.Expr
             .newBuilder()
             .setCast(castBuilder)
             .build())
-      case _ =>
+      case (None, _) =>
         withFallbackReason(expr, s"Unsupported datatype in castToProto: $dt")
+        None
+      case (_, None) =>
+        withFallbackReason(expr, CometTimeZone.unsupportedReason(timeZoneId))
         None
     }
   }
@@ -238,6 +243,14 @@ object CometCast
         canCastFromDouble(toType)
       case (from_struct: StructType, to_struct: StructType) =>
         from_struct.fields.zip(to_struct.fields).foreach { case (a, b) =>
+          // `convert` replaces a top-level cast that is always null (DATE to a numeric or boolean
+          // type in LEGACY mode) with a null literal, so the native cast never sees one. A struct
+          // field or map entry does reach it, and there DATE to INT reinterprets the day count
+          // (the kernel `unix_date` relies on) while the other targets raise an error. Arrays of
+          // dates have their own rule above.
+          if (isAlwaysCastToNull(a.dataType, b.dataType, evalMode)) {
+            return unsupported(fromType, toType)
+          }
           isSupported(a.dataType, b.dataType, timeZoneId, evalMode) match {
             case Compatible(_, _) =>
             // all good
@@ -248,11 +261,17 @@ object CometCast
         Compatible()
       case (from_map: MapType, to_map: MapType) =>
         // Native cast_map_to_map recursively casts keys and values, so support is
-        // determined by whether both inner casts are individually supported.
-        isSupported(from_map.keyType, to_map.keyType, timeZoneId, evalMode) match {
-          case Compatible(_, _) =>
-            isSupported(from_map.valueType, to_map.valueType, timeZoneId, evalMode)
-          case other => other
+        // determined by whether both inner casts are individually supported. As with struct
+        // fields, a key or value cast that is always null has no Spark-compatible native kernel.
+        if (isAlwaysCastToNull(from_map.keyType, to_map.keyType, evalMode) ||
+          isAlwaysCastToNull(from_map.valueType, to_map.valueType, evalMode)) {
+          unsupported(fromType, toType)
+        } else {
+          isSupported(from_map.keyType, to_map.keyType, timeZoneId, evalMode) match {
+            case Compatible(_, _) =>
+              isSupported(from_map.valueType, to_map.valueType, timeZoneId, evalMode)
+            case other => other
+          }
         }
       case (DataTypes.DateType, toType) => canCastFromDate(toType, evalMode)
       case _ => unsupported(fromType, toType)
