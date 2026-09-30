@@ -235,6 +235,9 @@ The JVM eligibility gate fails closed before building that `FileIO` for an `s3` 
 location. It checks effective `fs.s3a.*` Hadoop settings against the six keys translated by
 `NativeConfig`, and separately checks `table.io().properties()` for `s3.*` / `client.*` keys
 against the properties consumed by the pinned iceberg-rust S3 parser and Comet credential bridge.
+That bridge set includes the explicit provider class and the built-in web-identity tuning
+properties documented in the S3 credential-provider guide. The `s3.sse.type` value is also
+checked: iceberg-rust supports `none`, `s3`, `kms`, and `custom`, but not Iceberg's `dsse-kms`.
 When a Comet credential provider is configured, vendor-owned `s3.*` / `client.*` keys that are not
 part of Iceberg's own S3 property vocabulary are preserved because the provider receives and may
 consume the unfiltered FileIO bag. Iceberg-defined properties remain subject to the storage

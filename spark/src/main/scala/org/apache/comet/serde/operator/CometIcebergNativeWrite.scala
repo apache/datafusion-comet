@@ -96,15 +96,12 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
 
   // Hadoop S3A settings are not forwarded wholesale. Keep this allow-list in lockstep with
   // NativeConfig.s3aSuffixToIcebergGlobalKey: every admitted setting must be translated into the
-  // catalog properties consumed by iceberg-rust. Per-bucket spellings for the data bucket are
-  // admitted through the same suffix list; settings for other buckets do not affect this write.
-  private val SupportedHadoopS3Suffixes: Set[String] = Set(
-    "access.key",
-    "secret.key",
-    "session.token",
-    "endpoint",
-    "endpoint.region",
-    "path.style.access")
+  // catalog properties consumed by iceberg-rust. Derive the set from the translation itself so a
+  // new mapping cannot be forwarded by the write path while this gate still rejects it.
+  // Per-bucket spellings for the data bucket are admitted through the same suffix list; settings
+  // for other buckets do not affect this write.
+  private val SupportedHadoopS3Suffixes: Set[String] =
+    NativeConfig.s3aSuffixToIcebergGlobalKey.keySet
 
   private val SupportedHadoopS3Keys: Set[String] =
     SupportedHadoopS3Suffixes.map("fs.s3a." + _)
@@ -121,9 +118,10 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
   // Audited against the pinned iceberg-rust S3 parser
   // (`iceberg/src/io/storage/config/s3.rs` and `storage/opendal/src/s3.rs`). Do not broaden this
   // to every s3.* / client.* property: FileIOBuilder accepts unknown keys, but the storage backend
-  // silently ignores them. The last two entries are consumed by Comet's credential bridge rather
-  // than the storage parser; the expiry timestamp is needed by the documented REST-vended
-  // credential provider.
+  // silently ignores them. The provider class, token expiry, and web-identity settings are
+  // consumed by Comet's credential paths rather than the storage parser. The expiry timestamp is
+  // needed by the documented REST-vended credential provider. The web-identity settings tune the
+  // built-in IRSA path when no explicit provider or credentials take precedence.
   private val SupportedS3FileIOProperties: Set[String] = Set(
     "s3.endpoint",
     "s3.access-key-id",
@@ -142,7 +140,16 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     "s3.disable-ec2-metadata",
     "s3.disable-config-load",
     CometS3CredentialProviderClassProperty,
+    "s3.comet.credential.webIdentity.enabled",
+    "s3.comet.credential.webIdentity.maxAttempts",
+    "s3.comet.credential.webIdentity.minTtlSeconds",
+    "s3.comet.credential.webIdentity.refreshJitterSeconds",
     "s3.session-token-expires-at-ms")
+
+  // iceberg-java also defines "dsse-kms", but the pinned iceberg-rust S3 backend cannot map
+  // that mode into an OpenDAL server-side-encryption configuration. Check the value as well as
+  // the property name so it falls back during planning instead of failing in the native task.
+  private val SupportedS3SseTypes: Set[String] = Set("none", "s3", "kms", "custom")
 
   private case class IcebergAwsPropertyNames(exact: Set[String], prefixes: Seq[String]) {
     def contains(key: String): Boolean =
@@ -492,12 +499,17 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
       .get(CometS3CredentialProviderClassProperty)
       .exists(_.trim.nonEmpty)
 
-    properties.keys
-      .filter(key => key.startsWith("s3.") || key.startsWith("client."))
-      .filterNot(SupportedS3FileIOProperties.contains)
-      .filter { key =>
-        !customCredentialProviderConfigured || IcebergAwsProperties.contains(key)
+    properties.iterator
+      .filter { case (key, _) => key.startsWith("s3.") || key.startsWith("client.") }
+      .filter { case (key, value) =>
+        val unsupportedName = !SupportedS3FileIOProperties.contains(key)
+        val unsupportedValue =
+          key == "s3.sse.type" && !Option(value).exists(value =>
+            SupportedS3SseTypes.contains(value.toLowerCase(Locale.ROOT)))
+        unsupportedValue || (unsupportedName &&
+          (!customCredentialProviderConfigured || IcebergAwsProperties.contains(key)))
       }
+      .map(_._1)
       .toSeq
       .sorted
   }

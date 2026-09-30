@@ -555,10 +555,15 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
       "s3.allow-anonymous" -> "false",
       "s3.disable-ec2-metadata" -> "false",
       "s3.disable-config-load" -> "false",
+      "s3.comet.credential.webIdentity.enabled" -> "true",
+      "s3.comet.credential.webIdentity.maxAttempts" -> "5",
+      "s3.comet.credential.webIdentity.minTtlSeconds" -> "300",
+      "s3.comet.credential.webIdentity.refreshJitterSeconds" -> "60",
       "s3.session-token-expires-at-ms" -> "0")
     val unsupportedFileIO = CometIcebergNativeWrite.unsupportedS3FileIOProperties(
       supportedFileIO ++ Map(
         "s3.acl" -> secret,
+        "s3.sse.type" -> "dsse-kms",
         "s3.write.tags.foo" -> secret,
         "s3.write.storage-class" -> secret,
         "s3.access-points.bucket" -> secret,
@@ -573,10 +578,14 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
         "s3.access-points.bucket",
         "s3.acl",
         "s3.remote-signing-enabled",
+        "s3.sse.type",
         "s3.write.storage-class",
         "s3.write.tags.foo"),
       unsupportedFileIO)
     assert(!unsupportedFileIO.exists(_.contains(secret)), unsupportedFileIO)
+    assert(
+      CometIcebergNativeWrite.unsupportedS3FileIOProperties(Map("s3.sse.type" -> " kms ")) == Seq(
+        "s3.sse.type"))
 
     val withCustomProvider = supportedFileIO ++ Map(
       "s3.comet.credential.provider.class" -> "provider",
@@ -593,6 +602,31 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     assert(
       !unsupportedWithCustomProvider.exists(_.contains(secret)),
       unsupportedWithCustomProvider)
+  }
+
+  test("Hadoop S3A defaults are ignored but site and programmatic settings are effective") {
+    def xml(key: String, value: String): java.io.ByteArrayInputStream =
+      new java.io.ByteArrayInputStream(s"""<configuration>
+           |  <property><name>$key</name><value>$value</value></property>
+           |</configuration>""".stripMargin.getBytes(java.nio.charset.StandardCharsets.UTF_8))
+
+    val key = "fs.s3a.encryption.algorithm"
+
+    val defaultOnly = new Configuration(false)
+    defaultOnly.addResource(xml(key, "SSE-KMS"), "probe-default.xml")
+    assert(defaultOnly.get(key) == "SSE-KMS")
+    assert(
+      CometIcebergNativeWrite.unsupportedHadoopS3Settings(defaultOnly, Some("target")).isEmpty)
+
+    val site = new Configuration(false)
+    site.addResource(xml(key, "SSE-KMS"), "probe-site.xml")
+    assert(site.get(key) == "SSE-KMS")
+    assert(CometIcebergNativeWrite.unsupportedHadoopS3Settings(site, Some("target")) == Seq(key))
+
+    defaultOnly.set(key, "SSE-S3")
+    assert(
+      CometIcebergNativeWrite.unsupportedHadoopS3Settings(defaultOnly, Some("target")) == Seq(
+        key))
   }
 
   test("fall-back: unsupported Hadoop S3A setting on an S3 data location") {
@@ -641,6 +675,7 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
         s"spark.sql.catalog.$fileIOCat.warehouse" -> warehouseDir.getAbsolutePath,
         s"spark.sql.catalog.$fileIOCat.io-impl" -> classOf[ResolvingFileIO].getName,
         s"spark.sql.catalog.$fileIOCat.s3.acl" -> secret,
+        s"spark.sql.catalog.$fileIOCat.s3.sse.type" -> "dsse-kms",
         s"spark.sql.catalog.$fileIOCat.s3.write.tags.foo" -> secret) {
         spark.sql(s"""
           CREATE TABLE $fileIOCat.$ns.unsupported_file_io (
@@ -656,7 +691,10 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
         val support = CometIcebergNativeWrite.getSupportLevel(writeExec)
         support match {
           case Unsupported(Some(reason)) =>
-            assert(reason == "unsupported S3 FileIO settings: s3.acl, s3.write.tags.foo", reason)
+            assert(
+              reason ==
+                "unsupported S3 FileIO settings: s3.acl, s3.sse.type, s3.write.tags.foo",
+              reason)
             assert(!reason.contains(secret), reason)
           case other => fail(s"expected Unsupported, got $other")
         }
