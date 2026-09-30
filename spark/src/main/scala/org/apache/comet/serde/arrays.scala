@@ -22,12 +22,12 @@ package org.apache.comet.serde
 import scala.annotation.tailrec
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.catalyst.expressions.{And, ArrayAggregate, ArrayAppend, ArrayContains, ArrayExcept, ArrayExists, ArrayFilter, ArrayForAll, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArrayRepeat, ArraySort, ArraysOverlap, ArraysZip, ArrayTransform, ArrayUnion, Attribute, BoundReference, Cast, CreateArray, ElementAt, EmptyRow, Expression, Flatten, GetArrayItem, IsNotNull, IsNull, LambdaFunction, Literal, NamedLambdaVariable, Reverse, Sequence, Size, Slice, SortArray, ZipWith}
+import org.apache.spark.sql.catalyst.expressions.{ArrayAggregate, ArrayAppend, ArrayContains, ArrayExcept, ArrayExists, ArrayFilter, ArrayForAll, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArrayRepeat, ArraySort, ArraysOverlap, ArraysZip, ArrayTransform, ArrayUnion, Attribute, BoundReference, Cast, CreateArray, ElementAt, EmptyRow, Expression, Flatten, GetArrayItem, IsNotNull, IsNull, LambdaFunction, Literal, NamedLambdaVariable, Reverse, Sequence, Size, Slice, SortArray, ZipWith}
 import org.apache.spark.sql.catalyst.util.GenericArrayData
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
-import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
+import org.apache.comet.CometSparkSessionExtensions.{hasFallbackReason, withFallbackReason}
 import org.apache.comet.DataTypeSupport.{deepNullable, isComplexType}
 import org.apache.comet.serde.QueryPlanSerde._
 import org.apache.comet.shims.{CometExprShim, CometTypeShim}
@@ -60,8 +60,15 @@ object CometArrayRemove
 
 object CometArrayAppend extends CometExpressionSerde[ArrayAppend] with ArraysBase {
 
+  override def getUnsupportedReasons(): Seq[String] = Seq(NullGuard.reason)
+
+  // The item is serialized once, inside THEN, but it is guarded too when the array can be NULL:
+  // Spark's generated code evaluates it on every row (only the interpreted `eval` skips it for a
+  // NULL array), while native THEN evaluates it on the selected rows only. With a non-nullable
+  // array every row is selected, so the item runs on every row in both engines.
   override def getSupportLevel(expr: ArrayAppend): SupportLevel =
-    NullGuard.supportLevel(expr.children: _*)
+    if (expr.left.nullable) NullGuard.supportLevel(expr.children: _*)
+    else NullGuard.supportLevel(expr.left)
 
   override def convert(
       expr: ArrayAppend,
@@ -232,7 +239,8 @@ object CometArrayIntersect
   private val nullElementReason: String =
     "native array_intersect returns the other side's entries for a NullType-element array"
 
-  override def getUnsupportedReasons(): Seq[String] = Seq(nullElementReason)
+  override def getUnsupportedReasons(): Seq[String] =
+    Seq(nullElementReason, SetOpArguments.argumentReason("array_intersect"))
 
   override def getSupportLevel(expr: ArrayIntersect): SupportLevel = {
     // The native array_intersect dedups by raw bytes, which is wrong under non-default collations.
@@ -268,13 +276,9 @@ object CometArrayIntersect
       withFallbackReason(expr, nullElementReason)
       return None
     }
-    val Seq(left, right) = SetOpArguments.unify(expr.children)
-    val leftArrayExprProto = exprToProtoInternal(left, inputs, binding)
-    val rightArrayExprProto = exprToProtoInternal(right, inputs, binding)
-
-    val arraysIntersectScalarExpr =
-      scalarFunctionExprToProto("array_intersect", leftArrayExprProto, rightArrayExprProto)
-    arraysIntersectScalarExpr
+    SetOpArguments.serialize(expr, inputs, binding).flatMap { case Seq(left, right) =>
+      scalarFunctionExprToProto("array_intersect", Some(left), Some(right))
+    }
   }
 }
 
@@ -378,7 +382,8 @@ object CometArrayExcept
 
   override def getIncompatibleReasons(): Seq[String] = Seq(incompatReason)
 
-  override def getUnsupportedReasons(): Seq[String] = Seq(elementTypeReason)
+  override def getUnsupportedReasons(): Seq[String] =
+    Seq(elementTypeReason, SetOpArguments.argumentReason("array_except"))
 
   override def getSupportLevel(expr: ArrayExcept): SupportLevel = {
     // Surface the native element-type restriction in EXPLAIN. Unsupported rather than
@@ -418,17 +423,13 @@ object CometArrayExcept
     // raise on them.
     expr.children.map(_.dataType).find(dt => !isTypeSupported(dt)) match {
       case Some(dt) =>
-        withFallbackReason(expr, s"data type not supported: $dt")
+        withFallbackReason(expr, s"$elementTypeReason ($dt)")
         return None
       case None =>
     }
-    val Seq(left, right) = SetOpArguments.unify(expr.children)
-    val leftArrayExprProto = exprToProtoInternal(left, inputs, binding)
-    val rightArrayExprProto = exprToProtoInternal(right, inputs, binding)
-
-    val arrayExceptScalarExpr =
-      scalarFunctionExprToProto("array_except", leftArrayExprProto, rightArrayExprProto)
-    arrayExceptScalarExpr
+    SetOpArguments.serialize(expr, inputs, binding).flatMap { case Seq(left, right) =>
+      scalarFunctionExprToProto("array_except", Some(left), Some(right))
+    }
   }
 }
 
@@ -575,21 +576,53 @@ object CometSlice extends CometExpressionSerde[Slice] {
  * DataFusion's set-op kernel (`array_union` / `array_intersect` / `array_except`) asserts that
  * both sides carry the identical element type, nested field nullability included, and native
  * kernels widen nested nullability differently from what Spark planned (a lambda variable over a
- * list arrives nullable, a `monotonically_increasing_id()` struct field does not). Casting both
- * sides to a deeply-nullable element type only widens metadata and never changes values, so the
- * kernel always sees one type; a primitive element type needs nothing, since only nested fields
- * take part in the comparison.
+ * list arrives nullable, a `monotonically_increasing_id()` struct field does not). Equal Spark
+ * types are no evidence of equal native types either: the JVM codegen dispatcher and the native
+ * constructors declare every nested field nullable, while `map_entries` keeps its key field
+ * non-nullable. Field names can differ too: with case-insensitive analysis Spark accepts
+ * `struct<a>` beside `struct<A>` without a cast, and compares struct values by position, and a
+ * native `CASE` names a merged struct's fields after its ELSE branch where Spark names them after
+ * the first branch. Casting both sides to one target, the set op's own element type made deeply
+ * nullable, only relabels metadata (struct casts are positional) and never changes values, so the
+ * kernel always sees one type. Every side is cast, even one whose Spark type already is the
+ * target, since its native type need not be; the native cast is a no-op when it is. A primitive
+ * element type needs nothing, since only nested fields take part in the comparison.
  */
 private[serde] object SetOpArguments {
-  def unify(children: Seq[Expression]): Seq[Expression] =
-    children.map { c =>
-      c.dataType match {
-        case ArrayType(et, _) if isComplexType(et) =>
-          val unified = ArrayType(deepNullable(et), containsNull = true)
-          if (c.dataType == unified) c else Cast(c, unified)
-        case _ => c
-      }
+  def unify(expr: Expression): Seq[Expression] =
+    expr.dataType match {
+      case ArrayType(et, _) if isComplexType(et) =>
+        val unified = ArrayType(deepNullable(et), containsNull = true)
+        expr.children.map(Cast(_, unified))
+      case _ => expr.children
     }
+
+  /**
+   * Serializes `expr`'s arguments through [[unify]]. The casts it adds are not in the operator's
+   * tree, so a reason recorded under one would never reach `CometExecRule`'s roll-up; when an
+   * argument does not serialize, the reasons found under it are recorded on `expr` itself.
+   */
+  def serialize(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Seq[ExprOuterClass.Expr]] = {
+    val unified = unify(expr)
+    val protos = unified.map(exprToProtoInternal(_, inputs, binding))
+    if (protos.forall(_.isDefined)) {
+      Some(protos.flatten)
+    } else {
+      unified.zip(protos).collect { case (arg, None) => arg }.foreach { arg =>
+        QueryPlanSerde.liftFallbackReasons(arg, expr)
+      }
+      if (!hasFallbackReason(expr)) {
+        withFallbackReason(expr, argumentReason(expr.prettyName))
+      }
+      None
+    }
+  }
+
+  /** The reason recorded when an argument fails without a reason of its own. */
+  def argumentReason(name: String): String = s"$name: an argument could not be serialized"
 }
 
 /**
@@ -613,7 +646,8 @@ object CometArrayUnion extends CometExpressionSerde[ArrayUnion] with CodegenDisp
   private val nullElementReason =
     "native array_union drops the entries of a NullType-element array"
 
-  override def getUnsupportedReasons(): Seq[String] = Seq(nullElementReason)
+  override def getUnsupportedReasons(): Seq[String] =
+    Seq(nullElementReason, SetOpArguments.argumentReason("array_union"))
 
   // A NullType-element side runs through the JVM codegen dispatcher (`CodegenDispatchFallback`)
   // rather than the kernel that drops its entries; see `NullElementSetOp`.
@@ -629,13 +663,9 @@ object CometArrayUnion extends CometExpressionSerde[ArrayUnion] with CodegenDisp
       expr: ArrayUnion,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val Seq(left, right) = SetOpArguments.unify(expr.children)
-    val leftArrayExprProto = exprToProtoInternal(left, inputs, binding)
-    val rightArrayExprProto = exprToProtoInternal(right, inputs, binding)
-
-    val arraysUnionScalarExpr =
-      scalarFunctionExprToProto("array_union", leftArrayExprProto, rightArrayExprProto)
-    arraysUnionScalarExpr
+    SetOpArguments.serialize(expr, inputs, binding).flatMap { case Seq(left, right) =>
+      scalarFunctionExprToProto("array_union", Some(left), Some(right))
+    }
   }
 }
 
@@ -654,11 +684,13 @@ object CometCreateArray
     // coerces CreateArray's children to a common type, so a NullType child means every child is
     // NullType and that branch is the one taken. A non-scalar NullType argument (e.g.
     // `aggregate(arr, NULL, (acc, x) -> NULL)` admitted by the JVM codegen dispatcher) therefore
-    // fails the scalar-function row-count check for batches with more than one row. All-literal
-    // NULL arguments arrive as scalars and broadcast correctly, and empty `array()` never reaches
-    // make_array (`convert` emits a literal). `CodegenDispatchFallback` keeps the non-scalar
-    // case in the Comet pipeline through the JVM codegen dispatcher.
-    if (expr.children.exists(c => c.dataType == NullType && !c.foldable)) {
+    // fails the scalar-function row-count check for batches with more than one row. Only a
+    // literal is sure to arrive as a scalar: a foldable argument that constant folding did not
+    // reduce (`element_at(array(NULL), 1)` with `ConstantFolding` excluded) is still evaluated
+    // per row. Empty `array()` never reaches make_array (`convert` emits a literal).
+    // `CodegenDispatchFallback` keeps the non-scalar case in the Comet pipeline through the JVM
+    // codegen dispatcher.
+    if (expr.children.exists(c => c.dataType == NullType && !c.isInstanceOf[Literal])) {
       Unsupported(Some(nullTypeBatchReason))
     } else {
       Compatible()
@@ -709,9 +741,21 @@ object CometArrayRepeat extends CometExpressionSerde[ArrayRepeat] with CodegenDi
   private val nonNullableItemReason =
     "native array_repeat rebuilds a non-nullable list item as nullable"
 
-  override def getUnsupportedReasons(): Seq[String] = Seq(nonNullableItemReason)
+  private val interpretedReason =
+    "`array_repeat` with a nullable count, where Spark evaluates it without generated code, " +
+      "runs through the codegen dispatcher: its interpreted eval skips the element when the " +
+      "count is NULL, where the native kernel evaluates both"
+
+  override def getUnsupportedReasons(): Seq[String] =
+    Seq(nonNullableItemReason, interpretedReason)
 
   override def getSupportLevel(expr: ArrayRepeat): SupportLevel = {
+    // Spark's generated code evaluates the element and the count; its `eval` evaluates the count
+    // first and skips the element when the count is NULL, so an element that raises an error
+    // raises natively only. The dispatcher evaluates the tree through `eval` in these contexts.
+    if (sparkEvaluatesInterpreted && expr.right.nullable) {
+      return Unsupported(Some(interpretedReason))
+    }
     expr.left match {
       // Native `make_array` always emits a nullable item, whatever Spark's containsNull says, so
       // `array(c)` over a non-nullable `c` repeats natively.
@@ -721,10 +765,11 @@ object CometArrayRepeat extends CometExpressionSerde[ArrayRepeat] with CodegenDi
           // DataFusion's list repeat rebuilds the repeated list's item field as nullable, and
           // fails when the input's item is not ("ListArray expected data type List(non-null
           // Struct(..)) got List(Struct(..))"). A non-NullType item reaches native with Spark's
-          // containsNull (`map_entries` makes a non-nullable entry struct; the JVM codegen
-          // dispatcher declares its list items with Spark's flag), so containsNull = false is
-          // the plan-time proxy for that input. `CodegenDispatchFallback` runs those through
-          // the dispatcher instead. A NullType item is declared nullable on the FFI boundary
+          // containsNull (`map_entries` makes a non-nullable entry struct), so containsNull =
+          // false is the plan-time proxy for that input. It is broader than the defect: a
+          // dispatched producer now declares its items nullable, and those still go through the
+          // dispatcher here. `CodegenDispatchFallback` runs them there instead of the kernel.
+          // A NullType item is declared nullable on the FFI boundary
           // (Utils.declaredChildNullability) and matches the rebuild, so plain array<null>
           // stays native.
           case ArrayType(elementType, false) if elementType != NullType =>
@@ -961,6 +1006,10 @@ object CometArrayFilter extends CometExpressionSerde[ArrayFilter] {
 
 object CometSize extends CometExpressionSerde[Size] {
 
+  private val childTypeReason = "Only array and map inputs are supported"
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(childTypeReason, NullGuard.reason)
+
   override def getSupportLevel(expr: Size): SupportLevel = {
     expr.child.dataType match {
       case _: ArrayType | _: MapType =>
@@ -973,7 +1022,7 @@ object CometSize extends CometExpressionSerde[Size] {
           NullGuard.supportLevel(expr.child)
         }
       case other =>
-        Unsupported(Some(s"Unsupported child data type: $other"))
+        Unsupported(Some(s"$childTypeReason ($other)"))
     }
   }
 
@@ -1050,9 +1099,20 @@ object CometArrayPosition extends CometExpressionSerde[ArrayPosition] with Array
 
 object CometArraysZip extends CometExpressionSerde[ArraysZip] {
 
-  override def getUnsupportedReasons(): Seq[String] = Seq(
-    "Not all input data types are supported; falls back to Spark for unsupported types",
-    NullGuard.reason)
+  private val inputTypeReason =
+    "Not all input data types are supported; falls back to Spark for unsupported types"
+
+  private val noArgumentsReason = "`arrays_zip()` with no arguments falls back to Spark"
+
+  private val interpretedReason =
+    "`arrays_zip` over several arguments falls back to Spark where Spark evaluates it without " +
+      "generated code (codegen factory mode NO_CODEGEN, under a CodegenFallback expression, as " +
+      "the input of an imperative aggregate, or under a generator outside a whole-stage " +
+      "stage): its interpreted eval evaluates every argument, where its generated code, which " +
+      "the native null guard follows, stops at the first NULL one"
+
+  override def getUnsupportedReasons(): Seq[String] =
+    Seq(inputTypeReason, noArgumentsReason, interpretedReason, NullGuard.reason)
 
   private def isTypeSupported(dt: DataType): Boolean = {
     import DataTypes._
@@ -1068,14 +1128,24 @@ object CometArraysZip extends CometExpressionSerde[ArraysZip] {
   }
 
   override def getSupportLevel(expr: ArraysZip): SupportLevel = {
+    // The native kernel needs at least one argument, and so does `convert`'s CASE (one WHEN per
+    // argument); Spark returns an empty array.
+    if (expr.children.isEmpty) {
+      return Unsupported(Some(noArgumentsReason))
+    }
     val inputTypes = expr.children.map(_.dataType).toSet
     for (dt <- inputTypes) {
       if (!isTypeSupported(dt)) {
-        return Unsupported(Some(s"Unsupported child data type: $dt"))
+        return Unsupported(Some(s"$inputTypeReason ($dt)"))
       }
     }
-    // `convert` puts every child in the null-check predicate as well as in the zip itself;
-    // Spark's ArraysZip evaluates all of its children rather than short-circuiting, so a single
+    // The guard follows Spark's generated code, which stops at the first NULL argument. Spark's
+    // interpreted `eval` evaluates them all first, so an argument that raises an error after a
+    // NULL one raises in Spark there and not natively.
+    if (expr.children.size > 1 && sparkEvaluatesInterpreted) {
+      return Unsupported(Some(interpretedReason))
+    }
+    // `convert` puts every child in a null check as well as in the zip itself, so a single
     // stateful child is enough to diverge.
     NullGuard.supportLevel(expr.children: _*)
   }
@@ -1089,25 +1159,30 @@ object CometArraysZip extends CometExpressionSerde[ArraysZip] {
       expr.children.map(exprToProtoInternal(_, inputs, binding))
     val names: Seq[Any] = expr.names.map(_.eval(EmptyRow))
 
-    // mimic Spark's ArraysZip behavior: returns NULL if any argument is NULL
-    val combinedNullCheck = expr.children.map(child => IsNotNull(child)).reduce(And)
-    val isNotNullExpr = exprToProtoInternal(combinedNullCheck, inputs, binding)
+    // Mimic Spark's ArraysZip: NULL if any argument is NULL. One WHEN per argument, in order:
+    // Spark's generated code stops evaluating the arguments at the first NULL one, and native
+    // CASE evaluates each later WHEN and the ELSE only on the rows no earlier WHEN matched. A
+    // single AND of the null checks can evaluate a later argument on rows Spark skips, raising
+    // an error there (a division by zero under ANSI).
+    val isNullExprs =
+      expr.children.map(child => exprToProtoInternal(IsNull(child), inputs, binding))
     val nullLiteralProto =
       exprToProtoInternal(Literal(null, expr.dataType), Seq.empty, binding = true)
 
-    if (exprChildren.forall(
-        _.isDefined) && isNotNullExpr.isDefined && nullLiteralProto.isDefined) {
+    if (exprChildren.forall(_.isDefined) && isNullExprs.forall(
+        _.isDefined) && nullLiteralProto.isDefined) {
       val arraysZip: ExprOuterClass.ArraysZip = ExprOuterClass.ArraysZip
         .newBuilder()
         .addAllValues(exprChildren.map(_.get).asJava)
         .addAllNames(names.map(_.toString).asJava)
         .build()
 
-      val caseWhenExpr = ExprOuterClass.CaseWhen
-        .newBuilder()
-        .addWhen(isNotNullExpr.get)
-        .addThen(ExprOuterClass.Expr.newBuilder().setArraysZip(arraysZip).build())
-        .setElseExpr(nullLiteralProto.get)
+      val caseWhenBuilder = ExprOuterClass.CaseWhen.newBuilder()
+      isNullExprs.foreach { isNull =>
+        caseWhenBuilder.addWhen(isNull.get).addThen(nullLiteralProto.get)
+      }
+      val caseWhenExpr = caseWhenBuilder
+        .setElseExpr(ExprOuterClass.Expr.newBuilder().setArraysZip(arraysZip).build())
         .build()
       Some(
         ExprOuterClass.Expr

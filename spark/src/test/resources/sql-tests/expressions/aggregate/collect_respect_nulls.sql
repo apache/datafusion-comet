@@ -45,21 +45,21 @@ INSERT INTO crn_src VALUES
 -- collect_list RESPECT NULLS: nulls are kept (global aggregate)
 -- ============================================================
 
-query expect_fallback(collect_list with RESPECT NULLS (ignoreNulls = false) is not supported)
+query expect_fallback(`collect_list` with `RESPECT NULLS` falls back to Spark)
 SELECT sort_array(collect_list(v) RESPECT NULLS) FROM crn_src
 
 -- ============================================================
 -- collect_list RESPECT NULLS: per group, including an all-null group
 -- ============================================================
 
-query expect_fallback(collect_list with RESPECT NULLS (ignoreNulls = false) is not supported)
+query expect_fallback(`collect_list` with `RESPECT NULLS` falls back to Spark)
 SELECT grp, sort_array(collect_list(v) RESPECT NULLS) FROM crn_src GROUP BY grp ORDER BY grp
 
 -- ============================================================
 -- collect_set RESPECT NULLS: keeps a single null alongside distinct values
 -- ============================================================
 
-query expect_fallback(collect_set with RESPECT NULLS (ignoreNulls = false) is not supported)
+query expect_fallback(`collect_set` with `RESPECT NULLS` falls back to Spark)
 SELECT grp, sort_array(collect_set(v) RESPECT NULLS) FROM crn_src GROUP BY grp ORDER BY grp
 
 -- ============================================================

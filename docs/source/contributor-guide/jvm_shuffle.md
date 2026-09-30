@@ -54,6 +54,11 @@ JVM shuffle (`CometColumnarExchange`) is used instead of native shuffle (`CometE
    [Supported partition key types](native_shuffle.md#when-native-shuffle-is-used) for the exact
    rules. Complex types are fully supported as data columns in both implementations.
 
+4. **Round-robin over a hashed `NullType` column**: native round-robin partitioning hashes the
+   row's columns (the first `maxHashColumns`, or all of them for `0`, unless positional placement
+   applies), and the native hasher cannot hash a `NullType` column or field, so such a shuffle
+   uses JVM columnar shuffle when the shuffle mode and shuffle manager allow it.
+
 ## Input Handling
 
 ### Spark Row-Based Input

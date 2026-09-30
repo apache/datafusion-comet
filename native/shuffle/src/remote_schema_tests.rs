@@ -575,6 +575,7 @@ fn remote_shuffle_preserves_row_count_without_columns() {
 // unchanged: a `NullArray` owns no buffers, so the encoding, the dictionary decoding and the
 // nested-nullability reconciliation all have to pass it through by length alone.
 #[test]
+#[cfg_attr(miri, ignore)] // The codec matrix calls ZSTD_createCCtx.
 fn null_type_columns_and_children_survive_remote_shuffle() {
     let rows = 3;
     let null_field = |name: &str| Arc::new(Field::new(name, DataType::Null, true));

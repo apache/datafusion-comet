@@ -108,16 +108,11 @@ object SupportLevel {
 /**
  * Serdes that wrap a kernel in `CASE WHEN guarded IS NOT NULL THEN kernel(children) ELSE NULL`
  * serialize the guarded children twice, and a stateful child (one built over
- * monotonically_increasing_id(), say) then produces values Spark's single evaluation never would,
- * for either of two reasons:
- *
- *   - A child evaluated natively gets an independent instance per copy, but native CASE evaluates
- *     the THEN branch on the rows the predicate selected, so whenever the guard filters, the THEN
- *     copy's counter runs over a different row sequence than Spark's.
- *   - A child evaluated by the JVM codegen dispatcher (any lambda function) is keyed in the
- *     kernel cache by its serialized bytes, so both copies run one kernel instance and share its
- *     state: the predicate copy consumes the counter for the whole batch and the THEN copy
- *     continues from there, even when nothing filters.
+ * monotonically_increasing_id(), say) then produces values Spark's single evaluation never would.
+ * Each copy gets its own instance, natively or in the JVM codegen dispatcher (see
+ * `DispatchOccurrence`), but native CASE evaluates the THEN branch on the rows the predicate
+ * selected, so whenever the guard filters, the THEN copy's counter runs over a different row
+ * sequence than Spark's.
  *
  * Neither the stateful child nor the nullable one needs to be the same child, and the stateful
  * child need not be nullable at all; a serde that builds no guard for a non-nullable child

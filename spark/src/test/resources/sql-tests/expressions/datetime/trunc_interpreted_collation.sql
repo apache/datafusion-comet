@@ -15,25 +15,19 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
-statement
-CREATE TABLE test_case_when(i int, s string) USING parquet
+-- The interpreted-evaluation check for `trunc` (see trunc_interpreted.sql) runs ahead of the
+-- collation opt-in, so a collated non-literal format cannot route the expression to the native
+-- kernel through `allowIncompatible` where Spark evaluates it through `eval`.
+
+-- MinSparkVersion: 4.0
+-- Config: spark.sql.ansi.enabled=true
+-- Config: spark.comet.expression.TruncDate.allowIncompatible=true
 
 statement
-INSERT INTO test_case_when VALUES (1, 'a'), (2, 'b'), (3, 'c'), (NULL, 'd'), (1, NULL), (NULL, NULL)
+CREATE TABLE test_trunc_interpreted_collation(s string, fmt string) USING parquet
 
-query
-SELECT CASE WHEN i = 1 THEN 'one' WHEN i = 2 THEN 'two' ELSE 'other' END FROM test_case_when
+statement
+INSERT INTO test_trunc_interpreted_collation SELECT * FROM VALUES ('not-a-date', 'bogus'), ('2024-05-17', 'year') AS t(s, fmt) DISTRIBUTE BY 1
 
-query
-SELECT CASE i WHEN 1 THEN 'one' WHEN 2 THEN 'two' END FROM test_case_when
-
-query
-SELECT CASE WHEN s IS NULL THEN 'null_val' ELSE s END FROM test_case_when
-
--- literal arguments
-query
-SELECT CASE WHEN i = 1 THEN s WHEN i = 2 THEN 'fixed' ELSE s END FROM test_case_when
-
--- A NullType result whose rows come from both the THEN and the implicit ELSE runs natively.
-query expect_native(casewhen)
-SELECT CASE WHEN i = 1 THEN aggregate(array(i), NULL, (acc, x) -> NULL) END FROM test_case_when
+query expect_dispatch(trunc)
+SELECT collect_list(trunc(CAST(s AS date), CAST(fmt AS STRING COLLATE UTF8_LCASE))) FROM test_trunc_interpreted_collation

@@ -41,8 +41,11 @@ SELECT coalesce(NULL, NULL, 99), coalesce(1, NULL, 99), coalesce(NULL)
 query expect_dispatch(coalesce)
 SELECT coalesce(IF(monotonically_increasing_id() % 2 = 0, a, NULL), b, 0) FROM test_coalesce
 
--- A NullType result cannot run natively (the serde builds a native CASE, which merges the rows
--- of its branches through Arrow's merge_n and cannot build a NullArray with a validity bitmap),
--- so the JVM codegen dispatcher runs it inside the Comet pipeline.
-query expect_dispatch(coalesce)
+-- A non-deterministic last argument is the ELSE, serialized and evaluated once, so it stays on
+-- the native CASE.
+query expect_native(coalesce)
+SELECT coalesce(a, monotonically_increasing_id()) FROM test_coalesce
+
+-- A NullType result runs on the native CASE the serde builds.
+query expect_native(coalesce)
 SELECT coalesce(aggregate(array(a), NULL, (acc, x) -> NULL), aggregate(array(b), NULL, (acc, x) -> NULL)) FROM test_coalesce

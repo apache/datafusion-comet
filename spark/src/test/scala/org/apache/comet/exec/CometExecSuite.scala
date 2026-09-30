@@ -410,6 +410,66 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("non-AQE DPP: a build side the broadcast gate refuses keeps Spark's DPP subquery") {
+    // `map(store_id, NULL)` puts a NullType under a map entry, so the join's broadcast stays on
+    // Spark (`CometBroadcastExchangeExec.getSupportLevel`). The DPP subquery must stay with it:
+    // a Comet broadcast there would not be reused by the join's exchange, so the build side
+    // would run twice.
+    withTempDir { dir =>
+      val path = s"${dir.getAbsolutePath}/data"
+      withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "false") {
+        spark
+          .range(100)
+          .selectExpr("id % 10 as store_id", "cast(id * 2 as int) as date_id")
+          .write
+          .partitionBy("store_id")
+          .parquet(s"$path/fact")
+        spark
+          .range(10)
+          .selectExpr("cast(id as int) as store_id", "cast(id as string) as country")
+          .write
+          .parquet(s"$path/dim")
+      }
+
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
+        spark.read.parquet(s"$path/fact").createOrReplaceTempView("fact_null_map")
+        spark.read.parquet(s"$path/dim").createOrReplaceTempView("dim_null_map")
+
+        val df = spark.sql("""SELECT f.date_id, f.store_id, d.m
+            |FROM fact_null_map f JOIN (
+            |  SELECT store_id, country, map(store_id, NULL) AS m FROM dim_null_map) d
+            |ON f.store_id = d.store_id
+            |WHERE d.country = 'DE'""".stripMargin)
+        val (_, cometPlan) = checkSparkAnswer(df)
+
+        // Guard the premise: DPP planned a broadcast subquery for this join.
+        val subqueries = collectWithSubqueries(cometPlan) {
+          case s: SubqueryBroadcastExec => s
+          case s: CometSubqueryBroadcastExec => s
+        }
+        assert(subqueries.nonEmpty, s"Expected a DPP subquery:\n${cometPlan.treeString}")
+        // And that the build side under Spark's broadcast is Comet native: the rewrite only
+        // considers a native build side, so with a Spark one the next assertion would hold for
+        // the wrong reason.
+        val sparkBroadcasts = collectWithSubqueries(cometPlan) { case e: BroadcastExchangeExec =>
+          e
+        }
+        assert(
+          sparkBroadcasts.exists(_.child.exists(_.isInstanceOf[CometNativeExec])),
+          s"Expected a Comet native build side under Spark's broadcast:\n${cometPlan.treeString}")
+        assert(
+          collectWithSubqueries(cometPlan) { case e: CometBroadcastExchangeExec => e }.isEmpty,
+          s"Expected no Comet broadcast:\n${cometPlan.treeString}")
+        assert(
+          collectWithSubqueries(cometPlan) { case e: ReusedExchangeExec => e }.nonEmpty,
+          s"Expected the DPP subquery to reuse the join's exchange:\n${cometPlan.treeString}")
+      }
+    }
+  }
+
   test("non-AQE DPP: non-atomic type (struct/array) join key") {
     withTempDir { dir =>
       val path = s"${dir.getAbsolutePath}/data"

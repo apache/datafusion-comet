@@ -1784,7 +1784,20 @@ object CometExplodeExec extends CometOperatorSerde[GenerateExec] {
       builder: Operator.Builder,
       childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
     val childExpr = op.generator.children.head
-    val childExprProto = exprToProto(childExpr, op.child.output)
+    // Outside a whole-stage stage, GenerateExec calls the generator's `eval`, which evaluates its
+    // child the same way, so the child is serialized as Spark interprets it. These are the
+    // conditions under which CollapseCodegenStages leaves the Generate out of a stage.
+    val interpreted = !op.conf.wholeStageEnabled || !op.generator.supportCodegen ||
+      op.expressions.exists(_.exists(e =>
+        e.isInstanceOf[CodegenFallback] && !e.isInstanceOf[LeafExpression])) ||
+      WholeStageCodegenExec.isTooManyFields(op.conf, op.schema) ||
+      op.children.exists(child => WholeStageCodegenExec.isTooManyFields(op.conf, child.schema))
+    val childExprProto =
+      if (interpreted) {
+        QueryPlanSerde.withInterpretedEvaluation(exprToProto(childExpr, op.child.output))
+      } else {
+        exprToProto(childExpr, op.child.output)
+      }
 
     if (childExprProto.isEmpty) {
       return None

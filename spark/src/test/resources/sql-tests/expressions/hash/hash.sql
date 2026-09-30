@@ -33,4 +33,7 @@ SELECT md5('Spark SQL'), sha1('test'), sha2('test', 0), sha2('test', 256), sha2(
 
 -- The native hasher has no arm for NullType, which a non-foldable struct or array can carry.
 query expect_fallback(`NullType` is not supported)
-SELECT hash(named_struct('a', a, 'b', NULL)), xxhash64(transform(array(a), x -> NULL)) FROM test
+SELECT hash(named_struct('a', a, 'b', NULL)) FROM test
+
+query expect_fallback(`NullType` is not supported)
+SELECT xxhash64(transform(array(a), x -> NULL)) FROM test

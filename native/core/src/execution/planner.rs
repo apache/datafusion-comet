@@ -113,9 +113,9 @@ use datafusion::physical_expr::LexOrdering;
 
 use crate::parquet::parquet_exec::init_datasource_exec;
 use arrow::array::{
-    new_empty_array, Array, ArrayRef, BinaryBuilder, BooleanArray, Date32Array, Decimal128Array,
-    Float32Array, Float64Array, Int16Array, Int32Array, Int64Array, Int8Array, ListArray,
-    NullArray, StringBuilder, TimestampMicrosecondArray,
+    Array, ArrayRef, BinaryBuilder, BooleanArray, Date32Array, Decimal128Array, Float32Array,
+    Float64Array, Int16Array, Int32Array, Int64Array, Int8Array, ListArray, NullArray,
+    StringBuilder, TimestampMicrosecondArray,
 };
 use arrow::buffer::{BooleanBuffer, NullBuffer, OffsetBuffer};
 use datafusion::common::utils::SingleRowListArrayBuilder;
@@ -4593,8 +4593,11 @@ fn literal_to_array_ref(
                 let child_refs: Vec<&dyn Array> = child_arrays.iter().map(|a| a.as_ref()).collect();
                 arrow::compute::concat(&child_refs)?
             } else {
-                // All entries are null or the list is empty
-                new_empty_array(&dt)
+                // All entries are null or empty. Build the empty values array the way a child
+                // is built, so it has the type a non-empty child would have: `dt`'s element type
+                // (not `dt`, which nests one level too deep), with each nested list field
+                // nullable as this arm declares it (not as `dt` declares it).
+                literal_to_array_ref(dt.clone(), ListLiteral::default())?
             };
 
             // Create and return the parent ListArray
@@ -6373,6 +6376,70 @@ mod tests {
         let vals3 = v3.as_any().downcast_ref::<Int32Array>().unwrap();
         assert_eq!(vals3.values(), &[10, 0, 11]);
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_literal_to_list_with_only_empty_children() -> Result<(), DataFusionError> {
+        // [[], null]: no child contributes values, so the values array is built empty. It must
+        // still have the child list's element type, as it does when some child is non-empty.
+        let data = ListLiteral {
+            list_values: vec![ListLiteral::default(), ListLiteral::default()],
+            null_mask: vec![true, false],
+            ..Default::default()
+        };
+        let inner = DataType::List(Arc::new(Field::new("item", DataType::Int64, true)));
+        let nested_type = DataType::List(Arc::new(Field::new("item", inner.clone(), true)));
+
+        let array = literal_to_array_ref(nested_type, data)?;
+        assert_eq!(array.data_type(), &inner);
+        let list = array.as_any().downcast_ref::<ListArray>().unwrap();
+        assert_eq!(list.len(), 2);
+        assert!(list.value(0).is_empty());
+        assert!(list.is_null(1));
+
+        // [[[]], [[[1]]]] with every declared field non-nullable: the first child has no values
+        // below its own level, the second has. Both must come out as the same type, or
+        // concatenating them fails.
+        let list_of = |dt: DataType| DataType::List(Arc::new(Field::new("item", dt, false)));
+        let one = ListLiteral {
+            int_values: vec![1],
+            null_mask: vec![true],
+            ..Default::default()
+        };
+        let data = ListLiteral {
+            list_values: vec![
+                ListLiteral {
+                    list_values: vec![ListLiteral::default()],
+                    null_mask: vec![true],
+                    ..Default::default()
+                },
+                ListLiteral {
+                    list_values: vec![ListLiteral {
+                        list_values: vec![one],
+                        null_mask: vec![true],
+                        ..Default::default()
+                    }],
+                    null_mask: vec![true],
+                    ..Default::default()
+                },
+            ],
+            null_mask: vec![true, true],
+            ..Default::default()
+        };
+        let nested_type = list_of(list_of(list_of(list_of(DataType::Int32))));
+
+        let array = literal_to_array_ref(nested_type, data)?;
+        let list = array.as_any().downcast_ref::<ListArray>().unwrap();
+        assert_eq!(list.len(), 2);
+        assert!(list
+            .value(0)
+            .as_any()
+            .downcast_ref::<ListArray>()
+            .unwrap()
+            .value(0)
+            .is_empty());
+        assert_eq!(list.value(1).len(), 1);
         Ok(())
     }
 

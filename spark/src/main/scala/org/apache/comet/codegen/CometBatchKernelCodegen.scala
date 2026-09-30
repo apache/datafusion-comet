@@ -19,12 +19,16 @@
 
 package org.apache.comet.codegen
 
+import scala.util.control.NonFatal
+
 import org.apache.arrow.vector._
 import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
 import org.apache.arrow.vector.types.pojo.Field
 import org.apache.spark.internal.Logging
-import org.apache.spark.sql.catalyst.expressions.{BoundReference, Expression, Literal, Unevaluable}
+import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.catalyst.expressions.{ApplyFunctionExpression, BoundReference, CallMethodViaReflection, Expression, Literal, Nondeterministic, PlanExpression, ScalaUDF, UnaryExpression, Unevaluable}
 import org.apache.spark.sql.catalyst.expressions.codegen._
+import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
@@ -180,7 +184,8 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
     // Mirror WSCG's `spark.sql.codegen.maxFields` gate. Wide schemas blow the generated class's
     // typed input field count, the typed-getter switch, and the constant pool. Refuse here so the
     // operator falls back to Spark cleanly rather than tripping a Janino compile failure
-    // mid-execution (Comet has no recovery for that).
+    // mid-execution: the interpreted fallback in `compile` only replaces the expression's own
+    // code, and still generates the same typed Arrow accessors.
     val maxFields = SQLConf.get.wholeStageMaxNumFields
     val totalFields = numOfNestedFields(boundExpr.dataType) +
       boundExpr.collect { case b: BoundReference => numOfNestedFields(b.dataType) }.sum
@@ -199,15 +204,14 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
     // `CometScalaUDFCodegen.kernelCache` prevents concurrent partitions from racing on shared
     // state inside the expression.
     //
-    // Nondeterministic / stateful expressions are accepted: each cache entry holds one kernel
+    // Nondeterministic / stateful built-ins are accepted: each cache entry holds one kernel
     // instance with a single `init(partitionIndex)` call, so `Rand` / `MonotonicallyIncreasingID`
-    // state advances correctly across batches.
+    // state advances correctly across batches, and each occurrence gets its own entry
+    // (`DispatchOccurrence`). A non-deterministic user function is refused (`userStateReason`).
     //
-    // `ExecSubqueryExpression` (`ScalarSubquery`, `InSubqueryExec`) is accepted: the surrounding
-    // Comet operator's inherited `SparkPlan.waitForSubqueries` populates the subquery's
-    // `result` field before evaluation. The closure serializer captures that value into the
-    // arg-0 bytes, and the dispatcher keys its compile cache on those bytes, so distinct subquery
-    // results produce distinct cache entries.
+    // A subquery is refused (`subqueryReason`): the plan is serialized before the operator's
+    // `prepare` starts its subqueries, so the shipped copy never receives the result and its
+    // evaluation fails with "has not finished".
     //
     // `Unevaluable`: rejected by default. `isCodegenInertUnevaluable` exempts version-specific
     // leaves that are `Unevaluable` but never invoked by codegen (e.g. Spark 4.0's
@@ -225,8 +229,23 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
             "(aggregate, generator, or unevaluable)")
       case None =>
     }
+    if (boundExpr.exists(_.isInstanceOf[PlanExpression[_]])) {
+      return Some(subqueryReason)
+    }
+    if (boundExpr.exists(DispatchOccurrence.holdsSharedState)) {
+      return Some(userStateReason)
+    }
     boundExpr.collectFirst(Function.unlift(inputRejection))
   }
+
+  val userStateReason: String =
+    "codegen dispatch: a non-deterministic user-defined function or reflected method keeps " +
+      "state that Spark shares between all of its calls and advances row by row, which the " +
+      "dispatcher, evaluating each expression over a whole batch, cannot reproduce"
+
+  val subqueryReason: String =
+    "codegen dispatch: a subquery inside the expression would be evaluated before its result " +
+      "is available"
 
   /** Why `expr` cannot be read as a codegen input, if it cannot. */
   private def inputRejection(expr: Expression): Option[String] = expr match {
@@ -250,7 +269,27 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
   def toFfiArrowField(name: String, dataType: DataType, nullable: Boolean): Field =
     CometBatchKernelCodegenOutput.toFfiArrowField(name, dataType, nullable)
 
-  def compile(boundExpr: Expression, inputSchema: Seq[ArrowColumnSpec]): CompiledKernel = {
+  def compile(boundExpr: Expression, inputSchema: Seq[ArrowColumnSpec]): CompiledKernel =
+    try {
+      compileAs(boundExpr, inputSchema)
+    } catch {
+      // Spark's own `doGenCode` does not always compile: `ElementAt` on an in-bounds literal
+      // index is non-nullable, yet with ANSI off its generated code still assigns an undeclared
+      // `isNull` on the out-of-bounds branch. Spark's whole-stage codegen falls back to the
+      // interpreted path on a compile failure, and so does the kernel: the expression is wrapped
+      // in `InterpretedKernelExpr`, a `CodegenFallback`, so only the Arrow reads and writes stay
+      // generated and the expression itself runs through its interpreted `eval`.
+      case NonFatal(t) if !boundExpr.isInstanceOf[InterpretedKernelExpr] =>
+        logWarning(
+          s"CometBatchKernelCodegen: generated code for ${boundExpr.getClass.getSimpleName} " +
+            "did not compile; evaluating it through its interpreted eval instead",
+          t)
+        compileAs(InterpretedKernelExpr(boundExpr), inputSchema)
+    }
+
+  private def compileAs(
+      boundExpr: Expression,
+      inputSchema: Seq[ArrowColumnSpec]): CompiledKernel = {
     val src = generateSource(boundExpr, inputSchema)
     val (clazz, _) =
       try {
@@ -655,5 +694,77 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
       case ScalarColumnSpec(c, n) => Some((c, n))
       case _ => None
     }
+  }
+}
+
+/**
+ * Runs `child` through its interpreted `eval` inside a dispatcher kernel. Used when the code
+ * Spark generates for `child` does not compile (see `CometBatchKernelCodegen.compile`).
+ * `CodegenFallback.doGenCode` emits one `eval(row)` call against the kernel's typed Arrow getters
+ * and registers the partition initialization of any `Nondeterministic` node under it.
+ */
+private[comet] case class InterpretedKernelExpr(child: Expression)
+    extends UnaryExpression
+    with CodegenFallback {
+  override def dataType: DataType = child.dataType
+  override def nullable: Boolean = child.nullable
+  override def eval(input: InternalRow): Any = child.eval(input)
+  override protected def withNewChildInternal(newChild: Expression): InterpretedKernelExpr =
+    copy(child = newChild)
+}
+
+/**
+ * Ships one occurrence of a non-deterministic `child` to the dispatcher. The dispatcher caches a
+ * kernel instance per serialized expression, and a non-deterministic kernel keeps state across
+ * batches (`monotonically_increasing_id`'s counter, `rand`'s generator). Two identical
+ * occurrences in one plan serialize to the same bytes, so without a distinct `occurrence` the
+ * second would continue the first one's state, where Spark gives each its own. The dispatcher
+ * unwraps this before it compiles `child`, so it never reaches generated code.
+ *
+ * Only the state of Catalyst's `Nondeterministic` nodes is per occurrence in Spark. A
+ * non-deterministic user function (`ScalaUDF`, `Invoke`, `StaticInvoke`,
+ * `ApplyFunctionExpression`) keeps its state in one object every call references, and a reflected
+ * method (`CallMethodViaReflection`) can keep it in static fields, which no arrangement of
+ * kernels reproduces, so `CometBatchKernelCodegen.canHandle` refuses them (see
+ * [[DispatchOccurrence.holdsSharedState]]).
+ */
+private[comet] case class DispatchOccurrence(child: Expression, occurrence: Long)
+    extends UnaryExpression
+    with Unevaluable {
+  override def dataType: DataType = child.dataType
+  override def nullable: Boolean = child.nullable
+  override protected def withNewChildInternal(newChild: Expression): DispatchOccurrence =
+    copy(child = newChild)
+}
+
+private[comet] object DispatchOccurrence {
+  private val nextOccurrence = new java.util.concurrent.atomic.AtomicLong()
+
+  /** `expr` as the dispatcher should receive it: tagged when it keeps per-occurrence state. */
+  def tag(expr: Expression): Expression =
+    if (expr.exists(_.isInstanceOf[Nondeterministic])) {
+      DispatchOccurrence(expr, nextOccurrence.getAndIncrement())
+    } else {
+      expr
+    }
+
+  /**
+   * Non-deterministic in itself, whatever its children are, without being a Catalyst
+   * `Nondeterministic`: its state lives in an object the plan shares between its calls.
+   */
+  def holdsSharedState(e: Expression): Boolean = e match {
+    case _: CallMethodViaReflection => true
+    case _: Nondeterministic | _: PlanExpression[_] => false
+    case u: ScalaUDF => !u.udfDeterministic
+    case i: Invoke => !i.isDeterministic
+    case s: StaticInvoke => !s.isDeterministic
+    case f: ApplyFunctionExpression => !f.function.isDeterministic
+    case other => !other.deterministic && other.children.forall(_.deterministic)
+  }
+
+  /** The expression to compile from what the dispatcher received. */
+  def untag(expr: Expression): Expression = expr match {
+    case DispatchOccurrence(child, _) => child
+    case other => other
   }
 }
