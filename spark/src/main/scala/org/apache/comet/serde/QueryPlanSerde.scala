@@ -769,14 +769,15 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
           if (includeFieldIds && ParquetUtils.hasFieldId(f)) Some(ParquetUtils.getFieldId(f))
           else None
         }
-        if (fieldIds.exists(_.isDefined)) {
-          // Emit one FieldMetadata entry per nested field, parallel to field_names. Entries
-          // for fields without an ID are empty so the slot index stays aligned.
-          fieldIds.foreach { idOpt =>
+        val variantMetadata = s.fields.map(variantRequestMetadata)
+        if (fieldIds.exists(_.isDefined) || variantMetadata.exists(_.isDefined)) {
+          // Keep metadata entries aligned with field_names, including empty slots.
+          fieldIds.zip(variantMetadata).foreach { case (idOpt, variantMeta) =>
             val metaBuilder = Types.DataType.FieldMetadata.newBuilder()
             idOpt.foreach { id =>
               metaBuilder.putMetadata(CometParquetUtils.PARQUET_FIELD_ID_META_KEY, id.toString)
             }
+            variantMeta.foreach { case (key, value) => metaBuilder.putMetadata(key, value) }
             struct.addFieldMetadata(metaBuilder.build())
           }
         }

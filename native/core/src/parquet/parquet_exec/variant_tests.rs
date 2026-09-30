@@ -34,7 +34,10 @@ use parquet::{
     },
     file::{properties::WriterProperties, writer::SerializedFileWriter},
     schema::types::{Type as ParquetType, TypePtr},
-    variant::{Variant, VariantArray, VariantBuilder, VariantDecimal4},
+    variant::{
+        shred_variant, Variant, VariantArray, VariantArrayBuilder, VariantBuilder,
+        VariantBuilderExt, VariantDecimal4, VariantType,
+    },
 };
 use std::{fs::File, path::PathBuf};
 fn required_variant_schema() -> SchemaRef {
@@ -141,11 +144,16 @@ fn write_variant_typed_value<T: ParquetDataType>(typed_value: TypePtr, values: &
 }
 
 async fn scan_variant_file(filename: PathBuf) -> VariantArray {
+    let batch = scan_variant_batch(filename, required_variant_schema()).await;
+    VariantArray::try_new(batch.column(0).as_ref()).unwrap()
+}
+
+async fn scan_variant_batch(filename: PathBuf, required_schema: SchemaRef) -> RecordBatch {
     let partitioned_file =
         PartitionedFile::from_path(filename.to_string_lossy().into_owned()).unwrap();
     let session_ctx = Arc::new(SessionContext::new());
     let scan = init_datasource_exec(
-        required_variant_schema(),
+        required_schema,
         None,
         None,
         ObjectStoreUrl::local_filesystem(),
@@ -168,7 +176,71 @@ async fn scan_variant_file(filename: PathBuf) -> VariantArray {
     let mut stream = scan.execute(0, session_ctx.task_ctx()).unwrap();
     let batch = stream.next().await.unwrap().unwrap();
     assert!(stream.next().await.is_none());
-    VariantArray::try_new(batch.column(0).as_ref()).unwrap()
+    batch
+}
+
+#[tokio::test]
+async fn full_value_variant_request_reads_canonical_and_shredded_parquet() {
+    let mut builder = VariantArrayBuilder::new(4);
+    builder
+        .new_object()
+        .with_field("a", 1_i8)
+        .with_field("extra", "text")
+        .finish();
+    builder.append_null();
+    builder.append_variant(Variant::Null);
+    builder.new_object().with_field("a", 2_i8).finish();
+    let canonical = builder.build();
+    let shredded = shred_variant(
+        &canonical,
+        &DataType::Struct(Fields::from(vec![Field::new("a", DataType::Int64, true)])),
+    )
+    .unwrap();
+    let mut child = required_variant_schema()
+        .field(0)
+        .clone()
+        .with_name("0")
+        .with_nullable(true);
+    let mut metadata = child.metadata().clone();
+    metadata.insert(
+        "__VARIANT_METADATA_KEY".to_string(),
+        r#"{"path":"$","failOnError":true,"timeZoneId":"UTC"}"#.to_string(),
+    );
+    child = child.with_metadata(metadata);
+    let required = Arc::new(Schema::new(vec![Field::new(
+        "v",
+        DataType::Struct(Fields::from(vec![child])),
+        true,
+    )]));
+
+    for input in [canonical.inner(), shredded.inner()] {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "v",
+            input.data_type().clone(),
+            true,
+        )
+        .with_extension_type(VariantType)]));
+        let batch =
+            RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(input.clone())]).unwrap();
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let mut writer = ArrowWriter::try_new(file.reopen().unwrap(), schema, None).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+
+        let batch = scan_variant_batch(file.path().to_path_buf(), Arc::clone(&required)).await;
+        assert_eq!(batch.column(0).data_type(), required.field(0).data_type());
+        let wrapped = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StructArray>()
+            .unwrap();
+        assert_eq!(wrapped.nulls(), canonical.inner().nulls());
+        let output = VariantArray::try_new(wrapped.column(0).as_ref()).unwrap();
+        assert!(output.is_null(1));
+        for index in [0, 2, 3] {
+            assert_eq!(output.value(index), canonical.value(index));
+        }
+    }
 }
 
 #[tokio::test]

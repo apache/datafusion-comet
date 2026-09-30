@@ -181,7 +181,7 @@ pub fn to_arrow_datatype(dt_value: &DataType) -> ArrowDataType {
                             &info.field_datatypes[idx],
                             info.field_nullable[idx],
                         );
-                        // Attach Spark field metadata (currently parquet.field.id) when present.
+                        // Attach Spark field IDs and Variant request metadata when present.
                         // field_metadata is parallel to field_names; either empty or full length.
                         if let Some(meta) = info.field_metadata.get(idx) {
                             if !meta.metadata.is_empty() {

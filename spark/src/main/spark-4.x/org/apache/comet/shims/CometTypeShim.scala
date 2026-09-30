@@ -19,9 +19,11 @@
 
 package org.apache.comet.shims
 
+import scala.util.Try
+
 import org.apache.spark.sql.catalyst.expressions.aggregate.Mode
-import org.apache.spark.sql.execution.datasources.VariantMetadata
-import org.apache.spark.sql.types.{ArrayType, DataType, MapType, StringType, StructType, VariantType}
+import org.apache.spark.sql.execution.datasources.{RequestedVariantField, VariantMetadata}
+import org.apache.spark.sql.types.{ArrayType, DataType, MapType, StringType, StructField, StructType, VariantType}
 import org.apache.spark.unsafe.types.UTF8String
 
 trait CometTypeShim {
@@ -54,11 +56,24 @@ trait CometTypeShim {
     case _ => false
   }
 
-  // Spark 4.0's `PushVariantIntoScan` rewrites `VariantType` columns into a `StructType` whose
-  // fields each carry `__VARIANT_METADATA_KEY` metadata, then pushes `variant_get` paths down as
-  // ordinary struct field accesses. The whole-value Variant reader does not support this pushed
-  // representation. Detect the marker and force scan fallback.
+  // Spark's scan rewrite marks each requested Variant field with its extraction policy.
   def isVariantStruct(s: StructType): Boolean = VariantMetadata.isVariantStruct(s)
+
+  def isWholeVariantStruct(dt: DataType): Boolean = dt match {
+    case s: StructType
+        if s.length == 1 && s.head.name == "0" &&
+          s.head.dataType == VariantType && isVariantStruct(s) =>
+      Try(VariantMetadata.fromMetadata(s.head.metadata)).toOption
+        .contains(RequestedVariantField.fullVariant.path)
+    case _ => false
+  }
+
+  def variantRequestMetadata(field: StructField): Option[(String, String)] =
+    if (field.metadata.contains(VariantMetadata.METADATA_KEY)) {
+      Try(
+        VariantMetadata.METADATA_KEY ->
+          field.metadata.getMetadata(VariantMetadata.METADATA_KEY).json).toOption
+    } else None
 
   // Outside direct Parquet projection, Comet has no native execution path for Spark 4's
   // `VariantType`. Serdes call this to route casts/expressions touching the type back to Spark

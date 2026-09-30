@@ -344,7 +344,8 @@ case class CometScanRule(session: SparkSession)
     // preserve Spark's ENUM inference without losing Parquet decryption state.
     // https://github.com/apache/datafusion-comet/issues/5477
     if (encryptionEnabled(hadoopConf) &&
-      scanExec.requiredSchema.exists(field => isVariantType(field.dataType))) {
+      scanExec.requiredSchema.exists(field =>
+        isVariantType(field.dataType) || isWholeVariantStruct(field.dataType))) {
       withFallbackReason(scanExec, "Native Parquet Variant scans do not support encryption")
       return None
     }
@@ -1048,7 +1049,8 @@ case class CometScanRule(session: SparkSession)
           dt: DataType,
           name: String,
           reasons: ListBuffer[String]): Boolean =
-        isVariantType(dt) || typeChecker.isTypeSupported(dt, name, reasons)
+        isVariantType(dt) || isWholeVariantStruct(dt) ||
+          typeChecker.isTypeSupported(dt, name, reasons)
     }
     val schemaSupported =
       requiredSchemaChecker.isSchemaSupported(scanExec.requiredSchema, fallbackReasons)

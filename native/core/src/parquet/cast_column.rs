@@ -20,7 +20,7 @@ use self::variant::normalize_variant_array;
 use arrow::{
     array::{make_array, Array, ArrayRef, LargeListArray, ListArray, MapArray, StructArray},
     compute::CastOptions,
-    datatypes::{DataType, FieldRef, Schema, TimeUnit},
+    datatypes::{DataType, Field, FieldRef, Schema, TimeUnit},
     record_batch::RecordBatch,
 };
 
@@ -35,6 +35,27 @@ use std::{
     hash::Hash,
     sync::Arc,
 };
+
+/// The Variant to reconstruct for a direct projection or Spark's full-value scan request.
+pub(crate) fn variant_projection_field(field: &Field) -> Option<FieldRef> {
+    if field.has_valid_extension_type::<VariantType>() {
+        return Some(Arc::new(field.clone()));
+    }
+    let DataType::Struct(fields) = field.data_type() else {
+        return None;
+    };
+    if fields.len() != 1 || fields[0].name() != "0" {
+        return None;
+    }
+    let child = &fields[0];
+    if !child.has_valid_extension_type::<VariantType>() {
+        return None;
+    }
+    let metadata: serde_json::Value =
+        serde_json::from_str(child.metadata().get("__VARIANT_METADATA_KEY")?).ok()?;
+    (metadata["path"] == "$" && metadata["failOnError"] == true && metadata["timeZoneId"] == "UTC")
+        .then(|| Arc::clone(child))
+}
 
 /// Returns true if two DataTypes are structurally equivalent (same data layout)
 /// but may differ in field names within nested types. With `use_field_id`, a struct
@@ -175,6 +196,8 @@ pub struct CometCastColumnExpr {
     input_physical_field: FieldRef,
     /// The field type required by query
     target_field: FieldRef,
+    /// Derived once so request metadata is not parsed for each batch.
+    variant_field: Option<FieldRef>,
     /// Options forwarded to [`cast_column`].
     cast_options: CastOptions<'static>,
     /// Spark parquet options for complex nested type conversions.
@@ -242,6 +265,7 @@ impl CometCastColumnExpr {
         Ok(Self {
             expr,
             input_physical_field: physical_field,
+            variant_field: variant_projection_field(&target_field),
             target_field,
             cast_options: cast_options.unwrap_or(DEFAULT_CAST_OPTIONS),
             parquet_options: None,
@@ -283,12 +307,24 @@ impl PhysicalExpr for CometCastColumnExpr {
     fn evaluate(&self, batch: &RecordBatch) -> DataFusionResult<ColumnarValue> {
         let value = self.expr.evaluate(batch)?;
 
-        if self.target_field.has_valid_extension_type::<VariantType>() {
+        if let Some(variant_field) = &self.variant_field {
             return match value {
-                ColumnarValue::Array(array) => Ok(ColumnarValue::Array(normalize_variant_array(
-                    &array,
-                    &self.target_field,
-                )?)),
+                ColumnarValue::Array(array) => {
+                    let normalized = normalize_variant_array(&array, variant_field)?;
+                    if self.target_field.has_valid_extension_type::<VariantType>() {
+                        Ok(ColumnarValue::Array(normalized))
+                    } else {
+                        let DataType::Struct(fields) = self.target_field.data_type() else {
+                            unreachable!();
+                        };
+                        let nulls = normalized.nulls().cloned();
+                        Ok(ColumnarValue::Array(Arc::new(StructArray::try_new(
+                            fields.clone(),
+                            vec![normalized],
+                            nulls,
+                        )?)))
+                    }
+                }
                 ColumnarValue::Scalar(_) => Err(DataFusionError::Execution(
                     "Variant Parquet projection requires an array".to_string(),
                 )),
