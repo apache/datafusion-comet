@@ -16,5 +16,6 @@
 // under the License.
 
 pub mod azure;
+pub mod location_scoped;
 pub mod s3;
 pub mod s3_blob_fs_support;

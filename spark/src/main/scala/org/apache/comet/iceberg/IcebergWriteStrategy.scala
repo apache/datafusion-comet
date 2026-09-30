@@ -42,6 +42,10 @@ case class IcebergWriteStrategy(session: SparkSession) extends SparkStrategy {
     if (!isCometLoaded(conf) || !CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.get(conf)) {
       return Nil
     }
+    // Planner strategies run before CometRule, so plan-only mode needs its own guard here.
+    if (CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.get(session.sessionState.conf)) {
+      return Nil
+    }
 
     plan match {
       case ad: AppendData =>

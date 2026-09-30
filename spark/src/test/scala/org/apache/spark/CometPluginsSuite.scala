@@ -88,6 +88,22 @@ class CometPluginsSuite extends CometTestBase {
     }
   }
 
+  test("Iceberg write report listener is registered only when a report directory is set") {
+    val listenerKey = "spark.sql.queryExecutionListeners"
+    val listenerClass = "org.apache.comet.iceberg.IcebergWriteReportListener"
+
+    val unset = new SparkConf()
+    CometDriverPlugin.registerIcebergWriteReport(unset)
+    assert(!unset.contains(listenerKey))
+
+    val set = new SparkConf()
+      .set(CometConf.COMET_ICEBERG_WRITE_REPORT_DIR.key, "/tmp/report")
+      .set(listenerKey, "foo")
+    CometDriverPlugin.registerIcebergWriteReport(set)
+    CometDriverPlugin.registerIcebergWriteReport(set)
+    assert(set.get(listenerKey) == s"foo,$listenerClass")
+  }
+
   test("Comet version is exposed as a Spark config") {
     // The driver plugin sets spark.comet.version, which is then visible both on the SparkContext
     // conf and through the session runtime config (SET / spark.conf.get).
@@ -168,7 +184,8 @@ class CometPluginsDefaultSuite extends CometTestBase {
 
 class CometPluginsMemoryOverheadWarningSuite extends CometTestBase {
 
-  private val warning = "spark.executor.memoryOverhead is not set"
+  private val warning =
+    "Neither spark.executor.memoryOverhead nor spark.executor.memoryOverheadFactor is set"
 
   private def warningsFor(conf: SparkConf): Seq[String] = {
     // Logging derives the logger name by stripping the object's trailing '$'
@@ -180,26 +197,70 @@ class CometPluginsMemoryOverheadWarningSuite extends CometTestBase {
     appender.loggingEvents.map(_.getMessage.getFormattedMessage).toSeq
   }
 
+  private val kubernetesMaster = "k8s://https://kubernetes.default.svc:443"
+
+  private def cometConf(master: String = "yarn"): SparkConf =
+    new SparkConf()
+      .set("spark.master", master)
+      .set("spark.comet.enabled", "true")
+      .set("spark.comet.exec.enabled", "true")
+
   test("warns when executor memory overhead is unset and Comet is active") {
-    val conf = new SparkConf()
-    conf.set("spark.comet.enabled", "true")
-    conf.set("spark.comet.exec.enabled", "true")
-    assert(warningsFor(conf).exists(_.contains(warning)))
+    assert(warningsFor(cometConf()).exists(_.contains(warning)))
   }
 
   test("does not warn when executor memory overhead is set") {
-    val conf = new SparkConf()
-    conf.set("spark.comet.enabled", "true")
-    conf.set("spark.comet.exec.enabled", "true")
-    conf.set("spark.executor.memoryOverhead", "2g")
+    val conf = cometConf().set("spark.executor.memoryOverhead", "2g")
     assert(!warningsFor(conf).exists(_.contains(warning)))
   }
 
+  test("does not warn when the executor memory overhead factor is set") {
+    val conf = cometConf().set("spark.executor.memoryOverheadFactor", "0.2")
+    assert(!warningsFor(conf).exists(_.contains(warning)))
+  }
+
+  test("does not warn when the Kubernetes memory overhead factor is set") {
+    // A factor other than the one spark-submit would have passed on, whatever the application type
+    Seq(
+      Map("spark.kubernetes.memoryOverheadFactor" -> "0.3"),
+      Map(
+        "spark.kubernetes.resource.type" -> "java",
+        "spark.kubernetes.memoryOverheadFactor" -> "0.4"),
+      Map(
+        "spark.kubernetes.resource.type" -> "python",
+        "spark.kubernetes.memoryOverheadFactor" -> "0.5")).foreach { settings =>
+      val conf = cometConf(kubernetesMaster).setAll(settings)
+      assert(!warningsFor(conf).exists(_.contains(warning)), settings)
+    }
+  }
+
+  test("warns on Kubernetes when the memory overhead factor is the one spark-submit passed on") {
+    // In cluster mode spark-submit sets spark.kubernetes.memoryOverheadFactor for the driver even
+    // when the application did not: 0.4 for PySpark and SparkR applications, 0.1 for the rest
+    Seq("java" -> "0.1", "python" -> "0.4", "r" -> "0.4").foreach { case (resourceType, factor) =>
+      val conf = cometConf(kubernetesMaster)
+        .set("spark.kubernetes.resource.type", resourceType)
+        .set("spark.kubernetes.memoryOverheadFactor", factor)
+      assert(warningsFor(conf).exists(_.contains(warning)), resourceType)
+    }
+  }
+
+  test("does not fail on a Kubernetes memory overhead factor that does not parse") {
+    // Spark rejects the value itself when it sizes the executor pods
+    val conf = cometConf(kubernetesMaster).set("spark.kubernetes.memoryOverheadFactor", "lots")
+    assert(!warningsFor(conf).exists(_.contains(warning)))
+  }
+
+  test("does not warn in local mode or on a standalone cluster") {
+    Seq("local", "local[4]", "local-cluster[2,1,1024]", "spark://host:7077").foreach { master =>
+      assert(!warningsFor(cometConf(master)).exists(_.contains(warning)), master)
+    }
+  }
+
   test("does not warn when Comet is not executing anything") {
-    val conf = new SparkConf()
-    conf.set("spark.comet.enabled", "true")
-    conf.set("spark.comet.exec.enabled", "false")
-    conf.set("spark.comet.shuffle.enabled", "false")
+    val conf = cometConf()
+      .set("spark.comet.exec.enabled", "false")
+      .set("spark.comet.shuffle.enabled", "false")
     assert(!warningsFor(conf).exists(_.contains(warning)))
   }
 }
