@@ -62,6 +62,13 @@ import org.apache.comet.shims.{CometTypeShim, ShimCometStreaming, ShimCometWindo
 
 object CometExecRule {
 
+  private[rules] def removePlaceholders(plan: SparkPlan): SparkPlan = plan.transformUp {
+    // Recursive conversion can nest sinks. Remove the inner one before exposing its parent.
+    case CometSinkPlaceHolder(_, _, child) => child
+    // Scan wrappers are leaves, so their wrapped plan was not visited by transformUp.
+    case CometScanWrapper(_, wrapped) => removePlaceholders(wrapped)
+  }
+
   /**
    * Tag applied to Partial-mode aggregate operators that must NOT be converted to Comet because a
    * corresponding buffer-consuming aggregate cannot be converted, and the aggregate functions
@@ -794,11 +801,7 @@ case class CometExecRule(session: SparkSession)
         }
       }
 
-      // Remove placeholders
-      newPlan = newPlan.transform {
-        case CometSinkPlaceHolder(_, _, s) => s
-        case CometScanWrapper(_, s) => s
-      }
+      newPlan = CometExecRule.removePlaceholders(newPlan)
 
       // Revert CometColumnarShuffle to Spark's ShuffleExchangeExec when both its parent and child
       // are non-Comet HashAggregate/ObjectHashAggregate operators that remained JVM after the main

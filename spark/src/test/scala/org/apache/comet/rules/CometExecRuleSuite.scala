@@ -33,11 +33,12 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference,
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, BloomFilterAggregate, Final, Min, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 import org.apache.spark.sql.catalyst.plans.logical.{LocalRelation, LogicalPlan}
+import org.apache.spark.sql.catalyst.plans.physical.HashPartitioning
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution._
-import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, BroadcastQueryStageExec, LogicalQueryStage, QueryStageExec, ShuffleQueryStageExec, SimpleCost, SimpleCostEvaluator}
+import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, BroadcastQueryStageExec, LogicalQueryStage, QueryStageExec, ShuffleQueryStageExec, SimpleCost, SimpleCostEvaluator}
 import org.apache.spark.sql.execution.aggregate.{HashAggregateExec, ObjectHashAggregateExec}
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ShuffleExchangeExec}
@@ -46,7 +47,7 @@ import org.apache.spark.sql.types.{DataTypes, DoubleType, FloatType, StructField
 
 import org.apache.comet.{CometConf, CometCoverageStats, CometExplainInfo, CometSparkSessionExtensions, ExtendedExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark42Plus, withFallbackReason}
-import org.apache.comet.serde.{CometAggregateExpressionSerde, Compatible, ExprOuterClass, QueryPlanSerde, Unsupported}
+import org.apache.comet.serde.{CometAggregateExpressionSerde, Compatible, ExprOuterClass, OperatorOuterClass, QueryPlanSerde, Unsupported}
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 /**
@@ -157,6 +158,80 @@ class CometExecRuleSuite extends CometTestBase {
     aggregate
       .withNewChildren(Seq(ShuffleQueryStageExec(0, shuffle, shuffle.canonicalized)))
       .asInstanceOf[CometHashAggregateExec]
+  }
+
+  test("placeholder cleanup preserves AQE stages behind nested and leaf wrappers") {
+    val input = createSparkPlan(spark, "SELECT * FROM VALUES (1), (2) AS t(id)")
+    val exchange = ShuffleExchangeExec(HashPartitioning(input.output, 2), input)
+    val stage = ShuffleQueryStageExec(0, exchange, exchange.canonicalized)
+    val nativeOp = OperatorOuterClass.Operator.getDefaultInstance
+    def sink(child: SparkPlan): SparkPlan = CometSinkPlaceHolder(nativeOp, child, child)
+    def scan(child: SparkPlan): SparkPlan = CometScanWrapper(nativeOp, child)
+    val specs = Seq(CoalescedPartitionSpec(0, 2, Some(16L)))
+
+    for {
+      child <- Seq(sink(sink(stage)), sink(scan(stage)), scan(sink(stage)), scan(scan(stage)))
+      wrapRead <- Seq(false, true)
+    } {
+      val read = AQEShuffleReadExec(child, specs)
+      val input = if (wrapRead) scan(read) else read
+      val cleaned = CometExecRule.removePlaceholders(ProjectExec(read.output, input))
+      val cleanedRead = cleaned.children.head.asInstanceOf[AQEShuffleReadExec]
+      assert(cleanedRead.child eq stage)
+      assert(cleanedRead.partitionSpecs eq specs)
+      assert(!cleaned.exists {
+        case _: CometSinkPlaceHolder | _: CometScanWrapper => true
+        case _ => false
+      })
+      assert(CometExecRule.removePlaceholders(cleaned) eq cleaned)
+    }
+  }
+
+  test("aggregate fallback removes nested placeholders around an existing AQE stage") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_MODE.key -> "native",
+      CometConf.COMET_SHUFFLE_NATIVE_HASH_PARTITIONING_ENABLED.key -> "true") {
+      withTempView("test_data") {
+        createTestDataFrame.createOrReplaceTempView("test_data")
+        val original =
+          createSparkPlan(spark, "SELECT AVG(id) FROM test_data GROUP BY (id % 3)")
+        val partial = original.collectFirst {
+          case agg: HashAggregateExec if agg.aggregateExpressions.forall(_.mode == Partial) => agg
+        }.get
+        // Keep a previously converted input stage below the aggregate being planned. Its
+        // output attributes must match the Partial's original input, including grouping keys.
+        val exchange = applyCometExecRule(
+          ShuffleExchangeExec(HashPartitioning(Seq(partial.child.output.head), 2), partial.child))
+          .asInstanceOf[CometShuffleExchangeExec]
+        val stage = ShuffleQueryStageExec(0, exchange, exchange.canonicalized)
+        val staged = original.transformUp {
+          case agg: HashAggregateExec if agg eq partial => agg.copy(child = stage)
+        }
+
+        withSQLConf(CometConf.COMET_SHUFFLE_NATIVE_HASH_PARTITIONING_ENABLED.key -> "false") {
+          // The Partial initially converts, but its upper shuffle cannot. Repair restores
+          // Spark's AVG buffer producer and revisits the already wrapped input stage.
+          val result = applyCometExecRule(staged)
+          assert(result.collect { case agg: HashAggregateExec => agg }.size == 2)
+          assert(!result.exists(_.isInstanceOf[CometHashAggregateExec]))
+          val restoredPartial = result.collectFirst {
+            case agg: HashAggregateExec if agg.aggregateExpressions.forall(_.mode == Partial) =>
+              agg
+          }.get
+          assert(restoredPartial.getTagValue(CometExecRule.COMET_UNSAFE_PARTIAL).isDefined)
+          assert(!result.exists {
+            case _: CometSinkPlaceHolder | _: CometScanWrapper => true
+            case _ => false
+          })
+          assert(restoredPartial.child eq stage)
+          assert(result.collect { case s: ShuffleQueryStageExec => s } == Seq(stage))
+        }
+      }
+    }
   }
 
   test("CometExecRule preserves the current direct AQE logical link") {
