@@ -231,6 +231,22 @@ the storage backend from the data location's scheme and wires in Comet's S3 cred
 one is configured. For writes the bridge fails closed: if a configured provider cannot initialize,
 the task fails rather than writing with the default credential chain.
 
+The JVM eligibility gate fails closed before building that `FileIO` for an `s3` or `s3a` data
+location. It checks effective `fs.s3a.*` Hadoop settings against the six keys translated by
+`NativeConfig`, and separately checks `table.io().properties()` for `s3.*` / `client.*` keys
+against the properties consumed by the pinned iceberg-rust S3 parser and Comet credential bridge.
+When a Comet credential provider is configured, vendor-owned `s3.*` / `client.*` keys that are not
+part of Iceberg's own S3 property vocabulary are preserved because the provider receives and may
+consume the unfiltered FileIO bag. Iceberg-defined properties remain subject to the storage
+allow-list, so configuring a provider does not make unsupported ACL, tag, storage-class, or other
+write settings eligible.
+The Hadoop check excludes keys whose only source is a built-in `*-default.xml`, while retaining
+programmatic and site-XML settings. It also ignores Spark's session-wide S3A vectored-read and
+`downgrade.syncable.exceptions` settings, which cannot affect a data-file write request. Keep
+those allowlists aligned when adding storage support. Reaching `FileIOBuilder.with_prop` is not
+proof of support: the builder accepts unknown properties and the backend ignores them. A fallback
+reason must contain property names only, never values.
+
 ### Native to JVM: the task payload
 
 Each task emits exactly one batch with one row and two `BINARY` columns (`build_output_schema`):

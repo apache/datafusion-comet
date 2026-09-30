@@ -510,6 +510,204 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     }
   }
 
+  test("S3 setting allow-lists reject unknown keys deterministically without values") {
+    val hadoopConf = new Configuration(false)
+    val secret = "SECRET_VALUE_MUST_NOT_APPEAR"
+    Seq(
+      "fs.s3a.access.key",
+      "fs.s3a.secret.key",
+      "fs.s3a.session.token",
+      "fs.s3a.endpoint",
+      "fs.s3a.endpoint.region",
+      "fs.s3a.path.style.access",
+      "fs.s3a.bucket.target.access.key",
+      "fs.s3a.bucket.target.path.style.access",
+      // A per-bucket property for another bucket is not effective for this write.
+      "fs.s3a.bucket.other.encryption.algorithm").foreach(hadoopConf.set(_, "supported"))
+    hadoopConf.set("fs.s3a.encryption.key", secret)
+    hadoopConf.set("fs.s3a.aws.credentials.provider", secret)
+    hadoopConf.set("fs.s3a.bucket.target.encryption.algorithm", secret)
+
+    val unsupportedHadoop =
+      CometIcebergNativeWrite.unsupportedHadoopS3Settings(hadoopConf, Some("target"))
+    assert(
+      unsupportedHadoop == Seq(
+        "fs.s3a.aws.credentials.provider",
+        "fs.s3a.bucket.target.encryption.algorithm",
+        "fs.s3a.encryption.key"),
+      unsupportedHadoop)
+    assert(!unsupportedHadoop.exists(_.contains(secret)), unsupportedHadoop)
+
+    val supportedFileIO = Map(
+      "s3.endpoint" -> "endpoint",
+      "s3.access-key-id" -> "access",
+      "s3.secret-access-key" -> secret,
+      "s3.session-token" -> secret,
+      "s3.region" -> "us-east-1",
+      "client.region" -> "us-east-1",
+      "s3.path-style-access" -> "true",
+      "s3.sse.type" -> "kms",
+      "s3.sse.key" -> "key-id",
+      "s3.sse.md5" -> "md5",
+      "client.assume-role.arn" -> "arn",
+      "client.assume-role.external-id" -> "external",
+      "client.assume-role.session-name" -> "session",
+      "s3.allow-anonymous" -> "false",
+      "s3.disable-ec2-metadata" -> "false",
+      "s3.disable-config-load" -> "false",
+      "s3.session-token-expires-at-ms" -> "0")
+    val unsupportedFileIO = CometIcebergNativeWrite.unsupportedS3FileIOProperties(
+      supportedFileIO ++ Map(
+        "s3.acl" -> secret,
+        "s3.write.tags.foo" -> secret,
+        "s3.write.storage-class" -> secret,
+        "s3.access-points.bucket" -> secret,
+        "s3.remote-signing-enabled" -> secret,
+        "client.factory" -> secret,
+        "client.credentials-provider" -> secret,
+        "unrelated.property" -> secret))
+    assert(
+      unsupportedFileIO == Seq(
+        "client.credentials-provider",
+        "client.factory",
+        "s3.access-points.bucket",
+        "s3.acl",
+        "s3.remote-signing-enabled",
+        "s3.write.storage-class",
+        "s3.write.tags.foo"),
+      unsupportedFileIO)
+    assert(!unsupportedFileIO.exists(_.contains(secret)), unsupportedFileIO)
+
+    val withCustomProvider = supportedFileIO ++ Map(
+      "s3.comet.credential.provider.class" -> "provider",
+      "s3.vendor.credential-scope" -> secret,
+      "client.vendor.tenant-id" -> secret,
+      // Standard Iceberg settings remain unsupported even when a provider is configured.
+      "s3.acl" -> secret,
+      "s3.write.tags.foo" -> secret)
+    val unsupportedWithCustomProvider =
+      CometIcebergNativeWrite.unsupportedS3FileIOProperties(withCustomProvider)
+    assert(
+      unsupportedWithCustomProvider == Seq("s3.acl", "s3.write.tags.foo"),
+      unsupportedWithCustomProvider)
+    assert(
+      !unsupportedWithCustomProvider.exists(_.contains(secret)),
+      unsupportedWithCustomProvider)
+  }
+
+  test("fall-back: unsupported Hadoop S3A setting on an S3 data location") {
+    withDetectionCatalog { dir =>
+      createTable(
+        dir,
+        "s3a_hadoop_unsupported",
+        partitionSpec = "",
+        properties =
+          Some("'write.data.path'='s3a://probe-bucket/iceberg/db/s3a_hadoop_unsupported'"))
+      val secret = "SECRET_VALUE_MUST_NOT_APPEAR"
+      withSQLConf("fs.s3a.encryption.algorithm" -> secret) {
+        val writeExec = planInsertWriteExec(s"$catalog.$ns.s3a_hadoop_unsupported")
+        val support = CometIcebergNativeWrite.getSupportLevel(writeExec)
+        support match {
+          case Unsupported(Some(reason)) =>
+            assert(reason == "unsupported Hadoop S3A setting: fs.s3a.encryption.algorithm")
+            assert(!reason.contains(secret), reason)
+          case other => fail(s"expected Unsupported, got $other")
+        }
+        val planReasons =
+          writeExec.getTagValue(CometExplainInfo.FALLBACK_REASONS).getOrElse(Set.empty)
+        assert(planReasons.exists(_.contains("fs.s3a.encryption.algorithm")), planReasons)
+        assert(!planReasons.exists(_.contains(secret)), planReasons)
+        assert(!writeExec.toString.contains(secret), writeExec.toString)
+      }
+    }
+  }
+
+  test("S3-only setting gates do not affect a local data location") {
+    withDetectionCatalog { dir =>
+      createTable(dir, "local_with_s3_conf", partitionSpec = "")
+      withSQLConf("fs.s3a.encryption.algorithm" -> "SSE-KMS") {
+        assertSupportLevelIs[Compatible]("local_with_s3_conf")
+      }
+    }
+  }
+
+  test("fall-back: unsupported S3 FileIO properties") {
+    withTempIcebergDir { warehouseDir =>
+      val fileIOCat = "s3_file_io_probe_cat"
+      val secret = "SECRET_VALUE_MUST_NOT_APPEAR"
+      withSQLConf(
+        s"spark.sql.catalog.$fileIOCat" -> "org.apache.iceberg.spark.SparkCatalog",
+        s"spark.sql.catalog.$fileIOCat.type" -> "hadoop",
+        s"spark.sql.catalog.$fileIOCat.warehouse" -> warehouseDir.getAbsolutePath,
+        s"spark.sql.catalog.$fileIOCat.io-impl" -> classOf[ResolvingFileIO].getName,
+        s"spark.sql.catalog.$fileIOCat.s3.acl" -> secret,
+        s"spark.sql.catalog.$fileIOCat.s3.write.tags.foo" -> secret) {
+        spark.sql(s"""
+          CREATE TABLE $fileIOCat.$ns.unsupported_file_io (
+            id INT,
+            region STRING,
+            amount DOUBLE
+          ) USING iceberg
+          TBLPROPERTIES (
+            'write.data.path'='s3a://probe-bucket/iceberg/db/unsupported_file_io'
+          )
+        """)
+        val writeExec = planInsertWriteExec(s"$fileIOCat.$ns.unsupported_file_io")
+        val support = CometIcebergNativeWrite.getSupportLevel(writeExec)
+        support match {
+          case Unsupported(Some(reason)) =>
+            assert(reason == "unsupported S3 FileIO settings: s3.acl, s3.write.tags.foo", reason)
+            assert(!reason.contains(secret), reason)
+          case other => fail(s"expected Unsupported, got $other")
+        }
+        val planReasons =
+          writeExec.getTagValue(CometExplainInfo.FALLBACK_REASONS).getOrElse(Set.empty)
+        assert(planReasons.exists(_.contains("s3.acl")), planReasons)
+        assert(planReasons.exists(_.contains("s3.write.tags.foo")), planReasons)
+        assert(!planReasons.exists(_.contains(secret)), planReasons)
+      }
+    }
+  }
+
+  test("custom credential-provider S3/client properties keep the native writer engaged") {
+    withTempIcebergDir { warehouseDir =>
+      val fileIOCat = "s3_provider_props_cat"
+      val secret = "SECRET_PROVIDER_VALUE_MUST_NOT_APPEAR"
+      val providerClass =
+        classOf[org.apache.comet.cloud.s3.MinioCometS3CredentialProvider].getName
+      withSQLConf(
+        s"spark.sql.catalog.$fileIOCat" -> "org.apache.iceberg.spark.SparkCatalog",
+        s"spark.sql.catalog.$fileIOCat.type" -> "hadoop",
+        s"spark.sql.catalog.$fileIOCat.warehouse" -> warehouseDir.getAbsolutePath,
+        s"spark.sql.catalog.$fileIOCat.io-impl" -> classOf[ResolvingFileIO].getName,
+        s"spark.sql.catalog.$fileIOCat.s3.comet.credential.provider.class" -> providerClass,
+        s"spark.sql.catalog.$fileIOCat.s3.vendor.credential-scope" -> secret,
+        s"spark.sql.catalog.$fileIOCat.client.vendor.tenant-id" -> "tenant-A",
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        spark.sql(s"""
+          CREATE TABLE $fileIOCat.$ns.provider_properties (
+            id INT,
+            region STRING,
+            amount DOUBLE
+          ) USING iceberg
+          TBLPROPERTIES (
+            'write.data.path'='s3a://probe-bucket/iceberg/db/provider_properties'
+          )
+        """)
+
+        val plan = captureWritePlan("provider_properties", allowWriteFailure = true) {
+          spark.sql(s"INSERT INTO $fileIOCat.$ns.provider_properties VALUES (1, 'us', 1.0)")
+        }
+        val cometWrite = findCometWriteExec(plan)
+          .getOrElse(fail(s"expected CometIcebergWriteExec in:\n$plan"))
+        val properties = cometWrite.nativeOp.getIcebergWrite.getCommon.getCatalogPropertiesMap
+        assert(properties.get("s3.vendor.credential-scope") == secret, properties)
+        assert(properties.get("client.vendor.tenant-id") == "tenant-A", properties)
+        assert(!cometWrite.simpleString(Int.MaxValue).contains(secret))
+      }
+    }
+  }
+
   test("Compatible when the data location scheme is memory") {
     withDetectionCatalog { dir =>
       createTable(
