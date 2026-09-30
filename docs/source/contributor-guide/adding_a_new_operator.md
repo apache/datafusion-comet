@@ -70,6 +70,21 @@ in `CometExecRule` rather than using `CometOperatorSerde`, because they don't ne
 
 Examples: `CometBroadcastExchangeExec`, `CometShuffleExchangeExec`
 
+#### Local TopK inside a sink
+
+`CometTakeOrderedAndProjectExec` owns local candidate selection, the optional shuffle, and final
+selection with offset and projection. When `spark.comet.exec.topK.fusion.enabled` is enabled for an
+eligible native Parquet scan, its conversion inserts `CometLocalTopKExec` before native blocks are
+serialized. The local node extends `CometUnaryExec` and serializes a bounded sort above the native
+scan, so they execute in one block. It preserves the scan's output and partitioning and advertises
+the local sort order.
+
+The inserted node keeps the original Spark TopK for plan bookkeeping, but only the outer TopK owns
+Spark's offset and projection. Both transition reversion and aggregate-buffer restoration therefore
+remove the inserted local node when restoring Spark execution. Restoring its `originalPlan` would
+apply the global TopK twice. A single input partition uses a final native limit and projection;
+multiple input partitions still require a final TopK after the shuffle.
+
 ### Choosing the Right Operator Type
 
 When adding a new operator, choose based on these criteria:
@@ -156,6 +171,8 @@ The validation workflow in `CometExecRule.isOperatorEnabled`:
 #### Simple Example (Filter)
 
 ```scala
+import com.google.common.base.Objects
+
 object CometFilterExec extends CometOperatorSerde[FilterExec] {
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] =
@@ -173,7 +190,6 @@ object CometFilterExec extends CometOperatorSerde[FilterExec] {
         .setPredicate(cond.get)
       Some(builder.setFilter(filterBuilder).build())
     } else {
-      withInfo(op, op.condition, op.child)
       None
     }
   }
@@ -198,12 +214,30 @@ case class CometFilterExec(
 
   override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
     this.copy(child = newChild)
+
+  override def stringArgs: Iterator[Any] =
+    Iterator(output, condition, child)
+
+  override def equals(obj: Any): Boolean = {
+    obj match {
+      case other: CometFilterExec =>
+        this.output == other.output &&
+        this.condition == other.condition && this.child == other.child &&
+        this.serializedPlanOpt == other.serializedPlanOpt
+      case _ =>
+        false
+    }
+  }
+
+  override def hashCode(): Int = Objects.hashCode(output, condition, child)
 }
 ```
 
 #### More Complex Example (Project)
 
 ```scala
+import com.google.common.base.Objects
+
 object CometProjectExec extends CometOperatorSerde[ProjectExec] {
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] =
@@ -221,7 +255,6 @@ object CometProjectExec extends CometOperatorSerde[ProjectExec] {
         .addAllProjectList(exprs.map(_.get).asJava)
       Some(builder.setProjection(projectBuilder).build())
     } else {
-      withInfo(op, op.projectList: _*)
       None
     }
   }
@@ -245,8 +278,57 @@ case class CometProjectExec(
 
   override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
     this.copy(child = newChild)
+
+  override def stringArgs: Iterator[Any] = Iterator(output, projectList, child)
+
+  override def equals(obj: Any): Boolean = {
+    obj match {
+      case other: CometProjectExec =>
+        this.output == other.output &&
+        this.projectList == other.projectList &&
+        this.child == other.child &&
+        this.serializedPlanOpt == other.serializedPlanOpt
+      case _ =>
+        false
+    }
+  }
+
+  override def hashCode(): Int = Objects.hashCode(output, projectList, child)
+
+  override protected def outputExpressions: Seq[NamedExpression] = projectList
 }
 ```
+
+#### Plan Identity and Exchange Reuse
+
+Spark's `ReuseExchangeAndSubquery` identifies equivalent plans through canonicalization and may
+reuse one exchange for both branches. If `equals` omits a parameter that changes results, different
+operators can appear equivalent and silently return the wrong rows. If it includes execution state,
+equivalent operators can fail to reuse an exchange.
+
+For operators such as Filter and Project, compare the children, output and every parameter that
+affects results in `equals`, and include those semantic fields in `hashCode`. Capture semantic flags
+on the Comet operator itself: a value stored only in the protobuf or original Spark plan cannot
+participate in this field-based identity. Keep `equals` and `hashCode` consistent: equal operators
+must have equal hashes. Do not rely on the default case-class implementations.
+
+The examples above follow the implementations in
+[`operators.scala`](https://github.com/apache/datafusion-comet/blob/main/spark/src/main/scala/org/apache/spark/sql/comet/operators.scala):
+
+- `nativeOp` is the protobuf representation and `originalPlan` is the source Spark plan; neither is
+  compared by these operators. `CometNativeExec.canonicalizePlans` clears the non-child Spark plan
+  references, including their `originalPlan`.
+- `serializedPlanOpt` holds the bytes for a native execution block. These operators compare it in
+  `equals`, but omit it from `hashCode`; `CometNativeExec.doCanonicalize` clears the block's serialized
+  plan. The bytes therefore do not distinguish canonicalized plans.
+- `stringArgs` controls the plan's displayed arguments. Show the semantic fields and children
+  rather than serialization state; this method does not define equality.
+
+Some operators use a different convention. `CometNativeScanExec` compares `originalPlan` to retain
+scan identity, and its `doCanonicalize` canonicalizes that plan while removing unused dynamic
+pruning filters. `CometBroadcastExchangeExec` also compares `originalPlan` before canonicalization,
+but its `doCanonicalize` clears that reference and retains the canonicalized child. Follow each
+operator's equality and canonicalization together rather than copying an exclusion in isolation.
 
 #### Using getSupportLevel
 
@@ -395,6 +477,21 @@ The `checkSparkAnswerAndOperator` helper verifies:
 
 1. Results match Spark's native execution
 2. Your operator is actually being used (not falling back)
+
+#### Plan Identity Regression Tests
+
+If the operator has a result-affecting parameter beyond its children and output, add an
+exchange-reuse regression. Build two branches that differ in that parameter, verify that both
+execute with Comet, and assert the expected distinct results and that `sameResult` is false.
+Also test equivalent branches with fresh expression IDs or aliases: `sameResult` should be true,
+`semanticHash` values should match, and the executed plan should contain a reused exchange. Cover AQE both enabled and disabled when applicable.
+
+Use the "aggregate canonicalization preserves result expressions and equivalent reuse" tests in
+[`CometAggregateSuite`](https://github.com/apache/datafusion-comet/blob/main/spark/src/test/scala/org/apache/comet/exec/CometAggregateSuite.scala)
+as a model. Inspect the executed plans: an optimizer rewrite can make the branches differ for an
+unrelated reason, allowing a test to pass even when the intended field is missing from `equals`.
+Choose inputs and query shapes that preserve the parameter difference, and traverse adaptive and
+query-stage wrappers when checking the native operator and reused exchange.
 
 #### Rust Unit Tests
 

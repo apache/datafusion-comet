@@ -19,7 +19,7 @@ use arrow::array::builder::{Date32Builder, Decimal128Builder, Int32Builder};
 use arrow::array::{builder::StringBuilder, Array, Int32Array, RecordBatch};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::row::{RowConverter, SortField};
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, BatchSize, Bencher, Criterion};
 use datafusion::datasource::memory::MemorySourceConfig;
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::physical_expr::expressions::{col, Column};
@@ -30,7 +30,8 @@ use datafusion::{
     prelude::SessionContext,
 };
 use datafusion_comet_shuffle::{
-    CometPartitioning, CompressionCodec, ShuffleBlockWriter, ShuffleCodecContext, ShuffleWriterExec,
+    bench_support::BenchRepartitioner, CometPartitioning, CompressionCodec, RoundRobinStrategy,
+    ShuffleBlockWriter, ShuffleCodecContext, ShuffleWriterExec,
 };
 use itertools::Itertools;
 use std::io::Cursor;
@@ -73,19 +74,14 @@ fn criterion_benchmark(c: &mut Criterion) {
         group.bench_function(
             format!("shuffle_writer: end to end (compression = {compression_codec:?})"),
             |b| {
-                let ctx = SessionContext::new();
-                let exec = create_shuffle_writer_exec(
-                    compression_codec.clone(),
-                    CometPartitioning::Hash(vec![Arc::new(Column::new("a", 0))], 16),
-                    8192,
-                    10,
-                );
-                b.iter(|| {
-                    let task_ctx = ctx.task_ctx();
-                    let stream = exec.execute(0, task_ctx).unwrap();
-                    let rt = Runtime::new().unwrap();
-                    rt.block_on(collect(stream)).unwrap();
-                });
+                bench_end_to_end(b, || {
+                    create_shuffle_writer_exec(
+                        compression_codec.clone(),
+                        CometPartitioning::Hash(vec![Arc::new(Column::new("a", 0))], 16),
+                        8192,
+                        10,
+                    )
+                })
             },
         );
     }
@@ -126,19 +122,14 @@ fn criterion_benchmark(c: &mut Criterion) {
         group.bench_function(
             format!("shuffle_writer: end to end (partitioning={partitioning:?})"),
             |b| {
-                let ctx = SessionContext::new();
-                let exec = create_shuffle_writer_exec(
-                    compression_codec.clone(),
-                    partitioning.clone(),
-                    8192,
-                    10,
-                );
-                b.iter(|| {
-                    let task_ctx = ctx.task_ctx();
-                    let stream = exec.execute(0, task_ctx).unwrap();
-                    let rt = Runtime::new().unwrap();
-                    rt.block_on(collect(stream)).unwrap();
-                });
+                bench_end_to_end(b, || {
+                    create_shuffle_writer_exec(
+                        compression_codec.clone(),
+                        partitioning.clone(),
+                        8192,
+                        10,
+                    )
+                })
             },
         );
     }
@@ -157,19 +148,14 @@ fn criterion_benchmark(c: &mut Criterion) {
         group.bench_function(
             format!("shuffle_writer: end to end (partitioning=SinglePartition, rows_per_batch={rows_per_batch})"),
             |b| {
-                let ctx = SessionContext::new();
-                let exec = create_shuffle_writer_exec(
-                    CompressionCodec::None,
-                    CometPartitioning::SinglePartition,
-                    rows_per_batch,
-                    num_batches,
-                );
-                b.iter(|| {
-                    let task_ctx = ctx.task_ctx();
-                    let stream = exec.execute(0, task_ctx).unwrap();
-                    let rt = Runtime::new().unwrap();
-                    rt.block_on(collect(stream)).unwrap();
-                });
+                bench_end_to_end(b, || {
+                    create_shuffle_writer_exec(
+                        CompressionCodec::None,
+                        CometPartitioning::SinglePartition,
+                        rows_per_batch,
+                        num_batches,
+                    )
+                })
             },
         );
     }
@@ -185,23 +171,37 @@ fn criterion_benchmark(c: &mut Criterion) {
         high_partition_group.bench_function(
             format!("shuffle_writer: end to end (partitions={num_partitions}, compression=None)"),
             |b| {
-                let ctx = SessionContext::new();
-                let exec = create_shuffle_writer_exec(
-                    CompressionCodec::None,
-                    CometPartitioning::Hash(vec![Arc::new(Column::new("a", 0))], num_partitions),
-                    8192,
-                    10,
-                );
-                b.iter(|| {
-                    let task_ctx = ctx.task_ctx();
-                    let stream = exec.execute(0, task_ctx).unwrap();
-                    let rt = Runtime::new().unwrap();
-                    rt.block_on(collect(stream)).unwrap();
-                });
+                bench_end_to_end(b, || {
+                    create_shuffle_writer_exec(
+                        CompressionCodec::None,
+                        CometPartitioning::Hash(
+                            vec![Arc::new(Column::new("a", 0))],
+                            num_partitions,
+                        ),
+                        8192,
+                        10,
+                    )
+                })
             },
         );
     }
     high_partition_group.finish();
+}
+
+/// Times one execution of a freshly built writer per iteration. A `ShuffleWriterExec`
+/// publishes its partition offsets once, so it cannot be re-executed; building it is
+/// setup and stays outside the measurement.
+fn bench_end_to_end(b: &mut Bencher, make_exec: impl Fn() -> ShuffleWriterExec) {
+    let ctx = SessionContext::new();
+    b.iter_batched(
+        make_exec,
+        |exec| {
+            let stream = exec.execute(0, ctx.task_ctx()).unwrap();
+            let rt = Runtime::new().unwrap();
+            rt.block_on(collect(stream)).unwrap();
+        },
+        BatchSize::LargeInput,
+    );
 }
 
 fn create_shuffle_writer_exec(
@@ -237,6 +237,11 @@ fn create_batches(size: usize, count: usize) -> Vec<RecordBatch> {
 }
 
 fn create_batch(num_rows: usize, allow_nulls: bool) -> RecordBatch {
+    create_batch_from(0, num_rows, allow_nulls)
+}
+
+/// [`create_batch`] with every value offset by `first_row`, so that successive batches differ.
+fn create_batch_from(first_row: usize, num_rows: usize, allow_nulls: bool) -> RecordBatch {
     let schema = Arc::new(Schema::new(vec![
         Field::new("c0", DataType::Int32, true),
         Field::new("c1", DataType::Utf8, true),
@@ -249,7 +254,7 @@ fn create_batch(num_rows: usize, allow_nulls: bool) -> RecordBatch {
     let mut d = Decimal128Builder::new()
         .with_precision_and_scale(11, 2)
         .unwrap();
-    for i in 0..num_rows {
+    for i in first_row..first_row + num_rows {
         a.append_value(i as i32);
         c.append_value(i as i32);
         d.append_value((i * 1000000) as i128);
@@ -268,6 +273,107 @@ fn create_batch(num_rows: usize, allow_nulls: bool) -> RecordBatch {
         vec![Arc::new(a), Arc::new(b), Arc::new(c), Arc::new(d)],
     )
     .unwrap()
+}
+
+/// Round robin placement in isolation, and then the gather it implies on flush.
+///
+/// The end-to-end benches above spend most of their time in IPC encoding and the file write,
+/// which on a loaded disk swamps the difference between two placement strategies entirely.
+/// These stop short of both. `place` times only the strategy and the per-partition index
+/// buffering; `place+gather` adds the flush through a writer that discards its batches, which is
+/// where a run-indexed partitioner diverges from a row-indexed one — the row-level scatter makes
+/// `interleave_record_batch` walk every column and child again, and a run can instead be sliced,
+/// or handed through untouched when it covers a whole buffered batch.
+///
+/// 8192 rows per batch into 50 output partitions, so `RowGroups(auto)` uses the 163-row group the
+/// driver derives by default (`CometShuffleExchangeExec.resolvePositionalGroupRows`). `RowGroups(8192)` is the opposite extreme, one whole input batch per group,
+/// where every run covers a buffered batch end to end and the gather copies nothing at all.
+fn partitioning_benchmark(c: &mut Criterion) {
+    const BATCH_SIZE: usize = 8192;
+    const NUM_BATCHES: usize = 8;
+    const NUM_PARTITIONS: usize = 50;
+
+    let strategies = [
+        (
+            "HashAll",
+            RoundRobinStrategy::HashAll {
+                max_hash_columns: 0,
+            },
+        ),
+        // Hashing only the leading column: not a candidate strategy, but it separates the cost
+        // of recursing through every struct child from the cost of hashing at all.
+        (
+            "HashAll{1}",
+            RoundRobinStrategy::HashAll {
+                max_hash_columns: 1,
+            },
+        ),
+        (
+            "RowGroups(auto)",
+            RoundRobinStrategy::RowGroups {
+                start_partition: 0,
+                group_rows: BATCH_SIZE / NUM_PARTITIONS,
+                max_hash_columns: 0,
+            },
+        ),
+        (
+            "RowGroups(8192)",
+            RoundRobinStrategy::RowGroups {
+                start_partition: 0,
+                group_rows: BATCH_SIZE,
+                max_hash_columns: 0,
+            },
+        ),
+    ];
+
+    // `plain` is the flat schema the end-to-end benches use. `nested` is the shape that motivates
+    // positional placement: 40 struct columns over a three-field leaf, so 120 leaf arrays for a
+    // hash to recurse into and for a gather to walk. Every batch is built separately, rather than
+    // cloned, so that none of them share buffers: a clone would be charged nothing by the
+    // reservation, and the gather would keep rereading one cache-resident batch.
+    let fixtures = [
+        (
+            "plain",
+            (0..NUM_BATCHES)
+                .map(|b| create_batch_from(b * BATCH_SIZE, BATCH_SIZE, true))
+                .collect::<Vec<_>>(),
+        ),
+        (
+            "nested",
+            nested_batches(BATCH_SIZE, NUM_BATCHES, 40, 2, Fill::PerRow),
+        ),
+    ];
+
+    let mut group = c.benchmark_group("shuffle_partitioning");
+    for (schema, batches) in &fixtures {
+        for (label, strategy) in &strategies {
+            let partitioning = CometPartitioning::RoundRobin(NUM_PARTITIONS, strategy.clone());
+            group.bench_function(format!("place ({schema}, {label})"), |b| {
+                b.iter_batched(
+                    || BenchRepartitioner::try_new(partitioning.clone(), BATCH_SIZE).unwrap(),
+                    |mut repartitioner| {
+                        repartitioner.place(batches).unwrap();
+                        // Returned so that freeing the buffered batches and the partition index
+                        // lands outside the measurement.
+                        repartitioner
+                    },
+                    BatchSize::LargeInput,
+                );
+            });
+            group.bench_function(format!("place+gather ({schema}, {label})"), |b| {
+                b.iter_batched(
+                    || BenchRepartitioner::try_new(partitioning.clone(), BATCH_SIZE).unwrap(),
+                    |mut repartitioner| {
+                        repartitioner.place(batches).unwrap();
+                        repartitioner.gather().unwrap();
+                        repartitioner
+                    },
+                    BatchSize::LargeInput,
+                );
+            });
+        }
+    }
+    group.finish();
 }
 
 /// Benchmarks the per-block IPC encoding cost (schema + record batch) in isolation, using the
@@ -372,13 +478,50 @@ fn flat_schema_batch(num_rows: usize) -> RecordBatch {
 
 /// A schema of several deeply nested struct columns.
 fn nested_schema_batch(num_rows: usize) -> RecordBatch {
-    let num_cols = 4;
-    let depth = 6;
+    nested_batch(num_rows, 4, 6, Fill::Constant)
+}
 
+/// How a nested fixture fills its leaves.
+#[derive(Clone, Copy)]
+enum Fill {
+    /// One value repeated down every leaf. Cheap to build, and enough for the encoding benches
+    /// that only care about how much there is to encode. Useless for partitioning: identical
+    /// rows hash alike, so a hash strategy would put the whole input on one output partition
+    /// and never perform the scatter that a gather has to undo.
+    Constant,
+    /// A distinct value per row, so hash placement spreads rows across the output partitions the
+    /// way real data does.
+    PerRow,
+}
+
+/// `count` separately built batches, each filled from where the previous one left off.
+fn nested_batches(
+    num_rows: usize,
+    count: usize,
+    num_cols: usize,
+    depth: usize,
+    fill: Fill,
+) -> Vec<RecordBatch> {
+    (0..count)
+        .map(|b| nested_batch_from(b * num_rows, num_rows, num_cols, depth, fill))
+        .collect()
+}
+
+fn nested_batch(num_rows: usize, num_cols: usize, depth: usize, fill: Fill) -> RecordBatch {
+    nested_batch_from(0, num_rows, num_cols, depth, fill)
+}
+
+fn nested_batch_from(
+    first_row: usize,
+    num_rows: usize,
+    num_cols: usize,
+    depth: usize,
+    fill: Fill,
+) -> RecordBatch {
     let mut fields: Vec<Field> = Vec::with_capacity(num_cols);
     let mut columns: Vec<Arc<dyn Array>> = Vec::with_capacity(num_cols);
     for col in 0..num_cols {
-        let array = nested_struct_array(num_rows, depth);
+        let array = nested_struct_array(first_row, num_rows, depth, fill);
         fields.push(Field::new(
             format!("col{col}"),
             array.data_type().clone(),
@@ -390,23 +533,45 @@ fn nested_schema_batch(num_rows: usize) -> RecordBatch {
     RecordBatch::try_new(schema, columns).unwrap()
 }
 
-/// Builds a struct array with a multi-field leaf, wrapped in `depth` single-field structs.
-fn nested_struct_array(num_rows: usize, depth: usize) -> Arc<dyn Array> {
+/// Builds a struct array with a multi-field leaf, wrapped in `depth` single-field structs. Under
+/// [`Fill::PerRow`] the leaf values run from `first_row`.
+fn nested_struct_array(
+    first_row: usize,
+    num_rows: usize,
+    depth: usize,
+    fill: Fill,
+) -> Arc<dyn Array> {
     use arrow::array::{Float64Array, Int64Array, StringArray, StructArray};
+
+    let (ints, strings, floats): (Vec<i64>, Vec<String>, Vec<f64>) = match fill {
+        Fill::Constant => (
+            vec![1_i64; num_rows],
+            vec!["x".to_string(); num_rows],
+            vec![1.0_f64; num_rows],
+        ),
+        Fill::PerRow => {
+            let rows = first_row..first_row + num_rows;
+            (
+                rows.clone().map(|row| row as i64).collect(),
+                rows.clone().map(|row| format!("value {row}")).collect(),
+                rows.map(|row| row as f64 * 1.5).collect(),
+            )
+        }
+    };
 
     // Leaf: struct<a: int64, b: utf8, c: float64>
     let mut array: Arc<dyn Array> = Arc::new(StructArray::from(vec![
         (
             Arc::new(Field::new("a", DataType::Int64, false)),
-            Arc::new(Int64Array::from(vec![1_i64; num_rows])) as Arc<dyn Array>,
+            Arc::new(Int64Array::from(ints)) as Arc<dyn Array>,
         ),
         (
             Arc::new(Field::new("b", DataType::Utf8, false)),
-            Arc::new(StringArray::from(vec!["x"; num_rows])) as Arc<dyn Array>,
+            Arc::new(StringArray::from(strings)) as Arc<dyn Array>,
         ),
         (
             Arc::new(Field::new("c", DataType::Float64, false)),
-            Arc::new(Float64Array::from(vec![1.0_f64; num_rows])) as Arc<dyn Array>,
+            Arc::new(Float64Array::from(floats)) as Arc<dyn Array>,
         ),
     ]));
 
@@ -428,6 +593,6 @@ fn config() -> Criterion {
 criterion_group! {
     name = benches;
     config = config();
-    targets = criterion_benchmark, schema_encoding_benchmark, ipc_context_reuse_benchmark
+    targets = criterion_benchmark, partitioning_benchmark, schema_encoding_benchmark, ipc_context_reuse_benchmark
 }
 criterion_main!(benches);

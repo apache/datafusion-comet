@@ -21,6 +21,7 @@ package org.apache.comet.rules
 
 import java.lang.{Boolean => JBoolean}
 import java.net.URI
+import java.time.ZoneOffset
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 
@@ -31,9 +32,9 @@ import scala.jdk.CollectionConverters._
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.expressions.{Attribute, DynamicPruningExpression, Expression, GenericInternalRow, InputFileBlockLength, InputFileBlockStart, InputFileName, PlanExpression}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, DynamicPruningExpression, Expression, GenericInternalRow, InputFileBlockLength, InputFileBlockStart, InputFileName}
 import org.apache.spark.sql.catalyst.rules.Rule
-import org.apache.spark.sql.catalyst.util.{sideBySide, ArrayBasedMapData, GenericArrayData, MetadataColumnHelper}
+import org.apache.spark.sql.catalyst.util.{sideBySide, ArrayBasedMapData, DateTimeUtils, GenericArrayData, MetadataColumnHelper}
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
 import org.apache.spark.sql.comet.{CometBatchScanExec, CometScanExec}
 import org.apache.spark.sql.execution.{FileSourceScanExec, InSubqueryExec, SparkPlan, SubqueryAdaptiveBroadcastExec}
@@ -325,11 +326,26 @@ case class CometScanRule(session: SparkSession)
           s"${COMET_SCAN_ALLOW_DISABLED_PARQUET_VECTORIZED_READER.key}=true to opt in")
       return None
     }
+    // Check the projected and partition schemas before the scan-level checks so that an
+    // unsupported column type is reported as such (e.g. "Unsupported s of type VariantType")
+    // rather than as the coarser serialization failure that CometNativeScan.isSupported would
+    // report for the same column.
+    if (!isSchemaSupported(scanExec, r)) {
+      return None
+    }
     if (!CometNativeScan.isSupported(scanExec)) {
       return None
     }
     if (encryptionEnabled(hadoopConf) && !isEncryptionConfigSupported(hadoopConf)) {
       withFallbackReason(scanExec, "Native Parquet scan does not support encryption")
+      return None
+    }
+    // TODO: Remove this fallback once DataFusion can ignore embedded Arrow schema hints and
+    // preserve Spark's ENUM inference without losing Parquet decryption state.
+    // https://github.com/apache/datafusion-comet/issues/5477
+    if (encryptionEnabled(hadoopConf) &&
+      scanExec.requiredSchema.exists(field => isVariantType(field.dataType))) {
+      withFallbackReason(scanExec, "Native Parquet Variant scans do not support encryption")
       return None
     }
     // input_file_name, input_file_block_start, and input_file_block_length read from
@@ -346,11 +362,12 @@ case class CometScanRule(session: SparkSession)
           "input_file_block_start, or input_file_block_length")
       return None
     }
-    if (ShimFileFormat.findRowIndexColumnIndexInSchema(scanExec.requiredSchema) >= 0) {
+    // Check the name directly instead of calling findRowIndexColumnIndexInSchema, which validates
+    // the temporary column's type and can throw a raw RuntimeException. Falling back lets Spark's
+    // Parquet reader wrap that validation failure as FAILED_READ_FILE.
+    if (scanExec.requiredSchema.fieldNames.contains(
+        ShimFileFormat.ROW_INDEX_TEMPORARY_COLUMN_NAME)) {
       withFallbackReason(scanExec, "Native Parquet scan does not support row index generation")
-      return None
-    }
-    if (!isSchemaSupported(scanExec, r)) {
       return None
     }
     Some(CometScanExec(scanExec, session))
@@ -419,8 +436,19 @@ case class CometScanRule(session: SparkSession)
           fallbackReasons +=
             s"Comet supports only single-character delimiters, but got: '$delimiter'"
         }
+        // The native reader parses a timestamp without an offset as UTC. Spark parses it in the
+        // CSV `timeZone` option, which defaults to the session timezone.
+        val timeZone = Option(scan.options.get(DateTimeUtils.TIMEZONE_OPTION))
+          .getOrElse(SQLConf.get.sessionLocalTimeZone)
+        val parsesTimestampsLikeSpark =
+          !scan.readDataSchema.exists(_.dataType == TimestampType) ||
+            DateTimeUtils.getZoneId(timeZone).normalized() == ZoneOffset.UTC
+        if (!parsesTimestampsLikeSpark) {
+          fallbackReasons += "Comet's native CSV reader parses timestamps in UTC, but the CSV " +
+            s"timezone is $timeZone"
+        }
         if (schemaSupported && partitionSchemaSupported && containsCorruptedRecordsColumn
-          && !isInferSchemaEnabled && isSingleCharacterDelimiter) {
+          && !isInferSchemaEnabled && isSingleCharacterDelimiter && parsesTimestampsLikeSpark) {
           CometBatchScanExec(
             scanExec.clone().asInstanceOf[BatchScanExec],
             runtimeFilters = scanExec.runtimeFilters)
@@ -989,9 +1017,6 @@ case class CometScanRule(session: SparkSession)
     }
   }
 
-  private def isDynamicPruningFilter(e: Expression): Boolean =
-    e.exists(_.isInstanceOf[PlanExpression[_]])
-
   /**
    * Detects AQE DPP (SubqueryAdaptiveBroadcastExec), as opposed to non-AQE DPP.
    *
@@ -1016,8 +1041,17 @@ case class CometScanRule(session: SparkSession)
   private def isSchemaSupported(scanExec: FileSourceScanExec, r: HadoopFsRelation): Boolean = {
     val fallbackReasons = new ListBuffer[String]()
     val typeChecker = CometScanTypeChecker()
+    // Admit Variant only at a required root in ordinary Parquet. Recursive and Iceberg type
+    // checks continue to use CometScanTypeChecker's stricter support rules.
+    val requiredSchemaChecker = new CometScanTypeChecker {
+      override def isTypeSupported(
+          dt: DataType,
+          name: String,
+          reasons: ListBuffer[String]): Boolean =
+        isVariantType(dt) || typeChecker.isTypeSupported(dt, name, reasons)
+    }
     val schemaSupported =
-      typeChecker.isSchemaSupported(scanExec.requiredSchema, fallbackReasons)
+      requiredSchemaChecker.isSchemaSupported(scanExec.requiredSchema, fallbackReasons)
     if (!schemaSupported) {
       withFallbackReason(
         scanExec,

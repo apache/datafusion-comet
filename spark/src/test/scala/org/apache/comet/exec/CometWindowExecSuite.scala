@@ -25,7 +25,7 @@ import org.scalactic.source.Position
 import org.scalatest.Tag
 
 import org.apache.hadoop.fs.Path
-import org.apache.spark.sql.{CometTestBase, Row}
+import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, Divide, Expression, MakeDecimal, WindowExpression}
 import org.apache.spark.sql.comet.{CometSortExec, CometWindowExec, CometWindowGroupLimitExec}
 import org.apache.spark.sql.execution.SparkPlan
@@ -710,6 +710,59 @@ class CometWindowExecSuite extends CometTestBase {
       val (sparkPlan, cometPlan) = checkSparkAnswerAndOperator(df)
       assertSparkPlanHasDecimalSumRewrite(sparkPlan)
       assertCometWindowExecExists(cometPlan)
+    }
+  }
+
+  test("window: decimal SUM recovers from an intermediate overflow in an expanding frame") {
+    // Running sums 0.6, 1.2, 0.6 at DECIMAL(38,38): only the middle frame leaves the
+    // precision, so the third row must recover instead of staying latched at null.
+    Seq(true, false).foreach { ansiEnabled =>
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString) {
+        withTempDir { dir =>
+          Seq((1, "0.6"), (2, "0.6"), (3, "-0.6"))
+            .toDF("ord", "raw_v")
+            .selectExpr("ord", "CAST(raw_v AS DECIMAL(38,38)) AS v")
+            .repartition(1)
+            .write
+            .mode("overwrite")
+            .parquet(dir.toString)
+
+          spark.read.parquet(dir.toString).createOrReplaceTempView("dec_sum_recover")
+          def runningSums(function: String): DataFrame = sql(s"""
+            SELECT ord, run_sum
+            FROM (
+              SELECT ord,
+                $function(v) OVER (
+                  ORDER BY ord
+                  ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                ) AS run_sum
+              FROM dec_sum_recover
+            )
+            ORDER BY ord
+          """)
+          def assertRecovered(function: String): Unit = {
+            val (_, cometPlan) = checkSparkAnswerAndOperator(runningSums(function))
+            assertCometWindowExecExists(cometPlan)
+            val answer = runningSums(function).collect().toSeq
+            val recovered = new java.math.BigDecimal("0.6").setScale(38)
+            assert(
+              answer == Seq(Row(1, recovered), Row(2, null), Row(3, recovered)),
+              s"$function running sums were $answer, expected 0.6, null, 0.6")
+          }
+          if (ansiEnabled) {
+            // The frame whose sum is 1.2 holds a value that does not fit, so Spark fails in
+            // toPrecision with the out-of-range error rather than the latched sum overflow.
+            val errorClass =
+              if (isSpark40Plus) "NUMERIC_VALUE_OUT_OF_RANGE.WITH_SUGGESTION"
+              else "NUMERIC_VALUE_OUT_OF_RANGE"
+            checkSparkError(runningSums("SUM"), errorClass)
+          } else {
+            assertRecovered("SUM")
+          }
+          // try_sum returns null for the frame that does not fit in every mode.
+          assertRecovered("try_sum")
+        }
+      }
     }
   }
 

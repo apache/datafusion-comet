@@ -30,7 +30,7 @@ inputs:
     required: false
     default: ''
   upload-test-reports:
-    description: 'Whether to upload test results including coverage to GitHub'
+    description: 'Whether to upload test results to GitHub'
     required: false
     default: 'false'
   skip-native-build:

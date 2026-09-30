@@ -22,6 +22,7 @@ package org.apache.comet.cloud.s3;
 import java.lang.reflect.InvocationTargetException;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
@@ -118,6 +119,50 @@ public final class CometS3CredentialDispatcher {
     }
     return registered.provider.getCredentialsForPath(
         new CometS3CredentialContext(bucket, path, accessMode));
+  }
+
+  /**
+   * Invoked by native code when it creates the object store for {@code bucket}, and again after a
+   * read through that store fails with 403. Returns {@code null} when the provider behind {@code
+   * handle} does not implement {@link CometS3LocationScopedCredentialProvider}, which leaves it
+   * with one credential per bucket. Otherwise returns a copy of the provider's locations.
+   *
+   * <p>Copying the list here runs any lazy {@code List} code inside this call, so its exceptions
+   * reach native code as ordinary Java exceptions, and a non-{@code String} element fails with
+   * {@link ArrayStoreException}. A {@code null} list or location is a contract violation and
+   * throws, so the read fails instead of using a broader credential.
+   */
+  public static String[] getPolicyLocations(long handle, String bucket) throws Exception {
+    RegisteredProvider registered = INSTANCES.get(handle);
+    if (registered == null) {
+      throw new IllegalStateException(
+          "CometS3CredentialProvider handle "
+              + handle
+              + " was not initialized; "
+              + "ensureInitialized must be called before getPolicyLocations");
+    }
+    if (!(registered.provider instanceof CometS3LocationScopedCredentialProvider)) {
+      return null;
+    }
+    List<String> locations =
+        ((CometS3LocationScopedCredentialProvider) registered.provider).getPolicyLocations(bucket);
+    if (locations == null) {
+      throw new IllegalStateException(
+          registered.key.providerClassName
+              + ".getPolicyLocations returned null for bucket "
+              + bucket
+              + "; return an empty list when the bucket has no locations");
+    }
+    String[] copy = locations.toArray(new String[0]);
+    for (String location : copy) {
+      if (location == null) {
+        throw new IllegalStateException(
+            registered.key.providerClassName
+                + ".getPolicyLocations returned a null location for bucket "
+                + bucket);
+      }
+    }
+    return copy;
   }
 
   private static CometS3CredentialProvider instantiate(String providerClassName) {

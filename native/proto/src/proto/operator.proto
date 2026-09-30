@@ -163,8 +163,11 @@ message NativeScanCommon {
   // schema actually carries parquet.field.id metadata. When false the native
   // scan keeps its existing name-based path with no extra work.
   bool use_field_id = 15;
-  // True when spark.sql.parquet.fieldId.read.ignoreMissing is set.
-  bool ignore_missing_field_id = 16;
+  // True when the requested schema carries a field id and
+  // spark.sql.parquet.fieldId.read.ignoreMissing is not set. The native scan
+  // then refuses a file whose Parquet schema carries no field id, as Spark's
+  // ParquetReadSupport does whether or not the read flag is set.
+  bool require_field_ids = 16;
   // Whether widening type promotion is allowed (e.g. INT32 -> INT64,
   // FLOAT -> DOUBLE). Set from Comet's per-Spark-version constant in
   // ShimCometConf (false on 3.x, true on 4.x). When false, reading a column
@@ -188,9 +191,10 @@ message NativeScan {
   // Single partition's file list (injected at execution time)
   SparkFilePartition file_partition = 2;
 
-  // Hash half of the key under which this scan's planning data is stored and looked up at
-  // execution time; the other half is common.source. Derived once on the driver
-  // (CometNativeScanExec) so executors rebuild the key instead of hashing the common per task.
+  // Hash part of the key under which this scan's planning data is stored and looked up at
+  // execution time; the other parts are common.source and the operator's plan_id. Derived once
+  // on the driver (CometNativeScanExec) so executors rebuild the key instead of hashing the
+  // common per task.
   // JVM-consumed only; the native side ignores it.
   optional int32 source_key_hash = 3;
 }
@@ -349,8 +353,8 @@ message IcebergScanCommon {
 
   // Iceberg's SparkScan.hashCode() (folds in pushed filters, snapshot, branch, and read schema).
   // A self-join/self-merge can read the same table (same metadata_location) twice with different
-  // projections or filters, so PlanDataInjector keys planning data by
-  // (metadata_location, scan_hash_code) rather than metadata_location alone.
+  // projections or filters, so PlanDataInjector keys planning data by metadata_location,
+  // scan_hash_code and the operator's plan_id rather than metadata_location alone.
   int32 scan_hash_code = 15;
 }
 
@@ -897,11 +901,22 @@ message ShuffleWriter {
 }
 
 message ParquetWriter {
+  // Where this task writes. Two shapes, selected by whether `work_dir` is set:
+  //
+  //  - Spark 4.0+ (CometWriteFilesExec): `work_dir` is unset and `output_path` is the
+  //    fully-qualified path of the Parquet file to write, set per task from
+  //    FileCommitProtocol.newTaskTempFile. Naming and staging are owned by Spark's commit
+  //    protocol so that task-attempt isolation, speculative execution, and committers that track
+  //    individual files (S3A magic, streaming manifest) all behave as they do for Spark's own
+  //    writer. The native writer uses this path verbatim.
+  //  - Spark 3.x (CometNativeWriteExec): `work_dir` is set and the native writer derives the file
+  //    name from it, the partition id and the task attempt id. `output_path` is the write's
+  //    output directory and is unused natively. Goes away with Spark 3.x support.
   string output_path = 1;
   CompressionCodec compression = 2;
   repeated string column_names = 4;
-  // Working directory for temporary files (used by FileCommitProtocol)
-  // If not set, files are written directly to output_path
+  // Working directory for temporary files (used by FileCommitProtocol). Spark 3.x only; see
+  // output_path above.
   optional string work_dir = 5;
   // Job ID for tracking this write operation
   optional string job_id = 6;

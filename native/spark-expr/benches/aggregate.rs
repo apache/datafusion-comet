@@ -16,7 +16,7 @@
 // under the License.use arrow::array::{ArrayRef, BooleanBuilder, Int32Builder, RecordBatch, StringBuilder};
 
 use arrow::array::builder::{Decimal128Builder, Int64Builder, StringBuilder};
-use arrow::array::{ArrayRef, Int64Array, RecordBatch};
+use arrow::array::{ArrayRef, Decimal128Array, Int64Array, RecordBatch};
 use arrow::datatypes::SchemaRef;
 use arrow::datatypes::{DataType, Field, Schema};
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
@@ -198,6 +198,63 @@ fn criterion_benchmark(c: &mut Criterion) {
         })
     });
 
+    group.finish();
+
+    // The scalar decimal accumulator keeps a wide running sum, so measure its per-row cost on
+    // in-range inputs directly, with and without nulls.
+    let mut group = c.benchmark_group("sum_decimal_accumulator");
+    let decimal_type = DataType::Decimal128(38, 10);
+    let decimal_return_field = Arc::new(Field::new("sum", decimal_type.clone(), true));
+    let decimal_schema = Schema::new(vec![Field::new("c0", decimal_type.clone(), true)]);
+    let decimal_expr_fields: Vec<Arc<Field>> =
+        vec![Arc::new(Field::new("c0", decimal_type.clone(), true))];
+    for (null_name, null_ratio) in [("no_nulls", 0.0), ("sparse", 0.1)] {
+        let decimal_array: ArrayRef = Arc::new(
+            Decimal128Array::from_iter((0..8192).map(|i| {
+                if null_ratio > 0.0 && i % ((1.0 / null_ratio) as usize) == 0 {
+                    None
+                } else {
+                    Some(i as i128 * 1_000_000)
+                }
+            }))
+            .with_data_type(decimal_type.clone()),
+        );
+        let arrays: Vec<ArrayRef> = vec![decimal_array];
+        for (mode_name, eval_mode) in [("legacy", EvalMode::Legacy), ("ansi", EvalMode::Ansi)] {
+            let return_field = decimal_return_field.clone();
+            let expr_fields = decimal_expr_fields.clone();
+            let arrays = arrays.clone();
+            let schema = &decimal_schema;
+            let decimal_type = decimal_type.clone();
+            group.bench_function(format!("row_{null_name}_{mode_name}"), |b| {
+                let udf = SumDecimal::try_new(
+                    decimal_type.clone(),
+                    eval_mode,
+                    None,
+                    datafusion_comet_spark_expr::create_query_context_map(),
+                )
+                .unwrap();
+                b.iter(|| {
+                    let acc_args = AccumulatorArgs {
+                        return_field: return_field.clone(),
+                        schema,
+                        ignore_nulls: false,
+                        order_bys: &[],
+                        name: "sum",
+                        is_distinct: false,
+                        is_reversed: false,
+                        exprs: &[],
+                        expr_fields: &expr_fields,
+                    };
+                    let mut acc = udf.accumulator(acc_args).unwrap();
+                    for _ in 0..10 {
+                        acc.update_batch(&arrays).unwrap();
+                    }
+                    black_box(acc.evaluate().unwrap())
+                })
+            });
+        }
+    }
     group.finish();
 
     // Direct accumulator benchmarks (bypassing execution framework)

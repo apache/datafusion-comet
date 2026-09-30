@@ -22,17 +22,23 @@ under the License.
 Cast operations in Comet fall into three levels of support:
 
 - **C (Compatible)**: The results match Apache Spark
-- **I (Incompatible)**: The results may match Apache Spark for some inputs, but there are known issues where some inputs
-  will result in incorrect results or exceptions. The query stage will fall back to Spark by default. Setting
-  `spark.comet.expression.Cast.allowIncompatible=true` will allow all incompatible casts to run natively in Comet, but this is not
-  recommended for production use.
-- **U (Unsupported)**: Comet does not provide a native version of this cast expression and the query stage will fall back to
-  Spark.
+- **I (Incompatible)**: Comet's native cast may produce different results from Apache Spark for some inputs. By
+  default, Comet instead runs Spark's own code-generated cast inside the Comet pipeline, so the results match Spark.
+  Setting `spark.comet.expression.Cast.allowIncompatible=true` selects the native cast, but this is not recommended
+  for production use.
+- **U (Unsupported)**: Comet does not provide a native version of this cast, so it runs Spark's own code-generated
+  cast inside the Comet pipeline.
 - **N/A**: Spark does not support this cast.
 
-## ANSI Mode Fallback
+Incompatible and unsupported casts fall back to Spark only when Comet's codegen dispatcher cannot handle them (for
+example, casts involving `VariantType`) or when `spark.comet.exec.scalaUDF.codegen.enabled=false`.
 
-Cast will fall back to Spark in some cases when ANSI mode is enabled. This can be enabled by setting `spark.comet.expression.Cast.allowIncompatible=true`. See the [Comet Supported Expressions Guide](../../../expressions.md) for more information on this configuration setting.
+## ANSI Mode Support
+
+Enabling ANSI mode does not by itself make a cast fall back to Spark or require
+`spark.comet.expression.Cast.allowIncompatible=true`: every cast that Spark permits in ANSI mode has the same support
+level as in legacy mode. See the [ANSI Mode](#ansi-mode) table below for per-pair support, and the
+[Comet Supported Expressions Guide](../../../expressions.md) for more information on the `allowIncompatible` setting.
 
 ## Whitespace Trimming in Casts from String
 
@@ -143,20 +149,12 @@ Comet's native `CAST(date AS STRING)` is compatible with Spark. Years below 1000
 zero-padded to four digits (e.g. year 999 renders as `0999-01-01`). Years above 9999 are
 rendered without truncation. The cast is timezone-independent.
 
-## String to TimestampNTZ
-
-Comet's native `CAST(string AS TIMESTAMP_NTZ)` implementation matches Apache Spark's behavior.
-Unlike `CAST(string AS TIMESTAMP)`, this cast is timezone-independent: any timezone offset in
-the input string (e.g. `+08:00`, `Z`, `UTC`) is silently discarded, and the local date-time
-components are preserved as-is. Time-only strings (e.g. `T12:34:56`, `12:34`) produce `NULL`.
-The result is always a wall-clock timestamp with no timezone conversion or DST adjustment.
-
 ## Decimal with Negative Scale to String
 
 Casting a `DecimalType` with a negative scale to `StringType` is marked as incompatible when
 `spark.sql.legacy.allowNegativeScaleOfDecimal` is `false` (the default). When that config is
-disabled, Spark cannot create negative-scale decimals, so Comet falls back to avoid running
-native execution on unexpected inputs.
+disabled, Spark cannot create negative-scale decimals, so by default Comet runs Spark's
+code-generated cast instead of the native one.
 
 When `spark.sql.legacy.allowNegativeScaleOfDecimal=true`, the cast is compatible. Comet matches
 Spark's behavior of using Java `BigDecimal.toString()` semantics, which produces scientific
