@@ -265,7 +265,9 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_EXEC)
       .doc("Whether to enable Comet native execution for in-memory cached tables. Its value at " +
         "startup also decides whether CometDriverPlugin installs Comet's cache serializer, " +
-        "which stores cached data in Arrow format. Because spark.sql.cache.serializer is a " +
+        "which stores cached data in Arrow format. The plugin installs it only if " +
+        "spark.comet.enabled and spark.comet.exec.enabled are also enabled at startup. " +
+        "Because spark.sql.cache.serializer is a " +
         "static config, the cached format is fixed for the application, and disabling this " +
         "at runtime only sends cached scans back to Spark's execution path. Relations whose " +
         "schema Comet's Arrow writer does not support are always cached in Spark's default " +
@@ -362,9 +364,10 @@ object CometConf extends ShimCometConf {
     .category(CATEGORY_TUNING)
     .doc(
       "How often each executor logs its native memory usage at INFO level while Comet native " +
-        "plans are running: the bytes the native allocator has handed out, and the bytes " +
-        "reserved in Comet's memory pools. The difference is native memory that the pools are " +
-        "not accounting for. The executor logs one line per interval however many tasks are " +
+        "plans are running: the bytes the native allocator has handed out, the bytes reserved " +
+        "in Comet's memory pools, and the Arrow memory Comet holds on the JVM side. The " +
+        "difference between the first two is native memory that the pools are not accounting " +
+        "for. The executor logs one line per interval however many tasks are " +
         "running, and one more after the last plan finishes. It logs a warning when the " +
         "native memory looks larger than the executor's container allows. This is an executor " +
         "setting, read when an executor starts its first Comet native plan, so it must be set " +

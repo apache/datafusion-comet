@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+mod array_extrema;
 mod array_insert;
 mod array_position;
 mod array_slice;
@@ -24,10 +25,10 @@ mod flatten;
 mod get_array_struct_fields;
 mod list_extract;
 mod nested_comparison;
-mod nested_float_normalize;
 mod sequence;
 mod size;
 
+pub use array_extrema::SparkArrayExtrema;
 pub use array_insert::ArrayInsert;
 pub use array_position::SparkArrayPositionFunc;
 pub use array_slice::SparkArraySlice;
@@ -37,6 +38,5 @@ pub use flatten::SparkFlatten;
 pub use get_array_struct_fields::GetArrayStructFields;
 pub use list_extract::ListExtract;
 pub use nested_comparison::{spark_comparison, spark_in_list};
-pub use nested_float_normalize::NormalizeNestedFloats;
 pub use sequence::spark_sequence;
 pub use size::{spark_size, SparkSizeFunc};
