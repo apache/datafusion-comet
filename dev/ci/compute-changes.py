@@ -433,6 +433,7 @@ FILTERS = {
 }
 FILTERS["spark_4_1_hive"] = FILTERS["spark_4_1"]
 FILTERS["build_linux_full"] = FILTERS["build_linux"]
+FILTERS["build_macos_full"] = FILTERS["build_macos"]
 FILTERS["build_linux_all_profiles"] = FILTERS["build_linux"]
 
 # Which events may run each job, independent of the path filters above.
@@ -480,7 +481,7 @@ POLICY = {
     # own branch or on main, and nowhere else. The queue runs on a throwaway
     # gh-readonly-queue/* branch, so whatever it saves is deleted with that
     # branch. Without a push run, a Cargo.lock or pom.xml change would leave
-    # main's cargo-ci, cargo-debug, Maven and TPC-H/TPC-DS caches stale
+    # main's cargo-ci, Maven and TPC-H/TPC-DS caches stale
     # forever, and every later pull request would pay the delta on top of the
     # restore-keys prefix match.
     #
@@ -508,7 +509,16 @@ POLICY = {
     # macOS runners are the scarcest capacity we have, and the Linux build
     # already covers rustfmt and the Rust/JVM compile on every PR. The label
     # is for a change that touches platform-specific code.
-    "build_macos": ["queue", "label:run-macos-tests"],
+    #
+    # Split like the Linux build: `build_macos` runs pr_build_macos.yml at all,
+    # `build_macos_full` runs its test matrix too. Push to main sets only the
+    # first, so the workflow runs in cache-refresh-only mode there and keeps
+    # main's macOS cargo cache warm. Nothing else runs on main, and an entry
+    # written from the queue's throwaway branch is visible to nobody, so
+    # without the push run every queue build compiled the native library from
+    # scratch (issue #6390).
+    "build_macos": ["queue", "push", "label:run-macos-tests"],
+    "build_macos_full": ["queue", "label:run-macos-tests"],
     # Benchmark sources are compiled and linted, never run, so a break there
     # cannot affect a PR's correctness verdict; the queue catches it.
     "benchmark": ["queue", "label:run-benchmark-check"],

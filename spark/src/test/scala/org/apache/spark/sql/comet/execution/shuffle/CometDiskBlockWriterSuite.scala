@@ -29,7 +29,7 @@ import org.apache.spark.executor.{ShuffleWriteMetrics, TaskMetrics}
 import org.apache.spark.memory.{SparkOutOfMemoryError, TaskMemoryManager, TestMemoryManager}
 import org.apache.spark.shuffle.api.{ShuffleExecutorComponents, ShuffleMapOutputWriter, ShufflePartitionWriter}
 import org.apache.spark.shuffle.api.metadata.MapOutputCommitMessage
-import org.apache.spark.shuffle.comet.{CometShuffleMemoryAllocator, CometShuffleMemoryAllocatorTrait}
+import org.apache.spark.shuffle.comet.CometShuffleMemoryAllocator
 import org.apache.spark.shuffle.sort.SpillSorter
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{UnsafeProjection, UnsafeRow}
@@ -193,23 +193,6 @@ class CometDiskBlockWriterSuite extends AnyFunSuite {
       tmmA.cleanUpAllAllocatedMemory()
       tmmB.cleanUpAllAllocatedMemory()
     }
-  }
-
-  private def newWriter(
-      file: File,
-      allocator: CometShuffleMemoryAllocatorTrait,
-      taskContext: TaskContextImpl,
-      conf: SparkConf): CometDiskBlockWriter = {
-    new CometDiskBlockWriter(
-      file,
-      allocator,
-      taskContext,
-      new UnsafeRowSerializer(1).newInstance(),
-      schema,
-      new ShuffleWriteMetrics,
-      conf,
-      false,
-      new JLinkedList[CometDiskBlockWriter]())
   }
 
   test("a fatal error during write() frees the task's buffered pages") {

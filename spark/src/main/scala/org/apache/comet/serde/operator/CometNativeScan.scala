@@ -37,7 +37,7 @@ import org.apache.comet.CometConf.COMET_EXEC_ENABLED
 import org.apache.comet.CometSparkSessionExtensions.{hasFallbackReason, isSpark35Plus, isSpark41Plus, withFallbackReason}
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.parquet.CometParquetUtils
-import org.apache.comet.serde.{CometOperatorSerde, Compatible, OperatorOuterClass, SupportLevel}
+import org.apache.comet.serde.{CometOperatorSerde, CometTimeZone, Compatible, OperatorOuterClass, SupportLevel}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
@@ -69,7 +69,9 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
           } else {
             Some(Literal.create(value, field.dataType))
           }
-          expression.flatMap(exprToProto(_, output)).map(_ -> java.lang.Long.valueOf(index))
+          expression
+            .flatMap(exprToProto(_, output))
+            .map(_ -> java.lang.Long.valueOf(index.toLong))
       }
       .toSeq
     // Never drop a value independently of its index: that would shift every later default.
@@ -311,7 +313,9 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
       commonBuilder.addAllDataSchema(dataSchema.asJava)
       commonBuilder.addAllRequiredSchema(requiredSchema.asJava)
       commonBuilder.addAllPartitionSchema(partitionSchema.asJava)
-      commonBuilder.setSessionTimezone(scan.conf.getConfString("spark.sql.session.timeZone"))
+      val sessionTimeZone = scan.conf.getConfString("spark.sql.session.timeZone")
+      commonBuilder.setSessionTimezone(
+        CometTimeZone.nativeId(Some(sessionTimeZone)).getOrElse(sessionTimeZone))
       commonBuilder.setCaseSensitive(scan.conf.getConf[Boolean](SQLConf.CASE_SENSITIVE))
 
       // SPARK-53535 (Spark 4.1+): when reading a struct whose requested fields are all
