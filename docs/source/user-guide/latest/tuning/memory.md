@@ -220,10 +220,10 @@ after its last native plan finishes. It writes them at the executor's first hear
 more after the first of them arrived, which comes every `spark.executor.heartbeatInterval`, 10
 seconds by default, busy or not, and when the executor is removed, such as when the cluster manager
 kills it, or the application stops. So each executor adds about two events a minute while it runs
-native plans, however short the interval, and the event log has every sample within about a minute
-of its arrival. The event with the most untracked memory for an executor is then its sample with the
-most, apart from samples it takes while the application stops, and samples from the last minute
-before a driver exits without stopping the application.
+native plans, however short the interval, and each minute's two reach the event log within about a
+minute of that minute's first sample arriving. The event with the most untracked memory for an
+executor is then its sample with the most, apart from samples it takes while the application stops,
+and samples from the last minute before a driver exits without stopping the application.
 
 Each sample the driver writes is one event, on one line of the event log. It carries the figures of
 the line in bytes, the executor that took the sample, and when it did, in milliseconds since the
