@@ -231,15 +231,37 @@ private[codegen] object CometBatchKernelCodegenOutput extends CometTypeShim {
       val set = if (nested) "setSafe" else "set"
       OutputEmit("", s"$targetVec.$set($idx, $source);")
     case dt: DecimalType =>
+      // Rescale to the declared type, and write null when the value does not fit, as Spark's
+      // `UnsafeRowWriter` and `UnsafeArrayWriter` do in `write(ordinal, Decimal, precision,
+      // scale)`. A Spark expression already produces its declared precision and scale, but a
+      // DSv2 function called through `Invoke` / `StaticInvoke` can return a `Decimal` of any
+      // scale (#6425). Like Spark's writers, this rescales the value in place, and leaves it
+      // untouched when it does not fit.
+      //
+      // The precision and scale test repeats `changePrecision`'s own fast path. It keeps the call
+      // off the common path, so the JIT can still scalar-replace the `Decimal` that an input
+      // getter allocates. With the bare call, passing a `DECIMAL(18, 2)` column through took
+      // about half as long again per row.
+      //
       // DecimalOutputShortFastPath: precision <= 18 fits in a signed long, so pass the unscaled
       // value to `setSafe(int, long)` and skip the BigDecimal allocation.
+      val dec = ctx.freshName("dec")
+      val (precision, scale) = (dt.precision, dt.scale)
       val write =
-        if (dt.precision <= Decimal.MAX_LONG_DIGITS) {
-          s"$targetVec.setSafe($idx, $source.toUnscaledLong());"
+        if (precision <= Decimal.MAX_LONG_DIGITS) {
+          s"$targetVec.setSafe($idx, $dec.toUnscaledLong());"
         } else {
-          s"$targetVec.setSafe($idx, $source.toJavaBigDecimal());"
+          s"$targetVec.setSafe($idx, $dec.toJavaBigDecimal());"
         }
-      OutputEmit("", write)
+      OutputEmit(
+        "",
+        s"""org.apache.spark.sql.types.Decimal $dec = $source;
+           |if (($dec.precision() == $precision && $dec.scale() == $scale) ||
+           |    $dec.changePrecision($precision, $scale)) {
+           |  $write
+           |} else {
+           |  $targetVec.setNull($idx);
+           |}""".stripMargin)
     case _: StringType =>
       // Utf8OutputOnHeapShortcut: when the UTF8String is on-heap (Spark's string functions
       // allocate results on-heap), pass its backing byte[] directly to `setSafe`, skipping the

@@ -25,14 +25,19 @@ import org.scalatest.exceptions.TestFailedException
 
 import org.apache.arrow.vector._
 import org.apache.spark.{SparkConf, SparkEnv, TaskContext}
-import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.{CometTestBase, Row}
 import org.apache.spark.sql.api.java.UDF1
+import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.catalyst.analysis.NoSuchFunctionException
 import org.apache.spark.sql.catalyst.expressions.{Add, Alias, AttributeReference, BoundReference, Cast, CreateArray, CreateMap, CreateNamedStruct, Expression, Hypot, Literal, MapConcat}
 import org.apache.spark.sql.catalyst.expressions.objects.Invoke
 import org.apache.spark.sql.comet.CometProjectExec
+import org.apache.spark.sql.connector.catalog.{FunctionCatalog, Identifier}
+import org.apache.spark.sql.connector.catalog.functions.{BoundFunction, ScalarFunction, UnboundFunction}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
+import org.apache.spark.sql.util.CaseInsensitiveStringMap
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
@@ -2327,6 +2332,48 @@ class CometCodegenSuite
       Invoke(target, "twice", StringType, Seq(Literal(UTF8String.fromString("ab"), StringType)))
     assert(runKernel(folded, 1)(_.getUTF8String(0).toString) === "abab")
   }
+
+  test("decimal results of a DSv2 function are rescaled to the declared type (#6425)") {
+    // Spark lowers a call to a DSv2 function with an instance `invoke` method to `Invoke`, which
+    // the dispatcher runs. Both functions return `Decimal(i)` at scale 0, one declaring
+    // `DECIMAL(10, 2)` and one `DECIMAL(20, 12)`, which covers both of the dispatcher's decimal
+    // writers. Spark's row writer rescales the value with `changePrecision` and writes null when
+    // it does not fit: 100000000 has nine integer digits and both types allow eight. Spark adds
+    // no overflow check around the call, so that null does not depend on ANSI mode. `map` is
+    // itself dispatched, so its value exercises the nested writer.
+    def dec(s: String) = new java.math.BigDecimal(s)
+    val expected = Seq(
+      Row(3, dec("3.00"), dec("3.000000000000"), Map("k" -> dec("3.00"))),
+      Row(-7, dec("-7.00"), dec("-7.000000000000"), Map("k" -> dec("-7.00"))),
+      Row(null, null, null, Map("k" -> null)),
+      Row(
+        99999999,
+        dec("99999999.00"),
+        dec("99999999.000000000000"),
+        Map("k" -> dec("99999999.00"))),
+      Row(100000000, null, null, Map("k" -> null)))
+    withSQLConf(
+      "spark.sql.catalog.decfn" -> classOf[CometCodegenSuite.DecimalFunctionCatalog].getName) {
+      withTable("t") {
+        sql("CREATE TABLE t (i INT) USING parquet")
+        // One file, so the kernel sees every row in one batch.
+        sql(
+          "INSERT INTO t SELECT /*+ REPARTITION(1) */ * FROM " +
+            "VALUES (3), (-7), (NULL), (99999999), (100000000) AS v(i)")
+        for (ansi <- Seq("true", "false")) {
+          withSQLConf(SQLConf.ANSI_ENABLED.key -> ansi) {
+            val df = sql(
+              "SELECT i, decfn.ns.as_money(i), decfn.ns.as_wide_money(i), " +
+                "map('k', decfn.ns.as_money(i)) FROM t")
+            assertCodegenRan {
+              checkSparkAnswerAndOperator(df)
+            }
+            checkAnswer(df, expected)
+          }
+        }
+      }
+    }
+  }
 }
 
 /**
@@ -2345,6 +2392,44 @@ object CometCodegenSuite {
   /** Deliberately not `Serializable`, to make the closure serializer refuse the bound tree. */
   class NotSerializableTarget {
     def twice(s: UTF8String): UTF8String = UTF8String.fromString(s.toString + s.toString)
+  }
+
+  /**
+   * DSv2 function catalog for the #6425 test. `as_money` declares `DECIMAL(10, 2)` and
+   * `as_wide_money` declares `DECIMAL(20, 12)`.
+   */
+  class DecimalFunctionCatalog extends FunctionCatalog {
+    private val functions = Map(
+      "as_money" -> new ScaleZeroDecimalFunction(10, 2),
+      "as_wide_money" -> new ScaleZeroDecimalFunction(20, 12))
+    private var catalogName: String = _
+
+    override def initialize(name: String, options: CaseInsensitiveStringMap): Unit =
+      catalogName = name
+
+    override def name(): String = catalogName
+
+    override def listFunctions(namespace: Array[String]): Array[Identifier] =
+      functions.keys.map(Identifier.of(namespace, _)).toArray
+
+    override def loadFunction(ident: Identifier): UnboundFunction =
+      functions.getOrElse(ident.name(), throw new NoSuchFunctionException(ident))
+  }
+
+  /**
+   * Returns its `INT` argument as `Decimal(v)`, at scale 0, whatever scale it declares. `invoke`
+   * is an instance method, so Spark lowers a call to `Invoke`. The function binds to itself.
+   */
+  class ScaleZeroDecimalFunction(precision: Int, scale: Int)
+      extends UnboundFunction
+      with ScalarFunction[Decimal] {
+    override def name(): String = "scale_zero_decimal"
+    override def description(): String = s"int -> decimal($precision, $scale), at scale 0"
+    override def bind(inputType: StructType): BoundFunction = this
+    override def inputTypes(): Array[DataType] = Array(IntegerType)
+    override def resultType(): DataType = DecimalType(precision, scale)
+    def invoke(v: Int): Decimal = Decimal(v)
+    override def produceResult(input: InternalRow): Decimal = invoke(input.getInt(0))
   }
 }
 

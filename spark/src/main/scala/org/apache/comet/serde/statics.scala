@@ -81,10 +81,11 @@ object CometStaticInvoke extends CometExpressionSerde[StaticInvoke] {
    * dispatcher, and at least one of those is not dispatchable. `CometIcebergTruncate` declines a
    * decimal because Iceberg's `truncate` can return a value wider than the column's declared
    * precision, which Spark nulls only when the row is materialized; the dispatcher writes into an
-   * Arrow `Decimal128(precision, scale)` vector just like a native kernel does, so it produces
-   * the out-of-range value instead of a null. The mixin's contract ("the case must be something
-   * `doGenCode` can compile") does not cover a limit that lives at the Arrow output boundary, so
-   * enrollment stays with the individual handlers.
+   * Arrow `Decimal128(precision, scale)` vector just like a native kernel does, so it has to null
+   * the value at its own output, and an enclosing predicate or hash then sees a null where Spark
+   * sees the oversized value. The mixin's contract ("the case must be something `doGenCode` can
+   * compile") does not cover a limit that lives at the Arrow output boundary, so enrollment stays
+   * with the individual handlers.
    */
   override def getSupportLevel(expr: StaticInvoke): SupportLevel =
     handlerFor(expr)

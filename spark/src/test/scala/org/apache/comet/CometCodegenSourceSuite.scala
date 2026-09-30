@@ -401,6 +401,10 @@ class CometCodegenSourceSuite extends AnyFunSuite {
       !result.body.contains(".toJavaBigDecimal("),
       "expected no BigDecimal allocation for short-precision output; got:\n" +
         CodeFormatter.format(result.code))
+    // Rescaled to the declared type first, as Spark's row writer does (#6425).
+    assert(
+      result.body.contains(".changePrecision(18, 2)"),
+      s"expected changePrecision before the write; got:\n${CodeFormatter.format(result.code)}")
   }
 
   test("DecimalVector setSafe uses BigDecimal slow path for long-precision output") {
@@ -417,6 +421,9 @@ class CometCodegenSourceSuite extends AnyFunSuite {
       !result.body.contains(".toUnscaledLong()"),
       "expected no unscaled-long write for long-precision output; got:\n" +
         CodeFormatter.format(result.code))
+    assert(
+      result.body.contains(".changePrecision(38, 10)"),
+      s"expected changePrecision before the write; got:\n${CodeFormatter.format(result.code)}")
   }
 
   test("VarCharVector setSafe uses on-heap UTF8String shortcut") {
