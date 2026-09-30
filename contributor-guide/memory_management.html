@@ -901,6 +901,11 @@ forget, and a <code class="docutils literal notranslate"><span class="pre">creat
 <p><code class="docutils literal notranslate"><span class="pre">TaskSharedMemoryPool::drop</span></code> has to handle one race: an <code class="docutils literal notranslate"><span class="pre">acquire</span></code> can observe an expired <code class="docutils literal notranslate"><span class="pre">Weak</span></code> and
 insert a replacement before the dying pool reaches the registry lock. The drop therefore compares
 pointers and only removes an entry that is still its own.</p>
+<p>The pool acquires memory from Spark through the <code class="docutils literal notranslate"><span class="pre">CometTaskMemoryManager</span></code> passed with the plan that
+created it, so the JVM side shares one manager per task as well: <code class="docutils literal notranslate"><span class="pre">CometExecIterator.taskMemory</span></code>
+hands every native plan in a task the same one and drops it when the task completes. Its <code class="docutils literal notranslate"><span class="pre">getUsed</span></code>
+covers the whole task, so <code class="docutils literal notranslate"><span class="pre">CometExecIterator.close()</span></code> warns about memory still in use only when
+the task’s last open native plan closes.</p>
 </section>
 </section>
 <section id="how-datafusion-consumes-the-pool">
