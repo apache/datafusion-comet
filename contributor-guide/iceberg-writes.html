@@ -761,10 +761,17 @@ task:</p>
 <li><p><strong>Location generation.</strong> <code class="docutils literal notranslate"><span class="pre">CometLocationGenerator</span></code> (<code class="docutils literal notranslate"><span class="pre">iceberg_partition_path.rs</span></code>) replaces
 iceberg-rust’s <code class="docutils literal notranslate"><span class="pre">DefaultLocationGenerator</span></code> and renders partition directories the way iceberg-java’s
 <code class="docutils literal notranslate"><span class="pre">PartitionSpec.partitionToPath</span></code> does. iceberg-rust’s own rendering differs for several types, and
-panics for pre-1970 <code class="docutils literal notranslate"><span class="pre">timestamptz</span></code>. Float and double values use Comet’s Java <code class="docutils literal notranslate"><span class="pre">Double.toString</span></code>
-renderer (<code class="docutils literal notranslate"><span class="pre">java_float_string</span></code>), shared with <code class="docutils literal notranslate"><span class="pre">cast(float</span> <span class="pre">as</span> <span class="pre">string)</span></code>. The partition type is
-resolved once when the generator is built, because <code class="docutils literal notranslate"><span class="pre">LocationGenerator::generate_location</span></code> cannot
-return an error.</p></li>
+panics for pre-1970 <code class="docutils literal notranslate"><span class="pre">timestamptz</span></code> and for dates past <code class="docutils literal notranslate"><span class="pre">chrono</span></code>’s calendar. Float and double values
+use Comet’s Java <code class="docutils literal notranslate"><span class="pre">Double.toString</span></code> renderer (<code class="docutils literal notranslate"><span class="pre">java_float_string</span></code>), shared with
+<code class="docutils literal notranslate"><span class="pre">cast(float</span> <span class="pre">as</span> <span class="pre">string)</span></code>. The partition type is resolved once when the generator is built, because
+<code class="docutils literal notranslate"><span class="pre">LocationGenerator::generate_location</span></code> cannot return an error.</p></li>
+<li><p><strong>Partition values.</strong> <code class="docutils literal notranslate"><span class="pre">PartitionValueCalculator</span></code> (<code class="docutils literal notranslate"><span class="pre">iceberg_partition_value.rs</span></code>) replaces
+iceberg-rust’s calculator of the same name, and <code class="docutils literal notranslate"><span class="pre">PartitionSplitter</span></code> replaces its
+<code class="docutils literal notranslate"><span class="pre">RecordBatchPartitionSplitter</span></code>. <code class="docutils literal notranslate"><span class="pre">year</span></code> and <code class="docutils literal notranslate"><span class="pre">month</span></code> go through Comet’s <code class="docutils literal notranslate"><span class="pre">iceberg_years</span></code> /
+<code class="docutils literal notranslate"><span class="pre">iceberg_months</span></code> kernels, the ones the sort in front of a clustered write runs. iceberg-rust
+computes them with Arrow’s <code class="docutils literal notranslate"><span class="pre">date_part</span></code>, which returns NULL past <code class="docutils literal notranslate"><span class="pre">chrono</span></code>’s calendar
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6145">#6145</a>). Every other transform stays on
+iceberg-rust.</p></li>
 <li><p><strong>File names.</strong> <code class="docutils literal notranslate"><span class="pre">file_name_prefix</span></code> embeds the partition id, the task attempt id and the operation
 id, so a retried or speculative attempt never reuses another attempt’s file names.</p></li>
 <li><p><strong>Row pacing.</strong> iceberg-java’s rolling writer checks the target file size every 1000 rows of the
@@ -909,8 +916,8 @@ the writer: run the write suites and the Iceberg Spark tests. The pin policy is 
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">IcebergWriteProtoTranslationSuite</span></code></p></td>
 <td><p>Translation of properties into <code class="docutils literal notranslate"><span class="pre">IcebergParquetWriteSettings</span></code> and the writer mode.</p></td>
 </tr>
-<tr class="row-odd"><td><p>Rust tests in <code class="docutils literal notranslate"><span class="pre">iceberg_write.rs</span></code> and <code class="docutils literal notranslate"><span class="pre">iceberg_partition_path.rs</span></code></p></td>
-<td><p>File rolling on the 1000-row grid, fanout order, clustered input checks, cleanup guard, manifest round trip, partition path rendering.</p></td>
+<tr class="row-odd"><td><p>Rust tests in <code class="docutils literal notranslate"><span class="pre">iceberg_write.rs</span></code> and in <code class="docutils literal notranslate"><span class="pre">iceberg_partition_*.rs</span></code></p></td>
+<td><p>File rolling on the 1000-row grid, fanout order, clustered input checks, cleanup guard, manifest round trip, partition path rendering, partition values past <code class="docutils literal notranslate"><span class="pre">chrono</span></code>’s calendar.</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CometIcebergWriteBenchmark</span></code></p></td>
 <td><p>Native versus iceberg-java for unpartitioned, clustered, fanout and copy-on-write delete writes. It checks each arm’s plan before timing it.</p></td>
@@ -959,6 +966,10 @@ namespace that reaches the writer, as the <code class="docutils literal notransl
 <li><p><strong>Map iteration order leaks.</strong> It reaches file names, manifest order and read order.</p></li>
 <li><p><strong>Values that compare equal in Rust may not in Java.</strong> Signed zeros and NaN under <code class="docutils literal notranslate"><span class="pre">OrderedFloat</span></code>,
 and string or float rendering in partition paths.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">chrono</span></code> stops at year 262142.</strong> A Spark date reaches year 5881580 and a timestamp year 294247,
+and iceberg-java handles all of them. Code that goes through <code class="docutils literal notranslate"><span class="pre">chrono</span></code>, including Arrow’s
+<code class="docutils literal notranslate"><span class="pre">date_part</span></code>, panics or returns NULL past that
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6145">#6145</a>).</p></li>
 <li><p><strong>Partition evolution leaves <code class="docutils literal notranslate"><span class="pre">void</span></code> fields behind.</strong> A v1 spec keeps a dropped partition field as
 a <code class="docutils literal notranslate"><span class="pre">void</span></code> transform, whose source column may later be dropped from the schema. Resolving the spec
 against the schema then fails
