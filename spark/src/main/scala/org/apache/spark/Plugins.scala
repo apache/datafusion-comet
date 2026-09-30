@@ -23,16 +23,19 @@ import java.{util => ju}
 import java.util.Collections
 import java.util.concurrent.atomic.AtomicReference
 
+import scala.collection.mutable
 import scala.util.Try
 
 import org.apache.spark.api.plugin.{DriverPlugin, ExecutorPlugin, PluginContext, SparkPlugin}
 import org.apache.spark.internal.Logging
-import org.apache.spark.internal.config.{EXECUTOR_MEMORY_OVERHEAD, EXECUTOR_MEMORY_OVERHEAD_FACTOR}
+import org.apache.spark.internal.config.{EVENT_LOG_ENABLED, EXECUTOR_MEMORY_OVERHEAD, EXECUTOR_MEMORY_OVERHEAD_FACTOR}
+import org.apache.spark.scheduler.{SparkListener, SparkListenerApplicationEnd, SparkListenerExecutorRemoved}
 import org.apache.spark.sql.internal.StaticSQLConf
 
 import org.apache.comet.{COMET_VERSION, CometExecIterator, CometExecutorMemoryUsage, CometSparkSessionExtensions, NativeBase}
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometConf.{COMET_ICEBERG_WRITE_REPORT_DIR, COMET_METRICS_ENABLED, COMET_ONHEAP_ENABLED}
+import org.apache.comet.CometExecIterator.MemoryUsageSummary
 import org.apache.comet.CometKryoRegistrator
 import org.apache.comet.annotation.Public
 import org.apache.comet.iceberg.IcebergWriteReportListener
@@ -53,10 +56,31 @@ class CometDriverPlugin extends DriverPlugin with Logging {
   // Set by init, before Spark delivers any message, and read on the RPC thread that delivers them.
   @volatile private var sparkContext: SparkContext = _
 
+  // By executor, the memory usage samples that the event log has yet to record. The RPC thread
+  // that delivers samples shares it with the threads that record what is left of them.
+  private val memoryUsageSummaries = mutable.HashMap.empty[String, MemoryUsageSummary]
+
   override def init(sc: SparkContext, pluginContext: PluginContext): ju.Map[String, String] = {
     logInfo("CometDriverPlugin init")
 
     sparkContext = sc
+    if (sc.conf.get(EVENT_LOG_ENABLED)) {
+      // A queue of its own, so that a slow listener on the shared queue cannot hold the
+      // application's end back until the listener bus has stopped, which drops what is posted
+      // after it.
+      sc.listenerBus.addToQueue(
+        new SparkListener {
+          // An executor that has gone away sends no later sample to end its summary.
+          override def onExecutorRemoved(event: SparkListenerExecutorRemoved): Unit =
+            recordMemoryUsage(memoryUsageSummaries.synchronized {
+              memoryUsageSummaries.remove(event.executorId).toList.flatMap(_.flush())
+            })
+
+          override def onApplicationEnd(event: SparkListenerApplicationEnd): Unit =
+            recordRemainingMemoryUsage()
+        },
+        "comet")
+    }
 
     // Expose the Comet build version as a Spark config so it can be queried at runtime, e.g.
     // `spark.conf.get("spark.comet.version")` or `SET spark.comet.version` in SQL. This is set
@@ -89,10 +113,14 @@ class CometDriverPlugin extends DriverPlugin with Logging {
   }
 
   override def receive(message: Any): AnyRef = message match {
-    // An executor's memory usage sample. Posting it to the listener bus is what writes it to the
-    // event log. A one-way message gets no reply, and Spark logs any reply that is not null.
-    case memoryUsage: CometExecutorMemoryUsage =>
-      sparkContext.listenerBus.post(memoryUsage)
+    // An executor's memory usage sample. A one-way message gets no reply, and Spark logs any
+    // reply that is not null.
+    case sample: CometExecutorMemoryUsage =>
+      recordMemoryUsage(memoryUsageSummaries.synchronized {
+        memoryUsageSummaries
+          .getOrElseUpdate(sample.executorId, new MemoryUsageSummary)
+          .add(sample)
+      })
       null
     case _ => super.receive(message)
   }
@@ -100,10 +128,25 @@ class CometDriverPlugin extends DriverPlugin with Logging {
   override def shutdown(): Unit = {
     logInfo("CometDriverPlugin shutdown")
 
+    // From Spark 4.0 the listener bus stops after the plugins, so this records what is left even
+    // if the listener has yet to see the application end. Before 4.0 the bus has stopped already.
+    recordRemainingMemoryUsage()
+
     NativeBase.releaseNative()
 
     super.shutdown()
   }
+
+  // Posting samples to the listener bus is what writes them to the event log.
+  private def recordMemoryUsage(samples: Seq[CometExecutorMemoryUsage]): Unit =
+    samples.foreach(sparkContext.listenerBus.post)
+
+  private def recordRemainingMemoryUsage(): Unit =
+    recordMemoryUsage(memoryUsageSummaries.synchronized {
+      val remaining = memoryUsageSummaries.values.flatMap(_.flush()).toList
+      memoryUsageSummaries.clear()
+      remaining
+    })
 
   override def registerMetrics(appId: String, pluginContext: PluginContext): Unit =
     super.registerMetrics(appId, pluginContext)
@@ -333,11 +376,13 @@ object CometExecutorPlugin {
   private val current = new AtomicReference[PluginContext]()
 
   /**
-   * The context of the executor plugin running in this JVM, through which the executor can send
-   * messages to the driver plugin. None when the application does not run the Comet plugin, and
-   * after the executor has shut it down.
+   * The context of the executor plugin running in this JVM, through which the executor sends its
+   * memory usage samples to the driver plugin when the application writes an event log. None
+   * without the Comet plugin or an event log, and after the executor has shut the plugin down.
+   * The flag is read as the driver reads it, which ignores surrounding whitespace.
    */
-  private[apache] def pluginContext: Option[PluginContext] = Option(current.get())
+  private[apache] def eventLogContext: Option[PluginContext] =
+    Option(current.get()).filter(_.conf.get(EVENT_LOG_ENABLED))
 }
 
 /**

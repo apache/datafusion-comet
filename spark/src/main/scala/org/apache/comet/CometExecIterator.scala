@@ -424,12 +424,12 @@ object CometExecIterator extends Logging {
   private var limitExceededAtLastLog = false
 
   /**
-   * Whether the memory usage log failed to send a sample to the driver, after which it logs its
-   * samples on the executor. Only the log's own thread sets it.
+   * Whether the memory usage log failed to send a sample to the driver, after which it stops
+   * sending them. Only the log's own thread sets it.
    */
   private var eventLogSendFailed = false
 
-  private val EVENT_LOG_ENABLED = "spark.eventLog.enabled"
+  private val EVENT_LOG_SUMMARY_INTERVAL_MS = TimeUnit.MINUTES.toMillis(1)
 
   /**
    * Starts the executor's native memory usage log when the first native plan is created, unless
@@ -443,10 +443,11 @@ object CometExecIterator extends Logging {
    * all of its input before it returns, and a plan fed directly by native scans parks the task
    * thread until its next batch is ready.
    *
-   * When the application writes an event log and runs the Comet plugin, the samples go to the
-   * event log instead; see [[sendToEventLog]]. Executors' own logs are spread over the cluster
-   * and often go away with their containers, while the event log keeps every executor's samples
-   * in one place, next to the jobs and stages they ran alongside.
+   * When the application writes an event log and runs the Comet plugin, each sample also goes to
+   * the driver, which writes a summary of them to the event log; see [[sendToEventLog]].
+   * Executors' own logs are spread over the cluster and often go away with their containers,
+   * while the event log keeps every executor's samples in one place, next to the jobs and stages
+   * they ran alongside.
    */
   private def startMemoryUsageLog(): Unit = {
     if (memoryUsageLogStarted.compareAndSet(false, true)) {
@@ -466,14 +467,6 @@ object CometExecIterator extends Logging {
               "configuration. Set it when the application is submitted.")
         }
       if (intervalMs > 0) {
-        // Plugins start with the executor, before it runs any task, so this is known by now.
-        if (conf.getBoolean(EVENT_LOG_ENABLED, false) &&
-          CometExecutorPlugin.pluginContext.isEmpty) {
-          logInfo(
-            s"Logging native memory usage on the executor although $EVENT_LOG_ENABLED is " +
-              "true: sending it to the event log needs the Comet plugin, " +
-              "spark.plugins=org.apache.spark.CometPlugin.")
-        }
         val nativeLib = new Native()
         val limitBytes = nativeMemoryLimit(conf)
         val _ = Executors
@@ -610,8 +603,8 @@ object CometExecIterator extends Logging {
       val usage = nativeLib.getMemoryUsage()
       val jvmArrow = JvmArrowMemory.current()
       memoryUsageMessage(usage, jvmArrow, plansAtLastMemoryUsageLog).foreach { message =>
-        // A sample the event log records stays in the executor's log at DEBUG only.
-        if (sendToEventLog(usage, jvmArrow)) logDebug(message) else logInfo(message)
+        logInfo(message)
+        sendToEventLog(usage, jvmArrow)
       }
       plansAtLastMemoryUsageLog = usage(3)
       val warning = limitBytes.flatMap(
@@ -632,34 +625,78 @@ object CometExecIterator extends Logging {
   }
 
   /**
-   * Sends a memory usage sample to the driver, which posts it to the listener bus for the event
-   * log to record, and returns whether it did. It does when the application writes an event log,
-   * which `spark.eventLog.enabled` shows on the executor as well as on the driver, and the
-   * executor runs the Comet plugin, whose channel to the driver carries the sample. Both are
-   * checked for every sample rather than once, because in local mode each SparkContext starts its
-   * own executor plugin. A failure to send is not retried: those that surface here, such as a
-   * driver endpoint that could not be found, persist, so the log falls back to the executor's log
-   * for good.
+   * Sends a memory usage sample to the driver, which writes a summary of the samples to the event
+   * log; see [[MemoryUsageSummary]]. The executor plugin is looked up for every sample rather
+   * than once, because in local mode each SparkContext starts its own. Executors receive the
+   * driver's `spark.*` settings, so the plugin sees whether the driver writes an event log. The
+   * send is one-way, so Spark reports a failure to reach a remote driver in its own log. A
+   * failure that surfaces here, such as a driver endpoint that could not be found, persists, so
+   * the log stops sending after it.
    */
-  private[apache] def sendToEventLog(usage: Array[Long], jvmArrow: JvmArrowMemory): Boolean =
-    (Option(SparkEnv.get), CometExecutorPlugin.pluginContext) match {
-      case (Some(env), Some(pluginContext))
-          if !eventLogSendFailed && env.conf.getBoolean(EVENT_LOG_ENABLED, false) =>
+  private[apache] def sendToEventLog(usage: Array[Long], jvmArrow: JvmArrowMemory): Unit =
+    if (!eventLogSendFailed) {
+      CometExecutorPlugin.eventLogContext.foreach { pluginContext =>
         try {
           pluginContext.send(
-            memoryUsageEvent(env.executorId, System.currentTimeMillis(), usage, jvmArrow))
-          true
+            memoryUsageEvent(
+              pluginContext.executorID(),
+              System.currentTimeMillis(),
+              usage,
+              jvmArrow))
         } catch {
           case NonFatal(e) =>
             logWarning(
-              "Logging native memory usage on the executor from now on: could not send it to " +
-                "the driver for the event log",
+              "Not sending native memory usage to the event log from now on: could not send " +
+                "it to the driver",
               e)
             eventLogSendFailed = true
-            false
         }
-      case _ => false
+      }
     }
+
+  /**
+   * The memory usage samples that one executor sent the driver since the event log last recorded
+   * any of them. The driver writes, and flushes, each event it records, so rather than one event
+   * per executor per interval it records two samples for each minute an executor reports: the one
+   * with the most untracked memory, and the last, which is the one after the last plan finishes
+   * when the executor goes idle. Spark's executor metrics reach the event log as peaks in the
+   * same way. The driver holds the summary rather than the executor: an executor that the
+   * application stops, or the cluster manager kills, has no chance to send what it holds.
+   */
+  class MemoryUsageSummary {
+
+    /** The sample with the most untracked memory since the previous summary, and that memory. */
+    private var peak: Option[(CometExecutorMemoryUsage, Long)] = None
+
+    private var last: Option[CometExecutorMemoryUsage] = None
+
+    /** When the first sample since the previous summary was taken. */
+    private var start = 0L
+
+    /**
+     * Adds `sample`, and returns the summary that it ends, if it was taken a minute or more after
+     * the first sample of the summary, or nothing.
+     */
+    def add(sample: CometExecutorMemoryUsage): Seq[CometExecutorMemoryUsage] = {
+      val ended =
+        if (last.nonEmpty && sample.time - start >= EVENT_LOG_SUMMARY_INTERVAL_MS) flush()
+        else Nil
+      if (last.isEmpty) start = sample.time
+      val jvmArrow = JvmArrowMemory(sample.jvmArrowAllocated, sample.jvmArrowImported)
+      val untracked = untrackedMemory(sample.nativeAllocated, sample.poolsReserved, jvmArrow)
+      if (peak.forall(_._2 < untracked)) peak = Some((sample, untracked))
+      last = Some(sample)
+      ended
+    }
+
+    /** The samples to record since the previous summary, after which the summary starts over. */
+    def flush(): Seq[CometExecutorMemoryUsage] = {
+      val summary = (peak.map(_._1).toSeq ++ last).distinct
+      peak = None
+      last = None
+      summary
+    }
+  }
 
   /**
    * The event log's record of the memory usage sample `usage`, as returned by
@@ -734,6 +771,14 @@ object CometExecIterator extends Logging {
   }
 
   /**
+   * The memory Comet holds outside the JVM heap that Spark's off-heap pool does not account for:
+   * `allocated` native memory, less the `reserved` part, plus the Arrow memory the JVM allocated
+   * itself; see [[nativeMemoryLimitWarning]].
+   */
+  def untrackedMemory(allocated: Long, reserved: Long, jvmArrow: JvmArrowMemory): Long =
+    math.max(allocated + jvmArrow.allocatedByJvm - reserved, 0L)
+
+  /**
    * A warning if the executor's native footprint exceeds `limitBytes`, the container's memory
    * outside the JVM heap; see [[nativeMemoryLimit]].
    *
@@ -756,7 +801,7 @@ object CometExecIterator extends Logging {
       jvmArrow: JvmArrowMemory,
       sparkOffHeapUsed: Long,
       limitBytes: Long): Option[String] = {
-    val untracked = math.max(usage(0) + jvmArrow.allocatedByJvm - usage(1), 0L)
+    val untracked = untrackedMemory(usage(0), usage(1), jvmArrow)
     val footprint = untracked + sparkOffHeapUsed
     if (footprint > limitBytes) {
       Some(s"Comet memory that Spark does not account for (${toMiB(untracked)}, native and JVM " +

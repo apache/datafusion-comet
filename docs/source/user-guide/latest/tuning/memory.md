@@ -157,8 +157,8 @@ Comet native memory usage: allocated 5412.3 MiB, reserved 3890.0 MiB (16 native 
   which allocator a buffer is charged to rather than where it was allocated, so treat the JVM's
   part as an estimate.
 
-When the application writes an event log and runs the Comet plugin, the executors write these
-samples to the event log instead; see [Reading the Memory Usage Log from the Event Log].
+When the application writes an event log and runs the Comet plugin, the event log also records a
+summary of these samples; see [Reading the Memory Usage Log from the Event Log].
 
 Comet's untracked memory is what Comet holds outside the JVM heap that Spark's off-heap pool does
 not account for: `allocated`, plus the JVM Arrow figure less the part imported from native, minus
@@ -193,8 +193,7 @@ below. It derives the overhead the way YARN and Kubernetes size the executor's c
 described in [Configuring Executor Memory Overhead]. For a PySpark application it also counts
 `spark.executor.pyspark.memory` as part of the container when the cluster manager adds it, which
 YARN does, and Kubernetes does in cluster mode. There is no warning in local mode, on a standalone
-cluster, whose workers do not limit an executor's memory, or with any other cluster manager. The
-warning goes to the executor's log even when the samples go to the event log.
+cluster, whose workers do not limit an executor's memory, or with any other cluster manager.
 
 Look more closely before raising the overhead if the untracked memory keeps growing through a run
 rather than levelling off: memory that is not being released will exhaust any overhead eventually.
@@ -209,15 +208,25 @@ it when the application is submitted. Set it to `0` to turn the log off.
 ### Reading the Memory Usage Log from the Event Log
 
 When `spark.eventLog.enabled` is `true` and the application runs the Comet plugin
-(`spark.plugins=org.apache.spark.CometPlugin`), each executor sends its samples to the driver, which
-writes them to the application's event log. The event log keeps every executor's samples in one
-place, next to the jobs and stages they ran alongside, while executor logs are spread over the
-cluster and often go away with their containers. The executor then logs the line at DEBUG level
-only. Without the plugin, the samples stay in the executor's log at INFO level.
+(`spark.plugins=org.apache.spark.CometPlugin`), each executor also sends its samples to the driver,
+which writes a summary of them to the application's event log. The event log keeps every executor's
+samples in one place, next to the jobs and stages they ran alongside, while executor logs are spread
+over the cluster and often go away with their containers.
 
-Each sample is one event, on one line of the event log. It carries the figures of the line in bytes,
-the executor that took the sample, and when it did, in milliseconds since the epoch by the
-executor's clock. The line above looks like this as an event, spread over several lines here:
+The driver writes, and flushes, each event of its event log as it goes, so it does not write every
+sample. For each executor, it takes the samples a minute at a time and writes two of them: the one
+with the most untracked memory, and the last, which in the minute an executor goes idle is the one
+after its last native plan finishes. The samples of an executor's last minute of work wait on the
+driver until the executor runs native plans again, until it is removed, such as when the cluster
+manager kills it, or until the application stops. So each executor adds about two events a minute
+while it runs native plans, however short the interval, and the event with the most untracked memory
+for an executor is its sample with the most. The exceptions are samples an executor takes while the
+application stops, and samples the driver still holds if it exits without stopping the application.
+
+Each sample the driver writes is one event, on one line of the event log. It carries the figures of
+the line in bytes, the executor that took the sample, and when it did, in milliseconds since the
+epoch by the executor's clock. The line above looks like this as an event, spread over several lines
+here:
 
 ```json
 {
@@ -239,17 +248,16 @@ most untracked memory for each executor, in MiB:
 
 ```shell
 jq -n -c '[inputs | select(.Event == "org.apache.comet.CometExecutorMemoryUsage")
-    | {executorId, time, untrackedMiB: ((.nativeAllocated - .poolsReserved
-        + ([.jvmArrowAllocated - .jvmArrowImported, 0] | max)) / 1048576 | ceil)}]
+    | {executorId, time, untrackedMiB: (([.nativeAllocated - .poolsReserved
+        + ([.jvmArrowAllocated - .jvmArrowImported, 0] | max), 0] | max) / 1048576 | ceil)}]
   | group_by(.executorId) | map(max_by(.untrackedMiB))[]' <event log files>
 ```
 
 From Spark 4.0, event logs are compressed with zstd and split into several files by default, so
 decompress the files first, for example with `zstd -dc`. The Spark history server does not display
-these events, and one without Comet on its classpath logs once that it dropped them.
-
-Each executor adds one event per interval while it runs native plans, so a short interval on a large
-cluster makes the event log noticeably larger.
+these events, and one without Comet on its classpath logs once that it dropped them. From Spark 4.1,
+`spark.eventLog.excludedPatterns=org.apache.comet.CometExecutorMemoryUsage` leaves them out of the
+event log.
 
 ## Batch Size
 

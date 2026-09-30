@@ -24,9 +24,9 @@ import org.apache.spark.scheduler.SparkListenerEvent
 /**
  * One sample of an executor's native memory usage log, in the form the event log records it. When
  * the application writes an event log and runs the Comet plugin, the executor sends each sample
- * to the driver plugin instead of logging it, and the driver posts it to the listener bus, which
- * writes it to the event log as JSON with `"Event"` set to this class's name. See
- * `CometExecIterator.startMemoryUsageLog`.
+ * to the driver plugin as well as logging it, and the driver posts a summary of them to the
+ * listener bus, which writes each sample of it to the event log as JSON with `"Event"` set to
+ * this class's name. See `CometExecIterator.MemoryUsageSummary`.
  *
  * The memory figures are in bytes and are the ones the log line reports; see
  * `CometExecIterator.memoryUsageMessage`.
@@ -40,7 +40,7 @@ import org.apache.spark.scheduler.SparkListenerEvent
  *   pool tracks it.
  * @param poolsReserved
  *   The memory reserved across Comet's memory pools, counting a pool shared by several plans
- *   once.
+ *   once, less any that a pool recorded beyond what Spark granted it.
  * @param pools
  *   The number of live memory pools.
  * @param plans

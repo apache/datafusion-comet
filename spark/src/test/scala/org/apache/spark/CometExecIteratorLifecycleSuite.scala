@@ -504,6 +504,39 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
     assert(JsonProtocol.sparkEventFromJson(json) == event)
   }
 
+  test("the event log records the peak and the last memory usage sample of each minute") {
+    import CometExecIterator.{memoryUsageEvent, JvmArrowMemory, MemoryUsageSummary}
+    val mib = 1024L * 1024
+    // A sample taken `seconds` in, with `untrackedMiB` of native memory that no pool reserves.
+    def sample(
+        seconds: Int,
+        untrackedMiB: Long,
+        jvmArrow: JvmArrowMemory = JvmArrowMemory(0L, 0L)) =
+      memoryUsageEvent(
+        executorId = "7",
+        time = 1700000000000L + seconds * 1000L,
+        usage = Array((100 + untrackedMiB) * mib, 100 * mib, 2L, 3L),
+        jvmArrow = jvmArrow)
+
+    val summary = new MemoryUsageSummary
+    val peak = sample(10, 50)
+    val last = sample(50, 20)
+    assert(Seq(sample(0, 10), peak, last).flatMap(summary.add).isEmpty)
+    // A sample taken a minute or more after the first of a summary ends it, and starts the next.
+    val next = sample(60, 30)
+    assert(summary.add(next) == Seq(peak, last))
+
+    // Arrow memory that the JVM allocated counts as untracked, and the part imported from native
+    // does not, since the native figure already counts it.
+    val imported = sample(70, 0, JvmArrowMemory(allocated = 900 * mib, imported = 900 * mib))
+    val jvm = sample(80, 0, JvmArrowMemory(allocated = 40 * mib, imported = 0L))
+    assert(Seq(imported, jvm).flatMap(summary.add).isEmpty)
+    // What is left when the executor goes away or the application stops, a peak that is also the
+    // last sample recorded once.
+    assert(summary.flush() == Seq(jvm))
+    assert(summary.flush().isEmpty)
+  }
+
   test("the memory usage log reads JVM Arrow memory from the allocators, imports apart") {
     import CometExecIterator.JvmArrowMemory
     val root = new RootAllocator(Long.MaxValue)
