@@ -3721,6 +3721,65 @@ class CometExecSuite extends CometTestBase {
       })
   }
 
+  // Arrow Java ignores ArrowArray.offset on import, and a sliced boolean is the one array arrow-rs
+  // exports with a non-zero offset, so native has to zero it at every level, not only the top.
+  // https://github.com/apache/datafusion-comet/issues/6288
+  test("boolean struct children sliced by an OFFSET keep their values") {
+    withTempPath { dir =>
+      spark
+        .range(0, 1000)
+        .selectExpr(
+          "id AS v",
+          "named_struct('x', id % 7 = 0, 'y', id) AS st",
+          "named_struct('x', IF(id % 3 = 0, NULL, id % 7 = 0)) AS stn")
+        .write
+        .parquet(dir.getCanonicalPath)
+      withParquetTable(dir.getCanonicalPath, "t") {
+        // The OFFSET slices the sorted batch 17 rows in, which is not a whole byte of bits.
+        checkSparkAnswerAndOperator("SELECT st FROM t ORDER BY v LIMIT 40 OFFSET 17")
+        checkSparkAnswerAndOperator("SELECT stn FROM t ORDER BY v LIMIT 40 OFFSET 17")
+      }
+    }
+  }
+
+  test("boolean struct children built over sliced aggregate output keep their values") {
+    withTempPath { dir =>
+      spark
+        .range(0, 4000)
+        .selectExpr("id % 2000 AS k", "IF(id % 5 = 0, NULL, id % 2000 % 3 = 0) AS b")
+        .write
+        .parquet(dir.getCanonicalPath)
+      // The hash aggregate slices its emitted groups into batch-size chunks, so with one
+      // partition every output batch after the first is a slice, at offsets both on and off a
+      // byte boundary.
+      withSQLConf(
+        SQLConf.SHUFFLE_PARTITIONS.key -> "1",
+        CometConf.COMET_BATCH_SIZE.key -> "100") {
+        withParquetTable(dir.getCanonicalPath, "g") {
+          checkSparkAnswerAndOperator(
+            "SELECT named_struct('b', b, 'k', k) FROM (SELECT k, b, count(*) FROM g GROUP BY k, b)")
+        }
+      }
+    }
+  }
+
+  test("collect_list of structs with sliced boolean children keeps their values") {
+    withTempPath { dir =>
+      // One file, so the partial and final aggregates share a native plan and see one batch.
+      spark
+        .range(0, 100, 1, 1)
+        .selectExpr("0 AS k", "IF(id < 5, NULL, named_struct('b', id % 3 = 0)) AS st")
+        .write
+        .parquet(dir.getCanonicalPath)
+      withParquetTable(dir.getCanonicalPath, "t") {
+        // Dropping the leading null structs starts the group's only run past row 0, and
+        // collect_list returns a single run as a slice rather than a copy.
+        checkSparkAnswerAndOperator(
+          spark.table("t").coalesce(1).groupBy("k").agg(collect_list("st")))
+      }
+    }
+  }
+
   test("collect limit") {
     Seq("true", "false").foreach(aqe => {
       withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe) {
