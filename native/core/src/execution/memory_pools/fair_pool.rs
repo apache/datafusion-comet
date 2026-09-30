@@ -18,10 +18,8 @@
 use std::{
     collections::HashMap,
     fmt::{Debug, Display, Formatter, Result as FmtResult},
-    sync::Arc,
 };
 
-use jni::objects::{Global, JObject};
 use log::warn;
 
 use super::spark_memory::SparkMemory;
@@ -126,18 +124,7 @@ impl CometFairMemoryPool {
     /// Creating the pool makes no JVM call: the anchor byte is taken by the first grow that
     /// passes the pool's limits, so a plan that never allocates natively never touches Spark's
     /// memory manager and never counts as an active task there.
-    pub fn new(
-        task_memory_manager_handle: Arc<Global<JObject<'static>>>,
-        pool_size: usize,
-        task_attempt_id: i64,
-    ) -> CometFairMemoryPool {
-        Self::with_spark(
-            SparkMemory::new(task_memory_manager_handle, task_attempt_id),
-            pool_size,
-        )
-    }
-
-    fn with_spark(spark: SparkMemory, pool_size: usize) -> CometFairMemoryPool {
+    pub(super) fn with_spark(spark: SparkMemory, pool_size: usize) -> CometFairMemoryPool {
         Self {
             spark,
             pool_size,
@@ -147,6 +134,11 @@ impl CometFairMemoryPool {
                 anchor_held: false,
             }),
         }
+    }
+
+    /// The part of [`MemoryPool::reserved`] that Spark has not granted; see [`SparkMemory`].
+    pub(super) fn overcommit(&self) -> usize {
+        self.spark.overcommit()
     }
 
     /// Whether an anchor request came back covered. A declined anchor is a zero grant, so
@@ -448,7 +440,7 @@ mod tests {
     use std::collections::{hash_map::Entry, HashMap};
     use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering::SeqCst};
     use std::sync::mpsc::{channel, Receiver, Sender};
-    use std::sync::Barrier;
+    use std::sync::{Arc, Barrier};
     use std::thread;
     use std::time::Duration;
 
