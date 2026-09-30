@@ -37,6 +37,7 @@ use datafusion::datasource::physical_plan::parquet::metadata::DFParquetMetadata;
 use datafusion::datasource::physical_plan::parquet::{ParquetAccessPlan, RowGroupAccess};
 use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
 use datafusion::execution::runtime_env::RuntimeEnv;
+use datafusion_datasource::FileRange;
 use futures::{StreamExt, TryStreamExt};
 use object_store::path::Path;
 use object_store::{ObjectStore, ObjectStoreExt};
@@ -163,16 +164,22 @@ pub fn deserialize_dv_bitmap(data: &[u8]) -> Result<RoaringTreemap, ExecutionErr
 /// row groups become `Skip`, untouched groups stay `Scan`, and partially
 /// deleted groups get a `RowSelection` selecting the complement of the deleted
 /// rows. Page-index pruning later INTERSECTS with these selections, so DV
-/// skips and page skips compose.
+/// skips and page skips compose. When a file range is present, only its row groups acquire
+/// selectors; skipped groups still advance the file-global deletion-vector positions.
 pub fn build_access_plan(
-    row_group_row_counts: &[i64],
+    metadata: &ParquetMetaData,
     deleted: &RoaringTreemap,
+    file_range: Option<&FileRange>,
 ) -> Result<ParquetAccessPlan, ExecutionError> {
-    let mut plan = ParquetAccessPlan::new_all(row_group_row_counts.len());
-    // Single sweep over the (sorted) deleted row indexes, bucketing by row group.
-    let mut deleted_iter = deleted.iter().peekable();
+    let mut plan = ParquetAccessPlan::new_all(metadata.num_row_groups());
+    // Empty bitmaps create no selectors to avoid. Let the reader apply its ordinary range
+    // pruning instead of doing an extra page-offset pass for this case.
+    let file_range = file_range.filter(|_| !deleted.is_empty());
+    let mut deleted_iter = deleted.iter();
+    let mut next_deleted = deleted_iter.next();
     let mut group_start = 0u64;
-    for (idx, &num_rows) in row_group_row_counts.iter().enumerate() {
+    for (idx, row_group) in metadata.row_groups().iter().enumerate() {
+        let num_rows = row_group.num_rows();
         // A corrupt footer can report a negative row count. `num_rows as u64` would otherwise
         // wrap it into a huge positive value, silently corrupting every row-group boundary
         // computed from `group_start`/`group_end` below (and therefore which deleted row indexes
@@ -188,14 +195,32 @@ pub fn build_access_plan(
                 "Parquet footer row counts overflow at row group {idx} ({group_start} + {num_rows})"
             ))
         })?;
+        // Match DataFusion's prune_by_range: dictionary-page start takes precedence over
+        // data-page start, and FileRange is half-open. Keep an entry for every row group and
+        // advance file-global row positions even when this split cannot read the group.
+        if file_range.is_some_and(|range| {
+            let column = row_group.column(0);
+            let offset = column
+                .dictionary_page_offset()
+                .unwrap_or_else(|| column.data_page_offset());
+            !range.contains(offset)
+        }) {
+            plan.skip(idx);
+            group_start = group_end;
+            continue;
+        }
+
+        // Seeking skips deletion positions from preceding, excluded groups without visiting
+        // each one. The pinned Roaring implementation also handles absent 32-bit containers.
+        if next_deleted.is_some_and(|row| row < group_start) {
+            deleted_iter.advance_to(group_start);
+            next_deleted = deleted_iter.next();
+        }
         let mut selectors: Vec<RowSelector> = Vec::new();
         let mut cursor = group_start;
         let mut deleted_in_group = 0u64;
-        while let Some(&row) = deleted_iter.peek() {
-            if row >= group_end {
-                break;
-            }
-            deleted_iter.next();
+        while let Some(row) = next_deleted.filter(|row| *row < group_end) {
+            next_deleted = deleted_iter.next();
             deleted_in_group += 1;
             if row > cursor {
                 selectors.push(RowSelector::select((row - cursor) as usize));
@@ -217,10 +242,10 @@ pub fn build_access_plan(
         }
         group_start = group_end;
     }
-    // A deleted index beyond the file's total row count means the DV does not
-    // belong to this file (stale or corrupted metadata); silently dropping it
-    // would under-apply deletions.
-    if let Some(&row) = deleted_iter.peek() {
+    // Validate against the whole file even when this split excludes the final groups.
+    // A deleted index beyond the file's total row count means the DV does not belong to this
+    // file. Checking the maximum also catches corruption beyond an absent Roaring container.
+    if let Some(row) = deleted.max().filter(|row| *row >= group_start) {
         return Err(GeneralError(format!(
             "Deletion vector marks row {row} but the file only has {group_start} rows"
         )));
@@ -711,7 +736,7 @@ async fn attach_access_plan(
         ))
     })?;
 
-    let plan = build_access_plan(&row_counts, &deleted)
+    let plan = build_access_plan(&metadata, &deleted, file.range.as_ref())
         .map_err(|e| GeneralError(format!("Invalid deletion vector for {file_path}: {e}")))?;
 
     // Shrink the reservation to the reader-lifecycle steady state now that construction's
@@ -789,6 +814,58 @@ mod tests {
     use parquet::arrow::ArrowWriter;
     use parquet::file::metadata::ParquetMetaDataReader;
     use parquet::file::properties::WriterProperties;
+
+    fn metadata_with_page_offsets(
+        row_counts: &[i64],
+        offsets: &[(i64, Option<i64>)],
+    ) -> ParquetMetaData {
+        use parquet::basic::Type;
+        use parquet::file::metadata::{ColumnChunkMetaData, FileMetaData, RowGroupMetaData};
+        use parquet::schema::types::{SchemaDescriptor, Type as SchemaType};
+
+        assert_eq!(row_counts.len(), offsets.len());
+        let field = Arc::new(
+            SchemaType::primitive_type_builder("id", Type::INT64)
+                .build()
+                .unwrap(),
+        );
+        let schema = Arc::new(
+            SchemaType::group_type_builder("schema")
+                .with_fields(vec![field])
+                .build()
+                .unwrap(),
+        );
+        let descriptor = Arc::new(SchemaDescriptor::new(schema));
+        let row_groups = row_counts
+            .iter()
+            .zip(offsets)
+            .map(|(&count, &(data_offset, dictionary_offset))| {
+                RowGroupMetaData::builder(Arc::clone(&descriptor))
+                    .set_num_rows(count)
+                    .set_column_metadata(vec![ColumnChunkMetaData::builder(descriptor.column(0))
+                        .set_data_page_offset(data_offset)
+                        .set_dictionary_page_offset(dictionary_offset)
+                        .build()
+                        .unwrap()])
+                    .build()
+                    .unwrap()
+            })
+            .collect();
+        // Tests validate row-group counts, including corruption; do not sum them here.
+        let file_metadata = FileMetaData::new(1, 0, None, None, descriptor, None);
+        ParquetMetaData::new(file_metadata, row_groups)
+    }
+
+    fn full_file_access_plan(
+        row_counts: &[i64],
+        deleted: &RoaringTreemap,
+    ) -> Result<ParquetAccessPlan, ExecutionError> {
+        build_access_plan(
+            &metadata_with_page_offsets(row_counts, &vec![(0, None); row_counts.len()]),
+            deleted,
+            None,
+        )
+    }
 
     /// Mirror the pre-resolution `plan_delta_spark_scan` does before entering
     /// `attach_access_plans`: resolve `url`'s object store and within-store
@@ -1107,7 +1184,7 @@ mod tests {
         // Three row groups of 10 rows: group 0 untouched, group 1 fully
         // deleted, group 2 rows 21..24 deleted (local 1..4).
         let deleted: RoaringTreemap = (10u64..20).chain(21u64..24).collect();
-        let plan = build_access_plan(&[10, 10, 10], &deleted).unwrap();
+        let plan = full_file_access_plan(&[10, 10, 10], &deleted).unwrap();
         assert_eq!(&plan.inner()[0], &RowGroupAccess::Scan);
         assert_eq!(&plan.inner()[1], &RowGroupAccess::Skip);
         match &plan.inner()[2] {
@@ -1129,7 +1206,7 @@ mod tests {
     #[test]
     fn access_plan_rejects_out_of_range_rows() {
         let deleted: RoaringTreemap = [5u64, 25].into_iter().collect();
-        let err = build_access_plan(&[10, 10], &deleted).unwrap_err();
+        let err = full_file_access_plan(&[10, 10], &deleted).unwrap_err();
         assert!(format!("{err}").contains("only has 20 rows"));
     }
 
@@ -1153,7 +1230,7 @@ mod tests {
         let row_counts = vec![corrupted.num_rows()];
 
         let deleted = RoaringTreemap::new();
-        let err = build_access_plan(&row_counts, &deleted).unwrap_err();
+        let err = full_file_access_plan(&row_counts, &deleted).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("-5"), "expected the negative value: {msg}");
         assert!(
@@ -1166,7 +1243,7 @@ mod tests {
     fn access_plan_selects_complement_row_count() {
         // Random-ish pattern in one 100-row group: every 7th row deleted.
         let deleted: RoaringTreemap = (0u64..100).filter(|i| i % 7 == 0).collect();
-        let plan = build_access_plan(&[100], &deleted).unwrap();
+        let plan = full_file_access_plan(&[100], &deleted).unwrap();
         match &plan.inner()[0] {
             RowGroupAccess::Selection(sel) => {
                 let selected: usize = sel.iter().filter(|s| !s.skip).map(|s| s.row_count).sum();
@@ -1176,6 +1253,129 @@ mod tests {
             }
             other => panic!("expected selection, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn split_access_plan_preserves_file_global_positions() {
+        let metadata =
+            metadata_with_page_offsets(&[3, 3, 3], &[(10, None), (20, None), (30, None)]);
+        let plan = build_access_plan(
+            &metadata,
+            &RoaringTreemap::from_iter([1, 4, 7]),
+            Some(&FileRange { start: 20, end: 21 }),
+        )
+        .unwrap();
+        assert_eq!(plan.inner()[0], RowGroupAccess::Skip);
+        assert_eq!(plan.inner()[2], RowGroupAccess::Skip);
+        assert_eq!(
+            plan.inner()[1],
+            RowGroupAccess::Selection(RowSelection::from(vec![
+                RowSelector::select(1),
+                RowSelector::skip(1),
+                RowSelector::select(1),
+            ]))
+        );
+    }
+
+    #[test]
+    fn split_access_plan_uses_half_open_dictionary_page_boundaries() {
+        let metadata =
+            metadata_with_page_offsets(&[3, 3, 3], &[(20, Some(10)), (25, Some(20)), (30, None)]);
+        let plan = build_access_plan(
+            &metadata,
+            &RoaringTreemap::from_iter([1]),
+            Some(&FileRange { start: 20, end: 30 }),
+        )
+        .unwrap();
+        assert_eq!(
+            plan.inner(),
+            &[
+                RowGroupAccess::Skip,
+                RowGroupAccess::Scan,
+                RowGroupAccess::Skip
+            ]
+        );
+    }
+
+    #[test]
+    fn split_access_plan_validates_excluded_rows_and_row_groups() {
+        let metadata =
+            metadata_with_page_offsets(&[3, 3, 3], &[(10, None), (20, None), (30, None)]);
+        for range in [
+            FileRange { start: 20, end: 21 },
+            FileRange { start: 40, end: 50 },
+        ] {
+            let err =
+                build_access_plan(&metadata, &RoaringTreemap::from_iter([1, 9]), Some(&range))
+                    .unwrap_err();
+            assert!(err.to_string().contains("only has 9 rows"));
+        }
+        // Metadata must be valid even when the split excludes the corrupt row group.
+        let metadata = metadata_with_page_offsets(&[3, -1], &[(10, None), (20, None)]);
+        assert!(build_access_plan(
+            &metadata,
+            &RoaringTreemap::new(),
+            Some(&FileRange { start: 10, end: 11 }),
+        )
+        .is_err());
+        let metadata = metadata_with_page_offsets(
+            &[i64::MAX, i64::MAX, i64::MAX],
+            &[(10, None), (20, None), (30, None)],
+        );
+        assert!(build_access_plan(
+            &metadata,
+            &RoaringTreemap::new(),
+            Some(&FileRange { start: 10, end: 11 }),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn split_access_plan_seeks_across_present_and_absent_roaring_containers() {
+        for (first_group_rows, second_group_rows, marked_row) in [
+            ((1_i64 << 32) + 3, 3, (1_u64 << 32) + 4),
+            ((1_i64 << 32) + 100, 1_i64 << 32, (2_u64 << 32) + 50),
+        ] {
+            let metadata = metadata_with_page_offsets(
+                &[first_group_rows, second_group_rows],
+                &[(10, None), (20, None)],
+            );
+            let plan = build_access_plan(
+                &metadata,
+                &RoaringTreemap::from_iter([1, 2, marked_row]),
+                Some(&FileRange { start: 20, end: 21 }),
+            )
+            .unwrap();
+            assert_eq!(plan.inner()[0], RowGroupAccess::Skip);
+            let RowGroupAccess::Selection(selection) = &plan.inner()[1] else {
+                panic!("expected a selection in the second row group");
+            };
+            assert_eq!(selection.row_count(), second_group_rows as usize - 1);
+            assert_eq!(selection.skipped_row_count(), 1);
+        }
+
+        // A corrupt position beyond an absent high-32-bit container remains an error.
+        let metadata = metadata_with_page_offsets(&[(1_i64 << 32) + 100], &[(10, None)]);
+        assert!(build_access_plan(
+            &metadata,
+            &RoaringTreemap::from_iter([1, (2_u64 << 32) + 50]),
+            Some(&FileRange { start: 20, end: 21 }),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn split_access_plan_has_no_selectors_for_excluded_groups() {
+        let metadata = metadata_with_page_offsets(
+            &[1_000, 1_000, 1_000],
+            &[(10, None), (20, None), (30, None)],
+        );
+        let deleted = (0..1_000).chain(2_000..3_000).step_by(2).collect();
+        let plan = build_access_plan(&metadata, &deleted, Some(&FileRange { start: 20, end: 21 }))
+            .unwrap();
+        assert_eq!(total_selectors(&plan), 0);
+        assert_eq!(plan.inner()[1], RowGroupAccess::Scan);
+        assert!(total_selectors(&build_access_plan(&metadata, &deleted, None).unwrap()) > 0);
     }
 
     /// The confirmed worst case: deleting every even row leaves
@@ -1188,7 +1388,7 @@ mod tests {
     #[test]
     fn total_selectors_counts_one_per_row_for_alternating_bitmap() {
         let deleted = alternating_deleted(1024);
-        let plan = build_access_plan(&[1024], &deleted).unwrap();
+        let plan = full_file_access_plan(&[1024], &deleted).unwrap();
         assert_eq!(total_selectors(&plan), 1024);
     }
 
@@ -1197,7 +1397,7 @@ mod tests {
         // Group 0 untouched (Scan), group 1 fully deleted (Skip): neither
         // carries a RowSelection, so both must contribute zero selectors.
         let deleted: RoaringTreemap = (10u64..20).collect();
-        let plan = build_access_plan(&[10, 10], &deleted).unwrap();
+        let plan = full_file_access_plan(&[10, 10], &deleted).unwrap();
         assert_eq!(total_selectors(&plan), 0);
     }
 
@@ -1239,6 +1439,177 @@ mod tests {
             }),
             data_store,
             dv_store: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn split_access_plan_reservation_tracks_only_retained_selectors() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("split.parquet");
+        let size = write_parquet_with_properties(
+            &path,
+            3_000,
+            WriterProperties::builder()
+                .set_max_row_group_row_count(Some(1_000))
+                .build(),
+        );
+        let metadata = read_metadata_with_page_index(&path);
+        let column = metadata.row_group(1).column(0);
+        let offset = column
+            .dictionary_page_offset()
+            .unwrap_or_else(|| column.data_page_offset());
+        let pool: Arc<dyn MemoryPool> = Arc::new(GreedyMemoryPool::new(10_000_000));
+        let runtime_env = RuntimeEnvBuilder::new()
+            .with_memory_pool(Arc::clone(&pool))
+            .build_arc()
+            .unwrap();
+        let deleted = alternating_deleted(3_000);
+        let full = dv_scan_file_for_alternating(&runtime_env, &path, size, &deleted);
+        let mut split = dv_scan_file_for_alternating(&runtime_env, &path, size, &deleted);
+        split.file.range = Some(FileRange {
+            start: offset,
+            end: offset + 1,
+        });
+        let files = attach_access_plans(runtime_env, vec![full, split])
+            .await
+            .unwrap();
+        let full_plan = files[0].extensions.get::<ParquetAccessPlan>().unwrap();
+        let split_plan = files[1].extensions.get::<ParquetAccessPlan>().unwrap();
+        assert_eq!(total_selectors(full_plan), 3_000);
+        assert_eq!(total_selectors(split_plan), 1_000);
+        let full_reserved = files[0]
+            .extensions
+            .get::<DvAccessPlanReservation>()
+            .unwrap()
+            .0
+            .size();
+        let split_reserved = files[1]
+            .extensions
+            .get::<DvAccessPlanReservation>()
+            .unwrap()
+            .0
+            .size();
+        // Keep the existing reader-clone and page-index inflation allowance. Only the actual
+        // DV selector count changes, not the proof or the whole-file admission bound.
+        let page_bound = page_selection_bound_selectors(&metadata).unwrap();
+        assert_eq!(
+            split_reserved,
+            reader_peak_bytes((1_000 + page_bound).min(3_000), 3).unwrap()
+        );
+        assert!(split_reserved < full_reserved);
+        assert_eq!(pool.reserved(), full_reserved + split_reserved);
+        drop(files);
+        assert_eq!(pool.reserved(), 0);
+    }
+
+    #[tokio::test]
+    async fn native_parquet_split_applies_global_deletions_with_and_without_pruning() {
+        use datafusion::arrow::array::Int64Array;
+        use datafusion::execution::object_store::ObjectStoreUrl;
+        use datafusion::logical_expr::Operator;
+        use datafusion::physical_expr::expressions::{BinaryExpr, Column, Literal};
+        use datafusion::physical_expr::PhysicalExpr;
+        use datafusion::physical_plan::ExecutionPlan;
+        use datafusion::prelude::{SessionConfig, SessionContext};
+        use datafusion::scalar::ScalarValue;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("split.parquet");
+        let size = write_parquet_with_properties(
+            &path,
+            30,
+            WriterProperties::builder()
+                .set_max_row_group_row_count(Some(10))
+                .set_data_page_row_count_limit(2)
+                .set_write_batch_size(2)
+                .build(),
+        );
+        let metadata = read_metadata_with_page_index(&path);
+        let column = metadata.row_group(1).column(0);
+        let offset = column
+            .dictionary_page_offset()
+            .unwrap_or_else(|| column.data_page_offset());
+        let deleted = RoaringTreemap::from_iter([1, 4, 11, 14, 17, 21]);
+        for prune in [false, true] {
+            let runtime_env = RuntimeEnvBuilder::new().build_arc().unwrap();
+            let mut file = dv_scan_file_for_alternating(&runtime_env, &path, size, &deleted);
+            file.file.range = Some(FileRange {
+                start: offset,
+                end: offset + 1,
+            });
+            let files = attach_access_plans(Arc::clone(&runtime_env), vec![file])
+                .await
+                .unwrap();
+            let session = Arc::new(SessionContext::new_with_config_rt(
+                SessionConfig::new(),
+                runtime_env,
+            ));
+            let (schema, _) = sequential_int64_batch(0);
+            let filter: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+                Arc::new(Column::new("id", 0)),
+                Operator::GtEq,
+                Arc::new(Literal::new(ScalarValue::Int64(Some(15)))),
+            ));
+            let scan = crate::parquet::parquet_exec::init_datasource_exec(
+                Arc::clone(&schema),
+                Some(schema),
+                None,
+                ObjectStoreUrl::local_filesystem(),
+                crate::parquet::parquet_support::ObjectStoreBackend::Local,
+                vec![files],
+                None,
+                prune.then_some(vec![filter]),
+                None,
+                "UTC",
+                true,
+                false,
+                false,
+                false,
+                &session,
+                false,
+                false,
+                false,
+                false,
+                "",
+                "",
+            )
+            .unwrap();
+            let batches: Vec<_> = scan
+                .execute(0, session.task_ctx())
+                .unwrap()
+                .try_collect()
+                .await
+                .unwrap();
+            let values: Vec<_> = batches
+                .iter()
+                .flat_map(|batch| {
+                    batch
+                        .column(0)
+                        .as_any()
+                        .downcast_ref::<Int64Array>()
+                        .unwrap()
+                        .values()
+                        .iter()
+                        .copied()
+                })
+                .collect();
+            let expected: Vec<_> = (10..20)
+                .filter(|id| !deleted.contains(*id as u64) && (!prune || *id >= 15))
+                .collect();
+            assert_eq!(values, expected, "pruning enabled: {prune}");
+            if prune {
+                let Some(datafusion::physical_plan::metrics::MetricValue::PruningMetrics {
+                    pruning_metrics,
+                    ..
+                }) = scan
+                    .metrics()
+                    .unwrap()
+                    .sum_by_name("page_index_rows_pruned")
+                else {
+                    panic!("expected page-index pruning metrics");
+                };
+                assert!(pruning_metrics.pruned() > 0);
+            }
         }
     }
 
@@ -1703,7 +2074,7 @@ mod tests {
             .await
             .unwrap();
 
-        let plan = build_access_plan(&[num_rows], &deleted).unwrap();
+        let plan = full_file_access_plan(&[num_rows], &deleted).unwrap();
         let expected_bytes = reader_peak_bytes(total_selectors(&plan), 1).unwrap();
 
         let reservation = out[0]
@@ -2111,7 +2482,7 @@ mod tests {
     #[test]
     fn access_plan_rejects_row_counts_that_overflow_when_summed() {
         let deleted: RoaringTreemap = [1u64].into_iter().collect();
-        let err = build_access_plan(&[i64::MAX, i64::MAX, i64::MAX], &deleted).unwrap_err();
+        let err = full_file_access_plan(&[i64::MAX, i64::MAX, i64::MAX], &deleted).unwrap_err();
         assert!(
             format!("{err}").contains("overflow"),
             "expected an overflow error, got: {err}"
@@ -2124,7 +2495,7 @@ mod tests {
     #[test]
     fn access_plan_handles_deleted_rows_on_a_row_group_boundary() {
         let deleted: RoaringTreemap = [9u64, 10].into_iter().collect();
-        let plan = build_access_plan(&[10, 10, 10], &deleted).unwrap();
+        let plan = full_file_access_plan(&[10, 10, 10], &deleted).unwrap();
         match &plan.inner()[0] {
             RowGroupAccess::Selection(sel) => {
                 let selectors: Vec<RowSelector> = sel.clone().into();
@@ -2187,7 +2558,7 @@ mod tests {
                     .and_then(|m| m.checked_add(1))
                     .unwrap_or(u64::MAX);
                 assert_no_panic(&format!("{context}: build_access_plan on survivor"), || {
-                    let _ = build_access_plan(&[max_row as i64], &treemap);
+                    let _ = full_file_access_plan(&[max_row as i64], &treemap);
                 });
             }
         }
@@ -2350,7 +2721,7 @@ mod tests {
                         .and_then(|m| m.checked_add(1))
                         .unwrap_or(u64::MAX);
                     assert_no_panic(&format!("{context}: build_access_plan"), || {
-                        let _ = build_access_plan(&[max_row as i64], &treemap);
+                        let _ = full_file_access_plan(&[max_row as i64], &treemap);
                     });
                 }
             }
@@ -2385,7 +2756,7 @@ mod tests {
                         .and_then(|m| m.checked_add(1))
                         .unwrap_or(u64::MAX);
                     assert_no_panic(&format!("{context}: build_access_plan"), || {
-                        let _ = build_access_plan(&[max_row as i64], &treemap);
+                        let _ = full_file_access_plan(&[max_row as i64], &treemap);
                     });
                 }
             }
