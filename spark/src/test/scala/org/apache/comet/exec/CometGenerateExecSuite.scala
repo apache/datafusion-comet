@@ -665,12 +665,12 @@ class CometGenerateExecSuite extends CometTestBase {
   // every level before export, including in a struct built over the booleans and in the input to
   // a Scala UDF, or they come back wrong after the first output batch.
   // https://github.com/apache/datafusion-comet/issues/6464
-  private def withBooleanArrays(numRows: Int, arrayLength: Int)(f: => Unit): Unit = {
+  private def withBooleanArrays(numRows: Long, arrayLength: Long)(f: => Unit): Unit = {
     withTempPath { dir =>
       // One file, so a single input batch explodes into several output batches.
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
         spark
-          .range(0, numRows, 1, 1)
+          .range(0L, numRows, 1L, 1)
           .selectExpr(
             "id",
             s"transform(sequence(1, $arrayLength), i -> named_struct(" +
