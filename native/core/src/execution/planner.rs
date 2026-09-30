@@ -106,7 +106,6 @@ use datafusion::common::{
     JoinType as DFJoinType, NullEquality, ScalarValue,
 };
 use datafusion::datasource::listing::PartitionedFile;
-use datafusion::logical_expr::type_coercion::binary::type_union_coercion;
 use datafusion::logical_expr::type_coercion::functions::fields_with_udf;
 use datafusion::logical_expr::{
     AggregateUDF, ReturnFieldArgs, ScalarUDF, TypeSignature, WindowFrame, WindowFrameBound,
@@ -147,12 +146,12 @@ use datafusion_comet_proto::{
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
 use datafusion_comet_spark_expr::{
-    create_case_when, jvm_udf::JvmScalarUdfExpr, normalize_floats, spark_in_list, ApproxPercentile,
-    ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Correlation, Covariance, CreateNamedStruct,
-    DecimalRescaleCheckOverflow, GetArrayStructFields, GetStructField, HllPlusPlus, HllSketchAgg,
-    HllUnionAgg, IfExpr, ListExtract, MaxMinBy, Mode, NormalizeNaNAndZero, Regr, RegrType,
-    SparkCastOptions, Stddev, SumDecimal, ToJson, UnboundColumn, Variance, WideDecimalBinaryExpr,
-    WideDecimalOp,
+    create_case_when, create_if_expr, jvm_udf::JvmScalarUdfExpr, normalize_floats, spark_in_list,
+    ApproxPercentile, ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Correlation, Covariance,
+    CreateNamedStruct, DecimalRescaleCheckOverflow, GetArrayStructFields, GetStructField,
+    HllPlusPlus, HllSketchAgg, HllUnionAgg, IfExpr, ListExtract, MaxMinBy, Mode,
+    NormalizeNaNAndZero, Regr, RegrType, SparkCastOptions, Stddev, SumDecimal, ToJson,
+    UnboundColumn, Variance, WideDecimalBinaryExpr, WideDecimalOp,
 };
 use itertools::Itertools;
 use jni::objects::{Global, JObject};
@@ -803,34 +802,7 @@ impl PhysicalPlanner {
                     self.create_expr(expr.true_expr.as_ref().unwrap(), Arc::clone(&input_schema))?;
                 let false_expr =
                     self.create_expr(expr.false_expr.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                // Spark adds no cast when the branches differ only in whether a nested field can
-                // be NULL, but `IfExpr` reports the THEN branch's type and returns the ELSE
-                // branch's array unchanged when no row of a batch takes the THEN branch. So cast a
-                // branch whose type differs from the common type, as `create_case_expr` does for
-                // CASE WHEN. The THEN branch goes first so that the common type keeps its field
-                // names, as Spark's `If` does.
-                let true_type = true_expr.data_type(&input_schema)?;
-                let false_type = false_expr.data_type(&input_schema)?;
-                let common_type = type_union_coercion(&true_type, &false_type);
-                let coerce = |branch, data_type: &DataType| -> Arc<dyn PhysicalExpr> {
-                    match &common_type {
-                        // The branches share a Spark type, so a timestamp can only differ in its
-                        // label, and every TimestampType in a native plan is labelled UTC
-                        Some(common_type) if data_type != common_type => Arc::new(Cast::new(
-                            branch,
-                            common_type.clone(),
-                            SparkCastOptions::new(EvalMode::Legacy, "UTC", false),
-                            None,
-                            None,
-                        )),
-                        _ => branch,
-                    }
-                };
-                Ok(Arc::new(IfExpr::new(
-                    if_expr,
-                    coerce(true_expr, &true_type),
-                    coerce(false_expr, &false_type),
-                )))
+                create_if_expr(if_expr, true_expr, false_expr, &input_schema).map_err(|e| e.into())
             }
             ExprStruct::NormalizeNanAndZero(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
