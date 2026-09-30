@@ -994,7 +994,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       e.getTagValue(CometExplainInfo.FALLBACK_REASONS).foreach(reasons ++= _)
     }
     if (reasons.nonEmpty) {
-      withFallbackReasons(to, reasons.toSet)
+      val _ = withFallbackReasons(to, reasons.toSet)
     }
   }
 
@@ -1120,8 +1120,9 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
           expr.getTagValue(CometExplainInfo.DISPATCHED_SELF).isEmpty) {
           withNativeExpr(expr, CometExplainInfo.exprDisplayName(expr))
         }
-        // Attach QueryContext and expr_id to the expression
-        attachExprIdAndContext(expr, protoExpr)
+        // Passthrough serdes such as Alias return an already-identified child expression. Preserve
+        // that child's context instead of replacing it with the structural wrapper's origin.
+        if (protoExpr.hasExprId) protoExpr else attachExprIdAndContext(expr, protoExpr)
       }
   }
 
@@ -1355,7 +1356,12 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   }
 
   def supportedSortType(op: SparkPlan, sortOrder: Seq[SortOrder]): Boolean = {
-    if (sortOrder.length == 1) {
+    // Both single- and multi-column sorts compare strings by raw bytes. Check nested types
+    // before the single-column kernel restrictions, since multi-column keys bypass those.
+    if (sortOrder.exists(order => hasNonDefaultStringCollation(order.dataType))) {
+      withFallbackReason(op, "Sort does not support non-default string collation")
+      false
+    } else if (sortOrder.length == 1) {
       val canSort = sortOrder.head.dataType match {
         case ArrayType(elementType, _) => supportedScalarSortElementType(elementType)
         case MapType(_, valueType, _) => supportedScalarSortElementType(valueType)
