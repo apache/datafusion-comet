@@ -123,7 +123,7 @@ case class CometInMemoryTableScanExec(
     serializer
       .convertCachedBatchToColumnarBatch(filteredBuffers, relationOutput, scanOutput, conf)
       .map { cb =>
-        numOutputRows += cb.numRows()
+        numOutputRows += cb.numRows().toLong
         cb
       }
   }
