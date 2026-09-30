@@ -980,3 +980,27 @@ fn normalize_null_parent_ignores_empty_children() {
     assert!(output.is_null(0));
     assert!(output.as_struct().column(0).is_null(0));
 }
+
+/// Spark writes typed floats through `floatToIntBits`/`doubleToLongBits`, so every NaN comes out
+/// canonical while `-0.0` keeps its sign.
+#[test]
+fn typed_scalar_canonicalizes_nan_and_keeps_negative_zero() {
+    for bits in [0xfff8_0000_0000_0000, 0x7ff0_0000_0000_0001] {
+        let Variant::Double(v) = spark_typed_scalar(Variant::Double(f64::from_bits(bits))) else {
+            panic!("expected a double");
+        };
+        assert_eq!(v.to_bits(), f64::NAN.to_bits());
+    }
+    let Variant::Float(v) = spark_typed_scalar(Variant::Float(f32::from_bits(0xffc0_0000))) else {
+        panic!("expected a float");
+    };
+    assert_eq!(v.to_bits(), f32::NAN.to_bits());
+    let Variant::Double(v) = spark_typed_scalar(Variant::Double(-0.0)) else {
+        panic!("expected a double");
+    };
+    assert_eq!(v.to_bits(), (-0.0f64).to_bits());
+    let Variant::Float(v) = spark_typed_scalar(Variant::Float(-0.0)) else {
+        panic!("expected a float");
+    };
+    assert_eq!(v.to_bits(), (-0.0f32).to_bits());
+}
