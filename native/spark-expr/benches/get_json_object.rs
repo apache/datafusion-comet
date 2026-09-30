@@ -132,6 +132,27 @@ fn criterion_benchmark(c: &mut Criterion) {
         });
     });
 
+    // A long non-ASCII selected value exposes redundant UTF-8 validation
+    // after serde_json serialization, with and without a terminal wildcard.
+    let cjk_payload = "汉".repeat(21_845);
+    assert_eq!(cjk_payload.len(), 65_535);
+    let cjk_docs = ColumnarValue::Array(Arc::new(StringArray::from(
+        (0..64)
+            .map(|_| format!(r#"{{"a":["{cjk_payload}"]}}"#))
+            .collect::<Vec<_>>(),
+    )));
+    group.bench_function("large_cjk_terminal_wildcard", |b| {
+        b.iter(|| {
+            black_box(spark_get_json_object(&[cjk_docs.clone(), wildcard_path.clone()]).unwrap());
+        });
+    });
+    let cjk_array_path = path("$.a");
+    group.bench_function("large_cjk_selected_array", |b| {
+        b.iter(|| {
+            black_box(spark_get_json_object(&[cjk_docs.clone(), cjk_array_path.clone()]).unwrap());
+        });
+    });
+
     group.finish();
 }
 

@@ -539,8 +539,10 @@ fn write_spark_json_value<W: io::Write>(writer: W, value: &Value) -> serde_json:
 fn serialize_spark_json_value(value: &Value) -> serde_json::Result<String> {
     let mut bytes = Vec::new();
     write_spark_json_value(&mut bytes, value)?;
-    String::from_utf8(bytes)
-        .map_err(|error| serde_json::Error::io(io::Error::new(io::ErrorKind::InvalidData, error)))
+    // SAFETY: serde_json serializes Value as valid UTF-8. Our only custom
+    // formatter method writes floating-point text through fmt::Write, which
+    // accepts &str, so it preserves that invariant.
+    Ok(unsafe { String::from_utf8_unchecked(bytes) })
 }
 
 impl PathResult {
@@ -642,7 +644,11 @@ fn visit_terminal_wildcard<'de, A: SeqAccess<'de>>(
     } else {
         output.push(b']');
     }
-    let rendered = String::from_utf8(output).map_err(A::Error::custom)?;
+    // SAFETY: each value is written by the same UTF-8-preserving serializer
+    // above. The other bytes are ASCII brackets and commas. For one writer,
+    // copy_within removes only the leading ASCII bracket before pop shortens
+    // the buffer, so neither operation cuts through a multibyte character.
+    let rendered = unsafe { String::from_utf8_unchecked(output) };
     Ok(PathResult {
         writes: smallvec![rendered],
         matched: writers > 0,
@@ -1654,6 +1660,32 @@ mod tests {
         assert_eq!(
             evaluate_path(json, &path),
             Some(r#"["Alice","太郎"]"#.to_string())
+        );
+    }
+
+    #[test]
+    fn test_large_unicode_serialized_output() {
+        let payload = "汉".repeat(21_845);
+        assert_eq!(payload.len(), 65_535);
+        let json = format!(r#"{{"a":["{payload}"]}}"#);
+        let array_path = parse_json_path("$.a").unwrap();
+        let wildcard_path = parse_json_path("$.a[*]").unwrap();
+
+        // Selecting the array and serializing a terminal wildcard use the
+        // two byte-buffer-to-String paths, respectively.
+        assert_eq!(
+            evaluate_path(&json, &array_path),
+            Some(format!(r#"["{payload}"]"#))
+        );
+        assert_eq!(
+            evaluate_path(&json, &wildcard_path),
+            Some(format!(r#""{payload}""#))
+        );
+
+        let multiple = format!(r#"{{"a":["{payload}","🎉\n"]}}"#);
+        assert_eq!(
+            evaluate_path(&multiple, &wildcard_path),
+            Some(format!(r#"["{payload}","🎉\n"]"#))
         );
     }
 }

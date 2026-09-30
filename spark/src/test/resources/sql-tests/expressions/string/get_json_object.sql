@@ -284,3 +284,17 @@ SELECT get_json_object('[1,2]', '$.*'), get_json_object('[1,2]', '$[''*'']'),
 -- matches
 query
 SELECT get_json_object('{"a":[[{}]],"a":[[{"b":1}]]}', '$.a[0][*].b')
+
+-- The selected 65,535-byte CJK value reaches both serialized-output paths.
+-- Materialize the JSON in a column to prevent constant folding; compare
+-- booleans so the SQL test output does not contain the entire large string.
+statement
+INSERT INTO test_get_json_object
+SELECT concat('{"a":["', repeat('汉', cast(id as int) + 21845), '"]}'), '$.a[*]'
+FROM range(1)
+
+query expect_native(get_json_object)
+SELECT get_json_object(json_str, '$.a[*]') = concat('"', repeat('汉', 21845), '"'),
+       get_json_object(json_str, '$.a') = concat('["', repeat('汉', 21845), '"]')
+FROM test_get_json_object
+WHERE path = '$.a[*]'
