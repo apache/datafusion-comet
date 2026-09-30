@@ -2335,36 +2335,60 @@ class CometCodegenSuite
 
   test("decimal results of a DSv2 function are rescaled to the declared type (#6425)") {
     // Spark lowers a call to a DSv2 function with an instance `invoke` method to `Invoke`, which
-    // the dispatcher runs. Both functions return `Decimal(i)` at scale 0, one declaring
-    // `DECIMAL(10, 2)` and one `DECIMAL(20, 12)`, which covers both of the dispatcher's decimal
-    // writers. Spark's row writer rescales the value with `changePrecision` and writes null when
-    // it does not fit: 100000000 has nine integer digits and both types allow eight. Spark adds
-    // no overflow check around the call, so that null does not depend on ANSI mode. `map` is
-    // itself dispatched, so its value exercises the nested writer.
+    // the dispatcher runs. `as_money` and `as_wide_money` return `Decimal(i)` at scale 0, one
+    // declaring `DECIMAL(10, 2)` and one `DECIMAL(20, 12)`, which covers both of the dispatcher's
+    // decimal writers. Spark's row writer rescales the value with `changePrecision` and writes
+    // null when it does not fit: 100000000 and -100000000 have nine integer digits and both types
+    // allow eight. Spark adds no overflow check around the call, so that null does not depend on
+    // ANSI mode. `map` is itself dispatched, so its value exercises the nested writer.
+    // `mills_as_money` returns `i` thousandths, at scale 3, into `DECIMAL(10, 2)`, so the rescale
+    // drops a digit and `changePrecision` rounds half up: -1.005 becomes -1.01 and 1.004 becomes
+    // 1.00.
     def dec(s: String) = new java.math.BigDecimal(s)
     val expected = Seq(
-      Row(3, dec("3.00"), dec("3.000000000000"), Map("k" -> dec("3.00"))),
-      Row(-7, dec("-7.00"), dec("-7.000000000000"), Map("k" -> dec("-7.00"))),
-      Row(null, null, null, Map("k" -> null)),
+      Row(3, dec("3.00"), dec("3.000000000000"), Map("k" -> dec("3.00")), dec("0.00")),
+      Row(-7, dec("-7.00"), dec("-7.000000000000"), Map("k" -> dec("-7.00")), dec("-0.01")),
+      Row(null, null, null, Map("k" -> null), null),
       Row(
         99999999,
         dec("99999999.00"),
         dec("99999999.000000000000"),
-        Map("k" -> dec("99999999.00"))),
-      Row(100000000, null, null, Map("k" -> null)))
+        Map("k" -> dec("99999999.00")),
+        dec("100000.00")),
+      Row(100000000, null, null, Map("k" -> null), dec("100000.00")),
+      Row(
+        -99999999,
+        dec("-99999999.00"),
+        dec("-99999999.000000000000"),
+        Map("k" -> dec("-99999999.00")),
+        dec("-100000.00")),
+      Row(-100000000, null, null, Map("k" -> null), dec("-100000.00")),
+      Row(
+        -1005,
+        dec("-1005.00"),
+        dec("-1005.000000000000"),
+        Map("k" -> dec("-1005.00")),
+        dec("-1.01")),
+      Row(
+        1004,
+        dec("1004.00"),
+        dec("1004.000000000000"),
+        Map("k" -> dec("1004.00")),
+        dec("1.00")),
+      Row(5, dec("5.00"), dec("5.000000000000"), Map("k" -> dec("5.00")), dec("0.01")))
     withSQLConf(
       "spark.sql.catalog.decfn" -> classOf[CometCodegenSuite.DecimalFunctionCatalog].getName) {
       withTable("t") {
         sql("CREATE TABLE t (i INT) USING parquet")
         // One file, so the kernel sees every row in one batch.
         sql(
-          "INSERT INTO t SELECT /*+ REPARTITION(1) */ * FROM " +
-            "VALUES (3), (-7), (NULL), (99999999), (100000000) AS v(i)")
+          "INSERT INTO t SELECT /*+ REPARTITION(1) */ * FROM VALUES (3), (-7), (NULL), " +
+            "(99999999), (100000000), (-99999999), (-100000000), (-1005), (1004), (5) AS v(i)")
         for (ansi <- Seq("true", "false")) {
           withSQLConf(SQLConf.ANSI_ENABLED.key -> ansi) {
             val df = sql(
               "SELECT i, decfn.ns.as_money(i), decfn.ns.as_wide_money(i), " +
-                "map('k', decfn.ns.as_money(i)) FROM t")
+                "map('k', decfn.ns.as_money(i)), decfn.ns.mills_as_money(i) FROM t")
             assertCodegenRan {
               checkSparkAnswerAndOperator(df)
             }
@@ -2396,12 +2420,14 @@ object CometCodegenSuite {
 
   /**
    * DSv2 function catalog for the #6425 test. `as_money` declares `DECIMAL(10, 2)` and
-   * `as_wide_money` declares `DECIMAL(20, 12)`.
+   * `as_wide_money` declares `DECIMAL(20, 12)`, and both return their argument at scale 0.
+   * `mills_as_money` declares `DECIMAL(10, 2)` and returns its argument as thousandths.
    */
   class DecimalFunctionCatalog extends FunctionCatalog {
     private val functions = Map(
-      "as_money" -> new ScaleZeroDecimalFunction(10, 2),
-      "as_wide_money" -> new ScaleZeroDecimalFunction(20, 12))
+      "as_money" -> new IntAsDecimalFunction(10, 2, valueScale = 0),
+      "as_wide_money" -> new IntAsDecimalFunction(20, 12, valueScale = 0),
+      "mills_as_money" -> new IntAsDecimalFunction(10, 2, valueScale = 3))
     private var catalogName: String = _
 
     override def initialize(name: String, options: CaseInsensitiveStringMap): Unit =
@@ -2417,18 +2443,21 @@ object CometCodegenSuite {
   }
 
   /**
-   * Returns its `INT` argument as `Decimal(v)`, at scale 0, whatever scale it declares. `invoke`
-   * is an instance method, so Spark lowers a call to `Invoke`. The function binds to itself.
+   * Returns its `INT` argument as the unscaled value of a `Decimal` at `valueScale`, whatever
+   * scale it declares. `invoke` is an instance method, so Spark lowers a call to `Invoke`. The
+   * function binds to itself.
    */
-  class ScaleZeroDecimalFunction(precision: Int, scale: Int)
+  class IntAsDecimalFunction(precision: Int, scale: Int, valueScale: Int)
       extends UnboundFunction
       with ScalarFunction[Decimal] {
-    override def name(): String = "scale_zero_decimal"
-    override def description(): String = s"int -> decimal($precision, $scale), at scale 0"
+    override def name(): String = "int_as_decimal"
+    override def description(): String =
+      s"int -> decimal($precision, $scale), at scale $valueScale"
     override def bind(inputType: StructType): BoundFunction = this
     override def inputTypes(): Array[DataType] = Array(IntegerType)
     override def resultType(): DataType = DecimalType(precision, scale)
-    def invoke(v: Int): Decimal = Decimal(v)
+    // Ten digits hold any `INT`.
+    def invoke(v: Int): Decimal = Decimal(v.toLong, 10, valueScale)
     override def produceResult(input: InternalRow): Decimal = invoke(input.getInt(0))
   }
 }
