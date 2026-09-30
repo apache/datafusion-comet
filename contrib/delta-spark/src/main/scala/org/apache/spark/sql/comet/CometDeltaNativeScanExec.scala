@@ -275,9 +275,10 @@ object CometDeltaNativeScanExec {
    * deletion vector are split like any other file: a claimed scan requires Delta's reader
    * optimizations to be enabled, which is exactly what DeltaParquetFileFormat.isSplitable
    * returns, and Spark's row-index split gate does not apply to a claimed scan. Each split then
-   * fetches and decodes the whole deletion vector, reads the footer, builds the access plan for
-   * the whole file and reserves memory for the whole file, while the reader keeps only the row
-   * groups that start inside the split.
+   * fetches and decodes the whole deletion vector, reads the footer and admits memory against a
+   * bound for the whole file, but builds row selectors only for the row groups that start inside
+   * the split, which are the row groups the reader keeps, and shrinks the reservation it holds to
+   * those selectors plus the whole-file page-index allowance.
    */
   def planningHelper(
       scanExec: FileSourceScanExec,
