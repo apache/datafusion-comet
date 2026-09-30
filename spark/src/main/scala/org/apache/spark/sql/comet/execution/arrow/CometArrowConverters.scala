@@ -19,17 +19,25 @@
 
 package org.apache.spark.sql.comet.execution.arrow
 
+import java.io.ByteArrayOutputStream
+import java.nio.channels.Channels
+
+import scala.util.Using
 import scala.util.control.NonFatal
 
 import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector.VectorSchemaRoot
+import org.apache.arrow.vector.ipc.ArrowStreamWriter
 import org.apache.arrow.vector.types.pojo.Schema
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.catalyst.expressions.GenericInternalRow
 import org.apache.spark.sql.comet.util.Utils
-import org.apache.spark.sql.types.StructType
+import org.apache.spark.sql.types.{StringType, StructField, StructType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
+import org.apache.spark.unsafe.types.UTF8String
 
+import org.apache.comet.CometArrowAllocator
 import org.apache.comet.vector.NativeUtil
 
 /**
@@ -45,6 +53,53 @@ import org.apache.comet.vector.NativeUtil
  * caller owns.
  */
 object CometArrowConverters extends Logging {
+
+  /**
+   * Serialize a scalar subquery result as one struct column containing one row. Keeping the
+   * struct as a column preserves the distinction between a null struct and a struct whose fields
+   * are all null. Native execution expects TimestampType fields to carry the UTC zone.
+   */
+  def serializeScalarSubquery(row: InternalRow, dataType: StructType): Array[Byte] = {
+    val schema = StructType(Seq(StructField("value", dataType, nullable = true)))
+    val output = new ByteArrayOutputStream()
+    Using.resource(
+      VectorSchemaRoot.create(Utils.toArrowSchema(schema, "UTC"), CometArrowAllocator)) { root =>
+      val rowWriter = ArrowWriter.create(root, 1)
+      rowWriter.write(InternalRow(normalizeScalarSubqueryRow(row, dataType)))
+      rowWriter.finish()
+      Using.resource(new ArrowStreamWriter(root, null, Channels.newChannel(output))) { writer =>
+        writer.start()
+        writer.writeBatch()
+        writer.end()
+      }
+      output.toByteArray
+    }
+  }
+
+  /**
+   * Match CometScalarSubquery.getString's conversion through a JVM String, including replacement
+   * of malformed UTF-8. ArrowWriter copies raw UTF8String bytes, which Arrow IPC cannot represent
+   * as a valid string. The scalar-subquery support gate admits only structs and scalar leaves.
+   */
+  private def normalizeScalarSubqueryRow(row: InternalRow, dataType: StructType): InternalRow = {
+    if (row == null) {
+      return null
+    }
+    val values = new Array[Any](dataType.length)
+    dataType.fields.zipWithIndex.foreach { case (field, ordinal) =>
+      values(ordinal) = if (row.isNullAt(ordinal)) {
+        null
+      } else {
+        field.dataType match {
+          case _: StringType => UTF8String.fromString(row.getUTF8String(ordinal).toString)
+          case struct: StructType =>
+            normalizeScalarSubqueryRow(row.getStruct(ordinal, struct.length), struct)
+          case dt => row.get(ordinal, dt)
+        }
+      }
+    }
+    new GenericInternalRow(values)
+  }
 
   /**
    * Convert an iterator of Spark `InternalRow`s into an iterator of Arrow `ColumnarBatch`es.
