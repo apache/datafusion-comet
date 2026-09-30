@@ -814,7 +814,17 @@ with Spark. For dates beyond this range, functions that involve timezone-aware c
 <li><p>Using timezone-naive types (<code class="docutils literal notranslate"><span class="pre">timestamp_ntz</span></code>) when timezone conversion is not required</p></li>
 <li><p>Falling back to Spark for these specific operations</p></li>
 </ul>
+<section id="timezone-database-versions">
+<h3>Timezone Database Versions<a class="headerlink" href="#timezone-database-versions" title="Link to this heading">#</a></h3>
+<p>Comet’s native code converts between instants and local time with the IANA timezone database that
+chrono-tz compiles into the Comet library. Spark uses the JVM’s timezone database (<code class="docutils literal notranslate"><span class="pre">tzdb.dat</span></code>), whose
+version depends on the JDK build and on whether its timezone data has been updated. When the two versions
+have different rules for a timezone, local times that Comet computes natively for that timezone can differ
+from Spark’s for the affected dates. That covers <code class="docutils literal notranslate"><span class="pre">hour</span></code>, casts between timestamps and strings or dates,
+<code class="docutils literal notranslate"><span class="pre">date_trunc</span></code>, and parsing strings as timestamps. Comet logs a warning at startup when the two versions
+differ.</p>
 <!--BEGIN:EXPR_COMPAT[datetime]-->
+</section>
 </section>
 <section id="converttimezone">
 <h2>ConvertTimezone<a class="headerlink" href="#converttimezone" title="Link to this heading">#</a></h2>
@@ -978,7 +988,10 @@ with Spark. For dates beyond this range, functions that involve timezone-aware c
   </div>
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#date-and-time-functions">Date and Time Functions</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#date-and-time-functions">Date and Time Functions</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#timezone-database-versions">Timezone Database Versions</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#converttimezone">ConvertTimezone</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#dateformatclass">DateFormatClass</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#days">Days</a></li>
