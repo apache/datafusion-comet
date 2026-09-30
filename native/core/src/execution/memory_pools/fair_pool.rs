@@ -18,10 +18,7 @@
 use std::{
     collections::HashMap,
     fmt::{Debug, Display, Formatter, Result as FmtResult},
-    sync::Arc,
 };
-
-use jni::objects::{Global, JObject};
 
 use super::spark_memory::SparkMemory;
 use datafusion::common::resources_err;
@@ -72,18 +69,7 @@ impl Debug for CometFairMemoryPool {
 }
 
 impl CometFairMemoryPool {
-    pub fn new(
-        task_memory_manager_handle: Arc<Global<JObject<'static>>>,
-        pool_size: usize,
-        task_attempt_id: i64,
-    ) -> CometFairMemoryPool {
-        Self::with_spark(
-            SparkMemory::new(task_memory_manager_handle, task_attempt_id),
-            pool_size,
-        )
-    }
-
-    fn with_spark(spark: SparkMemory, pool_size: usize) -> CometFairMemoryPool {
+    pub(super) fn with_spark(spark: SparkMemory, pool_size: usize) -> CometFairMemoryPool {
         Self {
             spark,
             pool_size,
@@ -92,6 +78,11 @@ impl CometFairMemoryPool {
                 consumers: HashMap::new(),
             }),
         }
+    }
+
+    /// The part of [`MemoryPool::reserved`] that Spark has not granted; see [`SparkMemory`].
+    pub(super) fn overcommit(&self) -> usize {
+        self.spark.overcommit()
     }
 }
 
@@ -213,6 +204,7 @@ impl MemoryPool for CometFairMemoryPool {
 mod tests {
     use super::super::spark_memory::fake::FakeSpark;
     use super::*;
+    use std::sync::Arc;
 
     #[test]
     fn grow_past_the_fair_limit_is_recorded_and_refuses_the_next_try_grow() {
