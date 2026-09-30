@@ -19,7 +19,7 @@
 
 package org.apache.comet
 
-import java.util.Locale
+import java.util.{Collections, IdentityHashMap, Locale}
 
 import scala.collection.mutable
 
@@ -29,7 +29,7 @@ import org.apache.spark.sql.catalyst.trees.{TreeNode, TreeNodeTag}
 import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometEmptyRelationExec, CometNativeColumnarToRowExec, CometPlan, CometSparkToColumnarExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, InputAdapter, ReusedSubqueryExec, RowToColumnarExec, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, QueryStageExec}
-import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
+import org.apache.spark.sql.execution.exchange.{Exchange, ReusedExchangeExec}
 
 import org.apache.comet.CometExplainInfo.getActualPlan
 import org.apache.comet.annotation.Public
@@ -146,6 +146,15 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
       outString: StringBuilder,
       planStats: CometCoverageStats): Unit = {
 
+    // `getActualPlan` unwraps a `ReusedExchangeExec` to the exchange it points at, so a reused
+    // exchange is rendered in full at every reference. It runs only once, so its subtree is
+    // counted at whichever reference the traversal reaches first (the original or a reuse) and
+    // the other references are rendered into throwaway stats.
+    val stats = node match {
+      case e: Exchange if !planStats.markCounted(e) => new CometCoverageStats()
+      case _ => planStats
+    }
+
     node match {
       case _: AdaptiveSparkPlanExec | _: InputAdapter | _: QueryStageExec |
           _: WholeStageCodegenExec | _: ReusedExchangeExec | _: ReusedSubqueryExec |
@@ -155,14 +164,14 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
       // shown, so counting the wrapper too would invent an un-accelerated Spark operator.
       case _: RowToColumnarExec | _: ColumnarToRowExec | _: CometColumnarToRowExec |
           _: CometNativeColumnarToRowExec | _: CometSparkToColumnarExec =>
-        planStats.transitions += 1
+        stats.transitions += 1
       case _: CometPlan =>
-        planStats.cometOperators += 1
+        stats.cometOperators += 1
       case _ =>
-        planStats.sparkOperators += 1
+        stats.sparkOperators += 1
     }
 
-    planStats.recordExpressions(node)
+    stats.recordExpressions(node)
 
     outString.append("   " * indent)
     if (depth > 0) {
@@ -198,7 +207,7 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
             lastChildren :+ node.children.isEmpty :+ false,
             indent,
             outString,
-            planStats)
+            stats)
         case _ =>
       }
       generateTreeString(
@@ -207,7 +216,7 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
         lastChildren :+ node.children.isEmpty :+ true,
         indent,
         outString,
-        planStats)
+        stats)
     }
     if (node.children.nonEmpty) {
       node.children.init.foreach {
@@ -218,7 +227,7 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
             lastChildren :+ false,
             indent,
             outString,
-            planStats)
+            stats)
         case _ =>
       }
       node.children.last match {
@@ -229,7 +238,7 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
             lastChildren :+ true,
             indent,
             outString,
-            planStats)
+            stats)
         case _ =>
       }
     }
@@ -246,6 +255,16 @@ class CometCoverageStats {
 
   /** Distinct names of expressions routed through the JVM codegen dispatcher. */
   val codegenDispatchExpressions: mutable.Set[String] = mutable.HashSet.empty
+
+  /**
+   * Exchanges whose subtree has been counted, compared by reference: a `ReusedExchangeExec`
+   * points at the same instance as the exchange it reuses.
+   */
+  private val countedExchanges =
+    Collections.newSetFromMap(new IdentityHashMap[Exchange, java.lang.Boolean]())
+
+  /** Records `exchange` as counted. Returns false if it was already counted. */
+  private[comet] def markCounted(exchange: Exchange): Boolean = countedExchanges.add(exchange)
 
   /**
    * Accumulate the expression coverage that `CometExecRule.rollUpInfoMessages` rolled up onto a

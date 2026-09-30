@@ -438,7 +438,9 @@ diverge for several structural reasons:
   (see [The unified pools](#the-unified-pools)). `reserved()` includes it, but Spark's memory
   manager does not, so until it is repaid Spark can hand the same bytes to another consumer or task.
   The `overcommit` figure in the pool's `Display` output and `try_grow` errors shows how much is
-  outstanding.
+  outstanding. The executor's memory usage log leaves it out of the `reserved` figure it reports,
+  so that the log counts it as untracked: like an undeclared allocation, it needs room beyond what
+  Spark has handed out. Tracing's `comet_memory_reserved_total` still includes it.
 
 The practical consequence is that `reserved()` is a lower bound on Comet's real footprint, and the
 gap is workload-dependent. The margin that covers it has to come from
@@ -461,10 +463,14 @@ On Kubernetes, Spark sizes the executor pod from `ResourceProfile`:
 ```text
 pod memory request = pod memory limit
                    = spark.executor.memory
-                   + spark.executor.memoryOverhead   (default max(0.1 * executor.memory, 384 MiB))
+                   + spark.executor.memoryOverhead   (default max(factor * executor.memory, 384 MiB))
                    + spark.memory.offHeap.size
-                   + pyspark memory                  (Python applications only)
+                   + spark.executor.pyspark.memory   (Python applications in cluster mode only)
 ```
+
+The factor is `spark.executor.memoryOverheadFactor` or, when that is unset,
+`spark.kubernetes.memoryOverheadFactor`. Both default to 0.1, but in cluster mode spark-submit sets
+the Kubernetes factor to 0.4 for a PySpark or SparkR application that did not set it.
 
 Both the request and the limit are set to this same value, so the pod's cgroup `memory.max` is a
 hard ceiling on the sum of everything in the container. That cgroup counts, among other things:

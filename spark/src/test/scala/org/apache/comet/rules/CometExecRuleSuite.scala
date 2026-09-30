@@ -1165,7 +1165,7 @@ class CometExecRuleSuite extends CometTestBase {
   }
 
   test("CometExecRule should allow BloomFilter mixed Comet partial and Spark final") {
-    assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4142")
+    assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4968")
     val funcId = new FunctionIdentifier("bloom_filter_agg")
     spark.sessionState.functionRegistry.registerFunction(
       funcId,
@@ -1204,7 +1204,7 @@ class CometExecRuleSuite extends CometTestBase {
   }
 
   test("CometExecRule should allow BloomFilter mixed Spark partial and Comet final") {
-    assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4142")
+    assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4968")
     val funcId = new FunctionIdentifier("bloom_filter_agg")
     spark.sessionState.functionRegistry.registerFunction(
       funcId,
@@ -1577,7 +1577,7 @@ class CometExecRuleSuite extends CometTestBase {
         s"expected one report containing '$marker', got:\n${reports.mkString("\n\n")}")
       assert(
         coverageOf(matching.head) ==
-          (executed.cometOperators, executed.cometOperators + executed.sparkOperators),
+          ((executed.cometOperators, executed.cometOperators + executed.sparkOperators)),
         s"report disagrees with the executed plan ($executed):\n${matching.head}")
     }
     plan

@@ -51,7 +51,7 @@ use std::hash::Hash;
 use std::ops::Range;
 use std::sync::Arc;
 
-use super::nested_float_normalize::{has_float_leaf, normalize_nested_floats};
+use crate::float_semantics::{canonicalize_nan, has_float_leaf, normalize_nested_floats};
 
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub struct SparkArraysOverlap {
@@ -300,11 +300,7 @@ impl OverlapKey for f32 {
     type Key = u32;
 
     fn overlap_key(self) -> u32 {
-        if self.is_nan() {
-            f32::NAN.to_bits()
-        } else {
-            self.to_bits()
-        }
+        canonicalize_nan(self).to_bits()
     }
 }
 
@@ -312,11 +308,7 @@ impl OverlapKey for f64 {
     type Key = u64;
 
     fn overlap_key(self) -> u64 {
-        if self.is_nan() {
-            f64::NAN.to_bits()
-        } else {
-            self.to_bits()
-        }
+        canonicalize_nan(self).to_bits()
     }
 }
 
