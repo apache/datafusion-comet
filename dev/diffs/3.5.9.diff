@@ -218,7 +218,7 @@ index 0efe0877e9b..423d3b3d76d 100644
  -- SELECT_HAVING
  -- https://github.com/postgres/postgres/blob/REL_12_BETA2/src/test/regress/sql/select_having.sql
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/CachedTableSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/CachedTableSuite.scala
-index e5494726695..eaa3ea7a222 100644
+index e5494726695..7a2a2d8b721 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/CachedTableSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/CachedTableSuite.scala
 @@ -35,10 +35,11 @@ import org.apache.spark.sql.catalyst.analysis.TempTableAlreadyExistsException
@@ -234,17 +234,18 @@ index e5494726695..eaa3ea7a222 100644
  import org.apache.spark.sql.execution.ui.SparkListenerSQLAdaptiveExecutionUpdate
  import org.apache.spark.sql.functions._
  import org.apache.spark.sql.internal.SQLConf
-@@ -113,6 +114,9 @@ class CachedTableSuite extends QueryTest with SQLTestUtils
+@@ -113,6 +114,10 @@ class CachedTableSuite extends QueryTest with SQLTestUtils
        case inMemoryTable @ InMemoryTableScanExec(_, _, relation) =>
          getNumInMemoryTablesRecursively(relation.cachedPlan) +
            getNumInMemoryTablesInSubquery(inMemoryTable) + 1
++      // Comet's cache scan keeps the predicates pushed into it on its original plan, out of reach
++      // of subquery reuse. The filter above it evaluates the same subqueries, and counts them.
 +      case cometScan: CometInMemoryTableScanExec =>
-+        getNumInMemoryTablesRecursively(cometScan.originalPlan.relation.cachedPlan) +
-+          getNumInMemoryTablesInSubquery(cometScan.originalPlan) + 1
++        getNumInMemoryTablesRecursively(cometScan.originalPlan.relation.cachedPlan) + 1
        case p =>
          getNumInMemoryTablesInSubquery(p)
      }.sum
-@@ -393,7 +397,8 @@ class CachedTableSuite extends QueryTest with SQLTestUtils
+@@ -393,7 +398,8 @@ class CachedTableSuite extends QueryTest with SQLTestUtils
      assert(isExpectStorageLevel(rddId, Disk))
    }
  
@@ -254,7 +255,7 @@ index e5494726695..eaa3ea7a222 100644
      sql("CACHE TABLE testData")
      spark.table("testData").queryExecution.withCachedData.collect {
        case cached: InMemoryRelation =>
-@@ -519,7 +524,8 @@ class CachedTableSuite extends QueryTest with SQLTestUtils
+@@ -519,7 +525,8 @@ class CachedTableSuite extends QueryTest with SQLTestUtils
        df.collect()
      }
      assert(
@@ -264,7 +265,7 @@ index e5494726695..eaa3ea7a222 100644
    }
  
    test("A cached table preserves the partitioning and ordering of its cached SparkPlan") {
-@@ -1574,7 +1580,8 @@ class CachedTableSuite extends QueryTest with SQLTestUtils
+@@ -1574,7 +1581,8 @@ class CachedTableSuite extends QueryTest with SQLTestUtils
      }
    }
  

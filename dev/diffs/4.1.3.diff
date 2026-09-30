@@ -381,7 +381,7 @@ index 26d8f750f6e..c888f8e0844 100644
  
    test("SPARK-51777: sql.columnar.* classes registered in KryoSerializer") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/CachedTableSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/CachedTableSuite.scala
-index 0d807aeae4d..354a0757d31 100644
+index 0d807aeae4d..ce07fba149d 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/CachedTableSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/CachedTableSuite.scala
 @@ -37,6 +37,7 @@ import org.apache.spark.sql.catalyst.analysis.TempTableAlreadyExistsException
@@ -401,17 +401,18 @@ index 0d807aeae4d..354a0757d31 100644
  import org.apache.spark.sql.execution.ui.SparkListenerSQLAdaptiveExecutionUpdate
  import org.apache.spark.sql.functions._
  import org.apache.spark.sql.internal.SQLConf
-@@ -128,6 +129,9 @@ class CachedTableSuite extends QueryTest with SQLTestUtils
+@@ -128,6 +129,10 @@ class CachedTableSuite extends QueryTest with SQLTestUtils
        case inMemoryTable @ InMemoryTableScanExec(_, _, relation) =>
          getNumInMemoryTablesRecursively(relation.cachedPlan) +
            getNumInMemoryTablesInSubquery(inMemoryTable) + 1
++      // Comet's cache scan keeps the predicates pushed into it on its original plan, out of reach
++      // of subquery reuse. The filter above it evaluates the same subqueries, and counts them.
 +      case cometScan: CometInMemoryTableScanExec =>
-+        getNumInMemoryTablesRecursively(cometScan.originalPlan.relation.cachedPlan) +
-+          getNumInMemoryTablesInSubquery(cometScan.originalPlan) + 1
++        getNumInMemoryTablesRecursively(cometScan.originalPlan.relation.cachedPlan) + 1
        case p =>
          getNumInMemoryTablesInSubquery(p)
      }.sum
-@@ -408,7 +412,8 @@ class CachedTableSuite extends QueryTest with SQLTestUtils
+@@ -408,7 +413,8 @@ class CachedTableSuite extends QueryTest with SQLTestUtils
      assert(isExpectStorageLevel(rddId, Disk))
    }
  
@@ -421,7 +422,7 @@ index 0d807aeae4d..354a0757d31 100644
      sql("CACHE TABLE testData")
      spark.table("testData").queryExecution.withCachedData.collect {
        case cached: InMemoryRelation =>
-@@ -534,7 +539,8 @@ class CachedTableSuite extends QueryTest with SQLTestUtils
+@@ -534,7 +540,8 @@ class CachedTableSuite extends QueryTest with SQLTestUtils
        df.collect()
      }
      assert(
@@ -431,7 +432,7 @@ index 0d807aeae4d..354a0757d31 100644
    }
  
    test("A cached table preserves the partitioning and ordering of its cached SparkPlan") {
-@@ -1595,7 +1601,8 @@ class CachedTableSuite extends QueryTest with SQLTestUtils
+@@ -1595,7 +1602,8 @@ class CachedTableSuite extends QueryTest with SQLTestUtils
      }
    }
  
@@ -441,7 +442,17 @@ index 0d807aeae4d..354a0757d31 100644
      val tableName = "ntzCache"
      withTable(tableName) {
        sql(s"CACHE TABLE $tableName AS SELECT TIMESTAMP_NTZ'2021-01-01 00:00:00'")
-@@ -1673,9 +1680,18 @@ class CachedTableSuite extends QueryTest with SQLTestUtils
+@@ -1640,7 +1648,8 @@ class CachedTableSuite extends QueryTest with SQLTestUtils
+     }
+   }
+ 
+-  test("SPARK-35332: Make cache plan disable configs configurable - check AQE") {
++  test("SPARK-35332: Make cache plan disable configs configurable - check AQE",
++    IgnoreComet("Spark's SQL UI shows a cached plan only under Spark's own cache scan")) {
+     withSQLConf(SQLConf.SHUFFLE_PARTITIONS.key -> "2",
+       SQLConf.COALESCE_PARTITIONS_MIN_PARTITION_NUM.key -> "1",
+       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true") {
+@@ -1673,9 +1682,18 @@ class CachedTableSuite extends QueryTest with SQLTestUtils
            _.nodeName.contains("TableCacheQueryStage"))
          val aqeNode = findNodeInSparkPlanInfo(inMemoryScanNode.get,
            _.nodeName.contains("AdaptiveSparkPlan"))
@@ -463,7 +474,7 @@ index 0d807aeae4d..354a0757d31 100644
        }
  
        withTempView("t0", "t1", "t2") {
-@@ -1764,6 +1780,7 @@ class CachedTableSuite extends QueryTest with SQLTestUtils
+@@ -1764,6 +1782,7 @@ class CachedTableSuite extends QueryTest with SQLTestUtils
              val cached = spark.table("t")
              val tableCache = collect(cached.queryExecution.executedPlan) {
                case i: InMemoryTableScanExec => i
@@ -471,7 +482,7 @@ index 0d807aeae4d..354a0757d31 100644
              }
              if (expected == StorageLevel.NONE) {
                assert(tableCache.isEmpty)
-@@ -2630,6 +2647,7 @@ class CachedTableSuite extends QueryTest with SQLTestUtils
+@@ -2630,6 +2649,7 @@ class CachedTableSuite extends QueryTest with SQLTestUtils
  
        val inMemoryTableScan = collect(df.queryExecution.executedPlan) {
          case i: InMemoryTableScanExec => i
@@ -479,7 +490,7 @@ index 0d807aeae4d..354a0757d31 100644
        }
        assert(inMemoryTableScan.size == 1)
        checkAnswer(df, Row(5) :: Nil)
-@@ -2657,6 +2675,7 @@ class CachedTableSuite extends QueryTest with SQLTestUtils
+@@ -2657,6 +2677,7 @@ class CachedTableSuite extends QueryTest with SQLTestUtils
  
        val subqueryInMemoryTableScan = collect(cteInSubquery.queryExecution.executedPlan) {
          case i: InMemoryTableScanExec => i
@@ -3092,10 +3103,29 @@ index 188a28ff1c0..cfc84dcba01 100644
          assert(o1.semanticEquals(o2), "Different output column order after AQE optimization")
        }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/columnar/CachedBatchSerializerSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/columnar/CachedBatchSerializerSuite.scala
-index 47b935a2880..3fdeab3113c 100644
+index 47b935a2880..65ee66c1975 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/columnar/CachedBatchSerializerSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/columnar/CachedBatchSerializerSuite.scala
-@@ -230,9 +230,21 @@ class CachedBatchSerializerNoUnwrapSuite extends QueryTest
+@@ -212,6 +212,18 @@ class CachedBatchSerializerNoUnwrapSuite extends QueryTest
+       classOf[DefaultCachedBatchSerializerNoUnwrap].getName)
+   }
+ 
++  // Spark keeps the first cache serializer it loads for the rest of the JVM, which the suites
++  // before this one set to Comet's. Clear it on both sides, as CachedBatchSerializerSuite does.
++  protected override def beforeAll(): Unit = {
++    super.beforeAll()
++    clearSerializer()
++  }
++
++  protected override def afterAll(): Unit = {
++    clearSerializer()
++    super.afterAll()
++  }
++
+   test("Do not unwrap ColumnarToRowExec") {
+     withTempPath { workDir =>
+       val workDirPath = workDir.getAbsolutePath
+@@ -230,9 +242,21 @@ class CachedBatchSerializerNoUnwrapSuite extends QueryTest
        assert(cachedPlans.length == 2)
        cachedPlans.foreach {
          cachedPlan =>
