@@ -413,7 +413,7 @@ object CometExecIterator extends Logging {
       Option(taskMemories.putIfAbsent(context, created)).getOrElse {
         // Added once the entry is in place, since a completed task runs a new listener at once.
         context.addTaskCompletionListener[Unit] { _ =>
-          taskMemories.remove(context)
+          val _ = taskMemories.remove(context)
         }
         created
       }
