@@ -24,12 +24,13 @@ import scala.util.Random
 
 import org.apache.spark.sql._
 import org.apache.spark.sql.comet._
+import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.QueryStageExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
-import org.apache.comet.CometConf
+import org.apache.comet.{CometConf, DataTypeSupport}
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 /**
@@ -236,6 +237,63 @@ class CometScanRuleSuite extends CometTestBase {
           CometScanTypeChecker().isSchemaSupported(schema, ListBuffer.empty),
           s"$label: declined")
       }
+    }
+  }
+
+  test("hasContainerFieldIds finds an id on a struct, array, map or Variant field at any depth") {
+    // See https://github.com/apache/datafusion-comet/issues/6131.
+    val id = new MetadataBuilder().putLong("parquet.field.id", 1L).build()
+    // The same types CometScanRule treats as containers. Variant exists from Spark 4.0 on.
+    val isContainer: DataType => Boolean =
+      dt => DataTypeSupport.isComplexType(dt) || Utils.variantType.contains(dt)
+    val leaf = StructType(Array(StructField("x", LongType, nullable = true, id)))
+    val plain = StructType(Array(StructField("x", LongType)))
+    def field(dt: DataType, withId: Boolean): StructField =
+      if (withId) StructField("c", dt, nullable = true, id) else StructField("c", dt)
+
+    val found = Seq[(String, StructType)](
+      "struct" -> StructType(Array(field(plain, withId = true))),
+      "array" -> StructType(Array(field(ArrayType(LongType), withId = true))),
+      "map" -> StructType(Array(field(MapType(StringType, LongType), withId = true))),
+      "nested struct" -> StructType(
+        Array(field(StructType(Array(field(plain, withId = true))), withId = false))),
+      "struct in an array element" -> StructType(
+        Array(field(ArrayType(StructType(Array(field(plain, withId = true)))), withId = false))),
+      "array in a map value" -> StructType(
+        Array(
+          field(
+            MapType(StringType, StructType(Array(field(ArrayType(LongType), withId = true)))),
+            withId = false))),
+      "map in a map key" -> StructType(
+        Array(
+          field(
+            MapType(StructType(Array(field(MapType(LongType, LongType), withId = true))), plain),
+            withId = false))))
+    val variantFound = Utils.variantType.toSeq.flatMap { variant =>
+      Seq[(String, StructType)](
+        "Variant" -> StructType(Array(field(variant, withId = true))),
+        "Variant in an array element" -> StructType(
+          Array(
+            field(ArrayType(StructType(Array(field(variant, withId = true)))), withId = false))))
+    }
+    for ((label, schema) <- found ++ variantFound) {
+      assert(DataTypeSupport.hasContainerFieldIds(schema, isContainer), s"$label: not found")
+    }
+
+    val notFound = Seq[(String, StructType)](
+      "no ids" -> StructType(
+        Array(field(plain, withId = false), field(ArrayType(plain), withId = false))),
+      "leaf id at the root" -> leaf,
+      "leaf ids under a struct, array and map" -> StructType(
+        Array(
+          field(leaf, withId = false),
+          field(ArrayType(leaf), withId = false),
+          field(MapType(leaf, leaf), withId = false))))
+    val variantNotFound = Utils.variantType.toSeq.map { variant =>
+      "Variant without an id" -> StructType(Array(field(variant, withId = false)))
+    }
+    for ((label, schema) <- notFound ++ variantNotFound) {
+      assert(!DataTypeSupport.hasContainerFieldIds(schema, isContainer), s"$label: found")
     }
   }
 

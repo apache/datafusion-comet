@@ -348,6 +348,21 @@ case class CometScanRule(session: SparkSession)
       withFallbackReason(scanExec, "Native Parquet Variant scans do not support encryption")
       return None
     }
+    // DataFusion's INT96 coercion rebuilds struct, list and map fields without their metadata,
+    // so an id on one of them, or on a Variant (a struct in the file), is lost and the native
+    // scan null fills a column Spark reads by id. The planner cannot tell whether a file holds
+    // INT96, so decline every such request.
+    // TODO: Remove this fallback once DataFusion carries apache/datafusion#24790.
+    // https://github.com/apache/datafusion-comet/issues/6131
+    if (readFieldId(conf) && DataTypeSupport.hasContainerFieldIds(
+        scanExec.requiredSchema,
+        dt => DataTypeSupport.isComplexType(dt) || isVariantType(dt))) {
+      withFallbackReason(
+        scanExec,
+        "Native Parquet scan does not yet match field ids on struct, array, map or Variant " +
+          "fields")
+      return None
+    }
     // input_file_name, input_file_block_start, and input_file_block_length read from
     // InputFileBlockHolder, a thread-local set by Spark's FileScanRDD. The native DataFusion
     // scan does not use FileScanRDD, so these expressions would return empty/default values.

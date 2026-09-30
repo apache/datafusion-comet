@@ -107,6 +107,25 @@ object DataTypeSupport {
     ids.distinct.length != ids.length
   }
 
+  /**
+   * True when a field anywhere in `schema` whose type `isContainer` accepts declares a Parquet
+   * field id, including one nested under an array element or a map key or value. Callers pass the
+   * types that the native reader sees as struct, list or map fields.
+   *
+   * Only meaningful under `spark.sql.parquet.fieldId.read.enabled`; callers gate on that.
+   */
+  def hasContainerFieldIds(schema: StructType, isContainer: DataType => Boolean): Boolean = {
+    def check(dt: DataType): Boolean = dt match {
+      case StructType(fields) =>
+        fields.exists(f =>
+          (isContainer(f.dataType) && ParquetUtils.hasFieldId(f)) || check(f.dataType))
+      case ArrayType(elementType, _) => check(elementType)
+      case MapType(keyType, valueType, _) => check(keyType) || check(valueType)
+      case _ => false
+    }
+    check(schema)
+  }
+
   private def fieldId(field: StructField): Option[Int] = {
     if (!ParquetUtils.hasFieldId(field)) None
     else {
