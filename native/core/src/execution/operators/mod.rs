@@ -37,6 +37,7 @@ pub use explode::ExplodeExec;
 pub(crate) mod iceberg_common;
 pub use iceberg_common::clear_file_io_cache;
 mod iceberg_partition_path;
+mod iceberg_partition_value;
 mod iceberg_scan;
 mod iceberg_write;
 pub use iceberg_write::IcebergWriteExec;
