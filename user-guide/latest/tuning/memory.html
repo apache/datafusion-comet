@@ -850,11 +850,12 @@ already drawing on.</p>
 <p>Work out what the executor already gets before choosing a value. When
 <code class="docutils literal notranslate"><span class="pre">spark.executor.memoryOverhead</span></code> is unset, Spark derives the overhead as
 <code class="docutils literal notranslate"><span class="pre">max(spark.executor.memoryOverheadFactor</span> <span class="pre">*</span> <span class="pre">spark.executor.memory,</span> <span class="pre">384</span> <span class="pre">MiB)</span></code>. The factor defaults to
-<code class="docutils literal notranslate"><span class="pre">0.1</span></code>, except for PySpark and SparkR applications submitted to Kubernetes in cluster mode, where it
-defaults to <code class="docutils literal notranslate"><span class="pre">0.4</span></code>. On Spark 4.0 and later the floor is configurable through
-<code class="docutils literal notranslate"><span class="pre">spark.executor.minMemoryOverhead</span></code>. Setting <code class="docutils literal notranslate"><span class="pre">spark.executor.memoryOverhead</span></code> <strong>replaces</strong> the derived
-value rather than adding to it, so a value below what is derived today shrinks the container instead
-of growing it.</p>
+<code class="docutils literal notranslate"><span class="pre">0.1</span></code>. On Kubernetes, when <code class="docutils literal notranslate"><span class="pre">spark.executor.memoryOverheadFactor</span></code> is unset, Spark uses
+<code class="docutils literal notranslate"><span class="pre">spark.kubernetes.memoryOverheadFactor</span></code> instead, which also defaults to <code class="docutils literal notranslate"><span class="pre">0.1</span></code>, except for PySpark
+and SparkR applications submitted in cluster mode, where it defaults to <code class="docutils literal notranslate"><span class="pre">0.4</span></code>. On Spark 4.0 and
+later the floor is configurable through <code class="docutils literal notranslate"><span class="pre">spark.executor.minMemoryOverhead</span></code>. Setting
+<code class="docutils literal notranslate"><span class="pre">spark.executor.memoryOverhead</span></code> <strong>replaces</strong> the derived value rather than adding to it, so a value
+below what is derived today shrinks the container instead of growing it.</p>
 <p>For a small executor, <code class="docutils literal notranslate"><span class="pre">2g</span></code> is a reasonable starting point. A 4 GiB executor derives only 409 MiB, so
 this is a real increase:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">spark</span><span class="o">.</span><span class="n">executor</span><span class="o">.</span><span class="n">memoryOverhead</span><span class="o">=</span><span class="mi">2</span><span class="n">g</span>
@@ -871,7 +872,9 @@ size:</p>
 <code class="docutils literal notranslate"><span class="pre">ExecutorLostFailure</span></code> with exit code 137) rather than failing with a task-level out-of-memory error.
 To measure how much Comet needs rather than guessing, see <a class="reference internal" href="#sizing-the-overhead-from-the-memory-usage-log">Sizing the Overhead from the Memory Usage Log</a>.</p>
 <p>Note that on Kubernetes and YARN the overhead is added to the container size, so raising it reduces
-how many executors fit on a node.</p>
+how many executors fit on a node. A standalone cluster ignores the overhead: its workers start
+executors without a memory limit and count only <code class="docutils literal notranslate"><span class="pre">spark.executor.memory</span></code> against the memory they
+offer.</p>
 </section>
 <section id="sizing-the-overhead-from-the-memory-usage-log">
 <h2>Sizing the Overhead from the Memory Usage Log<a class="headerlink" href="#sizing-the-overhead-from-the-memory-usage-log" title="Link to this heading">#</a></h2>
@@ -923,10 +926,11 @@ occupy until Spark hands it out, so a quiet log is not a sign that the overhead 
 size it from the most untracked memory as described above. The overhead also has to hold the JVM’s
 own non-heap memory, so by the time the warning appears the executor has likely outgrown its
 container. It warns the first time this happens, and again each time it happens after dropping back
-below. The overhead it uses is <code class="docutils literal notranslate"><span class="pre">spark.executor.memoryOverhead</span></code> if set, otherwise
-<code class="docutils literal notranslate"><span class="pre">spark.executor.memoryOverheadFactor</span></code> of <code class="docutils literal notranslate"><span class="pre">spark.executor.memory</span></code> with a minimum of
-<code class="docutils literal notranslate"><span class="pre">spark.executor.minMemoryOverhead</span></code>, as Spark sizes the default container. There is no warning in
-local mode.</p>
+below. It derives the overhead the way YARN and Kubernetes size the executor’s container, as
+described in <a class="reference internal" href="#configuring-executor-memory-overhead">Configuring Executor Memory Overhead</a>. For a PySpark application it also counts
+<code class="docutils literal notranslate"><span class="pre">spark.executor.pyspark.memory</span></code> as part of the container when the cluster manager adds it, which
+YARN does, and Kubernetes does in cluster mode. There is no warning in local mode, on a standalone
+cluster, whose workers do not limit an executor’s memory, or with any other cluster manager.</p>
 <p>Look more closely before raising the overhead if the untracked memory keeps growing through a run
 rather than levelling off: memory that is not being released will exhaust any overhead eventually.
 The executor logs one more line after its last native plan finishes, and an <code class="docutils literal notranslate"><span class="pre">allocated</span></code> or
