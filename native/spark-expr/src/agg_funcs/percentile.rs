@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::float_semantics::compare_floats;
 use arrow::array::{
     Array, ArrayRef, AsArray, BooleanArray, Float64Array, Float64Builder, ListArray,
 };
@@ -27,7 +28,6 @@ use datafusion::logical_expr::{
     Accumulator, AggregateUDFImpl, EmitTo, GroupsAccumulator, ReversedUDAF, Signature,
 };
 use datafusion::physical_expr::expressions::format_state_name;
-use std::cmp::Ordering;
 use std::mem::{size_of, size_of_val};
 use std::sync::Arc;
 
@@ -297,38 +297,24 @@ fn spark_percentile(values: &mut [f64], percentile: f64) -> Option<f64> {
     let lower = position.floor() as usize;
     let higher = position.ceil() as usize;
 
-    let (_, lower_value, _) = values.select_nth_unstable_by(lower, spark_double_cmp);
+    let (_, lower_value, _) = values.select_nth_unstable_by(lower, |x, y| compare_floats(*x, *y));
     let lower_value = *lower_value;
     if lower == higher {
         return Some(lower_value);
     }
 
-    let (_, higher_value, _) = values.select_nth_unstable_by(higher, spark_double_cmp);
+    let (_, higher_value, _) = values.select_nth_unstable_by(higher, |x, y| compare_floats(*x, *y));
     let higher_value = *higher_value;
-    if spark_double_cmp(&lower_value, &higher_value) == Ordering::Equal {
+    if compare_floats(lower_value, higher_value).is_eq() {
         return Some(lower_value);
     }
 
     Some((higher as f64 - position) * lower_value + (position - lower as f64) * higher_value)
 }
 
-fn spark_double_cmp(x: &f64, y: &f64) -> Ordering {
-    if x == y || (x.is_nan() && y.is_nan()) {
-        Ordering::Equal
-    } else if x.is_nan() {
-        Ordering::Greater
-    } else if y.is_nan() {
-        Ordering::Less
-    } else {
-        x.partial_cmp(y)
-            .expect("non-NaN values should be comparable")
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{spark_double_cmp, spark_percentile};
-    use std::cmp::Ordering;
+    use super::spark_percentile;
 
     #[test]
     fn interpolates_with_full_spark_precision() {
@@ -340,10 +326,10 @@ mod tests {
     }
 
     #[test]
-    fn matches_spark_double_ordering_for_nan_and_zero() {
-        assert_eq!(spark_double_cmp(&f64::NAN, &1.0), Ordering::Greater);
-        assert_eq!(spark_double_cmp(&1.0, &f64::NAN), Ordering::Less);
-        assert_eq!(spark_double_cmp(&f64::NAN, &f64::NAN), Ordering::Equal);
-        assert_eq!(spark_double_cmp(&-0.0, &0.0), Ordering::Equal);
+    fn orders_nan_above_every_other_value() {
+        // A NaN with the sign bit set, which IEEE 754 total order would put first.
+        let mut values = vec![f64::from_bits(0xfff8_0000_0000_0000), 2.0, 1.0];
+        assert_eq!(spark_percentile(&mut values, 0.0), Some(1.0));
+        assert!(spark_percentile(&mut values, 1.0).unwrap().is_nan());
     }
 }

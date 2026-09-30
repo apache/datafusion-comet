@@ -267,7 +267,9 @@ object CometConf extends ShimCometConf {
         "Whether to enable Comet native scans and fused Spark reads of in-memory cached tables. " +
           "Requires spark.comet.enabled=true. At startup, this setting also decides whether " +
           "CometDriverPlugin installs Comet's cache serializer, which stores cached data in " +
-          "Arrow format. Because spark.sql.cache.serializer is a " +
+          "Arrow format. The plugin installs it only if spark.comet.enabled and " +
+          "spark.comet.exec.enabled are also enabled at startup. " +
+          "Because spark.sql.cache.serializer is a " +
           "static config, the cached format is fixed for the application, and disabling this " +
           "or spark.comet.enabled at runtime sends cached scans back to Spark's execution path " +
           "without the fused reader. Relations whose schema Comet's Arrow writer does not " +
