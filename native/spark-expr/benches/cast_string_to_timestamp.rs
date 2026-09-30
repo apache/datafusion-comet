@@ -120,6 +120,12 @@ fn criterion_benchmark(c: &mut Criterion) {
             }),
         ),
         ("invalid", create_batch(|_| "not a timestamp".to_string())),
+        // A long malformed value. Rejecting it must cost a bounded prefix, not a scan of every
+        // digit before and again after the `Z` is stripped.
+        (
+            "long_digits_zone",
+            create_batch(|_| format!("{}Z", "1".repeat(1024))),
+        ),
         // The parser only runs for non-null slots, so a mostly-null batch must not get slower.
         (
             "dense_nulls",
@@ -202,8 +208,10 @@ fn criterion_benchmark(c: &mut Criterion) {
                 // ANSI raises on the first value the parser rejects, so timing it against a
                 // batch that holds one would measure the error path rather than the parser.
                 // `timestamp_ntz_parser` additionally rejects time-only strings.
-                let ansi_raises = matches!(*name, "mixed" | "invalid" | "date_only_zone")
-                    || (*name == "time_only" && target_name == "timestamp_ntz");
+                let ansi_raises = matches!(
+                    *name,
+                    "mixed" | "invalid" | "date_only_zone" | "long_digits_zone"
+                ) || (*name == "time_only" && target_name == "timestamp_ntz");
                 if mode == EvalMode::Ansi && ansi_raises {
                     continue;
                 }

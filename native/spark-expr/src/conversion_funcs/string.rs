@@ -1711,35 +1711,53 @@ fn classify_timestamp_pattern(value: &str) -> Option<TimestampPattern> {
         [b'+' | b'-', rest @ ..] => (true, rest),
         _ => (false, bytes),
     };
-    let digits = digit_run(rest);
+    let digits = digit_run(rest, MAX_YEAR_DIGITS + 1);
     let after_digits = &rest[digits..];
     match after_digits.first() {
         // Year only.
-        None => (4..=6).contains(&digits).then_some(TimestampPattern::Year),
+        None => (4..=MAX_YEAR_DIGITS)
+            .contains(&digits)
+            .then_some(TimestampPattern::Year),
         // A year of 4-6 digits followed by the date separator.
-        Some(b'-') if (4..=6).contains(&digits) => classify_date_tail(&after_digits[1..]),
+        Some(b'-') if (4..=MAX_YEAR_DIGITS).contains(&digits) => {
+            classify_date_tail(&after_digits[1..])
+        }
         // Bare time-only shapes take a 1-2 digit hour and no sign.
         Some(b':') if !signed && (1..=2).contains(&digits) => classify_time(rest, false),
         _ => None,
     }
 }
 
-/// Number of leading ASCII digits in `bytes`.
-fn digit_run(bytes: &[u8]) -> usize {
+/// The most year digits Spark's `isValidDigits` accepts (`maxDigitsYear`).
+const MAX_YEAR_DIGITS: usize = 6;
+
+/// The most digits Spark's `isValidDigits` accepts in a month, day, hour, minute or second.
+const MAX_SEGMENT_DIGITS: usize = 2;
+
+/// Number of leading ASCII digits in `bytes`, counting no more than `limit`.
+///
+/// The fixed-width segments pass one more than their widest valid length, which is enough to
+/// reject an overlong run. Stopping there keeps a long malformed value, such as thousands of
+/// digits followed by `Z`, from being scanned end to end, and then again after the zone is
+/// stripped; the regexes this replaced also gave up after a bounded prefix.
+fn digit_run(bytes: &[u8], limit: usize) -> usize {
     bytes
         .iter()
-        .position(|b| !b.is_ascii_digit())
-        .unwrap_or(bytes.len())
+        .take(limit)
+        .take_while(|b| b.is_ascii_digit())
+        .count()
 }
 
 /// `bytes` past a leading 1-2 digit segment, or `None` when it does not start with one.
 ///
 /// Taking the whole digit run is equivalent to the regexes' `[0-9]{1,2}`: every segment is
 /// followed by a separator or the end of the string, so a run of three or more digits can
-/// never match.
+/// never match, and counting to three is enough to tell.
 fn skip_segment(bytes: &[u8]) -> Option<&[u8]> {
-    let digits = digit_run(bytes);
-    (1..=2).contains(&digits).then(|| &bytes[digits..])
+    let digits = digit_run(bytes, MAX_SEGMENT_DIGITS + 1);
+    (1..=MAX_SEGMENT_DIGITS)
+        .contains(&digits)
+        .then(|| &bytes[digits..])
 }
 
 /// Classifies `[0-9]{1,2}(:[0-9]{1,2}(:[0-9]{1,2}(\.[0-9]*)?)?)?`, the time-only shapes. A bare
@@ -1758,12 +1776,12 @@ fn classify_time(bytes: &[u8], t_prefixed: bool) -> Option<TimestampPattern> {
     if bytes.is_empty() {
         return Some(if t_prefixed { TimeOnlyHms } else { BareHms });
     }
+    // A fraction may be any length, so it is the one run that has to be scanned in full.
     let fraction = bytes.strip_prefix(b".")?;
-    (digit_run(fraction) == fraction.len()).then_some(if t_prefixed {
-        TimeOnlyHmsu
-    } else {
-        BareHmsu
-    })
+    fraction
+        .iter()
+        .all(u8::is_ascii_digit)
+        .then_some(if t_prefixed { TimeOnlyHmsu } else { BareHmsu })
 }
 
 /// Classifies `[0-9]{1,2}(-[0-9]{1,2}([T ][0-9]{1,2}(:[0-9]{1,2}(:[0-9]{1,2}(\.[0-9]*)?)?)?)?)?`,
@@ -1794,7 +1812,10 @@ fn classify_date_tail(bytes: &[u8]) -> Option<TimestampPattern> {
         return Some(Second);
     }
     let fraction = bytes.strip_prefix(b".")?;
-    (digit_run(fraction) == fraction.len()).then_some(Microsecond)
+    fraction
+        .iter()
+        .all(u8::is_ascii_digit)
+        .then_some(Microsecond)
 }
 
 /// Parses `value` according to the shape already determined for it by
@@ -2206,6 +2227,8 @@ mod tests {
             "-002020-1-2 3:4",
             "T1:2:3.",
             "1:2:3.4",
+            "0000000002020-01-01T12:34:56Z",
+            "2020-01-01T12:34:56.123456789012",
         ] {
             check(seed);
             for i in 0..seed.len() {
@@ -2263,6 +2286,21 @@ mod tests {
         assert_eq!(
             classify_timestamp_pattern("2020-01-01 12:34:56."),
             Some(Microsecond)
+        );
+        // An overlong run is rejected however long it is, while a fraction may be any length.
+        let long = "1".repeat(8192);
+        assert_eq!(classify_timestamp_pattern(&long), None);
+        assert_eq!(classify_timestamp_pattern(&format!("{long}Z")), None);
+        assert_eq!(classify_timestamp_pattern(&format!("-{long}-01")), None);
+        assert_eq!(classify_timestamp_pattern(&format!("2020-{long}")), None);
+        assert_eq!(classify_timestamp_pattern(&format!("T1:{long}")), None);
+        assert_eq!(
+            classify_timestamp_pattern(&format!("2020-01-01 12:34:56.{long}")),
+            Some(Microsecond)
+        );
+        assert_eq!(
+            classify_timestamp_pattern(&format!("1:2:3.{long}")),
+            Some(BareHmsu)
         );
     }
 
