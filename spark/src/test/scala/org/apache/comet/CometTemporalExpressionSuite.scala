@@ -853,6 +853,14 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
           "cast(floor(unix_micros(TIMESTAMP('1970-01-01 00:00:00')) / 86400000000D) as int)",
           "cast(floor(unix_micros(TIMESTAMP('2024-06-15 10:30:00')) / 86400000000D) as int)"))
 
+      // One microsecond before the epoch. Days are counted in UTC and floored, so this is day -1
+      // even though it is already 1970-01-01 in Asia/Tokyo.
+      withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> "Asia/Tokyo") {
+        checkDays(
+          dummyDF.select(getColumnFromExpression(Days(Literal(-1L, DataTypes.TimestampType)))),
+          dummyDF.selectExpr("-1"))
+      }
+
       // Null handling
       checkDays(
         dummyDF.select(getColumnFromExpression(Days(Literal.create(null, DataTypes.DateType)))),
