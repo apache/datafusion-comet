@@ -2425,6 +2425,49 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("statistical aggregates merge fractional constants across partitions") {
+    // https://github.com/apache/datafusion-comet/issues/6423
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "1",
+      SQLConf.FILES_MAX_PARTITION_BYTES.key -> "1048576",
+      SQLConf.FILES_OPEN_COST_IN_BYTES.key -> "1048576",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+      val swapped = RegrSparkVersions.r2DegenerateCasesSwapped(spark.version)
+      val constantX: java.lang.Double = if (swapped) null else 1.0
+      val constantY: java.lang.Double = if (swapped) 1.0 else null
+      for (reverse <- Seq(false, true)) {
+        withTempPath { path =>
+          val starts = if (reverse) Seq(3, 0) else Seq(0, 3)
+          for (start <- starts) {
+            (start until start + 3)
+              .map(y => (0, y.toDouble, 0.1))
+              .toDF("g", "y", "x")
+              .coalesce(1)
+              .write
+              .mode("append")
+              .parquet(path.getCanonicalPath)
+          }
+          withParquetTable(path.getCanonicalPath, "fractional_constants") {
+            assert(spark.table("fractional_constants").rdd.getNumPartitions == 2)
+            for (groupBy <- Seq("", " GROUP BY g")) {
+              val query = "SELECT regr_slope(y, x), regr_intercept(y, x), regr_r2(y, x), " +
+                "regr_sxx(y, x), regr_sxy(y, x), regr_r2(x, y), regr_syy(x, y) " +
+                "FROM fractional_constants" + groupBy
+              val (_, cometPlan) = checkSparkAnswerAndOperator(query)
+              val aggregates = cometPlan.collect { case a: CometHashAggregateExec => a }
+              assert(aggregates.exists(_.modes.contains(Partial)))
+              assert(aggregates.exists(_.modes.contains(Final)))
+              // Keep the degenerate-case results exact. A tolerance can hide nonzero M2.
+              checkAnswer(sql(query), Seq(Row(null, null, constantX, 0.0, 0.0, constantY, 0.0)))
+            }
+          }
+        }
+      }
+    }
+  }
+
   test("var_pop and var_samp") {
     withSQLConf(CometConf.COMET_SHUFFLE_ENABLED.key -> "true") {
       Seq("native", "jvm").foreach { cometShuffleMode =>
