@@ -47,7 +47,7 @@ flowchart LR
   QUEUE["Queue tier, on top of the PR tier<br>Spark SQL, Spark 4.1<br>Iceberg 1.11<br>macOS build and Comet suites<br>Benchmark check, Delta gate<br>PyArrow UDF, Spark 4.0 / 4.1 / 4.2"]
   NIGHTLY["Nightly tier<br>Comet suites, Spark 3.4 / 3.5 / 4.0 / 4.2<br>Spark SQL, Spark 3.5 / 4.0 / 4.2<br>Iceberg 1.8 / 1.9 / 1.10"]
   S34["Neither tier<br>Spark SQL, Spark 3.4"]
-  CACHE["Cache-refresh-only mode<br>the four cache-writing jobs, plus Lint"]
+  CACHE["Cache-refresh-only mode<br>the three cache-writing jobs, plus Lint"]
 ```
 
 Suite by suite:
@@ -74,16 +74,17 @@ a change lands, evaluated against the merge result rather than the pull request 
 runs one Spark version and one Iceberg version, the ones the default build profile targets. The
 **nightly tier** runs the other Spark and Iceberg versions once a day against `main` as it stands;
 see [Nightly runs](#nightly-runs) below. Nothing in the queue tier runs again
-on push to `main`, because the queue already tested the exact tree that landed. The one exception
-is the Linux build, which also runs on push so that the dependency caches on `main` stay fresh: a
-pull request can only restore caches saved on its own branch or on `main`, and the queue's
-temporary branch takes its caches with it when it is deleted.
+on push to `main`, because the queue already tested the exact tree that landed. The exceptions are
+the Linux and macOS builds, which also run on push so that the dependency caches on `main` stay
+fresh: a pull request can only restore caches saved on its own branch or on `main`, and the queue's
+temporary branch takes its caches with it when it is deleted. On push the macOS build runs only its
+native build, and only when `main` has no cache entry yet for the current dependency set.
 
 That push run is for the caches and nothing else, so it runs in **cache-refresh-only** mode: only
-the four jobs that own a cache entry (the native CI build, the Rust tests, and the two TPC-H/TPC-DS
-jobs, the last two stopping before their query passes), plus the short `Lint` job the native jobs
-depend on. The lints and the Comet test matrix are skipped, which is the difference between 587
-runner-minutes a push and about 73. If you add a job to `pr_build_linux.yml`, give it
+the three jobs that own a cache entry (the native CI build and the two TPC-H/TPC-DS jobs, the last
+two stopping before their query passes), plus the short `Lint` job the native build depends on. The
+lints, the Rust tests and the Comet test matrix are skipped, which is the difference between 587
+runner-minutes a push and about 40. If you add a job to `pr_build_linux.yml`, give it
 `if: ${{ !inputs.cache-refresh-only }}` unless it writes a cache that `main` needs;
 `dev/ci/check-ci-config.py` fails the build if you forget.
 
@@ -198,16 +199,17 @@ The pull request's own checks do not have to be finished, though it is polite no
 request whose PR tier is red.
 
 GitHub then builds a temporary branch named `gh-readonly-queue/main/...` containing the pull
-request's commits squashed on top of the current `main`, batched with up to four other queued pull
-requests, and runs `ci.yml` against it with a `merge_group` event. When `Required Checks` on that
-branch is green, every pull request in the batch merges. If it is red, GitHub removes the pull
-request whose entry failed, rebuilds the remaining entries without it, and records the removal on
-the pull request's timeline.
+request's commits squashed on top of `main` and of every entry ahead of it in the queue, and runs
+`ci.yml` against it with a `merge_group` event. Up to four entries build at once. An entry merges
+once `Required Checks` on its branch is green and every entry ahead of it has merged; up to five
+green entries land together. If an entry's build is red, GitHub removes that pull request,
+rebuilds the entries behind it without it, and records the removal on the pull request's
+timeline.
 
 The queue tests the merge result rather than the pull request head. That is the point of it: a
 semantic conflict between two pull requests that each pass in isolation is caught before either
 lands. It also means a pull request can be evicted for a failure it did not cause on its own,
-because `main` moved or because another entry in the batch broke the combined tree.
+because `main` moved or because an entry ahead of it broke the combined tree.
 
 ## When a queue run fails
 
@@ -230,8 +232,8 @@ through these in order:
 
 3. **Reproduce it on the pull request.** Merge `main` into the branch so the pull request head
    matches what the queue tested, then apply the label for the suite that failed. If the labeled
-   run passes, the failure came from the batch, not from this change, and re-queuing is the right
-   next step. If it fails, fix it on the branch like any other CI failure.
+   run passes, the failure came from the entries ahead of it, not from this change, and
+   re-queuing is the right next step. If it fails, fix it on the branch like any other CI failure.
 
 4. **Check for flakiness.** A test that is flaky in the queue tier blocks everyone's merges, not
    just one pull request. If a queue failure looks like a flake, do not just re-queue: file or

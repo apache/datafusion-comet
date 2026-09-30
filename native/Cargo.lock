@@ -1976,6 +1976,7 @@ dependencies = [
  "aws-smithy-types",
  "base64 0.23.1",
  "bytes",
+ "chrono-tz",
  "comet-contrib-delta",
  "comet-contrib-lance",
  "criterion",

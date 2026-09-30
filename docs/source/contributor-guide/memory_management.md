@@ -340,6 +340,12 @@ forget, and a `createPlan` that fails partway through cleans up on unwind.
 insert a replacement before the dying pool reaches the registry lock. The drop therefore compares
 pointers and only removes an entry that is still its own.
 
+The pool acquires memory from Spark through the `CometTaskMemoryManager` passed with the plan that
+created it, so the JVM side shares one manager per task as well: `CometExecIterator.taskMemory`
+hands every native plan in a task the same one and drops it when the task completes. Its `getUsed`
+covers the whole task, so `CometExecIterator.close()` warns about memory still in use only when
+the task's last open native plan closes.
+
 ## How DataFusion consumes the pool
 
 Native operators reserve through DataFusion's `MemoryConsumer` / `MemoryReservation` API:
@@ -368,9 +374,9 @@ which side of the boundary the bytes came from.
 
 **JVM → native (`ScanExec`).** The JVM allocates the Arrow buffers from a child of
 `CometArrowAllocator` and exports the whole per-partition iterator once as an `ArrowArrayStream`.
-`ScanExec` imports each batch through `AlignedArrowStreamReader` with `CopyMode::UnpackOrClone`:
-dictionary columns are unpacked into new native arrays, everything else is an `Arc` clone of the
-imported buffers. Those bytes stay where Java Arrow put them and are pinned for as long as any native
+`ScanExec` imports each batch through arrow-rs's `ArrowArrayStreamReader` and keeps every column as
+an `Arc` clone of the imported buffers; the JVM decodes dictionaries before export, so there is
+nothing to unpack. Those bytes stay where Java Arrow put them and are pinned for as long as any native
 reference survives. They are invisible to Spark's `TaskMemoryManager`, and `CometArrowAllocator` is
 unbounded, so nobody charged for them at allocation time. Whether they are charged _later_ depends
 on who holds them. DataFusion's `ExternalSorter` reserves `get_reserved_bytes_for_record_batch` for
@@ -457,10 +463,14 @@ On Kubernetes, Spark sizes the executor pod from `ResourceProfile`:
 ```text
 pod memory request = pod memory limit
                    = spark.executor.memory
-                   + spark.executor.memoryOverhead   (default max(0.1 * executor.memory, 384 MiB))
+                   + spark.executor.memoryOverhead   (default max(factor * executor.memory, 384 MiB))
                    + spark.memory.offHeap.size
-                   + pyspark memory                  (Python applications only)
+                   + spark.executor.pyspark.memory   (Python applications in cluster mode only)
 ```
+
+The factor is `spark.executor.memoryOverheadFactor` or, when that is unset,
+`spark.kubernetes.memoryOverheadFactor`. Both default to 0.1, but in cluster mode spark-submit sets
+the Kubernetes factor to 0.4 for a PySpark or SparkR application that did not set it.
 
 Both the request and the limit are set to this same value, so the pod's cgroup `memory.max` is a
 hard ceiling on the sum of everything in the container. That cgroup counts, among other things:

@@ -234,6 +234,19 @@ pub fn is_object_store_scheme_supported(url: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// JNI: the version of the IANA timezone database native code uses, such as `2025b`. chrono-tz
+/// compiles the database into libcomet, so it can differ from the JVM's `tzdb.dat`, and then local
+/// times computed natively can differ from Spark's.
+#[no_mangle]
+pub extern "system" fn Java_org_apache_comet_NativeBase_getTzdataVersion(
+    env: EnvUnowned,
+    _: JClass,
+) -> jni::sys::jstring {
+    try_unwrap_or_throw(&env, |env| {
+        Ok(env.new_string(chrono_tz::IANA_TZDB_VERSION)?.into_raw())
+    })
+}
+
 // Creates a default log4rs config, which logs to console with log level.
 fn default_logger_config(log_level: &str) -> CometResult<Config> {
     let console_append = ConsoleAppender::builder()
