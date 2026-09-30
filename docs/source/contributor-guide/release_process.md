@@ -35,7 +35,9 @@ instructions on each step.
 - [ ] Generate release documentation
 - [ ] Update Maven version in release branch
 - [ ] Update version in main for next development cycle
+- [ ] Check for fixes missing from the release branches
 - [ ] Generate the change log and PR it against the release branch
+- [ ] Run the full CI suite on the release branch
 - [ ] Build the jars
 - [ ] Tag the release candidate
 - [ ] Update documentation for the new release
@@ -116,6 +118,14 @@ git push apache branch-0.13
 Creating the branch is the only direct push to it. After protecting the branch (next step), all later changes
 to the release branch (documentation, version bump, changelog) go through pull requests targeting it.
 
+Also create the branch's backport label. Committers add it to pull requests on `main` that should be backported to
+the branch; see [Backporting to Release Branches](backporting.md).
+
+```shell
+gh label create backport-0.13 --repo apache/datafusion-comet \
+  --description "Candidate for backporting to 0.13 release branch"
+```
+
 ### Protect the Release Branch
 
 Add the new branch to `protected_branches` in `.asf.yaml` so it requires a pull request and review, the same as
@@ -132,6 +142,22 @@ protected_branches:
 ```
 
 All release branches stay protected, including older ones, so released code cannot be pushed to directly.
+
+Once the pull request merges, check that the protection took effect:
+
+```shell
+gh api repos/apache/datafusion-comet/branches/branch-0.13 --jq .protected
+```
+
+This prints `true` once ASF has applied the change. If it still prints `false`, check that the branch is listed
+under `protected_branches` on `main`.
+
+Protection requires a review but not a green CI run, so check that a pull request's run passed before merging it.
+The release branch has no merge queue, no nightly run, and no CI on push, so a pull request targeting it runs every
+suite that the PR, queue, and nightly tiers run on `main`. That includes the version bump pull request below and
+every backport. The documentation and change log pull requests change only Markdown, so the path filters skip the
+heavy suites for them. [Release branches](ci.md#release-branches) explains what runs and
+why. The [full CI run before tagging](#run-the-full-ci-suite) tests the branch with every change merged.
 
 ### Generate Release Documentation
 
@@ -170,16 +196,28 @@ Any hit outside the change log is a place that will break on the release branch.
 `-SNAPSHOT` qualifier changes the built artifact file names, so anything that locates the jar by glob must
 match a bare version too. Prefer patterns such as `comet-spark-spark3.5_2.12-*.jar` over
 `comet-spark-spark3.5_2.12-*-SNAPSHOT.jar`, and prefer resolving the jar by glob over hardcoding a version.
-The release branch runs the same CI workflows as `main`, including the PyArrow UDF tests, so a
-`-SNAPSHOT`-only glob in a test harness or script fails only after the release branch is cut.
+The release branch has the same CI workflows as `main`, so a `-SNAPSHOT`-only glob in a test harness or script
+fails only after the release branch is cut. The version bump pull request is where it shows up. It changes the
+`pom.xml` files, so it runs the suites that find the jar by file name or version, such as the PyArrow UDF tests and
+the Spark SQL and Iceberg suites. The Spark SQL suite for Spark 3.4 runs only with the `run-spark-3.4-tests` label.
 
 ### Update Version in main
 
 Create a PR against the main branch to prepare for developing the next release:
 
-- Update the Rust crate version to `0.14.0`.
+- Update the Rust crate version to `0.14.0` in `native/Cargo.toml` and in each `contrib/*/native/Cargo.toml`.
+  The contrib crates sit outside the `native/` workspace, so they do not inherit its version. Then run
+  `cargo update --workspace` in `native/` and in each contrib crate that has its own `Cargo.lock`.
 - Update the Maven version to `0.14.0-SNAPSHOT` in the same set of files listed above (the `pom.xml` files,
   the Spark test diffs under `dev/diffs`, and the Iceberg test diffs under `dev/diffs/iceberg`).
+
+### Check for Missing Backports
+
+Before generating the change log, check that the new branch has every fix from the older release branches that are
+still taking backports, and backport any that are missing. For a patch release, check the release branch against
+every newer release branch instead, so that a fix doesn't ship in the older release line first.
+[Checking Release Branches Before a Release](backporting.md#checking-release-branches-before-a-release) shows
+how.
 
 ### Generate the Change Log
 
@@ -208,6 +246,46 @@ Open a PR adding this change log targeting the release branch. Generate it late,
 branch are complete; if more changes land on the release branch before the release candidate is tagged,
 regenerate it and update the PR. After the release is approved and tagged, open a separate PR to bring the same
 change log file into `main`.
+
+### Run the Full CI Suite
+
+Once the generated docs, version bump, and change log have merged to the release branch, run every CI suite
+against it. Each pull request ran against the branch as it stood when its run started, so nothing has yet tested
+the branch with all of them merged. Pull requests there also skip the Spark SQL suite for Spark 3.4 unless it is
+labeled, and Miri, which runs only on a schedule on `main`.
+
+A dispatch runs every job in the release branch's own `ci.yml`, including `docs`, which publishes the website. So
+first check that the branch limits that job to `main`: the `if:` this prints must require
+`github.ref == 'refs/heads/main'`. A branch without that guard publishes its own docs over the site.
+
+```shell
+git fetch apache
+git show apache/branch-0.13:.github/workflows/ci.yml | sed -n '/^  docs:/,/uses:/p'
+```
+
+Then dispatch both workflows on the release branch:
+
+```shell
+gh workflow run ci.yml --repo apache/datafusion-comet --ref branch-0.13
+gh workflow run miri.yml --repo apache/datafusion-comet --ref branch-0.13
+```
+
+A dispatched `ci.yml` run ignores the tiers and the path filters. It runs every suite in the
+[tier table](ci.md#three-tiers), including the Spark SQL suite for Spark 3.4, which sits outside every tier.
+`miri.yml` runs the unsafe code checks, which are not part of `ci.yml`. Expect the runs to take a few hours.
+
+A failed dispatched run does not open a `ci-nightly-failure` issue, so check the result yourself. This prints the
+latest dispatched run of each workflow on the branch:
+
+```shell
+for wf in ci.yml miri.yml; do
+  gh api "repos/apache/datafusion-comet/actions/workflows/$wf/runs?branch=branch-0.13&event=workflow_dispatch&per_page=1" \
+    --jq ".workflow_runs[] | \"$wf\t\(.head_sha)\t\(.status)\t\(.conclusion)\t\(.html_url)\""
+done
+```
+
+Both runs must be green at the commit you are about to tag. If anything merges to the release branch after the
+runs start, run them again. Repeat this for every release candidate.
 
 ### Build the jars
 
@@ -275,7 +353,8 @@ repository
 
 ### Tag the Release Candidate
 
-Ensure that the Maven version update and change log have been merged to the release branch before tagging.
+Ensure that the Maven version update and change log have been merged to the release branch, and that the
+[full CI run](#run-the-full-ci-suite) is green at the commit you are tagging, before tagging.
 
 Tag the release branch with `0.13.0-rc1` and push to the `apache` repo
 

@@ -25,9 +25,12 @@ against your own workloads.
 ## Overview
 
 Spark writes an Iceberg table through a single physical operator that combines data-file
-writing with metadata writing, committing, and catalog validation. Because that operator sits
-outside Spark's Adaptive Query Execution (AQE), the sub-query feeding the write — the scans,
-projects, sorts, and exchanges producing the rows — cannot be re-planned at runtime.
+writing with metadata writing, committing, and catalog validation. Spark's Adaptive Query
+Execution (AQE) already re-plans the sub-query feeding that operator — the scans, projects,
+sorts, and exchanges producing the rows — but the operator itself sits outside AQE, so the
+data-file writing cannot be re-planned in response to how its input ran. And because data-file
+writing is bundled with the metadata and commit steps, there is no separate step for Comet to
+replace.
 
 When `spark.comet.write.iceberg.splitOperator.enabled=true`, Comet rewrites eligible Iceberg
 writes into two operators:
@@ -39,7 +42,7 @@ writes into two operators:
    Iceberg commit (including commit-time validation), outside AQE, exactly once.
 
 With only the split plan enabled, data files are still written by iceberg-java; only the plan
-shape changes. The split makes the write's input visible to AQE and to Comet's columnar rules,
+shape changes. The split moves data-file writing inside AQE and separates it from the commit,
 and it is the foundation for the second toggle: when
 `spark.comet.iceberg.write.enabled=true` and the write passes the eligibility check below, the
 `IcebergWrite` operator's per-task Parquet write is delegated to
@@ -172,6 +175,7 @@ A write is eligible only when ALL of the following hold:
 | `write.spark.fanout.enabled`                                                                                                                | any value (the native writer implements both clustered and fanout modes)                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `write.target-file-size-bytes`                                                                                                              | any value (the two writers can choose different roll points; see accepted divergences)                                                                                                                                                                                                                                                                                                                                                                                          |
 | data location URI scheme                                                                                                                    | `file`, `memory`, `s3`, `s3a`, `gs` (`gs` only when the `FileIO` opening the data location is a `GCSFileIO`; see below)                                                                                                                                                                                                                                                                                                                                                         |
+| resolved `table.locationProvider()`                                                                                                         | Iceberg's built-in `DefaultLocationProvider`                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | partition spec                                                                                                                              | any                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | column types                                                                                                                                | any except `uuid` (Spark plans it as a string; no Arrow cast reaches `fixed(16)`)                                                                                                                                                                                                                                                                                                                                                                                               |
 
@@ -184,12 +188,13 @@ key in the session Hadoop configuration other than the reader-only
 iceberg-java's writer but not the native one). Also gated explicitly: any `encryption.*` key,
 `write.object-storage.enabled=true`, `write.location-provider.impl`, and `io-impl`.
 
-Two checks look past properties at the table's instantiated state, because both can be
+Three checks look past properties at the table's instantiated state, because they can be
 configured at the catalog level (or by a custom `TableOperations`) without any table or write
-property changing: `table.io()` must be a recognized `FileIO` (the same allowlist the native
-scan uses, minus the `EncryptingFileIO` family — the native writer produces plaintext files,
-so an encrypting `FileIO` is rejected on the write side), and `table.encryption()` must be
-Iceberg's `PlaintextEncryptionManager`. Anything else falls back.
+property changing: `table.locationProvider()` must be Iceberg's `DefaultLocationProvider`;
+`table.io()` must be a recognized `FileIO` (the same allowlist the native scan uses, minus the
+`EncryptingFileIO` family — the native writer produces plaintext files, so an encrypting `FileIO`
+is rejected on the write side); and `table.encryption()` must be Iceberg's
+`PlaintextEncryptionManager`. Anything else falls back.
 
 A `gs` data location additionally requires that the `FileIO` actually opening it is a
 `GCSFileIO` (for a `ResolvingFileIO`, the delegate it instantiates for that location,
