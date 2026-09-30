@@ -250,6 +250,7 @@ jobs:
       build_linux_full: ${{ steps.compute.outputs.build_linux_full }}
       build_linux_all_profiles: ${{ steps.compute.outputs.build_linux_all_profiles }}
       build_macos:  ${{ steps.compute.outputs.build_macos }}
+      build_macos_full: ${{ steps.compute.outputs.build_macos_full }}
       benchmark:    ${{ steps.compute.outputs.benchmark }}
       delta_gate:   ${{ steps.compute.outputs.delta_gate }}
       pyarrow_udf:  ${{ steps.compute.outputs.pyarrow_udf }}
@@ -321,8 +322,11 @@ jobs:
           elif [[ "$EVENT_NAME" == "pull_request" ]]; then
             git diff --name-only "$PR_BASE_SHA"..."$PR_HEAD_SHA" > changed_files.txt
           elif [[ "$EVENT_NAME" == "merge_group" ]]; then
-            # The queue branch is built on top of base_sha, so this covers every
-            # entry batched into this merge group, not just the newest one.
+            # base_sha is the queue commit of the entry ahead of this one, and
+            # main only for the entry at the front, so this covers this entry's
+            # own changes. The entries ahead were diffed by their own
+            # merge_group runs; the queue's ALLGREEN strategy is what makes
+            # that enough (see the Merge Queue ruleset in .asf.yaml).
             git diff --name-only "$MQ_BASE_SHA"..."$MQ_HEAD_SHA" > changed_files.txt
           else
             # push to main; first push to a branch has all-zero before sha
@@ -382,9 +386,15 @@ jobs:
   pr_build_macos:
     name: PR Build (macOS)
     needs: changes
-    # Queue-only by default; PRs need the `run-macos-tests` label.
+    # Queue-only by default; PRs need the `run-macos-tests` label. Two POLICY
+    # outputs feed the call, the same shape as pr_build_linux above:
+    # `build_macos` runs the workflow at all, `build_macos_full` runs its test
+    # matrix as well. Only push to main sets the first without the second, and
+    # there the workflow just keeps main's macOS cargo cache warm.
     if: needs.changes.outputs.build_macos == 'true'
     uses: ./.github/workflows/pr_build_macos.yml
+    with:
+      cache-refresh-only: ${{ needs.changes.outputs.build_macos_full != 'true' }}
 
   pr_benchmark_check:
     name: PR Benchmark Check

@@ -39,13 +39,43 @@ from pathlib import Path
 # "Run Spark tests" step as per-row forked-test-JVM caps for SparkBuild.scala;
 # the sql_core rows set them because those shards were the ones hitting the
 # 7 GB runner budget.
+#
+# The tag filters split each module three ways, the same as Spark's own CI.
+# That left two rows far longer than the rest, and the longest row is what a
+# merge-queue run waits for, so the suites below are moved into rows of their
+# own (issue #6388). Each is excluded from the row it came from with sbt's
+# `-<glob>` testOnly syntax, and its row keeps that row's tag filters, so every
+# test still runs exactly once. The globs are package prefixes, which also
+# catch suites added to those packages later.
+#
+# HivePartitionFilteringSuites runs HivePartitionFilteringSuite against every
+# Hive client version, 21 to 35 minutes of sql_hive-1 in September 2026. It is
+# one class, so no name filter splits it further.
+HIVE_MOVED = ["org.apache.spark.sql.hive.client.HivePartitionFilteringSuites"]
+# The data source and connector suites were 13 to 19 minutes of sql_core-1 and,
+# with their Extended-tagged schema-pruning suites, 11 minutes of sql_core-2.
+CORE_MOVED = [
+    "org.apache.spark.sql.execution.datasources.*",
+    "org.apache.spark.sql.connector.*",
+]
+
+SQL_EXTENDED = "org.apache.spark.tags.ExtendedSQLTest"
+SQL_SLOW = "org.apache.spark.tags.SlowSQLTest"
+HIVE_EXTENDED = "org.apache.spark.tags.ExtendedHiveTest"
+HIVE_SLOW = "org.apache.spark.tags.SlowHiveTest"
+
+
+def excluding(globs):
+    return " ".join(f"-{glob}" for glob in globs)
+
+
 MODULES = [
     {"name": "catalyst", "group": "core", "args1": "catalyst/test", "args2": ""},
     {
         "name": "sql_core-1",
         "group": "core",
         "args1": "",
-        "args2": "sql/testOnly * -- -l org.apache.spark.tags.ExtendedSQLTest -l org.apache.spark.tags.SlowSQLTest",
+        "args2": f"sql/testOnly * {excluding(CORE_MOVED)} -- -l {SQL_EXTENDED} -l {SQL_SLOW}",
         "heap": "3g",
         "metaspace": "1g",
     },
@@ -53,7 +83,7 @@ MODULES = [
         "name": "sql_core-2",
         "group": "core",
         "args1": "",
-        "args2": "sql/testOnly * -- -n org.apache.spark.tags.ExtendedSQLTest",
+        "args2": f"sql/testOnly * {excluding(CORE_MOVED)} -- -n {SQL_EXTENDED}",
         "heap": "3g",
         "metaspace": "1g",
     },
@@ -61,7 +91,17 @@ MODULES = [
         "name": "sql_core-3",
         "group": "core",
         "args1": "",
-        "args2": "sql/testOnly * -- -n org.apache.spark.tags.SlowSQLTest",
+        "args2": f"sql/testOnly * -- -n {SQL_SLOW}",
+        "heap": "3g",
+        "metaspace": "1g",
+    },
+    {
+        # The moved suites' untagged and Extended tests; their Slow tests stay
+        # in sql_core-3 with every other Slow test.
+        "name": "sql_core-4",
+        "group": "core",
+        "args1": "",
+        "args2": f"sql/testOnly {' '.join(CORE_MOVED)} -- -l {SQL_SLOW}",
         "heap": "3g",
         "metaspace": "1g",
     },
@@ -69,19 +109,25 @@ MODULES = [
         "name": "sql_hive-1",
         "group": "hive",
         "args1": "",
-        "args2": "hive/testOnly * -- -l org.apache.spark.tags.ExtendedHiveTest -l org.apache.spark.tags.SlowHiveTest",
+        "args2": f"hive/testOnly * {excluding(HIVE_MOVED)} -- -l {HIVE_EXTENDED} -l {HIVE_SLOW}",
     },
     {
         "name": "sql_hive-2",
         "group": "hive",
         "args1": "",
-        "args2": "hive/testOnly * -- -n org.apache.spark.tags.ExtendedHiveTest",
+        "args2": f"hive/testOnly * -- -n {HIVE_EXTENDED}",
     },
     {
         "name": "sql_hive-3",
         "group": "hive",
         "args1": "",
-        "args2": "hive/testOnly * -- -n org.apache.spark.tags.SlowHiveTest",
+        "args2": f"hive/testOnly * -- -n {HIVE_SLOW}",
+    },
+    {
+        "name": "sql_hive-4",
+        "group": "hive",
+        "args1": "",
+        "args2": f"hive/testOnly {' '.join(HIVE_MOVED)} -- -l {HIVE_EXTENDED} -l {HIVE_SLOW}",
     },
 ]
 
