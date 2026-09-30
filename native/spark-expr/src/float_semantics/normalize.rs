@@ -273,14 +273,9 @@ pub fn has_float_leaf(dt: &DataType) -> bool {
     }
 }
 
-fn is_nested_with_float_leaf(dt: &DataType) -> bool {
-    matches!(
-        dt,
-        DataType::List(_)
-            | DataType::LargeList(_)
-            | DataType::FixedSizeList(_, _)
-            | DataType::Struct(_)
-    ) && has_float_leaf(dt)
+/// Whether `dt` is a list or struct with a Float32 or Float64 field at any depth.
+pub(crate) fn is_nested_with_float_leaf(dt: &DataType) -> bool {
+    dt.is_nested() && has_float_leaf(dt)
 }
 
 /// Recursively rebuilds nested arrays with `-0.0` normalized to `0.0` and NaN canonicalized

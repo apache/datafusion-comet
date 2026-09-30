@@ -19,8 +19,8 @@
 //! values without materializing normalized columns.
 
 use crate::float_semantics::{
-    has_float_leaf, normalize_comparison_operand, normalize_nested_floats, spark_equality,
-    NormalizeNestedFloats,
+    is_nested_with_float_leaf, normalize_comparison_operand, normalize_nested_floats,
+    spark_equality, NormalizeNestedFloats,
 };
 use arrow::array::{Array, ArrayRef, AsArray, BooleanArray};
 use arrow::buffer::{BooleanBuffer, NullBuffer};
@@ -29,16 +29,12 @@ use arrow::datatypes::{DataType, Schema};
 use arrow::record_batch::RecordBatch;
 use datafusion::common::{internal_err, DFSchema, Result, ScalarValue};
 use datafusion::logical_expr::{ColumnarValue, Operator};
-use datafusion::physical_expr::expressions::{in_list, BinaryExpr, InListExpr};
+use datafusion::physical_expr::expressions::{in_list, BinaryExpr, Column, InListExpr, Literal};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr_common::physical_expr::is_volatile;
 use std::fmt::{Display, Formatter};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
-
-fn needs_spark_equality(dt: &DataType) -> bool {
-    dt.is_nested() && has_float_leaf(dt)
-}
 
 struct Operand {
     array: ArrayRef,
@@ -226,9 +222,13 @@ impl PhysicalExpr for NestedPredicate {
 pub enum FloatOperands {
     /// Normalize them, so that the comparison follows Spark's SQL ordering.
     Normalize,
-    /// Leave them as they are. Only a scan's pushed-down data filters use this: Parquet pruning
-    /// recognizes a column compared with a literal but not a normalized column, and Spark's
-    /// Filter above the scan evaluates each of those filters again.
+    /// Leave a Float32 or Float64 column compared with a literal as it is, and normalize every
+    /// other operand. Only a scan's pushed-down data filters use this: Parquet pruning recognizes
+    /// a column compared with a literal but not a normalized column. With row-level pushdown the
+    /// reader also evaluates the filters on each row, and a row it drops never reaches Spark's
+    /// Filter above the scan, so any other shape, which pruning cannot use anyway, is normalized.
+    /// A computed operand such as `-d` can hold a NaN with the sign bit set, which a raw
+    /// comparison sorts below every other value.
     Raw,
 }
 
@@ -260,7 +260,7 @@ pub fn spark_comparison(
     let (Ok(left_type), Ok(_)) = (left.data_type(schema), right.data_type(schema)) else {
         return Ok(Arc::new(BinaryExpr::new(left, op, right)));
     };
-    if matches!(op, Eq | NotEq) && needs_spark_equality(&left_type) {
+    if matches!(op, Eq | NotEq) && is_nested_with_float_leaf(&left_type) {
         validate_types(&left, std::slice::from_ref(&right), schema)?;
         return Ok(Arc::new(NestedPredicate {
             value: left,
@@ -269,14 +269,31 @@ pub fn spark_comparison(
             membership: false,
         }));
     }
-    let (left, right) = match float_operands {
-        FloatOperands::Normalize => (
+    let raw = float_operands == FloatOperands::Raw;
+    let (left, right) = if raw && is_float_column(&left, schema) && is_literal(&right) {
+        (left, normalize_comparison_operand(right, schema)?)
+    } else if raw && is_literal(&left) && is_float_column(&right, schema) {
+        (normalize_comparison_operand(left, schema)?, right)
+    } else {
+        (
             normalize_comparison_operand(left, schema)?,
             normalize_comparison_operand(right, schema)?,
-        ),
-        FloatOperands::Raw => (left, right),
+        )
     };
     Ok(Arc::new(BinaryExpr::new(left, op, right)))
+}
+
+/// Whether `expr` is a Float32 or Float64 column, the operand that Parquet pruning reads.
+fn is_float_column(expr: &Arc<dyn PhysicalExpr>, schema: &Schema) -> bool {
+    expr.downcast_ref::<Column>().is_some()
+        && matches!(
+            expr.data_type(schema),
+            Ok(DataType::Float32 | DataType::Float64)
+        )
+}
+
+fn is_literal(expr: &Arc<dyn PhysicalExpr>) -> bool {
+    expr.downcast_ref::<Literal>().is_some()
 }
 
 fn validate_types(
@@ -301,7 +318,7 @@ pub fn spark_in_list(
     negated: bool,
     schema: &Schema,
 ) -> Result<Arc<dyn PhysicalExpr>> {
-    if !needs_spark_equality(&value.data_type(schema)?) || candidates.is_empty() {
+    if !is_nested_with_float_leaf(&value.data_type(schema)?) || candidates.is_empty() {
         return in_list(value, candidates, &negated, schema);
     }
     validate_types(&value, &candidates, schema)?;
@@ -948,7 +965,8 @@ mod tests {
     }
 
     /// A literal operand is normalized while planning, so the comparison stays `column op
-    /// literal`. With `FloatOperands::Raw`, as for a scan's data filters, nothing is wrapped.
+    /// literal`. With `FloatOperands::Raw`, as for a scan's data filters, only the column of that
+    /// shape is left unwrapped.
     #[test]
     fn float_operand_shapes() -> Result<()> {
         use crate::float_semantics::NormalizeNaNAndZero;
@@ -974,6 +992,8 @@ mod tests {
         let folded = binary.right().downcast_ref::<Literal>().unwrap();
         assert!(matches!(folded.value(), ScalarValue::Float64(Some(v)) if v.to_bits() == 0));
 
+        // With `FloatOperands::Raw`, a float column compared with a literal keeps the column, on
+        // either side, and the literal is still normalized.
         let expr = spark_comparison(
             Arc::new(Column::new("a", 0)),
             Operator::Lt,
@@ -983,10 +1003,39 @@ mod tests {
         )?;
         let binary = expr.downcast_ref::<BinaryExpr>().unwrap();
         assert!(binary.left().downcast_ref::<Column>().is_some());
-        assert!(Arc::ptr_eq(binary.right(), &negative_zero));
+        let folded = binary.right().downcast_ref::<Literal>().unwrap();
+        assert!(matches!(folded.value(), ScalarValue::Float64(Some(v)) if v.to_bits() == 0));
+        let expr = spark_comparison(
+            Arc::clone(&negative_zero),
+            Operator::Lt,
+            Arc::new(Column::new("a", 0)),
+            &schema,
+            FloatOperands::Raw,
+        )?;
+        let binary = expr.downcast_ref::<BinaryExpr>().unwrap();
+        assert!(binary.right().downcast_ref::<Column>().is_some());
+
+        // Any other shape is normalized even with `FloatOperands::Raw`, because a reader with
+        // row-level pushdown drops the rows it rejects.
+        let (a, b) = columns();
+        let expr = spark_comparison(
+            Arc::clone(&a),
+            Operator::Lt,
+            Arc::clone(&b),
+            &schema,
+            FloatOperands::Raw,
+        )?;
+        let binary = expr.downcast_ref::<BinaryExpr>().unwrap();
+        assert!(binary
+            .left()
+            .downcast_ref::<NormalizeNaNAndZero>()
+            .is_some());
+        assert!(binary
+            .right()
+            .downcast_ref::<NormalizeNaNAndZero>()
+            .is_some());
 
         // Other operators are not comparisons and keep their operands.
-        let (a, b) = columns();
         let expr = spark_comparison(
             Arc::clone(&a),
             Operator::Plus,

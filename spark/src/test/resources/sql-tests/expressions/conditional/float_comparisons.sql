@@ -22,6 +22,10 @@
 -- `-d` flips the sign bit, so `-d` of the NaN row is a NaN with the sign bit set on every
 -- platform. That is the NaN that arithmetic produces on x86-64, and Arrow's total order sorts
 -- it below -Infinity.
+--
+-- A scan pushes its filters into the Parquet reader, which with row-level pushdown drops rows
+-- itself, before Spark's Filter above the scan sees them.
+-- ConfigMatrix: spark.comet.parquet.rowFilterPushdown.enabled=false,true
 
 statement
 CREATE TABLE float_cmp(id INT, d DOUBLE, f FLOAT) USING parquet
@@ -56,6 +60,20 @@ SELECT id FROM float_cmp WHERE -d > 0.0D
 
 query
 SELECT id FROM float_cmp WHERE -f >= f
+
+-- A stored column compared with a constant, the filter shape that Parquet pruning reads. The
+-- scan still returns the -0.0 and NaN rows that Spark's ordering keeps.
+query
+SELECT id FROM float_cmp WHERE d >= 0.0D
+
+query
+SELECT id FROM float_cmp WHERE f <= -0.0F
+
+query
+SELECT id FROM float_cmp WHERE d = double('NaN')
+
+query
+SELECT id FROM float_cmp WHERE d > double('Infinity')
 
 -- Aggregate argument
 query

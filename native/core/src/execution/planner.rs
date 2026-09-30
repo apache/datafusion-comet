@@ -1019,9 +1019,9 @@ impl PhysicalPlanner {
 
     /// Create a data filter that a scan pushes into the Parquet reader. The filter prunes row
     /// groups and pages, and rows too when row-level pushdown is enabled. Pruning only recognizes
-    /// a column compared with a literal, so the filter's comparisons leave float operands as they
-    /// are rather than normalizing them. Spark's Filter above the scan evaluates the filter again
-    /// with Spark's semantics.
+    /// a column compared with a literal, so that shape leaves a float column as it is rather than
+    /// normalizing it, and every other comparison is normalized; see [`FloatOperands::Raw`].
+    /// Spark's Filter above the scan evaluates the filter again with Spark's semantics.
     fn create_data_filter(
         &self,
         spark_expr: &Expr,

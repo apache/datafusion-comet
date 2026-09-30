@@ -45,6 +45,7 @@ mod compare;
 mod normalize;
 
 pub use compare::{spark_comparator, spark_equality};
+pub(crate) use normalize::is_nested_with_float_leaf;
 pub use normalize::{
     has_float_leaf, normalize_comparison_operand, normalize_floats, normalize_nested_floats,
     NormalizeNaNAndZero, NormalizeNestedFloats,
