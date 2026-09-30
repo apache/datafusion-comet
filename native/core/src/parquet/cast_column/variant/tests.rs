@@ -473,12 +473,17 @@ fn normalize_rejects_missing_required_shredding_states() {
 
 #[test]
 fn canonical_and_shredded_values_normalize_equally() {
-    let mut builder = VariantArrayBuilder::new(6);
+    let mut builder = VariantArrayBuilder::new(8);
+    // Cross an object-offset width boundary before writing the remaining rows.
+    let payload = "x".repeat(65536);
+    builder.append_null();
     builder.new_object().with_field("known", 1_i8).finish();
+    builder.append_null();
     builder
         .new_object()
         .with_field("known", 2_i8)
         .with_field("extra", 3_i64)
+        .with_field("payload", payload.as_str())
         .finish();
     builder
         .new_list()
@@ -515,12 +520,33 @@ fn canonical_and_shredded_values_normalize_equally() {
         VariantArray::try_new(output.as_ref()).unwrap()
     };
     let canonical = normalize(&canonical);
-    let shredded = normalize(&shredded);
+    let output = normalize(&shredded);
+    for (offset, len) in [(1, 6), (2, 0), (2, 1)] {
+        assert_eq!(
+            normalize(&shredded.slice(offset, len)).inner(),
+            output.slice(offset, len).inner(),
+        );
+    }
 
     for index in 0..canonical.len() {
-        assert_eq!(canonical.is_null(index), shredded.is_null(index));
+        assert_eq!(canonical.is_null(index), output.is_null(index));
         if canonical.is_valid(index) {
-            assert_eq!(canonical.value(index), shredded.value(index));
+            assert_eq!(canonical.value(index), output.value(index));
+            assert_eq!(
+                binary_value(canonical.value_column(), index).unwrap(),
+                binary_value(output.value_column(), index).unwrap(),
+            );
+            let mut metadata = binary_value(canonical.metadata_column(), index)
+                .unwrap()
+                .to_vec();
+            metadata[0] &= !0x10;
+            assert_eq!(
+                binary_value(output.metadata_column(), index).unwrap(),
+                metadata
+            );
+        } else {
+            assert!(output.value_column().is_null(index));
+            assert!(output.metadata_column().is_null(index));
         }
     }
 }
@@ -710,15 +736,13 @@ fn benchmark_variant_buffer_reuse() {
     }
     let objects = objects.build();
     let empty_keys = empty_keys.build();
-    let shredded = shred_variant(
-        &objects,
-        &DataType::Struct(Fields::from(vec![Field::new(
-            "known",
-            DataType::Int64,
-            true,
-        )])),
-    )
-    .unwrap();
+    let partial_type = DataType::Struct(Fields::from(vec![Field::new(
+        "known",
+        DataType::Int64,
+        true,
+    )]));
+    let shredded = shred_variant(&objects, &partial_type).unwrap();
+    let empty_keys = shred_variant(&empty_keys, &partial_type).unwrap();
     let full = shred_variant(
         &objects,
         &DataType::Struct(Fields::from(vec![
@@ -742,13 +766,17 @@ fn benchmark_variant_buffer_reuse() {
                 empty_keys.value_column().data_type().clone(),
                 false,
             ),
-            Field::new("typed_value", DataType::Int64, true),
+            Field::new(
+                "typed_value",
+                empty_keys.typed_value_column().unwrap().data_type().clone(),
+                true,
+            ),
         ]
         .into(),
         vec![
             empty_metadata,
             Arc::clone(empty_keys.value_column()),
-            Arc::new(Int64Array::from(vec![None; rows])),
+            Arc::clone(empty_keys.typed_value_column().unwrap()),
         ],
         None,
     ));
