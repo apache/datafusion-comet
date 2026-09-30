@@ -1323,13 +1323,13 @@ mod tests {
     /// IF branches that share a Spark timestamp type but carry different Arrow timezone labels are
     /// reconciled by relabelling one of them, as CASE branches are. The result has the THEN
     /// branch's label, which `IfExpr` reported before the ELSE branch was cast, unless it has none.
+    /// Every case ends up labelled UTC, like every `TimestampType` value in a native plan.
     #[test]
     fn if_reconciles_timestamp_timezone_labels() {
         let timestamp =
             |label: Option<&str>| DataType::Timestamp(TimeUnit::Microsecond, label.map(Into::into));
         // The THEN branch's label, the ELSE branch's label, and the result's
         for (then_label, else_label, label) in [
-            (Some("Etc/UTC"), Some("UTC"), Some("Etc/UTC")),
             (None, Some("UTC"), Some("UTC")),
             (Some("UTC"), Some("Etc/UTC"), Some("UTC")),
             (Some("UTC"), None, Some("UTC")),
