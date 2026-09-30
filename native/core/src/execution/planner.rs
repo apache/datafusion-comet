@@ -33,7 +33,6 @@ mod delta_scan;
 mod lance_scan;
 
 use crate::execution::operators::init_csv_datasource_exec;
-use crate::execution::operators::AlignedArrowStreamReader;
 use crate::execution::operators::DynamicFilterJoinExec;
 use crate::execution::operators::IcebergScanExec;
 use crate::execution::operators::IcebergWriteExec;
@@ -55,7 +54,7 @@ use arrow::compute::CastOptions;
 use arrow::datatypes::{
     DataType, Field, FieldRef, Fields, Schema, TimeUnit, DECIMAL128_MAX_PRECISION,
 };
-use arrow::ffi_stream::FFI_ArrowArrayStream;
+use arrow::ffi_stream::{ArrowArrayStreamReader, FFI_ArrowArrayStream};
 use datafusion::functions_aggregate::bit_and_or_xor::{bit_and_udaf, bit_or_udaf, bit_xor_udaf};
 use datafusion::functions_aggregate::count::count_udaf;
 use datafusion::functions_aggregate::min_max::max_udaf;
@@ -118,6 +117,7 @@ use datafusion::physical_expr::expressions::{Literal, StatsType};
 use datafusion::physical_expr::window::WindowExpr;
 use datafusion::physical_expr::LexOrdering;
 
+use crate::execution::expressions::arithmetic::CheckedBinaryExpr;
 use crate::parquet::parquet_exec::init_datasource_exec;
 use arrow::array::{
     new_empty_array, Array, ArrayRef, BinaryBuilder, BooleanArray, Date32Array, Decimal128Array,
@@ -148,11 +148,12 @@ use datafusion_comet_proto::{
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
 use datafusion_comet_spark_expr::{
-    jvm_udf::JvmScalarUdfExpr, spark_in_list, ApproxPercentile, ArrayInsert, Avg, AvgDecimal, Cast,
-    CheckOverflow, Correlation, Covariance, CreateNamedStruct, DecimalRescaleCheckOverflow,
-    GetArrayStructFields, GetStructField, HllPlusPlus, HllSketchAgg, HllUnionAgg, IfExpr,
-    ListExtract, MaxMinBy, Mode, NormalizeNaNAndZero, Regr, RegrType, SparkCastOptions, Stddev,
-    SumDecimal, ToJson, UnboundColumn, Variance, WideDecimalBinaryExpr, WideDecimalOp,
+    jvm_udf::JvmScalarUdfExpr, normalize_floats, spark_in_list, ApproxPercentile, ArrayInsert, Avg,
+    AvgDecimal, Cast, CheckOverflow, Correlation, Covariance, CreateNamedStruct,
+    DecimalRescaleCheckOverflow, GetArrayStructFields, GetStructField, HllPlusPlus, HllSketchAgg,
+    HllUnionAgg, IfExpr, ListExtract, MaxMinBy, Mode, NormalizeNaNAndZero, Regr, RegrType,
+    SparkCastOptions, Stddev, SumDecimal, ToJson, UnboundColumn, Variance, WideDecimalBinaryExpr,
+    WideDecimalOp,
 };
 use itertools::Itertools;
 use jni::objects::{Global, JObject};
@@ -667,18 +668,35 @@ impl PhysicalPlanner {
                     self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
                 let data_type = to_arrow_datatype(expr.datatype.as_ref().unwrap());
                 let fail_on_error = expr.fail_on_error;
+                let query_context = spark_expr.expr_id.and_then(|expr_id| {
+                    let registry = &self.query_context_registry;
+                    registry.get(expr_id)
+                });
 
                 // WideDecimalBinaryExpr already handles overflow — skip redundant check
-                // but only if its output type matches CheckOverflow's declared type
-                if child.downcast_ref::<WideDecimalBinaryExpr>().is_some() {
+                // but only if its output type matches CheckOverflow's declared type. A binary
+                // expression with query context is wrapped in CheckedBinaryExpr, so look
+                // through any such wrappers.
+                let is_wide_decimal = unwrap_checked(&child)
+                    .downcast_ref::<WideDecimalBinaryExpr>()
+                    .is_some();
+                if is_wide_decimal {
                     let child_type = child.data_type(&input_schema)?;
                     if child_type == data_type {
-                        return Ok(child);
+                        return if query_context.is_some()
+                            && child.downcast_ref::<CheckedBinaryExpr>().is_none()
+                        {
+                            Ok(Arc::new(CheckedBinaryExpr::new(child, query_context)))
+                        } else {
+                            Ok(child)
+                        };
                     }
                 }
 
                 // Fuse Cast(Decimal128→Decimal128) + CheckOverflow into single rescale+check
-                // Only fuse when the Cast target type matches the CheckOverflow output type
+                // Only fuse when the Cast target type matches the CheckOverflow output type.
+                // Spark 3.4+ does not currently emit this shape, but keep its errors typed and
+                // contextualized in case a future serializer makes the fusion reachable.
                 if let Some(cast) = child.downcast_ref::<Cast>() {
                     if let (
                         DataType::Decimal128(p_out, s_out),
@@ -687,23 +705,33 @@ impl PhysicalPlanner {
                     {
                         let cast_target = cast.data_type(&input_schema)?;
                         if cast_target == data_type {
-                            return Ok(Arc::new(DecimalRescaleCheckOverflow::new(
-                                Arc::clone(&cast.child),
-                                s_in,
-                                *p_out,
-                                *s_out,
-                                fail_on_error,
-                            )));
+                            let fused: Arc<dyn PhysicalExpr> =
+                                Arc::new(DecimalRescaleCheckOverflow::new(
+                                    Arc::clone(&cast.child),
+                                    s_in,
+                                    *p_out,
+                                    *s_out,
+                                    fail_on_error,
+                                ));
+                            return if query_context.is_some() {
+                                Ok(Arc::new(CheckedBinaryExpr::new(fused, query_context)))
+                            } else {
+                                Ok(fused)
+                            };
                         }
                     }
                 }
 
-                // Look up query context from registry if expr_id is present
-                let query_context = spark_expr.expr_id.and_then(|expr_id| {
-                    let registry = &self.query_context_registry;
-                    registry.get(expr_id)
-                });
-
+                // Generated child protos may not carry an expression id of their own, so retain
+                // the outer CheckOverflow context as a fallback for bare child SparkErrors.
+                let child = if query_context.is_some()
+                    && child.downcast_ref::<CheckedBinaryExpr>().is_none()
+                {
+                    Arc::new(CheckedBinaryExpr::new(child, query_context.clone()))
+                        as Arc<dyn PhysicalExpr>
+                } else {
+                    child
+                };
                 Ok(Arc::new(CheckOverflow::new(
                     child,
                     data_type,
@@ -987,15 +1015,10 @@ impl PhysicalPlanner {
         input_schema: SchemaRef,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
         let child = self.create_expr(spark_expr, Arc::clone(&input_schema))?;
-        let data_type = child.data_type(input_schema.as_ref())?;
-        // Spark may already have normalized a partition or join key.
-        if matches!(data_type, DataType::Float32 | DataType::Float64)
-            && child.downcast_ref::<NormalizeNaNAndZero>().is_none()
-        {
-            Ok(Arc::new(NormalizeNaNAndZero::new(data_type, child)))
-        } else {
-            Ok(child)
-        }
+        Ok(NormalizeNaNAndZero::wrap_if_needed(
+            child,
+            input_schema.as_ref(),
+        )?)
     }
 
     /// Only constant literals are supported as scan defaults.
@@ -1110,9 +1133,14 @@ impl PhysicalPlanner {
                     DataFusionOperator::Multiply => WideDecimalOp::Multiply,
                     _ => unreachable!(),
                 };
-                Ok(Arc::new(WideDecimalBinaryExpr::new(
+                let expr: Arc<dyn PhysicalExpr> = Arc::new(WideDecimalBinaryExpr::new(
                     left, right, wide_op, p_out, s_out, eval_mode,
-                )))
+                ));
+                if query_context.is_some() {
+                    Ok(Arc::new(CheckedBinaryExpr::new(expr, query_context)))
+                } else {
+                    Ok(expr)
+                }
             }
             (
                 DataFusionOperator::Divide,
@@ -1137,13 +1165,18 @@ impl PhysicalPlanner {
                     Some(options.check_divide_overflow),
                     eval_mode,
                 )?;
-                Ok(Arc::new(ScalarFunctionExpr::new(
+                let expr: Arc<dyn PhysicalExpr> = Arc::new(ScalarFunctionExpr::new(
                     func_name,
                     fun_expr,
                     vec![left, right],
                     Arc::new(Field::new(func_name, data_type, true)),
                     Arc::new(ConfigOptions::default()),
-                )))
+                ));
+                if query_context.is_some() {
+                    Ok(Arc::new(CheckedBinaryExpr::new(expr, query_context)))
+                } else {
+                    Ok(expr)
+                }
             }
             // Date +/- Int8/Int16/Int32: DataFusion 52's arrow-arith kernels only
             // support Date32 +/- Interval types, not raw integers. Use the Spark
@@ -1210,9 +1243,11 @@ impl PhysicalPlanner {
                         Arc::new(ConfigOptions::default()),
                     ));
 
-                    // Wrap with CheckedBinaryExpr to add query_context to errors
-                    use crate::execution::expressions::arithmetic::CheckedBinaryExpr;
-                    Ok(Arc::new(CheckedBinaryExpr::new(scalar_expr, query_context)))
+                    if query_context.is_some() {
+                        Ok(Arc::new(CheckedBinaryExpr::new(scalar_expr, query_context)))
+                    } else {
+                        Ok(scalar_expr)
+                    }
                 } else {
                     Ok(Arc::new(BinaryExpr::new(left, op, right)))
                 }
@@ -1819,7 +1854,7 @@ impl PhysicalPlanner {
 
                 // Consumes the first input source for the scan. The Java side passes an
                 // `org.apache.arrow.c.ArrowArrayStream` whose `memoryAddress` points at the C
-                // struct; native takes ownership via `AlignedArrowStreamReader::from_raw`.
+                // struct; native takes ownership via `ArrowArrayStreamReader::from_raw`.
                 let input_source = if self.exec_context_id == TEST_EXEC_CONTEXT_ID
                     && inputs.is_empty()
                 {
@@ -1831,7 +1866,7 @@ impl PhysicalPlanner {
                         jni_call!(env, arrow_array_stream(java_stream.as_obj()).memory_address() -> i64)
                     })?;
                     let reader = unsafe {
-                        AlignedArrowStreamReader::from_raw(address as *mut FFI_ArrowArrayStream)
+                        ArrowArrayStreamReader::from_raw(address as *mut FFI_ArrowArrayStream)
                     }
                     .map_err(|e| {
                         GeneralError(format!("Failed to import ArrowArrayStream from JVM: {e}"))
@@ -3665,7 +3700,7 @@ impl PhysicalPlanner {
                     .iter()
                     .map(|scalar_vec| {
                         ScalarValue::iter_to_array(scalar_vec.iter().cloned())
-                            .map(|array| NormalizeNaNAndZero::normalize_array(&array))
+                            .map(|array| normalize_floats(&array))
                     })
                     .collect::<Result<Vec<_>, _>>()?;
 
@@ -4140,6 +4175,16 @@ fn rewrite_physical_expr(
     );
 
     Ok(expr.rewrite(&mut rewriter).data()?)
+}
+
+/// Strip any [`CheckedBinaryExpr`] wrappers so callers can inspect the expression
+/// they decorate, however many context-wrapping layers the planner emitted.
+fn unwrap_checked(expr: &Arc<dyn PhysicalExpr>) -> &Arc<dyn PhysicalExpr> {
+    let mut current = expr;
+    while let Some(checked) = current.downcast_ref::<CheckedBinaryExpr>() {
+        current = checked.child();
+    }
+    current
 }
 
 pub fn from_protobuf_eval_mode(value: i32) -> Result<EvalMode, prost::UnknownEnumValue> {
@@ -4754,7 +4799,10 @@ fn create_case_expr(
 
     if let Some(coerce_type) = get_coerce_type_for_case_expression(&then_types, else_type.as_ref())
     {
-        let cast_options = SparkCastOptions::new_without_timezone(EvalMode::Legacy, false);
+        // The branches share a Spark type, so any difference is in the Arrow representation. For
+        // a timestamp that is the timezone label, and the cast only relabels it, but Comet's cast
+        // still needs a timezone. Every `TimestampType` value in a native plan is labelled UTC.
+        let cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC", false);
 
         let when_then_pairs = when_then_pairs
             .iter()
@@ -7817,5 +7865,44 @@ mod tests {
             err.to_string().contains("Non-empty FileScanTask partition"),
             "unexpected error: {err}"
         );
+    }
+
+    /// CASE branches that share a Spark timestamp type but carry different Arrow timezone labels
+    /// are reconciled by relabelling them, which used to panic because the cast had no timezone.
+    #[test]
+    fn case_reconciles_timestamp_timezone_labels() {
+        use arrow::array::{AsArray, BooleanArray, TimestampMicrosecondArray};
+        use arrow::datatypes::{TimeUnit, TimestampMicrosecondType};
+
+        let utc = DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()));
+        for then_label in [Some("Etc/UTC"), None] {
+            let then_type = DataType::Timestamp(TimeUnit::Microsecond, then_label.map(Into::into));
+            let schema = Schema::new(vec![
+                Field::new("b", DataType::Boolean, true),
+                Field::new("t", then_type, true),
+                Field::new("e", utc.clone(), true),
+            ]);
+            let batch = RecordBatch::try_new(
+                Arc::new(schema.clone()),
+                vec![
+                    Arc::new(BooleanArray::from(vec![true, false])),
+                    Arc::new(
+                        TimestampMicrosecondArray::from(vec![1, 2]).with_timezone_opt(then_label),
+                    ),
+                    Arc::new(TimestampMicrosecondArray::from(vec![10, 20]).with_timezone("UTC")),
+                ],
+            )
+            .unwrap();
+            let case = super::create_case_expr(
+                vec![(Arc::new(Column::new("b", 0)), Arc::new(Column::new("t", 1)))],
+                Some(Arc::new(Column::new("e", 2))),
+                &schema,
+            )
+            .unwrap();
+            let result = case.evaluate(&batch).unwrap().into_array(2).unwrap();
+            assert_eq!(result.data_type(), &utc, "{then_label:?}");
+            let values = result.as_primitive::<TimestampMicrosecondType>();
+            assert_eq!(values.values().to_vec(), vec![1, 20], "{then_label:?}");
+        }
     }
 }

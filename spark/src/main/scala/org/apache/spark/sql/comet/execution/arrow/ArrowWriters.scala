@@ -485,9 +485,22 @@ private[arrow] class StringWriter(val valueVector: VarCharVector) extends ArrowF
 
   override def setValue(input: SpecializedGetters, ordinal: Int): Unit = {
     val utf8 = input.getUTF8String(ordinal)
-    val utf8ByteBuffer = utf8.getByteBuffer
-    // todo: for off-heap UTF8String, how to pass in to arrow without copy?
-    valueVector.setSafe(count, utf8ByteBuffer, utf8ByteBuffer.position(), utf8.numBytes())
+    if (utf8.getBaseObject == null) {
+      val length = utf8.numBytes()
+      require(length >= 0, "String length must be non-negative")
+      valueVector.setValueLengthSafe(count, length)
+
+      // Reservation can replace the buffer. Copy into its current address while Spark still owns
+      // the source bytes, without staging the off-heap payload in a JVM byte array.
+      val data = valueVector.getDataBuffer
+      val offset = valueVector.getStartOffset(count).toLong
+      require(offset >= 0 && offset + length <= data.capacity(), "Invalid Arrow string range")
+      utf8.writeToMemory(null, Math.addExact(data.memoryAddress(), offset))
+      valueVector.setIndexDefined(count)
+    } else {
+      val utf8ByteBuffer = utf8.getByteBuffer
+      valueVector.setSafe(count, utf8ByteBuffer, utf8ByteBuffer.position(), utf8.numBytes())
+    }
   }
 }
 

@@ -30,6 +30,7 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.{Partitioner, SparkConf}
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.comet.execution.shuffle.{CometShuffleDependency, CometShuffleExchangeExec, CometShuffleManager}
+import org.apache.spark.sql.execution.SQLExecution
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanHelper, AQEShuffleReadExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.exchange.{ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.SortMergeJoinExec
@@ -920,6 +921,22 @@ class DisableAQECometShuffleSuite extends CometColumnarShuffleSuite {
             classOf[SortMergeJoinExec])
         }
       }
+    }
+  }
+
+  test("JVM shuffle writes batches no larger than spark.comet.batchSize") {
+    // spark.comet.shuffle.jvm.batchSize keeps its default of 8192, which is capped at 4096.
+    withSQLConf(
+      CometConf.COMET_SHUFFLE_JVM_SPILL_THRESHOLD.key -> Int.MaxValue.toString,
+      CometConf.COMET_BATCH_SIZE.key -> "4096") {
+      val df = spark.range(0, 20000, 1, 1).toDF().repartition(2, $"id")
+      val shuffle = checkCometExchange(df, 1, native = false).head
+      // Propagating the SQL conf lets the tasks see the batch size, as they would under an action.
+      val batchRows = SQLExecution.withSQLConfPropagated(spark) {
+        shuffle.executeColumnar().map(_.numRows()).collect()
+      }
+      assert(batchRows.sum == 20000)
+      assert(batchRows.max <= 4096)
     }
   }
 }
