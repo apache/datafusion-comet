@@ -1157,11 +1157,11 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("native block without a JVM input publishes SQL metrics on the update interval") {
     withTempPath { dir =>
       spark.range(0, 10000, 1, 1).write.parquet(dir.getAbsolutePath)
-      // Ten output batches from one task. Returns output_rows as the task sees it right after the
-      // first batch, and again after the last. The task creates the native plan, which starts the
-      // interval's clock, when it builds the iterator, so the sleep before the first batch runs
+      // Ten output batches from one task. Passes `check` the output_rows the task sees right after
+      // the first batch, and again after the last. The task creates the native plan, which starts
+      // the interval's clock, when it builds the iterator, so the sleep before the first batch runs
       // after that.
-      def outputRowsMidStreamAndAtEnd(interval: String): (Long, Long) =
+      def checkOutputRows(interval: String)(check: (Long, Long) => Unit): Unit =
         withSQLConf(
           CometConf.COMET_BATCH_SIZE.key -> "1000",
           CometConf.COMET_METRICS_UPDATE_INTERVAL.key -> interval) {
@@ -1172,7 +1172,7 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           // The task deserializes this metric together with the scan's metric node, so both
           // refer to the task-side copy that native execution publishes into.
           val outputRows = scan.metrics("output_rows")
-          SQLExecution.withSQLConfPropagated(spark) {
+          val (midStream, atEnd) = SQLExecution.withSQLConfPropagated(spark) {
             scan
               .executeColumnar()
               .mapPartitions { batches =>
@@ -1185,24 +1185,21 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               .collect()
               .head
           }
+          check(midStream, atEnd)
         }
 
       // With the interval disabled, the only publish is the one in releasePlan, which a
       // per-batch publish would break after the first batch.
-      val (disabledMidStream, disabledAtEnd) = outputRowsMidStreamAndAtEnd("-1")
-      assert(disabledMidStream == 0, s"output_rows was published mid-stream: $disabledMidStream")
-      assert(
-        disabledAtEnd == 10000,
-        s"releasePlan should publish the final output_rows, got $disabledAtEnd")
+      checkOutputRows("-1") { (midStream, atEnd) =>
+        assert(midStream == 0, s"output_rows was published mid-stream: $midStream")
+        assert(atEnd == 10000, s"releasePlan should publish the final output_rows, got $atEnd")
+      }
 
       // A 1 ms interval has passed by the time the first batch arrives, so that batch publishes.
-      val (dueMidStream, dueAtEnd) = outputRowsMidStreamAndAtEnd("1")
-      assert(
-        dueMidStream > 0,
-        "output_rows was not published mid-stream once the interval passed")
-      assert(
-        dueAtEnd == 10000,
-        s"releasePlan should publish the final output_rows, got $dueAtEnd")
+      checkOutputRows("1") { (midStream, atEnd) =>
+        assert(midStream > 0, "output_rows was not published mid-stream once the interval passed")
+        assert(atEnd == 10000, s"releasePlan should publish the final output_rows, got $atEnd")
+      }
     }
   }
 
