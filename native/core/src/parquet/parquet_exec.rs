@@ -694,7 +694,9 @@ mod tests {
             .expect("cached entry should hold Parquet metadata")
             .parquet_metadata();
         assert!(
-            parquet_meta.column_index().is_some() && parquet_meta.offset_index().is_some(),
+            parquet_meta
+                .page_index()
+                .is_some_and(|page_index| page_index.is_complete()),
             "cached metadata must include the page index"
         );
     }
@@ -797,8 +799,7 @@ mod tests {
             .fetch_metadata()
             .await
             .unwrap();
-        assert!(footer_metadata.column_index().is_none());
-        assert!(footer_metadata.offset_index().is_none());
+        assert!(footer_metadata.page_index().is_none());
         metadata_cache.put(
             &partitioned_file.object_meta.location,
             CachedFileMetadataEntry::new(
@@ -815,8 +816,9 @@ mod tests {
             .unwrap();
         let metadata = reader.get_metadata(None).await.unwrap();
 
-        assert!(metadata.column_index().is_some());
-        assert!(metadata.offset_index().is_some());
+        assert!(metadata
+            .page_index()
+            .is_some_and(|page_index| page_index.is_complete()));
         let metadata_bytes = reader_metric(&metrics, "scan_io_metadata_bytes");
         assert!(metadata_bytes > 0);
         assert_eq!(reader_metric(&metrics, "scan_io_data_bytes"), 0);

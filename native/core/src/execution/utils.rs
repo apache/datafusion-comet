@@ -42,8 +42,10 @@ impl SparkArrowConvert for ArrayData {
         let ffi_array = FFI_ArrowArray::new(&data);
         // Spark owns the top-level name and nullability. Preserve the existing anonymous schema
         // shape while carrying logical extension metadata from the RecordBatch field.
-        let ffi_schema =
-            FFI_ArrowSchema::try_from(self.data_type())?.with_metadata(field.metadata())?;
+        let ffi_schema = FFI_ArrowSchema::try_from(self.data_type())?;
+        // SAFETY: `with_metadata` reinterprets the schema's private data, which is only sound for
+        // a schema arrow-rs produced itself. This one was just built by `TryFrom`.
+        let ffi_schema = unsafe { ffi_schema.with_metadata(field.metadata())? };
 
         // Check if the pointer alignment is correct.
         if array_ptr.align_offset(array_align) != 0 || schema_ptr.align_offset(schema_align) != 0 {

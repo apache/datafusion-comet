@@ -28,5 +28,5 @@ license = "Apache-2.0"
 crate-type = ["rlib"]
 
 [dependencies]
-datafusion = { version = "55.0.0", default-features = false }
+datafusion = { git = "https://github.com/apache/datafusion", rev = "4a5d58006e620bf6a175bb578be6652c3b330da9", default-features = false }
 datafusion-comet-proto = { path = "../../../native/proto" }

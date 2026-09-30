@@ -108,8 +108,12 @@ impl DynamicFilterJoinExec {
             .builder()
             .reset_state()
             .with_new_children(vec![Arc::clone(self.template.left()), consumer])?
-            .build()?
-            .with_dynamic_filter_expr(predicate)?;
+            .build()?;
+        // DataFusion 56 deprecates this setter without a replacement. Upstream installs a join's
+        // dynamic filter only from `handle_child_pushdown_result`, which this runtime wiring
+        // bypasses.
+        #[allow(deprecated)]
+        let join = join.with_dynamic_filter_expr(predicate)?;
         Ok(RuntimeDynamicFilterJoin {
             join,
             reader_filter_attached,

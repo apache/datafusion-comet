@@ -37,16 +37,18 @@ edition = "2021"
 rust-version = "1.94.0"
 
 [workspace.dependencies]
-arrow = { version = "59.2.0", features = ["prettyprint", "ffi", "chrono-tz"] }
-arrow-data = { version = "59.2.0" }
-arrow-select = { version = "59.2.0" }
+arrow = { version = "60.0.0", features = ["prettyprint", "ffi", "chrono-tz"] }
+arrow-data = { version = "60.0.0" }
+arrow-select = { version = "60.0.0" }
 async-trait = { version = "0.1" }
 bytes = { version = "1.11.1" }
-parquet = { version = "59.2.0", default-features = false, features = ["experimental"] }
-datafusion = { version = "55.1.0", default-features = false, features = ["unicode_expressions", "crypto_expressions", "nested_expressions", "parquet"] }
-datafusion-datasource = { version = "55.1.0" }
-datafusion-physical-expr-adapter = { version = "55.1.0" }
-datafusion-spark = { version = "55.1.0", features = ["core"] }
+parquet = { version = "60.0.0", default-features = false, features = ["experimental"] }
+# Tracking a DataFusion main revision ahead of its next release. The same revision is used
+# by the `datafusion-functions-nested` dev-dependency in core and by the contrib crates.
+datafusion = { git = "https://github.com/apache/datafusion", rev = "4a5d58006e620bf6a175bb578be6652c3b330da9", default-features = false, features = ["unicode_expressions", "crypto_expressions", "nested_expressions", "parquet"] }
+datafusion-datasource = { git = "https://github.com/apache/datafusion", rev = "4a5d58006e620bf6a175bb578be6652c3b330da9" }
+datafusion-physical-expr-adapter = { git = "https://github.com/apache/datafusion", rev = "4a5d58006e620bf6a175bb578be6652c3b330da9" }
+datafusion-spark = { git = "https://github.com/apache/datafusion", rev = "4a5d58006e620bf6a175bb578be6652c3b330da9", features = ["core"] }
 datafusion-comet-spark-expr = { path = "spark-expr" }
 datafusion-comet-common = { path = "common" }
 datafusion-comet-jni-bridge = { path = "jni-bridge" }
@@ -66,7 +68,7 @@ rand = "0.10"
 # https://github.com/apache/datafusion-comet/issues/5813.
 regex = "1.12.3"
 thiserror = "2"
-object_store = { version = "0.13.2", features = ["gcp", "azure", "aws", "http"] }
+object_store = { version = "0.14.2", features = ["gcp", "azure", "aws", "http"] }
 url = "2.2"
 aws-config = "1.8.18"
 aws-credential-types = "1.2.13"
@@ -75,9 +77,11 @@ aws-credential-types = "1.2.13"
 aws-sdk-sts = { version = "1.114.0", default-features = false }
 # Pinned to a revision rather than a release because no published iceberg-rust
 # version is on our arrow: 0.10.1 requires arrow/parquet ^58. Move to a plain
-# version requirement once a release ships on arrow 59. Bump policy: #5645.
-iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "bb1e4a4861f02377489eff818b75138f414c4cb0" }
-iceberg-storage-opendal = { git = "https://github.com/apache/iceberg-rust", rev = "bb1e4a4861f02377489eff818b75138f414c4cb0", features = ["opendal-memory", "opendal-fs", "opendal-s3", "opendal-gcs", "opendal-oss", "opendal-azdls"] }
+# version requirement once a release ships on arrow 60. Bump policy: #5645.
+# The revision is the head of apache/iceberg-rust#3257 (Arrow 60), which has not
+# merged yet. Move back to an upstream main revision once it does.
+iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "0d5eb123495f765ea151e78c8964919d554d4b98" }
+iceberg-storage-opendal = { git = "https://github.com/apache/iceberg-rust", rev = "0d5eb123495f765ea151e78c8964919d554d4b98", features = ["opendal-memory", "opendal-fs", "opendal-s3", "opendal-gcs", "opendal-oss", "opendal-azdls"] }
 reqsign-core = "3"
 
 [profile.release]

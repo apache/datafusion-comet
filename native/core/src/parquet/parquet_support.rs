@@ -1021,7 +1021,7 @@ mod tests {
             object_store_backend(&url::Url::parse("memory:///a").unwrap(), false).unwrap(),
             ObjectStoreBackend::Other
         );
-        // These spellings are not accepted native backends in pinned object_store 0.13.2.
+        // These spellings are not accepted native backends in pinned object_store 0.14.2.
         for scheme in ["gcs", "wasb", "wasbs", "s3n"] {
             let url = url::Url::parse(&format!("{scheme}://bucket/path")).unwrap();
             assert!(object_store_backend(&url, false).is_err());

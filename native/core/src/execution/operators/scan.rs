@@ -15,11 +15,12 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::execution::operators::{copy_or_unpack_array, AlignedArrowStreamReader, CopyMode};
+use crate::execution::operators::{copy_or_unpack_array, CopyMode};
 use crate::{errors::CometError, execution::planner::TEST_EXEC_CONTEXT_ID};
 use arrow::array::{ArrayRef, RecordBatch, RecordBatchOptions};
 use arrow::compute::{cast_with_options, CastOptions};
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+use arrow::ffi_stream::ArrowArrayStreamReader;
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{arrow_datafusion_err, DataFusionError, Result as DataFusionResult};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
@@ -50,7 +51,7 @@ pub struct ScanExec {
     pub exec_context_id: i64,
     /// The C Stream Interface reader. `None` only in unit tests that seed input via
     /// `set_input_batch`.
-    pub input_source: Option<Arc<Mutex<AlignedArrowStreamReader>>>,
+    pub input_source: Option<Arc<Mutex<ArrowArrayStreamReader>>>,
     pub input_source_description: String,
     pub data_types: Vec<DataType>,
     pub schema: SchemaRef,
@@ -67,7 +68,7 @@ pub struct ScanExec {
 impl ScanExec {
     pub fn new(
         exec_context_id: i64,
-        input_source: Option<Arc<Mutex<AlignedArrowStreamReader>>>,
+        input_source: Option<Arc<Mutex<ArrowArrayStreamReader>>>,
         input_source_description: &str,
         data_types: Vec<DataType>,
     ) -> Result<Self, CometError> {
@@ -144,7 +145,7 @@ impl ScanExec {
     /// columns are unpacked because Comet's downstream operators do not handle them.
     fn pull_next(
         exec_context_id: i64,
-        reader: &Arc<Mutex<AlignedArrowStreamReader>>,
+        reader: &Arc<Mutex<ArrowArrayStreamReader>>,
     ) -> Result<InputBatch, CometError> {
         if exec_context_id == TEST_EXEC_CONTEXT_ID {
             // Unit test path; input batches are seeded directly.
@@ -156,7 +157,7 @@ impl ScanExec {
         // `get_next_batch`, so a contended `try_lock` here would signal a caller bug, not races.
         let mut reader = reader
             .try_lock()
-            .map_err(|_| CometError::Internal("AlignedArrowStreamReader contended".to_string()))?;
+            .map_err(|_| CometError::Internal("ArrowArrayStreamReader contended".to_string()))?;
 
         let next = reader.next();
         match next {
@@ -402,9 +403,12 @@ impl InputBatch {
 #[cfg(test)]
 mod import_tests {
     use super::*;
-    use arrow::array::{make_array, Array, ArrayData, ArrayRef, StringArray};
+    use arrow::array::{
+        make_array, Array, ArrayData, ArrayRef, Decimal128Array, StringArray, StructArray,
+    };
     use arrow::buffer::Buffer;
-    use arrow::datatypes::DataType;
+    use arrow::datatypes::{DataType, Fields};
+    use arrow::ffi::{from_ffi_and_data_type, FFI_ArrowArray};
 
     #[test]
     fn import_decodes_invalid_utf8_column() {
@@ -421,5 +425,51 @@ mod import_tests {
         let out = import_column(&col).unwrap();
         let s = out.as_any().downcast_ref::<StringArray>().unwrap();
         assert_eq!(s.value(0), "\u{FFFD}");
+    }
+
+    /// A JVM producer (arrow-java's `NettyAllocationManager`) only guarantees the C Data
+    /// Interface's recommended 8-byte alignment, so it can hand us a `Decimal128` buffer that is
+    /// not 16-byte aligned (apache/arrow-rs#10028). `ArrowArrayStreamReader` imports each batch
+    /// with `from_ffi_and_data_type`, which realigns such buffers since arrow 59
+    /// (apache/arrow-rs#10030). Without that, building the typed column would panic in
+    /// `ScalarBuffer::<i128>::from`.
+    #[test]
+    fn ffi_import_realigns_under_aligned_decimal128() {
+        let decimal_type = DataType::Decimal128(10, 2);
+
+        // Slice an aligned [0, 1, 2] i128 buffer 8 bytes in to land on an 8-aligned-not-16-aligned
+        // address. The little-endian byte shift makes the two visible elements `1 << 64`, `2 << 64`.
+        let under_aligned = Buffer::from_vec(vec![0_i128, 1_i128, 2_i128]).slice(8);
+        assert_eq!(under_aligned.as_ptr().align_offset(8), 0);
+        assert_ne!(under_aligned.as_ptr().align_offset(16), 0);
+
+        // SAFETY: buffer holds room for 2 i128 values; under-alignment is the condition under test.
+        // `build_unchecked` avoids the validation read that would itself panic on the misaligned i128s.
+        let decimal = unsafe {
+            ArrayData::builder(decimal_type.clone())
+                .len(2)
+                .add_buffer(under_aligned)
+                .build_unchecked()
+        };
+        let fields = Fields::from(vec![Field::new("d", decimal_type, false)]);
+        let struct_data = unsafe {
+            ArrayData::builder(DataType::Struct(fields.clone()))
+                .len(2)
+                .add_child_data(decimal)
+                .build_unchecked()
+        };
+        let array = FFI_ArrowArray::new(&struct_data);
+
+        // The same import `ArrowArrayStreamReader::next` performs.
+        // SAFETY: `array` was exported above from data whose layout matches the struct type.
+        let data = unsafe { from_ffi_and_data_type(array, DataType::Struct(fields)) }.unwrap();
+        let (_, columns, _) = StructArray::from(data).into_parts();
+        let col = columns[0]
+            .as_any()
+            .downcast_ref::<Decimal128Array>()
+            .unwrap();
+        assert_eq!(col.len(), 2);
+        assert_eq!(col.value(0), 1_i128 << 64);
+        assert_eq!(col.value(1), 2_i128 << 64);
     }
 }
