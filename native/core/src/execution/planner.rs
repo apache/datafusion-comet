@@ -3524,19 +3524,13 @@ impl PhysicalPlanner {
             }
             Some(AggExprStruct::Min(expr)) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
-                if is_float(&child.data_type(&schema)?) {
-                    Ok((udaf(SparkMinMax::new(false)), vec![child]))
-                } else {
-                    Ok((by_name("min")?, vec![child]))
-                }
+                let func = min_max_udaf(&child.data_type(&schema)?, false);
+                Ok((WindowFunctionDefinition::AggregateUDF(func), vec![child]))
             }
             Some(AggExprStruct::Max(expr)) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
-                if is_float(&child.data_type(&schema)?) {
-                    Ok((udaf(SparkMinMax::new(true)), vec![child]))
-                } else {
-                    Ok((by_name("max")?, vec![child]))
-                }
+                let func = min_max_udaf(&child.data_type(&schema)?, true);
+                Ok((WindowFunctionDefinition::AggregateUDF(func), vec![child]))
             }
             Some(AggExprStruct::Sum(expr)) => {
                 // For ever-expanding frames, use Comet's Spark-compatible Sum UDAFs
@@ -3988,14 +3982,10 @@ impl PhysicalPlanner {
     }
 }
 
-fn is_float(data_type: &DataType) -> bool {
-    matches!(data_type, DataType::Float32 | DataType::Float64)
-}
-
 /// `min` or `max` over `data_type`: Spark's version for floats, which DataFusion orders
 /// differently, and DataFusion's for every other type.
 fn min_max_udaf(data_type: &DataType, is_max: bool) -> Arc<AggregateUDF> {
-    if is_float(data_type) {
+    if data_type.is_floating() {
         Arc::new(AggregateUDF::new_from_impl(SparkMinMax::new(is_max)))
     } else if is_max {
         max_udaf()

@@ -203,26 +203,12 @@ impl ScalarUDFImpl for SparkGreatestLeast {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::float_semantics::compare_floats;
+    use crate::float_semantics::{spark_extreme, EDGE_VALUES};
     use arrow::array::{Float32Array, Float64Array, ListArray};
     use arrow::buffer::OffsetBuffer;
     use arrow::datatypes::{Field, FieldRef, Fields};
     use datafusion::config::ConfigOptions;
     use std::sync::Arc;
-
-    const EDGE_VALUES: [Option<f64>; 9] = [
-        Some(f64::NEG_INFINITY),
-        Some(-1.0),
-        Some(-0.0),
-        Some(0.0),
-        Some(f64::INFINITY),
-        Some(f64::NAN),
-        // A NaN with the sign bit set, as arithmetic produces on x86-64.
-        Some(f64::from_bits(0xfff8_0000_0000_0000)),
-        // A NaN with a payload.
-        Some(f64::from_bits(0x7ff0_0000_0000_0001)),
-        None,
-    ];
 
     fn invoke(
         greatest: bool,
@@ -238,26 +224,6 @@ mod tests {
             return_field,
             config_options: Arc::new(ConfigOptions::default()),
         })
-    }
-
-    /// Spark's `greatest` (or `least`) of one row: the arguments in order, skipping nulls,
-    /// replaced only by a strictly greater (or smaller) value.
-    fn spark_pick(values: &[Option<f64>], greatest: bool) -> Option<f64> {
-        values
-            .iter()
-            .flatten()
-            .fold(None, |best, &value| match best {
-                None => Some(value),
-                Some(best) => {
-                    let ordering = compare_floats(value, best);
-                    let replace = if greatest {
-                        ordering.is_gt()
-                    } else {
-                        ordering.is_lt()
-                    };
-                    Some(if replace { value } else { best })
-                }
-            })
     }
 
     /// Every combination of three edge values, with the middle argument also given as a constant.
@@ -295,7 +261,7 @@ mod tests {
             let result = result.into_array(rows.len())?;
             let result = result.as_primitive::<Float64Type>();
             for (i, row) in rows.iter().enumerate() {
-                let expected = spark_pick(row, greatest).map(f64::to_bits);
+                let expected = spark_extreme(row, greatest).map(f64::to_bits);
                 let actual = result.is_valid(i).then(|| result.value(i).to_bits());
                 assert_eq!(actual, expected, "{row:?} greatest={greatest}");
             }
@@ -312,7 +278,7 @@ mod tests {
                 let result = result.as_primitive::<Float64Type>();
                 for (i, row) in rows.iter().enumerate() {
                     let expected =
-                        spark_pick(&[row[0], middle, row[2]], greatest).map(f64::to_bits);
+                        spark_extreme(&[row[0], middle, row[2]], greatest).map(f64::to_bits);
                     let actual = result.is_valid(i).then(|| result.value(i).to_bits());
                     assert_eq!(
                         actual, expected,

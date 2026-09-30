@@ -443,3 +443,11 @@ harness = false
 [[bench]]
 name = "nested_comparison"
 harness = false
+
+[[bench]]
+name = "min_max"
+harness = false
+
+[[bench]]
+name = "greatest_least"
+harness = false

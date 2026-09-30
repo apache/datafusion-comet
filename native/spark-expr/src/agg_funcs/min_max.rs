@@ -41,9 +41,9 @@ use std::sync::Arc;
 /// `least`. Every accumulator here follows that rule, including over a sliding window frame.
 ///
 /// DataFusion's `max` and `min` order floats by IEEE 754 total order in their batch kernels, in
-/// which a NaN with the sign bit set is the smallest value, and the grouped versions start each
-/// group at the most negative (or positive) finite value, so a group holding only `-Infinity`
-/// returns that finite value.
+/// which a NaN with the sign bit set is the smallest value. In DataFusion 55 the grouped versions
+/// also start each group at the most negative (or positive) finite value, so a group holding only
+/// `-Infinity` returns that finite value; apache/datafusion#24433 fixes that upstream.
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub struct SparkMinMax {
     signature: Signature,
@@ -465,23 +465,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::float_semantics::compare_floats;
+    use crate::float_semantics::{spark_extreme, EDGE_VALUES};
     use arrow::array::{Float32Array, Float64Array};
-
-    const EDGE_VALUES: [Option<f64>; 10] = [
-        Some(f64::NEG_INFINITY),
-        Some(-1.0),
-        Some(-0.0),
-        Some(0.0),
-        Some(1.0),
-        Some(f64::INFINITY),
-        Some(f64::NAN),
-        // A NaN with the sign bit set, as arithmetic produces on x86-64.
-        Some(f64::from_bits(0xfff8_0000_0000_0000)),
-        // A NaN with a payload.
-        Some(f64::from_bits(0x7ff0_0000_0000_0001)),
-        None,
-    ];
 
     /// Pseudo-random sequences of edge values, the same on every run.
     fn sequences() -> Vec<Vec<Option<f64>>> {
@@ -501,26 +486,6 @@ mod tests {
             .collect()
     }
 
-    /// Spark's `max` (or `min`): fold in order with `compareDoubles`, replacing only with a
-    /// strictly greater (or smaller) value.
-    fn spark_fold(values: &[Option<f64>], is_max: bool) -> Option<f64> {
-        values
-            .iter()
-            .flatten()
-            .fold(None, |best, &value| match best {
-                None => Some(value),
-                Some(best) => {
-                    let ordering = compare_floats(value, best);
-                    let replace = if is_max {
-                        ordering.is_gt()
-                    } else {
-                        ordering.is_lt()
-                    };
-                    Some(if replace { value } else { best })
-                }
-            })
-    }
-
     fn bits(value: &ScalarValue) -> Option<u64> {
         match value {
             ScalarValue::Float64(v) => v.map(f64::to_bits),
@@ -531,6 +496,10 @@ mod tests {
 
     fn array(values: &[Option<f64>]) -> ArrayRef {
         Arc::new(Float64Array::from(values.to_vec()))
+    }
+
+    fn float_array(values: &[Option<f32>]) -> ArrayRef {
+        Arc::new(Float32Array::from(values.to_vec()))
     }
 
     /// The loops' predicates agree with the shared ones on every pair of edge values.
@@ -555,10 +524,10 @@ mod tests {
     /// The result, down to its bits, including which zero or which NaN was kept, over a whole
     /// sequence fed in several batches, and over two partial states merged in order.
     #[test]
-    fn accumulator_matches_spark_fold() -> Result<()> {
+    fn accumulator_matches_spark() -> Result<()> {
         for values in sequences() {
             for is_max in [true, false] {
-                let expected = spark_fold(&values, is_max).map(f64::to_bits);
+                let expected = spark_extreme(&values, is_max).map(f64::to_bits);
                 let mut acc = MinMaxAccumulator::<Float64Type>::new(is_max);
                 for batch in values.chunks(4) {
                     acc.update_batch(&[array(batch)])?;
@@ -584,14 +553,15 @@ mod tests {
     }
 
     #[test]
-    fn float32_accumulator_matches_spark_fold() -> Result<()> {
+    fn float32_accumulator_matches_spark() -> Result<()> {
         for values in sequences() {
             let values: Vec<Option<f32>> = values.iter().map(|v| v.map(|v| v as f32)).collect();
             let as_f64: Vec<Option<f64>> = values.iter().map(|v| v.map(f64::from)).collect();
             for is_max in [true, false] {
                 let mut acc = MinMaxAccumulator::<Float32Type>::new(is_max);
-                acc.update_batch(&[Arc::new(Float32Array::from(values.clone()))])?;
-                let expected = spark_fold(&as_f64, is_max).map(|v| u64::from((v as f32).to_bits()));
+                acc.update_batch(&[float_array(&values)])?;
+                let expected =
+                    spark_extreme(&as_f64, is_max).map(|v| u64::from((v as f32).to_bits()));
                 assert_eq!(bits(&acc.evaluate()?), expected, "{values:?} max={is_max}");
             }
         }
@@ -602,7 +572,7 @@ mod tests {
     /// sequence runs twice: with its nulls and a filter that drops every fifth row, and without
     /// nulls or a filter, which takes the accumulator's faster loop.
     #[test]
-    fn groups_accumulator_matches_spark_fold() -> Result<()> {
+    fn groups_accumulator_matches_spark() -> Result<()> {
         for values in sequences() {
             let without_nulls: Vec<Option<f64>> =
                 values.iter().copied().filter(Option::is_some).collect();
@@ -629,7 +599,7 @@ mod tests {
                             .filter(|&row| groups[row] == group && keep(row))
                             .map(|row| values[row])
                             .collect();
-                        let expected = spark_fold(&rows, is_max).map(f64::to_bits);
+                        let expected = spark_extreme(&rows, is_max).map(f64::to_bits);
                         assert_eq!(
                             actual.map(f64::to_bits),
                             expected,
@@ -687,24 +657,40 @@ mod tests {
     }
 
     /// A frame of `width` rows ending at each row, as `ROWS BETWEEN width - 1 PRECEDING AND
-    /// CURRENT ROW` evaluates it: add the new row, then retract the row that left the frame.
+    /// CURRENT ROW` evaluates it: add the new row, then retract the row that left the frame. Each
+    /// sequence runs as `DOUBLE` and as `FLOAT`.
     #[test]
-    fn sliding_accumulator_matches_spark_fold() -> Result<()> {
+    fn sliding_accumulator_matches_spark() -> Result<()> {
         for values in sequences() {
+            // The `FLOAT` expectation folds the values that accumulator sees, widened back.
+            let floats: Vec<Option<f32>> = values.iter().map(|v| v.map(|v| v as f32)).collect();
+            let widened: Vec<Option<f64>> = floats.iter().map(|v| v.map(f64::from)).collect();
             for width in 1..5 {
                 for is_max in [true, false] {
-                    let mut acc = SlidingMinMaxAccumulator::<Float64Type>::new(is_max);
+                    let mut doubles = SlidingMinMaxAccumulator::<Float64Type>::new(is_max);
+                    let mut singles = SlidingMinMaxAccumulator::<Float32Type>::new(is_max);
                     for row in 0..values.len() {
-                        acc.update_batch(&[array(&values[row..=row])])?;
-                        if row >= width {
-                            acc.retract_batch(&[array(&values[row - width..row - width + 1])])?;
+                        doubles.update_batch(&[array(&values[row..=row])])?;
+                        singles.update_batch(&[float_array(&floats[row..=row])])?;
+                        if let Some(left) = row.checked_sub(width) {
+                            doubles.retract_batch(&[array(&values[left..=left])])?;
+                            singles.retract_batch(&[float_array(&floats[left..=left])])?;
                         }
-                        let frame = &values[(row + 1).saturating_sub(width)..=row];
-                        let expected = spark_fold(frame, is_max).map(f64::to_bits);
+                        let start = (row + 1).saturating_sub(width);
+                        let frame = &values[start..=row];
+                        let expected = spark_extreme(frame, is_max).map(f64::to_bits);
                         assert_eq!(
-                            bits(&acc.evaluate()?),
+                            bits(&doubles.evaluate()?),
                             expected,
                             "{frame:?} width={width} max={is_max}"
+                        );
+                        let frame = &widened[start..=row];
+                        let expected =
+                            spark_extreme(frame, is_max).map(|v| u64::from((v as f32).to_bits()));
+                        assert_eq!(
+                            bits(&singles.evaluate()?),
+                            expected,
+                            "FLOAT {frame:?} width={width} max={is_max}"
                         );
                     }
                 }
