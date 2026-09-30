@@ -21,6 +21,7 @@ package org.apache.comet
 
 import scala.collection.mutable.ListBuffer
 
+import org.apache.spark.sql.comet.util.Utils.isVariantType
 import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
 import org.apache.spark.sql.types._
 
@@ -108,17 +109,18 @@ object DataTypeSupport {
   }
 
   /**
-   * True when a field anywhere in `schema` whose type `isContainer` accepts declares a Parquet
-   * field id, including one nested under an array element or a map key or value. Callers pass the
-   * types that the native reader sees as struct, list or map fields.
+   * True when a struct, array, map or Variant field anywhere in `schema` declares a Parquet field
+   * id, including one nested under an array element or a map key or value. The native reader sees
+   * each of these as a struct, list or map field.
    *
    * Only meaningful under `spark.sql.parquet.fieldId.read.enabled`; callers gate on that.
    */
-  def hasContainerFieldIds(schema: StructType, isContainer: DataType => Boolean): Boolean = {
+  def hasContainerFieldIds(schema: StructType): Boolean = {
     def check(dt: DataType): Boolean = dt match {
       case StructType(fields) =>
         fields.exists(f =>
-          (isContainer(f.dataType) && ParquetUtils.hasFieldId(f)) || check(f.dataType))
+          ((isComplexType(f.dataType) || isVariantType(f.dataType)) &&
+            ParquetUtils.hasFieldId(f)) || check(f.dataType))
       case ArrayType(elementType, _) => check(elementType)
       case MapType(keyType, valueType, _) => check(keyType) || check(valueType)
       case _ => false

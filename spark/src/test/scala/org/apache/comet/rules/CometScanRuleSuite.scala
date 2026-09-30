@@ -243,9 +243,6 @@ class CometScanRuleSuite extends CometTestBase {
   test("hasContainerFieldIds finds an id on a struct, array, map or Variant field at any depth") {
     // See https://github.com/apache/datafusion-comet/issues/6131.
     val id = new MetadataBuilder().putLong("parquet.field.id", 1L).build()
-    // The same types CometScanRule treats as containers. Variant exists from Spark 4.0 on.
-    val isContainer: DataType => Boolean =
-      dt => DataTypeSupport.isComplexType(dt) || Utils.variantType.contains(dt)
     val leaf = StructType(Array(StructField("x", LongType, nullable = true, id)))
     val plain = StructType(Array(StructField("x", LongType)))
     def field(dt: DataType, withId: Boolean): StructField =
@@ -269,6 +266,7 @@ class CometScanRuleSuite extends CometTestBase {
           field(
             MapType(StructType(Array(field(MapType(LongType, LongType), withId = true))), plain),
             withId = false))))
+    // Variant exists from Spark 4.0 on.
     val variantFound = Utils.variantType.toSeq.flatMap { variant =>
       Seq[(String, StructType)](
         "Variant" -> StructType(Array(field(variant, withId = true))),
@@ -277,7 +275,7 @@ class CometScanRuleSuite extends CometTestBase {
             field(ArrayType(StructType(Array(field(variant, withId = true)))), withId = false))))
     }
     for ((label, schema) <- found ++ variantFound) {
-      assert(DataTypeSupport.hasContainerFieldIds(schema, isContainer), s"$label: not found")
+      assert(DataTypeSupport.hasContainerFieldIds(schema), s"$label: not found")
     }
 
     val notFound = Seq[(String, StructType)](
@@ -293,7 +291,7 @@ class CometScanRuleSuite extends CometTestBase {
       "Variant without an id" -> StructType(Array(field(variant, withId = false)))
     }
     for ((label, schema) <- notFound ++ variantNotFound) {
-      assert(!DataTypeSupport.hasContainerFieldIds(schema, isContainer), s"$label: found")
+      assert(!DataTypeSupport.hasContainerFieldIds(schema), s"$label: found")
     }
   }
 
