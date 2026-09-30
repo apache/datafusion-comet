@@ -326,13 +326,14 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
   }
 
   /**
-   * Runs two native plans in one task, so that they share one task-shared memory pool, and
-   * returns the "closed with non-zero memory usage" warnings logged while they close. The first
-   * plan sorts a batch, which reserves memory through the pool and makes the pool take its anchor
-   * byte through that plan's `CometTaskMemoryManager`. The second plan only holds the pool, so
-   * the anchor is still held when the first plan closes. `leakBytes` bytes are acquired through
-   * the first plan's manager and never released, which is what a native reservation that outlives
-   * its plan looks like to the JVM.
+   * Runs two native plans in one task, so that they share one task-shared memory pool and the
+   * task's one `CometTaskMemoryManager`, and returns the "closed with non-zero memory usage"
+   * warnings logged while they close. The first plan sorts a batch, which reserves memory through
+   * the pool and makes the pool take its anchor byte from Spark. The second plan only holds the
+   * pool, so the pool and its anchor outlive the first plan's close and the anchor shows in the
+   * task's Spark balance until the second plan closes too. `leakBytes` bytes are acquired through
+   * the task's manager and never released, which is what a native reservation that outlives its
+   * plan looks like to the JVM.
    */
   private def closeWarningsOfTwoPlanTask(taskAttemptId: Long, leakBytes: Long): Seq[String] = {
     // Any physical plan with a bigint output serves as the sort's child. Only its output is used.
@@ -424,12 +425,12 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
     field.get(iterator).asInstanceOf[CometTaskMemoryManager]
   }
 
-  test("close() does not report the memory pool's anchor byte as a leak") {
+  test("the memory pool holds its anchor byte until the task's last plan releases the pool") {
     val warnings = closeWarningsOfTwoPlanTask(4600000L, leakBytes = 0)
     assert(warnings.isEmpty, warnings)
   }
 
-  test("close() reports a leaked reservation without the memory pool's anchor byte") {
+  test("close() reports a leaked reservation once the last plan has returned the anchor byte") {
     val warnings = closeWarningsOfTwoPlanTask(4700000L, leakBytes = 4096)
     assert(
       warnings == Seq(

@@ -53,11 +53,7 @@ const _: () = assert!(ANCHOR_BYTES == 1);
 /// to the JVM whole: Spark grants a parked request only when they cover it.
 ///
 /// The anchor is never recorded in the pool's total and never carried as overcommit, so it goes
-/// through the Spark calls directly rather than through the [`SparkMemory`] ledger. It takes the
-/// manager's anchor calls rather than its plain acquire and release, which keeps it out of the
-/// usage the JVM checks when a plan closes. The pool is shared by every plan of the task and
-/// charged to the first plan's manager, so a plan closing while a sibling still held the pool
-/// would otherwise see the anchor as a leaked byte.
+/// through the Spark calls directly rather than through the [`SparkMemory`] ledger.
 pub struct CometFairMemoryPool {
     spark: SparkMemory,
     pool_size: usize,
@@ -173,7 +169,7 @@ impl CometFairMemoryPool {
         // A grow or a release on another thread took the anchor meanwhile. This byte was never
         // booked, so a failed return only leaves Spark holding it until the task ends, as on
         // drop.
-        if let Err(e) = self.spark.manager().release_anchor(ANCHOR_BYTES) {
+        if let Err(e) = self.spark.manager().release(ANCHOR_BYTES) {
             warn!("Failed to return a duplicate memory pool anchor byte: {e:?}");
         }
         Ok(())
@@ -184,7 +180,7 @@ impl CometFairMemoryPool {
     /// so the release cannot take the task's balance to zero under an acquire parked there.
     /// Claiming the anchor under the lock means one release keeps it, and an anchor retry that
     /// lands afterwards hands its byte back as a duplicate. The JVM releases to Spark before it
-    /// moves its counters, so a failed call has moved nothing: the claim is rolled back and the
+    /// moves its count, so a failed call has moved nothing: the claim is rolled back and the
     /// pool is unanchored again, with Spark still holding the bytes, and later grows retry the
     /// anchor as usual. A retry that returned its byte while the claim stood holds nothing.
     fn release_to_spark(&self, bytes: usize) -> CometResult<()> {
@@ -192,7 +188,10 @@ impl CometFairMemoryPool {
         if !keep_anchor {
             return self.spark.manager().release(bytes);
         }
-        let released = self.spark.manager().release_keeping_anchor(bytes);
+        if bytes == ANCHOR_BYTES {
+            return Ok(());
+        }
+        let released = self.spark.manager().release(bytes - ANCHOR_BYTES);
         if released.is_err() {
             self.state.lock().anchor_held = false;
         }
@@ -232,7 +231,7 @@ impl Drop for CometFairMemoryPool {
             return;
         }
         let released = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.spark.manager().release_anchor(ANCHOR_BYTES)
+            self.spark.manager().release(ANCHOR_BYTES)
         }));
         match released {
             Ok(Ok(())) => {}
@@ -530,12 +529,10 @@ mod tests {
         lock: Condvar,
         releases: AtomicUsize,
         acquires: AtomicUsize,
-        /// `CometTaskMemoryManager.used`: bytes granted to plain acquires and not yet released.
-        /// This is what the JVM checks for leaked reservations when a plan closes.
+        /// `CometTaskMemoryManager.used`: bytes granted and not yet released, the anchor
+        /// included. This is what the JVM checks for leaked reservations once the task's last
+        /// plan has closed.
         used: AtomicI64,
-        /// `CometTaskMemoryManager.anchor`: bytes granted to anchor acquires and not yet
-        /// released.
-        anchor: AtomicI64,
         /// When non-zero, every n-th acquire asks Spark for only half of the requested bytes,
         /// which is how a caller sees a short grant that must be rolled back.
         short_every: usize,
@@ -567,7 +564,6 @@ mod tests {
                 releases: AtomicUsize::new(0),
                 acquires: AtomicUsize::new(0),
                 used: AtomicI64::new(0),
-                anchor: AtomicI64::new(0),
                 short_every: 0,
                 fail_acquire: AtomicBool::new(false),
                 fail_release: AtomicBool::new(false),
@@ -654,8 +650,7 @@ mod tests {
     }
 
     impl StubTaskMemory {
-        /// Spark's `acquireExecutionMemory` for this task, behind both the plain and the anchor
-        /// acquire.
+        /// Spark's `acquireExecutionMemory` for this task.
         fn grant(&self, additional: usize) -> CometResult<i64> {
             let n = self.acquires.fetch_add(1, SeqCst) + 1;
             if self.fail_acquire.load(SeqCst) {
@@ -706,8 +701,7 @@ mod tests {
             }
         }
 
-        /// Spark's `releaseExecutionMemory` for this task, behind both the plain and the anchor
-        /// release.
+        /// Spark's `releaseExecutionMemory` for this task.
         fn hand_back(&self, size: usize) -> CometResult<()> {
             if self.fail_release.load(SeqCst) {
                 return Err(CometError::Internal("injected release failure".to_string()));
@@ -733,8 +727,8 @@ mod tests {
         }
     }
 
-    /// Keeps the two counts `CometTaskMemoryManager` keeps: the anchor calls go to the same
-    /// Spark balance as the plain ones but are counted apart from `used`.
+    /// Keeps the count `CometTaskMemoryManager` keeps on top of Spark's balance. Like the JVM,
+    /// a release calls Spark first and moves the count only once it has answered.
     impl SparkMemoryManager for Arc<StubTaskMemory> {
         fn acquire(&self, additional: usize) -> CometResult<i64> {
             let granted = self.grant(additional)?;
@@ -745,28 +739,6 @@ mod tests {
         fn release(&self, size: usize) -> CometResult<()> {
             self.hand_back(size)?;
             self.used.fetch_sub(size as i64, SeqCst);
-            Ok(())
-        }
-
-        fn acquire_anchor(&self, size: usize) -> CometResult<i64> {
-            let granted = self.grant(size)?;
-            self.anchor.fetch_add(granted, SeqCst);
-            Ok(granted)
-        }
-
-        fn release_anchor(&self, size: usize) -> CometResult<()> {
-            self.hand_back(size)?;
-            self.anchor.fetch_sub(size as i64, SeqCst);
-            Ok(())
-        }
-
-        fn release_keeping_anchor(&self, size: usize) -> CometResult<()> {
-            // Like the JVM, Spark first and the counters only once it has answered.
-            if size > ANCHOR_BYTES {
-                self.hand_back(size - ANCHOR_BYTES)?;
-            }
-            self.used.fetch_sub(size as i64, SeqCst);
-            self.anchor.fetch_add(ANCHOR_BYTES as i64, SeqCst);
             Ok(())
         }
     }
@@ -1113,16 +1085,15 @@ mod tests {
             .expect("parked anchor retry crashed when the pool released its last real bytes");
         assert_eq!(pool.reserved(), 0);
         assert_eq!(stub.outstanding(), 1, "only the anchor may remain");
-        assert_eq!(stub.used.load(SeqCst), 0, "no reservation is left counted");
         assert_eq!(
-            stub.anchor.load(SeqCst),
+            stub.used.load(SeqCst),
             1,
-            "the kept byte is counted as the anchor"
+            "the kept byte counts like any other grant"
         );
         drop(holder);
         drop(pool);
         assert_eq!(stub.outstanding(), 0);
-        assert_eq!(stub.anchor.load(SeqCst), 0);
+        assert_eq!(stub.used.load(SeqCst), 0);
     }
 
     /// A release that would keep a byte as the anchor fails before Spark sees it. Spark still
@@ -1154,22 +1125,25 @@ mod tests {
         let res = grow.join().unwrap();
         stub.fail_release.store(false, SeqCst);
         assert_eq!(stub.outstanding(), 5, "Spark still holds the whole grant");
-        assert_eq!(stub.anchor.load(SeqCst), 0, "no byte was kept");
+        assert_eq!(
+            stub.used.load(SeqCst),
+            5,
+            "the failed release moved nothing"
+        );
 
         let _ = res.try_grow(10);
         assert_eq!(
-            stub.anchor.load(SeqCst),
-            1,
+            stub.outstanding(),
+            6,
             "the next grow takes the anchor again"
         );
         drop(res);
         drop(pool);
         assert_eq!(
-            stub.anchor.load(SeqCst),
-            0,
-            "drop hands back the one anchor it holds"
+            stub.outstanding(),
+            5,
+            "drop hands back the one anchor it holds, and only the stranded grant remains"
         );
-        assert_eq!(stub.outstanding(), 5, "only the stranded grant remains");
     }
 
     /// Two grows retry a missing anchor at once and Spark grants both: one byte is kept and
@@ -1603,28 +1577,26 @@ mod tests {
         assert_eq!(fake.held(), 0);
     }
 
-    /// The anchor goes through Spark's anchor calls, which the JVM counts apart from the usage
-    /// it checks when a plan closes, so a pool left holding only its anchor reads as holding
-    /// nothing there. A declined anchor leaves both counts alone.
+    /// The anchor goes through the same Spark calls as any grant, so the JVM counts it in the
+    /// usage it checks once the task's last plan has closed, until the pool drops and hands it
+    /// back. A declined anchor counts nothing.
     #[test]
-    fn anchor_is_counted_apart_from_the_usage_a_closing_plan_checks() {
+    fn anchor_counts_as_usage_until_the_pool_drops() {
         let stub = Arc::new(StubTaskMemory::new(GIB));
         let pool = pool_with(&stub, 1_000);
         let res = MemoryConsumer::new("consumer").register(&pool);
 
         res.try_grow(10).unwrap();
-        assert_eq!(stub.used.load(SeqCst), 10, "the grant alone is usage");
-        assert_eq!(stub.anchor.load(SeqCst), 1);
-        assert_eq!(stub.outstanding(), 11, "both count for the task");
+        assert_eq!(stub.used.load(SeqCst), 11, "anchor plus the grant");
+        assert_eq!(stub.outstanding(), 11);
 
         res.free();
-        assert_eq!(stub.used.load(SeqCst), 0, "the anchor is not usage");
-        assert_eq!(stub.anchor.load(SeqCst), 1);
+        assert_eq!(stub.used.load(SeqCst), 1, "the anchor stays until drop");
         assert_eq!(stub.outstanding(), 1);
 
         drop(res);
         drop(pool);
-        assert_eq!(stub.anchor.load(SeqCst), 0);
+        assert_eq!(stub.used.load(SeqCst), 0, "drop hands the anchor back");
         assert_eq!(stub.outstanding(), 0);
 
         // Spark declines the anchor for a task at its share. Nothing is counted for it.
@@ -1634,7 +1606,6 @@ mod tests {
         let res = MemoryConsumer::new("consumer").register(&pool);
         assert!(res.try_grow(10).is_err());
         assert_eq!(stub.used.load(SeqCst), 0);
-        assert_eq!(stub.anchor.load(SeqCst), 0);
         drop(res);
         drop(pool);
     }

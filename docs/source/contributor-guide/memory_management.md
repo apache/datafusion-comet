@@ -340,19 +340,18 @@ task is already at its share. The pool then runs without it and each grow retrie
 of its own, before the real one, until it is held. If Spark frees up between a declined retry and
 the real request, the pool holds bytes from Spark without the anchor, and the next retry can park.
 So the first release that hands bytes back to Spark while the anchor is missing, a shrink or the
-rollback of a short grant, keeps one of them as the anchor through
-`CometTaskMemoryManager.releaseKeepingAnchor`, and none of the pool's own releases can zero the
-balance. Until a retry lands, a JVM consumer of the same task such as the shuffle allocator can
-still free its last bytes while a request of the pool is parked and the pool holds nothing from
-Spark. Spark then fails that acquire. A `try_grow` rolls its charge back and reports an error, and a
-`grow` keeps its charge as overcommit. That is the one window the anchor does not cover. The anchor
-is taken through `CometTaskMemoryManager.acquireAnchor` rather than `acquireMemory`, and a byte kept
-by a release is moved to the same count, so it counts toward the task's
-balance and toward `NativeMemoryConsumer.getUsed` but not toward `CometTaskMemoryManager.getUsed`,
-which is what `CometExecIterator.close` checks for reservations a plan never released. The pool is
-shared by every plan of the task and is charged to the manager of the plan that created it, so that
-plan can close while a sibling still holds the pool and with it the anchor. Without the separate
-count it would log the anchor as a leak of one byte, and a real leak would read one byte high.
+rollback of a short grant, hands back all but one of them and keeps that one as the anchor, and
+none of the pool's own releases can zero the balance. Until a retry lands, a JVM consumer of the
+same task such as the shuffle allocator can still free its last bytes while a request of the pool
+is parked and the pool holds nothing from Spark. Spark then fails that acquire. A `try_grow` rolls
+its charge back and reports an error, and a `grow` keeps its charge as overcommit. That is the one
+window the anchor does not cover. The anchor goes through `CometTaskMemoryManager.acquireMemory`
+and `releaseMemory` and is counted like any other grant, in `CometTaskMemoryManager.getUsed` as
+well. That is safe because `CometExecIterator.close` checks the task's manager only after the
+task's last plan has closed, and by then releasing that plan has dropped the pool and returned the
+anchor, as described under task-shared pools below. This holds when the pool is dropped with the
+last plan's release. A spawned task that still holds the pool for a moment after an early stop can
+make `close` log the anchor as a one byte leak.
 
 **The pool mutex is never held across a JNI call.** Both checks run, and the bytes are charged to
 the pool's total and to the consumer's running total, under the lock. The lock is dropped before

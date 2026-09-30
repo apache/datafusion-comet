@@ -30,13 +30,6 @@ pub(super) trait SparkMemoryManager: Send + Sync {
     /// Asks Spark for `size` bytes and returns how many it granted.
     fn acquire(&self, size: usize) -> CometResult<i64>;
     fn release(&self, size: usize) -> CometResult<()>;
-    /// Like [`Self::acquire`], for a pool's anchor. The JVM counts the anchor toward the task's
-    /// balance but not toward the usage it checks for leaked reservations when a plan closes.
-    fn acquire_anchor(&self, size: usize) -> CometResult<i64>;
-    fn release_anchor(&self, size: usize) -> CometResult<()>;
-    /// Like [`Self::release`], except that one of the `size` bytes stays with Spark as the
-    /// pool's anchor, to be handed back later through [`Self::release_anchor`].
-    fn release_keeping_anchor(&self, size: usize) -> CometResult<()>;
 }
 
 /// Calls [`crate::jvm_bridge::CometTaskMemoryManager`] over JNI.
@@ -55,29 +48,6 @@ impl SparkMemoryManager for JniMemoryManager {
         let handle = self.0.as_obj();
         JVMClasses::with_env(|env| unsafe {
             jni_call!(env, comet_task_memory_manager(handle).release_memory(size as i64) -> ())
-        })
-    }
-
-    fn acquire_anchor(&self, size: usize) -> CometResult<i64> {
-        let handle = self.0.as_obj();
-        JVMClasses::with_env(|env| unsafe {
-            jni_call!(env,
-              comet_task_memory_manager(handle).acquire_anchor(size as i64) -> i64)
-        })
-    }
-
-    fn release_anchor(&self, size: usize) -> CometResult<()> {
-        let handle = self.0.as_obj();
-        JVMClasses::with_env(|env| unsafe {
-            jni_call!(env, comet_task_memory_manager(handle).release_anchor(size as i64) -> ())
-        })
-    }
-
-    fn release_keeping_anchor(&self, size: usize) -> CometResult<()> {
-        let handle = self.0.as_obj();
-        JVMClasses::with_env(|env| unsafe {
-            jni_call!(env,
-              comet_task_memory_manager(handle).release_keeping_anchor(size as i64) -> ())
         })
     }
 }
@@ -226,7 +196,7 @@ impl SparkMemory {
     /// Asks Spark for the pool's anchor, `size` bytes the overcommit ledger never records, and
     /// returns how many it granted. Spark can block it like any other acquire.
     pub(super) fn acquire_anchor(&self, size: usize) -> CometResult<i64> {
-        wait_on_spark(|| self.manager.acquire_anchor(size))
+        self.ask_spark(size)
     }
 
     /// Asks Spark for `size` bytes and returns how many it granted.
@@ -343,19 +313,6 @@ pub(super) mod fake {
             *held -= size;
             self.released.lock().push(size);
             Ok(())
-        }
-
-        /// The fake keeps one balance, so the anchor shows in `held` like any other grant.
-        fn acquire_anchor(&self, size: usize) -> CometResult<i64> {
-            self.acquire(size)
-        }
-
-        fn release_anchor(&self, size: usize) -> CometResult<()> {
-            self.release(size)
-        }
-
-        fn release_keeping_anchor(&self, size: usize) -> CometResult<()> {
-            self.release(size - 1)
         }
     }
 }

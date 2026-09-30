@@ -21,7 +21,7 @@ package org.apache.spark
 
 import java.util.Properties
 import java.util.concurrent.{CountDownLatch, TimeUnit}
-import java.util.concurrent.atomic.{AtomicLong, AtomicReference}
+import java.util.concurrent.atomic.{AtomicBoolean, AtomicLong, AtomicReference}
 
 import org.apache.logging.log4j.{Level, LogManager}
 import org.apache.logging.log4j.core.{LogEvent, LoggerContext}
@@ -77,36 +77,35 @@ class CometTaskMemoryManagerSuite extends SparkFunSuite {
     }
   }
 
-  test("the memory pool's anchor byte counts for the task but not as usage") {
-    withTaskMemoryManager { taskMemoryManager =>
+  test("a release that Spark rejects leaves the usage unchanged") {
+    val memoryManager = new TestMemoryManager(new SparkConf())
+    memoryManager.limit(1024)
+    val rejectRelease = new AtomicBoolean(false)
+    val taskMemoryManager = new TaskMemoryManager(memoryManager, 0L) {
+      override def releaseExecutionMemory(size: Long, consumer: MemoryConsumer): Unit = {
+        if (rejectRelease.get) {
+          throw new IllegalStateException("release rejected")
+        }
+        super.releaseExecutionMemory(size, consumer)
+      }
+    }
+
+    withTaskContext(taskMemoryManager) { _ =>
       val manager = new CometTaskMemoryManager(1L, 0L)
       val consumer = nativeMemoryConsumer(manager)
-
-      assert(manager.acquireAnchor(1L) == 1L)
-      assert(manager.getUsed == 0L, "the anchor is not a reservation")
-      assert(consumer.getUsed == 1L, "Spark's view of the consumer matches the task's balance")
-      assert(taskMemoryManager.getMemoryConsumptionForThisTask == 1L)
-
       assert(manager.acquireMemory(128L) == 128L)
+
+      rejectRelease.set(true)
+      intercept[IllegalStateException](manager.releaseMemory(64L))
+      rejectRelease.set(false)
+      // Native code gets the error and still counts every byte as held, and so must the usage.
       assert(manager.getUsed == 128L)
-      assert(consumer.getUsed == 129L)
-      assert(taskMemoryManager.getMemoryConsumptionForThisTask == 129L)
+      assert(consumer.getUsed == 128L)
+      assert(taskMemoryManager.getMemoryConsumptionForThisTask == 128L)
 
       manager.releaseMemory(128L)
       assert(manager.getUsed == 0L)
-      assert(consumer.getUsed == 1L)
-
-      manager.releaseAnchor(1L)
-      assert(consumer.getUsed == 0L)
       assert(taskMemoryManager.getMemoryConsumptionForThisTask == 0L)
-
-      // A task at its share is declined the anchor with a zero grant, which counts nothing.
-      assert(manager.acquireMemory(1024L) == 1024L)
-      assert(manager.acquireAnchor(1L) == 0L)
-      assert(manager.getUsed == 1024L)
-      assert(consumer.getUsed == 1024L)
-      manager.releaseMemory(1024L)
-      assert(consumer.getUsed == 0L)
     }
   }
 
@@ -216,7 +215,7 @@ class CometTaskMemoryManagerSuite extends SparkFunSuite {
     withTaskContext(taskMemoryManager) { _ =>
       val manager = new CometTaskMemoryManager(1L, 0L)
       // The fair pool's anchor keeps this task in Spark's active set.
-      assert(manager.acquireAnchor(1L) == 1L)
+      assert(manager.acquireMemory(1L) == 1L)
 
       // Three active tasks and 16 bytes free: a 30 byte request is short granted 16 bytes, which
       // native code then hands back.
@@ -255,7 +254,7 @@ class CometTaskMemoryManagerSuite extends SparkFunSuite {
         Seq(first, second).foreach(_.join(TimeUnit.SECONDS.toMillis(TimeoutSeconds)))
       }
       manager.releaseMemory(secondGranted.get)
-      manager.releaseAnchor(1L)
+      manager.releaseMemory(1L)
       assert(taskMemoryManager.getMemoryConsumptionForThisTask == 0L)
     }
   }
@@ -277,7 +276,7 @@ class CometTaskMemoryManagerSuite extends SparkFunSuite {
       // A sibling consumer holds the task's whole share, so Spark declines the anchor. It frees
       // its memory and another task takes 90 bytes before the pool's real request of 10.
       assert(sibling.acquireMemory(100L) == 100L)
-      assert(manager.acquireAnchor(1L) == 0L)
+      assert(manager.acquireMemory(1L) == 0L)
       sibling.freeMemory(100L)
       assert(otherTask.acquireMemory(90L) == 90L)
       assert(manager.acquireMemory(10L) == 10L)
@@ -287,7 +286,7 @@ class CometTaskMemoryManagerSuite extends SparkFunSuite {
       val retryGranted = new AtomicLong(-1L)
       val retryFailure = new AtomicReference[Throwable]()
       val retry = new Thread(() =>
-        try retryGranted.set(manager.acquireAnchor(1L))
+        try retryGranted.set(manager.acquireMemory(1L))
         catch { case t: Throwable => retryFailure.set(t) })
       retry.setDaemon(true)
 
@@ -298,8 +297,9 @@ class CometTaskMemoryManagerSuite extends SparkFunSuite {
         assert(waitingInSpark(retry), s"the anchor retry is ${retry.getState}")
 
         // The pool releases its 10 bytes while the anchor is still missing, and keeps one of
-        // them as the anchor. Releasing all 10 would remove the task's entry under the retry.
-        manager.releaseKeepingAnchor(10L)
+        // them as the anchor by handing back only 9. Releasing all 10 would remove the task's
+        // entry under the retry.
+        manager.releaseMemory(9L)
 
         retry.join(TimeUnit.SECONDS.toMillis(TimeoutSeconds))
         assert(!retry.isAlive, s"the anchor retry is ${retry.getState}")
@@ -312,11 +312,11 @@ class CometTaskMemoryManagerSuite extends SparkFunSuite {
       }
 
       // The pool already holds the kept byte, so it hands the retry's byte back.
-      manager.releaseAnchor(1L)
-      assert(manager.getUsed == 0L, "the kept byte is not a reservation")
+      manager.releaseMemory(1L)
+      assert(manager.getUsed == 1L, "the kept byte counts like any other grant")
       assert(nativeMemoryConsumer(manager).getUsed == 1L)
       assert(taskMemoryManager.getMemoryConsumptionForThisTask == 1L)
-      manager.releaseAnchor(1L)
+      manager.releaseMemory(1L)
       assert(taskMemoryManager.getMemoryConsumptionForThisTask == 0L)
     }
   }
