@@ -139,6 +139,7 @@ Runs your existing Spark queries on the Apache DataFusion native engine, no code
 
 User Guide <user-guide/index>
 Contributor Guide <contributor-guide/index>
+Release Notes <release-notes/index>
 Changelog <changelog/index>
 About <about/index>
 ```
