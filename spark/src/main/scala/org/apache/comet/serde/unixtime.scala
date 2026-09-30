@@ -55,6 +55,8 @@ object CometFromUnixTime extends CometExpressionSerde[FromUnixTime] with Codegen
   override def getSupportLevel(expr: FromUnixTime): SupportLevel = {
     if (expr.format != Literal(TimestampFormatter.defaultPattern())) {
       Unsupported(Some(formatReason))
+    } else if (CometTimeZone.nativeId(expr.timeZoneId).isEmpty) {
+      CometTimeZone.supportLevel(expr.timeZoneId)
     } else {
       Incompatible(Some(timestampRangeReason))
     }
@@ -72,7 +74,11 @@ object CometFromUnixTime extends CometExpressionSerde[FromUnixTime] with Codegen
     // https://github.com/apache/datafusion/issues/14536
     // After fixing these issues, use provided `format` instead of the manual replacement below
     val formatExpr = exprToProtoInternal(Literal("%Y-%m-%d %H:%M:%S"), inputs, binding)
-    val timeZone = exprToProtoInternal(Literal(expr.timeZoneId.orNull), inputs, binding)
+    val timeZone =
+      exprToProtoInternal(
+        Literal(CometTimeZone.nativeId(expr.timeZoneId).orNull),
+        inputs,
+        binding)
 
     if (secExpr.isDefined && formatExpr.isDefined) {
       val timestampExpr =

@@ -17,13 +17,13 @@
 
 //! Spark equality for nested floating-point values without materializing normalized columns.
 
-use super::nested_float_normalize::{
-    has_float_leaf, normalize_nested_floats, NormalizeNestedFloats,
+use crate::float_semantics::{
+    has_float_leaf, normalize_nested_floats, spark_equality, NormalizeNestedFloats,
 };
-use arrow::array::{make_comparator, Array, ArrayRef, AsArray, BooleanArray, OffsetSizeTrait};
+use arrow::array::{Array, ArrayRef, AsArray, BooleanArray};
 use arrow::buffer::{BooleanBuffer, NullBuffer};
-use arrow::compute::{not, or_kleene, SortOptions};
-use arrow::datatypes::{DataType, Float32Type, Float64Type, Schema};
+use arrow::compute::{not, or_kleene};
+use arrow::datatypes::{DataType, Schema};
 use arrow::record_batch::RecordBatch;
 use datafusion::common::{internal_err, DFSchema, Result, ScalarValue};
 use datafusion::logical_expr::{ColumnarValue, Operator};
@@ -34,88 +34,8 @@ use std::fmt::{Display, Formatter};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
-type Equality = Box<dyn Fn(usize, usize) -> bool + Send + Sync>;
-
 fn needs_spark_equality(dt: &DataType) -> bool {
     dt.is_nested() && has_float_leaf(dt)
-}
-
-// Inner nulls participate in structural equality. Outer SQL nulls are handled separately.
-fn with_nulls(left: &ArrayRef, right: &ArrayRef, equal: Equality) -> Equality {
-    if left.null_count() == 0 && right.null_count() == 0 {
-        return equal;
-    }
-    let left = left.nulls().cloned();
-    let right = right.nulls().cloned();
-    Box::new(move |i, j| {
-        let l = left.as_ref().is_some_and(|n| n.is_null(i));
-        let r = right.as_ref().is_some_and(|n| n.is_null(j));
-        if l || r {
-            l == r
-        } else {
-            equal(i, j)
-        }
-    })
-}
-
-fn list_equality<O: OffsetSizeTrait>(left: &ArrayRef, right: &ArrayRef) -> Result<Equality> {
-    let l = left.as_list::<O>();
-    let r = right.as_list::<O>();
-    let equal = nested_equality(l.values(), r.values())?;
-    let l = l.offsets().clone();
-    let r = r.offsets().clone();
-    Ok(Box::new(move |i, j| {
-        let (ls, le) = (l[i].as_usize(), l[i + 1].as_usize());
-        let (rs, re) = (r[j].as_usize(), r[j + 1].as_usize());
-        le - ls == re - rs && (ls..le).zip(rs..re).all(|(i, j)| equal(i, j))
-    }))
-}
-
-fn nested_equality(left: &ArrayRef, right: &ArrayRef) -> Result<Equality> {
-    if !DFSchema::datatype_is_logically_equal(left.data_type(), right.data_type()) {
-        return internal_err!(
-            "Nested equality requires matching types, got {} and {}",
-            left.data_type(),
-            right.data_type()
-        );
-    }
-    if !has_float_leaf(left.data_type()) {
-        let cmp = make_comparator(left.as_ref(), right.as_ref(), SortOptions::default())?;
-        return Ok(Box::new(move |i, j| cmp(i, j).is_eq()));
-    }
-    let equal: Equality = match left.data_type() {
-        DataType::Float32 => {
-            let l = left.as_primitive::<Float32Type>().values().clone();
-            let r = right.as_primitive::<Float32Type>().values().clone();
-            Box::new(move |i, j| l[i] == r[j] || (l[i].is_nan() && r[j].is_nan()))
-        }
-        DataType::Float64 => {
-            let l = left.as_primitive::<Float64Type>().values().clone();
-            let r = right.as_primitive::<Float64Type>().values().clone();
-            Box::new(move |i, j| l[i] == r[j] || (l[i].is_nan() && r[j].is_nan()))
-        }
-        DataType::List(_) => list_equality::<i32>(left, right)?,
-        DataType::LargeList(_) => list_equality::<i64>(left, right)?,
-        DataType::FixedSizeList(_, width) => {
-            let l = left.as_fixed_size_list();
-            let r = right.as_fixed_size_list();
-            let equal = nested_equality(l.values(), r.values())?;
-            let width = *width as usize;
-            Box::new(move |i, j| (0..width).all(|k| equal(i * width + k, j * width + k)))
-        }
-        DataType::Struct(_) => {
-            let equal = left
-                .as_struct()
-                .columns()
-                .iter()
-                .zip(right.as_struct().columns())
-                .map(|(l, r)| nested_equality(l, r))
-                .collect::<Result<Vec<_>>>()?;
-            Box::new(move |i, j| equal.iter().all(|eq| eq(i, j)))
-        }
-        _ => return internal_err!("Unsupported nested equality type {}", left.data_type()),
-    };
-    Ok(with_nulls(left, right, equal))
 }
 
 struct Operand {
@@ -149,7 +69,8 @@ impl Operand {
         {
             BooleanArray::new_null(len)
         } else {
-            let equal = nested_equality(&self.array, &other.array)?;
+            // Inner nulls take part in structural equality. Outer SQL nulls are handled here.
+            let equal = spark_equality(self.array.as_ref(), other.array.as_ref())?;
             let nulls = match (self.scalar, other.scalar) {
                 (true, true) => None,
                 (true, false) => other.array.nulls().cloned(),
@@ -400,7 +321,7 @@ mod tests {
         FixedSizeListArray, Float64Array, Int32Array, LargeListArray, ListArray, StructArray,
     };
     use arrow::buffer::OffsetBuffer;
-    use arrow::datatypes::Field;
+    use arrow::datatypes::{Field, Float32Type, Float64Type};
     use datafusion::physical_expr::expressions::{Column, Literal};
     use std::collections::hash_map::DefaultHasher;
 
