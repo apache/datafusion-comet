@@ -59,13 +59,15 @@ gets a failed query instead of a fallback.
 ## The Split-Operator Plan
 
 Spark plans an Iceberg write as one physical operator (`AppendDataExec`, `ReplaceDataExec` and so
-on) that runs the input query, writes the files, and commits, all outside AQE. The split plan
-replaces it with two operators so that the write's input becomes an ordinary query stage.
+on) that writes the files and commits. It is a `V2CommandExec`, so Spark's
+`InsertAdaptiveSparkPlan` wraps its input query in AQE but leaves the operator itself outside. The
+split plan replaces it with two operators so that data-file writing moves inside AQE, apart from
+the commit.
 
 ```text
-IcebergCommit                 driver: collect task commit messages, BatchWrite.commit
-+- IcebergWrite               executors: write data files, emit one commit message per task
-   +- <input query>           scans, projects, exchanges, sorts; now visible to AQE and Comet
+IcebergCommit                 driver: collect task commit messages, BatchWrite.commit; outside AQE
++- IcebergWrite               executors: write data files, emit one commit message per task; inside AQE
+   +- <input query>           scans, projects, exchanges, sorts; inside AQE with or without the split
 ```
 
 | Component                                                                       | Location                                           | Role                                                                                                                                                                                                                                    |
