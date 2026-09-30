@@ -597,11 +597,13 @@ gets a failed query instead of a fallback.</p>
 <section id="the-split-operator-plan">
 <h2>The Split-Operator Plan<a class="headerlink" href="#the-split-operator-plan" title="Link to this heading">#</a></h2>
 <p>Spark plans an Iceberg write as one physical operator (<code class="docutils literal notranslate"><span class="pre">AppendDataExec</span></code>, <code class="docutils literal notranslate"><span class="pre">ReplaceDataExec</span></code> and so
-on) that runs the input query, writes the files, and commits, all outside AQE. The split plan
-replaces it with two operators so that the write’s input becomes an ordinary query stage.</p>
-<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>IcebergCommit                 driver: collect task commit messages, BatchWrite.commit
-+- IcebergWrite               executors: write data files, emit one commit message per task
-   +- &lt;input query&gt;           scans, projects, exchanges, sorts; now visible to AQE and Comet
+on) that writes the files and commits. It is a <code class="docutils literal notranslate"><span class="pre">V2CommandExec</span></code>, so Spark’s
+<code class="docutils literal notranslate"><span class="pre">InsertAdaptiveSparkPlan</span></code> wraps its input query in AQE but leaves the operator itself outside. The
+split plan replaces it with two operators so that data-file writing moves inside AQE, apart from
+the commit.</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>IcebergCommit                 driver: collect task commit messages, BatchWrite.commit; outside AQE
++- IcebergWrite               executors: write data files, emit one commit message per task; inside AQE
+   +- &lt;input query&gt;           scans, projects, exchanges, sorts; inside AQE with or without the split
 </pre></div>
 </div>
 <div class="pst-scrollable-table-container"><table class="table">
