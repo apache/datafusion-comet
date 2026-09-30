@@ -191,13 +191,10 @@ from both operator counts:
   `WholeStageCodegen`, query stages, and `AQEShuffleRead`.
 - The reuse marker `ReusedSubquery`. The subquery it points at is counted where
   that subquery is shown, so the marker itself does not add to the totals.
-- `ReusedExchange`, but with a caveat: it is not cleanly excluded the way the
-  wrappers above are. The node itself is skipped, and yet walking the plan
-  replaces it with the exchange it reuses, so the reused subtree is counted once
-  per reference rather than once for the whole plan. A plan that reuses one
-  exchange in three places contributes that subtree's operators three times.
-  Counting reused exchanges once is tracked as item 3 of
-  [#5203](https://github.com/apache/datafusion-comet/issues/5203).
+- The reuse marker `ReusedExchange`. Walking the plan replaces the marker with
+  the exchange it reuses, so the reused subtree is shown in full at every
+  reference. The exchange runs once, so the operators and transitions in that
+  subtree are counted once for the whole plan, where the subtree is first shown.
 
 ### `spark.comet.explain.native.enabled`
 
