@@ -26,7 +26,6 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 import scala.util.control.NonFatal
 
-import org.apache.arrow.c.ArrowArrayStream
 import org.apache.arrow.memory.BufferAllocator
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark._
@@ -161,16 +160,9 @@ class CometExecIterator(
           case closeFailure: Throwable => failure.addSuppressed(closeFailure)
         }
 
-        // Native only takes ownership of Arrow streams during the first executePlan call.
-        inputObjects.foreach {
-          case stream: ArrowArrayStream =>
-            try {
-              stream.release()
-            } catch {
-              case releaseFailure: Throwable => failure.addSuppressed(releaseFailure)
-            }
-          case _ =>
-        }
+        // Native has not taken the Arrow input streams yet (it does on the first executePlan), so
+        // the task-completion listener that `CometArrowStream.stream` registered for each one
+        // releases it.
 
         shuffleBlockIterators.values.foreach { iterator =>
           try {
