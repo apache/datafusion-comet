@@ -265,7 +265,9 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_EXEC)
       .doc("Whether to enable Comet native execution for in-memory cached tables. Its value at " +
         "startup also decides whether CometDriverPlugin installs Comet's cache serializer, " +
-        "which stores cached data in Arrow format. Because spark.sql.cache.serializer is a " +
+        "which stores cached data in Arrow format. The plugin installs it only if " +
+        "spark.comet.enabled and spark.comet.exec.enabled are also enabled at startup. " +
+        "Because spark.sql.cache.serializer is a " +
         "static config, the cached format is fixed for the application, and disabling this " +
         "at runtime only sends cached scans back to Spark's execution path. Relations whose " +
         "schema Comet's Arrow writer does not support are always cached in Spark's default " +
@@ -694,6 +696,7 @@ object CometConf extends ShimCometConf {
         "this should not be larger than batch size (i.e., `spark.comet.batchSize`). Otherwise " +
         "it will produce larger batches than expected in the native operator after shuffle.")
       .intConf
+      .checkValue(v => v > 0, "Batch size must be positive")
       .checkValue(
         v => v <= COMET_BATCH_SIZE.get(),
         "Should not be larger than batch size `spark.comet.batchSize`")
@@ -922,6 +925,8 @@ object CometConf extends ShimCometConf {
           "off-heap mode. Available pool types are `greedy_unified` and `fair_unified`. " +
           s"$TUNING_GUIDE.")
       .stringConf
+      .transform(_.toLowerCase(Locale.ROOT))
+      .checkValues(Set("fair_unified", "greedy_unified"))
       .createWithDefault("fair_unified")
 
   val COMET_OFFHEAP_MEMORY_POOL_FRACTION: ConfigEntry[Double] =
