@@ -40,7 +40,7 @@ import org.apache.comet.CometConf.COMET_EXEC_ENABLED
 import org.apache.comet.CometSparkSessionExtensions.{hasFallbackReason, isSpark35Plus, isSpark41Plus, withFallbackReason}
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.parquet.CometParquetUtils
-import org.apache.comet.serde.{CometOperatorSerde, Compatible, OperatorOuterClass, SupportLevel}
+import org.apache.comet.serde.{CometOperatorSerde, CometTimeZone, Compatible, OperatorOuterClass, SupportLevel}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
@@ -386,7 +386,9 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
       firstFileUri: Option[URI],
       hadoopConf: Configuration,
       conf: SQLConf): Unit = {
-    commonBuilder.setSessionTimezone(conf.getConfString("spark.sql.session.timeZone"))
+    val sessionTimeZone = conf.getConfString("spark.sql.session.timeZone")
+    commonBuilder.setSessionTimezone(
+      CometTimeZone.nativeId(Some(sessionTimeZone)).getOrElse(sessionTimeZone))
     commonBuilder.setCaseSensitive(conf.getConf[Boolean](SQLConf.CASE_SENSITIVE))
 
     // SPARK-53535 (Spark 4.1+): when reading a struct whose requested fields are all
