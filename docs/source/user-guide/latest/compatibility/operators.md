@@ -103,13 +103,8 @@ runs natively; it is controlled by `spark.comet.exec.windowGroupLimit.enabled` (
   (e.g. `UTF8_LCASE`). The native operator detects partitions and order-key peer groups by
   comparing Arrow row-encoded keys for byte equality, which splits peers that Spark ties.
 
-**Known incompatibilities:**
-
-- Floating-point values nested in array or struct `ORDER BY` keys are compared with Arrow's raw
-  total ordering, so ranks can differ from Spark when the data mixes `-0.0` and `+0.0` or more
-  than one NaN representation ([#5507](https://github.com/apache/datafusion-comet/issues/5507)).
-  Scalar `FLOAT` and `DOUBLE` keys are normalized and match Spark; see
-  [floating-point ordering](./floating-point.md).
+Floating-point `ORDER BY` keys, including floats nested in arrays and structs, are normalized
+and match Spark's ranks; see [floating-point ordering](./floating-point.md).
 
 ## Round-Robin Partitioning
 

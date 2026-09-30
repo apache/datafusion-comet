@@ -20,39 +20,19 @@
 package org.apache.comet.serde
 
 import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, Descending, NullsFirst, NullsLast, SortOrder}
-import org.apache.spark.sql.types.{DoubleType, FloatType}
 
-import org.apache.comet.CometConf
 import org.apache.comet.serde.QueryPlanSerde.exprToProtoInternal
 
+/**
+ * The key of a Sort, TopK, Window, WindowGroupLimit or range partitioning.
+ *
+ * Every key type is compatible, in strict floating-point mode too. Arrow orders floats by IEEE
+ * 754 total order, so the native side normalizes a `FLOAT` or `DOUBLE` key, and an array or
+ * struct key with a float at any depth, before comparing: NaN payloads fold together and signed
+ * zeros tie, as in Spark's `SQLOrderingUtil`. Only the comparison key is normalized; returned
+ * values keep their original NaN representation and zero sign.
+ */
 object CometSortOrder extends CometExpressionSerde[SortOrder] {
-
-  /**
-   * Subject of both the runtime fallback reason and the generated compatibility docs. Shared so
-   * the two cannot describe the policy differently.
-   */
-  private val nestedFloatingPointSort =
-    "Sorting on floating-point values nested in arrays, structs, or maps"
-
-  override def getIncompatibleReasons(): Seq[String] = Seq(
-    s"$nestedFloatingPointSort is not 100% compatible with Spark when " +
-      s"`${CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key}=true`")
-
-  override def getSupportLevel(expr: SortOrder): SupportLevel = expr.child.dataType match {
-    // Scalar FLOAT/DOUBLE comparison keys are normalized natively (NaN payloads folded together,
-    // signed zeros tied) for Sort, TopK, Window, WindowGroupLimit, and range partitioning, which
-    // matches Spark's SQLOrderingUtil. Only the comparison key is normalized; returned values keep
-    // their original NaN representation and zero sign. So these are compatible even in strict mode.
-    case _: FloatType | _: DoubleType => Compatible()
-    // Floating-point values nested in arrays, structs, or maps are still compared with Arrow's raw
-    // total ordering, under which -0.0 sorts below 0.0 and a sign-bit NaN sorts below -Infinity.
-    // https://github.com/apache/datafusion-comet/issues/5507
-    case dt =>
-      SupportLevel
-        .strictFloatingPointReason(dt, nestedFloatingPointSort)
-        .map(reason => Incompatible(Some(reason)))
-        .getOrElse(Compatible())
-  }
 
   override def convert(
       expr: SortOrder,
