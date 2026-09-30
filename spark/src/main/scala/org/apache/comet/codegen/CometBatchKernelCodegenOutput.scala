@@ -236,7 +236,9 @@ private[codegen] object CometBatchKernelCodegenOutput extends CometTypeShim {
       // scale)`. A Spark expression already produces its declared precision and scale, but a
       // DSv2 function called through `Invoke` / `StaticInvoke` can return a `Decimal` of any
       // scale (#6425). Like Spark's writers, this rescales the value in place, and leaves it
-      // untouched when it does not fit.
+      // untouched when it does not fit. Unlike them, it does not test `source` for null: the
+      // callers write null values themselves, and skip that test only for a type that is not
+      // nullable.
       //
       // The precision and scale test repeats `changePrecision`'s own fast path. It keeps the call
       // off the common path, so the JIT can still scalar-replace the `Decimal` that an input
