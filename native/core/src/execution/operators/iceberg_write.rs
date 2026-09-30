@@ -855,8 +855,9 @@ fn file_name_prefix(partition_id: i32, task_attempt_id: i64, operation_id: &str)
 ///
 /// This replaces iceberg-rust's `RecordBatchPartitionSplitter`, which computes the values with
 /// iceberg-rust's own transforms -- they turn a `year` or `month` past `chrono`'s calendar into a
-/// NULL (apache/datafusion-comet#6145) -- and groups rows through a HashMap, which emits parts in
-/// unspecified order.
+/// NULL (apache/datafusion-comet#6145) and put some pre-epoch timestamps in a different time
+/// partition from iceberg-java (apache/datafusion-comet#6426) -- and groups rows through a
+/// HashMap, which emits parts in unspecified order.
 struct PartitionSplitter {
     calculator: PartitionValueCalculator,
     partition_spec: PartitionSpecRef,
@@ -3651,14 +3652,17 @@ mod iceberg_rust_transform_parity {
         }
     }
 
-    /// Why `years` and `months` are not delegated to iceberg-rust even though `bucket`, `days`,
-    /// and `hours` could be: its kernels go through Arrow's `date_part`, which honours the
-    /// array's timezone tag, while Iceberg's Java `DateTimeUtil` is always UTC. Comet only ever
-    /// produces `UTC` and untagged timestamps today, so the parity above holds; this pins the
-    /// reason the local kernel exists. Reported as apache/iceberg-rust#3142; if this ever fails,
-    /// iceberg-rust dropped the tag dependency. Delegating is still unsafe until it also covers
-    /// dates past `chrono`'s calendar, which the writer's own partition values depend on too:
-    /// see `years_and_months_past_chronos_calendar_match_iceberg_java` (`iceberg_partition_value`).
+    /// Why `years` and `months` are not delegated to iceberg-rust even though `bucket` could be:
+    /// its kernels go through Arrow's `date_part`, which honours the array's timezone tag, while
+    /// Iceberg's Java `DateTimeUtil` is always UTC. Comet only ever produces `UTC` and untagged
+    /// timestamps today, so the parity above holds; this pins one reason the local kernel exists.
+    /// Reported as apache/iceberg-rust#3142; if this ever fails, iceberg-rust dropped the tag
+    /// dependency. Delegating is still unsafe until it also covers dates past `chrono`'s calendar,
+    /// which the writer's own partition values depend on too: see
+    /// `years_and_months_past_chronos_calendar_match_iceberg_java` (`iceberg_partition_value`).
+    /// Nor can `days` and `hours` be delegated: all four time transforms place some pre-epoch
+    /// timestamps differently from iceberg-java, see
+    /// `pre_epoch_timestamps_partition_like_iceberg_java` there.
     #[test]
     fn iceberg_rust_years_follow_the_timezone_tag() {
         // 1969-12-31T23:59:59.999999Z, which is 1970-01-01T05:44:59.999999 in Kathmandu.

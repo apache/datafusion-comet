@@ -217,8 +217,10 @@ impl SparkIcebergTemporalTransform {
     }
 
     /// Applies the transform to a whole column, for callers outside DataFusion's function
-    /// machinery. The native Iceberg writer computes its `year` and `month` partition values with
-    /// it, because iceberg-rust's own transforms return NULL past `chrono`'s range.
+    /// machinery. The native Iceberg writer computes its time partition values of dates and
+    /// timestamps with it (all but `day` of a date), because iceberg-rust's own transforms return
+    /// NULL past `chrono`'s range and place some pre-epoch timestamps differently from
+    /// iceberg-java.
     pub fn transform(&self, array: &ArrayRef) -> Result<ArrayRef> {
         apply_to_array(array, |array| transform_array(self.unit, array))
     }

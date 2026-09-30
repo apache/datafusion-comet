@@ -331,9 +331,10 @@ mod tests {
                 source.data_type()
             );
         }
-        // The reason Comet computes these two: iceberg-rust's transforms turn every value above
-        // into a NULL partition value. If this starts failing, iceberg-rust has learned the whole
-        // domain and delegating becomes an option again.
+        // The reason Comet computes these two for dates, and one reason for timestamps (see
+        // `pre_epoch_timestamps_partition_like_iceberg_java` for the other): iceberg-rust's
+        // transforms turn every value above into a NULL partition value. If this starts failing,
+        // iceberg-rust has learned the whole domain and delegating dates becomes an option again.
         for (column, (transform, source, _)) in columns(iceberg_rust.calculate(&batch).unwrap())
             .iter()
             .zip(&cases)
