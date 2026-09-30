@@ -111,11 +111,43 @@ Each scan partition keeps enough candidates for both `LIMIT` and `OFFSET`. With 
 Comet shuffles those candidates and performs the final TopK. With one partition, it reuses the local
 ordering without building a second heap. The final stage applies the offset and output projection.
 
-Fusion reduces the work of passing scan batches between native execution blocks. It still reads all
-input rows and does not enable TopK reader pruning. It can also reduce overlap between scan decoding
+Fusion reduces the work of passing scan batches between native execution blocks. Fusion alone still
+reads all input rows. [TopK reader pruning](#topk-reader-pruning) is enabled separately. Fusion can
+also reduce overlap between scan decoding
 and TopK processing, so some workloads may run slower. Compare enabled and disabled runs with your
 data layout, payload width, limit, and partition count before enabling it. The
 `CometTopKBenchmark` microbenchmark covers these cases with ascending, descending, and random layouts.
+
+### TopK Reader Pruning
+
+Set both `spark.comet.exec.topK.fusion.enabled=true` and
+`spark.comet.exec.topK.dynamicFilter.enabled=true` to pass the local TopK's improving threshold to
+its Parquet reader. Both options are experimental and disabled by default. Eligibility is the same
+single signed integer key described above. Each task creates a fresh threshold; it is not shared
+across Spark partitions or exchanges, or retained for later executions.
+
+Once the heap contains enough candidates for `LIMIT + OFFSET`, the reader can skip later row groups
+whose statistics prove that no row can improve those candidates. Existing Parquet page-index and
+decoder-filter options can also use the predicate. This option adds no separate filter over decoded
+scan batches. TopK continues to select the final candidates.
+
+Reader attachment is conservative. A scan with a fetch limit, supplied file statistics, or a static
+predicate other than direct column `IS NOT NULL` checks keeps the existing execution path. For each
+file, schema adaptation disables pruning if it could hide a conversion error in a projected or
+filtered column. Missing null counts remain unknown, which can prevent pruning even when min/max
+statistics are present. These cases can still execute a fused TopK.
+
+Reader pruning is most useful when small K values and the file order establish a strong threshold
+early. Descending or random layouts for an ascending query can prune few or no groups, while still
+paying the cost of attaching and checking the predicate. Wider rows can increase the benefit when
+groups are skipped. Compare `pruning` with `fused` in `CometTopKBenchmark` to measure the reader effect,
+and compare both with `unfused` to include the cost of fusion. Check the scan's emitted rows,
+`bytes_scanned`, `row_groups_pruned_dynamic_filter`, and `row_groups_pruned_statistics` alongside elapsed
+time; attachment alone does not demonstrate a saving. Pruning when later files open uses the TopK
+threshold already available and increments `row_groups_pruned_statistics`. With one row group per
+file, the dynamic counter can stay zero despite substantial TopK pruning. The statistics counter also
+includes other predicates, so compare with filtering disabled to assess TopK savings.
+See [TopK metrics](../metrics.md#local-topk).
 
 ## Optimizing Sorting on Floating-Point Values
 
