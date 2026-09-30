@@ -206,7 +206,7 @@ The tables below list every Spark built-in expression with its current status.
 | `array_size` | ✅ | — |  |
 | `cardinality` | ✅ | Native |  |
 | `concat` | ✅ | Hybrid | Binary/array children and non-UTF8_BINARY collations route through the JVM codegen dispatcher |
-| `reverse` | ✅ | Hybrid | Arrays with binary, struct, or map elements, and collated strings, route through the JVM codegen dispatcher ([details](compatibility/expressions/array.md)) |
+| `reverse` | ✅ | Hybrid | Binary input (Spark 4.2), arrays with binary, struct, or map elements, and collated strings, route through the JVM codegen dispatcher ([details](compatibility/expressions/array.md)) |
 | `size` | ✅ | Native |  |
 
 ---

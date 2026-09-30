@@ -20,7 +20,7 @@
 package org.apache.comet.serde
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Reverse, Shuffle}
-import org.apache.spark.sql.types.ArrayType
+import org.apache.spark.sql.types.{ArrayType, BinaryType}
 
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.exprToProtoInternal
@@ -38,12 +38,20 @@ object CometReverse
     "reverse does not support non-UTF8_BINARY collations " +
       "(https://github.com/apache/datafusion-comet/issues/2190)"
 
+  // Spark 4.2 also accepts binary and reverses its bytes. The native reverse UDF only takes
+  // strings, so there is no native path for it.
+  private val binaryReason = "reverse has no native implementation for binary input"
+
   override def getIncompatibleReasons(): Seq[String] =
     CometArrayReverse.getIncompatibleReasons() :+ collationReason
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(binaryReason)
 
   override def getSupportLevel(expr: Reverse): SupportLevel = {
     if (expr.child.dataType.isInstanceOf[ArrayType]) {
       CometArrayReverse.getSupportLevel(expr)
+    } else if (expr.child.dataType == BinaryType) {
+      Unsupported(Some(binaryReason))
     } else if (hasNonDefaultStringCollation(expr.child.dataType)) {
       Incompatible(Some(collationReason))
     } else {
