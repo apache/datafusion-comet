@@ -29,8 +29,9 @@ import org.apache.spark.sql.{CometTestBase, Row}
 import org.apache.spark.sql.api.java.UDF1
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.analysis.NoSuchFunctionException
-import org.apache.spark.sql.catalyst.expressions.{Add, Alias, AttributeReference, BoundReference, Cast, CreateArray, CreateMap, CreateNamedStruct, Expression, Hypot, Literal, MapConcat}
+import org.apache.spark.sql.catalyst.expressions.{Add, Alias, AttributeReference, BoundReference, Cast, CreateArray, CreateMap, CreateNamedStruct, Expression, GenericInternalRow, Hypot, Literal, MapConcat}
 import org.apache.spark.sql.catalyst.expressions.objects.Invoke
+import org.apache.spark.sql.catalyst.util.GenericArrayData
 import org.apache.spark.sql.comet.CometProjectExec
 import org.apache.spark.sql.connector.catalog.{FunctionCatalog, Identifier}
 import org.apache.spark.sql.connector.catalog.functions.{BoundFunction, ScalarFunction, UnboundFunction}
@@ -2333,69 +2334,110 @@ class CometCodegenSuite
     assert(runKernel(folded, 1)(_.getUTF8String(0).toString) === "abab")
   }
 
-  test("decimal results of a DSv2 function are rescaled to the declared type (#6425)") {
-    // Spark lowers a call to a DSv2 function with an instance `invoke` method to `Invoke`, which
-    // the dispatcher runs. `as_money` and `as_wide_money` return `Decimal(i)` at scale 0, one
-    // declaring `DECIMAL(10, 2)` and one `DECIMAL(20, 12)`, which covers both of the dispatcher's
-    // decimal writers. Spark's row writer rescales the value with `changePrecision` and writes
-    // null when it does not fit: 100000000 and -100000000 have nine integer digits and both types
-    // allow eight. Spark adds no overflow check around the call, so that null does not depend on
-    // ANSI mode. `map` is itself dispatched, so its value exercises the nested writer.
-    // `mills_as_money` returns `i` thousandths, at scale 3, into `DECIMAL(10, 2)`, so the rescale
-    // drops a digit and `changePrecision` rounds half up: -1.005 becomes -1.01 and 1.004 becomes
-    // 1.00.
-    def dec(s: String) = new java.math.BigDecimal(s)
-    val expected = Seq(
-      Row(3, dec("3.00"), dec("3.000000000000"), Map("k" -> dec("3.00")), dec("0.00")),
-      Row(-7, dec("-7.00"), dec("-7.000000000000"), Map("k" -> dec("-7.00")), dec("-0.01")),
-      Row(null, null, null, Map("k" -> null), null),
-      Row(
-        99999999,
-        dec("99999999.00"),
-        dec("99999999.000000000000"),
-        Map("k" -> dec("99999999.00")),
-        dec("100000.00")),
-      Row(100000000, null, null, Map("k" -> null), dec("100000.00")),
-      Row(
-        -99999999,
-        dec("-99999999.00"),
-        dec("-99999999.000000000000"),
-        Map("k" -> dec("-99999999.00")),
-        dec("-100000.00")),
-      Row(-100000000, null, null, Map("k" -> null), dec("-100000.00")),
-      Row(
-        -1005,
-        dec("-1005.00"),
-        dec("-1005.000000000000"),
-        Map("k" -> dec("-1005.00")),
-        dec("-1.01")),
-      Row(
-        1004,
-        dec("1004.00"),
-        dec("1004.000000000000"),
-        Map("k" -> dec("1004.00")),
-        dec("1.00")),
-      Row(5, dec("5.00"), dec("5.000000000000"), Map("k" -> dec("5.00")), dec("0.01")))
+  /**
+   * Runs `f` with [[CometCodegenSuite.DecimalFunctionCatalog]] registered as `decfn` and `values`
+   * in `t (i INT)`, for the #6425 tests.
+   */
+  private def withDecimalFunctions(values: Any*)(f: => Unit): Unit = {
     withSQLConf(
       "spark.sql.catalog.decfn" -> classOf[CometCodegenSuite.DecimalFunctionCatalog].getName) {
       withTable("t") {
         sql("CREATE TABLE t (i INT) USING parquet")
         // One file, so the kernel sees every row in one batch.
         sql(
-          "INSERT INTO t SELECT /*+ REPARTITION(1) */ * FROM VALUES (3), (-7), (NULL), " +
-            "(99999999), (100000000), (-99999999), (-100000000), (-1005), (1004), (5) AS v(i)")
-        for (ansi <- Seq("true", "false")) {
-          withSQLConf(SQLConf.ANSI_ENABLED.key -> ansi) {
-            val df = sql(
-              "SELECT i, decfn.ns.as_money(i), decfn.ns.as_wide_money(i), " +
-                "map('k', decfn.ns.as_money(i)), decfn.ns.mills_as_money(i) FROM t")
-            assertCodegenRan {
-              checkSparkAnswerAndOperator(df)
-            }
-            checkAnswer(df, expected)
+          "INSERT INTO t SELECT /*+ REPARTITION(1) */ * FROM VALUES " +
+            values.map(v => s"($v)").mkString(", ") + " AS v(i)")
+        f
+      }
+    }
+  }
+
+  private def dec(s: String) = if (s == null) null else new java.math.BigDecimal(s)
+
+  test("decimal results of a DSv2 function are rescaled to the declared type (#6425)") {
+    // Spark lowers a call to a DSv2 function with an instance `invoke` method to `Invoke`, and one
+    // with a static `invoke` to `StaticInvoke`. The dispatcher runs both. `as_money` and
+    // `as_wide_money` return `Decimal(i)` at scale 0, one declaring `DECIMAL(10, 2)` and one
+    // `DECIMAL(20, 12)`, which covers both of the dispatcher's decimal writers. `static_as_money`
+    // is `as_money` with a static `invoke`. Spark's row writer rescales the value with
+    // `changePrecision` and writes null when it does not fit: 100000000 and -100000000 have nine
+    // integer digits and both types allow eight. Spark adds no overflow check around the call, so
+    // that null does not depend on ANSI mode. `map` is itself dispatched, so its value goes
+    // through the kernel's map writer. `mills_as_money` returns `i` thousandths, at scale 3, into
+    // `DECIMAL(7, 2)`, so the rescale drops a digit and `changePrecision` rounds half up: -1.005
+    // becomes -1.01 and 1.004 becomes 1.00. 99999.999 has the five integer digits the type allows,
+    // but rounds up to 100000.00, which has six, so it is null.
+    //
+    // Each case is `(i, as_money, as_wide_money, mills_as_money)`. `static_as_money` and the `map`
+    // value match `as_money`.
+    val cases = Seq[(Any, String, String, String)](
+      (3, "3.00", "3.000000000000", "0.00"),
+      (-7, "-7.00", "-7.000000000000", "-0.01"),
+      (null, null, null, null),
+      (99999999, "99999999.00", "99999999.000000000000", null),
+      (100000000, null, null, null),
+      (-99999999, "-99999999.00", "-99999999.000000000000", null),
+      (-100000000, null, null, null),
+      (-1005, "-1005.00", "-1005.000000000000", "-1.01"),
+      (1004, "1004.00", "1004.000000000000", "1.00"),
+      (5, "5.00", "5.000000000000", "0.01"))
+    val expected = cases.map { case (i, money, wide, mills) =>
+      Row(i, dec(money), dec(money), dec(wide), Map("k" -> dec(money)), dec(mills))
+    }
+    withDecimalFunctions(cases.map(_._1): _*) {
+      for (ansi <- Seq("true", "false")) {
+        withSQLConf(SQLConf.ANSI_ENABLED.key -> ansi) {
+          val df = sql(
+            "SELECT i, decfn.ns.as_money(i), decfn.ns.static_as_money(i), " +
+              "decfn.ns.as_wide_money(i), map('k', decfn.ns.as_money(i)), " +
+              "decfn.ns.mills_as_money(i) FROM t")
+          assertCodegenRan {
+            checkSparkAnswerAndImpl(df, dispatched = Seq("invoke", "staticinvoke"))
           }
+          checkAnswer(df, expected)
         }
       }
+    }
+  }
+
+  test("decimals in a DSv2 function's array and struct results are rescaled (#6425)") {
+    // Each function returns `Decimal(i)`, at scale 0, in every decimal of its result, so the
+    // kernel's array and struct writers have to rescale them, as Spark's `UnsafeArrayWriter` and
+    // `UnsafeRowWriter` do. `money_array`'s element and `money_struct`'s `m` field are
+    // `DECIMAL(10, 2)`, so both are null at 100000000. The writers skip the null check for a
+    // non-nullable child, so `non_null_money_array`'s element and `money_struct`'s `non_null_m`
+    // field cover that path. They are `DECIMAL(12, 2)`, which holds any `INT`.
+    //
+    // `array(...)` or `named_struct(...)` around a scalar call would not reach these writers:
+    // Comet evaluates both natively, and dispatches only the call.
+    withDecimalFunctions(3, null, 100000000) {
+      val df = sql(
+        "SELECT i, decfn.ns.money_array(i), decfn.ns.non_null_money_array(i), " +
+          "decfn.ns.money_struct(i) FROM t")
+      assertCodegenRan {
+        checkSparkAnswerAndOperator(df)
+      }
+      checkAnswer(
+        df,
+        Seq(
+          Row(3, Seq(dec("3.00")), Seq(dec("3.00")), Row(dec("3.00"), dec("3.00"))),
+          Row(null, null, null, null),
+          Row(100000000, Seq(null), Seq(dec("100000000.00")), Row(null, dec("100000000.00")))))
+    }
+  }
+
+  test("a non-nullable DSv2 decimal result that does not fit fails, as in Spark (#6425)") {
+    // `non_null_money` declares a non-nullable `DECIMAL(10, 2)`, and `coalesce` makes its argument
+    // non-nullable too, so neither Spark nor the kernel checks the result for null. 100000000 does
+    // not fit, and both write null for it anyway. Spark then fails to decode the row, and Comet's
+    // native projection rejects the batch. The errors differ, but both engines fail.
+    withDecimalFunctions(3, 100000000) {
+      val (sparkError, cometError) =
+        checkSparkAnswerMaybeThrows(sql("SELECT decfn.ns.non_null_money(coalesce(i, 0)) FROM t"))
+      assert(sparkError.isDefined, "expected Spark to fail")
+      assert(
+        cometError.exists(_.getMessage.contains("is declared as non-nullable but contains null")),
+        s"expected Comet's native projection to reject the null, got $cometError")
     }
   }
 }
@@ -2419,15 +2461,25 @@ object CometCodegenSuite {
   }
 
   /**
-   * DSv2 function catalog for the #6425 test. `as_money` declares `DECIMAL(10, 2)` and
-   * `as_wide_money` declares `DECIMAL(20, 12)`, and both return their argument at scale 0.
-   * `mills_as_money` declares `DECIMAL(10, 2)` and returns its argument as thousandths.
+   * DSv2 function catalog for the #6425 tests. Each function returns its argument as a `Decimal`
+   * whose scale need not match the type it declares. `mills_as_money` returns its argument as
+   * thousandths, and the rest at scale 0.
    */
   class DecimalFunctionCatalog extends FunctionCatalog {
-    private val functions = Map(
-      "as_money" -> new IntAsDecimalFunction(10, 2, valueScale = 0),
-      "as_wide_money" -> new IntAsDecimalFunction(20, 12, valueScale = 0),
-      "mills_as_money" -> new IntAsDecimalFunction(10, 2, valueScale = 3))
+    private val money = DecimalType(10, 2)
+    // Holds any `INT`.
+    private val intMoney = DecimalType(12, 2)
+    private val functions: Map[String, UnboundFunction] = Map(
+      "as_money" -> new IntAsDecimalFunction(money),
+      "static_as_money" -> new StaticAsMoneyFunction,
+      "as_wide_money" -> new IntAsDecimalFunction(DecimalType(20, 12)),
+      "mills_as_money" -> new IntAsDecimalFunction(DecimalType(7, 2), valueScale = 3),
+      "non_null_money" -> new IntAsDecimalFunction(money, nullable = false),
+      "money_array" -> new IntAsDecimalFunction(ArrayType(money, containsNull = true)),
+      "non_null_money_array" ->
+        new IntAsDecimalFunction(ArrayType(intMoney, containsNull = false)),
+      "money_struct" -> new IntAsDecimalFunction(
+        new StructType().add("m", money).add("non_null_m", intMoney, nullable = false)))
     private var catalogName: String = _
 
     override def initialize(name: String, options: CaseInsensitiveStringMap): Unit =
@@ -2444,22 +2496,49 @@ object CometCodegenSuite {
 
   /**
    * Returns its `INT` argument as the unscaled value of a `Decimal` at `valueScale`, whatever
-   * scale it declares. `invoke` is an instance method, so Spark lowers a call to `Invoke`. The
-   * function binds to itself.
+   * scale `declared` has. For an array or struct type, every decimal in the result holds that
+   * value: the array has one element, and each field of the struct has it. `invoke` is an
+   * instance method, so Spark lowers a call to `Invoke`. The function binds to itself.
    */
-  class IntAsDecimalFunction(precision: Int, scale: Int, valueScale: Int)
+  class IntAsDecimalFunction(declared: DataType, valueScale: Int = 0, nullable: Boolean = true)
       extends UnboundFunction
-      with ScalarFunction[Decimal] {
+      with ScalarFunction[Any] {
     override def name(): String = "int_as_decimal"
-    override def description(): String =
-      s"int -> decimal($precision, $scale), at scale $valueScale"
+    override def description(): String = s"int -> ${declared.sql}, at scale $valueScale"
     override def bind(inputType: StructType): BoundFunction = this
     override def inputTypes(): Array[DataType] = Array(IntegerType)
-    override def resultType(): DataType = DecimalType(precision, scale)
-    // Ten digits hold any `INT`.
-    def invoke(v: Int): Decimal = Decimal(v.toLong, 10, valueScale)
-    override def produceResult(input: InternalRow): Decimal = invoke(input.getInt(0))
+    override def resultType(): DataType = declared
+    override def isResultNullable(): Boolean = nullable
+    def invoke(v: Int): Any = valueOf(declared, v)
+    override def produceResult(input: InternalRow): Any = invoke(input.getInt(0))
+
+    private def valueOf(dataType: DataType, v: Int): Any = dataType match {
+      // Ten digits hold any `INT`.
+      case _: DecimalType => Decimal(v.toLong, 10, valueScale)
+      case ArrayType(elementType, _) => new GenericArrayData(Array(valueOf(elementType, v)))
+      case struct: StructType =>
+        new GenericInternalRow(struct.fields.map(f => valueOf(f.dataType, v)))
+    }
   }
+}
+
+/**
+ * `as_money` for the #6425 tests, with `invoke` on the companion object. Scala also compiles a
+ * top-level companion's methods to static methods on the class, so Spark finds a static `invoke`
+ * and lowers a call to `StaticInvoke`.
+ */
+class StaticAsMoneyFunction extends UnboundFunction with ScalarFunction[Decimal] {
+  override def name(): String = "static_as_money"
+  override def description(): String = "int -> decimal(10, 2), at scale 0"
+  override def bind(inputType: StructType): BoundFunction = this
+  override def inputTypes(): Array[DataType] = Array(IntegerType)
+  override def resultType(): DataType = DecimalType(10, 2)
+  override def produceResult(input: InternalRow): Decimal =
+    StaticAsMoneyFunction.invoke(input.getInt(0))
+}
+
+object StaticAsMoneyFunction {
+  def invoke(v: Int): Decimal = Decimal(v)
 }
 
 /**
