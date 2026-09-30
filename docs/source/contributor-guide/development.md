@@ -599,6 +599,12 @@ the risk of accidentally overwriting another maintainer's commits when multiple 
 to the same PR branch. If the lease check rejects the push, inspect and integrate the remote
 changes before retrying; do not switch to `--force` to bypass the check.
 
+A pull request to `main` cannot merge while any review conversation on it is unresolved. Once you
+have addressed a review comment, with a fix or a reply, resolve its conversation. Reviewers should
+post feedback that has to be addressed before merging as inline comments or as a **Request
+changes** review. Top-level comments and review summaries do not open a conversation, so they do
+not block a merge.
+
 Before submitting a pull request, follow this checklist to ensure your changes are ready:
 
 ### 1. Format Your Code

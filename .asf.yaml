@@ -46,6 +46,11 @@ github:
     main:
       required_pull_request_reviews:
         required_approving_review_count: 1
+      # A pull request cannot merge while any review conversation on it is
+      # unresolved. Only inline review comments open a conversation: top-level
+      # comments and review summaries do not, so feedback that has to block a
+      # merge belongs inline or in a committer's "Request changes" review.
+      required_conversation_resolution: true
       required_status_checks:
         # `Required Checks` is the aggregator job at the bottom of
         # .github/workflows/ci.yml. It is deliberately the only entry: the
