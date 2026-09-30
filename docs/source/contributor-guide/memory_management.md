@@ -432,7 +432,9 @@ diverge for several structural reasons:
   (see [The unified pools](#the-unified-pools)). `reserved()` includes it, but Spark's memory
   manager does not, so until it is repaid Spark can hand the same bytes to another consumer or task.
   The `overcommit` figure in the pool's `Display` output and `try_grow` errors shows how much is
-  outstanding.
+  outstanding. The executor's memory usage log leaves it out of the `reserved` figure it reports,
+  so that the log counts it as untracked: like an undeclared allocation, it needs room beyond what
+  Spark has handed out. Tracing's `comet_memory_reserved_total` still includes it.
 
 The practical consequence is that `reserved()` is a lower bound on Comet's real footprint, and the
 gap is workload-dependent. The margin that covers it has to come from
