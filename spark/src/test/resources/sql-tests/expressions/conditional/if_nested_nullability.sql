@@ -1,0 +1,84 @@
+-- Licensed to the Apache Software Foundation (ASF) under one
+-- or more contributor license agreements.  See the NOTICE file
+-- distributed with this work for additional information
+-- regarding copyright ownership.  The ASF licenses this file
+-- to you under the Apache License, Version 2.0 (the
+-- "License"); you may not use this file except in compliance
+-- with the License.  You may obtain a copy of the License at
+--
+--   http://www.apache.org/licenses/LICENSE-2.0
+--
+-- Unless required by applicable law or agreed to in writing,
+-- software distributed under the License is distributed on an
+-- "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+-- KIND, either express or implied.  See the License for the
+-- specific language governing permissions and limitations
+-- under the License.
+
+-- Spark adds no cast to IF when its branches differ only in whether a nested struct field, map
+-- value or array element can be NULL, so the native planner has to cast a branch to the common
+-- type, as it does for CASE WHEN. Without the cast, a batch in which every row took the ELSE
+-- branch returned the ELSE array with the other nullability, and the query failed with
+-- "column types must match schema types". A batch that mixed the two failed when the THEN branch
+-- was the one that could not be NULL.
+-- https://github.com/apache/datafusion-comet/issues/6334
+--
+-- The harness disables ConstantFolding, so these cover the constructor path. The folded map
+-- literal path is covered in CometMapExpressionSuite.
+
+statement
+CREATE TABLE test_if_nested(q boolean, i int, m map<string, int>, s struct<x: int>, ms map<string, struct<x: int>>) USING parquet
+
+-- Each INSERT writes its own files, and a batch never spans files. Every row of this one takes the
+-- THEN branch of IF(q, ...) and the ELSE branch of IF(m IS NULL, ...).
+statement
+INSERT INTO test_if_nested VALUES (true, 1, map('a', 1), named_struct('x', 1), map('a', named_struct('x', 1))), (true, NULL, map('b', CAST(NULL AS INT)), named_struct('x', CAST(NULL AS INT)), map('b', CAST(NULL AS STRUCT<x: INT>)))
+
+-- Every row of this one takes the ELSE branch of IF(q, ...) and the THEN branch of IF(m IS NULL, ...)
+statement
+INSERT INTO test_if_nested VALUES (false, 2, NULL, NULL, NULL), (NULL, NULL, NULL, NULL, NULL)
+
+-- Pairs of rows that take different branches, so these batches mix the two
+statement
+INSERT INTO test_if_nested VALUES (true, 3, map('c', 3), named_struct('x', 3), map('c', named_struct('x', 3))), (false, 4, NULL, NULL, NULL), (true, NULL, map('d', CAST(NULL AS INT)), named_struct('x', CAST(NULL AS INT)), map('d', named_struct('x', CAST(NULL AS INT)))), (NULL, 6, NULL, NULL, NULL), (true, 7, map('e', 7), named_struct('x', 7), map('e', CAST(NULL AS STRUCT<x: INT>))), (false, NULL, NULL, NULL, NULL), (true, 9, map('f', 9), named_struct('x', 9), map('f', named_struct('x', 9))), (false, 10, NULL, NULL, NULL), (true, 11, map('g', 11), named_struct('x', 11), map('g', named_struct('x', 11))), (NULL, 12, NULL, NULL, NULL)
+
+-- struct constructors: x can be NULL in one branch only
+query
+SELECT IF(q, named_struct('x', i), named_struct('x', 0)) FROM test_if_nested
+
+query
+SELECT IF(q, named_struct('x', 0), named_struct('x', i)) FROM test_if_nested
+
+-- map constructors: the value can be NULL in one branch only
+query
+SELECT IF(q, map('k', i), map('k', 0)) FROM test_if_nested
+
+query
+SELECT IF(q, map('k', 0), map('k', i)) FROM test_if_nested
+
+-- a map column, whose value can be NULL, and a map constructor
+query
+SELECT IF(q, m, map('z', 0)) FROM test_if_nested
+
+query
+SELECT IF(m IS NULL, map('z', 0), m) FROM test_if_nested
+
+-- a struct column and a struct constructor
+query
+SELECT IF(q, s, named_struct('x', 0)) FROM test_if_nested
+
+-- a struct inside a map value
+query
+SELECT IF(q, ms, map('z', named_struct('x', 0))) FROM test_if_nested
+
+-- an array inside a map value
+query
+SELECT IF(q, map('k', array(i)), map('k', array(0))) FROM test_if_nested
+
+-- arrays already agree, because CreateArray casts its elements to one type
+query
+SELECT IF(q, array(i), array(0)) FROM test_if_nested
+
+-- CASE WHEN already casts its branches to a common type
+query
+SELECT CASE WHEN q THEN named_struct('x', i) ELSE named_struct('x', 0) END FROM test_if_nested
