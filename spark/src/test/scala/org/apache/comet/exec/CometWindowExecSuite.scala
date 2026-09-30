@@ -64,16 +64,6 @@ class CometWindowExecSuite extends CometTestBase {
     assert(cometWindowExecs.nonEmpty)
   }
 
-  private def checkSlidingIntegralSum(df: DataFrame): Unit = {
-    if (SQLConf.get.ansiEnabled) {
-      checkSparkAnswerAndFallbackReason(
-        df,
-        "ANSI/TRY SUM on integral types with a sliding window frame is not supported")
-    } else {
-      checkSparkAnswerAndOperator(df)
-    }
-  }
-
   private def sparkWindowExpressions(plan: SparkPlan): Seq[Expression] = {
     collect(plan) { case w: SparkWindowExec =>
       w.windowExpression
@@ -570,11 +560,7 @@ class CometWindowExecSuite extends CometTestBase {
               s"SELECT $function OVER(order by _2 rows between current row and 1 following) FROM t1")
 
             slidingQueries.foreach { query =>
-              if (function == "SUM(_1)") {
-                checkSlidingIntegralSum(sql(query))
-              } else {
-                checkSparkAnswerAndOperator(query)
-              }
+              checkSparkAnswerAndOperator(query)
             }
           }
         }
@@ -607,15 +593,19 @@ class CometWindowExecSuite extends CometTestBase {
           val df = spark.table("sliding_rows_sum").toDF("g", "id", "v")
           // DataFrame bounds are literals, so PRECEDING needs no constant folding.
           val frame = Window.partitionBy("g").orderBy("id").rowsBetween(-1, Window.currentRow)
-          checkSparkAnswerAndFallbackReason(
-            df.select($"g", $"id", expr("try_sum(v)").over(frame)),
-            "ANSI/TRY SUM on integral types with a sliding window frame is not supported")
+          checkSparkAnswerAndOperator(df.select($"g", $"id", expr("try_sum(v)").over(frame)))
+          val widerFrame =
+            Window.partitionBy("g").orderBy("id").rowsBetween(-2, Window.currentRow)
+          withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "2") {
+            checkSparkAnswerAndOperator(
+              df.select($"g", $"id", expr("try_sum(v)").over(widerFrame)))
+          }
 
-          // ANSI admission does not depend on whether the data actually overflows.
+          // Exercise successful ANSI execution separately from the overflow cases.
           val sumInput = if (SQLConf.get.ansiEnabled) df.where($"id" > 1) else df
-          checkSlidingIntegralSum(sumInput.select($"g", $"id", sum("v").over(frame)))
+          checkSparkAnswerAndOperator(sumInput.select($"g", $"id", sum("v").over(frame)))
           for (dataType <- Seq("tinyint", "smallint", "int")) {
-            checkSlidingIntegralSum(df.select(sum($"id".cast(dataType)).over(frame)))
+            checkSparkAnswerAndOperator(df.select(sum($"id".cast(dataType)).over(frame)))
           }
 
           if (SQLConf.get.ansiEnabled) {
@@ -915,7 +905,7 @@ class CometWindowExecSuite extends CometTestBase {
           SUM(c) OVER (PARTITION BY a ORDER BY b, c ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING) as sum_c
         FROM window_test
       """)
-      checkSlidingIntegralSum(df)
+      checkSparkAnswerAndOperator(df)
     }
   }
 
@@ -955,7 +945,7 @@ class CometWindowExecSuite extends CometTestBase {
           SUM(c) OVER (PARTITION BY a ORDER BY b, c ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) as sum_c
         FROM window_test
       """)
-      checkSlidingIntegralSum(df)
+      checkSparkAnswerAndOperator(df)
     }
   }
 
@@ -1426,7 +1416,7 @@ class CometWindowExecSuite extends CometTestBase {
           SUM(c) OVER (PARTITION BY a ORDER BY b RANGE BETWEEN 2 PRECEDING AND 2 FOLLOWING) as sum_c
         FROM window_test
       """)
-      checkSlidingIntegralSum(df)
+      checkSparkAnswerAndOperator(df)
     }
   }
 

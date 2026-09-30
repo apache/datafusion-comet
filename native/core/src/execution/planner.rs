@@ -2437,10 +2437,9 @@ impl PhysicalPlanner {
                 // `PERCENT_RANK` / `CUME_DIST` / `NTILE`
                 // (`!uses_bounded_memory()` — "Can not execute X in a streaming
                 // fashion") and keeps the Spark-compatible Comet UDAFs
-                // (`SumDecimal` / `SumInteger` / `AvgDecimal` / `Avg`) on the
-                // non-streaming path since they don't implement `retract_batch`.
-                // Because `process_agg_func` already picks DataFusion's
-                // retract-capable built-ins for sliding aggregate frames,
+                // (`SumDecimal` / `AvgDecimal` / `Avg`) on the non-streaming path
+                // where needed. `process_agg_func` picks retract-capable UDAFs
+                // for sliding aggregate frames;
                 // ever-expanding aggregate frames (all that route to
                 // `BoundedWindowAggExec` as `PlainAggregateWindowExpr`) never
                 // trigger a retract call.
@@ -3267,9 +3266,9 @@ impl PhysicalPlanner {
             // DataFusion uses `PlainAggregateWindowExpr` which does not call
             // `retract_batch`, so we can safely use Comet's Spark-compatible
             // UDAFs (SumDecimal/SumInteger/AvgDecimal/Avg). Otherwise it uses
-            // `SlidingAggregateWindowExpr` which requires retract — Comet's UDAFs
-            // don't implement it, so the caller must fall back to DataFusion's
-            // built-ins (which do).
+            // `SlidingAggregateWindowExpr` which requires retract. process_agg_func
+            // selects Comet's checked integer accumulator or a DataFusion built-in
+            // that supports retraction.
             let is_ever_expanding = spark_expr
                 .spec
                 .as_ref()
@@ -3485,9 +3484,9 @@ impl PhysicalPlanner {
             Some(AggExprStruct::Sum(expr)) => {
                 // For ever-expanding frames, use Comet's Spark-compatible Sum UDAFs
                 // (SumDecimal / SumInteger) which enforce Spark overflow semantics.
-                // For sliding frames, those UDAFs can't be used (no retract_batch),
-                // so delegate to DataFusion's built-in `sum`, which supports retract
-                // but doesn't enforce Spark's decimal precision overflow-to-NULL.
+                // Checked integral sliding sums also use Comet's retractable
+                // accumulator. Legacy sliding sums keep DataFusion's fast path;
+                // decimal sliding frames are rejected by the JVM planner.
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
                 let arrow_type = to_arrow_datatype(expr.datatype.as_ref().unwrap());
                 match arrow_type {
@@ -3502,7 +3501,8 @@ impl PhysicalPlanner {
                         Ok((udaf(func), vec![child]))
                     }
                     DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64
-                        if is_ever_expanding =>
+                        if is_ever_expanding
+                            || from_protobuf_eval_mode(expr.eval_mode)? != EvalMode::Legacy =>
                     {
                         let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
                         let func = SumInteger::try_new(arrow_type, eval_mode)?;

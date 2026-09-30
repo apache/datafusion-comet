@@ -30,19 +30,19 @@ INSERT INTO sliding_integer_sum VALUES
   (2, 1, -9223372036854775808), (2, 2, -1), (2, 3, 1), (2, 4, NULL), (2, 5, NULL),
   (3, 1, NULL), (3, 2, NULL), (3, 3, NULL)
 
--- TRY mode must fall back even when ANSI is disabled. Cover positive/negative
+-- TRY mode runs natively even when ANSI is disabled. Cover positive/negative
 -- overflow, recovery after it leaves the frame, all-NULL and empty frames.
-query expect_fallback(ANSI/TRY SUM on integral types with a sliding window frame is not supported)
+query
 SELECT g, id, try_sum(v) OVER (
   PARTITION BY g ORDER BY id RANGE BETWEEN 1 PRECEDING AND CURRENT ROW)
 FROM sliding_integer_sum
 
-query expect_fallback(ANSI/TRY SUM on integral types with a sliding window frame is not supported)
+query
 SELECT g, id, try_sum(v) OVER (
   PARTITION BY g ORDER BY id ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING)
 FROM sliding_integer_sum
 
-query expect_fallback(ANSI/TRY SUM on integral types with a sliding window frame is not supported)
+query
 SELECT g, id, try_sum(v) OVER (
   PARTITION BY g ORDER BY id ROWS BETWEEN 1 FOLLOWING AND 1 FOLLOWING)
 FROM sliding_integer_sum
@@ -81,3 +81,26 @@ FROM sliding_integer_sum
 query expect_error(ARITHMETIC_OVERFLOW)
 SELECT sum(v) OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
 FROM sliding_integer_sum WHERE g = 1
+
+-- Updating before retracting must not raise on the transient union of two frames.
+query
+SELECT g, id, sum(v) OVER (
+  PARTITION BY g ORDER BY id ROWS BETWEEN CURRENT ROW AND CURRENT ROW)
+FROM sliding_integer_sum
+
+statement
+CREATE TABLE sliding_integer_sum_peers(id INT, v BIGINT) USING parquet
+
+statement
+INSERT INTO sliding_integer_sum_peers VALUES
+  (1, 9223372036854775807), (1, 1), (3, -1), (6, NULL), (9, 7)
+
+-- RANGE peers enter together; a gap removes both overflow-causing values.
+query
+SELECT id, try_sum(v) OVER (ORDER BY id RANGE BETWEEN 1 PRECEDING AND CURRENT ROW)
+FROM sliding_integer_sum_peers
+
+-- Existing unsupported RANGE upper bounds retain their fallback boundary.
+query expect_fallback(Unsupported RANGE frame upper offset)
+SELECT id, try_sum(v) OVER (ORDER BY id RANGE BETWEEN 2 PRECEDING AND 1 PRECEDING)
+FROM sliding_integer_sum_peers
