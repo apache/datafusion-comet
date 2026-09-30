@@ -73,7 +73,7 @@ use only and should not be used in production yet.
 
 | Spark Version | Java Version | Scala Version | Comet Tests in CI | Spark SQL Tests in CI |
 | ------------- | ------------ | ------------- | ----------------- | --------------------- |
-| 4.2.0         | 17           | 2.13          | Nightly           | No                    |
+| 4.2.0         | 17           | 2.13          | Nightly           | Nightly               |
 
 Note that Comet may not fully work with proprietary forks of Apache Spark such as the Spark versions offered by
 Cloud Service Providers.
@@ -260,7 +260,7 @@ Some cluster managers may require additional configuration, see <https://spark.a
 ### Memory tuning
 
 In addition to Apache Spark memory configuration parameters, Comet introduces additional parameters to configure memory
-allocation for native execution. See [Comet Memory Tuning](./tuning.md) for details.
+allocation for native execution. See [Comet Memory Tuning](./tuning/memory.md) for details.
 
 ### Kryo serialization
 

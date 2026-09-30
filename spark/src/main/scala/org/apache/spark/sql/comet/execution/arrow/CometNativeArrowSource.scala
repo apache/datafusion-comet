@@ -230,6 +230,14 @@ object CometArrowStream extends Logging {
    * plan is registered later by `CometExecIterator`), so `allocator.close` finds zero outstanding
    * bytes.
    *
+   * Native takes the stream on the plan's first `executePlan`. The listener releases a stream
+   * native never took (plan creation failed, the consumer was never polled, the task failed
+   * first, or planning failed before reaching this input) itself: `ArrowArrayStream.close` alone
+   * frees only the C struct, leaving the reader open and pinned for the life of the executor by
+   * the JNI global ref that arrow-java holds on the stream's private data. Taking the stream
+   * leaves a null release callback in the JVM's struct, and arrow-java's `release` skips a null
+   * callback, so a stream native took is still released only once.
+   *
    * The reader is wrapped so that what it throws while native pulls a batch stays available to
    * [[inputFailure]] until the task completes.
    */
@@ -258,6 +266,8 @@ object CometArrowStream extends Logging {
       exportedReaders.put(streamRef, reader)
       context.addTaskCompletionListener[Unit] { _ =>
         exportedReaders.remove(streamRef)
+        // Release before close: `close` frees the struct that `release` reads.
+        streamRef.release()
         streamRef.close()
         allocator.close()
       }

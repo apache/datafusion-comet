@@ -261,6 +261,9 @@ case class CometExecRule(session: SparkSession)
           other
         } else {
           other match {
+            // Only the outer TopK owns Spark's original offset and projection. If a future
+            // fused input can contain a restored aggregate, remove its inserted local node.
+            case _: CometLocalTopKExec => children.head
             // A native ancestor embeds its old child in nativeOp. Replacing only its SparkPlan
             // child would leave the incompatible native partial in that serialized plan.
             case comet: CometExec =>
@@ -992,7 +995,7 @@ case class CometExecRule(session: SparkSession)
       .flatten
       .toSet
     if (reasons.nonEmpty) {
-      withFallbackReasons(op, reasons)
+      val _ = withFallbackReasons(op, reasons)
     }
   }
 
@@ -1024,7 +1027,7 @@ case class CometExecRule(session: SparkSession)
             "operator or any of its expressions. Add a withFallbackReason call stating why " +
             s"conversion failed. Operator:\n$op")
       }
-      withFallbackReason(op, s"${op.nodeName} is not supported")
+      val _ = withFallbackReason(op, s"${op.nodeName} is not supported")
     }
   }
 
@@ -1053,7 +1056,8 @@ case class CometExecRule(session: SparkSession)
       CometExplainInfo.collectExprTagValues(allExprs, CometExplainInfo.CODEGEN_DISPATCH_EXPRS)
     appendTagValues(exec, CometExplainInfo.CODEGEN_DISPATCH_EXPRS, routedNames)
     if (routedNames.nonEmpty && CometConf.COMET_EXPLAIN_CODEGEN_ENABLED.get()) {
-      withInfo(exec, s"JVM codegen dispatcher: ${routedNames.toSeq.sorted.mkString(", ")}")
+      val _ =
+        withInfo(exec, s"JVM codegen dispatcher: ${routedNames.toSeq.sorted.mkString(", ")}")
     }
   }
 
