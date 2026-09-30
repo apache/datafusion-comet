@@ -59,8 +59,8 @@ object CometExistenceJoinBenchmark extends CometBenchmarkBase {
   }
 
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
-    val probeRows = 1024 * 1024
-    val buildRows = 10000
+    val probeRows = 1024 * 1024L
+    val buildRows = 10000L
 
     withTempPath { dir =>
       withTempTable("probe", "build") {
