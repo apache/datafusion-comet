@@ -16,15 +16,20 @@
 -- under the License.
 
 -- Spark adds no cast to IF when its branches differ only in whether a nested struct field, map
--- value or array element can be NULL, so the native planner has to cast a branch to the common
--- type, as it does for CASE WHEN. Without the cast, a batch in which every row took the ELSE
--- branch returned the ELSE array with the other nullability, and the query failed with
+-- value or array element can be NULL, or in the case of a struct field name, so the native planner
+-- has to cast a branch to the common type, as it does for CASE WHEN. Without the cast, a batch in
+-- which every row took the ELSE branch returned the ELSE array unchanged, and the query failed with
 -- "column types must match schema types". A batch that mixed the two failed when the THEN branch
 -- was the one that could not be NULL.
 -- https://github.com/apache/datafusion-comet/issues/6334
 --
 -- The harness disables ConstantFolding, so these cover the constructor path. The folded map
 -- literal path is covered in CometMapExpressionSuite.
+--
+-- Native to_json writes the field names of the Arrow struct it is given, so it shows the names the
+-- native IF gave its result. By default, to_json runs through the codegen dispatcher, which
+-- evaluates its whole argument, the IF included, in the JVM.
+-- Config: spark.comet.expression.StructsToJson.allowIncompatible=true
 
 statement
 CREATE TABLE test_if_nested(q boolean, i int, m map<string, int>, s struct<x: int>, ms map<string, struct<x: int>>) USING parquet
@@ -66,6 +71,18 @@ SELECT IF(m IS NULL, map('z', 0), m) FROM test_if_nested
 -- a struct column and a struct constructor
 query
 SELECT IF(q, s, named_struct('x', 0)) FROM test_if_nested
+
+-- struct field names that differ only in case, which Spark treats as one type. It adds no cast,
+-- and the result's field has the THEN branch's name. Without the cast, a batch that mixed the two
+-- failed as well, because DataFusion's struct cast matches fields by name.
+query
+SELECT IF(q, named_struct('x', i), named_struct('X', i)) FROM test_if_nested
+
+-- The row comparison ignores struct field names, so check them with to_json, in both orders. Spark
+-- 4 reports to_json as `invoke`, so this names only the IF, which isn't reported as native if
+-- to_json runs through the dispatcher.
+query expect_native(if)
+SELECT to_json(IF(q, named_struct('x', i), named_struct('X', i))), to_json(IF(q, named_struct('X', i), named_struct('x', i))) FROM test_if_nested
 
 -- a struct inside a map value
 query
