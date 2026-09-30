@@ -17,6 +17,8 @@
 
 use crate::metrics::ShufflePartitionerMetrics;
 use arrow::record_batch::RecordBatch;
+use datafusion::execution::memory_pool::MemoryReservation;
+use std::sync::Arc;
 
 /// Storage backend abstraction for shuffle partition output.
 ///
@@ -33,6 +35,12 @@ use arrow::record_batch::RecordBatch;
 ///
 /// [`LocalPartitionWriter`]: crate::writers::local::local_partition_writer::LocalPartitionWriter
 pub(crate) trait PartitionWriter: Send {
+    /// Shares the writer's reservation with the repartitioner, if it reserves memory.
+    /// Both input buffers and retained metadata must count against the same fair allowance.
+    fn memory_reservation(&self) -> Option<Arc<MemoryReservation>> {
+        None
+    }
+
     /// Stages the batches from `iter` for partition `pid` without finalizing it.
     ///
     /// Used to stream single-partition output and to stage multi-partition

@@ -114,8 +114,10 @@ pub(crate) struct MultiPartitionShuffleRepartitioner<T: PartitionWriter> {
     /// The configured batch size
     batch_size: usize,
     /// Reservation for repartitioning
-    reservation: MemoryReservation,
-    /// Spill once the reservation reaches this many bytes, independently of whether the memory
+    reservation: Arc<MemoryReservation>,
+    /// The portion of the shared reservation released when buffered input spills.
+    reserved_input_bytes: usize,
+    /// Spill once buffered input reaches this many bytes, independently of whether the memory
     /// pool still has capacity. `None` disables the limit, leaving pool pressure as the only
     /// spill trigger.
     max_buffer_bytes: Option<usize>,
@@ -232,9 +234,13 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
             },
         };
 
-        let reservation = MemoryConsumer::new(format!("ShuffleRepartitioner[{partition}]"))
-            .with_can_spill(true)
-            .register(&runtime.memory_pool);
+        let reservation = partition_writer.memory_reservation().unwrap_or_else(|| {
+            Arc::new(
+                MemoryConsumer::new(format!("ShuffleRepartitioner[{partition}]"))
+                    .with_can_spill(true)
+                    .register(&runtime.memory_pool),
+            )
+        });
 
         Ok(Self {
             buffered_batches: vec![],
@@ -249,6 +255,7 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
             scratch,
             batch_size,
             reservation,
+            reserved_input_bytes: 0,
             max_buffer_bytes,
             tracing_enabled,
             pinned_buffers: HashSet::new(),
@@ -577,12 +584,15 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
         // A rejected reservation does not include this batch's memory, even though the batch
         // and its partition indices have already been buffered and must be counted as spilled.
         let reservation_failed = self.reservation.try_grow(mem_growth).is_err();
+        if !reservation_failed {
+            self.reserved_input_bytes += mem_growth;
+        }
         // Checking after buffering lets the writer overshoot the limit by at most one batch,
         // which is how the memory-pressure trigger already behaves.
         if reservation_failed
             || self
                 .max_buffer_bytes
-                .is_some_and(|limit| self.reservation.size() >= limit)
+                .is_some_and(|limit| self.reserved_input_bytes >= limit)
         {
             self.spill(if reservation_failed { mem_growth } else { 0 })?;
         }
@@ -652,7 +662,9 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
             // rejected reservation. Shared allocations are charged once within a spill, but
             // contribute again if buffered for a later spill, regardless of input batching.
             // Also release and count all buffered inputs when the writer fails partway through.
-            let memory_spilled_bytes = self.reservation.free().saturating_add(unreserved_bytes);
+            let reserved_input_bytes = std::mem::take(&mut self.reserved_input_bytes);
+            self.reservation.shrink(reserved_input_bytes);
+            let memory_spilled_bytes = reserved_input_bytes.saturating_add(unreserved_bytes);
             self.metrics.memory_spilled_bytes.add(memory_spilled_bytes);
             self.pinned_buffers.clear();
             self.metrics.spill_count.add(1);
