@@ -26,6 +26,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 import scala.util.control.NonFatal
 
+import org.apache.arrow.c.ArrowArrayStream
 import org.apache.arrow.memory.BufferAllocator
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark._
@@ -33,6 +34,7 @@ import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.internal.Logging
 import org.apache.spark.network.util.ByteUnit
 import org.apache.spark.sql.comet.CometMetricNode
+import org.apache.spark.sql.comet.execution.arrow.CometArrowStream
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.vectorized._
 import org.apache.spark.util.SerializableConfiguration
@@ -222,6 +224,15 @@ class CometExecIterator(
 
   CometExecIterator.startMemoryUsageLog()
 
+  /**
+   * What the producer behind one of this plan's Arrow stream inputs threw while native pulled a
+   * batch from it, if anything. See `CometArrowStream.inputFailure`.
+   */
+  private def inputFailure: Option[Throwable] =
+    inputObjects.iterator
+      .collect { case stream: ArrowArrayStream => CometArrowStream.inputFailure(stream) }
+      .collectFirst { case Some(failure) => failure }
+
   private def getNextBatch: Option[ColumnarBatch] = {
     assert(partitionIndex >= 0 && partitionIndex < numParts)
 
@@ -244,6 +255,12 @@ class CometExecIterator(
 
       result
     } catch {
+      // A JVM input threw while native pulled a batch from it. Native saw only the text of that
+      // exception and failed with a CometNativeException built from it, so rethrow the exception
+      // itself, which is what the task would have thrown without Comet.
+      case _: Throwable if inputFailure.isDefined =>
+        throw inputFailure.get
+
       // Handle CometQueryExecutionException with JSON payload first
       case e: CometQueryExecutionException =>
         logError(s"Native execution for task $taskAttemptId failed", e)
