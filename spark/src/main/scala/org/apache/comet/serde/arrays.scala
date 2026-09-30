@@ -846,7 +846,6 @@ object CometArrayPosition extends CometExpressionSerde[ArrayPosition] with Array
 object CometArraysZip extends CometExpressionSerde[ArraysZip] {
 
   override def getUnsupportedReasons(): Seq[String] = Seq(
-    "`arrays_zip` with duplicate field names is not supported",
     "Not all input data types are supported; falls back to Spark for unsupported types")
 
   private def isTypeSupported(dt: DataType): Boolean = {
@@ -863,10 +862,6 @@ object CometArraysZip extends CometExpressionSerde[ArraysZip] {
   }
 
   override def getSupportLevel(expr: ArraysZip): SupportLevel = {
-    val names = expr.names.map(_.eval(EmptyRow))
-    if (names.length != names.distinct.length) {
-      return Unsupported(Some("`arrays_zip` with duplicate field names is not supported"))
-    }
     val inputTypes = expr.children.map(_.dataType).toSet
     for (dt <- inputTypes) {
       if (!isTypeSupported(dt)) {

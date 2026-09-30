@@ -334,3 +334,39 @@ pub fn arrays_zip_inner(args: &[ArrayRef], names: Vec<String>) -> Result<ArrayRe
 
     Ok(Arc::new(result))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::array::{Int32Array, ListArray};
+    use arrow::buffer::OffsetBuffer;
+    use arrow::datatypes::{DataType, Field};
+    use std::sync::Arc;
+
+    #[test]
+    fn test_arrays_zip_duplicate_field_names() {
+        let field = Arc::new(Field::new("item", DataType::Int32, true));
+        let arr1 = Arc::new(ListArray::new(
+            field.clone(),
+            OffsetBuffer::from_lengths(vec![2]),
+            Arc::new(Int32Array::from(vec![1, 2])),
+            None,
+        )) as ArrayRef;
+        let arr2 = Arc::new(ListArray::new(
+            field,
+            OffsetBuffer::from_lengths(vec![2]),
+            Arc::new(Int32Array::from(vec![10, 20])),
+            None,
+        )) as ArrayRef;
+
+        let names = vec!["a".to_string(), "a".to_string()];
+        let res = arrays_zip_inner(&[arr1, arr2], names).unwrap();
+
+        assert_eq!(res.len(), 1);
+        let list_res = as_list_array(&res).unwrap();
+        let struct_res = list_res.value(0);
+        let struct_arr = struct_res.as_any().downcast_ref::<StructArray>().unwrap();
+        assert_eq!(struct_arr.num_columns(), 2);
+        assert_eq!(struct_arr.column_names(), vec!["a", "a"]);
+    }
+}
