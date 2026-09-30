@@ -415,7 +415,7 @@ object CometInMemoryCacheBenchmark extends CometBenchmarkBase {
       SparkOperatorRead("Comet's cache format, row reader", cometSerializer, sparkOperatorConf))
 
     Seq(100, 200, 1500).foreach { width =>
-      val rows = 20 * 1000 * 1000 / width
+      val rows = 20L * 1000 * 1000 / width
       val view = s"comet_cache_bench_wide_$width"
       spark.catalog.clearCache()
       withTempTable(view) {
