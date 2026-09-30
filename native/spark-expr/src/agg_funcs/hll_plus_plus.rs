@@ -24,13 +24,11 @@
 //! results are bit-identical to Spark.
 
 use crate::agg_funcs::hll_plus_plus_const::{BIAS_DATA, RAW_ESTIMATE_DATA, THRESHOLDS};
+use crate::float_semantics::normalize_floats;
 use crate::hash_funcs::create_xxhash64_hashes;
-use crate::math_funcs::internal::normalize_float;
-use arrow::array::{
-    Array, ArrayRef, AsArray, BooleanArray, Float32Array, Float64Array, Int64Array,
-};
-use arrow::datatypes::{DataType, Field, FieldRef, Float32Type, Float64Type};
-use datafusion::common::{Result, ScalarValue};
+use arrow::array::{Array, ArrayRef, AsArray, BooleanArray, Int64Array};
+use arrow::datatypes::{DataType, Field, FieldRef};
+use datafusion::common::{not_impl_err, Result, ScalarValue};
 use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion::logical_expr::{
     Accumulator, AggregateUDFImpl, EmitTo, GroupsAccumulator, Signature, Volatility,
@@ -117,25 +115,6 @@ impl AggregateUDFImpl for HllPlusPlus {
         _args: AccumulatorArgs,
     ) -> Result<Box<dyn GroupsAccumulator>> {
         Ok(Box::new(HllPlusPlusGroupsAccumulator::new(self.p)))
-    }
-}
-
-/// Normalize a float/double column the way Spark's `NormalizeNaNAndZero` does before hashing:
-/// every NaN becomes the canonical NaN and `-0.0` becomes `0.0`. Returns the input unchanged for
-/// non-floating-point types.
-fn normalize_floats(array: &ArrayRef) -> ArrayRef {
-    match array.data_type() {
-        DataType::Float32 => {
-            let normalized: Float32Array =
-                array.as_primitive::<Float32Type>().unary(normalize_float);
-            Arc::new(normalized)
-        }
-        DataType::Float64 => {
-            let normalized: Float64Array =
-                array.as_primitive::<Float64Type>().unary(normalize_float);
-            Arc::new(normalized)
-        }
-        _ => Arc::clone(array),
     }
 }
 
@@ -425,7 +404,6 @@ impl GroupsAccumulator for HllPlusPlusGroupsAccumulator {
         &mut self,
         values: &[ArrayRef],
         group_indices: &[usize],
-        _opt_filter: Option<&BooleanArray>,
         total_num_groups: usize,
     ) -> Result<()> {
         self.resize(total_num_groups);
@@ -465,6 +443,14 @@ impl GroupsAccumulator for HllPlusPlusGroupsAccumulator {
             columns.push(Arc::new(Int64Array::from(col)));
         }
         Ok(columns)
+    }
+
+    fn convert_to_state(
+        &self,
+        _values: &[ArrayRef],
+        _opt_filter: Option<&BooleanArray>,
+    ) -> Result<Vec<ArrayRef>> {
+        not_impl_err!("Input batch conversion to state not implemented")
     }
 
     fn size(&self) -> usize {
@@ -639,9 +625,7 @@ mod tests {
         for part in [&mut left, &mut right] {
             let state = part.state(EmitTo::All).unwrap();
             let n = state[0].len();
-            merged
-                .merge_batch(&state, &vec![0usize; n], None, 1)
-                .unwrap();
+            merged.merge_batch(&state, &vec![0usize; n], 1).unwrap();
         }
         let single = {
             let mut a = acc(9);

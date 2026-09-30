@@ -16,10 +16,11 @@
 // under the License.use arrow::array::{ArrayRef, BooleanBuilder, Int32Builder, RecordBatch, StringBuilder};
 
 use arrow::array::builder::{Decimal128Builder, Int64Builder, StringBuilder};
-use arrow::array::{ArrayRef, Int64Array, RecordBatch};
+use arrow::array::{ArrayRef, Decimal128Array, Int64Array, RecordBatch};
 use arrow::datatypes::SchemaRef;
 use arrow::datatypes::{DataType, Field, Schema};
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+use datafusion::common::ScalarValue;
 use datafusion::datasource::memory::MemorySourceConfig;
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::execution::TaskContext;
@@ -28,16 +29,23 @@ use datafusion::functions_aggregate::sum::sum_udaf;
 use datafusion::logical_expr::function::AccumulatorArgs;
 use datafusion::logical_expr::{AggregateUDF, AggregateUDFImpl, EmitTo};
 use datafusion::physical_expr::aggregate::AggregateExprBuilder;
-use datafusion::physical_expr::expressions::Column;
+use datafusion::physical_expr::expressions::{Column, StatsType};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode, PhysicalGroupBy};
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion_comet_spark_expr::{AvgDecimal, EvalMode, SumDecimal, SumInteger};
+use datafusion_comet_spark_expr::{
+    hllpp_precision, ApproxPercentile, Avg, AvgDecimal, Correlation, Covariance, EvalMode,
+    HllPlusPlus, SparkPercentile, Stddev, SumDecimal, SumInteger, Variance,
+};
 use futures::StreamExt;
 use std::hint::black_box;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::runtime::Runtime;
+
+#[path = "common/mod.rs"]
+mod common;
+use common::{f64_array, i64_array, NULL_RATIOS, ROW_COUNTS};
 
 fn criterion_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("aggregate");
@@ -192,6 +200,63 @@ fn criterion_benchmark(c: &mut Criterion) {
 
     group.finish();
 
+    // The scalar decimal accumulator keeps a wide running sum, so measure its per-row cost on
+    // in-range inputs directly, with and without nulls.
+    let mut group = c.benchmark_group("sum_decimal_accumulator");
+    let decimal_type = DataType::Decimal128(38, 10);
+    let decimal_return_field = Arc::new(Field::new("sum", decimal_type.clone(), true));
+    let decimal_schema = Schema::new(vec![Field::new("c0", decimal_type.clone(), true)]);
+    let decimal_expr_fields: Vec<Arc<Field>> =
+        vec![Arc::new(Field::new("c0", decimal_type.clone(), true))];
+    for (null_name, null_ratio) in [("no_nulls", 0.0), ("sparse", 0.1)] {
+        let decimal_array: ArrayRef = Arc::new(
+            Decimal128Array::from_iter((0..8192).map(|i| {
+                if null_ratio > 0.0 && i % ((1.0 / null_ratio) as usize) == 0 {
+                    None
+                } else {
+                    Some(i as i128 * 1_000_000)
+                }
+            }))
+            .with_data_type(decimal_type.clone()),
+        );
+        let arrays: Vec<ArrayRef> = vec![decimal_array];
+        for (mode_name, eval_mode) in [("legacy", EvalMode::Legacy), ("ansi", EvalMode::Ansi)] {
+            let return_field = decimal_return_field.clone();
+            let expr_fields = decimal_expr_fields.clone();
+            let arrays = arrays.clone();
+            let schema = &decimal_schema;
+            let decimal_type = decimal_type.clone();
+            group.bench_function(format!("row_{null_name}_{mode_name}"), |b| {
+                let udf = SumDecimal::try_new(
+                    decimal_type.clone(),
+                    eval_mode,
+                    None,
+                    datafusion_comet_spark_expr::create_query_context_map(),
+                )
+                .unwrap();
+                b.iter(|| {
+                    let acc_args = AccumulatorArgs {
+                        return_field: return_field.clone(),
+                        schema,
+                        ignore_nulls: false,
+                        order_bys: &[],
+                        name: "sum",
+                        is_distinct: false,
+                        is_reversed: false,
+                        exprs: &[],
+                        expr_fields: &expr_fields,
+                    };
+                    let mut acc = udf.accumulator(acc_args).unwrap();
+                    for _ in 0..10 {
+                        acc.update_batch(&arrays).unwrap();
+                    }
+                    black_box(acc.evaluate().unwrap())
+                })
+            });
+        }
+    }
+    group.finish();
+
     // Direct accumulator benchmarks (bypassing execution framework)
     let mut group = c.benchmark_group("sum_integer_accumulator");
     let int64_array: ArrayRef = Arc::new(Int64Array::from_iter_values(0..8192i64));
@@ -266,6 +331,202 @@ fn criterion_benchmark(c: &mut Criterion) {
         });
     }
 
+    group.finish();
+
+    bench_statistical_aggregates(c);
+}
+
+/// Benchmarks for the Comet-owned aggregate kernels in `agg_funcs/` not covered above:
+/// `avg`, `variance` (pop/samp), `stddev` (pop/samp), `covariance` (pop/samp), `correlation`,
+/// `percentile`, `approx_percentile`, and `hll_plus_plus`. Each drives the `Accumulator` directly
+/// (`update_batch` + `evaluate`) so it measures the accumulator hot path, not scan/grouping.
+fn bench_statistical_aggregates(c: &mut Criterion) {
+    bench_f64_one_arg(c, "avg", DataType::Float64, || {
+        Box::new(Avg::new("avg", DataType::Float64))
+    });
+
+    bench_f64_one_arg(c, "variance_pop", DataType::Float64, || {
+        Box::new(Variance::new(
+            "var",
+            DataType::Float64,
+            StatsType::Population,
+            true,
+        ))
+    });
+    bench_f64_one_arg(c, "variance_samp", DataType::Float64, || {
+        Box::new(Variance::new(
+            "var",
+            DataType::Float64,
+            StatsType::Sample,
+            true,
+        ))
+    });
+
+    bench_f64_one_arg(c, "stddev_pop", DataType::Float64, || {
+        Box::new(Stddev::new(
+            "stddev",
+            DataType::Float64,
+            StatsType::Population,
+            true,
+        ))
+    });
+    bench_f64_one_arg(c, "stddev_samp", DataType::Float64, || {
+        Box::new(Stddev::new(
+            "stddev",
+            DataType::Float64,
+            StatsType::Sample,
+            true,
+        ))
+    });
+
+    bench_f64_two_arg(c, "covariance_pop", || {
+        Box::new(Covariance::new(
+            "covar",
+            DataType::Float64,
+            StatsType::Population,
+            true,
+        ))
+    });
+    bench_f64_two_arg(c, "covariance_samp", || {
+        Box::new(Covariance::new(
+            "covar",
+            DataType::Float64,
+            StatsType::Sample,
+            true,
+        ))
+    });
+    bench_f64_two_arg(c, "correlation", || {
+        Box::new(Correlation::new("corr", DataType::Float64, true))
+    });
+
+    bench_f64_one_arg(c, "percentile", DataType::Float64, || {
+        Box::new(SparkPercentile::try_new(0.5).unwrap())
+    });
+    bench_f64_one_arg(c, "approx_percentile", DataType::Float64, || {
+        Box::new(ApproxPercentile::new(
+            vec![0.5],
+            10_000,
+            DataType::Float64,
+            false,
+        ))
+    });
+
+    // hll_plus_plus counts approximate distinct values; feed it an Int64 key column.
+    let hll_fields = [Arc::new(Field::new("x", DataType::Int64, true))];
+    let precision = hllpp_precision(0.05);
+    let mut group = c.benchmark_group("hll_plus_plus");
+    for rows in ROW_COUNTS {
+        for (null_ratio, tag) in NULL_RATIOS {
+            let arrays = vec![i64_array(rows, null_ratio, |i| (i % 4096) as i64)];
+            group.bench_with_input(
+                BenchmarkId::from_parameter(format!("{rows}/{tag}")),
+                &arrays,
+                |b, arrays| {
+                    b.iter(|| {
+                        black_box(drive_accumulator(
+                            &HllPlusPlus::new(precision),
+                            &hll_fields,
+                            DataType::Int64,
+                            arrays,
+                        ))
+                    })
+                },
+            );
+        }
+    }
+    group.finish();
+}
+
+/// Build a fresh accumulator for `udf`, feed it `arrays` once, and return the aggregate result.
+/// A new accumulator is built per call because accumulators are stateful and cannot be reused.
+fn drive_accumulator(
+    udf: &dyn AggregateUDFImpl,
+    input_fields: &[Arc<Field>],
+    return_type: DataType,
+    arrays: &[ArrayRef],
+) -> ScalarValue {
+    let schema = Schema::new(
+        input_fields
+            .iter()
+            .map(|f| f.as_ref().clone())
+            .collect::<Vec<_>>(),
+    );
+    let acc_args = AccumulatorArgs {
+        return_field: Arc::new(Field::new("agg", return_type, true)),
+        schema: &schema,
+        ignore_nulls: false,
+        order_bys: &[],
+        name: "agg",
+        is_distinct: false,
+        is_reversed: false,
+        exprs: &[],
+        expr_fields: input_fields,
+    };
+    let mut acc = udf.accumulator(acc_args).unwrap();
+    acc.update_batch(arrays).unwrap();
+    acc.evaluate().unwrap()
+}
+
+/// Drive an aggregate that takes a single Float64 input column.
+fn bench_f64_one_arg(
+    c: &mut Criterion,
+    name: &str,
+    return_type: DataType,
+    make: impl Fn() -> Box<dyn AggregateUDFImpl>,
+) {
+    let fields = [Arc::new(Field::new("x", DataType::Float64, true))];
+    let mut group = c.benchmark_group(name);
+    for rows in ROW_COUNTS {
+        for (null_ratio, tag) in NULL_RATIOS {
+            let arrays = vec![f64_array(rows, null_ratio, |i| (i as f64).sin() * 1000.0)];
+            group.bench_with_input(
+                BenchmarkId::from_parameter(format!("{rows}/{tag}")),
+                &arrays,
+                |b, arrays| {
+                    b.iter(|| {
+                        black_box(drive_accumulator(
+                            make().as_ref(),
+                            &fields,
+                            return_type.clone(),
+                            arrays,
+                        ))
+                    })
+                },
+            );
+        }
+    }
+    group.finish();
+}
+
+/// Drive an aggregate that takes two Float64 input columns (covariance / correlation).
+fn bench_f64_two_arg(c: &mut Criterion, name: &str, make: impl Fn() -> Box<dyn AggregateUDFImpl>) {
+    let fields = [
+        Arc::new(Field::new("x", DataType::Float64, true)),
+        Arc::new(Field::new("y", DataType::Float64, true)),
+    ];
+    let mut group = c.benchmark_group(name);
+    for rows in ROW_COUNTS {
+        for (null_ratio, tag) in NULL_RATIOS {
+            let arrays = vec![
+                f64_array(rows, null_ratio, |i| (i as f64).sin() * 1000.0),
+                f64_array(rows, null_ratio, |i| (i as f64).cos() * 1000.0),
+            ];
+            group.bench_with_input(
+                BenchmarkId::from_parameter(format!("{rows}/{tag}")),
+                &arrays,
+                |b, arrays| {
+                    b.iter(|| {
+                        black_box(drive_accumulator(
+                            make().as_ref(),
+                            &fields,
+                            DataType::Float64,
+                            arrays,
+                        ))
+                    })
+                },
+            );
+        }
+    }
     group.finish();
 }
 

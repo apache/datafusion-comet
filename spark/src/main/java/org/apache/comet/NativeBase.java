@@ -27,6 +27,7 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
+import java.time.zone.ZoneRulesProvider;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.slf4j.Logger;
@@ -101,6 +102,7 @@ public abstract class NativeBase {
     }
 
     initWithLogConf();
+    warnOnTzdataMismatch();
     // Only set the Arrow properties when debugging mode is off
     if (!(boolean) CometConf.COMET_DEBUG_ENABLED().get()) {
       setArrowProperties();
@@ -175,6 +177,35 @@ public abstract class NativeBase {
       LOG.info("Using {} for native library logging", logConfPath);
     }
     init(logConfPath, logLevel);
+  }
+
+  /**
+   * Native code converts between instants and local time with the IANA timezone database that
+   * chrono-tz compiles into libcomet, while Spark uses the JVM's. When the two versions differ,
+   * local times in timezones whose rules changed between them can differ from Spark's.
+   */
+  private static void warnOnTzdataMismatch() {
+    try {
+      String warning =
+          tzdataMismatchWarning(getTzdataVersion(), ZoneRulesProvider.getVersions("UTC").lastKey());
+      if (warning != null) {
+        LOG.warn(warning);
+      }
+    } catch (Throwable t) {
+      LOG.debug("Could not compare timezone database versions", t);
+    }
+  }
+
+  /** The warning to log when native code and the JVM use different tzdata versions, or null. */
+  static String tzdataMismatchWarning(String nativeVersion, String jvmVersion) {
+    if (nativeVersion.equals(jvmVersion)) {
+      return null;
+    }
+    return String.format(
+        "Comet's native library uses timezone database %s, but the JVM uses %s. Local times that "
+            + "Comet computes natively can differ from Spark's in timezones whose rules changed "
+            + "between these versions.",
+        nativeVersion, jvmVersion);
   }
 
   private static void cleanupOldTempLibs() {
@@ -318,13 +349,24 @@ public abstract class NativeBase {
   public static native boolean isFeatureEnabled(String featureName);
 
   /**
-   * Check whether Comet's native object_store layer recognizes the given URL's scheme (i.e. the
-   * scan would be natively readable rather than failing at execution with "Unable to recognise
-   * URL"). This is the authoritative answer from object_store's own scheme parser, so the JVM
-   * planner never has to hardcode (and drift from) the set of supported schemes.
+   * Check whether Comet's native object_store layer can open the given URL (i.e. the scan would be
+   * natively readable rather than failing at execution with "Unable to recognise URL"). This is the
+   * authoritative answer from object_store's own parser, so the JVM planner never has to hardcode
+   * (and drift from) the set of supported schemes.
    *
-   * @param url a fully-qualified URL whose scheme should be checked (e.g. "s3://bucket/path")
-   * @return true if object_store can construct a store for this scheme, false otherwise
+   * <p>The parser validates the path as well as the scheme, so a recognized scheme carrying a key
+   * object_store forbids (e.g. a directory name containing a newline) also returns false. Callers
+   * that want a path-independent answer must pass a synthetic scheme-only URL.
+   *
+   * @param url a fully-qualified URL to check (e.g. "s3://bucket/path")
+   * @return true if object_store can construct both a store and an object key for this URL
    */
   public static native boolean isObjectStoreSchemeSupported(String url);
+
+  /**
+   * The version of the IANA timezone database that native code uses, such as "2025b".
+   *
+   * @return the version compiled into libcomet
+   */
+  public static native String getTzdataVersion();
 }

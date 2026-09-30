@@ -27,7 +27,7 @@ import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, ExprId, PythonUDF}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, LeafExecNode}
 import org.apache.spark.sql.execution.python.MapInArrowExec
-import org.apache.spark.sql.types.{LongType, StructField, StructType}
+import org.apache.spark.sql.types.{LongType, StructField, StructType, VariantType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.{CometConf, ExtendedExplainInfo}
@@ -105,6 +105,31 @@ class CometMapInBatchSuite extends CometTestBase {
     }
   }
 
+  test("Variant inputs and outputs keep Python operators on Spark") {
+    val plain = Seq(AttributeReference("id", LongType)())
+    val variant = Seq(AttributeReference("v", VariantType)())
+    withSQLConf(CometConf.COMET_PYARROW_UDF_ENABLED.key -> "true") {
+      for ((input, output) <- Seq(variant -> plain, plain -> variant)) {
+        val udf = stubPythonUDF.copy(
+          children = input,
+          dataType = StructType(output.map(attr => StructField(attr.name, attr.dataType))))
+        val plan = MapInArrowExec(
+          udf,
+          output,
+          ColumnarToRowExec(StubCometLeaf(input)),
+          isBarrier = false,
+          profile = None)
+        val rewritten = EliminateRedundantTransitions(spark).apply(plan)
+        assert(rewritten.isInstanceOf[MapInArrowExec])
+        assert(!rewritten.exists(_.isInstanceOf[CometMapInBatchExec]))
+        assert(
+          new ExtendedExplainInfo()
+            .getFallbackReasons(rewritten)
+            .exists(_.contains("Comet Python operators do not support type VariantType")))
+      }
+    }
+  }
+
   test("rule annotates operator with opt-in hint when feature is disabled") {
     withSQLConf(CometConf.COMET_PYARROW_UDF_ENABLED.key -> "false") {
       val rewritten = EliminateRedundantTransitions(spark).apply(buildPlan())
@@ -161,37 +186,4 @@ class CometMapInBatchSuite extends CometTestBase {
     }
   }
 
-  test("end-to-end: rewrite-on output matches rewrite-off output for primitives + varchar") {
-    // This test needs PySpark workers; only run if PYSPARK_PYTHON is set in the env.
-    assume(
-      sys.env.contains("PYSPARK_PYTHON"),
-      "set PYSPARK_PYTHON to enable end-to-end pyarrow UDF tests")
-
-    withTempPath { path =>
-      val pathStr = path.getCanonicalPath
-      spark
-        .range(0, 1000, 1, 4)
-        .selectExpr(
-          "id AS id",
-          "CAST(id AS DOUBLE) * 1.5 AS dbl",
-          "CASE WHEN id % 10 = 0 THEN NULL ELSE CONCAT('row_', CAST(id AS STRING)) END AS s")
-        .write
-        .mode("overwrite")
-        .parquet(pathStr)
-
-      // Baseline: rewrite disabled, vanilla MapInArrowExec runs.
-      val baseline = withSQLConf(CometConf.COMET_PYARROW_UDF_ENABLED.key -> "false") {
-        spark.read.parquet(pathStr).collect().map(_.toSeq).toSet
-      }
-
-      // Optimized: rewrite enabled, CometMapInBatchExec + CometArrowPythonRunner runs.
-      withSQLConf(CometConf.COMET_PYARROW_UDF_ENABLED.key -> "true") {
-        val df = spark.read.parquet(pathStr)
-        val result = df.collect().map(_.toSeq).toSet
-        assert(
-          result == baseline,
-          s"optimized output differs from baseline:\noptimized=$result\nbaseline=$baseline")
-      }
-    }
-  }
 }

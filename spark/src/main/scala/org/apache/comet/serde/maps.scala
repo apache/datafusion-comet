@@ -23,8 +23,60 @@ import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
-import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, scalarFunctionExprToProto}
+import org.apache.comet.DataTypeSupport.isComplexType
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, hasNonDefaultStringCollation, scalarFunctionExprToProto}
 import org.apache.comet.shims.CometTypeShim
+
+/**
+ * Shared gate for the native map kernels that compare a lookup key against a map's stored keys
+ * (`map_extract`, reached from both `GetMapValue` and `ElementAt`).
+ */
+private[serde] object MapKeySupport {
+
+  private val floatingPointReason: String =
+    "Spark normalizes floating-point map keys, so `-0.0` matches a `+0.0` key and all `NaN`s " +
+      "match each other; Comet's native map lookup compares the raw Arrow values."
+
+  private val collationReason: String =
+    "Comet's native map lookup compares string keys as `UTF8_BINARY` and cannot honour a " +
+      "non-default collation."
+
+  private val complexKeyReason: String =
+    "Comet's native `map_extract` casts the lookup key to the map's exact Arrow key type, which " +
+      "cannot reproduce Spark's equality for a complex key type (for example a `NULL` inside the " +
+      "lookup key aborts the cast against a non-nullable nested component)."
+
+  /**
+   * The `SupportLevel` for a map-consuming expression whose stored-key type is `keyType`. Spark
+   * finds a key with `TypeUtils.getInterpretedOrdering` over the keys `ArrayBasedMapBuilder`
+   * stored, having first normalized them, while native `map_extract` compares the Arrow values as
+   * they are, so decline the key types where those disagree:
+   *   - `ArrayBasedMapBuilder` rewrites a `-0.0` key to `+0.0` and canonicalises `NaN`, and
+   *     `nanSafeCompareDoubles` treats `-0.0` and `+0.0` as equal, so Spark answers a `-0.0`
+   *     lookup from a `+0.0` key where native finds nothing.
+   *   - a non-default collation compares under rules native applies as `UTF8_BINARY`.
+   *   - for a complex key type, `map_extract`'s `coerce_types` returns the map's exact key field
+   *     type, so Comet's planner casts the lookup key to it. That cannot reproduce Spark's
+   *     interpreted-ordering equality, and a `NULL` inside the lookup key aborts the cast with
+   *     `Non-nullable field of ListArray "item" cannot contain nulls` rather than missing the
+   *     lookup. Declined for every complex key type, since which of these trips is a runtime
+   *     property of the lookup.
+   *
+   * `BinaryType` keys need no decline: Arrow compares them by content, as Spark's ordering does.
+   * The floating-point and collation checks walk every nesting level of the key type.
+   */
+  def keySupport(keyType: DataType): SupportLevel = {
+    if (SupportLevel.containsType(keyType, classOf[FloatType], classOf[DoubleType])) {
+      Unsupported(Some(floatingPointReason))
+    } else if (hasNonDefaultStringCollation(keyType)) {
+      Unsupported(Some(collationReason))
+    } else if (isComplexType(keyType)) {
+      Unsupported(Some(complexKeyReason))
+    } else {
+      Compatible()
+    }
+  }
+}
 
 object CometMapKeys extends CometExpressionSerde[MapKeys] {
 
@@ -63,6 +115,11 @@ object CometMapValues extends CometExpressionSerde[MapValues] {
 }
 
 object CometMapExtract extends CometExpressionSerde[GetMapValue] {
+
+  override def getSupportLevel(expr: GetMapValue): SupportLevel = expr.child.dataType match {
+    case MapType(keyType, _, _) => MapKeySupport.keySupport(keyType)
+    case _ => Compatible()
+  }
 
   override def convert(
       expr: GetMapValue,
@@ -120,14 +177,23 @@ object CometMapFromArrays extends CometExpressionSerde[MapFromArrays] {
     val valueType = expr.right.dataType.asInstanceOf[ArrayType].elementType
     val returnType = MapType(keyType = keyType, valueType = valueType)
     for {
-      andBinaryExprProto <- createAndBinaryExpr(expr, inputs, binding)
+      keysNotNullExprProto <- exprToProtoInternal(IsNotNull(expr.left), inputs, binding)
+      valuesNotNullExprProto <- exprToProtoInternal(IsNotNull(expr.right), inputs, binding)
       mapFromArraysExprProto <- scalarFunctionExprToProto("map", keysExpr, valuesExpr)
       nullLiteralExprProto <- exprToProtoInternal(Literal(null, returnType), inputs, binding)
     } yield {
+      // Spark skips the values expression when keys are null. Nested CASE guards preserve
+      // this evaluation order; a native AND may evaluate both operands for the whole batch.
+      val valuesCaseWhenExprProto = ExprOuterClass.CaseWhen
+        .newBuilder()
+        .addWhen(valuesNotNullExprProto)
+        .addThen(mapFromArraysExprProto)
+        .setElseExpr(nullLiteralExprProto)
+        .build()
       val caseWhenExprProto = ExprOuterClass.CaseWhen
         .newBuilder()
-        .addWhen(andBinaryExprProto)
-        .addThen(mapFromArraysExprProto)
+        .addWhen(keysNotNullExprProto)
+        .addThen(ExprOuterClass.Expr.newBuilder().setCaseWhen(valuesCaseWhenExprProto).build())
         .setElseExpr(nullLiteralExprProto)
         .build()
       ExprOuterClass.Expr
@@ -137,18 +203,6 @@ object CometMapFromArrays extends CometExpressionSerde[MapFromArrays] {
     }
   }
 
-  private def createAndBinaryExpr(
-      expr: MapFromArrays,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[ExprOuterClass.Expr] = {
-    createBinaryExpr(
-      expr,
-      IsNotNull(expr.left),
-      IsNotNull(expr.right),
-      inputs,
-      binding,
-      (builder, binaryExpr) => builder.setAnd(binaryExpr))
-  }
 }
 
 object CometMapFromEntries

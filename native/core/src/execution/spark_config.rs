@@ -26,6 +26,10 @@ pub(crate) const COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED: &str =
     "spark.comet.parquet.rowFilterPushdown.enabled";
 pub(crate) const SPARK_EXECUTOR_CORES: &str = "spark.executor.cores";
 
+/// Comet configs read through this trait must be resolved by the JVM first:
+/// `CometExecIterator.serializeCometSQLConfs` sends booleans as `true` or `false` and sizes as a
+/// bare byte count. A config missing from its list arrives exactly as the user wrote it, and a
+/// value such as `10g` or `TRUE` then silently parses as the default.
 pub(crate) trait SparkConfig {
     fn get_bool(&self, name: &str) -> bool;
     fn get_u64(&self, name: &str, default_value: u64) -> u64;

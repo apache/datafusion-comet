@@ -112,8 +112,13 @@ class CometSqlFileTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       case _ => false
     }
     if (!hasExpectError) return
+    // `ExpectDispatch` and `ExpectNative` both run `checkSparkAnswerAndImpl`, which performs the
+    // same answer and operator checks as a plain `query` before asserting anything extra, so
+    // either is a strictly stronger sentinel than `CheckCoverageAndAnswer`. Not accepting them
+    // meant upgrading a file's last positive query to one of the new modes made preflight reject
+    // the file for having no sentinel, forcing a redundant plain query alongside it.
     val hasSentinel = file.records.exists {
-      case SqlQuery(_, CheckCoverageAndAnswer, _) => true
+      case SqlQuery(_, CheckCoverageAndAnswer | _: ExpectDispatch | _: ExpectNative, _) => true
       case _ => false
     }
     assert(
@@ -122,8 +127,8 @@ class CometSqlFileTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         s"${CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key}=true but is missing a non-error " +
         "sentinel query. Without one, a silent dispatcher fallback to Spark would let the " +
         "`expect_error` queries pass vacuously (Spark raises the same error on the fallback " +
-        "path). Add at least one `query` over valid input so `checkSparkAnswerAndOperator` " +
-        "fails if the expression did not execute natively.")
+        "path). Add at least one `query`, `expect_dispatch` or `expect_native` over valid " +
+        "input so the operator check fails if the expression did not execute natively.")
   }
 
   private def runTestFile(relativePath: String, file: SqlTestFile): Unit = {
@@ -155,6 +160,10 @@ class CometSqlFileTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                     checkSparkAnswerAndOperatorWithTolerance(sql, tol)
                   case ExpectFallback(reason) =>
                     checkSparkAnswerAndFallbackReason(sql, reason)
+                  case ExpectDispatch(names) =>
+                    checkSparkAnswerAndImpl(sql, native = Seq.empty, dispatched = names)
+                  case ExpectNative(names) =>
+                    checkSparkAnswerAndImpl(sql, native = names, dispatched = Seq.empty)
                   case Ignore(reason) =>
                     logInfo(s"IGNORED query ($reason): $sql")
                   case ExpectError(pattern) =>

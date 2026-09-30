@@ -26,7 +26,6 @@ import org.apache.spark.internal.{config, Logging}
 import org.apache.spark.io.CompressionCodec
 import org.apache.spark.serializer.SerializerManager
 import org.apache.spark.shuffle.BaseShuffleHandle
-import org.apache.spark.shuffle.ShuffleReader
 import org.apache.spark.shuffle.ShuffleReadMetricsReporter
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.storage.BlockId
@@ -51,7 +50,7 @@ class CometBlockStoreShuffleReader[K, C](
     blockManager: BlockManager = SparkEnv.get.blockManager,
     mapOutputTracker: MapOutputTracker = SparkEnv.get.mapOutputTracker,
     shouldBatchFetch: Boolean = false)
-    extends ShuffleReader[K, C]
+    extends CometShuffleReader[K, C]
     with Logging {
 
   private val dep = handle.dependency.asInstanceOf[CometShuffleDependency[_, _, _]]
@@ -122,7 +121,7 @@ class CometBlockStoreShuffleReader[K, C](
     // Update the context task metrics for each record read.
     val metricIter = CompletionIterator[(Any, Any), Iterator[(Any, Any)]](
       recordIter.map { record =>
-        readMetrics.incRecordsRead(record._2.numRows())
+        readMetrics.incRecordsRead(record._2.numRows().toLong)
         record
       },
       context.taskMetrics().mergeShuffleReadMetrics())
@@ -157,7 +156,7 @@ class CometBlockStoreShuffleReader[K, C](
    * Returns the raw concatenated InputStream of all shuffle blocks, bypassing the decode step.
    * Used by ShuffleScan direct read path.
    */
-  def readAsRawStream(): InputStream = {
+  override def readAsRawStream(): InputStream = {
     val streams = fetchIterator.map(_._2)
     new java.io.SequenceInputStream(new java.util.Enumeration[InputStream] {
       override def hasMoreElements: Boolean = streams.hasNext

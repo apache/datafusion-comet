@@ -19,10 +19,15 @@
 
 package org.apache.spark.sql.benchmark
 
+import scala.collection.mutable.ArrayBuffer
+
 import org.apache.spark.SparkConf
 import org.apache.spark.benchmark.Benchmark
 import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometNativeColumnarToRowExec}
+import org.apache.spark.sql.execution.{ColumnarToRowExec, QueryExecution, SparkPlan}
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.util.QueryExecutionListener
 
 import org.apache.comet.{CometConf, CometSparkSessionExtensions}
 
@@ -46,6 +51,9 @@ object CometColumnarToRowBenchmark extends CometBenchmarkBase {
       .set("spark.master", "local[1]")
       .setIfMissing("spark.driver.memory", "3g")
       .setIfMissing("spark.executor.memory", "3g")
+      .set(
+        "spark.shuffle.manager",
+        "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
       .set("spark.memory.offHeap.enabled", "true")
       .set("spark.memory.offHeap.size", "2g")
 
@@ -61,6 +69,8 @@ object CometColumnarToRowBenchmark extends CometBenchmarkBase {
     sparkSession.conf.set(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key, "true")
     sparkSession.conf.set(CometConf.COMET_ENABLED.key, "false")
     sparkSession.conf.set(CometConf.COMET_EXEC_ENABLED.key, "false")
+    // These fixtures are written by Spark and contain no unsigned small integers.
+    sparkSession.conf.set(CometConf.COMET_PARQUET_UNSIGNED_SMALL_INT_CHECK.key, "false")
     // Disable dictionary encoding to ensure consistent data representation
     sparkSession.conf.set("parquet.enable.dictionary", "false")
 
@@ -72,29 +82,67 @@ object CometColumnarToRowBenchmark extends CometBenchmarkBase {
    * code duplication across benchmark methods.
    */
   private def addC2RBenchmarkCases(benchmark: Benchmark, query: String): Unit = {
-    benchmark.addCase("Spark (ColumnarToRowExec)") { _ =>
-      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        spark.sql(query).noop()
+    def addCase(name: String, expected: Class[_ <: SparkPlan], conf: (String, String)*): Unit = {
+      withSQLConf(conf: _*) {
+        // Validate the actual noop write, whose plan can differ from the SELECT's plan.
+        // Keep execution and listener synchronization outside the timed benchmark cases.
+        val plans = ArrayBuffer.empty[SparkPlan]
+        val listener = new QueryExecutionListener {
+          override def onSuccess(funcName: String, qe: QueryExecution, durationNs: Long): Unit = {
+            plans += qe.executedPlan
+          }
+
+          override def onFailure(
+              funcName: String,
+              qe: QueryExecution,
+              exception: Exception): Unit = ()
+        }
+        spark.sparkContext.listenerBus.waitUntilEmpty()
+        spark.listenerManager.register(listener)
+        try {
+          spark.sql(query).noop()
+          spark.sparkContext.listenerBus.waitUntilEmpty()
+        } finally {
+          spark.listenerManager.unregister(listener)
+        }
+        val conversions = plans.flatMap { plan =>
+          collect(plan) {
+            case c: ColumnarToRowExec => c
+            case c: CometColumnarToRowExec => c
+            case c: CometNativeColumnarToRowExec => c
+          }
+        }
+        require(
+          conversions.nonEmpty && conversions.forall(expected.isInstance),
+          s"$name did not execute the expected columnar-to-row conversion.\n" +
+            plans.mkString("\n"))
+        benchmark.out.println(s"Verified $name")
+      }
+      benchmark.addCase(name) { _ =>
+        withSQLConf(conf: _*) {
+          spark.sql(query).noop()
+        }
       }
     }
 
-    benchmark.addCase("Comet JVM (CometColumnarToRowExec)") { _ =>
-      withSQLConf(
-        CometConf.COMET_ENABLED.key -> "true",
-        CometConf.COMET_EXEC_ENABLED.key -> "true",
-        CometConf.COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED.key -> "false") {
-        spark.sql(query).noop()
-      }
-    }
+    addCase(
+      "Spark (ColumnarToRowExec)",
+      classOf[ColumnarToRowExec],
+      CometConf.COMET_ENABLED.key -> "false")
 
-    benchmark.addCase("Comet Native (CometNativeColumnarToRowExec)") { _ =>
-      withSQLConf(
-        CometConf.COMET_ENABLED.key -> "true",
-        CometConf.COMET_EXEC_ENABLED.key -> "true",
-        CometConf.COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED.key -> "true") {
-        spark.sql(query).noop()
-      }
-    }
+    addCase(
+      "Comet JVM (CometColumnarToRowExec)",
+      classOf[CometColumnarToRowExec],
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ENABLED.key -> "true",
+      CometConf.COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED.key -> "false")
+
+    addCase(
+      "Comet Native (CometNativeColumnarToRowExec)",
+      classOf[CometNativeColumnarToRowExec],
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ENABLED.key -> "true",
+      CometConf.COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED.key -> "true")
   }
 
   /**
@@ -102,13 +150,13 @@ object CometColumnarToRowBenchmark extends CometBenchmarkBase {
    */
   def primitiveTypesBenchmark(values: Int): Unit = {
     val benchmark =
-      new Benchmark("Columnar to Row - Primitive Types", values, output = output)
+      new Benchmark("Columnar to Row - Primitive Types", values.toLong, output = output)
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
         // Create a table with various primitive types (includes strings)
         val df = spark
-          .range(values)
+          .range(values.toLong)
           .selectExpr(
             "id as long_col",
             "cast(id as int) as int_col",
@@ -134,13 +182,16 @@ object CometColumnarToRowBenchmark extends CometBenchmarkBase {
    */
   def fixedWidthOnlyBenchmark(values: Int): Unit = {
     val benchmark =
-      new Benchmark("Columnar to Row - Fixed Width Only (no strings)", values, output = output)
+      new Benchmark(
+        "Columnar to Row - Fixed Width Only (no strings)",
+        values.toLong,
+        output = output)
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
         // Create a table with ONLY fixed-width primitive types (no strings!)
         val df = spark
-          .range(values)
+          .range(values.toLong)
           .selectExpr(
             "id as long_col",
             "cast(id as int) as int_col",
@@ -166,12 +217,12 @@ object CometColumnarToRowBenchmark extends CometBenchmarkBase {
    */
   def stringTypesBenchmark(values: Int): Unit = {
     val benchmark =
-      new Benchmark("Columnar to Row - String Types", values, output = output)
+      new Benchmark("Columnar to Row - String Types", values.toLong, output = output)
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
         val df = spark
-          .range(values)
+          .range(values.toLong)
           .selectExpr(
             "id",
             "concat('short_', cast(id % 100 as string)) as short_str",
@@ -191,12 +242,12 @@ object CometColumnarToRowBenchmark extends CometBenchmarkBase {
    */
   def structTypesBenchmark(values: Int): Unit = {
     val benchmark =
-      new Benchmark("Columnar to Row - Struct Types", values, output = output)
+      new Benchmark("Columnar to Row - Struct Types", values.toLong, output = output)
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
         val df = spark
-          .range(values)
+          .range(values.toLong)
           .selectExpr(
             "id",
             // Simple struct
@@ -231,12 +282,12 @@ object CometColumnarToRowBenchmark extends CometBenchmarkBase {
    */
   def arrayTypesBenchmark(values: Int): Unit = {
     val benchmark =
-      new Benchmark("Columnar to Row - Array Types", values, output = output)
+      new Benchmark("Columnar to Row - Array Types", values.toLong, output = output)
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
         val df = spark
-          .range(values)
+          .range(values.toLong)
           .selectExpr(
             "id",
             // Array of primitives
@@ -262,12 +313,12 @@ object CometColumnarToRowBenchmark extends CometBenchmarkBase {
    */
   def mapTypesBenchmark(values: Int): Unit = {
     val benchmark =
-      new Benchmark("Columnar to Row - Map Types", values, output = output)
+      new Benchmark("Columnar to Row - Map Types", values.toLong, output = output)
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
         val df = spark
-          .range(values)
+          .range(values.toLong)
           .selectExpr(
             "id",
             // Map with string keys and int values
@@ -295,12 +346,12 @@ object CometColumnarToRowBenchmark extends CometBenchmarkBase {
    */
   def complexNestedTypesBenchmark(values: Int): Unit = {
     val benchmark =
-      new Benchmark("Columnar to Row - Complex Nested Types", values, output = output)
+      new Benchmark("Columnar to Row - Complex Nested Types", values.toLong, output = output)
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
         val df = spark
-          .range(values)
+          .range(values.toLong)
           .selectExpr(
             "id",
             // Array of structs
@@ -332,7 +383,7 @@ object CometColumnarToRowBenchmark extends CometBenchmarkBase {
    */
   def wideRowsBenchmark(values: Int): Unit = {
     val benchmark =
-      new Benchmark("Columnar to Row - Wide Rows (50 columns)", values, output = output)
+      new Benchmark("Columnar to Row - Wide Rows (50 columns)", values.toLong, output = output)
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
@@ -347,7 +398,7 @@ object CometColumnarToRowBenchmark extends CometBenchmarkBase {
           }
         }
 
-        val df = spark.range(values).selectExpr(columns: _*)
+        val df = spark.range(values.toLong).selectExpr(columns: _*)
 
         prepareTable(dir, df)
         val query = "SELECT * FROM parquetV1Table"
@@ -363,12 +414,15 @@ object CometColumnarToRowBenchmark extends CometBenchmarkBase {
    */
   def dictionaryEncodedBenchmark(values: Int): Unit = {
     val benchmark =
-      new Benchmark("Columnar to Row - Dictionary-encoded strings", values, output = output)
+      new Benchmark(
+        "Columnar to Row - Dictionary-encoded strings",
+        values.toLong,
+        output = output)
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
         val df = spark
-          .range(values)
+          .range(values.toLong)
           .selectExpr(
             "id",
             "concat('val_', cast(id % 1000 as string)) as low_card_str",
@@ -398,14 +452,14 @@ object CometColumnarToRowBenchmark extends CometBenchmarkBase {
    */
   def jvmConsumerBenchmark(values: Int): Unit = {
     val benchmark =
-      new Benchmark("Columnar to Row - JVM UDF consumer", values, output = output)
+      new Benchmark("Columnar to Row - JVM UDF consumer", values.toLong, output = output)
 
     spark.udf.register("plus_one", (x: Long) => x + 1)
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
         val df = spark
-          .range(values)
+          .range(values.toLong)
           .selectExpr(
             "id as long_col",
             "cast(id as int) as int_col",
