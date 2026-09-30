@@ -63,9 +63,11 @@ import org.apache.comet.shims.{CometTypeShim, ShimCometStreaming, ShimCometWindo
 object CometExecRule {
 
   private[rules] def removePlaceholders(plan: SparkPlan): SparkPlan = plan.transformUp {
-    // Recursive conversion can nest sinks. Remove the inner one before exposing its parent.
+    // revertUnsafePartialAggregates re-runs transform over already wrapped query stages, which
+    // can produce CometSinkPlaceHolder(CometSinkPlaceHolder(stage)). Remove sinks bottom-up.
     case CometSinkPlaceHolder(_, _, child) => child
-    // Scan wrappers are leaves, so their wrapped plan was not visited by transformUp.
+    // Scan wrappers are leaves. Recurse explicitly to preserve the old top-down cleanup's
+    // coverage of the wrapped plan's descendants as well as remove wrappers at its root.
     case CometScanWrapper(_, wrapped) => removePlaceholders(wrapped)
   }
 
