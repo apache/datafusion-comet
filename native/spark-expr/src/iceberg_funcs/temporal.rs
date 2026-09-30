@@ -359,14 +359,15 @@ mod tests {
             // `(int)` narrowing wraps it exactly as `as i32` does.
             (i64::MAX, 292_277, 3_507_324, 106_751_991, -1_732_919_508),
             (i64::MIN, -292_278, -3_507_325, -106_751_992, 1_732_919_507),
-            // The lowest `i64` that ends in 999999, where moving the value a second earlier would
-            // overflow.
+            // -290307-01-01T00:00:00.999999, 999999 micros into the lowest year boundary in
+            // range, so all four take the unit before it. A floor gives -292_277, -3_507_324,
+            // -106_751_981, and 1_732_919_752.
             (
-                i64::MIN + 775_807,
+                -106_751_981 * MICROS_PER_DAY + 999_999,
                 -292_278,
                 -3_507_325,
-                -106_751_992,
-                1_732_919_507,
+                -106_751_982,
+                1_732_919_751,
             ),
             (
                 8_000_000_000_000_000_000,
