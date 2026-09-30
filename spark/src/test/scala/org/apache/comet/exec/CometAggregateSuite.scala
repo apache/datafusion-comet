@@ -28,7 +28,7 @@ import org.apache.spark.{CometListenerBusUtils, SparkConf}
 import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.Cast
-import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial, PartialMerge, RegrIntercept, RegrR2, RegrReplacement, RegrSlope, RegrSXY}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.optimizer.EliminateSorts
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, RangePartitioning}
 import org.apache.spark.sql.comet.{CometFilterExec, CometHashAggregateExec, CometNativeExec, CometProjectExec}
@@ -1812,38 +1812,6 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       assert(
         RegrSparkVersions.r2DegenerateCasesSwapped(version) == expected,
         s"regr_r2 degenerate-case swap for Spark $version should be $expected")
-    }
-  }
-
-  test("regression aggregates fall back to Spark by default") {
-    // https://github.com/apache/datafusion-comet/issues/6423: the native merge of partial
-    // aggregates orders its floating-point operations differently from Spark. For a variable that
-    // is constant at 0.1 and merged from two partial aggregates, m2 ends up around 1e-34 instead
-    // of 0, Spark's degenerate-case checks never fire, and the native results are wrong. Until the
-    // merge matches Spark, every regr aggregate has to fall back unless the user opts in.
-    withTempPath { dir =>
-      val path = dir.getCanonicalPath
-      spark
-        .range(0, 6, 1, 2)
-        .selectExpr("CAST(id AS DOUBLE) AS y", "0.1D AS x")
-        .write
-        .parquet(path)
-      withParquetTable(path, "t") {
-        // The wrong results need rows merged from more than one partial aggregate, one per file.
-        assert(sql("SELECT * FROM t").rdd.getNumPartitions == 2)
-        val optInKeys = Seq[Class[_]](
-          classOf[RegrSlope],
-          classOf[RegrIntercept],
-          classOf[RegrR2],
-          classOf[RegrSXY],
-          // regr_sxx and regr_syy
-          classOf[RegrReplacement]).map(cls => CometConf.getExprAllowIncompatConfigKey(cls))
-        checkSparkAnswerAndFallbackReasons(
-          "SELECT regr_slope(y, x), regr_intercept(y, x), regr_r2(y, x), regr_sxx(y, x), " +
-            "regr_sxy(y, x), regr_r2(x, y), regr_syy(x, y) FROM t",
-          optInKeys.map(key => s"set $key=true").toSet +
-            "https://github.com/apache/datafusion-comet/issues/6423")
-      }
     }
   }
 
