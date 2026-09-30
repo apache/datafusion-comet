@@ -54,6 +54,18 @@ SELECT IF(q, named_struct('x', i), named_struct('x', 0)) FROM test_if_nested
 query
 SELECT IF(q, named_struct('x', 0), named_struct('x', i)) FROM test_if_nested
 
+-- Different fields are nullable in each branch, so both branches need a cast to the common type.
+query expect_native(if)
+SELECT IF(q, named_struct('x', i, 'y', 0), named_struct('x', 0, 'y', i)) FROM test_if_nested
+
+-- Reconcile nested struct fields through an array, in both branch orders.
+query expect_native(if)
+SELECT IF(q, array(named_struct('x', i)), array(named_struct('x', 0))), IF(q, array(named_struct('x', 0)), array(named_struct('x', i))) FROM test_if_nested
+
+-- Recurse through a struct into map values and array elements, in both branch orders.
+query expect_native(if)
+SELECT IF(q, named_struct('m', map('k', i), 'a', array(i)), named_struct('m', map('k', 0), 'a', array(0))), IF(q, named_struct('m', map('k', 0), 'a', array(0)), named_struct('m', map('k', i), 'a', array(i))) FROM test_if_nested
+
 -- map constructors: the value can be NULL in one branch only
 query
 SELECT IF(q, map('k', i), map('k', 0)) FROM test_if_nested
