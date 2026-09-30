@@ -50,6 +50,7 @@ const SPARK_DEFAULT_SEED: i64 = 42;
 /// - `Time64`, which `SparkXxhash64` does not dispatch
 /// - `Float32`/`Float64` (and anything containing one): `SparkXxhash64` hashes the raw bits of a
 ///   NaN, where Spark hashes every NaN as the canonical NaN
+///   (<https://github.com/apache/datafusion/issues/25913>)
 pub fn spark_xxhash64(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
     let length = args.len();
     let seed = &args[length - 1];

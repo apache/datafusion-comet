@@ -33,12 +33,13 @@ SELECT md5('Spark SQL'), sha1('test'), sha2('test', 0), sha2('test', 256), sha2(
 
 -- Spark hashes a float through doubleToLongBits or floatToIntBits, which canonicalize NaN, so
 -- every NaN hashes alike. Negating a column flips the sign bit of a NaN, giving the bits that
--- arithmetic produces on x86-64.
+-- arithmetic produces on x86-64. The infinities share a NaN's exponent bits but are not NaN, so
+-- they keep their own hashes, which negation swaps.
 statement
 CREATE TABLE test_nan(d double, f float) USING parquet
 
 statement
-INSERT INTO test_nan VALUES (double('NaN'), float('NaN')), (0.0, 0.0), (double('-0.0'), float('-0.0')), (1.5, 1.5), (NULL, NULL)
+INSERT INTO test_nan VALUES (double('NaN'), float('NaN')), (0.0, 0.0), (double('-0.0'), float('-0.0')), (1.5, 1.5), (NULL, NULL), (double('Infinity'), float('Infinity')), (double('-Infinity'), float('-Infinity'))
 
 query
 SELECT hash(d), hash(-d), xxhash64(d), xxhash64(-d), hash(f), hash(-f), xxhash64(f), xxhash64(-f), hash(-d, -f), xxhash64(-d, -f) FROM test_nan
