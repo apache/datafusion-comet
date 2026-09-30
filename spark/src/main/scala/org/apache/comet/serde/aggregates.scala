@@ -1169,14 +1169,12 @@ object CometCollectSet extends CometAggregateExpressionSerde[CollectSet] {
     }
   }
 
+  private val respectNullsReason =
+    "`collect_set` with `RESPECT NULLS` falls back to Spark, since the native " +
+      "implementation always drops null inputs."
+
   override def getUnsupportedReasons(): Seq[String] =
-    if (isSpark42Plus) {
-      Seq(
-        "`collect_set` with `RESPECT NULLS` falls back to Spark, since the native " +
-          "implementation always drops null inputs.")
-    } else {
-      Nil
-    }
+    if (isSpark42Plus) Seq(respectNullsReason) else Nil
 
   override def getSupportLevel(expr: CollectSet): SupportLevel = {
     // The native path always drops null inputs. Spark 4.2 added an `ignoreNulls` field to
@@ -1185,19 +1183,17 @@ object CometCollectSet extends CometAggregateExpressionSerde[CollectSet] {
     // through 4.1 the field does not exist, `RESPECT NULLS`/`IGNORE NULLS` are rejected at
     // analysis time, and CometCollectShim.ignoreNulls hardcodes true, making this a no-op.
     if (!CometCollectShim.ignoreNulls(expr)) {
-      Unsupported(Some("collect_set with RESPECT NULLS (ignoreNulls = false) is not supported"))
+      Unsupported(Some(respectNullsReason))
     } else if (isSpark42Plus) {
       Compatible()
     } else {
-      CometCollectAggregate.nestedNullLevel(expr.children.head.dataType).getOrElse {
-        SupportLevel
-          .strictFloatingPointReason(
-            expr.children.head.dataType,
-            "collect_set on floating-point types " +
-              "(Comet deduplicates NaN values and distinguishes -0.0 from 0.0, unlike Spark)")
-          .map(reason => Incompatible(Some(reason)))
-          .getOrElse(Compatible())
-      }
+      SupportLevel
+        .strictFloatingPointReason(
+          expr.children.head.dataType,
+          "collect_set on floating-point types " +
+            "(Comet deduplicates NaN values and distinguishes -0.0 from 0.0, unlike Spark)")
+        .map(reason => Incompatible(Some(reason)))
+        .getOrElse(Compatible())
     }
   }
 
@@ -1242,29 +1238,44 @@ object CometCollectSet extends CometAggregateExpressionSerde[CollectSet] {
 }
 
 /**
- * Shared gate for collect_list / collect_set. Native collect accumulates the input's own child
- * array, so every nested element keeps the non-nullability its producer gave it (`map_entries`
- * yields a non-null entry struct with a non-null key), while the declared output type is built
- * from Spark's `dataType` widened by `Utils.declaredChildNullability`. Where the two disagree
- * DataFusion rejects the batch at runtime ("column types must match schema types"). Gated on any
- * NullType-bearing input rather than the exact failing shapes; the same mismatch exists for
- * non-Null nesting (`collect_list(array(array(id)))` fails on main) and is a native-aggregate
- * bug.
+ * NullType gate for collect_list. Without a grouping key, the final aggregation merges the
+ * partial states as they arrive from the shuffle, and a nested element there still carries the
+ * non-nullable fields its producer gave it (`named_struct('a', id)`, `array(id)`, `map_entries`),
+ * while the declared output has them nullable: the planner's nullability cast on the collect
+ * child only covers the partial side. DataFusion then rejects the batch ("column types must match
+ * schema types"). A grouped collect_list, and collect_set in either form, are not affected; the
+ * serde cannot see the grouping keys, so the gate covers grouped collect_list as well.
+ *
+ * This is not specific to NullType: `SELECT collect_list(array(id)) FROM t` over more than one
+ * partition fails the same way on main. For NullType-bearing input main fails even sooner: a
+ * nested element such as `array(named_struct('a', id, 'b', NULL))` raises this error from a
+ * single partition. The gate trades the NullType shapes that do run on main (a struct with a NULL
+ * field, and any grouped collect_list) for keeping all of them off that path; it can go once the
+ * final merge normalizes the state as well.
  */
-object CometCollectAggregate {
+object CometCollectListNullType {
 
-  def nestedNullLevel(dt: DataType): Option[SupportLevel] =
+  val reason: String =
+    "collect_list over a NullType-bearing input falls back to Spark: without a grouping key, " +
+      "the native final merge rejects an element whose producer declares non-nullable fields, " +
+      "and the grouping keys are not known when the aggregate is planned"
+
+  def supportLevel(dt: DataType): Option[SupportLevel] =
     if (SupportLevel.containsType(dt, classOf[NullType])) {
-      Some(
-        Unsupported(
-          Some("native collect_list/collect_set rebuilds a NullType-bearing element with a " +
-            "nullability that does not match the declared output type")))
+      Some(Unsupported(Some(reason)))
     } else {
       None
     }
 }
 
 object CometCollectList extends CometAggregateExpressionSerde[CollectList] {
+
+  private val respectNullsReason =
+    "`collect_list` with `RESPECT NULLS` falls back to Spark, since the native " +
+      "implementation always drops null inputs."
+
+  override def getUnsupportedReasons(): Seq[String] =
+    (if (isSpark42Plus) Seq(respectNullsReason) else Nil) :+ CometCollectListNullType.reason
 
   override def getSupportLevel(expr: CollectList): SupportLevel = {
     // The native path delegates to SparkCollectList, which always drops null inputs. Spark 4.2
@@ -1274,9 +1285,9 @@ object CometCollectList extends CometAggregateExpressionSerde[CollectList] {
     // are rejected at analysis time, and CometCollectShim.ignoreNulls hardcodes true, making this
     // a no-op.
     if (!CometCollectShim.ignoreNulls(expr)) {
-      Unsupported(Some("collect_list with RESPECT NULLS (ignoreNulls = false) is not supported"))
+      Unsupported(Some(respectNullsReason))
     } else {
-      CometCollectAggregate.nestedNullLevel(expr.children.head.dataType).getOrElse(Compatible())
+      CometCollectListNullType.supportLevel(expr.children.head.dataType).getOrElse(Compatible())
     }
   }
 

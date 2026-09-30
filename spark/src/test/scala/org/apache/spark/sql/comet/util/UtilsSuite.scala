@@ -316,10 +316,10 @@ class UtilsSuite extends CometTestBase {
   test("coalesceBroadcastBatches bypasses exactly the schemas with a NullType under a struct") {
     // Exhaustive over the shape space of the bypass rule: VectorAppender hangs only when a
     // NullVector is a *direct* child of a struct (see `Utils.hasNullDirectlyUnderStruct` for
-    // the Arrow mechanics). Each shape runs the real appender under a timeout, so a rule that
-    // is too narrow shows up as a timeout on the hanging shapes instead of a hung build, and
-    // one that is too wide shows up as a needless bypass. Once an Arrow release fixes the
-    // appender, the shapes reported as needless bypasses are the ones whose gate can go.
+    // the Arrow mechanics). Each shape runs under a timeout, so a rule that is too narrow shows
+    // up as a timeout on the hanging shapes instead of a hung build, and one that is too wide
+    // shows up as a needless bypass. The bypassed shapes never reach the appender, so this test
+    // cannot tell when an Arrow release fixes it; that needs a direct appender probe.
     val nullStruct = StructType(Seq(StructField("a", NullType)))
     val shapes: Seq[(DataType, Any)] = Seq(
       NullType -> null,
@@ -357,9 +357,14 @@ class UtilsSuite extends CometTestBase {
       val bufs = Utils.serializeBatches(batches.iterator).map(_._2).toVector
       batches.foreach(_.close())
 
+      // A hanging append keeps growing its vectors after the timeout gives up on it; the bound
+      // turns that into an allocation failure in its own thread instead of exhausting the
+      // test JVM's direct memory.
+      val bounded = CometArrowAllocator.newChildAllocator(s"coalesce $name", 0, 64L << 20)
       val (result, batchCount, totalRows) = Await.result(
-        Future(Utils.coalesceBroadcastBatches(bufs.iterator))(ExecutionContext.global),
+        Future(Utils.coalesceBroadcastBatches(bufs.iterator, bounded))(ExecutionContext.global),
         10.seconds)
+      bounded.close()
 
       // The planner's gate (`CometBroadcastExchangeExec.getSupportLevel`) uses this same
       // predicate, so this also pins that it refuses exactly the shapes the appender cannot take.

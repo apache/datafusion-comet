@@ -28,9 +28,10 @@ import org.apache.spark.sql.types.BinaryType
 import org.apache.comet.CometConf
 import org.apache.comet.CometExplainInfo
 import org.apache.comet.CometSparkSessionExtensions.{withCodegenDispatchExpr, withFallbackReason}
-import org.apache.comet.codegen.CometBatchKernelCodegen
+import org.apache.comet.DataTypeSupport
+import org.apache.comet.codegen.{CometBatchKernelCodegen, DispatchOccurrence, InterpretedKernelExpr}
 import org.apache.comet.serde.ExprOuterClass.Expr
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, serializeDataType}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, serializeDataType, sparkEvaluatesInterpreted}
 import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 
 /**
@@ -116,6 +117,13 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
       case None =>
     }
 
+    // Where Spark would evaluate this tree through `eval` (see `sparkEvaluatesInterpreted`), the
+    // kernel does too: some expressions' `eval` evaluates arguments their generated code skips
+    // (`ArraysZip` evaluates every argument before it looks for a NULL one), and an error one of
+    // them raises must reach the query as it does in Spark.
+    val kernelExpr =
+      if (sparkEvaluatesInterpreted) InterpretedKernelExpr(boundExpr) else boundExpr
+
     // Serialize via Spark's closure serializer: respects the task context classloader (so user
     // UDF jars are visible) and matches Spark's wire format. The bytes become arg 0 of the
     // JvmScalarUdf proto and self-describe the expression so this works in cluster mode without
@@ -130,7 +138,7 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
     val bytes =
       try {
         val serializer = SparkEnv.get.closureSerializer.newInstance()
-        val buffer = serializer.serialize(boundExpr)
+        val buffer = serializer.serialize(DispatchOccurrence.tag(kernelExpr))
         val serialized = new Array[Byte](buffer.remaining())
         buffer.get(serialized)
         serialized
@@ -159,12 +167,18 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
         return None
       }
     }
-    val returnTypeProto = serializeDataType(expr.dataType).getOrElse {
-      withFallbackReason(
-        expr,
-        s"$exprName: codegen dispatch: unsupported return type ${expr.dataType}")
-      return None
-    }
+    // Declared deep-nullable, like the Arrow field the kernel exports
+    // (`CometScalaUDFCodegen.lookupOrCompile`): native constructors (`make_array`,
+    // `named_struct`) and Parquet columns produce nested fields nullable, and a kernel that
+    // compares two inputs' types (set ops, CASE, list compare) rejects a dispatched side that
+    // keeps Spark's non-null flags.
+    val returnTypeProto =
+      serializeDataType(DataTypeSupport.deepNullable(expr.dataType)).getOrElse {
+        withFallbackReason(
+          expr,
+          s"$exprName: codegen dispatch: unsupported return type ${expr.dataType}")
+        return None
+      }
 
     val udfBuilder = ExprOuterClass.JvmScalarUdf
       .newBuilder()

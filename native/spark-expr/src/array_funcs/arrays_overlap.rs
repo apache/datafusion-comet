@@ -131,9 +131,15 @@ impl ScalarUDFImpl for SparkArraysOverlap {
                 Ok(ColumnarValue::Array(result))
             }
             (left, right) => {
-                // Handle scalar inputs by converting to arrays
-                let left_arr = left.to_array(1)?;
-                let right_arr = right.to_array(1)?;
+                // At least one side is a scalar. A scalar beside a column is expanded to the batch
+                // length so every row is compared; only two scalars produce a scalar result.
+                let both_scalar = matches!(
+                    (left, right),
+                    (ColumnarValue::Scalar(_), ColumnarValue::Scalar(_))
+                );
+                let rows = if both_scalar { 1 } else { args.number_rows };
+                let left_arr = left.to_array(rows)?;
+                let right_arr = right.to_array(rows)?;
                 let result = match (left_arr.data_type(), right_arr.data_type()) {
                     (DataType::List(_), DataType::List(_)) => arrays_overlap_list::<i32>(
                         left_arr.as_any().downcast_ref().unwrap(),
@@ -149,8 +155,13 @@ impl ScalarUDFImpl for SparkArraysOverlap {
                         )
                     }
                 };
-                let scalar = ScalarValue::try_from_array(&result, 0)?;
-                Ok(ColumnarValue::Scalar(scalar))
+                if both_scalar {
+                    Ok(ColumnarValue::Scalar(ScalarValue::try_from_array(
+                        &result, 0,
+                    )?))
+                } else {
+                    Ok(ColumnarValue::Array(result))
+                }
             }
         }
     }

@@ -106,7 +106,10 @@ mod tests {
         let out = child_with_parent_nulls(&struct_array, 0).unwrap();
         assert_eq!(out.data_type(), &DataType::Null);
         assert_eq!(out.len(), 3);
-        assert!(out.nulls().is_none(), "a NullArray must not carry a validity bitmap");
+        assert!(
+            out.nulls().is_none(),
+            "a NullArray must not carry a validity bitmap"
+        );
         out.to_data().validate_full().unwrap();
     }
 

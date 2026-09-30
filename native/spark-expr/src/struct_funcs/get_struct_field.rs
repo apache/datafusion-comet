@@ -149,11 +149,6 @@ mod tests {
     use arrow::datatypes::Fields;
     use datafusion::physical_expr::expressions::{Column, Literal};
 
-    // A field of a NULL struct must be NULL (Spark semantics) even when the child buffer holds a
-    // non-null value at that row -- Arrow stores child validity independently of the parent
-    // struct's null mask, so a logically-null struct column read from parquet can still carry a
-    // populated child buffer. Without propagating the parent null mask, `isnotnull(struct.field)`
-    // wrongly evaluates TRUE for a null struct.
     // A scalar struct input yields a scalar field, so a consumer that broadcasts it over the batch
     // (a CASE branch, a projection beside a column) sees one value per row rather than a one-row
     // array. A null struct scalar yields a null scalar, for a typed field and a Null-typed one.
@@ -196,6 +191,11 @@ mod tests {
         }
     }
 
+    // A field of a NULL struct must be NULL (Spark semantics) even when the child buffer holds a
+    // non-null value at that row -- Arrow stores child validity independently of the parent
+    // struct's null mask, so a logically-null struct column read from parquet can still carry a
+    // populated child buffer. Without propagating the parent null mask, `isnotnull(struct.field)`
+    // wrongly evaluates TRUE for a null struct.
     #[test]
     fn field_of_null_struct_is_null() {
         // Child is non-null at every row; the struct itself is null at rows 1 and 3.

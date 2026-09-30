@@ -127,12 +127,16 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
     // batches while reusing its builders. A `NullBuilder` keeps its length across `finish`, so
     // every Null-bearing shape used to fail or miscount from the second batch on. The bypass
     // writer never sends more than one batch per call, hence the partition count here, and the
-    // spill threshold is lifted so the writer sees several rows per partition.
+    // spill threshold is lifted so the writer sees several rows per partition. The suite's
+    // `local[5]` session writes the table as five files, so each of the five map tasks sends each
+    // of the 300 destinations about 13 rows, several batches of two; with too few rows per
+    // destination no call would reach a second batch, and the test would pass with the reset
+    // removed.
     withSQLConf(
       CometConf.COMET_SHUFFLE_JVM_BATCH_SIZE.key -> "2",
       CometConf.COMET_SHUFFLE_JVM_SPILL_THRESHOLD.key -> "100000",
       CometConf.COMET_SHUFFLE_CONVERT_FROM_SPARK_PLAN_ENABLED.key -> "false") {
-      withParquetTable((0L until 2000L).map(Tuple1(_)), "tbl") {
+      withParquetTable((0L until 20000L).map(Tuple1(_)), "tbl") {
         val producers = Seq(
           "named_struct('v', _1, 'n', NULL)",
           "named_struct('s', named_struct('v', _1, 'n', NULL))",
@@ -156,10 +160,12 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
   }
 
   test("columnar shuffle with Map[NullType, _] column") {
-    // map() leaves a NullType key, which Arrow requires to be non-nullable in the IPC schema;
-    // transform_values keeps a second copy non-foldable so it is built by the child rather than
-    // constant-folded into a literal. `map()` is MapType(NullType, NullType) only while the
-    // legacy flag is off.
+    // map() leaves a NullType key. The shuffle rows go through the native builders, which declare
+    // the key non-nullable themselves, so this is coverage for the shape rather than a witness for
+    // the Arrow Java IPC key repair (`Utils.withNonNullableMapKeys`); `UtilsSuite` and the pyspark
+    // Arrow UDF tests cover that. transform_values keeps a second copy non-foldable so it is built
+    // by the child rather than constant-folded into a literal. `map()` is
+    // MapType(NullType, NullType) only while the legacy flag is off.
     withSQLConf(SQLConf.LEGACY_CREATE_EMPTY_COLLECTION_USING_STRING_TYPE.key -> "false") {
       val df = sql(
         "SELECT id, map() AS m1, transform_values(map(), (k, v) -> id) AS m2 " +

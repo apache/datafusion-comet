@@ -159,23 +159,17 @@ object CometMapFromArrays extends CometExpressionSerde[MapFromArrays] {
   override def getCompatibleNotes(): Seq[String] =
     Seq(MapKeyDedupPolicySupport.nullKeyReason)
 
-  private val scalarSideReason: String =
-    "native map takes the first row of a scalar list where the other argument is per-row"
+  override def getUnsupportedReasons(): Seq[String] = Seq(NullGuard.reason)
 
-  override def getUnsupportedReasons(): Seq[String] = Seq(scalarSideReason, NullGuard.reason)
-
-  override def getSupportLevel(expr: MapFromArrays): SupportLevel = {
-    if (MapKeyDedupPolicySupport.isLastWin) {
-      Incompatible(Some(MapKeyDedupPolicySupport.incompatibleReason))
-    } else if (expr.left.foldable != expr.right.foldable) {
-      // DataFusion's `map` reads a scalar list argument through its first row only, so a literal
-      // array beside a per-row one fails with "map requires key and value lists to have the same
-      // length" as soon as the batch holds more than one row.
-      Unsupported(Some(scalarSideReason))
-    } else {
-      NullGuard.supportLevel(expr.left, expr.right)
+  // The null guard comes before the LAST_WIN branch: `Incompatible` hands the expression to
+  // `convert` once the user opts in, so a shape the guard cannot run has to be refused first or
+  // the opt-in would reach it.
+  override def getSupportLevel(expr: MapFromArrays): SupportLevel =
+    NullGuard.supportLevel(expr.left, expr.right) match {
+      case _: Compatible if MapKeyDedupPolicySupport.isLastWin =>
+        Incompatible(Some(MapKeyDedupPolicySupport.incompatibleReason))
+      case level => level
     }
-  }
 
   override def convert(
       expr: MapFromArrays,

@@ -221,6 +221,24 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("a cast that only relabels nested field names and nullability is compatible") {
+    // A set op casts both sides to one element type; when only names or nullability change, the
+    // cast is a relabel, which must stay native rather than go through the codegen dispatcher.
+    val dates = ArrayType(ArrayType(DateType, containsNull = false), containsNull = false)
+    val nullableDates = ArrayType(ArrayType(DateType, containsNull = true), containsNull = true)
+    val lower = ArrayType(StructType(Seq(StructField("a", DateType, nullable = false))))
+    val upper = ArrayType(StructType(Seq(StructField("A", DateType, nullable = true))))
+    val mapOf = (t: DataType) => MapType(IntegerType, t, valueContainsNull = false)
+    Seq((dates, nullableDates), (lower, upper), (mapOf(lower), mapOf(upper))).foreach {
+      case (from, to) =>
+        assert(CometCast.isSupported(from, to, None, CometEvalMode.LEGACY) == Compatible())
+    }
+    // A change of element type is not a relabel and keeps its own rule.
+    assert(
+      CometCast.isSupported(dates, ArrayType(ArrayType(LongType)), None, CometEvalMode.LEGACY)
+        != Compatible())
+  }
+
   test("cast BooleanType to DecimalType(14,4)") {
     castTest(generateBools(), DataTypes.createDecimalType(14, 4))
   }

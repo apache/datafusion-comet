@@ -1350,6 +1350,34 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
     }
   }
 
+  test("native shuffle: round robin over a hashed NullType-bearing column falls back") {
+    // Without positional placement, native round-robin hashes every column, and the native
+    // hasher has no NullType arm; `map(_1, NULL)` reaches the exchange from the codegen
+    // dispatcher, which runs NullType-bearing outputs.
+    withSQLConf(
+      CometConf.COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_POSITIONAL_ENABLED.key -> "false",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      withParquetTable((0 until 4).map(i => (i.toLong, i)), "tbl") {
+        checkSparkAnswerAndFallbackReason(
+          "SELECT /*+ REPARTITION(2) */ map(_1, NULL) AS m FROM tbl",
+          "the native hasher does not support NullType")
+        // A column the hasher never reads keeps the native shuffle: past `maxHashColumns`, or
+        // with every row placed by position.
+        withSQLConf(
+          CometConf.COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_MAX_HASH_COLUMNS.key -> "1") {
+          checkSparkAnswerAndOperator(
+            sql("SELECT /*+ REPARTITION(2) */ _1, map(_1, NULL) AS m FROM tbl"))
+        }
+        withSQLConf(
+          CometConf.COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_POSITIONAL_ENABLED.key -> "true") {
+          checkSparkAnswerAndOperator(
+            sql("SELECT /*+ REPARTITION(2) */ map(_1, NULL) AS m FROM tbl"))
+        }
+      }
+    }
+  }
+
   test("native shuffle: round robin deterministic behavior") {
     // Test that round robin produces consistent results across multiple executions
     withSQLConf(CometConf.COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_ENABLED.key -> "true") {

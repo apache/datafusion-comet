@@ -67,7 +67,6 @@ trait CometBenchmarkBase
       // Off-heap memory is disabled, so Comet runs in on-heap mode, which must be enabled
       // explicitly or Comet stays disabled.
       .set("spark.comet.exec.onHeap.enabled", "true")
-    extraSparkConf.foreach { case (key, value) => conf.set(key, value) }
 
     val sparkSession = SparkSession
       .builder()
@@ -90,12 +89,6 @@ trait CometBenchmarkBase
 
     sparkSession
   }
-
-  /**
-   * Static Spark settings a benchmark needs in its context, applied on top of the defaults above
-   * before the context starts. Session-level SQL configs belong in the cases instead.
-   */
-  protected def extraSparkConf: Map[String, String] = Map.empty
 
   def runCometBenchmark(args: Array[String]): Unit
 

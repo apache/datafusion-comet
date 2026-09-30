@@ -61,10 +61,10 @@
 ## array_except
 
 - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
-- Spark 3.5.8 (audited 2026-05-27): baseline. `ArrayExcept(left, right) extends ArrayBinaryLike with ComplexTypeMergingExpression`; result preserves left-side first occurrences not present in right. Comet routes via `CometArrayExcept` and unconditionally flags `Incompatible` ("Null handling and ordering may differ from Spark"); also falls back for `BinaryType` / `StructType` element types.
+- Spark 3.5.8 (audited 2026-05-27): baseline. `ArrayExcept(left, right) extends ArrayBinaryLike with ComplexTypeMergingExpression`; result preserves left-side first occurrences not present in right. Comet routes via `CometArrayExcept`, which flags supported element types `Incompatible` ("Null handling and ordering may differ from Spark"), so unless `allowIncompatible` opts into the native kernel they run through the JVM codegen dispatcher when it is enabled and accepts the expression, and fall back to Spark otherwise. Any other element type (binary, struct or map, for example, at any array depth) is `Unsupported`: it never reaches the native kernel, whatever `allowIncompatible` says, and takes the dispatcher or Spark under the same condition.
 - Spark 4.0.1 (audited 2026-05-27): `nullIntolerant = true` moves into `ArrayBinaryLike`; the overflow path uses `arrayFunctionWithElementsExceedLimitError`.
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
-- Float/double NaN and signed-zero canonicalization matches `array_distinct`. (`array_except` still falls back by default for the null-handling/ordering reasons noted above.)
+- Float/double NaN and signed-zero canonicalization matches `array_distinct`. (`array_except` still avoids the native kernel by default for the null-handling/ordering reasons noted above.)
 
 ## array_insert
 
@@ -131,14 +131,14 @@
 ## array_repeat
 
 - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
-- Spark 3.5.8 (audited 2026-05-27): baseline. `ArrayRepeat(left, right) extends BinaryExpression with ExpectsInputTypes`; `inputTypes = Seq(AnyDataType, IntegerType)`. NULL count yields NULL; count <= 0 yields empty array; count > `MAX_ROUNDED_ARRAY_LENGTH` throws at runtime. Wired as `CometScalarFunction("array_repeat")` against `datafusion-spark`'s `SparkArrayRepeat`, which returns NULL for NULL count and repeats NULL elements (matching Spark).
+- Spark 3.5.8 (audited 2026-05-27): baseline. `ArrayRepeat(left, right) extends BinaryExpression with ExpectsInputTypes`; `inputTypes = Seq(AnyDataType, IntegerType)`. NULL count yields NULL; count <= 0 yields empty array; count > `MAX_ROUNDED_ARRAY_LENGTH` throws at runtime. Wired through `CometArrayRepeat` to `datafusion-spark`'s `SparkArrayRepeat` (an array argument whose item Spark declares non-nullable, other than a `CreateArray` or one with NullType elements, routes through the JVM codegen dispatcher, since the kernel rebuilds the item as nullable), which returns NULL for NULL count and repeats NULL elements (matching Spark). Spark's `eval` evaluates the count first and skips the element when it is NULL, while its generated code evaluates both, as the native kernel does; where Spark would use `eval` (`QueryPlanSerde.sparkEvaluatesInterpreted`), a nullable count runs through the codegen dispatcher, which then evaluates the tree through `eval` too.
 - Spark 4.0.1 (audited 2026-05-27): error message uses `createArrayWithElementsExceedLimitError(prettyName, count)`; semantics unchanged.
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 
 ## array_union
 
 - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
-- Spark 3.5.8 (audited 2026-05-27): baseline. `ArrayUnion(left, right) extends ArrayBinaryLike with ComplexTypeMergingExpression`; result is left-side distinct elements followed by new right-side elements. Wired as `CometScalarFunction("array_union")`.
+- Spark 3.5.8 (audited 2026-05-27): baseline. `ArrayUnion(left, right) extends ArrayBinaryLike with ComplexTypeMergingExpression`; result is left-side distinct elements followed by new right-side elements. Wired through `CometArrayUnion` to the native `array_union`, with both sides cast to a deeply-nullable element type; a `NullType`-element side routes through the JVM codegen dispatcher.
 - Spark 4.0.1 (audited 2026-05-27): `nullIntolerant = true` moves into `ArrayBinaryLike`; overflow path uses `arrayFunctionWithElementsExceedLimitError`.
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 - Float/double element types follow the same Spark 4.2.0-only gate as `array_distinct`. Result element ordering matches Spark (left-side distinct elements followed by new right-side elements).
@@ -153,7 +153,7 @@
 ## arrays_zip
 
 - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
-- Spark 3.5.8 (audited 2026-05-27): baseline. `ArraysZip(children, names)`; returns an array of structs, padding shorter inputs with NULL. Comet routes via `CometArraysZip` and rejects unsupported child element types (anything outside primitives, decimals, dates/timestamps, strings, binary, and nested arrays/structs of those).
+- Spark 3.5.8 (audited 2026-05-27): baseline. `ArraysZip(children, names)`; returns an array of structs, padding shorter inputs with NULL. Comet routes via `CometArraysZip` and rejects unsupported child element types (anything outside primitives, decimals, dates/timestamps, strings, binary, and nested arrays/structs of those). The inputs are wrapped in `CASE WHEN a IS NULL THEN NULL WHEN b IS NULL THEN NULL ... ELSE arrays_zip(...) END`: Spark's generated code stops evaluating the arguments at the first NULL one, and one WHEN per argument keeps native from evaluating a later argument on those rows (a single `AND` of the null checks can, which raised a division by zero under ANSI). Spark's interpreted `eval` evaluates every argument, so where Spark would use it (`spark.sql.codegen.factoryMode=NO_CODEGEN`, beneath a non-leaf `CodegenFallback` expression such as a higher-order function, as the input of an imperative aggregate, or under a generator outside a whole-stage stage, all of which `QueryPlanSerde.sparkEvaluatesInterpreted` tracks) `arrays_zip` over several arguments falls back to Spark, and the codegen dispatcher evaluates a tree it runs through `eval`. `arrays_zip()` with no arguments falls back to Spark.
 - Spark 4.0.1 (audited 2026-05-27): the length-mismatch error switches from `IllegalArgumentException` to `SparkIllegalArgumentException("_LEGACY_ERROR_TEMP_3235")`; runtime unchanged.
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 

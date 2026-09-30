@@ -47,13 +47,15 @@ This feature is enabled by default. Set `spark.comet.exec.scalaUDF.codegen.enabl
 - Hive `GenericUDF` and `SimpleUDF`.
 - `UserDefinedType` arguments and return types, and `NullType` arguments. UDT-typed columns fall back to Spark; to keep execution in the Comet pipeline, store and read the underlying representation directly (e.g. write MLlib `Vector` outputs as `Struct<type: Byte, size: Int, indices: Array<Int>, values: Array<Double>>` rather than `VectorUDT`). A `NullType` _return_ type is supported: Comet writes an all-null Arrow vector for it.
 - Trees whose total nested-field count (output plus all input columns the UDF tree references) exceeds `spark.sql.codegen.maxFields` (default 100). Comet refuses these at plan time and the operator falls back to Spark.
-- Struct types with duplicate field names (`named_struct('x', 1, 'x', 2)`) anywhere in an argument or return type. Arrow's `StructVector` addresses children by name, so the two fields would collapse into one; Comet refuses these at plan time and the operator falls back to Spark.
+- UDFs marked non-deterministic (`asNondeterministic()`). Spark keeps such a function's state in one object that all of its calls share and advances it row by row, which Comet's per-batch evaluation cannot reproduce, so the operator falls back to Spark.
+- A subquery inside the UDF's argument tree (`my_udf((SELECT max(x) FROM t))`). A subquery beside the UDF (`my_udf(x) + (SELECT max(x) FROM t)`) is not affected.
+- Struct types with duplicate field names (`named_struct('x', 1, 'x', 2)`) in a column the UDF tree reads or in its return type, the values that cross into Arrow. Arrow's `StructVector` addresses children by name, so the two fields would collapse into one; Comet refuses these at plan time and the operator falls back to Spark. A struct the UDF's arguments build from other columns (`my_udf(named_struct('x', a, 'x', b))`) is evaluated inside the generated code and is not affected.
 
 When a UDF is rejected, the reason surfaces through Comet's standard fallback diagnostics; the query still runs on Spark.
 
 ## Behavior
 
-- Non-deterministic expressions referenced from the argument tree (`rand`, `uuid`, `monotonically_increasing_id`) produce per-partition sequences consistent with Spark.
+- Non-deterministic expressions referenced from the argument tree (`rand`, `uuid`, `monotonically_increasing_id`) produce per-partition sequences consistent with Spark, and two identical calls each keep their own sequence, as in Spark.
 - `TaskContext.get()` inside the user function returns the driving Spark task's context.
 - The Spark task thread's context ClassLoader is propagated to the thread that runs the user function, so functions defined in jars supplied with `--jars` / `spark.jars` resolve the same way they do under Spark's own execution.
 - The user function must be closure-serializable; the same function that works with Spark's executor execution works here.

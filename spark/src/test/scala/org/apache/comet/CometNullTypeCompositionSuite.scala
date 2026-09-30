@@ -24,15 +24,15 @@ import scala.collection.mutable.ArrayBuffer
 import scala.util.{Failure, Success, Try}
 
 import org.apache.spark.sql.CometTestBase
-import org.apache.spark.sql.catalyst.expressions.{ArrayExcept, ArrayIntersect, ArrayRepeat, ArraysZip, ArrayUnion, CaseWhen, Coalesce, CreateArray, Expression, If, JsonToStructs, MapFromArrays, RuntimeReplaceable, Sequence, StringToMap}
+import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayExcept, ArrayIntersect, ArrayRepeat, ArraysZip, ArrayUnion, Coalesce, CreateArray, Expression, JsonToStructs, MapFromArrays, Murmur3Hash, RuntimeReplaceable, Sequence, Size, StringToMap, XxHash64}
 import org.apache.spark.sql.catalyst.expressions.aggregate._
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 import org.apache.spark.sql.comet.CometProjectExec
-import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AdaptiveSparkPlanHelper}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.NullType
 
-import org.apache.comet.serde.{CodegenDispatchFallback, CometExpressionSerde, Compatible, QueryPlanSerde, SupportLevel, Unsupported}
+import org.apache.comet.serde.{CodegenDispatchFallback, CometAggregateExpressionSerde, CometExpressionSerde, Compatible, QueryPlanSerde, SupportLevel, Unsupported}
 
 /**
  * Cross-product sweep of the `NullType` shapes the JVM codegen dispatcher admits against the
@@ -204,10 +204,7 @@ class CometNullTypeCompositionSuite extends CometTestBase with AdaptiveSparkPlan
    * in their value or, for the `filter` one, in their length. Under a null guard whose other
    * argument is nullable, the THEN branch evaluates them on the guard's filtered rows only, so
    * the counter sequence differs from Spark's even though the stateful child itself is never
-   * null; and a lambda producer runs through the JVM codegen dispatcher, whose kernel cache makes
-   * the guard's two copies share one counter, so it diverges under a single-argument guard too
-   * (`size(%s)` on a head that guarded non-nullable children). Paired with a deterministic
-   * producer of the same type for the sibling slot.
+   * null. Paired with a deterministic producer of the same type for the sibling slot.
    */
   private val statefulProducers: Seq[(String, String, Seq[String])] = Seq(
     (
@@ -255,7 +252,8 @@ class CometNullTypeCompositionSuite extends CometTestBase with AdaptiveSparkPlan
     "groupby-value" -> "SELECT id, first(%s) AS c FROM t GROUP BY id",
     "groupby-last" -> "SELECT id, last(%s) AS c FROM t GROUP BY id",
     "collect-list" -> "SELECT collect_list(%s) AS c FROM t",
-    "collect-set" -> "SELECT collect_set(%s) AS c FROM t",
+    // collect_set's element order is not defined, so the set is sorted before it is compared.
+    "collect-set" -> "SELECT sort_array(collect_set(%s)) AS c FROM t",
     "max" -> "SELECT max(%s) AS c FROM t",
     "min" -> "SELECT min(%s) AS c FROM t",
     "count-distinct" -> "SELECT count(DISTINCT %s) AS c FROM t",
@@ -265,9 +263,13 @@ class CometNullTypeCompositionSuite extends CometTestBase with AdaptiveSparkPlan
     "window-order" -> "SELECT %s AS c, row_number() OVER (ORDER BY id) AS r FROM t",
     "window-partition" -> "SELECT id, count(*) OVER (PARTITION BY %s) AS n FROM t",
     // The producer is computed on the build side, so the value itself crosses the exchange
-    // (shuffle or broadcast) rather than being projected after the join.
+    // (shuffle or broadcast) rather than being projected after the join. The suites' broadcast
+    // threshold is 1g, so the shuffled join needs its hint, and `t` is one partition, which
+    // already satisfies the join's distribution, so the build side is repartitioned to make the
+    // value cross a hash exchange.
     "join-shuffle" ->
-      "SELECT a.id, b.c FROM t a JOIN (SELECT id AS bid, %s AS c FROM t) b ON a.id = b.bid",
+      ("SELECT /*+ SHUFFLE_HASH(b) */ a.id, b.c FROM t a " +
+        "JOIN (SELECT /*+ REPARTITION(3) */ id AS bid, %s AS c FROM t) b ON a.id = b.bid"),
     "join-broadcast" ->
       ("SELECT /*+ BROADCAST(b) */ a.id, b.c FROM t a " +
         "JOIN (SELECT id AS bid, %s AS c FROM t) b ON a.id = b.bid"),
@@ -337,7 +339,10 @@ class CometNullTypeCompositionSuite extends CometTestBase with AdaptiveSparkPlan
     "ConstantFolding",
     "NullPropagation",
     "SimplifyBinaryComparison",
-    "SimplifyConditionals").map("org.apache.spark.sql.catalyst.optimizer." + _).mkString(",")
+    "SimplifyConditionals",
+    // Otherwise `named_struct('a', id, 'b', NULL).b` is reduced to NULL before execution, and the
+    // struct-field extraction the template is there to exercise never runs.
+    "SimplifyExtractValueOps").map("org.apache.spark.sql.catalyst.optimizer." + _).mkString(",")
 
   /**
    * How rows are cut into batches and which path an exchange takes. The expression sweeps vary
@@ -388,8 +393,9 @@ class CometNullTypeCompositionSuite extends CometTestBase with AdaptiveSparkPlan
    * `spark.shuffle.sort.bypassMergeThreshold`), through the sort-based writer (above it, one
    * whole partition per native call) with and without forced spills, and native shuffle. Across
    * them AQE, native columnar-to-row and the two-row batch size each take both values, and every
-   * pair of those settings appears together at least once except native columnar-to-row off with
-   * AQE off, whose two mechanisms do not interact. Five profiles rather than one per setting,
+   * pair of those settings appears together at least once except the two with AQE off: with
+   * native columnar-to-row off, and with the default batch size. AQE decides which plan runs, not
+   * how either of those converts or cuts batches. Five profiles rather than one per setting,
    * because each one runs the whole operator and nesting sweeps.
    */
   private val physicalProfiles = Seq(
@@ -432,7 +438,7 @@ class CometNullTypeCompositionSuite extends CometTestBase with AdaptiveSparkPlan
       query: String,
       cometEnabled: Boolean,
       ansi: Boolean,
-      profile: Profile): (Seq[String], Boolean) = {
+      profile: Profile): (Seq[String], Boolean, Boolean) = {
     val confs = Seq(
       CometConf.COMET_ENABLED.key -> cometEnabled.toString,
       CometConf.COMET_EXEC_ENABLED.key -> cometEnabled.toString,
@@ -445,7 +451,7 @@ class CometNullTypeCompositionSuite extends CometTestBase with AdaptiveSparkPlan
       SQLConf.OPTIMIZER_EXCLUDED_RULES.key -> excludedOptimizerRules) ++ profile.confs
     // withSQLConf's body is typed `=> Unit` on the older supported Spark versions and generic
     // only on the newer ones, so the result is captured out of band to stay portable.
-    var result: (Seq[String], Boolean) = (Seq.empty, false)
+    var result: (Seq[String], Boolean, Boolean) = (Seq.empty, false, false)
     withSQLConf(confs: _*) {
       val df = spark.sql(query)
       val rows = df.collect().map(_.toString()).sorted.toSeq
@@ -457,7 +463,16 @@ class CometNullTypeCompositionSuite extends CometTestBase with AdaptiveSparkPlan
         collectFirst(df.queryExecution.executedPlan) { case _: CometProjectExec =>
           ()
         }.isDefined
-      result = (rows, nativeProject)
+      // A native projection alone does not show that the operator a template exercises ran in
+      // Comet (an exchange or a join can fall back above it), so the sweeps' native count
+      // credits only a case whose whole plan, every adaptive stage included, is Comet.
+      val fullyNative = Try {
+        df.queryExecution.executedPlan match {
+          case adaptive: AdaptiveSparkPlanExec => checkCometOperatorsInFinalPlan(adaptive)
+          case plan => checkCometOperators(plan)
+        }
+      }.isSuccess
+      result = (rows, nativeProject, fullyNative)
     }
     result
   }
@@ -502,8 +517,9 @@ class CometNullTypeCompositionSuite extends CometTestBase with AdaptiveSparkPlan
       }
     }
 
-    // A stateful producer only diverges where a batch boundary falls inside it, so this sweep
-    // takes the two-row batches as well as the default; the kernel choice never sees the state.
+    // A stateful producer diverges wherever a guard filters rows, within one batch or with its
+    // state carried across batches, so this sweep takes the two-row batches as well as the
+    // default. The kernel choice never sees the state.
     for (profile <- Seq(defaultProfile, smallBatchProfile)) {
       test(s"stateful NullType producers survive guards filtered by a sibling ${tag(profile)}") {
         sweep(
@@ -518,6 +534,8 @@ class CometNullTypeCompositionSuite extends CometTestBase with AdaptiveSparkPlan
 
     // A non-deterministic child makes every guarding serde decline its native kernel, so neither
     // batching nor the kernel choice reaches the producer; ANSI still decides which serdes guard.
+    // This holds because each guard is checked before any opt-in (`Incompatible`) branch; the
+    // gate test below pins that order where a config selects such a branch (LAST_WIN).
     test(
       s"nullable non-deterministic NullType producers survive every consumer ${tag(defaultProfile)}") {
       sweep(
@@ -547,24 +565,40 @@ class CometNullTypeCompositionSuite extends CometTestBase with AdaptiveSparkPlan
       // Beside a typed side Spark's coercion casts the NullType one away, so both sides are NullType.
       s"array_union($nullArray, array())" -> classOf[ArrayUnion],
       s"array($nullScalar)" -> classOf[CreateArray],
-      s"IF(id > 2, $nullScalar, NULL)" -> classOf[If],
-      s"CASE WHEN id > 2 THEN $nullScalar END" -> classOf[CaseWhen],
-      s"coalesce($nullScalar, $nullScalar)" -> classOf[Coalesce],
-      "coalesce(IF(monotonically_increasing_id() % 2 = 0, id, NULL), id)" -> classOf[Coalesce])
-    // Declined for a reason the dispatcher shares (a NullType input it cannot read, a kernel
-    // that only runs when the user opts in) or on a serde outside this PR's enrollment; these
-    // only have to publish their reason.
-    val documentedOnly: Seq[(String, Class[_ <: Expression])] = Seq(
+      // Foldable, but not a literal, so not guaranteed to reach native as a scalar.
+      "array(element_at(array(NULL), 1))" -> classOf[CreateArray],
+      "coalesce(IF(monotonically_increasing_id() % 2 = 0, id, NULL), id)" -> classOf[Coalesce],
       s"array_intersect($nullArray, array())" -> classOf[ArrayIntersect],
+      // No native kernel for struct elements; Unsupported, so it dispatches at every setting.
       "array_except(array(named_struct('a', id)), array(named_struct('a', id)))" ->
-        classOf[ArrayExcept],
+        classOf[ArrayExcept])
+    // Declined on serdes outside the dispatcher's enrollment; these only have to publish their
+    // reason. They stay unenrolled: enrolling would route every Unsupported branch of the serde
+    // through the dispatcher, a wider change than these gates need.
+    val documentedOnly: Seq[(String, Class[_ <: Expression])] = Seq(
       "arrays_zip(array(monotonically_increasing_id()), array(id))" -> classOf[ArraysZip],
-      "map_from_arrays(array(id), array(1))" -> classOf[MapFromArrays])
+      "map_from_arrays(IF(monotonically_increasing_id() % 2 = 0, array(id), NULL), array(id))" ->
+        classOf[MapFromArrays],
+      "array_append(IF(monotonically_increasing_id() % 2 = 0, array(id), NULL), id)" ->
+        classOf[ArrayAppend],
+      // Serialized once, but Spark's generated code evaluates the item on every row.
+      "array_append(IF(id % 2 = 0, array(id), NULL), monotonically_increasing_id())" ->
+        classOf[ArrayAppend],
+      // The hash consumers in `anyTypeConsumers` decline every NullType producer.
+      s"hash($nullArray)" -> classOf[Murmur3Hash],
+      s"xxhash64($nullArray)" -> classOf[XxHash64])
+    // Aggregate gates, looked up through `aggrSerdeMap`.
+    val documentedAggregates: Seq[(String, Class[_ <: AggregateFunction])] =
+      Seq(s"collect_list($nullArray)" -> classOf[CollectList])
     // Shapes a gate must leave on the native kernel: the gate's plan-time proxy would match, but
     // the native producer is known to be safe.
     val nativeShapes: Seq[(String, Class[_ <: Expression])] = Seq(
       // Native make_array emits a nullable item whatever Spark's containsNull says.
-      "array_repeat(array(id), 2)" -> classOf[ArrayRepeat])
+      "array_repeat(array(id), 2)" -> classOf[ArrayRepeat],
+      // The ELSE is serialized once, so a non-deterministic one needs no guard.
+      "coalesce(IF(id % 2 = 0, id, NULL), monotonically_increasing_id())" -> classOf[Coalesce],
+      // Native CASE merges NullType branch results.
+      s"coalesce($nullScalar, $nullScalar)" -> classOf[Coalesce])
 
     withTempView("t") {
       spark.range(0, 8).createOrReplaceTempView("t")
@@ -582,7 +616,7 @@ class CometNullTypeCompositionSuite extends CometTestBase with AdaptiveSparkPlan
           .getOrElse(fail(s"$query has no ${cls.getSimpleName} in its analyzed plan"))
         (QueryPlanSerde.exprSerdeMap(cls).asInstanceOf[CometExpressionSerde[Expression]], node)
       }
-      for ((expr, cls) <- dispatched ++ documentedOnly) {
+      def assertPublishes(expr: String, cls: Class[_ <: Expression]): Unit = {
         val (serde, node) = serdeAndNode(expr, cls)
         val reason = serde.getSupportLevel(node) match {
           case Unsupported(Some(reason)) => reason
@@ -592,6 +626,49 @@ class CometNullTypeCompositionSuite extends CometTestBase with AdaptiveSparkPlan
         assert(
           serde.getUnsupportedReasons().exists(reason.startsWith),
           s"${cls.getSimpleName}'s reason for $expr is not in getUnsupportedReasons: $reason")
+      }
+      for ((expr, cls) <- dispatched ++ documentedOnly) assertPublishes(expr, cls)
+      // `size` only guards when it returns NULL for a NULL array, which needs the legacy flag
+      // off; Spark 3.x defaults it on (with ANSI off), and `Size` captures it at analysis.
+      withSQLConf(SQLConf.LEGACY_SIZE_OF_NULL.key -> "false") {
+        assertPublishes(
+          "size(IF(monotonically_increasing_id() % 2 = 0, array(id), NULL))",
+          classOf[Size])
+      }
+      for ((expr, cls) <- documentedAggregates) {
+        val query = s"SELECT $expr AS c FROM t"
+        val node = spark
+          .sql(query)
+          .queryExecution
+          .analyzed
+          .flatMap(_.expressions)
+          .flatMap(_.collect { case e: AggregateFunction if e.getClass == cls => e })
+          .headOption
+          .getOrElse(fail(s"$query has no ${cls.getSimpleName} in its analyzed plan"))
+        val serde = QueryPlanSerde
+          .aggrSerdeMap(cls)
+          .asInstanceOf[CometAggregateExpressionSerde[AggregateFunction]]
+        val reason = serde.getSupportLevel(node) match {
+          case Unsupported(Some(reason)) => reason
+          case other =>
+            fail(s"${cls.getSimpleName} reports $other for $expr, expected Unsupported")
+        }
+        assert(
+          serde.getUnsupportedReasons().exists(reason.startsWith),
+          s"${cls.getSimpleName}'s reason for $expr is not in getUnsupportedReasons: $reason")
+      }
+      // Under LAST_WIN the dedup difference is an opt-in, and the opt-in hands the expression to
+      // `convert`; the null guard must still win over it.
+      withSQLConf(
+        SQLConf.MAP_KEY_DEDUP_POLICY.key -> "LAST_WIN",
+        CometConf.getExprAllowIncompatConfigKey(classOf[MapFromArrays]) -> "true") {
+        val expr =
+          "map_from_arrays(IF(monotonically_increasing_id() % 2 = 0, array(id), NULL), " +
+            "transform(array(id), x -> NULL))"
+        val (serde, node) = serdeAndNode(expr, classOf[MapFromArrays])
+        assert(
+          serde.getSupportLevel(node).isInstanceOf[Unsupported],
+          s"MapFromArrays must refuse $expr under LAST_WIN as well")
       }
       for ((expr, cls) <- nativeShapes) {
         val (serde, node) = serdeAndNode(expr, cls)
@@ -604,8 +681,8 @@ class CometNullTypeCompositionSuite extends CometTestBase with AdaptiveSparkPlan
         assert(
           QueryPlanSerde.exprSerdeMap(cls).isInstanceOf[CodegenDispatchFallback],
           s"${cls.getSimpleName} must mix in CodegenDispatchFallback")
-        val (sparkRows, _) = rowsOf(query, cometEnabled = false, ansi = false, defaultProfile)
-        val (cometRows, nativeProject) =
+        val (sparkRows, _, _) = rowsOf(query, cometEnabled = false, ansi = false, defaultProfile)
+        val (cometRows, nativeProject, _) =
           rowsOf(query, cometEnabled = true, ansi = false, defaultProfile)
         assert(
           cometRows == sparkRows,
@@ -637,7 +714,6 @@ class CometNullTypeCompositionSuite extends CometTestBase with AdaptiveSparkPlan
   private lazy val serdesWithoutNestedInput: Set[Class[_ <: Expression]] =
     Set(classOf[Sequence], classOf[StringToMap], classOf[JsonToStructs])
 
-  /** Aggregates whose serde accepts any input type, so a `NullType` shape can reach them. */
   /** The serdes the sweep must reach: those with a nested-typed argument plus the aggregates. */
   private lazy val registeredSerdes: Set[Class[_]] =
     (QueryPlanSerde.arrayExpressions.keySet ++
@@ -645,6 +721,7 @@ class CometNullTypeCompositionSuite extends CometTestBase with AdaptiveSparkPlan
       QueryPlanSerde.structExpressions.keySet).toSet[Class[_]] --
       serdesWithoutNestedInput ++ anyTypeAggregates
 
+  /** Aggregates whose serde accepts any input type, so a `NullType` shape can reach them. */
   private lazy val anyTypeAggregates: Set[Class[_]] = Set(
     classOf[CollectList],
     classOf[CollectSet],
@@ -784,12 +861,12 @@ class CometNullTypeCompositionSuite extends CometTestBase with AdaptiveSparkPlan
                 case Failure(e) =>
                   failures += s"[threw:$label] $query\n              " +
                     s"${e.getClass.getSimpleName}: ${firstLine(causeText(e))}"
-                case Success((cometRows, _)) if cometRows != sparkRows =>
+                case Success((cometRows, _, _)) if cometRows != sparkRows =>
                   failures += s"[mismatch:$label] $query\n" +
                     s"              spark: ${preview(sparkRows)}\n" +
                     s"              comet: ${preview(cometRows)}"
-                case Success((_, nativeProject)) =>
-                  if (nativeProject) native += 1
+                case Success((_, _, fullyNative)) =>
+                  if (fullyNative) native += 1
               }
           }
         }

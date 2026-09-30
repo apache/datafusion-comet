@@ -26,6 +26,7 @@ import java.nio.channels.{Channels, WritableByteChannel}
 import scala.jdk.CollectionConverters._
 
 import org.apache.arrow.c.CDataDictionaryProvider
+import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector._
 import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
 import org.apache.arrow.vector.dictionary.{Dictionary, DictionaryProvider}
@@ -355,8 +356,8 @@ object Utils extends CometTypeShim with Logging {
    *
    * When Comet moves to an Arrow Java release whose `VectorAppender` can grow a `NullVector`
    * under a struct, drop this gate from `CometBroadcastExchangeExec.getSupportLevel` and the
-   * bypass in [[coalesceBroadcastBatches]]; `UtilsSuite` runs the real appender over every shape
-   * and will show which ones no longer need it.
+   * bypass in [[coalesceBroadcastBatches]]. `UtilsSuite` cannot show when that happens, since the
+   * bypassed shapes never reach the appender; check with a direct appender probe first.
    */
   def hasNullTypeUnderStruct(dataType: DataType): Boolean = {
     // A list insulates whatever is below it, so `inStruct` resets when descending into one.
@@ -497,15 +498,19 @@ object Utils extends CometTypeShim with Logging {
    * allocation) for each one. With coalescing, we decode and append all batches into one
    * VectorSchemaRoot on the driver, then re-serialize once. Each consumer task then deserializes
    * a single Arrow IPC stream.
+   *
+   * `parentAllocator` is only overridden by tests, to bound what a runaway append can take.
    */
   def coalesceBroadcastBatches(
-      input: Iterator[ChunkedByteBuffer]): (Array[ChunkedByteBuffer], Long, Long) = {
+      input: Iterator[ChunkedByteBuffer],
+      parentAllocator: BufferAllocator = org.apache.comet.CometArrowAllocator)
+      : (Array[ChunkedByteBuffer], Long, Long) = {
     val buffers = input.filterNot(_.size == 0).toArray
     if (buffers.isEmpty) {
       return (Array.empty, 0L, 0L)
     }
 
-    val allocator = org.apache.comet.CometArrowAllocator
+    val allocator = parentAllocator
       .newChildAllocator("broadcast-coalesce", 0, Long.MaxValue)
     try {
       var targetRoot: VectorSchemaRoot = null

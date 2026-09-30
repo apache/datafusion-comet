@@ -445,8 +445,10 @@ object GenerateDocs {
       }
       if (n.unsupportedReasons.nonEmpty) {
         val header = if (n.codegenDispatchFallback) {
-          "\nThe following cases have no native implementation and always run in the JVM using" +
-            " Spark's code-generated implementation (inside the Comet pipeline):\n\n"
+          "\nThe following cases have no native implementation. They run in the JVM using" +
+            " Spark's own implementation (inside the Comet pipeline) when the codegen" +
+            " dispatcher is enabled and accepts the expression, and fall back to Spark" +
+            " otherwise:\n\n"
         } else {
           "\nThe following cases are not supported by Comet and always fall back to Spark," +
             " regardless of any `allowIncompatible` setting:\n\n"
