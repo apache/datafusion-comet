@@ -29,8 +29,9 @@ import scala.util.Try
 import org.apache.spark.api.plugin.{DriverPlugin, ExecutorPlugin, PluginContext, SparkPlugin}
 import org.apache.spark.internal.Logging
 import org.apache.spark.internal.config.{EVENT_LOG_ENABLED, EXECUTOR_MEMORY_OVERHEAD, EXECUTOR_MEMORY_OVERHEAD_FACTOR}
-import org.apache.spark.scheduler.{SparkListener, SparkListenerApplicationEnd, SparkListenerExecutorRemoved}
+import org.apache.spark.scheduler.{SparkListener, SparkListenerApplicationEnd, SparkListenerExecutorMetricsUpdate, SparkListenerExecutorRemoved}
 import org.apache.spark.sql.internal.StaticSQLConf
+import org.apache.spark.util.{Clock, SystemClock}
 
 import org.apache.comet.{COMET_VERSION, CometExecIterator, CometExecutorMemoryUsage, CometSparkSessionExtensions, NativeBase}
 import org.apache.comet.{CometConf, ConfigEntry}
@@ -51,13 +52,15 @@ import org.apache.comet.iceberg.IcebergWriteReportListener
  *
  * To enable this plugin, set the config "spark.plugins" to `org.apache.spark.CometPlugin`.
  */
-class CometDriverPlugin extends DriverPlugin with Logging {
+class CometDriverPlugin private[spark] (clock: Clock) extends DriverPlugin with Logging {
+
+  def this() = this(new SystemClock())
 
   // Set by init, before Spark delivers any message, and read on the RPC thread that delivers them.
   @volatile private var sparkContext: SparkContext = _
 
   // By executor, the memory usage samples that the event log has yet to record. The RPC thread
-  // that delivers samples shares it with the threads that record what is left of them.
+  // that delivers samples shares it with the threads that record them.
   private val memoryUsageSummaries = mutable.HashMap.empty[String, MemoryUsageSummary]
 
   override def init(sc: SparkContext, pluginContext: PluginContext): ju.Map[String, String] = {
@@ -70,7 +73,17 @@ class CometDriverPlugin extends DriverPlugin with Logging {
       // after it.
       sc.listenerBus.addToQueue(
         new SparkListener {
-          // An executor that has gone away sends no later sample to end its summary.
+          // Every executor heartbeat posts one, whether or not the executor is busy, so this ends
+          // an idle executor's summary too. The event log does not record the heartbeat itself.
+          override def onExecutorMetricsUpdate(event: SparkListenerExecutorMetricsUpdate): Unit =
+            recordMemoryUsage(memoryUsageSummaries.synchronized {
+              memoryUsageSummaries
+                .get(event.execId)
+                .toList
+                .flatMap(_.flushIfDue(clock.nanoTime()))
+            })
+
+          // An executor that has gone away sends no more heartbeats to end its summary.
           override def onExecutorRemoved(event: SparkListenerExecutorRemoved): Unit =
             recordMemoryUsage(memoryUsageSummaries.synchronized {
               memoryUsageSummaries.remove(event.executorId).toList.flatMap(_.flush())
@@ -116,11 +129,11 @@ class CometDriverPlugin extends DriverPlugin with Logging {
     // An executor's memory usage sample. A one-way message gets no reply, and Spark logs any
     // reply that is not null.
     case sample: CometExecutorMemoryUsage =>
-      recordMemoryUsage(memoryUsageSummaries.synchronized {
+      memoryUsageSummaries.synchronized {
         memoryUsageSummaries
           .getOrElseUpdate(sample.executorId, new MemoryUsageSummary)
-          .add(sample)
-      })
+          .add(sample, clock.nanoTime())
+      }
       null
     case _ => super.receive(message)
   }

@@ -22,6 +22,7 @@ package org.apache.spark
 import java.io.ByteArrayInputStream
 import java.lang.ref.WeakReference
 import java.util.Properties
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger}
 
 import scala.reflect.ClassTag
@@ -521,16 +522,21 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
     val summary = new MemoryUsageSummary
     val peak = sample(10, 50)
     val last = sample(50, 20)
-    assert(Seq(sample(0, 10), peak, last).flatMap(summary.add).isEmpty)
-    // A sample taken a minute or more after the first of a summary ends it, and starts the next.
-    val next = sample(60, 30)
-    assert(summary.add(next) == Seq(peak, last))
+    // What decides is when the driver received the samples, by its own monotonic clock in
+    // nanoseconds, not the times the executor took them.
+    val second = TimeUnit.SECONDS.toNanos(1)
+    summary.add(sample(0, 10), receivedAt = 0L)
+    summary.add(peak, receivedAt = 10 * second)
+    summary.add(last, receivedAt = 50 * second)
+    // The summary ends a minute after the driver received its first sample.
+    assert(summary.flushIfDue(60 * second - 1).isEmpty)
+    assert(summary.flushIfDue(60 * second) == Seq(peak, last))
 
     // Arrow memory that the JVM allocated counts as untracked, and the part imported from native
     // does not, since the native figure already counts it.
     val imported = sample(70, 0, JvmArrowMemory(allocated = 900 * mib, imported = 900 * mib))
     val jvm = sample(80, 0, JvmArrowMemory(allocated = 40 * mib, imported = 0L))
-    assert(Seq(imported, jvm).flatMap(summary.add).isEmpty)
+    Seq(sample(60, 30), imported, jvm).foreach(summary.add(_, receivedAt = 70 * second))
     // What is left when the executor goes away or the application stops, a peak that is also the
     // last sample recorded once.
     assert(summary.flush() == Seq(jvm))

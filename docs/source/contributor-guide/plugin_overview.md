@@ -60,9 +60,10 @@ When the driver or an executor stops, the plugin shuts down Comet's native tokio
 When `spark.eventLog.enabled` is `true`, the executor plugin also carries each sample of the executor's native memory
 usage log to the driver plugin. For each executor, the driver plugin keeps the sample with the most untracked memory
 and the last sample of every minute, and posts them to Spark's listener bus as `CometExecutorMemoryUsage` events so
-that the event log records them. Since an executor that goes away sends nothing more, a listener on a listener bus
-queue of its own posts what the driver plugin holds of an executor's samples when the executor is removed, and of
-every executor's when the application ends. See
+that the event log records them. A listener on a listener bus queue of its own posts them at the executor's first
+heartbeat a minute or more after the first of them arrived, which also ends an idle executor's minute, and posts what
+the driver plugin holds when an executor is removed and when the application ends, since an executor that goes away
+sends nothing more. See
 [Reading the Memory Usage Log from the Event Log](../user-guide/latest/tuning/memory.md#reading-the-memory-usage-log-from-the-event-log).
 
 `CometSparkSessionExtensions` can also be registered without the plugin, through `spark.sql.extensions` or

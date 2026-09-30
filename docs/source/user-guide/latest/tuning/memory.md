@@ -216,12 +216,14 @@ over the cluster and often go away with their containers.
 The driver writes, and flushes, each event of its event log as it goes, so it does not write every
 sample. For each executor, it takes the samples a minute at a time and writes two of them: the one
 with the most untracked memory, and the last, which in the minute an executor goes idle is the one
-after its last native plan finishes. The samples of an executor's last minute of work wait on the
-driver until the executor runs native plans again, until it is removed, such as when the cluster
-manager kills it, or until the application stops. So each executor adds about two events a minute
-while it runs native plans, however short the interval, and the event with the most untracked memory
-for an executor is its sample with the most. The exceptions are samples an executor takes while the
-application stops, and samples the driver still holds if it exits without stopping the application.
+after its last native plan finishes. It writes them at the executor's first heartbeat a minute or
+more after the first of them arrived, which comes every `spark.executor.heartbeatInterval`, 10
+seconds by default, busy or not, and when the executor is removed, such as when the cluster manager
+kills it, or the application stops. So each executor adds about two events a minute while it runs
+native plans, however short the interval, and the event log has every sample within about a minute
+of its arrival. The event with the most untracked memory for an executor is then its sample with the
+most, apart from samples it takes while the application stops, and samples from the last minute
+before a driver exits without stopping the application.
 
 Each sample the driver writes is one event, on one line of the event log. It carries the figures of
 the line in bytes, the executor that took the sample, and when it did, in milliseconds since the

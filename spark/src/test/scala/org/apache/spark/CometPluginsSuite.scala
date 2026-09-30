@@ -22,15 +22,16 @@ package org.apache.spark
 import java.io.File
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
+import java.util.concurrent.TimeUnit
 
 import org.apache.logging.log4j.Level
-import org.apache.spark.api.plugin.PluginContext
-import org.apache.spark.scheduler.{SparkListenerApplicationEnd, SparkListenerEvent, SparkListenerExecutorRemoved}
+import org.apache.spark.api.plugin.{DriverPlugin, ExecutorPlugin, PluginContext, SparkPlugin}
+import org.apache.spark.scheduler.{SparkListenerApplicationEnd, SparkListenerEvent, SparkListenerExecutorMetricsUpdate, SparkListenerExecutorRemoved}
 import org.apache.spark.sql.{CometTestBase, SaveMode, SparkSession}
 import org.apache.spark.sql.comet.CometPlan
 import org.apache.spark.sql.comet.execution.shuffle.{CometShuffleExchangeExec, CometShuffleManager}
 import org.apache.spark.sql.internal.StaticSQLConf
-import org.apache.spark.util.{JsonProtocol, Utils}
+import org.apache.spark.util.{JsonProtocol, ManualClock, Utils}
 
 import org.apache.comet.{COMET_VERSION, CometConf, CometExecIterator, CometExecutorMemoryUsage}
 
@@ -434,18 +435,19 @@ class CometPluginsEventLogSuite extends SparkFunSuite {
   import CometExecIterator.{memoryUsageEvent, JvmArrowMemory}
 
   /**
-   * Runs `f` in an application that runs the Comet plugin and writes an event log, passing it the
-   * context through which the executor sends memory usage samples, and returns the event log's
-   * events once the application has stopped.
+   * Runs `f` in an application that runs `plugin` and writes an event log, passing it the context
+   * through which the executor sends memory usage samples, and returns the event log's events
+   * once the application has stopped.
    */
-  private def eventLog(f: (SparkContext, PluginContext) => Unit): Seq[SparkListenerEvent] = {
+  private def eventLog(plugin: Class[_ <: SparkPlugin] = classOf[CometPlugin])(
+      f: (SparkContext, PluginContext) => Unit): Seq[SparkListenerEvent] = {
     val eventLogDir = Utils.createTempDir()
     try {
       val sc = new SparkContext(
         new SparkConf()
           .setMaster("local[1]")
           .setAppName(getClass.getSimpleName)
-          .set("spark.plugins", "org.apache.spark.CometPlugin")
+          .set("spark.plugins", plugin.getName)
           .set("spark.eventLog.enabled", "true")
           .set("spark.eventLog.dir", eventLogDir.toURI.toString)
           // One plain file, which the test reads directly. Spark 4 compresses and rolls it by
@@ -485,7 +487,7 @@ class CometPluginsEventLogSuite extends SparkFunSuite {
     // summary.
     val usage = Array(123456789L * 1024, 0L, 1L, 1L)
     val jvmArrow = JvmArrowMemory(allocated = 3456789L, imported = 456789L)
-    val events = eventLog { (sc, pluginContext) =>
+    val events = eventLog() { (sc, pluginContext) =>
       CometExecIterator.sendToEventLog(usage, jvmArrow)
       // The driver plugin receives its messages in order, and `ask`, unlike the log's one-way
       // `send`, returns once it has received this one, so it has the sample above by then. It
@@ -517,7 +519,7 @@ class CometPluginsEventLogSuite extends SparkFunSuite {
       System.currentTimeMillis(),
       Array(300L * 1024 * 1024, 100L * 1024 * 1024, 2L, 3L),
       JvmArrowMemory(0L, 0L))
-    val events = eventLog { (sc, pluginContext) =>
+    val events = eventLog() { (sc, pluginContext) =>
       pluginContext.ask(sample)
       sc.listenerBus.post(SparkListenerExecutorRemoved(sample.time, sample.executorId, "test"))
       sc.listenerBus.waitUntilEmpty()
@@ -527,4 +529,32 @@ class CometPluginsEventLogSuite extends SparkFunSuite {
     // Once, before the application's end, which would otherwise record it.
     assert(recorded.size == 1 && ends.nonEmpty && recorded(0) < ends(0), events)
   }
+
+  test("the driver records an idle executor's samples at its first heartbeat a minute later") {
+    val sample = memoryUsageEvent(
+      "idle",
+      System.currentTimeMillis(),
+      Array(300L * 1024 * 1024, 100L * 1024 * 1024, 2L, 0L),
+      JvmArrowMemory(0L, 0L))
+    val events = eventLog(classOf[ManualClockCometPlugin]) { (sc, pluginContext) =>
+      pluginContext.ask(sample)
+      ManualClockCometPlugin.clock.advance(TimeUnit.MINUTES.toMillis(1))
+      sc.listenerBus.post(SparkListenerExecutorMetricsUpdate(sample.executorId, Seq.empty))
+      sc.listenerBus.waitUntilEmpty()
+    }
+    val recorded = indicesWhere(events)(_ == sample)
+    val ends = applicationEnds(events)
+    // Once, before the application's end, which would otherwise record it.
+    assert(recorded.size == 1 && ends.nonEmpty && recorded(0) < ends(0), events)
+  }
+}
+
+/** The Comet plugin with a driver clock that `CometPluginsEventLogSuite` moves by hand. */
+class ManualClockCometPlugin extends SparkPlugin {
+  override def driverPlugin(): DriverPlugin = new CometDriverPlugin(ManualClockCometPlugin.clock)
+  override def executorPlugin(): ExecutorPlugin = new CometExecutorPlugin
+}
+
+object ManualClockCometPlugin {
+  val clock = new ManualClock()
 }

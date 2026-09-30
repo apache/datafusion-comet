@@ -429,7 +429,7 @@ object CometExecIterator extends Logging {
    */
   private var eventLogSendFailed = false
 
-  private val EVENT_LOG_SUMMARY_INTERVAL_MS = TimeUnit.MINUTES.toMillis(1)
+  private val EVENT_LOG_SUMMARY_INTERVAL_NS = TimeUnit.MINUTES.toNanos(1)
 
   /**
    * Starts the executor's native memory usage log when the first native plan is created, unless
@@ -670,24 +670,27 @@ object CometExecIterator extends Logging {
 
     private var last: Option[CometExecutorMemoryUsage] = None
 
-    /** When the first sample since the previous summary was taken. */
-    private var start = 0L
-
     /**
-     * Adds `sample`, and returns the summary that it ends, if it was taken a minute or more after
-     * the first sample of the summary, or nothing.
+     * When the driver received the first sample since the previous summary, in nanoseconds by its
+     * own monotonic clock, rather than when the executor took it by a clock that can differ.
      */
-    def add(sample: CometExecutorMemoryUsage): Seq[CometExecutorMemoryUsage] = {
-      val ended =
-        if (last.nonEmpty && sample.time - start >= EVENT_LOG_SUMMARY_INTERVAL_MS) flush()
-        else Nil
-      if (last.isEmpty) start = sample.time
+    private var openedAt = 0L
+
+    /** Adds `sample`, which the driver received at `receivedAt`, by its monotonic clock. */
+    def add(sample: CometExecutorMemoryUsage, receivedAt: Long): Unit = {
+      if (last.isEmpty) openedAt = receivedAt
       val jvmArrow = JvmArrowMemory(sample.jvmArrowAllocated, sample.jvmArrowImported)
       val untracked = untrackedMemory(sample.nativeAllocated, sample.poolsReserved, jvmArrow)
       if (peak.forall(_._2 < untracked)) peak = Some((sample, untracked))
       last = Some(sample)
-      ended
     }
+
+    /**
+     * The samples to record, if the first of them arrived a minute or more before `now`, by the
+     * same clock as `add`, after which the summary starts over, or nothing.
+     */
+    def flushIfDue(now: Long): Seq[CometExecutorMemoryUsage] =
+      if (last.nonEmpty && now - openedAt >= EVENT_LOG_SUMMARY_INTERVAL_NS) flush() else Nil
 
     /** The samples to record since the previous summary, after which the summary starts over. */
     def flush(): Seq[CometExecutorMemoryUsage] = {
