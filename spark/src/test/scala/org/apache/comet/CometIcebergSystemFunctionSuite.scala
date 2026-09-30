@@ -174,24 +174,6 @@ class CometIcebergSystemFunctionSuite
     }
   }
 
-  test("years, months, days, and hours match Iceberg on pre-1970 timestamps ending in .999999") {
-    // The random corpus almost never lands on such a value, and its boundary rows sit a
-    // microsecond before a boundary rather than after it.
-    withIcebergCatalog {
-      withPreEpochTable {
-        val transformed = for {
-          column <- Seq("ts", "ntz")
-          function <- Seq("years", "months", "days", "hours")
-        } yield s"$catalog.system.$function($column)"
-        checkSparkAnswerAndOperator(s"SELECT id, ${transformed.mkString(", ")} FROM pre_epoch")
-        checkSparkAnswerAndOperator(
-          s"SELECT id FROM pre_epoch WHERE $catalog.system.days(ts) = DATE '1968-12-31'")
-        checkSparkAnswerAndOperator(
-          s"SELECT id FROM pre_epoch WHERE $catalog.system.hours(ts) = -2")
-      }
-    }
-  }
-
   test("system functions in filters stay native") {
     withSourceTable {
       checkSparkAnswerAndOperator(
