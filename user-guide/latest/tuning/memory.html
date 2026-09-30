@@ -946,7 +946,7 @@ increase peak memory usage — a batch holds all projected columns in Arrow form
 if you see frequent spilling or out-of-memory errors on wide tables; increase it (for example to <code class="docutils literal notranslate"><span class="pre">16384</span></code>) on
 narrow tables when memory is plentiful.</p>
 <p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.jvm.batchSize</span></code> controls the batch size used when the JVM columnar shuffle writer
-flushes sorted spill files. It must not exceed <code class="docutils literal notranslate"><span class="pre">spark.comet.batchSize</span></code>.</p>
+flushes sorted spill files. A value larger than <code class="docutils literal notranslate"><span class="pre">spark.comet.batchSize</span></code> is capped at <code class="docutils literal notranslate"><span class="pre">spark.comet.batchSize</span></code>.</p>
 </section>
 <section id="limiting-spill-disk-usage">
 <h2>Limiting Spill Disk Usage<a class="headerlink" href="#limiting-spill-disk-usage" title="Link to this heading">#</a></h2>

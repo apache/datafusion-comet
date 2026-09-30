@@ -801,7 +801,8 @@ refuses a page. Nothing bounds these allocations, and memory pressure never trig
 That mode exists only so the Spark SQL tests can run against Comet. See
 <a class="reference internal" href="memory_management.html"><span class="std std-doc">Memory Management</span></a>.</p></li>
 <li><p>Row count still triggers spilling in either mode. <code class="docutils literal notranslate"><span class="pre">CometDiskBlockWriter</span></code> spills at
-<code class="docutils literal notranslate"><span class="pre">min(spark.comet.shuffle.jvm.spillThreshold,</span> <span class="pre">spark.comet.shuffle.jvm.batchSize)</span></code>.
+<code class="docutils literal notranslate"><span class="pre">min(spark.comet.shuffle.jvm.spillThreshold,</span> <span class="pre">batch</span> <span class="pre">size)</span></code>, where the batch size is
+<code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.jvm.batchSize</span></code> capped at <code class="docutils literal notranslate"><span class="pre">spark.comet.batchSize</span></code>.
 <code class="docutils literal notranslate"><span class="pre">CometShuffleExternalSorter</span></code> spills at <code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.jvm.spillThreshold</span></code> alone, which
 defaults to <code class="docutils literal notranslate"><span class="pre">Int.MaxValue</span></code>, so on the sort path that trigger is effectively off by default.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">CometDiskBlockWriter</span></code> coordinates spilling across all partition writers (largest first)</p></li>

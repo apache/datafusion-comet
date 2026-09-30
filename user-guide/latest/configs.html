@@ -1070,7 +1070,7 @@ shuffle, including applications that rely only on remote reliable storage or dec
 <td><p>true</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.jvm.batchSize</span></code></p></td>
-<td><p>Batch size when writing out sorted spill files on the native side. Note that this should not be larger than batch size (i.e., <code class="docutils literal notranslate"><span class="pre">spark.comet.batchSize</span></code>). Otherwise it will produce larger batches than expected in the native operator after shuffle.</p></td>
+<td><p>Batch size when writing out sorted spill files on the native side. A value larger than the batch size (i.e., <code class="docutils literal notranslate"><span class="pre">spark.comet.batchSize</span></code>) is capped at the batch size, so that the native operators after the shuffle do not receive larger batches than expected.</p></td>
 <td><p>8192</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.jvm.maxWritersPerExecutor</span></code></p></td>
