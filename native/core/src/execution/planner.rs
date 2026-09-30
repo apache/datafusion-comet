@@ -33,7 +33,6 @@ mod delta_scan;
 mod lance_scan;
 
 use crate::execution::operators::init_csv_datasource_exec;
-use crate::execution::operators::AlignedArrowStreamReader;
 use crate::execution::operators::DynamicFilterJoinExec;
 use crate::execution::operators::IcebergScanExec;
 use crate::execution::operators::IcebergWriteExec;
@@ -55,7 +54,7 @@ use arrow::compute::CastOptions;
 use arrow::datatypes::{
     DataType, Field, FieldRef, Fields, Schema, TimeUnit, DECIMAL128_MAX_PRECISION,
 };
-use arrow::ffi_stream::FFI_ArrowArrayStream;
+use arrow::ffi_stream::{ArrowArrayStreamReader, FFI_ArrowArrayStream};
 use datafusion::functions_aggregate::bit_and_or_xor::{bit_and_udaf, bit_or_udaf, bit_xor_udaf};
 use datafusion::functions_aggregate::count::count_udaf;
 use datafusion::functions_aggregate::min_max::max_udaf;
@@ -149,11 +148,12 @@ use datafusion_comet_proto::{
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
 use datafusion_comet_spark_expr::{
-    jvm_udf::JvmScalarUdfExpr, spark_in_list, ApproxPercentile, ArrayInsert, Avg, AvgDecimal, Cast,
-    CheckOverflow, Correlation, Covariance, CreateNamedStruct, DecimalRescaleCheckOverflow,
-    GetArrayStructFields, GetStructField, HllPlusPlus, HllSketchAgg, HllUnionAgg, IfExpr,
-    ListExtract, MaxMinBy, Mode, NormalizeNaNAndZero, Regr, RegrType, SparkCastOptions, Stddev,
-    SumDecimal, ToJson, UnboundColumn, Variance, WideDecimalBinaryExpr, WideDecimalOp,
+    jvm_udf::JvmScalarUdfExpr, normalize_floats, spark_in_list, ApproxPercentile, ArrayInsert, Avg,
+    AvgDecimal, Cast, CheckOverflow, Correlation, Covariance, CreateNamedStruct,
+    DecimalRescaleCheckOverflow, GetArrayStructFields, GetStructField, HllPlusPlus, HllSketchAgg,
+    HllUnionAgg, IfExpr, ListExtract, MaxMinBy, Mode, NormalizeNaNAndZero, Regr, RegrType,
+    SparkCastOptions, Stddev, SumDecimal, ToJson, UnboundColumn, Variance, WideDecimalBinaryExpr,
+    WideDecimalOp,
 };
 use itertools::Itertools;
 use jni::objects::{Global, JObject};
@@ -1015,15 +1015,10 @@ impl PhysicalPlanner {
         input_schema: SchemaRef,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
         let child = self.create_expr(spark_expr, Arc::clone(&input_schema))?;
-        let data_type = child.data_type(input_schema.as_ref())?;
-        // Spark may already have normalized a partition or join key.
-        if matches!(data_type, DataType::Float32 | DataType::Float64)
-            && child.downcast_ref::<NormalizeNaNAndZero>().is_none()
-        {
-            Ok(Arc::new(NormalizeNaNAndZero::new(data_type, child)))
-        } else {
-            Ok(child)
-        }
+        Ok(NormalizeNaNAndZero::wrap_if_needed(
+            child,
+            input_schema.as_ref(),
+        )?)
     }
 
     /// Only constant literals are supported as scan defaults.
@@ -1859,7 +1854,7 @@ impl PhysicalPlanner {
 
                 // Consumes the first input source for the scan. The Java side passes an
                 // `org.apache.arrow.c.ArrowArrayStream` whose `memoryAddress` points at the C
-                // struct; native takes ownership via `AlignedArrowStreamReader::from_raw`.
+                // struct; native takes ownership via `ArrowArrayStreamReader::from_raw`.
                 let input_source = if self.exec_context_id == TEST_EXEC_CONTEXT_ID
                     && inputs.is_empty()
                 {
@@ -1871,7 +1866,7 @@ impl PhysicalPlanner {
                         jni_call!(env, arrow_array_stream(java_stream.as_obj()).memory_address() -> i64)
                     })?;
                     let reader = unsafe {
-                        AlignedArrowStreamReader::from_raw(address as *mut FFI_ArrowArrayStream)
+                        ArrowArrayStreamReader::from_raw(address as *mut FFI_ArrowArrayStream)
                     }
                     .map_err(|e| {
                         GeneralError(format!("Failed to import ArrowArrayStream from JVM: {e}"))
@@ -3705,7 +3700,7 @@ impl PhysicalPlanner {
                     .iter()
                     .map(|scalar_vec| {
                         ScalarValue::iter_to_array(scalar_vec.iter().cloned())
-                            .map(|array| NormalizeNaNAndZero::normalize_array(&array))
+                            .map(|array| normalize_floats(&array))
                     })
                     .collect::<Result<Vec<_>, _>>()?;
 
@@ -4804,7 +4799,10 @@ fn create_case_expr(
 
     if let Some(coerce_type) = get_coerce_type_for_case_expression(&then_types, else_type.as_ref())
     {
-        let cast_options = SparkCastOptions::new_without_timezone(EvalMode::Legacy, false);
+        // The branches share a Spark type, so any difference is in the Arrow representation. For
+        // a timestamp that is the timezone label, and the cast only relabels it, but Comet's cast
+        // still needs a timezone. Every `TimestampType` value in a native plan is labelled UTC.
+        let cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC", false);
 
         let when_then_pairs = when_then_pairs
             .iter()
@@ -7867,5 +7865,44 @@ mod tests {
             err.to_string().contains("Non-empty FileScanTask partition"),
             "unexpected error: {err}"
         );
+    }
+
+    /// CASE branches that share a Spark timestamp type but carry different Arrow timezone labels
+    /// are reconciled by relabelling them, which used to panic because the cast had no timezone.
+    #[test]
+    fn case_reconciles_timestamp_timezone_labels() {
+        use arrow::array::{AsArray, BooleanArray, TimestampMicrosecondArray};
+        use arrow::datatypes::{TimeUnit, TimestampMicrosecondType};
+
+        let utc = DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()));
+        for then_label in [Some("Etc/UTC"), None] {
+            let then_type = DataType::Timestamp(TimeUnit::Microsecond, then_label.map(Into::into));
+            let schema = Schema::new(vec![
+                Field::new("b", DataType::Boolean, true),
+                Field::new("t", then_type, true),
+                Field::new("e", utc.clone(), true),
+            ]);
+            let batch = RecordBatch::try_new(
+                Arc::new(schema.clone()),
+                vec![
+                    Arc::new(BooleanArray::from(vec![true, false])),
+                    Arc::new(
+                        TimestampMicrosecondArray::from(vec![1, 2]).with_timezone_opt(then_label),
+                    ),
+                    Arc::new(TimestampMicrosecondArray::from(vec![10, 20]).with_timezone("UTC")),
+                ],
+            )
+            .unwrap();
+            let case = super::create_case_expr(
+                vec![(Arc::new(Column::new("b", 0)), Arc::new(Column::new("t", 1)))],
+                Some(Arc::new(Column::new("e", 2))),
+                &schema,
+            )
+            .unwrap();
+            let result = case.evaluate(&batch).unwrap().into_array(2).unwrap();
+            assert_eq!(result.data_type(), &utc, "{then_label:?}");
+            let values = result.as_primitive::<TimestampMicrosecondType>();
+            assert_eq!(values.values().to_vec(), vec![1, 20], "{then_label:?}");
+        }
     }
 }
