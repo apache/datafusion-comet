@@ -15,10 +15,12 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Spark equality for nested floating-point values without materializing normalized columns.
+//! Spark comparisons for floating-point values, and Spark equality for nested floating-point
+//! values without materializing normalized columns.
 
 use crate::float_semantics::{
-    has_float_leaf, normalize_nested_floats, spark_equality, NormalizeNestedFloats,
+    has_float_leaf, normalize_comparison_operand, normalize_nested_floats, spark_equality,
+    NormalizeNestedFloats,
 };
 use arrow::array::{Array, ArrayRef, AsArray, BooleanArray};
 use arrow::buffer::{BooleanBuffer, NullBuffer};
@@ -219,31 +221,62 @@ impl PhysicalExpr for NestedPredicate {
     }
 }
 
-/// Build equality after the planner has reconciled nested operand nullability.
+/// How [`spark_comparison`] treats floating-point operands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FloatOperands {
+    /// Normalize them, so that the comparison follows Spark's SQL ordering.
+    Normalize,
+    /// Leave them as they are. Only a scan's pushed-down data filters use this: Parquet pruning
+    /// recognizes a column compared with a literal but not a normalized column, and Spark's
+    /// Filter above the scan evaluates each of those filters again.
+    Raw,
+}
+
+/// Builds a comparison with Spark's SQL ordering for floats, in which `-0.0` equals `0.0`, all
+/// NaNs are equal and NaN sorts above every other value, at any depth of a list or struct.
+///
+/// Arrow compares floats by IEEE 754 total order instead, so each float operand is normalized
+/// first with [`normalize_comparison_operand`], after which the two orders agree. Nested `=` and
+/// `<>` compare with `spark_equality` instead, without building normalized copies of the nested
+/// values. Any other operator, such as `AND`, builds a plain [`BinaryExpr`].
+///
+/// The planner reconciles the nullability of nested operands before calling this.
 pub fn spark_comparison(
     left: Arc<dyn PhysicalExpr>,
     op: Operator,
     right: Arc<dyn PhysicalExpr>,
     schema: &Schema,
+    float_operands: FloatOperands,
 ) -> Result<Arc<dyn PhysicalExpr>> {
+    use Operator::*;
+    if !matches!(
+        op,
+        Eq | NotEq | Lt | LtEq | Gt | GtEq | IsDistinctFrom | IsNotDistinctFrom
+    ) {
+        return Ok(Arc::new(BinaryExpr::new(left, op, right)));
+    }
     // An operand whose type does not resolve against this schema falls back to the plain
     // comparison, the way `reconcile_nested_comparison_types` already leaves such operands alone.
-    let nested = matches!(op, Operator::Eq | Operator::NotEq)
-        && match (left.data_type(schema), right.data_type(schema)) {
-            (Ok(lt), Ok(_)) => needs_spark_equality(&lt),
-            _ => false,
-        };
-    if nested {
+    let (Ok(left_type), Ok(_)) = (left.data_type(schema), right.data_type(schema)) else {
+        return Ok(Arc::new(BinaryExpr::new(left, op, right)));
+    };
+    if matches!(op, Eq | NotEq) && needs_spark_equality(&left_type) {
         validate_types(&left, std::slice::from_ref(&right), schema)?;
-        Ok(Arc::new(NestedPredicate {
+        return Ok(Arc::new(NestedPredicate {
             value: left,
             candidates: vec![right],
-            negated: op == Operator::NotEq,
+            negated: op == NotEq,
             membership: false,
-        }))
-    } else {
-        Ok(Arc::new(BinaryExpr::new(left, op, right)))
+        }));
     }
+    let (left, right) = match float_operands {
+        FloatOperands::Normalize => (
+            normalize_comparison_operand(left, schema)?,
+            normalize_comparison_operand(right, schema)?,
+        ),
+        FloatOperands::Raw => (left, right),
+    };
+    Ok(Arc::new(BinaryExpr::new(left, op, right)))
 }
 
 fn validate_types(
@@ -441,6 +474,7 @@ mod tests {
                         },
                         Arc::clone(&b),
                         batch.schema().as_ref(),
+                        FloatOperands::Normalize,
                     )?;
                     let inside = spark_in_list(
                         Arc::clone(&a),
@@ -458,6 +492,7 @@ mod tests {
                         Operator::Eq,
                         Arc::clone(&lit),
                         batch.schema().as_ref(),
+                        FloatOperands::Normalize,
                     )?;
                     let inside = spark_in_list(
                         Arc::clone(&a),
@@ -471,6 +506,7 @@ mod tests {
                         Operator::Eq,
                         Arc::clone(&a),
                         batch.schema().as_ref(),
+                        FloatOperands::Normalize,
                     )?;
                     assert_eq!(results(&eq, &batch), results(&reversed, &batch));
                 }
@@ -558,6 +594,7 @@ mod tests {
             Operator::Eq,
             Arc::clone(&zero),
             batch.schema().as_ref(),
+            FloatOperands::Normalize,
         )?;
         assert!(matches!(
             scalar.evaluate(&RecordBatch::new_empty(batch.schema()))?,
@@ -568,6 +605,7 @@ mod tests {
             Operator::Eq,
             Arc::clone(&b),
             batch.schema().as_ref(),
+            FloatOperands::Normalize,
         )?;
         assert!(eq.nullable(batch.schema().as_ref())?);
         assert_eq!(eq.data_type(batch.schema().as_ref())?, DataType::Boolean);
@@ -623,7 +661,8 @@ mod tests {
             Arc::clone(&primitive),
             Operator::Eq,
             primitive,
-            batch.schema().as_ref()
+            batch.schema().as_ref(),
+            FloatOperands::Normalize,
         )?
         .as_ref()
         .is::<BinaryExpr>());
@@ -635,11 +674,15 @@ mod tests {
             (Arc::clone(&unresolved), Arc::clone(&a)),
             (Arc::clone(&a), Arc::clone(&unresolved)),
         ] {
-            assert!(
-                spark_comparison(l, Operator::Eq, r, batch.schema().as_ref())?
-                    .as_ref()
-                    .is::<BinaryExpr>()
-            );
+            assert!(spark_comparison(
+                l,
+                Operator::Eq,
+                r,
+                batch.schema().as_ref(),
+                FloatOperands::Normalize
+            )?
+            .as_ref()
+            .is::<BinaryExpr>());
         }
         Ok(())
     }
@@ -760,6 +803,273 @@ mod tests {
         // Failure during the empty-batch probe selects the dynamic path, not a false result.
         let expr = spark_in_list(a, vec![bad], false, batch.schema().as_ref())?;
         assert!(expr.evaluate(&batch).is_err());
+        Ok(())
+    }
+
+    const COMPARISONS: [Operator; 8] = [
+        Operator::Eq,
+        Operator::NotEq,
+        Operator::Lt,
+        Operator::LtEq,
+        Operator::Gt,
+        Operator::GtEq,
+        Operator::IsDistinctFrom,
+        Operator::IsNotDistinctFrom,
+    ];
+
+    /// Spark's answer for `left op right`, given the ordering of two non-null values.
+    fn spark_answer(op: Operator, ordering: Option<Option<std::cmp::Ordering>>) -> Option<bool> {
+        use Operator::*;
+        match ordering {
+            // Both non-null.
+            Some(Some(ord)) => Some(match op {
+                Eq | IsNotDistinctFrom => ord.is_eq(),
+                NotEq | IsDistinctFrom => ord.is_ne(),
+                Lt => ord.is_lt(),
+                LtEq => ord.is_le(),
+                Gt => ord.is_gt(),
+                GtEq => ord.is_ge(),
+                _ => unreachable!(),
+            }),
+            // Both null.
+            Some(None) => match op {
+                IsNotDistinctFrom => Some(true),
+                IsDistinctFrom => Some(false),
+                _ => None,
+            },
+            // One null.
+            None => match op {
+                IsNotDistinctFrom => Some(false),
+                IsDistinctFrom => Some(true),
+                _ => None,
+            },
+        }
+    }
+
+    fn float_ordering(l: Option<f64>, r: Option<f64>) -> Option<Option<std::cmp::Ordering>> {
+        match (l, r) {
+            (Some(l), Some(r)) => Some(Some(crate::float_semantics::compare_floats(l, r))),
+            (None, None) => Some(None),
+            _ => None,
+        }
+    }
+
+    /// Every pair of edge values, under every operator, as two columns and as a column and a
+    /// literal on either side, for Float64 and Float32.
+    #[test]
+    fn float_operands_follow_spark_ordering() -> Result<()> {
+        let values = [
+            Some(f64::NEG_INFINITY),
+            Some(-1.0),
+            Some(-0.0),
+            Some(0.0),
+            Some(f64::MIN_POSITIVE),
+            Some(f64::INFINITY),
+            Some(f64::NAN),
+            // A NaN with the sign bit set, as arithmetic produces on x86-64.
+            Some(f64::from_bits(0xfff8_0000_0000_0000)),
+            // A NaN with a payload.
+            Some(f64::from_bits(0x7ff0_0000_0000_0001)),
+            None,
+        ];
+        // The Float32 pass computes Spark's answers from the values as Float32 holds them.
+        let to_f32 = |v: Option<f64>| v.map(|v| v as f32 as f64);
+        for float32 in [false, true] {
+            let values: Vec<_> = if float32 {
+                values.iter().map(|&v| to_f32(v)).collect()
+            } else {
+                values.to_vec()
+            };
+            let pairs: Vec<_> = values
+                .iter()
+                .flat_map(|&l| values.iter().map(move |&r| (l, r)))
+                .collect();
+            let left: Vec<_> = pairs.iter().map(|p| p.0).collect();
+            let right: Vec<_> = pairs.iter().map(|p| p.1).collect();
+            let array = |v: &[Option<f64>]| -> ArrayRef {
+                if float32 {
+                    Arc::new(arrow::array::Float32Array::from(
+                        v.iter().map(|v| v.map(|v| v as f32)).collect::<Vec<_>>(),
+                    ))
+                } else {
+                    Arc::new(Float64Array::from(v.to_vec()))
+                }
+            };
+            let batch = batch(array(&left), array(&right));
+            let schema = batch.schema();
+            let (a, b) = columns();
+            for op in COMPARISONS {
+                let expr = spark_comparison(
+                    Arc::clone(&a),
+                    op,
+                    Arc::clone(&b),
+                    &schema,
+                    FloatOperands::Normalize,
+                )?;
+                let expected: Vec<_> = pairs
+                    .iter()
+                    .map(|&(l, r)| spark_answer(op, float_ordering(l, r)))
+                    .collect();
+                assert_eq!(results(&expr, &batch), expected, "a {op} b");
+            }
+            // The first rows pair `values[0]` with each value in turn, so row `i` of column `b`
+            // holds `values[i]`.
+            for (i, &value) in values.iter().enumerate() {
+                let lit = literal(batch.column(1), i);
+                for op in COMPARISONS {
+                    let column_first = spark_comparison(
+                        Arc::clone(&a),
+                        op,
+                        Arc::clone(&lit),
+                        &schema,
+                        FloatOperands::Normalize,
+                    )?;
+                    let expected: Vec<_> = left
+                        .iter()
+                        .map(|&l| spark_answer(op, float_ordering(l, value)))
+                        .collect();
+                    assert_eq!(results(&column_first, &batch), expected, "a {op} {lit}");
+                    let literal_first = spark_comparison(
+                        Arc::clone(&lit),
+                        op,
+                        Arc::clone(&a),
+                        &schema,
+                        FloatOperands::Normalize,
+                    )?;
+                    let expected: Vec<_> = left
+                        .iter()
+                        .map(|&l| spark_answer(op, float_ordering(value, l)))
+                        .collect();
+                    assert_eq!(results(&literal_first, &batch), expected, "{lit} {op} a");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// A literal operand is normalized while planning, so the comparison stays `column op
+    /// literal`. With `FloatOperands::Raw`, as for a scan's data filters, nothing is wrapped.
+    #[test]
+    fn float_operand_shapes() -> Result<()> {
+        use crate::float_semantics::NormalizeNaNAndZero;
+        let batch = batch(
+            Arc::new(Float64Array::from(vec![1.0])),
+            Arc::new(Float64Array::from(vec![1.0])),
+        );
+        let schema = batch.schema();
+        let negative_zero: Arc<dyn PhysicalExpr> =
+            Arc::new(Literal::new(ScalarValue::Float64(Some(-0.0))));
+        let expr = spark_comparison(
+            Arc::new(Column::new("a", 0)),
+            Operator::Lt,
+            Arc::clone(&negative_zero),
+            &schema,
+            FloatOperands::Normalize,
+        )?;
+        let binary = expr.downcast_ref::<BinaryExpr>().unwrap();
+        assert!(binary
+            .left()
+            .downcast_ref::<NormalizeNaNAndZero>()
+            .is_some());
+        let folded = binary.right().downcast_ref::<Literal>().unwrap();
+        assert!(matches!(folded.value(), ScalarValue::Float64(Some(v)) if v.to_bits() == 0));
+
+        let expr = spark_comparison(
+            Arc::new(Column::new("a", 0)),
+            Operator::Lt,
+            Arc::clone(&negative_zero),
+            &schema,
+            FloatOperands::Raw,
+        )?;
+        let binary = expr.downcast_ref::<BinaryExpr>().unwrap();
+        assert!(binary.left().downcast_ref::<Column>().is_some());
+        assert!(Arc::ptr_eq(binary.right(), &negative_zero));
+
+        // Other operators are not comparisons and keep their operands.
+        let (a, b) = columns();
+        let expr = spark_comparison(
+            Arc::clone(&a),
+            Operator::Plus,
+            Arc::clone(&b),
+            &schema,
+            FloatOperands::Normalize,
+        )?;
+        let binary = expr.downcast_ref::<BinaryExpr>().unwrap();
+        assert!(Arc::ptr_eq(binary.left(), &a));
+        assert!(Arc::ptr_eq(binary.right(), &b));
+        Ok(())
+    }
+
+    /// Ordering and null-safe comparisons of lists and structs match `spark_comparator`, which
+    /// compares float leaves in Spark's order without normalizing them.
+    #[test]
+    fn nested_float_operands_follow_spark_ordering() -> Result<()> {
+        use crate::float_semantics::spark_comparator;
+        let leaves = [
+            Some(-0.0),
+            Some(0.0),
+            Some(f64::NAN),
+            Some(f64::from_bits(0xfff8_0000_0000_0000)),
+            Some(f64::INFINITY),
+            Some(1.0),
+            None,
+        ];
+        // Lists of every pair of leaves, including lists of different lengths.
+        let mut left_lists = vec![];
+        let mut right_lists = vec![];
+        for &l in &leaves {
+            for &r in &leaves {
+                left_lists.push(Some(vec![l]));
+                right_lists.push(Some(vec![r]));
+                left_lists.push(Some(vec![Some(1.0), l]));
+                right_lists.push(Some(vec![Some(1.0), r, Some(2.0)]));
+            }
+        }
+        left_lists.push(None);
+        right_lists.push(Some(vec![]));
+        left_lists.push(None);
+        right_lists.push(None);
+        let list = |lists: &[Option<Vec<Option<f64>>>]| -> ArrayRef {
+            Arc::new(ListArray::from_iter_primitive::<Float64Type, _, _>(
+                lists.to_vec(),
+            ))
+        };
+        let (left, right) = (list(&left_lists), list(&right_lists));
+        let as_struct = |array: &ArrayRef| -> ArrayRef {
+            Arc::new(StructArray::new(
+                vec![Arc::new(Field::new("v", array.data_type().clone(), true))].into(),
+                vec![Arc::clone(array)],
+                None,
+            ))
+        };
+        for (l, r) in [
+            (Arc::clone(&left), Arc::clone(&right)),
+            (as_struct(&left), as_struct(&right)),
+        ] {
+            let compare = spark_comparator(l.as_ref(), r.as_ref())?;
+            let batch = batch(Arc::clone(&l), Arc::clone(&r));
+            let (a, b) = columns();
+            for op in COMPARISONS {
+                let expr = spark_comparison(
+                    Arc::clone(&a),
+                    op,
+                    Arc::clone(&b),
+                    batch.schema().as_ref(),
+                    FloatOperands::Normalize,
+                )?;
+                let expected: Vec<_> = (0..l.len())
+                    .map(|i| {
+                        let ordering = match (l.is_null(i), r.is_null(i)) {
+                            (false, false) => Some(Some(compare(i, i))),
+                            (true, true) => Some(None),
+                            _ => None,
+                        };
+                        spark_answer(op, ordering)
+                    })
+                    .collect();
+                assert_eq!(results(&expr, &batch), expected, "{} {op}", l.data_type());
+            }
+        }
         Ok(())
     }
 }

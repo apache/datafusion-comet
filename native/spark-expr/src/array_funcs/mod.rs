@@ -37,6 +37,6 @@ pub use arrays_zip::SparkArraysZipFunc;
 pub use flatten::SparkFlatten;
 pub use get_array_struct_fields::GetArrayStructFields;
 pub use list_extract::ListExtract;
-pub use nested_comparison::{spark_comparison, spark_in_list};
+pub use nested_comparison::{spark_comparison, spark_in_list, FloatOperands};
 pub use sequence::spark_sequence;
 pub use size::{spark_size, SparkSizeFunc};
