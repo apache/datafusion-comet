@@ -560,7 +560,7 @@ under the License.
 per-partition iterator once as an <code class="docutils literal notranslate"><span class="pre">ArrowArrayStream</span></code>, and native pulls every batch through a single C callback.</p></li>
 <li><p><strong>Native → JVM</strong>: JVM pulls batches from native code using <code class="docutils literal notranslate"><span class="pre">CometExecIterator</span></code>, via the
 <a class="reference external" href="https://arrow.apache.org/docs/format/CDataInterface.html">Arrow C Data Interface</a> (one <code class="docutils literal notranslate"><span class="pre">ArrowArray</span></code>/<code class="docutils literal notranslate"><span class="pre">ArrowSchema</span></code>
-pair per batch).</p></li>
+pair per column of each batch).</p></li>
 </ol>
 <p>The following diagram shows an example of the end-to-end flow for a query stage.</p>
 <p><img alt="Diagram of Comet Data Flow" src="../_images/comet-dataflow.svg" /></p>
@@ -609,7 +609,7 @@ exports once per partition:</p>
          │ (native pulls each batch via the get_next callback)
          ▼
 ┌─────────────────┐
-│    ScanExec     │ ── owns an AlignedArrowStreamReader
+│    ScanExec     │ ── owns an ArrowArrayStreamReader
 │  (Rust/native)  │
 └────────┬────────┘
          │
@@ -638,18 +638,15 @@ to native <code class="docutils literal notranslate"><span class="pre">createPla
 compressed shuffle blocks are decoded inside the native plan by <code class="docutils literal notranslate"><span class="pre">ShuffleScanExec</span></code> rather than crossing this FFI
 boundary at all. <code class="docutils literal notranslate"><span class="pre">CometExecRDD.resolveInputObjects</span></code> classifies the slots, driven by which scan slots the serialized
 plan marked as <code class="docutils literal notranslate"><span class="pre">ShuffleScan</span></code>. See <a class="reference internal" href="native_shuffle.html#direct-read-shufflescan"><span class="std std-ref">Direct Read</span></a> for that path.</p>
-<p>On the native side, <code class="docutils literal notranslate"><span class="pre">planner.rs</span></code> reads each stream’s <code class="docutils literal notranslate"><span class="pre">memoryAddress</span></code> and takes ownership through
-<code class="docutils literal notranslate"><span class="pre">AlignedArrowStreamReader::from_raw</span></code>, importing the schema once. <code class="docutils literal notranslate"><span class="pre">ScanExec::get_next_batch</span></code> then pulls each batch
-through the stream’s <code class="docutils literal notranslate"><span class="pre">get_next</span></code> callback. There is no per-batch JNI call and no per-column FFI export.</p>
-</section>
-<section id="buffer-alignment-alignedarrowstreamreader">
-<h3>Buffer Alignment (AlignedArrowStreamReader)<a class="headerlink" href="#buffer-alignment-alignedarrowstreamreader" title="Link to this heading">#</a></h3>
-<p><code class="docutils literal notranslate"><span class="pre">AlignedArrowStreamReader</span></code> (in <code class="docutils literal notranslate"><span class="pre">execution/operators/aligned_stream_reader.rs</span></code>) wraps the imported stream and calls
-<code class="docutils literal notranslate"><span class="pre">align_buffers</span></code> on every batch before constructing typed arrays. This works around the fact that Java’s allocator
-hands back <code class="docutils literal notranslate"><span class="pre">Decimal128</span></code> buffers at 8-byte (not 16-byte) alignment, which the stock <code class="docutils literal notranslate"><span class="pre">ArrowArrayStreamReader</span></code> rejects
-(<a class="reference external" href="https://github.com/apache/arrow-rs/issues/10028">apache/arrow-rs#10028</a>). The fix
-(<a class="reference external" href="https://github.com/apache/arrow-rs/pull/10030">apache/arrow-rs#10030</a>) makes import align internally and ships in
-arrow 59.0.0; once Comet is on arrow &gt;= 59 this reader can be dropped for the stock <code class="docutils literal notranslate"><span class="pre">ArrowArrayStreamReader</span></code>.</p>
+<p>On the native side, <code class="docutils literal notranslate"><span class="pre">planner.rs</span></code> reads each stream’s <code class="docutils literal notranslate"><span class="pre">memoryAddress</span></code> and takes ownership through arrow-rs’s
+<code class="docutils literal notranslate"><span class="pre">ArrowArrayStreamReader::from_raw</span></code>, importing the schema once. <code class="docutils literal notranslate"><span class="pre">ScanExec::get_next_batch</span></code> then pulls each batch
+through the stream’s <code class="docutils literal notranslate"><span class="pre">get_next</span></code> callback. There is no per-batch JNI call and no per-column FFI export.
+<code class="docutils literal notranslate"><span class="pre">ScanExec::pull_next</span></code> passes every imported column through <code class="docutils literal notranslate"><span class="pre">import_column</span></code>, which decodes invalid UTF-8 to Spark’s
+rendering and otherwise uses the column as imported, without a copy.</p>
+<p>Java’s allocator only guarantees 8-byte alignment, while arrow-rs needs <code class="docutils literal notranslate"><span class="pre">Decimal128</span></code> buffers 16-byte aligned. arrow-rs
+realigns under-aligned buffers on import (<a class="reference external" href="https://github.com/apache/arrow-rs/pull/10030">apache/arrow-rs#10030</a>), and
+the <code class="docutils literal notranslate"><span class="pre">realigns_under_aligned_decimal128</span></code> test in <code class="docutils literal notranslate"><span class="pre">scan.rs</span></code> guards against an arrow downgrade that would bring back the
+panic (<a class="reference external" href="https://github.com/apache/arrow-rs/issues/10028">apache/arrow-rs#10028</a>).</p>
 </section>
 <section id="schema-reconciliation">
 <h3>Schema Reconciliation<a class="headerlink" href="#schema-reconciliation" title="Link to this heading">#</a></h3>
@@ -657,6 +654,9 @@ arrow 59.0.0; once Comet is on arrow &gt;= 59 this reader can be dropped for the
 first batch rather than the consumer’s Spark-declared types. Native <code class="docutils literal notranslate"><span class="pre">ScanExec</span></code> already casts its input to the
 declared scan-input schema in <code class="docutils literal notranslate"><span class="pre">build_record_batch</span></code>, so the truthful first-batch schema lets that cast fire; if the
 two differ, it logs one deduplicated warning naming the operator, column, and type drift.</p>
+<p>No input stream carries a dictionary. <code class="docutils literal notranslate"><span class="pre">RowArrowReader</span></code> and <code class="docutils literal notranslate"><span class="pre">SparkColumnarArrowReader</span></code> write plain vectors, and
+<code class="docutils literal notranslate"><span class="pre">ColumnarBatchArrowReader</span></code> decodes a dictionary-encoded column on the JVM before export, which is why
+<code class="docutils literal notranslate"><span class="pre">reconcileStreamSchema</span></code> advertises the dictionary’s value type for it.</p>
 </section>
 <section id="memory-layout">
 <h3>Memory Layout<a class="headerlink" href="#memory-layout" title="Link to this heading">#</a></h3>
@@ -686,7 +686,7 @@ Off-heap Memory:                            │
 so it is safe to buffer batches in operators such as <code class="docutils literal notranslate"><span class="pre">SortExec</span></code> or <code class="docutils literal notranslate"><span class="pre">ShuffleWriterExec</span></code> without a deep copy.</p>
 <p>The whole per-partition stream is exported once, so the JVM allocates one <code class="docutils literal notranslate"><span class="pre">ArrowArrayStream</span></code> per partition rather
 than a per-batch, per-column <code class="docutils literal notranslate"><span class="pre">ArrowArray</span></code>/<code class="docutils literal notranslate"><span class="pre">ArrowSchema</span></code> wrapper object pair. Lifecycle is anchored at the stream: when
-<code class="docutils literal notranslate"><span class="pre">ScanExec</span></code> drops its <code class="docutils literal notranslate"><span class="pre">AlignedArrowStreamReader</span></code>, the stream’s release callback fires synchronously back into the JVM
+<code class="docutils literal notranslate"><span class="pre">ScanExec</span></code> drops its <code class="docutils literal notranslate"><span class="pre">ArrowArrayStreamReader</span></code>, the stream’s release callback fires synchronously back into the JVM
 and closes the <code class="docutils literal notranslate"><span class="pre">ArrowReader</span></code> and its <code class="docutils literal notranslate"><span class="pre">VectorSchemaRoot</span></code>, releasing the off-heap buffers. Because native holds those
 buffers until the reader drops, an operator that buffers many batches keeps the corresponding JVM-side data alive
 until then.</p>
@@ -696,7 +696,7 @@ until then.</p>
 <h2>Native → JVM Data Flow (CometExecIterator)<a class="headerlink" href="#native-jvm-data-flow-cometexeciterator" title="Link to this heading">#</a></h2>
 <section id="id1">
 <h3>Architecture<a class="headerlink" href="#id1" title="Link to this heading">#</a></h3>
-<p>When JVM needs results from native execution:</p>
+<p>When the JVM needs results from native execution:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>┌─────────────────┐
 │ DataFusion Plan │
 │   (native)      │
@@ -704,82 +704,45 @@ until then.</p>
          │ produces RecordBatch
          ▼
 ┌─────────────────┐
-│ CometExecIter   │
+│ prepare_output  │ ── fills one ArrowArray/ArrowSchema pair per column
 │  (Rust/native)  │
 └────────┬────────┘
-         │ Arrow FFI
-         │ (transfers ArrowArray/ArrowSchema pointers)
+         │ Arrow C Data Interface
+         │ (structs allocated by the JVM, filled by native)
          ▼
 ┌─────────────────┐
-│ CometExecIter   │ ◄─── JNI call from Spark
-│  (Scala side)   │
+│   NativeUtil    │ ◄─── CometExecIterator calls Native.executePlan
+│  (Scala side)   │      once per batch
 └────────┬────────┘
-         │
+         │ ColumnarBatch of CometVectors
          ▼
 ┌─────────────────┐
-│  Spark Actions  │
-│  (collect, etc) │
+│ Spark and Comet │
+│  JVM operators  │
 └─────────────────┘
 </pre></div>
 </div>
 </section>
-<section id="ffi-transfer-process">
-<h3>FFI Transfer Process<a class="headerlink" href="#ffi-transfer-process" title="Link to this heading">#</a></h3>
-<p>The transfer happens in <code class="docutils literal notranslate"><span class="pre">CometExecIterator::getNextBatch()</span></code>:</p>
-<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="c1">// Scala side</span>
-<span class="k">def</span><span class="w"> </span><span class="nf">getNextBatch</span><span class="p">():</span><span class="w"> </span><span class="nc">ColumnarBatch</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
-<span class="w">  </span><span class="kd">val</span><span class="w"> </span><span class="n">batchHandle</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nc">Native</span><span class="p">.</span><span class="n">getNextBatch</span><span class="p">(</span><span class="n">nativeHandle</span><span class="p">)</span>
-
-<span class="w">  </span><span class="c1">// Import from FFI structures</span>
-<span class="w">  </span><span class="kd">val</span><span class="w"> </span><span class="n">vectors</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">(</span><span class="mi">0</span><span class="w"> </span><span class="n">until</span><span class="w"> </span><span class="n">schema</span><span class="p">.</span><span class="n">length</span><span class="p">).</span><span class="n">map</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">i</span><span class="w"> </span><span class="o">=&gt;</span>
-<span class="w">    </span><span class="kd">val</span><span class="w"> </span><span class="n">array</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nc">Array</span><span class="p">.</span><span class="n">empty</span><span class="p">[</span><span class="nc">Long</span><span class="p">](</span><span class="mi">1</span><span class="p">)</span>
-<span class="w">    </span><span class="kd">val</span><span class="w"> </span><span class="n">schemaPtr</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nc">Array</span><span class="p">.</span><span class="n">empty</span><span class="p">[</span><span class="nc">Long</span><span class="p">](</span><span class="mi">1</span><span class="p">)</span>
-
-<span class="w">    </span><span class="c1">// Get FFI pointers from native</span>
-<span class="w">    </span><span class="nc">Native</span><span class="p">.</span><span class="n">exportVector</span><span class="p">(</span><span class="n">batchHandle</span><span class="p">,</span><span class="w"> </span><span class="n">i</span><span class="p">,</span><span class="w"> </span><span class="n">array</span><span class="p">,</span><span class="w"> </span><span class="n">schemaPtr</span><span class="p">)</span>
-
-<span class="w">    </span><span class="c1">// Import into Arrow Java</span>
-<span class="w">    </span><span class="nc">Data</span><span class="p">.</span><span class="n">importVector</span><span class="p">(</span><span class="n">allocator</span><span class="p">,</span><span class="w"> </span><span class="n">array</span><span class="p">(</span><span class="mi">0</span><span class="p">),</span><span class="w"> </span><span class="n">schemaPtr</span><span class="p">(</span><span class="mi">0</span><span class="p">))</span>
-<span class="w">  </span><span class="p">}</span>
-
-<span class="w">  </span><span class="k">new</span><span class="w"> </span><span class="nc">ColumnarBatch</span><span class="p">(</span><span class="n">vectors</span><span class="p">.</span><span class="n">toArray</span><span class="p">,</span><span class="w"> </span><span class="n">numRows</span><span class="p">)</span>
-<span class="p">}</span>
-</pre></div>
-</div>
-<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="c1">// Native side (simplified)</span>
-<span class="cp">#[no_mangle]</span>
-<span class="k">pub</span><span class="w"> </span><span class="k">extern</span><span class="w"> </span><span class="s">"system"</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">Java_</span><span class="o">..</span><span class="p">.</span><span class="n">_getNextBatch</span><span class="p">(</span>
-<span class="w">    </span><span class="n">env</span><span class="p">:</span><span class="w"> </span><span class="nc">JNIEnv</span><span class="p">,</span>
-<span class="w">    </span><span class="n">handle</span><span class="p">:</span><span class="w"> </span><span class="nc">jlong</span><span class="p">,</span>
-<span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">jlong</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">context</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">get_exec_context</span><span class="p">(</span><span class="n">handle</span><span class="p">)</span><span class="o">?</span><span class="p">;</span>
-<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">batch</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">context</span><span class="p">.</span><span class="n">stream</span><span class="p">.</span><span class="n">next</span><span class="p">().</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
-
-<span class="w">    </span><span class="c1">// Store batch and return handle</span>
-<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">batch_handle</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">Box</span><span class="p">::</span><span class="n">into_raw</span><span class="p">(</span><span class="nb">Box</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">batch</span><span class="p">))</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="kt">i64</span><span class="p">;</span>
-<span class="w">    </span><span class="n">batch_handle</span>
-<span class="p">}</span>
-
-<span class="cp">#[no_mangle]</span>
-<span class="k">pub</span><span class="w"> </span><span class="k">extern</span><span class="w"> </span><span class="s">"system"</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">Java_</span><span class="o">..</span><span class="p">.</span><span class="n">_exportVector</span><span class="p">(</span>
-<span class="w">    </span><span class="n">env</span><span class="p">:</span><span class="w"> </span><span class="nc">JNIEnv</span><span class="p">,</span>
-<span class="w">    </span><span class="n">batch_handle</span><span class="p">:</span><span class="w"> </span><span class="nc">jlong</span><span class="p">,</span>
-<span class="w">    </span><span class="n">col_idx</span><span class="p">:</span><span class="w"> </span><span class="nc">jint</span><span class="p">,</span>
-<span class="w">    </span><span class="n">array_ptr</span><span class="p">:</span><span class="w"> </span><span class="nc">jlongArray</span><span class="p">,</span>
-<span class="w">    </span><span class="n">schema_ptr</span><span class="p">:</span><span class="w"> </span><span class="nc">jlongArray</span><span class="p">,</span>
-<span class="p">)</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">batch</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">get_batch</span><span class="p">(</span><span class="n">batch_handle</span><span class="p">)</span><span class="o">?</span><span class="p">;</span>
-<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">array</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">batch</span><span class="p">.</span><span class="n">column</span><span class="p">(</span><span class="n">col_idx</span><span class="p">);</span>
-
-<span class="w">    </span><span class="c1">// Export to FFI structures</span>
-<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="p">(</span><span class="n">array_ffi</span><span class="p">,</span><span class="w"> </span><span class="n">schema_ffi</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">to_ffi</span><span class="p">(</span><span class="n">array</span><span class="p">.</span><span class="n">to_data</span><span class="p">())</span><span class="o">?</span><span class="p">;</span>
-
-<span class="w">    </span><span class="c1">// Write pointers back to JVM</span>
-<span class="w">    </span><span class="n">env</span><span class="p">.</span><span class="n">set_long_array_region</span><span class="p">(</span><span class="n">array_ptr</span><span class="p">,</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="p">[</span><span class="n">array_ffi</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="kt">i64</span><span class="p">])</span><span class="o">?</span><span class="p">;</span>
-<span class="w">    </span><span class="n">env</span><span class="p">.</span><span class="n">set_long_array_region</span><span class="p">(</span><span class="n">schema_ptr</span><span class="p">,</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="p">[</span><span class="n">schema_ffi</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="kt">i64</span><span class="p">])</span><span class="o">?</span><span class="p">;</span>
-<span class="p">}</span>
-</pre></div>
-</div>
+<section id="transfer-process">
+<h3>Transfer Process<a class="headerlink" href="#transfer-process" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">CometExecIterator.hasNext</span></code> fetches each batch through <code class="docutils literal notranslate"><span class="pre">NativeUtil.getNextBatch</span></code>, with one JNI call per batch:</p>
+<ol class="arabic simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">NativeUtil.getNextBatch</span></code> allocates one empty <code class="docutils literal notranslate"><span class="pre">ArrowArray</span></code>/<code class="docutils literal notranslate"><span class="pre">ArrowSchema</span></code> pair per output column from
+<code class="docutils literal notranslate"><span class="pre">CometArrowAllocator</span></code> and passes their memory addresses to
+<code class="docutils literal notranslate"><span class="pre">Native.executePlan(stage,</span> <span class="pre">partition,</span> <span class="pre">plan,</span> <span class="pre">arrayAddrs,</span> <span class="pre">schemaAddrs)</span></code>.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">executePlan</span></code> (in <code class="docutils literal notranslate"><span class="pre">jni_api.rs</span></code>) polls the native plan for its next <code class="docutils literal notranslate"><span class="pre">RecordBatch</span></code>, and <code class="docutils literal notranslate"><span class="pre">prepare_output</span></code> exports
+each column into its pair with <code class="docutils literal notranslate"><span class="pre">move_to_spark</span></code> (in <code class="docutils literal notranslate"><span class="pre">execution/utils.rs</span></code>). <code class="docutils literal notranslate"><span class="pre">move_to_spark</span></code> zeroes the column’s
+offsets (see <a class="reference internal" href="#array-offsets">Array Offsets</a>), then writes an <code class="docutils literal notranslate"><span class="pre">FFI_ArrowArray</span></code> over the result, and an
+<code class="docutils literal notranslate"><span class="pre">FFI_ArrowSchema</span></code> built from its data type and field metadata, into the JVM-allocated structs. <code class="docutils literal notranslate"><span class="pre">executePlan</span></code>
+returns the batch’s row count, or <code class="docutils literal notranslate"><span class="pre">-1</span></code> at the end of the output. With <code class="docutils literal notranslate"><span class="pre">spark.comet.debug.enabled</span></code> set,
+<code class="docutils literal notranslate"><span class="pre">prepare_output</span></code> first runs <code class="docutils literal notranslate"><span class="pre">validate_full</span></code> on every column.</p></li>
+<li><p>At the end of the output, <code class="docutils literal notranslate"><span class="pre">NativeUtil</span></code> releases the unused structs. Otherwise <code class="docutils literal notranslate"><span class="pre">NativeUtil.importVector</span></code> imports
+each column with <code class="docutils literal notranslate"><span class="pre">ArrowImporter.importVector</span></code>, wraps it with <code class="docutils literal notranslate"><span class="pre">CometVector.getVector</span></code>, and returns the vectors as
+a <code class="docutils literal notranslate"><span class="pre">ColumnarBatch</span></code>.</p></li>
+</ol>
+<p><code class="docutils literal notranslate"><span class="pre">ArrowImporter</span></code> (in <code class="docutils literal notranslate"><span class="pre">spark/src/main/java/org/apache/arrow/c/</span></code>) imports every column through one shared
+<code class="docutils literal notranslate"><span class="pre">SchemaImporter</span></code>. Arrow Java’s own <code class="docutils literal notranslate"><span class="pre">Data.importField</span></code> creates a new <code class="docutils literal notranslate"><span class="pre">SchemaImporter</span></code> for each field, and each one
+numbers dictionaries from 0, so two dictionary-encoded columns would collide in the shared <code class="docutils literal notranslate"><span class="pre">CDataDictionaryProvider</span></code>.</p>
 </section>
 <section id="array-offsets">
 <h3>Array Offsets<a class="headerlink" href="#array-offsets" title="Link to this heading">#</a></h3>
@@ -793,59 +756,20 @@ level and shares every other buffer. <code class="docutils literal notranslate">
 or sliced booleans reach the JVM misaligned
 (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6288">#6288</a>).</p>
 </section>
-<section id="wrapper-object-lifecycle-native-jvm">
-<h3>Wrapper Object Lifecycle (Native → JVM)<a class="headerlink" href="#wrapper-object-lifecycle-native-jvm" title="Link to this heading">#</a></h3>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>Time    Native Memory              JVM Heap              Data location
-────────────────────────────────────────────────────────────────────────
-t0      RecordBatch produced       -                     Data in native
-        in DataFusion
-
-t1      FFI_ArrowArray created     -                     Data in native
-        FFI_ArrowSchema created
-        (native heap)
-
-t2      Pointers exported to JVM   ArrowBuf created      Data in native
-                                   (wraps native ptr)
-
-t3      FFI structures kept alive  Spark processes       Data in native
-        via batch handle           ColumnarBatch         ✓ Valid
-
-t4      Batch handle released      ArrowBuf freed        Data freed
-        Release callback runs      (triggers native      (via release
-                                   release callback)     callback)
-</pre></div>
-</div>
-<p><strong>Key Difference from JVM → Native</strong>:</p>
+<section id="id2">
+<h3>Ownership and Lifecycle<a class="headerlink" href="#id2" title="Link to this heading">#</a></h3>
+<p>Native allocates the data, and the JVM references it without copying:</p>
 <ul class="simple">
-<li><p>Native code controls lifecycle through batch handle</p></li>
-<li><p>JVM creates <code class="docutils literal notranslate"><span class="pre">ArrowBuf</span></code> wrappers that point to native memory</p></li>
-<li><p>Release callback ensures proper cleanup when JVM is done</p></li>
-<li><p>No GC pressure issue because native allocator manages the data</p></li>
+<li><p>The <code class="docutils literal notranslate"><span class="pre">FFI_ArrowArray</span></code> that <code class="docutils literal notranslate"><span class="pre">move_to_spark</span></code> writes holds a reference to the column’s native buffers, and its release
+callback drops that reference.</p></li>
+<li><p>On import, Arrow Java wraps each native buffer in an <code class="docutils literal notranslate"><span class="pre">ArrowBuf</span></code>. Closing the last <code class="docutils literal notranslate"><span class="pre">ArrowBuf</span></code> over an imported
+column runs its release callback, and native frees the buffers once no Rust reference to them remains.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">CometExecIterator</span></code> closes the batch it returned when the consumer next calls <code class="docutils literal notranslate"><span class="pre">hasNext</span></code> or <code class="docutils literal notranslate"><span class="pre">next</span></code>, and on
+<code class="docutils literal notranslate"><span class="pre">close()</span></code>. A batch is therefore valid only until the consumer asks for the next one, and a consumer that keeps the
+data longer has to copy it.</p></li>
 </ul>
-</section>
-<section id="release-callbacks">
-<h3>Release Callbacks<a class="headerlink" href="#release-callbacks" title="Link to this heading">#</a></h3>
-<p>Critical for proper cleanup:</p>
-<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="c1">// Native release callback (simplified)</span>
-<span class="k">extern</span><span class="w"> </span><span class="s">"C"</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">release_batch</span><span class="p">(</span><span class="n">array</span><span class="p">:</span><span class="w"> </span><span class="o">*</span><span class="k">mut</span><span class="w"> </span><span class="n">FFI_ArrowArray</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="o">!</span><span class="n">array</span><span class="p">.</span><span class="n">is_null</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="k">unsafe</span><span class="w"> </span><span class="p">{</span>
-<span class="w">            </span><span class="c1">// Free the data buffers</span>
-<span class="w">            </span><span class="k">for</span><span class="w"> </span><span class="n">buffer</span><span class="w"> </span><span class="k">in</span><span class="w"> </span><span class="p">(</span><span class="o">*</span><span class="n">array</span><span class="p">).</span><span class="n">buffers</span><span class="w"> </span><span class="p">{</span>
-<span class="w">                </span><span class="nb">drop</span><span class="p">(</span><span class="nb">Box</span><span class="p">::</span><span class="n">from_raw</span><span class="p">(</span><span class="n">buffer</span><span class="p">));</span>
-<span class="w">            </span><span class="p">}</span>
-<span class="w">            </span><span class="c1">// Free the array structure itself</span>
-<span class="w">            </span><span class="nb">drop</span><span class="p">(</span><span class="nb">Box</span><span class="p">::</span><span class="n">from_raw</span><span class="p">(</span><span class="n">array</span><span class="p">));</span>
-<span class="w">        </span><span class="p">}</span>
-<span class="w">    </span><span class="p">}</span>
-<span class="p">}</span>
-</pre></div>
-</div>
-<p>When JVM is done with the data:</p>
-<div class="highlight-java notranslate"><div class="highlight"><pre><span></span><span class="c1">// ArrowBuf.close() triggers the release callback</span>
-<span class="n">arrowBuf</span><span class="p">.</span><span class="na">close</span><span class="p">();</span><span class="w">  </span><span class="c1">// → calls native release_batch()</span>
-</pre></div>
-</div>
+<p>By the time the JVM receives a batch, native has usually stopped reserving it in the memory pool, but it stays
+resident until the JVM closes it. See <a class="reference internal" href="memory_management.html#crossing-the-ffi-boundary"><span class="std std-ref">Crossing the FFI boundary</span></a>.</p>
 </section>
 </section>
 <section id="memory-ownership-rules">
@@ -862,7 +786,7 @@ t4      Batch handle released      ArrowBuf freed        Data freed
 <tbody>
 <tr class="row-even"><td><p>All cases</p></td>
 <td><p>Native owns</p></td>
-<td><p>None; the C Stream transfers ownership by reference count (copy only to unpack dictionaries). Dropping the reader releases the JVM-side data</p></td>
+<td><p>None; the C Stream transfers ownership by reference count. Dropping the reader releases the JVM-side data</p></td>
 </tr>
 </tbody>
 </table>
@@ -953,7 +877,6 @@ t4      Batch handle released      ArrowBuf freed        Data freed
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#jvm-native-data-flow-scanexec">JVM → Native Data Flow (ScanExec)</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#architecture">Architecture</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#stream-export-and-import">Stream Export and Import</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#buffer-alignment-alignedarrowstreamreader">Buffer Alignment (AlignedArrowStreamReader)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#schema-reconciliation">Schema Reconciliation</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#memory-layout">Memory Layout</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#ownership-and-lifecycle">Ownership and Lifecycle</a></li>
@@ -961,10 +884,9 @@ t4      Batch handle released      ArrowBuf freed        Data freed
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#native-jvm-data-flow-cometexeciterator">Native → JVM Data Flow (CometExecIterator)</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#id1">Architecture</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#ffi-transfer-process">FFI Transfer Process</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#transfer-process">Transfer Process</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#array-offsets">Array Offsets</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#wrapper-object-lifecycle-native-jvm">Wrapper Object Lifecycle (Native → JVM)</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#release-callbacks">Release Callbacks</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#id2">Ownership and Lifecycle</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#memory-ownership-rules">Memory Ownership Rules</a><ul class="nav section-nav flex-column">

@@ -970,13 +970,10 @@ produces columnar data, and both are excluded.</p></li>
 <code class="docutils literal notranslate"><span class="pre">WholeStageCodegen</span></code>, query stages, and <code class="docutils literal notranslate"><span class="pre">AQEShuffleRead</span></code>.</p></li>
 <li><p>The reuse marker <code class="docutils literal notranslate"><span class="pre">ReusedSubquery</span></code>. The subquery it points at is counted where
 that subquery is shown, so the marker itself does not add to the totals.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">ReusedExchange</span></code>, but with a caveat: it is not cleanly excluded the way the
-wrappers above are. The node itself is skipped, and yet walking the plan
-replaces it with the exchange it reuses, so the reused subtree is counted once
-per reference rather than once for the whole plan. A plan that reuses one
-exchange in three places contributes that subtree’s operators three times.
-Counting reused exchanges once is tracked as item 3 of
-<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5203">#5203</a>.</p></li>
+<li><p>The reuse marker <code class="docutils literal notranslate"><span class="pre">ReusedExchange</span></code>. Walking the plan replaces the marker with
+the exchange it reuses, so the reused subtree is shown in full at every
+reference. The exchange runs once, so the operators and transitions in that
+subtree are counted once for the whole plan, where the subtree is first shown.</p></li>
 </ul>
 </section>
 <section id="spark-comet-explain-native-enabled">
