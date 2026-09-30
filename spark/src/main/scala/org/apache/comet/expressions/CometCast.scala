@@ -238,6 +238,14 @@ object CometCast
         canCastFromDouble(toType)
       case (from_struct: StructType, to_struct: StructType) =>
         from_struct.fields.zip(to_struct.fields).foreach { case (a, b) =>
+          // `convert` replaces a top-level cast that is always null (DATE to a numeric or boolean
+          // type in LEGACY mode) with a null literal, so the native cast never sees one. A struct
+          // field or map entry does reach it, and there DATE to INT reinterprets the day count
+          // (the kernel `unix_date` relies on) while the other targets raise an error. Arrays of
+          // dates have their own rule above.
+          if (isAlwaysCastToNull(a.dataType, b.dataType, evalMode)) {
+            return unsupported(fromType, toType)
+          }
           isSupported(a.dataType, b.dataType, timeZoneId, evalMode) match {
             case Compatible(_, _) =>
             // all good
@@ -248,11 +256,17 @@ object CometCast
         Compatible()
       case (from_map: MapType, to_map: MapType) =>
         // Native cast_map_to_map recursively casts keys and values, so support is
-        // determined by whether both inner casts are individually supported.
-        isSupported(from_map.keyType, to_map.keyType, timeZoneId, evalMode) match {
-          case Compatible(_, _) =>
-            isSupported(from_map.valueType, to_map.valueType, timeZoneId, evalMode)
-          case other => other
+        // determined by whether both inner casts are individually supported. As with struct
+        // fields, a key or value cast that is always null has no Spark-compatible native kernel.
+        if (isAlwaysCastToNull(from_map.keyType, to_map.keyType, evalMode) ||
+          isAlwaysCastToNull(from_map.valueType, to_map.valueType, evalMode)) {
+          unsupported(fromType, toType)
+        } else {
+          isSupported(from_map.keyType, to_map.keyType, timeZoneId, evalMode) match {
+            case Compatible(_, _) =>
+              isSupported(from_map.valueType, to_map.valueType, timeZoneId, evalMode)
+            case other => other
+          }
         }
       case (DataTypes.DateType, toType) => canCastFromDate(toType, evalMode)
       case _ => unsupported(fromType, toType)

@@ -149,3 +149,66 @@ query
 SELECT cast(arr_struct as string), id
 FROM test_cast_complex
 ORDER BY id
+
+-- DATE to a numeric or boolean type is always NULL in legacy mode. A top-level cast is folded to a
+-- null literal during planning, but one nested in a struct field or map value reaches the cast
+-- kernel, so these run through the codegen dispatcher.
+statement
+CREATE TABLE test_cast_complex_date(
+  id int,
+  s struct<d:date,label:string>,
+  m map<string,date>,
+  arr_struct array<struct<d:date>>
+) USING parquet
+
+statement
+INSERT INTO test_cast_complex_date VALUES
+  (
+    1,
+    named_struct('d', date '2024-01-15', 'label', 'first'),
+    map('a', date '2024-01-15', 'b', cast(null as date)),
+    array(named_struct('d', date '2024-01-15'), named_struct('d', cast(null as date)))
+  ),
+  (
+    2,
+    named_struct('d', cast(null as date), 'label', cast(null as string)),
+    cast(map() as map<string,date>),
+    cast(array() as array<struct<d:date>>)
+  ),
+  (
+    3,
+    cast(null as struct<d:date,label:string>),
+    cast(null as map<string,date>),
+    cast(null as array<struct<d:date>>)
+  )
+
+query
+SELECT cast(s as struct<d:int,label:string>), id
+FROM test_cast_complex_date
+ORDER BY id
+
+query
+SELECT cast(s as struct<d:bigint,label:string>), cast(s as struct<d:boolean,label:string>), id
+FROM test_cast_complex_date
+ORDER BY id
+
+query
+SELECT cast(s as struct<d:double,label:string>), cast(s as struct<d:decimal(10,2),label:string>), id
+FROM test_cast_complex_date
+ORDER BY id
+
+query
+SELECT cast(m as map<string,int>), cast(m as map<string,bigint>), id
+FROM test_cast_complex_date
+ORDER BY id
+
+query
+SELECT cast(arr_struct as array<struct<d:int>>), cast(arr_struct as array<struct<d:tinyint>>), id
+FROM test_cast_complex_date
+ORDER BY id
+
+-- DATE to TIMESTAMP and STRING inside a struct or map are unaffected
+query
+SELECT cast(s as struct<d:timestamp,label:string>), cast(m as map<string,string>), id
+FROM test_cast_complex_date
+ORDER BY id

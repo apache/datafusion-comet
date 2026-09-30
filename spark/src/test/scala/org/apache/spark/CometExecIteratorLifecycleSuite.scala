@@ -453,7 +453,9 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
         == fourGiB)
   }
 
-  test("the native memory limit is the off-heap size plus the memory overhead") {
+  private val kubernetesMaster = "k8s://https://kubernetes.default.svc:443"
+
+  test("the native memory limit is the container's memory outside the JVM heap") {
     import CometExecIterator.nativeMemoryLimit
     val mib = 1024L * 1024
     val offHeap = new SparkConf(false)
@@ -464,9 +466,28 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
     assert(nativeMemoryLimit(offHeap) == Some((4096 + 1638) * mib))
     assert(nativeMemoryLimit(offHeap.clone.set("spark.memory.offHeap.enabled", "false")).isEmpty)
     assert(nativeMemoryLimit(offHeap.clone.set("spark.master", "local[*]")).isEmpty)
+
+    // The container also holds spark.executor.pyspark.memory for an application that
+    // spark-submit marked as Python: with spark.yarn.isPython for YARN, and with
+    // spark.kubernetes.resource.type in Kubernetes cluster mode.
+    val pyspark = offHeap.clone.set("spark.executor.pyspark.memory", "2g")
+    assert(nativeMemoryLimit(pyspark) == Some((4096 + 1638) * mib))
+    assert(
+      nativeMemoryLimit(pyspark.clone.set("spark.yarn.isPython", "true"))
+        == Some((4096 + 1638 + 2048) * mib))
+    val kubernetes = pyspark.clone
+      .set("spark.master", kubernetesMaster)
+      .set("spark.kubernetes.memoryOverheadFactor", "0.1")
+    // Nothing sets the resource type in client mode, and Kubernetes then leaves it out.
+    assert(nativeMemoryLimit(kubernetes) == Some((4096 + 1638) * mib))
+    Seq("java" -> 0, "r" -> 0, "python" -> 2048).foreach { case (resourceType, pysparkMiB) =>
+      val conf = kubernetes.clone.set("spark.kubernetes.resource.type", resourceType)
+      assert(nativeMemoryLimit(conf) == Some((4096 + 1638 + pysparkMiB) * mib), resourceType)
+    }
   }
 
-  test("the executor memory overhead is sized as Spark sizes the container") {
+  test("the executor memory overhead is sized as YARN sizes the container") {
+    import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
     import CometExecIterator.executorMemoryOverhead
     val mib = 1024L * 1024
     def conf(settings: (String, String)*): SparkConf =
@@ -485,8 +506,80 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
         conf(
           "spark.executor.memory" -> "10g",
           "spark.executor.memoryOverheadFactor" -> "0.25")) == Some(2560 * mib))
+    // Spark 4.0 made the 384 MiB minimum configurable; earlier versions ignore the setting.
+    assert(
+      executorMemoryOverhead(
+        conf("spark.executor.memory" -> "4g", "spark.executor.minMemoryOverhead" -> "1g")) ==
+        Some((if (isSpark40Plus) 1024 else 409) * mib))
+    // Only Kubernetes reads the Kubernetes factor.
+    assert(
+      executorMemoryOverhead(
+        conf(
+          "spark.executor.memory" -> "8g",
+          "spark.kubernetes.memoryOverheadFactor" -> "0.4")) == Some(819 * mib))
     assert(executorMemoryOverhead(conf("spark.executor.memoryOverhead" -> "lots")).isEmpty)
-    assert(executorMemoryOverhead(new SparkConf(false).set("spark.master", "local[4]")).isEmpty)
+  }
+
+  test("the executor memory overhead is sized as Kubernetes sizes the pod") {
+    import CometExecIterator.executorMemoryOverhead
+    val mib = 1024L * 1024
+    def conf(settings: (String, String)*): SparkConf =
+      new SparkConf(false)
+        .set("spark.master", kubernetesMaster)
+        .set("spark.executor.memory", "8g")
+        .setAll(settings)
+
+    // In cluster mode spark-submit passes spark.kubernetes.memoryOverheadFactor on to the
+    // executors, 0.4 for a PySpark or SparkR application that did not set it, and Kubernetes
+    // uses it when spark.executor.memoryOverheadFactor is unset.
+    Seq("python", "r").foreach { resourceType =>
+      val pod = conf(
+        "spark.kubernetes.resource.type" -> resourceType,
+        "spark.kubernetes.memoryOverheadFactor" -> "0.4")
+      assert(executorMemoryOverhead(pod) == Some(3276 * mib), resourceType)
+    }
+    // A factor the application set is passed on in the same way.
+    assert(
+      executorMemoryOverhead(conf("spark.kubernetes.memoryOverheadFactor" -> "0.3")) ==
+        Some(2457 * mib))
+    // Nothing sets it in client mode, where it defaults to 0.1.
+    assert(executorMemoryOverhead(conf()) == Some(819 * mib))
+    assert(
+      executorMemoryOverhead(
+        conf(
+          "spark.kubernetes.memoryOverheadFactor" -> "0.4",
+          "spark.executor.memoryOverheadFactor" -> "0.2")) == Some(1638 * mib))
+    assert(
+      executorMemoryOverhead(
+        conf(
+          "spark.kubernetes.memoryOverheadFactor" -> "0.4",
+          "spark.executor.memoryOverhead" -> "1g")) == Some(1024 * mib))
+    assert(
+      executorMemoryOverhead(
+        conf(
+          "spark.executor.memory" -> "512m",
+          "spark.kubernetes.memoryOverheadFactor" -> "0.4")) == Some(384 * mib))
+    assert(
+      executorMemoryOverhead(conf("spark.kubernetes.memoryOverheadFactor" -> "lots")).isEmpty)
+  }
+
+  test("the executor memory overhead is unknown without a container sized from it") {
+    import CometExecIterator.executorMemoryOverhead
+    // Local mode has no executor container, and a standalone worker starts executors without
+    // a memory limit, never reading the overhead settings.
+    val masters =
+      Seq(
+        "local",
+        "local[4]",
+        "local-cluster[2,1,1024]",
+        "spark://host:7077",
+        "mesos://host:5050")
+    masters.foreach { master =>
+      val conf = new SparkConf(false)
+        .set("spark.master", master)
+        .set("spark.executor.memoryOverhead", "2g")
+      assert(executorMemoryOverhead(conf).isEmpty, master)
+    }
   }
 
   test("the memory usage log interval disables the log on a value it cannot use") {
