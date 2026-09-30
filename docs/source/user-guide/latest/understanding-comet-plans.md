@@ -191,13 +191,10 @@ from both operator counts:
   `WholeStageCodegen`, query stages, and `AQEShuffleRead`.
 - The reuse marker `ReusedSubquery`. The subquery it points at is counted where
   that subquery is shown, so the marker itself does not add to the totals.
-- `ReusedExchange`, but with a caveat: it is not cleanly excluded the way the
-  wrappers above are. The node itself is skipped, and yet walking the plan
-  replaces it with the exchange it reuses, so the reused subtree is counted once
-  per reference rather than once for the whole plan. A plan that reuses one
-  exchange in three places contributes that subtree's operators three times.
-  Counting reused exchanges once is tracked as item 3 of
-  [#5203](https://github.com/apache/datafusion-comet/issues/5203).
+- The reuse marker `ReusedExchange`. Walking the plan replaces the marker with
+  the exchange it reuses, so the reused subtree is shown in full at every
+  reference. The exchange runs once, so the operators and transitions in that
+  subtree are counted once for the whole plan, where the subtree is first shown.
 
 ### `spark.comet.explain.native.enabled`
 
@@ -301,6 +298,9 @@ by role. Names match what is shown in the plan output.
 | `CometNativeScan`        | Parquet scan that runs entirely in Rust via DataFusion.                                       |
 | `CometIcebergNativeScan` | Iceberg Parquet scan that runs entirely in Rust via DataFusion.                               |
 | `CometCsvNativeScan`     | CSV scan that runs entirely in Rust via DataFusion (experimental).                            |
+| `CometInMemoryTableScan` | JVM-side scan of a table cached in Comet's Arrow format (experimental, disabled by default).  |
+| `CometLocalTableScan`    | JVM-side scan of a `LocalTableScanExec` (disabled by default).                                |
+| `CometEmptyRelation`     | Empty native input that replaces `EmptyRelationExec` (Spark 4.0 and later).                   |
 
 ### Native Rust Operators
 
@@ -321,20 +321,28 @@ consecutively in a plan, they execute as a single fused block.
 | `CometBroadcastHashJoin`       | `BroadcastHashJoinExec`                                                           |
 | `CometBroadcastNestedLoopJoin` | `BroadcastNestedLoopJoinExec`                                                     |
 | `CometSortMergeJoin`           | `SortMergeJoinExec`                                                               |
-| `CometWindow`                  | `WindowExec`                                                                      |
+| `CometWindowExec`              | `WindowExec`                                                                      |
+| `CometWindowGroupLimitExec`    | `WindowGroupLimitExec` (Spark 3.5 and later)                                      |
+| `CometSample`                  | `SampleExec` (sampling without replacement)                                       |
 | `CometTakeOrderedAndProject`   | `TakeOrderedAndProjectExec`                                                       |
+| `CometWriteFiles`              | `WriteFilesExec` (Spark 4.0 and later, experimental native Parquet writes)        |
+| `CometNativeWrite`             | `DataWritingCommandExec` (Spark 3.x, experimental native Parquet writes)          |
+| `CometIcebergWrite`            | `IcebergWrite` (experimental native Iceberg data-file writes)                     |
 
 ### JVM-Side Operators
 
 These keep their data on the JVM but participate in the Comet pipeline.
 
-| Node                     | Notes                                                                               |
-| ------------------------ | ----------------------------------------------------------------------------------- |
-| `CometUnion`             | JVM-side union of Comet inputs. The Rust side reads each branch as a separate scan. |
-| `CometCoalesce`          | JVM-side partition coalesce.                                                        |
-| `CometCollectLimit`      | JVM-side collect limit, equivalent to `CollectLimitExec`.                           |
-| `CometBroadcastExchange` | Broadcast exchange producing serialized Arrow batches that the consumer can decode. |
-| `CometSubqueryBroadcast` | Companion to `CometBroadcastExchange` for dynamic partition pruning subqueries.     |
+| Node                     | Notes                                                                                                                                       |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CometUnion`             | JVM-side union of Comet inputs. The Rust side reads each branch as a separate scan.                                                         |
+| `CometCoalesce`          | JVM-side partition coalesce.                                                                                                                |
+| `CometCollectLimit`      | JVM-side collect limit, equivalent to `CollectLimitExec`.                                                                                   |
+| `CometBroadcastExchange` | Broadcast exchange producing serialized Arrow batches that the consumer can decode.                                                         |
+| `CometSubqueryBroadcast` | Companion to `CometBroadcastExchange` for dynamic partition pruning subqueries.                                                             |
+| `CometMapInBatch`        | Runs `mapInArrow` / `mapInPandas` Python UDFs on Comet's Arrow batches (experimental). See [PyArrow UDF Acceleration](pyarrow-udfs.md).     |
+| `IcebergWrite`           | Executor-side Iceberg data-file write in Comet's split-operator Iceberg write plan (experimental). See [Iceberg Writes](iceberg-writes.md). |
+| `IcebergCommit`          | Driver-side commit for Comet's split-operator Iceberg write plan (experimental).                                                            |
 
 ### Shuffle Operators
 
@@ -344,24 +352,29 @@ use:
 - **`CometExchange`** is the **native shuffle** path. The child must already
   be a Comet operator producing columnar Arrow batches; the node calls
   `executeColumnar()` on its child and the partition, encode, and compress
-  steps run in Rust. Hash and range partitioning **keys** must be
-  primitive types because the Rust hashing and ordering do not support complex
-  types, but the data columns themselves can include `StructType`,
-  `ArrayType`, and `MapType` since batches are serialized via the Arrow IPC
-  writer.
+  steps run in Rust. Range partitioning **keys** must be scalar types. Hash
+  partitioning keys must also be scalar types unless
+  `spark.comet.shuffle.native.partitioning.hash.nested.enabled=true`, which
+  admits struct, array, and (Spark 4.0 and later) map keys. The data columns
+  themselves can include `StructType`, `ArrayType`, and `MapType` since
+  batches are serialized via the Arrow IPC writer.
 - **`CometColumnarExchange`** is the **JVM columnar shuffle** path. It accepts
   either Spark row-based input or Comet columnar input, which makes it the
   fallback when the child is not a Comet operator or when a hash/range key
-  type is not supported by native shuffle (for example, collated strings). It
-  is still preferred over Spark's native shuffle when Comet shuffle is
-  enabled.
+  type is not supported by native shuffle (for example, a struct or array
+  hash key while nested hash keys are disabled). It is still preferred over
+  Spark's native shuffle when Comet shuffle is enabled. Keys with a
+  non-default string collation are supported by neither path and use Spark's
+  shuffle.
 
 Both paths support the same set of partitioning schemes
 (`HashPartitioning`, `RangePartitioning`, `RoundRobinPartitioning`,
-`SinglePartition`) and both can carry complex types in data columns.
+`SinglePartition`) and both can carry complex types in data columns. Native
+round-robin partitioning is disabled by default; see
+[Round-Robin Partitioning](compatibility/operators.md#round-robin-partitioning).
 
 The choice between the two is automatic. See the
-[Tuning Guide shuffle section](tuning.md#shuffle) for how to enable Comet
+[shuffle tuning guide](tuning/shuffle.md) for how to enable Comet
 shuffle and choose between the implementations.
 
 ### Columnar/Row Transitions

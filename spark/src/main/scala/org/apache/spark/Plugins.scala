@@ -29,16 +29,17 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.internal.config.{EXECUTOR_MEMORY_OVERHEAD, EXECUTOR_MEMORY_OVERHEAD_FACTOR}
 import org.apache.spark.sql.internal.StaticSQLConf
 
-import org.apache.comet.{COMET_VERSION, CometSparkSessionExtensions, NativeBase}
+import org.apache.comet.{COMET_VERSION, CometExecIterator, CometSparkSessionExtensions, NativeBase}
 import org.apache.comet.{CometConf, ConfigEntry}
-import org.apache.comet.CometConf.{COMET_METRICS_ENABLED, COMET_ONHEAP_ENABLED}
+import org.apache.comet.CometConf.{COMET_ICEBERG_WRITE_REPORT_DIR, COMET_METRICS_ENABLED, COMET_ONHEAP_ENABLED}
 import org.apache.comet.CometKryoRegistrator
 import org.apache.comet.annotation.Public
+import org.apache.comet.iceberg.IcebergWriteReportListener
 
 /**
  * Comet driver plugin. This class is loaded by Spark's plugin framework. It will be instantiated
  * on driver side only. It will update the SparkConf with the extra configuration provided by
- * Comet, e.g., Comet memory configurations.
+ * Comet, e.g., the cache serializer and the session extension.
  *
  * Note that `SparkContext.conf` is spark package only. So this plugin must be in spark package.
  * Although `SparkContext.getConf` is public, it returns a copy of the SparkConf, so it cannot
@@ -73,6 +74,7 @@ class CometDriverPlugin extends DriverPlugin with Logging {
 
     // Register Comet metrics
     CometDriverPlugin.registerCometMetrics(sc)
+    CometDriverPlugin.registerIcebergWriteReport(sc.conf)
 
     CometDriverPlugin.warnIfExecutorMemoryOverheadUnset(sc.getConf)
     CometDriverPlugin.warnIfMemoryPoolFractionSet(sc.getConf)
@@ -100,15 +102,18 @@ object CometDriverPlugin extends Logging {
   /** Spark config key under which the loaded Comet version is exposed at runtime. */
   val COMET_VERSION_CONFIG = "spark.comet.version"
 
-  // Use Comet's cache serializer only for the native in-memory cache path.
+  // Use Comet's cache serializer only when the native in-memory cache scan can run, which needs
+  // Comet and its native execution as well as the cache config. spark.sql.cache.serializer is
+  // static, so an application that starts with Comet or native execution off would otherwise
+  // store every cache in Comet's format, with only Spark operators to read it.
   // If the application already set spark.sql.cache.serializer, leave that value
   // unchanged so Comet does not replace a user-selected cache format.
   private[apache] def maybeSetCacheSerializer(
       conf: SparkConf,
       extraConfs: ju.HashMap[String, String]): Unit = {
-    if (conf.getBoolean(
-        CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key,
-        CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.defaultValue.get)) {
+    if (getBooleanConf(conf, CometConf.COMET_ENABLED) &&
+      getBooleanConf(conf, CometConf.COMET_EXEC_ENABLED) &&
+      getBooleanConf(conf, CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED)) {
       val serializerKey = StaticSQLConf.SPARK_CACHE_SERIALIZER.key
       val serializerValue =
         "org.apache.spark.sql.comet.execution.arrow.ArrowCachedBatchSerializer"
@@ -155,13 +160,14 @@ object CometDriverPlugin extends Logging {
   }
 
   // Comet's native allocations are made by the Rust global allocator and live in the native heap.
-  // The share that operators reserve is charged against a memory pool, but everything else --
-  // expression kernels and Arrow array builders, decompression buffers, Parquet reader structures,
-  // object store buffers, the tokio runtime, allocator overhead -- is covered by no budget at all,
-  // and neither is Comet's JVM-side Arrow allocator. The only slack the executor container has for
-  // that is spark.executor.memoryOverhead, which the JVM's own non-heap usage already draws on.
+  // In off-heap mode the share that operators reserve is charged against a memory pool, but
+  // everything else -- expression kernels and Arrow array builders, decompression buffers, Parquet
+  // reader structures, object store buffers, the tokio runtime, allocator overhead -- is covered by
+  // no budget at all, and neither is Comet's JVM-side Arrow allocator. In on-heap mode the pool is
+  // unbounded and nothing is bounded at all. The only slack the executor container has for that is
+  // spark.executor.memoryOverhead, which the JVM's own non-heap usage already draws on.
   //
-  // Comet used to add spark.comet.memoryOverhead to it here, but a driver plugin cannot: on Spark
+  // Comet used to add an overhead of its own to it here, but a driver plugin cannot: on Spark
   // 3.4, 3.5 and 4.0, SparkContext builds the default ResourceProfile before it creates the plugin
   // container, and the cluster managers size executors from that profile rather than re-reading
   // the conf, so the new value never reached the container. Say so while the application is still
@@ -171,10 +177,11 @@ object CometDriverPlugin extends Logging {
     val cometExecEnabled = getBooleanConf(conf, CometConf.COMET_EXEC_ENABLED)
     val cometShuffleEnabled = getBooleanConf(conf, CometConf.COMET_SHUFFLE_ENABLED)
     val cometActive = cometEnabled && (cometExecEnabled || cometShuffleEnabled)
-    // Local mode, local-cluster included, has no executor container to size
-    val localMode = conf.get("spark.master", "").startsWith("local")
+    // Only YARN and Kubernetes size executors from the overhead, not local mode or standalone
+    val sizedFromOverhead =
+      CometExecIterator.isContainerSizedFromOverhead(conf.get("spark.master", ""))
 
-    if (cometActive && !localMode && !isExecutorMemoryOverheadSet(conf)) {
+    if (cometActive && sizedFromOverhead && !isExecutorMemoryOverheadSet(conf)) {
       logWarning(
         s"Neither ${EXECUTOR_MEMORY_OVERHEAD.key} nor ${EXECUTOR_MEMORY_OVERHEAD_FACTOR.key} is " +
           "set. Comet allocates outside the JVM heap, and the part of that which no memory pool " +
@@ -214,10 +221,10 @@ object CometDriverPlugin extends Logging {
     val key = CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key
     conf.getOption(key).foreach { value =>
       logWarning(
-        s"$key=$value is deprecated and will be removed in a future release. It does not leave " +
-          "room in spark.memory.offHeap.size for native memory that Comet's memory pools do " +
-          "not track, because Spark hands out the whole off-heap pool whatever it is set to. " +
-          s"Size ${EXECUTOR_MEMORY_OVERHEAD.key} for that memory instead. " +
+        s"$key=$value is deprecated and will be removed in a future major release. It does " +
+          "not leave room in spark.memory.offHeap.size for native memory that Comet's memory " +
+          "pools do not track, because Spark hands out the whole off-heap pool whatever it is " +
+          s"set to. Size ${EXECUTOR_MEMORY_OVERHEAD.key} for that memory instead. " +
           s"${CometConf.TUNING_GUIDE}.")
     }
   }
@@ -230,24 +237,36 @@ object CometDriverPlugin extends Logging {
         COMET_METRICS_ENABLED.key,
         COMET_METRICS_ENABLED.defaultValue.get)) {
       sc.env.metricsSystem.registerSource(CometSource)
-
-      val listenerKey = "spark.sql.queryExecutionListeners"
-      val listenerClass = "org.apache.comet.CometMetricsListener"
-      val listeners = sc.conf.get(listenerKey, "")
-      if (listeners.isEmpty) {
-        logInfo(s"Setting $listenerKey=$listenerClass")
-        sc.conf.set(listenerKey, listenerClass)
-      } else {
-        val currentListeners = listeners.split(",").map(_.trim)
-        if (!currentListeners.contains(listenerClass)) {
-          val newValue = s"$listeners,$listenerClass"
-          logInfo(s"Setting $listenerKey=$newValue")
-          sc.conf.set(listenerKey, newValue)
-        }
-      }
+      registerQueryExecutionListener(sc.conf, "org.apache.comet.CometMetricsListener")
     } else {
       logInfo(
         "Comet metrics reporting is disabled. Set spark.comet.metrics.enabled=true to enable.")
+    }
+  }
+
+  // Test-only: see COMET_ICEBERG_WRITE_REPORT_DIR. The value may come from the environment, which
+  // lets the Iceberg Spark test jobs turn the report on without changing the Iceberg diffs.
+  def registerIcebergWriteReport(conf: SparkConf): Unit = {
+    if (conf
+        .get(COMET_ICEBERG_WRITE_REPORT_DIR.key, COMET_ICEBERG_WRITE_REPORT_DIR.defaultValue.get)
+        .nonEmpty) {
+      registerQueryExecutionListener(conf, classOf[IcebergWriteReportListener].getName)
+    }
+  }
+
+  private def registerQueryExecutionListener(conf: SparkConf, listenerClass: String): Unit = {
+    val listenerKey = "spark.sql.queryExecutionListeners"
+    val listeners = conf.get(listenerKey, "")
+    if (listeners.isEmpty) {
+      logInfo(s"Setting $listenerKey=$listenerClass")
+      val _ = conf.set(listenerKey, listenerClass)
+    } else {
+      val currentListeners = listeners.split(",").map(_.trim)
+      if (!currentListeners.contains(listenerClass)) {
+        val newValue = s"$listeners,$listenerClass"
+        logInfo(s"Setting $listenerKey=$newValue")
+        val _ = conf.set(listenerKey, newValue)
+      }
     }
   }
 
@@ -257,13 +276,13 @@ object CometDriverPlugin extends Logging {
     val extensions = conf.get(extensionKey, "")
     if (extensions.isEmpty) {
       logInfo(s"Setting $extensionKey=$extensionClass")
-      conf.set(extensionKey, extensionClass)
+      val _ = conf.set(extensionKey, extensionClass)
     } else {
       val currentExtensions = extensions.split(",").map(_.trim)
       if (!currentExtensions.contains(extensionClass)) {
         val newValue = s"$extensions,$extensionClass"
         logInfo(s"Setting $extensionKey=$newValue")
-        conf.set(extensionKey, newValue)
+        val _ = conf.set(extensionKey, newValue)
       }
     }
   }

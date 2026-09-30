@@ -28,7 +28,7 @@ use datafusion::common::Result as DFResult;
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_expr::PhysicalExpr;
 
-use datafusion_comet_common::decode_string_arrays;
+use datafusion_comet_common::{decode_string_arrays, zero_offsets};
 use datafusion_comet_jni_bridge::errors::{CometError, ExecutionError};
 use datafusion_comet_jni_bridge::JVMClasses;
 use jni::objects::{Global, JObject, JValue};
@@ -141,10 +141,15 @@ impl PhysicalExpr for JvmScalarUdfExpr {
             .collect::<DFResult<_>>()?;
 
         // The JVM writes into the out_array/out_schema slots and reads from the in_ slots.
+        // Arrow Java ignores `ArrowArray.offset` on import, so every level has to start at 0.
         let in_ffi_arrays: Vec<Box<FFI_ArrowArray>> = arrays
             .iter()
-            .map(|arr| Box::new(FFI_ArrowArray::new(&arr.to_data())))
-            .collect();
+            .map(|arr| {
+                let data = arr.to_data();
+                let data = zero_offsets(&data).map_err(|e| CometError::Arrow { source: e })?;
+                Ok(Box::new(FFI_ArrowArray::new(&data)))
+            })
+            .collect::<Result<_, CometError>>()?;
         let in_ffi_schemas: Vec<Box<FFI_ArrowSchema>> = arrays
             .iter()
             .map(|arr| {
