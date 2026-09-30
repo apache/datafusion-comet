@@ -658,7 +658,10 @@ case class CometExecRule(session: SparkSession)
                 }
               case other => other
             }
-            if (cometChild.isInstanceOf[CometNativeExec]) {
+            // The join's own exchange stays on Spark when the broadcast gate refuses the build
+            // side, so this one must too: a Comet broadcast here would not be reused by it.
+            val gated = CometBroadcastExchangeExec.getSupportLevel(b).isInstanceOf[Unsupported]
+            if (cometChild.isInstanceOf[CometNativeExec] && !gated) {
               logInfo(
                 "Converting SubqueryBroadcastExec to " +
                   "CometSubqueryBroadcastExec for DPP exchange reuse")

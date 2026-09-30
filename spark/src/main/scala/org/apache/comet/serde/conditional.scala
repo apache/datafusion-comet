@@ -21,37 +21,48 @@ package org.apache.comet.serde
 
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, CaseWhen, Coalesce, Expression, If, IsNotNull}
-import org.apache.spark.sql.types.NullType
+import org.apache.spark.sql.catalyst.expressions.{Attribute, CaseWhen, Cast, Coalesce, Expression, If, IsNotNull}
+import org.apache.spark.sql.types.{ArrayType, DataType, MapType, StructType}
 
-import org.apache.comet.serde.QueryPlanSerde.exprToProtoInternal
+import org.apache.comet.DataTypeSupport.deepNullable
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, liftFallbackReasons}
 
 /**
- * Native CASE merges the rows each branch produced with Arrow's `merge_n`, which builds the
- * result through a `MutableArrayData` that carries a validity bitmap; a `NullArray` cannot hold
- * one ("Arrays of type Null cannot contain a null bitmask"), so a CASE whose result type is
- * `NullType` fails whenever more than one branch contributes rows. Spark normally folds such an
- * expression away (`IF(c, NULL, NULL)`), but a `NullType`-typed non-foldable branch keeps it. The
- * three serdes below mix in `CodegenDispatchFallback`, so that shape runs through the JVM codegen
- * dispatcher and the projection stays in the Comet pipeline.
+ * Serializes a CASE WHEN or coalesce result branch. A native CASE coerces its branches to one
+ * type, folding from the ELSE branch, so a merged struct takes the ELSE branch's field names,
+ * where Spark names it after the first branch; with case-insensitive analysis the two can differ
+ * (`s` beside `named_struct('A', id)`). A consumer that compares types exactly (`array(...)`, the
+ * set ops) then meets a struct named differently from its sibling. A branch of a struct-bearing
+ * type is cast to the expression's own type, made deeply nullable, so every branch has Spark's
+ * names and the coercion has nothing left to change; struct casts are positional, so values are
+ * kept.
  */
-private[serde] object NullTypeBranches {
-  val reason = "native CASE cannot merge NullType branches"
-
-  def supportLevel(expr: Expression): SupportLevel =
-    if (expr.dataType == NullType) {
-      Unsupported(Some(reason))
-    } else {
-      Compatible()
+private[serde] object CaseBranch {
+  def serialize(
+      expr: Expression,
+      branch: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    if (!hasStruct(expr.dataType)) {
+      return exprToProtoInternal(branch, inputs, binding)
     }
+    // The cast is not in the plan, so a reason recorded under it is lifted onto `expr`.
+    val aligned = Cast(branch, deepNullable(expr.dataType))
+    exprToProtoInternal(aligned, inputs, binding).orElse {
+      liftFallbackReasons(aligned, expr)
+      None
+    }
+  }
+
+  private def hasStruct(dt: DataType): Boolean = dt match {
+    case _: StructType => true
+    case ArrayType(element, _) => hasStruct(element)
+    case MapType(key, value, _) => hasStruct(key) || hasStruct(value)
+    case _ => false
+  }
 }
 
-object CometIf extends CometExpressionSerde[If] with CodegenDispatchFallback {
-
-  override def getUnsupportedReasons(): Seq[String] = Seq(NullTypeBranches.reason)
-
-  override def getSupportLevel(expr: If): SupportLevel = NullTypeBranches.supportLevel(expr)
-
+object CometIf extends CometExpressionSerde[If] {
   override def convert(
       expr: If,
       inputs: Seq[Attribute],
@@ -75,13 +86,7 @@ object CometIf extends CometExpressionSerde[If] with CodegenDispatchFallback {
   }
 }
 
-object CometCaseWhen extends CometExpressionSerde[CaseWhen] with CodegenDispatchFallback {
-
-  override def getUnsupportedReasons(): Seq[String] = Seq(NullTypeBranches.reason)
-
-  override def getSupportLevel(expr: CaseWhen): SupportLevel =
-    NullTypeBranches.supportLevel(expr)
-
+object CometCaseWhen extends CometExpressionSerde[CaseWhen] {
   override def convert(
       expr: CaseWhen,
       inputs: Seq[Attribute],
@@ -93,7 +98,7 @@ object CometCaseWhen extends CometExpressionSerde[CaseWhen] with CodegenDispatch
     })
     val thenSeq = expr.branches.map(elements => {
       allBranches = allBranches :+ elements._2
-      exprToProtoInternal(elements._2, inputs, binding)
+      CaseBranch.serialize(expr, elements._2, inputs, binding)
     })
     assert(whenSeq.length == thenSeq.length)
     if (whenSeq.forall(_.isDefined) && thenSeq.forall(_.isDefined)) {
@@ -101,8 +106,7 @@ object CometCaseWhen extends CometExpressionSerde[CaseWhen] with CodegenDispatch
       builder.addAllWhen(whenSeq.map(_.get).asJava)
       builder.addAllThen(thenSeq.map(_.get).asJava)
       if (expr.elseValue.isDefined) {
-        val elseValueExpr =
-          exprToProtoInternal(expr.elseValue.get, inputs, binding)
+        val elseValueExpr = CaseBranch.serialize(expr, expr.elseValue.get, inputs, binding)
         if (elseValueExpr.isDefined) {
           builder.setElseExpr(elseValueExpr.get)
         } else {
@@ -122,21 +126,25 @@ object CometCaseWhen extends CometExpressionSerde[CaseWhen] with CodegenDispatch
 
 object CometCoalesce extends CometExpressionSerde[Coalesce] with CodegenDispatchFallback {
 
-  override def getUnsupportedReasons(): Seq[String] =
-    Seq(NullTypeBranches.reason, NullGuard.reason)
+  override def getUnsupportedReasons(): Seq[String] = Seq(NullGuard.reason)
 
   // Every child but the last is a guard; the last one is the ELSE, evaluated on the rows the
-  // guards left over. The result is a native CASE, so it shares that serde's NullType rule.
+  // guards left over. Only the guarded children are serialized twice (predicate and THEN), so
+  // only they need the single-evaluation check; the ELSE is serialized once, as Spark evaluates
+  // it once.
   override def getSupportLevel(expr: Coalesce): SupportLevel =
-    NullTypeBranches.supportLevel(expr) match {
-      case _: Compatible => NullGuard.supportLevel(expr.children: _*)
-      case unsupported => unsupported
-    }
+    NullGuard.supportLevel(expr.children.dropRight(1): _*)
 
   override def convert(
       expr: Coalesce,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
+    // The optimizer normally reduces a one-argument coalesce to its argument, but not when
+    // `NullPropagation` and `SimplifyConditionals` are excluded, and a CASE over no guarded
+    // children would have no WHEN clause, which native CASE rejects.
+    if (expr.children.size == 1) {
+      return exprToProtoInternal(expr.children.head, inputs, binding)
+    }
     val branches = expr.children.dropRight(1).map { child =>
       (IsNotNull(child), child)
     }
@@ -145,14 +153,14 @@ object CometCoalesce extends CometExpressionSerde[Coalesce] with CodegenDispatch
       exprToProtoInternal(elements._1, inputs, binding)
     })
     val thenSeq = branches.map(elements => {
-      exprToProtoInternal(elements._2, inputs, binding)
+      CaseBranch.serialize(expr, elements._2, inputs, binding)
     })
     assert(whenSeq.length == thenSeq.length)
     if (whenSeq.forall(_.isDefined) && thenSeq.forall(_.isDefined)) {
       val builder = ExprOuterClass.CaseWhen.newBuilder()
       builder.addAllWhen(whenSeq.map(_.get).asJava)
       builder.addAllThen(thenSeq.map(_.get).asJava)
-      val elseValueExpr = exprToProtoInternal(elseValue, inputs, binding)
+      val elseValueExpr = CaseBranch.serialize(expr, elseValue, inputs, binding)
       if (elseValueExpr.isDefined) {
         builder.setElseExpr(elseValueExpr.get)
       } else {

@@ -44,9 +44,11 @@ import CometBenchmarkBase.BenchmarkArm
  * coalesced, so the exchange and join stay on Spark).
  *
  * Every case is timed on five arms under the same session, warmup and iteration policy: Spark,
- * Comet, Comet on the prior path (codegen dispatcher off, so the NullType projection falls back
- * and takes its operator with it), and the two Comet arms again with a small
- * `spark.comet.batchSize`. The build side is sized for few and for many broadcast buffers.
+ * Comet, Comet with the codegen dispatcher off (the NullType projection falls back and takes its
+ * operator with it, as it did before this work), and the two Comet arms again with a small
+ * `spark.comet.batchSize`. The dispatcher-off arm keeps this work's broadcast gate, so for the
+ * struct broadcast case it is not the earlier native broadcast, which a baseline build measures.
+ * The build side is sized for few and for many broadcast buffers.
  *
  * After timing, each case checks that every arm returns the same rows and profiles one execution
  * per arm: the executed plan (native or where it falls back), JVM allocation, peak and retained
@@ -66,16 +68,16 @@ object CometNullTypeColumnsBenchmark extends CometBenchmarkBase {
   private val dispatchOff = CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false"
   private val smallBatch = CometConf.COMET_BATCH_SIZE.key -> smallBatchSize.toString
 
-  // The prior path: with the JVM codegen dispatcher off, a NullType-bearing projection falls
-  // back to Spark and takes its enclosing operator with it. Each Comet arm is also run with a
-  // small `spark.comet.batchSize`, the batch size of the native operators and of the JVM-side
-  // conversions. The native Parquet scan emits 8192-row batches whatever this is set to, so the
-  // broadcast buffer count is varied through the build size instead (see the profile columns).
+  // Dispatcher off: a NullType-bearing projection falls back to Spark and takes its enclosing
+  // operator with it, as it did before this work (the broadcast gate stays on). Each Comet arm is also run with a
+  // small `spark.comet.batchSize`, the batch size of the native Parquet scan, the native
+  // operators and the JVM-side conversions; on the broadcast cases it also cuts the build side
+  // into 8x as many buffers (see the profile columns).
   private val extraArms: Seq[BenchmarkArm] = Seq(
-    BenchmarkArm("Comet (dispatch off, prior path)", Seq(dispatchOff), expectNative = false),
+    BenchmarkArm("Comet (dispatch off)", Seq(dispatchOff), expectNative = false),
     BenchmarkArm(s"Comet (batch $smallBatchSize)", Seq(smallBatch), expectNative = true),
     BenchmarkArm(
-      s"Comet (dispatch off, prior path, batch $smallBatchSize)",
+      s"Comet (dispatch off, batch $smallBatchSize)",
       Seq(dispatchOff, smallBatch),
       expectNative = false))
 
@@ -121,10 +123,14 @@ object CometNullTypeColumnsBenchmark extends CometBenchmarkBase {
   private def broadcastBuildBenchmarks(): Unit = {
     val probeRows = 1024 * 1024
 
-    // Few and many broadcast buffers: the native scan emits 8192-row batches and the broadcast
-    // collects one buffer per batch, so the build size sets the buffer count. Files are split and
-    // packed by Spark's defaults; the hint forces the broadcast join.
-    for ((label, buildRows) <- Seq(("2 buffers", 2 * 8192), ("64 buffers", 64 * 8192))) {
+    // Few and many broadcast buffers: the native scan emits `spark.comet.batchSize`-row batches
+    // and the broadcast collects one buffer per batch, so at the default 8192 these build sizes
+    // give 2 and 64 buffers, and the small-batch arms 8x as many. The profile reports each arm's
+    // actual count. Files are split and packed by Spark's defaults; the hint forces the broadcast
+    // join.
+    for ((label, buildRows) <- Seq(
+        ("16K build rows", 2 * 8192),
+        ("512K build rows", 64 * 8192))) {
       withTempPath { dir =>
         withTempTable("probe", "build") {
           spark

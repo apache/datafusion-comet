@@ -54,7 +54,9 @@ Native shuffle (`CometExchange`) is selected when all of the following condition
    - `SinglePartition`
    - `RoundRobinPartitioning`, disabled by default via
      `spark.comet.shuffle.native.partitioning.roundrobin.enabled`, because Comet's hash-based
-     assignment puts unsorted rows in different partitions than Spark does
+     assignment puts unsorted rows in different partitions than Spark does. It is also refused
+     when a column it hashes (the first `maxHashColumns`, or all of them for `0`, unless
+     positional placement applies) contains a `NullType`, which the native hasher cannot hash
 
 4. **Supported partition key types**: The rule differs by partitioning, and neither restricts data
    columns. Complex types are fully supported as data columns in native shuffle.

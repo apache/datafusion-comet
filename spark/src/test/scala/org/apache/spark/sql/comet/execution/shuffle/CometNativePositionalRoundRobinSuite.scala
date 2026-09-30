@@ -24,7 +24,7 @@ import org.apache.spark.sql.{CometTestBase, DataFrame}
 import org.apache.spark.sql.catalyst.plans.physical.RoundRobinPartitioning
 import org.apache.spark.sql.execution.SQLExecution
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
-import org.apache.spark.sql.functions.{col, lit, rand, udf}
+import org.apache.spark.sql.functions.{col, lit, monotonically_increasing_id, rand}
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
@@ -113,15 +113,16 @@ class CometNativePositionalRoundRobinSuite extends CometTestBase with AdaptiveSp
   test("a nondeterministic projection or filter keeps content-hash placement") {
     // Evaluated row by row, but nothing bounds what a nondeterministic expression does between
     // attempts: one that reorders or re-filters rows on a retry sends them to different reducers.
-    val sameId = udf((id: Long) => id)
     withPositionalRoundRobin() {
       withParquetTable(1000) { t =>
         val df = spark.table(t)
-        assert(!isPositional(
-          df.select(sameId.asNondeterministic()(col("id")).as("id")).repartition(numPartitions)))
+        // The same values either way; only the second projection is non-deterministic.
+        assert(isPositional(df.select((col("id") + lit(0L)).as("id")).repartition(numPartitions)))
+        assert(
+          !isPositional(
+            df.select((col("id") + monotonically_increasing_id() * 0).as("id"))
+              .repartition(numPartitions)))
         assert(!isPositional(df.filter(rand(42) < 0.5).repartition(numPartitions)))
-        // The same UDF marked deterministic is admitted, so it is the flag that excludes it.
-        assert(isPositional(df.select(sameId(col("id")).as("id")).repartition(numPartitions)))
       }
     }
   }

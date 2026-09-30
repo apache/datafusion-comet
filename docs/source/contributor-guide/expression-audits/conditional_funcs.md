@@ -24,7 +24,7 @@
 ## coalesce
 
 - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
-- Spark 3.5.8 (audited 2026-05-27): baseline. `Coalesce(children) extends Expression with ComplexTypeMergingExpression`; returns the first non-null child, evaluated left-to-right with short-circuit. Result type is the merged child type. Comet routes via `CometCoalesce`, which serialises as nested `CaseWhen(IsNotNull(c1) -> c1, IsNotNull(c2) -> c2, ..., else cN)` so the native engine preserves the short-circuit semantics.
+- Spark 3.5.8 (audited 2026-05-27): baseline. `Coalesce(children) extends Expression with ComplexTypeMergingExpression`; returns the first non-null child, evaluated left-to-right with short-circuit. Result type is the merged child type. Comet routes via `CometCoalesce`, which serialises as nested `CaseWhen(IsNotNull(c1) -> c1, IsNotNull(c2) -> c2, ..., else cN)` so the native engine preserves the short-circuit semantics. A non-deterministic argument other than the last would be serialized twice, so `CometCoalesce` sends such a coalesce to the JVM codegen dispatcher, which runs it unless it calls a non-deterministic user-defined function.
 - Spark 4.0.1 (audited 2026-05-27): byte-for-byte identical to 3.5.8.
 - Spark 4.1.1 (audited 2026-05-27): byte-for-byte identical to 3.5.8.
 - Performance (tuned 2026-09-28, PR [#6350](https://github.com/apache/datafusion-comet/pull/6350)): runs through the `CASE WHEN` evaluation described under `when`. 12-13x faster for two columns. Benchmark: `benches/conditional.rs`.

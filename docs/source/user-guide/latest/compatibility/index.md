@@ -52,7 +52,10 @@ Some Spark expressions have two implementations in Comet:
   expression inside Comet's native pipeline (via the Arrow-direct codegen dispatcher). This
   produces byte-exact Spark results at the cost of one JNI round-trip per batch. It is gated
   globally by `spark.comet.exec.scalaUDF.codegen.enabled` (enabled by default); when the
-  dispatcher is disabled, these expressions fall back to Spark.
+  dispatcher is disabled, these expressions fall back to Spark. The dispatcher also cannot read
+  an input column whose type contains `NullType` (for example an `array<void>` column produced
+  below an exchange), so an expression that needs the dispatcher over such a column falls back to
+  Spark as well.
 - A **native** (Rust / DataFusion) implementation that avoids the JNI round-trip but has
   known semantic differences from Spark for some inputs or patterns.
 

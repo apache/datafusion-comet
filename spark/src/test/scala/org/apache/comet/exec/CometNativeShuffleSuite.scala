@@ -46,6 +46,7 @@ import org.apache.spark.sql.execution.LocalTableScanExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
 import org.apache.spark.sql.functions.{col, count, sum}
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, DataType, LongType, MapType, StructField, StructType}
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 
@@ -1319,6 +1320,34 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
         // Just collect and verify row count - simpler test
         val result = shuffled.collect()
         assert(result.length == 100, s"Expected 100 rows, got ${result.length}")
+      }
+    }
+  }
+
+  test("native shuffle: round robin over a hashed NullType-bearing column falls back") {
+    // Without positional placement, native round-robin hashes every column, and the native
+    // hasher has no NullType arm; `map(_1, NULL)` reaches the exchange from the codegen
+    // dispatcher, which runs NullType-bearing outputs.
+    withSQLConf(
+      CometConf.COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_POSITIONAL_ENABLED.key -> "false",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      withParquetTable((0 until 4).map(i => (i.toLong, i)), "tbl") {
+        checkSparkAnswerAndFallbackReason(
+          "SELECT /*+ REPARTITION(2) */ map(_1, NULL) AS m FROM tbl",
+          "the native hasher does not support NullType")
+        // A column the hasher never reads keeps the native shuffle: past `maxHashColumns`, or
+        // with every row placed by position.
+        withSQLConf(
+          CometConf.COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_MAX_HASH_COLUMNS.key -> "1") {
+          checkSparkAnswerAndOperator(
+            sql("SELECT /*+ REPARTITION(2) */ _1, map(_1, NULL) AS m FROM tbl"))
+        }
+        withSQLConf(
+          CometConf.COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_POSITIONAL_ENABLED.key -> "true") {
+          checkSparkAnswerAndOperator(
+            sql("SELECT /*+ REPARTITION(2) */ map(_1, NULL) AS m FROM tbl"))
+        }
       }
     }
   }

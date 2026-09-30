@@ -511,6 +511,25 @@ object CometUnixDate extends CometExpressionSerde[UnixDate] {
   }
 }
 
+/**
+ * Spark's `eval` for `trunc` / `date_trunc` reads a non-literal format first and returns NULL for
+ * an invalid one without evaluating the date or timestamp, while its generated code, like the
+ * native kernel, evaluates both. Where Spark would use `eval`
+ * ([[QueryPlanSerde.sparkEvaluatesInterpreted]]) the expression runs through the codegen
+ * dispatcher, which then evaluates it through `eval` as well.
+ */
+private object TruncFormat {
+
+  /** Whether Spark would evaluate this format first and possibly skip the value. */
+  def skipsValue(format: Expression): Boolean =
+    !format.isInstanceOf[Literal] && sparkEvaluatesInterpreted
+
+  def interpretedReason(name: String): String =
+    s"`$name` with a non-literal format runs through the codegen dispatcher where Spark " +
+      "evaluates it without generated code: its interpreted eval returns NULL for an invalid " +
+      "format without evaluating the value, which the native kernel evaluates"
+}
+
 object CometTruncDate extends CometExpressionSerde[TruncDate] with CodegenDispatchFallback {
 
   val supportedFormats: Seq[String] =
@@ -529,10 +548,15 @@ object CometTruncDate extends CometExpressionSerde[TruncDate] with CodegenDispat
     Seq(nonLiteralFormatIncompatReason) ++ DatetimeCollation.incompatibleReasons("trunc")
 
   override def getUnsupportedReasons(): Seq[String] = Seq(
-    "Only the following formats are supported: " + supportedFormats.mkString(", "))
+    "Only the following formats are supported: " + supportedFormats.mkString(", "),
+    TruncFormat.interpretedReason("trunc"))
 
   override def getSupportLevel(expr: TruncDate): SupportLevel = {
-    if (DatetimeCollation.hasNonDefaultCollation(expr)) {
+    // Ahead of every opt-in branch (collation included), so `allowIncompatible` cannot route a
+    // non-literal format to the native kernel where Spark evaluates through `eval`.
+    if (TruncFormat.skipsValue(expr.format)) {
+      Unsupported(Some(TruncFormat.interpretedReason(expr.prettyName)))
+    } else if (DatetimeCollation.hasNonDefaultCollation(expr)) {
       Incompatible(Some(collationReason))
     } else {
       expr.format match {
@@ -605,10 +629,14 @@ object CometTruncTimestamp
       DatetimeCollation.incompatibleReasons("date_trunc")
 
   override def getUnsupportedReasons(): Seq[String] = Seq(
-    "Only the following formats are supported: " + supportedFormats.mkString(", "))
+    "Only the following formats are supported: " + supportedFormats.mkString(", "),
+    TruncFormat.interpretedReason("date_trunc"))
 
   override def getSupportLevel(expr: TruncTimestamp): SupportLevel = {
-    if (DatetimeCollation.hasNonDefaultCollation(expr)) {
+    // Ahead of every opt-in branch; see CometTruncDate.
+    if (TruncFormat.skipsValue(expr.format)) {
+      Unsupported(Some(TruncFormat.interpretedReason(expr.prettyName)))
+    } else if (DatetimeCollation.hasNonDefaultCollation(expr)) {
       Incompatible(Some(collationReason))
     } else if (CometTimeZone.nativeId(expr.timeZoneId).isEmpty) {
       CometTimeZone.supportLevel(expr.timeZoneId)

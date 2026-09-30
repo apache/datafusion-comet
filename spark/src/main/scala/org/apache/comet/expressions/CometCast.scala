@@ -28,7 +28,7 @@ import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, withFallback
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.serde.{CodegenDispatchFallback, CometExpressionSerde, CometTimeZone, Compatible, ExprOuterClass, Incompatible, SupportLevel, Unsupported}
 import org.apache.comet.serde.ExprOuterClass.Expr
-import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProtoInternal, serializeDataType}
+import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProtoInternal, liftFallbackReasons, serializeDataType}
 import org.apache.comet.shims.{CometExprShim, CometTypeShim}
 
 object CometCast
@@ -121,7 +121,12 @@ object CometCast
     val cometEvalMode = evalMode(cast)
     cast.child match {
       case _: Literal =>
-        exprToProtoInternal(Literal.create(cast.eval(), cast.dataType), inputs, binding)
+        // The folded literal is not in the plan, so a reason it records is lifted onto `cast`.
+        val folded = Literal.create(cast.eval(), cast.dataType)
+        exprToProtoInternal(folded, inputs, binding).orElse {
+          liftFallbackReasons(folded, cast)
+          None
+        }
       case _ =>
         if (isAlwaysCastToNull(cast.child.dataType, cast.dataType, cometEvalMode)) {
           exprToProtoInternal(Literal.create(null, cast.dataType), inputs, binding)
@@ -135,6 +140,23 @@ object CometCast
         }
     }
   }
+
+  /**
+   * True when `fromType` and `toType` differ only in nested field names and nullability. Spark
+   * and the native cast both match struct fields by position, so such a cast changes no value and
+   * only relabels the type; a set op adds one to give its two sides the same type.
+   */
+  private def isRelabel(fromType: DataType, toType: DataType): Boolean =
+    (fromType, toType) match {
+      case (ArrayType(fromElement, _), ArrayType(toElement, _)) =>
+        isRelabel(fromElement, toElement)
+      case (MapType(fromKey, fromValue, _), MapType(toKey, toValue, _)) =>
+        isRelabel(fromKey, toKey) && isRelabel(fromValue, toValue)
+      case (StructType(fromFields), StructType(toFields)) =>
+        fromFields.length == toFields.length &&
+        fromFields.zip(toFields).forall { case (f, t) => isRelabel(f.dataType, t.dataType) }
+      case _ => fromType == toType
+    }
 
 //  Some casts like date -> int/byte / long are always null. Terminate early in planning
   private def isAlwaysCastToNull(
@@ -219,7 +241,7 @@ object CometCast
       return Unsupported(Some(nonDefaultCollationReason))
     }
 
-    if (fromType == toType) {
+    if (fromType == toType || isRelabel(fromType, toType)) {
       return Compatible()
     }
 

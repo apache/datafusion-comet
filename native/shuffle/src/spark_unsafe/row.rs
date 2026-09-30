@@ -1428,14 +1428,6 @@ pub fn process_sorted_row_partition(
             .collect();
         let batch = make_batch(array_refs?, n)?;
 
-        // A finished `NullBuilder` keeps its length; see `recreate_null_type_builders`.
-        recreate_null_type_builders(
-            &mut data_builders,
-            schema,
-            batch_size,
-            prefer_dictionary_ratio,
-        )?;
-
         frozen.clear();
         let mut cursor = Cursor::new(&mut frozen);
 
@@ -1448,6 +1440,18 @@ pub fn process_sorted_row_partition(
 
         output_data.write_all(&frozen)?;
         current_row += n;
+        drop(batch);
+
+        // A finished `NullBuilder` keeps its length; see `recreate_null_type_builders`. Done once
+        // the batch is written and dropped, and only when another batch follows.
+        if current_row < row_num {
+            recreate_null_type_builders(
+                &mut data_builders,
+                schema,
+                batch_size,
+                prefer_dictionary_ratio,
+            )?;
+        }
     }
 
     Ok((

@@ -150,6 +150,10 @@ SELECT arrays_zip(a, b)['a'] FROM (SELECT array(1, 2, 3) as a, array(3, 4, 5) as
 query expect_fallback(non-deterministic child under a null guard is evaluated on different rows than Spark's)
 SELECT arrays_zip(transform(a, x -> named_struct('i', monotonically_increasing_id(), 'n', NULL)), IF(size(b) > 1, b, CAST(NULL AS array<int>))) FROM test_arrays_zip
 
+-- No arguments: Spark returns an empty array per row; the native kernel needs at least one.
+query expect_fallback(`arrays_zip()` with no arguments falls back to Spark)
+SELECT arrays_zip() FROM test_arrays_zip
+
 query
 SELECT arrays_zip(a, b)['b'] FROM (SELECT array(1, 2, 3) as a, array(3, 4, 5) as b)
 

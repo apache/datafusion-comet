@@ -78,11 +78,6 @@ query
 SELECT a, array_intersect(a, a) FROM test_intersect_dups
 
 -- empty array combinations
--- The empty operands are Null-typed literals. The NullType-element gate reports Unsupported for
--- them, so the JVM codegen dispatcher evaluates them instead: still inside Comet, and matching
--- Spark. A plain `query` pins both halves at once -- delete the gate and this file's
--- allowIncompatible=true hands these to the native kernel, whose NullType short-circuit returns
--- the other side's entries.
 query
 SELECT array_intersect(array(), array()), array_intersect(array(), array(1, 2)), array_intersect(array(1, 2), array())
 
@@ -273,6 +268,23 @@ SELECT array_intersect(array(1, NULL, 3), b) FROM test_array_intersect
 query
 SELECT array_intersect(CASE WHEN a IS NOT NULL THEN a ELSE array(0) END, b) FROM test_array_intersect
 
+-- The set-op kernel asserts identical element types, nested nullability included, and two sides
+-- of one Spark type can still reach it with different nested nullability: `map_entries` keeps
+-- its key field non-nullable, while the JVM codegen dispatcher and the native constructors
+-- declare every nested field nullable. Both sides are cast to a deeply-nullable element type
+-- first; without that the kernel's type assertion fails the query.
+query expect_native(array_intersect)
+SELECT array_intersect(map_entries(map(coalesce(b[0], 0), 1)), transform(array(coalesce(b[0], 0)), x -> named_struct('key', x, 'value', 1))) FROM test_array_intersect
+
+-- The set-op kernel short-circuits on a NullType-element side and returns the other side's
+-- distinct entries, so `array_intersect(array(), array(NULL))` would come back as [NULL] where
+-- Spark returns []. Only a side that Spark leaves as array<null> reaches it (a typed sibling
+-- makes Spark cast the Null side first). The gate reports Unsupported, which routes these to the
+-- JVM codegen dispatcher at every setting -- including this file's allowIncompatible=true, where
+-- dropping the gate would hand them to the kernel and turn the first case into [NULL].
+query expect_dispatch(array_intersect)
+SELECT array_intersect(array(), array(NULL)), array_intersect(array(NULL), array()), array_intersect(array(NULL, NULL), array(NULL))
+
 -- Without native opt-in, preserve Spark's left-input order even when the right array is longer.
 statement
 INSERT INTO test_array_intersect VALUES (array(2, 1), array(3, 1, 2))
@@ -295,18 +307,3 @@ SET spark.comet.expression.ArrayIntersect.allowIncompatible=true
 
 query expect_native(array_intersect)
 SELECT sort_array(array_intersect(a, b)) FROM test_array_intersect
-
--- The set-op kernel asserts identical element types, nested nullability included, and the two
--- sides can arrive with different nested nullability (a literal field is non-nullable, a lambda
--- variable over a list is not). Both sides are cast to a deeply-nullable element type first.
-query
-SELECT array_intersect(transform(a, x -> named_struct('i', 1)), transform(b, x -> named_struct('i', x))) FROM test_array_intersect
-
--- The set-op kernel short-circuits on a NullType-element side and returns the other side's
--- distinct entries, so `array_intersect(array(), array(NULL))` would come back as [NULL] where
--- Spark returns []. Only a side that Spark leaves as array<null> reaches it (a typed sibling
--- makes Spark cast the Null side first). The gate reports Unsupported, which routes these to the
--- JVM codegen dispatcher at every setting -- including this file's allowIncompatible=true, where
--- dropping the gate would hand them to the kernel and turn the first case into [NULL].
-query
-SELECT array_intersect(array(), array(NULL)), array_intersect(array(NULL), array()), array_intersect(array(NULL, NULL), array(NULL))
