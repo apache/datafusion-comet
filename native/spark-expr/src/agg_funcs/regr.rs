@@ -722,6 +722,51 @@ mod tests {
     }
 
     #[test]
+    fn merge_fractional_constant_partials() {
+        // #6423: the first merge into an empty final buffer used to round the
+        // constant mean away from 0.1. Later merges then produced nonzero M2.
+        for (kind, constant_dependent, expected) in [
+            (RegrType::Slope, false, None),
+            (RegrType::Intercept, false, None),
+            (RegrType::R2, false, None),
+            (RegrType::R2, true, Some(1.0)),
+            (RegrType::SXX, false, Some(0.0)),
+            (RegrType::SYY, true, Some(0.0)),
+            (RegrType::SXY, false, Some(0.0)),
+        ] {
+            for reverse in [false, true] {
+                let mut merged = acc(kind);
+                let starts = if reverse { [3, 0] } else { [0, 3] };
+                for start in starts {
+                    let varying = (start..start + 3).map(|v| Some(v as f64)).collect();
+                    let constant = vec![Some(0.1); 3];
+                    let values = match kind {
+                        // Spark's RegrReplacement duplicates the selected column.
+                        RegrType::SXX | RegrType::SYY => cols(constant.clone(), constant),
+                        _ if constant_dependent => cols(constant, varying),
+                        _ => cols(varying, constant),
+                    };
+                    let mut partial = acc(kind);
+                    partial.update_batch(&values).unwrap();
+                    let state = partial
+                        .state()
+                        .unwrap()
+                        .iter()
+                        .map(|v| v.to_array_of_size(1).unwrap())
+                        .collect::<Vec<_>>();
+                    merged.merge_batch(&state).unwrap();
+                }
+                // A tolerance would hide the tiny nonzero moments behind the bug.
+                assert_eq!(
+                    merged.evaluate().unwrap(),
+                    ScalarValue::Float64(expected),
+                    "{kind:?}, constant_dependent={constant_dependent}, reverse={reverse}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn merge_matches_single_batch() {
         let (y, x) = perfect_line();
         // Split into two batches and merge their partial states.
