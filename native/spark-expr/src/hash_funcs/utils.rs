@@ -116,7 +116,7 @@ macro_rules! hash_array_primitive {
 
 #[macro_export]
 macro_rules! hash_array_primitive_float {
-    ($array_type: ident, $column: ident, $ty: ident, $ty2: ident, $hashes: ident, $hash_method: ident) => {
+    ($array_type: ident, $column: ident, $hashes: ident, $hash_method: ident) => {
         let array = $column
             .as_any()
             .downcast_ref::<$array_type>()
@@ -132,25 +132,15 @@ macro_rules! hash_array_primitive_float {
         if array.null_count() == 0 {
             // Fast path: no nulls, use direct indexing
             for i in 0..values.len() {
-                let value = values[i];
-                // Spark uses 0 as hash for -0.0, see `Murmur3Hash` expression.
-                if value == 0.0 && value.is_sign_negative() {
-                    $hashes[i] = $hash_method((0 as $ty2).to_le_bytes(), $hashes[i]);
-                } else {
-                    $hashes[i] = $hash_method((value as $ty).to_le_bytes(), $hashes[i]);
-                }
+                let value = $crate::float_semantics::hash_input(values[i]);
+                $hashes[i] = $hash_method(value.to_le_bytes(), $hashes[i]);
             }
         } else {
             // Slow path: check nulls
             for i in 0..values.len() {
                 if !array.is_null(i) {
-                    let value = values[i];
-                    // Spark uses 0 as hash for -0.0, see `Murmur3Hash` expression.
-                    if value == 0.0 && value.is_sign_negative() {
-                        $hashes[i] = $hash_method((0 as $ty2).to_le_bytes(), $hashes[i]);
-                    } else {
-                        $hashes[i] = $hash_method((value as $ty).to_le_bytes(), $hashes[i]);
-                    }
+                    let value = $crate::float_semantics::hash_input(values[i]);
+                    $hashes[i] = $hash_method(value.to_le_bytes(), $hashes[i]);
                 }
             }
         }
@@ -362,12 +352,12 @@ macro_rules! hash_list_with_primitive_elements {
             DataType::Float32 => {
                 let elem_array = $values.as_any().downcast_ref::<Float32Array>().unwrap();
                 $crate::hash_list_primitive!(offsets: $offsets, $list_array, elem_array, $hashes_buffer, $hash_method,
-                    |v: f32| if v == 0.0 && v.is_sign_negative() { (0_i32).to_le_bytes() } else { v.to_le_bytes() });
+                    |v: f32| $crate::float_semantics::hash_input(v).to_le_bytes());
             }
             DataType::Float64 => {
                 let elem_array = $values.as_any().downcast_ref::<Float64Array>().unwrap();
                 $crate::hash_list_primitive!(offsets: $offsets, $list_array, elem_array, $hashes_buffer, $hash_method,
-                    |v: f64| if v == 0.0 && v.is_sign_negative() { (0_i64).to_le_bytes() } else { v.to_le_bytes() });
+                    |v: f64| $crate::float_semantics::hash_input(v).to_le_bytes());
             }
             DataType::Boolean => {
                 let elem_array = $values.as_any().downcast_ref::<BooleanArray>().unwrap();
@@ -461,12 +451,12 @@ macro_rules! hash_list_with_primitive_elements {
             DataType::Float32 => {
                 let elem_array = $values.as_any().downcast_ref::<Float32Array>().unwrap();
                 $crate::hash_list_primitive!(fixed_size: $list_size, $list_array, elem_array, $hashes_buffer, $hash_method,
-                    |v: f32| if v == 0.0 && v.is_sign_negative() { (0_i32).to_le_bytes() } else { v.to_le_bytes() });
+                    |v: f32| $crate::float_semantics::hash_input(v).to_le_bytes());
             }
             DataType::Float64 => {
                 let elem_array = $values.as_any().downcast_ref::<Float64Array>().unwrap();
                 $crate::hash_list_primitive!(fixed_size: $list_size, $list_array, elem_array, $hashes_buffer, $hash_method,
-                    |v: f64| if v == 0.0 && v.is_sign_negative() { (0_i64).to_le_bytes() } else { v.to_le_bytes() });
+                    |v: f64| $crate::float_semantics::hash_input(v).to_le_bytes());
             }
             DataType::Boolean => {
                 let elem_array = $values.as_any().downcast_ref::<BooleanArray>().unwrap();
@@ -901,8 +891,6 @@ macro_rules! create_hashes_internal {
                     $crate::hash_array_primitive_float!(
                         Float32Array,
                         col,
-                        f32,
-                        i32,
                         $hashes_buffer,
                         $hash_method
                     );
@@ -911,8 +899,6 @@ macro_rules! create_hashes_internal {
                     $crate::hash_array_primitive_float!(
                         Float64Array,
                         col,
-                        f64,
-                        i64,
                         $hashes_buffer,
                         $hash_method
                     );

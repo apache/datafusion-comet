@@ -25,9 +25,12 @@ against your own workloads.
 ## Overview
 
 Spark writes an Iceberg table through a single physical operator that combines data-file
-writing with metadata writing, committing, and catalog validation. Because that operator sits
-outside Spark's Adaptive Query Execution (AQE), the sub-query feeding the write — the scans,
-projects, sorts, and exchanges producing the rows — cannot be re-planned at runtime.
+writing with metadata writing, committing, and catalog validation. Spark's Adaptive Query
+Execution (AQE) already re-plans the sub-query feeding that operator — the scans, projects,
+sorts, and exchanges producing the rows — but the operator itself sits outside AQE, so the
+data-file writing cannot be re-planned in response to how its input ran. And because data-file
+writing is bundled with the metadata and commit steps, there is no separate step for Comet to
+replace.
 
 When `spark.comet.write.iceberg.splitOperator.enabled=true`, Comet rewrites eligible Iceberg
 writes into two operators:
@@ -39,7 +42,7 @@ writes into two operators:
    Iceberg commit (including commit-time validation), outside AQE, exactly once.
 
 With only the split plan enabled, data files are still written by iceberg-java; only the plan
-shape changes. The split makes the write's input visible to AQE and to Comet's columnar rules,
+shape changes. The split moves data-file writing inside AQE and separates it from the commit,
 and it is the foundation for the second toggle: when
 `spark.comet.iceberg.write.enabled=true` and the write passes the eligibility check below, the
 `IcebergWrite` operator's per-task Parquet write is delegated to
