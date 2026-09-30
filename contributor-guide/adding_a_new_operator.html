@@ -609,6 +609,13 @@ Spark’s offset and projection. Both transition reversion and aggregate-buffer 
 remove the inserted local node when restoring Spark execution. Restoring its <code class="docutils literal notranslate"><span class="pre">originalPlan</span></code> would
 apply the global TopK twice. A single input partition uses a final native limit and projection;
 multiple input partitions still require a final TopK after the shuffle.</p>
+<p>With <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.topK.dynamicFilter.enabled</span></code>, only the local sort sets the protobuf
+<code class="docutils literal notranslate"><span class="pre">Sort.dynamic_filter_enabled</span></code> flag. The native planner wraps an eligible sort in
+<code class="docutils literal notranslate"><span class="pre">TopKReaderFilterExec</span></code>. Its permanent plan contains an unexecuted sort template; each execution
+creates a fresh sort and live predicate, then attaches that predicate to the Parquet reader when
+eligible. The stream owns the heap and predicate until completion, error, or cancellation. The
+final TopK after an exchange does not share this state. Reader work stays on scan metrics while
+attachment counters belong to the local TopK.</p>
 </section>
 </section>
 <section id="choosing-the-right-operator-type">

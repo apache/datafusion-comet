@@ -968,6 +968,39 @@ by the reader. An attached filter does not guarantee that any row groups are pru
 probe scan’s <code class="docutils literal notranslate"><span class="pre">bytes_scanned</span></code> and <code class="docutils literal notranslate"><span class="pre">row_groups_pruned_statistics</span></code> with filtering disabled to assess
 reader savings. Existing join, scan, and intervening filter metrics retain their own meanings.</p>
 </section>
+<section id="local-topk">
+<h3>Local TopK<a class="headerlink" href="#local-topk" title="Link to this heading">#</a></h3>
+<p>With <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.topK.dynamicFilter.enabled=true</span></code>, eligible fused local TopK operators report
+these counters. See <a class="reference internal" href="tuning/operators.html#topk-reader-pruning"><span class="std std-ref">TopK Reader Pruning</span></a> for the required
+fusion option and reader restrictions.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Metric</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">dynamic_filter_topk_filters_attached</span></code></p></td>
+<td><p>Executions that attach their live TopK threshold to a native Parquet reader.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">dynamic_filter_topk_filters_skipped</span></code></p></td>
+<td><p>Eligible TopK executions whose input cannot accept reader attachment.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>These counters belong to the local TopK. An attached predicate may prune nothing, and a file’s
+schema adaptation can disable it to preserve conversion errors. Reader work remains on the scan:
+<code class="docutils literal notranslate"><span class="pre">output_rows</span></code> counts rows emitted by the scan, <code class="docutils literal notranslate"><span class="pre">bytes_scanned</span></code> measures requested data/Bloom-filter
+ranges (excluding footer and page-index reads), and page and decoder filtering use the existing
+<code class="docutils literal notranslate"><span class="pre">page_index_rows_pruned</span></code> and <code class="docutils literal notranslate"><span class="pre">pushdown_rows_pruned</span></code> counters.</p>
+<p>Row groups skipped by runtime pruning within a file increment <code class="docutils literal notranslate"><span class="pre">row_groups_pruned_dynamic_filter</span></code>.
+When later files open, the reader can prune using the TopK threshold already available; those groups
+increment <code class="docutils literal notranslate"><span class="pre">row_groups_pruned_statistics</span></code>. With one row group per file, the dynamic counter can remain
+zero even when TopK skips most later groups. The statistics counter also includes pruning by other
+predicates, so compare both counters and <code class="docutils literal notranslate"><span class="pre">bytes_scanned</span></code> with filtering disabled to assess TopK savings.
+This feature adds no separate decoded-batch filter or evaluated/pruned row counters to the TopK.</p>
+</section>
 <section id="exchange">
 <h3>Exchange<a class="headerlink" href="#exchange" title="Link to this heading">#</a></h3>
 <p>Comet adds some additional metrics:</p>
@@ -1127,6 +1160,9 @@ execution metrics. Counters accumulate per scan operator; they do not instrument
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">scan_io_metadata_cache_misses</span></code></p></td>
 <td><p>Successful, cache-eligible metadata opens requiring storage reads. Failed opens and encrypted opens, which bypass this shared cache, increment neither cache counter.</p></td>
 </tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">row_groups_pruned_dynamic_filter</span></code></p></td>
+<td><p>Row groups skipped by a runtime predicate whose value changes during execution, such as a local TopK threshold.</p></td>
+</tr>
 </tbody>
 </table>
 </div>
@@ -1227,6 +1263,7 @@ filesystem or network traffic accounting.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#cometicebergnativescan">CometIcebergNativeScan</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#comethashaggregate">CometHashAggregate</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#hash-joins">Hash Joins</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#local-topk">Local TopK</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#exchange">Exchange</a></li>
 </ul>
 </li>

@@ -864,11 +864,40 @@ existing TopK execution path.</p>
 <p>Each scan partition keeps enough candidates for both <code class="docutils literal notranslate"><span class="pre">LIMIT</span></code> and <code class="docutils literal notranslate"><span class="pre">OFFSET</span></code>. With multiple partitions,
 Comet shuffles those candidates and performs the final TopK. With one partition, it reuses the local
 ordering without building a second heap. The final stage applies the offset and output projection.</p>
-<p>Fusion reduces the work of passing scan batches between native execution blocks. It still reads all
-input rows and does not enable TopK reader pruning. It can also reduce overlap between scan decoding
+<p>Fusion reduces the work of passing scan batches between native execution blocks. Fusion alone still
+reads all input rows. <a class="reference internal" href="#topk-reader-pruning">TopK reader pruning</a> is enabled separately. Fusion can
+also reduce overlap between scan decoding
 and TopK processing, so some workloads may run slower. Compare enabled and disabled runs with your
 data layout, payload width, limit, and partition count before enabling it. The
 <code class="docutils literal notranslate"><span class="pre">CometTopKBenchmark</span></code> microbenchmark covers these cases with ascending, descending, and random layouts.</p>
+<section id="topk-reader-pruning">
+<h3>TopK Reader Pruning<a class="headerlink" href="#topk-reader-pruning" title="Link to this heading">#</a></h3>
+<p>Set both <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.topK.fusion.enabled=true</span></code> and
+<code class="docutils literal notranslate"><span class="pre">spark.comet.exec.topK.dynamicFilter.enabled=true</span></code> to pass the local TopK’s improving threshold to
+its Parquet reader. Both options are experimental and disabled by default. Eligibility is the same
+single signed integer key described above. Each task creates a fresh threshold; it is not shared
+across Spark partitions or exchanges, or retained for later executions.</p>
+<p>Once the heap contains enough candidates for <code class="docutils literal notranslate"><span class="pre">LIMIT</span> <span class="pre">+</span> <span class="pre">OFFSET</span></code>, the reader can skip later row groups
+whose statistics prove that no row can improve those candidates. Existing Parquet page-index and
+decoder-filter options can also use the predicate. This option adds no separate filter over decoded
+scan batches. TopK continues to select the final candidates.</p>
+<p>Reader attachment is conservative. A scan with a fetch limit, supplied file statistics, or a static
+predicate other than direct column <code class="docutils literal notranslate"><span class="pre">IS</span> <span class="pre">NOT</span> <span class="pre">NULL</span></code> checks keeps the existing execution path. For each
+file, schema adaptation disables pruning if it could hide a conversion error in a projected or
+filtered column. Missing null counts remain unknown, which can prevent pruning even when min/max
+statistics are present. These cases can still execute a fused TopK.</p>
+<p>Reader pruning is most useful when small K values and the file order establish a strong threshold
+early. Descending or random layouts for an ascending query can prune few or no groups, while still
+paying the cost of attaching and checking the predicate. Wider rows can increase the benefit when
+groups are skipped. Compare <code class="docutils literal notranslate"><span class="pre">pruning</span></code> with <code class="docutils literal notranslate"><span class="pre">fused</span></code> in <code class="docutils literal notranslate"><span class="pre">CometTopKBenchmark</span></code> to measure the reader effect,
+and compare both with <code class="docutils literal notranslate"><span class="pre">unfused</span></code> to include the cost of fusion. Check the scan’s emitted rows,
+<code class="docutils literal notranslate"><span class="pre">bytes_scanned</span></code>, <code class="docutils literal notranslate"><span class="pre">row_groups_pruned_dynamic_filter</span></code>, and <code class="docutils literal notranslate"><span class="pre">row_groups_pruned_statistics</span></code> alongside elapsed
+time; attachment alone does not demonstrate a saving. Pruning when later files open uses the TopK
+threshold already available and increments <code class="docutils literal notranslate"><span class="pre">row_groups_pruned_statistics</span></code>. With one row group per
+file, the dynamic counter can stay zero despite substantial TopK pruning. The statistics counter also
+includes other predicates, so compare with filtering disabled to assess TopK savings.
+See <a class="reference internal" href="../metrics.html#local-topk"><span class="std std-ref">TopK metrics</span></a>.</p>
+</section>
 </section>
 <section id="optimizing-sorting-on-floating-point-values">
 <h2>Optimizing Sorting on Floating-Point Values<a class="headerlink" href="#optimizing-sorting-on-floating-point-values" title="Link to this heading">#</a></h2>
@@ -939,7 +968,10 @@ element type. Use <code class="docutils literal notranslate"><span class="pre">s
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#adaptive-partial-aggregation">Adaptive Partial Aggregation</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#local-topk-fusion">Local TopK Fusion</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#local-topk-fusion">Local TopK Fusion</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#topk-reader-pruning">TopK Reader Pruning</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#optimizing-sorting-on-floating-point-values">Optimizing Sorting on Floating-Point Values</a></li>
 </ul>
   </nav></div>
