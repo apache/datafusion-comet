@@ -270,23 +270,18 @@ object CometCast
       case (DataTypes.DoubleType, _) =>
         canCastFromDouble(toType)
       case (from_struct: StructType, to_struct: StructType) =>
-        from_struct.fields.zip(to_struct.fields).foreach { case (a, b) =>
-          // `convert` replaces a top-level cast that is always null (DATE to a numeric or boolean
-          // type in LEGACY mode) with a null literal, so the native cast never sees one. A struct
-          // field or map entry does reach it, and there DATE to INT reinterprets the day count
-          // (the kernel `unix_date` relies on) while the other targets raise an error. Arrays of
-          // dates have their own rule above.
+        // `convert` replaces a top-level cast that is always null (DATE to a numeric or boolean
+        // type in LEGACY mode) with a null literal, so the native cast never sees one. A struct
+        // field or map entry does reach it, and there DATE to INT reinterprets the day count
+        // (the kernel `unix_date` relies on) while the other targets raise an error. Arrays of
+        // dates have their own rule above.
+        combineSupportLevels(from_struct.fields.zip(to_struct.fields).map { case (a, b) =>
           if (isAlwaysCastToNull(a.dataType, b.dataType, evalMode)) {
-            return unsupported(fromType, toType)
+            unsupported(fromType, toType)
+          } else {
+            isSupported(a.dataType, b.dataType, timeZoneId, evalMode)
           }
-          isSupported(a.dataType, b.dataType, timeZoneId, evalMode) match {
-            case Compatible(_, _) =>
-            // all good
-            case other =>
-              return other
-          }
-        }
-        Compatible()
+        })
       case (from_map: MapType, to_map: MapType) =>
         // Native cast_map_to_map recursively casts keys and values, so support is
         // determined by whether both inner casts are individually supported. As with struct
@@ -295,11 +290,10 @@ object CometCast
           isAlwaysCastToNull(from_map.valueType, to_map.valueType, evalMode)) {
           unsupported(fromType, toType)
         } else {
-          isSupported(from_map.keyType, to_map.keyType, timeZoneId, evalMode) match {
-            case Compatible(_, _) =>
-              isSupported(from_map.valueType, to_map.valueType, timeZoneId, evalMode)
-            case other => other
-          }
+          combineSupportLevels(
+            Seq(
+              isSupported(from_map.keyType, to_map.keyType, timeZoneId, evalMode),
+              isSupported(from_map.valueType, to_map.valueType, timeZoneId, evalMode)))
         }
       case (DataTypes.DateType, toType) => canCastFromDate(toType, evalMode)
       case _ => unsupported(fromType, toType)
@@ -369,16 +363,9 @@ object CometCast
       case DataTypes.BinaryType =>
         Compatible()
       case StructType(fields) =>
-        for (field <- fields) {
-          isSupported(field.dataType, DataTypes.StringType, timeZoneId, evalMode) match {
-            case s: Incompatible =>
-              return s
-            case u: Unsupported =>
-              return u
-            case _ =>
-          }
-        }
-        Compatible()
+        combineSupportLevels(fields.map { field =>
+          isSupported(field.dataType, DataTypes.StringType, timeZoneId, evalMode)
+        })
       case _ => unsupported(fromType, DataTypes.StringType)
     }
   }
@@ -522,5 +509,16 @@ object CometCast
 
   private def unsupported(fromType: DataType, toType: DataType): Unsupported = {
     Unsupported(Some(s"Cast from $fromType to $toType is not supported"))
+  }
+
+  /**
+   * Nested casts report the most restrictive child support level. `Unsupported` wins over
+   * `Incompatible`, which wins over `Compatible`. Child order must not change the result.
+   */
+  private def combineSupportLevels(levels: Iterable[SupportLevel]): SupportLevel = {
+    levels
+      .collectFirst { case u: Unsupported => u }
+      .orElse(levels.collectFirst { case i: Incompatible => i })
+      .getOrElse(Compatible())
   }
 }
