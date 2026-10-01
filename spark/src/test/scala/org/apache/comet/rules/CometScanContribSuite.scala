@@ -25,6 +25,7 @@ import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.util.ServiceLoader
 
+import scala.annotation.nowarn
 import scala.jdk.CollectionConverters._
 
 import org.scalatest.funsuite.AnyFunSuite
@@ -331,6 +332,7 @@ class RecordingClaimingScanContrib extends ClaimingScanContrib {
 class NotAContribAtAll
 
 /** Implements the service but cannot be constructed; `next` throws. */
+@nowarn("msg=dead code")
 class ThrowingCtorScanContrib extends CometScanContrib {
   throw new IllegalStateException("contrib constructor blew up")
 }
