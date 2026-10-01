@@ -48,6 +48,7 @@ class CometLocalExecutionSuite
         .master("local[1]")
         .appName("CometLocalExecutionSuite")
         .config("spark.ui.enabled", "false")
+        .config("spark.sql.session.timeZone", "UTC")
         .config("spark.sql.extensions", classOf[CometSparkSessionExtensions].getName)
         .config("spark.sql.adaptive.enabled", "false")
         .config("spark.comet.enabled", "true")
@@ -266,4 +267,241 @@ class CometLocalExecutionSuite
       executor.shutdownNow()
     }
   }
+
+  private def withParquetData(f: String => Unit): Unit = {
+    val directory = java.nio.file.Files.createTempDirectory("comet-local-parquet").toFile
+    val path = new java.io.File(directory, "data").getAbsolutePath
+    try {
+      withConf("spark.comet.enabled", "false") {
+        spark
+          .range(0, 200, 1, 5)
+          .selectExpr(
+            "id",
+            "CAST(id % 7 AS INT) AS k",
+            "CASE WHEN id % 5 = 0 THEN NULL ELSE CAST(id AS STRING) END AS text",
+            "CAST(id / 10 AS DECIMAL(12, 2)) AS amount",
+            "date_add(DATE '2020-01-01', CAST(id AS INT)) AS day",
+            "TIMESTAMP '2020-01-01 00:00:00' + id * INTERVAL 1 SECOND AS ts")
+          .write
+          .parquet(path)
+      }
+      withConf("spark.sql.files.maxPartitionBytes", "4096") {
+        withConf("spark.sql.files.openCostInBytes", "4096") { f(path) }
+      }
+    } finally org.apache.commons.io.FileUtils.deleteDirectory(directory)
+  }
+
+  private def compareParquet(path: String)(query: DataFrame => DataFrame): DataFrame = {
+    val expected = withConf("spark.comet.enabled", "false") {
+      query(spark.read.parquet(path)).collect().toSeq.groupBy(identity).map {
+        case (row, copies) => row -> copies.size
+      }
+    }
+    val actual = query(spark.read.parquet(path))
+    assert(localNodes(actual).size == 1, actual.queryExecution.executedPlan.toString)
+    assert(actual.queryExecution.executedPlan.collect { case p: Exchange => p }.isEmpty)
+    assert(actual.collect().toSeq.groupBy(identity).map { case (row, copies) =>
+      row -> copies.size
+    } == expected)
+    actual
+  }
+
+  test("local Parquet reads every file with shared filter and projection") {
+    withParquetData { path =>
+      val query = compareParquet(path) { df =>
+        df.filter("id >= 12 AND id < 153 AND text IS NOT NULL")
+          .selectExpr(
+            "id + 3 AS value",
+            "amount * CAST(2 AS DECIMAL(2, 0)) AS amount",
+            "text",
+            "day",
+            "ts")
+      }
+      assert(localNodes(query).head.spec.asInstanceOf[LocalParquetSpec].filePartitions.length > 1)
+      assert(localNodes(query).head.outputOrdering.isEmpty)
+      assert(query.queryExecution.executedPlan.execute().getNumPartitions == 1)
+      assert(query.take(2).length == 2)
+      query.collect()
+    }
+  }
+
+  test("local Parquet pushdown on and off preserve null and decimal predicates") {
+    withParquetData { path =>
+      for (pushdown <- Seq("true", "false"); rowFilter <- Seq("true", "false")) {
+        withConf("spark.sql.parquet.filterPushdown", pushdown) {
+          withConf(CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.key, rowFilter) {
+            compareParquet(path)(
+              _.filter("(text IS NULL OR k >= 4) AND amount > 3.20")
+                .selectExpr("id", "amount", "CAST(ts AS STRING) AS time"))
+          }
+        }
+      }
+    }
+  }
+
+  test("local Parquet empty results and missing nullable columns") {
+    withParquetData { path =>
+      compareParquet(path)(_.filter("id < 0").selectExpr("id", "text"))
+      val schema =
+        spark.read.parquet(path).schema.add("missing", org.apache.spark.sql.types.LongType)
+      val query = spark.read.schema(schema).parquet(path).selectExpr("id", "missing")
+      assert(localNodes(query).nonEmpty)
+      assert(query.collect().forall(_.isNullAt(1)))
+      val emptyDir = java.nio.file.Files.createTempDirectory("comet-local-empty").toFile
+      try {
+        val empty = spark.read.schema(schema).parquet(emptyDir.getAbsolutePath)
+        assert(localNodes(empty).nonEmpty)
+        assert(empty.collect().isEmpty)
+      } finally org.apache.commons.io.FileUtils.deleteDirectory(emptyDir)
+    }
+  }
+
+  test("local Parquet rejects callback expressions and whole unsupported queries") {
+    withParquetData { path =>
+      val plusOne = org.apache.spark.sql.functions.udf((value: Long) => value + 1)
+      val input = spark.read.parquet(path)
+      for (query <- Seq(
+          input.selectExpr("input_file_name()"),
+          input.selectExpr("spark_partition_id()"),
+          input.select(plusOne(input("id"))),
+          input.selectExpr("sum(id)"),
+          input.selectExpr("_metadata.file_path"),
+          input.selectExpr("array(id)"))) {
+        assert(localNodes(query).isEmpty, query.queryExecution.executedPlan.toString)
+        query.collect()
+      }
+    }
+  }
+
+  test("local Parquet freezes timezone and ANSI settings per query") {
+    withParquetData { path =>
+      val utc = spark.newSession()
+      val pacific = spark.newSession()
+      utc.conf.set("spark.sql.session.timeZone", "UTC")
+      pacific.conf.set("spark.sql.session.timeZone", "America/Los_Angeles")
+      val first = utc.read.parquet(path).selectExpr("CAST(ts AS STRING) AS time")
+      val second = pacific.read.parquet(path).selectExpr("CAST(ts AS STRING) AS time")
+      assert(localNodes(first).nonEmpty)
+      assert(localNodes(second).nonEmpty)
+      utc.conf.set("spark.sql.session.timeZone", "Asia/Tokyo")
+      pacific.conf.set("spark.sql.session.timeZone", "Asia/Tokyo")
+      assert(first.collect().map(_.getString(0)).min == "2020-01-01 00:00:00")
+      assert(second.collect().map(_.getString(0)).min == "2019-12-31 16:00:00")
+      for (ansi <- Seq("false", "true")) {
+        withConf("spark.sql.ansi.enabled", ansi) {
+          val query = spark.read.parquet(path).selectExpr("CAST(id + 100 AS TINYINT)")
+          assert(localNodes(query).nonEmpty)
+          if (ansi == "true") {
+            val failure = intercept[Exception] { query.collect() }
+            assert(
+              Iterator
+                .iterate[Throwable](failure)(_.getCause)
+                .takeWhile(_ != null)
+                .exists(e => Option(e.getMessage).exists(_.contains("[CAST_OVERFLOW]"))))
+          } else compareParquet(path)(_.selectExpr("CAST(id + 100 AS TINYINT)"))
+        }
+      }
+    }
+  }
+
+  test("local Parquet read errors close the native query") {
+    withParquetData { path =>
+      val query = spark.read.parquet(path).selectExpr("id + 1")
+      assert(localNodes(query).nonEmpty)
+      org.apache.commons.io.FileUtils.deleteDirectory(new java.io.File(path))
+      intercept[Exception] { query.collect() }
+      assert(new NativeLocal().activeQueries() == 0)
+    }
+  }
+
+  test("local Parquet preserves static partition pruning and partition column values") {
+    withParquetData { path =>
+      val directory = java.nio.file.Files.createTempDirectory("comet-local-partitioned").toFile
+      val target = new java.io.File(directory, "data").getAbsolutePath
+      try {
+        withConf("spark.comet.enabled", "false") {
+          spark.read.parquet(path).write.partitionBy("k").parquet(target)
+        }
+        compareParquet(target)(_.filter("k = 3 AND id > 20").selectExpr("id", "k", "amount"))
+      } finally org.apache.commons.io.FileUtils.deleteDirectory(directory)
+    }
+  }
+
+  test("simultaneous native Parquet graphs retain configuration and independent lifetime") {
+    withParquetData { path =>
+      val utc = spark.newSession()
+      val pacific = spark.newSession()
+      utc.conf.set("spark.sql.session.timeZone", "UTC")
+      pacific.conf.set("spark.sql.session.timeZone", "America/Los_Angeles")
+      val specs = Seq(utc, pacific).map { session =>
+        localNodes(session.read.parquet(path).selectExpr("CAST(ts AS STRING)")).head.spec
+          .asInstanceOf[LocalParquetSpec]
+      }
+      val native = new NativeLocal
+      val ids = scala.collection.mutable.ArrayBuffer.empty[Long]
+      val util = new NativeUtil
+      try {
+        specs.foreach { spec =>
+          ids += native.createParquet(
+            spec.plan,
+            spec.filePartitions,
+            spec.batchSize,
+            spec.columns,
+            spec.rowFilterPushdown)
+        }
+        assert(native.activeQueries() == 2)
+        native.close(ids.head)
+        val values = scala.collection.mutable.ArrayBuffer.empty[String]
+        var finished = false
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20)
+        while (!finished) {
+          val batch = util.getNextBatch(
+            1,
+            (arrays, schemas) => {
+              var rows = -2L
+              while (rows == -2L) {
+                assert(System.nanoTime() < deadline, "local scan failed to make progress")
+                rows = native.nextBatch(ids(1), arrays, schemas)
+              }
+              rows
+            })
+          batch match {
+            case Some(data) =>
+              try {
+                (0 until data.numRows()).foreach { row =>
+                  values += data.column(0).getUTF8String(row).toString
+                }
+              } finally data.close()
+            case None => finished = true
+          }
+        }
+        assert(values.length == 200)
+        assert(values.min == "2019-12-31 16:00:00")
+      } finally {
+        ids.foreach(native.close)
+        util.close()
+      }
+    }
+  }
+
+  test("local Parquet reads split row groups exactly once") {
+    val directory = java.nio.file.Files.createTempDirectory("comet-local-splits").toFile
+    val path = new java.io.File(directory, "data").getAbsolutePath
+    try {
+      withConf("spark.comet.enabled", "false") {
+        spark
+          .range(0, 10000, 1, 1)
+          .selectExpr("id", "CAST(id AS STRING) AS text")
+          .write
+          .option("parquet.block.size", "4096")
+          .parquet(path)
+      }
+      withConf("spark.sql.files.maxPartitionBytes", "4096") {
+        val query = compareParquet(path)(_.filter("id % 13 = 0").selectExpr("id", "text"))
+        assert(
+          localNodes(query).head.spec.asInstanceOf[LocalParquetSpec].filePartitions.length > 1)
+      }
+    } finally org.apache.commons.io.FileUtils.deleteDirectory(directory)
+  }
+
 }

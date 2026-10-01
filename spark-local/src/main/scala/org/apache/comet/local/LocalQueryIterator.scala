@@ -22,10 +22,12 @@ package org.apache.comet.local
 import org.apache.spark.{TaskContext, TaskKilledException}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
+import org.apache.comet.SparkErrorConverter
+import org.apache.comet.exceptions.CometQueryExecutionException
 import org.apache.comet.vector.NativeUtil
 
 /** Task-thread-owned Arrow batches; native close can also interrupt a concurrent result pull. */
-private[local] class LocalQueryIterator(spec: LocalRangeSpec, context: TaskContext)
+private[local] class LocalQueryIterator(spec: LocalQuerySpec, context: TaskContext)
     extends Iterator[ColumnarBatch]
     with AutoCloseable {
   private val native = new NativeLocal
@@ -39,17 +41,26 @@ private[local] class LocalQueryIterator(spec: LocalRangeSpec, context: TaskConte
   context.addTaskCompletionListener[Unit](_ => close())
   try {
     checkCancellation()
-    id = native.createRange(
-      spec.start,
-      spec.end,
-      spec.step,
-      spec.partitions,
-      spec.batchSize,
-      spec.columns)
+    id = spec match {
+      case range: LocalRangeSpec =>
+        native.createRange(
+          range.start,
+          range.end,
+          range.step,
+          range.partitions,
+          range.batchSize,
+          range.columns)
+      case scan: LocalParquetSpec =>
+        native.createParquet(
+          scan.plan,
+          scan.filePartitions,
+          scan.batchSize,
+          scan.columns,
+          scan.rowFilterPushdown)
+    }
   } catch {
     case failure: Throwable =>
-      closeAfterFailure(failure)
-      throw failure
+      throw executionFailure(failure)
   }
 
   private def checkCancellation(): Unit = {
@@ -59,6 +70,14 @@ private[local] class LocalQueryIterator(spec: LocalRangeSpec, context: TaskConte
   private def closeAfterFailure(failure: Throwable): Unit = {
     try close()
     catch { case cleanup: Throwable => failure.addSuppressed(cleanup) }
+  }
+
+  private def executionFailure(failure: Throwable): Throwable = {
+    closeAfterFailure(failure)
+    failure match {
+      case e: CometQueryExecutionException => SparkErrorConverter.convertToSparkException(e)
+      case other => other
+    }
   }
 
   override def hasNext: Boolean = {
@@ -86,8 +105,7 @@ private[local] class LocalQueryIterator(spec: LocalRangeSpec, context: TaskConte
       pending != null
     } catch {
       case failure: Throwable =>
-        closeAfterFailure(failure)
-        throw failure
+        throw executionFailure(failure)
     }
   }
 

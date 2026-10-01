@@ -28,6 +28,19 @@ import org.apache.spark.sql.execution.{ColumnarToRowExec, LeafExecNode}
 import org.apache.spark.sql.execution.metric.SQLMetrics
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
+private[local] sealed trait LocalQuerySpec extends Serializable {
+  def batchSize: Int
+  def columns: Int
+}
+
+private[local] case class LocalParquetSpec(
+    plan: Array[Byte],
+    filePartitions: Array[Array[Byte]],
+    batchSize: Int,
+    columns: Int,
+    rowFilterPushdown: Boolean)
+    extends LocalQuerySpec
+
 private[local] case class LocalRangeSpec(
     start: Long,
     end: Long,
@@ -35,17 +48,22 @@ private[local] case class LocalRangeSpec(
     partitions: Int,
     batchSize: Int,
     columns: Int)
+    extends LocalQuerySpec
 
 /** The one Spark result task owns a whole execution, including all native partitions. */
 case class CometLocalExec private[local] (
     override val output: Seq[Attribute],
-    spec: LocalRangeSpec)
+    spec: LocalQuerySpec)
     extends LeafExecNode {
   override def supportsColumnar: Boolean = true
   override def outputPartitioning: Partitioning = SinglePartition
   // The native range adapter uses a sort-preserving merge before the result boundary.
   override def outputOrdering: Seq[SortOrder] =
-    Seq(SortOrder(output.head, if (spec.step > 0) Ascending else Descending))
+    spec match {
+      case range: LocalRangeSpec =>
+        Seq(SortOrder(output.head, if (range.step > 0) Ascending else Descending))
+      case _: LocalParquetSpec => Nil
+    }
   override lazy val metrics = Map(
     "numOutputRows" -> SQLMetrics.createMetric(sparkContext, "number of output rows"))
 
@@ -55,14 +73,14 @@ case class CometLocalExec private[local] (
     val rows = longMetric("numOutputRows")
     new LocalQueryRDD(sparkContext, spec).mapPartitions { input =>
       input.map { batch =>
-        rows += batch.numRows()
+        rows += batch.numRows().toLong
         batch
       }
     }
   }
 }
 
-private[local] class LocalQueryRDD(sc: SparkContext, spec: LocalRangeSpec)
+private[local] class LocalQueryRDD(sc: SparkContext, spec: LocalQuerySpec)
     extends RDD[ColumnarBatch](sc, Nil) {
   override protected def getPartitions: Array[Partition] = Array(new Partition {
     override def index: Int = 0

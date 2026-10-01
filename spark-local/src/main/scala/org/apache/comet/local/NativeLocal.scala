@@ -32,6 +32,12 @@ private[local] class NativeLocal extends NativeBase {
       partitions: Int,
       batchSize: Int,
       columns: Int): Long
+  @native def createParquet(
+      plan: Array[Byte],
+      filePartitions: Array[Array[Byte]],
+      batchSize: Int,
+      columns: Int,
+      rowFilterPushdown: Boolean): Long
   @native def nextBatch(id: Long, arrays: Array[Long], schemas: Array[Long]): Long
   @native def close(id: Long): Unit
   @native def activeQueries(): Long

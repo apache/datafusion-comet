@@ -19,8 +19,9 @@ under the License.
 
 # Local execution development plan
 
-Status: experimental Spark range bridge; stage-2 implementation and local checks
-are complete. Spark SQL validation is deferred at the user's request.
+Status: experimental local range and Parquet execution. Stage 3 adds admitted
+Parquet/filter/project queries. Local execution and bridge tests pass; Spark SQL
+validation remains deferred at the user's request.
 `spark.comet.exec.local.enabled=true` opts in through the existing Comet extension.
 The option defaults to false. Unsupported whole queries use ordinary Comet/Spark planning.
 The development baseline is local `upstream/main` at `9c7fcc5aa`.
@@ -202,8 +203,9 @@ cancellation, native errors/panics and Arrow lifetime. Strict Clippy passes for
 the native core and local crate. The new JVM suite is registered in both CI
 matrices. Formatting and CI configuration checks also passed. The user requested
 deferring the Spark SQL suite, so no Spark SQL compatibility verdict is claimed.
-Development stops at this stage-2 checkpoint; stage 3 has not started. Resolve the
-deferred gate or explicitly revise this plan before expanding admission.
+Development stopped at the stage-2 checkpoint. The subsequent user instruction
+authorized stage 3 while retaining the deferral of Spark SQL validation. This is
+an explicit exception to the usual gate order, not a Spark SQL compatibility verdict.
 
 ### 3. Native scans and shared expression conversion
 
@@ -217,6 +219,64 @@ Gate: compare Spark and local execution results on supported types and expressio
 multiple files and empty inputs; verify pushdown does not alter correctness;
 confirm whole-query fallback for unsupported plans. Test configuration isolation
 between simultaneous queries and obtain the Spark SQL gate.
+
+Stage-3 admission and reuse:
+
+- Only DataSource V1 scans of Spark's built-in Parquet format on `file:` paths are
+  admitted. The existing `CometScanRule` validates a copy of the scan before
+  `CometNativeScan` serializes it. Static partition pruning and Spark file splitting
+  are reused; file groups and scan settings are captured during local planning.
+- `spark-local/LocalParquetPlanner` serializes a whole unary scan/filter/project
+  tree using existing operator and expression protobufs. Its explicit expression
+  allowlist covers references, literals, aliases, arithmetic, comparisons, boolean
+  and null predicates, casts, overflow checks, and conditionals. Both the Spark
+  expressions and serialized expressions must be admitted: serde can otherwise
+  choose JVM codegen callbacks even for familiar expression classes.
+- The initial type surface is primitive numeric/boolean/string/binary, decimal,
+  date, timestamp and timestamp NTZ. Nested and collated types, UDFs, nondeterministic
+  or partition-sensitive expressions, subqueries and metadata expressions fall
+  back as a whole. Existing serde compatibility/configuration gates still apply.
+- `native/core/src/local/planner.rs` is a local adapter to core's existing
+  `PhysicalPlanner`. It reuses native Parquet construction for each file group,
+  assembles those scans under a native union, and constructs shared filter/project
+  nodes above it. This is one query graph and one Spark result task; no graph is
+  deserialized per Spark input task. No shared expression implementation is copied
+  or moved into a dependency cycle with `native/local`.
+- Every execution owns its DataFusion session configuration, runtime environment
+  and object-store registry, while the Tokio worker runtime remains process-owned.
+  Timezone, schema matching and scan flags travel in existing scan metadata;
+  expression ANSI/timezone behavior travels in existing expression protobufs.
+  Batch size and the Comet row-filter pushdown option are also captured. Arbitrary
+  `spark.comet.datafusion.*` overrides are not propagated in this initial mode.
+- Cloud/custom filesystems, custom `fs.file.impl`, object-store options, encrypted
+  reads, bucketed or ordered scans and file metadata columns are excluded. In
+  particular, credentials and encryption callbacks do not cross the local boundary.
+  These are admission limits, not a claim that remote files cannot eventually be
+  read from a single process.
+- Parquet output is unordered and uses the stage-2 single-partition result bridge.
+  Ordered scans are rejected because Spark may already have removed a sort based
+  on their ordering. Range queries retain their separate sort-preserving adapter.
+  Structured execution errors reuse `SparkErrorConverter`; query cleanup happens
+  before conversion/rethrow. There is no fallback after native output starts.
+
+The admission caps remain 1,024 file groups, 1,024 output columns and batch size
+65,536. These bound some execution overhead, not total memory. The driver currently
+captures all admitted file metadata in the physical plan. A query memory budget,
+spilling policy and bounded driver result streaming are still deferred.
+
+Checkpoint (2026-09-30): 55 Spark 4.1 JVM tests passed: 22 local execution tests,
+21 iterator lifecycle tests and 12 `NativeUtil` tests. The local tests compare
+Spark and local results, require a local physical node (so fallback cannot mask a
+failure), and cover multi-file scans, split row groups exactly once, static
+partition pruning, nulls/decimals/dates/timestamps, pushdown on/off, missing nullable
+columns, empty scans, repeated actions, early stop and errors. Two native Parquet
+queries with different timezone settings remain live simultaneously; closing one
+does not affect the other's results. ANSI overflow retains `CAST_OVERFLOW`.
+All 18 native lifecycle/repartition tests, strict Rust Clippy, formatting and CI
+configuration checks also passed. Spark 3.5 main/test compilation with
+`-Pstrict-warnings` passed; local execution stays disabled on that profile.
+Spark SQL remains deliberately unrun. No scan,
+join or aggregate performance claim is made, and stage 4 has not started.
 
 ### 4. Operators across exchange boundaries
 

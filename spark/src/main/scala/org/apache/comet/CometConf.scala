@@ -218,10 +218,9 @@ object CometConf extends ShimCometConf {
   val COMET_EXEC_LOCAL_ENABLED: ConfigEntry[Boolean] = conf("spark.comet.exec.local.enabled")
     .category(CATEGORY_EXEC)
     .internal()
-    .doc(
-      "Enable experimental whole-query local execution. " +
-        "Requires Spark 4.1 in local mode with AQE disabled. Initially supports range and " +
-        "direct column projections; unsupported queries use the existing execution path.")
+    .doc("Enable experimental whole-query local execution. " +
+      "Requires Spark 4.1 in local mode with AQE disabled. Supports range projections and " +
+      "admitted local Parquet/filter/project queries; unsupported queries use the existing path.")
     .booleanConf
     .createWithDefault(false)
 

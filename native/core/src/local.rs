@@ -28,13 +28,15 @@ use datafusion::prelude::SessionConfig;
 use datafusion_comet_local::handle::{QueryHandle, QueryPoll};
 use datafusion_comet_local::range::range_plan;
 use datafusion_comet_local::LocalQuery;
-use jni::objects::{JLongArray, JObject, ReleaseMode};
-use jni::sys::{jint, jlong};
+use jni::objects::{JByteArray, JLongArray, JObject, JObjectArray, ReleaseMode};
+use jni::sys::{jboolean, jint, jlong};
 use jni::{Env, EnvUnowned};
 use parking_lot::Mutex;
 
 use crate::errors::{try_unwrap_or_throw, CometError, CometResult};
 use crate::execution::jni_api::{get_runtime, prepare_output};
+
+mod planner;
 
 struct Entry {
     query: QueryHandle,
@@ -79,21 +81,7 @@ pub extern "system" fn Java_org_apache_comet_local_NativeLocal_createRange(
                 .with_session_config(SessionConfig::new().with_batch_size(batch_size as usize)),
         );
         let query = QueryHandle::start(LocalQuery::new(plan, context), &get_runtime())?;
-        let id = NEXT_ID
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
-            .map_err(|_| CometError::Internal("Local query IDs exhausted".into()))?;
-        let mut registry = QUERIES.lock();
-        if registry.len() >= MAX_LIVE_QUERIES {
-            return Err(CometError::Internal("Too many live local queries".into()));
-        }
-        registry.insert(
-            id,
-            Arc::new(Entry {
-                query,
-                columns: columns as usize,
-            }),
-        );
-        Ok(id)
+        register(query, columns as usize)
     })
 }
 
@@ -158,4 +146,52 @@ pub extern "system" fn Java_org_apache_comet_local_NativeLocal_activeQueries(
     _: JObject,
 ) -> jlong {
     try_unwrap_or_throw(&e, |_| Ok(QUERIES.lock().len() as jlong))
+}
+
+fn register(query: QueryHandle, columns: usize) -> CometResult<i64> {
+    let id = NEXT_ID
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+        .map_err(|_| CometError::Internal("Local query IDs exhausted".into()))?;
+    let mut registry = QUERIES.lock();
+    if registry.len() >= MAX_LIVE_QUERIES {
+        return Err(CometError::Internal("Too many live local queries".into()));
+    }
+    registry.insert(id, Arc::new(Entry { query, columns }));
+    Ok(id)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_org_apache_comet_local_NativeLocal_createParquet(
+    e: EnvUnowned,
+    _: JObject,
+    plan: JByteArray,
+    partitions: JObjectArray,
+    batch_size: jint,
+    columns: jint,
+    row_filter_pushdown: jboolean,
+) -> jlong {
+    try_unwrap_or_throw(&e, |env| {
+        let bytes = env.convert_byte_array(plan)?;
+        let count = partitions.len(env)?;
+        if count > 1024 || !(1..=65536).contains(&batch_size) || !(1..=1024).contains(&columns) {
+            return Err(CometError::Internal(
+                "Invalid local Parquet parameters".into(),
+            ));
+        }
+        let mut groups = Vec::with_capacity(count);
+        for i in 0..count {
+            let array = partitions.get_element(env, i)?;
+            let array = unsafe { JByteArray::from_raw(&*env, array.into_raw()) };
+            groups.push(env.convert_byte_array(&array)?);
+            env.delete_local_ref(array);
+        }
+        let query = planner::parquet_query(
+            &bytes,
+            &groups,
+            batch_size as usize,
+            columns as usize,
+            row_filter_pushdown,
+        )?;
+        register(QueryHandle::start(query, &get_runtime())?, columns as usize)
+    })
 }

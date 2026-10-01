@@ -63,6 +63,9 @@ private[comet] case class CometLocalRule(session: SparkSession) extends Rule[Spa
         (limit.child, (p: SparkPlan) => limit.copy(child = p))
       case other => (other, (p: SparkPlan) => p)
     }
+    LocalParquetPlanner.plan(body, session).foreach { spec =>
+      return wrap(CometLocalExec(body.output, spec))
+    }
     def source(p: SparkPlan): Option[RangeExec] = p match {
       case range: RangeExec => Some(range)
       case project: ProjectExec
@@ -89,7 +92,8 @@ private[comet] case class CometLocalRule(session: SparkSession) extends Rule[Spa
       case _ =>
         withInfo(
           plan,
-          "Local execution currently supports only range and direct column projections " +
+          "Local execution supports range projections or admitted " +
+            "local Parquet/filter/project queries " +
             "(up to 1024 partitions/columns and batch size 65536)")
     }
   }
