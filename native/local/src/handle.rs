@@ -49,6 +49,7 @@ pub struct QueryHandle {
     receiver: Mutex<mpsc::Receiver<Delivery>>,
     producer: JoinHandle<()>,
     cancelled: AtomicBool,
+    completed: Arc<AtomicBool>,
 }
 
 impl QueryHandle {
@@ -58,6 +59,8 @@ impl QueryHandle {
             query.execute()?
         };
         let (sender, receiver) = mpsc::channel();
+        let completed = Arc::new(AtomicBool::new(false));
+        let worker_completed = Arc::clone(&completed);
         let producer = runtime.spawn(async move {
             let capacity = Arc::new(Semaphore::new(1));
             let result = AssertUnwindSafe(async {
@@ -103,11 +106,15 @@ impl QueryHandle {
                     });
                 }
             }
+            // Publish before dropping sender. Runtime shutdown/abort skips this store;
+            // channel disconnection alone must never turn a truncated result into EOF.
+            worker_completed.store(true, Ordering::Release);
         });
         Ok(Self {
             receiver: Mutex::new(receiver),
             producer,
             cancelled: AtomicBool::new(false),
+            completed,
         })
     }
 
@@ -127,7 +134,15 @@ impl QueryHandle {
         match delivery {
             Ok(delivery) => delivery.batch.map(QueryPoll::Batch),
             Err(mpsc::RecvTimeoutError::Timeout) => Ok(QueryPoll::Pending),
-            Err(mpsc::RecvTimeoutError::Disconnected) => Ok(QueryPoll::Finished),
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                if self.completed.load(Ordering::Acquire) {
+                    Ok(QueryPoll::Finished)
+                } else {
+                    Err(DataFusionError::Execution(
+                        "Local query worker stopped without completing".into(),
+                    ))
+                }
+            }
         }
     }
 

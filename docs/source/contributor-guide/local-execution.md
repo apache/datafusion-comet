@@ -19,7 +19,7 @@ under the License.
 
 # Local execution development plan
 
-Status: stage 4c checkpoint, experimental local range and Parquet execution with
+Status: stage 5a stability checkpoint, experimental local range and Parquet execution with
 COUNT/MIN/MAX aggregation, partitioned hash joins, and terminal global sort/limit. Local execution and bridge
 tests pass; Spark SQL validation remains deferred at the user's request.
 `spark.comet.exec.local.enabled=true` opts in through the existing Comet extension.
@@ -437,8 +437,8 @@ lifecycle and 12 NativeUtil), plus 18 native lifecycle tests and nine native
 planner tests. Rust formatting, strict Clippy and Spark 3.5 main/test compilation
 with strict warnings passed.
 
-Stop at this checkpoint before stage 5 (hardening and performance). Spark SQL
-validation remains deferred at the user's request; its gate has not passed.
+This checkpoint stopped before stage 5 (hardening and performance). Spark SQL
+validation remained deferred at the user's request; its gate had not passed.
 
 ### 5. Hardening and performance
 
@@ -451,6 +451,57 @@ CPU, peak/retained memory, planning time and spill, not just plan construction.
 Gate: supported result comparisons pass, no hangs or persistent resource growth,
 default-path regression checks pass, and benchmark results justify wider admission.
 Do not claim general performance gains from the stage-one native tests.
+
+#### 5a. Lifecycle and diagnostics checkpoint
+
+A regression test exposed a correctness bug in the local result handoff: stopping
+the Tokio runtime while a query was still pending disconnected its channel, and
+the reader interpreted this as successful EOF. A producer-owned completion flag
+now distinguishes normal completion from an interrupted worker. The producer
+publishes completion before dropping the sender; an unexpected disconnection
+returns an execution error. Explicit cancellation retains its separate error path.
+Tests cover shutdown before output and after partial output, including the
+one-batch queue bound and continued validity of the already-delivered batch.
+
+The one-worker handoff test repeats twelve executions with an unread, backpressured
+query alongside a healthy query, then verifies graph release on cancellation.
+Native planner tests overlap two spilling sorts (one consumed, one dropped early)
+and a join with an insufficient reservation budget, repeating three times. Each
+query's own reservation pool and disk usage returns to zero independently.
+
+The JVM tests repeatedly run three live native graphs: a join with ordered output,
+an aggregate that is explicitly closed, and a sort that fails its reservation.
+Across eight cycles the healthy result still matches Spark, the handle registry
+returns to zero, and imported Arrow allocations return to zero. Another test races
+result pulls against repeated close across 24 executions while retaining a prior
+imported batch, checking that its ownership survives the race. Existing Spark
+job cancellation, input-error and lifecycle suites remain part of the checkpoint.
+
+`CometLocalExec` now exposes a compact explain description with query kind, terminal
+operation presence, batch size, one result partition, ordering declaration, and
+applicable memory/spill settings. Serialized plans and file metadata are excluded.
+Explain allocates no native execution. SQL metrics count delivered rows and batches;
+they do not claim native peak memory, spill, CPU or wall-clock timing.
+
+These are correctness and resource-accounting checks, not a benchmark or proof
+that RSS returns to baseline. The query budgets remain reservation limits, not a
+shared process budget. Admission has not expanded in this checkpoint.
+
+Checkpoint (2026-09-30): 76 JVM tests passed (43 local execution, 21 iterator
+lifecycle and 12 NativeUtil), plus 21 native lifecycle/handoff tests and ten native
+planner tests. Formatting, strict Clippy and Spark 3.5 main/test compilation with
+strict warnings passed. Spark SQL remains deliberately unrun.
+
+#### 5b. Performance checkpoint (not started)
+
+First record which benchmark queries are actually admitted. The current narrow
+operator surface cannot be assumed to execute full TPC-H/TPC-DS queries natively;
+fallback timings must not be presented as local-mode performance. Establish
+supported-query baselines with matching CPU and memory settings, then measure
+end-to-end time, planning, CPU, spill and peak/retained process memory. Keep
+unsupported-query coverage and any remaining Spark SQL validation gap explicit.
+
+Stop after 5a verification before beginning these measurements.
 
 ## Spark SQL validation policy
 

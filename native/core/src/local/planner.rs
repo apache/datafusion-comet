@@ -840,4 +840,14 @@ mod tests {
         .await
         .unwrap();
     }
+    #[tokio::test]
+    async fn concurrent_queries_keep_spill_and_reservation_budgets_isolated() {
+        for _ in 0..3 {
+            tokio::join!(
+                sort_case(false, false),
+                sort_case(true, false),
+                join_case(false, true)
+            );
+        }
+    }
 }

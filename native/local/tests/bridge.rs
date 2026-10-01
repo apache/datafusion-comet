@@ -173,3 +173,129 @@ fn startup_failure_is_returned() {
     )
     .is_err());
 }
+
+#[test]
+fn runtime_shutdown_is_an_error_not_successful_eof() {
+    let runtime = runtime();
+    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+    let query = QueryHandle::start(
+        LocalQuery::new(
+            Arc::new(BlockingExec::new(schema, 4)),
+            Arc::new(TaskContext::default()),
+        ),
+        runtime.handle(),
+    )
+    .unwrap();
+    assert!(matches!(
+        query.poll(Duration::from_millis(20)).unwrap(),
+        QueryPoll::Pending
+    ));
+    drop(runtime);
+    match query.poll(Duration::from_millis(50)) {
+        Err(error) => assert!(error.to_string().contains("without completing")),
+        Ok(_) => panic!("runtime shutdown must not look like successful EOF"),
+    }
+}
+
+#[test]
+fn backpressured_query_does_not_starve_other_queries_and_cancel_releases_graph() {
+    let runtime = runtime();
+    for _ in 0..12 {
+        let stalled = range_plan(0, i64::MAX, 1, 7, 5, 1).unwrap();
+        let refs = Arc::downgrade(&stalled);
+        let stalled = QueryHandle::start(
+            LocalQuery::new(stalled, Arc::new(TaskContext::default())),
+            runtime.handle(),
+        )
+        .unwrap();
+        // Leave its one-batch result channel unread while a second query makes progress.
+        let healthy = QueryHandle::start(
+            LocalQuery::new(
+                range_plan(100, 237, 1, 7, 3, 1).unwrap(),
+                Arc::new(TaskContext::default()),
+            ),
+            runtime.handle(),
+        )
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut next = 100;
+        loop {
+            assert!(
+                Instant::now() < deadline,
+                "a stalled consumer starved another query"
+            );
+            match healthy.poll(Duration::from_millis(20)).unwrap() {
+                QueryPoll::Batch(batch) => {
+                    let values = batch
+                        .column(0)
+                        .as_any()
+                        .downcast_ref::<Int64Array>()
+                        .unwrap();
+                    for i in 0..batch.num_rows() {
+                        assert_eq!(values.value(i), next);
+                        next += 1;
+                    }
+                }
+                QueryPoll::Pending => (),
+                QueryPoll::Finished => break,
+            }
+        }
+        assert_eq!(next, 237);
+        stalled.cancel();
+        assert!(stalled.poll(Duration::ZERO).is_err());
+        drop(stalled);
+        drop(healthy);
+        while refs.strong_count() != 0 {
+            assert!(Instant::now() < deadline, "cancelled graph remained live");
+            std::thread::yield_now();
+        }
+    }
+}
+
+#[test]
+fn shutdown_after_partial_output_never_silently_truncates_the_result() {
+    let runtime = runtime();
+    let query = QueryHandle::start(
+        LocalQuery::new(
+            range_plan(0, i64::MAX, 1, 7, 5, 1).unwrap(),
+            Arc::new(TaskContext::default()),
+        ),
+        runtime.handle(),
+    )
+    .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let first = loop {
+        assert!(Instant::now() < deadline);
+        match query.poll(Duration::from_millis(20)).unwrap() {
+            QueryPoll::Batch(batch) => break batch,
+            QueryPoll::Pending => (),
+            QueryPoll::Finished => panic!("unbounded fixture ended"),
+        }
+    };
+    drop(runtime);
+    assert_eq!(
+        first
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap()
+            .value(0),
+        0
+    );
+    let mut queued = 0;
+    loop {
+        assert!(Instant::now() < deadline);
+        match query.poll(Duration::from_millis(20)) {
+            Ok(QueryPoll::Batch(_)) => {
+                queued += 1;
+                assert!(queued <= 1, "handoff exceeded its one-batch bound");
+            }
+            Ok(QueryPoll::Pending) => (),
+            Ok(QueryPoll::Finished) => panic!("partial output was reported as complete"),
+            Err(error) => {
+                assert!(error.to_string().contains("without completing"));
+                break;
+            }
+        }
+    }
+}

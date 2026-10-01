@@ -79,16 +79,43 @@ case class CometLocalExec private[local] (
         Seq(SortOrder(output.head, if (range.step > 0) Ascending else Descending))
       case _: LocalParquetSpec | _: LocalJoinSpec => ordering
     }
+  // Explain describes execution settings, never serialized protobufs or file metadata.
+  override def stringArgs: Iterator[Any] = {
+    val details = spec match {
+      case _: LocalRangeSpec => Seq("query=range")
+      case scan: LocalParquetSpec =>
+        Seq(
+          s"query=${if (scan.aggregate.nonEmpty) "aggregate" else "parquet"}",
+          s"terminal=${scan.terminal.nonEmpty}",
+          s"memoryLimit=${scan.memoryLimit}",
+          s"spill=${scan.spillEnabled}")
+      case join: LocalJoinSpec =>
+        Seq(
+          "query=hash-join",
+          s"terminal=${join.terminal.nonEmpty}",
+          s"memoryLimit=${join.memoryLimit}",
+          s"spill=${join.spillEnabled}")
+    }
+    Iterator(
+      output,
+      s"batchSize=${spec.batchSize}",
+      "resultPartitions=1",
+      s"ordered=${outputOrdering.nonEmpty}") ++ details.iterator
+  }
+
   override lazy val metrics = Map(
-    "numOutputRows" -> SQLMetrics.createMetric(sparkContext, "number of output rows"))
+    "numOutputRows" -> SQLMetrics.createMetric(sparkContext, "number of output rows"),
+    "numOutputBatches" -> SQLMetrics.createMetric(sparkContext, "number of output batches"))
 
   override protected def doExecute(): RDD[InternalRow] = ColumnarToRowExec(this).execute()
 
   override protected def doExecuteColumnar(): RDD[ColumnarBatch] = {
     val rows = longMetric("numOutputRows")
+    val batches = longMetric("numOutputBatches")
     new LocalQueryRDD(sparkContext, spec).mapPartitions { input =>
       input.map { batch =>
         rows += batch.numRows().toLong
+        batches += 1L
         batch
       }
     }

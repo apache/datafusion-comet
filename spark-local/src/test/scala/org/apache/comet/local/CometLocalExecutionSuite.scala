@@ -836,4 +836,176 @@ class CometLocalExecutionSuite
     }
   }
 
+  private def startNative(native: NativeLocal, spec: LocalQuerySpec): Long = spec match {
+    case scan: LocalParquetSpec =>
+      native.createParquet(
+        scan.plan,
+        scan.filePartitions,
+        scan.batchSize,
+        scan.columns,
+        scan.rowFilterPushdown,
+        scan.aggregate,
+        scan.memoryLimit,
+        scan.spillEnabled,
+        scan.terminal)
+    case join: LocalJoinSpec =>
+      native.createJoin(
+        join.plan,
+        join.batchSize,
+        join.columns,
+        join.rowFilterPushdown,
+        join.memoryLimit,
+        join.spillEnabled,
+        join.terminal)
+    case range: LocalRangeSpec =>
+      native.createRange(
+        range.start,
+        range.end,
+        range.step,
+        range.partitions,
+        range.batchSize,
+        range.columns)
+  }
+
+  private def readNative(
+      native: NativeLocal,
+      util: NativeUtil,
+      id: Long,
+      columns: Int): Option[org.apache.spark.sql.vectorized.ColumnarBatch] = {
+    val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20)
+    util.getNextBatch(
+      columns,
+      (arrays, schemas) => {
+        var rows = -2L
+        while (rows == -2L) {
+          assert(System.nanoTime() < deadline, "native query did not make progress")
+          rows = native.nextBatch(id, arrays, schemas)
+        }
+        rows
+      })
+  }
+
+  test("concurrent native join sort and aggregate isolate cancellation and reservation failure") {
+    withParquetData { path =>
+      withConf("spark.sql.shuffle.partitions", "7") {
+        val input = spark.read.parquet(path)
+        val healthy = joinQuery(input, "inner", true)
+          .orderBy("l", "r")
+          .limit(23)
+          .select("l", "r")
+        val expected = withConf("spark.comet.enabled", "false") {
+          joinQuery(spark.read.parquet(path), "inner", true)
+            .orderBy("l", "r")
+            .limit(23)
+            .select("l", "r")
+            .collect()
+            .toSeq
+        }
+        val healthySpec = localNodes(healthy).head.spec
+        val cancelSpec = localNodes(input.groupBy("id").count().orderBy("id")).head.spec
+        val failSpec = localNodes(input.orderBy("id")).head.spec
+          .asInstanceOf[LocalParquetSpec]
+          .copy(memoryLimit = 1L, spillEnabled = false)
+        val native = new NativeLocal
+        for (_ <- 0 until 8) {
+          val ids = scala.collection.mutable.ArrayBuffer.empty[Long]
+          val util = new NativeUtil
+          val failedUtil = new NativeUtil
+          try {
+            ids += startNative(native, healthySpec)
+            ids += startNative(native, cancelSpec)
+            ids += startNative(native, failSpec)
+            assert(native.activeQueries() == 3)
+            native.close(ids(1))
+            intercept[Exception] { readNative(native, failedUtil, ids(2), failSpec.columns) }
+            assert(native.activeQueries() == 1)
+            val actual = scala.collection.mutable.ArrayBuffer.empty[Row]
+            var finished = false
+            while (!finished) {
+              readNative(native, util, ids.head, healthySpec.columns) match {
+                case Some(batch) =>
+                  try {
+                    (0 until batch.numRows()).foreach { row =>
+                      actual += Row(batch.column(0).getLong(row), batch.column(1).getLong(row))
+                    }
+                  } finally batch.close()
+                case None => finished = true
+              }
+            }
+            assert(actual.toSeq == expected)
+            assert(native.activeQueries() == 0)
+          } finally {
+            ids.foreach(native.close)
+            util.close()
+            failedUtil.close()
+          }
+          assert(CometArrowImportAllocator.getAllocatedMemory == 0)
+        }
+      }
+    }
+  }
+
+  test("repeated native close racing with result reads does not invalidate imported batches") {
+    val native = new NativeLocal
+    val closer = Executors.newSingleThreadExecutor()
+    try {
+      for (_ <- 0 until 24) {
+        val id = native.createRange(0, Long.MaxValue, 1, 7, 17, 1)
+        val util = new NativeUtil
+        val started = new java.util.concurrent.CountDownLatch(1)
+        val closed = closer.submit(new Callable[Unit] {
+          override def call(): Unit = {
+            assert(started.await(5, TimeUnit.SECONDS))
+            native.close(id)
+            native.close(id)
+          }
+        })
+        try {
+          val first = readNative(native, util, id, 1).get
+          try {
+            started.countDown()
+            // Either a batch wins the race or close/cancel wins. Both must preserve
+            // ownership of the already-imported first batch.
+            try readNative(native, util, id, 1).foreach(_.close())
+            catch {
+              case failure: Exception =>
+                assert(
+                  Iterator
+                    .iterate[Throwable](failure)(_.getCause)
+                    .takeWhile(_ != null)
+                    .exists(e =>
+                      Option(e.getMessage).exists(m =>
+                        m.contains("closed") || m.contains("cancelled"))))
+            }
+            closed.get(5, TimeUnit.SECONDS)
+            assert(first.column(0).getLong(0) == 0L)
+          } finally first.close()
+          intercept[Exception] { readNative(native, util, id, 1) }
+        } finally {
+          started.countDown()
+          native.close(id)
+          util.close()
+        }
+        assert(native.activeQueries() == 0)
+      }
+    } finally closer.shutdownNow()
+  }
+
+  test("local explain is compact and output metrics count delivered rows and batches") {
+    withParquetData { path =>
+      val query = spark.read.parquet(path).select("id").orderBy("id").limit(23)
+      val node = localNodes(query).head
+      val description = node.simpleString(20)
+      assert(description.contains("query=parquet") && description.contains("terminal=true"))
+      assert(description.contains("memoryLimit=") && description.contains("resultPartitions=1"))
+      assert(!description.contains("LocalParquetSpec") && !description.contains(path))
+      assert(description.length < 512)
+      assert(new NativeLocal().activeQueries() == 0)
+      node.resetMetrics()
+      assert(query.collect().length == 23)
+      assert(node.metrics("numOutputRows").value == 23L)
+      assert(node.metrics("numOutputBatches").value > 0L)
+    }
+  }
+
 }
