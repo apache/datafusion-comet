@@ -28,5 +28,5 @@ CREATE TABLE test_reverse_binary(b binary) USING parquet
 statement
 INSERT INTO test_reverse_binary VALUES (X'CAFE'), (X''), (NULL), (X'01'), (X'636166C3A9')
 
-query
+query expect_dispatch(reverse)
 SELECT reverse(b) FROM test_reverse_binary
