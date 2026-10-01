@@ -119,6 +119,7 @@ impl OperatorRegistry {
     /// Register all operator builders
     fn register_all_operators(&mut self) {
         self.register_projection_operators();
+        self.register_write_operators();
     }
 
     /// Register projection operators
@@ -127,6 +128,16 @@ impl OperatorRegistry {
 
         self.builders
             .insert(OperatorType::Projection, Box::new(ProjectionBuilder));
+    }
+
+    /// Register write operators
+    fn register_write_operators(&mut self) {
+        use super::write::{IcebergWriteBuilder, ParquetWriterBuilder};
+
+        self.builders
+            .insert(OperatorType::IcebergWrite, Box::new(IcebergWriteBuilder));
+        self.builders
+            .insert(OperatorType::ParquetWriter, Box::new(ParquetWriterBuilder));
     }
 }
 
