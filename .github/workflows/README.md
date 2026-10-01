@@ -25,13 +25,13 @@ ruleset in `.asf.yaml`. That splits CI into three tiers:
   default profile's, and one Delta profile.
 - **Nightly tier** (`nightly`): the regression sweep of everything else, once
   a day against `main` as it stands. The Comet test suites against the other
-  four Spark profiles, Spark SQL on Spark 3.5 and 4.0, Iceberg 1.8/1.9/1.10,
-  and the Delta contrib suites on Spark 4.0 and 4.1. See
+  four Spark profiles, Spark SQL on Spark 3.5, 4.0 and 4.2, Iceberg
+  1.8/1.9/1.10, and the Delta contrib suites on Spark 4.0 and 4.1. See
   [Nightly tier](#nightly-tier) below for how a failure surfaces.
 
 Every queue-only and nightly job has a `run-*` label that opts a pull request
 into it early, listed in the diagram below. The Lint Java matrix compiles
-Spark 3.4/3.5/4.0 on every pull request, so a shim that fails to build is
+every Spark profile on every pull request, so a shim that fails to build is
 caught there; only the runtime suites wait for the queue or the nightly.
 
 `spark_3_4` is in none of the tiers. Spark 3.4 is deprecated, so its Spark SQL
@@ -43,12 +43,6 @@ publish the advisory `Required Checks (label run)` name rather than the
 required one, so a red 3.4 there changes nothing. It is the next push with
 the label still applied that runs 3.4 under `Required Checks`, and with the
 queue run gone that push is the only thing that makes a 3.4 failure blocking.
-
-`spark_4_2` is in the nightly tier despite Spark 4.2 support being
-experimental. Nightly is what keeps `dev/diffs/4.2.0.diff` honest: the diff
-files for the supported versions are updated together whenever a Comet change
-needs one, and a 4.2 suite that only ran on request would let its diff rot
-unnoticed between requests.
 
 Heavy jobs have no `push` tier. The queue already tested the exact tree that
 lands, so re-running them on push to main would double the cost of every

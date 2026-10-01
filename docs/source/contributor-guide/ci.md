@@ -171,7 +171,7 @@ does not cover. Some examples:
 - code under `spark/src/main/spark-3.4/`, `spark-3.5/`, `spark-4.0/` or the shared `spark-3.x/`
   directory, or any change to `CometExprShim` and friends; `run-all-spark-profiles` runs the Comet
   test suites against every Spark version rather than 4.1 alone (the Lint Java matrix already
-  compiles the 3.4/3.5/4.0 profiles on every pull request, so this is for runtime differences)
+  compiles every Spark profile on every pull request, so this is for runtime differences)
 - a change to a Spark SQL diff under `dev/diffs/`
 - anything that touches Hive table support, `InsertIntoHiveTable`, or the `sql/hive` parts of
   the 4.1 diff

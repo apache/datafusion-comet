@@ -42,8 +42,6 @@ use crate::execution::operators::IcebergWriteExec;
 use crate::execution::operators::TopKReaderFilterExec;
 use crate::execution::operators::{PartitionedRankLimitExec, WindowFnKind};
 use crate::execution::{
-    expressions::list_positions::ListPositionsExpr,
-    expressions::subquery::Subquery,
     operators::{
         CometFilterExec, ExecutionError, ExpandExec, ExplodeExec, ParquetCompression,
         ParquetWriterExec, SampleExec, ScanExec, ShuffleScanExec,
@@ -91,9 +89,9 @@ use datafusion::{
 };
 use datafusion_comet_spark_expr::{
     create_comet_physical_fun, create_comet_physical_fun_with_eval_mode, BinaryOutputStyle,
-    BloomFilterAgg, BloomFilterMightContain, CometCollectList, CometCollectSet, CsvWriteOptions,
-    EvalMode, SparkArraysZipFunc, SparkBloomFilterVersion, SparkListAgg, SparkPercentile,
-    SumInteger, ToCsv,
+    BloomFilterAgg, BloomFilterMightContain, CheckedBinaryExpr, CometCollectList, CometCollectSet,
+    CsvWriteOptions, EvalMode, ListPositionsExpr, SparkArraysZipFunc, SparkBloomFilterVersion,
+    SparkListAgg, SparkPercentile, Subquery, SumInteger, ToCsv,
 };
 use datafusion_datasource::TableSchema;
 use iceberg::expr::Bind;
@@ -119,7 +117,6 @@ use datafusion::physical_expr::expressions::{Literal, StatsType};
 use datafusion::physical_expr::window::WindowExpr;
 use datafusion::physical_expr::LexOrdering;
 
-use crate::execution::expressions::arithmetic::CheckedBinaryExpr;
 use crate::parquet::parquet_exec::init_datasource_exec;
 use arrow::array::{
     new_empty_array, Array, ArrayRef, BinaryBuilder, BooleanArray, Date32Array, Decimal128Array,
