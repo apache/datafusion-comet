@@ -816,6 +816,9 @@ does not replicate. By default Comet falls back to Spark in this case. Set
 Comet Parquet scan regardless.</p></li>
 <li><p>A read schema that repeats a Parquet field id, at the top level or within a struct, when
 <code class="docutils literal notranslate"><span class="pre">spark.sql.parquet.fieldId.read.enabled=true</span></code>.</p></li>
+<li><p>A read schema with sibling struct fields whose names collide case-insensitively, when
+<code class="docutils literal notranslate"><span class="pre">spark.sql.caseSensitive=false</span></code>. Spark’s analyzer normally rejects such a schema before the scan
+is planned.</p></li>
 </ul>
 <p>The following limitation may produce incorrect results without falling back to Spark:</p>
 <ul class="simple">
