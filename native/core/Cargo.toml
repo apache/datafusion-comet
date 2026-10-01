@@ -37,6 +37,7 @@ publish = false
 [dependencies]
 arrow = { workspace = true }
 base64 = "0.23.0"
+chrono-tz = { workspace = true }
 bytes = { workspace = true }
 parquet = { workspace = true, default-features = false, features = ["experimental", "arrow", "arrow_canonical_extension_types", "snap", "lz4", "zstd", "flate2-zlib-rs"] }
 futures = { workspace = true }

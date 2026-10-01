@@ -73,6 +73,12 @@ case class CometInMemoryTableScanExec(
   // for instance -- then reads the wrong column.
   override def output: Seq[Attribute] = originalPlan.output
 
+  // Described by the Spark scan it replaces: the table's name when it has one, the attributes it
+  // reads and any pruning predicates. The default would print every constructor field, among them
+  // the CachedRDDBuilder with the whole cached plan, physical and logical, inline and with its raw
+  // newlines, which breaks the tree of every plan that reads the cache.
+  override def stringArgs: Iterator[Any] = Iterator(originalPlan)
+
   // `originalPlan` is a plan-typed field rather than a child, so QueryPlan's canonicalization
   // walks straight past it: its attributes and predicates keep the expression IDs of whichever
   // occurrence of the cached relation produced them. Two scans of one cache then compare unequal,
