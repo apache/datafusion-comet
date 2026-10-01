@@ -153,18 +153,20 @@ in the OS temporary directory; there is no local-mode disk quota. With spill
 disabled, queries that exceed the budget fail with a resource error.
 
 The planner adjusts two DataFusion sort settings according to the budget divided by
-the number of input partitions (the per-partition share):
+the number of sorters in the graph (the per-sorter share):
 
 - `sort_spill_reservation_bytes` is reduced to at most a quarter of the share.
-  Every per-partition sorter reserves this amount up front, and the 10 MiB default
-  can exhaust a small budget before any data is sorted.
-- `sort_in_place_threshold_bytes` is raised to the share. Before spilling,
-  DataFusion 55.1's `ExternalSorter` frees its merge reservation and merges buffered
-  batches with a new unspillable reservation. Once spillable sorters fill the fair
-  pool, that reservation cannot grow and the query fails instead of spilling.
-  Sorting buffered batches in place avoids that merge. The cost is that multi-column
-  sorts that fit in memory sort larger runs with the lexicographic comparator
-  instead of merging small runs.
+  Every sorter reserves this amount up front, and the 10 MiB default can exhaust a
+  small budget before any data is sorted.
+- `sort_in_place_threshold_bytes` is raised to the share. This works around a
+  DataFusion 55.1 `ExternalSorter` bug that is fixed in DataFusion 56.0.0: before
+  spilling, the sorter frees its merge reservation and merges buffered batches with
+  a new unspillable reservation. Once spillable sorters fill the fair pool, that
+  reservation cannot grow and the query fails instead of spilling. Sorting buffered
+  batches in place avoids that merge, at the cost of unaccounted transient copies
+  and slower multi-column sorts that fit in memory. Remove this override after
+  upgrading to DataFusion 56.0.0; the native test
+  `multi_column_sorts_spill_under_a_shared_budget` must still pass without it.
 
 DataFusion's hash join build side does not spill, so an oversized build side fails
 regardless of the spill setting.

@@ -80,6 +80,7 @@ pub(super) fn parquet_query(
             "Local output schema width mismatch".into(),
         ));
     }
+    size_sorters(&context, plan.as_ref(), settings.memory_limit);
     Ok(LocalQuery::new(plan, context.task_ctx()))
 }
 
@@ -92,18 +93,6 @@ fn query_context(
     let mut config = SessionConfig::new()
         .with_batch_size(batch_size)
         .with_target_partitions(partitions.max(1));
-    // Every per-partition sorter reserves this much for its final merge before sorting. With
-    // the default 10 MiB, a few concurrent sorters can exhaust a small query budget up front.
-    let merge_reservation = settings.memory_limit / (4 * partitions.max(1));
-    config.options_mut().execution.sort_spill_reservation_bytes =
-        merge_reservation.min(config.options().execution.sort_spill_reservation_bytes);
-    // Before spilling, a sorter whose buffered batches exceed this threshold merges them with
-    // a new unspillable reservation. Once spillable sorters fill the fair pool, that merge
-    // cannot grow and the query fails instead of spilling. Sorting the buffered batches in
-    // place below a sorter's fair share avoids that merge.
-    let in_place = settings.memory_limit / partitions.max(1);
-    config.options_mut().execution.sort_in_place_threshold_bytes =
-        in_place.max(config.options().execution.sort_in_place_threshold_bytes);
     config.options_mut().execution.parquet.pushdown_filters = row_filter_pushdown;
     config.options_mut().execution.parquet.reorder_filters = row_filter_pushdown;
     // Registry and configuration are query-owned. Never inherit another query's credentials.
@@ -123,6 +112,46 @@ fn query_context(
         Arc::new(runtime),
     ));
     Ok(context)
+}
+
+/// Sizes DataFusion's sort settings by the number of sorters that share the query budget.
+/// Must run after the whole graph is built and before its task context is created.
+fn size_sorters(context: &SessionContext, plan: &dyn ExecutionPlan, memory_limit: usize) {
+    fn sorters(plan: &dyn ExecutionPlan) -> usize {
+        let own = match plan.downcast_ref::<SortExec>() {
+            Some(sort) if sort.preserve_partitioning() => {
+                sort.input().output_partitioning().partition_count()
+            }
+            Some(_) => 1,
+            None => 0,
+        };
+        own + plan
+            .children()
+            .into_iter()
+            .map(|child| sorters(child.as_ref()))
+            .sum::<usize>()
+    }
+    let sorters = sorters(plan);
+    if sorters == 0 {
+        return;
+    }
+    let share = memory_limit / sorters;
+    let state = context.state_ref();
+    let mut state = state.write();
+    let execution = &mut state.config_mut().options_mut().execution;
+    // Every sorter reserves this much for its final merge before sorting. With the default
+    // 10 MiB, a few concurrent sorters can exhaust a small query budget up front.
+    execution.sort_spill_reservation_bytes =
+        (share / 4).min(execution.sort_spill_reservation_bytes);
+    // Workaround for DataFusion 55.1's ExternalSorter, fixed upstream in DataFusion 56.0.0:
+    // before spilling, it frees its merge reservation and merges buffered batches with a new,
+    // empty, unspillable reservation. Once spillable sorters fill the fair pool, that merge
+    // cannot grow and the query fails instead of spilling. A sorter spills once its buffered
+    // batches reach its fair share, so a threshold of one share makes it sort them in place
+    // instead of merging. This costs unaccounted transient copies and slower multi-column
+    // sorts that fit in memory. Remove this override after upgrading to DataFusion 56.0.0;
+    // `multi_column_sorts_spill_under_a_shared_budget` must still pass without it.
+    execution.sort_in_place_threshold_bytes = share.max(execution.sort_in_place_threshold_bytes);
 }
 
 pub(super) fn join_query(
@@ -160,6 +189,7 @@ pub(super) fn join_query(
             "Local join output schema width mismatch".into(),
         ));
     }
+    size_sorters(&context, plan.as_ref(), settings.memory_limit);
     Ok(LocalQuery::new(plan, context.task_ctx()))
 }
 
@@ -829,6 +859,7 @@ mod tests {
             &PhysicalPlanner::new(Arc::clone(&context), 0),
         )
         .unwrap();
+        size_sorters(&context, plan.as_ref(), 16 * 1024 * 1024);
         assert_eq!(plan.properties().output_partitioning().partition_count(), 1);
         let batches = tokio::time::timeout(std::time::Duration::from_secs(30), async {
             if early {
@@ -899,5 +930,120 @@ mod tests {
                 join_case(false, true)
             );
         }
+    }
+
+    /// Several sorters with a two-column key share a budget far below the data size and run
+    /// concurrently, so the pool fills with their spillable batches before they spill. With
+    /// DataFusion 55.1 this fails with an `ExternalSorterMerge` allocation error unless
+    /// `size_sorters` raises the in-place sort threshold. Keep this test when that override is
+    /// removed after upgrading to DataFusion 56.0.0.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn multi_column_sorts_spill_under_a_shared_budget() {
+        use arrow::array::Array;
+        use datafusion_comet_proto::local::LocalSort;
+        let budget = 8 * 1024 * 1024;
+        let context = query_context(
+            4096,
+            1,
+            false,
+            &QuerySettings {
+                aggregate: &[],
+                terminal: &[],
+                memory_limit: budget,
+                spill_enabled: true,
+            },
+        )
+        .unwrap();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("rank", DataType::Int64, false),
+            Field::new("id", DataType::Int64, false),
+        ]));
+        let (sorters, rows) = (4, 1 << 20);
+        let mut partitions = vec![vec![]; sorters];
+        for (chunk, start) in (0..rows).step_by(4096).enumerate() {
+            let ids: Vec<i64> = (start..start + 4096).collect();
+            partitions[chunk % sorters].push(
+                RecordBatch::try_new(
+                    Arc::clone(&schema),
+                    vec![
+                        Arc::new(Int64Array::from_iter_values(
+                            ids.iter().map(|id| id * 37 % 1_000_003),
+                        )),
+                        Arc::new(Int64Array::from(ids)),
+                    ],
+                )
+                .unwrap(),
+            );
+        }
+        let input = MemorySourceConfig::try_new_exec(&partitions, schema, None).unwrap();
+        let order = |index| LocalSort {
+            child: Some(bound(index)),
+            descending: false,
+            nulls_first: true,
+        };
+        let message = LocalOutput {
+            orders: vec![order(0), order(1)],
+            skip: 0,
+            fetch: None,
+            result: vec![],
+        };
+        let plan = output_plan(
+            input,
+            &message.encode_to_vec(),
+            &PhysicalPlanner::new(Arc::clone(&context), 0),
+        )
+        .unwrap();
+        size_sorters(&context, plan.as_ref(), budget);
+        let batches = tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            collect(Arc::clone(&plan), context.task_ctx()),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let mut previous = None;
+        let mut count = 0;
+        for batch in &batches {
+            let column = |i: usize| {
+                batch
+                    .column(i)
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .unwrap()
+                    .clone()
+            };
+            let (rank, id) = (column(0), column(1));
+            for row in 0..rank.len() {
+                let key = (rank.value(row), id.value(row));
+                assert!(previous.is_none_or(|p| p < key), "out of order at {key:?}");
+                previous = Some(key);
+            }
+            count += rank.len();
+        }
+        assert_eq!(count, rows as usize);
+        struct Spills(usize);
+        impl ExecutionPlanVisitor for Spills {
+            type Error = std::convert::Infallible;
+            fn pre_visit(&mut self, plan: &dyn ExecutionPlan) -> Result<bool, Self::Error> {
+                if let Some(metrics) = plan.metrics() {
+                    self.0 += metrics.spilled_bytes().unwrap_or_default();
+                }
+                Ok(true)
+            }
+        }
+        let mut spills = Spills(0);
+        accept(plan.as_ref(), &mut spills).unwrap();
+        assert!(spills.0 > 0, "the shared budget must force spilling");
+        drop(plan);
+        drop(batches);
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while context.runtime_env().memory_pool.reserved() != 0
+                || context.runtime_env().disk_manager.used_disk_space() != 0
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
     }
 }
