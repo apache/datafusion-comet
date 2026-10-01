@@ -1,0 +1,5 @@
+*(2) HashAggregate(keys=[k#174L], functions=[count(text#176), min(amount#175), max(id#173L)], output=[k#174L, count(text)#184L, min(amount)#185, max(id)#186L])
++- Exchange hashpartitioning(k#174L, 8), ENSURE_REQUIREMENTS, [plan_id=361]
+   +- *(1) HashAggregate(keys=[k#174L], functions=[partial_count(text#176), partial_min(amount#175), partial_max(id#173L)], output=[k#174L, count#191L, min#192, max#193L])
+      +- *(1) ColumnarToRow
+         +- FileScan parquet [id#173L,k#174L,amount#175,text#176] Batched: true, DataFilters: [], Format: Parquet, Location: InMemoryFileIndex(1 paths)[file:/private/tmp/comet-local-stage5d-data/fact], PartitionFilters: [], PushedFilters: [], ReadSchema: struct<id:bigint,k:bigint,amount:decimal(18,2),text:string>

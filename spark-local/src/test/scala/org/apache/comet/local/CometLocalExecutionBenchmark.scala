@@ -29,17 +29,21 @@ import org.apache.spark.sql.{DataFrame, Row, SparkSession, TPCHTables}
 import org.apache.spark.sql.benchmark.TPCDSSchemaHelper
 import org.apache.spark.sql.types._
 
-import org.apache.comet.{CometConf, CometSparkSessionExtensions}
+import org.apache.comet.{CometArrowImportAllocator, CometConf, CometSparkSessionExtensions}
 
 /** Manual benchmark; run with dev/bench-local-execution.py, never as a CI timing test. */
 object CometLocalExecutionBenchmark {
   private val enabled = CometConf.COMET_EXEC_LOCAL_ENABLED.key
 
   def main(args: Array[String]): Unit = {
-    require(args.length == 6, "mode data-directory output-directory rows repetitions schema-mode")
-    val Array(mode, dataArg, outputArg, rowsArg, repetitionsArg, schemaMode) = args
+    require(
+      args.length == 7,
+      "mode data-directory output-directory rows repetitions schema-mode memory-mib")
+    val Array(mode, dataArg, outputArg, rowsArg, repetitionsArg, schemaMode, memoryArg) = args
+    val memoryMiB = memoryArg.toInt
+    require(memoryMiB >= 16)
     require(Set("infer", "explicit").contains(schemaMode))
-    require(Set("prepare", "coverage", "spark", "comet", "local").contains(mode))
+    require(Set("prepare", "coverage", "pressure", "spark", "comet", "local").contains(mode))
     val data = Paths.get(dataArg)
     val output = Paths.get(outputArg)
     Files.createDirectories(output)
@@ -57,23 +61,26 @@ object CometLocalExecutionBenchmark {
       .config("spark.sql.autoBroadcastJoinThreshold", "-1")
       .config("spark.sql.session.timeZone", "UTC")
       .config("spark.memory.offHeap.enabled", "true")
-      .config("spark.memory.offHeap.size", "512m")
+      .config("spark.memory.offHeap.size", s"${memoryMiB}m")
       .config("spark.comet.exec.memoryPool", "fair_unified")
-      .config("spark.comet.exec.local.memoryLimit", "512m")
+      .config("spark.comet.exec.local.memoryLimit", s"${memoryMiB}m")
       .config("spark.comet.batchSize", "8192")
       .config(
         "spark.shuffle.manager",
         "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
       .config("spark.comet.shuffle.enabled", (mode == "comet").toString)
-      .config("spark.comet.enabled", (mode == "comet" || mode == "local").toString)
+      .config(
+        "spark.comet.enabled",
+        (mode == "comet" || mode == "local" || mode == "pressure").toString)
       .config("spark.comet.exec.enabled", "true")
-      .config(enabled, (mode == "local").toString)
+      .config(enabled, (mode == "local" || mode == "pressure").toString)
       .getOrCreate()
     spark.sparkContext.setLogLevel("ERROR")
     try {
       mode match {
         case "prepare" => prepare(spark, data, rows)
         case "coverage" => coverage(spark, data, output)
+        case "pressure" => pressure(spark, data, output, schemaMode)
         case _ => measure(spark, mode, data, output, repetitions, schemaMode)
       }
     } finally spark.stop()
@@ -199,6 +206,54 @@ object CometLocalExecutionBenchmark {
       // An idle sample after results become unreachable; no explicit GC is requested.
       Files.write(output.resolve(s"$mode.phase"), "retained".getBytes(UTF_8))
       Thread.sleep(1000)
+    } finally writer.close()
+  }
+
+  /**
+   * Reproduce sort reservation exhaustion and verify a subsequent local query in the same JVM.
+   */
+  private def pressure(
+      spark: SparkSession,
+      data: Path,
+      output: Path,
+      schemaMode: String): Unit = {
+    val cases = queries(spark, data, schemaMode).toMap
+    val native = new NativeLocal()
+    val writer = Files.newBufferedWriter(output.resolve("pressure-check.txt"), UTF_8)
+    try {
+      for (cycle <- 0 until 3) {
+        val sort = cases("full-sort")()
+        require(sort.queryExecution.executedPlan.collect { case p: CometLocalExec =>
+          p
+        }.size == 1)
+        val failure = scala.util.Try(sort.collect()).failed.get
+        val resourceFailure = Iterator
+          .iterate[Throwable](failure)(_.getCause)
+          .takeWhile(_ != null)
+          .find(e =>
+            e.getClass.getName == "org.apache.comet.CometNativeException" &&
+              e.getMessage.contains("Failed to allocate additional") &&
+              e.getMessage.contains("ExternalSorterMerge"))
+        require(resourceFailure.isDefined, s"Unexpected failure: $failure")
+        require(native.activeQueries() == 0)
+        require(CometArrowImportAllocator.getAllocatedMemory == 0)
+        val recovery = cases("top-k")()
+        require(recovery.queryExecution.executedPlan.collect { case p: CometLocalExec =>
+          p
+        }.size == 1)
+        val actual = recovery.collect()
+        require(native.activeQueries() == 0)
+        require(CometArrowImportAllocator.getAllocatedMemory == 0)
+        spark.conf.set("spark.comet.enabled", "false")
+        val expected =
+          try cases("top-k")().collect()
+          finally spark.conf.set("spark.comet.enabled", "true")
+        require(actual.sameElements(expected))
+        writer.write(
+          s"cycle=$cycle recoveryRows=${actual.length} activeQueries=0 importedArrowBytes=0 " +
+            s"failure=${resourceFailure.get.getMessage}\n")
+        writer.flush()
+      }
     } finally writer.close()
   }
 

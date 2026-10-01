@@ -1,0 +1,4 @@
+*(1) CometColumnarToRow
++- CometTakeOrderedAndProjectExec(limit=1000, offset=0, orderBy=[rank#213L ASC NULLS FIRST,id#209L ASC NULLS FIRST], output=[id#209L,rank#213L])
+   +- CometProject [id#209L, rank#213L], [id#209L, ((id#209L * 37) % 1000003) AS rank#213L]
+      +- CometNativeScan parquet [id#209L] Batched: true, DataFilters: [], Format: Parquet, Location: InMemoryFileIndex(1 paths)[file:/private/tmp/comet-local-stage5d-data/fact], PartitionFilters: [], PushedFilters: [], ReadSchema: struct<id:bigint>

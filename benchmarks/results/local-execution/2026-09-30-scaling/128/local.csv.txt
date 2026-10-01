@@ -1,0 +1,2 @@
+query,iteration,planning_ms,execution_ms,total_ms,cpu_ms,rows,sha256,local_nodes,comet_nodes,dataframe_ms,physical_planning_ms
+top-k,-2,1281.836083,804.256834,2086.092917,3387.864,1000,a61753475f1626e300b9cc33a7511ffde14988bdce607d87a239d87c323d88d3,1,1,721.180833,560.65525

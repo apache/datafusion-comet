@@ -529,6 +529,23 @@ Stop here. Next proposed checkpoint: larger-data scaling and memory pressure on
 the existing operator surface, before optimizing native execution or widening
 TPC admission. Spark SQL remains deferred at the user's request.
 
+#### 5d. Larger-data and pressure checkpoint (completed with a limitation)
+
+At five million fact rows and 512 MiB, 150 case executions across three modes and
+forward/reverse order match. Local join and Top-K improve over existing Comet in
+both passes, while scan, aggregate and full sort do not. The manual harness now
+accepts a memory budget and can reproduce sorter reservation failure and recovery.
+
+At 64 MiB both local and existing Comet fail full sort with ExternalSorterMerge
+allocation errors; Spark completes. Local also fails at 128 MiB. Three cycles of
+failure followed by local Top-K succeed in one JVM, with native handle and imported
+Arrow counts returning to zero. Spill success has not been demonstrated by these
+runs. See the [scaling and pressure report](local-execution-scaling.md).
+
+Stop here. The next checkpoint is a native regression and bounded fix for the
+two-key sort merge reservation failure, before any further performance or operator
+expansion. Spark SQL remains deferred at the user's request.
+
 ## Spark SQL validation policy
 
 For stages changing planner, serde, operators or shims, obtain a Spark SQL verdict
