@@ -102,6 +102,11 @@ runs natively; it is controlled by `spark.comet.exec.windowGroupLimit.enabled` (
 - Any `PARTITION BY` or `ORDER BY` key whose type carries a non-default `StringType` collation
   (e.g. `UTF8_LCASE`). The native operator detects partitions and order-key peer groups by
   comparing Arrow row-encoded keys for byte equality, which splits peers that Spark ties.
+- `RANK` and `DENSE_RANK` whose `ORDER BY` key has a `FLOAT` or `DOUBLE` nested in an array or
+  struct. The same byte equality decides their ties, and nested floating-point values aren't
+  normalized, so `-0.0` and `+0.0`, or two NaN representations, would get different ranks and the
+  cutoff would drop rows that Spark keeps
+  ([#5507](https://github.com/apache/datafusion-comet/issues/5507)).
 
 Floating-point `ORDER BY` keys, including floats nested in arrays and structs, are normalized
 and match Spark's ranks; see [floating-point ordering](./floating-point.md).
