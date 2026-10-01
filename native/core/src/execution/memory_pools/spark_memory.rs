@@ -164,6 +164,9 @@ impl SparkMemory {
     }
 
     /// Takes up to `size` bytes off the overcommit in one atomic step and returns how many.
+    // Rust 1.99 deprecates `fetch_update` in favor of `try_update`, which needs Rust 1.95, newer
+    // than the workspace `rust-version`.
+    #[allow(deprecated)]
     fn repay(&self, size: usize) -> usize {
         let debt = self
             .overcommit
