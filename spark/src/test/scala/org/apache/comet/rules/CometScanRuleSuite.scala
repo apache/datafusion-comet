@@ -295,4 +295,25 @@ class CometScanRuleSuite extends CometTestBase {
     }
   }
 
+  test("DataTypeSupport finds sibling field names that collide case-insensitively") {
+    // See https://github.com/apache/datafusion-comet/issues/6136.
+    def fields(names: String*): StructType =
+      StructType(names.map(StructField(_, LongType)))
+
+    val colliding = fields("x", "X")
+    val detected = Seq[(String, DataType)](
+      "root" -> colliding,
+      "nested struct" -> StructType(Seq(StructField("s", colliding))),
+      "array element" -> ArrayType(colliding),
+      "map key" -> MapType(colliding, LongType),
+      "map value" -> MapType(StringType, colliding))
+    for ((label, dt) <- detected) {
+      assert(DataTypeSupport.hasCaseInsensitiveDuplicateFieldNames(dt), s"$label: missed")
+    }
+
+    // Only siblings are compared, so neither a parent and child nor cousins collide.
+    val distinct = StructType(Seq(StructField("x", fields("X")), StructField("t", fields("x"))))
+    assert(!DataTypeSupport.hasCaseInsensitiveDuplicateFieldNames(distinct))
+  }
+
 }

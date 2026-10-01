@@ -55,6 +55,9 @@ The following features are not supported and cause Comet to fall back to Spark:
   nested inside a struct, array or map, are still matched natively. This fallback is temporary,
   until Comet moves to a DataFusion release with the fix
   ([#6131](https://github.com/apache/datafusion-comet/issues/6131)).
+- A read schema with sibling struct fields whose names collide case-insensitively, when
+  `spark.sql.caseSensitive=false`. Spark's analyzer normally rejects such a schema before the scan
+  is planned.
 
 The following limitation may produce incorrect results without falling back to Spark:
 
