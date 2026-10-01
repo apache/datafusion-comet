@@ -765,6 +765,36 @@ object IcebergReflection extends Logging {
   }
 
   /**
+   * The partition fields of `spec` that hold a `float` or `double` value, as (partition field
+   * name, Iceberg type name). A `void` field is skipped: it only ever holds null. Throws on
+   * reflection failure so the caller can fail closed.
+   */
+  def floatingPointPartitionFields(spec: Any): Seq[(String, String)] = {
+    import scala.jdk.CollectionConverters._
+    val specFields =
+      getMethod(spec.getClass, "fields").invoke(spec).asInstanceOf[java.util.List[_]]
+    val partitionType = getMethod(spec.getClass, "partitionType").invoke(spec)
+    val typeFields = getMethod(partitionType.getClass, "fields")
+      .invoke(partitionType)
+      .asInstanceOf[java.util.List[_]]
+    specFields.asScala
+      .zip(typeFields.asScala)
+      .flatMap { case (partitionField, typeField) =>
+        val transform =
+          getMethod(partitionField.getClass, "transform").invoke(partitionField).toString
+        val fieldType = getMethod(typeField.getClass, "type").invoke(typeField).toString
+        if (transform != "void" && (fieldType == "float" || fieldType == "double")) {
+          val name =
+            getMethod(partitionField.getClass, "name").invoke(partitionField).asInstanceOf[String]
+          Some(name -> fieldType)
+        } else {
+          None
+        }
+      }
+      .toSeq
+  }
+
+  /**
    * Gets the partition spec from an Iceberg table.
    */
   def getPartitionSpec(table: Any): Option[Any] = {

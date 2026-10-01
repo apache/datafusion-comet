@@ -884,6 +884,24 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     }
   }
 
+  test("fall-back: identity partition on a float or double column") {
+    // iceberg-rust groups float partition values with an equality that treats -0.0 and 0.0 as one
+    // value, where iceberg-java keeps them apart (#6138).
+    withDetectionCatalog { _ =>
+      Seq("float" -> "FLOAT", "double" -> "DOUBLE").foreach { case (typeName, sqlType) =>
+        val table = s"part_$typeName"
+        spark.sql(s"""
+          CREATE TABLE $catalog.$ns.$table (id INT, v $sqlType)
+          USING iceberg PARTITIONED BY (v)
+        """)
+        val writeExec = captureWriteExec(table, allowWriteFailure = false) {
+          spark.sql(s"INSERT INTO $catalog.$ns.$table VALUES (1, CAST(1.5 AS $sqlType))")
+        }
+        assertUnsupportedContains(writeExec, table, "partition field v", typeName, "-0.0")
+      }
+    }
+  }
+
   test("fall-back: uuid column in the write schema") {
     withDetectionCatalog { dir =>
       // Spark DDL cannot declare `uuid`, so evolve the schema through the Iceberg API. Spark
