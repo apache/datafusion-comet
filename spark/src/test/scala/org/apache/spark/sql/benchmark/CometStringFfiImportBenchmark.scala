@@ -137,7 +137,7 @@ object CometStringFfiImportBenchmark extends CometBenchmarkBase {
   /** A filter over a wide string column, with the column reaching native code from a scan. */
   def scanImportBenchmark(values: Int, kind: String): Unit = {
     val benchmark =
-      new Benchmark(s"Filter over wide $kind strings", values, output = output)
+      new Benchmark(s"Filter over wide $kind strings", values.toLong, output = output)
     val query = "SELECT count(*) FROM parquetV1Table WHERE s LIKE '%999%'"
 
     benchmark.addCase("Spark") { _ =>
@@ -168,7 +168,7 @@ object CometStringFfiImportBenchmark extends CometBenchmarkBase {
   /** Wide string columns returned to Spark as rows. */
   def columnarToRowImportBenchmark(values: Int, kind: String): Unit = {
     val benchmark =
-      new Benchmark(s"Columnar to row of wide $kind strings", values, output = output)
+      new Benchmark(s"Columnar to row of wide $kind strings", values.toLong, output = output)
     val query = "SELECT s FROM parquetV1Table"
     val nativeScan = cometConf :+ (CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true")
 
@@ -210,7 +210,7 @@ object CometStringFfiImportBenchmark extends CometBenchmarkBase {
     strings.foreach { case (kind, expr) =>
       withTempPath { dir =>
         withTempTable("parquetV1Table") {
-          prepareTable(dir, spark.range(values).selectExpr(s"$expr AS s"))
+          prepareTable(dir, spark.range(values.toLong).selectExpr(s"$expr AS s"))
 
           runBenchmark(s"FFI String Import - Scan ($kind)") {
             scanImportBenchmark(values, kind)

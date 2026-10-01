@@ -22,8 +22,8 @@ package org.apache.comet
 import java.io.File
 import java.net.URI
 import java.nio.charset.StandardCharsets.UTF_8
+import java.util.concurrent.atomic.AtomicLong
 
-import scala.collection.mutable
 import scala.jdk.CollectionConverters._
 
 import org.apache.iceberg.data.IcebergGenerics
@@ -34,10 +34,11 @@ import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.DynamicPruningExpression
 import org.apache.spark.sql.comet._
-import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
+import org.apache.spark.sql.comet.execution.shuffle.{CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{InSubqueryExec, ReusedSubqueryExec, SparkPlan, SubqueryExec}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AdaptiveSparkPlanHelper, BroadcastQueryStageExec}
-import org.apache.spark.sql.execution.exchange.{ReusedExchangeExec, ShuffleExchangeExec}
+import org.apache.spark.sql.execution.exchange.{ReusedExchangeExec, ShuffleExchangeExec, ShuffleExchangeLike}
+import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, StringType, StructType, TimestampType}
 
@@ -3638,7 +3639,7 @@ class CometIcebergNativeSuite
   }
 
   test("REST catalog with native Iceberg scan") {
-    assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4142")
+    assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4969")
     assume(icebergAvailable, "Iceberg not available in classpath")
 
     withRESTCatalog { (restUri, _, warehouseDir) =>
@@ -3836,8 +3837,16 @@ class CometIcebergNativeSuite
         assert(
           icebergScans.nonEmpty,
           s"Expected CometIcebergNativeScanExec but found none. Plan:\n$cometPlan")
-        val numPartitions = icebergScans.head.numPartitions
-        assert(numPartitions == 1, s"Expected DPP to prune to 1 partition but got $numPartitions")
+        // Iceberg packs these small files into one Spark partition whether or not DPP prunes, so
+        // count the planned file tasks instead: 1 of the 3 date partitions' files is left. The
+        // num_splits metric is not used here because the ORDER BY's range partitioning runs the
+        // scan once to sample bounds and again for the shuffle, so each split is read twice.
+        val plannedTasks = icebergScans.head.perPartitionData
+          .map(OperatorOuterClass.IcebergScan.parseFrom(_).getFileScanTasksCount)
+          .sum
+        assert(
+          plannedTasks == 1,
+          s"Expected DPP to prune to 1 of 3 files but planned $plannedTasks tasks:\n$cometPlan")
 
         // Verify AQE DPP used CometSubqueryBroadcastExec with broadcast reuse
         if (isSpark35Plus) {
@@ -4073,6 +4082,83 @@ class CometIcebergNativeSuite
     }
   }
 
+  /** Row count written by [[createInputMetricsTable]], and the expected `recordsRead`. */
+  private val inputMetricsRows = 10000L
+
+  /**
+   * Creates `table` as (id INT, value DOUBLE) holding [[inputMetricsRows]] rows spread over
+   * several files, so scanning it runs multiple tasks that each read a non-zero number of bytes.
+   */
+  private def createInputMetricsTable(table: String): Unit = {
+    spark.sql(s"CREATE TABLE $table (id INT, value DOUBLE) USING iceberg")
+    spark
+      .range(inputMetricsRows)
+      .selectExpr("CAST(id AS INT) AS id", "CAST(id * 1.5 AS DOUBLE) AS value")
+      .repartition(5)
+      .write
+      .format("iceberg")
+      .mode("append")
+      .saveAsTable(table)
+  }
+
+  /**
+   * Native operators holding an Iceberg scan as a direct child, i.e. the scan is fused with them.
+   */
+  private def icebergScanFusingParents(plan: SparkPlan): Seq[CometNativeExec] =
+    collect(plan) {
+      case p: CometNativeExec if p.children.exists(_.isInstanceOf[CometIcebergNativeScanExec]) =>
+        p
+    }
+
+  /**
+   * Runs `body` and returns the (bytesRead, recordsRead) totals Spark reported across the tasks
+   * it launched. Events from the table setup are drained first so they cannot leak into the
+   * totals. Reduce-stage tasks read shuffle blocks rather than files, so they add nothing and
+   * need no filtering.
+   */
+  private def taskInputMetrics(body: => Unit): (Long, Long) = {
+    val bytesRead = new AtomicLong()
+    val recordsRead = new AtomicLong()
+    val listener = new SparkListener {
+      override def onTaskEnd(taskEnd: SparkListenerTaskEnd): Unit = {
+        bytesRead.addAndGet(taskEnd.taskMetrics.inputMetrics.bytesRead)
+        recordsRead.addAndGet(taskEnd.taskMetrics.inputMetrics.recordsRead)
+      }
+    }
+    CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
+    spark.sparkContext.addSparkListener(listener)
+    try {
+      body
+      CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
+      (bytesRead.get(), recordsRead.get())
+    } finally {
+      spark.sparkContext.removeSparkListener(listener)
+    }
+  }
+
+  /**
+   * Asserts the task-level input metrics account for every row scanned and every byte the scans
+   * report, which is what drives the Input column on the UI's Stages and Executors tabs.
+   */
+  private def assertScanInputMetrics(
+      scans: Seq[CometIcebergNativeScanExec],
+      bytesRead: Long,
+      recordsRead: Long): Unit = {
+    assert(bytesRead > 0, s"bytesRead should be > 0, got $bytesRead")
+    assert(
+      recordsRead == inputMetricsRows,
+      s"recordsRead should equal the scanned row count $inputMetricsRows, got $recordsRead")
+    val sqlBytes = scans.map(_.metrics("bytes_scanned").value).sum
+    assert(
+      sqlBytes == bytesRead,
+      s"SQL bytes_scanned ($sqlBytes) should match task bytesRead ($bytesRead)")
+  }
+
+  /**
+   * `SELECT *` leaves the scan as the root of its own native block, so Spark calls
+   * `CometIcebergNativeScanExec.doExecuteColumnar` directly and that method registers the
+   * input-metric reporting listener itself.
+   */
   test("task-level inputMetrics.bytesRead is populated for Iceberg native scan") {
     assume(icebergAvailable, "Iceberg not available in classpath")
 
@@ -4085,88 +4171,171 @@ class CometIcebergNativeSuite
         CometConf.COMET_EXEC_ENABLED.key -> "true",
         CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
 
-        spark.sql("""
-          CREATE TABLE test_cat.db.task_metrics_test (
-            id INT,
-            value DOUBLE
-          ) USING iceberg
-        """)
-
-        spark
-          .range(10000)
-          .selectExpr("CAST(id AS INT)", "CAST(id * 1.5 AS DOUBLE) as value")
-          .repartition(5)
-          .write
-          .format("iceberg")
-          .mode("append")
-          .saveAsTable("test_cat.db.task_metrics_test")
-
-        val bytesReadValues = mutable.ArrayBuffer.empty[Long]
-        val recordsReadValues = mutable.ArrayBuffer.empty[Long]
-
-        val listener = new SparkListener {
-          override def onTaskEnd(taskEnd: SparkListenerTaskEnd): Unit = {
-            val im = taskEnd.taskMetrics.inputMetrics
-            if (im.bytesRead > 0) {
-              bytesReadValues.synchronized {
-                bytesReadValues += im.bytesRead
-                recordsReadValues += im.recordsRead
-              }
-            }
-          }
-        }
-        spark.sparkContext.addSparkListener(listener)
-
+        createInputMetricsTable("test_cat.db.task_metrics_test")
         try {
-          val query = "SELECT * FROM test_cat.db.task_metrics_test"
+          val df = spark.sql("SELECT * FROM test_cat.db.task_metrics_test")
+          val (bytesRead, recordsRead) = taskInputMetrics(df.collect())
 
-          // Same drain-run-drain pattern as CometTaskMetricsSuite's shuffle test
-          CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
-
-          // Baseline: iceberg-Java scan (Comet native disabled)
-          withSQLConf(CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "false") {
-            bytesReadValues.clear()
-            recordsReadValues.clear()
-            spark.sql(query).collect()
-            CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
-          }
-          val sparkBytes = bytesReadValues.sum
-          val sparkRecords = recordsReadValues.sum
-
-          // Comet native Iceberg scan
-          bytesReadValues.clear()
-          recordsReadValues.clear()
-          val df = spark.sql(query)
-
-          val scanNodes = df.queryExecution.executedPlan
-            .collectLeaves()
-            .collect { case s: CometIcebergNativeScanExec => s }
-          assert(scanNodes.nonEmpty, "Expected CometIcebergNativeScanExec in plan")
-
-          df.collect()
-          CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
-
-          val cometBytes = bytesReadValues.sum
-          val cometRecords = recordsReadValues.sum
-
-          // Both paths should report metrics
-          assert(sparkBytes > 0, s"Spark bytesRead should be > 0, got $sparkBytes")
-          assert(sparkRecords > 0, s"Spark recordsRead should be > 0, got $sparkRecords")
-          assert(cometBytes > 0, s"Comet bytesRead should be > 0, got $cometBytes")
-          assert(cometRecords > 0, s"Comet recordsRead should be > 0, got $cometRecords")
-
+          // Inspect the plan after execution so we assert on what AQE actually ran.
+          val plan = df.queryExecution.executedPlan
+          val scans = collectIcebergNativeScans(plan)
+          assert(scans.nonEmpty, s"Expected CometIcebergNativeScanExec in plan:\n$plan")
+          // No native parent, so the scan reports for itself. Pinning the shape keeps this test
+          // from silently becoming a duplicate of the fused one below.
           assert(
-            cometRecords == sparkRecords,
-            s"recordsRead mismatch: comet=$cometRecords, spark=$sparkRecords")
+            icebergScanFusingParents(plan).isEmpty,
+            s"Expected the scan to be un-fused:\n$plan")
 
-          // SQL-level metric should match task-level metric
-          val sqlBytes = scanNodes.head.metrics("bytes_scanned").value
-          assert(
-            sqlBytes == cometBytes,
-            s"SQL bytes_scanned ($sqlBytes) should match task bytesRead ($cometBytes)")
+          assertScanInputMetrics(scans, bytesRead, recordsRead)
         } finally {
-          spark.sparkContext.removeSparkListener(listener)
           spark.sql("DROP TABLE test_cat.db.task_metrics_test")
+        }
+      }
+    }
+  }
+
+  /**
+   * With an operator above it the scan fuses into one native block, so
+   * `CometIcebergNativeScanExec.doExecuteColumnar` never runs -- the parent reads its scan child
+   * via `PlanDataInjector.findAllPlanData` instead of executing it -- and reporting comes from
+   * `CometNativeExec.executeColumnarWithContext`, whose `hasScanInput` gate used to match only
+   * `CometNativeScanExec` and so skipped Iceberg, leaving the Input column blank.
+   */
+  test("task-level inputMetrics is populated when Iceberg native scan is fused into a block") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        createInputMetricsTable("test_cat.db.fused_metrics_test")
+        try {
+          // Arithmetic in the projection keeps it from being collapsed into the scan, so a
+          // CometProjectExec sits above the scan and the two fuse into one native block.
+          val df = spark.sql(
+            "SELECT id + 1 AS id2, value * 2 AS value2 FROM test_cat.db.fused_metrics_test")
+          val (bytesRead, recordsRead) = taskInputMetrics(df.collect())
+
+          val plan = df.queryExecution.executedPlan
+          val scans = collectIcebergNativeScans(plan)
+          assert(scans.nonEmpty, s"Expected CometIcebergNativeScanExec in plan:\n$plan")
+          assert(
+            icebergScanFusingParents(plan).nonEmpty,
+            s"Expected the scan to be fused under a native parent operator:\n$plan")
+
+          assertScanInputMetrics(scans, bytesRead, recordsRead)
+        } finally {
+          spark.sql("DROP TABLE test_cat.db.fused_metrics_test")
+        }
+      }
+    }
+  }
+
+  /**
+   * The native shuffle path inlines the child's whole native subtree -- scan included -- under
+   * the `ShuffleWriter` protobuf operator and executes it in the ShuffleMapTask. No
+   * `CometExecRDD` runs for that subtree, so neither site above reports anything and
+   * `CometNativeShuffleWriter` has its own `ctx.hasScanInput` check instead.
+   *
+   * Before the fix, an Iceberg scan feeding a native shuffle left the map stage's Input column
+   * blank. The Parquet equivalent ("native shuffle reports task input metrics for its scan child"
+   * in `CometTaskMetricsSuite`) passed all along because the old gate matched
+   * `CometNativeScanExec`.
+   */
+  test("task-level inputMetrics is populated when Iceberg native scan feeds a native shuffle") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true",
+        CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+        // "auto" would also pick native here, but pin it so a future change to the auto
+        // heuristic turns this into a skip-with-assertion-failure rather than a silent
+        // switch to columnar shuffle (which reports input metrics through a different path).
+        CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+
+        createInputMetricsTable("test_cat.db.shuffle_metrics_test")
+        try {
+          val df = spark.table("test_cat.db.shuffle_metrics_test").repartition(4, col("id"))
+          val (bytesRead, recordsRead) = taskInputMetrics(df.collect())
+
+          // All three conditions are required for the writer to be the reporting site: a native
+          // (not columnar) shuffle, a CometNativeExec child so `nativeChildContext` is `Some`, and
+          // an Iceberg scan inside that child's subtree so `hasScanInput` must be true.
+          val plan = df.queryExecution.executedPlan
+          val nativeShuffles = collect(plan) {
+            case s: CometShuffleExchangeExec if s.shuffleType == CometNativeShuffle => s
+          }
+          assert(
+            nativeShuffles.nonEmpty,
+            s"Expected a CometShuffleExchangeExec with CometNativeShuffle in plan:\n$plan")
+          val scans = nativeShuffles.flatMap { s =>
+            assert(
+              s.child.isInstanceOf[CometNativeExec],
+              "Expected the shuffle's child to be a CometNativeExec so its subtree is " +
+                s"inlined into the writer plan, got ${s.child.getClass.getSimpleName}:\n$plan")
+            collectIcebergNativeScans(s.child)
+          }
+          assert(
+            scans.nonEmpty,
+            s"Expected the Iceberg scan to be inlined under the native shuffle:\n$plan")
+
+          assertScanInputMetrics(scans, bytesRead, recordsRead)
+        } finally {
+          spark.sql("DROP TABLE test_cat.db.shuffle_metrics_test")
+        }
+      }
+    }
+  }
+
+  test("Iceberg native scan left unconsumed by a limit still reports task input metrics") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        createInputMetricsTable("test_cat.db.task_metrics_limit_test")
+        try {
+          // This Iceberg scan is its own native block with no JVM input, so its metrics publish
+          // per batch and this covers the registration site rather than the listener order. A
+          // fused Iceberg scan reports from the same CometNativeExec site as a fused Parquet
+          // scan, whose order CometTaskMetricsSuite's broadcast join limit test guards.
+          val query = "SELECT * FROM test_cat.db.task_metrics_limit_test LIMIT 3"
+          Seq("-1", CometConf.COMET_METRICS_UPDATE_INTERVAL.defaultValueString).foreach {
+            interval =>
+              withSQLConf(CometConf.COMET_METRICS_UPDATE_INTERVAL.key -> interval) {
+                val df = spark.sql(query)
+                val (bytesRead, recordsRead) = taskInputMetrics(df.collect())
+                assert(
+                  collectIcebergNativeScans(df.queryExecution.executedPlan).nonEmpty,
+                  "Expected CometIcebergNativeScanExec in plan")
+                assert(
+                  bytesRead > 0,
+                  s"bytesRead should be > 0 at interval $interval, got $bytesRead")
+                assert(
+                  recordsRead >= 3 && recordsRead <= inputMetricsRows,
+                  s"recordsRead should cover at least the limit at interval $interval, " +
+                    s"got $recordsRead")
+              }
+          }
+        } finally {
+          spark.sql("DROP TABLE test_cat.db.task_metrics_limit_test")
         }
       }
     }
@@ -4230,6 +4399,68 @@ class CometIcebergNativeSuite
           s"Scans with different pushed filters must not share an exchange:\n$cometPlan")
 
         spark.sql("DROP TABLE reuse_cat.db.reuse_table")
+      }
+    }
+  }
+
+  test("storage-partitioned self-join with partially clustered distribution (#6278)") {
+    assume(icebergAvailable, "Iceberg not available")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.spj_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.spj_cat.type" -> "hadoop",
+        "spark.sql.catalog.spj_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        // The tiny split size makes every data file its own task, so each bucket spans several
+        // input partitions. Partial clustering then splits one side of the join by file and
+        // replicates the other, giving the two scans different files per partition.
+        spark.sql("""
+          CREATE TABLE spj_cat.db.spj_self (id INT, v STRING) USING iceberg
+          PARTITIONED BY (bucket(4, id))
+          TBLPROPERTIES ('read.split.target-size'='1', 'read.split.open-file-cost'='1',
+            'format-version'='2')
+        """)
+        spark.sql(
+          "INSERT INTO spj_cat.db.spj_self SELECT CAST(id AS INT), concat('a', id) " +
+            "FROM range(0, 40)")
+        spark.sql(
+          "INSERT INTO spj_cat.db.spj_self SELECT CAST(id AS INT), concat('b', id) " +
+            "FROM range(0, 40, 3)")
+        spark.sql(
+          "INSERT INTO spj_cat.db.spj_self SELECT CAST(id AS INT), concat('c', id) " +
+            "FROM range(0, 12)")
+
+        val query =
+          "SELECT a.id, a.v, b.v FROM spj_cat.db.spj_self a JOIN spj_cat.db.spj_self b " +
+            "ON a.id = b.id"
+
+        for (partiallyClustered <- Seq(false, true)) {
+          withSQLConf(
+            SQLConf.V2_BUCKETING_ENABLED.key -> "true",
+            SQLConf.V2_BUCKETING_PUSH_PART_VALUES_ENABLED.key -> "true",
+            SQLConf.V2_BUCKETING_PARTIALLY_CLUSTERED_DISTRIBUTION_ENABLED.key ->
+              partiallyClustered.toString,
+            "spark.sql.requireAllClusterKeysForCoPartition" -> "false",
+            "spark.sql.iceberg.planning.preserve-data-grouping" -> "true",
+            SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+            val (_, cometPlan) = checkSparkAnswerAndOperator(query)
+
+            // Both scans run in one native plan with no exchange between them, which is where
+            // each scan must be handed its own files rather than the other side's.
+            assert(
+              collectIcebergNativeScans(cometPlan).length == 2,
+              s"Expected 2 CometIcebergNativeScanExec. Plan:\n$cometPlan")
+            assert(
+              collect(cometPlan) { case e: ShuffleExchangeLike => e }.isEmpty,
+              s"Expected a storage-partitioned join without a shuffle. Plan:\n$cometPlan")
+          }
+        }
+
+        spark.sql("DROP TABLE spj_cat.db.spj_self")
       }
     }
   }
@@ -4324,12 +4555,20 @@ class CometIcebergNativeSuite
           // reuse manifests as ReusedExchangeExec inside the ASPE's final plan.
           assertCsbBroadcastReuse(subqueries, cometPlan)
 
-          // Verify correct results and partition pruning
+          // Verify partition pruning. Iceberg packs these small files into one Spark partition
+          // whether or not DPP prunes, so count the planned file tasks and the splits read: only
+          // the file for 1970-01-02 of the 3 dates should be left.
           val icebergScans = collectIcebergNativeScans(cometPlan)
           assert(icebergScans.nonEmpty, "Expected CometIcebergNativeScanExec in plan")
+          val scan = icebergScans.head
+          val plannedTasks = scan.perPartitionData
+            .map(OperatorOuterClass.IcebergScan.parseFrom(_).getFileScanTasksCount)
+            .sum
+          val numSplits = scan.metrics("num_splits").value
           assert(
-            icebergScans.head.numPartitions == 1,
-            s"Expected DPP to prune to 1 partition but got ${icebergScans.head.numPartitions}")
+            plannedTasks == 1 && numSplits == 1,
+            s"Expected DPP to prune to 1 of 3 files, planned $plannedTasks tasks and read " +
+              s"$numSplits splits:\n${cometPlan.treeString}")
         }
 
         spark.sql("DROP TABLE aqe_cat.db.dpp_reuse_fact")
@@ -6237,7 +6476,8 @@ class CometIcebergNativeSuite
           conflictingField.put("name", "id_as_region")
           conflictingField.put("transform", "identity")
           conflictingFields.add(conflictingField)
-          conflictingSpec.set("fields", conflictingFields)
+          conflictingSpec
+            .set[com.fasterxml.jackson.databind.node.ObjectNode]("fields", conflictingFields)
           specs.add(conflictingSpec)
 
           // Round-trip through Iceberg's own parser before writing, so a malformed hand-edit

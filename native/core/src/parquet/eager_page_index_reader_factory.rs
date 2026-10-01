@@ -43,8 +43,22 @@
 //! fetch to encrypted scans that have no pruning predicate at all. Encrypted opens get exactly
 //! the caller's requested policy, unchanged from stock behavior.
 //!
-//! Filed upstream as apache/datafusion#23978. Revert this once the opener merges its deferred
-//! page-index load back into `FileMetadataCache` instead of bypassing it.
+//! Filed upstream as apache/datafusion#23978. Once the opener merges its deferred page-index
+//! load back into `FileMetadataCache` instead of bypassing it, the eager policy can go, but the
+//! factory cannot: `get_metadata` is the one per-file hook that sees the raw footer, and two
+//! other things hang off it.
+//!
+//! The first is Spark's missing field id check. `ParquetReadSupport` refuses to open a file
+//! whose Parquet schema carries no field id when the requested schema carries one, unless
+//! `ignoreMissing` is set, and it walks the raw `MessageType` to decide. That walk has to run
+//! over the Parquet schema rather than the Arrow schema the schema adapter is handed later,
+//! because an id on a repeated `list` or `key_value` group, or on the message root, never
+//! reaches an Arrow field. Until apache/datafusion#24790, which is not in DataFusion 55.1.0,
+//! the INT96 coercion also rebuilt container fields without their metadata, so a struct id could
+//! vanish on the way to Arrow as well.
+//!
+//! The second is the Variant footer rewrite, `with_spark_arrow_schema`, which replaces the
+//! Arrow schema hint in the footer for scans that project Variant.
 
 use arrow::datatypes::{DataType, FieldRef, Schema};
 use async_trait::async_trait;
@@ -58,6 +72,7 @@ use datafusion::execution::cache::cache_manager::FileMetadataCache;
 use datafusion::physical_plan::metrics::{
     Count, ExecutionPlanMetricsSet, MetricBuilder, MetricCategory, MetricType,
 };
+use datafusion_comet_common::SparkError;
 use datafusion_datasource::PartitionedFile;
 use futures::future::BoxFuture;
 use futures::{FutureExt, StreamExt, TryStreamExt};
@@ -77,7 +92,7 @@ use parquet::file::metadata::{FileMetaData, KeyValue, ParquetMetaDataBuilder};
 use parquet::file::metadata::{
     FooterTail, PageIndexPolicy, ParquetMetaData, ParquetMetaDataReader,
 };
-use parquet::schema::types::{ColumnDescPtr, SchemaDescriptor};
+use parquet::schema::types::{ColumnDescPtr, SchemaDescriptor, Type as ParquetType};
 use std::fmt::{Debug, Display, Formatter};
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -163,6 +178,9 @@ pub struct EagerPageIndexReaderFactory {
     // Enable the footer workaround only for scans that project Variant.
     // https://github.com/apache/datafusion-comet/issues/5477
     spark_variant_schema: bool,
+    // Refuse a file whose Parquet schema carries no field id, as Spark's `ParquetReadSupport`
+    // does when the requested schema carries one and `ignoreMissing` is not set.
+    require_field_ids: bool,
 }
 
 impl EagerPageIndexReaderFactory {
@@ -191,6 +209,7 @@ impl EagerPageIndexReaderFactory {
             metadata_cache,
             scan_io_metrics,
             spark_variant_schema: false,
+            require_field_ids: false,
         }
     }
 
@@ -198,6 +217,24 @@ impl EagerPageIndexReaderFactory {
         self.spark_variant_schema = enabled;
         self
     }
+
+    /// Refuse a file whose Parquet schema carries no field id. Off by default, so a factory
+    /// that never calls this reads every file.
+    pub fn with_require_field_ids(mut self, enabled: bool) -> Self {
+        self.require_field_ids = enabled;
+        self
+    }
+}
+
+/// True when `node` or any node under it carries a field id, the way Spark's
+/// `containsFieldIds` answers it over the raw Parquet schema, message root included.
+fn contains_field_ids(node: &ParquetType) -> bool {
+    node.get_basic_info().has_id()
+        || (node.is_group()
+            && node
+                .get_fields()
+                .iter()
+                .any(|field| contains_field_ids(field)))
 }
 
 impl ParquetFileReaderFactory for EagerPageIndexReaderFactory {
@@ -225,6 +262,7 @@ impl ParquetFileReaderFactory for EagerPageIndexReaderFactory {
             metadata_cache: Arc::clone(&self.metadata_cache),
             metadata_size_hint,
             spark_variant_schema: self.spark_variant_schema,
+            require_field_ids: self.require_field_ids,
         }))
     }
 }
@@ -240,6 +278,7 @@ struct EagerPageIndexReader {
     metadata_cache: Arc<FileMetadataCache>,
     metadata_size_hint: Option<usize>,
     spark_variant_schema: bool,
+    require_field_ids: bool,
 }
 
 // Arrow infers ENUM as Binary, losing the distinction from raw binary that Spark needs.
@@ -439,6 +478,7 @@ impl AsyncFileReader for EagerPageIndexReader {
         let metadata_size_hint = self.metadata_size_hint;
         let scan_io_metrics = Arc::clone(&self.scan_io_metrics);
         let spark_variant_schema = self.spark_variant_schema;
+        let require_field_ids = self.require_field_ids;
         async move {
             let file_decryption_properties = options
                 .and_then(|o| o.file_decryption_properties())
@@ -498,6 +538,18 @@ impl AsyncFileReader for EagerPageIndexReader {
             }
 
             let metadata = metadata?;
+            // Spark's missing field id check, over the raw Parquet schema as in
+            // `ParquetReadSupport`. The JNI layer unwraps the `External` error, so the JVM sees
+            // the exception Spark raises.
+            if require_field_ids
+                && !contains_field_ids(metadata.file_metadata().schema_descr().root_schema())
+            {
+                return Err(ParquetError::External(Box::new(
+                    SparkError::ParquetMissingFieldIds {
+                        file_path: object_meta.location.to_string(),
+                    },
+                )));
+            }
             if spark_variant_schema {
                 with_spark_arrow_schema(metadata)
             } else {
@@ -833,7 +885,7 @@ mod tests {
     use arrow::{array::Int32Array, record_batch::RecordBatch};
     use object_store::memory::InMemory;
     use parquet::{
-        arrow::ArrowWriter,
+        arrow::{ArrowWriter, PARQUET_FIELD_ID_META_KEY},
         file::{
             properties::{EnabledStatistics, WriterProperties},
             reader::FileReader,
@@ -990,6 +1042,145 @@ mod tests {
                 .as_usize(),
             if remote { 6 } else { 0 }
         );
+    }
+
+    /// The raw schema walk answers like Spark's `containsFieldIds`: an id on the message root,
+    /// on a leaf, or on a repeated `list` or `key_value` group counts, and a schema without
+    /// any does not.
+    #[test]
+    fn contains_field_ids_sees_ids_on_any_node() {
+        use parquet::basic::Type as PhysicalType;
+        use parquet::schema::types::TypePtr;
+
+        let leaf = |name: &str, id: Option<i32>| -> TypePtr {
+            Arc::new(
+                ParquetType::primitive_type_builder(name, PhysicalType::INT32)
+                    .with_id(id)
+                    .build()
+                    .unwrap(),
+            )
+        };
+        let group = |name: &str, id: Option<i32>, fields: Vec<TypePtr>| -> TypePtr {
+            Arc::new(
+                ParquetType::group_type_builder(name)
+                    .with_id(id)
+                    .with_fields(fields)
+                    .build()
+                    .unwrap(),
+            )
+        };
+
+        assert!(!contains_field_ids(&group("schema", None, vec![])));
+        assert!(!contains_field_ids(&group(
+            "schema",
+            None,
+            vec![leaf("a", None)]
+        )));
+        assert!(contains_field_ids(&group(
+            "schema",
+            Some(1),
+            vec![leaf("a", None)]
+        )));
+        assert!(contains_field_ids(&group(
+            "schema",
+            None,
+            vec![leaf("a", Some(1))]
+        )));
+        let list_group_only = group(
+            "schema",
+            None,
+            vec![group(
+                "l",
+                None,
+                vec![group("list", Some(5), vec![leaf("element", None)])],
+            )],
+        );
+        assert!(contains_field_ids(&list_group_only));
+        let key_value_group_only = group(
+            "schema",
+            None,
+            vec![group(
+                "m",
+                None,
+                vec![group(
+                    "key_value",
+                    Some(6),
+                    vec![leaf("key", None), leaf("value", None)],
+                )],
+            )],
+        );
+        assert!(contains_field_ids(&key_value_group_only));
+        let nested_without_ids = group(
+            "schema",
+            None,
+            vec![group("s", None, vec![leaf("a", None)])],
+        );
+        assert!(!contains_field_ids(&nested_without_ids));
+    }
+
+    /// Write a one-column `a: int32` file into `store`, with a field id on `a` when `id` is
+    /// set, and return the file as `PartitionedFile`.
+    async fn put_int_file(store: &InMemory, location: &str, id: Option<&str>) -> PartitionedFile {
+        let mut field = arrow::datatypes::Field::new("a", DataType::Int32, false);
+        if let Some(id) = id {
+            field = field
+                .with_metadata([(PARQUET_FIELD_ID_META_KEY.to_string(), id.to_string())].into());
+        }
+        let schema = Arc::new(Schema::new(vec![field]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Int32Array::from(vec![1, 2]))],
+        )
+        .unwrap();
+        let mut bytes = Vec::new();
+        let mut writer = ArrowWriter::try_new(&mut bytes, schema, None).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+        let size = bytes.len() as u64;
+        store
+            .put(&Path::from(location), Bytes::from(bytes).into())
+            .await
+            .unwrap();
+        PartitionedFile::new(location.to_string(), size)
+    }
+
+    /// A reader made by a factory with `require_field_ids` set refuses a file without ids on
+    /// its first metadata fetch, naming the file, and reads one that carries an id. A factory
+    /// without it reads the file without ids.
+    #[tokio::test]
+    async fn get_metadata_refuses_a_file_without_ids_only_when_required() {
+        let store = Arc::new(InMemory::new());
+        let without_ids = put_int_file(&store, "no_ids.parquet", None).await;
+        let with_ids = put_int_file(&store, "ids.parquet", Some("1")).await;
+        let runtime = datafusion::execution::runtime_env::RuntimeEnv::default();
+        let metrics = ExecutionPlanMetricsSet::new();
+        let metadata_for = |require: bool, file: PartitionedFile| {
+            let factory = EagerPageIndexReaderFactory::new(
+                Arc::clone(&store) as Arc<dyn ObjectStore>,
+                runtime.cache_manager.get_file_metadata_cache(),
+                ScanIoSource::Local,
+                &metrics,
+            )
+            .with_require_field_ids(require);
+            let mut reader = factory.create_reader(0, file, None, &metrics).unwrap();
+            async move { reader.get_metadata(None).await }
+        };
+
+        let err = metadata_for(true, without_ids.clone())
+            .await
+            .expect_err("a file without ids must be refused");
+        match err {
+            ParquetError::External(inner) => assert!(
+                matches!(
+                    inner.downcast_ref::<SparkError>(),
+                    Some(SparkError::ParquetMissingFieldIds { file_path }) if file_path == "no_ids.parquet"
+                ),
+                "unexpected error: {inner}"
+            ),
+            other => panic!("unexpected error: {other}"),
+        }
+        assert!(metadata_for(true, with_ids).await.is_ok());
+        assert!(metadata_for(false, without_ids).await.is_ok());
     }
 
     #[test]

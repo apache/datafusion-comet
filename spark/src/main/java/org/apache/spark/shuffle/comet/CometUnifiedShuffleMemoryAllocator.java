@@ -33,8 +33,8 @@ import org.apache.spark.unsafe.memory.MemoryBlock;
  * configured with `MemoryMode.OFF_HEAP`, i.e. it is using off-heap memory.
  *
  * <p>If the user does not enable off-heap memory then we want to use
- * CometBoundedShuffleMemoryAllocator. The tests also need to default to using this because off-heap
- * is not enabled when running the Spark SQL tests.
+ * CometUnboundedShuffleMemoryAllocator. The tests also need to default to using this because
+ * off-heap is not enabled when running the Spark SQL tests.
  */
 public final class CometUnifiedShuffleMemoryAllocator extends CometShuffleMemoryAllocatorTrait {
 
