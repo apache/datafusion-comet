@@ -22,7 +22,6 @@ package org.apache.comet.exec
 import java.{util => ju}
 import java.nio.charset.StandardCharsets
 
-import scala.collection.mutable
 import scala.jdk.CollectionConverters._
 
 import org.apache.arrow.compression.ZstdCompressionCodec
@@ -1998,12 +1997,12 @@ class CometInMemoryCacheSuite extends CometTestBase {
   }
 
   test("Comet in-memory cache records per-column decoded sizes in its statistics") {
-    // SimpleMetricsCachedBatch reserves a fifth field per column for its size and sums those into
-    // the batch's sizeInBytes, which is what Spark's planner reads as the size of a materialized
-    // cached relation. Spark's own formats record a column's decoded size there, so each field is
-    // compared with its column decoded back out of the payload, not with what the column occupies
-    // compressed. Run over the nested relation as well: a nested column's size is the sum of its
-    // whole subtree, so this is also where a size attributed to the wrong column surfaces.
+    // Each column's size field must be its decoded size (see ArrowCachedBatchSerializer.statsRow),
+    // so each field is compared with its column decoded back out of the payload, not with what the
+    // column occupies compressed. Run over the nested relation as well: a nested column's size is
+    // the sum of its whole subtree, so this is also where a size attributed to the wrong column
+    // surfaces. And over the dictionary relation, whose columns reach the writer dictionary
+    // encoded: a size measured before they are decoded would be the size of their indices.
     def checkSizes(
         relation: org.apache.spark.sql.execution.columnar.InMemoryRelation,
         batches: Array[CachedBatch]): Unit = {
@@ -2028,14 +2027,15 @@ class CometInMemoryCacheSuite extends CometTestBase {
 
     withProjectionCache(checkSizes _)
     withNestedProjectionCache(checkSizes _)
+    withDictionaryCache(relation =>
+      checkSizes(relation, relation.cacheBuilder.cachedColumnBuffers.collect()))
   }
 
   test("Comet in-memory cache reports the same relation size under every codec") {
-    // Broadcast thresholds and the shuffled hash join build side are compared against this size.
-    // Reported compressed, a relation that zstd shrinks several times over would be broadcast
-    // where the same relation in Spark's cache format is shuffled, so it must not depend on the
-    // codec.
-    val sizes = mutable.ArrayBuffer.empty[(String, Long, Long)]
+    // The planner compares this size with broadcast thresholds and with the other side of a
+    // shuffled hash join, so it must not depend on the codec (see
+    // ArrowCachedBatchSerializer.statsRow).
+    val measured = Seq.newBuilder[(String, Long, Long)]
     Seq("zstd", "none").foreach { codec =>
       withSQLConf(
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
@@ -2054,11 +2054,12 @@ class CometInMemoryCacheSuite extends CometTestBase {
           .cachedRepresentation
         val batches = relation.cacheBuilder.cachedColumnBuffers.collect()
         val payload = batches.map(CometCachedBatchHelper.payloadSize).sum
-        sizes += ((codec, relation.computeStats().sizeInBytes.toLong, payload))
+        measured += ((codec, relation.computeStats().sizeInBytes.toLong, payload))
         spark.catalog.clearCache()
       }
     }
 
+    val sizes = measured.result()
     val (_, zstdSize, zstdPayload) = sizes(0)
     val (_, plainSize, _) = sizes(1)
     assert(zstdPayload * 2 < zstdSize, s"zstd should compress this relation: $sizes")

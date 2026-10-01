@@ -199,8 +199,7 @@ object CometCachedBatchHelper {
 
   /**
    * Decoded size of each top-level column: the column read back out of the payload the way a scan
-   * reads it, measured the way Spark's own Arrow cache format measures a column for its
-   * statistics.
+   * reads it, measured with `getBufferSize`.
    */
   def decodedColumnSizes(
       batch: CachedBatch,
