@@ -229,10 +229,6 @@ impl Accumulator for CorrelationAccumulator {
     }
 
     fn evaluate(&mut self) -> Result<ScalarValue> {
-        let covar = self.covar.evaluate()?;
-        let stddev1 = self.stddev1.evaluate()?;
-        let stddev2 = self.stddev2.evaluate()?;
-
         if self.covar.get_count() == 0.0 {
             return Ok(ScalarValue::Float64(None));
         } else if self.covar.get_count() == 1.0 {
@@ -242,14 +238,16 @@ impl Accumulator for CorrelationAccumulator {
                 return Ok(ScalarValue::Float64(Some(f64::NAN)));
             }
         }
-        match (covar, stddev1, stddev2) {
-            (
-                ScalarValue::Float64(Some(c)),
-                ScalarValue::Float64(Some(s1)),
-                ScalarValue::Float64(Some(s2)),
-            ) if s1 != 0.0 && s2 != 0.0 => Ok(ScalarValue::Float64(Some(c / (s1 * s2)))),
-            _ => Ok(ScalarValue::Float64(None)),
+        let m2_1 = self.stddev1.get_m2();
+        let m2_2 = self.stddev2.get_m2();
+        if m2_1 == 0.0 || m2_2 == 0.0 {
+            return Ok(ScalarValue::Float64(None));
         }
+        // Match Spark and the grouped path's raw-moment evaluation. Normalizing
+        // first changes rounding and can avoid overflow in m2_1 * m2_2.
+        Ok(ScalarValue::Float64(Some(
+            self.covar.get_algo_const() / (m2_1 * m2_2).sqrt(),
+        )))
     }
 
     fn size(&self) -> usize {
@@ -475,6 +473,61 @@ mod groups_tests {
             .as_primitive::<Float64Type>()
             .iter()
             .collect()
+    }
+
+    #[test]
+    fn correlation_evaluates_raw_moments_exactly() {
+        // Spark divides ck by sqrt(m2_1 * m2_2). Normalizing the moments
+        // first changes rounding, and avoids overflow that Spark preserves.
+        for (values, expected) in [
+            ([1e16, 1e16 + 2.0], Some(1.0)),
+            ([1e16 + 2.0, 1e16], None),
+            ([-1e16, -1e16 - 2.0], Some(1.0)),
+            ([1e100, 2e100], Some(0.0)),
+        ] {
+            for sign in [-1.0, 1.0] {
+                for null_on_divide_by_zero in [false, true] {
+                    let input: Vec<ArrayRef> = vec![
+                        Arc::new(Float64Array::from(vec![
+                            Some(values[0]),
+                            None,
+                            Some(values[1]),
+                        ])),
+                        Arc::new(Float64Array::from(vec![
+                            Some(sign * values[0]),
+                            Some(0.0),
+                            Some(sign * values[1]),
+                        ])),
+                    ];
+                    let mut scalar =
+                        CorrelationAccumulator::try_new(null_on_divide_by_zero).unwrap();
+                    let mut grouped = CorrelationGroupsAccumulator::new(null_on_divide_by_zero);
+                    scalar.update_batch(&input).unwrap();
+                    grouped.update_batch(&input, &[0, 0, 0], None, 1).unwrap();
+                    let state = scalar
+                        .state()
+                        .unwrap()
+                        .iter()
+                        .map(|s| s.to_array_of_size(1).unwrap())
+                        .collect::<Vec<_>>();
+                    let mut merged_scalar =
+                        CorrelationAccumulator::try_new(null_on_divide_by_zero).unwrap();
+                    let mut merged_grouped =
+                        CorrelationGroupsAccumulator::new(null_on_divide_by_zero);
+                    merged_scalar.merge_batch(&state).unwrap();
+                    merged_grouped.merge_batch(&state, &[0], 1).unwrap();
+                    for result in [
+                        scalar.evaluate().unwrap(),
+                        merged_scalar.evaluate().unwrap(),
+                    ] {
+                        assert_eq!(result, ScalarValue::Float64(expected.map(|v| sign * v)));
+                    }
+                    for result in [evaluate(&mut grouped)[0], evaluate(&mut merged_grouped)[0]] {
+                        assert_eq!(result, expected.map(|v| sign * v));
+                    }
+                }
+            }
+        }
     }
 
     #[test]
