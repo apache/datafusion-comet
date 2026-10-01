@@ -97,6 +97,51 @@ A PR that quietly marks something `Compatible` while the diff shows a known dive
 most important thing to catch. Keep reasons concise and link a tracking issue when the behavior is
 known to differ.
 
+### Behavior change against the latest release
+
+Users upgrade from a release, not from `main`. So the question is not only what the PR changes
+relative to `main`, but whether a user moving from the latest release to a build with this PR sees
+different behavior. `main` may already carry unreleased changes in the same code, and a PR that
+looks harmless against `main` can finish turning a released behavior into a different one.
+
+Find the latest release branch, the highest `branch-X.Y`:
+
+```shell
+git ls-remote --heads https://github.com/apache/datafusion-comet 'branch-*' | sort -t- -k2 -V | tail -1
+```
+
+Fetch the PR head and diff the files the PR touches against that branch, not against `main`:
+
+```shell
+git fetch https://github.com/apache/datafusion-comet branch-X.Y:release-X.Y pull/<pr>/head:pr-<pr>
+git diff release-X.Y pr-<pr> -- <changed files>
+```
+
+Then ask, for each code path the PR touches, whether any of these differ from the release:
+
+- the result for some input, including null, NaN, `-0.0`, empty, overflow, and timezone cases
+- whether a query raises an error, and which error
+- whether an operator or expression runs natively or falls back to Spark
+- a config default, a config name, or a support level
+- performance or memory use on an existing path
+
+The tests the PR adds are a good probe. If a new test would fail on the release branch, the PR
+changes released behavior, and you should know which of those two cases it is. Running the test
+against the release branch is the cheapest way to find out when the answer is not obvious from
+the code.
+
+Every behavior change against the release is one of two things:
+
+- **Intended.** A bug fix that makes Comet match Spark, or a deliberate change. The PR description
+  should say so, user-facing changes need a note in the user guide or compatibility docs, and a
+  correctness fix should be considered for backport to the release branches per
+  `docs/source/contributor-guide/backporting.md`.
+- **Unintended.** The PR, alone or together with unreleased changes already on `main`, makes Comet
+  diverge from Spark where the release did not, or makes a released path slower. This is a
+  correctness or performance regression, and it falls under the request-changes rule below.
+
+Report the comparison in the review even when nothing changed, so the reviewer knows it was done.
+
 ### Spark version coverage
 
 Comet supports several Spark versions. Version-specific behavior belongs in the shims under
@@ -192,13 +237,16 @@ Present your review as guidance for the reviewer:
 1. **PR Summary**, brief description of what the PR does
 2. **Areas**, which sibling skills you loaded and why
 3. **CI Status**, summary of CI check results
-4. **Findings**, organized by area
-5. **Suggested Review Comments**, specific comments the reviewer could leave, with file and line
+4. **Behavior vs Release**, which release branch you compared against, and every behavior change
+   you found, each marked intended or unintended. Say "no change" when there is none.
+5. **Findings**, organized by area
+6. **Suggested Review Comments**, specific comments the reviewer could leave, with file and line
    references. Everything here is something you expect the author to address. Anything that did not
    clear the bar above should not appear.
-6. **Review State**, how to submit the review. Use the first case that applies:
+7. **Review State**, how to submit the review. Use the first case that applies:
    - **Request changes** when any finding is a correctness problem that the PR introduces or a
-     performance regression. Name those findings.
+     performance regression, including an unintended behavior change against the latest release.
+     Name those findings.
    - **Approve**, or dismiss the earlier review, when this is a re-review and the findings behind the
      reviewer's earlier **Request changes** review have all been addressed.
    - **Comment** otherwise.
