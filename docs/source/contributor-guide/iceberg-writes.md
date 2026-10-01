@@ -35,7 +35,7 @@ Two flags, each of which builds on the one before it:
 | Flag                                              | What it changes                                                                                                                         |
 | ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
 | `spark.comet.write.iceberg.splitOperator.enabled` | The plan shape. Spark's single V2 write operator becomes `IcebergCommit` over `IcebergWrite`. iceberg-java still writes the data files. |
-| `spark.comet.iceberg.write.enabled`               | Who writes the data files. An eligible `IcebergWrite` becomes `CometIcebergWrite`, which writes Parquet with iceberg-rust.              |
+| `spark.comet.write.iceberg.enabled`               | Who writes the data files. An eligible `IcebergWrite` becomes `CometIcebergWrite`, which writes Parquet with iceberg-rust.              |
 
 The native flag does nothing without the split flag, because it converts a node only the split plan
 creates. Both default to `false`. The roadmap for making them the default, and the criteria for it,
@@ -98,7 +98,7 @@ Things to know before changing this layer:
 ## From `IcebergWrite` to `CometIcebergWrite`
 
 `CometExecRule` converts an `IcebergWriteExec` with the `CometIcebergNativeWrite` operator serde
-when `spark.comet.iceberg.write.enabled` is on. Two arms in `CometExecRule` handle it: one unwraps
+when `spark.comet.write.iceberg.enabled` is on. Two arms in `CometExecRule` handle it: one unwraps
 the double conversion AQE can produce when it re-fires write planning over a sub-tree that already
 contains a `CometIcebergWriteExec`, and the other calls `convertToComet`.
 

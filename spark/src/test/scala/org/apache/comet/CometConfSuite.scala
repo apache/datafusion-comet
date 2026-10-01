@@ -157,6 +157,29 @@ class CometConfSuite extends AnyFunSuite {
     assert(CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.get(conf))
   }
 
+  test("native write flags share the spark.comet.write namespace") {
+    Seq(
+      CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED,
+      CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED,
+      CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED).foreach { entry =>
+      assert(entry.key.startsWith("spark.comet.write."), entry.key)
+    }
+  }
+
+  test("COMET_NATIVE_PARQUET_WRITE_ENABLED reads the deprecated parquet.write.enabled key") {
+    val conf = new SQLConf
+    conf.setConfString("spark.comet.parquet.write.enabled", "true")
+
+    assert(CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.get(conf))
+  }
+
+  test("COMET_ICEBERG_NATIVE_WRITE_ENABLED reads the deprecated iceberg.write.enabled key") {
+    val conf = new SQLConf
+    conf.setConfString("spark.comet.iceberg.write.enabled", "true")
+
+    assert(CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.get(conf))
+  }
+
   test("remote shuffle frame and admission limits have bounded defaults") {
     val conf = new SQLConf
 
