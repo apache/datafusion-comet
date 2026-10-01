@@ -125,6 +125,12 @@ and `INT32 → DOUBLE` widening that Spark 4.0+ accepts unconditionally; `Timest
 is rejected by Spark 3.x but accepted by Spark 4.0+). Comet aims to follow the per-version Spark
 behavior.
 
+- **A pushed row filter can skip the mismatch error**. Like Spark, Comet raises most mismatches only
+  while it decodes a file's rows, so an empty file, or one whose row groups are all pruned, reads
+  without error. With `spark.comet.parquet.rowFilterPushdown.enabled=true` (off by default), the scan
+  decodes a column that the filter doesn't read only for the rows that pass the filter, so a file in
+  which no row passes also reads without error. Spark decodes every row of a row group it doesn't
+  prune, so it raises the error for that file.
 - **List conversion error paths assume Spark's standard encoding**. Comet inserts `list`
   before the element name when reporting a rejected array element conversion. Arrow's schema
   omits the repeated group name, so paths for legacy LIST encodings or custom group names may

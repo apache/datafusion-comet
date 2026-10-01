@@ -1690,6 +1690,20 @@ abstract class ParquetReadSuite extends CometTestBase {
           }
         }
       }
+      // Spark fails a shape it can't clip when it opens the file, so an empty file with one
+      // still fails, even after a field whose type Spark only rejects while decoding.
+      withTempPath { dir =>
+        val path = dir.getCanonicalPath
+        spark.sql("select named_struct('a', 1, 'b', 1) as s").write.parquet(path)
+        spark
+          .sql("select named_struct('a', 'x', 'b', array(1)) as s where false")
+          .write
+          .mode("append")
+          .parquet(path)
+        val (sparkError, cometError) =
+          checkSparkAnswerMaybeThrows(spark.read.schema("s struct<a:int, b:int>").parquet(path))
+        assert(sparkError.isDefined && cometError.isDefined, s"$sparkError, $cometError")
+      }
     }
   }
 

@@ -722,6 +722,25 @@ fn check_leaf_conversion(
     ConversionCheck::Accept
 }
 
+/// Combine the verdicts of sibling fields. A `Reject` wins wherever it is, because Spark
+/// raises it when it opens the file, before it decodes anything. Otherwise the first deferred
+/// verdict wins, like Spark, which raises for the first offending column it decodes.
+fn combine_checks(
+    checks: impl Iterator<Item = DataFusionResult<ConversionCheck>>,
+) -> DataFusionResult<ConversionCheck> {
+    let mut deferred = None;
+    for check in checks {
+        match check? {
+            ConversionCheck::Accept => {}
+            reject @ ConversionCheck::Reject(_) => return Ok(reject),
+            check @ ConversionCheck::RejectOnNonEmpty { .. } => {
+                deferred.get_or_insert(check);
+            }
+        }
+    }
+    Ok(deferred.unwrap_or(ConversionCheck::Accept))
+}
+
 /// Check a physical/logical type pair the way Spark's vectorized reader does. Spark runs
 /// `getUpdater` on every *leaf* column regardless of nesting, so same-shape complex pairs
 /// (struct / list / map, at any depth) are walked and [`check_leaf_conversion`] is applied to
@@ -731,8 +750,7 @@ fn check_leaf_conversion(
 /// encoding used by Spark. Legacy or custom group names cannot be recovered from this schema.
 /// Requested struct fields resolve to file fields with the same field-id / case-fold rules the runtime
 /// convert uses ([`match_struct_fields`]); requested fields missing from the file are skipped
-/// (they read as null / default, as before). The first non-`Accept` verdict in leaf order
-/// wins, like Spark, which raises for the first offending column it initializes.
+/// (they read as null / default, as before). Sibling verdicts combine as in [`combine_checks`].
 fn check_conversion(
     physical_type: &DataType,
     target_type: &DataType,
@@ -746,22 +764,17 @@ fn check_conversion(
     match (physical_type, target_type) {
         (DataType::Struct(physical_fields), DataType::Struct(target_fields)) => {
             let physical_indices = match_struct_fields(physical_fields, target_fields, options)?;
-            for (target_field, physical_index) in target_fields.iter().zip(physical_indices) {
-                let Some(physical_index) = physical_index else {
-                    continue;
-                };
-                let physical_field = &physical_fields[physical_index];
-                let check = check_conversion(
-                    physical_field.data_type(),
-                    target_field.data_type(),
-                    &format!("{column}, {}", physical_field.name()),
-                    options,
-                )?;
-                if !matches!(check, ConversionCheck::Accept) {
-                    return Ok(check);
-                }
-            }
-            Ok(ConversionCheck::Accept)
+            combine_checks(target_fields.iter().zip(physical_indices).filter_map(
+                |(target_field, physical_index)| {
+                    let physical_field = &physical_fields[physical_index?];
+                    Some(check_conversion(
+                        physical_field.data_type(),
+                        target_field.data_type(),
+                        &format!("{column}, {}", physical_field.name()),
+                        options,
+                    ))
+                },
+            ))
         }
         (
             DataType::List(physical_item)
@@ -796,22 +809,20 @@ fn check_conversion(
                         target_type,
                     )));
                 }
-                for (physical_field, target_field) in physical_kv.iter().zip(target_kv.iter()) {
-                    let check = check_conversion(
-                        physical_field.data_type(),
-                        target_field.data_type(),
-                        &format!(
-                            "{column}, {}, {}",
-                            physical_entries.name(),
-                            physical_field.name()
-                        ),
-                        options,
-                    )?;
-                    if !matches!(check, ConversionCheck::Accept) {
-                        return Ok(check);
-                    }
-                }
-                return Ok(ConversionCheck::Accept);
+                return combine_checks(physical_kv.iter().zip(target_kv.iter()).map(
+                    |(physical_field, target_field)| {
+                        check_conversion(
+                            physical_field.data_type(),
+                            target_field.data_type(),
+                            &format!(
+                                "{column}, {}, {}",
+                                physical_entries.name(),
+                                physical_field.name()
+                            ),
+                            options,
+                        )
+                    },
+                ));
             }
             Ok(ConversionCheck::Reject(parquet_schema_convert_err(
                 column,
@@ -1554,14 +1565,14 @@ impl SparkPhysicalExprAdapter {
     }
 }
 
-/// Defers a Parquet type-promotion rejection to runtime: returns an empty array
+/// Defers a Parquet type conversion rejection to runtime: returns an empty array
 /// when the input batch has no rows, and raises `ParquetSchemaConvert` otherwise.
 ///
 /// Mirrors Spark's vectorized reader, which only invokes
 /// `ParquetVectorUpdaterFactory.getUpdater` while decoding a row group. A
 /// Parquet file with no row groups (e.g. one written from an empty DataFrame)
 /// never triggers the per-row-group check, so a partition mixing such a file
-/// with another whose schema would otherwise fail the type-promotion check
+/// with another whose schema would otherwise fail the conversion check
 /// (SPARK-26709) is still readable.
 #[derive(Debug, Eq)]
 struct RejectOnNonEmpty {
@@ -3192,6 +3203,47 @@ pub(crate) mod test {
         Ok(())
     }
 
+    /// Spark fails an unclippable shape when it opens the file, before it decodes a sibling it
+    /// would also reject, so the shape mismatch wins over a deferred sibling in either order.
+    #[test]
+    fn rejection_at_open_wins_over_a_deferred_sibling() -> Result<(), DataFusionError> {
+        let options = default_options();
+        let int_list = list_type(DataType::Int32);
+        let map = |key: DataType, value: DataType| {
+            let entries = Fields::from(vec![
+                Field::new("key", key, false),
+                Field::new("value", value, true),
+            ]);
+            DataType::Map(
+                Arc::new(Field::new("key_value", DataType::Struct(entries), false)),
+                false,
+            )
+        };
+        for (physical, target) in [
+            (
+                struct_type(vec![("a", DataType::Utf8), ("b", int_list.clone())]),
+                struct_type(vec![("a", DataType::Int32), ("b", DataType::Int32)]),
+            ),
+            (
+                struct_type(vec![("b", int_list.clone()), ("a", DataType::Utf8)]),
+                struct_type(vec![("b", DataType::Int32), ("a", DataType::Int32)]),
+            ),
+            (
+                map(DataType::Int64, int_list.clone()),
+                map(DataType::Int32, DataType::Int32),
+            ),
+        ] {
+            assert!(
+                matches!(
+                    check_conversion(&physical, &target, "s", &options)?,
+                    ConversionCheck::Reject(_)
+                ),
+                "{physical} read as {target}"
+            );
+        }
+        Ok(())
+    }
+
     /// Positive: `INT32 -> bigint` inside a struct still converts when type promotion is
     /// allowed (Spark 4.x behaviour).
     #[tokio::test]
@@ -3339,18 +3391,16 @@ pub(crate) mod test {
 
     #[test]
     fn issue_5783_fallback_deferred_rejection_checks_decoded_subtree() {
+        // An int read as a map of primitives is deferred, like `other`, and DataFusion's
+        // default adapter can't cast it, which forces the fallback.
         let logical = struct_schema(vec![
             Field::new("other", DataType::Int32, true),
-            Field::new("force_fallback", DataType::Int32, true),
+            Field::new("force_fallback", map_type(DataType::Int32), true),
         ]);
         for duplicate in [false, true] {
             let mut fields = vec![
                 Field::new("other", DataType::Int64, true),
-                Field::new(
-                    "force_fallback",
-                    DataType::List(Arc::new(Field::new("element", DataType::Int32, true))),
-                    true,
-                ),
+                Field::new("force_fallback", DataType::Int32, true),
                 Field::new("dup", DataType::Int64, true),
             ];
             if duplicate {
