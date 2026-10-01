@@ -26,6 +26,7 @@ import scala.jdk.CollectionConverters._
 import org.scalatest.{BeforeAndAfterAll, BeforeAndAfterEach, Outcome}
 import org.scalatest.funsuite.AnyFunSuite
 
+import org.apache.spark.SparkException
 import org.apache.spark.sql.{DataFrame, Row, SparkSession}
 import org.apache.spark.sql.execution.exchange.Exchange
 
@@ -74,6 +75,7 @@ class CometLocalExecutionSuite
       if (spark != null) {
         assert(new NativeLocal().activeQueries() == 0)
         assert(CometArrowImportAllocator.getAllocatedMemory == 0)
+        assert(LocalResultHandoff.active == 0)
       }
     } finally super.afterEach()
   }
@@ -142,6 +144,67 @@ class CometLocalExecutionSuite
         .mapPartitions(rows => rows.take(2).map(_.copy()))
         .collect()
         .length == 2)
+  }
+
+  test("collect and take hand local results to the driver within a Spark job") {
+    withParquetData { path =>
+      val query = spark.read.parquet(path).filter("id % 3 = 0").select("id", "text")
+      val plan = query.queryExecution.executedPlan
+      assert(plan.isInstanceOf[CometLocalResultExec], plan.toString)
+      assert(localNodes(query).size == 1)
+      val expected = withConf("spark.comet.enabled", "false")(query.collect().toSeq)
+      assert(query.collect().toSeq.sortBy(_.getLong(0)) == expected.sortBy(_.getLong(0)))
+      val taken = query.take(4)
+      assert(taken.length == 4 && taken.forall(r => expected.contains(r)))
+      assert(query.head(0).isEmpty)
+      val ordered = spark.read.parquet(path).orderBy(org.apache.spark.sql.functions.desc("id"))
+      assert(ordered.queryExecution.executedPlan.isInstanceOf[CometLocalResultExec])
+      assert(ordered.collect().map(_.getLong(0)).toSeq == (199L to 0L by -1L))
+      assert(ordered.take(3).map(_.getLong(0)).toSeq == Seq(199L, 198L, 197L))
+    }
+  }
+
+  test("job group cancellation interrupts a local collect") {
+    val query = spark.range(0, Long.MaxValue, 1, 7).toDF()
+    assert(query.queryExecution.executedPlan.isInstanceOf[CometLocalResultExec])
+    val group = "comet-local-collect-cancel"
+    val pool = Executors.newSingleThreadExecutor()
+    try {
+      val future = pool.submit(new Callable[Int] {
+        override def call(): Int = {
+          spark.sparkContext.setJobGroup(group, "cancel local collect", interruptOnCancel = true)
+          try query.collect().length
+          finally spark.sparkContext.clearJobGroup()
+        }
+      })
+      val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20)
+      while (new NativeLocal().activeQueries() == 0 && System.nanoTime() < deadline) {
+        Thread.sleep(10)
+      }
+      assert(new NativeLocal().activeQueries() == 1)
+      spark.sparkContext.cancelJobGroup(group)
+      intercept[java.util.concurrent.ExecutionException] { future.get(20, TimeUnit.SECONDS) }
+      while (new NativeLocal().activeQueries() != 0 && System.nanoTime() < deadline) {
+        Thread.sleep(10)
+      }
+    } finally pool.shutdownNow()
+  }
+
+  test("local result size limit stops native production and fails the action") {
+    val query = spark.range(0, Long.MaxValue, 1, 7).selectExpr("id", "id AS other")
+    val plan = query.queryExecution.executedPlan
+    assert(plan.isInstanceOf[CometLocalResultExec], plan.toString)
+    // Each two-long UnsafeRow is 24 bytes, so 1,000 bytes fit 41 rows and the 42nd exceeds it.
+    val failure = intercept[SparkException] {
+      LocalResultHandoff.collect(plan.execute(), -1, 1000)
+    }
+    assert(failure.getMessage.contains("spark.driver.maxResultSize"), failure.getMessage)
+    assert(failure.getMessage.contains("at least 1008 bytes"), failure.getMessage)
+    assert(new NativeLocal().activeQueries() == 0)
+    // A take within the limit still succeeds against the same bound.
+    assert(LocalResultHandoff.collect(plan.execute(), 41, 1000).length == 41)
+    // Non-positive limits mean unlimited, as in Spark.
+    assert(LocalResultHandoff.collect(plan.execute(), 100, 0).length == 100)
   }
 
   test("empty ranges, descending ranges and iterator results") {

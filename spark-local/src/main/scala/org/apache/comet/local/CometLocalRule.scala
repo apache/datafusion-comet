@@ -31,7 +31,7 @@ import org.apache.comet.shims.ShimCometStreaming
 
 private[comet] case class CometLocalRule(session: SparkSession) extends Rule[SparkPlan] {
   override def apply(plan: SparkPlan): SparkPlan = {
-    if (!CometConf.COMET_EXEC_LOCAL_ENABLED.get(conf) || plan.isInstanceOf[CometLocalExec]) {
+    if (!CometConf.COMET_EXEC_LOCAL_ENABLED.get(conf) || CometLocalRule.isLocal(plan)) {
       return plan
     }
     val reason = LocalModeSupport
@@ -57,7 +57,7 @@ private[comet] case class CometLocalRule(session: SparkSession) extends Rule[Spa
     if (reason.isDefined) return withInfo(plan, reason.get)
 
     LocalOutputPlanner.plan(plan, session).foreach { spec =>
-      return CometLocalExec(plan.output, spec, plan.outputOrdering)
+      return CometLocalResultExec(CometLocalExec(plan.output, spec, plan.outputOrdering))
     }
 
     // Inspect the complete root, never transform matching descendants of an unsupported query.
@@ -72,7 +72,7 @@ private[comet] case class CometLocalRule(session: SparkSession) extends Rule[Spa
       .orElse(LocalAggregatePlanner.plan(body, session))
       .orElse(LocalParquetPlanner.plan(body, session))
       .foreach { spec =>
-        return wrap(CometLocalExec(body.output, spec))
+        return wrap(CometLocalResultExec(CometLocalExec(body.output, spec)))
       }
     def source(p: SparkPlan): Option[RangeExec] = p match {
       case range: RangeExec => Some(range)
@@ -88,15 +88,16 @@ private[comet] case class CometLocalRule(session: SparkSession) extends Rule[Spa
             body.output.size <= 1024 && CometConf.COMET_BATCH_SIZE.get(conf) >= 1 &&
             CometConf.COMET_BATCH_SIZE.get(conf) <= 65536 && isCometLoaded(conf) =>
         wrap(
-          CometLocalExec(
-            body.output,
-            LocalRangeSpec(
-              range.start,
-              range.end,
-              range.step,
-              range.numSlices,
-              CometConf.COMET_BATCH_SIZE.get(conf),
-              body.output.size)))
+          CometLocalResultExec(
+            CometLocalExec(
+              body.output,
+              LocalRangeSpec(
+                range.start,
+                range.end,
+                range.step,
+                range.numSlices,
+                CometConf.COMET_BATCH_SIZE.get(conf),
+                body.output.size))))
       case _ =>
         withInfo(
           plan,
@@ -116,4 +117,14 @@ private[comet] case class CometLocalRule(session: SparkSession) extends Rule[Spa
         }
       case _ => false
     }
+}
+
+private[comet] object CometLocalRule {
+
+  /** An already admitted local query, with or without its result boundary or limit wrapper. */
+  def isLocal(plan: SparkPlan): Boolean = plan match {
+    case _: CometLocalExec | _: CometLocalResultExec => true
+    case limit: CollectLimitExec => isLocal(limit.child)
+    case _ => false
+  }
 }

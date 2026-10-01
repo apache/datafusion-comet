@@ -32,7 +32,7 @@ import org.apache.spark.sql.execution.reuse.ReuseExchangeAndSubquery
 
 import org.apache.comet.{CometConf, ExtendedExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.isCometLoaded
-import org.apache.comet.local.{CometLocalExec, CometLocalRule}
+import org.apache.comet.local.CometLocalRule
 import org.apache.comet.shims.ShimCometStreaming
 
 object CometRule {
@@ -141,7 +141,7 @@ case class CometRule(session: SparkSession, queryStagePrep: Boolean = false)
   private val execRule = CometExecRule(session)
 
   override def apply(plan: SparkPlan): SparkPlan = {
-    if (plan.isInstanceOf[CometLocalExec]) return plan
+    if (CometLocalRule.isLocal(plan)) return plan
     if (planOnlyApplies(plan)) {
       reportPlanOnlyCoverage(plan)
       plan
