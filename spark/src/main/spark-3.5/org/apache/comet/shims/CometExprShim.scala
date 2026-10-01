@@ -35,6 +35,8 @@ trait CometExprShim {
 
   def binaryOutputStyle: BinaryOutputStyle = BinaryOutputStyle.HEX_DISCRETE
 
+  def getJsonObjectNativeFunctionName: String = "get_json_object"
+
   def sparkVersionSpecificStringExpressions
       : Map[Class[_ <: Expression], CometExpressionSerde[_]] =
     Map(classOf[StringDecode] -> CometStringDecode, classOf[Encode] -> CometEncode)
