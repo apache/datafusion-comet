@@ -369,10 +369,14 @@ object CometConf extends ShimCometConf {
         "difference between the first two is native memory that the pools are not accounting " +
         "for. The executor logs one line per interval however many tasks are " +
         "running, and one more after the last plan finishes. It logs a warning when the " +
-        "native memory looks larger than the executor's container allows. This is an executor " +
-        "setting, read when an executor starts its first Comet native plan, so it must be set " +
-        "when the application is submitted. An invalid value disables the log with a warning. " +
-        s"Set to 0 to disable. $TUNING_GUIDE.")
+        "native memory looks larger than the executor's container allows. When " +
+        "spark.eventLog.enabled is true and the application runs the Comet plugin, the " +
+        "executor also sends its samples to the driver, which writes the one with the most " +
+        "untracked memory and the last of every minute to the event log, as " +
+        "CometExecutorMemoryUsage events. This is an " +
+        "executor setting, read when an executor starts its first Comet native plan, so it " +
+        "must be set when the application is submitted. An invalid value disables the log " +
+        s"with a warning. Set to 0 to disable. $TUNING_GUIDE.")
     .timeConf(TimeUnit.MILLISECONDS)
     .checkValue(_ >= 0, "The memory usage log interval must not be negative")
     .createWithDefault(TimeUnit.SECONDS.toMillis(10))

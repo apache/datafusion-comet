@@ -644,7 +644,9 @@ A checklist for triaging an executor OOM kill:
    them. A failed task with `SparkOutOfMemoryError` and a surviving executor is Spark's managed
    memory pool, which is the only one of the three that is recoverable at task level.
 2. Compare `allocated` against `reserved` in the executor's `Comet native memory usage` log lines
-   leading up to the kill, or `native_allocated` against `comet_memory_reserved_total` in a trace.
+   leading up to the kill, or `nativeAllocated` against `poolsReserved` in its
+   `CometExecutorMemoryUsage` events when the event log records them, or `native_allocated`
+   against `comet_memory_reserved_total` in a trace.
    A large excess points at undeclared native allocations; a small excess points at the budget
    simply being too small, or at the JVM side, which the same lines report as `JVM Arrow allocated`.
 3. Check `spark.comet.batchSize` against the schema width. Peak memory scales with
