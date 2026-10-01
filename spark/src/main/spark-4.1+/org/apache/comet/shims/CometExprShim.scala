@@ -35,6 +35,8 @@ import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, scalarFunctio
  */
 trait CometExprShim extends Spark4xCometExprShim {
 
+  def getJsonObjectNativeFunctionName: String = "get_json_object"
+
   def binaryOutputStyle: BinaryOutputStyle = {
     // Since Spark 4.1, BINARY_OUTPUT_STYLE is an enumConf so getConf already returns the enum value.
     SQLConf.get.getConf(SQLConf.BINARY_OUTPUT_STYLE) match {
