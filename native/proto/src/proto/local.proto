@@ -1,0 +1,61 @@
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//   http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+
+
+syntax = "proto3";
+package spark.local;
+import "expr.proto";
+import "operator.proto";
+option java_package = "org.apache.comet.serde";
+option java_outer_classname = "LocalOuterClass";
+
+// Complete aggregation over raw local input. Never a Spark partial-buffer protocol.
+// Grouped inputs are repartitioned by the complete group key; global inputs are gathered.
+message LocalAggregate {
+  repeated spark.spark_expression.Expr grouping = 1;
+  repeated spark.spark_expression.AggExpr aggregates = 2;
+  repeated spark.spark_expression.Expr result = 3;
+  uint32 partitions = 4;
+}
+
+// Two independent Parquet inputs, repartitioned together within one query runtime.
+message LocalJoin {
+  spark.spark_operator.Operator left = 1;
+  spark.spark_operator.Operator right = 2;
+  repeated spark.spark_operator.SparkFilePartition left_files = 3;
+  repeated spark.spark_operator.SparkFilePartition right_files = 4;
+  repeated spark.spark_expression.Expr left_keys = 5;
+  repeated spark.spark_expression.Expr right_keys = 6;
+  spark.spark_operator.JoinType join_type = 7;
+  uint32 partitions = 8;
+  bool build_right = 9;
+  repeated spark.spark_expression.Expr result = 10;
+}
+
+// Query result operations. Fetch excludes skip; sort Top-K retains skip + fetch rows.
+message LocalOutput {
+  repeated LocalSort orders = 1;
+  optional uint64 fetch = 2;
+  uint64 skip = 3;
+  repeated spark.spark_expression.Expr result = 4;
+}
+message LocalSort {
+  spark.spark_expression.Expr child = 1;
+  bool descending = 2;
+  bool nulls_first = 3;
+}

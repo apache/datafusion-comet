@@ -127,6 +127,10 @@ BUILD_JOBS = {
 MVN_JOBS = BUILD_JOBS | {"delta_gate", "pyarrow_udf"}
 
 ROUTING_CASES = [
+    (["spark-local/src/main/scala/org/apache/comet/local/CometLocalRule.scala"],
+     BUILD_JOBS | {"delta_gate"}),
+    (["spark-local/src/test/scala/org/apache/comet/local/CometLocalExecutionSuite.scala"],
+     {"build_linux", "build_linux_full", "build_linux_all_profiles", "build_macos", "build_macos_full"}),
     # The Maven wrapper and its config feed every job that runs ./mvnw: the
     # Linux/macOS builds, setup-spark-builder, the Iceberg `mvnw install`, the
     # Delta gate's effective-pom check and the PyArrow suite's `mvnw install`.

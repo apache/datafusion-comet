@@ -651,6 +651,21 @@ under the License.
   <build>
     <plugins>
       <plugin>
+        <groupId>org.scalastyle</groupId>
+        <artifactId>scalastyle-maven-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>check-local-source-module</id>
+            <phase>compile</phase>
+            <goals><goal>check</goal></goals>
+            <configuration>
+              <sourceDirectory>${project.basedir}/../spark-local/src/main/scala</sourceDirectory>
+              <outputFile>${project.build.directory}/scalastyle-local-output.xml</outputFile>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
         <groupId>io.github.git-commit-id</groupId>
         <artifactId>git-commit-id-maven-plugin</artifactId>
         <version>${git-commit-id-maven-plugin.version}</version>
@@ -832,6 +847,7 @@ under the License.
             </goals>
             <configuration>
               <sources>
+                <source>../spark-local/src/test/scala</source>
                 <source>src/test/${shims.majorVerSrc}</source>
                 <source>src/test/${shims.minorPlusVerSrc}</source>
                 <source>src/test/${shims.minorVerSrc}</source>
@@ -846,6 +862,7 @@ under the License.
             </goals>
             <configuration>
               <sources>
+                <source>../spark-local/src/main/scala</source>
                 <source>src/main/${shims.majorVerSrc}</source>
                 <source>src/main/${shims.minorPlusVerSrc}</source>
                 <source>src/main/${shims.minorVerSrc}</source>

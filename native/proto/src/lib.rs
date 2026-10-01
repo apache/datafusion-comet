@@ -51,6 +51,10 @@ pub mod spark_config {
     include!(concat!("generated", "/spark.spark_config.rs"));
 }
 
+pub mod local {
+    include!(concat!("generated", "/spark.local.rs"));
+}
+
 #[cfg(test)]
 mod tests {
     use super::spark_operator::{

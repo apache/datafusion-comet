@@ -215,6 +215,35 @@ object CometConf extends ShimCometConf {
     .booleanConf
     .createWithDefault(true)
 
+  val COMET_EXEC_LOCAL_MEMORY_LIMIT: ConfigEntry[Long] =
+    conf("spark.comet.exec.local.memoryLimit")
+      .category(CATEGORY_EXEC)
+      .internal()
+      .doc("Per-query DataFusion reservation budget for local Parquet queries; not an RSS limit.")
+      .bytesConf(ByteUnit.BYTE)
+      .checkValue(_ > 0, "Must be positive.")
+      .createWithDefault(256L * 1024 * 1024)
+
+  val COMET_EXEC_LOCAL_SPILL_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.exec.local.spill.enabled")
+      .category(CATEGORY_EXEC)
+      .internal()
+      .doc(
+        "Allow local queries to spill to query-owned temporary files in the OS temp directory.")
+      .booleanConf
+      .createWithDefault(true)
+
+  val COMET_EXEC_LOCAL_ENABLED: ConfigEntry[Boolean] = conf("spark.comet.exec.local.enabled")
+    .category(CATEGORY_EXEC)
+    .internal()
+    .doc(
+      "Enable experimental whole-query local execution. " +
+        "Requires Spark 4.1 in local mode with AQE disabled. Supports range projections and " +
+        "admitted local Parquet/filter/project/aggregate/hash-join queries; " +
+        "terminal sort/limit is supported on Parquet queries; unsupported queries fall back.")
+    .booleanConf
+    .createWithDefault(false)
+
   val COMET_EXEC_PROJECT_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("project", defaultValue = true)
   val COMET_EXEC_FILTER_ENABLED: ConfigEntry[Boolean] =

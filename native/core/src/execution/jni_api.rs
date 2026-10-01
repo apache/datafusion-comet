@@ -974,7 +974,7 @@ fn register_datafusion_spark_function(session_ctx: &SessionContext) {
 }
 
 /// Prepares arrow arrays for output.
-fn prepare_output(
+pub(crate) fn prepare_output(
     env: &mut Env,
     array_addrs: JLongArray,
     schema_addrs: JLongArray,

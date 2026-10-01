@@ -34,6 +34,7 @@ fn main() -> Result<()> {
             "src/proto/partitioning.proto",
             "src/proto/operator.proto",
             "src/proto/config.proto",
+            "src/proto/local.proto",
         ],
         &["src/proto"],
     )?;

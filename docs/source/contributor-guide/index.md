@@ -45,6 +45,8 @@ Development Guide <development>
 :hidden:
 
 Comet Plugin Overview <plugin_overview>
+Local Execution <local-execution>
+Local Execution Benchmark <local-execution-benchmark>
 Arrow FFI <ffi>
 Timezone Handling <timezones>
 JVM Shuffle <jvm_shuffle>

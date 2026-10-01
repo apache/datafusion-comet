@@ -2857,7 +2857,7 @@ impl PhysicalPlanner {
     }
 
     /// Create a DataFusion physical aggregate expression from Spark physical aggregate expression
-    fn create_agg_expr(
+    pub(crate) fn create_agg_expr(
         &self,
         spark_expr: &AggExpr,
         schema: SchemaRef,
