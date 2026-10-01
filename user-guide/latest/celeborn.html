@@ -29,7 +29,7 @@ under the License.
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Comet Metrics &#8212; Apache DataFusion Comet  documentation</title>
+    <title>Using Comet with Apache Celeborn &#8212; Apache DataFusion Comet  documentation</title>
   
   
   
@@ -63,13 +63,13 @@ under the License.
     <script src="../../_static/documentation_options.js?v=5929fcd5"></script>
     <script src="../../_static/doctools.js?v=9a2dae69"></script>
     <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script>DOCUMENTATION_OPTIONS.pagename = 'user-guide/0.14/metrics';</script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'user-guide/latest/celeborn';</script>
     <script async="true" defer="true" src="https://buttons.github.io/buttons.js"></script>
     <script src="../../_static/comet-ux.js?v=97577a30"></script>
     <link rel="index" title="Index" href="../../genindex.html" />
     <link rel="search" title="Search" href="../../search.html" />
-    <link rel="next" title="Accelerating Apache Iceberg Parquet Scans using Comet (Experimental)" href="iceberg.html" />
-    <link rel="prev" title="Comet Tuning Guide" href="tuning.html" />
+    <link rel="next" title="S3 Credential Providers" href="s3-credential-providers.html" />
+    <link rel="prev" title="Iceberg Writes: Comet’s Split-Operator Plan (Experimental)" href="iceberg-writes.html" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
@@ -489,117 +489,117 @@ under the License.
 </ul>
 
 </details></li>
-<li class="toctree-l1 has-children"><a class="reference internal" href="../latest/index.html">Development Snapshot</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><p aria-level="2" class="caption" role="heading"><span class="caption-text">Getting Started</span></p>
+<li class="toctree-l1 current active has-children"><a class="reference internal" href="index.html">Development Snapshot</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><p aria-level="2" class="caption" role="heading"><span class="caption-text">Getting Started</span></p>
 <ul>
-<li class="toctree-l2"><a class="reference internal" href="../latest/installation.html">Installing Comet</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../latest/configs.html">Configuration Settings</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../latest/migration-guide.html">Upgrading Comet</a></li>
+<li class="toctree-l2"><a class="reference internal" href="installation.html">Installing Comet</a></li>
+<li class="toctree-l2"><a class="reference internal" href="configs.html">Configuration Settings</a></li>
+<li class="toctree-l2"><a class="reference internal" href="migration-guide.html">Upgrading Comet</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">What Comet Supports</span></p>
 <ul>
-<li class="toctree-l2"><a class="reference internal" href="../latest/datasources.html">Supported Data Sources</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../latest/datatypes.html">Supported Data Types</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../latest/operators.html">Supported Operators</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../latest/expressions.html">Supported Expressions</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../latest/scala_java_udfs.html">ScalaUDF and Java UDF Support</a></li>
+<li class="toctree-l2"><a class="reference internal" href="datasources.html">Supported Data Sources</a></li>
+<li class="toctree-l2"><a class="reference internal" href="datatypes.html">Supported Data Types</a></li>
+<li class="toctree-l2"><a class="reference internal" href="operators.html">Supported Operators</a></li>
+<li class="toctree-l2"><a class="reference internal" href="expressions.html">Supported Expressions</a></li>
+<li class="toctree-l2"><a class="reference internal" href="scala_java_udfs.html">ScalaUDF and Java UDF Support</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Compatibility</span></p>
 <ul>
-<li class="toctree-l2"><a class="reference internal" href="../latest/compatibility/index.html">Overview</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../latest/compatibility/scans.html">Parquet Compatibility</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../latest/compatibility/floating-point.html">Floating-point Number Comparison</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../latest/compatibility/regex.html">Regular Expressions</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../latest/compatibility/operators.html">Operator Compatibility</a></li>
-<li class="toctree-l2 has-children"><a class="reference internal" href="../latest/compatibility/expressions/index.html">Expression Compatibility</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
-<li class="toctree-l3 has-children"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.4/index.html">Spark 3.4</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.4/aggregate.html">Aggregate Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.4/array.html">Array Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.4/datetime.html">Date/Time Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.4/map.html">Map Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.4/math.html">Math Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.4/misc.html">Miscellaneous Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.4/string.html">String Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.4/struct.html">Struct Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.4/url.html">URL Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.4/cast.html">Cast</a></li>
+<li class="toctree-l2"><a class="reference internal" href="compatibility/index.html">Overview</a></li>
+<li class="toctree-l2"><a class="reference internal" href="compatibility/scans.html">Parquet Compatibility</a></li>
+<li class="toctree-l2"><a class="reference internal" href="compatibility/floating-point.html">Floating-point Number Comparison</a></li>
+<li class="toctree-l2"><a class="reference internal" href="compatibility/regex.html">Regular Expressions</a></li>
+<li class="toctree-l2"><a class="reference internal" href="compatibility/operators.html">Operator Compatibility</a></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="compatibility/expressions/index.html">Expression Compatibility</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3 has-children"><a class="reference internal" href="compatibility/expressions/spark-3.4/index.html">Spark 3.4</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.4/aggregate.html">Aggregate Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.4/array.html">Array Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.4/datetime.html">Date/Time Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.4/map.html">Map Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.4/math.html">Math Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.4/misc.html">Miscellaneous Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.4/string.html">String Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.4/struct.html">Struct Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.4/url.html">URL Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.4/cast.html">Cast</a></li>
 </ul>
 </details></li>
-<li class="toctree-l3 has-children"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.5/index.html">Spark 3.5</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.5/aggregate.html">Aggregate Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.5/array.html">Array Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.5/datetime.html">Date/Time Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.5/map.html">Map Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.5/math.html">Math Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.5/misc.html">Miscellaneous Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.5/string.html">String Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.5/struct.html">Struct Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.5/url.html">URL Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.5/cast.html">Cast</a></li>
+<li class="toctree-l3 has-children"><a class="reference internal" href="compatibility/expressions/spark-3.5/index.html">Spark 3.5</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.5/aggregate.html">Aggregate Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.5/array.html">Array Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.5/datetime.html">Date/Time Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.5/map.html">Map Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.5/math.html">Math Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.5/misc.html">Miscellaneous Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.5/string.html">String Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.5/struct.html">Struct Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.5/url.html">URL Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.5/cast.html">Cast</a></li>
 </ul>
 </details></li>
-<li class="toctree-l3 has-children"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.0/index.html">Spark 4.0</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.0/aggregate.html">Aggregate Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.0/array.html">Array Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.0/datetime.html">Date/Time Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.0/map.html">Map Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.0/math.html">Math Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.0/misc.html">Miscellaneous Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.0/string.html">String Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.0/struct.html">Struct Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.0/url.html">URL Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.0/cast.html">Cast</a></li>
+<li class="toctree-l3 has-children"><a class="reference internal" href="compatibility/expressions/spark-4.0/index.html">Spark 4.0</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.0/aggregate.html">Aggregate Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.0/array.html">Array Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.0/datetime.html">Date/Time Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.0/map.html">Map Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.0/math.html">Math Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.0/misc.html">Miscellaneous Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.0/string.html">String Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.0/struct.html">Struct Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.0/url.html">URL Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.0/cast.html">Cast</a></li>
 </ul>
 </details></li>
-<li class="toctree-l3 has-children"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.1/index.html">Spark 4.1</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.1/aggregate.html">Aggregate Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.1/array.html">Array Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.1/datetime.html">Date/Time Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.1/map.html">Map Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.1/math.html">Math Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.1/misc.html">Miscellaneous Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.1/string.html">String Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.1/struct.html">Struct Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.1/url.html">URL Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.1/cast.html">Cast</a></li>
+<li class="toctree-l3 has-children"><a class="reference internal" href="compatibility/expressions/spark-4.1/index.html">Spark 4.1</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.1/aggregate.html">Aggregate Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.1/array.html">Array Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.1/datetime.html">Date/Time Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.1/map.html">Map Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.1/math.html">Math Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.1/misc.html">Miscellaneous Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.1/string.html">String Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.1/struct.html">Struct Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.1/url.html">URL Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.1/cast.html">Cast</a></li>
 </ul>
 </details></li>
 </ul>
 </details></li>
-<li class="toctree-l2"><a class="reference internal" href="../latest/compatibility/json.html">JSON Compatibility</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../latest/compatibility/spark-versions.html">Spark Version Compatibility</a></li>
+<li class="toctree-l2"><a class="reference internal" href="compatibility/json.html">JSON Compatibility</a></li>
+<li class="toctree-l2"><a class="reference internal" href="compatibility/spark-versions.html">Spark Version Compatibility</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Operating Comet</span></p>
 <ul>
-<li class="toctree-l2"><a class="reference internal" href="../latest/understanding-comet-plans.html">Understanding Comet Plans</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../latest/metrics.html">Metrics Guide</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../latest/in-memory-cache.html">In-Memory Cache</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../latest/pyarrow-udfs.html">PyArrow UDF Acceleration</a></li>
+<li class="toctree-l2"><a class="reference internal" href="understanding-comet-plans.html">Understanding Comet Plans</a></li>
+<li class="toctree-l2"><a class="reference internal" href="metrics.html">Metrics Guide</a></li>
+<li class="toctree-l2"><a class="reference internal" href="in-memory-cache.html">In-Memory Cache</a></li>
+<li class="toctree-l2"><a class="reference internal" href="pyarrow-udfs.html">PyArrow UDF Acceleration</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Tuning</span></p>
 <ul>
-<li class="toctree-l2"><a class="reference internal" href="../latest/tuning.html">Overview</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../latest/tuning/memory.html">Memory</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../latest/tuning/shuffle.html">Shuffle</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../latest/tuning/celeborn.html">Celeborn Shuffle</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../latest/tuning/scans.html">Scans</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../latest/tuning/operators.html">Operators</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../latest/tuning/transitions.html">Row/Columnar Transitions</a></li>
+<li class="toctree-l2"><a class="reference internal" href="tuning.html">Overview</a></li>
+<li class="toctree-l2"><a class="reference internal" href="tuning/memory.html">Memory</a></li>
+<li class="toctree-l2"><a class="reference internal" href="tuning/shuffle.html">Shuffle</a></li>
+<li class="toctree-l2"><a class="reference internal" href="tuning/celeborn.html">Celeborn Shuffle</a></li>
+<li class="toctree-l2"><a class="reference internal" href="tuning/scans.html">Scans</a></li>
+<li class="toctree-l2"><a class="reference internal" href="tuning/operators.html">Operators</a></li>
+<li class="toctree-l2"><a class="reference internal" href="tuning/transitions.html">Row/Columnar Transitions</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Integrations</span></p>
-<ul>
-<li class="toctree-l2"><a class="reference internal" href="../latest/iceberg.html">Iceberg Guide</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../latest/iceberg-writes.html">Iceberg Writes</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../latest/celeborn.html">Celeborn Guide</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../latest/s3-credential-providers.html">S3 Credential Providers</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../latest/kubernetes.html">Kubernetes Guide</a></li>
+<ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="iceberg.html">Iceberg Guide</a></li>
+<li class="toctree-l2"><a class="reference internal" href="iceberg-writes.html">Iceberg Writes</a></li>
+<li class="toctree-l2 current"><a class="current reference internal" href="#">Celeborn Guide</a></li>
+<li class="toctree-l2"><a class="reference internal" href="s3-credential-providers.html">S3 Credential Providers</a></li>
+<li class="toctree-l2"><a class="reference internal" href="kubernetes.html">Kubernetes Guide</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Advanced</span></p>
 <ul>
-<li class="toctree-l2"><a class="reference internal" href="../latest/source.html">Building From Source</a></li>
+<li class="toctree-l2"><a class="reference internal" href="source.html">Building From Source</a></li>
 </ul>
 
 </details></li>
-<li class="toctree-l1 current active has-children"><a class="reference internal" href="../older-versions.html">Older Versions</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul class="current">
+<li class="toctree-l1 has-children"><a class="reference internal" href="../older-versions.html">Older Versions</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../0.17/index.html">0.17.x</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
 <li class="toctree-l3"><a class="reference internal" href="../0.17/installation.html">Installing Comet</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../0.17/configs.html">Configuration Settings</a></li>
@@ -670,19 +670,19 @@ under the License.
 <li class="toctree-l3"><a class="reference internal" href="../0.15/kubernetes.html">Kubernetes Guide</a></li>
 </ul>
 </details></li>
-<li class="toctree-l2 current active has-children"><a class="reference internal" href="index.html">0.14.x</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul class="current">
-<li class="toctree-l3"><a class="reference internal" href="installation.html">Installing Comet</a></li>
-<li class="toctree-l3"><a class="reference internal" href="source.html">Building From Source</a></li>
-<li class="toctree-l3"><a class="reference internal" href="datasources.html">Supported Data Sources</a></li>
-<li class="toctree-l3"><a class="reference internal" href="datatypes.html">Supported Data Types</a></li>
-<li class="toctree-l3"><a class="reference internal" href="operators.html">Supported Operators</a></li>
-<li class="toctree-l3"><a class="reference internal" href="expressions.html">Supported Expressions</a></li>
-<li class="toctree-l3"><a class="reference internal" href="configs.html">Configuration Settings</a></li>
-<li class="toctree-l3"><a class="reference internal" href="compatibility.html">Compatibility Guide</a></li>
-<li class="toctree-l3"><a class="reference internal" href="tuning.html">Tuning Guide</a></li>
-<li class="toctree-l3 current active"><a class="current reference internal" href="#">Metrics Guide</a></li>
-<li class="toctree-l3"><a class="reference internal" href="iceberg.html">Iceberg Guide</a></li>
-<li class="toctree-l3"><a class="reference internal" href="kubernetes.html">Kubernetes Guide</a></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../0.14/index.html">0.14.x</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../0.14/installation.html">Installing Comet</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.14/source.html">Building From Source</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.14/datasources.html">Supported Data Sources</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.14/datatypes.html">Supported Data Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.14/operators.html">Supported Operators</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.14/expressions.html">Supported Expressions</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.14/configs.html">Configuration Settings</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.14/compatibility.html">Compatibility Guide</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.14/tuning.html">Tuning Guide</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.14/metrics.html">Metrics Guide</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.14/iceberg.html">Iceberg Guide</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.14/kubernetes.html">Kubernetes Guide</a></li>
 </ul>
 </details></li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../0.13/index.html">0.13.x</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
@@ -748,12 +748,9 @@ under the License.
     <li class="breadcrumb-item"><a href="../index.html" class="nav-link">Comet User Guide</a></li>
     
     
-    <li class="breadcrumb-item"><a href="../older-versions.html" class="nav-link">Older Versions</a></li>
+    <li class="breadcrumb-item"><a href="index.html" class="nav-link">Comet 1.2.0-SNAPSHOT User Guide</a></li>
     
-    
-    <li class="breadcrumb-item"><a href="index.html" class="nav-link">Comet 0.14.0 User Guide</a></li>
-    
-    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Comet Metrics</span></li>
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Using Comet with Apache Celeborn</span></li>
   </ul>
 </nav>
 </div>
@@ -771,130 +768,150 @@ under the License.
                 <article class="bd-article">
                   
   <!---
-Licensed to the Apache Software Foundation (ASF) under one
-or more contributor license agreements.  See the NOTICE file
-distributed with this work for additional information
-regarding copyright ownership.  The ASF licenses this file
-to you under the Apache License, Version 2.0 (the
-"License"); you may not use this file except in compliance
-with the License.  You may obtain a copy of the License at
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
 
-http://www.apache.org/licenses/LICENSE-2.0
+    http://www.apache.org/licenses/LICENSE-2.0
 
-Unless required by applicable law or agreed to in writing,
-software distributed under the License is distributed on an
-"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-KIND, either express or implied.  See the License for the
-specific language governing permissions and limitations
-under the License.
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
 -->
-<div class="admonition warning">
-<p class="admonition-title">Warning</p>
-<p>This is <strong>out-of-date</strong> documentation. The latest Comet release is version 1.0.0.</p>
+<section id="using-comet-with-apache-celeborn">
+<h1>Using Comet with Apache Celeborn<a class="headerlink" href="#using-comet-with-apache-celeborn" title="Link to this heading">#</a></h1>
+<p>Comet accelerates query processing. <a class="reference external" href="https://celeborn.apache.org/">Apache Celeborn</a> provides
+remote storage for shuffle data.</p>
+<section id="support-status">
+<h2>Support Status<a class="headerlink" href="#support-status" title="Link to this heading">#</a></h2>
+<p>Comet’s <a class="reference internal" href="tuning/shuffle.html#native-shuffle"><span class="std std-ref">native shuffle</span></a> through Celeborn is unavailable
+with the currently released Celeborn 0.6.x and 0.7.x clients.
+Setting <code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.mode=native</span></code> does not change that.</p>
+<p>You can still use Comet to accelerate supported scans, filters, and other query operators.
+Shuffle is handled by Celeborn’s existing Spark integration.</p>
+</section>
+<section id="setup">
+<h2>Setup<a class="headerlink" href="#setup" title="Link to this heading">#</a></h2>
+<p>Start with a running Celeborn service and a compatible <a class="reference internal" href="installation.html"><span class="std std-doc">Comet installation</span></a>.
+Celeborn is an optional application dependency that Comet does not bundle. Supply both the
+Comet JAR and a Celeborn Spark client matching the application’s Spark and Scala versions on
+the startup classpaths of the driver and all executors.</p>
+<p>For Spark 3, the shaded client coordinates in Maven Central are
+<code class="docutils literal notranslate"><span class="pre">org.apache.celeborn:celeborn-client-spark-3-shaded_&lt;scala-binary-version&gt;:&lt;celeborn-version&gt;</span></code>.
+For example, <code class="docutils literal notranslate"><span class="pre">org.apache.celeborn:celeborn-client-spark-3-shaded_2.12:0.7.0</span></code> supplies
+<code class="docutils literal notranslate"><span class="pre">celeborn-client-spark-3-shaded_2.12-0.7.0.jar</span></code> for Spark 3 / Scala 2.12.</p>
+<p>The example below uses Spark 3.5, Scala 2.12, and Celeborn 0.7.0:</p>
+<ol class="arabic simple">
+<li><p>Download the matching Comet JAR using the <a class="reference internal" href="installation.html"><span class="std std-doc">installation guide</span></a> and the
+shaded Celeborn client from Maven Central.</p></li>
+<li><p>Install both JARs in <code class="docutils literal notranslate"><span class="pre">$SPARK_HOME/jars</span></code> on the driver and every executor, or include them
+in the Spark image used by those processes. For JARs installed elsewhere, set
+<code class="docutils literal notranslate"><span class="pre">spark.driver.extraClassPath</span></code> and <code class="docutils literal notranslate"><span class="pre">spark.executor.extraClassPath</span></code> to their paths before
+startup. Those paths must exist on the corresponding machines.</p></li>
+<li><p>Start Spark with the settings below, replacing the Celeborn master endpoints with your
+deployment’s values.</p></li>
+</ol>
+<p>Spark 3.5 loads the shuffle manager before the executor’s user-JAR classloader is initialized.
+Supplying only <code class="docutils literal notranslate"><span class="pre">--jars</span></code> or <code class="docutils literal notranslate"><span class="pre">--packages</span></code> does not ensure that the manager and Celeborn client
+are available at that point; use the startup classpaths above.</p>
+<p>This example enables Comet with Spark shuffle backed by Celeborn, as described in
+<a class="reference internal" href="#support-status">Support Status</a>.</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nv">$SPARK_HOME</span>/bin/spark-shell<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.plugins<span class="o">=</span>org.apache.spark.CometPlugin<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.shuffle.manager<span class="o">=</span>org.apache.spark.sql.comet.execution.shuffle.CometCelebornShuffleManager<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.serializer<span class="o">=</span>org.apache.spark.serializer.KryoSerializer<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.celeborn.master.endpoints<span class="o">=</span>celeborn-master-1:9097,celeborn-master-2:9097<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.comet.exec.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.comet.shuffle.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.comet.shuffle.mode<span class="o">=</span>auto<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.comet.explain.fallback.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.memory.offHeap.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.memory.offHeap.size<span class="o">=</span>2g
+</pre></div>
 </div>
-<section id="comet-metrics">
-<h1>Comet Metrics<a class="headerlink" href="#comet-metrics" title="Link to this heading">#</a></h1>
-<section id="spark-sql-metrics">
-<h2>Spark SQL Metrics<a class="headerlink" href="#spark-sql-metrics" title="Link to this heading">#</a></h2>
-<p>Set <code class="docutils literal notranslate"><span class="pre">spark.comet.metrics.detailed=true</span></code> to see all available Comet metrics.</p>
-<section id="cometscanexec">
-<h3>CometScanExec<a class="headerlink" href="#cometscanexec" title="Link to this heading">#</a></h3>
+<p>Celeborn’s shaded client requires the Kryo serializer; see the
+<a class="reference external" href="https://github.com/apache/celeborn/blob/v0.7.0/docs/deploy.md#deploy-spark-client">Celeborn deployment guide</a>.
+For another Spark or Scala version, select matching Comet and Celeborn artifacts rather than
+reusing the Spark 3 / Scala 2.12 example.</p>
+<p>Set the shuffle manager and Celeborn service configuration before creating the Spark context.
+Keep your deployment’s existing Celeborn authentication, storage, and recovery settings.</p>
+</section>
+<section id="verifying-the-shuffle-path">
+<h2>Verifying the Shuffle Path<a class="headerlink" href="#verifying-the-shuffle-path" title="Link to this heading">#</a></h2>
+<ol class="arabic simple">
+<li><p>Run a query containing a shuffle, then inspect its executed plan in the Spark SQL UI or
+with <code class="docutils literal notranslate"><span class="pre">df.explain(&quot;formatted&quot;)</span></code>. With AQE, inspect the final plan after an action completes.
+Supported operators can appear as Comet nodes, while the shuffle appears as a plain
+<code class="docutils literal notranslate"><span class="pre">Exchange</span></code>. This is the expected result with the currently released Celeborn 0.6.x and
+0.7.x clients.</p></li>
+<li><p>Inspect shuffle read/write bytes, records, and time in the Spark UI. Spark’s remote-read
+byte counters alone cannot confirm that Celeborn stored the data: they also count local
+shuffle files fetched from another executor. Celeborn’s fallback policy may select local
+Spark shuffle for some exchanges; use the check below to identify those shuffles.</p></li>
+</ol>
+<p>If an operator you expected Comet to accelerate remains on Spark, use
+<code class="docutils literal notranslate"><span class="pre">spark.comet.explain.fallback.enabled=true</span></code> to see the reasons in the driver log. See
+<a class="reference internal" href="understanding-comet-plans.html"><span class="std std-doc">Understanding Comet Plans</span></a> for details.</p>
+<section id="checking-for-local-fallback">
+<h3>Checking for Local Fallback<a class="headerlink" href="#checking-for-local-fallback" title="Link to this heading">#</a></h3>
+<p>For the Spark 3.5 / Celeborn 0.7.0 setup above, enable INFO logging for
+<code class="docutils literal notranslate"><span class="pre">org.apache.spark.scheduler.DAGScheduler</span></code> on the driver before running the query, then:</p>
+<ol class="arabic simple">
+<li><p>Open the query in the Spark UI’s SQL tab, follow its associated jobs, and identify the
+shuffle-writing stage you want to check.</p></li>
+<li><p>Find that stage in the driver log. For example,
+<code class="docutils literal notranslate"><span class="pre">Submitting</span> <span class="pre">ShuffleMapStage</span> <span class="pre">5</span> <span class="pre">(MapPartitionsRDD[17]</span> <span class="pre">...)</span></code> identifies its input RDD as 17.
+Find the corresponding
+<code class="docutils literal notranslate"><span class="pre">Registering</span> <span class="pre">RDD</span> <span class="pre">17</span> <span class="pre">(...)</span> <span class="pre">as</span> <span class="pre">input</span> <span class="pre">to</span> <span class="pre">shuffle</span> <span class="pre">3</span></code> message. In this example, stage 5 writes
+shuffle 3. Match the IDs within the same application; the messages need not be adjacent.</p></li>
+<li><p>Check Celeborn’s driver logs for
+<code class="docutils literal notranslate"><span class="pre">Fallback</span> <span class="pre">to</span> <span class="pre">vanilla</span> <span class="pre">Spark</span> <span class="pre">SortShuffleManager</span> <span class="pre">for</span> <span class="pre">shuffle:</span> <span class="pre">3</span></code>.
+This confirms that shuffle 3 selected local Spark shuffle. If fallback occurs with dynamic
+allocation enabled and no external shuffle service, Celeborn instead logs an ERROR
+containing <code class="docutils literal notranslate"><span class="pre">fallback</span> <span class="pre">to</span> <span class="pre">vanilla</span> <span class="pre">Spark</span> <span class="pre">SortShuffleManager</span> <span class="pre">for</span> <span class="pre">shuffle:</span> <span class="pre">3</span></code>.</p></li>
+</ol>
+<p>The IDs above are examples. Use the shuffle ID you found in step 2 when checking Celeborn’s
+<a class="reference external" href="https://github.com/apache/celeborn/blob/v0.7.0/client-spark/spark-3/src/main/java/org/apache/spark/shuffle/celeborn/SparkShuffleManager.java#L222-L234">fallback messages</a>.
+The absence of a fallback message does not prove that data was stored in Celeborn.</p>
+</section>
+</section>
+<section id="troubleshooting">
+<h2>Troubleshooting<a class="headerlink" href="#troubleshooting" title="Link to this heading">#</a></h2>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
-<tr class="row-odd"><th class="head"><p>Metric</p></th>
-<th class="head"><p>Description</p></th>
+<tr class="row-odd"><th class="head"><p>Symptom</p></th>
+<th class="head"><p>What to check</p></th>
 </tr>
 </thead>
 <tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">scan</span> <span class="pre">time</span></code></p></td>
-<td><p>Total time to scan a Parquet file. This is not comparable to the same metric in Spark because Comet’s scan metric is more accurate. Although both Comet and Spark measure the time in nanoseconds, Spark rounds this time to the nearest millisecond per batch and Comet does not.</p></td>
+<tr class="row-even"><td><p>Celeborn classes cannot be loaded when the application starts</p></td>
+<td><p>Supply the matching shaded client on both driver and executor startup classpaths. Comet does not bundle it.</p></td>
+</tr>
+<tr class="row-odd"><td><p>The plan contains <code class="docutils literal notranslate"><span class="pre">Exchange</span></code> rather than <code class="docutils literal notranslate"><span class="pre">CometExchange</span></code></p></td>
+<td><p>This is expected with the currently released Celeborn 0.6.x and 0.7.x clients. Shuffle uses Celeborn’s existing Spark integration; other supported operators can still run in Comet.</p></td>
+</tr>
+<tr class="row-even"><td><p>Setting <code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.mode=native</span></code> does not change the plan</p></td>
+<td><p>Native shuffle is disabled with these clients. Changing this setting does not enable it.</p></td>
+</tr>
+<tr class="row-odd"><td><p>No Comet operators appear in the plan</p></td>
+<td><p>Check that the Comet plugin and native library loaded, that Comet execution is enabled, and that the query uses supported operators. Inspect the driver fallback explanations.</p></td>
+</tr>
+<tr class="row-even"><td><p>Shuffle data is stored locally instead of in Celeborn</p></td>
+<td><p>Check Celeborn’s fallback policy, partition-count threshold, worker availability, and quota. An effective <code class="docutils literal notranslate"><span class="pre">spark.celeborn.client.spark.shuffle.fallback.policy=ALWAYS</span></code> selects local shuffle; <code class="docutils literal notranslate"><span class="pre">AUTO</span></code> can also select it.</p></td>
+</tr>
+<tr class="row-odd"><td><p>Changing the shuffle manager in the SQL session has no effect</p></td>
+<td><p>Set the manager before creating the Spark context. Restart the application to change it.</p></td>
 </tr>
 </tbody>
 </table>
 </div>
-</section>
-<section id="exchange">
-<h3>Exchange<a class="headerlink" href="#exchange" title="Link to this heading">#</a></h3>
-<p>Comet adds some additional metrics:</p>
-<div class="pst-scrollable-table-container"><table class="table">
-<thead>
-<tr class="row-odd"><th class="head"><p>Metric</p></th>
-<th class="head"><p>Description</p></th>
-</tr>
-</thead>
-<tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">native</span> <span class="pre">shuffle</span> <span class="pre">time</span></code></p></td>
-<td><p>Total time in native code excluding any child operators.</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">repartition</span> <span class="pre">time</span></code></p></td>
-<td><p>Time to repartition batches.</p></td>
-</tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">memory</span> <span class="pre">pool</span> <span class="pre">time</span></code></p></td>
-<td><p>Time interacting with memory pool.</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">encoding</span> <span class="pre">and</span> <span class="pre">compression</span> <span class="pre">time</span></code></p></td>
-<td><p>Time to encode batches in IPC format and compress using ZSTD.</p></td>
-</tr>
-</tbody>
-</table>
-</div>
-</section>
-</section>
-<section id="native-metrics">
-<h2>Native Metrics<a class="headerlink" href="#native-metrics" title="Link to this heading">#</a></h2>
-<p>Setting <code class="docutils literal notranslate"><span class="pre">spark.comet.explain.native.enabled=true</span></code> will cause native plans to be logged in each executor. Metrics are
-logged for each native plan (and there is one plan per task, so this is very verbose).</p>
-<p>Here is a guide to some of the native metrics.</p>
-<section id="scanexec">
-<h3>ScanExec<a class="headerlink" href="#scanexec" title="Link to this heading">#</a></h3>
-<div class="pst-scrollable-table-container"><table class="table">
-<thead>
-<tr class="row-odd"><th class="head"><p>Metric</p></th>
-<th class="head"><p>Description</p></th>
-</tr>
-</thead>
-<tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">elapsed_compute</span></code></p></td>
-<td><p>Total time spent in this operator, fetching batches from a JVM iterator.</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">jvm_fetch_time</span></code></p></td>
-<td><p>Time spent in the JVM fetching input batches to be read by this <code class="docutils literal notranslate"><span class="pre">ScanExec</span></code> instance.</p></td>
-</tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">arrow_ffi_time</span></code></p></td>
-<td><p>Time spent using Arrow FFI to create Arrow batches from the memory addresses returned from the JVM.</p></td>
-</tr>
-</tbody>
-</table>
-</div>
-</section>
-<section id="shufflewriterexec">
-<h3>ShuffleWriterExec<a class="headerlink" href="#shufflewriterexec" title="Link to this heading">#</a></h3>
-<div class="pst-scrollable-table-container"><table class="table">
-<thead>
-<tr class="row-odd"><th class="head"><p>Metric</p></th>
-<th class="head"><p>Description</p></th>
-</tr>
-</thead>
-<tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">elapsed_compute</span></code></p></td>
-<td><p>Total time excluding any child operators.</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">repart_time</span></code></p></td>
-<td><p>Time to repartition batches.</p></td>
-</tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ipc_time</span></code></p></td>
-<td><p>Time to encode batches in IPC format and compress using ZSTD.</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">mempool_time</span></code></p></td>
-<td><p>Time interacting with memory pool.</p></td>
-</tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">write_time</span></code></p></td>
-<td><p>Time spent writing bytes to disk.</p></td>
-</tr>
-</tbody>
-</table>
-</div>
-</section>
 </section>
 </section>
 
@@ -909,20 +926,20 @@ logged for each native plan (and there is one plan per task, so this is very ver
                   
 <div class="prev-next-area">
     <a class="left-prev"
-       href="tuning.html"
+       href="iceberg-writes.html"
        title="previous page">
       <i class="fa-solid fa-angle-left"></i>
       <div class="prev-next-info">
         <p class="prev-next-subtitle">previous</p>
-        <p class="prev-next-title">Comet Tuning Guide</p>
+        <p class="prev-next-title">Iceberg Writes: Comet’s Split-Operator Plan (Experimental)</p>
       </div>
     </a>
     <a class="right-next"
-       href="iceberg.html"
+       href="s3-credential-providers.html"
        title="next page">
       <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">Accelerating Apache Iceberg Parquet Scans using Comet (Experimental)</p>
+        <p class="prev-next-title">S3 Credential Providers</p>
       </div>
       <i class="fa-solid fa-angle-right"></i>
     </a>
@@ -945,16 +962,13 @@ logged for each native plan (and there is one plan per task, so this is very ver
   </div>
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#spark-sql-metrics">Spark SQL Metrics</a><ul class="nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#cometscanexec">CometScanExec</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#exchange">Exchange</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#support-status">Support Status</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#setup">Setup</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#verifying-the-shuffle-path">Verifying the Shuffle Path</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#checking-for-local-fallback">Checking for Local Fallback</a></li>
 </ul>
 </li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#native-metrics">Native Metrics</a><ul class="nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#scanexec">ScanExec</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#shufflewriterexec">ShuffleWriterExec</a></li>
-</ul>
-</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#troubleshooting">Troubleshooting</a></li>
 </ul>
   </nav></div>
 

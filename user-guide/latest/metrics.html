@@ -589,6 +589,7 @@ under the License.
 <ul>
 <li class="toctree-l2"><a class="reference internal" href="iceberg.html">Iceberg Guide</a></li>
 <li class="toctree-l2"><a class="reference internal" href="iceberg-writes.html">Iceberg Writes</a></li>
+<li class="toctree-l2"><a class="reference internal" href="celeborn.html">Celeborn Guide</a></li>
 <li class="toctree-l2"><a class="reference internal" href="s3-credential-providers.html">S3 Credential Providers</a></li>
 <li class="toctree-l2"><a class="reference internal" href="kubernetes.html">Kubernetes Guide</a></li>
 </ul>
@@ -1057,6 +1058,15 @@ contributes again. Whether input slices arrive in one batch or separate batches 
 the accounting for identical spill boundaries. Other operators may still own the same buffers,
 so this measures memory released from shuffle buffering, not necessarily a drop in process memory.</p>
 </section>
+<section id="celeborn-shuffle">
+<h3>Celeborn Shuffle<a class="headerlink" href="#celeborn-shuffle" title="Link to this heading">#</a></h3>
+<p>With the currently released Celeborn 0.6.x and 0.7.x clients, shuffle uses Celeborn’s existing
+Spark integration and reports its shuffle metrics in the Spark UI. Comet’s operator metrics
+still apply to the other parts of the query that run in Comet.</p>
+<p>Spark’s remote-read counters do not identify the storage destination: local shuffle files
+fetched from another executor also count as remote reads. See
+<a class="reference internal" href="celeborn.html#verifying-the-shuffle-path"><span class="std std-ref">Verifying the Shuffle Path</span></a> for plan and storage checks.</p>
+</section>
 </section>
 <section id="native-metrics">
 <h2>Native Metrics<a class="headerlink" href="#native-metrics" title="Link to this heading">#</a></h2>
@@ -1265,6 +1275,7 @@ filesystem or network traffic accounting.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#hash-joins">Hash Joins</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#local-topk">Local TopK</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#exchange">Exchange</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#celeborn-shuffle">Celeborn Shuffle</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#native-metrics">Native Metrics</a><ul class="nav section-nav flex-column">

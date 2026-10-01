@@ -589,6 +589,7 @@ under the License.
 <ul>
 <li class="toctree-l2"><a class="reference internal" href="iceberg.html">Iceberg Guide</a></li>
 <li class="toctree-l2"><a class="reference internal" href="iceberg-writes.html">Iceberg Writes</a></li>
+<li class="toctree-l2"><a class="reference internal" href="celeborn.html">Celeborn Guide</a></li>
 <li class="toctree-l2"><a class="reference internal" href="s3-credential-providers.html">S3 Credential Providers</a></li>
 <li class="toctree-l2"><a class="reference internal" href="kubernetes.html">Kubernetes Guide</a></li>
 </ul>
@@ -1030,23 +1031,10 @@ under the License.
 </section>
 <section id="shuffle-configuration-settings">
 <h2>Shuffle Configuration Settings<a class="headerlink" href="#shuffle-configuration-settings" title="Link to this heading">#</a></h2>
-<p>For native remote shuffle, <code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.rss.maxFrameBytes</span></code> limits one complete
-encoded frame, while <code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.rss.maxInFlightBytes</span></code> limits the memory reserved
-by map attempts sharing an executor’s remote shuffle client. The reservation includes
-encoding workspace and overlapping frame copies. An ordinary uncompressed frame needs
-approximately seven times its size plus schema and transport overhead. The default 512 MiB
-reservation budget accommodates ordinary frames up to the default 64 MiB frame limit.
-Compressed frames still need workspace for their uncompressed data. Increase the reservation
-budget when larger rows or schemas need more workspace.</p>
-<p>If a row cannot fit the remote limits, Comet materializes a replacement shuffle using its
-local writer before publishing the exchange to downstream tasks. The replacement has a separate
-shuffle and scheduling identity, so late remote results or failures cannot affect local output.
-Independent exchanges can materialize concurrently, and runtime output statistics describe only
-the selected destination. Subsequent fetch failures retain Spark’s normal recovery behavior.
-With dynamic allocation enabled, native Celeborn shuffle also requires either
-<code class="docutils literal notranslate"><span class="pre">spark.shuffle.service.enabled=true</span></code> or <code class="docutils literal notranslate"><span class="pre">spark.dynamicAllocation.shuffleTracking.enabled=true</span></code>
-(the Spark default) to preserve fallback files. Otherwise exchanges retain ordinary Spark/Celeborn
-shuffle, including applications that rely only on remote reliable storage or decommissioning.</p>
+<p>For Celeborn client compatibility and setup, see the <a class="reference internal" href="celeborn.html"><span class="std std-doc">Celeborn guide</span></a>.
+The <a class="reference internal" href="tuning/celeborn.html"><span class="std std-doc">native remote shuffle tuning reference</span></a> explains how
+<code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.rss.maxFrameBytes</span></code> and <code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.rss.maxInFlightBytes</span></code>
+interact, including encoding workspace and local fallback for oversized rows.</p>
 <!--BEGIN:CONFIG_TABLE[shuffle]-->
 <!-- prettier-ignore-start -->
 <div class="pst-scrollable-table-container"><table class="table">

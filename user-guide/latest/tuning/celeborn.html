@@ -585,6 +585,7 @@ under the License.
 <ul>
 <li class="toctree-l2"><a class="reference internal" href="../iceberg.html">Iceberg Guide</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../iceberg-writes.html">Iceberg Writes</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../celeborn.html">Celeborn Guide</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../s3-credential-providers.html">S3 Credential Providers</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../kubernetes.html">Kubernetes Guide</a></li>
 </ul>
@@ -782,71 +783,44 @@ under the License.
 -->
 <section id="remote-shuffle-with-celeborn">
 <h1>Remote Shuffle with Celeborn<a class="headerlink" href="#remote-shuffle-with-celeborn" title="Link to this heading">#</a></h1>
-<p>Applications using Apache Celeborn can use Comet’s composite shuffle manager to retain ordinary
-Spark/Celeborn shuffle while accelerating other operators with Comet.</p>
-<p>Native shuffle also requires reliable completion tracking for in-flight payloads. Released Celeborn
-0.6.0 and 0.7.0 clients do not provide the required guarantee, so these versions retain ordinary
-Spark/Celeborn shuffle even when <code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.mode=native</span></code>. Native shuffle support for
-these clients requires a safe Celeborn push-completion API. The following settings request
-native shuffle when the client passes Comet’s compatibility checks:</p>
-<div class="highlight-properties notranslate"><div class="highlight"><pre><span></span><span class="na">spark.shuffle.manager</span><span class="o">=</span><span class="s">org.apache.spark.sql.comet.execution.shuffle.CometCelebornShuffleManager</span>
-<span class="na">spark.comet.exec.enabled</span><span class="o">=</span><span class="s">true</span>
-<span class="na">spark.comet.shuffle.enabled</span><span class="o">=</span><span class="s">true</span>
-<span class="na">spark.comet.shuffle.mode</span><span class="o">=</span><span class="s">native</span>
-<span class="na">spark.celeborn.client.spark.stageRerun.enabled</span><span class="o">=</span><span class="s">true</span>
-</pre></div>
+<p>See the <a class="reference internal" href="../celeborn.html"><span class="std std-doc">Celeborn guide</span></a> for setup and client compatibility. The settings
+below apply only to Comet’s native remote shuffle, which is unavailable with the currently
+released Celeborn 0.6.x and 0.7.x clients. They do not tune Celeborn’s existing Spark shuffle
+implementation.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Setting</p></th>
+<th class="head"><p>Default</p></th>
+<th class="head"><p>Purpose</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.rss.maxFrameBytes</span></code></p></td>
+<td><p>64 MiB</p></td>
+<td><p>Maximum size of one complete encoded frame. The admission budget can reduce the effective limit.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.rss.maxInFlightBytes</span></code></p></td>
+<td><p>512 MiB</p></td>
+<td><p>Shared memory admission budget for map attempts using the same executor-side remote shuffle client.</p></td>
+</tr>
+</tbody>
+</table>
 </div>
-<p>Set the shuffle manager and Celeborn configuration before creating the Spark context. Celeborn is
-an optional application dependency, not bundled with Comet: provide a compatible Celeborn Spark
-client matching the application’s Spark and Scala versions on both the driver and executors,
-alongside the Comet JAR. Keep the application’s existing Celeborn service configuration.</p>
-<p>Native Celeborn shuffle requires explicit <code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.mode=native</span></code>. The default <code class="docutils literal notranslate"><span class="pre">auto</span></code>
-mode and <code class="docutils literal notranslate"><span class="pre">jvm</span></code> mode retain ordinary Spark shuffle through the delegated Celeborn manager; they do
-not select Comet’s JVM columnar shuffle. Comet execution can still accelerate other operators.
-With native mode enabled, exchanges with unsupported children, data types, or partitioning also
-retain the ordinary Spark/Celeborn shuffle path. The local <code class="docutils literal notranslate"><span class="pre">CometShuffleManager</span></code> keeps its existing
-native-to-columnar fallback behavior.</p>
-<p>Stage reruns must remain enabled so failed or ambiguous map attempts can recover through a new
-Celeborn shuffle generation. Native RSS does not support <code class="docutils literal notranslate"><span class="pre">spark.io.encryption.enabled=true</span></code>;
-encrypted applications retain ordinary Spark/Celeborn shuffle instead. Do not disable encryption
-required by the application to enable native RSS. Eligibility uses the manager’s application-time
-configuration, including Celeborn’s effective defaults and legacy aliases, rather than later SQL
-session overrides.</p>
-<p>Celeborn’s fallback policy remains application-owned. An effective
-<code class="docutils literal notranslate"><span class="pre">spark.celeborn.client.spark.shuffle.fallback.policy=ALWAYS</span></code>, or an <code class="docutils literal notranslate"><span class="pre">AUTO</span></code> partition-count
-threshold that the exchange reaches, keeps the exchange on Spark. Worker availability and quota
-can still cause Celeborn to choose local fallback during registration. Once an exchange has been
-planned as native, Comet rejects that local handle and fails the registration: native Arrow frames
-cannot be passed to Spark’s ordinary local shuffle writer. Set
-<code class="docutils literal notranslate"><span class="pre">spark.celeborn.client.spark.shuffle.fallback.policy=NEVER</span></code> only if the application also wants
-Celeborn to prohibit local fallback for ordinary Spark shuffles.</p>
-<p>Native frames retain Comet’s configured compression; the raw Celeborn client path bypasses
-Celeborn’s additional row compression and decompression. Use
-<code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.rss.maxFrameBytes</span></code> and <code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.rss.maxInFlightBytes</span></code> to bound
-encoded frame size and executor-side push admission. The defaults are 64 MiB and 512 MiB,
-respectively. Admission includes Arrow encoding workspace as well as overlapping native, JNI,
-and client frame copies. An uncompressed frame needs roughly seven times its size plus schema
-and codec overhead. Compression reduces the transmitted bytes but still needs uncompressed
-encoding workspace.</p>
-<p>Comet splits large batches between rows. If a single row, its schema, or its encoding workspace
-cannot fit the remote limits, Comet abandons the remote shuffle and materializes a replacement
-using its local shuffle writer before downstream tasks can consume the exchange. The replacement
-has a separate shuffle and scheduling identity, so late remote results cannot overwrite or skip
-local map output, and remote stage failures cannot abort the replacement. Independent exchanges
-can materialize concurrently; readers wait for their storage decisions before execution. Runtime
-output statistics count only the selected destination. All reads and retries for the replacement
-use local files and Spark’s block transfer
-service, including normal recovery after later fetch failures. Native operators and Comet’s
-Arrow shuffle format are preserved, and remote admission limits remain enforced. Once remote
-output has been published, subsequent failures use the existing Spark/Celeborn recovery path;
-Comet does not change that shuffle’s destination. Local fallback uses executor disk. When <code class="docutils literal notranslate"><span class="pre">spark.dynamicAllocation.enabled=true</span></code>, native Celeborn shuffle requires
-<code class="docutils literal notranslate"><span class="pre">spark.shuffle.service.enabled=true</span></code> or <code class="docutils literal notranslate"><span class="pre">spark.dynamicAllocation.shuffleTracking.enabled=true</span></code>
-(the Spark default) so those files remain available. Applications using dynamic allocation with
-both settings disabled retain ordinary Spark/Celeborn shuffle, even if remote reliable storage or
-decommissioning enables dynamic allocation. Executor shutdown preserves fallback files for the
-external shuffle service; explicit shuffle unregister retains the normal local cleanup behavior.
-AQE reducer coalescing and mapper-range reads are supported, but Celeborn physical-skew chunk reads
-are not.</p>
+<p>Admission includes Arrow encoding workspace and overlapping native, JNI, and client frame
+copies. An ordinary uncompressed frame needs roughly seven times its size plus schema and
+codec overhead. The default 512 MiB budget accommodates ordinary frames up to the default
+64 MiB frame limit. Compression reduces transmitted bytes but still needs workspace for the
+uncompressed data. This budget bounds shuffle-write admission, not total executor memory.</p>
+<p>Comet splits batches between rows. If a row, schema, or encoding workspace cannot fit, Comet
+replaces the exchange with its local native shuffle writer before downstream tasks consume
+the output.
+Increase the limiting setting if larger rows need to stay on the remote path, allowing for
+encoding workspace as well as the encoded frame. Raising only <code class="docutils literal notranslate"><span class="pre">maxFrameBytes</span></code> may not help
+when <code class="docutils literal notranslate"><span class="pre">maxInFlightBytes</span></code> is the limiting budget. Larger budgets also increase potential
+executor memory use.</p>
+<p>Native frames use Comet’s <a class="reference internal" href="shuffle.html#shuffle-compression"><span class="std std-ref">shuffle compression settings</span></a>.
+The raw Celeborn path bypasses Celeborn’s additional row compression and decompression, so
+frames are not compressed twice.</p>
 </section>
 
 
