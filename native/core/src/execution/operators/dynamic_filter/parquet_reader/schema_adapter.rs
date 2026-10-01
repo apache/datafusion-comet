@@ -17,12 +17,13 @@
 
 //! Preserve per-file conversion errors when runtime reader filters are attached.
 
+use crate::parquet::schema_adapter::is_infallible_read_adaptation;
 use std::sync::Arc;
 
 use arrow::datatypes::SchemaRef;
 use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode};
 use datafusion::common::Result;
-use datafusion::physical_expr::expressions::{lit, Column, DynamicFilterPhysicalExpr, Literal};
+use datafusion::physical_expr::expressions::{lit, Column, DynamicFilterPhysicalExpr};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr_adapter::{PhysicalExprAdapter, PhysicalExprAdapterFactory};
 
@@ -54,24 +55,14 @@ impl PhysicalExprAdapterFactory for RuntimeFilterSchemaAdapterFactory {
         let inner = self
             .inner
             .create(logical_schema, Arc::clone(&physical_schema))?;
-        // DataFusion adapts predicates before projections and row-group pruning.
-        // Direct remapping and missing/default literals are safe. Other adaptations
-        // can reject nonempty batches or overflow, so let normal decoding run first.
-        // Spark's adapter can leave unresolved columns unchanged. Require rewritten
-        // column names to resolve in the original physical schema; case and field-ID
-        // remapping restore those names before returning the expression.
-        // Safe-adaptation and matching-schema optimizations are tracked in
-        // https://github.com/apache/datafusion-comet/issues/6123.
-        let allow_runtime_filter =
-            self.read_columns
-                .iter()
-                .all(|column| match inner.rewrite(Arc::new(column.clone())) {
-                    Ok(expr) if expr.is::<Literal>() => true,
-                    Ok(expr) => expr
-                        .downcast_ref::<Column>()
-                        .is_some_and(|column| physical_schema.index_of(column.name()).is_ok()),
-                    Err(_) => false,
-                });
+        // Preserve the adapter's resolution and conversion rules. Only adaptations
+        // proven infallible may be skipped by reader filtering. Probe errors disable
+        // pruning rather than changing normal empty-file or static-pruning behavior.
+        let allow_runtime_filter = self.read_columns.iter().all(|column| {
+            inner
+                .rewrite(Arc::new(column.clone()))
+                .is_ok_and(|expr| is_infallible_read_adaptation(&expr, &physical_schema))
+        });
         Ok(Arc::new(RuntimeFilterSchemaAdapter {
             inner,
             allow_runtime_filter,

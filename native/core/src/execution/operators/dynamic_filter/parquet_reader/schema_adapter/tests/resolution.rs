@@ -19,6 +19,7 @@ use super::*;
 use crate::parquet::parquet_support::SparkParquetOptions;
 use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
 use datafusion::common::ScalarValue;
+use datafusion::physical_expr::expressions::Literal;
 use datafusion_comet_spark_expr::EvalMode;
 use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
 use std::collections::HashMap;

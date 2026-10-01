@@ -15,6 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
+mod read_adaptation;
+
+pub(crate) use read_adaptation::is_infallible_read_adaptation;
+
 use crate::parquet::cast_column::CometCastColumnExpr;
 use crate::parquet::name_fold::{fold_name, fold_names, fold_schema_names};
 use crate::parquet::parquet_support::{
