@@ -49,6 +49,10 @@ public abstract class NativeBase {
 
   private static final String libraryToLoad = System.mapLibraryName(NATIVE_LIB_NAME);
   private static boolean loaded = false;
+  // Whether the bundled libcomet has been unpacked and loaded. Unlike `loaded`, never reset:
+  // unpacking it again yields a new temporary file, which the JVM loads as a second library with
+  // its own uninitialized native state, and JNI methods can then bind to either copy.
+  private static boolean bundledLibraryLoaded = false;
   private static volatile Throwable loadErr = null;
   private static final String searchPattern = "libcomet-";
   private static final AtomicBoolean released = new AtomicBoolean(false);
@@ -113,6 +117,11 @@ public abstract class NativeBase {
    * Use the bundled native libraries. Functionally equivalent to <code>System.loadLibrary</code>.
    */
   private static void bundleLoadLibrary() {
+    if (bundledLibraryLoaded) {
+      loaded = true;
+      return;
+    }
+
     String resourceName = resourceName();
     InputStream is = NativeBase.class.getResourceAsStream(resourceName);
     if (is == null) {
@@ -133,6 +142,7 @@ public abstract class NativeBase {
       Files.copy(is, tempLib.toPath(), StandardCopyOption.REPLACE_EXISTING);
       System.load(tempLib.getAbsolutePath());
       loaded = true;
+      bundledLibraryLoaded = true;
     } catch (IOException e) {
       throw new IllegalStateException("Cannot unpack libcomet: " + e);
     } finally {

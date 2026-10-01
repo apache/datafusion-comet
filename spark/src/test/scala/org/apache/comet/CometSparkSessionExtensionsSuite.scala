@@ -114,6 +114,28 @@ class CometSparkSessionExtensionsSuite extends CometTestBase {
     }
   }
 
+  test("reloading NativeBase does not load a second copy of the native library") {
+    // The bundled library is unpacked to a new temporary file each time it is loaded. To the JVM
+    // a second copy is a distinct library with its own uninitialized native state, and a JNI
+    // method first called afterwards can bind to it (#6096).
+    def unpackedLibraries(): Set[String] =
+      Option(new java.io.File(System.getProperty("java.io.tmpdir")).list())
+        .getOrElse(Array.empty[String])
+        .filter(name => name.startsWith("libcomet-") && !name.endsWith(".lck"))
+        .toSet
+
+    val before = unpackedLibraries()
+    try {
+      NativeBase.setLoaded(false)
+      NativeBase.load()
+      assert(NativeBase.isLoaded)
+    } finally {
+      NativeBase.setLoaded(true)
+    }
+    val added = unpackedLibraries() -- before
+    assert(added.isEmpty, s"reload unpacked another copy of the native library: $added")
+  }
+
   test("Arrow properties") {
     NativeBase.setLoaded(false)
     NativeBase.load()
