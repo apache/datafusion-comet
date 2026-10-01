@@ -58,6 +58,16 @@ Because those comparison keys match Spark, `spark.comet.exec.strictFloatingPoint
 force a fallback for them: sort keys, window and rank order keys, and range partitioning keys all
 stay native under strict mode, whether the floats in them are scalar or nested.
 
+The exception is a key that nests floats in an array or struct whose type can hold a null element
+or field. Spark orders such a null below every other value, whatever the key's `NULLS FIRST` or
+`NULLS LAST`. The native sort places it by that null order, so `ASC NULLS LAST` and
+`DESC NULLS FIRST` can differ from Spark, and a `RANGE` window frame orders it above every other
+value, so a running aggregate can span the whole partition
+([#6476](https://github.com/apache/datafusion-comet/issues/6476),
+[#6477](https://github.com/apache/datafusion-comet/issues/6477)). Strict mode makes those keys fall
+back to Spark. A key whose type cannot hold a null, such as `array(coalesce(x, 0.0D))`, stays
+native.
+
 `array_min` and `array_max` use Spark-compatible native comparisons in both strict and non-strict
 floating-point modes. Signed zeros compare equal, and all NaN representations compare equal and
 greater than non-NaN values. The original first equal element is retained: for example,

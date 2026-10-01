@@ -56,10 +56,13 @@ keys**, and it is not the same rule for the two partitionings:
   float and double are accepted, under `spark.comet.exec.strictFloatingPoint` as well: since
   [#5981](https://github.com/apache/datafusion-comet/pull/5981) the native range partitioner
   normalizes its comparison keys and its sampled boundary rows the same way the native sort does.
-  `CometSortOrder` is `Compatible()` for every key type regardless of strict mode, because the
-  native sort also normalizes floats nested in arrays and structs, but a nested key is already out
-  as a range key for being nested. `CometNativeShuffleSuite` runs "range partitioning on
-  floating-point uses native shuffle" under both settings of the config.
+  `CometSortOrder` is `Compatible()` for scalar floats regardless of strict mode. It is for floats
+  nested in arrays and structs too, because the native sort normalizes them, unless the key's type
+  can hold a null element or field
+  ([#6476](https://github.com/apache/datafusion-comet/issues/6476),
+  [#6477](https://github.com/apache/datafusion-comet/issues/6477)), which strict mode declines.
+  A nested key is already out as a range key for being nested. `CometNativeShuffleSuite` runs
+  "range partitioning on floating-point uses native shuffle" under both settings of the config.
 - **`HashPartitioning` is primitive-only by default only.** With
   `spark.comet.shuffle.native.partitioning.hash.nested.enabled=true` (default `false`),
   `supportedHashPartitioningDataType` admits structs and arrays recursively, and maps on Spark

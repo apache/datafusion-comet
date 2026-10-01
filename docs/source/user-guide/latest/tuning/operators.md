@@ -154,6 +154,13 @@ nested in arrays and structs, so `ORDER BY`, window ordering and range partition
 even with `spark.comet.exec.strictFloatingPoint=true`. Only the comparison key is normalized; returned values keep their
 original NaN representation and zero sign.
 
+The exception is a key that nests floating-point values in an array or struct whose type can hold a null element or
+field. Spark orders such a null below every other value, and the native sort and `RANGE` window frames do not
+([#6476](https://github.com/apache/datafusion-comet/issues/6476),
+[#6477](https://github.com/apache/datafusion-comet/issues/6477)), so
+`spark.comet.exec.strictFloatingPoint=true` makes those keys fall back to Spark. They can be forced back onto the
+native path with `spark.comet.expression.SortOrder.allowIncompatible=true`.
+
 `sort_array` is separate. It sorts array elements rather than ordering rows, and its elements are compared with Arrow's
 raw total ordering, so `spark.comet.exec.strictFloatingPoint=true` makes it fall back even for a scalar floating-point
 element type. Use `spark.comet.expression.SortArray.allowIncompatible=true` to keep it native.

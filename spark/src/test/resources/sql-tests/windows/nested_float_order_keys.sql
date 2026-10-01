@@ -24,10 +24,8 @@
 -- total order sorts below -Infinity. Each ORDER BY ends with a unique tiebreaker, so peers come
 -- out in the tiebreaker's order.
 
--- Strict floating-point mode no longer needs to fall back for these keys. The test harness
--- admits incompatible sort orders by default, so turn that off to check the shipped policy.
--- ConfigMatrix: spark.comet.exec.strictFloatingPoint=false,true
--- Config: spark.comet.expression.SortOrder.allowIncompatible=false
+-- Strict floating-point mode declines these keys, because their types can hold a null element or
+-- field: see nested_float_order_keys_strict.sql.
 
 statement
 CREATE TABLE nested_float_keys(id INT, g INT, d DOUBLE, f FLOAT, s BOOLEAN) USING parquet
