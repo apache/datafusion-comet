@@ -19,8 +19,10 @@ under the License.
 
 # Local execution development plan
 
-Status: experimental native foundation, not connected to Spark. No configuration
-currently enables local execution. The existing Comet execution path is unchanged.
+Status: experimental Spark range bridge; stage-2 implementation and local checks
+are complete. Spark SQL validation is deferred at the user's request.
+`spark.comet.exec.local.enabled=true` opts in through the existing Comet extension.
+The option defaults to false. Unsupported whole queries use ordinary Comet/Spark planning.
 The development baseline is local `upstream/main` at `9c7fcc5aa`.
 
 ## Execution contract
@@ -63,8 +65,10 @@ blocked result pull and must not require that pull to finish before cancelling.
 - `native/local`: query execution lifecycle, independent of JNI and Spark tasks.
   Reuse DataFusion scheduling, exchange and result streaming rather than building
   another scheduler or exchange implementation.
-- Proposed JVM local module: mode selection, whole-query admission, planning
-  entry, query ownership, result bridge, cancellation and SQL metrics.
+- `spark-local`: JVM source module for mode selection, whole-query admission,
+  query ownership, result bridge, cancellation and SQL metrics. Build-helper
+  compiles it into the existing Spark artifact, avoiding a cyclic dependency on
+  `CometConf` and `NativeUtil`; its source and tests remain in separate directories.
 - Existing expression crates and Arrow bridge: reuse Spark-compatible evaluation
   and columnar interchange. Audit all task-context callbacks before admission.
 - Proposed shared planning module: extract only reusable operator construction
@@ -156,6 +160,50 @@ fresh graphs; result correctness; empty output; cancellation during a blocked JN
 pull; no Spark shuffle dependency for the admitted query; no native references
 retained after close. Build native before JVM tests and never use Maven `-pl`.
 Register JVM suites in both CI matrices. Obtain the Spark SQL gate described below.
+
+Stage-2 implementation:
+
+- Enable the ordinary `CometSparkSessionExtensions`, native execution, and
+  `spark.comet.exec.local.enabled`; disable AQE. Admission currently requires
+  Spark 4.1 and `SparkContext.isLocal`. Streaming and subquery preparation are
+  rejected. No additional session extension is required.
+- Admit only a complete `RangeExec` with optional direct column/alias projections
+  and an optional root `CollectLimitExec` with zero offset. Configuration is frozen
+  in the local physical node. Limits are 1,024 native partitions, 1,024 projected
+  columns and 65,536 rows per batch. Expressions, filters, aggregations, exchanges,
+  file scans and writes remain outside admission.
+- One Spark result task creates one fresh native graph per attempt. Native range
+  partitions execute through DataFusion on the existing process runtime. A
+  sort-preserving merge retains range order: Spark may have removed a redundant
+  sort before invoking the Comet rule. This is necessary for both correctness and
+  the ordering advertised by the local node.
+- The JNI registry stores numeric, non-reused IDs for at most 1,024 live queries.
+  Each entry owns a cancellable producer. EOF, errors, early termination and task
+  completion remove it. A concurrent pull holds an `Arc`, so close cannot free an
+  object still being read. Polling returns pending after 50 ms, allowing Spark
+  interruption checks. Cancellation does not acquire the reader mutex.
+- Reuse `prepare_output` (including zero-offset normalization) and `NativeUtil`
+  for Arrow ownership. Imported buffers remain valid after native query close
+  until the JVM closes their batch. The bridge queues at most one batch; this does
+  not bound DataFusion operator reservations or the driver's result collection.
+
+`collect`, `take` and `toLocalIterator` retain Spark's action behavior. In particular,
+Spark's `toLocalIterator` materializes a result partition, so it does **not** provide
+bounded driver-memory streaming with this single-partition boundary. The native to
+Spark task iterator streams batches. DataFrame `.rdd` introduces object
+deserialization, which is currently unsupported and causes whole-query fallback.
+Native worker count is not derived from Spark task slots; matched CPU/memory budgets
+and general result iteration remain later-stage work.
+
+Local verification (2026-09-30): 18 native tests and 34 JVM tests passed (13 local
+mode tests plus 21 existing iterator lifecycle tests). Tests cover ordered and
+descending ranges, empty input, repeated actions, early stop, fallback, task
+cancellation, native errors/panics and Arrow lifetime. Strict Clippy passes for
+the native core and local crate. The new JVM suite is registered in both CI
+matrices. Formatting and CI configuration checks also passed. The user requested
+deferring the Spark SQL suite, so no Spark SQL compatibility verdict is claimed.
+Development stops at this stage-2 checkpoint; stage 3 has not started. Resolve the
+deferred gate or explicitly revise this plan before expanding admission.
 
 ### 3. Native scans and shared expression conversion
 

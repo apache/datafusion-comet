@@ -63,6 +63,12 @@ none of the driver plugin's steps run for them.
 
 ## CometSparkSessionExtensions
 
+The experimental `spark.comet.exec.local.enabled` option invokes whole-query
+admission before ordinary Comet conversion in `CometRule`. Admitted Spark 4.1
+local-mode range queries run through `spark-local` and `native/local`; unsupported
+queries retain the existing conversion path. See the [local execution development
+plan](local-execution.md) for admission limits, ownership and validation status.
+
 On initialization, this class registers one physical plan optimization rule with Spark: `CometRule`. It runs whenever
 a query stage is being planned during Adaptive Query Execution, and runs once for the entire plan when Adaptive Query
 Execution is disabled.

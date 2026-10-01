@@ -32,9 +32,9 @@ arrow = { workspace = true }
 datafusion-common = { workspace = true }
 datafusion-execution = { workspace = true }
 datafusion-physical-plan = { workspace = true }
+datafusion-physical-expr = { workspace = true }
 futures = { workspace = true }
-tokio = { version = "1", features = ["rt"] }
+tokio = { version = "1", features = ["rt", "sync"] }
 
 [dev-dependencies]
-datafusion-physical-expr = { workspace = true }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }

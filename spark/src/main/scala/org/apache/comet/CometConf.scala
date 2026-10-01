@@ -215,6 +215,16 @@ object CometConf extends ShimCometConf {
     .booleanConf
     .createWithDefault(true)
 
+  val COMET_EXEC_LOCAL_ENABLED: ConfigEntry[Boolean] = conf("spark.comet.exec.local.enabled")
+    .category(CATEGORY_EXEC)
+    .internal()
+    .doc(
+      "Enable experimental whole-query local execution. " +
+        "Requires Spark 4.1 in local mode with AQE disabled. Initially supports range and " +
+        "direct column projections; unsupported queries use the existing execution path.")
+    .booleanConf
+    .createWithDefault(false)
+
   val COMET_EXEC_PROJECT_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("project", defaultValue = true)
   val COMET_EXEC_FILTER_ENABLED: ConfigEntry[Boolean] =

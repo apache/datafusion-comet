@@ -36,6 +36,15 @@ The following diagram shows an example of the end-to-end flow for a query stage.
 
 Both scenarios use the same FFI mechanism but have different ownership semantics and memory management implications.
 
+The experimental [local execution bridge](local-execution.md) has no JVM input
+iterator for its native range source. Its `LocalQueryIterator` reuses the native
+`prepare_output` exporter and JVM `NativeUtil` importer, including offset
+normalization and release callbacks. Numeric query handles own execution rather
+than exported buffers: closing a query leaves imported batches valid until their
+JVM owner closes them. The local JNI pull returns `-2` for pending, `-1` for EOF,
+or the exported row count. Pending polls export no buffers and allow the caller
+to check Spark task cancellation every 50 ms.
+
 ## Arrow FFI Basics
 
 The Arrow C Data Interface defines two C structures:

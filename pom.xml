@@ -1120,6 +1120,7 @@ under the License.
               <includes>
                 <include>src/main/scala/**/*.scala</include>
                 <include>src/test/scala/**/*.scala</include>
+                <include>spark-local/src/**/*.scala</include>
                 <include>src/test/celeborn-reflection-compatibility/**/*.scala</include>
                 <!-- Include spark shim sources -->
                 <include>src/main/spark-*/**/*.scala</include>

@@ -20,7 +20,10 @@
 //! A caller supplies a fresh, fully planned graph for each execution. All partitions
 //! execute the same operator instances, including the channels in RepartitionExec.
 //! The caller owns the Tokio runtime and must keep it running until cleanup finishes.
-//! This crate does not yet implement Spark planning or the JVM result bridge.
+//! Spark admission and JNI live outside this crate.
+
+pub mod handle;
+pub mod range;
 
 use std::pin::Pin;
 use std::sync::Arc;
