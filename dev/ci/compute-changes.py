@@ -501,7 +501,7 @@ POLICY = {
     # day apiece on pull requests in mid-September 2026, and together they
     # were three quarters of the Linux build. A pull request and the queue run
     # the Comet test suites against Spark 4.1 only; the nightly run covers the
-    # other four. The lint-java matrix still compiles Spark 3.4/3.5/4.0 on
+    # other four. The lint-java matrix still compiles every Spark profile on
     # every pull request, so what waits for the nightly is runtime behaviour,
     # not a shim that fails to build. ci.yml turns this output into the
     # workflow's `profiles` input.

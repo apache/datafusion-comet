@@ -329,6 +329,43 @@ class CometInMemoryCacheSuite extends CometTestBase {
     }
   }
 
+  test("CometInMemoryTableScan is described by the Spark scan it replaces") {
+    // With every constructor field printed, the node dumped its CachedRDDBuilder, the whole cached
+    // plan both physical and logical, into the middle of every plan that read the cache, raw
+    // newlines and all, in the tree string and in EXPLAIN FORMATTED alike.
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true") {
+      spark.catalog.clearCache()
+      spark
+        .range(1000)
+        .selectExpr("id AS key", "id % 8 AS value")
+        .createOrReplaceTempView("explain_cache")
+      spark.catalog.cacheTable("explain_cache")
+      try {
+        val df = spark.sql("SELECT key FROM explain_cache WHERE value = 3")
+        df.collect()
+        val plan = df.queryExecution.executedPlan
+        val scans = collect(plan) { case s: CometInMemoryTableScanExec => s }
+        assert(scans.size == 1)
+        val line = scans.head.simpleString(SQLConf.get.maxToStringFields)
+        assert(
+          line.startsWith("CometInMemoryTableScan Scan In-memory table explain_cache ["),
+          line)
+        assert(line.contains("= 3)"), s"the pruning predicates should be shown: $line")
+        Seq(
+          plan.treeString,
+          df.queryExecution.explainString(org.apache.spark.sql.execution.FormattedMode))
+          .foreach { text =>
+            assert(!text.contains("CachedRDDBuilder"), text)
+            assert(!text.contains(classOf[ArrowCachedBatchSerializer].getName), text)
+          }
+      } finally {
+        spark.catalog.clearCache()
+      }
+    }
+  }
+
   test("Comet in-memory cache disabled keeps SparkToColumnar fallback path") {
     withSQLConf(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
