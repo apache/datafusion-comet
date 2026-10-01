@@ -34,7 +34,7 @@ import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, Comet
 import org.apache.spark.sql.comet.shims.ShimCometEmptyRelation
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution._
-import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, BroadcastQueryStageExec, QueryStageExec, ShuffleQueryStageExec}
+import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, BroadcastQueryStageExec, LogicalQueryStage, QueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
 import org.apache.spark.sql.execution.columnar.InMemoryTableScanExec
 import org.apache.spark.sql.execution.command.{DataWritingCommandExec, ExecutedCommandExec}
@@ -61,6 +61,15 @@ import org.apache.comet.serde.operator._
 import org.apache.comet.shims.{CometTypeShim, ShimCometStreaming, ShimCometWindowGroupLimit, ShimSubqueryBroadcast}
 
 object CometExecRule {
+
+  private[rules] def removePlaceholders(plan: SparkPlan): SparkPlan = plan.transformUp {
+    // revertUnsafePartialAggregates re-runs transform over already wrapped query stages, which
+    // can produce CometSinkPlaceHolder(CometSinkPlaceHolder(stage)). Remove sinks bottom-up.
+    case CometSinkPlaceHolder(_, _, child) => child
+    // Scan wrappers are leaves. Recurse explicitly to preserve the old top-down cleanup's
+    // coverage of the wrapped plan's descendants as well as remove wrappers at its root.
+    case CometScanWrapper(_, wrapped) => removePlaceholders(wrapped)
+  }
 
   /**
    * Tag applied to Partial-mode aggregate operators that must NOT be converted to Comet because a
@@ -261,6 +270,9 @@ case class CometExecRule(session: SparkSession)
           other
         } else {
           other match {
+            // Only the outer TopK owns Spark's original offset and projection. If a future
+            // fused input can contain a restored aggregate, remove its inserted local node.
+            case _: CometLocalTopKExec => children.head
             // A native ancestor embeds its old child in nativeOp. Replacing only its SparkPlan
             // child would leave the incompatible native partial in that serialized plan.
             case comet: CometExec =>
@@ -407,6 +419,16 @@ case class CometExecRule(session: SparkSession)
             scan
           }
         }
+
+      // For AQE table-cache stage (Spark 3.5+) on a Comet cache scan. The operators above it are
+      // planned again once it materializes, and like a Comet shuffle stage it is a native input.
+      case s: QueryStageExec if s.plan.isInstanceOf[CometInMemoryTableScanExec] =>
+        convertToComet(s, CometExchangeSink).getOrElse(s)
+
+      // A CometSparkToColumnarExec from an earlier pass, which AQE reuses over a table-cache stage
+      // because it carries its scan's logical link. Wrap it again so re-planned parents convert.
+      case c: CometSparkToColumnarExec =>
+        convertToComet(c, CometScanWrapper).getOrElse(c)
 
       case op if shouldApplySparkToColumnar(conf, op) =>
         convertToComet(op, CometSparkToColumnarExec).getOrElse(op)
@@ -781,11 +803,7 @@ case class CometExecRule(session: SparkSession)
         }
       }
 
-      // Remove placeholders
-      newPlan = newPlan.transform {
-        case CometSinkPlaceHolder(_, _, s) => s
-        case CometScanWrapper(_, s) => s
-      }
+      newPlan = CometExecRule.removePlaceholders(newPlan)
 
       // Revert CometColumnarShuffle to Spark's ShuffleExchangeExec when both its parent and child
       // are non-Comet HashAggregate/ObjectHashAggregate operators that remained JVM after the main
@@ -796,6 +814,23 @@ case class CometExecRule(session: SparkSession)
 
       // Set up logical links
       newPlan = newPlan.transform {
+        case op: CometExec
+            if op
+              .getTagValue(SparkPlan.LOGICAL_PLAN_TAG)
+              .exists(_.isInstanceOf[LogicalQueryStage]) =>
+          // AQE replanning reuses this physical root and links it to the current logical stage.
+          // originalPlan can still point to a subtree hidden inside that logical leaf, which
+          // AQE cannot replace in the current logical plan. Only preserve a direct stage link,
+          // not a link inherited from an ancestor.
+          // On the ordinary exchange path, the exchange itself is behind a QueryStageExec
+          // leaf and is not visited by this transform.
+          // Spark 4.1.3 returns the existing root in LogicalQueryStageStrategy and then calls
+          // setLogicalLink from SparkStrategies.plan:
+          // scalastyle:off line.size.limit
+          // https://github.com/apache/spark/blob/v4.1.3/sql/core/src/main/scala/org/apache/spark/sql/execution/adaptive/LogicalQueryStageStrategy.scala#L64-L65
+          // https://github.com/apache/spark/blob/v4.1.3/sql/core/src/main/scala/org/apache/spark/sql/execution/SparkStrategies.scala#L78-L87
+          // scalastyle:on line.size.limit
+          op
         case op: CometExec =>
           if (op.originalPlan.logicalLink.isEmpty) {
             op.unsetTagValue(SparkPlan.LOGICAL_PLAN_TAG)
@@ -893,7 +928,8 @@ case class CometExecRule(session: SparkSession)
         case writeFiles: WriteFilesExec => Seq(writeFiles.child)
         case other => Seq(other)
       }
-      if ((op.output ++ dataProducingChildren.flatMap(_.output)).exists(attr =>
+      if (!op.isInstanceOf[CometScanExec] &&
+        (op.output ++ dataProducingChildren.flatMap(_.output)).exists(attr =>
           containsVariantType(attr.dataType))) {
         withFallbackReason(
           op,
@@ -964,7 +1000,7 @@ case class CometExecRule(session: SparkSession)
       .flatten
       .toSet
     if (reasons.nonEmpty) {
-      withFallbackReasons(op, reasons)
+      val _ = withFallbackReasons(op, reasons)
     }
   }
 
@@ -996,7 +1032,7 @@ case class CometExecRule(session: SparkSession)
             "operator or any of its expressions. Add a withFallbackReason call stating why " +
             s"conversion failed. Operator:\n$op")
       }
-      withFallbackReason(op, s"${op.nodeName} is not supported")
+      val _ = withFallbackReason(op, s"${op.nodeName} is not supported")
     }
   }
 
@@ -1025,7 +1061,8 @@ case class CometExecRule(session: SparkSession)
       CometExplainInfo.collectExprTagValues(allExprs, CometExplainInfo.CODEGEN_DISPATCH_EXPRS)
     appendTagValues(exec, CometExplainInfo.CODEGEN_DISPATCH_EXPRS, routedNames)
     if (routedNames.nonEmpty && CometConf.COMET_EXPLAIN_CODEGEN_ENABLED.get()) {
-      withInfo(exec, s"JVM codegen dispatcher: ${routedNames.toSeq.sorted.mkString(", ")}")
+      val _ =
+        withInfo(exec, s"JVM codegen dispatcher: ${routedNames.toSeq.sorted.mkString(", ")}")
     }
   }
 

@@ -25,26 +25,15 @@ import org.scalatest.funsuite.AnyFunSuite
 
 import org.apache.spark.SparkConf
 import org.apache.spark.memory.{SparkOutOfMemoryError, TaskMemoryManager, TestMemoryManager}
-import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.unsafe.memory.MemoryBlock
 
-import org.apache.comet.CometConf
-
-class CometBoundedShuffleMemoryAllocatorSuite extends AnyFunSuite {
+class CometUnboundedShuffleMemoryAllocatorSuite extends AnyFunSuite {
   private val pageSize = 4096L
-  private val memoryLimit = 1024L * 1024
 
-  private def newAllocator(): CometBoundedShuffleMemoryAllocator = {
-    val conf = new SparkConf(false)
-      .set("spark.memory.offHeap.enabled", "false")
-      .set(CometConf.COMET_ONHEAP_MEMORY_OVERHEAD.key, "1m")
+  private def newAllocator(): CometUnboundedShuffleMemoryAllocator = {
+    val conf = new SparkConf(false).set("spark.memory.offHeap.enabled", "false")
     val taskMemoryManager = new TaskMemoryManager(new TestMemoryManager(conf), 0)
-    val sqlConf = new SQLConf
-    sqlConf.setConfString(CometConf.COMET_SHUFFLE_JVM_MEMORY_FACTOR.key, "1.0")
-    SQLConf.withExistingConf(sqlConf) {
-      // Avoid the executor singleton so each test owns its budget and allocated pages.
-      new CometBoundedShuffleMemoryAllocator(conf, taskMemoryManager, pageSize)
-    }
+    new CometUnboundedShuffleMemoryAllocator(taskMemoryManager, pageSize)
   }
 
   test("getUsed reports actual page sizes and ignores repeated frees") {
@@ -97,36 +86,25 @@ class CometBoundedShuffleMemoryAllocatorSuite extends AnyFunSuite {
     }
   }
 
-  test("getUsed is unchanged when a partial grant is rolled back") {
+  test("allocations are not bounded by any budget") {
+    // On-heap mode performs no memory accounting, so a request far larger than anything Comet
+    // would have been granted under the old fixed-size pool succeeds.
     val allocator = newAllocator()
-    val page = allocator.allocate(1)
+    val huge = 64L * 1024 * 1024
+    val page = allocator.allocate(huge)
     try {
-      intercept[SparkOutOfMemoryError] {
-        allocator.allocate(memoryLimit)
-      }
-      assert(allocator.getUsed === page.size())
+      assert(page.size() === huge)
+      assert(allocator.getUsed === huge)
     } finally {
       allocator.free(page)
     }
     assert(allocator.getUsed === 0L)
   }
 
-  test("getUsed is unchanged when the budget is exhausted") {
-    val allocator = newAllocator()
-    val page = allocator.allocate(memoryLimit)
-    try {
-      assert(allocator.getUsed === memoryLimit)
-      intercept[SparkOutOfMemoryError] {
-        allocator.allocate(1)
-      }
-      assert(allocator.getUsed === memoryLimit)
-    } finally {
-      allocator.free(page)
-    }
-    assert(allocator.getUsed === 0L)
-  }
-
-  test("getUsed is unchanged when the page table is exhausted") {
+  test("an exhausted page table is reported as a refused acquisition") {
+    // The page table is the only limit this allocator has. It has to surface as
+    // SparkOutOfMemoryError so that the writers, which respond to that by spilling and retrying,
+    // can free pages instead of failing the task.
     val allocator = newAllocator()
     val pages = ArrayBuffer.empty[MemoryBlock]
     val maxPages = 1 << 13
@@ -136,9 +114,15 @@ class CometBoundedShuffleMemoryAllocatorSuite extends AnyFunSuite {
       }
       val allocatedBytes = pages.map(_.size()).sum
       assert(allocator.getUsed === allocatedBytes)
-      intercept[IllegalStateException] {
+      intercept[SparkOutOfMemoryError] {
         allocator.allocateArray(1)
       }
+      assert(allocator.getUsed === allocatedBytes)
+
+      // Freeing a page makes room again, which is what lets a spilling writer make progress.
+      allocator.free(pages.remove(pages.length - 1))
+      val page = allocator.allocateArray(1).memoryBlock()
+      pages += page
       assert(allocator.getUsed === allocatedBytes)
     } finally {
       pages.foreach(allocator.free)

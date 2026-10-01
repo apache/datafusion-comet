@@ -144,7 +144,7 @@ class CometCelebornShufflePlanningSuite extends CometTestBase {
 
   test("the actual composite manager loads Comet and default auto preserves Spark shuffle") {
     val conf = spark.sessionState.conf
-    assert(isCometShuffleManagerEnabled(conf))
+    assert(isCometShuffleManagerEnabled)
     assertNativeExecutionLoaded()
     assert(CometConf.COMET_SHUFFLE_MODE.get(conf) == "auto")
     assert(!isCometShuffleEnabled(conf))

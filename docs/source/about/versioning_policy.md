@@ -257,10 +257,12 @@ says, and is covered by [Everything Else Is Internal](#everything-else-is-intern
 These classes are named as _values_ in Spark configuration properties. Users do not compile against
 them; they write the fully qualified name into a config string.
 
-| Class                                  | Named in                             | Purpose                                               |
-| -------------------------------------- | ------------------------------------ | ----------------------------------------------------- |
-| `org.apache.spark.CometPlugin`         | `spark.plugins`                      | Installs Comet.                                       |
-| `org.apache.comet.ExtendedExplainInfo` | `spark.sql.extendedExplainProviders` | Adds Comet fallback explanations to `EXPLAIN` output. |
+| Class                                                          | Named in                                 | Purpose                                                            |
+| -------------------------------------------------------------- | ---------------------------------------- | ------------------------------------------------------------------ |
+| `org.apache.spark.CometPlugin`                                 | `spark.plugins`                          | Installs Comet.                                                    |
+| `org.apache.comet.ExtendedExplainInfo`                         | `spark.sql.extendedExplainProviders`     | Adds Comet fallback explanations to `EXPLAIN` output.              |
+| `org.apache.comet.cloud.s3.HadoopS3ACredentialProviderAdapter` | `fs.s3a.comet.credential.provider.class` | Built-in adapter delegating to Hadoop S3A's provider construction. |
+| `org.apache.comet.cloud.s3.AwsSdkCredentialProviderAdapter`    | `fs.s3a.comet.credential.provider.class` | Built-in adapter wrapping a raw AWS SDK provider.                  |
 
 Renaming or removing one of these class names breaks user configuration in exactly the way renaming
 a `spark.comet.*` key does, so it is treated on the same terms: a deprecation cycle, then removal in
@@ -276,13 +278,25 @@ here, because a vendor jar built against one Comet release is loaded by another.
 The SPI consists of:
 
 - `CometS3CredentialProvider`, the interface a vendor implements.
+- `CometS3LocationScopedCredentialProvider`, an optional extension of it for buckets whose credentials
+  differ by location.
 - `CometS3Credentials`, the value a provider returns.
 - `CometS3CredentialContext` and `CometS3AccessMode`, describing the request being served.
+
+Comet also ships two built-in implementations, `HadoopS3ACredentialProviderAdapter` and
+`AwsSdkCredentialProviderAdapter`. Users do not compile against them; they name them in
+`fs.s3a.comet.credential.provider.class`, so they are covered by the config-referenced class-name
+table above (name pinned, internal structure not guaranteed) rather than by the SPI's binary
+compatibility contract. See the
+[S3 Credential Providers](../user-guide/latest/s3-credential-providers.md) guide for how to enable
+them.
 
 Additive changes are allowed in a minor release, for example a new accessor on
 `CometS3CredentialContext`, because a vendor jar compiled against an earlier `1.x` continues to
 load and run. Any change that would break such a jar, including adding an abstract method to
-`CometS3CredentialProvider` without a default implementation, requires a major release.
+`CometS3CredentialProvider` or `CometS3LocationScopedCredentialProvider` without a default
+implementation, requires a major release. The same holds for changing the meaning of an existing
+method, such as how `CometS3LocationScopedCredentialProvider` matches a path to a location.
 
 `CometS3CredentialDispatcher` is the JNI entry point Comet uses to reach a provider. It is internal
 despite living in the same package, and vendors must not call it.
@@ -389,8 +403,11 @@ up. Older Spark patches within the same minor are not separately supported.
 Comet targets a minor release every four to six weeks. Patch releases are made on demand, only
 when a critical bug or security fix needs to ship before the next minor release.
 
-Only the most recent minor release receives patch releases. Comet does not currently backport
-fixes to older minor releases; users are expected to upgrade forward.
+Patch releases normally come from the most recent minor release, and users are expected to upgrade
+forward. The maintainers may still backport an important fix to an older minor release, for
+example a correctness or security fix for users who cannot upgrade yet. The contributor guide's
+[Backporting to Release Branches](../contributor-guide/backporting.md) page describes how fixes
+reach a release branch.
 
 ## Native Library Coupling
 
