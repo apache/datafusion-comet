@@ -240,6 +240,10 @@ private[codegen] object CometBatchKernelCodegenOutput extends CometTypeShim {
       // callers write null values themselves, and skip that test only for a type that is not
       // nullable.
       //
+      // Only the kernel's own output sees the null. Spark rescales such a value when it writes a
+      // row, and an expression around the call reads the value the function returned, so
+      // `QueryPlanSerde` dispatches that expression with the call, and falls an aggregate back.
+      //
       // The precision and scale test repeats `changePrecision`'s own fast path. It keeps the call
       // off the common path, so the JIT can still scalar-replace the `Decimal` that an input
       // getter allocates. With the bare call, passing a `DECIMAL(18, 2)` column through took
