@@ -23,7 +23,7 @@ pub use iceberg_scan::*;
 pub use scan::*;
 
 mod dynamic_filter;
-pub(crate) use dynamic_filter::DynamicFilterJoinExec;
+pub(crate) use dynamic_filter::{DynamicFilterJoinExec, TopKReaderFilterExec};
 mod filter;
 pub(crate) use filter::CometFilterExec;
 mod expand;
