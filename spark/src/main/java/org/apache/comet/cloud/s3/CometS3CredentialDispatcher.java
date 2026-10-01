@@ -123,9 +123,9 @@ public final class CometS3CredentialDispatcher {
 
   /**
    * Invoked by native code when it creates the object store for {@code bucket} (Parquet), or builds
-   * an Iceberg {@code FileIO} for a catalog whose locations it does not have yet or first uses
-   * {@code bucket} through one (Iceberg), and again after a request fails with 403. Returns {@code
-   * null} when the provider behind {@code handle} does not implement {@link
+   * an Iceberg {@code FileIO} for catalog properties whose locations it does not have yet or first
+   * uses {@code bucket} through one (Iceberg), and again after a request fails with 403. Returns
+   * {@code null} when the provider behind {@code handle} does not implement {@link
    * CometS3LocationScopedCredentialProvider}, which leaves it with one credential per bucket, or
    * per table on the Iceberg path. Otherwise returns a copy of the provider's locations.
    *

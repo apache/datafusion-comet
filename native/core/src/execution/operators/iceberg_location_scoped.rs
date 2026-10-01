@@ -26,7 +26,8 @@
 //! is bound to that location. A bucket's locations are fetched the first time a call names the
 //! bucket (the reference bucket's when the `FileIO` is built), and a location's storage is built
 //! the first time a call needs it. Both belong to [`SharedLocations`], which every `FileIO` of the
-//! provider registration shares, so the tables and commits of a catalog do not fetch them again.
+//! provider registration shares, so the commits of a table, and the tables whose catalog properties
+//! match, do not fetch them again.
 //!
 //! A path is routed by the key the OpenDAL storage asks S3 for: everything after
 //! `{scheme}://{bucket}/`, normalized as opendal normalizes it but not percent-decoded. Iceberg
@@ -65,8 +66,23 @@ use url::Url;
 use crate::cloud::s3::policy_locations::{LocationIndex, PolicyLocations, RefreshError};
 use crate::parquet::objectstore::s3_blob_fs_support::BlobHostPromotingS3Storage;
 
-/// Fetches the provider's current policy locations for a bucket.
+/// Fetches the provider's current policy locations for a bucket. It may block, as a JVM call does;
+/// the storage runs it through [`run_blocking`].
 pub(crate) type BucketLocationSource = Arc<dyn Fn(&str) -> Result<Vec<String>> + Send + Sync>;
+
+/// Runs `f`, a blocking call, made from an async storage call or from the thread that builds a
+/// `FileIO`. On a multi-thread runtime that is `block_in_place`, so the worker hands its other
+/// tasks to another thread first. Anywhere else `f` just runs: `block_in_place` panics on a
+/// current-thread runtime, which is where `AbortOnDrop` deletes a failed write's files, and a 403
+/// on one of those deletes fetches the locations again.
+fn run_blocking<R>(f: impl FnOnce() -> R) -> R {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+            tokio::task::block_in_place(f)
+        }
+        _ => f(),
+    }
+}
 
 /// Builds the storage for one policy location from the `FileIO`'s storage configuration, the
 /// bucket, and the path passed to `getCredentialsForPath`.
@@ -215,9 +231,9 @@ struct Route {
 }
 
 /// The locations of one provider registration and access mode, which every `FileIO` of the
-/// registration shares: each bucket's snapshot, and each location's storage. The tables and
-/// commits of a catalog then fetch a bucket's locations once, and a refresh through one `FileIO`
-/// serves them all.
+/// registration shares: each bucket's snapshot, and each location's storage. The commits of a
+/// table, and the tables whose catalog properties match, then fetch a bucket's locations once, and
+/// a refresh through one `FileIO` serves them all.
 pub(crate) struct SharedLocations {
     source: BucketLocationSource,
     storage_factory: LocationStorageFactory,
@@ -268,7 +284,11 @@ impl SharedLocations {
             return Ok(Arc::clone(locations));
         }
         // Fetch outside the lock, since it calls the provider.
-        self.insert(bucket, (self.source)(bucket)?)
+        self.insert(bucket, self.fetch(bucket)?)
+    }
+
+    fn fetch(&self, bucket: &str) -> Result<Vec<String>> {
+        run_blocking(|| (self.source)(bucket))
     }
 
     /// Adds `bucket`'s first snapshot. When two calls race to add one, the first insert wins and
@@ -327,7 +347,7 @@ impl SharedLocations {
         bucket
             .locations
             .refresh(generation, |generation| {
-                (self.source)(&bucket.bucket)
+                self.fetch(&bucket.bucket)
                     .map_err(|e| e.to_string())
                     .and_then(|locations| {
                         LocationIndex::new(generation, locations).map_err(|e| e.to_string())
@@ -1435,6 +1455,31 @@ mod tests {
         let err = read(&storage, "s3://b/t/f.parquet").await.unwrap_err();
         assert!(!may_mean_stale_locations(&err));
         assert_eq!(fixture.fetches(), 0);
+    }
+
+    /// A delete under a location the snapshot does not have, which gets a 403 and refreshes.
+    async fn delete_under_a_new_location() {
+        let fixture = Fixture::new(
+            &[("b", &["t"])],
+            &[("b", "/t", &[]), ("b", "/t/new", &["/t/new"])],
+        );
+        let storage = fixture.storage();
+        fixture.set_locations("b", &["t", "t/new"]);
+        storage.delete("s3://b/t/new/f.parquet").await.unwrap();
+        assert_eq!(fixture.fetches(), 1);
+        assert_eq!(fixture.served("delete"), ["b/t", "b/t/new"]);
+    }
+
+    /// `AbortOnDrop` deletes a failed write's files on a current-thread runtime, where
+    /// `block_in_place` panics, so a refresh there must not use it.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_delete_refreshes_on_a_current_thread_runtime() {
+        delete_under_a_new_location().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn a_delete_refreshes_on_a_runtime_worker() {
+        tokio::spawn(delete_under_a_new_location()).await.unwrap();
     }
 
     #[tokio::test]

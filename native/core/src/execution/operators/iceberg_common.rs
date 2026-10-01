@@ -504,25 +504,23 @@ fn location_scoped_state(
 ) -> Result<SharedLocations, DataFusionError> {
     let bridge = Arc::new(bridge);
     let source_bridge = Arc::clone(&bridge);
+    // A blocking JVM call, which the storage makes through `run_blocking`.
     let source: BucketLocationSource = Arc::new(move |bucket: &str| {
-        // A blocking JVM call, usually made inside an async storage call on a Tokio worker.
-        tokio::task::block_in_place(|| {
-            source_bridge
-                .for_location(bucket, ROOT_CREDENTIAL_PATH)?
-                .policy_locations()
-        })
-        .map_err(|e| {
-            IcebergError::new(
-                IcebergErrorKind::Unexpected,
-                format!("Failed to get policy locations for {bucket}: {e}"),
-            )
-        })?
-        .ok_or_else(|| {
-            IcebergError::new(
-                IcebergErrorKind::Unexpected,
-                format!("The provider for {bucket} stopped returning policy locations"),
-            )
-        })
+        source_bridge
+            .for_location(bucket, ROOT_CREDENTIAL_PATH)
+            .and_then(|bridge| bridge.policy_locations())
+            .map_err(|e| {
+                IcebergError::new(
+                    IcebergErrorKind::Unexpected,
+                    format!("Failed to get policy locations for {bucket}: {e}"),
+                )
+            })?
+            .ok_or_else(|| {
+                IcebergError::new(
+                    IcebergErrorKind::Unexpected,
+                    format!("The provider for {bucket} stopped returning policy locations"),
+                )
+            })
     });
     let storage_factory: LocationStorageFactory = Arc::new(
         move |config: &StorageConfig, bucket: &str, credential_path: &str| {
