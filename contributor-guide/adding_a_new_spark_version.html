@@ -552,8 +552,8 @@ under the License.
 <section id="adding-support-for-a-new-spark-version">
 <h1>Adding Support for a New Spark Version<a class="headerlink" href="#adding-support-for-a-new-spark-version" title="Link to this heading">#</a></h1>
 <p>This guide describes how to bring up support for a new Apache Spark release in
-Comet. Past examples include the work to add Spark 4.0, Spark 4.1, and the
-Spark 4.2 preview profile. The goal is a repeatable recipe that keeps each
+Comet. Past examples include the work to add Spark 4.0, Spark 4.1, and
+Spark 4.2. The goal is a repeatable recipe that keeps each
 pull request small, reviewable, and easy to revert if a problem is discovered
 later.</p>
 <section id="why-stage-the-work">
@@ -838,14 +838,16 @@ confirm every skip introduced in this PR has a linked GitHub issue.</p>
 <p>Once stage 3 is merged and CI is green, advertise the version to users.</p>
 <p>The single source of truth for which Spark versions Comet works with is the
 <code class="docutils literal notranslate"><span class="pre">###</span> <span class="pre">Supported</span> <span class="pre">Spark</span> <span class="pre">Versions</span></code> section in
-<code class="docutils literal notranslate"><span class="pre">docs/source/user-guide/latest/installation.md</span></code>. It contains two tables and a
-list of per-version jar download links. Update each:</p>
+<code class="docutils literal notranslate"><span class="pre">docs/source/user-guide/latest/installation.md</span></code>. It contains the supported
+versions table, an experimental versions table while any version is
+experimental, and a list of per-version jar download links. Update each:</p>
 <ul class="simple">
 <li><p>Add a row to the <strong>experimental</strong> table (the one introduced by the
 sentence “Experimental support is provided for the following versions
-…”). Include the Java version, Scala version, and the <code class="docutils literal notranslate"><span class="pre">Yes</span></code>/<code class="docutils literal notranslate"><span class="pre">No</span></code>
-values for “Comet Tests in CI” and “Spark SQL Tests in CI” that match
-what stage 2 and stage 3 actually enabled.</p></li>
+…”). If no version is experimental, add that sentence and table below
+the supported table first. Include the Java version, Scala version, and
+the <code class="docutils literal notranslate"><span class="pre">Yes</span></code>/<code class="docutils literal notranslate"><span class="pre">No</span></code> values for “Comet Tests in CI” and “Spark SQL Tests in CI”
+that match what stage 2 and stage 3 actually enabled.</p></li>
 <li><p>Add a <code class="docutils literal notranslate"><span class="pre">(Experimental)</span></code> jar download link below the existing entries.</p></li>
 </ul>
 <p>Do not add the new version to the main “Supported Spark Versions” table
@@ -900,10 +902,18 @@ reasons are acceptable; correctness skips are not.</p></li>
 </ul>
 <p>When the criteria are met, the promotion PR moves the version’s row from
 the experimental table into the main “Supported Spark Versions” table and
-removes the <code class="docutils literal notranslate"><span class="pre">(Experimental)</span></code> qualifier from the jar download link. No
-shim, code, or test changes should be bundled with this promotion. Keeping
-it as a doc-only PR makes it easy to revert if a problem shows up after
-the promotion.</p>
+removes the <code class="docutils literal notranslate"><span class="pre">(Experimental)</span></code> qualifier from the jar download link.</p>
+<p>If the version’s jars are not published yet, the same PR adds its profile
+to <code class="docutils literal notranslate"><span class="pre">dev/release/build-release-comet.sh</span></code> and
+<code class="docutils literal notranslate"><span class="pre">.github/workflows/publish_snapshot.yml</span></code>, and its jar to the snapshot and
+release lists in <code class="docutils literal notranslate"><span class="pre">installation.md</span></code>. It also adds the version’s expression
+compatibility pages: a <code class="docutils literal notranslate"><span class="pre">spark-X.Y/index.md</span></code> under
+<code class="docutils literal notranslate"><span class="pre">docs/source/user-guide/latest/compatibility/expressions/</span></code>, a toctree entry
+in that directory’s <code class="docutils literal notranslate"><span class="pre">index.md</span></code>, and the profile in <code class="docutils literal notranslate"><span class="pre">SPARK_PROFILES</span></code> in both
+<code class="docutils literal notranslate"><span class="pre">docs/build.sh</span></code> and <code class="docutils literal notranslate"><span class="pre">dev/generate-release-docs.sh</span></code>.</p>
+<p>No shim, code, or test changes should be bundled with this promotion.
+Keeping it to docs and packaging makes it easy to revert if a problem
+shows up after the promotion.</p>
 </section>
 <section id="related-documentation">
 <h2>Related Documentation<a class="headerlink" href="#related-documentation" title="Link to this heading">#</a></h2>

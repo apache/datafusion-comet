@@ -563,6 +563,19 @@ under the License.
 <li class="toctree-l4"><a class="reference internal" href="expressions/spark-4.1/cast.html">Cast</a></li>
 </ul>
 </details></li>
+<li class="toctree-l3 has-children"><a class="reference internal" href="expressions/spark-4.2/index.html">Spark 4.2</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l4"><a class="reference internal" href="expressions/spark-4.2/aggregate.html">Aggregate Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="expressions/spark-4.2/array.html">Array Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="expressions/spark-4.2/datetime.html">Date/Time Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="expressions/spark-4.2/map.html">Map Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="expressions/spark-4.2/math.html">Math Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="expressions/spark-4.2/misc.html">Miscellaneous Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="expressions/spark-4.2/string.html">String Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="expressions/spark-4.2/struct.html">Struct Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="expressions/spark-4.2/url.html">URL Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="expressions/spark-4.2/cast.html">Cast</a></li>
+</ul>
+</details></li>
 </ul>
 </details></li>
 <li class="toctree-l2"><a class="reference internal" href="json.html">JSON Compatibility</a></li>
@@ -854,16 +867,26 @@ persisting, or read the file with Comet disabled for that query.</p></li>
 </ul>
 </section>
 </section>
-<section id="spark-4-2-experimental">
-<h2>Spark 4.2 (Experimental)<a class="headerlink" href="#spark-4-2-experimental" title="Link to this heading">#</a></h2>
-<p>Spark 4.2.0 is provided as experimental support with Java 17 and Scala 2.13.</p>
-<div class="admonition warning">
-<p class="admonition-title">Warning</p>
-<p>Spark 4.2 support is experimental. Comet’s own test suites and Apache Spark’s SQL test suite both
-run nightly for this version rather than on every pull request, so a regression is caught within a
-day but does not block a merge. It is intended for early evaluation only and should not be used in
-production.</p>
-</div>
+<section id="spark-4-2">
+<h2>Spark 4.2<a class="headerlink" href="#spark-4-2" title="Link to this heading">#</a></h2>
+<p>Spark 4.2.0 is supported with Java 17 and Scala 2.13.</p>
+<section id="id4">
+<h3>Known Limitations<a class="headerlink" href="#id4" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">FILTER</span></code> on window aggregates</strong>: Spark 4.2 accepts a <code class="docutils literal notranslate"><span class="pre">FILTER</span> <span class="pre">(WHERE</span> <span class="pre">...)</span></code> clause on an
+aggregate function used as a window function. Comet does not support the clause there, so the
+window operator falls back to Spark.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">OneRowRelation</span></code> in <code class="docutils literal notranslate"><span class="pre">UNION</span></code> branches</strong>
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4949">#4949</a>): Spark 4.2 plans a
+<code class="docutils literal notranslate"><span class="pre">OneRowRelation</span></code> into the <code class="docutils literal notranslate"><span class="pre">UNION</span></code> branches of some queries, for example TPC-DS q77a. Comet does
+not convert <code class="docutils literal notranslate"><span class="pre">OneRowRelation</span></code> by default, so the union and the aggregates above it fall back to
+Spark.</p></li>
+<li><p><strong>ANSI arithmetic overflow</strong>
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4967">#4967</a>): Spark 4.2 changed some
+ANSI-mode arithmetic overflow behavior, and Comet does not match these changes yet. See
+<a class="reference internal" href="index.html#ansi-mode-error-classes-and-messages"><span class="std std-ref">ANSI-mode error classes and messages</span></a>.</p></li>
+</ul>
+</section>
 </section>
 </section>
 
@@ -930,7 +953,10 @@ production.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#id3">Known Limitations</a></li>
 </ul>
 </li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#spark-4-2-experimental">Spark 4.2 (Experimental)</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#spark-4-2">Spark 4.2</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#id4">Known Limitations</a></li>
+</ul>
+</li>
 </ul>
   </nav></div>
 
