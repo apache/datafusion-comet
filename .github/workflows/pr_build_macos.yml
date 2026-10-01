@@ -19,8 +19,26 @@ name: PR Build (macOS)
 
 # Reusable: invoked by ci.yml. Triggering, path filters, and concurrency
 # live in the umbrella workflow.
+#
+# Two modes, selected by `cache-refresh-only`, the same split as
+# pr_build_linux.yml:
+#
+#   false  the full pipeline: the native build and the test matrix. The merge
+#          queue, and pull requests carrying `run-macos-tests`.
+#   true   `build-native` alone, and only far enough to keep main's macOS cargo
+#          cache warm. This is the push-to-main tier. Nothing else ever runs on
+#          main, and a cache entry written anywhere else is invisible to the
+#          queue, so without this run every queue build compiled the native
+#          library from scratch. See issue #6390.
 on:
   workflow_call:
+    inputs:
+      cache-refresh-only:
+        description: >-
+          Populate main's macOS cargo cache without running any test. Set by
+          ci.yml on push to main.
+        type: boolean
+        default: false
 
 env:
   RUST_VERSION: stable
@@ -42,7 +60,11 @@ jobs:
           rustup component add rustfmt
           cd native && cargo fmt --all -- --check
 
-  # Build native library once and share with all test jobs
+  # Build native library once and share with all test jobs. Also the owner of
+  # main's macOS `cargo-ci-v2` cache entry, which is why it runs in
+  # cache-refresh-only mode. The key covers the dependency set only, as in
+  # pr_build_linux.yml, so the push run builds once per dependency change and
+  # otherwise stops at the lookup.
   build-native:
     needs: lint
     name: Build Native Library (macOS)
@@ -50,7 +72,22 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # In cache-refresh-only mode this job is only here to write the entry, so
+      # if the entry already exists there is nothing left to do.
+      - name: Look up Cargo cache
+        id: cargo-lookup
+        if: ${{ inputs.cache-refresh-only }}
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/target
+          key: ${{ runner.os }}-cargo-ci-v2-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}
+          lookup-only: true
+
       - name: Setup Rust & Java toolchain
+        if: steps.cargo-lookup.outputs.cache-hit != 'true'
         uses: ./.github/actions/setup-macos-builder
         with:
           rust-version: ${{ env.RUST_VERSION }}
@@ -59,17 +96,18 @@ jobs:
           protoc-architecture: aarch_64
 
       - name: Restore Cargo cache
+        id: cargo-cache
+        if: steps.cargo-lookup.outputs.cache-hit != 'true'
         uses: actions/cache/restore@v6
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             native/target
-          key: ${{ runner.os }}-cargo-ci-v2-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-ci-v2-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-
+          key: ${{ runner.os }}-cargo-ci-v2-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}
 
       - name: Build native library (CI profile)
+        if: steps.cargo-lookup.outputs.cache-hit != 'true'
         run: |
           cd native
           # CI profile: same overflow behavior as release, but faster compilation
@@ -79,6 +117,7 @@ jobs:
           RUSTFLAGS: "-Ctarget-cpu=apple-m1"
 
       - name: Upload native library
+        if: ${{ !inputs.cache-refresh-only }}
         uses: ./.github/actions/upload-artifact-retry
         with:
           name: native-lib-macos
@@ -87,16 +126,17 @@ jobs:
 
       - name: Save Cargo cache
         uses: actions/cache/save@v6
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' && steps.cargo-lookup.outputs.cache-hit != 'true' && steps.cargo-cache.outputs.cache-hit != 'true'
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             native/target
-          key: ${{ runner.os }}-cargo-ci-v2-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
+          key: ${{ runner.os }}-cargo-ci-v2-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}
 
   macos-aarch64-test:
     needs: build-native
+    if: ${{ !inputs.cache-refresh-only }}
     strategy:
       matrix:
         os: [macos-14]
@@ -200,12 +240,14 @@ jobs:
               org.apache.spark.CometPluginsUnifiedModeSuite
               org.apache.spark.CometPluginsExtensionOnlySuite
               org.apache.spark.CometPluginsSparkShuffleManagerSuite
+              org.apache.spark.CometPluginsEventLogSuite
               org.apache.comet.rules.CometScanRuleSuite
               org.apache.comet.rules.CometScanContribSuite
               org.apache.comet.rules.CometScanSchemeFallbackSuite
               org.apache.comet.rules.CometExecRuleSuite
               org.apache.spark.sql.comet.CometPlanEqualitySuite
               org.apache.comet.rules.CometEmptyRelationExecRuleSuite
+              org.apache.comet.rules.EliminateRedundantTransitionsSuite
               org.apache.comet.rules.RevertNativeForTransitionHeavyStagesSuite
               org.apache.spark.sql.CometTPCDSQuerySuite
               org.apache.spark.sql.CometTPCDSQueryTestSuite
@@ -232,6 +274,7 @@ jobs:
               org.apache.spark.sql.CometSortCollationSuite
               org.apache.comet.CometFuzzAggregateSuite
               org.apache.spark.sql.comet.execution.arrow.CometArrowStreamSuite
+              org.apache.spark.sql.comet.execution.arrow.CometStringWriterSuite
               org.apache.spark.sql.CometSparkInternalFunctionsSuite
           - name: "expressions"
             value: |
@@ -245,6 +288,7 @@ jobs:
               org.apache.comet.CometTemporalExpressionSuite
               org.apache.comet.CometArrayExpressionSuite
               org.apache.comet.CometNativeCastSuite
+              org.apache.comet.CometCastCollatedStringSuite
               org.apache.comet.CometDateTimeUtilsSuite
               org.apache.comet.CometMathExpressionSuite
               org.apache.comet.CometStringExpressionSuite
