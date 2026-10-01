@@ -554,18 +554,49 @@ under the License.
 <p>This documentation explains the release process for Apache DataFusion Comet. Some preparation tasks can be
 performed by any contributor, while certain release tasks can only be performed by a DataFusion Project Management
 Committee (PMC) member.</p>
+<section id="release-cycle">
+<h2>Release Cycle<a class="headerlink" href="#release-cycle" title="Link to this heading">#</a></h2>
+<p>Comet targets a minor release every four to six weeks (see
+<a class="reference internal" href="../about/versioning_policy.html#release-cadence"><span class="std std-ref">Release Cadence</span></a>). Each release starts by cutting the release
+branch. The weeks after that are for finding and fixing regressions on the branch, and the release candidate comes
+last.</p>
+<p><img alt="The release cycle: cut the release branch, audit it for regressions for about a week, review the fixes and backport them for one to two weeks, then create a release candidate and publish the release. Fixes merge to main first and are then backported to the release branch." src="../_images/comet-release-cycle.svg" /></p>
+<ol class="arabic simple">
+<li><p><strong>Cut the release branch</strong> from <code class="docutils literal notranslate"><span class="pre">main</span></code>. From then on, new work goes to <code class="docutils literal notranslate"><span class="pre">main</span></code> for the next release, and the
+release branch only takes backported fixes and release mechanics such as the version bump.</p></li>
+<li><p><strong>Audit the release branch for regressions</strong> for about a week, and open a pull request against <code class="docutils literal notranslate"><span class="pre">main</span></code> to fix
+each one.</p></li>
+<li><p><strong>Review the fixes and backport them</strong> to the release branch over the next one to two weeks.</p></li>
+<li><p><strong>Create a release candidate</strong> and hold the vote. If the vote fails, fix the problems and create the next
+release candidate.</p></li>
+<li><p><strong>Publish the release</strong> once the vote passes.</p></li>
+</ol>
+<p>These steps take three to four weeks, so the next release starts as soon as the current one ships.</p>
+</section>
 <section id="checklist">
 <h2>Checklist<a class="headerlink" href="#checklist" title="Link to this heading">#</a></h2>
 <p>The following is a quick-reference checklist for the full release process. See the detailed sections below for
 instructions on each step.</p>
 <ul class="contains-task-list simple">
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Release preparation: review expression support status and user guide</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Release preparation: check the scheduled CI runs are healthy</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Create release branch</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Cut the release branch:</p>
+<ul class="contains-task-list">
+<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Create the release branch and its backport label</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Protect the release branch in <code class="docutils literal notranslate"><span class="pre">.asf.yaml</span></code></p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Generate release documentation</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Update Maven version in release branch</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Update version in main for next development cycle</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Find and fix regressions:</p>
+<ul class="contains-task-list">
+<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Review expression support status and the user guide</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Benchmark against the previous release</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Check the scheduled CI runs are healthy</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Fix each regression on <code class="docutils literal notranslate"><span class="pre">main</span></code> and backport the fix</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Create the release candidate:</p>
+<ul class="contains-task-list">
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Check for fixes missing from the release branches</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Generate the change log and PR it against the release branch</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Run the full CI suite on the release branch</p></li>
@@ -575,6 +606,8 @@ instructions on each step.</p>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Publish Maven artifacts to staging</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Create the release candidate tarball</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Start the email voting thread</p></li>
+</ul>
+</li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Once the vote passes:</p>
 <ul class="contains-task-list">
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Publish source tarball</p></li>
@@ -590,40 +623,13 @@ instructions on each step.</p>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Register the release with Apache Reporter</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Delete old RCs and releases from SVN</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Write a blog post</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Start the next release</p></li>
 </ul>
 </li>
 </ul>
 </section>
-<section id="release-preparation">
-<h2>Release Preparation<a class="headerlink" href="#release-preparation" title="Link to this heading">#</a></h2>
-<p>Before starting the release process, review the user guide to ensure it accurately reflects the current state of the
-project:</p>
-<ul class="simple">
-<li><p>Review the <a class="reference internal" href="../user-guide/latest/expressions.html"><span class="std std-doc">Spark Expression Support</span></a> page and the supported operators list
-in the user guide. The expression page is the source of truth for expression support status, so verify that any
-expressions added or changed since the last release appear there with an accurate status (✅ / ⚠️ / 🔜 / 💤).</p></li>
-<li><p>Spot-check the support status of individual expressions by running tests or queries to confirm they work as
-documented.</p></li>
-<li><p>Look for any expressions that may have regressed or changed behavior since the last release and update the
-documentation accordingly.</p></li>
-</ul>
-<p>It is also recommended to run benchmarks (such as TPC-H and TPC-DS) comparing performance against the previous
-release to check for regressions. See the
-<a class="reference internal" href="benchmarking.html"><span class="std std-doc">Comet Benchmarking Guide</span></a> for instructions.</p>
-<p>Check that the scheduled CI runs have been healthy over the release window. Most of Comet’s coverage of the
-non-default Spark and Iceberg versions runs nightly rather than on pull requests, so a nightly run that has been
-failing — or one that silently stopped firing — means the release is going out with less testing behind it than the
-tier table suggests. A scheduled run has no pull request to turn red, and <code class="docutils literal notranslate"><span class="pre">publish_snapshot.yml</span></code> does
-not report its own failures, so this has to be looked at deliberately. See
-<a class="reference internal" href="ci.html#checking-that-the-scheduled-runs-are-healthy"><span class="std std-ref">Checking that the scheduled runs are healthy</span></a> for the commands
-and for how to tell a genuinely quiet night from a broken one.</p>
-<p>These are tasks where agentic coding tools can be particularly helpful — for example, scanning the codebase for
-newly registered expressions and cross-referencing them against the documented list, or generating test queries to
-verify expression support status.</p>
-<p>Any issues found should be addressed before creating the release branch.</p>
-</section>
-<section id="creating-the-release-candidate">
-<h2>Creating the Release Candidate<a class="headerlink" href="#creating-the-release-candidate" title="Link to this heading">#</a></h2>
+<section id="cutting-the-release-branch">
+<h2>Cutting the Release Branch<a class="headerlink" href="#cutting-the-release-branch" title="Link to this heading">#</a></h2>
 <p>This part of the process can be performed by any committer.</p>
 <p>Here are the steps, using the 0.13.0 release as an example.</p>
 <section id="create-release-branch">
@@ -728,6 +734,48 @@ The contrib crates sit outside the <code class="docutils literal notranslate"><s
 the Spark test diffs under <code class="docutils literal notranslate"><span class="pre">dev/diffs</span></code>, and the Iceberg test diffs under <code class="docutils literal notranslate"><span class="pre">dev/diffs/iceberg</span></code>).</p></li>
 </ul>
 </section>
+</section>
+<section id="finding-and-fixing-regressions">
+<h2>Finding and Fixing Regressions<a class="headerlink" href="#finding-and-fixing-regressions" title="Link to this heading">#</a></h2>
+<p>Once the release branch is cut, spend about a week auditing it for regressions, then one to two weeks getting the
+fixes reviewed and backported. Anyone can help with both.</p>
+<section id="audit-the-release-branch">
+<h3>Audit the Release Branch<a class="headerlink" href="#audit-the-release-branch" title="Link to this heading">#</a></h3>
+<p>Check that the user guide accurately reflects what is being released:</p>
+<ul class="simple">
+<li><p>Review the <a class="reference internal" href="../user-guide/latest/expressions.html"><span class="std std-doc">Spark Expression Support</span></a> page and the supported operators list
+in the user guide. The expression page is the source of truth for expression support status, so verify that any
+expressions added or changed since the last release appear there with an accurate status (✅ / ⚠️ / 🔜 / 💤).</p></li>
+<li><p>Spot-check the support status of individual expressions by running tests or queries to confirm they work as
+documented.</p></li>
+<li><p>Look for any expressions that may have regressed or changed behavior since the last release and update the
+documentation accordingly.</p></li>
+</ul>
+<p>Run benchmarks (such as TPC-H and TPC-DS) on the release branch and compare them against the previous release to
+check for performance regressions. See the <a class="reference internal" href="benchmarking.html"><span class="std std-doc">Comet Benchmarking Guide</span></a> for instructions.</p>
+<p>Check that the scheduled CI runs have been healthy over the release window. Most of Comet’s coverage of the
+non-default Spark and Iceberg versions runs nightly rather than on pull requests, so a nightly run that has been
+failing — or one that silently stopped firing — means the release is going out with less testing behind it than the
+tier table suggests. A scheduled run has no pull request to turn red, and <code class="docutils literal notranslate"><span class="pre">publish_snapshot.yml</span></code> does
+not report its own failures, so this has to be looked at deliberately. See
+<a class="reference internal" href="ci.html#checking-that-the-scheduled-runs-are-healthy"><span class="std std-ref">Checking that the scheduled runs are healthy</span></a> for the commands
+and for how to tell a genuinely quiet night from a broken one.</p>
+<p>These are tasks where agentic coding tools can be particularly helpful — for example, scanning the codebase for
+newly registered expressions and cross-referencing them against the documented list, or generating test queries to
+verify expression support status.</p>
+</section>
+<section id="fix-and-backport-regressions">
+<h3>Fix and Backport Regressions<a class="headerlink" href="#fix-and-backport-regressions" title="Link to this heading">#</a></h3>
+<p>File an issue for each regression and open a pull request against <code class="docutils literal notranslate"><span class="pre">main</span></code> that fixes it. Committers add the
+<code class="docutils literal notranslate"><span class="pre">backport-0.13</span></code> label to these pull requests, and once each one merges it is backported to the release branch as
+described in <a class="reference internal" href="backporting.html"><span class="std std-doc">Backporting to Release Branches</span></a>. The label shows which fixes still need to reach the
+branch.</p>
+<p>Create the release candidate once the fixes have been backported.</p>
+</section>
+</section>
+<section id="creating-the-release-candidate">
+<h2>Creating the Release Candidate<a class="headerlink" href="#creating-the-release-candidate" title="Link to this heading">#</a></h2>
+<p>This part of the process can be performed by any committer.</p>
 <section id="check-for-missing-backports">
 <h3>Check for Missing Backports<a class="headerlink" href="#check-for-missing-backports" title="Link to this heading">#</a></h3>
 <p>Before generating the change log, check that the new branch has every fix from the older release branches that are
@@ -1076,6 +1124,11 @@ Google document where the community can collaborate on a blog post. Once the con
 created against the <a class="reference external" href="https://github.com/apache/datafusion-site">datafusion-site</a> repository to add the blog post. Any
 contributor can drive this process.</p>
 </section>
+<section id="start-the-next-release">
+<h3>Start the Next Release<a class="headerlink" href="#start-the-next-release" title="Link to this heading">#</a></h3>
+<p>The release cycle takes three to four weeks, so start the next release right away by cutting its release branch.
+See <a class="reference internal" href="#release-cycle">Release Cycle</a>.</p>
+</section>
 </section>
 </section>
 
@@ -1126,14 +1179,22 @@ contributor can drive this process.</p>
   </div>
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#release-cycle">Release Cycle</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#checklist">Checklist</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#release-preparation">Release Preparation</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#creating-the-release-candidate">Creating the Release Candidate</a><ul class="nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#cutting-the-release-branch">Cutting the Release Branch</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#create-release-branch">Create Release Branch</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#protect-the-release-branch">Protect the Release Branch</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#generate-release-documentation">Generate Release Documentation</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#update-maven-version">Update Maven Version</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#update-version-in-main">Update Version in main</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#finding-and-fixing-regressions">Finding and Fixing Regressions</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#audit-the-release-branch">Audit the Release Branch</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#fix-and-backport-regressions">Fix and Backport Regressions</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#creating-the-release-candidate">Creating the Release Candidate</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#check-for-missing-backports">Check for Missing Backports</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#generate-the-change-log">Generate the Change Log</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#run-the-full-ci-suite">Run the Full CI Suite</a></li>
@@ -1182,6 +1243,7 @@ contributor can drive this process.</p>
 </ul>
 </li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#write-a-blog-post">Write a blog post</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#start-the-next-release">Start the Next Release</a></li>
 </ul>
 </li>
 </ul>
