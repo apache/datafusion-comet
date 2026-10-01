@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+mod case_when;
 mod if_expr;
 
+pub use case_when::{create_case_when, CaseWhenExpr};
 pub use if_expr::IfExpr;
