@@ -36,10 +36,9 @@ use crate::execution::operators::init_csv_datasource_exec;
 use crate::execution::operators::DynamicFilterJoinExec;
 use crate::execution::operators::IcebergScanExec;
 use crate::execution::operators::IcebergWriteExec;
+use crate::execution::operators::TopKReaderFilterExec;
 use crate::execution::operators::{PartitionedRankLimitExec, WindowFnKind};
 use crate::execution::{
-    expressions::list_positions::ListPositionsExpr,
-    expressions::subquery::Subquery,
     operators::{
         CometFilterExec, ExecutionError, ExpandExec, ExplodeExec, ParquetCompression,
         ParquetWriterExec, SampleExec, ScanExec, ShuffleScanExec,
@@ -71,9 +70,7 @@ use datafusion::{
     functions_aggregate::first_last::{FirstValue, LastValue},
     logical_expr::Operator as DataFusionOperator,
     physical_expr::{
-        expressions::{
-            BinaryExpr, CaseExpr, CastExpr, Column, IsNullExpr, Literal as DataFusionLiteral,
-        },
+        expressions::{BinaryExpr, CastExpr, Column, IsNullExpr, Literal as DataFusionLiteral},
         PhysicalExpr, PhysicalSortExpr, ScalarFunctionExpr,
     },
     physical_plan::{
@@ -89,9 +86,9 @@ use datafusion::{
 };
 use datafusion_comet_spark_expr::{
     create_comet_physical_fun, create_comet_physical_fun_with_eval_mode, BinaryOutputStyle,
-    BloomFilterAgg, BloomFilterMightContain, CometCollectList, CometCollectSet, CsvWriteOptions,
-    EvalMode, SparkArraysZipFunc, SparkBloomFilterVersion, SparkListAgg, SparkPercentile,
-    SumInteger, ToCsv,
+    BloomFilterAgg, BloomFilterMightContain, CheckedBinaryExpr, CometCollectList, CometCollectSet,
+    CsvWriteOptions, EvalMode, ListPositionsExpr, SparkArraysZipFunc, SparkBloomFilterVersion,
+    SparkListAgg, SparkPercentile, Subquery, SumInteger, ToCsv,
 };
 use datafusion_datasource::TableSchema;
 use iceberg::expr::Bind;
@@ -108,7 +105,6 @@ use datafusion::common::{
 };
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::logical_expr::type_coercion::functions::fields_with_udf;
-use datafusion::logical_expr::type_coercion::other::get_coerce_type_for_case_expression;
 use datafusion::logical_expr::{
     AggregateUDF, ReturnFieldArgs, ScalarUDF, TypeSignature, WindowFrame, WindowFrameBound,
     WindowFrameUnits, WindowFunctionDefinition,
@@ -117,7 +113,6 @@ use datafusion::physical_expr::expressions::{Literal, StatsType};
 use datafusion::physical_expr::window::WindowExpr;
 use datafusion::physical_expr::LexOrdering;
 
-use crate::execution::expressions::arithmetic::CheckedBinaryExpr;
 use crate::parquet::parquet_exec::init_datasource_exec;
 use arrow::array::{
     new_empty_array, Array, ArrayRef, BinaryBuilder, BooleanArray, Date32Array, Decimal128Array,
@@ -148,8 +143,8 @@ use datafusion_comet_proto::{
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
 use datafusion_comet_spark_expr::{
-    jvm_udf::JvmScalarUdfExpr, normalize_floats, spark_in_list, ApproxPercentile, ArrayInsert, Avg,
-    AvgDecimal, Cast, CheckOverflow, Correlation, Covariance, CreateNamedStruct,
+    create_case_when, jvm_udf::JvmScalarUdfExpr, normalize_floats, spark_in_list, ApproxPercentile,
+    ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Correlation, Covariance, CreateNamedStruct,
     DecimalRescaleCheckOverflow, GetArrayStructFields, GetStructField, HllPlusPlus, HllSketchAgg,
     HllUnionAgg, IfExpr, ListExtract, MaxMinBy, Mode, NormalizeNaNAndZero, Regr, RegrType,
     SparkCastOptions, Stddev, SumDecimal, ToJson, UnboundColumn, Variance, WideDecimalBinaryExpr,
@@ -782,7 +777,8 @@ impl PhysicalPlanner {
                     )?),
                 };
 
-                create_case_expr(when_then_pairs, else_phy_expr, &input_schema)
+                create_case_when(when_then_pairs, else_phy_expr, &input_schema)
+                    .map_err(|e| e.into())
             }
             ExprStruct::In(expr) => {
                 let value =
@@ -1622,13 +1618,22 @@ impl PhysicalPlanner {
 
                 let fetch = sort.fetch.map(|num| num as usize);
 
-                let mut sort_exec: Arc<dyn ExecutionPlan> = Arc::new(
-                    SortExec::new(
-                        LexOrdering::new(exprs?).unwrap(),
-                        Arc::clone(&child.native_plan),
-                    )
-                    .with_fetch(fetch),
-                );
+                let sort_plan = SortExec::new(
+                    LexOrdering::new(exprs?).unwrap(),
+                    Arc::clone(&child.native_plan),
+                )
+                .with_fetch(fetch);
+                let mut sort_exec: Arc<dyn ExecutionPlan> = if sort.dynamic_filter_enabled {
+                    match TopKReaderFilterExec::try_new(
+                        &sort_plan,
+                        self.session_ctx.copied_config().options(),
+                    )? {
+                        Some(wrapper) => Arc::new(wrapper),
+                        None => Arc::new(sort_plan),
+                    }
+                } else {
+                    Arc::new(sort_plan)
+                };
 
                 if let Some(skip) = sort.skip.filter(|&n| n > 0).map(|n| n as usize) {
                     sort_exec = Arc::new(GlobalLimitExec::new(sort_exec, skip, None));
@@ -4781,67 +4786,6 @@ fn parse_file_scan_tasks_from_common(
     results
 }
 
-/// Create CASE WHEN expression and add casting as needed
-fn create_case_expr(
-    when_then_pairs: Vec<(Arc<dyn PhysicalExpr>, Arc<dyn PhysicalExpr>)>,
-    else_expr: Option<Arc<dyn PhysicalExpr>>,
-    input_schema: &Schema,
-) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-    let then_types: Vec<DataType> = when_then_pairs
-        .iter()
-        .map(|x| x.1.data_type(input_schema))
-        .collect::<Result<Vec<_>, _>>()?;
-
-    let else_type: Option<DataType> = else_expr
-        .as_ref()
-        .map(|x| Arc::clone(x).data_type(input_schema))
-        .transpose()?
-        .or(Some(DataType::Null));
-
-    if let Some(coerce_type) = get_coerce_type_for_case_expression(&then_types, else_type.as_ref())
-    {
-        // The branches share a Spark type, so any difference is in the Arrow representation. For
-        // a timestamp that is the timezone label, and the cast only relabels it, but Comet's cast
-        // still needs a timezone. Every `TimestampType` value in a native plan is labelled UTC.
-        let cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC", false);
-
-        let when_then_pairs = when_then_pairs
-            .iter()
-            .map(|x| {
-                let t: Arc<dyn PhysicalExpr> = Arc::new(Cast::new(
-                    Arc::clone(&x.1),
-                    coerce_type.clone(),
-                    cast_options.clone(),
-                    None,
-                    None,
-                ));
-                (Arc::clone(&x.0), t)
-            })
-            .collect::<Vec<(Arc<dyn PhysicalExpr>, Arc<dyn PhysicalExpr>)>>();
-
-        let else_phy_expr: Option<Arc<dyn PhysicalExpr>> = else_expr.clone().map(|x| {
-            Arc::new(Cast::new(
-                x,
-                coerce_type.clone(),
-                cast_options.clone(),
-                None,
-                None,
-            )) as Arc<dyn PhysicalExpr>
-        });
-        Ok(Arc::new(CaseExpr::try_new(
-            None,
-            when_then_pairs,
-            else_phy_expr,
-        )?))
-    } else {
-        Ok(Arc::new(CaseExpr::try_new(
-            None,
-            when_then_pairs,
-            else_expr.clone(),
-        )?))
-    }
-}
-
 fn from_protobuf_binary_output_style(
     value: i32,
 ) -> Result<BinaryOutputStyle, prost::UnknownEnumValue> {
@@ -7866,44 +7810,5 @@ mod tests {
             err.to_string().contains("Non-empty FileScanTask partition"),
             "unexpected error: {err}"
         );
-    }
-
-    /// CASE branches that share a Spark timestamp type but carry different Arrow timezone labels
-    /// are reconciled by relabelling them, which used to panic because the cast had no timezone.
-    #[test]
-    fn case_reconciles_timestamp_timezone_labels() {
-        use arrow::array::{AsArray, BooleanArray, TimestampMicrosecondArray};
-        use arrow::datatypes::{TimeUnit, TimestampMicrosecondType};
-
-        let utc = DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()));
-        for then_label in [Some("Etc/UTC"), None] {
-            let then_type = DataType::Timestamp(TimeUnit::Microsecond, then_label.map(Into::into));
-            let schema = Schema::new(vec![
-                Field::new("b", DataType::Boolean, true),
-                Field::new("t", then_type, true),
-                Field::new("e", utc.clone(), true),
-            ]);
-            let batch = RecordBatch::try_new(
-                Arc::new(schema.clone()),
-                vec![
-                    Arc::new(BooleanArray::from(vec![true, false])),
-                    Arc::new(
-                        TimestampMicrosecondArray::from(vec![1, 2]).with_timezone_opt(then_label),
-                    ),
-                    Arc::new(TimestampMicrosecondArray::from(vec![10, 20]).with_timezone("UTC")),
-                ],
-            )
-            .unwrap();
-            let case = super::create_case_expr(
-                vec![(Arc::new(Column::new("b", 0)), Arc::new(Column::new("t", 1)))],
-                Some(Arc::new(Column::new("e", 2))),
-                &schema,
-            )
-            .unwrap();
-            let result = case.evaluate(&batch).unwrap().into_array(2).unwrap();
-            assert_eq!(result.data_type(), &utc, "{then_label:?}");
-            let values = result.as_primitive::<TimestampMicrosecondType>();
-            assert_eq!(values.values().to_vec(), vec![1, 20], "{then_label:?}");
-        }
     }
 }

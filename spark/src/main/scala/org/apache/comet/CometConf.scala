@@ -378,10 +378,14 @@ object CometConf extends ShimCometConf {
         "difference between the first two is native memory that the pools are not accounting " +
         "for. The executor logs one line per interval however many tasks are " +
         "running, and one more after the last plan finishes. It logs a warning when the " +
-        "native memory looks larger than the executor's container allows. This is an executor " +
-        "setting, read when an executor starts its first Comet native plan, so it must be set " +
-        "when the application is submitted. An invalid value disables the log with a warning. " +
-        s"Set to 0 to disable. $TUNING_GUIDE.")
+        "native memory looks larger than the executor's container allows. When " +
+        "spark.eventLog.enabled is true and the application runs the Comet plugin, the " +
+        "executor also sends its samples to the driver, which writes the one with the most " +
+        "untracked memory and the last of every minute to the event log, as " +
+        "CometExecutorMemoryUsage events. This is an " +
+        "executor setting, read when an executor starts its first Comet native plan, so it " +
+        "must be set when the application is submitted. An invalid value disables the log " +
+        s"with a warning. Set to 0 to disable. $TUNING_GUIDE.")
     .timeConf(TimeUnit.MILLISECONDS)
     .checkValue(_ >= 0, "The memory usage log interval must not be negative")
     .createWithDefault(TimeUnit.SECONDS.toMillis(10))
@@ -446,6 +450,20 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_EXEC_AGGREGATE_SKIP_PARTIAL_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.aggregate.skipPartial.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Experimental opt-in: let a native partial aggregate stop aggregating once its input " +
+          "looks mostly distinct, and send the rest of the task's rows to the shuffle " +
+          "unaggregated. Only applies to partial aggregates that feed Comet native shuffle " +
+          "and whose aggregate functions, if any, are all single-argument COUNT. The check " +
+          "starts after the first 100,000 input rows of a task, and once aggregation stops " +
+          "it does not resume, so a task whose keys repeat after a mostly distinct start can " +
+          s"shuffle many times more rows than it would with this disabled. $TUNING_GUIDE.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_EXEC_JOIN_DYNAMIC_FILTER_ENABLED: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.join.dynamicFilter.enabled")
       .category(CATEGORY_EXEC)
@@ -467,6 +485,18 @@ object CometConf extends ShimCometConf {
           "Parquet scan. Supports one direct signed integer sort key. This changes the local " +
           "execution pipeline and can reduce scan/TopK overlap, so it may be slower for some " +
           "workloads.")
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_EXEC_TOPK_DYNAMIC_FILTER_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.topK.dynamicFilter.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Experimental opt-in: use a local TopK heap's improving threshold to prune " +
+          "eligible native Parquet input. Requires spark.comet.exec.topK.fusion.enabled. " +
+          "Supports one direct signed integer sort key. Thresholds are local to each " +
+          "native execution and do not cross Spark exchanges or JVM/Arrow boundaries. " +
+          "Unsupported readers retain ordinary TopK execution.")
       .booleanConf
       .createWithDefault(false)
 

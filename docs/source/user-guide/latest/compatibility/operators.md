@@ -102,13 +102,19 @@ runs natively; it is controlled by `spark.comet.exec.windowGroupLimit.enabled` (
 - Any `PARTITION BY` or `ORDER BY` key whose type carries a non-default `StringType` collation
   (e.g. `UTF8_LCASE`). The native operator detects partitions and order-key peer groups by
   comparing Arrow row-encoded keys for byte equality, which splits peers that Spark ties.
+- `RANK` and `DENSE_RANK` whose `ORDER BY` key has a `FLOAT` or `DOUBLE` nested in an array or
+  struct. The same byte equality decides their ties, and nested floating-point values aren't
+  normalized, so `-0.0` and `+0.0`, or two NaN representations, would get different ranks and the
+  cutoff would drop rows that Spark keeps
+  ([#5507](https://github.com/apache/datafusion-comet/issues/5507)).
 
 **Known incompatibilities:**
 
-- Floating-point values nested in array or struct `ORDER BY` keys are compared with Arrow's raw
-  total ordering, so ranks can differ from Spark when the data mixes `-0.0` and `+0.0` or more
-  than one NaN representation ([#5507](https://github.com/apache/datafusion-comet/issues/5507)).
-  Scalar `FLOAT` and `DOUBLE` keys are normalized and match Spark; see
+- `ROW_NUMBER` over such a key still runs natively and follows the native sort, which compares
+  nested floating-point values with Arrow's raw total ordering. Which of two rows that differ only
+  in `-0.0` and `+0.0`, or in their NaN representation, gets the lower row number can therefore
+  differ from Spark ([#5507](https://github.com/apache/datafusion-comet/issues/5507)). Scalar
+  `FLOAT` and `DOUBLE` keys are normalized and match Spark; see
   [floating-point ordering](./floating-point.md).
 
 ## Round-Robin Partitioning
