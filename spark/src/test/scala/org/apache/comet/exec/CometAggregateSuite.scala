@@ -2350,7 +2350,11 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       "spark.sql.files.minPartitionNum" -> "1",
       CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "native") {
-      for (values <- Seq(Seq(1e16, 1e16 + 2), Seq(1e16 + 2, 1e16), Seq(-1e16, -1e16 - 2))) {
+      val cases = Seq(
+        (Seq(1e16, 1e16 + 2), Some(1.0)),
+        (Seq(1e16 + 2, 1e16), None),
+        (Seq(-1e16, -1e16 - 2), Some(1.0)))
+      for ((values, expectedCorr) <- cases) {
         // One ordered file keeps both values in the same partial accumulator. Splitting
         // them across files would only exercise merging two single-row states.
         withTempPath { path =>
@@ -2372,11 +2376,43 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
               // CORR and REGR_R2 use PearsonCorrelation's update, while REGR_SXX/SYY
               // and the variance used by slope/intercept follow CentralMomentAgg.
+              val corrQuery = "SELECT corr(v, v) FROM large_moments" + groupBy
+              checkSparkAnswerAndNumOfAggregates(corrQuery, 2)
+              // Reversing the positive pair rounds the Pearson mean to the second
+              // value, leaving zero M2 and a NULL correlation.
+              checkAnswer(sql(corrQuery), Seq(Row(expectedCorr.map(Double.box).orNull)))
               checkSparkAnswerWithTolAndNumOfAggregates(
-                "SELECT corr(v, v), regr_r2(v, v), regr_sxx(v, v), regr_syy(v, v), " +
+                "SELECT regr_r2(v, v), regr_sxx(v, v), regr_syy(v, v), " +
                   "regr_slope(v, v), regr_intercept(v, v) FROM large_moments" + groupBy,
                 2)
             }
+          }
+        }
+      }
+    }
+  }
+
+  test("statistical aggregates correlation preserves raw moment overflow") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "1",
+      "spark.sql.files.minPartitionNum" -> "1",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+      withTempPath { path =>
+        Seq(Some(1e100), None, Some(2e100))
+          .map(v => (0, v))
+          .toDF("g", "v")
+          .coalesce(1)
+          .write
+          .parquet(path.getCanonicalPath)
+        withParquetTable(path.getCanonicalPath, "correlation_overflow") {
+          assert(spark.table("correlation_overflow").rdd.getNumPartitions == 1)
+          for (groupBy <- Seq("", " GROUP BY g")) {
+            val query = "SELECT corr(v, v), corr(v, -v) FROM correlation_overflow" + groupBy
+            checkSparkAnswerAndNumOfAggregates(query, 2)
+            // Spark's sqrt(m2_1 * m2_2) overflows to infinity, so corr is exactly zero.
+            checkAnswer(sql(query), Seq(Row(0.0, -0.0)))
           }
         }
       }
@@ -2427,7 +2463,9 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("statistical aggregates merge fractional constants across partitions") {
     // https://github.com/apache/datafusion-comet/issues/6423
+    // https://github.com/apache/datafusion-comet/issues/6481
     withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "false",
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       SQLConf.SHUFFLE_PARTITIONS.key -> "1",
       SQLConf.FILES_MAX_PARTITION_BYTES.key -> "1048576",
@@ -2461,6 +2499,15 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               assert(aggregates.exists(_.modes.contains(Final)))
               // Keep the degenerate-case results exact. A tolerance can hide nonzero M2.
               checkAnswer(sql(query), Seq(Row(null, null, constantX, 0.0, 0.0, constantY, 0.0)))
+
+              val statsQuery = "SELECT corr(y, x), covar_pop(y, x), covar_samp(y, x), " +
+                "var_pop(x), var_samp(x), stddev_pop(x), stddev_samp(x) " +
+                "FROM fractional_constants" + groupBy
+              val (_, statsPlan) = checkSparkAnswerAndOperator(statsQuery)
+              val statsAggregates = statsPlan.collect { case a: CometHashAggregateExec => a }
+              assert(statsAggregates.exists(_.modes.contains(Partial)))
+              assert(statsAggregates.exists(_.modes.contains(Final)))
+              checkAnswer(sql(statsQuery), Seq(Row(null, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)))
             }
           }
         }
