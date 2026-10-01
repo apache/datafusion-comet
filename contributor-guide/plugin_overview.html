@@ -584,6 +584,14 @@ and skips the remaining steps. Otherwise it:</p>
 <p>The plugin does not change any executor memory setting. The <a class="reference internal" href="../user-guide/latest/tuning/memory.html"><span class="std std-doc">Memory Tuning</span></a> guide covers how
 to size them.</p>
 <p>When the driver or an executor stops, the plugin shuts down Comet’s native tokio runtime in that JVM.</p>
+<p>When <code class="docutils literal notranslate"><span class="pre">spark.eventLog.enabled</span></code> is <code class="docutils literal notranslate"><span class="pre">true</span></code>, the executor plugin also carries each sample of the executor’s native memory
+usage log to the driver plugin. For each executor, the driver plugin keeps the sample with the most untracked memory
+and the last sample of every minute, and posts them to Spark’s listener bus as <code class="docutils literal notranslate"><span class="pre">CometExecutorMemoryUsage</span></code> events so
+that the event log records them. A listener on a listener bus queue of its own posts them at the executor’s first
+heartbeat a minute or more after the first of them arrived, which also ends an idle executor’s minute, and posts what
+the driver plugin holds when an executor is removed and when the application ends, since an executor that goes away
+sends nothing more. See
+<a class="reference internal" href="../user-guide/latest/tuning/memory.html#reading-the-memory-usage-log-from-the-event-log"><span class="std std-ref">Reading the Memory Usage Log from the Event Log</span></a>.</p>
 <p><code class="docutils literal notranslate"><span class="pre">CometSparkSessionExtensions</span></code> can also be registered without the plugin, through <code class="docutils literal notranslate"><span class="pre">spark.sql.extensions</span></code> or
 <code class="docutils literal notranslate"><span class="pre">SparkSession.Builder.withExtensions</span></code>. Most of Comet’s test suites and the Spark SQL tests enable Comet this way, so
 none of the driver plugin’s steps run for them.</p>

@@ -899,15 +899,18 @@ operator holds on to one of its batches, such as a sort buffering its input. The
 which allocator a buffer is charged to rather than where it was allocated, so treat the JVM’s
 part as an estimate.</p></li>
 </ul>
+<p>When the application writes an event log and runs the Comet plugin, the event log also records a
+summary of these samples; see <a class="reference internal" href="#reading-the-memory-usage-log-from-the-event-log">Reading the Memory Usage Log from the Event Log</a>.</p>
 <p>Comet’s untracked memory is what Comet holds outside the JVM heap that Spark’s off-heap pool does
 not account for: <code class="docutils literal notranslate"><span class="pre">allocated</span></code>, plus the JVM Arrow figure less the part imported from native, minus
 <code class="docutils literal notranslate"><span class="pre">reserved</span></code>. It is the part of Comet’s footprint that has to fit in <code class="docutils literal notranslate"><span class="pre">spark.executor.memoryOverhead</span></code>,
 alongside the JVM’s own non-heap memory. To size the overhead from it:</p>
 <ol class="arabic simple">
 <li><p>Run a representative workload and find the line with the most untracked memory in each
-executor’s log. Take all the figures from the same line: they are sampled together, and figures
-from different lines describe different moments. Setting <code class="docutils literal notranslate"><span class="pre">spark.comet.memory.logInterval=1s</span></code> for
-this run makes a short-lived peak less likely to fall between samples.</p></li>
+executor’s log, or the event with the most for each executor in the event log. Take all the
+figures from the same line or event: they are sampled together, and figures from different
+samples describe different moments. Setting <code class="docutils literal notranslate"><span class="pre">spark.comet.memory.logInterval=1s</span></code> for this run
+makes a short-lived peak less likely to fall between samples.</p></li>
 <li><p>Start from the overhead the executors had before Comet was enabled, which covers the JVM’s own
 non-heap memory, and add the most untracked memory seen on any executor.</p></li>
 <li><p>Add a margin on top. The log can miss the true peak between samples, and none of the figures
@@ -937,6 +940,56 @@ The executor logs one more line after its last native plan finishes, and an <cod
 <code class="docutils literal notranslate"><span class="pre">JVM</span> <span class="pre">Arrow</span> <span class="pre">allocated</span></code> figure there that grows from one query to the next points the same way.</p>
 <p><code class="docutils literal notranslate"><span class="pre">spark.comet.memory.logInterval</span></code> is read when an executor starts its first Comet native plan, so set
 it when the application is submitted. Set it to <code class="docutils literal notranslate"><span class="pre">0</span></code> to turn the log off.</p>
+<section id="reading-the-memory-usage-log-from-the-event-log">
+<h3>Reading the Memory Usage Log from the Event Log<a class="headerlink" href="#reading-the-memory-usage-log-from-the-event-log" title="Link to this heading">#</a></h3>
+<p>When <code class="docutils literal notranslate"><span class="pre">spark.eventLog.enabled</span></code> is <code class="docutils literal notranslate"><span class="pre">true</span></code> and the application runs the Comet plugin
+(<code class="docutils literal notranslate"><span class="pre">spark.plugins=org.apache.spark.CometPlugin</span></code>), each executor also sends its samples to the driver,
+which writes a summary of them to the application’s event log. The event log keeps every executor’s
+samples in one place, next to the jobs and stages they ran alongside, while executor logs are spread
+over the cluster and often go away with their containers.</p>
+<p>The driver writes, and flushes, each event of its event log as it goes, so it does not write every
+sample. For each executor, it takes the samples a minute at a time and writes two of them: the one
+with the most untracked memory, and the last, which in the minute an executor goes idle is the one
+after its last native plan finishes. It writes them at the executor’s first heartbeat a minute or
+more after the first of them arrived, which comes every <code class="docutils literal notranslate"><span class="pre">spark.executor.heartbeatInterval</span></code>, 10
+seconds by default, busy or not, and when the executor is removed, such as when the cluster manager
+kills it, or the application stops. So each executor adds about two events a minute while it runs
+native plans, however short the interval, and each minute’s two reach the event log within about a
+minute of that minute’s first sample arriving. The event with the most untracked memory for an
+executor is then its sample with the most, apart from samples it takes while the application stops,
+and samples from the last minute before a driver exits without stopping the application.</p>
+<p>Each sample the driver writes is one event, on one line of the event log. It carries the figures of
+the line in bytes, the executor that took the sample, and when it did, in milliseconds since the
+epoch by the executor’s clock. The line above looks like this as an event, spread over several lines
+here:</p>
+<div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
+<span class="w">  </span><span class="nt">"Event"</span><span class="p">:</span><span class="w"> </span><span class="s2">"org.apache.comet.CometExecutorMemoryUsage"</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"executorId"</span><span class="p">:</span><span class="w"> </span><span class="s2">"3"</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"time"</span><span class="p">:</span><span class="w"> </span><span class="mi">1727550000000</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"nativeAllocated"</span><span class="p">:</span><span class="w"> </span><span class="mi">5675212390</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"poolsReserved"</span><span class="p">:</span><span class="w"> </span><span class="mi">4078960640</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"pools"</span><span class="p">:</span><span class="w"> </span><span class="mi">8</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"plans"</span><span class="p">:</span><span class="w"> </span><span class="mi">16</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"jvmArrowAllocated"</span><span class="p">:</span><span class="w"> </span><span class="mi">325478809</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"jvmArrowImported"</span><span class="p">:</span><span class="w"> </span><span class="mi">100873420</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">nativeAllocated</span></code> is <code class="docutils literal notranslate"><span class="pre">allocated</span></code>, <code class="docutils literal notranslate"><span class="pre">poolsReserved</span></code> is <code class="docutils literal notranslate"><span class="pre">reserved</span></code>, and <code class="docutils literal notranslate"><span class="pre">jvmArrowAllocated</span></code> and
+<code class="docutils literal notranslate"><span class="pre">jvmArrowImported</span></code> are the JVM Arrow figures. With <code class="docutils literal notranslate"><span class="pre">jq</span></code>, for example, this lists the sample with the
+most untracked memory for each executor, in MiB:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>jq<span class="w"> </span>-n<span class="w"> </span>-c<span class="w"> </span><span class="s1">'[inputs | select(.Event == "org.apache.comet.CometExecutorMemoryUsage")</span>
+<span class="s1">    | {executorId, time, untrackedMiB: (([.nativeAllocated - .poolsReserved</span>
+<span class="s1">        + ([.jvmArrowAllocated - .jvmArrowImported, 0] | max), 0] | max) / 1048576 | ceil)}]</span>
+<span class="s1">  | group_by(.executorId) | map(max_by(.untrackedMiB))[]'</span><span class="w"> </span>&lt;event<span class="w"> </span>log<span class="w"> </span>files&gt;
+</pre></div>
+</div>
+<p>From Spark 4.0, event logs are compressed with zstd and split into several files by default, so
+decompress the files first, for example with <code class="docutils literal notranslate"><span class="pre">zstd</span> <span class="pre">-dc</span></code>. The Spark history server does not display
+these events, and one without Comet on its classpath logs once that it dropped them. From Spark 4.1,
+<code class="docutils literal notranslate"><span class="pre">spark.eventLog.excludedPatterns=org.apache.comet.CometExecutorMemoryUsage</span></code> leaves them out of the
+event log.</p>
+</section>
 </section>
 <section id="batch-size">
 <h2>Batch Size<a class="headerlink" href="#batch-size" title="Link to this heading">#</a></h2>
@@ -1010,7 +1063,10 @@ multiple of this value.</p>
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#configuring-comet-memory">Configuring Comet Memory</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#configuring-executor-memory-overhead">Configuring Executor Memory Overhead</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#sizing-the-overhead-from-the-memory-usage-log">Sizing the Overhead from the Memory Usage Log</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#sizing-the-overhead-from-the-memory-usage-log">Sizing the Overhead from the Memory Usage Log</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#reading-the-memory-usage-log-from-the-event-log">Reading the Memory Usage Log from the Event Log</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#batch-size">Batch Size</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#limiting-spill-disk-usage">Limiting Spill Disk Usage</a></li>
 </ul>

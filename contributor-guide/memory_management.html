@@ -1138,7 +1138,9 @@ treats it as fatal, so the executor is lost either way and the exit code is what
 them. A failed task with <code class="docutils literal notranslate"><span class="pre">SparkOutOfMemoryError</span></code> and a surviving executor is Spark’s managed
 memory pool, which is the only one of the three that is recoverable at task level.</p></li>
 <li><p>Compare <code class="docutils literal notranslate"><span class="pre">allocated</span></code> against <code class="docutils literal notranslate"><span class="pre">reserved</span></code> in the executor’s <code class="docutils literal notranslate"><span class="pre">Comet</span> <span class="pre">native</span> <span class="pre">memory</span> <span class="pre">usage</span></code> log lines
-leading up to the kill, or <code class="docutils literal notranslate"><span class="pre">native_allocated</span></code> against <code class="docutils literal notranslate"><span class="pre">comet_memory_reserved_total</span></code> in a trace.
+leading up to the kill, or <code class="docutils literal notranslate"><span class="pre">nativeAllocated</span></code> against <code class="docutils literal notranslate"><span class="pre">poolsReserved</span></code> in its
+<code class="docutils literal notranslate"><span class="pre">CometExecutorMemoryUsage</span></code> events when the event log records them, or <code class="docutils literal notranslate"><span class="pre">native_allocated</span></code>
+against <code class="docutils literal notranslate"><span class="pre">comet_memory_reserved_total</span></code> in a trace.
 A large excess points at undeclared native allocations; a small excess points at the budget
 simply being too small, or at the JVM side, which the same lines report as <code class="docutils literal notranslate"><span class="pre">JVM</span> <span class="pre">Arrow</span> <span class="pre">allocated</span></code>.</p></li>
 <li><p>Check <code class="docutils literal notranslate"><span class="pre">spark.comet.batchSize</span></code> against the schema width. Peak memory scales with
