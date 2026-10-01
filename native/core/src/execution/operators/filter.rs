@@ -44,6 +44,7 @@ use datafusion::physical_plan::{
 pub(crate) struct CometFilterExec {
     filter: FilterExec,
     metrics: ExecutionPlanMetricsSet,
+    allow_runtime_filter_pushdown: bool,
 }
 
 impl CometFilterExec {
@@ -51,7 +52,17 @@ impl CometFilterExec {
         Self {
             filter,
             metrics: ExecutionPlanMetricsSet::new(),
+            allow_runtime_filter_pushdown: false,
         }
+    }
+
+    pub(crate) fn with_runtime_filter_pushdown(mut self, allowed: bool) -> Self {
+        self.allow_runtime_filter_pushdown = allowed;
+        self
+    }
+
+    pub(crate) fn allows_runtime_filter_pushdown(&self) -> bool {
+        self.allow_runtime_filter_pushdown
     }
 
     pub(crate) fn input(&self) -> &Arc<dyn ExecutionPlan> {
@@ -90,6 +101,7 @@ impl CometFilterExec {
                 ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
             )?,
             metrics: self.metrics.clone(),
+            allow_runtime_filter_pushdown: self.allow_runtime_filter_pushdown,
         }))
     }
 }
@@ -135,6 +147,7 @@ impl ExecutionPlan for CometFilterExec {
         Ok(Arc::new(Self {
             filter: self.replace_input(children.remove(0), options)?,
             metrics: ExecutionPlanMetricsSet::new(),
+            allow_runtime_filter_pushdown: self.allow_runtime_filter_pushdown,
         }))
     }
 
@@ -197,6 +210,7 @@ impl ExecutionPlan for CometFilterExec {
         Some(Arc::new(Self {
             filter,
             metrics: ExecutionPlanMetricsSet::new(),
+            allow_runtime_filter_pushdown: self.allow_runtime_filter_pushdown,
         }))
     }
 
@@ -206,6 +220,7 @@ impl ExecutionPlan for CometFilterExec {
         Some(Arc::new(Self {
             filter,
             metrics: ExecutionPlanMetricsSet::new(),
+            allow_runtime_filter_pushdown: self.allow_runtime_filter_pushdown,
         }))
     }
 }
@@ -238,6 +253,29 @@ mod tests {
         let input = MemorySourceConfig::try_new_exec(&partitions, Arc::clone(&schema), None)?;
         let predicate = binary(col("key", &schema)?, Operator::Gt, lit(5i32), &schema)?;
         FilterExec::try_new(predicate, input)
+    }
+
+    #[test]
+    fn runtime_filter_permission_survives_rebuilding() -> Result<()> {
+        assert!(!CometFilterExec::from_datafusion(filter()?).allows_runtime_filter_pushdown());
+        for allowed in [false, true] {
+            let filter = Arc::new(
+                CometFilterExec::from_datafusion(filter()?).with_runtime_filter_pushdown(allowed),
+            );
+            for rebuilt in [
+                filter.with_execution_input(Arc::clone(filter.input()))?,
+                Arc::clone(&filter).replace_children(
+                    vec![Arc::clone(filter.input())],
+                    ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+                )?,
+                filter.with_fetch(Some(1)).unwrap(),
+            ] {
+                let rebuilt = rebuilt.downcast_ref::<CometFilterExec>().unwrap();
+                assert_eq!(rebuilt.allows_runtime_filter_pushdown(), allowed);
+                assert!(Arc::ptr_eq(rebuilt.predicate(), filter.predicate()));
+            }
+        }
+        Ok(())
     }
 
     #[test]

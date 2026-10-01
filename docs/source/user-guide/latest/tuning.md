@@ -56,3 +56,26 @@ external sink (for example Prometheus) configured. This setting must be applied 
 
 For an explanation of Comet plan output, the configs that control it, and how
 fallback to Spark works, see [Understanding Comet Plans](understanding-comet-plans.md).
+
+## Join runtime filters through residual predicates
+
+Native join runtime filtering is enabled with
+`spark.comet.exec.join.dynamicFilter.enabled`. It can reject probe rows whose keys
+are absent from the completed build side and use eligible Parquet readers to prune
+row groups. By default, an intervening residual filter permits reader propagation
+only for direct-column `IS NOT NULL` checks combined with `AND`.
+
+Set `spark.comet.exec.join.dynamicFilter.allowDeterministicFilterPushdown=true` to
+let the join filter pass through other deterministic residual predicates, such as
+`quantity > 0` or a Spark-generated Bloom check. The original residual and the
+exact join remain in place. For example, when the build contains only item IDs
+17 and 42, a row for item 99 can be rejected before evaluating its quantity.
+Nondeterministic predicates, limits, computed projections, and execution boundaries
+continue to stop propagation. Parquet schema conversion checks remain active.
+
+This additional setting defaults to false because deterministic expressions can
+throw. Earlier pruning can skip division-by-zero or ANSI cast errors on rows that
+cannot join. Errors on retained rows still propagate. Enable it only when skipping
+such errors on eliminated rows is acceptable. Parquet row filtering during decoding
+also requires `spark.comet.parquet.rowFilterPushdown.enabled`; row-group statistics
+pruning does not require that setting.
