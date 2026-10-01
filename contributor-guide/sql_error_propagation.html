@@ -797,29 +797,35 @@ same error message format as Spark:</p>
 <section id="step-5-error-is-serialized-to-json">
 <h2>Step 5: Error Is Serialized to JSON<a class="headerlink" href="#step-5-error-is-serialized-to-json" title="Link to this heading">#</a></h2>
 <p>When DataFusion propagates the error all the way up through the execution engine and it
-reaches the JNI boundary, <code class="docutils literal notranslate"><span class="pre">throw_exception()</span></code> in <code class="docutils literal notranslate"><span class="pre">errors.rs</span></code> is called. It detects the
-<code class="docutils literal notranslate"><span class="pre">SparkErrorWithContext</span></code> type and calls <code class="docutils literal notranslate"><span class="pre">.to_json()</span></code> on it:</p>
-<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="c1">// native/core/src/errors.rs</span>
+reaches the JNI boundary, <code class="docutils literal notranslate"><span class="pre">try_unwrap_or_throw</span></code> in <code class="docutils literal notranslate"><span class="pre">native/jni-bridge/src/errors.rs</span></code> hands it to
+<code class="docutils literal notranslate"><span class="pre">NativeError::from_comet_error</span></code>. That function classifies the error, without using JNI, into the
+JVM exception it must surface as. It detects the <code class="docutils literal notranslate"><span class="pre">SparkErrorWithContext</span></code> type and calls
+<code class="docutils literal notranslate"><span class="pre">.to_json()</span></code> on it:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="c1">// native/jni-bridge/src/errors.rs</span>
 
-<span class="k">fn</span><span class="w"> </span><span class="nf">throw_exception</span><span class="p">(</span><span class="n">env</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">mut</span><span class="w"> </span><span class="n">JNIEnv</span><span class="p">,</span><span class="w"> </span><span class="n">error</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">CometError</span><span class="p">,</span><span class="w"> </span><span class="o">..</span><span class="p">.)</span><span class="w"> </span><span class="p">{</span>
+<span class="k">fn</span><span class="w"> </span><span class="nf">jvm_exception</span><span class="o">&lt;'</span><span class="na">a</span><span class="o">&gt;</span><span class="p">(</span><span class="n">error</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="o">'</span><span class="na">a</span><span class="w"> </span><span class="nc">CometError</span><span class="p">,</span><span class="w"> </span><span class="n">backtrace</span><span class="p">:</span><span class="w"> </span><span class="nb">Option</span><span class="o">&lt;&amp;</span><span class="kt">str</span><span class="o">&gt;</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">JvmException</span><span class="o">&lt;'</span><span class="na">a</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="k">match</span><span class="w"> </span><span class="n">error</span><span class="w"> </span><span class="p">{</span>
 <span class="w">        </span><span class="n">CometError</span><span class="p">::</span><span class="n">DataFusion</span><span class="w"> </span><span class="p">{</span>
 <span class="w">            </span><span class="n">source</span><span class="p">:</span><span class="w"> </span><span class="nc">DataFusionError</span><span class="p">::</span><span class="n">External</span><span class="p">(</span><span class="n">e</span><span class="p">),</span><span class="w"> </span><span class="o">..</span>
 <span class="w">        </span><span class="p">}</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="p">{</span>
 <span class="w">            </span><span class="k">if</span><span class="w"> </span><span class="kd">let</span><span class="w"> </span><span class="nb">Some</span><span class="p">(</span><span class="n">spark_err_ctx</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">e</span><span class="p">.</span><span class="n">downcast_ref</span><span class="p">::</span><span class="o">&lt;</span><span class="n">SparkErrorWithContext</span><span class="o">&gt;</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
-<span class="w">                </span><span class="c1">// Has SQL context → throw with JSON payload</span>
-<span class="w">                </span><span class="kd">let</span><span class="w"> </span><span class="n">json</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">spark_err_ctx</span><span class="p">.</span><span class="n">to_json</span><span class="p">();</span>
-<span class="w">                </span><span class="n">env</span><span class="p">.</span><span class="n">throw_new</span><span class="p">(</span><span class="s">"org/apache/comet/exceptions/CometQueryExecutionException"</span><span class="p">,</span><span class="w"> </span><span class="n">json</span><span class="p">)</span>
+<span class="w">                </span><span class="c1">// Has SQL context → JSON payload</span>
+<span class="w">                </span><span class="n">JvmException</span><span class="p">::</span><span class="n">Spark</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">json</span><span class="p">:</span><span class="w"> </span><span class="nc">spark_err_ctx</span><span class="p">.</span><span class="n">to_json</span><span class="p">()</span><span class="w"> </span><span class="p">}</span>
 <span class="w">            </span><span class="p">}</span><span class="w"> </span><span class="k">else</span><span class="w"> </span><span class="k">if</span><span class="w"> </span><span class="kd">let</span><span class="w"> </span><span class="nb">Some</span><span class="p">(</span><span class="n">spark_err</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">e</span><span class="p">.</span><span class="n">downcast_ref</span><span class="p">::</span><span class="o">&lt;</span><span class="n">SparkError</span><span class="o">&gt;</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
-<span class="w">                </span><span class="c1">// No SQL context → throw with JSON payload (no context field)</span>
-<span class="w">                </span><span class="n">throw_spark_error_as_json</span><span class="p">(</span><span class="n">env</span><span class="p">,</span><span class="w"> </span><span class="n">spark_err</span><span class="p">)</span>
+<span class="w">                </span><span class="c1">// No SQL context → JSON payload (no context field)</span>
+<span class="w">                </span><span class="n">spark_exception</span><span class="p">(</span><span class="n">spark_err</span><span class="p">)</span>
 <span class="w">            </span><span class="p">}</span>
+<span class="w">            </span><span class="c1">// ...</span>
 <span class="w">        </span><span class="p">}</span>
 <span class="w">        </span><span class="c1">// ...</span>
 <span class="w">    </span><span class="p">}</span>
 <span class="p">}</span>
 </pre></div>
 </div>
+<p><code class="docutils literal notranslate"><span class="pre">throw_native_error</span></code> then throws a <code class="docutils literal notranslate"><span class="pre">JvmException::Spark</span></code> as
+<code class="docutils literal notranslate"><span class="pre">org.apache.comet.exceptions.CometQueryExecutionException</span></code> with the JSON as its message. The
+classification is independent of JNI so that a caller that is not a JNI entry point can receive
+the same exception description as a JSON document from <code class="docutils literal notranslate"><span class="pre">NativeError::to_payload</span></code>.</p>
 <p>The JSON looks like this for a divide-by-zero in <code class="docutils literal notranslate"><span class="pre">SELECT</span> <span class="pre">a/b</span> <span class="pre">FROM</span> <span class="pre">t</span></code>:</p>
 <div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
 <span class="w">  </span><span class="nt">"errorType"</span><span class="p">:</span><span class="w"> </span><span class="s2">"DivideByZero"</span><span class="p">,</span>
