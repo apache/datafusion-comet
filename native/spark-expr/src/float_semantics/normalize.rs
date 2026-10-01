@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::math_funcs::internal::normalize_float;
+use super::normalize_float;
 use arrow::array::{
     Array, ArrayRef, AsArray, FixedSizeListArray, Float32Array, Float64Array, LargeListArray,
     ListArray, StructArray,
@@ -28,6 +28,101 @@ use datafusion::physical_expr::PhysicalExpr;
 use std::fmt::{Display, Formatter};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
+
+/// Spark's `NormalizeNaNAndZero` expression, which applies [`normalize_float`] to a Float32 or
+/// Float64 child.
+#[derive(Debug, Eq)]
+pub struct NormalizeNaNAndZero {
+    pub data_type: DataType,
+    pub child: Arc<dyn PhysicalExpr>,
+}
+
+impl PartialEq for NormalizeNaNAndZero {
+    fn eq(&self, other: &Self) -> bool {
+        self.child.eq(&other.child) && self.data_type.eq(&other.data_type)
+    }
+}
+
+impl Hash for NormalizeNaNAndZero {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.child.hash(state);
+        self.data_type.hash(state);
+    }
+}
+
+impl NormalizeNaNAndZero {
+    pub fn new(data_type: DataType, child: Arc<dyn PhysicalExpr>) -> Self {
+        Self { data_type, child }
+    }
+
+    /// Whether `evaluate` cannot fail, which it does by panicking for anything but a float.
+    pub(crate) fn is_infallible(&self) -> bool {
+        matches!(self.data_type, DataType::Float32 | DataType::Float64)
+    }
+
+    /// Wraps a Float32 or Float64 key so that keys equal under Spark's SQL ordering also compare
+    /// equal in Arrow. Other types are returned as is, and so is a key that is already wrapped,
+    /// because Spark may have normalized a partition or join key itself.
+    pub fn wrap_if_needed(
+        child: Arc<dyn PhysicalExpr>,
+        schema: &Schema,
+    ) -> Result<Arc<dyn PhysicalExpr>> {
+        let data_type = child.data_type(schema)?;
+        if matches!(data_type, DataType::Float32 | DataType::Float64)
+            && child.downcast_ref::<NormalizeNaNAndZero>().is_none()
+        {
+            Ok(Arc::new(Self::new(data_type, child)))
+        } else {
+            Ok(child)
+        }
+    }
+}
+
+impl PhysicalExpr for NormalizeNaNAndZero {
+    fn fmt_sql(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        Display::fmt(self, f)
+    }
+
+    fn data_type(&self, input_schema: &Schema) -> Result<DataType> {
+        self.child.data_type(input_schema)
+    }
+
+    fn nullable(&self, input_schema: &Schema) -> Result<bool> {
+        self.child.nullable(input_schema)
+    }
+
+    fn evaluate(&self, batch: &RecordBatch) -> Result<ColumnarValue> {
+        let cv = self.child.evaluate(batch)?;
+        let array = cv.into_array(batch.num_rows())?;
+
+        match &self.data_type {
+            DataType::Float32 | DataType::Float64 => {
+                Ok(ColumnarValue::Array(normalize_floats(&array)))
+            }
+            dt => panic!("Unexpected data type {dt:?}"),
+        }
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
+        vec![&self.child]
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn PhysicalExpr>>,
+    ) -> Result<Arc<dyn PhysicalExpr>> {
+        Ok(Arc::new(NormalizeNaNAndZero::new(
+            self.data_type.clone(),
+            Arc::clone(&children[0]),
+        )))
+    }
+}
+
+impl Display for NormalizeNaNAndZero {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "FloatNormalize [child: {}]", self.child)
+    }
+}
 
 /// Normalizes nested IN operands, preserving constants for static membership lookup.
 #[derive(Debug, Eq)]
@@ -119,7 +214,27 @@ impl PhysicalExpr for NormalizeNestedFloats {
     }
 }
 
-pub(super) fn has_float_leaf(dt: &DataType) -> bool {
+/// Applies [`normalize_float`] to a Float32 or Float64 array. Any other array is returned as is,
+/// including a nested one: [`normalize_nested_floats`] reaches floats inside lists and structs.
+pub fn normalize_floats(array: &ArrayRef) -> ArrayRef {
+    match array.data_type() {
+        DataType::Float32 => {
+            let normalized: Float32Array =
+                array.as_primitive::<Float32Type>().unary(normalize_float);
+            Arc::new(normalized)
+        }
+        DataType::Float64 => {
+            let normalized: Float64Array =
+                array.as_primitive::<Float64Type>().unary(normalize_float);
+            Arc::new(normalized)
+        }
+        _ => Arc::clone(array),
+    }
+}
+
+/// Whether a Float32 or Float64 field occurs at any depth of a list or struct type. The keys and
+/// values of a map are not searched.
+pub fn has_float_leaf(dt: &DataType) -> bool {
     match dt {
         DataType::Float32 | DataType::Float64 => true,
         DataType::List(field) | DataType::LargeList(field) | DataType::FixedSizeList(field, _) => {
@@ -138,22 +253,13 @@ pub(super) fn has_float_leaf(dt: &DataType) -> bool {
 /// keeps the rebuild proportional to the float data, and it also leaves empty structs alone:
 /// `StructArray::new` cannot infer a length from zero columns and would panic. An empty struct
 /// reaches this code through Iceberg's `_partition` metadata column on an unpartitioned table.
-pub(super) fn normalize_nested_floats(array: &ArrayRef) -> ArrayRef {
+pub fn normalize_nested_floats(array: &ArrayRef) -> ArrayRef {
     if !has_float_leaf(array.data_type()) {
         return Arc::clone(array);
     }
 
     match array.data_type() {
-        DataType::Float32 => {
-            let normalized: Float32Array =
-                array.as_primitive::<Float32Type>().unary(normalize_float);
-            Arc::new(normalized)
-        }
-        DataType::Float64 => {
-            let normalized: Float64Array =
-                array.as_primitive::<Float64Type>().unary(normalize_float);
-            Arc::new(normalized)
-        }
+        DataType::Float32 | DataType::Float64 => normalize_floats(array),
         DataType::List(field) => {
             let list = array.as_list::<i32>();
             let normalized_values = normalize_nested_floats(list.values());
@@ -396,6 +502,51 @@ mod tests {
         assert_eq!(normalized.value(3).to_bits(), f64::NAN.to_bits());
         assert!(normalized.is_null(4));
         assert_eq!(normalized.value(5), 1.5);
+    }
+
+    /// Range partition boundaries use `normalize_floats` to match sort keys, which are only
+    /// normalized when they are floats themselves, so a nested array must come back unchanged.
+    #[test]
+    fn test_normalize_floats_leaves_nested_arrays_alone() {
+        let flat: ArrayRef = Arc::new(Float32Array::from(vec![
+            Some(-0.0),
+            Some(f32::from_bits(0xffc0_0001)),
+            None,
+        ]));
+        let normalized = normalize_floats(&flat);
+        let normalized = normalized.as_primitive::<Float32Type>();
+        assert_eq!(normalized.value(0).to_bits(), 0.0f32.to_bits());
+        assert_eq!(normalized.value(1).to_bits(), f32::NAN.to_bits());
+        assert!(normalized.is_null(2));
+
+        let mut builder = ListBuilder::new(Float64Builder::new());
+        builder.values().append_value(-0.0);
+        builder.append(true);
+        let nested: ArrayRef = Arc::new(builder.finish());
+        assert!(Arc::ptr_eq(&normalize_floats(&nested), &nested));
+    }
+
+    #[test]
+    fn test_wrap_float_keys_once() -> Result<()> {
+        use datafusion::physical_expr::expressions::Column;
+        let list = DataType::List(Arc::new(Field::new("item", DataType::Float64, true)));
+        let schema = Schema::new(vec![
+            Field::new("f32", DataType::Float32, true),
+            Field::new("f64", DataType::Float64, true),
+            Field::new("i32", DataType::Int32, true),
+            Field::new("list", list, true),
+        ]);
+        for (index, wrapped) in [(0, true), (1, true), (2, false), (3, false)] {
+            let column: Arc<dyn PhysicalExpr> =
+                Arc::new(Column::new(schema.field(index).name(), index));
+            let key = NormalizeNaNAndZero::wrap_if_needed(Arc::clone(&column), &schema)?;
+            assert_eq!(key.downcast_ref::<NormalizeNaNAndZero>().is_some(), wrapped);
+            assert_eq!(Arc::ptr_eq(&key, &column), !wrapped);
+            // A key that is already normalized is not wrapped a second time.
+            let again = NormalizeNaNAndZero::wrap_if_needed(Arc::clone(&key), &schema)?;
+            assert!(Arc::ptr_eq(&again, &key));
+        }
+        Ok(())
     }
 
     #[test]
