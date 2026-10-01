@@ -19,21 +19,25 @@
 
 use std::sync::Arc;
 
+use arrow::compute::SortOptions;
 use datafusion::common::{JoinType, NullEquality};
 use datafusion::execution::disk_manager::{DiskManagerBuilder, DiskManagerMode};
 use datafusion::execution::memory_pool::FairSpillPool;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
 use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode, PhysicalGroupBy};
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
+use datafusion::physical_plan::limit::GlobalLimitExec;
 use datafusion::physical_plan::repartition::RepartitionExec;
+use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::Partitioning;
 use datafusion::physical_plan::{
     filter::FilterExec, projection::ProjectionExec, union::UnionExec, ExecutionPlan,
 };
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_comet_local::LocalQuery;
-use datafusion_comet_proto::local::{LocalAggregate, LocalJoin};
+use datafusion_comet_proto::local::{LocalAggregate, LocalJoin, LocalOutput};
 use datafusion_comet_proto::spark_operator::{operator::OpStruct, Operator, SparkFilePartition};
 use prost::Message;
 
@@ -42,6 +46,7 @@ use crate::execution::planner::PhysicalPlanner;
 use crate::parquet::parquet_support::CometObjectStoreRegistry;
 
 pub(super) struct QuerySettings<'a> {
+    pub terminal: &'a [u8],
     pub aggregate: &'a [u8],
     pub memory_limit: usize,
     pub spill_enabled: bool,
@@ -68,6 +73,7 @@ pub(super) fn parquet_query(
     } else {
         aggregate_plan(plan, &LocalAggregate::decode(settings.aggregate)?, &planner)?
     };
+    let plan = output_plan(plan, settings.terminal, &planner)?;
     if plan.schema().fields().len() != columns {
         return Err(ExecutionError::GeneralError(
             "Local output schema width mismatch".into(),
@@ -135,6 +141,7 @@ pub(super) fn join_query(
     let right = build(right, &join.right_files, &right_planner)?;
     let planner = PhysicalPlanner::new(Arc::clone(&context), 0);
     let plan = join_plan(left, right, &join, &planner)?;
+    let plan = output_plan(plan, settings.terminal, &planner)?;
     if plan.schema().fields().len() != columns {
         return Err(ExecutionError::GeneralError(
             "Local join output schema width mismatch".into(),
@@ -219,6 +226,70 @@ fn join_plan(
         })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(Arc::new(ProjectionExec::try_new(result, plan)?))
+}
+
+fn output_plan(
+    input: Arc<dyn ExecutionPlan>,
+    bytes: &[u8],
+    planner: &PhysicalPlanner,
+) -> Result<Arc<dyn ExecutionPlan>, ExecutionError> {
+    if bytes.is_empty() {
+        return Ok(input);
+    }
+    let output = LocalOutput::decode(bytes)?;
+    let skip = usize::try_from(output.skip)
+        .map_err(|_| ExecutionError::GeneralError("Local offset overflow".into()))?;
+    let fetch = output
+        .fetch
+        .map(usize::try_from)
+        .transpose()
+        .map_err(|_| ExecutionError::GeneralError("Local fetch overflow".into()))?;
+    let top = fetch
+        .map(|n| {
+            n.checked_add(skip)
+                .ok_or_else(|| ExecutionError::GeneralError("Local Top-K overflow".into()))
+        })
+        .transpose()?;
+    let expressions = output
+        .orders
+        .iter()
+        .map(|order| {
+            let child = order
+                .child
+                .as_ref()
+                .ok_or_else(|| ExecutionError::GeneralError("Missing local sort key".into()))?;
+            Ok(PhysicalSortExpr {
+                expr: planner.create_expr(child, input.schema())?,
+                options: SortOptions {
+                    descending: order.descending,
+                    nulls_first: order.nulls_first,
+                },
+            })
+        })
+        .collect::<Result<Vec<_>, ExecutionError>>()?;
+    // Global limit/sort requires one input partition. Never sort each partition and
+    // then use the unordered result coalescer: that would lose the global order.
+    let mut plan: Arc<dyn ExecutionPlan> = Arc::new(CoalescePartitionsExec::new(input));
+    if let Some(ordering) = LexOrdering::new(expressions) {
+        plan = Arc::new(SortExec::new(ordering, plan).with_fetch(top));
+    }
+    if fetch.is_some() || skip > 0 {
+        plan = Arc::new(GlobalLimitExec::new(plan, skip, fetch));
+    }
+    if !output.result.is_empty() {
+        let result = output
+            .result
+            .iter()
+            .enumerate()
+            .map(|(i, e)| {
+                planner
+                    .create_expr(e, plan.schema())
+                    .map(|expr| (expr, format!("col_{i}")))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        plan = Arc::new(ProjectionExec::try_new(result, plan)?);
+    }
+    Ok(plan)
 }
 
 fn build(
@@ -552,6 +623,7 @@ mod tests {
             false,
             &QuerySettings {
                 aggregate: &[],
+                terminal: &[],
                 memory_limit: if fail { 1 } else { 32 * 1024 * 1024 },
                 spill_enabled: true,
             },
@@ -635,6 +707,127 @@ mod tests {
             } else {
                 assert_eq!(keys.len(), 65536);
             }
+        }
+        drop(plan);
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while context.runtime_env().memory_pool.reserved() != 0
+                || context.runtime_env().disk_manager.used_disk_space() != 0
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+    #[tokio::test]
+    async fn global_sort_spills_and_releases_query_resources() {
+        sort_case(false, false).await;
+    }
+
+    #[tokio::test]
+    async fn dropping_global_sort_releases_spill_files() {
+        sort_case(true, false).await;
+    }
+
+    #[tokio::test]
+    async fn top_k_applies_offset_once_across_input_partitions() {
+        sort_case(false, true).await;
+    }
+
+    async fn sort_case(early: bool, top: bool) {
+        use datafusion_comet_proto::local::LocalSort;
+        let context = query_context(
+            1024,
+            7,
+            false,
+            &QuerySettings {
+                aggregate: &[],
+                terminal: &[],
+                memory_limit: 16 * 1024 * 1024,
+                spill_enabled: true,
+            },
+        )
+        .unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("key", DataType::Int64, false)]));
+        let mut partitions = vec![vec![]; 7];
+        let total = 256 * 4096;
+        for chunk in 0..256 {
+            partitions[chunk % 7].push(
+                RecordBatch::try_new(
+                    Arc::clone(&schema),
+                    vec![Arc::new(Int64Array::from_iter_values(
+                        (0..4096).map(|i| (total - 1 - (chunk * 4096 + i)) as i64),
+                    ))],
+                )
+                .unwrap(),
+            );
+        }
+        let input = MemorySourceConfig::try_new_exec(&partitions, schema, None).unwrap();
+        let message = LocalOutput {
+            orders: vec![LocalSort {
+                child: Some(bound(0)),
+                descending: false,
+                nulls_first: true,
+            }],
+            skip: if top { 9 } else { 0 },
+            fetch: if top { Some(13) } else { None },
+            result: vec![],
+        };
+        let plan = output_plan(
+            input,
+            &message.encode_to_vec(),
+            &PhysicalPlanner::new(Arc::clone(&context), 0),
+        )
+        .unwrap();
+        assert_eq!(plan.properties().output_partitioning().partition_count(), 1);
+        let batches = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            if early {
+                use futures::StreamExt;
+                let mut stream = datafusion::physical_plan::execute_stream(
+                    Arc::clone(&plan),
+                    context.task_ctx(),
+                )?;
+                let first = stream.next().await.unwrap()?;
+                drop(stream);
+                Ok(vec![first])
+            } else {
+                collect(Arc::clone(&plan), context.task_ctx()).await
+            }
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        let mut next = if top { 9 } else { 0 };
+        for batch in batches {
+            let values = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap();
+            for row in 0..batch.num_rows() {
+                assert_eq!(values.value(row), next);
+                next += 1;
+            }
+        }
+        if early {
+            assert!(next > 0 && next < total as i64);
+        } else {
+            assert_eq!(next, if top { 22 } else { total as i64 });
+        }
+        if !top {
+            struct Spills(usize);
+            impl ExecutionPlanVisitor for Spills {
+                type Error = std::convert::Infallible;
+                fn pre_visit(&mut self, plan: &dyn ExecutionPlan) -> Result<bool, Self::Error> {
+                    if let Some(metrics) = plan.metrics() {
+                        self.0 += metrics.spilled_bytes().unwrap_or_default();
+                    }
+                    Ok(true)
+                }
+            }
+            let mut spills = Spills(0);
+            accept(plan.as_ref(), &mut spills).unwrap();
+            assert!(spills.0 > 0, "sort test must actually spill");
         }
         drop(plan);
         tokio::time::timeout(std::time::Duration::from_secs(5), async {

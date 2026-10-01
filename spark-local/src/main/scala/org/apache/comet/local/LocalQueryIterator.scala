@@ -57,7 +57,8 @@ private[local] class LocalQueryIterator(spec: LocalQuerySpec, context: TaskConte
           join.columns,
           join.rowFilterPushdown,
           join.memoryLimit,
-          join.spillEnabled)
+          join.spillEnabled,
+          join.terminal)
       case scan: LocalParquetSpec =>
         native.createParquet(
           scan.plan,
@@ -67,7 +68,8 @@ private[local] class LocalQueryIterator(spec: LocalQuerySpec, context: TaskConte
           scan.rowFilterPushdown,
           scan.aggregate,
           scan.memoryLimit,
-          scan.spillEnabled)
+          scan.spillEnabled,
+          scan.terminal)
     }
   } catch {
     case failure: Throwable =>

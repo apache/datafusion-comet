@@ -41,7 +41,8 @@ private[local] case class LocalParquetSpec(
     rowFilterPushdown: Boolean,
     aggregate: Array[Byte],
     memoryLimit: Long,
-    spillEnabled: Boolean)
+    spillEnabled: Boolean,
+    terminal: Array[Byte] = Array.emptyByteArray)
     extends LocalQuerySpec
 
 private[local] case class LocalJoinSpec(
@@ -50,7 +51,8 @@ private[local] case class LocalJoinSpec(
     columns: Int,
     rowFilterPushdown: Boolean,
     memoryLimit: Long,
-    spillEnabled: Boolean)
+    spillEnabled: Boolean,
+    terminal: Array[Byte] = Array.emptyByteArray)
     extends LocalQuerySpec
 
 private[local] case class LocalRangeSpec(
@@ -65,7 +67,8 @@ private[local] case class LocalRangeSpec(
 /** The one Spark result task owns a whole execution, including all native partitions. */
 case class CometLocalExec private[local] (
     override val output: Seq[Attribute],
-    spec: LocalQuerySpec)
+    spec: LocalQuerySpec,
+    ordering: Seq[SortOrder] = Nil)
     extends LeafExecNode {
   override def supportsColumnar: Boolean = true
   override def outputPartitioning: Partitioning = SinglePartition
@@ -74,7 +77,7 @@ case class CometLocalExec private[local] (
     spec match {
       case range: LocalRangeSpec =>
         Seq(SortOrder(output.head, if (range.step > 0) Ascending else Descending))
-      case _: LocalParquetSpec | _: LocalJoinSpec => Nil
+      case _: LocalParquetSpec | _: LocalJoinSpec => ordering
     }
   override lazy val metrics = Map(
     "numOutputRows" -> SQLMetrics.createMetric(sparkContext, "number of output rows"))

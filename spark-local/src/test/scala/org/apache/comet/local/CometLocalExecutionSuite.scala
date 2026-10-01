@@ -722,4 +722,118 @@ class CometLocalExecutionSuite
     }
   }
 
+  private def compareOrdered(path: String)(query: DataFrame => DataFrame): DataFrame = {
+    val expected = withConf("spark.comet.enabled", "false") {
+      val baseline = query(spark.read.parquet(path))
+      (baseline.collect().toSeq, baseline.queryExecution.executedPlan.outputOrdering.nonEmpty)
+    }
+    val actual = query(spark.read.parquet(path))
+    assert(localNodes(actual).size == 1, actual.queryExecution.executedPlan.toString)
+    assert(actual.queryExecution.executedPlan.collect { case p: Exchange => p }.isEmpty)
+    assert(localNodes(actual).head.outputOrdering.nonEmpty == expected._2)
+    assert(actual.collect().toSeq == expected._1)
+    actual
+  }
+
+  test("local global sort preserves direction null placement and multiple keys") {
+    withParquetData { path =>
+      withConf("spark.sql.shuffle.partitions", "7") {
+        for (direction <- Seq("ASC", "DESC"); nulls <- Seq("FIRST", "LAST")) {
+          compareOrdered(path) { input =>
+            input
+              .selectExpr("id", "text", "amount")
+              .orderBy(
+                ((direction, nulls) match {
+                  case ("ASC", "FIRST") =>
+                    org.apache.spark.sql.functions.col("text").asc_nulls_first
+                  case ("ASC", _) => org.apache.spark.sql.functions.col("text").asc_nulls_last
+                  case (_, "FIRST") => org.apache.spark.sql.functions.col("text").desc_nulls_first
+                  case _ => org.apache.spark.sql.functions.col("text").desc_nulls_last
+                }),
+                org.apache.spark.sql.functions.col("id").desc)
+          }
+        }
+        compareOrdered(path)(_.orderBy("amount", "day", "ts", "id"))
+      }
+    }
+  }
+
+  test("local Top-K handles offset projection and repeated actions") {
+    withParquetData { path =>
+      val query = compareOrdered(path) { input =>
+        input
+          .orderBy(org.apache.spark.sql.functions.col("id").desc)
+          .offset(9)
+          .limit(13)
+          .selectExpr("id + 1 AS value", "text")
+      }
+      assert(query.collect().map(_.getLong(0)).toSeq == (191L to 179L by -1L))
+      assert(query.take(3).length == 3)
+    }
+  }
+
+  test("local global sort and limit apply after aggregate and partitioned join") {
+    withParquetData { path =>
+      withConf("spark.sql.shuffle.partitions", "7") {
+        compareOrdered(path)(_.groupBy("k").count().orderBy("count", "k").limit(3))
+        compareOrdered(path)(input =>
+          joinQuery(input, "inner", true)
+            .orderBy("l", "r")
+            .limit(23))
+      }
+    }
+  }
+
+  test("local full sort limit offset handles empty input and offset beyond the end") {
+    withParquetData { path =>
+      withConf("spark.sql.execution.topKSortFallbackThreshold", "0") {
+        compareOrdered(path)(_.orderBy("id").offset(195).limit(20))
+        compareOrdered(path)(_.orderBy("id").offset(250).limit(20))
+        compareOrdered(path)(_.orderBy("id").offset(195))
+        compareOrdered(path)(_.filter("id < 0").orderBy("id").limit(10))
+      }
+    }
+  }
+
+  test("local unordered limit is global and closes native production") {
+    withParquetData { path =>
+      val query = spark.read.parquet(path).select("id").offset(11).limit(19)
+      assert(localNodes(query).size == 1)
+      assert(!query.queryExecution.executedPlan.toString.contains("CollectLimit"))
+      val rows = query.collect().map(_.getLong(0))
+      assert(rows.length == 19 && rows.distinct.length == 19)
+      assert(rows.forall(id => id >= 0 && id < 200))
+      assert(new NativeLocal().activeQueries() == 0)
+    }
+  }
+
+  test("local sort rejects per-partition sorting float keys and disabled operators") {
+    withParquetData { path =>
+      val input = spark.read.parquet(path)
+      assert(localNodes(input.sortWithinPartitions("id")).isEmpty)
+      assert(
+        localNodes(input.orderBy(org.apache.spark.sql.functions.col("k").cast("double"))).isEmpty)
+      withConf(CometConf.COMET_EXEC_SORT_ENABLED.key, "false") {
+        assert(localNodes(input.orderBy("id")).isEmpty)
+      }
+      withConf(CometConf.COMET_EXEC_TAKE_ORDERED_AND_PROJECT_ENABLED.key, "false") {
+        assert(localNodes(input.orderBy("id").limit(5)).isEmpty)
+      }
+    }
+  }
+
+  test("local sort reservation failure cleans up and permits another query") {
+    withParquetData { path =>
+      withConf(CometConf.COMET_EXEC_LOCAL_MEMORY_LIMIT.key, "1b") {
+        withConf(CometConf.COMET_EXEC_LOCAL_SPILL_ENABLED.key, "false") {
+          val query = spark.read.parquet(path).orderBy("text", "id")
+          assert(localNodes(query).size == 1)
+          intercept[Exception] { query.collect() }
+          assert(new NativeLocal().activeQueries() == 0)
+        }
+      }
+      compareOrdered(path)(_.orderBy("id"))
+    }
+  }
+
 }

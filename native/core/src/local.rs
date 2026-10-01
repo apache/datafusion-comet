@@ -172,6 +172,7 @@ pub extern "system" fn Java_org_apache_comet_local_NativeLocal_createParquet(
     aggregate: JByteArray,
     memory_limit: jlong,
     spill_enabled: jboolean,
+    terminal: JByteArray,
 ) -> jlong {
     try_unwrap_or_throw(&e, |env| {
         let bytes = env.convert_byte_array(plan)?;
@@ -193,6 +194,7 @@ pub extern "system" fn Java_org_apache_comet_local_NativeLocal_createParquet(
             env.delete_local_ref(array);
         }
         let aggregate = env.convert_byte_array(aggregate)?;
+        let terminal = env.convert_byte_array(terminal)?;
         let query = planner::parquet_query(
             &bytes,
             &groups,
@@ -201,6 +203,7 @@ pub extern "system" fn Java_org_apache_comet_local_NativeLocal_createParquet(
             row_filter_pushdown,
             planner::QuerySettings {
                 aggregate: &aggregate,
+                terminal: &terminal,
                 memory_limit: memory_limit as usize,
                 spill_enabled,
             },
@@ -219,6 +222,7 @@ pub extern "system" fn Java_org_apache_comet_local_NativeLocal_createJoin(
     row_filter_pushdown: jboolean,
     memory_limit: jlong,
     spill_enabled: jboolean,
+    terminal: JByteArray,
 ) -> jlong {
     try_unwrap_or_throw(&e, |env| {
         if memory_limit <= 0 || !(1..=65536).contains(&batch_size) || !(1..=1024).contains(&columns)
@@ -226,6 +230,7 @@ pub extern "system" fn Java_org_apache_comet_local_NativeLocal_createJoin(
             return Err(CometError::Internal("Invalid local join parameters".into()));
         }
         let bytes = env.convert_byte_array(plan)?;
+        let terminal = env.convert_byte_array(terminal)?;
         let query = planner::join_query(
             &bytes,
             batch_size as usize,
@@ -233,6 +238,7 @@ pub extern "system" fn Java_org_apache_comet_local_NativeLocal_createJoin(
             row_filter_pushdown,
             planner::QuerySettings {
                 aggregate: &[],
+                terminal: &terminal,
                 memory_limit: memory_limit as usize,
                 spill_enabled,
             },

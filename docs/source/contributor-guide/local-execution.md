@@ -19,8 +19,8 @@ under the License.
 
 # Local execution development plan
 
-Status: stage 4b checkpoint, experimental local range and Parquet execution with
-COUNT/MIN/MAX aggregation and partitioned hash joins across native exchanges. Local execution and bridge
+Status: stage 4c checkpoint, experimental local range and Parquet execution with
+COUNT/MIN/MAX aggregation, partitioned hash joins, and terminal global sort/limit. Local execution and bridge
 tests pass; Spark SQL validation remains deferred at the user's request.
 `spark.comet.exec.local.enabled=true` opts in through the existing Comet extension.
 The option defaults to false. Unsupported whole queries use ordinary Comet/Spark planning.
@@ -383,8 +383,62 @@ native planner tests (three aggregation/spill and three join tests). Rust
 formatting, strict Clippy and Spark 3.5 main/test compilation with strict warnings
 passed. Spark SQL validation remains deferred at the user's request.
 
-Stop at this checkpoint before stage 4c (sort and limit). General join coverage,
-ordering contracts and the broader Spark SQL gate remain outstanding.
+This checkpoint stopped before 4c (sort and limit). General join coverage and the
+broader Spark SQL gate remained outstanding.
+
+#### 4c. Global sort and limit checkpoint
+
+`LocalOutputPlanner` admits terminal global `SortExec`, `TakeOrderedAndProjectExec`
+and root `CollectLimitExec` over the existing Parquet, aggregate and hash-join
+inputs. A global sort's range exchange is removed only when every sort expression,
+direction and null placement matches. The local graph gathers input partitions,
+then runs DataFusion `SortExec` and/or `GlobalLimitExec` once for the whole query.
+It never concatenates independently sorted partitions as a globally ordered result.
+This initial implementation uses a single global sorter rather than a parallel
+local-sort/merge optimization; no sort performance claim is made.
+
+`LocalOutput` carries sort expressions with explicit direction/null placement,
+optional fetch, skip and a final projection. Spark's physical limit includes the
+offset: admission converts it to `fetch = limit - offset`. Top-K retains
+`skip + fetch` rows and applies skip once. Offset without limit remains unbounded;
+output projection runs after sort/limit. The terminal operators belong to the
+same query context and reservation pool as their input graph, including joined
+inputs. Existing scan and expression implementations and the result bridge are
+reused. There is no Spark shuffle for an admitted query.
+
+The native root has one result partition. Spark's root `outputOrdering` is retained
+conservatively, including an empty declaration when Spark does not advertise order
+through a projection or collection limit. Actual ordered results are compared
+sequence-by-sequence with Spark; ties without a complete ordering key need not
+have a stable relative order. Unordered limit results need not select the same rows
+as Spark's partition traversal.
+
+Sorting covers the admitted primitive/decimal/date/timestamp expression surface,
+excluding floating-point keys. Per-partition sorting, nested limit pipelines and
+new terminal operations on the separate range adapter remain outside this
+checkpoint. Existing range execution and its root Spark limit wrapper are retained.
+Unsupported shapes use the existing path. Native sort, Top-K and projection flags
+gate their corresponding terminal operations; disabling native collection limit
+retains the existing Spark result wrapper.
+
+Full sort can spill under the existing query spill policy. Disabling spill or
+setting a budget below the sort workspace requirement can produce a resource
+error; spill does not promise success at arbitrary budgets. Native tests force
+spill with 1,048,576 rows from seven input partitions and a 16 MiB reservation
+budget on one Tokio worker. They verify global order, actual spill, and return of
+reservations/disk usage to zero after completion or early stream drop. A separate
+Top-K test checks offset across all seven input partitions. JVM tests compare all
+ASC/DESC and NULLS FIRST/LAST combinations, multiple keys, Top-K projection,
+aggregate/join output sorting, empty input, offset beyond EOF, repeated actions,
+unordered global limit, fallback and resource-error cleanup.
+
+Checkpoint (2026-09-30): 73 JVM tests passed (40 local execution, 21 iterator
+lifecycle and 12 NativeUtil), plus 18 native lifecycle tests and nine native
+planner tests. Rust formatting, strict Clippy and Spark 3.5 main/test compilation
+with strict warnings passed.
+
+Stop at this checkpoint before stage 5 (hardening and performance). Spark SQL
+validation remains deferred at the user's request; its gate has not passed.
 
 ### 5. Hardening and performance
 

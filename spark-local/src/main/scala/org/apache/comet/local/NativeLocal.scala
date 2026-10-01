@@ -40,14 +40,16 @@ private[local] class NativeLocal extends NativeBase {
       rowFilterPushdown: Boolean,
       aggregate: Array[Byte],
       memoryLimit: Long,
-      spillEnabled: Boolean): Long
+      spillEnabled: Boolean,
+      terminal: Array[Byte] = Array.emptyByteArray): Long
   @native def createJoin(
       plan: Array[Byte],
       batchSize: Int,
       columns: Int,
       rowFilterPushdown: Boolean,
       memoryLimit: Long,
-      spillEnabled: Boolean): Long
+      spillEnabled: Boolean,
+      terminal: Array[Byte] = Array.emptyByteArray): Long
   @native def nextBatch(id: Long, arrays: Array[Long], schemas: Array[Long]): Long
   @native def close(id: Long): Unit
   @native def activeQueries(): Long

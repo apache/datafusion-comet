@@ -46,3 +46,16 @@ message LocalJoin {
   bool build_right = 9;
   repeated spark.spark_expression.Expr result = 10;
 }
+
+// Query result operations. Fetch excludes skip; sort Top-K retains skip + fetch rows.
+message LocalOutput {
+  repeated LocalSort orders = 1;
+  optional uint64 fetch = 2;
+  uint64 skip = 3;
+  repeated spark.spark_expression.Expr result = 4;
+}
+message LocalSort {
+  spark.spark_expression.Expr child = 1;
+  bool descending = 2;
+  bool nulls_first = 3;
+}

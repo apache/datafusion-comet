@@ -56,6 +56,10 @@ private[comet] case class CometLocalRule(session: SparkSession) extends Rule[Spa
       }
     if (reason.isDefined) return withInfo(plan, reason.get)
 
+    LocalOutputPlanner.plan(plan, session).foreach { spec =>
+      return CometLocalExec(plan.output, spec, plan.outputOrdering)
+    }
+
     // Inspect the complete root, never transform matching descendants of an unsupported query.
     // A root CollectLimit is a result-consumption wrapper (take/head), not a native island.
     val (body, wrap) = plan match {
