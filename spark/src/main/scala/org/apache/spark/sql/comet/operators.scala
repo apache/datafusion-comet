@@ -3235,11 +3235,6 @@ case class CometSortMergeJoinExec(
   override def withNewChildrenInternal(newLeft: SparkPlan, newRight: SparkPlan): SparkPlan =
     this.copy(left = newLeft, right = newRight)
 
-  override def producedAttributes: AttributeSet = joinType match {
-    case ExistenceJoin(exists) => AttributeSet(exists)
-    case _ => AttributeSet.empty
-  }
-
   override def stringArgs: Iterator[Any] =
     Iterator(leftKeys, rightKeys, joinType, condition, left, right)
 
