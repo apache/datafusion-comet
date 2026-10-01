@@ -161,6 +161,7 @@
 - Spark 3.5.8 (audited 2026-05-27): baseline. `ElementAt(left, right, defaultValueOutOfBound, failOnError)`; group label `map_funcs`. Comet supports `ArrayType` input through native `ListExtract` and `MapType` input through native `map_extract`.
 - Spark 4.0.1 (audited 2026-05-27): `NullIntolerant` -> `nullIntolerant` field refactor; group label changes to `collection_funcs`; ANSI default flips to `true` so out-of-bound throws by default. Comet wires `failOnError` through to native `ListExtract`.
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
+- Dispatcher follow-up (audited 2026-09-11, all four versions): `CometElementAt` now mixes in `CodegenDispatchFallback` for map-key exclusions (see [map lookup audit](map_funcs.md#element_at)). This also routes its existing ANSI-mode nullable nondeterministic array/map exclusion through Spark's generated expression as a whole. The left operand is evaluated once and a NULL result skips the key/index, avoiding both duplicated stateful evaluation and eager index errors. Deterministic operands keep the native NULL guard; ordinary array lookup remains native. `element_at_ansi.sql` checks the nondeterministic array route and `element_at_map_ansi.sql` checks its map counterpart.
 
 ## flatten
 
