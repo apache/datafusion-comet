@@ -31,7 +31,7 @@ import xml.etree.ElementTree as ET
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=["prepare", "coverage", "pressure", "spark", "comet", "local"])
+    parser.add_argument("mode", choices=["prepare", "coverage", "pressure", "spark", "comet", "local", "tpch"])
     parser.add_argument("--data", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--rows", type=int, default=500000)
@@ -42,11 +42,23 @@ def main():
     parser.add_argument("--jfr", action="store_true", help="Record a diagnostic JVM profile; do not compare its timings")
     parser.add_argument("--memory-mib", type=int, default=512,
                         help="Spark off-heap and local query reservation budgets in MiB (not RSS)")
+    parser.add_argument("--aqe", action="store_true",
+                        help="Enable AQE for the spark, comet and tpch baselines; local execution requires it disabled")
+    parser.add_argument("--local", action="store_true",
+                        help="tpch mode: enable local execution (requires AQE disabled)")
+    parser.add_argument("--shuffle-partitions", type=int, default=200,
+                        help="tpch mode: spark.sql.shuffle.partitions (Spark's default is 200)")
     args = parser.parse_args()
+    if args.aqe and args.mode not in ("spark", "comet", "tpch"):
+        parser.error("--aqe applies only to the spark, comet and tpch modes")
+    if args.mode != "tpch" and (args.local or args.shuffle_partitions != 200):
+        parser.error("--local and --shuffle-partitions apply only to the tpch mode")
+    if args.local and args.aqe:
+        parser.error("Local execution requires AQE disabled")
     if args.memory_mib < 16:
         parser.error("--memory-mib must be at least 16")
     root = Path(__file__).resolve().parents[1]
-    if args.mode in ("spark", "comet", "local") and args.library != "release":
+    if args.mode in ("spark", "comet", "local", "tpch") and args.library != "release":
         parser.error("Timing comparisons require an optimized release native library")
     report = root / "spark/target/surefire-reports/TEST-org.apache.comet.local.CometLocalExecutionSuite.xml"
     properties = {p.get("name"): p.get("value") for p in ET.parse(report).findall("./properties/property")}
@@ -76,7 +88,8 @@ def main():
                "-Dtest.appender=console", f"-Djava.library.path={library}", f"-Djava.io.tmpdir={java_scratch}",
                f"-Dspark.local.dir={spark_scratch}", "-cp", classpath,
                "org.apache.comet.local.CometLocalExecutionBenchmark", args.mode,
-               str(args.data.resolve()), str(output), str(args.rows), str(args.repetitions), args.schema_mode, str(args.memory_mib)]
+               str(args.data.resolve()), str(output), str(args.rows), str(args.repetitions), args.schema_mode, str(args.memory_mib),
+               str(args.aqe).lower(), str(args.local).lower(), str(args.shuffle_partitions)]
     if args.jfr:
         recording = output / f"{args.mode}.jfr"
         command[1:1] = ["-XX:FlightRecorderOptions=stackdepth=256",
@@ -85,7 +98,8 @@ def main():
            "COMET_CONF_DIR": str(root / "conf")}
     metadata = {"mode": args.mode, "rows": args.rows, "repetitions": args.repetitions,
                 "host": platform.platform(), "java": str(java), "heap": "2g", "cores": 4,
-                "memory_mib": args.memory_mib, "schema_mode": args.schema_mode, "jfr": args.jfr,
+                "memory_mib": args.memory_mib, "schema_mode": args.schema_mode, "aqe": args.aqe, "local": args.local,
+                "shuffle_partitions": args.shuffle_partitions, "jfr": args.jfr,
                 "native_profile": args.library, "library_sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
                 "git_head": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip(),
                 "sampling_seconds": 0.1, "native_temp": str(native_scratch), "spark_temp": str(spark_scratch)}

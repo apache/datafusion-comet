@@ -27,23 +27,48 @@ import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.{DataFrame, Row, SparkSession, TPCHTables}
 import org.apache.spark.sql.benchmark.TPCDSSchemaHelper
+import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.types._
 
 import org.apache.comet.{CometArrowImportAllocator, CometConf, CometSparkSessionExtensions}
 
 /** Manual benchmark; run with dev/bench-local-execution.py, never as a CI timing test. */
 object CometLocalExecutionBenchmark {
+  private val adaptive = new AdaptiveSparkPlanHelper {}
   private val enabled = CometConf.COMET_EXEC_LOCAL_ENABLED.key
 
   def main(args: Array[String]): Unit = {
     require(
-      args.length == 7,
-      "mode data-directory output-directory rows repetitions schema-mode memory-mib")
-    val Array(mode, dataArg, outputArg, rowsArg, repetitionsArg, schemaMode, memoryArg) = args
+      args.length == 10,
+      "mode data-directory output-directory rows repetitions schema-mode memory-mib aqe " +
+        "tpch-local tpch-shuffle-partitions")
+    val Array(
+      mode,
+      dataArg,
+      outputArg,
+      rowsArg,
+      repetitionsArg,
+      schemaMode,
+      memoryArg,
+      aqeArg,
+      tpchLocalArg,
+      tpchPartitionsArg) = args
     val memoryMiB = memoryArg.toInt
     require(memoryMiB >= 16)
     require(Set("infer", "explicit").contains(schemaMode))
-    require(Set("prepare", "coverage", "pressure", "spark", "comet", "local").contains(mode))
+    require(
+      Set("prepare", "coverage", "pressure", "spark", "comet", "local", "tpch").contains(mode))
+    val aqe = aqeArg.toBoolean
+    // Local execution admits queries only with AQE disabled; the baselines may use either.
+    require(
+      !aqe || Set("spark", "comet", "tpch").contains(mode),
+      s"AQE is not supported in $mode mode")
+    val tpch = mode == "tpch"
+    // The tpch mode runs ordinary Comet, optionally with local execution enabled (which
+    // requires AQE disabled), to measure what queries it does not admit lose without AQE.
+    val tpchLocal = tpchLocalArg.toBoolean
+    require(!tpchLocal || (tpch && !aqe), "Local execution in tpch mode requires AQE disabled")
+    val localEnabled = mode == "local" || mode == "pressure" || tpchLocal
     val data = Paths.get(dataArg)
     val output = Paths.get(outputArg)
     Files.createDirectories(output)
@@ -56,9 +81,10 @@ object CometLocalExecutionBenchmark {
       .appName(s"CometLocalBenchmark-$mode")
       .config("spark.ui.enabled", "false")
       .config("spark.sql.extensions", classOf[CometSparkSessionExtensions].getName)
-      .config("spark.sql.adaptive.enabled", "false")
-      .config("spark.sql.shuffle.partitions", "8")
-      .config("spark.sql.autoBroadcastJoinThreshold", "-1")
+      .config("spark.sql.adaptive.enabled", aqe.toString)
+      // The tpch mode defaults to Spark's shuffle partitions and broadcast threshold.
+      .config("spark.sql.shuffle.partitions", if (tpch) tpchPartitionsArg else "8")
+      .config("spark.sql.autoBroadcastJoinThreshold", if (tpch) "10485760" else "-1")
       .config("spark.sql.session.timeZone", "UTC")
       .config("spark.memory.offHeap.enabled", "true")
       .config("spark.memory.offHeap.size", s"${memoryMiB}m")
@@ -68,12 +94,12 @@ object CometLocalExecutionBenchmark {
       .config(
         "spark.shuffle.manager",
         "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
-      .config("spark.comet.shuffle.enabled", (mode == "comet").toString)
+      .config("spark.comet.shuffle.enabled", (mode == "comet" || tpch).toString)
       .config(
         "spark.comet.enabled",
-        (mode == "comet" || mode == "local" || mode == "pressure").toString)
+        (mode == "comet" || mode == "local" || mode == "pressure" || tpch).toString)
       .config("spark.comet.exec.enabled", "true")
-      .config(enabled, (mode == "local" || mode == "pressure").toString)
+      .config(enabled, localEnabled.toString)
       .getOrCreate()
     spark.sparkContext.setLogLevel("ERROR")
     try {
@@ -81,6 +107,7 @@ object CometLocalExecutionBenchmark {
         case "prepare" => prepare(spark, data, rows)
         case "coverage" => coverage(spark, data, output)
         case "pressure" => pressure(spark, data, output, schemaMode)
+        case "tpch" => tpchTimings(spark, data, output, repetitions)
         case _ => measure(spark, mode, data, output, repetitions, schemaMode)
       }
     } finally spark.stop()
@@ -176,16 +203,17 @@ object CometLocalExecutionBenchmark {
         val query = make()
         val constructed = System.nanoTime()
         val plan = query.queryExecution.executedPlan
-        val local = plan.collect { case p: CometLocalExec => p }.size
-        val comet = plan.collect { case p if p.nodeName.startsWith("Comet") => p }.size
-        require(
-          (mode == "local" && local == 1) || (mode != "local" && local == 0),
-          s"Unexpected execution path: $mode/$name\n$plan")
-        if (mode == "comet") require(comet > 0, s"Comet fell back completely: $name")
         val planned = System.nanoTime()
         val result = query.collect()
         val end = System.nanoTime()
         val cpuEnd = cpu.getProcessCpuTime
+        // Checked after execution, so that an adaptive plan has reached its final form.
+        val local = adaptive.collect(plan) { case p: CometLocalExec => p }.size
+        val comet = adaptive.collect(plan) { case p if p.nodeName.startsWith("Comet") => p }.size
+        require(
+          (mode == "local" && local == 1) || (mode != "local" && local == 0),
+          s"Unexpected execution path: $mode/$name\n$plan")
+        if (mode == "comet") require(comet > 0, s"Comet fell back completely: $name")
         Files.write(output.resolve(s"$mode.phase"), "idle".getBytes(UTF_8))
         // Outside the timing interval. Sorted cases validate order; others validate a multiset.
         val strings = result.map(_.toString)
@@ -308,6 +336,67 @@ object CometLocalExecutionBenchmark {
         sampler.join()
       }
     (result, peak.get())
+  }
+
+  /**
+   * Times the repository's TPC-H queries over generated Parquet tables under `data` (one
+   * directory per table), with the session's AQE, local execution and shuffle partition settings.
+   */
+  private def tpchTimings(
+      spark: SparkSession,
+      data: Path,
+      output: Path,
+      repetitions: Int): Unit = {
+    val tables =
+      Seq("customer", "lineitem", "nation", "orders", "part", "partsupp", "region", "supplier")
+    tables.foreach { table =>
+      // A directory per table, or one file per table as written by tpchgen-cli.
+      val directory = data.resolve(table)
+      val path = if (Files.exists(directory)) directory else data.resolve(s"$table.parquet")
+      spark.read.parquet(path.toString).createOrReplaceTempView(table)
+    }
+    val directory = Paths.get("benchmarks", "tpc", "queries", "tpch")
+    val stream = Files.list(directory)
+    val files =
+      try stream.iterator().asScala.filter(_.toString.endsWith(".sql")).toSeq
+      finally stream.close()
+    val writer = Files.newBufferedWriter(output.resolve("tpch.csv"), UTF_8)
+    writer.write("query,iteration,total_ms,rows,sha256,local_nodes,comet_nodes\n")
+    try
+      for (iteration <- -1 until repetitions;
+        file <- files.sortBy(_.getFileName.toString.stripPrefix("q").stripSuffix(".sql").toInt)) {
+        val name = file.getFileName.toString.stripSuffix(".sql")
+        Files.write(output.resolve("tpch.phase"), s"$name,$iteration".getBytes(UTF_8))
+        // TPC-H q15 is the repository's create-view/select/drop-view script; time the select.
+        val statements = new String(Files.readAllBytes(file), UTF_8)
+          .split(";")
+          .map(_.trim)
+          .filter(_.nonEmpty)
+          .map(_.replace("create view", "create temporary view"))
+        val timed = if (statements.length == 3) 1 else 0
+        statements.take(timed).foreach(spark.sql(_).collect())
+        val start = System.nanoTime()
+        val query = spark.sql(statements(timed))
+        val result = query.collect()
+        val elapsed = (System.nanoTime() - start).toDouble / 1000000.0
+        statements.drop(timed + 1).foreach(spark.sql(_).collect())
+        val plan = query.queryExecution.executedPlan
+        val local = adaptive.collectWithSubqueries(plan) { case p: CometLocalExec => p }.size
+        val comet = adaptive
+          .collectWithSubqueries(plan) {
+            case p if p.nodeName.startsWith("Comet") => p
+          }
+          .size
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+        result.map(_.toString).sorted.foreach { row =>
+          digest.update(row.getBytes(UTF_8))
+          digest.update(10.toByte)
+        }
+        val hash = digest.digest().map(b => f"${b & 0xff}%02x").mkString
+        writer.write(s"$name,$iteration,$elapsed,${result.length},$hash,$local,$comet\n")
+        writer.flush()
+      }
+    finally writer.close()
   }
 
   private def coverage(spark: SparkSession, data: Path, output: Path): Unit = {

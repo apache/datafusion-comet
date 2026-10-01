@@ -85,6 +85,9 @@ Environment requirements:
   not a session override of `spark.master`. `local-cluster` and remote masters
   are rejected.
 - AQE disabled, Comet and Comet native execution enabled, not in plan-only mode.
+  AQE is a session setting, so queries that are not admitted also run without AQE;
+  see [Local Execution Benchmark](local-execution-benchmark.md#queries-outside-admission)
+  for what that costs on TPC-H.
 - Batch queries only. Streaming plans and subquery preparation are rejected.
 
 Admitted query shapes:

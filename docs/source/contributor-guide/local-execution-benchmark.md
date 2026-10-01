@@ -39,12 +39,13 @@ contiguous one percent of the fact ids (four files). The timed cases are:
 | top-k                 | order by a computed rank and `id`, limit 1,000       |
 | full-sort             | the same order without a limit, collecting every row |
 
-Each mode runs in a fresh JVM with a 2 GiB heap, `local[4]`, AQE and broadcast joins
+Each mode runs in a fresh JVM with a 2 GiB heap, `local[4]`, broadcast joins
 disabled, eight shuffle partitions, UTC, batch size 8,192 and four Comet Tokio
 workers. `--memory-mib` sets both Spark's off-heap size (Comet uses `fair_unified`)
 and `spark.comet.exec.local.memoryLimit`. These have different accounting scopes,
-and neither limits process RSS. Each case is warmed up twice, then measured with the
-case order rotated between iterations.
+and neither limits process RSS. AQE is disabled unless `--aqe` enables it for the
+`spark` and `comet` baselines; local execution requires it disabled. Each case is
+warmed up twice, then measured with the case order rotated between iterations.
 
 Timing starts before DataFrame construction and ends when `collect` returns, so it
 includes planning, native graph creation, execution, row conversion and driver
@@ -102,6 +103,52 @@ Peak process RSS was about 2.6 to 2.7 GiB for every mode. Peak RSS includes star
 warmup, collection and digest validation, so it does not distinguish the modes.
 No native spill files were observed at 512 MiB.
 
+### Baselines with AQE
+
+AQE is enabled by default in Spark, so the same comparison was repeated with `--aqe`
+for Spark and Comet (local execution still has AQE disabled). All 210 executions
+agreed:
+
+| Case                  |   Spark (AQE) |   Comet (AQE) |         Local |
+| --------------------- | ------------: | ------------: | ------------: |
+| scan-filter-project   |   76.3 / 77.4 |   61.9 / 63.8 |   61.5 / 58.1 |
+| grouped-count-min-max | 130.2 / 140.4 |   75.6 / 80.0 |   63.7 / 57.2 |
+| partitioned-join      | 236.0 / 238.7 | 110.0 / 110.2 |   53.4 / 51.2 |
+| top-k                 |   81.1 / 84.7 |   50.6 / 49.3 |   37.3 / 35.9 |
+| full-sort             | 898.9 / 913.9 | 681.8 / 690.3 | 345.7 / 328.6 |
+
+With only eight shuffle partitions and one exchange per query, AQE changes little:
+it coalesces the aggregate's shuffle reads and speeds up Spark's join by about a
+tenth. The other differences from the first table are within run-to-run variation,
+which is also visible in the local column. This workload does not exercise AQE's
+larger benefits, such as coalescing many shuffle partitions, skew join handling and
+switching to broadcast joins.
+
+## Queries outside admission
+
+AQE is a session setting, so enabling local execution also disables AQE for every
+query that it does not admit. `tpch` mode times the repository's 22 TPC-H queries on
+SF1 Parquet data with ordinary Comet, Spark's default shuffle partitions (200) and
+broadcast threshold, a 2 GiB budget, one warmup and three measured iterations. None
+of the queries is admitted. Totals of the per-query medians, in milliseconds, for two
+passes (results agreed across all configurations):
+
+| Configuration                                     | Total TPC-H time |
+| ------------------------------------------------- | ---------------: |
+| AQE enabled                                       |    5,581 / 5,602 |
+| Local execution enabled (AQE disabled)            |  25,963 / 27,452 |
+| AQE and local execution disabled                  |  25,672 / 27,032 |
+| Local execution enabled, eight shuffle partitions |    4,645 / 4,643 |
+
+Enabling local execution makes these queries about five times slower in total. q16
+is 25 times slower, and q2, q9 and q10 are 10 to 15 times slower. Local admission itself
+costs nothing measurable: disabling AQE alone is as slow. The cause is that without
+AQE the default 200 shuffle partitions are not coalesced, so every stage runs 200
+small tasks. Setting `spark.sql.shuffle.partitions` to suit the data recovers the
+loss at SF1, but a fixed partition count does not adapt to data size as AQE does.
+For a workload whose queries are mostly outside admission, enabling local execution
+can therefore cost more than the admitted queries gain.
+
 ## Memory pressure
 
 `pressure` mode repeats three cycles in one JVM: full sort under the given budget
@@ -148,11 +195,35 @@ for mode in local comet spark; do
     --schema-mode explicit --memory-mib 512 \
     --data /tmp/comet-local-data --output /tmp/comet-local-reverse || exit 1
 done
+for mode in spark comet; do
+  python3 dev/bench-local-execution.py "$mode" --aqe --rows 5000000 --repetitions 5 \
+    --schema-mode explicit --memory-mib 512 \
+    --data /tmp/comet-local-data --output /tmp/comet-local-aqe || exit 1
+done
+python3 dev/bench-local-execution.py local --rows 5000000 --repetitions 5 \
+  --schema-mode explicit --memory-mib 512 \
+  --data /tmp/comet-local-data --output /tmp/comet-local-aqe
 for budget in 64 128; do
   python3 dev/bench-local-execution.py pressure --rows 5000000 \
     --schema-mode explicit --memory-mib "$budget" \
     --data /tmp/comet-local-data --output "/tmp/comet-local-pressure-$budget" || exit 1
 done
+```
+
+For `tpch` mode, generate SF1 TPC-H Parquet data, for example with `tpchgen-cli -s 1
+--format=parquet` as in [Comet Benchmarking on macOS](benchmarking_macos.md). The
+data directory may contain one directory or one `<table>.parquet` file per table. Use
+a separate output directory for each configuration:
+
+```shell
+python3 dev/bench-local-execution.py tpch --aqe --repetitions 3 --memory-mib 2048 \
+  --data /tmp/tpch-sf1 --output /tmp/comet-local-tpch-aqe
+python3 dev/bench-local-execution.py tpch --local --repetitions 3 --memory-mib 2048 \
+  --data /tmp/tpch-sf1 --output /tmp/comet-local-tpch-local
+python3 dev/bench-local-execution.py tpch --repetitions 3 --memory-mib 2048 \
+  --data /tmp/tpch-sf1 --output /tmp/comet-local-tpch-no-aqe
+python3 dev/bench-local-execution.py tpch --local --shuffle-partitions 8 --repetitions 3 \
+  --memory-mib 2048 --data /tmp/tpch-sf1 --output /tmp/comet-local-tpch-local-8
 ```
 
 The launcher reads the JVM classpath from the Spark 4.1 local suite's report, so run
