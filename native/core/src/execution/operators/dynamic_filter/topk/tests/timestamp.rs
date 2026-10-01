@@ -95,6 +95,7 @@ fn timestamp_input(
         false,
         false,
         false,
+        false,
     )
     .unwrap();
     (file, scan)
