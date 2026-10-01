@@ -3126,7 +3126,8 @@ object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {
         case LeftSemi => JoinType.LeftSemi
         case LeftAnti => JoinType.LeftAnti
         // Existence SMJ falls back to Spark: DF 55.1.0's BitwiseSortMergeJoin buffers output
-        // before emitting, risking OOM on large equal-key groups.
+        // before emitting, risking OOM on large equal-key groups. Tracked in
+        // https://github.com/apache/datafusion-comet/issues/6514.
         case _ =>
           // Spark doesn't support other join types
           withFallbackReason(join, s"Unsupported join type ${join.joinType}")
