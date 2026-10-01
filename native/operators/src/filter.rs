@@ -41,28 +41,28 @@ use datafusion::physical_plan::{
 };
 
 #[derive(Debug)]
-pub(crate) struct CometFilterExec {
+pub struct CometFilterExec {
     filter: FilterExec,
     metrics: ExecutionPlanMetricsSet,
 }
 
 impl CometFilterExec {
-    pub(crate) fn from_datafusion(filter: FilterExec) -> Self {
+    pub fn from_datafusion(filter: FilterExec) -> Self {
         Self {
             filter,
             metrics: ExecutionPlanMetricsSet::new(),
         }
     }
 
-    pub(crate) fn input(&self) -> &Arc<dyn ExecutionPlan> {
+    pub fn input(&self) -> &Arc<dyn ExecutionPlan> {
         self.filter.input()
     }
 
-    pub(crate) fn predicate(&self) -> &Arc<dyn PhysicalExpr> {
+    pub fn predicate(&self) -> &Arc<dyn PhysicalExpr> {
         self.filter.predicate()
     }
 
-    pub(crate) fn has_projection(&self) -> bool {
+    pub fn has_projection(&self) -> bool {
         self.filter.projection().is_some()
     }
 
@@ -80,7 +80,7 @@ impl CometFilterExec {
 
     /// Replace the child for one execution while keeping the metric identity
     /// owned by the permanent Spark filter node.
-    pub(crate) fn with_execution_input(
+    pub fn with_execution_input(
         &self,
         input: Arc<dyn ExecutionPlan>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
