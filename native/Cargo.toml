@@ -16,8 +16,8 @@
 # under the License.
 
 [workspace]
-default-members = ["core", "spark-expr", "common", "proto", "jni-bridge", "shuffle"]
-members = ["core", "spark-expr", "common", "proto", "jni-bridge", "shuffle"]
+default-members = ["core", "spark-expr", "common", "proto", "jni-bridge", "shuffle", "local"]
+members = ["core", "spark-expr", "common", "proto", "jni-bridge", "shuffle", "local"]
 # Crates under ../contrib are intentionally NOT workspace members. Core pulls them in as
 # optional path dependencies when their corresponding contrib feature is enabled.
 exclude = ["../contrib"]
@@ -45,6 +45,10 @@ bytes = { version = "1.11.1" }
 parquet = { version = "59.2.0", default-features = false, features = ["experimental"] }
 datafusion = { version = "55.1.0", default-features = false, features = ["unicode_expressions", "crypto_expressions", "nested_expressions", "parquet"] }
 datafusion-datasource = { version = "55.1.0" }
+datafusion-common = { version = "55.1.0" }
+datafusion-execution = { version = "55.1.0" }
+datafusion-physical-expr = { version = "55.1.0" }
+datafusion-physical-plan = { version = "55.1.0" }
 datafusion-physical-expr-adapter = { version = "55.1.0" }
 datafusion-spark = { version = "55.1.0", features = ["core"] }
 datafusion-comet-spark-expr = { path = "spark-expr" }

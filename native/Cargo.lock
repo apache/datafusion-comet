@@ -2060,6 +2060,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "datafusion-comet-local"
+version = "1.2.0"
+dependencies = [
+ "arrow",
+ "datafusion-common",
+ "datafusion-execution",
+ "datafusion-physical-expr",
+ "datafusion-physical-plan",
+ "futures",
+ "tokio",
+]
+
+[[package]]
 name = "datafusion-comet-proto"
 version = "1.2.0"
 dependencies = [
