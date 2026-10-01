@@ -155,8 +155,8 @@ The tables below list every Spark built-in expression with its current status.
 | `array` | ✅ | Native |  |
 | `array_append` | ✅ | Native |  |
 | `array_compact` | ✅ | — |  |
-| `array_contains` | ✅ | Native | Float/double element arrays route through the JVM codegen dispatcher by default; the native path is opt-in via allowIncompatible |
-| `array_distinct` | ✅ | Native | NaN/signed-zero handling may differ ([details](compatibility/floating-point.md)) |
+| `array_contains` | ✅ | Hybrid | Float/double element arrays and non-default string collations route through the JVM codegen dispatcher by default; the native path is opt-in via allowIncompatible |
+| `array_distinct` | ✅ | Hybrid | NaN/signed-zero handling may differ ([details](compatibility/floating-point.md)); non-default string collations use the JVM codegen dispatcher |
 | `array_except` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default; the incompatible native path is opt-in via allowIncompatible ([details](compatibility/expressions/array.md)) |
 | `array_insert` | ✅ | Native |  |
 | `array_intersect` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default; the incompatible native path is opt-in via allowIncompatible ([details](compatibility/expressions/array.md)) |
@@ -167,8 +167,8 @@ The tables below list every Spark built-in expression with its current status.
 | `array_prepend` | ✅ | — |  |
 | `array_remove` | ✅ | Native |  |
 | `array_repeat` | ✅ | Native |  |
-| `array_union` | ✅ | Native | NaN/signed-zero handling may differ ([details](compatibility/floating-point.md)) |
-| `arrays_overlap` | ✅ | Native |  |
+| `array_union` | ✅ | Hybrid | NaN/signed-zero handling may differ ([details](compatibility/floating-point.md)); non-default string collations use the JVM codegen dispatcher |
+| `arrays_overlap` | ✅ | Hybrid | Non-default string collations use the JVM codegen dispatcher |
 | `arrays_zip` | ✅ | Native |  |
 | `element_at` | ✅ | Native |  |
 | `flatten` | ✅ | Native | Binary/struct/map elements fall back |
