@@ -111,3 +111,34 @@ SELECT IF(q, array(i), array(0)) FROM test_if_nested
 -- CASE WHEN already casts its branches to a common type
 query
 SELECT CASE WHEN q THEN named_struct('x', i) ELSE named_struct('x', 0) END FROM test_if_nested
+
+-- Case-distinct names repeat across positions in the opposite order. Spark aligns fields by
+-- position; name-based type union would pair INT with DOUBLE and make to_json emit 7.0.
+statement
+CREATE TABLE test_if_positional(q boolean, i int, d double) USING parquet
+
+statement
+INSERT INTO test_if_positional VALUES (true, 7, 9.5), (true, NULL, NULL)
+
+-- Pin the all-THEN wrong result before adding rows that exercise ELSE and mixed batches.
+query expect_native(if)
+SELECT to_json(IF(q, named_struct('x', i, 'X', CAST(5.5 AS DOUBLE)), named_struct('X', 0, 'x', d))) FROM test_if_positional
+
+statement
+INSERT INTO test_if_positional VALUES (false, 7, 9.5), (false, NULL, NULL)
+
+statement
+INSERT INTO test_if_positional VALUES (true, 7, 9.5), (false, 8, 10.5), (NULL, NULL, NULL)
+
+query expect_native(if)
+SELECT to_json(IF(q, named_struct('x', i, 'X', CAST(5.5 AS DOUBLE)), named_struct('X', 0, 'x', d))), to_json(IF(q, named_struct('X', 0, 'x', d), named_struct('x', i, 'X', CAST(5.5 AS DOUBLE)))) FROM test_if_positional
+
+-- Native to_json supports structs, so extract the struct after reconciling the array or map.
+query expect_native(if)
+SELECT to_json(IF(q, array(named_struct('x', i, 'X', CAST(5.5 AS DOUBLE))), array(named_struct('X', 0, 'x', d)))[0]) FROM test_if_positional
+
+query expect_native(if)
+SELECT to_json(IF(q, map('k', named_struct('x', i, 'X', CAST(5.5 AS DOUBLE))), map('k', named_struct('X', 0, 'x', d)))['k']) FROM test_if_positional
+
+query expect_native(if)
+SELECT to_json(IF(q, named_struct('s', named_struct('x', i, 'X', CAST(5.5 AS DOUBLE))), named_struct('s', named_struct('X', 0, 'x', d)))) FROM test_if_positional

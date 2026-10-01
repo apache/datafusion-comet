@@ -86,10 +86,7 @@ pub fn create_if_expr(
 ) -> Result<Arc<dyn PhysicalExpr>> {
     let true_type = true_expr.data_type(input_schema)?;
     let false_type = false_expr.data_type(input_schema)?;
-    // The coercion that `get_coerce_type_for_case_expression` folds over the branches of a CASE
-    // WHEN, starting from the ELSE branch. Here the THEN branch goes first, so the common type
-    // takes its struct field names, as Spark's `If.dataType` does.
-    let Some(common_type) = type_union_coercion(&true_type, &false_type) else {
+    let Some(common_type) = if_common_type(&true_type, &false_type) else {
         return Ok(Arc::new(IfExpr::new(if_expr, true_expr, false_expr)));
     };
     Ok(Arc::new(IfExpr::new(
@@ -97,6 +94,47 @@ pub fn create_if_expr(
         coerce_branch(true_expr, &true_type, &common_type),
         coerce_branch(false_expr, &false_type, &common_type),
     )))
+}
+
+/// Reconciles Spark IF branches positionally, retaining THEN names and merging nullability.
+/// Spark has already coerced the branches to the same SQL type. DataFusion's struct union may
+/// instead match by name, pairing different positions when names differ only in case.
+fn if_common_type(then_type: &DataType, else_type: &DataType) -> Option<DataType> {
+    use arrow::datatypes::FieldRef;
+
+    fn field(then_field: &FieldRef, else_field: &FieldRef) -> Option<FieldRef> {
+        Some(Arc::new(
+            then_field
+                .as_ref()
+                .clone()
+                .with_data_type(if_common_type(
+                    then_field.data_type(),
+                    else_field.data_type(),
+                )?)
+                .with_nullable(then_field.is_nullable() || else_field.is_nullable()),
+        ))
+    }
+
+    match (then_type, else_type) {
+        (DataType::Struct(then_fields), DataType::Struct(else_fields)) => {
+            if then_fields.len() != else_fields.len() {
+                return None;
+            }
+            Some(DataType::Struct(
+                then_fields
+                    .iter()
+                    .zip(else_fields)
+                    .map(|(t, e)| field(t, e))
+                    .collect::<Option<Vec<_>>>()?
+                    .into(),
+            ))
+        }
+        (DataType::List(t), DataType::List(e)) => Some(DataType::List(field(t, e)?)),
+        (DataType::Map(t, t_sorted), DataType::Map(e, e_sorted)) => {
+            Some(DataType::Map(field(t, e)?, *t_sorted && *e_sorted))
+        }
+        _ => type_union_coercion(then_type, else_type),
+    }
 }
 
 /// Casts a CASE WHEN or IF branch whose type is `data_type` to the branches' `common_type`.
@@ -1318,6 +1356,73 @@ mod tests {
             );
         }
         expr.evaluate(batch).unwrap().into_array(2).unwrap()
+    }
+
+    /// Spark matches struct fields by position even when their case-distinct names are reordered.
+    /// Name-based union pairs the first INT with the second DOUBLE and silently widens it.
+    #[test]
+    fn if_reconciles_case_variant_fields_positionally() {
+        use arrow::array::Float64Array;
+
+        let then_fields: arrow::datatypes::Fields = vec![
+            Field::new("x", DataType::Int32, true),
+            Field::new("X", DataType::Float64, false),
+        ]
+        .into();
+        let else_fields: arrow::datatypes::Fields = vec![
+            Field::new("X", DataType::Int32, false),
+            Field::new("x", DataType::Float64, true),
+        ]
+        .into();
+        let expected_fields: arrow::datatypes::Fields = vec![
+            Field::new("x", DataType::Int32, true),
+            Field::new("X", DataType::Float64, true),
+        ]
+        .into();
+        let schema = Schema::new(vec![
+            Field::new("b", DataType::Boolean, false),
+            Field::new("t", DataType::Struct(then_fields.clone()), false),
+            Field::new("e", DataType::Struct(else_fields.clone()), false),
+        ]);
+        let batch = RecordBatch::try_new(
+            Arc::new(schema.clone()),
+            vec![
+                Arc::new(BooleanArray::from(vec![true, false])),
+                Arc::new(StructArray::new(
+                    then_fields,
+                    vec![
+                        Arc::new(Int32Array::from(vec![Some(7), None])),
+                        Arc::new(Float64Array::from(vec![5.5, 5.5])),
+                    ],
+                    None,
+                )),
+                Arc::new(StructArray::new(
+                    else_fields,
+                    vec![
+                        Arc::new(Int32Array::from(vec![0, 0])),
+                        Arc::new(Float64Array::from(vec![Some(9.5), None])),
+                    ],
+                    None,
+                )),
+            ],
+        )
+        .unwrap();
+        let c = |name: &str| col(name, &schema).unwrap();
+        let expr = create_if_expr(c("b"), c("t"), c("e"), &schema).unwrap();
+        assert_eq!(
+            expr.data_type(&schema).unwrap(),
+            DataType::Struct(expected_fields.clone())
+        );
+        let result = evaluate_if(&expr, &batch);
+        let expected = StructArray::new(
+            expected_fields,
+            vec![
+                Arc::new(Int32Array::from(vec![7, 0])),
+                Arc::new(Float64Array::from(vec![Some(5.5), None])),
+            ],
+            None,
+        );
+        assert_eq!(result.as_ref(), &expected);
     }
 
     /// IF branches that share a Spark timestamp type but carry different Arrow timezone labels are
