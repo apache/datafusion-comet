@@ -17,160 +17,154 @@ specific language governing permissions and limitations
 under the License.
 -->
 
-# Local execution performance checkpoint
+# Local Execution Benchmark
 
-This is a development checkpoint for the experimental single-process mode, not a
-TPC benchmark or a general performance claim. Production code was unchanged in
-this checkpoint; the native library was built from `63bd47c3a` in release mode.
-The manual harness and raw results are committed alongside this report.
+`dev/bench-local-execution.py` runs a manual benchmark that compares Spark local
+mode, existing Comet with native shuffle, and [local execution](local-execution.md)
+in separate JVMs. It is not a TPC benchmark or a CI timing suite, and the results
+below are small-sample, warm-cache observations on one machine, not a general
+performance claim.
 
-Follow-up: [stage 5c planning diagnosis](local-execution-planning.md) separates
-DataFrame construction/schema inference from physical preparation. Its evidence
-supersedes the hypothesis that the planning gap indicates costly local admission.
+## Workload
 
-## Coverage before timing
+`prepare` writes a synthetic fact table (`id`, `k = id % 4096`, a decimal amount and
+a nullable string; eight Parquet files) and a dimension table whose keys match a
+contiguous one percent of the fact ids (four files). The timed cases are:
 
-Planning the repository TPC SQL over one-row Parquet fixtures admitted **zero**
-complete queries: TPC-H has 22 fallbacks; TPC-DS has 102 fallbacks and one planning
-error across 103 SELECT instances in 99 files. Four TPC-DS files contain two
-SELECT statements. TPC-DS q30 references `c_last_review_date_sk`, while the Spark
-schema helper used by the fixture declares `c_last_review_date`; this is recorded
-as an unresolved planning error, not as fallback. CHAR/VARCHAR fixture fields use
-physical StringType. TPCH q15 creates and drops its temporary view; other SELECTs
-are planned without execution.
+| Case                  | Query                                                |
+| --------------------- | ---------------------------------------------------- |
+| scan-filter-project   | `id % 100 = 0` filter and three projected columns    |
+| grouped-count-min-max | `COUNT`, `MIN`, `MAX` grouped by `k` (4,096 groups)  |
+| partitioned-join      | fact joined to dimension with a `SHUFFLE_HASH` hint  |
+| top-k                 | order by a computed rank and `id`, limit 1,000       |
+| full-sort             | the same order without a limit, collecting every row |
 
-This is fixture-based admission evidence, not TPC correctness validation. No
-TPC timings are reported. The current operator surface excludes, among other
-things, SUM/AVG, nested joins, many expressions and subqueries. Broadening that
-surface remains separate work.
+Each mode runs in a fresh JVM with a 2 GiB heap, `local[4]`, AQE and broadcast joins
+disabled, eight shuffle partitions, UTC, batch size 8,192 and four Comet Tokio
+workers. `--memory-mib` sets both Spark's off-heap size (Comet uses `fair_unified`)
+and `spark.comet.exec.local.memoryLimit`. These have different accounting scopes,
+and neither limits process RSS. Each case is warmed up twice, then measured with the
+case order rotated between iterations.
 
-## Method
+Timing starts before DataFrame construction and ends when `collect` returns, so it
+includes planning, native graph creation, execution, row conversion and driver
+result collection. Result digests are computed outside the timed interval. Sorted
+cases compare rows in order; the others compare a sorted multiset. Every execution,
+including warmups, must match across modes, and the plan must contain a local node
+(local mode) or Comet operators (Comet mode), so fallback cannot be timed as local
+execution. Process CPU covers all JVM and native threads during the interval.
 
-Apple M4 Max (16 logical CPUs), 64 GiB RAM, macOS 26.6.2 arm64; Spark 4.1.3,
-Scala 2.13.17, Zulu OpenJDK 17.0.16. The coverage-only process used JDK 21; all
-six timed JVMs used JDK 17. The same optimized native library was used throughout
-(SHA-256 recorded in metadata). No compilation ran concurrently with timing.
-
-Each mode uses a fresh JVM with 512 MiB initial / 2 GiB maximum heap, local[4],
-AQE disabled, eight shuffle partitions, broadcast disabled, UTC, batch size 8192,
-and four Comet Tokio workers. Spark off-heap and local native reservation limits
-are both configured to 512 MiB. Existing Comet uses fair_unified and native
-shuffle. These settings have different accounting scopes and do not establish
-equal total RSS limits. Local execution produces one Spark result partition.
-
-A fixed 500,000-row fact dataset (eight files) and 5,000-row dimension (four files)
-are reused in every process. Cases cover scan/filter/project, grouped
-COUNT/MIN/MAX, a shuffled hash equijoin, Top-K, and full sort. There are two warmup
-and five measured iterations per case, with rotated case order. The forward pass
-runs Spark, Comet, local; the second pass reverses mode order. Filesystem caches
-are not cleared. These small warm-cache workloads are preliminary evidence.
-
-Planning includes DataFrame construction, file/schema discovery and executed-plan
-creation. Execution includes collect and native graph creation; total is their
-sum. Process CPU includes all JVM/native threads during this interval. Digest
-calculation is outside timing, but its allocations and JIT/GC effects may affect
-subsequent iterations. Sorted cases compare ordered rows; others compare a sorted
-multiset of row strings. All 210 executions, including warmups across both passes,
-agreed on row counts and SHA-256 digests. Every local query had exactly one
-CometLocal node and zero live native handles after collect; every Comet baseline
-had Comet operators. Saved physical plans confirm native shuffle in the join
-baseline. This validates these concrete inputs, not arbitrary SQL semantics.
+`--schema-mode explicit` supplies the fixture schemas; the default `infer` adds
+Parquet schema inference, which costs every mode alike and can dominate small
+queries.
 
 ## Results
 
-Each cell is the median of five samples, **forward / reverse**, in milliseconds.
-Columns are independent medians, so planning plus execution medians need not sum
-to the total median.
+Apple M4 Max (16 logical CPUs), 64 GiB RAM, macOS 26.6.2, Spark 4.1.3, Zulu OpenJDK
+17.0.16, release native library. Five million fact rows (67 MiB of Parquet), 50,000
+dimension rows, explicit schemas and a 512 MiB budget. Values are medians of five
+measured iterations in milliseconds, **forward / reverse** mode order. All 210
+executions agreed on row counts and digests.
 
-| Query | Mode | Planning | Execution + collect | Total | Process CPU |
-|---|---|---:|---:|---:|---:|
-| scan-filter-project | spark | 44.9 / 36.1 | 22.4 / 23.7 | 84.2 / 60.5 | 273.7 / 133.3 |
-| scan-filter-project | comet | 43.1 / 45.4 | 15.8 / 16.1 | 58.9 / 64.1 | 170.0 / 147.8 |
-| scan-filter-project | local | 49.1 / 50.8 | 15.2 / 15.5 | 65.2 / 66.3 | 184.4 / 165.3 |
-| grouped-count-min-max | spark | 40.1 / 33.4 | 49.4 / 52.8 | 83.6 / 86.2 | 336.0 / 325.1 |
-| grouped-count-min-max | comet | 30.5 / 36.5 | 30.5 / 31.5 | 63.6 / 67.4 | 221.4 / 224.8 |
-| grouped-count-min-max | local | 53.6 / 63.6 | 16.4 / 17.1 | 71.5 / 81.0 | 147.8 / 127.5 |
-| partitioned-join | spark | 64.3 / 69.0 | 78.8 / 76.2 | 151.0 / 171.6 | 560.2 / 510.0 |
-| partitioned-join | comet | 68.4 / 108.4 | 37.1 / 38.0 | 105.5 / 146.9 | 390.7 / 376.3 |
-| partitioned-join | local | 103.3 / 128.6 | 12.6 / 12.4 | 115.9 / 140.4 | 268.8 / 289.5 |
-| top-k | spark | 30.8 / 33.5 | 21.8 / 26.0 | 53.9 / 70.5 | 151.1 / 201.8 |
-| top-k | comet | 32.8 / 37.9 | 22.7 / 33.6 | 56.0 / 75.5 | 194.8 / 295.9 |
-| top-k | local | 39.9 / 43.9 | 12.4 / 13.3 | 52.8 / 56.6 | 146.5 / 142.1 |
-| full-sort | spark | 33.6 / 37.7 | 106.7 / 106.6 | 134.5 / 149.3 | 514.3 / 477.8 |
-| full-sort | comet | 34.3 / 45.5 | 82.8 / 82.8 | 118.8 / 128.3 | 463.9 / 492.1 |
-| full-sort | local | 58.7 / 39.5 | 67.3 / 65.0 | 126.0 / 111.4 | 372.3 / 387.1 |
+| Case                  |         Spark |         Comet |         Local |
+| --------------------- | ------------: | ------------: | ------------: |
+| scan-filter-project   |   76.2 / 83.2 |   65.5 / 70.7 |   68.1 / 65.9 |
+| grouped-count-min-max | 129.4 / 140.8 |   79.4 / 83.1 |   66.2 / 63.6 |
+| partitioned-join      | 264.4 / 287.1 | 110.3 / 115.3 |   56.5 / 57.7 |
+| top-k                 |   84.3 / 81.2 |   67.1 / 56.6 |   38.0 / 39.3 |
+| full-sort             | 869.4 / 978.9 | 710.2 / 754.6 | 366.3 / 359.1 |
 
-The local execution median was lower than existing Comet in all five cases in
-both passes, but planning was higher in nine of ten case/pass comparisons. End-to-end local totals did
-not consistently beat existing Comet. Top-K improved in both passes; scan and
-aggregate were slower in both; join and full sort changed relative order between
-passes. These results justify profiling planning and admission before expanding
-scope or claiming an overall speedup. They do not identify the exact planning
-bottleneck: repeated file discovery, Comet conversion and local admission still
-need separate profiling.
+Median process CPU time in milliseconds:
 
-## Resource samples
+| Case                  |       Spark |       Comet |       Local |
+| --------------------- | ----------: | ----------: | ----------: |
+| scan-filter-project   |   314 / 390 |   238 / 258 |   287 / 248 |
+| grouped-count-min-max |   578 / 671 |   301 / 361 |   336 / 239 |
+| partitioned-join      | 1146 / 1298 |   470 / 523 |   244 / 234 |
+| top-k                 |   332 / 390 |   345 / 252 |   145 / 158 |
+| full-sort             | 4000 / 4445 | 3549 / 3598 | 1667 / 1815 |
 
-The launcher samples the whole Java process and temporary directory occupancy
-at approximately 100 ms intervals. Values below are **forward / reverse**, MiB.
-Peak RSS includes startup, warmup, collection and digest validation. Retained RSS
-is the median during the one-second idle period after all cases, without forced
-GC; it is not proof of a leak or the amount of live native memory.
+Planning (DataFrame construction plus physical preparation) takes about 9 to 20 ms
+in every mode and case, and local physical preparation is within a millisecond of
+existing Comet's.
 
-| Mode | Peak process RSS | Idle RSS | Peak native temp | Peak Spark temp |
-|---|---:|---:|---:|---:|
-| spark | 1546.4 / 1783.4 | 1315.8 / 1672.3 | 0.0 / 0.0 | 11.4 / 11.1 |
-| comet | 1754.4 / 1596.1 | 1754.4 / 1596.0 | 0.0 / 0.0 | 8.0 / 10.1 |
-| local | 1598.1 / 1667.4 | 1269.1 / 1667.4 | 0.0 / 0.0 | 0.0 / 0.0 |
+Local execution is faster than Comet for aggregation, join, Top-K and full sort. For
+the join and aggregation it replaces Comet's shuffle files with in-memory DataFusion
+exchanges. For full sort, a separate measurement (not part of the raw results) found that pulling the sorted rows
+out of the native graph takes a fraction of the total, and most of the remaining
+time is Spark's result path; local mode avoids the single-threaded encode/decode
+part of it through [same-JVM result delivery](local-execution.md#result-delivery),
+while driver deserialization of five million rows into `Row` objects is common to
+every mode. The scan case has no exchange to remove and uses the same Parquet
+reader, so the modes are within noise.
 
-No native spill files were observed under the configured native temp directory.
-Spark-directory occupancy includes shuffle files and possibly native shuffle
-spill. Occupancy is not cumulative spill bytes; short-lived files can be missed.
-The benchmark does not expose DataFusion operator peak reservation or cumulative
-spill metrics and does not exercise memory pressure. Stage 5a's deterministic
-spill/budget tests provide separate correctness coverage. RSS does not show a
-consistent local-mode advantage over both baselines.
+Peak process RSS was about 2.6 to 2.7 GiB for every mode. Peak RSS includes startup,
+warmup, collection and digest validation, so it does not distinguish the modes.
+No native spill files were observed at 512 MiB.
+
+## Memory pressure
+
+`pressure` mode repeats three cycles in one JVM: full sort under the given budget
+must spill, observed by polling the native temporary directory, and match Spark row
+by row; with `spark.comet.exec.local.spill.enabled=false` the same sort must fail on
+a native resource error; then a local Top-K must match Spark. After each step,
+native query handles and imported Arrow memory must return to zero.
+
+At 64 MiB and 128 MiB all three cycles passed. Each full sort returned five million
+rows with a peak of about 78 MiB of spill files. With spill disabled, the 64 MiB
+sort failed with an `ExternalSorterMerge` reservation error and the 128 MiB sort
+with `Memory Exhausted while Sorting (DiskManager is disabled)`.
+
+## Admission coverage
+
+`coverage` plans the repository's TPC-H and TPC-DS queries over one-row Parquet
+fixtures without executing them. No complete query is admitted: TPC-H has 22
+fallbacks, TPC-DS has 102 fallbacks and one planning error, because TPC-DS q30
+references `c_last_review_date_sk` while the fixture schema declares
+`c_last_review_date`. Missing aggregate functions, nested joins, subqueries and
+many expressions keep these queries outside admission.
 
 ## Reproduce
 
-Run from the repository root. Follow the development guide for toolchains and
-build native before the JVM suite. Do not use Maven `-pl`. For example:
+Run from the repository root. Build native code first and never use Maven `-pl`:
 
 ```shell
-export JAVA_HOME=$(/usr/libexec/java_home -v 17) # macOS; select JDK 17 on other OSes
+export JAVA_HOME=$(/usr/libexec/java_home -v 17) # macOS; select JDK 17 elsewhere
 (cd native && cargo build --release -p datafusion-comet --locked)
 ./mvnw test -Pspark-4.1 -Dsuites=org.apache.comet.local.CometLocalExecutionSuite
 ./mvnw test-compile -Pspark-4.1 -DskipTests
-python3 dev/bench-local-execution.py prepare --data /tmp/comet-local-data --output /tmp/comet-local-prepare
-python3 dev/bench-local-execution.py coverage --data /tmp/comet-local-coverage-data --output /tmp/comet-local-coverage
+
+python3 dev/bench-local-execution.py prepare --rows 5000000 \
+  --data /tmp/comet-local-data --output /tmp/comet-local-prepare
+python3 dev/bench-local-execution.py coverage \
+  --data /tmp/comet-local-coverage-data --output /tmp/comet-local-coverage
 for mode in spark comet local; do
-  python3 dev/bench-local-execution.py "$mode" --data /tmp/comet-local-data --output /tmp/comet-local-forward || exit 1
+  python3 dev/bench-local-execution.py "$mode" --rows 5000000 --repetitions 5 \
+    --schema-mode explicit --memory-mib 512 \
+    --data /tmp/comet-local-data --output /tmp/comet-local-forward || exit 1
 done
 for mode in local comet spark; do
-  python3 dev/bench-local-execution.py "$mode" --data /tmp/comet-local-data --output /tmp/comet-local-reverse || exit 1
+  python3 dev/bench-local-execution.py "$mode" --rows 5000000 --repetitions 5 \
+    --schema-mode explicit --memory-mib 512 \
+    --data /tmp/comet-local-data --output /tmp/comet-local-reverse || exit 1
+done
+for budget in 64 128; do
+  python3 dev/bench-local-execution.py pressure --rows 5000000 \
+    --schema-mode explicit --memory-mib "$budget" \
+    --data /tmp/comet-local-data --output "/tmp/comet-local-pressure-$budget" || exit 1
 done
 ```
 
-The launcher obtains the JVM classpath from the Spark 4.1 local suite's XML report;
-compile the benchmark test object before running it. It explicitly loads the
-release library for timing. Use fresh output directories and fixture data paths;
-input creation never overwrites existing data. Default row count is 500,000 and
-repetitions five. Timing mode rejects debug libraries. This is a manual object,
-not a CI timing suite. Mode logs, plans, CSV, metadata and samples are written to
-the output directory. Compare both passes' digests before interpreting timings.
+The launcher reads the JVM classpath from the Spark 4.1 local suite's report, so run
+that suite and compile the benchmark first; switch back to the Spark 4.1 profile if
+another profile was built last. Timing modes require the release library. Input
+creation never overwrites data, and each mode needs a fresh output directory (or one
+where that mode has not run). Each output directory receives the mode's log, CSV,
+process samples, metadata and the executed plan of each case. The launcher compares
+digests across all modes present in the output directory. `--jfr` records a
+diagnostic profile; do not compare its timings.
 
-Raw results are under `benchmarks/results/local-execution/2026-09-30/`, including
-per-iteration timing, process samples, path-verification plans and the coverage
-CSV/error. Stored CSV and JSON files have a `.txt` suffix, matching the repository
-convention for raw benchmark output and its existing license-check exclusion.
-Remove that suffix when loading them with tools that infer format from extensions.
-An earlier interrupted run was discarded: the sampler raced Spark's
-deleted temporary directories. Directory walking now tolerates those removals;
-the interruption was not an engine failure.
-
-Spark 4.1 main/test compilation, Spark 3.5 strict-warning main/test compilation,
-Python syntax validation and formatting checks passed. Spark SQL suite validation
-remains explicitly deferred by the user. No CI label,
-PR update or push was performed. Stop at this checkpoint; the proposed next stage
-is to profile planning/admission overhead and verify a narrowly scoped remedy
-with this same harness before adding more operators.
+Raw results for the tables above are under `benchmarks/results/local-execution/`.
+CSV and JSON files carry a `.txt` suffix, following the repository's convention for
+raw benchmark output; remove it when loading them with tools that infer the format
+from the extension. Local paths in the metadata are replaced by `<output-root>`.
