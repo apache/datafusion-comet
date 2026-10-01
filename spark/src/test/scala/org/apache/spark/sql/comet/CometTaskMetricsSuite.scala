@@ -32,6 +32,8 @@ import org.apache.spark.shuffle.comet.CometShuffleMemoryAllocator
 import org.apache.spark.shuffle.sort.CometShuffleExternalSorter
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.catalyst.expressions.UnsafeRow
+import org.apache.spark.sql.comet.execution.shuffle.CometBypassMergeSortShuffleHandle
+import org.apache.spark.sql.comet.execution.shuffle.CometColumnarShuffle
 import org.apache.spark.sql.comet.execution.shuffle.CometNativeShuffle
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.SparkPlan
@@ -388,11 +390,11 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
       def insert(value: Int): Unit = {
         val bytes = new Array[Byte](4 + 16)
-        Platform.putInt(bytes, Platform.BYTE_ARRAY_OFFSET, value)
+        Platform.putInt(bytes, Platform.BYTE_ARRAY_OFFSET.toLong, value)
         val row = new UnsafeRow(1)
-        row.pointTo(bytes, Platform.BYTE_ARRAY_OFFSET + 4, 16)
+        row.pointTo(bytes, (Platform.BYTE_ARRAY_OFFSET + 4).toLong, 16)
         row.setInt(0, value)
-        sorter.insertRecord(bytes, Platform.BYTE_ARRAY_OFFSET, bytes.length, value % 2)
+        sorter.insertRecord(bytes, Platform.BYTE_ARRAY_OFFSET.toLong, bytes.length, value % 2)
       }
 
       try {
@@ -642,6 +644,61 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         assert(shuffleWriteStages.map(_.shuffleWriteTime).sum > 0L)
         assert(shuffleWriteStages.map(_.memoryBytesSpilled).sum == sqlMemorySpilled)
         assert(shuffleWriteStages.map(_.diskBytesSpilled).sum == sqlDiskSpilled)
+      }
+    }
+  }
+
+  test("JVM hash shuffle counts batch-size writes as shuffle bytes written, not spill") {
+    val expectedRecords = 20000L
+    withParquetTable((0 until expectedRecords.toInt).map(i => (i, s"row-$i")), "tbl") {
+      // A small batch size makes each partition writer flush several batches to its partition
+      // file before the final one.
+      withSQLConf(
+        CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
+        CometConf.COMET_SHUFFLE_JVM_BATCH_SIZE.key -> "100") {
+        val shuffled = sql("SELECT * FROM tbl").repartition(4, $"_1")
+        val store = spark.sparkContext.statusStore
+        spark.sparkContext.listenerBus.waitUntilEmpty()
+        val stagesBefore = store.stageList(null).map(_.stageId).toSet
+
+        assert(shuffled.collect().length == expectedRecords)
+        spark.sparkContext.listenerBus.waitUntilEmpty()
+
+        val exchange = collectFirst(shuffled.queryExecution.executedPlan) {
+          case jvm: CometShuffleExchangeExec if jvm.shuffleType == CometColumnarShuffle => jvm
+        }.getOrElse(fail("Expected a JVM columnar shuffle exchange"))
+        // Four partitions is under spark.shuffle.sort.bypassMergeThreshold, so the hash-based
+        // writer ran.
+        assert(
+          exchange.shuffleDependency.shuffleHandle
+            .isInstanceOf[CometBypassMergeSortShuffleHandle[_, _]])
+
+        // The map output is every batch written to the partition files, concatenated.
+        val shuffleId = exchange.shuffleDependency.shuffleId
+        val dataFiles = SparkEnv.get.blockManager.diskBlockManager
+          .getAllFiles()
+          .filter { file =>
+            file.getName.startsWith(s"shuffle_${shuffleId}_") && file.getName.endsWith(".data")
+          }
+        assert(dataFiles.nonEmpty, s"No map output files found for shuffle $shuffleId")
+        val mapOutputBytes = dataFiles.map(_.length()).sum
+
+        val metrics = exchange.metrics
+        assert(metrics("shuffleRecordsWritten").value == expectedRecords)
+        assert(metrics("shuffleBytesWritten").value == mapOutputBytes)
+        assert(metrics("shuffleWriteTime").value > 0L)
+
+        val shuffleWriteStages = store
+          .stageList(null)
+          .filterNot(stage => stagesBefore.contains(stage.stageId))
+          .filter(_.shuffleWriteRecords > 0L)
+
+        assert(shuffleWriteStages.nonEmpty, "No JVM shuffle write stage was recorded")
+        assert(shuffleWriteStages.map(_.shuffleWriteRecords).sum == expectedRecords)
+        assert(shuffleWriteStages.map(_.shuffleWriteBytes).sum == mapOutputBytes)
+        // Without memory pressure, no batch was spilled.
+        assert(shuffleWriteStages.map(_.memoryBytesSpilled).sum == 0L)
+        assert(shuffleWriteStages.map(_.diskBytesSpilled).sum == 0L)
       }
     }
   }

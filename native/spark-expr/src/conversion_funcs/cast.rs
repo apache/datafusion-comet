@@ -118,6 +118,26 @@ impl Cast {
             query_context,
         }
     }
+
+    /// Whether the cast cannot fail for any value, in any eval mode: a cast to the child's own
+    /// type, from NULL, or to a wider number. `cast_array` rejects a dictionary target first.
+    pub(crate) fn is_infallible(&self, input_schema: &Schema) -> bool {
+        use DataType::*;
+        let Ok(from) = self.child.data_type(input_schema) else {
+            return false;
+        };
+        !matches!(self.data_type, Dictionary(_, _))
+            && (from == self.data_type
+                || from == Null
+                || matches!(
+                    (&from, &self.data_type),
+                    (Int8, Int16 | Int32 | Int64 | Float32 | Float64)
+                        | (Int16, Int32 | Int64 | Float32 | Float64)
+                        | (Int32, Int64 | Float32 | Float64)
+                        | (Int64, Float32 | Float64)
+                        | (Float32, Float64)
+                ))
+    }
 }
 
 /// Spark cast options

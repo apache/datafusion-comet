@@ -30,11 +30,11 @@ use crate::{
     spark_ceil, spark_day_name, spark_decimal_div, spark_decimal_integral_div, spark_floor,
     spark_isnan, spark_lpad, spark_make_decimal, spark_month_name, spark_read_side_padding,
     spark_round, spark_rpad, spark_sequence, spark_to_time, spark_unhex, spark_unscaled_value,
-    EvalMode, SparkArrayPositionFunc, SparkArraySlice, SparkArraysOverlap, SparkContains,
-    SparkDateDiff, SparkDateFromUnixDate, SparkDateTrunc, SparkDayOfWeek, SparkFlatten,
-    SparkIcebergBucket, SparkIcebergTemporalTransform, SparkIcebergTruncate, SparkMakeDate,
-    SparkMakeInterval, SparkMakeTime, SparkMapExtract, SparkNextDay, SparkSecondsToTimestamp,
-    SparkSizeFunc, SparkWeekDay,
+    EvalMode, SparkArrayExtrema, SparkArrayPositionFunc, SparkArraySlice, SparkArraysOverlap,
+    SparkContains, SparkDateDiff, SparkDateFromUnixDate, SparkDateTrunc, SparkDayOfWeek,
+    SparkFlatten, SparkIcebergBucket, SparkIcebergTemporalTransform, SparkIcebergTruncate,
+    SparkMakeDate, SparkMakeInterval, SparkMakeTime, SparkMapExtract, SparkNextDay,
+    SparkSecondsToTimestamp, SparkSizeFunc, SparkWeekDay,
 };
 use arrow::datatypes::DataType;
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
@@ -264,6 +264,10 @@ pub fn create_comet_physical_fun_with_eval_mode(
             let func = Arc::new(crate::string_funcs::spark_get_json_object);
             make_comet_scalar_udf!("get_json_object", func, without data_type)
         }
+        "get_json_object_spark34" => {
+            let func = Arc::new(crate::string_funcs::spark_get_json_object_spark34);
+            make_comet_scalar_udf!("get_json_object_spark34", func, without data_type)
+        }
         "map" => Ok(Arc::new(ScalarUDF::new_from_impl(
             SparkMapFromArrays::default(),
         ))),
@@ -323,6 +327,8 @@ pub fn create_comet_physical_fun_with_eval_mode(
 
 fn all_scalar_functions() -> Vec<Arc<ScalarUDF>> {
     vec![
+        Arc::new(ScalarUDF::new_from_impl(SparkArrayExtrema::new(true))),
+        Arc::new(ScalarUDF::new_from_impl(SparkArrayExtrema::new(false))),
         Arc::new(ScalarUDF::new_from_impl(SparkArrayPositionFunc::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkArraySlice::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkArraysOverlap::default())),
