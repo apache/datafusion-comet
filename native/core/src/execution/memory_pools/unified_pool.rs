@@ -96,6 +96,9 @@ impl MemoryPool for CometUnifiedMemoryPool {
     }
 
     /// Records memory that already exists, so it must not fail; see [`SparkMemory`].
+    // Rust 1.99 deprecates `fetch_update` in favor of `try_update`, which needs Rust 1.95, newer
+    // than the workspace `rust-version`.
+    #[allow(deprecated)]
     fn grow(&self, _: &MemoryReservation, additional: usize) {
         if additional == 0 {
             return;
@@ -106,6 +109,9 @@ impl MemoryPool for CometUnifiedMemoryPool {
             .unwrap();
     }
 
+    // Rust 1.99 deprecates `fetch_update` in favor of `try_update`, which needs Rust 1.95, newer
+    // than the workspace `rust-version`.
+    #[allow(deprecated)]
     fn shrink(&self, _: &MemoryReservation, size: usize) {
         if let Err(e) = self.spark.release(size) {
             panic!(
@@ -124,6 +130,9 @@ impl MemoryPool for CometUnifiedMemoryPool {
         }
     }
 
+    // Rust 1.99 deprecates `fetch_update` in favor of `try_update`, which needs Rust 1.95, newer
+    // than the workspace `rust-version`.
+    #[allow(deprecated)]
     fn try_grow(&self, _: &MemoryReservation, additional: usize) -> Result<(), DataFusionError> {
         if additional > 0 {
             // A partial grant is handed back and refused, which triggers spilling in the caller.
