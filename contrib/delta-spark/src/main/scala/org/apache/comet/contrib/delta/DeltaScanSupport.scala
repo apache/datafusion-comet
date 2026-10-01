@@ -761,10 +761,11 @@ object DeltaScanSupport {
    * SYNC NOTE: the key list must stay a superset of native's `NATIVE_S3A_CONFIG_PROPERTIES`
    * constant (`native/core/src/parquet/objectstore/s3.rs`, property suffixes without the
    * `fs.s3a.` prefix) -- `DeltaScanContribSuite`'s discovery-harness test asserts this
-   * mechanically against [[AllS3ConfigKeys]]. Literal strings, not the
-   * [[AwsCredentialsProviderKey]] / [[AssumedRoleCredentialsProviderKey]] vals declared below,
-   * purely to avoid a forward reference inside this `object` body; kept textually identical to
-   * those two constants.
+   * mechanically against [[AllS3ConfigKeys]]. A Rust test in `s3.rs` also parses this `Seq(`
+   * block as text, so each entry must stay a single `"fs.s3a.<key>" -> <Tier>` literal pair.
+   * Literal strings, not the [[AwsCredentialsProviderKey]] /
+   * [[AssumedRoleCredentialsProviderKey]] vals declared below, purely to avoid a forward
+   * reference inside this `object` body; kept textually identical to those two constants.
    */
   private[delta] val S3ConfigKeyConsumers: Seq[(String, S3ConfigConsumer)] = Seq(
     "fs.s3a.access.key" -> LookupPasswordConsumer,

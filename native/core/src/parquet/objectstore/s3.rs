@@ -438,23 +438,14 @@ pub(super) fn get_config_trimmed<'a>(
 
 /// Every `fs.s3a.*` property suffix (without the `fs.s3a.` prefix) this module resolves via
 /// [`get_config`]/[`get_config_trimmed`], i.e. every Hadoop S3A config key native's S3 client
-/// actually reads. Kept as an explicit, checked-in constant -- rather than only living implicitly
-/// as scattered string literals at call sites -- so it can be asserted against two things: (1) the
-/// `native_s3a_config_properties_matches_call_sites` test below, which mechanically re-derives the
-/// same set from this file's own source text and fails loudly if a call site is added/removed/
-/// retyped without updating this list; and (2) `DeltaScanSupport.scala`'s `AllS3ConfigKeys` in the
-/// `contrib/delta-spark` module, which the discovery-harness tests in `DeltaScanContribSuite`
-/// assert is a superset of this exact list.
+/// actually reads. `#[cfg(test)]`-only.
 ///
-/// SYNC NOTE: keep this list and `AllS3ConfigKeys`
-/// (`contrib/delta-spark/src/main/scala/org/apache/comet/contrib/delta/DeltaScanSupport.scala`)
-/// in sync manually -- Scala cannot reference this Rust constant directly, so
-/// `DeltaScanContribSuite`'s discovery-harness test carries its own hand-copied duplicate of
-/// these same literal values (with a sync-note pointing back here) and asserts `AllS3ConfigKeys`
-/// is a superset of it. Adding a `get_config`/`get_config_trimmed` call site here for a new
-/// property MUST add the corresponding `fs.s3a.<property>` entry on BOTH sides, or one of the two
-/// discovery-harness tests will fail. `#[cfg(test)]`-only: nothing in the production build reads
-/// this constant, only the mechanical self-check test below.
+/// SYNC NOTE: a new call site means adding its property here and `fs.s3a.<property>` to
+/// `S3ConfigKeyConsumers` in
+/// `contrib/delta-spark/src/main/scala/org/apache/comet/contrib/delta/DeltaScanSupport.scala`.
+/// `native_s3a_config_properties_matches_call_sites` keeps this list equal to the call sites,
+/// `delta_contrib_compares_every_native_s3a_property` checks the Scala block covers it, and
+/// `DeltaScanContribSuite` checks it against the compiled `AllS3ConfigKeys`.
 #[cfg(test)]
 pub(super) const NATIVE_S3A_CONFIG_PROPERTIES: &[&str] = &[
     "endpoint.region",
@@ -1048,10 +1039,9 @@ mod tests {
     /// `get_config_trimmed(configs, bucket, ...)` call site, resolving an identifier argument
     /// (e.g. `PROVIDER_CLASS_PROPERTY`) through its own `const NAME: &str = "..."` definition, and
     /// asserts the result is EXACTLY `NATIVE_S3A_CONFIG_PROPERTIES`. This fails loudly the moment
-    /// a call site is added, removed, or its literal changes without updating that constant --
-    /// which is exactly the class of bug (a config key silently added to one side of the
-    /// Scala/Rust boundary but not the other) that let a Hadoop-side resolution rule diverge
-    /// unnoticed in the round-15 SSE-C finding.
+    /// a call site is added, removed, or its literal changes without updating that constant.
+    /// It guards against a config key read on one side of the Scala/Rust boundary but not
+    /// compared on the other, which lets Hadoop and native resolve that key differently.
     ///
     /// The `configs, property` call inside `get_config_trimmed`'s own body (a passthrough of its
     /// own `property` parameter, not a call site naming a fixed config key) is deliberately
@@ -1125,6 +1115,71 @@ mod tests {
              get_config/get_config_trimmed in this file -- update the constant (and keep \
              DeltaScanSupport.scala's AllS3ConfigKeys in sync, see that constant's SYNC NOTE) \
              when a call site changes"
+        );
+    }
+
+    /// Checks that the Delta contrib's `S3ConfigKeyConsumers` (`DeltaScanSupport.scala`) compares
+    /// every property in `NATIVE_S3A_CONFIG_PROPERTIES`, on every PR that touches native code
+    /// (the contrib suites do not). Parses the Scala block as text: each `"fs.s3a.<key>"`
+    /// literal followed by `->` up to the first `)`. `DeltaScanContribSuite` checks the same
+    /// parse against the compiled `AllS3ConfigKeys`.
+    #[test]
+    fn delta_contrib_compares_every_native_s3a_property() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
+            "../../contrib/delta-spark/src/main/scala/org/apache/comet/contrib/delta/\
+             DeltaScanSupport.scala",
+        );
+        let scala = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+
+        let marker = "S3ConfigKeyConsumers: Seq[(String, S3ConfigConsumer)] = Seq(";
+        let start = scala.find(marker).unwrap_or_else(|| {
+            panic!(
+                "{} no longer declares `{marker}`: the block was renamed or reformatted, \
+                 update this parser and the matching one in DeltaScanContribSuite",
+                path.display()
+            )
+        }) + marker.len();
+        // No key literal contains a parenthesis, so the first `)` closes the `Seq(`.
+        let end = start
+            + scala[start..]
+                .find(')')
+                .expect("unterminated S3ConfigKeyConsumers Seq(");
+        let block = &scala[start..end];
+
+        let mut compared: BTreeSet<&str> = BTreeSet::new();
+        let opening = "\"fs.s3a.";
+        let mut pos = 0usize;
+        while let Some(rel) = block[pos..].find(opening) {
+            let key_start = pos + rel + 1;
+            let key_end = key_start
+                + block[key_start..]
+                    .find('"')
+                    .expect("unterminated key literal in S3ConfigKeyConsumers");
+            if block[key_end + 1..].trim_start().starts_with("->") {
+                compared.insert(&block[key_start..key_end]);
+            }
+            pos = key_end + 1;
+        }
+        assert!(
+            !compared.is_empty(),
+            "parsed no `\"fs.s3a.<key>\" -> <Tier>` pairs out of S3ConfigKeyConsumers in {}",
+            path.display()
+        );
+
+        let missing: Vec<String> = NATIVE_S3A_CONFIG_PROPERTIES
+            .iter()
+            .map(|p| format!("fs.s3a.{p}"))
+            .filter(|k| !compared.contains(k.as_str()))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "native reads {missing:?} but S3ConfigKeyConsumers in {} does not compare them. Add \
+             each with the tier matching how hadoop-aws reads it (LookupPasswordConsumer for \
+             S3AUtils#lookupPassword credentials, PropagatedOptionConsumer for a plain \
+             Configuration#get after propagateBucketOptions); a wrong tier compares the wrong \
+             Hadoop value.",
+            path.display()
         );
     }
 

@@ -2363,20 +2363,17 @@ class DeltaScanContribSuite extends CometDeltaTestBase {
   }
 
   // ---------------------------------------------------------------------------------------
-  // Discovery harness: mechanically bounds the "which fs.s3a.* keys does this comparator need
-  // to know about" model, rather than relying on someone noticing the next one by hand (which
-  // is exactly how the SSE-C long-bucket-alias gap went unnoticed). A new key cannot even
-  // compile into the comparator without a consumer-tier assignment (AllS3ConfigKeys is derived
-  // from S3ConfigKeyConsumers), and the tier expectations below pin the assignments themselves.
-  // Independent checks:
-  //   (a) DeltaScanSupport.AllS3ConfigKeys must be a superset of native's OWN checked-in list
-  //       of every fs.s3a.* property it reads (native/core/src/parquet/objectstore/s3.rs's
-  //       NATIVE_S3A_CONFIG_PROPERTIES, itself mechanically verified against that file's call
-  //       sites by a Rust unit test -- see that constant's doc).
-  //   (b) Every fs.s3a.* key Hadoop's own Constants class declares that looks credential- or
-  //       encryption-shaped (name contains key/secret/token/password/encryption) must be either
-  //       covered by AllS3ConfigKeys or explicitly, individually documented as exempt -- a loud
-  //       failure naming the key the moment Hadoop grows a new one nobody has classified yet.
+  // Discovery harness: mechanically bounds which fs.s3a.* keys this comparator must know about.
+  // A key cannot compile into the comparator without a consumer tier (AllS3ConfigKeys is
+  // derived from S3ConfigKeyConsumers), and the tier expectations below pin the assignments.
+  //   (a) AllS3ConfigKeys must cover native's NATIVE_S3A_CONFIG_PROPERTIES
+  //       (native/core/src/parquet/objectstore/s3.rs, kept equal to that file's call sites by a
+  //       Rust test).
+  //   (b) A Rust test in s3.rs checks (a) on every native PR by parsing S3ConfigKeyConsumers
+  //       as text. The parse is mirrored here and must equal AllS3ConfigKeys, so a reformat
+  //       of that block fails this suite rather than silently breaking the Rust check.
+  //   (c) Every credential- or encryption-shaped fs.s3a.* key in Hadoop's Constants class must
+  //       be covered by AllS3ConfigKeys or individually documented as exempt.
   // ---------------------------------------------------------------------------------------
 
   test(
@@ -2416,6 +2413,36 @@ class DeltaScanContribSuite extends CometDeltaTestBase {
             "so a Hadoop-vs-native divergence on any of them would go undetected: " +
             s"${uncovered.toSeq.sorted.mkString(", ")} -- add the missing key(s) to " +
             "AllS3ConfigKeys")
+    }
+  }
+
+  test(
+    "discovery harness: the text parse of S3ConfigKeyConsumers used by the Rust test in " +
+      "s3.rs yields exactly AllS3ConfigKeys") {
+    val scalaPath = "contrib/delta-spark/src/main/scala/org/apache/comet/contrib/delta/" +
+      "DeltaScanSupport.scala"
+    DeltaScanContribSuite.findRepoFile(scalaPath) match {
+      case None =>
+        cancel(s"Could not locate $scalaPath from this checkout; skipping the parse check.")
+      case Some(file) =>
+        val contents = scala.io.Source.fromFile(file, "UTF-8").mkString
+        // Same marker and extraction rule as delta_contrib_compares_every_native_s3a_property.
+        val marker = "S3ConfigKeyConsumers: Seq[(String, S3ConfigConsumer)] = Seq("
+        val start = contents.indexOf(marker)
+        assert(
+          start >= 0,
+          s"${file.getAbsolutePath} no longer declares `$marker`: update the parser here and " +
+            "in s3.rs")
+        val end = contents.indexOf(")", start + marker.length)
+        assert(end > start, "Expected a `)` closing the S3ConfigKeyConsumers Seq(")
+        val block = contents.substring(start + marker.length, end)
+        val parsed =
+          "\"(fs\\.s3a\\.[^\"]*)\"\\s*->".r.findAllMatchIn(block).map(_.group(1)).toSet
+        assert(
+          parsed == DeltaScanSupport.AllS3ConfigKeys.toSet,
+          "The Rust test in s3.rs would parse S3ConfigKeyConsumers as " +
+            s"${parsed.toSeq.sorted.mkString(", ")}, not AllS3ConfigKeys: keep each entry a " +
+            "single \"fs.s3a.<key>\" -> <Tier> literal pair, or update both parsers")
     }
   }
 
