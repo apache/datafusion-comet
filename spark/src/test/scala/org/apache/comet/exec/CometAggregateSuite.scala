@@ -3045,27 +3045,42 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("statistical aggregates correlation preserves raw moment overflow") {
+  test("statistical aggregates correlation uses raw moments at extreme magnitudes") {
     withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "false",
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       SQLConf.SHUFFLE_PARTITIONS.key -> "1",
       "spark.sql.files.minPartitionNum" -> "1",
       CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "native") {
-      withTempPath { path =>
-        Seq(Some(1e100), None, Some(2e100))
-          .map(v => (0, v))
-          .toDF("g", "v")
-          .coalesce(1)
-          .write
-          .parquet(path.getCanonicalPath)
-        withParquetTable(path.getCanonicalPath, "correlation_overflow") {
-          assert(spark.table("correlation_overflow").rdd.getNumPartitions == 1)
-          for (groupBy <- Seq("", " GROUP BY g")) {
-            val query = "SELECT corr(v, v), corr(v, -v) FROM correlation_overflow" + groupBy
-            checkSparkAnswerAndNumOfAggregates(query, 2)
-            // Spark's sqrt(m2_1 * m2_2) overflows to infinity, so corr is exactly zero.
-            checkAnswer(sql(query), Seq(Row(0.0, -0.0)))
+      val cases = Seq(
+        (Seq(1e100, 2e100), Some(0.0), None),
+        (Seq(1e-100, 2e-100), None, None),
+        (Seq(1e200, -1e200), Some(Double.NaN), Some(Double.NaN)))
+      for ((values, expectedCorr, expectedConstantCorr) <- cases) {
+        withTempPath { path =>
+          Seq(Some(values.head), None, Some(values.last))
+            .map(v => (0, v, 0.1))
+            .toDF("g", "v", "x")
+            .coalesce(1)
+            .write
+            .parquet(path.getCanonicalPath)
+          withParquetTable(path.getCanonicalPath, "correlation_extremes") {
+            assert(spark.table("correlation_extremes").rdd.getNumPartitions == 1)
+            for (groupBy <- Seq("", " GROUP BY g")) {
+              val query = "SELECT corr(v, v), corr(v, -v), corr(v, x) " +
+                "FROM correlation_extremes" + groupBy
+              checkSparkAnswerAndNumOfAggregates(query, 2)
+              // The raw-moment product can overflow, underflow, or become NaN (0 * Inf).
+              // ANSI-off division by a zero denominator returns NULL.
+              checkAnswer(
+                sql(query),
+                Seq(
+                  Row(
+                    expectedCorr.map(Double.box).orNull,
+                    expectedCorr.map(v => Double.box(-v)).orNull,
+                    expectedConstantCorr.map(Double.box).orNull)))
+            }
           }
         }
       }
