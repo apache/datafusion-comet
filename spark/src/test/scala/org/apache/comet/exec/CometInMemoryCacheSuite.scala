@@ -22,6 +22,9 @@ package org.apache.comet.exec
 import java.{util => ju}
 import java.nio.charset.StandardCharsets
 
+import scala.concurrent.{Await, Future}
+import scala.concurrent.ExecutionContext.Implicits.global
+import scala.concurrent.duration.DurationInt
 import scala.jdk.CollectionConverters._
 
 import org.apache.arrow.compression.ZstdCompressionCodec
@@ -31,7 +34,7 @@ import org.apache.arrow.vector.compression.{CompressionCodec, CompressionUtil, N
 import org.apache.arrow.vector.types.pojo.ArrowType
 import org.apache.spark.CometDriverPlugin
 import org.apache.spark.SparkConf
-import org.apache.spark.sql.{CometTestBase, QueryTest, Row}
+import org.apache.spark.sql.{CometTestBase, Observation, QueryTest, Row}
 import org.apache.spark.sql.catalyst.expressions.{And, Attribute, AttributeReference, EqualTo, Expression, GreaterThan, GreaterThanOrEqual, LessThan, Literal}
 import org.apache.spark.sql.columnar.{CachedBatch, SimpleMetricsCachedBatch}
 import org.apache.spark.sql.comet.{CometBroadcastHashJoinExec, CometInMemoryTableScanExec, CometSortExec, CometSortMergeJoinExec}
@@ -42,13 +45,13 @@ import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffl
 import org.apache.spark.sql.execution.columnar.{CometInMemoryRelationHelper, InMemoryRelation, InMemoryTableScanExec}
 import org.apache.spark.sql.execution.exchange.{Exchange, ReusedExchangeExec, ShuffleExchangeLike}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, SortMergeJoinExec}
-import org.apache.spark.sql.functions.max
+import org.apache.spark.sql.functions.{count, lit, max, min, sum}
 import org.apache.spark.sql.internal.{SQLConf, StaticSQLConf}
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 import org.apache.spark.storage.StorageLevel
 
-import org.apache.comet.{CometArrowAllocator, CometConf}
+import org.apache.comet.{CometArrowAllocator, CometConf, ExtendedExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
 import org.apache.comet.vector.{CometPlainVector, CometVector}
 
@@ -2612,6 +2615,60 @@ class CometInMemoryCacheSuite extends CometTestBase {
         "cache scans with different pruning predicates must not compare equal")
 
       spark.catalog.clearCache()
+    }
+  }
+
+  test("Comet in-memory cache keeps the observed metrics recorded in a cached plan") {
+    // Spark collects the metrics of an observe() inside a cached plan only through an
+    // InMemoryTableScanExec over it, so the scan of such a relation has to stay Spark's. Replaced,
+    // the metrics come back empty, and on Spark 3.4 Observation.get never returns. Nested the way
+    // SPARK-35695's test nests it, with a shuffle in the inner cached plan so that AQE plans it,
+    // under one more cache that records no metrics of its own. The metrics read through that top
+    // scan are only found by following it into the caches it reads.
+    withAQECache {
+      val df = spark
+        .range(0, 100, 1, 2)
+        .repartition(4)
+        .observe("inner_event", count(lit(1)).as("rows"), max($"id").as("max_id"))
+        .persist()
+        .observe("outer_event", min($"id").as("min_id"))
+        .persist()
+        .filter($"id" > 10)
+        .persist()
+      df.collect()
+      assert(
+        df.queryExecution.observedMetrics ==
+          Map("inner_event" -> Row(100L, 99L), "outer_event" -> Row(0L)))
+      val plan = df.queryExecution.executedPlan
+      assert(collect(plan) { case s: CometInMemoryTableScanExec => s }.isEmpty)
+      assert(
+        new ExtendedExplainInfo()
+          .generateExtendedInfo(plan)
+          .contains("records Dataset.observe metrics"))
+      // Still stored in Comet's format: only the scan changes.
+      assert(
+        spark.sharedState.cacheManager
+          .lookupCachedData(df)
+          .get
+          .cachedRepresentation
+          .cacheBuilder
+          .cachedColumnBuffers
+          .map(_.getClass.getName)
+          .distinct()
+          .collect()
+          .sameElements(Array("org.apache.spark.sql.comet.execution.arrow.CometCachedBatch")))
+
+      val observation = Observation("cached_observation")
+      val observed = spark.range(10).observe(observation, sum($"id").as("total")).persist()
+      observed.collect()
+      // Bounded, so that a regression fails here rather than hanging the suite on Spark 3.4.
+      assert(Await.result(Future(observation.get), 1.minute) == Map("total" -> 45L))
+
+      val plain = spark.range(0, 100, 1, 2).persist()
+      plain.collect()
+      assert(collect(plain.queryExecution.executedPlan) { case s: CometInMemoryTableScanExec =>
+        s
+      }.nonEmpty)
     }
   }
 }

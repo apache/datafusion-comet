@@ -61,6 +61,10 @@ under one setting stays readable after the setting changes. Turning
 `spark.comet.exec.inMemoryCache.enabled` off at runtime only sends cached scans back to Spark's
 execution path; the cached data stays readable either way.
 
+A relation whose cached plan records observed metrics, from `Dataset.observe`, is still stored in
+Comet's format but is scanned by Spark's `InMemoryTableScanExec`, because Spark collects those
+metrics only through that scan.
+
 ## Storage format
 
 Each cached batch is stored as a single Arrow IPC record batch message and its body.
