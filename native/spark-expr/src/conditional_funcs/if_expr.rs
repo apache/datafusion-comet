@@ -15,16 +15,69 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::{Cast, EvalMode, SparkCastOptions};
 use arrow::{
     datatypes::{DataType, Schema},
     record_batch::RecordBatch,
 };
 use datafusion::common::Result;
+use datafusion::logical_expr::type_coercion::binary::type_union_coercion;
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_expr::{expressions::CaseExpr, PhysicalExpr};
 use std::fmt::{Display, Formatter};
 use std::hash::Hash;
 use std::sync::Arc;
+
+/// Creates an `IF`, casting a branch whose type differs from the other's to their common type.
+///
+/// Spark adds no cast when the branches differ only in whether a nested field can be NULL, or in
+/// the case of a struct field name. But [`IfExpr`] reports the THEN branch's type, and returns the
+/// ELSE branch's array unchanged when no row of a batch takes the THEN branch.
+pub fn create_if_expr(
+    if_expr: Arc<dyn PhysicalExpr>,
+    true_expr: Arc<dyn PhysicalExpr>,
+    false_expr: Arc<dyn PhysicalExpr>,
+    input_schema: &Schema,
+) -> Result<Arc<dyn PhysicalExpr>> {
+    let true_type = true_expr.data_type(input_schema)?;
+    let false_type = false_expr.data_type(input_schema)?;
+    // The coercion that `get_coerce_type_for_case_expression` folds over the branches of a CASE
+    // WHEN, starting from the ELSE branch. Here the THEN branch goes first, so the common type
+    // takes its struct field names, as Spark's `If.dataType` does.
+    let Some(common_type) = type_union_coercion(&true_type, &false_type) else {
+        return Ok(Arc::new(IfExpr::new(if_expr, true_expr, false_expr)));
+    };
+    Ok(Arc::new(IfExpr::new(
+        if_expr,
+        coerce_branch(true_expr, &true_type, &common_type),
+        coerce_branch(false_expr, &false_type, &common_type),
+    )))
+}
+
+/// Casts an IF branch whose type is `data_type` to the branches' `common_type`.
+///
+/// The branches share a Spark type, so any difference is in the Arrow representation. For a
+/// timestamp that is the timezone label, and the cast only relabels it, but Comet's cast still
+/// needs a timezone. Every `TimestampType` value in a native plan is labelled UTC.
+fn coerce_branch(
+    expr: Arc<dyn PhysicalExpr>,
+    data_type: &DataType,
+    common_type: &DataType,
+) -> Arc<dyn PhysicalExpr> {
+    // A branch that already has the common type is not wrapped in a cast, which would do nothing
+    // but hide what the branch is from the evaluation.
+    if data_type == common_type {
+        return expr;
+    }
+    let cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC", false);
+    Arc::new(Cast::new(
+        expr,
+        common_type.clone(),
+        cast_options,
+        None,
+        None,
+    ))
+}
 
 /// IfExpr is a wrapper around CaseExpr, because `IF(a, b, c)` is semantically equivalent to
 /// `CASE WHEN a THEN b ELSE c END`.
@@ -122,13 +175,135 @@ impl PhysicalExpr for IfExpr {
 
 #[cfg(test)]
 mod tests {
-    use arrow::array::Int32Array;
+    use arrow::array::{
+        ArrayRef, AsArray, BooleanArray, Int32Array, StructArray, TimestampMicrosecondArray,
+    };
     use arrow::{array::StringArray, datatypes::*};
     use datafusion::common::cast::as_int32_array;
     use datafusion::logical_expr::Operator;
     use datafusion::physical_expr::expressions::{binary, col, lit};
 
     use super::*;
+
+    /// Evaluates an IF over `batch`, whose first row takes the THEN branch and second row the ELSE
+    /// branch, and over each row alone, and checks that every result has the type the IF reports.
+    /// Returns the result for the whole batch.
+    fn evaluate_if(expr: &Arc<dyn PhysicalExpr>, batch: &RecordBatch) -> ArrayRef {
+        let data_type = expr.data_type(&batch.schema()).unwrap();
+        // Both branches, only THEN, and only ELSE, whose array `IfExpr` returns unchanged
+        for (offset, len) in [(0, 2), (0, 1), (1, 1)] {
+            let result = expr.evaluate(&batch.slice(offset, len)).unwrap();
+            let result = result.into_array(len).unwrap();
+            assert_eq!(
+                result.data_type(),
+                &data_type,
+                "{expr} over rows {offset}..+{len}"
+            );
+        }
+        expr.evaluate(batch).unwrap().into_array(2).unwrap()
+    }
+
+    /// IF branches that share a Spark timestamp type but carry different Arrow timezone labels are
+    /// reconciled by relabelling one of them, as CASE branches are. The result has the THEN
+    /// branch's label, which `IfExpr` reported before the ELSE branch was cast, unless it has none.
+    /// Every case ends up labelled UTC, like every `TimestampType` value in a native plan.
+    #[test]
+    fn if_reconciles_timestamp_timezone_labels() {
+        let timestamp =
+            |label: Option<&str>| DataType::Timestamp(TimeUnit::Microsecond, label.map(Into::into));
+        // The THEN branch's label, the ELSE branch's label, and the result's
+        for (then_label, else_label, label) in [
+            (None, Some("UTC"), Some("UTC")),
+            (Some("UTC"), Some("Etc/UTC"), Some("UTC")),
+            (Some("UTC"), None, Some("UTC")),
+        ] {
+            let schema = Schema::new(vec![
+                Field::new("b", DataType::Boolean, true),
+                Field::new("t", timestamp(then_label), true),
+                Field::new("e", timestamp(else_label), true),
+            ]);
+            let batch = RecordBatch::try_new(
+                Arc::new(schema.clone()),
+                vec![
+                    Arc::new(BooleanArray::from(vec![true, false])),
+                    Arc::new(
+                        TimestampMicrosecondArray::from(vec![1, 2]).with_timezone_opt(then_label),
+                    ),
+                    Arc::new(
+                        TimestampMicrosecondArray::from(vec![10, 20]).with_timezone_opt(else_label),
+                    ),
+                ],
+            )
+            .unwrap();
+            let c = |name: &str| col(name, &schema).unwrap();
+            let expr = create_if_expr(c("b"), c("t"), c("e"), &schema).unwrap();
+            let labels = format!("{then_label:?} {else_label:?}");
+            assert_eq!(
+                expr.data_type(&schema).unwrap(),
+                timestamp(label),
+                "{labels}"
+            );
+            let result = evaluate_if(&expr, &batch);
+            let values = result.as_primitive::<TimestampMicrosecondType>();
+            assert_eq!(values.values().to_vec(), vec![1, 20], "{labels}");
+        }
+    }
+
+    /// IF branches whose struct field differs only in whether it can be NULL, or in the case of its
+    /// name, which Spark adds no cast for. The result's field can be NULL if either branch's can,
+    /// and has the THEN branch's name, as in Spark's `If.dataType`.
+    #[test]
+    fn if_reconciles_struct_field_nullability_and_names() {
+        let field =
+            |name: &str, nullable: bool| Arc::new(Field::new(name, DataType::Int32, nullable));
+        let struct_type = |field: &FieldRef| DataType::Struct(vec![Arc::clone(field)].into());
+        let column = |field: &FieldRef, values: Vec<Option<i32>>| -> ArrayRef {
+            Arc::new(StructArray::new(
+                vec![Arc::clone(field)].into(),
+                vec![Arc::new(Int32Array::from(values)) as ArrayRef],
+                None,
+            ))
+        };
+        // The THEN branch's field, the ELSE branch's field, and the result's
+        for (then_field, else_field, result_field) in [
+            (field("x", false), field("x", true), field("x", true)),
+            (field("x", true), field("x", false), field("x", true)),
+            (field("x", true), field("X", true), field("x", true)),
+            (field("X", false), field("x", true), field("X", true)),
+        ] {
+            let schema = Schema::new(vec![
+                Field::new("b", DataType::Boolean, true),
+                Field::new("t", struct_type(&then_field), true),
+                Field::new("e", struct_type(&else_field), true),
+            ]);
+            // A NULL field in the row that takes the ELSE branch, where it can be NULL
+            let else_values = if else_field.is_nullable() {
+                vec![Some(10), None]
+            } else {
+                vec![Some(10), Some(20)]
+            };
+            let batch = RecordBatch::try_new(
+                Arc::new(schema.clone()),
+                vec![
+                    Arc::new(BooleanArray::from(vec![true, false])),
+                    column(&then_field, vec![Some(1), Some(2)]),
+                    column(&else_field, else_values.clone()),
+                ],
+            )
+            .unwrap();
+            let c = |name: &str| col(name, &schema).unwrap();
+            let expr = create_if_expr(c("b"), c("t"), c("e"), &schema).unwrap();
+            let fields = format!("{then_field:?} {else_field:?}");
+            assert_eq!(
+                expr.data_type(&schema).unwrap(),
+                struct_type(&result_field),
+                "{fields}"
+            );
+            let result = evaluate_if(&expr, &batch);
+            let expected = column(&result_field, vec![Some(1), else_values[1]]);
+            assert_eq!(result.as_ref(), expected.as_ref(), "{fields}");
+        }
+    }
 
     /// Create an If expression
     fn if_fn(

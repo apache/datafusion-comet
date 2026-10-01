@@ -17,4 +17,4 @@
 
 mod if_expr;
 
-pub use if_expr::IfExpr;
+pub use if_expr::{create_if_expr, IfExpr};
