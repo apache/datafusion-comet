@@ -1005,7 +1005,7 @@ class CometExecRuleSuite extends CometTestBase {
     }
   }
 
-  test("CometExecRule should not allow AVG Comet partial and Spark final before buffer repair") {
+  test("CometExecRule should allow AVG mixed Comet partial and Spark final") {
     withTempView("test_data") {
       createTestDataFrame.createOrReplaceTempView("test_data")
       val sparkPlan =
@@ -1015,9 +1015,8 @@ class CometExecRuleSuite extends CometTestBase {
         CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> "false",
         CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
         val transformedPlan = applyCometExecRule(sparkPlan)
-        // Matching field types do not make native AVG's empty (null, 0) state safe for Spark.
-        assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 2)
-        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 0)
+        assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 1) // final
+        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 1) // partial
       }
     }
   }
@@ -1069,7 +1068,8 @@ class CometExecRuleSuite extends CometTestBase {
       s"unsafe aggregate buffers fall back when native shuffle is ineligible (distinct=$distinct)") {
       withTempView("test_data") {
         createTestDataFrame.createOrReplaceTempView("test_data")
-        val aggregates = "AVG(id)" + (if (distinct) ", SUM(DISTINCT id)" else "")
+        val aggregates = "AVG(CAST(id AS DECIMAL(20, 2)))" +
+          (if (distinct) ", SUM(DISTINCT id)" else "")
 
         for (fallback <- Seq("disabled hash partitioning", "prior shuffle fallback", "none")) {
           withSQLConf(
@@ -1145,7 +1145,9 @@ class CometExecRuleSuite extends CometTestBase {
       withTempView("test_data") {
         createTestDataFrame.createOrReplaceTempView("test_data")
         val plan = applyCometExecRule(
-          createSparkPlan(spark, "SELECT AVG(id) FROM test_data GROUP BY (id % 3)"))
+          createSparkPlan(
+            spark,
+            "SELECT AVG(CAST(id AS DECIMAL(20, 2))) FROM test_data GROUP BY (id % 3)"))
         val partial = plan.collectFirst {
           case agg: CometHashAggregateExec if agg.modes == Seq(Partial) => agg
         }.get
@@ -1179,7 +1181,9 @@ class CometExecRuleSuite extends CometTestBase {
       withTempView("test_data") {
         createTestDataFrame.createOrReplaceTempView("test_data")
         val plan = applyCometExecRule(
-          createSparkPlan(spark, "SELECT AVG(id) FROM test_data GROUP BY (id % 3)"))
+          createSparkPlan(
+            spark,
+            "SELECT AVG(CAST(id AS DECIMAL(20, 2))) FROM test_data GROUP BY (id % 3)"))
         val partial = plan.collectFirst {
           case agg: CometHashAggregateExec if agg.modes == Seq(Partial) => agg
         }.get
