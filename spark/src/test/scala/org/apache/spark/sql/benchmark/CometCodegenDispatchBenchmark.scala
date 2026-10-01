@@ -327,7 +327,7 @@ object CometCodegenDispatchBenchmark extends CometBenchmarkBase {
     withTempPath { dir =>
       withTempTable(tbl, "parquetV1Table") {
         withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-          spark.range(rows).createOrReplaceTempView(tbl)
+          spark.range(rows.toLong).createOrReplaceTempView(tbl)
           prepareTable(dir, spark.sql(query))
         }
         f
