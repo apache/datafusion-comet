@@ -31,10 +31,11 @@ use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
 use datafusion::physical_plan::limit::GlobalLimitExec;
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::sorts::sort::SortExec;
-use datafusion::physical_plan::Partitioning;
+use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
 use datafusion::physical_plan::{
     filter::FilterExec, projection::ProjectionExec, union::UnionExec, ExecutionPlan,
 };
+use datafusion::physical_plan::{ExecutionPlanProperties, Partitioning};
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_comet_local::LocalQuery;
 use datafusion_comet_proto::local::{LocalAggregate, LocalJoin, LocalOutput};
@@ -91,6 +92,18 @@ fn query_context(
     let mut config = SessionConfig::new()
         .with_batch_size(batch_size)
         .with_target_partitions(partitions.max(1));
+    // Every per-partition sorter reserves this much for its final merge before sorting. With
+    // the default 10 MiB, a few concurrent sorters can exhaust a small query budget up front.
+    let merge_reservation = settings.memory_limit / (4 * partitions.max(1));
+    config.options_mut().execution.sort_spill_reservation_bytes =
+        merge_reservation.min(config.options().execution.sort_spill_reservation_bytes);
+    // Before spilling, a sorter whose buffered batches exceed this threshold merges them with
+    // a new unspillable reservation. Once spillable sorters fill the fair pool, that merge
+    // cannot grow and the query fails instead of spilling. Sorting the buffered batches in
+    // place below a sorter's fair share avoids that merge.
+    let in_place = settings.memory_limit / partitions.max(1);
+    config.options_mut().execution.sort_in_place_threshold_bytes =
+        in_place.max(config.options().execution.sort_in_place_threshold_bytes);
     config.options_mut().execution.parquet.pushdown_filters = row_filter_pushdown;
     config.options_mut().execution.parquet.reorder_filters = row_filter_pushdown;
     // Registry and configuration are query-owned. Never inherit another query's credentials.
@@ -267,12 +280,21 @@ fn output_plan(
             })
         })
         .collect::<Result<Vec<_>, ExecutionError>>()?;
-    // Global limit/sort requires one input partition. Never sort each partition and
-    // then use the unordered result coalescer: that would lose the global order.
-    let mut plan: Arc<dyn ExecutionPlan> = Arc::new(CoalescePartitionsExec::new(input));
-    if let Some(ordering) = LexOrdering::new(expressions) {
-        plan = Arc::new(SortExec::new(ordering, plan).with_fetch(top));
-    }
+    // Sort each input partition in parallel, then merge the sorted runs into one ordered
+    // partition. Never send independently sorted partitions through the unordered result
+    // coalescer: that would lose the global order. An unordered limit just gathers.
+    let mut plan: Arc<dyn ExecutionPlan> = match LexOrdering::new(expressions) {
+        Some(ordering) if input.output_partitioning().partition_count() > 1 => {
+            let sorted = Arc::new(
+                SortExec::new(ordering.clone(), input)
+                    .with_preserve_partitioning(true)
+                    .with_fetch(top),
+            );
+            Arc::new(SortPreservingMergeExec::new(ordering, sorted).with_fetch(top))
+        }
+        Some(ordering) => Arc::new(SortExec::new(ordering, input).with_fetch(top)),
+        None => Arc::new(CoalescePartitionsExec::new(input)),
+    };
     if fetch.is_some() || skip > 0 {
         plan = Arc::new(GlobalLimitExec::new(plan, skip, fetch));
     }
@@ -414,32 +436,60 @@ fn aggregate_plan(
                 .transpose()
         })
         .collect::<Result<Vec<_>, _>>()?;
-    // All raw rows for a key must reach the same aggregate partition. DataFusion's hash is
-    // internal to this graph; no Spark consumer observes its buckets or partial buffers.
-    let (input, mode): (Arc<dyn ExecutionPlan>, _) =
-        if grouping.is_empty() || aggregate.partitions == 1 {
-            (
-                Arc::new(CoalescePartitionsExec::new(input)),
+    let group_by = PhysicalGroupBy::new_single(grouping);
+    let gather = group_by.is_empty() || aggregate.partitions == 1;
+    // Pre-aggregate each input partition so only partial states cross the exchange. Partial
+    // buffers and DataFusion's hash buckets stay internal to this graph; no Spark consumer
+    // observes them. A single input partition that needs no exchange aggregates directly.
+    let plan: Arc<dyn ExecutionPlan> =
+        if gather && input.output_partitioning().partition_count() == 1 {
+            Arc::new(AggregateExec::try_new(
                 AggregateMode::Single,
-            )
+                group_by,
+                expressions,
+                filters,
+                input,
+                schema,
+            )?)
         } else {
-            let keys = grouping.iter().map(|(e, _)| Arc::clone(e)).collect();
-            (
-                Arc::new(RepartitionExec::try_new(
-                    input,
-                    Partitioning::Hash(keys, aggregate.partitions as usize),
-                )?),
-                AggregateMode::SinglePartitioned,
-            )
+            let partial = Arc::new(AggregateExec::try_new(
+                AggregateMode::Partial,
+                group_by.clone(),
+                expressions.clone(),
+                filters,
+                input,
+                Arc::clone(&schema),
+            )?);
+            let final_group_by = group_by.as_final();
+            let final_filters = vec![None; expressions.len()];
+            let (mode, input): (_, Arc<dyn ExecutionPlan>) = if gather {
+                (
+                    AggregateMode::Final,
+                    Arc::new(CoalescePartitionsExec::new(partial)),
+                )
+            } else {
+                let keys = final_group_by
+                    .expr()
+                    .iter()
+                    .map(|(e, _)| Arc::clone(e))
+                    .collect();
+                (
+                    AggregateMode::FinalPartitioned,
+                    Arc::new(RepartitionExec::try_new(
+                        partial,
+                        Partitioning::Hash(keys, aggregate.partitions as usize),
+                    )?),
+                )
+            };
+            Arc::new(AggregateExec::try_new(
+                mode,
+                final_group_by,
+                expressions,
+                final_filters,
+                input,
+                schema,
+            )?)
         };
-    let plan = Arc::new(AggregateExec::try_new(
-        mode,
-        PhysicalGroupBy::new_single(grouping),
-        expressions,
-        filters,
-        input,
-        schema,
-    )?);
     let results = aggregate
         .result
         .iter()
