@@ -17,7 +17,9 @@
 
 //! Preserve per-file conversion errors when runtime reader filters are attached.
 
-use crate::parquet::schema_adapter::is_infallible_read_adaptation;
+use crate::parquet::schema_adapter::{
+    is_infallible_read_adaptation, SparkPhysicalExprAdapterFactory,
+};
 use std::sync::Arc;
 
 use arrow::datatypes::SchemaRef;
@@ -32,6 +34,7 @@ use datafusion::physical_expr_adapter::{PhysicalExprAdapter, PhysicalExprAdapter
 pub(super) struct RuntimeFilterSchemaAdapterFactory {
     inner: Arc<dyn PhysicalExprAdapterFactory>,
     read_columns: Vec<Column>,
+    spark_factory: Option<Arc<SparkPhysicalExprAdapterFactory>>,
 }
 
 impl RuntimeFilterSchemaAdapterFactory {
@@ -42,7 +45,16 @@ impl RuntimeFilterSchemaAdapterFactory {
         Self {
             inner,
             read_columns,
+            spark_factory: None,
         }
+    }
+
+    pub(super) fn with_spark_factory(
+        mut self,
+        factory: Option<Arc<SparkPhysicalExprAdapterFactory>>,
+    ) -> Self {
+        self.spark_factory = factory;
+        self
     }
 }
 
@@ -52,17 +64,21 @@ impl PhysicalExprAdapterFactory for RuntimeFilterSchemaAdapterFactory {
         logical_schema: SchemaRef,
         physical_schema: SchemaRef,
     ) -> Result<Arc<dyn PhysicalExprAdapter>> {
-        let inner = self
-            .inner
-            .create(logical_schema, Arc::clone(&physical_schema))?;
-        // Preserve the adapter's resolution and conversion rules. Only adaptations
-        // proven infallible may be skipped by reader filtering. Probe errors disable
-        // pruning rather than changing normal empty-file or static-pruning behavior.
-        let allow_runtime_filter = self.read_columns.iter().all(|column| {
-            inner
-                .rewrite(Arc::new(column.clone()))
-                .is_ok_and(|expr| is_infallible_read_adaptation(&expr, &physical_schema))
-        });
+        let (inner, allow_runtime_filter) = if let Some(factory) = &self.spark_factory {
+            factory.create_with_read_safety(logical_schema, physical_schema, &self.read_columns)?
+        } else {
+            let inner = self
+                .inner
+                .create(logical_schema, Arc::clone(&physical_schema))?;
+            // Unknown factories must establish safety through their actual rewrites.
+            // Errors only disable pruning; normal decoding retains its error timing.
+            let allow_runtime_filter = self.read_columns.iter().all(|column| {
+                inner
+                    .rewrite(Arc::new(column.clone()))
+                    .is_ok_and(|expr| is_infallible_read_adaptation(&expr, &physical_schema))
+            });
+            (inner, allow_runtime_filter)
+        };
         Ok(Arc::new(RuntimeFilterSchemaAdapter {
             inner,
             allow_runtime_filter,

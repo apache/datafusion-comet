@@ -17,6 +17,7 @@
 
 //! Attach a live predicate to a native Parquet reader while preserving input boundaries.
 
+use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
 use std::sync::Arc;
 
 use datafusion::common::config::ConfigOptions;
@@ -156,10 +157,10 @@ pub(super) fn try_attach_parquet_reader_filter(
             .then_with(|| a.name().cmp(b.name()))
     });
     read_columns.dedup();
-    let adapter_factory = Arc::new(RuntimeFilterSchemaAdapterFactory::new(
-        Arc::clone(adapter_factory),
-        read_columns,
-    ));
+    let adapter_factory = Arc::new(
+        RuntimeFilterSchemaAdapterFactory::new(Arc::clone(adapter_factory), read_columns)
+            .with_spark_factory(SparkPhysicalExprAdapterFactory::from_file_scan(file_config)),
+    );
 
     let predicate: Arc<dyn PhysicalExpr> = predicate;
     let propagation = match scan
