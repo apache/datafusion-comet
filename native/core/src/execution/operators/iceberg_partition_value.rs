@@ -51,7 +51,7 @@ use iceberg::{Error, ErrorKind, Result};
 ///   partitions (apache/datafusion-comet#6426).
 /// - `day` moves a timestamp from the last second of a day before 1969-12-31 into the next day,
 ///   unless its microsecond of second is 0 or 999999: it takes the whole seconds with a truncating
-///   division and the microseconds with a flooring one.
+///   division and the microseconds with a flooring one (apache/iceberg-rust#3315).
 ///
 /// A partition value that differs from the sort key can also fail a clustered write, which rejects
 /// a row whose partition it has already closed. Everywhere else the two implementations agree, so
@@ -439,8 +439,9 @@ mod tests {
                 let label = format!("{transform} of {}", source.data_type());
                 assert_eq!(&comet[i], java, "{label}");
                 // The reason Comet computes these: iceberg-rust floors the first two rows, and its
-                // `day` moves the last two into 1969-12-31. If this starts failing, iceberg-rust's
-                // transforms have changed and delegating needs another look.
+                // `day` moves the last two into 1969-12-31 (apache/iceberg-rust#3315). If this
+                // starts failing, iceberg-rust's transforms have changed and delegating needs
+                // another look.
                 assert_eq!(&iceberg_rust[i], rust, "iceberg-rust's {label}");
             }
         }
