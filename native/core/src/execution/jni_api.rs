@@ -16,6 +16,15 @@
 // under the License.
 
 //! Define JNI APIs which can be called from Java/Scala.
+//!
+//! An entry point is a thin JNI wrapper: it converts its JNI arguments into plain Rust values,
+//! calls a core function whose signature has no JNI types (e.g. `decode_shuffle_block`), and
+//! converts the result back. Errors and panics are raised as JVM exceptions by
+//! `try_unwrap_or_throw`, through the boundary error protocol in `errors::NativeError`.
+//!
+//! `createPlan`, `setShufflePartitionPusher`, `executePlan` and `releasePlan` also depend on
+//! upcalls into the JVM (input iterators, the task memory manager, metrics, UDFs and scalar
+//! subqueries), so their core logic keeps holding JNI references.
 
 use super::{serde, utils::SparkArrowConvert};
 use crate::{
@@ -105,7 +114,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::execution::memory_pools::{
-    create_memory_pool, parse_memory_pool_config, PlanMemoryPool,
+    create_memory_pool, overcommit, parse_memory_pool_config, PlanMemoryPool,
 };
 use crate::execution::operators::{ScanExec, ShuffleScanExec};
 use crate::execution::shuffle::{
@@ -119,7 +128,8 @@ use crate::execution::tracing::{
 
 use crate::execution::memory_pools::logging_pool::LoggingMemoryPool;
 use crate::execution::spark_config::{
-    SparkConfig, COMET_DEBUG_ENABLED, COMET_DEBUG_MEMORY, COMET_EXPLAIN_NATIVE_ENABLED,
+    SparkConfig, COMET_DEBUG_ENABLED, COMET_DEBUG_MEMORY,
+    COMET_EXEC_AGGREGATE_SKIP_PARTIAL_ENABLED, COMET_EXPLAIN_NATIVE_ENABLED,
     COMET_MAX_TEMP_DIRECTORY_SIZE, COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED,
     COMET_TRACING_ENABLED, SPARK_EXECUTOR_CORES,
 };
@@ -262,6 +272,17 @@ fn sum_reserved(pools: &[Arc<dyn MemoryPool>]) -> usize {
     pools.iter().map(|pool| pool.reserved()).sum()
 }
 
+/// Bytes reserved across `pools`, less the part that Spark has not granted them; see
+/// [`MemoryUsage::pools_reserved`].
+fn sum_reserved_less_overcommit(pools: &[Arc<dyn MemoryPool>]) -> usize {
+    pools
+        .iter()
+        // The two figures are read at different moments, so a `grow` in between can leave the
+        // overcommit larger than the reservation read before it.
+        .map(|pool| pool.reserved().saturating_sub(overcommit(pool)))
+        .sum()
+}
+
 fn total_reserved_for_thread(thread_id: u64) -> usize {
     sum_reserved(&snapshot_registry(Some(thread_id)).thread_pools)
 }
@@ -309,7 +330,9 @@ struct MemoryUsage {
     /// Bytes handed out by the Rust global allocator, process-wide.
     native_allocated: usize,
     /// Bytes reserved across every live Comet memory pool, counting each pool once however many
-    /// plans share it.
+    /// plans share it, less any the pools recorded beyond what Spark granted them; see
+    /// [`overcommit`]. Spark's off-heap pool does not account for those bytes, so the log counts
+    /// them with the native memory that no pool tracks.
     pools_reserved: usize,
     /// Live memory pools. With the task-shared pool types, which include both defaults, that is one
     /// per task running native plans.
@@ -326,7 +349,7 @@ fn memory_usage() -> MemoryUsage {
     let snapshot = snapshot_registry(None);
     MemoryUsage {
         native_allocated: crate::alloc_accounting::current_balance(),
-        pools_reserved: sum_reserved(&snapshot.all_pools),
+        pools_reserved: sum_reserved_less_overcommit(&snapshot.all_pools),
         pools: snapshot.all_pools.len(),
         plans: snapshot.plans,
     }
@@ -793,10 +816,15 @@ pub extern "system" fn Java_org_apache_comet_Native_setShufflePartitionPusher(
     })
 }
 
-/// Only admit the validated native-shuffle path. A session belongs to one fused Spark plan,
-/// so an unsafe partial aggregate disables skipping for the whole plan, including its children.
-/// This deliberately gives up some opportunities rather than changing execution contexts per op.
-fn configure_skip_partial_aggregation(config: &mut SessionConfig, plan: &Operator) {
+/// Skipping is opt-in (`spark.comet.exec.aggregate.skipPartial.enabled`): once DataFusion's probe
+/// decides to skip, it never aggregates again, so a task whose keys repeat after a mostly distinct
+/// start shuffles every later row (#6466).
+///
+/// When enabled, only admit the validated native-shuffle path. A session belongs to one fused
+/// Spark plan, so an unsafe partial aggregate disables skipping for the whole plan, including its
+/// children. This deliberately gives up some opportunities rather than changing execution
+/// contexts per op.
+fn configure_skip_partial_aggregation(config: &mut SessionConfig, plan: &Operator, enabled: bool) {
     fn supported(plan: &Operator) -> bool {
         let supported_aggregate = match &plan.op_struct {
             Some(OpStruct::HashAgg(agg)) => match AggregateMode::try_from(agg.mode) {
@@ -819,9 +847,12 @@ fn configure_skip_partial_aggregation(config: &mut SessionConfig, plan: &Operato
         supported_aggregate && plan.children.iter().all(supported)
     }
 
-    if !matches!(&plan.op_struct, Some(OpStruct::ShuffleWriter(_))) || !supported(plan) {
-        // Enforce safety after config pass-through: a testing override cannot make unsupported
-        // accumulators convertible. DF 55 removed supports_convert_to_state().
+    let eligible =
+        enabled && matches!(&plan.op_struct, Some(OpStruct::ShuffleWriter(_))) && supported(plan);
+    if !eligible {
+        // Enforce this after config pass-through: a testing override can neither turn skipping
+        // on nor make unsupported accumulators convertible. DF 55 removed
+        // supports_convert_to_state().
         config
             .options_mut()
             .execution
@@ -880,7 +911,11 @@ fn prepare_datafusion_session_context(
         }
     }
 
-    configure_skip_partial_aggregation(&mut session_config, spark_plan);
+    configure_skip_partial_aggregation(
+        &mut session_config,
+        spark_plan,
+        spark_config.get_bool(COMET_EXEC_AGGREGATE_SKIP_PARTIAL_ENABLED),
+    );
 
     let runtime = rt_config.build()?;
 
@@ -946,13 +981,25 @@ fn prepare_output(
     output_batch: RecordBatch,
     validate: bool,
 ) -> CometResult<jlong> {
-    let num_cols = array_addrs.len(env)?;
-
     let array_addrs = unsafe { array_addrs.get_elements(env, ReleaseMode::NoCopyBack)? };
-    let array_addrs = &*array_addrs;
-
     let schema_addrs = unsafe { schema_addrs.get_elements(env, ReleaseMode::NoCopyBack)? };
-    let schema_addrs = &*schema_addrs;
+    unsafe { export_batch(&array_addrs, &schema_addrs, output_batch, validate) }
+}
+
+/// Moves the columns of `output_batch` into the Arrow C Data Interface structs at `array_addrs`
+/// and `schema_addrs`, one pair per column, and returns the row count. With no addresses, which
+/// Spark passes when the results of a query are not used, only the row count is returned.
+///
+/// # Safety
+/// Each address must point to a writable `FFI_ArrowArray` / `FFI_ArrowSchema` the caller owns.
+/// Whatever the structs hold is overwritten without being released.
+unsafe fn export_batch(
+    array_addrs: &[i64],
+    schema_addrs: &[i64],
+    output_batch: RecordBatch,
+    validate: bool,
+) -> CometResult<i64> {
+    let num_cols = array_addrs.len();
 
     let output_schema = output_batch.schema();
     let results = output_batch.columns();
@@ -990,7 +1037,7 @@ fn prepare_output(
         }
     }
 
-    Ok(num_rows as jlong)
+    Ok(num_rows as i64)
 }
 
 /// Pull the next input from JVM. Note that we cannot pull input batches in
@@ -1076,6 +1123,10 @@ where
 /// task thread.
 struct BatchProducer {
     batches: mpsc::Receiver<DataFusionResult<RecordBatch>>,
+    /// Set by the task once it has sent the stream's last batch. The channel closes whenever the
+    /// task ends, and a runtime that shuts down ends every task it has by cancelling it, so only
+    /// this tells the consumer that it has had every batch.
+    stream_ended: Arc<AtomicBool>,
     /// The plan's stream, and with it every reservation the stream holds. The task locks it only
     /// while polling it, so `stop` can take it whenever the task is waiting.
     stream: Arc<Mutex<Option<SendableRecordBatchStream>>>,
@@ -1090,6 +1141,8 @@ impl BatchProducer {
         // trade memory for latency hiding if JNI/FFI overhead dominates;
         // decreasing to 1 would serialize production and consumption.
         let (tx, batches) = mpsc::channel(2);
+        let stream_ended = Arc::new(AtomicBool::new(false));
+        let ended = Arc::clone(&stream_ended);
         let stream = Arc::new(Mutex::new(Some(stream)));
         let polled = Arc::clone(&stream);
         let task = runtime.spawn(async move {
@@ -1103,9 +1156,10 @@ impl BatchProducer {
                 };
                 while let Some(batch) = next().await {
                     if tx.send(batch).await.is_err() {
-                        break;
+                        return;
                     }
                 }
+                ended.store(true, Ordering::Release);
             })
             .catch_unwind()
             .await;
@@ -1127,8 +1181,26 @@ impl BatchProducer {
         });
         Self {
             batches,
+            stream_ended,
             stream,
             task,
+        }
+    }
+
+    /// Waits for the plan's next batch, and returns `None` once the stream has ended.
+    ///
+    /// A channel that closes before the stream has ended means the task was cancelled, and the
+    /// plan's output is incomplete. That is an error, or the Spark task would end successfully
+    /// with only the batches it has read so far.
+    fn next_batch(&mut self) -> CometResult<Option<RecordBatch>> {
+        match self.batches.blocking_recv() {
+            Some(batch) => Ok(Some(batch?)),
+            None if self.stream_ended.load(Ordering::Acquire) => Ok(None),
+            None => Err(CometError::Internal(
+                "The Tokio task running the native plan was cancelled before the plan produced \
+                 all of its output, for instance because Comet's Tokio runtime was shut down"
+                    .to_string(),
+            )),
         }
     }
 
@@ -1144,6 +1216,7 @@ impl BatchProducer {
             batches,
             stream,
             task,
+            ..
         } = self;
         drop(batches);
         task.abort();
@@ -1237,8 +1310,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
             }
 
             if let Some(producer) = &mut exec_context.batch_producer {
-                match producer.batches.blocking_recv() {
-                    Some(Ok(batch)) => {
+                match producer.next_batch()? {
+                    Some(batch) => {
                         update_metrics(env, exec_context)?;
                         return prepare_output(
                             env,
@@ -1247,9 +1320,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                             batch,
                             exec_context.debug_native,
                         );
-                    }
-                    Some(Err(e)) => {
-                        return Err(e.into());
                     }
                     None => {
                         log_plan_metrics(exec_context, stage_id, partition);
@@ -1635,7 +1705,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlock(
 ) -> jlong {
     try_unwrap_or_throw(&e, |env| {
         with_trace("decodeShuffleBlock", tracing_enabled != JNI_FALSE, || {
-            decode_shuffle_block(env, byte_buffer, length, array_addrs, schema_addrs, None)
+            decode_shuffle_block_jni(env, byte_buffer, length, array_addrs, schema_addrs, None)
         })
     })
 }
@@ -1651,12 +1721,7 @@ pub extern "system" fn Java_org_apache_comet_Native_createRemoteShuffleDecoder(
 ) -> jlong {
     try_unwrap_or_throw(&e, |env| {
         let bytes = env.convert_byte_array(expected_schema)?;
-        let schema = ShuffleScan::decode(bytes.as_slice()).map_err(|error| {
-            CometError::Internal(format!("Invalid expected remote shuffle schema: {error}"))
-        })?;
-        let decoder = RemoteShuffleDecoder {
-            expected_types: schema.fields.iter().map(to_arrow_datatype).collect(),
-        };
+        let decoder = RemoteShuffleDecoder::try_new(&bytes)?;
         Ok(Box::into_raw(Box::new(decoder)) as jlong)
     })
 }
@@ -1664,6 +1729,19 @@ pub extern "system" fn Java_org_apache_comet_Native_createRemoteShuffleDecoder(
 /// Immutable decoding state owned by one JVM remote shuffle iterator, not shared across tasks.
 struct RemoteShuffleDecoder {
     expected_types: Vec<ArrowDataType>,
+}
+
+impl RemoteShuffleDecoder {
+    /// Parses the serialized `ShuffleScan` holding the expected schema. Core of
+    /// `Native.createRemoteShuffleDecoder`.
+    fn try_new(expected_schema: &[u8]) -> CometResult<Self> {
+        let schema = ShuffleScan::decode(expected_schema).map_err(|error| {
+            CometError::Internal(format!("Invalid expected remote shuffle schema: {error}"))
+        })?;
+        Ok(RemoteShuffleDecoder {
+            expected_types: schema.fields.iter().map(to_arrow_datatype).collect(),
+        })
+    }
 }
 
 #[no_mangle]
@@ -1706,7 +1784,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlockWit
                 .ok_or_else(|| {
                     CometError::Internal("Remote shuffle decoder is not initialized".to_owned())
                 })?;
-            decode_shuffle_block(
+            decode_shuffle_block_jni(
                 env,
                 byte_buffer,
                 length,
@@ -1718,7 +1796,9 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlockWit
     })
 }
 
-fn decode_shuffle_block(
+/// Converts the JNI arguments of the `decodeShuffleBlock` entry points for
+/// [`decode_shuffle_block`].
+fn decode_shuffle_block_jni(
     env: &mut Env,
     byte_buffer: JByteBuffer,
     length: jint,
@@ -1728,15 +1808,33 @@ fn decode_shuffle_block(
 ) -> CometResult<jlong> {
     let raw_pointer = env.get_direct_buffer_address(&byte_buffer)?;
     let length = length as usize;
-    let slice: &[u8] = unsafe { std::slice::from_raw_parts(raw_pointer, length) };
+    let block: &[u8] = unsafe { std::slice::from_raw_parts(raw_pointer, length) };
+    let array_addrs = unsafe { array_addrs.get_elements(env, ReleaseMode::NoCopyBack)? };
+    let schema_addrs = unsafe { schema_addrs.get_elements(env, ReleaseMode::NoCopyBack)? };
+    unsafe { decode_shuffle_block(block, &array_addrs, &schema_addrs, expected_types) }
+}
+
+/// Decodes one native shuffle block (codec header plus Arrow IPC stream) and exports its columns
+/// as in [`export_batch`], returning the row count. `expected_types` is set for a remote shuffle
+/// block, which is validated against it. Core of `Native.decodeShuffleBlock` and
+/// `Native.decodeShuffleBlockWithValidation`.
+///
+/// # Safety
+/// As for [`export_batch`].
+unsafe fn decode_shuffle_block(
+    block: &[u8],
+    array_addrs: &[i64],
+    schema_addrs: &[i64],
+    expected_types: Option<&[ArrowDataType]>,
+) -> CometResult<i64> {
     let batch = if let Some(expected_types) = expected_types {
         // Reject incompatible logical types, then decode dictionaries before JVM import. The
         // JVM importer supports fewer dictionary key/value layouts than the shuffle writer.
-        decode_remote_shuffle_batch(slice, expected_types)?
+        decode_remote_shuffle_batch(block, expected_types)?
     } else {
-        read_ipc_compressed(slice)?
+        read_ipc_compressed(block)?
     };
-    prepare_output(env, array_addrs, schema_addrs, batch, false)
+    export_batch(array_addrs, schema_addrs, batch, false)
 }
 
 #[no_mangle]
@@ -2005,7 +2103,7 @@ mod tests {
             }],
             ..Default::default()
         };
-        let ratio = |plan: &Operator, requested: f64| {
+        let ratio = |plan: &Operator, requested: f64, enabled: bool| {
             let mut config = SessionConfig::new();
             config
                 .options_mut()
@@ -2015,7 +2113,7 @@ mod tests {
                 .options_mut()
                 .execution
                 .skip_partial_aggregation_probe_ratio_threshold = requested;
-            configure_skip_partial_aggregation(&mut config, plan);
+            configure_skip_partial_aggregation(&mut config, plan, enabled);
             assert_eq!(
                 config
                     .options()
@@ -2041,11 +2139,13 @@ mod tests {
             },
         ] {
             let plan = writer(agg);
-            assert_eq!(ratio(&plan, 0.8), 0.8);
-            assert_eq!(ratio(&plan, 0.5), 0.5);
-            assert_eq!(ratio(&plan, 1.1), 1.1);
+            assert_eq!(ratio(&plan, 0.8, true), 0.8);
+            assert_eq!(ratio(&plan, 0.5, true), 0.5);
+            assert_eq!(ratio(&plan, 1.1, true), 1.1);
+            // Skipping is opt-in, and a DataFusion override cannot turn it on.
+            assert_eq!(ratio(&plan, 0.8, false), 1.1);
             // Non-native shuffle / standalone native blocks stay disabled.
-            assert_eq!(ratio(&plan.children[0], 0.8), 1.1);
+            assert_eq!(ratio(&plan.children[0], 0.8, true), 1.1);
         }
 
         for agg in [
@@ -2080,14 +2180,14 @@ mod tests {
             },
         ] {
             let plan = writer(agg);
-            assert_eq!(ratio(&plan, 0.8), 1.1);
+            assert_eq!(ratio(&plan, 0.8, true), 1.1);
             // An eligible sibling or a Final parent must not hide the unsafe child.
             let mut nested = writer(HashAggregate {
                 mode: AggregateMode::Final as i32,
                 ..partial.clone()
             });
             nested.children[0].children = plan.children;
-            assert_eq!(ratio(&nested, 0.8), 1.1);
+            assert_eq!(ratio(&nested, 0.8, true), 1.1);
         }
     }
 
@@ -2302,6 +2402,37 @@ mod tests {
 
         drop(shared_reservation);
         drop(own_reservation);
+    }
+
+    /// The memory usage log leaves overcommit out of the reservations it reports, because Spark's
+    /// off-heap pool does not account for it, so the log counts it with the native memory that no
+    /// pool tracks. Tracing's process total still reports everything the pools recorded.
+    #[test]
+    fn memory_usage_leaves_out_what_spark_did_not_grant() {
+        use crate::execution::memory_pools::{
+            create_memory_pool_with_fake_spark, MemoryPoolConfig, MemoryPoolType,
+        };
+
+        let _guard = serial();
+        let before = memory_usage();
+        let traced_before = total_reserved_across_threads();
+        // A task's pool as `greedy_unified` creates it, where Spark grants at most 4096 bytes.
+        let config = MemoryPoolConfig::new(MemoryPoolType::GreedyUnified, 0);
+        let pool = create_memory_pool_with_fake_spark(&config, -6101, 4096);
+        let _registration = ThreadMemoryPoolRegistration::new(21, -6101, Arc::clone(&pool));
+        let reservation = MemoryConsumer::new("spill reader").register(&pool);
+
+        // A spilled batch read back from disk is recorded in full, although Spark grants only 4096
+        // of its 6144 bytes.
+        reservation.grow(6144);
+        assert_eq!(total_reserved_across_threads() - traced_before, 6144);
+        assert_eq!(memory_usage().pools_reserved - before.pools_reserved, 4096);
+
+        // Freeing memory repays the overcommit before anything goes back to Spark.
+        reservation.shrink(2048);
+        assert_eq!(memory_usage().pools_reserved - before.pools_reserved, 4096);
+        reservation.shrink(1024);
+        assert_eq!(memory_usage().pools_reserved - before.pools_reserved, 3072);
     }
 
     /// Stands in for a `CometFairMemoryPool` whose lock is held across a Spark acquire: it counts
@@ -2587,7 +2718,7 @@ mod tests {
         });
 
         let mut producer = BatchProducer::spawn(runtime.handle(), plan_stream(stream));
-        assert!(producer.batches.blocking_recv().unwrap().is_ok());
+        assert!(producer.next_batch().unwrap().is_some());
         producer.stop().unwrap();
         assert_eq!(pool.reserved(), 0, "the stream outlived its producer");
     }
@@ -2615,7 +2746,7 @@ mod tests {
         });
 
         let mut producer = BatchProducer::spawn(runtime.handle(), plan_stream(stream));
-        assert!(producer.batches.blocking_recv().unwrap().is_ok());
+        assert!(producer.next_batch().unwrap().is_some());
         polling_rx.recv().unwrap();
         let finished = Arc::new(AtomicBool::new(false));
         let finishing = {
@@ -2728,7 +2859,7 @@ mod tests {
             }
         });
         let mut producer = BatchProducer::spawn(runtime.handle(), plan_stream(stream));
-        assert!(producer.batches.blocking_recv().unwrap().is_ok());
+        assert!(producer.next_batch().unwrap().is_some());
 
         // Holds the only worker until the stopped plan's memory comes back, as another task
         // waiting in `acquireMemory` does. It gives up eventually so a failure cannot hang the
@@ -2751,5 +2882,122 @@ mod tests {
             .expect("stopping the producer waited for a free worker")
             .unwrap();
         assert_eq!(pool.reserved(), 0, "the stream outlived its producer");
+    }
+
+    /// One uncompressed native shuffle block holding `batch`.
+    fn shuffle_block(batch: &RecordBatch) -> Vec<u8> {
+        let mut block = b"NONE".to_vec();
+        let mut writer =
+            arrow::ipc::writer::StreamWriter::try_new(&mut block, batch.schema_ref()).unwrap();
+        writer.write(batch).unwrap();
+        writer.finish().unwrap();
+        drop(writer);
+        block
+    }
+
+    fn int_batch() -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, true)]));
+        RecordBatch::try_new(
+            schema,
+            vec![Arc::new(Int32Array::from(vec![Some(1), None, Some(3)]))],
+        )
+        .unwrap()
+    }
+
+    /// Decodes `block` into freshly allocated C Data structs and imports the single column back.
+    fn decode_one_column(
+        block: &[u8],
+        expected_types: Option<&[ArrowDataType]>,
+    ) -> CometResult<(i64, ArrayRef)> {
+        let mut ffi_array = Box::new(FFI_ArrowArray::empty());
+        let mut ffi_schema = Box::new(FFI_ArrowSchema::empty());
+        let array_addrs = [ffi_array.as_mut() as *mut FFI_ArrowArray as i64];
+        let schema_addrs = [ffi_schema.as_mut() as *mut FFI_ArrowSchema as i64];
+        let rows =
+            unsafe { decode_shuffle_block(block, &array_addrs, &schema_addrs, expected_types)? };
+        let data = unsafe { from_ffi(*ffi_array, &ffi_schema) }?;
+        Ok((rows, arrow::array::make_array(data)))
+    }
+
+    #[test]
+    fn decode_shuffle_block_exports_columns() {
+        let batch = int_batch();
+        let block = shuffle_block(&batch);
+
+        let (rows, column) = decode_one_column(&block, None).unwrap();
+        assert_eq!(rows, 3);
+        assert_eq!(column.as_ref(), batch.column(0).as_ref());
+
+        let (rows, column) = decode_one_column(&block, Some(&[DataType::Int32])).unwrap();
+        assert_eq!(rows, 3);
+        assert_eq!(column.as_ref(), batch.column(0).as_ref());
+    }
+
+    #[test]
+    fn decode_shuffle_block_without_output_columns_counts_rows() {
+        let block = shuffle_block(&int_batch());
+        let rows = unsafe { decode_shuffle_block(&block, &[], &[], None) }.unwrap();
+        assert_eq!(rows, 3);
+    }
+
+    #[test]
+    fn decode_shuffle_block_rejects_bad_input() {
+        let block = shuffle_block(&int_batch());
+        // A remote block whose column type differs from the expected schema.
+        assert!(decode_one_column(&block, Some(&[DataType::Utf8])).is_err());
+        // A truncated block.
+        assert!(decode_one_column(&block[..block.len() / 2], None).is_err());
+        // An expected schema that is not a serialized `ShuffleScan`.
+        let error = RemoteShuffleDecoder::try_new(&[0xff, 0xff, 0xff])
+            .err()
+            .expect("garbage schema is rejected");
+        assert!(error
+            .to_string()
+            .starts_with("Comet Internal Error: Invalid expected remote shuffle schema"));
+    }
+
+    /// See issue #6294. A runtime cancels every task it has when it shuts down, which Comet's does
+    /// when the executor stops. The producer's channel then closes as it does at the end of the
+    /// stream, and the consumer must fail rather than end with the batches it has read so far.
+    #[test]
+    fn a_batch_producer_cancelled_mid_stream_is_an_error_not_the_end() {
+        let runtime = single_worker_runtime();
+        let mut first = Some(empty_batch());
+        // Yields one batch, then waits for input that never arrives.
+        let stream = futures::stream::poll_fn(move |_| match first.take() {
+            Some(batch) => Poll::Ready(Some(Ok(batch))),
+            None => Poll::Pending,
+        });
+        let mut producer = BatchProducer::spawn(runtime.handle(), plan_stream(stream));
+        assert!(producer.next_batch().unwrap().is_some());
+
+        // Shuts the runtime down while the consumer waits for the next batch.
+        let shutting_down = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            runtime.shutdown_timeout(Duration::from_secs(10));
+        });
+        match producer.next_batch() {
+            Err(CometError::Internal(msg)) => assert!(msg.contains("cancelled"), "{msg}"),
+            other => panic!("expected an error, got {other:?}"),
+        }
+        shutting_down.join().unwrap();
+        producer.stop().unwrap();
+    }
+
+    /// The channel also closes once the stream has ended, and the consumer has then had every
+    /// batch, even if the runtime shuts down before it takes the batches the producer sent.
+    #[test]
+    fn a_batch_producer_ends_cleanly_once_its_stream_has_ended() {
+        let runtime = single_worker_runtime();
+        let stream = futures::stream::iter([Ok(empty_batch()), Ok(empty_batch())]);
+        let mut producer = BatchProducer::spawn(runtime.handle(), plan_stream(stream));
+        // Both batches fit in the channel, so the task finishes without waiting for the consumer.
+        runtime.block_on(&mut producer.task).unwrap();
+        runtime.shutdown_timeout(Duration::from_secs(10));
+
+        assert!(producer.next_batch().unwrap().is_some());
+        assert!(producer.next_batch().unwrap().is_some());
+        assert!(producer.next_batch().unwrap().is_none());
+        producer.stop().unwrap();
     }
 }
