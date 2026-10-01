@@ -210,6 +210,60 @@ class CometWindowExecSuite extends CometTestBase {
     }
   }
 
+  test("window group limit: floating-point values nested in the order key") {
+    assume(isSpark35Plus, "WindowGroupLimit was added in Spark 3.5")
+    // The native RANK and DENSE_RANK find ties by byte equality, and nested floats aren't
+    // normalized, so [-0.0] and [0.0] would get different ranks and the cutoff would drop a row
+    // that Spark keeps (#5507). The limit falls back to Spark for them instead. ROW_NUMBER never
+    // compares peers, and Spark normalizes nested floating-point partition keys itself.
+    withTempDir { dir =>
+      val path = new Path(dir.toString, "nested_float_order").toString
+      Seq((1, -0.0f, -0.0d), (2, 0.0f, 0.0d), (3, 1.0f, 1.0d))
+        .toDF("id", "f", "d")
+        .write
+        .parquet(path)
+      spark.read.parquet(path).createOrReplaceTempView("nested_float_order")
+
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.SHUFFLE_PARTITIONS.key -> "1",
+        CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "false",
+        CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false",
+        CometConf.COMET_EXEC_WINDOW_GROUP_LIMIT_ENABLED.key -> "true") {
+        for {
+          rankFunction <- Seq("RANK", "DENSE_RANK")
+          // A struct needs a second key, because a lone struct sort key falls back on its own.
+          orderBy <- Seq("array(f)", "array(d)", "named_struct('x', d), id > 0")
+        } {
+          val query = sql(s"""
+               |SELECT id FROM (
+               |  SELECT id, $rankFunction() OVER (ORDER BY $orderBy) AS rnk
+               |  FROM nested_float_order
+               |) WHERE rnk <= 1
+               |""".stripMargin)
+          checkSparkAnswerAndFallbackReason(query, "compare nested floating-point values exactly")
+          assert(query.collect().map(_.getInt(0)).sorted.toSeq == Seq(1, 2))
+        }
+
+        checkSparkAnswerAndOperator(
+          sql("""
+              |SELECT id FROM (
+              |  SELECT id, ROW_NUMBER() OVER (PARTITION BY id > 0 ORDER BY array(d), id) AS rn
+              |  FROM nested_float_order
+              |) WHERE rn <= 2
+              |""".stripMargin),
+          Seq(classOf[CometWindowGroupLimitExec]))
+
+        checkSparkAnswer(sql("""
+            |SELECT id FROM (
+            |  SELECT id, RANK() OVER (PARTITION BY array(d) ORDER BY id) AS rnk
+            |  FROM nested_float_order
+            |) WHERE rnk <= 1
+            |""".stripMargin))
+      }
+    }
+  }
+
   for (orderColumn <- Seq("f", "d")) {
     test(s"window: scalar floating-point order key under strict floating point ($orderColumn)") {
       // Deliberately not gated on Spark 3.5, unlike the WindowGroupLimit tests above, so the

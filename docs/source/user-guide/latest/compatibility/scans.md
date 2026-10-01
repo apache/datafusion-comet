@@ -50,6 +50,9 @@ The following features are not supported and cause Comet to fall back to Spark:
   Comet Parquet scan regardless.
 - A read schema that repeats a Parquet field id, at the top level or within a struct, when
   `spark.sql.parquet.fieldId.read.enabled=true`.
+- A read schema with sibling struct fields whose names collide case-insensitively, when
+  `spark.sql.caseSensitive=false`. Spark's analyzer normally rejects such a schema before the scan
+  is planned.
 
 The following limitation may produce incorrect results without falling back to Spark:
 
