@@ -1,3 +1,0 @@
-CometLocalResult
-+- *(1) ColumnarToRow
-   +- CometLocal [value#159L, amount#156, text#157], batchSize=8192, resultPartitions=1, ordered=false, query=parquet, terminal=false, memoryLimit=536870912, spill=true

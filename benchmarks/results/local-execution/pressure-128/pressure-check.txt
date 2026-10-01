@@ -1,3 +1,0 @@
-cycle=0 sortRows=5000000 peakSpillBytes=81369856 recoveryRows=1000 activeQueries=0 importedArrowBytes=0 noSpillFailure=Memory Exhausted while Sorting (DiskManager is disabled)
-cycle=1 sortRows=5000000 peakSpillBytes=81369856 recoveryRows=1000 activeQueries=0 importedArrowBytes=0 noSpillFailure=Memory Exhausted while Sorting (DiskManager is disabled)
-cycle=2 sortRows=5000000 peakSpillBytes=81369856 recoveryRows=1000 activeQueries=0 importedArrowBytes=0 noSpillFailure=Memory Exhausted while Sorting (DiskManager is disabled)

@@ -90,7 +90,7 @@ existing Comet's.
 
 Local execution is faster than Comet for aggregation, join, Top-K and full sort. For
 the join and aggregation it replaces Comet's shuffle files with in-memory DataFusion
-exchanges. For full sort, a separate measurement (not part of the raw results) found that pulling the sorted rows
+exchanges. For full sort, a separate measurement (not included in the tables) found that pulling the sorted rows
 out of the native graph takes a fraction of the total, and most of the remaining
 time is Spark's result path; local mode avoids the single-threaded encode/decode
 part of it through [same-JVM result delivery](local-execution.md#result-delivery),
@@ -163,8 +163,3 @@ where that mode has not run). Each output directory receives the mode's log, CSV
 process samples, metadata and the executed plan of each case. The launcher compares
 digests across all modes present in the output directory. `--jfr` records a
 diagnostic profile; do not compare its timings.
-
-Raw results for the tables above are under `benchmarks/results/local-execution/`.
-CSV and JSON files carry a `.txt` suffix, following the repository's convention for
-raw benchmark output; remove it when loading them with tools that infer the format
-from the extension. Local paths in the metadata are replaced by `<output-root>`.

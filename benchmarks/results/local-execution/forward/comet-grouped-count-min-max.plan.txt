@@ -1,5 +1,0 @@
-*(1) CometColumnarToRow
-+- CometHashAggregate [k#168L, count#185L, min#186, max#187L], [Final], [k#168L], [count(text#170), min(amount#169), max(id#167L)]
-   +- CometExchange hashpartitioning(k#168L, 8), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=504]
-      +- CometHashAggregate [id#167L, k#168L, amount#169, text#170], [Partial], [k#168L], [partial_count(text#170), partial_min(amount#169), partial_max(id#167L)]
-         +- CometNativeScan parquet [id#167L,k#168L,amount#169,text#170] Batched: true, DataFilters: [], Format: Parquet, Location: InMemoryFileIndex(1 paths)[file:/private/tmp/comet-local-stage5d-data/fact], PartitionFilters: [], PushedFilters: [], ReadSchema: struct<id:bigint,k:bigint,amount:decimal(18,2),text:string>
