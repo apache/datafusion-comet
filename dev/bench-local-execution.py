@@ -37,6 +37,9 @@ def main():
     parser.add_argument("--rows", type=int, default=500000)
     parser.add_argument("--repetitions", type=int, default=5)
     parser.add_argument("--library", choices=["release", "debug"], default="release")
+    parser.add_argument("--schema-mode", choices=["infer", "explicit"], default="infer",
+                        help="Use inferred or declared schemas for the synthetic timing fixtures")
+    parser.add_argument("--jfr", action="store_true", help="Record a diagnostic JVM profile; do not compare its timings")
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     if args.mode in ("spark", "comet", "local") and args.library != "release":
@@ -66,14 +69,19 @@ def main():
     pom = ET.parse(root / "pom.xml")
     opens = pom.find(".//{*}extraJavaTestArgs").text.split()
     command = [str(java), "-Xms512m", "-Xmx2g", *opens,
-               f"-Djava.library.path={library}", f"-Djava.io.tmpdir={java_scratch}",
+               "-Dtest.appender=console", f"-Djava.library.path={library}", f"-Djava.io.tmpdir={java_scratch}",
                f"-Dspark.local.dir={spark_scratch}", "-cp", classpath,
                "org.apache.comet.local.CometLocalExecutionBenchmark", args.mode,
-               str(args.data.resolve()), str(output), str(args.rows), str(args.repetitions)]
+               str(args.data.resolve()), str(output), str(args.rows), str(args.repetitions), args.schema_mode]
+    if args.jfr:
+        recording = output / f"{args.mode}.jfr"
+        command[1:1] = ["-XX:FlightRecorderOptions=stackdepth=256",
+                        f"-XX:StartFlightRecording=filename={recording},settings=profile,dumponexit=true"]
     env = {**os.environ, "COMET_WORKER_THREADS": "4", "TMPDIR": str(native_scratch),
            "COMET_CONF_DIR": str(root / "conf")}
     metadata = {"mode": args.mode, "rows": args.rows, "repetitions": args.repetitions,
                 "host": platform.platform(), "java": str(java), "heap": "2g", "cores": 4,
+                "schema_mode": args.schema_mode, "jfr": args.jfr,
                 "native_profile": args.library, "library_sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
                 "git_head": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip(),
                 "sampling_seconds": 0.1, "native_temp": str(native_scratch), "spark_temp": str(spark_scratch)}

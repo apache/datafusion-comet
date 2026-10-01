@@ -24,6 +24,10 @@ TPC benchmark or a general performance claim. Production code was unchanged in
 this checkpoint; the native library was built from `63bd47c3a` in release mode.
 The manual harness and raw results are committed alongside this report.
 
+Follow-up: [stage 5c planning diagnosis](local-execution-planning.md) separates
+DataFrame construction/schema inference from physical preparation. Its evidence
+supersedes the hypothesis that the planning gap indicates costly local admission.
+
 ## Coverage before timing
 
 Planning the repository TPC SQL over one-row Parquet fixtures admitted **zero**

@@ -1,0 +1,2 @@
+*(1) ColumnarToRow
++- CometLocal [k#168L, count(text)#178L, min(amount)#179, max(id)#180L], batchSize=8192, resultPartitions=1, ordered=false, query=aggregate, terminal=false, memoryLimit=536870912, spill=true

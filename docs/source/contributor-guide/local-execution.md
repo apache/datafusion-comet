@@ -511,6 +511,24 @@ Stop after this checkpoint. The proposed next stage is profiling planning and
 admission overhead, then validating a bounded optimization before broadening the
 operator surface. Spark SQL validation remains deferred at the user's request.
 
+#### 5c. Planning diagnosis checkpoint (completed)
+
+The previous planning interval included DataFrame construction and Parquet schema
+inference. Direct timing measured warm local admission at 1.822 ms median across
+50 calls, which did not explain the earlier planning gap. Temporary instrumentation
+was removed; production planner code remains unchanged.
+
+The benchmark now splits construction from physical preparation and compares
+inferred versus declared fixture schemas. All 420 executions across three modes,
+two schema settings and forward/reverse passes matched. With declared schemas,
+local aggregate, join, Top-K and full-sort total medians improved versus existing
+Comet in both passes; scan results were mixed. See the
+[planning diagnosis](local-execution-planning.md) for evidence and limitations.
+
+Stop here. Next proposed checkpoint: larger-data scaling and memory pressure on
+the existing operator surface, before optimizing native execution or widening
+TPC admission. Spark SQL remains deferred at the user's request.
+
 ## Spark SQL validation policy
 
 For stages changing planner, serde, operators or shims, obtain a Spark SQL verdict

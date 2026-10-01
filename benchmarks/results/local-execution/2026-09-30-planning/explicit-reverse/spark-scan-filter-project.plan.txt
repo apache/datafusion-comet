@@ -1,0 +1,4 @@
+*(1) Project [(id#160L + 1) AS value#165L, amount#162, text#163]
++- *(1) Filter (isnotnull(id#160L) AND ((id#160L % 100) = 0))
+   +- *(1) ColumnarToRow
+      +- FileScan parquet [id#160L,amount#162,text#163] Batched: true, DataFilters: [isnotnull(id#160L), ((id#160L % 100) = 0)], Format: Parquet, Location: InMemoryFileIndex(1 paths)[file:/private/tmp/comet-local-stage5b-data/fact], PartitionFilters: [], PushedFilters: [IsNotNull(id)], ReadSchema: struct<id:bigint,amount:decimal(18,2),text:string>

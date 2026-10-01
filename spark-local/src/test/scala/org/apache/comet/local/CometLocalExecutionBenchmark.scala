@@ -36,8 +36,9 @@ object CometLocalExecutionBenchmark {
   private val enabled = CometConf.COMET_EXEC_LOCAL_ENABLED.key
 
   def main(args: Array[String]): Unit = {
-    require(args.length == 5, "mode data-directory output-directory rows repetitions")
-    val Array(mode, dataArg, outputArg, rowsArg, repetitionsArg) = args
+    require(args.length == 6, "mode data-directory output-directory rows repetitions schema-mode")
+    val Array(mode, dataArg, outputArg, rowsArg, repetitionsArg, schemaMode) = args
+    require(Set("infer", "explicit").contains(schemaMode))
     require(Set("prepare", "coverage", "spark", "comet", "local").contains(mode))
     val data = Paths.get(dataArg)
     val output = Paths.get(outputArg)
@@ -73,7 +74,7 @@ object CometLocalExecutionBenchmark {
       mode match {
         case "prepare" => prepare(spark, data, rows)
         case "coverage" => coverage(spark, data, output)
-        case _ => measure(spark, mode, data, output, repetitions)
+        case _ => measure(spark, mode, data, output, repetitions, schemaMode)
       }
     } finally spark.stop()
   }
@@ -96,8 +97,25 @@ object CometLocalExecutionBenchmark {
       .parquet(data.resolve("dimension").toString)
   }
 
-  private def queries(spark: SparkSession, data: Path): Seq[(String, () => DataFrame)] = {
-    def fact = spark.read.parquet(data.resolve("fact").toString)
+  private def queries(
+      spark: SparkSession,
+      data: Path,
+      schemaMode: String): Seq[(String, () => DataFrame)] = {
+    // These schemas describe only the synthetic fixtures created by prepare.
+    def read(name: String, schema: StructType): DataFrame = {
+      val reader = spark.read
+      if (schemaMode == "explicit") reader.schema(schema)
+      reader.parquet(data.resolve(name).toString)
+    }
+    def fact = read(
+      "fact",
+      new StructType()
+        .add("id", LongType)
+        .add("k", LongType)
+        .add("amount", DecimalType(18, 2))
+        .add("text", StringType))
+    def dimension =
+      read("dimension", new StructType().add("rid", LongType).add("value", LongType))
     Seq(
       "scan-filter-project" -> (() =>
         fact
@@ -112,8 +130,7 @@ object CometLocalExecutionBenchmark {
             org.apache.spark.sql.functions.max("id"))),
       "partitioned-join" -> (() => {
         val left = fact.alias("f")
-        val right = spark.read
-          .parquet(data.resolve("dimension").toString)
+        val right = dimension
           .hint("SHUFFLE_HASH")
           .alias("d")
         left.join(right, left("id") === right("rid")).selectExpr("f.id", "d.value")
@@ -134,14 +151,15 @@ object CometLocalExecutionBenchmark {
       mode: String,
       data: Path,
       output: Path,
-      repetitions: Int): Unit = {
+      repetitions: Int,
+      schemaMode: String): Unit = {
     val cpu = ManagementFactory.getOperatingSystemMXBean
       .asInstanceOf[com.sun.management.OperatingSystemMXBean]
     val writer = Files.newBufferedWriter(output.resolve(s"$mode.csv"), UTF_8)
     writer.write(
-      "query,iteration,planning_ms,execution_ms,total_ms,cpu_ms,rows,sha256,local_nodes,comet_nodes\n")
+      "query,iteration,planning_ms,execution_ms,total_ms,cpu_ms,rows,sha256,local_nodes,comet_nodes,dataframe_ms,physical_planning_ms\n")
     try {
-      val cases = queries(spark, data)
+      val cases = queries(spark, data, schemaMode)
       for (iteration <- -2 until repetitions;
         (name, make) <- cases.drop(Math.floorMod(iteration, cases.size)) ++
           cases.take(Math.floorMod(iteration, cases.size))) {
@@ -149,6 +167,7 @@ object CometLocalExecutionBenchmark {
         val start = System.nanoTime()
         val cpuStart = cpu.getProcessCpuTime
         val query = make()
+        val constructed = System.nanoTime()
         val plan = query.queryExecution.executedPlan
         val local = plan.collect { case p: CometLocalExec => p }.size
         val comet = plan.collect { case p if p.nodeName.startsWith("Comet") => p }.size
@@ -170,7 +189,8 @@ object CometLocalExecutionBenchmark {
         def ms(nanos: Long): Double = nanos.toDouble / 1000000.0
         writer.write(
           s"$name,$iteration,${ms(planned - start)},${ms(end - planned)}," +
-            s"${ms(end - start)},${ms(cpuEnd - cpuStart)},${result.length},$hash,$local,$comet\n")
+            s"${ms(end - start)},${ms(cpuEnd - cpuStart)},${result.length},$hash,$local,$comet," +
+            s"${ms(constructed - start)},${ms(planned - constructed)}\n")
         writer.flush()
         if (iteration == 0)
           Files.write(output.resolve(s"$mode-$name.plan.txt"), plan.toString.getBytes(UTF_8))
