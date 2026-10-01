@@ -816,11 +816,16 @@ converted into Arrow format, allowing the Comet pipeline to take over after that
 </section>
 <section id="spark-to-comet-conversion-types">
 <h3>Spark-to-Comet conversion types<a class="headerlink" href="#spark-to-comet-conversion-types" title="Link to this heading">#</a></h3>
-<p>Spark-to-Comet conversion supports <code class="docutils literal notranslate"><span class="pre">ARRAY&lt;STRING&gt;</span></code> with binary string semantics, including
-nullable arrays and nullable elements, both as top-level fields and inside supported structs.
+<p>Spark-to-Comet conversion supports <code class="docutils literal notranslate"><span class="pre">ARRAY&lt;STRING&gt;</span></code> and <code class="docutils literal notranslate"><span class="pre">MAP&lt;STRING,STRING&gt;</span></code> with binary
+string semantics, both as top-level fields and inside supported structs. Arrays and maps may
+be null; array elements and map values may also be null. Map keys must be non-null.
 This applies to Spark row and columnar inputs when conversion is enabled for the source.
-Other array element types, nested arrays, arrays of structs, maps, and non-binary string
-collations remain unsupported at this conversion boundary. Source defaults are unchanged.</p>
+Other array element types, other map key/value types, nested collections, and non-binary
+string collations remain unsupported at this conversion boundary. Source defaults are unchanged.</p>
+<p>This includes row-backed <code class="docutils literal notranslate"><span class="pre">ExistingRDD</span></code> inputs when
+<code class="docutils literal notranslate"><span class="pre">spark.comet.sparkToColumnar.enabled=true</span></code> and
+<code class="docutils literal notranslate"><span class="pre">spark.comet.sparkToColumnar.supportedOperatorList</span></code> includes <code class="docutils literal notranslate"><span class="pre">RDDScan</span></code>. Spark still produces
+the RDD rows; conversion lets eligible downstream operators execute in Comet.</p>
 </section>
 </section>
 <section id="data-catalogs">
