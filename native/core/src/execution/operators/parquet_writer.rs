@@ -30,9 +30,10 @@ use opendal::Operator;
 #[cfg(feature = "hdfs-opendal")]
 use std::io::Cursor;
 
-use crate::parquet::parquet_support::is_hdfs_scheme;
+use crate::parquet::objectstore::s3_blob_fs_support::normalize_object_store_url;
 #[cfg(feature = "hdfs-opendal")]
 use crate::parquet::parquet_support::{create_hdfs_operator, prepare_object_store_with_configs};
+use crate::parquet::parquet_support::{is_hdfs_scheme, object_store_for_write};
 use arrow::datatypes::{Schema, SchemaRef};
 use arrow::record_batch::{RecordBatch, RecordBatchOptions};
 use async_trait::async_trait;
@@ -50,8 +51,9 @@ use datafusion::{
     },
 };
 use futures::TryStreamExt;
+use object_store::buffered::BufWriter;
 use parquet::{
-    arrow::ArrowWriter,
+    arrow::{ArrowWriter, AsyncArrowWriter},
     basic::{Compression, GzipLevel, ZstdLevel},
     file::properties::WriterProperties,
 };
@@ -88,7 +90,7 @@ impl ParquetCompression {
 enum ParquetWriter {
     /// Writer for local file system
     LocalFile(ArrowWriter<File>),
-    /// Writer for HDFS or other remote storage (writes to in-memory buffer)
+    /// Writer for HDFS (writes to in-memory buffer)
     /// Contains the arrow writer, HDFS operator, and destination path
     /// an Arrow writer writes to in-memory buffer the data converted to Parquet format
     /// The opendal::Writer is created lazily on first write
@@ -99,6 +101,11 @@ enum ParquetWriter {
         Box<Operator>,
         String,
     ),
+    /// Writer for S3 and S3-compatible object stores. Each row group is encoded in memory and
+    /// handed to a `BufWriter`, which uploads a file smaller than its buffer with one PUT and
+    /// switches to a multipart upload once the file outgrows it. The object only becomes visible
+    /// when `close` completes the upload.
+    ObjectStore(Box<AsyncArrowWriter<BufWriter>>),
 }
 
 impl ParquetWriter {
@@ -154,15 +161,18 @@ impl ParquetWriter {
 
                 Ok(())
             }
+            ParquetWriter::ObjectStore(writer) => writer.write(batch).await,
         }
     }
 
-    /// Close the writer and finalize the file
-    async fn close(self) -> std::result::Result<(), parquet::errors::ParquetError> {
+    /// Close the writer and finalize the file. Returns the file's size in bytes when the writer
+    /// tracks it, which only an object store writer does. Otherwise the caller has to ask the file
+    /// system.
+    async fn close(self) -> std::result::Result<Option<u64>, parquet::errors::ParquetError> {
         match self {
             ParquetWriter::LocalFile(writer) => {
                 writer.close()?;
-                Ok(())
+                Ok(None)
             }
             #[cfg(feature = "hdfs-opendal")]
             ParquetWriter::Remote(
@@ -209,8 +219,31 @@ impl ParquetWriter {
                     }
                 }
 
-                Ok(())
+                Ok(None)
             }
+            ParquetWriter::ObjectStore(mut writer) => {
+                // `finish` rather than `close`, so that the writer is still around to report its
+                // byte count, footer included, once the upload has completed.
+                writer.finish().await?;
+                Ok(Some(writer.bytes_written() as u64))
+            }
+        }
+    }
+
+    /// Discard a file whose write failed before `close`. Only an object store writer has anything
+    /// to discard: once a file outgrows the writer's buffer it is uploaded as a multipart upload,
+    /// whose parts stay stored, and billed, until the upload is completed or aborted. The other
+    /// writers leave a partial file in place. A write that is cancelled rather than failed, such
+    /// as a killed task, drops the writer without calling this, so its upload is left for the
+    /// bucket's lifecycle rules to remove.
+    async fn abort(self) -> std::result::Result<(), parquet::errors::ParquetError> {
+        match self {
+            ParquetWriter::ObjectStore(writer) => (*writer)
+                .into_inner()
+                .abort()
+                .await
+                .map_err(|e| parquet::errors::ParquetError::External(Box::new(e))),
+            _ => Ok(()),
         }
     }
 }
@@ -329,7 +362,7 @@ impl ParquetWriterExec {
                     ))
                 })?;
 
-                // For remote storage (HDFS, S3), write to an in-memory buffer
+                // For HDFS, write to an in-memory buffer
                 let buffer = Vec::new();
                 let cursor = Cursor::new(buffer);
                 let arrow_parquet_buffer_writer = ArrowWriter::try_new(cursor, schema, Some(props))
@@ -402,6 +435,25 @@ impl ParquetWriterExec {
                 })?;
                 Ok(ParquetWriter::LocalFile(writer))
             }
+        } else if Self::is_s3_destination(output_file_path, object_store_options)? {
+            // The store is resolved exactly as the Parquet scan resolves it, including the
+            // `fs.s3a.*` endpoint, region and credential settings, but under the write access mode.
+            let (store, path) = object_store_for_write(output_file_path, object_store_options)
+                .map_err(|e| {
+                    DataFusionError::Execution(format!(
+                        "Failed to prepare object store for '{}': {}",
+                        output_file_path, e
+                    ))
+                })?;
+            let writer =
+                AsyncArrowWriter::try_new(BufWriter::new(store, path), schema, Some(props))
+                    .map_err(|e| {
+                        DataFusionError::Execution(format!(
+                            "Failed to create object store writer: {}",
+                            e
+                        ))
+                    })?;
+            Ok(ParquetWriter::ObjectStore(Box::new(writer)))
         } else {
             // Unsupported storage scheme
             Err(DataFusionError::Execution(format!(
@@ -409,6 +461,24 @@ impl ParquetWriterExec {
                 output_file_path
             )))
         }
+    }
+
+    /// Whether `output_file_path` addresses S3 or an S3-compatible store. Decided by the same
+    /// normalization the store resolution applies, which rewrites `s3a` and the aliases configured
+    /// in `fs.comet.s3Compliant.schemes` to `s3`, so this cannot admit a URL that
+    /// `object_store_for_write` would then build some other store for.
+    fn is_s3_destination(
+        output_file_path: &str,
+        object_store_options: &HashMap<String, String>,
+    ) -> Result<bool> {
+        let normalized = normalize_object_store_url(output_file_path, object_store_options)
+            .map_err(|e| {
+                DataFusionError::Execution(format!(
+                    "Failed to parse URL '{}': {}",
+                    output_file_path, e
+                ))
+            })?;
+        Ok(!normalized.is_hdfs && normalized.url.scheme() == "s3")
     }
 }
 
@@ -550,47 +620,67 @@ impl ExecutionPlan for ParquetWriterExec {
             let mut stream = input;
             let mut total_rows = 0i64;
 
-            while let Some(batch_result) = stream.try_next().await.transpose() {
-                let batch = batch_result?;
+            // A failure here leaves the file unfinished, so keep it rather than return it at once:
+            // the writer has to discard what it may already have uploaded.
+            let written: Result<()> = async {
+                while let Some(batch_result) = stream.try_next().await.transpose() {
+                    let batch = batch_result?;
 
-                // Track row count
-                total_rows += batch.num_rows() as i64;
+                    // Track row count
+                    total_rows += batch.num_rows() as i64;
 
-                // Rename columns in the batch to match output schema
-                let renamed_batch = if !column_names.is_empty() {
-                    // Collection field IDs exist on the target schema, not on arrays produced by
-                    // the placeholder Scan. Both schemas use the same Catalyst data types, and
-                    // disabling field-name matching still recursively validates nested nullability;
-                    // only nested field names and metadata are ignored.
-                    RecordBatch::try_new_with_options(
-                        Arc::clone(&schema_for_write),
-                        batch.columns().to_vec(),
-                        &RecordBatchOptions::new().with_match_field_names(false),
-                    )
-                    .map_err(|e| {
-                        DataFusionError::Execution(format!("Failed to rename batch columns: {}", e))
-                    })?
-                } else {
-                    batch
-                };
+                    // Rename columns in the batch to match output schema
+                    let renamed_batch = if !column_names.is_empty() {
+                        // Collection field IDs exist on the target schema, not on arrays produced
+                        // by the placeholder Scan. Both schemas use the same Catalyst data types,
+                        // and disabling field-name matching still recursively validates nested
+                        // nullability; only nested field names and metadata are ignored.
+                        RecordBatch::try_new_with_options(
+                            Arc::clone(&schema_for_write),
+                            batch.columns().to_vec(),
+                            &RecordBatchOptions::new().with_match_field_names(false),
+                        )
+                        .map_err(|e| {
+                            DataFusionError::Execution(format!(
+                                "Failed to rename batch columns: {}",
+                                e
+                            ))
+                        })?
+                    } else {
+                        batch
+                    };
 
-                writer.write(&renamed_batch).await.map_err(|e| {
-                    DataFusionError::Execution(format!("Failed to write batch: {}", e))
-                })?;
+                    writer.write(&renamed_batch).await.map_err(|e| {
+                        DataFusionError::Execution(format!("Failed to write batch: {}", e))
+                    })?;
+                }
+                Ok(())
+            }
+            .await;
+            if let Err(e) = written {
+                if let Err(abort_error) = writer.abort().await {
+                    log::warn!("Failed to abort the write of '{part_file}': {abort_error}");
+                }
+                return Err(e);
             }
 
-            writer.close().await.map_err(|e| {
+            let uploaded_size = writer.close().await.map_err(|e| {
                 DataFusionError::Execution(format!("Failed to close writer: {}", e))
             })?;
 
-            // Get file size - strip file:// prefix if present for local filesystem access
-            let local_path = part_file
-                .strip_prefix("file://")
-                .or_else(|| part_file.strip_prefix("file:"))
-                .unwrap_or(&part_file);
-            let file_size = std::fs::metadata(local_path)
-                .map(|m| m.len() as i64)
-                .unwrap_or(0);
+            let file_size = match uploaded_size {
+                Some(size) => size as i64,
+                None => {
+                    // Get file size - strip file:// prefix if present for local filesystem access
+                    let local_path = part_file
+                        .strip_prefix("file://")
+                        .or_else(|| part_file.strip_prefix("file:"))
+                        .unwrap_or(&part_file);
+                    std::fs::metadata(local_path)
+                        .map(|m| m.len() as i64)
+                        .unwrap_or(0)
+                }
+            };
 
             // Update metrics with write statistics
             files_written.add(1);
@@ -619,14 +709,27 @@ impl ExecutionPlan for ParquetWriterExec {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{Array, Int32Array, ListArray, StringArray};
+    use crate::cloud::s3::credential_bridge::AccessMode;
+    use crate::parquet::parquet_support::cache_object_store_for_test;
+    use arrow::array::{Array, Int32Array, Int64Array, ListArray, StringArray};
     use arrow::datatypes::{DataType, Field, Int32Type, Schema};
     use datafusion::datasource::memory::MemorySourceConfig;
     use datafusion::datasource::source::DataSourceExec;
+    use datafusion::execution::runtime_env::RuntimeEnv;
     use datafusion::prelude::SessionContext;
+    use futures::stream::BoxStream;
+    use object_store::memory::InMemory;
+    use object_store::path::Path;
+    use object_store::{
+        CopyOptions, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, ObjectStore,
+        ObjectStoreExt, PutMultipartOptions, PutOptions, PutPayload, PutResult, UploadPart,
+    };
+    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
     use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
     use parquet::basic::Repetition;
+    use parquet::file::properties::DEFAULT_MAX_ROW_GROUP_ROW_COUNT;
     use parquet::file::reader::{FileReader, SerializedFileReader};
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
     #[test]
@@ -841,6 +944,340 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    /// Counts what a writer asks of an in-memory store: one-shot PUTs, and multipart uploads with
+    /// how each one ended. That tells a single-request upload from a multipart one, and shows an
+    /// abort, without a real object store.
+    #[derive(Debug, Default)]
+    struct RecordingStore {
+        inner: InMemory,
+        puts: AtomicUsize,
+        uploads: Arc<UploadCounts>,
+    }
+
+    #[derive(Debug, Default)]
+    struct UploadCounts {
+        started: AtomicUsize,
+        completed: AtomicUsize,
+        aborted: AtomicUsize,
+    }
+
+    impl RecordingStore {
+        /// `(one-shot PUTs, multipart uploads started, completed, aborted)`
+        fn counts(&self) -> (usize, usize, usize, usize) {
+            (
+                self.puts.load(Ordering::SeqCst),
+                self.uploads.started.load(Ordering::SeqCst),
+                self.uploads.completed.load(Ordering::SeqCst),
+                self.uploads.aborted.load(Ordering::SeqCst),
+            )
+        }
+    }
+
+    impl fmt::Display for RecordingStore {
+        fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+            write!(f, "RecordingStore")
+        }
+    }
+
+    #[async_trait]
+    impl ObjectStore for RecordingStore {
+        async fn put_opts(
+            &self,
+            location: &Path,
+            payload: PutPayload,
+            opts: PutOptions,
+        ) -> object_store::Result<PutResult> {
+            self.puts.fetch_add(1, Ordering::SeqCst);
+            self.inner.put_opts(location, payload, opts).await
+        }
+
+        async fn put_multipart_opts(
+            &self,
+            location: &Path,
+            opts: PutMultipartOptions,
+        ) -> object_store::Result<Box<dyn MultipartUpload>> {
+            self.uploads.started.fetch_add(1, Ordering::SeqCst);
+            let inner = self.inner.put_multipart_opts(location, opts).await?;
+            Ok(Box::new(RecordingUpload {
+                inner,
+                counts: Arc::clone(&self.uploads),
+            }))
+        }
+
+        async fn get_opts(
+            &self,
+            location: &Path,
+            options: GetOptions,
+        ) -> object_store::Result<GetResult> {
+            self.inner.get_opts(location, options).await
+        }
+
+        fn delete_stream(
+            &self,
+            locations: BoxStream<'static, object_store::Result<Path>>,
+        ) -> BoxStream<'static, object_store::Result<Path>> {
+            self.inner.delete_stream(locations)
+        }
+
+        fn list(
+            &self,
+            prefix: Option<&Path>,
+        ) -> BoxStream<'static, object_store::Result<ObjectMeta>> {
+            self.inner.list(prefix)
+        }
+
+        async fn list_with_delimiter(
+            &self,
+            prefix: Option<&Path>,
+        ) -> object_store::Result<ListResult> {
+            self.inner.list_with_delimiter(prefix).await
+        }
+
+        async fn copy_opts(
+            &self,
+            from: &Path,
+            to: &Path,
+            options: CopyOptions,
+        ) -> object_store::Result<()> {
+            self.inner.copy_opts(from, to, options).await
+        }
+    }
+
+    #[derive(Debug)]
+    struct RecordingUpload {
+        inner: Box<dyn MultipartUpload>,
+        counts: Arc<UploadCounts>,
+    }
+
+    #[async_trait]
+    impl MultipartUpload for RecordingUpload {
+        fn put_part(&mut self, data: PutPayload) -> UploadPart {
+            self.inner.put_part(data)
+        }
+
+        async fn complete(&mut self) -> object_store::Result<PutResult> {
+            self.counts.completed.fetch_add(1, Ordering::SeqCst);
+            self.inner.complete().await
+        }
+
+        async fn abort(&mut self) -> object_store::Result<()> {
+            self.counts.aborted.fetch_add(1, Ordering::SeqCst);
+            self.inner.abort().await
+        }
+    }
+
+    /// Serves every native write to `bucket` from a fresh [`RecordingStore`] until the returned
+    /// guard drops. A test's writes never leave the process, as long as its bucket is its own.
+    fn record_writes_to(
+        bucket: &str,
+    ) -> (
+        Arc<RecordingStore>,
+        crate::parquet::parquet_support::CachedObjectStoreForTest,
+    ) {
+        let store = Arc::new(RecordingStore::default());
+        let cached = cache_object_store_for_test(
+            &format!("s3a://{bucket}/"),
+            &HashMap::new(),
+            AccessMode::Write,
+            Arc::clone(&store) as Arc<dyn ObjectStore>,
+        );
+        (store, cached)
+    }
+
+    /// One full row group of two `Int64` columns, roughly 16 MiB once encoded: more than the
+    /// 10 MiB a `BufWriter` holds before it switches to a multipart upload.
+    fn multipart_sized_batch(schema: SchemaRef) -> Result<RecordBatch> {
+        let rows = DEFAULT_MAX_ROW_GROUP_ROW_COUNT as i64;
+        Ok(RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int64Array::from_iter_values(0..rows)),
+                Arc::new(Int64Array::from_iter_values((0..rows).map(|v| v * 7))),
+            ],
+        )?)
+    }
+
+    fn two_long_columns(nullable: bool) -> SchemaRef {
+        Arc::new(Schema::new(vec![
+            Field::new("a", DataType::Int64, nullable),
+            Field::new("b", DataType::Int64, nullable),
+        ]))
+    }
+
+    /// An S3 destination is written through `object_store` to the key the scan would read it
+    /// from. The JVM passes Hadoop's unescaped `Path.toString`. The URL parser escapes a space and
+    /// a non-ASCII name and the key is decoded again, so both reach the key unchanged. A file this
+    /// small goes up in one PUT, and the writer reports the size it uploaded.
+    #[tokio::test]
+    async fn test_parquet_writer_uploads_s3_files_to_the_hadoop_key() -> Result<()> {
+        let (store, _cached) = record_writes_to("comet-writer-small");
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, true)]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )?;
+        let memory_source =
+            MemorySourceConfig::try_new(&[vec![batch.clone()]], Arc::clone(&schema), None)?;
+        let input = Arc::new(DataSourceExec::new(Arc::new(memory_source)));
+        let key = "out/dir with space/caf\u{e9}/part-00007-11111111-2222-3333-4444-555555555555-c000.parquet";
+
+        let writer = ParquetWriterExec::try_new(
+            input,
+            format!("s3a://comet-writer-small/{key}"),
+            None, // work_dir: Spark 4.0+ path
+            None,
+            None,
+            ParquetCompression::None,
+            0,
+            vec!["id".to_string()],
+            None,
+            HashMap::new(),
+        )?;
+        let mut stream = writer.execute(0, SessionContext::new().task_ctx())?;
+        while stream.try_next().await?.is_some() {}
+
+        // `parse` keeps the key as spelled. `Path::from` would percent-encode the non-ASCII name.
+        let location = Path::parse(key).expect("valid object key");
+        let uploaded = store.inner.get(&location).await?.bytes().await?;
+        assert_eq!(store.counts(), (1, 0, 0, 0));
+        let bytes_written = writer
+            .metrics()
+            .and_then(|metrics| metrics.sum_by_name("bytes_written"))
+            .map(|value| value.as_usize());
+        assert_eq!(bytes_written, Some(uploaded.len()));
+
+        let read: Vec<RecordBatch> = ParquetRecordBatchReaderBuilder::try_new(uploaded)?
+            .build()?
+            .collect::<std::result::Result<_, _>>()?;
+        assert_eq!(read.len(), 1);
+        assert_eq!(read[0].column(0).as_ref(), batch.column(0).as_ref());
+
+        Ok(())
+    }
+
+    /// A file larger than the writer's buffer is streamed as a multipart upload, which only
+    /// becomes an object once `close` completes it.
+    #[tokio::test]
+    async fn test_parquet_writer_streams_large_s3_files_as_multipart_uploads() -> Result<()> {
+        let (store, _cached) = record_writes_to("comet-writer-multipart");
+        let schema = two_long_columns(true);
+        let batch = multipart_sized_batch(Arc::clone(&schema))?;
+        let memory_source = MemorySourceConfig::try_new(&[vec![batch]], schema, None)?;
+        let input = Arc::new(DataSourceExec::new(Arc::new(memory_source)));
+
+        let writer = ParquetWriterExec::try_new(
+            input,
+            "s3a://comet-writer-multipart/out/part-00000.parquet".to_string(),
+            None,
+            None,
+            None,
+            ParquetCompression::None,
+            0,
+            vec!["a".to_string(), "b".to_string()],
+            None,
+            HashMap::new(),
+        )?;
+        let mut stream = writer.execute(0, SessionContext::new().task_ctx())?;
+        while stream.try_next().await?.is_some() {}
+
+        assert_eq!(store.counts(), (0, 1, 1, 0));
+        let uploaded = store
+            .inner
+            .get(&Path::from("out/part-00000.parquet"))
+            .await?
+            .bytes()
+            .await?;
+        assert!(
+            uploaded.len() > 10 * 1024 * 1024,
+            "expected a multipart-sized file, got {} bytes",
+            uploaded.len()
+        );
+        let reader = SerializedFileReader::new(uploaded)?;
+        assert_eq!(
+            reader.metadata().file_metadata().num_rows(),
+            DEFAULT_MAX_ROW_GROUP_ROW_COUNT as i64
+        );
+
+        Ok(())
+    }
+
+    /// A write that fails once its multipart upload is under way aborts the upload instead of
+    /// leaving the uploaded parts behind, and no object ever appears.
+    #[tokio::test]
+    async fn test_parquet_writer_aborts_the_s3_upload_when_the_write_fails() -> Result<()> {
+        let (store, _cached) = record_writes_to("comet-writer-abort");
+        let input_schema = two_long_columns(true);
+        // The first batch fills a row group past the buffer, which starts the multipart upload.
+        // The second has a null that the non-nullable target columns reject.
+        let large = multipart_sized_batch(Arc::clone(&input_schema))?;
+        let bad = RecordBatch::try_new(
+            Arc::clone(&input_schema),
+            vec![
+                Arc::new(Int64Array::from(vec![Some(1), None])),
+                Arc::new(Int64Array::from(vec![1, 2])),
+            ],
+        )?;
+        let memory_source = MemorySourceConfig::try_new(&[vec![large, bad]], input_schema, None)?;
+        let input = Arc::new(DataSourceExec::new(Arc::new(memory_source)));
+
+        let writer = ParquetWriterExec::try_new(
+            input,
+            "s3a://comet-writer-abort/out/part-00000.parquet".to_string(),
+            None,
+            None,
+            None,
+            ParquetCompression::None,
+            0,
+            vec!["a".to_string(), "b".to_string()],
+            Some(two_long_columns(false)),
+            HashMap::new(),
+        )?;
+        let mut stream = writer.execute(0, SessionContext::new().task_ctx())?;
+        let error = stream
+            .try_next()
+            .await
+            .expect_err("a null in a non-nullable column must fail the write");
+        assert!(
+            error.to_string().contains("Failed to rename batch columns"),
+            "unexpected error: {error}"
+        );
+
+        assert_eq!(store.counts(), (0, 1, 0, 1));
+        assert!(store
+            .inner
+            .head(&Path::from("out/part-00000.parquet"))
+            .await
+            .is_err());
+
+        Ok(())
+    }
+
+    /// S3 is the only object store the writer uploads to. Other object store URLs are rejected
+    /// before any store is built for them.
+    #[test]
+    fn test_parquet_writer_rejects_other_object_store_schemes() {
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, true)]));
+        for path in [
+            "gs://bucket/out/part-00000.parquet",
+            "abfss://container@account.dfs.core.windows.net/out/part-00000.parquet",
+        ] {
+            let result = ParquetWriterExec::create_arrow_writer(
+                path,
+                Arc::clone(&schema),
+                WriterProperties::builder().build(),
+                Arc::new(RuntimeEnv::default()),
+                &HashMap::new(),
+            );
+            let Err(error) = result else {
+                panic!("expected {path} to be rejected");
+            };
+            assert!(
+                error.to_string().contains("Unsupported storage scheme"),
+                "unexpected error for {path}: {error}"
+            );
+        }
     }
 
     /// Helper function to create a test RecordBatch with 1000 rows of (int, string) data

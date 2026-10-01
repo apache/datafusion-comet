@@ -25,6 +25,7 @@ import scala.collection.mutable.ArrayBuffer
 import scala.jdk.CollectionConverters._
 import scala.util.{Random, Using}
 
+import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.{FileSystem, Path}
 import org.apache.hadoop.mapreduce.TaskAttemptContext
 import org.apache.logging.log4j.Level
@@ -44,6 +45,7 @@ import org.apache.spark.sql.types.{ArrayType, LongType, MapType, Metadata, Metad
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
+import org.apache.comet.hadoop.fs.BlobSchemeFileSystem
 import org.apache.comet.serde.operator.NativeWriteUtils
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, SchemaGenOptions}
 
@@ -1076,6 +1078,120 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
         declinedAtPlanning == rejectedAtRuntime,
         s"basename '$basename': declined at planning = $declinedAtPlanning, but the task guard " +
           s"on ${committedPath(basename)} says $rejectedAtRuntime")
+    }
+  }
+
+  test("S3 destinations are admitted only where the native writer matches S3A") {
+    // The native writer uploads with object_store rather than through S3A, so the filesystem gate
+    // both native write serdes share admits an S3 destination only where the two create the same
+    // objects. It reads the Hadoop configuration and asks Hadoop which FileSystem serves the
+    // scheme, which hadoop-aws on the test classpath answers without an S3 endpoint.
+    // ParquetWriteToS3Suite runs admitted writes against MinIO.
+    def declined(path: String, settings: (String, String)*): Option[String] =
+      declinedWith(path, "part", settings: _*)
+    def declinedWith(
+        path: String,
+        basename: String,
+        settings: (String, String)*): Option[String] = {
+      val conf = new Configuration()
+      settings.foreach { case (key, value) => conf.set(key, value) }
+      NativeWriteUtils.unsupportedDestination(path, basename, conf)
+    }
+    // Built from code points because scalastyle forbids non-ASCII source characters.
+    def cp(codePoints: Int*): String = codePoints.map(Character.toChars(_).mkString).mkString
+    val out = "s3a://bucket/warehouse/out"
+
+    // Spaces and non-ASCII names survive the native writer's URL round trip on S3, unlike on HDFS.
+    Seq(
+      out,
+      "s3a://bucket/dir with space/out",
+      s"s3a://bucket/caf${cp(0x00e9)}/${cp(0x65e5, 0x672c, 0x8a9e)}/out",
+      "s3a://bucket/dt=2026-09-28/hour=17/out").foreach { path =>
+      assert(declined(path).isEmpty, s"expected $path to be admitted: ${declined(path)}")
+    }
+    // `%`, `?`, `#` and control characters do not, whether in the directory or in the basename.
+    Seq(
+      "s3a://bucket/50%25off/out",
+      "s3a://bucket/a%2Fb/out",
+      "s3a://bucket/question?here/out",
+      "s3a://bucket/hash#here/out",
+      "s3a://bucket/line\nbreak/out",
+      "s3a://bucket/tab\there/out").foreach { path =>
+      assert(declined(path).isDefined, s"expected $path to be declined")
+    }
+    Seq("part%25", "part?x", "part#x").foreach { basename =>
+      assert(declinedWith(out, basename).isDefined, s"expected basename '$basename' declined")
+    }
+
+    // Hadoop decides, not the scheme: `s3://` has no FileSystem unless one is configured, and
+    // only S3A itself is trusted, not a subclass of it or some other S3 connector.
+    assert(declined("s3://bucket/out").exists(_.contains("no loadable FileSystem")))
+    assert(
+      declined(
+        "s3://bucket/out",
+        "fs.s3.impl" -> "org.apache.hadoop.fs.s3a.S3AFileSystem").isEmpty)
+    assert(declined(out, "fs.s3a.impl" -> classOf[BlobSchemeFileSystem].getName).isDefined)
+    assert(declined("gs://bucket/out").exists(_.startsWith("Supported output filesystems")))
+    // A scheme listed for libhdfs is routed to the HDFS writer natively.
+    assert(declined(out, CometConf.COMET_LIBHDFS_SCHEMES_KEY -> "hdfs,s3a").isDefined)
+
+    // The magic committer relies on S3A intercepting the files it is asked to create.
+    assert(declined("s3a://bucket/out/__magic_job-1234/__base").isDefined)
+    assert(declined(out, "fs.s3a.committer.name" -> "magic").isDefined)
+    assert(declined(out, "fs.s3a.bucket.bucket.committer.name" -> "magic").isDefined)
+    assert(declined(out, "fs.s3a.committer.name" -> "directory").isEmpty)
+
+    // Settings that S3A applies to every object it creates and the native writer would not.
+    Seq(
+      "fs.s3a.encryption.algorithm" -> "SSE-KMS",
+      "fs.s3a.server-side-encryption-algorithm" -> "AES256",
+      "fs.s3a.bucket.bucket.encryption.algorithm" -> "CSE-KMS",
+      "fs.s3a.acl.default" -> "BucketOwnerFullControl",
+      "fs.s3a.create.storage.class" -> "intelligent_tiering",
+      "fs.s3a.object.content.encoding" -> "gzip",
+      "fs.s3a.create.header.x-amz-meta-owner" -> "etl",
+      "fs.s3a.bucket.bucket.create.header.x-amz-meta-owner" -> "etl").foreach { setting =>
+      assert(declined(out, setting).isDefined, s"expected $setting to be declined")
+    }
+    // Unless the setting is scoped to another bucket, or blanked out for this one.
+    assert(declined(out, "fs.s3a.bucket.other.encryption.algorithm" -> "SSE-KMS").isEmpty)
+    assert(
+      declined(
+        out,
+        "fs.s3a.encryption.algorithm" -> "SSE-KMS",
+        "fs.s3a.bucket.bucket.encryption.algorithm" -> "").isEmpty)
+
+    // The path the commit protocol hands a task is checked again, for the same characters and
+    // for a magic committer directory.
+    val attempt = s"$out/_temporary/0/_temporary/attempt_202609281700_0001_m_000000_0"
+    NativeWriteUtils.checkNativeWriteDestination(
+      s"$attempt/part-00000-a1b2c3d4-e5f6-c000.snappy.parquet")
+    // A staging committer hands out a local path, which the native writer uses as it is.
+    NativeWriteUtils.checkNativeWriteDestination("file:/tmp/staging/part?x-00000.parquet")
+    Seq(
+      s"$attempt/part%25-00000.parquet",
+      s"$out/__magic_job-1234/job-1234/tasks/attempt_1/__base/part-00000.parquet").foreach {
+      path =>
+        intercept[UnsupportedOperationException] {
+          NativeWriteUtils.checkNativeWriteDestination(path)
+        }
+    }
+    // Planning and the task guard have to agree, as they do for HDFS above.
+    Seq("part", "out", "data_v2", "part with space", "part%25", "part?x", "part#x").foreach {
+      basename =>
+        val declinedAtPlanning = declinedWith(out, basename).isDefined
+        val rejectedAtRuntime =
+          try {
+            NativeWriteUtils.checkNativeWriteDestination(
+              s"$attempt/$basename-00000-a1b2c3d4-e5f6-c000.snappy.parquet")
+            false
+          } catch {
+            case _: UnsupportedOperationException => true
+          }
+        assert(
+          declinedAtPlanning == rejectedAtRuntime,
+          s"basename '$basename': declined at planning = $declinedAtPlanning, but the task " +
+            s"guard says $rejectedAtRuntime")
     }
   }
 
