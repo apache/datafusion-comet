@@ -27,7 +27,6 @@ import org.apache.spark.sql.catalyst.util.GenericArrayData
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
-import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.DataTypeSupport.{deepNullable, isComplexType}
 import org.apache.comet.serde.QueryPlanSerde._
@@ -140,10 +139,6 @@ object CometArrayContains
 
 object CometSortArray extends CometExpressionSerde[SortArray] with CodegenDispatchFallback {
 
-  override def getIncompatibleReasons(): Seq[String] = Seq(
-    "When `" + CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key + "=true`, sorting on" +
-      " floating-point types is not 100% compatible with Spark")
-
   private def supportedSortArrayElementType(dt: DataType): Boolean = {
     dt match {
       case _: NullType =>
@@ -163,16 +158,13 @@ object CometSortArray extends CometExpressionSerde[SortArray] with CodegenDispat
     if (!supportedSortArrayElementType(elementType)) {
       Unsupported(Some(s"Sort on array element type $elementType is not supported"))
     } else {
-      SupportLevel
-        .strictFloatingPointReason(elementType, "Sorting on floating-point")
-        .map(reason => Incompatible(Some(reason)))
-        .getOrElse(expr.ascendingOrder match {
-          // Spark 3.x requires a boolean Literal; Spark 4.0+ widens ascendingOrder to any
-          // foldable boolean. Accept both; convert evaluates the foldable expression.
-          case ao if ao.foldable && ao.dataType == BooleanType => Compatible()
-          case other =>
-            Unsupported(Some(s"ascendingOrder must be a foldable boolean: $other"))
-        })
+      expr.ascendingOrder match {
+        // Spark 3.x requires a boolean Literal; Spark 4.0+ widens ascendingOrder to any
+        // foldable boolean. Accept both; convert evaluates the foldable expression.
+        case ao if ao.foldable && ao.dataType == BooleanType => Compatible()
+        case other =>
+          Unsupported(Some(s"ascendingOrder must be a foldable boolean: $other"))
+      }
     }
   }
 
@@ -184,18 +176,28 @@ object CometSortArray extends CometExpressionSerde[SortArray] with CodegenDispat
     // ascendingOrder is a foldable boolean (gated in getSupportLevel). Evaluate it; a null result
     // unboxes to false, matching Spark's `right.eval().asInstanceOf[Boolean]`.
     val ascending = expr.ascendingOrder.eval(EmptyRow).asInstanceOf[Boolean]
-    val direction = if (ascending) "ASC" else "DESC"
-    val nullOrdering = if (ascending) "NULLS FIRST" else "NULLS LAST"
-    val sortDirectionExprProto = exprToProtoInternal(Literal(direction), inputs, binding)
-    val nullOrderingExprProto = exprToProtoInternal(Literal(nullOrdering), inputs, binding)
-
-    val sortArrayScalarExpr =
+    val arrayType = expr.base.dataType.asInstanceOf[ArrayType]
+    if (SupportLevel.containsType(
+        arrayType.elementType,
+        classOf[FloatType],
+        classOf[DoubleType])) {
+      // DataFusion's array_sort orders floats by IEEE 754 total order. spark_sort_array follows
+      // Spark, whose generated code also sorts differently when the elements cannot be null, so it
+      // takes containsNull, which the native array type does not carry.
+      scalarFunctionExprToProto(
+        "spark_sort_array",
+        arrayExprProto,
+        exprToProtoInternal(Literal(ascending), inputs, binding),
+        exprToProtoInternal(Literal(arrayType.containsNull), inputs, binding))
+    } else {
+      val direction = if (ascending) "ASC" else "DESC"
+      val nullOrdering = if (ascending) "NULLS FIRST" else "NULLS LAST"
       scalarFunctionExprToProto(
         "array_sort",
         arrayExprProto,
-        sortDirectionExprProto,
-        nullOrderingExprProto)
-    sortArrayScalarExpr
+        exprToProtoInternal(Literal(direction), inputs, binding),
+        exprToProtoInternal(Literal(nullOrdering), inputs, binding))
+    }
   }
 }
 

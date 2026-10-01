@@ -122,9 +122,10 @@
 ## array_remove
 
 - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
-- Spark 3.5.8 (audited 2026-05-27): baseline. `ArrayRemove(left, right)`; removes all occurrences equal to `right`. Wired as `CometScalarFunction("array_remove")`. Falls back via `ArraysBase.isTypeSupported` for binary/struct/map/null child types.
+- Spark 3.5.8 (audited 2026-05-27): baseline. `ArrayRemove(left, right)`; removes all occurrences equal to `right`. Falls back via `ArraysBase.isTypeSupported` for binary/struct/map/null child types.
 - Spark 4.0.1 (audited 2026-05-27): `NullIntolerant` -> `nullIntolerant` field refactor.
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
+- Current status: `CometArrayRemove` calls `array_remove_all`, which Comet's `SparkArrayRemove` replaces. For elements with a `FLOAT` or `DOUBLE` at any depth it compares as Spark's `genEqual` does (`-0.0` equals `0.0`, all NaNs are equal, nested elements through `spark_equality`) and keeps the bits of the elements it keeps. Other element types use DataFusion's `array_remove_all`. Null elements stay, and a null array or value gives null.
 
 ## array_repeat
 
@@ -196,8 +197,9 @@
 ## sort_array
 
 - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
-- Spark 3.5.8 (audited 2026-05-27): baseline. `SortArray(base, ascendingOrder) extends BinaryExpression with ArraySortLike`; the second arg must be a `Literal(_: Boolean, BooleanType)`. Comet `CometSortArray` flags `Incompatible` under strict floating-point and falls back for nested arrays whose innermost element is `Struct` or `Null`.
-- Spark 4.0.1 (audited 2026-05-27): trait set changes substantively: `ArraySortLike` and `NullIntolerant` are removed, `nullIntolerant = true` becomes an override, and `ascendingOrder` is widened to accept any foldable boolean (not just `Literal`). Comet's `CometSortArray` still requires a `Literal`, so the new foldable form falls back at convert time.
+- Spark 3.5.8 (audited 2026-05-27): baseline. `SortArray(base, ascendingOrder) extends BinaryExpression with ArraySortLike`; the second arg must be a `Literal(_: Boolean, BooleanType)`.
+- Spark 4.0.1 (audited 2026-05-27): trait set changes substantively: `ArraySortLike` and `NullIntolerant` are removed, `nullIntolerant = true` becomes an override, and `ascendingOrder` is widened to accept any foldable boolean (not just `Literal`).
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
+- Current status: elements with a `FLOAT` or `DOUBLE` at any depth go to the native `spark_sort_array`, which takes Spark's `containsNull` from the serde and sorts as Spark's generated code does: a stable sort in Spark's SQL ordering, except that an ascending sort of `FLOAT` or `DOUBLE` elements that cannot be null follows `java.util.Arrays.sort`, which puts `-0.0` before `0.0`. This holds in strict floating-point mode too. Other supported element types use DataFusion's `array_sort`, and unsupported ones route through the codegen dispatcher. `ascendingOrder` may be any foldable boolean, which the serde evaluates.
 
 [Spark Expression Support]: ../../user-guide/latest/expressions.md

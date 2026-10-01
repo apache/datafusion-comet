@@ -18,6 +18,7 @@
 mod array_extrema;
 mod array_insert;
 mod array_position;
+mod array_remove;
 mod array_slice;
 mod arrays_overlap;
 mod arrays_zip;
@@ -28,10 +29,12 @@ mod list_positions;
 mod nested_comparison;
 mod sequence;
 mod size;
+mod sort_array;
 
 pub use array_extrema::SparkArrayExtrema;
 pub use array_insert::ArrayInsert;
 pub use array_position::SparkArrayPositionFunc;
+pub use array_remove::SparkArrayRemove;
 pub use array_slice::SparkArraySlice;
 pub use arrays_overlap::SparkArraysOverlap;
 pub use arrays_zip::SparkArraysZipFunc;
@@ -42,3 +45,4 @@ pub use list_positions::ListPositionsExpr;
 pub use nested_comparison::{spark_comparison, spark_in_list};
 pub use sequence::spark_sequence;
 pub use size::{spark_size, SparkSizeFunc};
+pub use sort_array::SparkSortArray;

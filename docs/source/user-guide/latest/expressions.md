@@ -176,7 +176,7 @@ The tables below list every Spark built-in expression with its current status.
 | `sequence` | ✅ | Hybrid | Integral types run natively; date/timestamp sequences use codegen dispatch |
 | `shuffle` | ✅ | Native | Binary/struct/map elements fall back |
 | `slice` | ✅ | Native | Native ([#4149](https://github.com/apache/datafusion-comet/pull/4149)) |
-| `sort_array` | ✅ | Hybrid | Struct, nested-array, and null elements run natively; other element types (for example intervals), and floating-point elements when `spark.comet.exec.strictFloatingPoint=true`, route through the JVM codegen dispatcher |
+| `sort_array` | ✅ | Hybrid | Struct, nested-array, floating-point, and null elements run natively; other element types (for example intervals) route through the JVM codegen dispatcher |
 
 ---
 
