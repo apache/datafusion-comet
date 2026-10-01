@@ -1,0 +1,15 @@
+{
+  "mode": "spark",
+  "rows": 500000,
+  "repetitions": 5,
+  "host": "macOS-26.6.2-arm64-arm-64bit",
+  "java": "/Library/Java/JavaVirtualMachines/zulu-17.jdk/Contents/Home/bin/java",
+  "heap": "2g",
+  "cores": 4,
+  "native_profile": "release",
+  "library_sha256": "944a8a217ebef76ddb6c2bc4bfb8e82ce678532dfb972a1feae1dfaf1d615b61",
+  "git_head": "63bd47c3af8cb2bec8a05b570e11e7d7d4ce5da7",
+  "sampling_seconds": 0.1,
+  "native_temp": "/private/tmp/comet-local-stage5b-final/spark-tmp/native",
+  "spark_temp": "/private/tmp/comet-local-stage5b-final/spark-tmp/spark"
+}

@@ -1,0 +1,10 @@
+*(3) Project [id#206L, value#211L]
++- *(3) ShuffledHashJoin [id#206L], [rid#210L], Inner, BuildRight
+   :- Exchange hashpartitioning(id#206L, 8), ENSURE_REQUIREMENTS, [plan_id=415]
+   :  +- *(1) Filter isnotnull(id#206L)
+   :     +- *(1) ColumnarToRow
+   :        +- FileScan parquet [id#206L] Batched: true, DataFilters: [isnotnull(id#206L)], Format: Parquet, Location: InMemoryFileIndex(1 paths)[file:/private/tmp/comet-local-stage5b-data/fact], PartitionFilters: [], PushedFilters: [IsNotNull(id)], ReadSchema: struct<id:bigint>
+   +- Exchange hashpartitioning(rid#210L, 8), ENSURE_REQUIREMENTS, [plan_id=421]
+      +- *(2) Filter isnotnull(rid#210L)
+         +- *(2) ColumnarToRow
+            +- FileScan parquet [rid#210L,value#211L] Batched: true, DataFilters: [isnotnull(rid#210L)], Format: Parquet, Location: InMemoryFileIndex(1 paths)[file:/private/tmp/comet-local-stage5b-data/dimension], PartitionFilters: [], PushedFilters: [IsNotNull(rid)], ReadSchema: struct<rid:bigint,value:bigint>

@@ -492,16 +492,24 @@ lifecycle and 12 NativeUtil), plus 21 native lifecycle/handoff tests and ten nat
 planner tests. Formatting, strict Clippy and Spark 3.5 main/test compilation with
 strict warnings passed. Spark SQL remains deliberately unrun.
 
-#### 5b. Performance checkpoint (not started)
+#### 5b. Performance checkpoint (completed)
 
-First record which benchmark queries are actually admitted. The current narrow
-operator surface cannot be assumed to execute full TPC-H/TPC-DS queries natively;
-fallback timings must not be presented as local-mode performance. Establish
-supported-query baselines with matching CPU and memory settings, then measure
-end-to-end time, planning, CPU, spill and peak/retained process memory. Keep
-unsupported-query coverage and any remaining Spark SQL validation gap explicit.
+The manual benchmark records actual admission, checks execution paths and result
+digests, and compares Spark local, existing Comet with native shuffle, and local
+execution in separate release-library JVMs. Five supported cases passed 210
+executions across two passes with reversed mode order. TPC fixture planning
+admitted no complete query (22 TPC-H fallbacks; 102 TPC-DS fallbacks and one schema
+planning error). No fallback timing is presented as local performance.
 
-Stop after 5a verification before beginning these measurements.
+Local execution reduced the execution median in all ten case/pass comparisons,
+but increased planning in nine versus existing Comet. End-to-end performance did not consistently improve.
+Process RSS and temporary-file occupancy were sampled; operator peak memory and
+cumulative spill bytes remain unavailable. See the [benchmark report](local-execution-benchmark.md)
+for settings, limits, raw results and reproduction steps.
+
+Stop after this checkpoint. The proposed next stage is profiling planning and
+admission overhead, then validating a bounded optimization before broadening the
+operator surface. Spark SQL validation remains deferred at the user's request.
 
 ## Spark SQL validation policy
 

@@ -1,0 +1,2 @@
+*(1) ColumnarToRow
++- CometLocal [id#220L, rank#224L], batchSize=8192, resultPartitions=1, ordered=true, query=parquet, terminal=true, memoryLimit=536870912, spill=true

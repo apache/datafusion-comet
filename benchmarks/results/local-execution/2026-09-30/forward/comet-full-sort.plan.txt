@@ -1,0 +1,5 @@
+*(1) CometColumnarToRow
++- CometSort [id#220L, rank#224L], [rank#224L ASC NULLS FIRST, id#220L ASC NULLS FIRST]
+   +- CometExchange rangepartitioning(rank#224L ASC NULLS FIRST, id#220L ASC NULLS FIRST, 8), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=664]
+      +- CometProject [id#220L, rank#224L], [id#220L, ((id#220L * 37) % 1000003) AS rank#224L]
+         +- CometNativeScan parquet [id#220L] Batched: true, DataFilters: [], Format: Parquet, Location: InMemoryFileIndex(1 paths)[file:/private/tmp/comet-local-stage5b-data/fact], PartitionFilters: [], PushedFilters: [], ReadSchema: struct<id:bigint>

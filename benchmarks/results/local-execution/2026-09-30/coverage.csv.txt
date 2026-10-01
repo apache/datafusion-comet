@@ -1,0 +1,126 @@
+suite,query,status,root
+tpch,q1.sql,fallback,WholeStageCodegen (3)
+tpch,q10.sql,fallback,TakeOrderedAndProject
+tpch,q11.sql,fallback,WholeStageCodegen (11)
+tpch,q12.sql,fallback,WholeStageCodegen (7)
+tpch,q13.sql,fallback,WholeStageCodegen (7)
+tpch,q14.sql,fallback,WholeStageCodegen (6)
+tpch,q15.sql,fallback,WholeStageCodegen (6)
+tpch,q16.sql,fallback,WholeStageCodegen (8)
+tpch,q17.sql,fallback,WholeStageCodegen (9)
+tpch,q18.sql,fallback,TakeOrderedAndProject
+tpch,q19.sql,fallback,WholeStageCodegen (6)
+tpch,q2.sql,fallback,TakeOrderedAndProject
+tpch,q20.sql,fallback,WholeStageCodegen (22)
+tpch,q21.sql,fallback,TakeOrderedAndProject
+tpch,q22.sql,fallback,WholeStageCodegen (7)
+tpch,q3.sql,fallback,TakeOrderedAndProject
+tpch,q4.sql,fallback,WholeStageCodegen (7)
+tpch,q5.sql,fallback,WholeStageCodegen (23)
+tpch,q6.sql,fallback,WholeStageCodegen (2)
+tpch,q7.sql,fallback,WholeStageCodegen (23)
+tpch,q8.sql,fallback,WholeStageCodegen (31)
+tpch,q9.sql,fallback,WholeStageCodegen (23)
+tpcds,q1.sql,fallback,TakeOrderedAndProject
+tpcds,q10.sql,fallback,TakeOrderedAndProject
+tpcds,q11.sql,fallback,TakeOrderedAndProject
+tpcds,q12.sql,fallback,TakeOrderedAndProject
+tpcds,q13.sql,fallback,WholeStageCodegen (22)
+tpcds,q14.sql-1,fallback,TakeOrderedAndProject
+tpcds,q14.sql-2,fallback,TakeOrderedAndProject
+tpcds,q15.sql,fallback,TakeOrderedAndProject
+tpcds,q16.sql,fallback,WholeStageCodegen (22)
+tpcds,q17.sql,fallback,TakeOrderedAndProject
+tpcds,q18.sql,fallback,TakeOrderedAndProject
+tpcds,q19.sql,fallback,TakeOrderedAndProject
+tpcds,q2.sql,fallback,WholeStageCodegen (21)
+tpcds,q20.sql,fallback,TakeOrderedAndProject
+tpcds,q21.sql,fallback,TakeOrderedAndProject
+tpcds,q22.sql,fallback,TakeOrderedAndProject
+tpcds,q23.sql-1,fallback,WholeStageCodegen (48)
+tpcds,q23.sql-2,fallback,TakeOrderedAndProject
+tpcds,q24.sql-1,fallback,WholeStageCodegen (24)
+tpcds,q24.sql-2,fallback,WholeStageCodegen (24)
+tpcds,q25.sql,fallback,TakeOrderedAndProject
+tpcds,q26.sql,fallback,TakeOrderedAndProject
+tpcds,q27.sql,fallback,TakeOrderedAndProject
+tpcds,q28.sql,fallback,CartesianProduct
+tpcds,q29.sql,fallback,TakeOrderedAndProject
+tpcds,q3.sql,fallback,TakeOrderedAndProject
+tpcds,q30.sql,planning-error,ExtendedAnalysisException
+tpcds,q31.sql,fallback,WholeStageCodegen (72)
+tpcds,q32.sql,fallback,WholeStageCodegen (17)
+tpcds,q33.sql,fallback,TakeOrderedAndProject
+tpcds,q34.sql,fallback,WholeStageCodegen (19)
+tpcds,q35.sql,fallback,TakeOrderedAndProject
+tpcds,q36.sql,fallback,TakeOrderedAndProject
+tpcds,q37.sql,fallback,TakeOrderedAndProject
+tpcds,q38.sql,fallback,WholeStageCodegen (36)
+tpcds,q39.sql-1,fallback,WholeStageCodegen (32)
+tpcds,q39.sql-2,fallback,WholeStageCodegen (32)
+tpcds,q4.sql,fallback,TakeOrderedAndProject
+tpcds,q40.sql,fallback,TakeOrderedAndProject
+tpcds,q41.sql,fallback,TakeOrderedAndProject
+tpcds,q42.sql,fallback,TakeOrderedAndProject
+tpcds,q43.sql,fallback,TakeOrderedAndProject
+tpcds,q44.sql,fallback,TakeOrderedAndProject
+tpcds,q45.sql,fallback,TakeOrderedAndProject
+tpcds,q46.sql,fallback,TakeOrderedAndProject
+tpcds,q47.sql,fallback,TakeOrderedAndProject
+tpcds,q48.sql,fallback,WholeStageCodegen (18)
+tpcds,q49.sql,fallback,TakeOrderedAndProject
+tpcds,q5.sql,fallback,TakeOrderedAndProject
+tpcds,q50.sql,fallback,TakeOrderedAndProject
+tpcds,q51.sql,fallback,TakeOrderedAndProject
+tpcds,q52.sql,fallback,TakeOrderedAndProject
+tpcds,q53.sql,fallback,TakeOrderedAndProject
+tpcds,q54.sql,fallback,TakeOrderedAndProject
+tpcds,q55.sql,fallback,TakeOrderedAndProject
+tpcds,q56.sql,fallback,TakeOrderedAndProject
+tpcds,q57.sql,fallback,TakeOrderedAndProject
+tpcds,q58.sql,fallback,TakeOrderedAndProject
+tpcds,q59.sql,fallback,TakeOrderedAndProject
+tpcds,q6.sql,fallback,TakeOrderedAndProject
+tpcds,q60.sql,fallback,TakeOrderedAndProject
+tpcds,q61.sql,fallback,WholeStageCodegen (49)
+tpcds,q62.sql,fallback,TakeOrderedAndProject
+tpcds,q63.sql,fallback,TakeOrderedAndProject
+tpcds,q64.sql,fallback,WholeStageCodegen (150)
+tpcds,q65.sql,fallback,TakeOrderedAndProject
+tpcds,q66.sql,fallback,TakeOrderedAndProject
+tpcds,q67.sql,fallback,TakeOrderedAndProject
+tpcds,q68.sql,fallback,TakeOrderedAndProject
+tpcds,q69.sql,fallback,TakeOrderedAndProject
+tpcds,q7.sql,fallback,TakeOrderedAndProject
+tpcds,q70.sql,fallback,TakeOrderedAndProject
+tpcds,q71.sql,fallback,WholeStageCodegen (25)
+tpcds,q72.sql,fallback,TakeOrderedAndProject
+tpcds,q73.sql,fallback,WholeStageCodegen (19)
+tpcds,q74.sql,fallback,TakeOrderedAndProject
+tpcds,q75.sql,fallback,TakeOrderedAndProject
+tpcds,q76.sql,fallback,TakeOrderedAndProject
+tpcds,q77.sql,fallback,TakeOrderedAndProject
+tpcds,q78.sql,fallback,TakeOrderedAndProject
+tpcds,q79.sql,fallback,TakeOrderedAndProject
+tpcds,q8.sql,fallback,TakeOrderedAndProject
+tpcds,q80.sql,fallback,TakeOrderedAndProject
+tpcds,q81.sql,fallback,TakeOrderedAndProject
+tpcds,q82.sql,fallback,TakeOrderedAndProject
+tpcds,q83.sql,fallback,TakeOrderedAndProject
+tpcds,q84.sql,fallback,TakeOrderedAndProject
+tpcds,q85.sql,fallback,TakeOrderedAndProject
+tpcds,q86.sql,fallback,TakeOrderedAndProject
+tpcds,q87.sql,fallback,WholeStageCodegen (36)
+tpcds,q88.sql,fallback,CartesianProduct
+tpcds,q89.sql,fallback,TakeOrderedAndProject
+tpcds,q9.sql,fallback,WholeStageCodegen (1)
+tpcds,q90.sql,fallback,WholeStageCodegen (29)
+tpcds,q91.sql,fallback,WholeStageCodegen (27)
+tpcds,q92.sql,fallback,WholeStageCodegen (17)
+tpcds,q93.sql,fallback,TakeOrderedAndProject
+tpcds,q94.sql,fallback,WholeStageCodegen (22)
+tpcds,q95.sql,fallback,WholeStageCodegen (31)
+tpcds,q96.sql,fallback,WholeStageCodegen (14)
+tpcds,q97.sql,fallback,WholeStageCodegen (14)
+tpcds,q98.sql,fallback,WholeStageCodegen (13)
+tpcds,q99.sql,fallback,TakeOrderedAndProject
