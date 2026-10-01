@@ -97,7 +97,7 @@ The store itself caches no credentials. Each location's bridge reuses its own cr
 
 The dispatcher returns `null` for a provider that does not implement the interface without calling it, and Comet builds the same plain store as before. The Iceberg path does not use locations. Operations other than reads route by path without the retry, since Comet only reads through these stores.
 
-## The IRSA web-identity provider is the exception that does cache
+## The IRSA web-identity provider keeps its own cache
 
 The bridge's reuse above is bounded by the expiry a vendor reports. The EKS/IRSA web-identity provider in `native/core/src/cloud/s3/web_identity.rs` is Comet's own and keeps a fuller cache. It is not a vendor path -- there is no JVM SPI involved -- so the reasoning above does not apply.
 
