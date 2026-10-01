@@ -22,8 +22,6 @@
 -- `-d` flips the sign bit, so `-d` of the NaN row is a NaN with the sign bit set on every
 -- platform. That is the NaN that arithmetic produces on x86-64.
 
--- ConfigMatrix: spark.comet.exec.strictFloatingPoint=false,true
-
 statement
 CREATE TABLE ar_float(id INT, d DOUBLE, f FLOAT) USING parquet
 

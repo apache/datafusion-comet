@@ -45,8 +45,16 @@ object CometArrayRemove
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val arrayExprProto = exprToProtoInternal(expr.left, inputs, binding)
     val keyExprProto = exprToProtoInternal(expr.right, inputs, binding)
-
-    scalarFunctionExprToProto("array_remove_all", arrayExprProto, keyExprProto)
+    // DataFusion's array_remove_all compares floats by their bits. spark_array_remove compares
+    // them as Spark does, with -0.0 equal to 0.0 and all NaNs equal.
+    val elementType = expr.left.dataType.asInstanceOf[ArrayType].elementType
+    val function =
+      if (SupportLevel.containsType(elementType, classOf[FloatType], classOf[DoubleType])) {
+        "spark_array_remove"
+      } else {
+        "array_remove_all"
+      }
+    scalarFunctionExprToProto(function, arrayExprProto, keyExprProto)
   }
 }
 
@@ -182,13 +190,15 @@ object CometSortArray extends CometExpressionSerde[SortArray] with CodegenDispat
         classOf[FloatType],
         classOf[DoubleType])) {
       // DataFusion's array_sort orders floats by IEEE 754 total order. spark_sort_array follows
-      // Spark, whose generated code also sorts differently when the elements cannot be null, so it
-      // takes containsNull, which the native array type does not carry.
+      // Spark's ordering, except that -0.0 sorts before 0.0 where Spark's generated code sorts
+      // with java.util.Arrays.sort: ascending, over FLOAT or DOUBLE elements that cannot be null.
+      val negativeZeroFirst = ascending && !arrayType.containsNull &&
+        (arrayType.elementType == FloatType || arrayType.elementType == DoubleType)
       scalarFunctionExprToProto(
         "spark_sort_array",
         arrayExprProto,
         exprToProtoInternal(Literal(ascending), inputs, binding),
-        exprToProtoInternal(Literal(arrayType.containsNull), inputs, binding))
+        exprToProtoInternal(Literal(negativeZeroFirst), inputs, binding))
     } else {
       val direction = if (ascending) "ASC" else "DESC"
       val nullOrdering = if (ascending) "NULLS FIRST" else "NULLS LAST"

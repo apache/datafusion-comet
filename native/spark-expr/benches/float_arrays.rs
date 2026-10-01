@@ -87,7 +87,7 @@ fn criterion_benchmark(c: &mut Criterion) {
                 vec![
                     column.clone(),
                     scalar(ScalarValue::Boolean(Some(true))),
-                    scalar(ScalarValue::Boolean(Some(true))),
+                    scalar(ScalarValue::Boolean(Some(false))),
                 ],
                 &list,
             );

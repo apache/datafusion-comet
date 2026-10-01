@@ -17,17 +17,17 @@
 
 use std::sync::Arc;
 
-use crate::float_semantics::{compare_floats, has_float_leaf, spark_equality};
+use super::with_values;
+use crate::float_semantics::{compare_floats, spark_equality};
 use arrow::array::{
     Array, ArrayRef, AsArray, BooleanArray, BooleanBufferBuilder, ListArray, PrimitiveArray,
 };
 use arrow::buffer::{BooleanBuffer, NullBuffer, OffsetBuffer};
 use arrow::compute::filter;
-use arrow::datatypes::{ArrowPrimitiveType, DataType, FieldRef, Float32Type, Float64Type};
-use datafusion::common::{exec_err, Result, ScalarValue};
-use datafusion::functions_nested::remove::array_remove_all_udf;
+use arrow::datatypes::{ArrowPrimitiveType, DataType, Float32Type, Float64Type};
+use datafusion::common::{exec_err, utils::take_function_args, Result, ScalarValue};
 use datafusion::logical_expr::{
-    ColumnarValue, ReturnFieldArgs, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl, Signature,
+    ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
 use num::Float;
 
@@ -35,61 +35,50 @@ use num::Float;
 ///
 /// Spark removes every element equal to the value under `genEqual`, in which `-0.0` equals `0.0`
 /// and all NaNs are equal, at any depth of an array or struct element. It keeps null elements,
-/// and returns null when the array or the value is null. DataFusion's `array_remove_all` compares
-/// the bits instead, so it keeps a `-0.0` when removing `0.0`, and a NaN whose bits differ. Other
-/// element types go to DataFusion's implementation, which this replaces in Comet's registry.
+/// and returns null when the array or the value is null. DataFusion's `array_remove_all`, which
+/// Comet uses for other element types, compares the bits instead, so it keeps a `-0.0` when
+/// removing `0.0`, and a NaN whose bits differ.
 #[derive(Debug, Hash, Eq, PartialEq)]
 pub struct SparkArrayRemove {
-    datafusion_udf: Arc<ScalarUDF>,
+    signature: Signature,
 }
 
 impl Default for SparkArrayRemove {
     fn default() -> Self {
         Self {
-            datafusion_udf: array_remove_all_udf(),
+            signature: Signature::any(2, Volatility::Immutable),
         }
     }
 }
 
 impl ScalarUDFImpl for SparkArrayRemove {
     fn name(&self) -> &str {
-        "array_remove_all"
+        "spark_array_remove"
     }
 
     fn signature(&self) -> &Signature {
-        self.datafusion_udf.signature()
+        &self.signature
     }
 
     fn return_type(&self, arg_types: &[DataType]) -> Result<DataType> {
         Ok(arg_types[0].clone())
     }
 
-    /// DataFusion's version answers only this, with the array's field made nullable when either
-    /// argument is.
-    fn return_field_from_args(&self, args: ReturnFieldArgs) -> Result<FieldRef> {
-        self.datafusion_udf.return_field_from_args(args)
-    }
-
     fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
-        let [array, value] = args.args.as_slice() else {
-            return exec_err!("array_remove takes exactly two arguments");
-        };
-        // Spark arrays use Arrow's 32-bit List layout.
-        let DataType::List(field) = array.data_type() else {
-            return self.datafusion_udf.invoke_with_args(args);
-        };
-        if !has_float_leaf(field.data_type()) {
-            return self.datafusion_udf.invoke_with_args(args);
-        }
+        let [array, value] = take_function_args(self.name(), &args.args)?;
         let all_scalars = matches!(
             (array, value),
             (ColumnarValue::Scalar(_), ColumnarValue::Scalar(_))
         );
         let rows = if all_scalars { 1 } else { args.number_rows };
         let array = array.to_array(rows)?;
+        // Spark arrays use Arrow's 32-bit List layout.
+        let Some(list) = array.as_list_opt::<i32>() else {
+            return exec_err!("spark_array_remove takes a list, got {}", array.data_type());
+        };
         let result = match value {
-            ColumnarValue::Scalar(needle) => remove_constant(array.as_list::<i32>(), needle)?,
-            ColumnarValue::Array(value) => array_remove(array.as_list::<i32>(), value)?,
+            ColumnarValue::Scalar(needle) => remove_constant(list, needle)?,
+            ColumnarValue::Array(value) => array_remove(list, value)?,
         };
         if all_scalars {
             Ok(ColumnarValue::Scalar(ScalarValue::try_from_array(
@@ -152,17 +141,7 @@ where
         None => differs,
     };
     // A null row keeps its elements in the values; the list's null hides them.
-    let mut kept_offsets = Vec::with_capacity(array.len() + 1);
-    kept_offsets.push(0i32);
-    let mut kept = 0i32;
-    for bounds in offsets.windows(2) {
-        let start = bounds[0] as usize - first;
-        let length = bounds[1] as usize - first - start;
-        kept += keep
-            .inner()
-            .count_set_bits_offset(keep.offset() + start, length) as i32;
-        kept_offsets.push(kept);
-    }
+    let kept_offsets = kept_offsets(&keep, offsets);
     let kept_values = filter(&values, &BooleanArray::new(keep, None))?;
     Ok(with_values(
         array,
@@ -170,6 +149,25 @@ where
         kept_values,
         array.nulls().cloned(),
     ))
+}
+
+/// The offsets of the elements that `keep` keeps, for a `keep` that starts at `offsets[0]`: the
+/// number of its set bits before each offset, counted a word at a time in one pass.
+fn kept_offsets(keep: &BooleanBuffer, offsets: &OffsetBuffer<i32>) -> OffsetBuffer<i32> {
+    let chunks = keep.inner().bit_chunks(keep.offset(), keep.len());
+    let mut words = chunks.iter_padded();
+    let (mut word, mut word_start, mut before_word) = (words.next().unwrap_or(0), 0, 0);
+    let kept = offsets.iter().map(|offset| {
+        let end = (offset - offsets[0]) as usize;
+        while end >= word_start + 64 {
+            before_word += word.count_ones() as usize;
+            word = words.next().unwrap_or(0);
+            word_start += 64;
+        }
+        let below_end = word & ((1u64 << (end - word_start)) - 1);
+        (before_word + below_end.count_ones() as usize) as i32
+    });
+    OffsetBuffer::new(kept.collect::<Vec<i32>>().into())
 }
 
 /// Copies the floats of each row that are null or differ from the row's value in Spark's
@@ -215,7 +213,12 @@ where
         kept.into(),
         validity.map(|mut validity| NullBuffer::new(validity.finish())),
     );
-    with_values(array, offsets, Arc::new(kept), row_nulls)
+    with_values(
+        array,
+        OffsetBuffer::new(offsets.into()),
+        Arc::new(kept),
+        row_nulls,
+    )
 }
 
 /// Copies each row's elements except the non-null ones for which `equal(element, row)` holds. A
@@ -247,50 +250,22 @@ where
         offsets.push(kept);
     }
     let kept_values = filter(values, &BooleanArray::new(keep.finish(), None))?;
-    Ok(with_values(array, offsets, kept_values, row_nulls))
-}
-
-/// A list with the type of `array` and the given nulls, holding `values` at `offsets`.
-fn with_values(
-    array: &ListArray,
-    offsets: Vec<i32>,
-    values: ArrayRef,
-    nulls: Option<NullBuffer>,
-) -> ArrayRef {
-    let DataType::List(field) = array.data_type() else {
-        unreachable!("array_remove takes a List");
-    };
-    Arc::new(ListArray::new(
-        Arc::clone(field),
+    Ok(with_values(
+        array,
         OffsetBuffer::new(offsets.into()),
-        values,
-        nulls,
+        kept_values,
+        row_nulls,
     ))
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::test_util::{bits, first_row_field_bits, list, EDGE_VALUES};
     use super::*;
-    use arrow::array::{Float32Array, Float64Array, Int32Array, StructArray};
+    use crate::float_semantics::NEGATIVE_NAN;
+    use arrow::array::{Float32Array, Float64Array, StructArray};
     use arrow::datatypes::{Field, Fields};
     use datafusion::config::ConfigOptions;
-
-    /// A NaN with the sign bit set, which arithmetic produces on x86-64.
-    const NEGATIVE_NAN: f64 = f64::from_bits(0xfff8_0000_0000_0000);
-
-    const EDGE_VALUES: [Option<f64>; 10] = [
-        Some(f64::NEG_INFINITY),
-        Some(-1.0),
-        Some(-0.0),
-        Some(0.0),
-        Some(1.0),
-        Some(f64::INFINITY),
-        Some(f64::NAN),
-        Some(NEGATIVE_NAN),
-        // A NaN with a payload.
-        Some(f64::from_bits(0x7ff0_0000_0000_0001)),
-        None,
-    ];
 
     fn invoke(array: ColumnarValue, value: ColumnarValue, rows: usize) -> Result<ColumnarValue> {
         let return_field = Arc::new(Field::new("result", array.data_type(), true));
@@ -301,27 +276,6 @@ mod tests {
             return_field,
             config_options: Arc::new(ConfigOptions::default()),
         })
-    }
-
-    fn list(rows: &[Option<Vec<Option<f64>>>]) -> ArrayRef {
-        Arc::new(ListArray::from_iter_primitive::<Float64Type, _, _>(
-            rows.iter().cloned(),
-        ))
-    }
-
-    fn bits(array: &ArrayRef) -> Vec<Option<Vec<Option<u64>>>> {
-        array
-            .as_list::<i32>()
-            .iter()
-            .map(|row| {
-                row.map(|row| {
-                    row.as_primitive::<Float64Type>()
-                        .iter()
-                        .map(|v| v.map(f64::to_bits))
-                        .collect()
-                })
-            })
-            .collect()
     }
 
     /// Spark's result for one row: drop the non-null elements that `genEqual` the value.
@@ -384,6 +338,45 @@ mod tests {
                     })
                     .collect();
                 assert_eq!(bits(&result), expected, "remove {needle:?}");
+            }
+        }
+        Ok(())
+    }
+
+    /// Kept counts are read from the mask a 64-bit word at a time, so these rows end on word
+    /// boundaries and inside words, span several words, or are empty or null, and so do those of
+    /// the slice, whose values start at a word boundary.
+    #[test]
+    fn constant_value_across_words() -> Result<()> {
+        let lengths = [64, 0, 64, 1, 63, 128, 5, 59, 130, 0, 70, 3];
+        let rows: Vec<Option<Vec<Option<f64>>>> = lengths
+            .iter()
+            .enumerate()
+            .map(|(row, &length)| {
+                (row != 7).then(|| {
+                    (0..length)
+                        .map(|i| EDGE_VALUES[(row + i) % EDGE_VALUES.len()])
+                        .collect()
+                })
+            })
+            .collect();
+        let full = list(&rows);
+        for (array, rows) in [
+            (Arc::clone(&full), &rows[..]),
+            (full.slice(2, 8), &rows[2..10]),
+        ] {
+            for needle in [0.0, f64::NAN, 1.0] {
+                let result = invoke(
+                    ColumnarValue::Array(Arc::clone(&array)),
+                    ColumnarValue::Scalar(ScalarValue::Float64(Some(needle))),
+                    rows.len(),
+                )?
+                .into_array(rows.len())?;
+                let expected: Vec<Option<Vec<Option<u64>>>> = rows
+                    .iter()
+                    .map(|row| row.as_ref().map(|row| spark_remove(row, needle)))
+                    .collect();
+                assert_eq!(bits(&result), expected, "remove {needle}");
             }
         }
         Ok(())
@@ -469,36 +462,9 @@ mod tests {
                 1,
             )?
             .into_array(1)?;
-            let row = result.as_list::<i32>().value(0);
-            let x = row
-                .as_struct()
-                .column(0)
-                .as_primitive::<Float64Type>()
-                .clone();
-            let actual: Vec<u64> = x.values().iter().map(|v| v.to_bits()).collect();
             let expected: Vec<u64> = expected.iter().map(|v| v.to_bits()).collect();
-            assert_eq!(actual, expected, "remove {value}");
+            assert_eq!(first_row_field_bits(&result), expected, "remove {value}");
         }
-        Ok(())
-    }
-
-    /// The planner asks the UDF for its return field, which DataFusion's version only answers
-    /// through `return_field_from_args`.
-    #[test]
-    fn return_field() -> Result<()> {
-        let udf = ScalarUDF::new_from_impl(SparkArrayRemove::default());
-        let list = Arc::new(Field::new(
-            "array",
-            DataType::new_list(DataType::Float64, true),
-            false,
-        ));
-        let value = Arc::new(Field::new("value", DataType::Float64, true));
-        let field = udf.return_field_from_args(ReturnFieldArgs {
-            arg_fields: &[Arc::clone(&list), value],
-            scalar_arguments: &[None, None],
-        })?;
-        assert_eq!(field.data_type(), list.data_type());
-        assert!(field.is_nullable(), "a null value gives a null array");
         Ok(())
     }
 
@@ -513,28 +479,5 @@ mod tests {
         ] {
             assert!(invoke(ColumnarValue::Array(Arc::clone(&array)), value, 1).is_err());
         }
-    }
-
-    #[test]
-    fn other_types_go_to_datafusion() -> Result<()> {
-        let array = Arc::new(ListArray::from_iter_primitive::<
-            arrow::datatypes::Int32Type,
-            _,
-            _,
-        >(vec![Some(vec![Some(1), Some(2), Some(1)])]));
-        let result = invoke(
-            ColumnarValue::Array(array),
-            ColumnarValue::Array(Arc::new(Int32Array::from(vec![1]))),
-            1,
-        )?
-        .into_array(1)?;
-        let row = result.as_list::<i32>().value(0);
-        assert_eq!(
-            row.as_primitive::<arrow::datatypes::Int32Type>()
-                .values()
-                .as_ref(),
-            &[2]
-        );
-        Ok(())
     }
 }
