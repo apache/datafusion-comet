@@ -282,30 +282,37 @@ pub struct SparkErrorWithContext {
 ## Step 5: Error Is Serialized to JSON
 
 When DataFusion propagates the error all the way up through the execution engine and it
-reaches the JNI boundary, `throw_exception()` in `errors.rs` is called. It detects the
-`SparkErrorWithContext` type and calls `.to_json()` on it:
+reaches the JNI boundary, `try_unwrap_or_throw` in `native/jni-bridge/src/errors.rs` hands it to
+`NativeError::from_comet_error`. That function classifies the error, without using JNI, into the
+JVM exception it must surface as. It detects the `SparkErrorWithContext` type and calls
+`.to_json()` on it:
 
 ```rust
-// native/core/src/errors.rs
+// native/jni-bridge/src/errors.rs
 
-fn throw_exception(env: &mut JNIEnv, error: &CometError, ...) {
+fn jvm_exception<'a>(error: &'a CometError, backtrace: Option<&str>) -> JvmException<'a> {
     match error {
         CometError::DataFusion {
             source: DataFusionError::External(e), ..
         } => {
             if let Some(spark_err_ctx) = e.downcast_ref::<SparkErrorWithContext>() {
-                // Has SQL context → throw with JSON payload
-                let json = spark_err_ctx.to_json();
-                env.throw_new("org/apache/comet/exceptions/CometQueryExecutionException", json)
+                // Has SQL context → JSON payload
+                JvmException::Spark { json: spark_err_ctx.to_json() }
             } else if let Some(spark_err) = e.downcast_ref::<SparkError>() {
-                // No SQL context → throw with JSON payload (no context field)
-                throw_spark_error_as_json(env, spark_err)
+                // No SQL context → JSON payload (no context field)
+                spark_exception(spark_err)
             }
+            // ...
         }
         // ...
     }
 }
 ```
+
+`throw_native_error` then throws a `JvmException::Spark` as
+`org.apache.comet.exceptions.CometQueryExecutionException` with the JSON as its message. The
+classification is independent of JNI so that a caller that is not a JNI entry point can receive
+the same exception description as a JSON document from `NativeError::to_payload`.
 
 The JSON looks like this for a divide-by-zero in `SELECT a/b FROM t`:
 
