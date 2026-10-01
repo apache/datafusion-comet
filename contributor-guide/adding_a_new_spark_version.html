@@ -599,6 +599,10 @@ preview has been published).</p></li>
 release actually publishes. Use the exact Scala patch version Spark
 publishes, not a looser pin; a mismatch causes <code class="docutils literal notranslate"><span class="pre">NoSuchMethodError</span></code> at
 runtime.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">semanticdb.version</span></code>: <code class="docutils literal notranslate"><span class="pre">semanticdb-scalac</span></code> is published separately for each
+Scala patch version, so check that <code class="docutils literal notranslate"><span class="pre">org.scalameta:semanticdb-scalac_&lt;scala.version&gt;</span></code>
+exists at this version. Without it, <code class="docutils literal notranslate"><span class="pre">make</span> <span class="pre">format</span></code> and the Lint Java CI job
+cannot run scalafix on the new profile.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">shims.majorVerSrc</span></code> and <code class="docutils literal notranslate"><span class="pre">shims.minorVerSrc</span></code>: the directory names the
 build helper plugin will add to the source path. By convention the
 major-version directory groups shims that are identical across the family
@@ -638,11 +642,13 @@ logic and to skip tests. Add the matching helper for the new version
 </section>
 <section id="add-a-compile-only-ci-job">
 <h3>Add a Compile-Only CI Job<a class="headerlink" href="#add-a-compile-only-ci-job" title="Link to this heading">#</a></h3>
-<p>Edit <code class="docutils literal notranslate"><span class="pre">.github/workflows/pr_build_linux.yml</span></code> and <code class="docutils literal notranslate"><span class="pre">pr_build_macos.yml</span></code> to add
-the new Spark version to the <code class="docutils literal notranslate"><span class="pre">build-spark</span></code> (or equivalent compile-only) job
-matrix. Do not add it to the heavier test matrices yet. A compile-only job
-keeps the CI cost of stage 1 small and prevents test failures on the new
-version from blocking unrelated PRs.</p>
+<p>Edit <code class="docutils literal notranslate"><span class="pre">.github/workflows/pr_build_linux.yml</span></code> to add the new Spark version to
+the <code class="docutils literal notranslate"><span class="pre">lint-java</span></code> matrix, which compiles each listed profile and runs scalafix
+on every pull request. If <code class="docutils literal notranslate"><span class="pre">semanticdb-scalac</span></code> is not yet published for the new
+Scala version, add a separate compile-only job instead until it is. Do not add
+the version to the heavier test matrices yet. Compiling only keeps the CI cost
+of stage 1 small and prevents test failures on the new version from blocking
+unrelated PRs.</p>
 <p>When CI capacity is constrained (the macOS runners in particular), it is
 acceptable to drop an older minor version from the macOS PR matrix while a
 preview version is being stabilized. PR <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/4104">#4104</a> (“ci: reduce macOS PR matrix

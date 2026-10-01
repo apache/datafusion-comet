@@ -774,7 +774,7 @@ runs it against the default profile</p></li>
 <li><p>code under <code class="docutils literal notranslate"><span class="pre">spark/src/main/spark-3.4/</span></code>, <code class="docutils literal notranslate"><span class="pre">spark-3.5/</span></code>, <code class="docutils literal notranslate"><span class="pre">spark-4.0/</span></code> or the shared <code class="docutils literal notranslate"><span class="pre">spark-3.x/</span></code>
 directory, or any change to <code class="docutils literal notranslate"><span class="pre">CometExprShim</span></code> and friends; <code class="docutils literal notranslate"><span class="pre">run-all-spark-profiles</span></code> runs the Comet
 test suites against every Spark version rather than 4.1 alone (the Lint Java matrix already
-compiles the 3.4/3.5/4.0 profiles on every pull request, so this is for runtime differences)</p></li>
+compiles every Spark profile on every pull request, so this is for runtime differences)</p></li>
 <li><p>a change to a Spark SQL diff under <code class="docutils literal notranslate"><span class="pre">dev/diffs/</span></code></p></li>
 <li><p>anything that touches Hive table support, <code class="docutils literal notranslate"><span class="pre">InsertIntoHiveTable</span></code>, or the <code class="docutils literal notranslate"><span class="pre">sql/hive</span></code> parts of
 the 4.1 diff</p></li>

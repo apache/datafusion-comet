@@ -760,7 +760,7 @@ same error message format as Spark:</p>
 <h2>Step 4: Error Gets Wrapped with SQL Context<a class="headerlink" href="#step-4-error-gets-wrapped-with-sql-context" title="Link to this heading">#</a></h2>
 <p>The expression wrappers (<code class="docutils literal notranslate"><span class="pre">CheckedBinaryExpr</span></code>, <code class="docutils literal notranslate"><span class="pre">CheckOverflow</span></code>, <code class="docutils literal notranslate"><span class="pre">Cast</span></code>) catch the
 <code class="docutils literal notranslate"><span class="pre">SparkError</span></code> and attach the SQL context using <code class="docutils literal notranslate"><span class="pre">SparkErrorWithContext</span></code>:</p>
-<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="c1">// native/core/src/execution/expressions/arithmetic.rs</span>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="c1">// native/spark-expr/src/math_funcs/checked_binary_expr.rs</span>
 <span class="c1">// CheckedBinaryExpr wraps arithmetic operations</span>
 
 <span class="k">impl</span><span class="w"> </span><span class="n">PhysicalExpr</span><span class="w"> </span><span class="k">for</span><span class="w"> </span><span class="n">CheckedBinaryExpr</span><span class="w"> </span><span class="p">{</span>
