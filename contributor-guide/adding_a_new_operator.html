@@ -967,7 +967,7 @@ operator’s equality and canonicalization together rather than copying an exclu
 <span class="p">}</span>
 </pre></div>
 </div>
-<p>For custom operators, you’ll need to implement the <code class="docutils literal notranslate"><span class="pre">ExecutionPlan</span></code> trait. See <code class="docutils literal notranslate"><span class="pre">native/core/src/execution/operators/expand.rs</span></code> or <code class="docutils literal notranslate"><span class="pre">scan.rs</span></code> for examples.</p>
+<p>For custom operators, you’ll need to implement the <code class="docutils literal notranslate"><span class="pre">ExecutionPlan</span></code> trait. Operators that need nothing else from <code class="docutils literal notranslate"><span class="pre">core</span></code> live in the <code class="docutils literal notranslate"><span class="pre">datafusion-comet-operators</span></code> crate under <code class="docutils literal notranslate"><span class="pre">native/operators/src/</span></code>. See <code class="docutils literal notranslate"><span class="pre">native/operators/src/expand.rs</span></code> or <code class="docutils literal notranslate"><span class="pre">native/core/src/execution/operators/scan.rs</span></code> for examples.</p>
 </section>
 </section>
 <section id="step-6-add-tests">
