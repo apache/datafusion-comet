@@ -239,7 +239,7 @@ public CometS3Credentials getCredentialsForPath(CometS3CredentialContext ctx) th
 
 Spark delegation token propagation is supported on YARN and Kubernetes only. Standalone deployments need a different refresh path, typically a vendor-side service callback authenticated by long-lived state in `catalogProperties` or Hadoop conf.
 
-Publish a real `expirationEpochMillis` when you have one. On both paths Comet reuses a credential until five minutes before that expiry and then asks you again, and requests that arrive together wait for that one call. `0` means unknown: Comet does not keep the credential and asks you for every request, and on the Iceberg path it assumes the credential lasts five minutes. `Long.MAX_VALUE` means the credential does not expire, and Comet does not keep it either. A value before 2000, almost always seconds sent as milliseconds, is treated as unknown, with a warning. If a credential can be revoked before the expiry you report, report an earlier one, or `0`.
+Publish a real `expirationEpochMillis` when you have one. On both paths Comet reuses a credential until five minutes before that expiry and then asks you again. Comet makes at most one call at a time for each location (each bucket, for a provider without locations), and requests that arrive while it is in flight share its answer, even one Comet cannot keep. `0` means unknown: Comet does not keep the credential and asks you again for every request that does not overlap a call already in flight, and on the Iceberg path it assumes the credential lasts five minutes. `Long.MAX_VALUE` means the credential does not expire, and Comet does not keep it either. A value before 2000, almost always seconds sent as milliseconds, is treated as unknown, with a warning. If a credential can be revoked before the expiry you report, report an earlier one, or `0`.
 
 On the Parquet/`object_store` path, `object_store` signs a request once and sends the same signature on every retry, for up to 3 minutes by default, and it does not retry a 403. The five minutes Comet leaves before an expiry cover those retries. A credential you return with less time left than that is used for the request that asked for it and not kept.
 
@@ -254,7 +254,7 @@ The built-in adapters report an expiry when the AWS SDK exposes one, which it do
 | `sessionToken`          | `null` for non-STS credentials.                                                                                                             |
 | `expirationEpochMillis` | When the credential stops working. Comet reuses it until 5 minutes before. `0` means unknown and `Long.MAX_VALUE` never; neither is reused. |
 
-Provide a real `expirationEpochMillis` whenever you have one. Without it, Comet asks for a credential on every request on the Parquet path, and on every storage call on the Iceberg path.
+Provide a real `expirationEpochMillis` whenever you have one. Without it, Comet asks for a credential on every request on the Parquet path, and on every storage call on the Iceberg path, apart from requests that overlap a call already in flight.
 
 ### Returns or throws
 

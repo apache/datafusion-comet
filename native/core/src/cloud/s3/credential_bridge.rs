@@ -39,6 +39,7 @@ use reqsign_core::{
 };
 use std::collections::HashMap;
 use std::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -93,40 +94,79 @@ impl Expiry {
     }
 }
 
-/// A credential with a known expiry, and when to stop reusing it.
-struct CachedCredential {
-    raw: RawCredentials,
-    refresh_at: Timestamp,
+/// A bridge's last provider call: its outcome, its number among the bridge's calls, and until when
+/// its credential may be reused.
+struct LastFetch<E> {
+    number: u64,
+    result: Result<RawCredentials, E>,
+    reusable_until: Option<Timestamp>,
 }
 
-/// A bridge's last credential with a known expiry. It is reused until [`REFRESH_BEFORE_EXPIRY`]
-/// before that expiry, so the provider is asked about once per credential rather than once per
-/// request (Parquet) or storage call (Iceberg). A credential whose expiry is unknown, or that does
-/// not expire, is not kept, and the provider is asked for every time.
-#[derive(Default)]
-struct CredentialCache(Mutex<Option<CachedCredential>>);
+/// The provider calls of one bridge. A bridge stands for one bucket and path, which on a
+/// location-scoped store is one policy location, so this coordinates the requests for one location
+/// and never makes another location's wait.
+///
+/// - At most one provider call runs at a time. A request that waited for one shares its outcome, a
+///   credential or an error, rather than asking again, so a burst of requests costs one call.
+/// - A credential with a known expiry is reused until [`REFRESH_BEFORE_EXPIRY`] before that
+///   expiry, so the provider is asked about once per credential rather than once per request
+///   (Parquet) or storage call (Iceberg).
+/// - A credential whose expiry is unknown, or that does not expire, is not reused: a request that
+///   arrives after the call that fetched it asks again.
+struct CredentialCache<E> {
+    /// How many provider calls have completed. A request reads it before it waits for the lock, so
+    /// it can tell whether a call completed while it waited.
+    completed: AtomicU64,
+    last: Mutex<Option<LastFetch<E>>>,
+}
 
-impl CredentialCache {
-    /// The kept credential if it is still fresh at `now`, or else the one `fetch` returns, kept if
-    /// it can be. Concurrent calls wait for one fetch.
-    fn get_or_fetch<E>(
+impl<E> Default for CredentialCache<E> {
+    fn default() -> Self {
+        Self {
+            completed: AtomicU64::new(0),
+            last: Mutex::new(None),
+        }
+    }
+}
+
+impl<E: Clone> CredentialCache<E> {
+    /// The credential for a request at `now`: the outcome of a call that completed while the
+    /// request waited, or a kept credential that is still fresh, or else what `fetch` returns.
+    fn get_or_fetch(
         &self,
         now: Timestamp,
         fetch: impl FnOnce() -> Result<RawCredentials, E>,
     ) -> Result<RawCredentials, E> {
-        let mut cached = self.0.lock();
-        if let Some(credential) = cached.as_ref().filter(|c| now < c.refresh_at) {
-            return Ok(credential.raw.clone());
+        let seen = self.completed.load(Ordering::Acquire);
+        let mut slot = self.last.lock();
+        if let Some(last) = slot.as_ref() {
+            if last.number > seen {
+                return last.result.clone();
+            }
+            if let (Ok(raw), Some(until)) = (&last.result, last.reusable_until) {
+                if now < until {
+                    return Ok(raw.clone());
+                }
+            }
         }
-        let raw = fetch()?;
-        *cached = match Expiry::from_millis(raw.expiration_epoch_millis) {
-            Expiry::At(at) if now < at - REFRESH_BEFORE_EXPIRY => Some(CachedCredential {
-                raw: raw.clone(),
-                refresh_at: at - REFRESH_BEFORE_EXPIRY,
-            }),
-            _ => None,
+        let result = fetch();
+        let reusable_until = match &result {
+            Ok(raw) => match Expiry::from_millis(raw.expiration_epoch_millis) {
+                Expiry::At(at) if now < at - REFRESH_BEFORE_EXPIRY => {
+                    Some(at - REFRESH_BEFORE_EXPIRY)
+                }
+                _ => None,
+            },
+            Err(_) => None,
         };
-        Ok(raw)
+        let number = slot.as_ref().map_or(0, |last| last.number) + 1;
+        *slot = Some(LastFetch {
+            number,
+            result: result.clone(),
+            reusable_until,
+        });
+        self.completed.store(number, Ordering::Release);
+        result
     }
 }
 
@@ -160,7 +200,7 @@ pub struct CometS3CredentialBridge {
     path_jstr: Arc<Global<JString<'static>>>,
     /// The credential this bridge last fetched, while it is fresh. A derived bridge starts with an
     /// empty cache, since it asks about another path.
-    cache: CredentialCache,
+    cache: CredentialCache<String>,
 }
 
 impl fmt::Debug for CometS3CredentialBridge {
@@ -248,11 +288,13 @@ impl CometS3CredentialBridge {
         })
     }
 
-    /// The provider's credential for this bridge's bucket, path and mode, reused while it is fresh.
-    /// See [`CredentialCache`].
-    fn credential(&self) -> Result<RawCredentials, ExecutionError> {
-        self.cache
-            .get_or_fetch(Timestamp::now(), || self.fetch_raw())
+    /// The provider's credential for this bridge's bucket, path and mode, shared with concurrent
+    /// requests and reused while it is fresh. See [`CredentialCache`]. A failure is shared as its
+    /// message, which is all the callers report.
+    fn credential(&self) -> Result<RawCredentials, String> {
+        self.cache.get_or_fetch(Timestamp::now(), || {
+            self.fetch_raw().map_err(|e| e.to_string())
+        })
     }
 
     fn fetch_raw(&self) -> Result<RawCredentials, ExecutionError> {
@@ -460,7 +502,7 @@ impl CredentialProvider for CometS3CredentialBridge {
             .credential()
             .map_err(|e| object_store::Error::Generic {
                 store: "S3",
-                source: Box::new(CredentialProviderError(e.to_string())),
+                source: Box::new(CredentialProviderError(e)),
             })?;
         Ok(Arc::new(AwsCredential {
             key_id: raw.access_key_id,
@@ -479,7 +521,7 @@ impl IcebergProvideCredential for CometS3CredentialBridge {
     ) -> reqsign_core::Result<Option<Self::Credential>> {
         let raw = self
             .credential()
-            .map_err(|e| ReqsignError::new(ReqsignErrorKind::CredentialInvalid, e.to_string()))?;
+            .map_err(|e| ReqsignError::new(ReqsignErrorKind::CredentialInvalid, e))?;
 
         let expires_in = match Expiry::from_millis(raw.expiration_epoch_millis) {
             Expiry::At(at) => Some(at),
@@ -612,6 +654,43 @@ mod tests {
             })
             .unwrap();
         assert_eq!(fetched.access_key_id, "key");
+    }
+
+    /// Requests that overlap a provider call share its outcome even when it cannot be kept, a
+    /// credential or an error, so they cost one call rather than one call after another.
+    #[test]
+    fn concurrent_requests_share_a_fetch_they_cannot_keep() {
+        let outcomes: [Result<i64, &str>; 4] = [
+            Ok(0),
+            Ok(i64::MAX),
+            Ok(NOW_MILLIS + 60_000),
+            Err("provider threw"),
+        ];
+        for outcome in outcomes {
+            let cache = Arc::new(CredentialCache::default());
+            let fetches = Arc::new(AtomicUsize::new(0));
+            let start = Arc::new(std::sync::Barrier::new(8));
+            let requests: Vec<_> = (0..8)
+                .map(|_| {
+                    let (cache, fetches, start) =
+                        (Arc::clone(&cache), Arc::clone(&fetches), Arc::clone(&start));
+                    std::thread::spawn(move || {
+                        start.wait();
+                        cache
+                            .get_or_fetch(now(), || {
+                                fetches.fetch_add(1, SeqCst);
+                                std::thread::sleep(Duration::from_millis(100));
+                                outcome.map(|expiry| credential("key", expiry))
+                            })
+                            .map(|c| c.access_key_id)
+                    })
+                })
+                .collect();
+            for request in requests {
+                assert_eq!(request.join().unwrap(), outcome.map(|_| "key".to_string()));
+            }
+            assert_eq!(fetches.load(SeqCst), 1, "outcome {outcome:?}");
+        }
     }
 
     #[test]
