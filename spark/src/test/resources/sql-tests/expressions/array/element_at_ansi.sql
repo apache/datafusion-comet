@@ -31,47 +31,58 @@ CREATE TABLE ansi_element_at_oob(arr array<int>) USING parquet
 statement
 INSERT INTO ansi_element_at_oob VALUES (array(1, 2, 3))
 
+-- Valid positive and negative boundary indices must run natively and match Spark.
+query
+SELECT element_at(arr, 1), element_at(arr, 3), element_at(arr, -1), element_at(arr, -3)
+FROM ansi_element_at_oob
+
+-- A NULL index returns NULL even in ANSI mode.
+query
+SELECT element_at(arr, CAST(NULL AS INT)) FROM ansi_element_at_oob
+
 -- ============================================================================
 -- element_at index out of bounds (positive index)
--- Spark throws: [INVALID_ARRAY_INDEX_IN_ELEMENT_AT] ...
--- Comet throws: Index out of bounds for array
--- See https://github.com/apache/datafusion-comet/issues/3375
+-- Spark and Comet throw INVALID_ARRAY_INDEX_IN_ELEMENT_AT in ANSI mode.
 -- ============================================================================
 
 -- index beyond array length should throw (1-based indexing)
-query ignore(https://github.com/apache/datafusion-comet/issues/3375)
+query expect_error([INVALID_ARRAY_INDEX_IN_ELEMENT_AT])
+SELECT element_at(arr, 4) FROM ansi_element_at_oob
+
+query expect_error([INVALID_ARRAY_INDEX_IN_ELEMENT_AT])
 SELECT element_at(arr, 10) FROM ansi_element_at_oob
 
 -- literal array with out of bounds access
-query ignore(https://github.com/apache/datafusion-comet/issues/3375)
-SELECT element_at(array(1, 2, 3), 5)
+query expect_error([INVALID_ARRAY_INDEX_IN_ELEMENT_AT])
+SELECT element_at(array(1, 2, 3), 5) FROM ansi_element_at_oob
 
 -- ============================================================================
 -- element_at with index 0 (invalid)
--- Spark throws: [INVALID_INDEX_OF_ZERO] The index 0 is invalid
--- Comet throws: different error message
--- See https://github.com/apache/datafusion-comet/issues/3375
+-- Spark and Comet throw INVALID_INDEX_OF_ZERO.
 -- ============================================================================
 
 -- index 0 is not valid for element_at (1-based indexing)
-query ignore(https://github.com/apache/datafusion-comet/issues/3375)
+query expect_error([INVALID_INDEX_OF_ZERO])
 SELECT element_at(arr, 0) FROM ansi_element_at_oob
 
 -- literal with index 0
-query ignore(https://github.com/apache/datafusion-comet/issues/3375)
-SELECT element_at(array(1, 2, 3), 0)
+query expect_error([INVALID_INDEX_OF_ZERO])
+SELECT element_at(array(1, 2, 3), 0) FROM ansi_element_at_oob
 
 -- ============================================================================
 -- element_at index out of bounds (negative index beyond array)
 -- ============================================================================
 
 -- negative index beyond array size should throw
-query ignore(https://github.com/apache/datafusion-comet/issues/3375)
+query expect_error([INVALID_ARRAY_INDEX_IN_ELEMENT_AT])
+SELECT element_at(arr, -4) FROM ansi_element_at_oob
+
+query expect_error([INVALID_ARRAY_INDEX_IN_ELEMENT_AT])
 SELECT element_at(arr, -10) FROM ansi_element_at_oob
 
 -- literal with negative out of bounds
-query ignore(https://github.com/apache/datafusion-comet/issues/3375)
-SELECT element_at(array(1, 2, 3), -5)
+query expect_error([INVALID_ARRAY_INDEX_IN_ELEMENT_AT])
+SELECT element_at(array(1, 2, 3), -5) FROM ansi_element_at_oob
 
 -- ============================================================================
 -- ANSI short-circuit over a NULL array

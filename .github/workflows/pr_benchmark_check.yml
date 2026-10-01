@@ -59,15 +59,21 @@ jobs:
           cd native
           cargo check --benches
 
-      - name: Cache Maven dependencies
-        uses: actions/cache@v6
+      - name: Restore Maven dependencies
+        id: maven-cache
+        uses: actions/cache/restore@v6
         with:
           path: |
             ~/.m2/repository
             /root/.m2/repository
           key: ${{ runner.os }}-benchmark-maven-${{ hashFiles('**/pom.xml') }}
+          # This job is queue-only, so nothing writes `benchmark-maven-` any
+          # more (see the save step below). `java-maven-` is the entry the
+          # TPC-H/TPC-DS jobs write on push to main; a Maven repository is
+          # always safe to start from a superset or a subset of itself.
           restore-keys: |
             ${{ runner.os }}-benchmark-maven-
+            ${{ runner.os }}-java-maven-
 
       - name: Check Scala compilation and linting
         # Pin to spark-4.0 (Scala 2.13.16) because the default profile is now
@@ -76,3 +82,16 @@ jobs:
         # the same exclusion in the main lint matrix.
         run: |
           ./mvnw -B compile test-compile scalafix:scalafix -Dscalafix.mode=CHECK -Psemanticdb -Pspark-4.0 -DskipTests
+
+      # Saved only on main: an entry written from a pull request or a
+      # `gh-readonly-queue/*` branch cannot be restored by any later run, and
+      # it evicts main's from the shared budget. See "Large caches are written
+      # on main only" in README.md.
+      - name: Save Maven dependencies
+        if: ${{ github.ref == 'refs/heads/main' && steps.maven-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ~/.m2/repository
+            /root/.m2/repository
+          key: ${{ runner.os }}-benchmark-maven-${{ hashFiles('**/pom.xml') }}

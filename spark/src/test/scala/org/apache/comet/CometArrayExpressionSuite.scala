@@ -23,7 +23,7 @@ import scala.util.Random
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.CometTestBase
-import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayExcept, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayRepeat}
+import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayExcept, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayRepeat}
 import org.apache.spark.sql.catalyst.expressions.{ArrayContains, ArrayRemove}
 import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Cast, CreateArray, ElementAt, Literal, MonotonicallyIncreasingID}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
@@ -626,6 +626,80 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
             "SELECT arrays_overlap(array('a', null), array('b', null)) from t1 where _1 is not null"))
           checkSparkAnswerAndOperator(spark.sql(
             "SELECT arrays_overlap((CASE WHEN _2 =_3 THEN array(_6, _7) END), array(_6, _7)) FROM t1"));
+        }
+      }
+    }
+  }
+
+  test("array extrema - collations fall back when the dispatcher is disabled") {
+    assume(isSpark40Plus)
+    withParquetTable(Seq(("a", "B"), ("B", "a"), ("A", "a")), "collated_extrema") {
+      val a = "CAST(_1 AS STRING COLLATE UTF8_LCASE)"
+      val b = "CAST(_2 AS STRING COLLATE UTF8_LCASE)"
+      val inputs = Seq(
+        s"array($a, $b)",
+        s"array(named_struct('s', array($a)), named_struct('s', array($b)))")
+      withSQLConf(
+        CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false",
+        CometConf.getExprAllowIncompatConfigKey(classOf[ArrayMin]) -> "false",
+        CometConf.getExprAllowIncompatConfigKey(classOf[ArrayMax]) -> "false") {
+        for (function <- Seq("array_min", "array_max"); input <- inputs) {
+          checkSparkAnswerAndFallbackReason(
+            s"SELECT $function($input) FROM collated_extrema",
+            "Array extrema use binary string ordering")
+        }
+      }
+    }
+  }
+
+  test("array extrema - runtime NaN representations") {
+    withParquetTable(Seq((Float.NaN, Double.NaN)), "floating_point_extrema") {
+      for (strict <- Seq(false, true)) {
+        withSQLConf(
+          CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> strict.toString,
+          CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false",
+          CometConf.getExprAllowIncompatConfigKey(classOf[ArrayMin]) -> "false",
+          CometConf.getExprAllowIncompatConfigKey(classOf[ArrayMax]) -> "false") {
+          for (function <- Seq("array_min", "array_max")) {
+            // Parquet canonicalizes NaNs. Negating the column after the scan supplies a
+            // different representation at runtime; ordinary SQL equality cannot check
+            // that extrema preserve the bits of the first equal NaN.
+            val query = sql(s"""
+              SELECT $function(array(-_1, _1)), $function(array(_1, -_1)),
+                     $function(array(-_2, _2)), $function(array(_2, -_2)),
+                     $function(array(-_1, CAST(1 AS FLOAT))),
+                     $function(array(-_2, CAST(1 AS DOUBLE))),
+                     $function(array(named_struct('v', -_1, 'n', 1),
+                                     named_struct('v', _1, 'n', 1))).v,
+                     $function(array(named_struct('v', -_2, 'n', 1),
+                                     named_struct('v', _2, 'n', 1))).v
+              FROM floating_point_extrema
+            """)
+            checkSparkAnswerAndOperator(query)
+            val row = query.head()
+            val floatBits = java.lang.Float.floatToRawIntBits(Float.NaN)
+            val doubleBits = java.lang.Double.doubleToRawLongBits(Double.NaN)
+            val negativeFloatBits = floatBits | Int.MinValue
+            val negativeDoubleBits = doubleBits | Long.MinValue
+            assert(java.lang.Float.floatToRawIntBits(row.getFloat(0)) == negativeFloatBits)
+            assert(java.lang.Float.floatToRawIntBits(row.getFloat(1)) == floatBits)
+            assert(java.lang.Double.doubleToRawLongBits(row.getDouble(2)) == negativeDoubleBits)
+            assert(java.lang.Double.doubleToRawLongBits(row.getDouble(3)) == doubleBits)
+            val expectedFloatBits = if (function == "array_min") {
+              java.lang.Float.floatToRawIntBits(1.0f)
+            } else {
+              negativeFloatBits
+            }
+            val expectedDoubleBits = if (function == "array_min") {
+              java.lang.Double.doubleToRawLongBits(1.0d)
+            } else {
+              negativeDoubleBits
+            }
+            assert(java.lang.Float.floatToRawIntBits(row.getFloat(4)) == expectedFloatBits)
+            assert(java.lang.Double.doubleToRawLongBits(row.getDouble(5)) == expectedDoubleBits)
+            assert(java.lang.Float.floatToRawIntBits(row.getFloat(6)) == negativeFloatBits)
+            assert(java.lang.Double.doubleToRawLongBits(row.getDouble(7)) == negativeDoubleBits)
+          }
         }
       }
     }
@@ -1486,6 +1560,23 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       val df = Seq(Seq(1, 2, 3), Seq(4, 5)).toDF("x")
       // SPARK-41233 array prepend lowers to array_insert at position 1
       checkSparkAnswerAndOperator(df.selectExpr("array_insert(x, 1, 0)"))
+    }
+  }
+
+  // Spark declares split and sequence as ArrayType(..., containsNull=false). Native
+  // Parquet already normalizes stored children to nullable, so the non-null element
+  // field is produced after the scan. CometSlice must infer its return type from that
+  // input field; a planned nullable element disagrees with the kernel and crashes.
+  // https://github.com/apache/datafusion-comet/issues/5743
+  test("slice over expression-produced non-null element arrays (#5743)") {
+    val input = Seq((1, "axb", 2), (2, "", 3), (3, "cxd", 2))
+    withParquetDataFrame(input) { parquet =>
+      withParquetTable(parquet.toDF("id", "s", "n"), "t") {
+        checkSparkAnswerAndOperator(sql("SELECT id, slice(split(s, 'x'), 1, n) AS a FROM t"))
+        checkSparkAnswerAndOperator(sql("SELECT id, slice(sequence(1, n), 1, 2) AS a FROM t"))
+        checkSparkAnswerAndOperator(
+          sql("SELECT id, slice(concat(split(s, 'x'), array('z')), 1, n) AS a FROM t"))
+      }
     }
   }
 

@@ -1133,6 +1133,7 @@ fn parse_to_timestamp_info(
         (1i32, value)
     };
     let mut parts = date_part.split(['T', ' ', '-', ':', '.']);
+    // The integer parser accepts a leading '+', which is not a segment separator.
     let year = sign
         * parts
             .next()
@@ -1434,19 +1435,6 @@ fn timestamp_parser<T: TimeZone>(
         };
     }
     let value = trimmed;
-    // Spark accepts a leading '+' year sign on full date-time strings (e.g. "+2020-01-01T12:34:56")
-    // but rejects it on time-only strings (e.g. "+12:12:12" -> null).
-    // Detect: '+' followed by at least one digit and then a '-' separator -> year prefix -> strip '+'.
-    // Anything else starting with '+' (time-only, bare number, etc.) -> null.
-    let value = if let Some(rest) = value.strip_prefix('+') {
-        let first_non_digit = rest.find(|c: char| !c.is_ascii_digit());
-        match first_non_digit {
-            Some(i) if i >= 1 && rest.as_bytes()[i] == b'-' => rest,
-            _ => return Ok(None),
-        }
-    } else {
-        value
-    };
 
     // Only attempt offset-suffix extraction when the value does not already match a
     // base pattern.  This prevents the '-' in plain date strings like "2015-03-18"
@@ -1645,29 +1633,33 @@ fn extract_offset_suffix(value: &str) -> Option<(&str, Tz)> {
 type TimestampParsePattern<T> = (&'static Regex, fn(&str, &T) -> SparkResult<Option<i64>>);
 
 // These shapes transcribe the per-segment digit rules of Spark's
-// `SparkDateTimeUtils.parseTimestampString` (`isValidDigits`): the year takes 4-6 digits
+// `SparkDateTimeUtils.parseTimestampString` (`isValidDigits`): the year takes an optional
+// '+' or '-' sign followed by 4-6 digits
 // (`maxDigitsYear = 6`, so "0002020-01-01" is malformed for a timestamp even though
 // `stringToDate`, ported by `date_parser`, allows 7), month/day/hour/minute/second take 1-2
 // digits each, and the fraction takes any number of digits including none ("12:34:56." is
 // valid), of which only the first six are kept. All digits must be ASCII, matching Spark's
 // byte scanner and the numeric parsers used after shape recognition.
 // Keep the ASCII ranges: Unicode `\d` also costs substantially more to match on valid input.
-static RE_YEAR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^-?[0-9]{4,6}$").unwrap());
+static RE_YEAR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[+-]?[0-9]{4,6}$").unwrap());
 static RE_MONTH: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^-?[0-9]{4,6}-[0-9]{1,2}$").unwrap());
+    LazyLock::new(|| Regex::new(r"^[+-]?[0-9]{4,6}-[0-9]{1,2}$").unwrap());
 static RE_DAY: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^-?[0-9]{4,6}-[0-9]{1,2}-[0-9]{1,2}$").unwrap());
+    LazyLock::new(|| Regex::new(r"^[+-]?[0-9]{4,6}-[0-9]{1,2}-[0-9]{1,2}$").unwrap());
 static RE_HOUR: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^-?[0-9]{4,6}-[0-9]{1,2}-[0-9]{1,2}[T ][0-9]{1,2}$").unwrap());
+    LazyLock::new(|| Regex::new(r"^[+-]?[0-9]{4,6}-[0-9]{1,2}-[0-9]{1,2}[T ][0-9]{1,2}$").unwrap());
 static RE_MINUTE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^-?[0-9]{4,6}-[0-9]{1,2}-[0-9]{1,2}[T ][0-9]{1,2}:[0-9]{1,2}$").unwrap()
+    Regex::new(r"^[+-]?[0-9]{4,6}-[0-9]{1,2}-[0-9]{1,2}[T ][0-9]{1,2}:[0-9]{1,2}$").unwrap()
 });
 static RE_SECOND: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^-?[0-9]{4,6}-[0-9]{1,2}-[0-9]{1,2}[T ][0-9]{1,2}:[0-9]{1,2}:[0-9]{1,2}$").unwrap()
+    Regex::new(r"^[+-]?[0-9]{4,6}-[0-9]{1,2}-[0-9]{1,2}[T ][0-9]{1,2}:[0-9]{1,2}:[0-9]{1,2}$")
+        .unwrap()
 });
 static RE_MICROSECOND: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^-?[0-9]{4,6}-[0-9]{1,2}-[0-9]{1,2}[T ][0-9]{1,2}:[0-9]{1,2}:[0-9]{1,2}\.[0-9]*$")
-        .unwrap()
+    Regex::new(
+        r"^[+-]?[0-9]{4,6}-[0-9]{1,2}-[0-9]{1,2}[T ][0-9]{1,2}:[0-9]{1,2}:[0-9]{1,2}\.[0-9]*$",
+    )
+    .unwrap()
 });
 static RE_TIME_ONLY_H: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^T[0-9]{1,2}$").unwrap());
 static RE_TIME_ONLY_HM: LazyLock<Regex> =
@@ -1705,7 +1697,7 @@ fn timestamp_parser_with_tz<T: TimeZone>(
     // Both T-separator and space-separator date-time forms are supported.
     // Negative years are handled by get_timestamp_values detecting a leading '-'.
     let patterns: &[TimestampParsePattern<T>] = &[
-        // Year only: 4-6 digits, optionally negative
+        // Year only: 4-6 digits, optionally signed
         (
             &RE_YEAR,
             parse_str_to_year_timestamp as fn(&str, &T) -> SparkResult<Option<i64>>,
@@ -1778,17 +1770,6 @@ fn timestamp_ntz_parser(
     // (same logic as timestamp_parser), but time-only is rejected entirely for NTZ anyway.
 
     let value = trimmed;
-
-    // Handle leading '+' the same way as timestamp_parser
-    let value = if let Some(rest) = value.strip_prefix('+') {
-        let first_non_digit = rest.find(|c: char| !c.is_ascii_digit());
-        match first_non_digit {
-            Some(i) if i >= 1 && rest.as_bytes()[i] == b'-' => rest,
-            _ => return Ok(None),
-        }
-    } else {
-        value
-    };
 
     // Reject time-only patterns: NTZ requires a date component
     if RE_TIME_ONLY_H.is_match(value)
@@ -2635,19 +2616,77 @@ mod tests {
     #[test]
     fn plus_sign_year_test() {
         let tz = &Tz::from_str("UTC").unwrap();
-        // Spark accepts '+year' prefix on full date-time strings for TIMESTAMP casts.
-        // "+2020-01-01T12:34:56" -> 2020-01-01T12:34:56 UTC = 1577882096 seconds.
-        assert_eq!(
-            timestamp_parser("+2020-01-01T12:34:56", EvalMode::Legacy, tz, true).unwrap(),
-            Some(1577882096000000),
-            "+year on full datetime should parse the same as without the + prefix"
-        );
-        // But '+' on a time-only string is rejected (Spark returns null).
-        assert_eq!(
-            timestamp_parser("+12:12:12", EvalMode::Legacy, tz, true).unwrap(),
-            None,
-            "+hour:min:sec must return null"
-        );
+        for input in [
+            "7528",
+            "00463",
+            "79821",
+            "2976",
+            "0000",
+            "002020",
+            "2020-1",
+            "2020-1-2",
+            "2020-1-2T3",
+            "2020-1-2 3:4",
+            "2020-1-2T3:4:5",
+            "2020-1-2 3:4:5.",
+            "2020-1-2T3:4:5.123456789",
+            "2020-1-2T3:4:5Z",
+            "2020-1-2T3:4:5+05:30",
+            "2020-1-2T3:4:5-08:00",
+            "2020-1-2T3:4:5 UTC",
+            "294247-01-10T04:00:54.775807",
+        ] {
+            let signed = format!(" +{input} ");
+            for mode in [EvalMode::Legacy, EvalMode::Try, EvalMode::Ansi] {
+                for (actual, expected) in [
+                    (
+                        timestamp_parser(&signed, mode, tz, true),
+                        timestamp_parser(input, mode, tz, true),
+                    ),
+                    (
+                        timestamp_ntz_parser(&signed, mode, true, true),
+                        timestamp_ntz_parser(input, mode, true, true),
+                    ),
+                ] {
+                    let expected = expected.unwrap();
+                    assert!(expected.is_some(), "{input:?}");
+                    assert_eq!(actual.unwrap(), expected, "{signed:?} in {mode:?}");
+                }
+            }
+        }
+        for input in [
+            "+",
+            "++2020",
+            "+-2020",
+            "-+2020",
+            "--2020",
+            "+020",
+            "+0002020",
+            "+ 2020",
+            "+２０２０",
+            "+2020-+1",
+            "+2020--1",
+            "+2020-1-+2",
+            "+12:12:12",
+            "+T12:12:12",
+            "+2020Z",
+            "+2020-1-2Z",
+            "+2020-1-2T3:4Z",
+            "+294247-01-10T04:00:54.775808",
+        ] {
+            for mode in [EvalMode::Legacy, EvalMode::Try, EvalMode::Ansi] {
+                for result in [
+                    timestamp_parser(input, mode, tz, true),
+                    timestamp_ntz_parser(input, mode, true, true),
+                ] {
+                    if mode == EvalMode::Ansi {
+                        assert!(result.is_err(), "{input:?} in {mode:?}");
+                    } else {
+                        assert_eq!(result.unwrap(), None, "{input:?} in {mode:?}");
+                    }
+                }
+            }
+        }
     }
 
     #[test]
