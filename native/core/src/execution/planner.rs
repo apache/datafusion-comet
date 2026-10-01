@@ -37,14 +37,8 @@ use crate::execution::operators::DynamicFilterJoinExec;
 use crate::execution::operators::IcebergScanExec;
 use crate::execution::operators::IcebergWriteExec;
 use crate::execution::operators::TopKReaderFilterExec;
-use crate::execution::operators::{PartitionedRankLimitExec, WindowFnKind};
 use crate::execution::{
-    expressions::list_positions::ListPositionsExpr,
-    expressions::subquery::Subquery,
-    operators::{
-        CometFilterExec, ExecutionError, ExpandExec, ExplodeExec, ParquetCompression,
-        ParquetWriterExec, SampleExec, ScanExec, ShuffleScanExec,
-    },
+    operators::{ExecutionError, ParquetCompression, ParquetWriterExec, ScanExec, ShuffleScanExec},
     planner::expression_registry::ExpressionRegistry,
     planner::operator_registry::OperatorRegistry,
     serde::{to_arrow_datatype, to_arrow_field},
@@ -86,11 +80,14 @@ use datafusion::{
     },
     prelude::SessionContext,
 };
+use datafusion_comet_operators::{
+    CometFilterExec, ExpandExec, ExplodeExec, PartitionedRankLimitExec, SampleExec, WindowFnKind,
+};
 use datafusion_comet_spark_expr::{
     create_comet_physical_fun, create_comet_physical_fun_with_eval_mode, BinaryOutputStyle,
-    BloomFilterAgg, BloomFilterMightContain, CometCollectList, CometCollectSet, CsvWriteOptions,
-    EvalMode, SparkArraysZipFunc, SparkBloomFilterVersion, SparkListAgg, SparkPercentile,
-    SumInteger, ToCsv,
+    BloomFilterAgg, BloomFilterMightContain, CheckedBinaryExpr, CometCollectList, CometCollectSet,
+    CsvWriteOptions, EvalMode, ListPositionsExpr, SparkArraysZipFunc, SparkBloomFilterVersion,
+    SparkListAgg, SparkPercentile, Subquery, SumInteger, ToCsv,
 };
 use datafusion_datasource::TableSchema;
 use iceberg::expr::Bind;
@@ -115,7 +112,6 @@ use datafusion::physical_expr::expressions::{Literal, StatsType};
 use datafusion::physical_expr::window::WindowExpr;
 use datafusion::physical_expr::LexOrdering;
 
-use crate::execution::expressions::arithmetic::CheckedBinaryExpr;
 use crate::parquet::parquet_exec::init_datasource_exec;
 use arrow::array::{
     new_empty_array, Array, ArrayRef, BinaryBuilder, BooleanArray, Date32Array, Decimal128Array,
@@ -5169,7 +5165,7 @@ mod tests {
     };
     use crate::jvm_bridge::{JavaShufflePartitionPusher, ShufflePartitionPusher};
 
-    use crate::execution::operators::{ExecutionError, PartitionedRankLimitExec, WindowFnKind};
+    use crate::execution::operators::ExecutionError;
     use crate::execution::planner::{
         convert_spark_types_to_arrow_schema, literal_to_array_ref,
         parse_file_scan_tasks_from_common,
@@ -5177,6 +5173,7 @@ mod tests {
     use crate::execution::shuffle::CometPartitioning;
     use crate::parquet::parquet_support::SparkParquetOptions;
     use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
+    use datafusion_comet_operators::{PartitionedRankLimitExec, WindowFnKind};
     use datafusion_comet_proto::spark_expression::expr::ExprStruct;
     use datafusion_comet_proto::spark_expression::ListLiteral;
     use datafusion_comet_proto::{

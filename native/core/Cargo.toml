@@ -37,6 +37,7 @@ publish = false
 [dependencies]
 arrow = { workspace = true }
 base64 = "0.23.0"
+chrono-tz = { workspace = true }
 bytes = { workspace = true }
 parquet = { workspace = true, default-features = false, features = ["experimental", "arrow", "arrow_canonical_extension_types", "snap", "lz4", "zstd", "flate2-zlib-rs"] }
 futures = { workspace = true }
@@ -64,6 +65,7 @@ datafusion-comet-spark-expr = { workspace = true }
 datafusion-comet-jni-bridge = { workspace = true }
 datafusion-comet-proto = { workspace = true }
 datafusion-comet-shuffle = { workspace = true }
+datafusion-comet-operators = { workspace = true }
 object_store = { workspace = true }
 url = { workspace = true }
 aws-config = { workspace = true }
@@ -140,10 +142,6 @@ harness = false
 
 [[bench]]
 name = "array_element_append"
-harness = false
-
-[[bench]]
-name = "explode"
 harness = false
 
 [[bench]]
