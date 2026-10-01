@@ -210,7 +210,9 @@ object CometLocalExecutionBenchmark {
   }
 
   /**
-   * Reproduce sort reservation exhaustion and verify a subsequent local query in the same JVM.
+   * Under a small reservation budget, full sort must spill and match Spark. With spill disabled
+   * the same sort must fail on a native resource error and release everything, after which a
+   * local Top-K in the same JVM must still match Spark.
    */
   private def pressure(
       spark: SparkSession,
@@ -219,42 +221,93 @@ object CometLocalExecutionBenchmark {
       schemaMode: String): Unit = {
     val cases = queries(spark, data, schemaMode).toMap
     val native = new NativeLocal()
+    val spill = CometConf.COMET_EXEC_LOCAL_SPILL_ENABLED.key
+    // The launcher points TMPDIR at a directory used only for native spill files.
+    val spillDirectory = Paths.get(sys.env("TMPDIR"))
+    def local(name: String): DataFrame = {
+      val query = cases(name)()
+      require(query.queryExecution.executedPlan.collect { case p: CometLocalExec => p }.size == 1)
+      query
+    }
+    def baseline(name: String): Array[Row] = {
+      spark.conf.set("spark.comet.enabled", "false")
+      try cases(name)().collect()
+      finally spark.conf.set("spark.comet.enabled", "true")
+    }
+    def requireReleased(): Unit = {
+      require(native.activeQueries() == 0)
+      require(CometArrowImportAllocator.getAllocatedMemory == 0)
+    }
+    val expectedSort = baseline("full-sort")
+    val expectedTopK = baseline("top-k")
     val writer = Files.newBufferedWriter(output.resolve("pressure-check.txt"), UTF_8)
     try {
       for (cycle <- 0 until 3) {
-        val sort = cases("full-sort")()
-        require(sort.queryExecution.executedPlan.collect { case p: CometLocalExec =>
-          p
-        }.size == 1)
-        val failure = scala.util.Try(sort.collect()).failed.get
+        val sort = local("full-sort")
+        val (actual, spilledBytes) = sampleDirectory(spillDirectory)(sort.collect())
+        require(spilledBytes > 0, "Full sort did not spill; use a smaller --memory-mib")
+        require(actual.sameElements(expectedSort), "Spilled full sort differs from Spark")
+        requireReleased()
+
+        spark.conf.set(spill, "false")
+        val failure =
+          try scala.util.Try(local("full-sort").collect()).failed.toOption
+          finally spark.conf.unset(spill)
+        require(failure.isDefined, "Full sort without spill unexpectedly fit the budget")
         val resourceFailure = Iterator
-          .iterate[Throwable](failure)(_.getCause)
+          .iterate[Throwable](failure.get)(_.getCause)
           .takeWhile(_ != null)
           .find(e =>
             e.getClass.getName == "org.apache.comet.CometNativeException" &&
-              e.getMessage.contains("Failed to allocate additional") &&
-              e.getMessage.contains("ExternalSorterMerge"))
-        require(resourceFailure.isDefined, s"Unexpected failure: $failure")
-        require(native.activeQueries() == 0)
-        require(CometArrowImportAllocator.getAllocatedMemory == 0)
-        val recovery = cases("top-k")()
-        require(recovery.queryExecution.executedPlan.collect { case p: CometLocalExec =>
-          p
-        }.size == 1)
-        val actual = recovery.collect()
-        require(native.activeQueries() == 0)
-        require(CometArrowImportAllocator.getAllocatedMemory == 0)
-        spark.conf.set("spark.comet.enabled", "false")
-        val expected =
-          try cases("top-k")().collect()
-          finally spark.conf.set("spark.comet.enabled", "true")
-        require(actual.sameElements(expected))
+              (e.getMessage.contains("Failed to allocate additional") ||
+                e.getMessage.contains("DiskManager is disabled")))
+        require(resourceFailure.isDefined, s"Unexpected failure: ${failure.get}")
+        requireReleased()
+
+        require(local("top-k").collect().sameElements(expectedTopK))
+        requireReleased()
         writer.write(
-          s"cycle=$cycle recoveryRows=${actual.length} activeQueries=0 importedArrowBytes=0 " +
-            s"failure=${resourceFailure.get.getMessage}\n")
+          s"cycle=$cycle sortRows=${actual.length} peakSpillBytes=$spilledBytes " +
+            s"recoveryRows=${expectedTopK.length} activeQueries=0 importedArrowBytes=0 " +
+            s"noSpillFailure=${resourceFailure.get.getMessage.linesIterator.next()}\n")
         writer.flush()
       }
     } finally writer.close()
+  }
+
+  /** Evaluates `f` while polling the bytes under `directory`; returns the result and the peak. */
+  private def sampleDirectory[T](directory: Path)(f: => T): (T, Long) = {
+    @volatile var running = true
+    val peak = new java.util.concurrent.atomic.AtomicLong()
+    def bytes(): Long = {
+      // Spill files can disappear between listing and stat.
+      val files = Files.walk(directory)
+      try
+        files
+          .iterator()
+          .asScala
+          .map { file =>
+            try if (Files.isRegularFile(file)) Files.size(file) else 0L
+            catch { case _: java.io.IOException => 0L }
+          }
+          .sum
+      catch { case _: java.io.UncheckedIOException => 0L }
+      finally files.close()
+    }
+    val sampler = new Thread(() =>
+      while (running) {
+        peak.accumulateAndGet(bytes(), Math.max)
+        Thread.sleep(5)
+      })
+    sampler.setDaemon(true)
+    sampler.start()
+    val result =
+      try f
+      finally {
+        running = false
+        sampler.join()
+      }
+    (result, peak.get())
   }
 
   private def coverage(spark: SparkSession, data: Path, output: Path): Unit = {
