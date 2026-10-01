@@ -686,7 +686,7 @@ class CometDeltaNativeScanSuite extends CometDeltaTestBase {
     withTempPath { dir =>
       val path = dir.getAbsolutePath
       // repartition(4) guarantees >= 2 physical files so the per-file cardinality gate has
-      // more than one file to inspect, mirroring design F3's multi-file test shape.
+      // more than one file to inspect.
       spark
         .range(0, 1000)
         .selectExpr("id", "id * 2 as v")
@@ -2197,12 +2197,9 @@ class CometDeltaNativeScanSuite extends CometDeltaTestBase {
   test(
     "decline: shallow clone with a supported local root but viewfs-scheme selected files " +
       "falls back to Spark") {
-    // The shape this decline guards against: a Delta shallow clone whose table ROOT is a natively
-    // supported scheme (here, local `file:`) but whose SELECTED data files still resolve
-    // through the shallow clone's ORIGINAL, natively-unsupported location (here, `viewfs:`,
-    // mounted transparently onto the local filesystem so the on-disk bytes are real and the
-    // query's results are actually checkable). The rootPaths-only gate this task extends cannot
-    // see this: it only ever inspects the clone's own (supported) root.
+    // A shallow clone whose root is a supported scheme (local `file:`) but whose selected data
+    // files resolve through the source table's unsupported location (`viewfs:`, mounted onto
+    // the local filesystem so results are checkable). A gate on rootPaths alone misses this.
     val cluster = "cometDeltaViewfsGate"
     // Hadoop's mounttable is plain Configuration, not SQLConf: mutate the session's shared
     // hadoopConfiguration directly (mirroring withSQLConf's set-then-restore shape) rather than

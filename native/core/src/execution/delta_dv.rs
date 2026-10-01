@@ -365,64 +365,42 @@ const VEC_GROWTH_CAPACITY_FACTOR: usize = 2;
 const MIN_VEC_CAPACITY_SELECTORS: usize = 4;
 
 /// Conservative upper bound, in bytes, on the peak allocation live while DataFusion 54.1's
-/// reader normalizes one file's attached [`ParquetAccessPlan`] -- the allocation this module's
-/// steady-state reservation must cover, not merely the plan's own retained selector bytes.
-/// THREE allocations can be live simultaneously by the time `into_overall_row_selection`
-/// returns, not two -- the clone is only exact when page-index pruning never touches it:
+/// reader normalizes one file's attached [`ParquetAccessPlan`]. This, not the plan's own
+/// retained selector bytes, is what the steady-state reservation must cover. Three allocations
+/// can be live at once when `into_overall_row_selection` returns:
 ///
-/// 1. **Attached original** (`selectors`, exact): `create_initial_plan` deep-clones the
-///    attached plan while the original remains reachable from the file's `extensions` until
-///    the scan consumes it. The ORIGINAL's own selector `Vec`s are exact -- a coalesced
-///    [`RowSelection`] built via `RowSelection::from(Vec<RowSelector>)` (what
-///    `build_access_plan` uses) has no excess capacity, because that conversion is a plain
-///    `with_capacity(len)` copy, not a `size_hint`-blind fold.
-/// 2. **The clone, possibly capacity-inflated** (`<= VEC_GROWTH_CAPACITY_FACTOR * selectors +
-///    MIN_VEC_CAPACITY_SELECTORS * num_row_groups`): if page-index pruning fires
-///    (`PagePruningAccessPlanFilter`; `access_plan.rs`'s `scan_selection` on a row group that
-///    already carries a `RowGroupAccess::Selection` calls `existing.intersection(&page_derived)`
-///    -- `RowSelection::intersection` -> `intersect_row_selections`), it replaces the CLONE's
-///    per-row-group selection with that intersection's output. `intersect_row_selections` is
-///    ANOTHER `from_fn` generator with `size_hint() == (0, None)`, so each intersected row
-///    group's backing `Vec` starts at `with_capacity(0)` and doubles as it grows, independent
-///    of whatever capacity the pre-intersection selection had. This inflated clone is still
-///    live when `into_overall_row_selection` later moves its buffer. Term 1's exactness
-///    guarantee holds for the ORIGINAL always, and for the clone only when page-index pruning
-///    never fires against it -- once it does, the clone must be charged at the SAME
-///    growth-capped bound as a fresh combined-selection `Vec` (term 3), summed once per row
-///    group rather than once per run, since each row group's `Selection` is intersected
-///    independently.
-/// 3. **Per-run combined-selection allocation** (`<= VEC_GROWTH_CAPACITY_FACTOR * (selectors +
-///    num_row_groups) + MIN_VEC_CAPACITY_SELECTORS * num_row_groups`): `into_overall_row_selection`
-///    collects each contiguous run of row groups' selectors into a *new* `RowSelection` via a
-///    `FlatMap` whose `size_hint().0 == 0`, so that run's `Vec` starts at `with_capacity(0)`
-///    and doubles as it grows -- capping its backing allocation at
-///    `max(MIN_VEC_CAPACITY_SELECTORS, next_power_of_two(len))`, which is at most
-///    `MIN_VEC_CAPACITY_SELECTORS + VEC_GROWTH_CAPACITY_FACTOR * len` for a run of `len`
-///    selectors. `len` is at most that run's share of `selectors` plus one boundary selector
-///    per `RowGroupAccess::Scan` row group in the run (`Scan` always contributes exactly one
-///    `RowSelector::select(num_rows)`; see `access_plan.rs`'s `into_overall_row_selection`).
-///    Summing across at most `num_row_groups` runs (each spans >= 1 row group) bounds the total
-///    at `VEC_GROWTH_CAPACITY_FACTOR * selectors + (MIN_VEC_CAPACITY_SELECTORS +
-///    VEC_GROWTH_CAPACITY_FACTOR) * num_row_groups`.
+/// 1. **Attached original** (`selectors`, exact): `create_initial_plan` deep-clones the plan
+///    while the original stays reachable from the file's `extensions`. The original's `Vec`s
+///    have no excess capacity, because `RowSelection::from(Vec<RowSelector>)` (what
+///    `build_access_plan` uses) is a `with_capacity(len)` copy.
+/// 2. **The clone** (`<= VEC_GROWTH_CAPACITY_FACTOR * selectors + MIN_VEC_CAPACITY_SELECTORS *
+///    num_row_groups`): exact unless page-index pruning fires. When it does,
+///    `PagePruningAccessPlanFilter` (via `access_plan.rs`'s `scan_selection`) replaces each of
+///    the clone's `RowGroupAccess::Selection`s with `RowSelection::intersection`'s output,
+///    which `intersect_row_selections` builds with a `from_fn` generator whose `size_hint()` is
+///    `(0, None)`. Each row group's `Vec` therefore starts empty and doubles as it grows, and
+///    since row groups are intersected independently the capacity floor is paid per row group.
+/// 3. **Per-run combined selection** (`<= VEC_GROWTH_CAPACITY_FACTOR * (selectors +
+///    num_row_groups) + MIN_VEC_CAPACITY_SELECTORS * num_row_groups`):
+///    `into_overall_row_selection` collects each contiguous run of row groups into a new
+///    `RowSelection` through a `FlatMap` whose `size_hint().0` is 0, so a run of `len`
+///    selectors allocates at most `MIN_VEC_CAPACITY_SELECTORS + VEC_GROWTH_CAPACITY_FACTOR *
+///    len`. `len` is the run's share of `selectors` plus one `RowSelector::select(num_rows)` per
+///    `RowGroupAccess::Scan` row group, and there are at most `num_row_groups` runs.
 ///
-/// Summing all three terms and converting to bytes: `((1 + 2 * VEC_GROWTH_CAPACITY_FACTOR) *
-/// selectors + (2 * MIN_VEC_CAPACITY_SELECTORS + VEC_GROWTH_CAPACITY_FACTOR) * num_row_groups)
-/// * size_of::<RowSelector>()` -- with the constants above, `(5 * selectors + 10 *
-///   num_row_groups) * size_of::<RowSelector>()`. Checked against two measured worst cases:
+/// In bytes, with the constants above: `(5 * selectors + 10 * num_row_groups) *
+/// size_of::<RowSelector>()`. Checked against two measured worst cases:
 ///
-/// - No page-index pruning (the original P2 report; term 2 stays exact): one 2,000,000-row
-///   group, 1,000,000 alternating deletions, `selectors = 2,000,000`. Measured allocator peak
-///   97,554,457 B; the byte-for-byte accounting for the attached original plus the (here,
-///   exact) clone plus the inflated combined selection explains 97,554,432 B of that, a 25 B
-///   residue we did not attribute. This bound gives 160,000,160 B -- much looser here because
-///   it must also cover the next case, where the clone is NOT exact.
+/// - No page-index pruning (term 2 stays exact): one 2,000,000-row group, 1,000,000
+///   alternating deletions, `selectors = 2,000,000`. Measured allocator peak 97,554,457 B, of
+///   which the three terms account for 97,554,432 B (a 25 B residue is unattributed). This
+///   bound gives 160,000,160 B, looser because it must also cover the next case.
 /// - Page-index pruning fires against the clone: one 1,048,577-row group, `selectors =
-///   1,048,577`. Measured peak 83,886,096 B; this bound gives 83,886,320 B (a 224 B, <1%
-///   margin -- deliberately tight, since this is the case that drives the bound).
+///   1,048,577`. Measured peak 83,886,096 B; this bound gives 83,886,320 B, a deliberately
+///   tight 224 B margin since this case drives the bound.
 ///
-/// Uses checked arithmetic throughout: a selector or row-group count large enough to overflow
-/// `usize` indicates a corrupted or malicious input, reported as a clean error rather than
-/// panicking.
+/// Uses checked arithmetic: a count large enough to overflow `usize` means corrupt or malicious
+/// input and is reported as an error rather than a panic.
 fn reader_peak_bytes(selectors: usize, num_row_groups: usize) -> Result<usize, ExecutionError> {
     let overflow = || {
         GeneralError(format!(

@@ -82,12 +82,10 @@ fn plan_delta_spark_scan(
     spark_plan: &Operator,
     scan: &DeltaSparkScan,
 ) -> PlanCreationResult {
-    // Delta data files are plain parquet; the read path deliberately reuses
-    // the same shared parquet scan builder as NativeScan so Delta inherits
-    // row-group stats pruning, page-index pruning, and filter pushdown. Only
-    // the file list arrives in Delta-specific form. Note delta_common's
-    // column_mapping_mode is informational in M1: the actual field-id
-    // matching switch is common.use_field_id, same as the Iceberg path.
+    // Delta data files are plain parquet, so this reuses NativeScan's parquet scan builder
+    // (row-group and page-index pruning, filter pushdown); only the file list is
+    // Delta-specific. delta_common.column_mapping_mode is informational: native code never
+    // reads it, and field-id matching is switched by common.use_field_id.
     let common = scan
         .common
         .as_ref()

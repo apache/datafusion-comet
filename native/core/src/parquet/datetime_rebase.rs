@@ -1245,10 +1245,9 @@ mod tests {
     }
 
     #[test]
-    fn day_rebase_handles_the_maintainer_repro_date() {
-        // A legacy writer stores proleptic 1500-01-01 as the hybrid day labeled Julian
-        // 1500-01-01 (numerically the proleptic day of 1500-01-10); reading without rebasing
-        // shows 1500-01-10. Rebasing must restore proleptic 1500-01-01.
+    fn day_rebase_restores_proleptic_1500_01_01() {
+        // A legacy writer stores proleptic 1500-01-01 as Julian 1500-01-01, which reads
+        // unrebased as 1500-01-10. Rebasing must restore 1500-01-01.
         let stored = julian_civil_to_day(1500, 1, 1);
         assert_eq!(stored, days_from_civil(1500, 1, 10) as i32);
         assert_eq!(
@@ -1714,8 +1713,8 @@ mod tests {
     #[test]
     fn non_spark_files_with_mixed_read_modes_resolve_each_spec_independently() {
         // datetime CORRECTED + int96 EXCEPTION on a metadata-free file: dates and INT64
-        // timestamps follow the datetime spec alone (the maintainer's corrected 1500-01-01
-        // INT64 timestamp must read verbatim), INT96 leaves follow the INT96 spec.
+        // timestamps follow the datetime spec alone (an ancient INT64 timestamp reads
+        // verbatim), INT96 leaves follow the INT96 spec.
         let ts_dt = DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()));
         let schema = Schema::new_with_metadata(
             vec![
@@ -2540,8 +2539,8 @@ mod tests {
         assert!(err.contains("rebase"), "unexpected error: {err}");
     }
 
-    /// `STRUCT<d: Date32, ts: Timestamp>` as (field, type, array builder), the maintainer's
-    /// physical `s` column: a modern date next to a timestamp that may be ancient.
+    /// A physical `s: STRUCT<d: Date32, ts: Timestamp>` column holding a modern date and the
+    /// given timestamp, as (field, type, array).
     fn date_ts_struct(ts: i64) -> (FieldRef, DataType, ArrayRef) {
         let d_field = Arc::new(Field::new("d", DataType::Date32, true));
         let ts_field = Arc::new(ts_field(TimeUnit::Microsecond));
@@ -2568,11 +2567,10 @@ mod tests {
 
     #[test]
     fn unrequested_struct_leaves_are_never_checked() {
-        // The maintainer's P2 probe: a metadata-free file with s.d = 2024-06-01 and
-        // s.ts = 1500-01-01 under EXCEPTION read modes. Spark's requested schema for
-        // `select s.d` is STRUCT<d>, so Spark never decodes s.ts and reads fine; the wrapper,
-        // sitting beneath the schema adapter's struct narrowing, must not check the leaf the
-        // narrowing is about to drop.
+        // A metadata-free file with s.d = 2024-06-01 and an ancient s.ts under EXCEPTION read
+        // modes. Spark's requested schema for `select s.d` is STRUCT<d>, so Spark never decodes
+        // s.ts; the wrapper sits beneath the schema adapter's struct narrowing and must not
+        // check the leaf that narrowing drops.
         let ancient = LAST_SWITCH_JULIAN_TS_SECONDS * 1_000_000 - 1;
         let (field, dt, array) = date_ts_struct(ancient);
         let schema = Schema::new(vec![Field::new("s", dt.clone(), true)]);
