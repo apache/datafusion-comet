@@ -109,10 +109,8 @@ jobs:
 
   # Fast syntactic-only scalafix check. Parses sources without compiling, so it
   # surfaces version-independent style issues (e.g. RedundantSyntax) in seconds,
-  # long before the lint-java matrix finishes its ~3.5 min build. It also scans
-  # the spark-4.1 / spark-4.2 sources that lint-java skips (those profiles can't
-  # run -Psemanticdb yet), so it is the only gate covering them. The full rule
-  # set, including the semantic rules, still runs in lint-java.
+  # long before the lint-java matrix finishes its ~3.5 min build. The full rule
+  # set, including the semantic rules, runs in lint-java.
   scalafix-syntactic:
     name: Lint Scala (syntactic)
     if: ${{ !inputs.cache-refresh-only && inputs.profiles != 'nightly' }}
@@ -177,10 +175,12 @@ jobs:
           - name: "Spark 4.0, JDK 21"
             java_version: "21"
             maven_opts: "-Pspark-4.0"
-          # Spark 4.1 and 4.2 are intentionally absent: the lint job invokes -Psemanticdb,
-          # but semanticdb-scalac for those Scala patch versions (2.13.17 / 2.13.18) is not
-          # yet published, so we cannot currently run scalafix against the spark-4.1 or
-          # spark-4.2 profiles.
+          - name: "Spark 4.1, JDK 17"
+            java_version: "17"
+            maven_opts: "-Pspark-4.1"
+          - name: "Spark 4.2, JDK 17"
+            java_version: "17"
+            maven_opts: "-Pspark-4.2"
       fail-fast: false
     steps:
       - uses: actions/checkout@v7
@@ -287,53 +287,6 @@ jobs:
             ~/.m2/repository
             /root/.m2/repository
           key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-strict-warnings
-
-  # Compile-only verification for Spark 4.1. Tests are intentionally skipped: the spark-4.1
-  # profile is currently a build target only, and several runtime/test failures are tracked
-  # in follow-up PRs. Excluded from lint-java because semanticdb-scalac_2.13.17 is not yet
-  # published and the lint job activates -Psemanticdb.
-  build-spark-4-1:
-    needs: lint
-    name: Build Spark 4.1, JDK 17
-    if: ${{ !inputs.cache-refresh-only && inputs.profiles != 'nightly' }}
-    runs-on: ubuntu-24.04
-    container:
-      image: amd64/rust
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Setup Rust & Java toolchain
-        uses: ./.github/actions/setup-builder
-        with:
-          rust-version: ${{ env.RUST_VERSION }}
-          jdk-version: 17
-
-      - name: Restore Maven dependencies
-        id: maven-cache
-        uses: actions/cache/restore@v6
-        with:
-          path: |
-            ~/.m2/repository
-            /root/.m2/repository
-          key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-spark-4.1-build
-          restore-keys: |
-            ${{ runner.os }}-java-maven-
-
-      - name: Compile (skip tests)
-        run: ./mvnw -B install -DskipTests -Dmaven.test.skip=true -Pspark-4.1
-
-      # Saved only on main: an entry written from a pull request or a
-      # `gh-readonly-queue/*` branch cannot be restored by any later run, and
-      # it evicts main's from the shared budget. See "Large caches are written
-      # on main only" in README.md.
-      - name: Save Maven dependencies
-        if: ${{ github.ref == 'refs/heads/main' && steps.maven-cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v6
-        with:
-          path: |
-            ~/.m2/repository
-            /root/.m2/repository
-          key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-spark-4.1-build
 
   celeborn-reflection-compatibility:
     needs: lint
@@ -583,6 +536,7 @@ jobs:
               org.apache.spark.CometPluginsUnifiedModeSuite
               org.apache.spark.CometPluginsExtensionOnlySuite
               org.apache.spark.CometPluginsSparkShuffleManagerSuite
+              org.apache.spark.CometPluginsEventLogSuite
               org.apache.comet.rules.CometScanRuleSuite
               org.apache.comet.rules.CometScanContribSuite
               org.apache.comet.rules.CometScanSchemeFallbackSuite
@@ -630,6 +584,7 @@ jobs:
               org.apache.comet.CometTemporalExpressionSuite
               org.apache.comet.CometArrayExpressionSuite
               org.apache.comet.CometNativeCastSuite
+              org.apache.comet.CometCastCollatedStringSuite
               org.apache.comet.CometDateTimeUtilsSuite
               org.apache.comet.CometMathExpressionSuite
               org.apache.comet.CometStringExpressionSuite
