@@ -142,12 +142,12 @@ use datafusion_comet_proto::{
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
 use datafusion_comet_spark_expr::{
-    create_case_when, jvm_udf::JvmScalarUdfExpr, normalize_floats, spark_in_list, ApproxPercentile,
-    ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Correlation, Covariance, CreateNamedStruct,
-    DecimalRescaleCheckOverflow, GetArrayStructFields, GetStructField, HllPlusPlus, HllSketchAgg,
-    HllUnionAgg, IfExpr, ListExtract, MaxMinBy, Mode, NormalizeNaNAndZero, Regr, RegrType,
-    SparkCastOptions, Stddev, SumDecimal, ToJson, UnboundColumn, Variance, WideDecimalBinaryExpr,
-    WideDecimalOp,
+    create_case_when, create_if_expr, jvm_udf::JvmScalarUdfExpr, normalize_floats, spark_in_list,
+    ApproxPercentile, ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Correlation, Covariance,
+    CreateNamedStruct, DecimalRescaleCheckOverflow, GetArrayStructFields, GetStructField,
+    HllPlusPlus, HllSketchAgg, HllUnionAgg, IfExpr, ListExtract, MaxMinBy, Mode,
+    NormalizeNaNAndZero, Regr, RegrType, SparkCastOptions, Stddev, SumDecimal, ToJson,
+    UnboundColumn, Variance, WideDecimalBinaryExpr, WideDecimalOp,
 };
 use itertools::Itertools;
 use jni::objects::{Global, JObject};
@@ -797,8 +797,8 @@ impl PhysicalPlanner {
                 let true_expr =
                     self.create_expr(expr.true_expr.as_ref().unwrap(), Arc::clone(&input_schema))?;
                 let false_expr =
-                    self.create_expr(expr.false_expr.as_ref().unwrap(), input_schema)?;
-                Ok(Arc::new(IfExpr::new(if_expr, true_expr, false_expr)))
+                    self.create_expr(expr.false_expr.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                create_if_expr(if_expr, true_expr, false_expr, &input_schema).map_err(|e| e.into())
             }
             ExprStruct::NormalizeNanAndZero(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
