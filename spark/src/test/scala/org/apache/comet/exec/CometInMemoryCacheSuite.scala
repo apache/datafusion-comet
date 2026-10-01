@@ -2512,7 +2512,9 @@ class CometInMemoryCacheSuite extends CometTestBase {
     // Spark collects the metrics of an observe() inside a cached plan only through an
     // InMemoryTableScanExec over it, so the scan of such a relation has to stay Spark's. Replaced,
     // the metrics come back empty, and on Spark 3.4 Observation.get never returns. Nested the way
-    // SPARK-35695's test nests it, with a shuffle in the inner cached plan so that AQE plans it.
+    // SPARK-35695's test nests it, with a shuffle in the inner cached plan so that AQE plans it,
+    // under one more cache that records no metrics of its own. The metrics read through that top
+    // scan are only found by following it into the caches it reads.
     withAQECache {
       val df = spark
         .range(0, 100, 1, 2)
@@ -2520,6 +2522,8 @@ class CometInMemoryCacheSuite extends CometTestBase {
         .observe("inner_event", count(lit(1)).as("rows"), max($"id").as("max_id"))
         .persist()
         .observe("outer_event", min($"id").as("min_id"))
+        .persist()
+        .filter($"id" > 10)
         .persist()
       df.collect()
       assert(
