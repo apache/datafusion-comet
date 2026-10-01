@@ -37,7 +37,8 @@ public interface CometS3CredentialProvider extends AutoCloseable {
   /**
    * Called once per Comet-cached instance before any {@link #getCredentialsForPath} call. Must be
    * cheap and non-blocking. On the Iceberg path the map carries the unfiltered FileIO bag; on the
-   * Parquet path it is empty.
+   * Parquet path it carries the {@code fs.s3a.*} config subset (including any static keys, so a
+   * provider chain resolves the same way it would under Spark).
    *
    * @param catalogProperties may contain secrets, do not log
    */

@@ -61,43 +61,41 @@ with the setting disabled to distinguish reduced hash-probe work from reader I/O
 
 ## Adaptive Partial Aggregation
 
-For high-cardinality grouping, Comet can bypass partial hash aggregation when it is not
-reducing the number of rows enough. This currently applies only to fused native shuffle-writer
-plans whose partial aggregates are grouping-only or single-argument `COUNT`. Low-cardinality
-inputs continue to aggregate normally. The SQL metric `rows bypassing partial aggregation`
-shows whether skipping occurred.
+Set `spark.comet.exec.aggregate.skipPartial.enabled=true` to let Comet bypass partial hash
+aggregation for high-cardinality grouping when it is not reducing the number of rows enough. This
+experimental optimization is disabled by default. It currently applies only to fused native
+shuffle-writer plans whose partial aggregates are grouping-only or single-argument `COUNT`.
+Low-cardinality inputs continue to aggregate normally. The SQL metric
+`rows bypassing partial aggregation` shows whether skipping occurred.
+
+DataFusion makes the decision separately in each task. It starts checking after the first 100,000
+input rows, and as soon as the number of groups divided by the number of input rows exceeds `0.8`,
+it stops aggregating and sends the rest of the task's rows to the shuffle as they are. It does not
+check again, so a task whose keys repeat after a mostly distinct start, such as several snapshot
+files of the same keys packed into one split, can shuffle many times more rows than it would with
+skipping disabled. Compare the shuffle write metrics with the setting enabled and disabled before
+enabling it for a workload.
 
 Eligibility is conservative for the whole fused native plan: any unsupported partial accumulator,
 Spark `PartialMerge`, or mixed-mode aggregate disables skipping in that plan. Multi-argument
 `COUNT` and other accumulators are not admitted. Distribution-required grouping-only stages
 still fully deduplicate, and non-native-shuffle plans retain ordinary aggregation.
-The DataFusion testing configuration override does not bypass these safety checks.
 
-DataFusion 55 defaults to probing after 100,000 input rows per partial aggregation
-partition and skipping when the number of groups divided by input rows exceeds `0.8`.
-To experiment with these thresholds, enable `spark.comet.exec.respectDataFusionConfigs`,
+To experiment with the thresholds, also enable `spark.comet.exec.respectDataFusionConfigs`,
 a development and testing option that defaults to `false`. For example, the following
 SQL settings pass through the default threshold values, which you can adjust:
 
 ```sql
+SET spark.comet.exec.aggregate.skipPartial.enabled=true;
 SET spark.comet.exec.respectDataFusionConfigs=true;
 SET spark.comet.datafusion.execution.skip_partial_aggregation_probe_rows_threshold=100000;
 SET spark.comet.datafusion.execution.skip_partial_aggregation_probe_ratio_threshold=0.8;
 ```
 
 A lower row threshold allows an earlier decision; a lower ratio threshold makes
-skipping more likely. Skipping can increase the number of partial states emitted
-and the amount of shuffle data, so measure the effect on your workload.
-
-To disable skipping, keep `spark.comet.exec.respectDataFusionConfigs=true` and set
-the ratio threshold above the maximum possible groups/input-rows ratio:
-
-```sql
-SET spark.comet.datafusion.execution.skip_partial_aggregation_probe_ratio_threshold=1.1;
-```
-
-These settings only tune eligible plans. Unsupported accumulators and modes remain
-disabled even when configuration overrides are enabled.
+skipping more likely. These settings only tune eligible plans. They cannot enable skipping
+while `spark.comet.exec.aggregate.skipPartial.enabled` is `false`, or for unsupported
+accumulators and modes.
 
 ## Local TopK Fusion
 
@@ -111,11 +109,43 @@ Each scan partition keeps enough candidates for both `LIMIT` and `OFFSET`. With 
 Comet shuffles those candidates and performs the final TopK. With one partition, it reuses the local
 ordering without building a second heap. The final stage applies the offset and output projection.
 
-Fusion reduces the work of passing scan batches between native execution blocks. It still reads all
-input rows and does not enable TopK reader pruning. It can also reduce overlap between scan decoding
+Fusion reduces the work of passing scan batches between native execution blocks. Fusion alone still
+reads all input rows. [TopK reader pruning](#topk-reader-pruning) is enabled separately. Fusion can
+also reduce overlap between scan decoding
 and TopK processing, so some workloads may run slower. Compare enabled and disabled runs with your
 data layout, payload width, limit, and partition count before enabling it. The
 `CometTopKBenchmark` microbenchmark covers these cases with ascending, descending, and random layouts.
+
+### TopK Reader Pruning
+
+Set both `spark.comet.exec.topK.fusion.enabled=true` and
+`spark.comet.exec.topK.dynamicFilter.enabled=true` to pass the local TopK's improving threshold to
+its Parquet reader. Both options are experimental and disabled by default. Eligibility is the same
+single signed integer key described above. Each task creates a fresh threshold; it is not shared
+across Spark partitions or exchanges, or retained for later executions.
+
+Once the heap contains enough candidates for `LIMIT + OFFSET`, the reader can skip later row groups
+whose statistics prove that no row can improve those candidates. Existing Parquet page-index and
+decoder-filter options can also use the predicate. This option adds no separate filter over decoded
+scan batches. TopK continues to select the final candidates.
+
+Reader attachment is conservative. A scan with a fetch limit, supplied file statistics, or a static
+predicate other than direct column `IS NOT NULL` checks keeps the existing execution path. For each
+file, schema adaptation disables pruning if it could hide a conversion error in a projected or
+filtered column. Missing null counts remain unknown, which can prevent pruning even when min/max
+statistics are present. These cases can still execute a fused TopK.
+
+Reader pruning is most useful when small K values and the file order establish a strong threshold
+early. Descending or random layouts for an ascending query can prune few or no groups, while still
+paying the cost of attaching and checking the predicate. Wider rows can increase the benefit when
+groups are skipped. Compare `pruning` with `fused` in `CometTopKBenchmark` to measure the reader effect,
+and compare both with `unfused` to include the cost of fusion. Check the scan's emitted rows,
+`bytes_scanned`, `row_groups_pruned_dynamic_filter`, and `row_groups_pruned_statistics` alongside elapsed
+time; attachment alone does not demonstrate a saving. Pruning when later files open uses the TopK
+threshold already available and increments `row_groups_pruned_statistics`. With one row group per
+file, the dynamic counter can stay zero despite substantial TopK pruning. The statistics counter also
+includes other predicates, so compare with filtering disabled to assess TopK savings.
+See [TopK metrics](../metrics.md#local-topk).
 
 ## Optimizing Sorting on Floating-Point Values
 
