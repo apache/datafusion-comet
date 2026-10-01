@@ -78,12 +78,12 @@ impl ScalarUDFImpl for SparkSortArray {
         };
         let is_scalar = matches!(array, ColumnarValue::Scalar(_));
         let rows = if is_scalar { 1 } else { args.number_rows };
+        let array = array.to_array(rows)?;
         // Spark arrays use Arrow's 32-bit List layout.
-        let result = sort_array(
-            array.to_array(rows)?.as_list::<i32>(),
-            ascending,
-            contains_null,
-        )?;
+        let Some(list) = array.as_list_opt::<i32>() else {
+            return exec_err!("spark_sort_array takes a list, got {}", array.data_type());
+        };
+        let result = sort_array(list, ascending, contains_null)?;
         if is_scalar {
             Ok(ColumnarValue::Scalar(ScalarValue::try_from_array(
                 &result, 0,
@@ -494,6 +494,11 @@ mod tests {
             );
         }
         Ok(())
+    }
+
+    #[test]
+    fn non_list_is_an_error() {
+        assert!(invoke(Arc::new(Float64Array::from(vec![1.0])), true, true).is_err());
     }
 
     #[test]

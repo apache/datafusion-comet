@@ -50,6 +50,10 @@ query
 SELECT id, sort_array(array(f, -f, 1.0F, NULL)), sort_array(array(-f, f), false)
 FROM sa_float
 
+-- A null array
+query
+SELECT id, sort_array(IF(d IS NULL, NULL, array(d, -d, 1.0D))) FROM sa_float
+
 -- Elements that cannot be null
 query
 SELECT id, sort_array(array(coalesce(d, 0.0D), coalesce(-d, 0.0D), 1.0D)),

@@ -102,9 +102,10 @@ impl ScalarUDFImpl for SparkArrayRemove {
 }
 
 fn array_remove(array: &ListArray, value: &ArrayRef) -> Result<ArrayRef> {
-    match array.value_type() {
-        DataType::Float32 => Ok(remove_floats::<Float32Type>(array, value)),
-        DataType::Float64 => Ok(remove_floats::<Float64Type>(array, value)),
+    // Spark casts the value to the element type. Anything else fails in `spark_equality`.
+    match (array.value_type(), value.data_type()) {
+        (DataType::Float32, DataType::Float32) => Ok(remove_floats::<Float32Type>(array, value)),
+        (DataType::Float64, DataType::Float64) => Ok(remove_floats::<Float64Type>(array, value)),
         _ => {
             let equal = spark_equality(array.values().as_ref(), value.as_ref())?;
             remove_where(array, value, equal)
@@ -115,9 +116,13 @@ fn array_remove(array: &ListArray, value: &ArrayRef) -> Result<ArrayRef> {
 /// [`array_remove`] of the same value from every row, which a float array does in one pass over
 /// all the values, as DataFusion does for its own `array_remove`.
 fn remove_constant(array: &ListArray, needle: &ScalarValue) -> Result<ArrayRef> {
-    match needle {
-        ScalarValue::Float32(Some(needle)) => remove_float_constant::<Float32Type>(array, *needle),
-        ScalarValue::Float64(Some(needle)) => remove_float_constant::<Float64Type>(array, *needle),
+    match (array.value_type(), needle) {
+        (DataType::Float32, ScalarValue::Float32(Some(needle))) => {
+            remove_float_constant::<Float32Type>(array, *needle)
+        }
+        (DataType::Float64, ScalarValue::Float64(Some(needle))) => {
+            remove_float_constant::<Float64Type>(array, *needle)
+        }
         _ => array_remove(array, &needle.to_array_of_size(array.len())?),
     }
 }
@@ -495,6 +500,19 @@ mod tests {
         assert_eq!(field.data_type(), list.data_type());
         assert!(field.is_nullable(), "a null value gives a null array");
         Ok(())
+    }
+
+    /// Spark casts the value to the element type, so a value of another type is an error, not a
+    /// panic, whether it is a constant or a column.
+    #[test]
+    fn mismatched_value_type() {
+        let array = list(&[Some(vec![Some(1.0)])]);
+        for value in [
+            ColumnarValue::Scalar(ScalarValue::Float32(Some(1.0))),
+            ColumnarValue::Array(Arc::new(Float32Array::from(vec![1.0f32]))),
+        ] {
+            assert!(invoke(ColumnarValue::Array(Arc::clone(&array)), value, 1).is_err());
+        }
     }
 
     #[test]

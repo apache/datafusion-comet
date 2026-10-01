@@ -35,10 +35,14 @@ use std::time::Duration;
 
 const ROWS: usize = 8192;
 
+/// The value of element `i`. Values repeat so that `array_remove` finds something to remove.
+fn value(i: usize) -> f64 {
+    ((i * 7919) % 101) as f64 * 0.5 + 1.0
+}
+
 /// `ROWS` lists of `len` doubles, with every tenth list and every seventh element null if
-/// `nulls`. Values repeat so that `array_remove` finds something to remove.
+/// `nulls`.
 fn lists(len: usize, nulls: bool) -> ArrayRef {
-    let value = |i: usize| ((i * 7919) % 101) as f64 * 0.5 + 1.0;
     let values = if nulls {
         Float64Array::from_iter((0..ROWS * len).map(|i| (i % 7 != 0).then(|| value(i))))
     } else {
@@ -96,7 +100,14 @@ fn criterion_benchmark(c: &mut Criterion) {
                 &list,
             );
             let remove_args = args(
-                vec![column, scalar(ScalarValue::Float64(Some(26.0)))],
+                vec![column.clone(), scalar(ScalarValue::Float64(Some(26.0)))],
+                &list,
+            );
+            // A value per row: the row's second element.
+            let row_values =
+                Float64Array::from_iter_values((0..ROWS).map(|row| value(row * len + 1)));
+            let remove_column_args = args(
+                vec![column, ColumnarValue::Array(Arc::new(row_values))],
                 &list,
             );
             let cases = [
@@ -113,6 +124,13 @@ fn criterion_benchmark(c: &mut Criterion) {
                     &datafusion_remove,
                     &remove_args,
                     &remove_args,
+                ),
+                (
+                    "array_remove_column",
+                    &comet_remove,
+                    &datafusion_remove,
+                    &remove_column_args,
+                    &remove_column_args,
                 ),
             ];
             for (op, comet, datafusion, comet_args, datafusion_args) in cases {

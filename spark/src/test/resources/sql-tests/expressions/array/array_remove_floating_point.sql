@@ -45,6 +45,12 @@ query
 SELECT id, array_remove(array(f, -f, 1.0F, NULL), 0.0F), array_remove(array(f, -f), -f)
 FROM ar_float
 
+-- A literal array with a value from a column, and a null array
+query
+SELECT id, array_remove(array(0.0D, -0.0D, double('NaN'), 1.0D), d),
+  array_remove(IF(d IS NULL, NULL, array(d, -d, 1.0D)), 0.0D)
+FROM ar_float
+
 -- Arrays as elements compare their floats the same way. Struct elements fall back to Spark
 -- (#1307).
 query
