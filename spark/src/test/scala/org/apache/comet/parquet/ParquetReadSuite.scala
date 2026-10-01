@@ -1676,17 +1676,13 @@ abstract class ParquetReadSuite extends CometTestBase {
           }
           withTempPath { dir =>
             val path = dir.getCanonicalPath
-            spark.sql(s"select 100 as id, $matching as s").repartition(1).write.parquet(path)
-            spark
-              .sql(s"select 1 as id, $mismatched as s")
-              .repartition(1)
-              .write
-              .mode("append")
-              .parquet(path)
+            spark.sql(s"select 100 as id, $matching as s").write.parquet(path)
+            spark.sql(s"select 1 as id, $mismatched as s").write.mode("append").parquet(path)
             val df = spark.read.schema(s"id int, s $readType").parquet(path)
             checkSparkAnswerAndOperator(df.where("id = 100"))
-            // The pruned row group still fails when it is decoded.
-            intercept[SparkException](df.collect())
+            // The pruned row group still fails in both engines when it is decoded.
+            val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+            assert(sparkError.isDefined && cometError.isDefined, s"$sparkError, $cometError")
           }
         }
       }

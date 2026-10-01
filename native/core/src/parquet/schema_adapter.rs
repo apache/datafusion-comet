@@ -462,13 +462,11 @@ fn reject_on_non_empty_expr(
 }
 
 /// Outcome of checking one Parquet (physical) -> Spark (logical) type pair against the
-/// conversion rules of Spark's vectorized Parquet reader.
+/// conversion rules of Spark's vectorized Parquet reader. A pair Spark rejects when it opens
+/// the file, before it decodes anything, is an error from [`check_conversion`] instead.
 enum ConversionCheck {
     /// Spark has an updater for the pair (for a same-shape complex pair: for every leaf).
     Accept,
-    /// Spark rejects the pair when it opens the file, before it decodes anything; raised at
-    /// plan time.
-    Reject(DataFusionError),
     /// Spark rejects the pair, but only while decoding a row group, so the rejection is
     /// deferred to runtime via [`RejectOnNonEmpty`] (SPARK-26709). A file with nothing to
     /// decode, empty or with every row group pruned, reads. Carries the offending
@@ -480,86 +478,79 @@ enum ConversionCheck {
     },
 }
 
-/// Apply the rejection matrix of Spark's `ParquetVectorUpdaterFactory.getUpdater` to a single
-/// physical/logical leaf pair. `column` is the Spark-style column path used in the error (`a`
-/// for a top-level column, `s, x` for a nested leaf, mirroring
-/// `Arrays.toString(descriptor.getPath())`). The rules and their order are exactly those the
-/// adapter applies to top-level columns; [`check_conversion`] applies them to nested leaves.
+/// Whether Parquet stores `data_type` as a group: a struct, a list or a map.
+fn is_complex(data_type: &DataType) -> bool {
+    matches!(
+        data_type,
+        DataType::Struct(_)
+            | DataType::List(_)
+            | DataType::LargeList(_)
+            | DataType::FixedSizeList(_, _)
+            | DataType::ListView(_)
+            | DataType::LargeListView(_)
+            | DataType::Map(_, _)
+    )
+}
+
+/// Check a pair that [`check_conversion`] doesn't walk: two primitives, or two types of
+/// different shape. `column` is the Spark-style column path used in the error (`a` for a
+/// top-level column, `s, x` for a nested leaf, mirroring `Arrays.toString(descriptor.getPath())`).
 ///
-/// Spark calls `getUpdater` only while it decodes a row group, so every rejection here is
-/// deferred to runtime except a shape mismatch that Spark already fails when it opens the
-/// file (#6506).
+/// A shape mismatch (e.g. TIMESTAMP read as ARRAY<TIMESTAMP>, or STRUCT read as ARRAY) fails
+/// when Spark opens the file if Spark can't clip the file's type to the requested one: a group
+/// read as another type (`ParquetToSparkSchemaConverter`), or a primitive read as a struct, or
+/// as an array or map with a complex element (`ParquetReadSupport.clipParquetType`). Every
+/// other pair Spark rejects, including a primitive read as an array or map of primitives
+/// (SPARK-45604), is rejected only by `getUpdater`, which Spark calls while decoding a row
+/// group, so the rejection is deferred to runtime (#6506).
 fn check_leaf_conversion(
     physical_type: &DataType,
     target_type: &DataType,
     column: &str,
     options: &SparkParquetOptions,
-) -> ConversionCheck {
+) -> DataFusionResult<ConversionCheck> {
     if physical_type == target_type {
-        return ConversionCheck::Accept;
+        return Ok(ConversionCheck::Accept);
     }
-    let reject = || {
-        ConversionCheck::Reject(parquet_schema_convert_err(
-            column,
-            physical_type,
-            target_type,
-        ))
-    };
-    let reject_on_non_empty = || ConversionCheck::RejectOnNonEmpty {
+    if is_complex(physical_type) || is_complex(target_type) {
+        let is_unclipped = !is_complex(physical_type)
+            && match target_type {
+                DataType::List(item)
+                | DataType::LargeList(item)
+                | DataType::FixedSizeList(item, _)
+                | DataType::ListView(item)
+                | DataType::LargeListView(item) => !is_complex(item.data_type()),
+                DataType::Map(entries, _) => matches!(
+                    entries.data_type(),
+                    DataType::Struct(kv) if kv.iter().all(|f| !is_complex(f.data_type()))
+                ),
+                _ => false,
+            };
+        if !is_unclipped {
+            return Err(parquet_schema_convert_err(
+                column,
+                physical_type,
+                target_type,
+            ));
+        }
+    } else if spark_has_updater(physical_type, target_type, options) {
+        return Ok(ConversionCheck::Accept);
+    }
+    Ok(ConversionCheck::RejectOnNonEmpty {
         column: column.to_string(),
         physical_type: physical_type.clone(),
         target_type: target_type.clone(),
-    };
+    })
+}
 
-    // Scalar/complex mismatch (e.g. TIMESTAMP read as ARRAY<TIMESTAMP>):
-    // Spark's vectorized reader rejects with
-    // SchemaColumnConvertNotSupportedException (SPARK-45604). Same-shape
-    // complex pairs never reach this leaf check (`check_conversion` walks their
-    // leaves instead), so two complex types here differ in shape (e.g. STRUCT
-    // read as ARRAY), which Spark rejects just the same.
-    //
-    // Checked first because the shape decides when Spark rejects. It fails when
-    // it opens the file if it can't clip the file's type to the requested one,
-    // which it can't for a group (`ParquetToSparkSchemaConverter`) or for a
-    // primitive read as a struct, or as an array or map with a complex element
-    // (`ParquetReadSupport.clipParquetType`). It doesn't clip a primitive read as
-    // an array or map of primitives, so only `getUpdater` rejects that, while
-    // decoding, as in SPARK-45604.
-    let is_complex = |t: &DataType| {
-        matches!(
-            t,
-            DataType::Struct(_)
-                | DataType::List(_)
-                | DataType::LargeList(_)
-                | DataType::FixedSizeList(_, _)
-                | DataType::ListView(_)
-                | DataType::LargeListView(_)
-                | DataType::Map(_, _)
-        )
-    };
-    if is_complex(physical_type) {
-        return reject();
-    }
-    if is_complex(target_type) {
-        let elements_are_primitive = match target_type {
-            DataType::List(item)
-            | DataType::LargeList(item)
-            | DataType::FixedSizeList(item, _)
-            | DataType::ListView(item)
-            | DataType::LargeListView(item) => !is_complex(item.data_type()),
-            DataType::Map(entries, _) => matches!(
-                entries.data_type(),
-                DataType::Struct(kv) if kv.iter().all(|f| !is_complex(f.data_type()))
-            ),
-            _ => false,
-        };
-        return if elements_are_primitive {
-            reject_on_non_empty()
-        } else {
-            reject()
-        };
-    }
-
+/// Whether Spark's `ParquetVectorUpdaterFactory.getUpdater` has an updater that reads the
+/// primitive Parquet (physical) type as the requested (logical) type. The same rules apply to
+/// top-level columns and, through [`check_conversion`], to nested leaves.
+fn spark_has_updater(
+    physical_type: &DataType,
+    target_type: &DataType,
+    options: &SparkParquetOptions,
+) -> bool {
     // Reject reading a string/binary Parquet column as anything else. Spark's
     // `ParquetVectorUpdaterFactory.getUpdater` BINARY case allows StringType /
     // BinaryType, or DecimalType only when the column carries a
@@ -568,14 +559,11 @@ fn check_leaf_conversion(
     // nulls, parse strings, or surface as a generic Arrow type-mismatch error.
     // See #4088 and #4351.
     if is_string_or_binary(physical_type) && !is_string_or_binary(target_type) {
-        return reject_on_non_empty();
+        return false;
     }
 
     // Reject reading a primitive numeric Parquet column as StringType /
-    // BinaryType. Spark has no `int -> string` etc. updater. Defer to
-    // runtime via `RejectOnNonEmpty` so empty Parquet files (SPARK-26709)
-    // pass and the JVM shim translates to
-    // `SchemaColumnConvertNotSupportedException`.
+    // BinaryType. Spark has no `int -> string` etc. updater.
     let physical_is_primitive_numeric = matches!(
         physical_type,
         DataType::Boolean
@@ -587,7 +575,7 @@ fn check_leaf_conversion(
             | DataType::Float64
     );
     if physical_is_primitive_numeric && is_string_or_binary(target_type) {
-        return reject_on_non_empty();
+        return false;
     }
 
     // Decimal-to-decimal narrowing. Spark's `isDecimalTypeMatched` (the
@@ -602,7 +590,7 @@ fn check_leaf_conversion(
         let src_int_precision = i32::from(*src_p) - i32::from(*src_s);
         let dst_int_precision = i32::from(*dst_p) - i32::from(*dst_s);
         if dst_s < src_s || dst_int_precision < src_int_precision {
-            return reject_on_non_empty();
+            return false;
         }
     }
 
@@ -622,7 +610,7 @@ fn check_leaf_conversion(
         if let Some((dst_p, dst_s)) = dst_precision_scale {
             let dst_int_precision = i32::from(dst_p) - i32::from(dst_s);
             if dst_int_precision < min_int_precision {
-                return reject_on_non_empty();
+                return false;
             }
         }
     }
@@ -630,8 +618,7 @@ fn check_leaf_conversion(
     // Type promotion (widening). When `allow_type_promotion` is false,
     // reject the three widenings (INT32→INT64, FLOAT→DOUBLE, INT32→DOUBLE)
     // that Spark 3.x's vectorized reader rejects. The flag tracks Comet's
-    // per-Spark-version constant in ShimCometConf. Deferred to runtime so
-    // empty files (SPARK-26709) pass.
+    // per-Spark-version constant in ShimCometConf.
     if !options.allow_type_promotion {
         let is_disallowed_promotion = matches!(
             (physical_type, target_type),
@@ -640,7 +627,7 @@ fn check_leaf_conversion(
                 | (DataType::Int32, DataType::Float64)
         );
         if is_disallowed_promotion {
-            return reject_on_non_empty();
+            return false;
         }
     }
 
@@ -657,7 +644,7 @@ fn check_leaf_conversion(
     //   - `Date32 -> Timestamp(LTZ)`: Spark only allows Date -> TimestampNTZ.
     //   - `Timestamp -> Date32`: no Timestamp updater branches into Date.
     //
-    // Deferred to runtime (SPARK-26709). See #4297.
+    // See #4297.
     let is_spark_rejected_conversion = matches!(
         (physical_type, target_type),
         // Long -> narrower int.
@@ -693,14 +680,13 @@ fn check_leaf_conversion(
         | (DataType::Timestamp(_, _), DataType::Date32)
     );
     if is_spark_rejected_conversion {
-        return reject_on_non_empty();
+        return false;
     }
 
     // Spark 3.x refuses to read a Parquet TimestampLTZ column as
     // TimestampNTZ (SPARK-36182); Spark 4.0 (SPARK-47447) lifted that.
     // The flag tracks Comet's per-Spark-version constant in
-    // ShimCometConf. Deferred to runtime so empty files (SPARK-26709)
-    // still pass. See #4219.
+    // ShimCometConf. See #4219.
     //
     // This catches all LTZ physical encodings: TIMESTAMP_MICROS /
     // TIMESTAMP_MILLIS arrive as `Timestamp(_, Some(_))` directly, and
@@ -716,29 +702,26 @@ fn check_leaf_conversion(
             )
         )
     {
-        return reject_on_non_empty();
+        return false;
     }
 
-    ConversionCheck::Accept
+    true
 }
 
-/// Combine the verdicts of sibling fields. A `Reject` wins wherever it is, because Spark
-/// raises it when it opens the file, before it decodes anything. Otherwise the first deferred
+/// Combine the verdicts of sibling fields. A rejection at open is an error, so it wins wherever
+/// it is, as in Spark, which raises it before it decodes anything. Otherwise the first deferred
 /// verdict wins, like Spark, which raises for the first offending column it decodes.
 fn combine_checks(
     checks: impl Iterator<Item = DataFusionResult<ConversionCheck>>,
 ) -> DataFusionResult<ConversionCheck> {
-    let mut deferred = None;
+    let mut combined = ConversionCheck::Accept;
     for check in checks {
-        match check? {
-            ConversionCheck::Accept => {}
-            reject @ ConversionCheck::Reject(_) => return Ok(reject),
-            check @ ConversionCheck::RejectOnNonEmpty { .. } => {
-                deferred.get_or_insert(check);
-            }
+        let check = check?;
+        if matches!(combined, ConversionCheck::Accept) {
+            combined = check;
         }
     }
-    Ok(deferred.unwrap_or(ConversionCheck::Accept))
+    Ok(combined)
 }
 
 /// Check a physical/logical type pair the way Spark's vectorized reader does. Spark runs
@@ -750,7 +733,8 @@ fn combine_checks(
 /// encoding used by Spark. Legacy or custom group names cannot be recovered from this schema.
 /// Requested struct fields resolve to file fields with the same field-id / case-fold rules the runtime
 /// convert uses ([`match_struct_fields`]); requested fields missing from the file are skipped
-/// (they read as null / default, as before). Sibling verdicts combine as in [`combine_checks`].
+/// (they read as null / default, as before). A pair Spark rejects when it opens the file is an
+/// error, and sibling verdicts combine as in [`combine_checks`].
 fn check_conversion(
     physical_type: &DataType,
     target_type: &DataType,
@@ -803,11 +787,11 @@ fn check_conversion(
                 (physical_entries.data_type(), target_entries.data_type())
             {
                 if physical_kv.len() != 2 || target_kv.len() != 2 {
-                    return Ok(ConversionCheck::Reject(parquet_schema_convert_err(
+                    return Err(parquet_schema_convert_err(
                         column,
                         physical_type,
                         target_type,
-                    )));
+                    ));
                 }
                 return combine_checks(physical_kv.iter().zip(target_kv.iter()).map(
                     |(physical_field, target_field)| {
@@ -824,18 +808,13 @@ fn check_conversion(
                     },
                 ));
             }
-            Ok(ConversionCheck::Reject(parquet_schema_convert_err(
+            Err(parquet_schema_convert_err(
                 column,
                 physical_type,
                 target_type,
-            )))
+            ))
         }
-        _ => Ok(check_leaf_conversion(
-            physical_type,
-            target_type,
-            column,
-            options,
-        )),
+        _ => check_leaf_conversion(physical_type, target_type, column, options),
     }
 }
 
@@ -1281,7 +1260,6 @@ impl SparkPhysicalExprAdapter {
                             &self.parquet_options,
                         )? {
                             ConversionCheck::Accept => {}
-                            ConversionCheck::Reject(err) => return Err(err),
                             ConversionCheck::RejectOnNonEmpty {
                                 column,
                                 physical_type: leaf_physical_type,
@@ -1390,7 +1368,6 @@ impl SparkPhysicalExprAdapter {
                 &self.parquet_options,
             )? {
                 ConversionCheck::Accept => {}
-                ConversionCheck::Reject(err) => return Err(err),
                 ConversionCheck::RejectOnNonEmpty {
                     column,
                     physical_type: leaf_physical_type,
@@ -2890,10 +2867,7 @@ pub(crate) mod test {
             ),
         ] {
             for (physical, target) in [(&valid, &invalid), (&invalid, &valid)] {
-                assert!(matches!(
-                    check_conversion(physical, target, "m", &options)?,
-                    ConversionCheck::Reject(_)
-                ));
+                assert!(check_conversion(physical, target, "m", &options).is_err());
             }
         }
         Ok(())
@@ -2902,8 +2876,13 @@ pub(crate) mod test {
     /// Build the Arrow `Map<string, value_type>` type with Parquet's `key_value` / `key` /
     /// `value` names, as Spark-written files surface it.
     fn map_type(value_type: DataType) -> DataType {
+        map_type_with_key(DataType::Utf8, value_type)
+    }
+
+    /// [`map_type`] with keys of `key_type`.
+    fn map_type_with_key(key_type: DataType, value_type: DataType) -> DataType {
         let entries = Fields::from(vec![
-            Field::new("key", DataType::Utf8, false),
+            Field::new("key", key_type, false),
             Field::new("value", value_type, true),
         ]);
         DataType::Map(
@@ -3067,24 +3046,17 @@ pub(crate) mod test {
             (DataType::Int32, map_type(DataType::Int32)),
         ] {
             for nested in [false, true] {
-                let shape = |t: &DataType| {
-                    if nested {
+                let schema = |t: &DataType| {
+                    let t = if nested {
                         struct_type(vec![("x", t.clone())])
                     } else {
                         t.clone()
-                    }
+                    };
+                    Arc::new(Schema::new(vec![Field::new("s", t, true)]))
                 };
                 let label = format!("{physical_type} read as {target_type}, nested: {nested}");
-                let file_schema = Arc::new(Schema::new(vec![Field::new(
-                    "s",
-                    shape(&physical_type),
-                    true,
-                )]));
-                let required_schema = Arc::new(Schema::new(vec![Field::new(
-                    "s",
-                    shape(&target_type),
-                    true,
-                )]));
+                let file_schema = schema(&physical_type);
+                let required_schema = schema(&target_type);
 
                 let empty = RecordBatch::new_empty(Arc::clone(&file_schema));
                 let mut stream =
@@ -3096,7 +3068,7 @@ pub(crate) mod test {
 
                 let one_row = RecordBatch::try_new(
                     Arc::clone(&file_schema),
-                    vec![new_null_array(&shape(&physical_type), 1)],
+                    vec![new_null_array(file_schema.field(0).data_type(), 1)],
                 )?;
                 let mut stream = scan_parquet(&one_row, required_schema, default_options())?;
                 let err = stream.next().await.unwrap().expect_err(&label);
@@ -3111,11 +3083,8 @@ pub(crate) mod test {
     #[tokio::test]
     async fn rejected_conversion_passes_for_pruned_row_group() -> Result<(), DataFusionError> {
         for nested in [false, true] {
-            let decimals: ArrayRef = Arc::new(
-                Decimal128Array::from(vec![12_345i128])
-                    .with_precision_and_scale(10, 4)
-                    .map_err(|e| DataFusionError::ArrowError(Box::new(e), None))?,
-            );
+            let decimals: ArrayRef =
+                Arc::new(Decimal128Array::from(vec![12_345i128]).with_precision_and_scale(10, 4)?);
             let (s, read_type) = if nested {
                 let fields = Fields::from(vec![Field::new("d", DataType::Decimal128(10, 4), true)]);
                 (
@@ -3152,14 +3121,9 @@ pub(crate) mod test {
                 assert_eq!(read?.num_rows(), 0, "nested: {nested}");
             }
 
-            let mut stream = scan_parquet(&batch, required_schema, default_options())?;
-            let err = stream
-                .next()
-                .await
-                .unwrap()
-                .expect_err("the row group fails when it is decoded");
+            let err = nested_rejection_message(&batch, required_schema).await;
             let column = if nested { "[[s, d]]" } else { "[[s]]" };
-            assert!(err.to_string().contains(column), "nested: {nested}: {err}");
+            assert!(err.contains(column), "nested: {nested}: {err}");
         }
         Ok(())
     }
@@ -3193,10 +3157,7 @@ pub(crate) mod test {
             (struct_type(vec![("y", DataType::Int32)]), int_list),
         ] {
             assert!(
-                matches!(
-                    check_conversion(&physical, &target, "a", &options)?,
-                    ConversionCheck::Reject(_)
-                ),
+                check_conversion(&physical, &target, "a", &options).is_err(),
                 "{physical} read as {target}"
             );
         }
@@ -3206,19 +3167,9 @@ pub(crate) mod test {
     /// Spark fails an unclippable shape when it opens the file, before it decodes a sibling it
     /// would also reject, so the shape mismatch wins over a deferred sibling in either order.
     #[test]
-    fn rejection_at_open_wins_over_a_deferred_sibling() -> Result<(), DataFusionError> {
+    fn rejection_at_open_wins_over_a_deferred_sibling() {
         let options = default_options();
         let int_list = list_type(DataType::Int32);
-        let map = |key: DataType, value: DataType| {
-            let entries = Fields::from(vec![
-                Field::new("key", key, false),
-                Field::new("value", value, true),
-            ]);
-            DataType::Map(
-                Arc::new(Field::new("key_value", DataType::Struct(entries), false)),
-                false,
-            )
-        };
         for (physical, target) in [
             (
                 struct_type(vec![("a", DataType::Utf8), ("b", int_list.clone())]),
@@ -3229,19 +3180,15 @@ pub(crate) mod test {
                 struct_type(vec![("b", DataType::Int32), ("a", DataType::Int32)]),
             ),
             (
-                map(DataType::Int64, int_list.clone()),
-                map(DataType::Int32, DataType::Int32),
+                map_type_with_key(DataType::Int64, int_list.clone()),
+                map_type_with_key(DataType::Int32, DataType::Int32),
             ),
         ] {
             assert!(
-                matches!(
-                    check_conversion(&physical, &target, "s", &options)?,
-                    ConversionCheck::Reject(_)
-                ),
+                check_conversion(&physical, &target, "s", &options).is_err(),
                 "{physical} read as {target}"
             );
         }
-        Ok(())
     }
 
     /// Positive: `INT32 -> bigint` inside a struct still converts when type promotion is
