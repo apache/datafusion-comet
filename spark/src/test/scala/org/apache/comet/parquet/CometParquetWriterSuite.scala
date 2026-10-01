@@ -20,6 +20,7 @@
 package org.apache.comet.parquet
 
 import java.io.{File, IOException}
+import java.util.UUID
 
 import scala.collection.mutable.ArrayBuffer
 import scala.jdk.CollectionConverters._
@@ -27,20 +28,23 @@ import scala.util.{Random, Using}
 
 import org.apache.hadoop.fs.{FileSystem, Path}
 import org.apache.hadoop.mapreduce.TaskAttemptContext
-import org.apache.logging.log4j.Level
 import org.apache.parquet.hadoop.ParquetFileReader
 import org.apache.parquet.hadoop.metadata.CompressionCodecName
 import org.apache.parquet.hadoop.util.HadoopInputFile
 import org.apache.parquet.schema.{MessageType, Type}
 import org.apache.spark.internal.io.FileCommitProtocol
+import org.apache.spark.memory.MemoryMode
 import org.apache.spark.sql.{AnalysisException, DataFrame, Row, SaveMode}
-import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.catalyst.{CatalystTypeConverters, InternalRow}
 import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeScanExec, CometScanExec, CometWriteFilesExec}
-import org.apache.spark.sql.execution.{FileSourceScanExec, SparkPlan}
-import org.apache.spark.sql.execution.datasources.{BasicWriteTaskStats, SQLHadoopMapReduceCommitProtocol, WriteTaskStats, WriteTaskStatsTracker}
+import org.apache.spark.sql.execution.{FileSourceScanExec, SparkPlan, SQLExecution}
+import org.apache.spark.sql.execution.datasources.{BasicWriteTaskStats, BasicWriteTaskStatsTracker, FileFormatWriter, SQLHadoopMapReduceCommitProtocol, WriteJobStatsTracker, WriteTaskStats, WriteTaskStatsTracker}
+import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
+import org.apache.spark.sql.execution.vectorized.ColumnVectorUtils
 import org.apache.spark.sql.functions.{array, col, map, struct, when}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, LongType, MapType, Metadata, MetadataBuilder, StringType, StructField, StructType}
+import org.apache.spark.sql.types.{ArrayType, IntegerType, LongType, MapType, Metadata, MetadataBuilder, StringType, StructField, StructType}
+import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
@@ -1363,30 +1367,292 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
     }
   }
 
-  test("a third-party WriteTaskStatsTracker is warned that it gets counts, not row contents") {
-    // The documented known limitation. `WriteTaskStatsTracker.newRow` is a per-row callback and
-    // Comet has columnar batches, so rather than materialize every row to hand it straight back
-    // it passes an empty one - exactly right for BasicWriteTaskStatsTracker, which ignores the
-    // row, and wrong for anything that inspects it. Nothing Spark ships lets a V1 write install a
-    // third-party tracker, so drive recordRows directly.
-    val tracker = new RecordingStatsTracker
-    val appender = new LogAppender("third-party WriteTaskStatsTracker warning")
-    withLogAppender(appender, Seq(classOf[CometWriteFilesExec].getName), Some(Level.WARN)) {
-      CometWriteFilesExec.recordRows(Seq(tracker), "/tmp/part-00000.parquet", 3)
+  test("write statistics trackers receive row contents across batches") {
+    val schema = StructType(
+      Seq(
+        StructField("id", LongType),
+        StructField("text", StringType),
+        StructField(
+          "details",
+          StructType(Seq(StructField("number", LongType), StructField("label", StringType)))),
+        StructField("items", ArrayType(LongType))))
+    val expected = Seq(
+      Row(1L, "alpha", Row(11L, "first"), Seq(1L, null)),
+      Row(null, null, null, null),
+      Row(3L, "", Row(null, null), Seq.empty[Long]),
+      Row(4L, "中文", Row(44L, "last"), Seq(4L, 5L)))
+    val filePath = "/tmp/part-00000.parquet"
+    val first = new RecordingStatsTracker
+    val second = new RecordingStatsTracker
+    val basic = new BasicWriteTaskStatsTracker(spark.sparkContext.hadoopConfiguration)
+
+    val reportRows = CometWriteFilesExec.recordRows(Seq(first, basic, second), filePath, schema)
+    expected.grouped(2).foreach { rows =>
+      Using.resource(
+        ColumnVectorUtils.toBatch(schema, MemoryMode.ON_HEAP, rows.iterator.asJava)) { batch =>
+        reportRows(batch)
+      }
     }
 
-    assert(tracker.rows.size == 3, s"Expected 3 row callbacks, got ${tracker.rows.size}")
+    val toScala = CatalystTypeConverters.createToScalaConverter(schema)
+    Seq(first, second).foreach { tracker =>
+      assert(
+        tracker.rows.map { case (path, row) => (path, toScala(row)) }.toSeq ==
+          expected.map(row => (filePath, row)))
+    }
+    assert(basic.getFinalStats(0L).asInstanceOf[BasicWriteTaskStats].numRows == expected.size)
+  }
+
+  test("write statistics trackers receive no callbacks for an empty batch") {
+    val tracker = new RecordingStatsTracker
+    val basic = new BasicWriteTaskStatsTracker(spark.sparkContext.hadoopConfiguration)
+    Using.resource(new ColumnarBatch(Array.empty[ColumnVector], 0)) { batch =>
+      CometWriteFilesExec.recordRows(
+        Seq(basic, tracker),
+        "/tmp/part-00000.parquet",
+        StructType(Nil))(batch)
+    }
+    assert(tracker.rows.isEmpty)
+    assert(basic.getFinalStats(0L).asInstanceOf[BasicWriteTaskStats].numRows == 0)
+  }
+
+  test("write statistics support InternalRow.anyNull") {
+    val nullRows = ArrayBuffer.empty[Boolean]
+    val tracker = new RecordingStatsTracker {
+      override def newRow(filePath: String, row: InternalRow): Unit = {
+        nullRows += row.anyNull
+        super.newRow(filePath, row)
+      }
+    }
+    val schema = StructType(Seq(StructField("id", LongType), StructField("value", StringType)))
+    val rows = Seq(Row(1L, "one"), Row(2L, null), Row(null, "three"))
+    Using.resource(ColumnVectorUtils.toBatch(schema, MemoryMode.ON_HEAP, rows.iterator.asJava)) {
+      batch =>
+        CometWriteFilesExec.recordRows(Seq(tracker), "/tmp/part-00000.parquet", schema)(batch)
+    }
+    assert(nullRows.toSeq == Seq(false, true, true))
+  }
+
+  test("write statistics skip row iteration for basic trackers and no trackers") {
+    val basicTrackers =
+      Seq.fill(2)(new BasicWriteTaskStatsTracker(spark.sparkContext.hadoopConfiguration))
+    val batch = new ColumnarBatch(Array.empty[ColumnVector], 3) {
+      override def rowIterator(): java.util.Iterator[InternalRow] =
+        throw new AssertionError("Row iteration is unnecessary for basic trackers or no trackers")
+    }
+    Using.resource(batch) { batch =>
+      CometWriteFilesExec.recordRows(Seq.empty, "/tmp/part-00000.parquet", StructType(Nil))(batch)
+      CometWriteFilesExec.recordRows(basicTrackers, "/tmp/part-00000.parquet", StructType(Nil))(
+        batch)
+    }
+    basicTrackers.foreach { tracker =>
+      assert(tracker.getFinalStats(0L).asInstanceOf[BasicWriteTaskStats].numRows == 3)
+    }
+  }
+
+  test("write statistics reject physical type drift before reading rows") {
+    val tracker = new RecordingStatsTracker
+    val schema = StructType(Seq(StructField("id", LongType)))
+    val reportRows = CometWriteFilesExec.recordRows(Seq(tracker), "/tmp/part.parquet", schema)
+    val actualSchema = StructType(Seq(StructField("id", IntegerType)))
+    Using.resource(
+      ColumnVectorUtils.toBatch(actualSchema, MemoryMode.ON_HEAP, Seq(Row(1)).iterator.asJava)) {
+      batch =>
+        val failure = intercept[UnsupportedOperationException](reportRows(batch))
+        assert(failure.getMessage.contains("types differ from the write schema"))
+        assert(tracker.rows.isEmpty)
+        // The count-only path leaves conversion to native ScanExec as before.
+        val basic = new BasicWriteTaskStatsTracker(spark.sparkContext.hadoopConfiguration)
+        CometWriteFilesExec.recordRows(Seq(basic), "/tmp/part.parquet", schema)(batch)
+        assert(basic.getFinalStats(0L).asInstanceOf[BasicWriteTaskStats].numRows == 1)
+    }
+  }
+
+  test("write statistics allow nested field renames and different nullability") {
+    val tracker = new RecordingStatsTracker
+    val actualSchema = StructType(
+      Seq(
+        StructField(
+          "original",
+          StructType(Seq(StructField("old_name", LongType, nullable = true))),
+          nullable = true)))
+    val schema = StructType(
+      Seq(
+        StructField(
+          "renamed",
+          StructType(Seq(StructField("new_name", LongType, nullable = false))),
+          nullable = false)))
+    Using.resource(
+      ColumnVectorUtils
+        .toBatch(actualSchema, MemoryMode.ON_HEAP, Seq(Row(Row(7L))).iterator.asJava)) { batch =>
+      CometWriteFilesExec.recordRows(Seq(tracker), "/tmp/part.parquet", schema)(batch)
+    }
+    assert(tracker.rows.head._2.getStruct(0, 1).getLong(0) == 7L)
+  }
+
+  test("write statistics supply row contents to BasicWriteTaskStatsTracker subclasses") {
+    val recording = new RecordingStatsTracker
+    val tracker = new BasicWriteTaskStatsTracker(spark.sparkContext.hadoopConfiguration) {
+      override def newRow(filePath: String, row: InternalRow): Unit = {
+        super.newRow(filePath, row)
+        recording.newRow(filePath, row)
+      }
+    }
+    val schema = StructType(Seq(StructField("id", LongType)))
+    val rows = Seq(Row(7L), Row(11L))
+    val filePath = "/tmp/part-00001.parquet"
+    Using.resource(ColumnVectorUtils.toBatch(schema, MemoryMode.ON_HEAP, rows.iterator.asJava)) {
+      batch => CometWriteFilesExec.recordRows(Seq(tracker), filePath, schema)(batch)
+    }
     assert(
-      tracker.rows.forall(_._1 == "/tmp/part-00000.parquet"),
-      "Every callback must name the file being written")
-    assert(
-      tracker.rows.forall(_._2.numFields == 0),
-      "The known limitation is that the row is empty, so assert it rather than assume it")
-    assert(
-      appender.loggingEvents.exists(
-        _.getMessage.getFormattedMessage.contains(classOf[RecordingStatsTracker].getName)),
-      "A tracker that is not BasicWriteTaskStatsTracker must be warned by name, got: " +
-        appender.loggingEvents.map(_.getMessage.getFormattedMessage).mkString("\n"))
+      recording.rows.map { case (path, row) => (path, row.getLong(0)) }.toSeq ==
+        Seq((filePath, 7L), (filePath, 11L)))
+    assert(tracker.getFinalStats(0L).asInstanceOf[BasicWriteTaskStats].numRows == 2)
+  }
+
+  test("write statistics propagate tracker failures") {
+    val failure = new IOException("injected row statistics failure")
+    val tracker = new RecordingStatsTracker {
+      override def newRow(filePath: String, row: InternalRow): Unit = {
+        super.newRow(filePath, row)
+        if (row.getLong(0) == 2L) throw failure
+      }
+    }
+    val schema = StructType(Seq(StructField("id", LongType)))
+    val rows = Seq(Row(1L), Row(2L), Row(3L))
+    Using.resource(ColumnVectorUtils.toBatch(schema, MemoryMode.ON_HEAP, rows.iterator.asJava)) {
+      batch =>
+        val thrown = intercept[IOException] {
+          CometWriteFilesExec.recordRows(Seq(tracker), "/tmp/part-00000.parquet", schema)(batch)
+        }
+        assert(thrown eq failure)
+    }
+    assert(tracker.rows.map(_._2.getLong(0)).toSeq == Seq(1L, 2L))
+  }
+
+  Seq(None, Some(0), Some(16)).foreach { failAfterRows =>
+    test(s"write statistics through native writer (fail after rows: $failAfterRows)") {
+      assume(isSpark40Plus, "Requires the WriteFilesExec seam")
+      withTempPath { dir =>
+        withNativeWriter {
+          withSQLConf(
+            SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+            CometConf.COMET_BATCH_SIZE.key -> "16") {
+            val expected = (0L until 64L).map { i =>
+              (i, if (i % 3 == 0) None else Some(s"value_$i"))
+            }
+            val df = materializeAsCometSource(
+              expected.toDF("id", "value").repartition(1),
+              new File(dir, "source").getAbsolutePath)
+            val outputPath = new File(dir, "output").getAbsolutePath
+            // Exercise failures during initial batch prefetch and after native code has
+            // consumed a batch, where the exception comes from an Arrow-stream callback.
+            val tracker = new NativeWriteRowStatsTracker(failAfterRows.getOrElse(Int.MaxValue))
+            FailingCommitProtocol.reset()
+            try {
+              def write(): Unit = writeWithRowStatsTracker(
+                df,
+                new File(dir, "template").getAbsolutePath,
+                outputPath,
+                tracker,
+                new FailingCommitProtocol(UUID.randomUUID().toString, outputPath, false))
+
+              if (failAfterRows.isDefined) {
+                val failure = intercept[Exception](write())
+                // Arrow's C stream can wrap the callback exception; its message must survive.
+                assert(
+                  causeChain(failure).exists(e =>
+                    Option(e.getMessage).exists(
+                      _.contains(NativeWriteRowStatsTracker.failureMessage))))
+                assert(FailingCommitProtocol.abortTaskCalled)
+                assert(tracker.taskStats.isEmpty)
+                assert(listPartFileNames(outputPath).isEmpty)
+                assert(!new File(outputPath, "_temporary").exists())
+              } else {
+                write()
+                assert(tracker.taskStats.flatMap(_.rows).sortBy(_._1) == expected)
+                assert(tracker.taskStats.nonEmpty)
+                assert(tracker.taskStats.forall(_.fileClosed))
+                assert(tracker.taskStats.forall(_.filePath.endsWith(".parquet")))
+                assert(!FailingCommitProtocol.abortTaskCalled)
+                checkAnswer(spark.read.parquet(outputPath), df)
+              }
+            } finally {
+              FailingCommitProtocol.reset()
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("write statistics preserve copied native nested and decimal rows") {
+    assume(isSpark40Plus, "Requires the WriteFilesExec seam")
+    withTempPath { dir =>
+      withNativeWriter {
+        withSQLConf(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+          CometConf.COMET_BATCH_SIZE.key -> "16") {
+          val input = spark
+            .range(65)
+            .coalesce(1)
+            .selectExpr(
+              "id",
+              "case when id % 7 = 0 then null else named_struct('label', 'repeat', " +
+                "'items', array(id, cast(null as bigint))) end as nested",
+              "cast(id * 10000000000000.1234 as decimal(24, 4)) as amount",
+              "map('key', cast(id / 3.0 as decimal(20, 4))) as amounts",
+              "cast('2020-01-02 03:04:05.123456' as timestamp) as ts",
+              "cast('2020-01-02 03:04:05.123456' as timestamp_ntz) as local_ts")
+          val sourcePath = new File(dir, "source").getAbsolutePath
+          val df = materializeAsCometSource(input, sourcePath)
+          val expected = readSparkRows(sourcePath)
+          val outputPath = new File(dir, "output").getAbsolutePath
+          val tracker = new NativeWriteCopyStatsTracker
+          writeWithRowStatsTracker(
+            df,
+            new File(dir, "template").getAbsolutePath,
+            outputPath,
+            tracker,
+            new SQLHadoopMapReduceCommitProtocol(UUID.randomUUID().toString, outputPath, false))
+
+          // The task and all its Arrow batches are closed before copied rows reach the driver.
+          val toScala = CatalystTypeConverters.createToScalaConverter(df.schema)
+          val recorded = tracker.rows.map(row => toScala(row).asInstanceOf[Row]).toArray
+          compareRows(df.schema, expected, recorded)
+          compareRows(df.schema, expected, readSparkRows(outputPath))
+        }
+      }
+    }
+  }
+
+  test("write statistics accept native interval subtype erasure") {
+    assume(isSpark40Plus, "Requires the WriteFilesExec seam")
+    withTempPath { dir =>
+      withNativeWriter {
+        withSQLConf(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+          CometConf.COMET_BATCH_SIZE.key -> "16") {
+          val df = materializeAsCometSource(
+            spark.range(65).coalesce(1).toDF(),
+            new File(dir, "source").getAbsolutePath)
+            .selectExpr("id", "INTERVAL '1' HOUR AS elapsed")
+          val outputPath = new File(dir, "output").getAbsolutePath
+          val tracker = new NativeWriteCopyStatsTracker
+          // The native vector reconstructs DAY TO SECOND while Catalyst retains HOUR.
+          // Both use microseconds in getLong; the guard must accept this metadata difference.
+          writeWithRowStatsTracker(
+            df,
+            new File(dir, "template").getAbsolutePath,
+            outputPath,
+            tracker,
+            new SQLHadoopMapReduceCommitProtocol(UUID.randomUUID().toString, outputPath, false))
+          assert(
+            tracker.rows.map(row => (row.getLong(0), row.getLong(1))).sortBy(_._1) ==
+              (0L until 65L).map(id => (id, 3600000000L)))
+        }
+      }
+    }
   }
 
   test("a failing task aborts and cleans up its staging file") {
@@ -1471,6 +1737,32 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
             captureWritePlan(p => df.write.mode(SaveMode.Overwrite).parquet(p), outputPath))
         }
       }
+    }
+  }
+
+  private def writeWithRowStatsTracker(
+      df: DataFrame,
+      templatePath: String,
+      outputPath: String,
+      tracker: WriteJobStatsTracker,
+      committer: FileCommitProtocol): Unit = {
+    // V1 DataFrameWriter has no public tracker injection point. Obtain the real native write
+    // node and pass it through FileFormatWriter again with our tracker installed.
+    val plan = captureWritePlan(p => df.write.parquet(p), templatePath)
+    assertHasCometNativeWriteExec(plan)
+    val writer = plan.collectFirst { case write: CometWriteFilesExec => write }.get.copy()
+    SQLExecution.withNewExecutionId(df.queryExecution) {
+      FileFormatWriter.write(
+        sparkSession = spark,
+        plan = writer,
+        fileFormat = new ParquetFileFormat,
+        committer = committer,
+        outputSpec = FileFormatWriter.OutputSpec(outputPath, Map.empty, writer.child.output),
+        hadoopConf = spark.sessionState.newHadoopConf(),
+        partitionColumns = Seq.empty,
+        bucketSpec = None,
+        statsTrackers = Seq(tracker),
+        options = Map.empty)
     }
   }
 
@@ -1741,8 +2033,7 @@ object FailingCommitProtocol {
 /**
  * A `WriteTaskStatsTracker` that is not Spark's own, recording what Comet hands it.
  *
- * Stands in for a third-party tracker, which Comet cannot supply with row contents. See
- * `CometWriteFilesExec.recordRows`.
+ * Copies rows because the columnar batch iterator reuses its row object.
  */
 class RecordingStatsTracker extends WriteTaskStatsTracker {
   val rows: ArrayBuffer[(String, InternalRow)] = ArrayBuffer.empty
@@ -1750,7 +2041,70 @@ class RecordingStatsTracker extends WriteTaskStatsTracker {
   override def newPartition(partitionValues: InternalRow): Unit = {}
   override def newFile(filePath: String): Unit = {}
   override def closeFile(filePath: String): Unit = {}
-  override def newRow(filePath: String, row: InternalRow): Unit = rows += ((filePath, row))
+  override def newRow(filePath: String, row: InternalRow): Unit = rows += ((filePath, row.copy()))
   override def getFinalStats(taskCommitTime: Long): WriteTaskStats =
     BasicWriteTaskStats(Seq.empty, 0, 0, rows.size.toLong)
+}
+
+case class NativeWriteRecordedStats(
+    rows: Seq[(Long, Option[String])],
+    filePath: String,
+    fileClosed: Boolean)
+    extends WriteTaskStats
+
+class NativeWriteRowStatsTracker(failAfterRows: Int) extends WriteJobStatsTracker {
+  var taskStats: Seq[NativeWriteRecordedStats] = Seq.empty
+
+  override def newTaskInstance(): WriteTaskStatsTracker = new WriteTaskStatsTracker {
+    private val rows = ArrayBuffer.empty[(Long, Option[String])]
+    private var currentFile = ""
+    private var fileClosed = false
+
+    override def newPartition(partitionValues: InternalRow): Unit = {}
+    override def newFile(filePath: String): Unit = {
+      assert(currentFile.isEmpty)
+      currentFile = filePath
+    }
+    override def newRow(filePath: String, row: InternalRow): Unit = {
+      assert(filePath == currentFile && !fileClosed)
+      if (rows.size == failAfterRows) {
+        throw new IOException(NativeWriteRowStatsTracker.failureMessage)
+      }
+      assert(row.anyNull == row.isNullAt(1))
+      rows += ((row.getLong(0), Option(row.getUTF8String(1)).map(_.toString)))
+    }
+    override def closeFile(filePath: String): Unit = {
+      assert(filePath == currentFile && !fileClosed)
+      fileClosed = true
+    }
+    override def getFinalStats(taskCommitTime: Long): WriteTaskStats =
+      NativeWriteRecordedStats(rows.toSeq, currentFile, fileClosed)
+  }
+
+  override def processStats(stats: Seq[WriteTaskStats], jobCommitTime: Long): Unit = {
+    taskStats = stats.map(_.asInstanceOf[NativeWriteRecordedStats])
+  }
+}
+
+object NativeWriteRowStatsTracker {
+  val failureMessage = "injected row statistics failure"
+}
+
+case class NativeWriteCopiedStats(rows: Seq[InternalRow]) extends WriteTaskStats
+
+class NativeWriteCopyStatsTracker extends WriteJobStatsTracker {
+  var rows: Seq[InternalRow] = Seq.empty
+
+  override def newTaskInstance(): WriteTaskStatsTracker = new RecordingStatsTracker {
+    override def newRow(filePath: String, row: InternalRow): Unit = {
+      assert(row.anyNull == (0 until row.numFields).exists(row.isNullAt))
+      super.newRow(filePath, row)
+    }
+    override def getFinalStats(taskCommitTime: Long): WriteTaskStats =
+      NativeWriteCopiedStats(this.rows.map(_._2).toSeq)
+  }
+
+  override def processStats(stats: Seq[WriteTaskStats], jobCommitTime: Long): Unit = {
+    rows = stats.flatMap(_.asInstanceOf[NativeWriteCopiedStats].rows)
+  }
 }
