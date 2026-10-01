@@ -58,6 +58,10 @@ object CometStaticInvoke extends CometExpressionSerde[StaticInvoke] {
   private def handlerFor(expr: StaticInvoke): Option[CometExpressionSerde[StaticInvoke]] =
     staticInvokeExpressions.get((expr.functionName, expr.staticObject.getName))
 
+  /** Whether [[convert]] hands `expr` to the codegen dispatcher, because no handler claims it. */
+  def runsInDispatcher(expr: StaticInvoke): Boolean =
+    handlerFor(expr).isEmpty && icebergHandlerFor(expr).isEmpty
+
   /**
    * Iceberg's system functions are keyed by class name only because both the `StaticInvoke` and
    * `ApplyFunctionExpression` lowerings share the same identity class. Consulted after the
@@ -80,12 +84,13 @@ object CometStaticInvoke extends CometExpressionSerde[StaticInvoke] {
    * [[CodegenDispatchFallback]]: that would also route a *handler's* `Unsupported` through the
    * dispatcher, and at least one of those is not dispatchable. `CometIcebergTruncate` declines a
    * decimal because Iceberg's `truncate` can return a value wider than the column's declared
-   * precision, which Spark nulls only when the row is materialized; the dispatcher writes into an
-   * Arrow `Decimal128(precision, scale)` vector just like a native kernel does, so it has to null
-   * the value at its own output, and an enclosing predicate or hash then sees a null where Spark
-   * sees the oversized value. The mixin's contract ("the case must be something `doGenCode` can
-   * compile") does not cover a limit that lives at the Arrow output boundary, so enrollment stays
-   * with the individual handlers.
+   * precision, which Spark nulls only when the row is materialized. The dispatcher nulls such a
+   * value at its own output, as the row writer does, and an expression or aggregate that reads a
+   * dispatched call either runs in the same kernel or falls back (see
+   * `QueryPlanSerde.readsDispatchedDsv2Decimal`), but the decline predates that and stays. The
+   * mixin's contract ("the case must be something `doGenCode` can compile") does not cover a
+   * limit that lives at the Arrow output boundary, so enrollment stays with the individual
+   * handlers.
    */
   override def getSupportLevel(expr: StaticInvoke): SupportLevel =
     handlerFor(expr)

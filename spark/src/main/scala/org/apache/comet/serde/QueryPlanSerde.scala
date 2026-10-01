@@ -31,6 +31,7 @@ import org.apache.spark.sql.catalyst.expressions.aggregate._
 import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
 import org.apache.spark.sql.catalyst.expressions.xml.{XPathBoolean, XPathDouble, XPathFloat, XPathInt, XPathList, XPathLong, XPathShort, XPathString}
 import org.apache.spark.sql.comet.DecimalPrecision
+import org.apache.spark.sql.connector.catalog.functions.ScalarFunction
 import org.apache.spark.sql.execution.{ScalarSubquery, SparkPlan}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
 import org.apache.spark.sql.internal.SQLConf
@@ -835,6 +836,17 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     }
 
     val fn = aggExpr.aggregateFunction
+    // An aggregate reads the `Decimal` a DSv2 function returned, whether or not it fits the
+    // declared type, and the kernel has nulled such a value at its own output: Spark counts it
+    // and takes it as the maximum, and the row writer nulls the result afterwards. An aggregate
+    // cannot run in the kernel, so it falls back. See [[readsDispatchedDsv2Decimal]].
+    if (fn.children.exists(isDispatchedDsv2DecimalCall)) {
+      withFallbackReason(
+        aggExpr,
+        s"${fn.prettyName} aggregates the decimal result of a DSv2 function, which Spark " +
+          "rescales to the declared type only when it writes a row")
+      return None
+    }
     val cometExpr = aggrSerdeMap.get(fn.getClass)
     val protoAggExprOpt = cometExpr match {
       case Some(handler) =>
@@ -1017,6 +1029,12 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
             s"${CometConf.getExprEnabledConfigKey(exprConfName)}=true to enable it.")
         return None
       }
+      if (readsDispatchedDsv2Decimal(expr)) {
+        // Returns None, tagged with the reason, when the dispatcher declines, which falls the
+        // operator back to Spark. Converting `expr` natively is not an alternative: it would read
+        // the call's output rather than the value the function returned.
+        return CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
+      }
       handler.getSupportLevel(expr) match {
         case Unsupported(notes) =>
           // `CodegenDispatchFallback` serdes have no native path for these cases either, but the
@@ -1122,6 +1140,46 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
    */
   private def isStructuralExpr(expr: Expression): Boolean = expr match {
     case _: Attribute | _: BoundReference | _: Literal | _: Alias => true
+    case _ => false
+  }
+
+  /**
+   * Whether `expr` takes the decimal result of a DSv2 scalar function call, which the codegen
+   * dispatcher runs, as an argument.
+   *
+   * Spark does not rescale such a result to the type the function declares, or write null when it
+   * does not fit, until it writes a row. An expression around the call reads the `Decimal` the
+   * function returned. The dispatcher has to write an Arrow vector of the declared type, so it
+   * rescales and nulls at its own output, and a native expression over that output would read
+   * something else. `IS NULL` of a value that does not fit is false in Spark, a cast to string
+   * keeps the function's scale, and `hash` reads the unscaled value at that scale (#6425). So
+   * such an expression runs in the same kernel as the call, where Spark's own code reads the
+   * value the function returned. `Alias` is skipped because it computes nothing: the call under
+   * it is the root, and Spark writes a root as a row.
+   */
+  private def readsDispatchedDsv2Decimal(expr: Expression): Boolean =
+    !isStructuralExpr(expr) && expr.children.exists(isDispatchedDsv2DecimalCall)
+
+  private def isDispatchedDsv2DecimalCall(expr: Expression): Boolean = {
+    val dispatchedDsv2Call = expr match {
+      case i: Invoke =>
+        i.targetObject match {
+          case Literal(_: ScalarFunction[_], _) => true
+          case _ => false
+        }
+      case s: StaticInvoke =>
+        classOf[ScalarFunction[_]].isAssignableFrom(s.staticObject) &&
+        CometStaticInvoke.runsInDispatcher(s)
+      case _ => false
+    }
+    dispatchedDsv2Call && containsDecimal(expr.dataType)
+  }
+
+  private def containsDecimal(dataType: DataType): Boolean = dataType match {
+    case _: DecimalType => true
+    case ArrayType(elementType, _) => containsDecimal(elementType)
+    case MapType(keyType, valueType, _) => containsDecimal(keyType) || containsDecimal(valueType)
+    case StructType(fields) => fields.exists(f => containsDecimal(f.dataType))
     case _ => false
   }
 

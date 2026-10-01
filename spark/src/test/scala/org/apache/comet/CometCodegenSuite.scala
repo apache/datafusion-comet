@@ -39,6 +39,7 @@ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
+import org.apache.spark.unsafe.hash.Murmur3_x86_32
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
@@ -2438,6 +2439,67 @@ class CometCodegenSuite
       assert(
         cometError.exists(_.getMessage.contains("is declared as non-nullable but contains null")),
         s"expected Comet's native projection to reject the null, got $cometError")
+    }
+  }
+
+  test("an expression around a DSv2 decimal result reads the value Spark reads (#6425)") {
+    // Spark rescales the call's `Decimal` to its declared type, and writes null when it does not
+    // fit, only when it writes a row. An expression around the call reads the `Decimal` the
+    // function returned, at the scale the function chose. `as_money` returns `Decimal(i)` at scale
+    // 0 for a `DECIMAL(10, 2)`:
+    //   - `IS NULL` is false for 100000000, which needs nine integer digits where the type allows
+    //     eight, so the row writer's null for it must not reach the expression;
+    //   - a cast to a wider decimal keeps that value, and so does a comparison, which finds it
+    //     greater than 5;
+    //   - `CAST(... AS STRING)` prints "3", not "3.00";
+    //   - `hash` hashes the unscaled value, so `Decimal(3, 10, 0)` hashes as the long 3.
+    // The kernel nulls an oversized decimal at its own output, so each of these expressions has
+    // to run in the same kernel as the call.
+    val hashes = Seq(3L, null, 100000000L, -100000000L).map {
+      case null => 42
+      case v: Long => Murmur3_x86_32.hashLong(v, 42)
+    }
+    withDecimalFunctions(3, null, 100000000, -100000000) {
+      for (ansi <- Seq("true", "false")) {
+        withSQLConf(SQLConf.ANSI_ENABLED.key -> ansi) {
+          val df = sql(
+            "SELECT i, decfn.ns.as_money(i) IS NULL, " +
+              "CAST(decfn.ns.as_money(i) AS DECIMAL(12, 2)), " +
+              "CAST(decfn.ns.as_money(i) AS STRING), hash(decfn.ns.as_money(i)) FROM t")
+          assertCodegenRan {
+            checkSparkAnswerAndImpl(df, dispatched = Seq("isnull", "cast", "hash"))
+          }
+          checkAnswer(
+            df,
+            Seq(
+              Row(3, false, dec("3.00"), "3", hashes(0)),
+              Row(null, true, null, null, hashes(1)),
+              Row(100000000, false, dec("100000000.00"), "100000000", hashes(2)),
+              Row(-100000000, false, dec("-100000000.00"), "-100000000", hashes(3))))
+        }
+      }
+      val filtered = sql("SELECT i FROM t WHERE decfn.ns.as_money(i) > 5")
+      assertCodegenRan {
+        checkSparkAnswerAndImpl(filtered, dispatched = Seq("greaterthan"))
+      }
+      checkAnswer(filtered, Row(100000000))
+    }
+  }
+
+  test(
+    "an aggregate over a DSv2 decimal result falls back, as Spark aggregates the value (#6425)") {
+    // Spark aggregates the `Decimal` the function returned, and the row writer nulls the result
+    // afterwards. `count` counts 100000000, `max` is that value and so is null, and the two
+    // values that do not fit cancel in the sum of the even group. An aggregate cannot run in the
+    // kernel, which has nulled those values at its output.
+    withDecimalFunctions(3, null, 100000000, -100000000) {
+      val reason = "aggregates the decimal result of a DSv2 function"
+      val global = sql("SELECT count(decfn.ns.as_money(i)), max(decfn.ns.as_money(i)) FROM t")
+      checkSparkAnswerAndFallbackReason(global, reason)
+      checkAnswer(global, Row(3L, null))
+      val grouped = sql("SELECT i % 2, sum(decfn.ns.as_money(i)) FROM t GROUP BY i % 2")
+      checkSparkAnswerAndFallbackReason(grouped, reason)
+      checkAnswer(grouped, Seq(Row(0, dec("0.00")), Row(1, dec("3.00")), Row(null, null)))
     }
   }
 }
