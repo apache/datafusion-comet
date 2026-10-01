@@ -26,6 +26,8 @@ mod dynamic_filter;
 pub(crate) use dynamic_filter::{DynamicFilterJoinExec, TopKReaderFilterExec};
 mod filter;
 pub(crate) use filter::CometFilterExec;
+mod runtime_filter_projection;
+pub(crate) use runtime_filter_projection::CometProjectionExec;
 mod expand;
 pub use expand::ExpandExec;
 mod explode;
