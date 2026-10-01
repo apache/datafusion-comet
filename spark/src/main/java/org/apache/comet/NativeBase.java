@@ -49,10 +49,10 @@ public abstract class NativeBase {
 
   private static final String libraryToLoad = System.mapLibraryName(NATIVE_LIB_NAME);
   private static boolean loaded = false;
-  // Whether the bundled libcomet has been unpacked and loaded. Unlike `loaded`, never reset:
-  // unpacking it again yields a new temporary file, which the JVM loads as a second library with
-  // its own uninitialized native state, and JNI methods can then bind to either copy.
-  private static boolean bundledLibraryLoaded = false;
+  // The bundled libcomet this class loader unpacked and loaded, or null. Unlike `loaded`, never
+  // reset: unpacking it again yields a new temporary file, which the JVM loads as a second
+  // library with its own uninitialized native state, and JNI methods can then bind to either copy.
+  private static File bundledLibrary = null;
   private static volatile Throwable loadErr = null;
   private static final String searchPattern = "libcomet-";
   private static final AtomicBoolean released = new AtomicBoolean(false);
@@ -78,6 +78,11 @@ public abstract class NativeBase {
   // Only for testing
   static synchronized void setLoaded(boolean b) {
     loaded = b;
+  }
+
+  // Only for testing
+  static synchronized File bundledLibrary() {
+    return bundledLibrary;
   }
 
   static synchronized void load() {
@@ -117,7 +122,7 @@ public abstract class NativeBase {
    * Use the bundled native libraries. Functionally equivalent to <code>System.loadLibrary</code>.
    */
   private static void bundleLoadLibrary() {
-    if (bundledLibraryLoaded) {
+    if (bundledLibrary != null) {
       loaded = true;
       return;
     }
@@ -142,7 +147,7 @@ public abstract class NativeBase {
       Files.copy(is, tempLib.toPath(), StandardCopyOption.REPLACE_EXISTING);
       System.load(tempLib.getAbsolutePath());
       loaded = true;
-      bundledLibraryLoaded = true;
+      bundledLibrary = tempLib;
     } catch (IOException e) {
       throw new IllegalStateException("Cannot unpack libcomet: " + e);
     } finally {
