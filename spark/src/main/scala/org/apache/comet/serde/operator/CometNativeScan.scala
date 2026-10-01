@@ -23,6 +23,7 @@ import scala.collection.mutable.ListBuffer
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.internal.Logging
+import org.apache.spark.sql.catalyst.analysis.Resolver
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, Expression, Literal}
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
 import org.apache.spark.sql.comet.{CometNativeExec, CometNativeScanExec, CometScanExec}
@@ -31,12 +32,12 @@ import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{StructField, StructType}
 
-import org.apache.comet.{CometConf, ConfigEntry}
+import org.apache.comet.{CometConf, ConfigEntry, DataTypeSupport}
 import org.apache.comet.CometConf.COMET_EXEC_ENABLED
 import org.apache.comet.CometSparkSessionExtensions.{hasFallbackReason, isSpark35Plus, isSpark41Plus, withFallbackReason}
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.parquet.CometParquetUtils
-import org.apache.comet.serde.{CometOperatorSerde, Compatible, OperatorOuterClass, SupportLevel}
+import org.apache.comet.serde.{CometOperatorSerde, CometTimeZone, Compatible, OperatorOuterClass, SupportLevel}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
@@ -68,7 +69,9 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
           } else {
             Some(Literal.create(value, field.dataType))
           }
-          expression.flatMap(exprToProto(_, output)).map(_ -> java.lang.Long.valueOf(index))
+          expression
+            .flatMap(exprToProto(_, output))
+            .map(_ -> java.lang.Long.valueOf(index.toLong))
       }
       .toSeq
     // Never drop a value independently of its index: that would shift every later default.
@@ -96,6 +99,27 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
       StructField(name, attr.dataType, attr.nullable)
     }
   }
+
+  /**
+   * The data schema the native scan actually serializes.
+   *
+   * Spark's required schema can prune a Variant column, including a Variant nested under an
+   * unrequested struct, while the complete relation schema still contains it. Keep ordinary
+   * fields unchanged and retain the pruned required field for a requested Variant-bearing root,
+   * including a struct whose Variant child was pruned. Entirely unread Variant roots never enter
+   * the native schema.
+   */
+  private def nativeDataSchema(
+      dataSchema: StructType,
+      requiredSchema: StructType,
+      resolver: Resolver): StructType =
+    StructType(dataSchema.fields.flatMap { field =>
+      if (containsVariantType(field.dataType)) {
+        requiredSchema.fields.find(requiredField => resolver(requiredField.name, field.name))
+      } else {
+        Some(field)
+      }
+    })
 
   /** Determine whether the scan is supported and tag the Spark plan with any fallback reasons */
   def isSupported(scanExec: FileSourceScanExec): Boolean = {
@@ -143,6 +167,19 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
       withFallbackReason(scanExec, unsupportedDefaultReason)
     }
 
+    // Spark's reader raises when a requested field folds to more than one file field. The native
+    // scan resolves nested names only while casting, so a column whose file type equals the
+    // requested one, and whose siblings are therefore the requested ones, is read positionally.
+    // A DataFrame analyzed case-sensitively gets such a schema past the analyzer (#6136). Not in
+    // CometScanTypeChecker, which also gates Iceberg scans that resolve fields by id.
+    if (!SQLConf.get.caseSensitiveAnalysis &&
+      DataTypeSupport.hasCaseInsensitiveDuplicateFieldNames(scanExec.requiredSchema)) {
+      withFallbackReason(
+        scanExec,
+        "Native Parquet scan does not support a read schema whose field names collide " +
+          s"case-insensitively when ${SQLConf.CASE_SENSITIVE.key}=false")
+    }
+
     if (scanExec.requiredSchema.exists(field => isVariantType(field.dataType))) {
       // Spark's strict legacy reader owns malformed-layout errors (SPARK-47546).
       // TODO: Remove this guard once the native reader implements Spark's strict Variant layout
@@ -158,6 +195,25 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
         withFallbackReason(
           scanExec,
           "Native Variant scans require default Parquet timestamp inference")
+      }
+    }
+
+    // The native scan serializes whole schemas rather than just the required columns, so every
+    // field it serializes must have a proto representation. Types that have none (e.g. GEOMETRY /
+    // GEOGRAPHY) would otherwise crash schema serialization; fall back instead. Validate the same
+    // pruned data schema `convert` serializes, and the full partition schema, which is never
+    // pruned.
+    val serializedFields =
+      nativeDataSchema(
+        scanExec.relation.dataSchema,
+        scanExec.requiredSchema,
+        scanExec.conf.resolver).fields ++ scanExec.relation.partitionSchema.fields
+    serializedFields.foreach { field =>
+      if (serializeDataType(field.dataType).isEmpty) {
+        withFallbackReason(
+          scanExec,
+          s"Native scan does not support data type ${field.dataType.simpleString} " +
+            s"in column ${field.name}")
       }
     }
 
@@ -247,23 +303,16 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
       val partitionSchema = schema2Proto(partitionSchemaFields)
       val requiredSchema = schema2Proto(scan.requiredSchema)
 
-      // Retain the pruned required field for a requested Variant root, including a struct whose
-      // Variant child was pruned. Entirely unread Variant roots never enter the native schema.
-      val nativeDataSchema = StructType(scan.relation.dataSchema.fields.flatMap { field =>
-        if (containsVariantType(field.dataType)) {
-          scan.requiredSchema.fields.find(requiredField =>
-            scan.conf.resolver(requiredField.name, field.name))
-        } else {
-          Some(field)
-        }
-      })
-      val dataSchema = schema2Proto(nativeDataSchema)
+      // Serialize the same pruned schema `isSupported` validated; see `nativeDataSchema`.
+      val prunedDataSchema =
+        nativeDataSchema(scan.relation.dataSchema, scan.requiredSchema, scan.conf.resolver)
+      val dataSchema = schema2Proto(prunedDataSchema)
 
       val dataSchemaIndexes = scan.requiredSchema.map(field => {
-        nativeDataSchema.fieldIndex(field.name)
+        prunedDataSchema.fieldIndex(field.name)
       })
-      val partitionSchemaIndexes = nativeDataSchema.fields.length until
-        (nativeDataSchema.length + partitionSchemaFields.length)
+      val partitionSchemaIndexes = prunedDataSchema.fields.length until
+        (prunedDataSchema.length + partitionSchemaFields.length)
 
       val projectionVector = (dataSchemaIndexes ++ partitionSchemaIndexes).map(idx =>
         idx.toLong.asInstanceOf[java.lang.Long])
@@ -277,7 +326,9 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
       commonBuilder.addAllDataSchema(dataSchema.asJava)
       commonBuilder.addAllRequiredSchema(requiredSchema.asJava)
       commonBuilder.addAllPartitionSchema(partitionSchema.asJava)
-      commonBuilder.setSessionTimezone(scan.conf.getConfString("spark.sql.session.timeZone"))
+      val sessionTimeZone = scan.conf.getConfString("spark.sql.session.timeZone")
+      commonBuilder.setSessionTimezone(
+        CometTimeZone.nativeId(Some(sessionTimeZone)).getOrElse(sessionTimeZone))
       commonBuilder.setCaseSensitive(scan.conf.getConf[Boolean](SQLConf.CASE_SENSITIVE))
 
       // SPARK-53535 (Spark 4.1+): when reading a struct whose requested fields are all

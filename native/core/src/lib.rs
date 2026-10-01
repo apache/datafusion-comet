@@ -183,15 +183,18 @@ pub extern "system" fn Java_org_apache_comet_NativeBase_isFeatureEnabled(
 ) -> jni::sys::jboolean {
     try_unwrap_or_throw(&env, |env| {
         let feature: String = feature_name.try_to_string(env)?;
-
-        let enabled = match feature.as_str() {
-            "jemalloc" => cfg!(feature = "jemalloc"),
-            "hdfs-opendal" => cfg!(feature = "hdfs-opendal"),
-            _ => false, // Unknown features return false
-        };
-
-        Ok(enabled)
+        Ok(is_feature_enabled(&feature))
     })
+}
+
+/// Whether the native build enables `feature`; unknown features are disabled. Core of
+/// `NativeBase.isFeatureEnabled`.
+pub fn is_feature_enabled(feature: &str) -> bool {
+    match feature {
+        "jemalloc" => cfg!(feature = "jemalloc"),
+        "hdfs-opendal" => cfg!(feature = "hdfs-opendal"),
+        _ => false, // Unknown features return false
+    }
 }
 
 /// JNI: can object_store build a store AND an object key for this URL?
@@ -218,11 +221,29 @@ pub extern "system" fn Java_org_apache_comet_NativeBase_isObjectStoreSchemeSuppo
 ) -> jni::sys::jboolean {
     try_unwrap_or_throw(&env, |env| {
         let url_str: String = url.try_to_string(env)?;
-        let supported = url::Url::parse(&url_str)
-            .ok()
-            .map(|u| object_store::ObjectStoreScheme::parse(&u).is_ok())
-            .unwrap_or(false);
-        Ok(supported)
+        Ok(is_object_store_scheme_supported(&url_str))
+    })
+}
+
+/// Whether object_store can build a store and an object key for `url`. Core of
+/// `NativeBase.isObjectStoreSchemeSupported`.
+pub fn is_object_store_scheme_supported(url: &str) -> bool {
+    url::Url::parse(url)
+        .ok()
+        .map(|u| object_store::ObjectStoreScheme::parse(&u).is_ok())
+        .unwrap_or(false)
+}
+
+/// JNI: the version of the IANA timezone database native code uses, such as `2025b`. chrono-tz
+/// compiles the database into libcomet, so it can differ from the JVM's `tzdb.dat`, and then local
+/// times computed natively can differ from Spark's.
+#[no_mangle]
+pub extern "system" fn Java_org_apache_comet_NativeBase_getTzdataVersion(
+    env: EnvUnowned,
+    _: JClass,
+) -> jni::sys::jstring {
+    try_unwrap_or_throw(&env, |env| {
+        Ok(env.new_string(chrono_tz::IANA_TZDB_VERSION)?.into_raw())
     })
 }
 
@@ -242,4 +263,27 @@ fn default_logger_config(log_level: &str) -> CometResult<Config> {
         .appender(appender)
         .build(root)
         .map_err(|err| CometError::Config(err.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn feature_enabled() {
+        assert_eq!(is_feature_enabled("jemalloc"), cfg!(feature = "jemalloc"));
+        assert_eq!(
+            is_feature_enabled("hdfs-opendal"),
+            cfg!(feature = "hdfs-opendal")
+        );
+        assert!(!is_feature_enabled("no-such-feature"));
+    }
+
+    #[test]
+    fn object_store_scheme_supported() {
+        assert!(is_object_store_scheme_supported("file:///tmp/data.parquet"));
+        assert!(is_object_store_scheme_supported("s3://bucket/key"));
+        assert!(!is_object_store_scheme_supported("unknown://bucket/key"));
+        assert!(!is_object_store_scheme_supported("not a url"));
+    }
 }

@@ -35,6 +35,7 @@ instructions on each step.
 - [ ] Generate release documentation
 - [ ] Update Maven version in release branch
 - [ ] Update version in main for next development cycle
+- [ ] Check for fixes missing from the release branches
 - [ ] Generate the change log and PR it against the release branch
 - [ ] Run the full CI suite on the release branch
 - [ ] Build the jars
@@ -117,6 +118,14 @@ git push apache branch-0.13
 Creating the branch is the only direct push to it. After protecting the branch (next step), all later changes
 to the release branch (documentation, version bump, changelog) go through pull requests targeting it.
 
+Also create the branch's backport label. Committers add it to pull requests on `main` that should be backported to
+the branch; see [Backporting to Release Branches](backporting.md).
+
+```shell
+gh label create backport-0.13 --repo apache/datafusion-comet \
+  --description "Candidate for backporting to 0.13 release branch"
+```
+
 ### Protect the Release Branch
 
 Add the new branch to `protected_branches` in `.asf.yaml` so it requires a pull request and review, the same as
@@ -196,9 +205,19 @@ the Spark SQL and Iceberg suites. The Spark SQL suite for Spark 3.4 runs only wi
 
 Create a PR against the main branch to prepare for developing the next release:
 
-- Update the Rust crate version to `0.14.0`.
+- Update the Rust crate version to `0.14.0` in `native/Cargo.toml` and in each `contrib/*/native/Cargo.toml`.
+  The contrib crates sit outside the `native/` workspace, so they do not inherit its version. Then run
+  `cargo update --workspace` in `native/` and in each contrib crate that has its own `Cargo.lock`.
 - Update the Maven version to `0.14.0-SNAPSHOT` in the same set of files listed above (the `pom.xml` files,
   the Spark test diffs under `dev/diffs`, and the Iceberg test diffs under `dev/diffs/iceberg`).
+
+### Check for Missing Backports
+
+Before generating the change log, check that the new branch has every fix from the older release branches that are
+still taking backports, and backport any that are missing. For a patch release, check the release branch against
+every newer release branch instead, so that a fix doesn't ship in the older release line first.
+[Checking Release Branches Before a Release](backporting.md#checking-release-branches-before-a-release) shows
+how.
 
 ### Generate the Change Log
 
