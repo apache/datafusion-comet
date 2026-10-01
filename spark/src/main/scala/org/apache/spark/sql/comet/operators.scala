@@ -2592,6 +2592,14 @@ trait CometHashJoin {
           } else {
             JoinType.Existence
           }
+        case ExistenceJoin(_) =>
+          // The guard above matched only when the flag is enabled; reaching here means it is off.
+          // Report a toggle-specific reason so the plan does not read like a permanent limitation.
+          withFallbackReason(
+            join,
+            "Native ExistenceJoin is disabled; set " +
+              s"${CometConf.COMET_EXEC_EXISTENCE_JOIN_ENABLED.key}=true to enable it")
+          return None
         case _ =>
           // Spark doesn't support other join types
           withFallbackReason(join, s"Unsupported join type ${join.joinType}")

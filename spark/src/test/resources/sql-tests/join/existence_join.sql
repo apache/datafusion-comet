@@ -29,7 +29,7 @@
 -- cases fall back to Spark's SortMergeJoin (existence SMJ is not yet native) and
 -- verify result parity under the Comet-enabled config.
 
--- Native ExistenceJoin support is experimental and disabled by default.
+-- Native ExistenceJoin support is enabled by default; this fixture pins the flag on explicitly.
 -- Config: spark.comet.exec.existenceJoin.enabled=true
 
 -- ============================================================
@@ -232,3 +232,50 @@ WHERE l.id > 0
        OR EXISTS (SELECT /*+ SHUFFLE_HASH(r) */ 1
                   FROM ex_right_multi r WHERE r.k1 = l.k1 AND r.k2 = l.k2))
 ORDER BY l.id
+
+-- ============================================================
+-- Marker projected directly (not gated behind OR), so the exists tag itself
+-- is observed rather than masked by another true predicate.
+-- ============================================================
+
+query
+SELECT l.id, EXISTS (SELECT /*+ BROADCAST(r) */ 1 FROM ex_right r WHERE r.k = l.k) AS matched
+FROM ex_left l
+ORDER BY l.id
+
+query
+SELECT l.id, EXISTS (SELECT /*+ SHUFFLE_HASH(r) */ 1 FROM ex_right_dups r WHERE r.k = l.k) AS matched
+FROM ex_left l
+ORDER BY l.id
+
+-- ============================================================
+-- IN combined with OR also lowers to ExistenceJoin.
+-- ============================================================
+
+query
+SELECT * FROM ex_left l
+WHERE l.region = 'US'
+   OR l.k IN (SELECT /*+ BROADCAST(r) */ r.k FROM ex_right r)
+ORDER BY l.id
+
+query
+SELECT * FROM ex_left l
+WHERE l.region = 'US'
+   OR l.k IN (SELECT /*+ SHUFFLE_HASH(r) */ r.k FROM ex_right r)
+ORDER BY l.id
+
+-- ============================================================
+-- String join key: non-collated string keys run natively.
+-- ============================================================
+
+statement
+CREATE TABLE ex_right_str(s string) USING parquet
+
+statement
+INSERT INTO ex_right_str VALUES ('US'), ('APAC')
+
+query
+SELECT l.id, EXISTS (SELECT /*+ BROADCAST(r) */ 1 FROM ex_right_str r WHERE r.s = l.region) AS matched
+FROM ex_left l
+ORDER BY l.id
+

@@ -1707,6 +1707,53 @@ class CometJoinSuite extends CometTestBase {
     }
   }
 
+  test("ExistenceJoin falls back to Spark when the feature flag is disabled") {
+    // With the flag off, the join is declined with a toggle-specific reason rather than a generic
+    // "Unsupported join type" message that reads like a permanent limitation. AQE is disabled
+    // because a declined broadcast join loses its fallback reason from the AQE-final plan; see
+    // https://github.com/apache/datafusion-comet/issues/6442.
+    withSQLConf(
+      CometConf.COMET_EXEC_EXISTENCE_JOIN_ENABLED.key -> "false",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "10MB",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "10MB") {
+      withParquetTable((0 until 100).map(i => (i, if (i % 3 == 0) "US" else "EU")), "tbl_a") {
+        withParquetTable((0 until 30).map(i => (i, i + 1)), "tbl_b") {
+          val df = sql(
+            "SELECT * FROM tbl_a a WHERE a._2 = 'US' OR EXISTS " +
+              "(SELECT /*+ BROADCAST(b) */ 1 FROM tbl_b b WHERE b._1 = a._1)")
+          checkSparkAnswerAndFallbackReason(df, "Native ExistenceJoin is disabled")
+        }
+      }
+    }
+  }
+
+  test("ExistenceJoin via SortMergeJoin stays on Spark even with forceShuffledHashJoin") {
+    // RewriteJoin refuses to rewrite an existence SortMergeJoin into a BuildRight ShuffledHashJoin
+    // (https://github.com/apache/datafusion-comet/issues/2697), so even with forced SHJ the join
+    // must stay on Spark rather than run as a native hash join. Assert on the plan (no native join
+    // form) rather than the fallback reason, which is the robust signal for this rewrite guard.
+    withSQLConf(
+      CometConf.COMET_EXEC_EXISTENCE_JOIN_ENABLED.key -> "true",
+      CometConf.COMET_FORCE_SHJ.key -> "true",
+      SQLConf.PREFER_SORTMERGEJOIN.key -> "true",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+      withParquetTable((0 until 100).map(i => (i, if (i % 3 == 0) "US" else "EU")), "tbl_a") {
+        withParquetTable((0 until 30).map(i => (i, i + 1)), "tbl_b") {
+          val df = sql(
+            "SELECT * FROM tbl_a a " +
+              "WHERE a._2 = 'US' OR EXISTS (SELECT 1 FROM tbl_b b WHERE b._1 = a._1)")
+          val (_, cometPlan) = checkSparkAnswer(df)
+          assert(
+            collect(cometPlan) { case h: CometHashJoinExec => h }.isEmpty &&
+              collect(cometPlan) { case s: CometSortMergeJoinExec => s }.isEmpty,
+            s"Existence SMJ must not be rewritten to a native hash join:\n$cometPlan")
+        }
+      }
+    }
+  }
+
   test("scans of one bucketed table in a single native plan each read their own files") {
     withTable("bucketed_self", "bucketed_dim") {
       val rows = for {
