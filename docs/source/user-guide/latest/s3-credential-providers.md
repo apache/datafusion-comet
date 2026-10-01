@@ -219,7 +219,7 @@ Comet keys provider instances by `(FQCN, dispatchKey, catalogProperties)`. The d
 
 ### Caching, refresh, and distribution
 
-Comet does not maintain a TTL cache, broadcast catalog state, or schedule refresh. Vendors decide:
+Comet does not broadcast catalog state or schedule refresh, and it keeps a credential only as long as the expiry you report allows (see below). Vendors decide:
 
 - Whether to cache credentials and for how long. Iceberg vendors get `software.amazon.awssdk.utils.cache.CachedSupplier` for free inside `VendedCredentialsProvider`; vendors with custom STS write whatever cache fits.
 - When to refresh: proactive timer, on-demand at expiry, on `403` retry, etc.
@@ -239,20 +239,22 @@ public CometS3Credentials getCredentialsForPath(CometS3CredentialContext ctx) th
 
 Spark delegation token propagation is supported on YARN and Kubernetes only. Standalone deployments need a different refresh path, typically a vendor-side service callback authenticated by long-lived state in `catalogProperties` or Hadoop conf.
 
-`expirationEpochMillis` only matters on the Iceberg/`opendal` path. There the bridge implements `reqsign_core::ProvideCredential`, which carries an `expires_in` field that `opendal` uses to schedule the next refresh. Publish a real expiry when you have one. `0` means "unknown"; the bridge then substitutes a 5-minute expiry to bound staleness.
+Publish a real `expirationEpochMillis` when you have one. On both paths Comet reuses a credential until five minutes before that expiry and then asks you again, and requests that arrive together wait for that one call. `0` means unknown: Comet does not keep the credential and asks you for every request, and on the Iceberg path it assumes the credential lasts five minutes. `Long.MAX_VALUE` means the credential does not expire, and Comet does not keep it either. A value before 2000, almost always seconds sent as milliseconds, is treated as unknown, with a warning. If a credential can be revoked before the expiry you report, report an earlier one, or `0`.
 
-The Parquet/`object_store` path has no expiry concept: `object_store::CredentialProvider` returns just `AwsCredential` (key/secret/token). The bridge is passed to `with_credentials` without a TTL wrapper, so `object_store` calls into the SPI on every request and relies on the vendor's own cache for hit rates. Expiry handling is fully the vendor's responsibility: the vendor decides when its internal cache refreshes. If `object_store` receives a 403 from an expired session token, its retry layer calls `get_credential()` again, giving the vendor another chance to mint fresh credentials.
+On the Parquet/`object_store` path, `object_store` signs a request once and sends the same signature on every retry, for up to 3 minutes by default, and it does not retry a 403. The five minutes Comet leaves before an expiry cover those retries. A credential you return with less time left than that is used for the request that asked for it and not kept.
+
+The built-in adapters report an expiry when the AWS SDK exposes one, which it does on the Spark 4.x builds (SDK v2). On the Spark 3.4 and 3.5 builds (SDK v1) they cannot, and report `0`.
 
 ### Returned fields
 
-| Field                   | Notes                                                                                                                     |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `accessKeyId`           | Required.                                                                                                                 |
-| `secretAccessKey`       | Required.                                                                                                                 |
-| `sessionToken`          | `null` for non-STS credentials.                                                                                           |
-| `expirationEpochMillis` | Iceberg path only. `0` means "unknown"; the bridge substitutes a 5-minute expiry. The Parquet path has no expiry concept. |
+| Field                   | Notes                                                                                                                                       |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `accessKeyId`           | Required.                                                                                                                                   |
+| `secretAccessKey`       | Required.                                                                                                                                   |
+| `sessionToken`          | `null` for non-STS credentials.                                                                                                             |
+| `expirationEpochMillis` | When the credential stops working. Comet reuses it until 5 minutes before. `0` means unknown and `Long.MAX_VALUE` never; neither is reused. |
 
-Provide a real `expirationEpochMillis` whenever you have one on the Iceberg path. The Parquet path's `object_store::CredentialProvider` does not consume an expiry, and the bridge invokes the SPI on every `get_credential()` call.
+Provide a real `expirationEpochMillis` whenever you have one. Without it, Comet asks for a credential on every request on the Parquet path, and on every storage call on the Iceberg path.
 
 ### Returns or throws
 

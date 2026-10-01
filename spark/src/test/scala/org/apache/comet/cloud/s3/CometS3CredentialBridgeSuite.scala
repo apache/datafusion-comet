@@ -315,4 +315,31 @@ class CometS3CredentialBridgeSuite
         "/warehouse/finance"),
       s"Unexpected credential paths: ${MinioLocationScopedCredentialProvider.credentialPaths()}")
   }
+
+  // Declared last: the bridge keeps the credential this test reports an expiry for, so a later
+  // Parquet test on this bucket would not see the provider asked.
+  test("Parquet reads reuse a credential until shortly before its expiry") {
+    val path = s"s3a://$testBucketName/data/bridge-expiry.parquet"
+    spark.range(0, 1000).write.format("parquet").mode(SaveMode.Overwrite).save(path)
+    val expectedSum = (0L until 1000L).sum
+    MinioCometS3CredentialProvider.installExpiration(System.currentTimeMillis() + 60 * 60 * 1000L)
+    try {
+      // Fetches the credential with its expiry, which the bridge then keeps.
+      assert(
+        spark.read.format("parquet").load(path).agg(sum(col("id"))).first().getLong(0) ==
+          expectedSum)
+
+      MinioCometS3CredentialProvider.resetCounters()
+      for (_ <- 1 to 2) {
+        val df = spark.read.format("parquet").load(path).agg(sum(col("id")))
+        assertHasCometParquetScan(df.queryExecution.executedPlan)
+        assert(df.first().getLong(0) == expectedSum)
+      }
+      assert(
+        MinioCometS3CredentialProvider.callCount() == 0,
+        s"Provider asked ${MinioCometS3CredentialProvider.callCount()} times for a fresh credential")
+    } finally {
+      MinioCometS3CredentialProvider.installExpiration(0L)
+    }
+  }
 }

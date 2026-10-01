@@ -31,6 +31,7 @@ use log::warn;
 use object_store::aws::AwsCredential;
 use object_store::CredentialProvider;
 use once_cell::sync::OnceCell;
+use parking_lot::Mutex;
 use reqsign_core::time::Timestamp;
 use reqsign_core::{
     Context, Error as ReqsignError, ErrorKind as ReqsignErrorKind,
@@ -41,14 +42,93 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// Cap on opendal's credential cache when the provider does not report an expiry. Prevents the
-/// executor from holding a stale credential for the entire job lifetime. Shared with the IRSA
-/// web-identity provider (`super::web_identity`).
+/// Expiry the Iceberg path assumes when the provider does not report one. It bounds how long a
+/// long-lived reader or writer reuses a credential, but it can outlast a short-lived credential,
+/// so a provider that knows the expiry should report it. Shared with the IRSA web-identity
+/// provider (`super::web_identity`).
 pub(crate) const DEFAULT_EXPIRY_WHEN_UNKNOWN: Duration = Duration::from_secs(300);
+
+/// How long before its expiry a bridge stops reusing a credential and asks the provider again. It
+/// matches the refresh-ahead of the other credential caches Comet keeps, and it covers object_store,
+/// which signs a request once and sends that signature again on every retry for up to 3 minutes by
+/// default.
+pub(crate) const REFRESH_BEFORE_EXPIRY: Duration = Duration::from_secs(300);
+
+/// The earliest `expirationEpochMillis` taken at face value, 2000-01-01T00:00:00Z. An earlier one is
+/// almost always seconds since the epoch sent as milliseconds.
+const EARLIEST_PLAUSIBLE_EXPIRY_MILLIS: i64 = 946_684_800_000;
 
 /// Once-per-process latch for the "missing expiry" warning. Bridges live as long as their entry in
 /// the executor's FileIO cache, so a per-bridge latch would re-log for every new configuration.
 static WARNED_MISSING_EXPIRY: OnceCell<()> = OnceCell::new();
+
+/// Once-per-process latch for the "implausible expiry" warning.
+static WARNED_IMPLAUSIBLE_EXPIRY: OnceCell<()> = OnceCell::new();
+
+/// When a provider's credential stops working, as its `expirationEpochMillis` says.
+#[derive(Debug, PartialEq, Eq)]
+enum Expiry {
+    /// `0` or negative, or too early to be a real expiry: the provider does not know.
+    Unknown,
+    /// Too far ahead to represent, as `Long.MAX_VALUE` is: the credential does not expire.
+    Never,
+    At(Timestamp),
+}
+
+impl Expiry {
+    fn from_millis(millis: i64) -> Self {
+        if millis <= 0 {
+            return Expiry::Unknown;
+        }
+        if millis < EARLIEST_PLAUSIBLE_EXPIRY_MILLIS {
+            if WARNED_IMPLAUSIBLE_EXPIRY.set(()).is_ok() {
+                warn!(
+                    "CometS3CredentialProvider returned expirationEpochMillis {millis}, which is \
+                     before 2000 and probably in seconds; treating the expiry as unknown"
+                );
+            }
+            return Expiry::Unknown;
+        }
+        Timestamp::from_millisecond(millis).map_or(Expiry::Never, Expiry::At)
+    }
+}
+
+/// A credential with a known expiry, and when to stop reusing it.
+struct CachedCredential {
+    raw: RawCredentials,
+    refresh_at: Timestamp,
+}
+
+/// A bridge's last credential with a known expiry. It is reused until [`REFRESH_BEFORE_EXPIRY`]
+/// before that expiry, so the provider is asked about once per credential rather than once per
+/// request (Parquet) or storage call (Iceberg). A credential whose expiry is unknown, or that does
+/// not expire, is not kept, and the provider is asked for every time.
+#[derive(Default)]
+struct CredentialCache(Mutex<Option<CachedCredential>>);
+
+impl CredentialCache {
+    /// The kept credential if it is still fresh at `now`, or else the one `fetch` returns, kept if
+    /// it can be. Concurrent calls wait for one fetch.
+    fn get_or_fetch<E>(
+        &self,
+        now: Timestamp,
+        fetch: impl FnOnce() -> Result<RawCredentials, E>,
+    ) -> Result<RawCredentials, E> {
+        let mut cached = self.0.lock();
+        if let Some(credential) = cached.as_ref().filter(|c| now < c.refresh_at) {
+            return Ok(credential.raw.clone());
+        }
+        let raw = fetch()?;
+        *cached = match Expiry::from_millis(raw.expiration_epoch_millis) {
+            Expiry::At(at) if now < at - REFRESH_BEFORE_EXPIRY => Some(CachedCredential {
+                raw: raw.clone(),
+                refresh_at: at - REFRESH_BEFORE_EXPIRY,
+            }),
+            _ => None,
+        };
+        Ok(raw)
+    }
+}
 
 /// Access intent forwarded to the Java SPI. Ordinal must match the JVM `CometS3AccessMode` enum.
 #[derive(Debug, Clone, Copy)]
@@ -78,6 +158,9 @@ pub struct CometS3CredentialBridge {
     handle: i64,
     bucket_jstr: Arc<Global<JString<'static>>>,
     path_jstr: Arc<Global<JString<'static>>>,
+    /// The credential this bridge last fetched, while it is fresh. A derived bridge starts with an
+    /// empty cache, since it asks about another path.
+    cache: CredentialCache,
 }
 
 impl fmt::Debug for CometS3CredentialBridge {
@@ -135,6 +218,7 @@ impl CometS3CredentialBridge {
             handle,
             bucket_jstr,
             path_jstr,
+            cache: CredentialCache::default(),
         })
     }
 
@@ -160,7 +244,15 @@ impl CometS3CredentialBridge {
             handle: self.handle,
             bucket_jstr: Arc::clone(&self.bucket_jstr),
             path_jstr,
+            cache: CredentialCache::default(),
         })
+    }
+
+    /// The provider's credential for this bridge's bucket, path and mode, reused while it is fresh.
+    /// See [`CredentialCache`].
+    fn credential(&self) -> Result<RawCredentials, ExecutionError> {
+        self.cache
+            .get_or_fetch(Timestamp::now(), || self.fetch_raw())
     }
 
     fn fetch_raw(&self) -> Result<RawCredentials, ExecutionError> {
@@ -333,6 +425,7 @@ fn build_java_string_map<'a>(
     Ok(instance)
 }
 
+#[derive(Clone)]
 struct RawCredentials {
     access_key_id: String,
     secret_access_key: String,
@@ -361,10 +454,14 @@ impl CredentialProvider for CometS3CredentialBridge {
     type Credential = AwsCredential;
 
     async fn get_credential(&self) -> object_store::Result<Arc<AwsCredential>> {
-        let raw = self.fetch_raw().map_err(|e| object_store::Error::Generic {
-            store: "S3",
-            source: Box::new(CredentialProviderError(e.to_string())),
-        })?;
+        // object_store's credential carries no expiry, and object_store asks for one on every
+        // request, so the bridge's cache is what honors the provider's expiry on this path.
+        let raw = self
+            .credential()
+            .map_err(|e| object_store::Error::Generic {
+                store: "S3",
+                source: Box::new(CredentialProviderError(e.to_string())),
+            })?;
         Ok(Arc::new(AwsCredential {
             key_id: raw.access_key_id,
             secret_key: raw.secret_access_key,
@@ -381,30 +478,22 @@ impl IcebergProvideCredential for CometS3CredentialBridge {
         _ctx: &Context,
     ) -> reqsign_core::Result<Option<Self::Credential>> {
         let raw = self
-            .fetch_raw()
+            .credential()
             .map_err(|e| ReqsignError::new(ReqsignErrorKind::CredentialInvalid, e.to_string()))?;
 
-        let expires_in = if raw.expiration_epoch_millis > 0 {
-            Some(
-                Timestamp::from_millisecond(raw.expiration_epoch_millis).map_err(|e| {
-                    ReqsignError::new(
-                        ReqsignErrorKind::CredentialInvalid,
-                        format!(
-                            "Invalid expirationEpochMillis {}: {e}",
-                            raw.expiration_epoch_millis
-                        ),
-                    )
-                })?,
-            )
-        } else {
-            if WARNED_MISSING_EXPIRY.set(()).is_ok() {
-                warn!(
-                    "CometS3CredentialProvider returned credentials without expiration; \
+        let expires_in = match Expiry::from_millis(raw.expiration_epoch_millis) {
+            Expiry::At(at) => Some(at),
+            Expiry::Never => None,
+            Expiry::Unknown => {
+                if WARNED_MISSING_EXPIRY.set(()).is_ok() {
+                    warn!(
+                        "CometS3CredentialProvider returned credentials without expiration; \
                      defaulting to {}s expiry to bound opendal caching",
-                    DEFAULT_EXPIRY_WHEN_UNKNOWN.as_secs()
-                );
+                        DEFAULT_EXPIRY_WHEN_UNKNOWN.as_secs()
+                    );
+                }
+                Some(Timestamp::now() + DEFAULT_EXPIRY_WHEN_UNKNOWN)
             }
-            Some(Timestamp::now() + DEFAULT_EXPIRY_WHEN_UNKNOWN)
         };
 
         Ok(Some(IcebergAwsCredential {
@@ -441,4 +530,111 @@ fn read_optional_string(
     jstr.try_to_string(env)
         .map(Some)
         .map_err(|e| ExecutionError::GeneralError(format!("try_to_string: {e}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+
+    const NOW_MILLIS: i64 = 1_790_000_000_000;
+    const HOUR_MILLIS: i64 = 3_600_000;
+
+    fn now() -> Timestamp {
+        Timestamp::from_millisecond(NOW_MILLIS).unwrap()
+    }
+
+    fn credential(key: &str, expiration_epoch_millis: i64) -> RawCredentials {
+        RawCredentials {
+            access_key_id: key.to_string(),
+            secret_access_key: "secret".to_string(),
+            session_token: None,
+            expiration_epoch_millis,
+        }
+    }
+
+    #[test]
+    fn reads_what_an_expiry_says() {
+        assert_eq!(Expiry::from_millis(0), Expiry::Unknown);
+        assert_eq!(Expiry::from_millis(-1), Expiry::Unknown);
+        // Seconds sent as milliseconds would be a day in January 1970.
+        assert_eq!(Expiry::from_millis(NOW_MILLIS / 1000), Expiry::Unknown);
+        assert_eq!(Expiry::from_millis(i64::MAX), Expiry::Never);
+        assert_eq!(Expiry::from_millis(NOW_MILLIS), Expiry::At(now()));
+    }
+
+    #[test]
+    fn reuses_a_credential_until_shortly_before_it_expires() {
+        let cache = CredentialCache::default();
+        let fetches = AtomicUsize::new(0);
+        let fetch = || {
+            let n = fetches.fetch_add(1, SeqCst);
+            let expiry = NOW_MILLIS + (n as i64 + 1) * HOUR_MILLIS;
+            Ok::<_, ()>(credential(&format!("key-{n}"), expiry))
+        };
+        let key_at = |minutes: u64| {
+            cache
+                .get_or_fetch(now() + Duration::from_secs(minutes * 60), fetch)
+                .unwrap()
+                .access_key_id
+        };
+        assert_eq!(key_at(0), "key-0");
+        assert_eq!(key_at(54), "key-0", "more than five minutes left");
+        assert_eq!(key_at(56), "key-1", "within five minutes of the expiry");
+        assert_eq!(fetches.load(SeqCst), 2);
+    }
+
+    #[test]
+    fn asks_every_time_for_a_credential_it_cannot_keep() {
+        // An unknown expiry, one that never comes, and one within five minutes.
+        for expiration in [0, i64::MAX, NOW_MILLIS + 60_000] {
+            let cache = CredentialCache::default();
+            let fetches = AtomicUsize::new(0);
+            let fetch = || {
+                fetches.fetch_add(1, SeqCst);
+                Ok::<_, ()>(credential("key", expiration))
+            };
+            cache.get_or_fetch(now(), fetch).unwrap();
+            cache.get_or_fetch(now(), fetch).unwrap();
+            assert_eq!(fetches.load(SeqCst), 2, "expiration {expiration}");
+        }
+    }
+
+    #[test]
+    fn a_failed_fetch_is_not_kept() {
+        let cache = CredentialCache::default();
+        assert!(cache
+            .get_or_fetch(now(), || Err::<RawCredentials, _>("provider threw"))
+            .is_err());
+        let fetched = cache
+            .get_or_fetch(now(), || {
+                Ok::<_, &str>(credential("key", NOW_MILLIS + HOUR_MILLIS))
+            })
+            .unwrap();
+        assert_eq!(fetched.access_key_id, "key");
+    }
+
+    #[test]
+    fn concurrent_requests_wait_for_one_fetch() {
+        let cache = Arc::new(CredentialCache::default());
+        let fetches = Arc::new(AtomicUsize::new(0));
+        let requests: Vec<_> = (0..8)
+            .map(|_| {
+                let (cache, fetches) = (Arc::clone(&cache), Arc::clone(&fetches));
+                std::thread::spawn(move || {
+                    cache
+                        .get_or_fetch(now(), || {
+                            fetches.fetch_add(1, SeqCst);
+                            std::thread::sleep(Duration::from_millis(20));
+                            Ok::<_, ()>(credential("key", NOW_MILLIS + HOUR_MILLIS))
+                        })
+                        .unwrap()
+                })
+            })
+            .collect();
+        for request in requests {
+            assert_eq!(request.join().unwrap().access_key_id, "key");
+        }
+        assert_eq!(fetches.load(SeqCst), 1);
+    }
 }
