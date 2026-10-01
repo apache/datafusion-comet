@@ -823,7 +823,7 @@ Iceberg commit (including commit-time validation), outside AQE, exactly once.</p
 <p>With only the split plan enabled, data files are still written by iceberg-java; only the plan
 shape changes. The split moves data-file writing inside AQE and separates it from the commit,
 and it is the foundation for the second toggle: when
-<code class="docutils literal notranslate"><span class="pre">spark.comet.iceberg.write.enabled=true</span></code> and the write passes the eligibility check below, the
+<code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.enabled=true</span></code> and the write passes the eligibility check below, the
 <code class="docutils literal notranslate"><span class="pre">IcebergWrite</span></code> operator’s per-task Parquet write is delegated to
 <a class="reference external" href="https://github.com/apache/iceberg-rust">iceberg-rust</a> via Comet’s native execution pipeline
 (<a class="reference external" href="https://github.com/apache/datafusion-comet/pull/5361">#5361</a>).</p>
@@ -860,7 +860,7 @@ is untouched: <code class="docutils literal notranslate"><span class="pre">Icebe
 <span class="n">spark</span><span class="o">.</span><span class="n">comet</span><span class="o">.</span><span class="n">write</span><span class="o">.</span><span class="n">iceberg</span><span class="o">.</span><span class="n">splitOperator</span><span class="o">.</span><span class="n">enabled</span><span class="o">=</span><span class="n">true</span>
 
 <span class="c1"># Native Parquet writer (experimental, off by default; requires the split plan)</span>
-<span class="n">spark</span><span class="o">.</span><span class="n">comet</span><span class="o">.</span><span class="n">iceberg</span><span class="o">.</span><span class="n">write</span><span class="o">.</span><span class="n">enabled</span><span class="o">=</span><span class="n">true</span>
+<span class="n">spark</span><span class="o">.</span><span class="n">comet</span><span class="o">.</span><span class="n">write</span><span class="o">.</span><span class="n">iceberg</span><span class="o">.</span><span class="n">enabled</span><span class="o">=</span><span class="n">true</span>
 
 <span class="c1"># Lets writes whose input is a local relation (INSERT ... VALUES, a local DataFrame) use the</span>
 <span class="c1"># native writer; see "Native Parquet write eligibility" below</span>
@@ -906,7 +906,7 @@ trade-off, only no plan change.</p>
 </section>
 <section id="native-parquet-write-eligibility">
 <h2>Native Parquet write eligibility<a class="headerlink" href="#native-parquet-write-eligibility" title="Link to this heading">#</a></h2>
-<p>When <code class="docutils literal notranslate"><span class="pre">spark.comet.iceberg.write.enabled=true</span></code>
+<p>When <code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.enabled=true</span></code>
 (<a class="reference external" href="https://github.com/apache/datafusion-comet/pull/5361">#5361</a>), the <code class="docutils literal notranslate"><span class="pre">IcebergWrite</span></code> operator’s
 per-task Parquet write is delegated to <a class="reference external" href="https://github.com/apache/iceberg-rust">iceberg-rust</a>.
 The native writer must produce the same outcome as iceberg-java — the same Parquet features,
@@ -1069,7 +1069,7 @@ unchanged.</p>
 <h2>Accepted divergences behind the toggle<a class="headerlink" href="#accepted-divergences-behind-the-toggle" title="Link to this heading">#</a></h2>
 <p>Some differences between parquet-mr and the pinned parquet-rs / iceberg-rust are unconditional —
 they apply to every native write and cannot be configured away. Enabling
-<code class="docutils literal notranslate"><span class="pre">spark.comet.iceberg.write.enabled</span></code> accepts them. They fall into three classes with very
+<code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.enabled</span></code> accepts them. They fall into three classes with very
 different blast radius: differences confined to the physical bytes of a data file (cosmetic —
 no reader decision is based on them), differences visible in manifest metadata (these outlive
 the write and feed later readers’ pruning decisions, so each one is analyzed individually

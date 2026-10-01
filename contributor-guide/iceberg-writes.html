@@ -571,7 +571,7 @@ does not repeat those lists; it explains the code that implements them.</p>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.splitOperator.enabled</span></code></p></td>
 <td><p>The plan shape. Spark’s single V2 write operator becomes <code class="docutils literal notranslate"><span class="pre">IcebergCommit</span></code> over <code class="docutils literal notranslate"><span class="pre">IcebergWrite</span></code>. iceberg-java still writes the data files.</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.iceberg.write.enabled</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.enabled</span></code></p></td>
 <td><p>Who writes the data files. An eligible <code class="docutils literal notranslate"><span class="pre">IcebergWrite</span></code> becomes <code class="docutils literal notranslate"><span class="pre">CometIcebergWrite</span></code>, which writes Parquet with iceberg-rust.</p></td>
 </tr>
 </tbody>
@@ -658,7 +658,7 @@ Spark 3.4. Those keep Spark’s plan.</p></li>
 <section id="from-icebergwrite-to-cometicebergwrite">
 <h2>From <code class="docutils literal notranslate"><span class="pre">IcebergWrite</span></code> to <code class="docutils literal notranslate"><span class="pre">CometIcebergWrite</span></code><a class="headerlink" href="#from-icebergwrite-to-cometicebergwrite" title="Link to this heading">#</a></h2>
 <p><code class="docutils literal notranslate"><span class="pre">CometExecRule</span></code> converts an <code class="docutils literal notranslate"><span class="pre">IcebergWriteExec</span></code> with the <code class="docutils literal notranslate"><span class="pre">CometIcebergNativeWrite</span></code> operator serde
-when <code class="docutils literal notranslate"><span class="pre">spark.comet.iceberg.write.enabled</span></code> is on. Two arms in <code class="docutils literal notranslate"><span class="pre">CometExecRule</span></code> handle it: one unwraps
+when <code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.enabled</span></code> is on. Two arms in <code class="docutils literal notranslate"><span class="pre">CometExecRule</span></code> handle it: one unwraps
 the double conversion AQE can produce when it re-fires write planning over a sub-tree that already
 contains a <code class="docutils literal notranslate"><span class="pre">CometIcebergWriteExec</span></code>, and the other calls <code class="docutils literal notranslate"><span class="pre">convertToComet</span></code>.</p>
 <p><code class="docutils literal notranslate"><span class="pre">CometIcebergNativeWrite.requiresNativeChildren</span></code> is <code class="docutils literal notranslate"><span class="pre">true</span></code>. The native writer consumes Arrow
