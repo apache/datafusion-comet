@@ -444,6 +444,62 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     }
   }
 
+  test("fall-back: hostless hdfs:/ data location is read as hdfs, not file") {
+    // Hadoop normalises `hdfs:///p` to `hdfs:/p`; with no `://` the gate used to call it `file`.
+    withDetectionCatalog { dir =>
+      createTable(
+        dir,
+        "hostless_hdfs",
+        partitionSpec = "",
+        properties = Some("'write.data.path'='hdfs:/iceberg/db/hostless_hdfs'"))
+      assertUnsupportedContains(
+        planInsertWriteExec(s"$catalog.$ns.hostless_hdfs"),
+        "hostless_hdfs",
+        "unsupported storage scheme: hdfs")
+    }
+  }
+
+  test("fall-back: s3 data location without a bucket in its authority") {
+    withDetectionCatalog { dir =>
+      createTable(
+        dir,
+        "hostless_s3",
+        partitionSpec = "",
+        properties = Some("'write.data.path'='s3:/nonexistent-bucket/iceberg/db/hostless_s3'"))
+      assertUnsupportedContains(
+        planInsertWriteExec(s"$catalog.$ns.hostless_s3"),
+        "hostless_s3",
+        "s3 data location has no bucket")
+    }
+  }
+
+  test("storageScheme follows the native scheme_of rule") {
+    // Keep in step with `scheme_of_extracts_scheme_from_all_uri_forms` in iceberg_common.rs.
+    Seq(
+      "hdfs:/warehouse/t" -> "hdfs",
+      "hdfs:///warehouse/t" -> "hdfs",
+      "hdfs://nn:8020/warehouse/t" -> "hdfs",
+      "s3://bucket/key" -> "s3",
+      "s3:/bucket/key" -> "s3",
+      "blob:/bucket/key" -> "blob",
+      "memory:/x" -> "memory",
+      "file:///tmp/x" -> "file",
+      "file:/tmp/x" -> "file",
+      "/tmp/no-scheme" -> "file",
+      "/tmp/a:b" -> "file").foreach { case (location, expected) =>
+      assert(CometIcebergNativeWrite.storageScheme(location) == expected, location)
+    }
+  }
+
+  test("hasBucketAuthority requires a non-empty host after //") {
+    Seq("s3://bucket/key", "s3a://bucket", "gs://bucket/x").foreach { location =>
+      assert(CometIcebergNativeWrite.hasBucketAuthority(location), location)
+    }
+    Seq("s3:/bucket/key", "s3:///bucket/key", "s3:bucket/key", "gs://").foreach { location =>
+      assert(!CometIcebergNativeWrite.hasBucketAuthority(location), location)
+    }
+  }
+
   test("Compatible when the data location scheme is s3") {
     withDetectionCatalog { dir =>
       createTable(

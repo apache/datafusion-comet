@@ -219,6 +219,10 @@ fn env_region_present() -> bool {
 /// S3-compliant scan to the local filesystem. A `/` before the `:` means there is no scheme (the
 /// `:` sits inside a path segment, e.g. `/tmp/a:b`), so those and truly schemeless paths default
 /// to `file`.
+///
+/// The JVM write gate (`CometIcebergNativeWrite.storageScheme`) mirrors this rule, except that it
+/// lowercases the scheme. Change both together, and keep the cases in
+/// `scheme_of_extracts_scheme_from_all_uri_forms` in step with its `storageScheme` test.
 fn scheme_of(path: &str) -> &str {
     match path.split_once(':') {
         Some((scheme, _)) if !scheme.is_empty() && !scheme.contains('/') => scheme,
@@ -284,7 +288,15 @@ mod tests {
         assert_eq!(scheme_of("blob://bucket/key"), "blob");
         assert_eq!(scheme_of("blob:/bucket/key"), "blob");
         assert_eq!(scheme_of("s3://bucket/key"), "s3");
+        assert_eq!(scheme_of("s3:/bucket/key"), "s3");
+        // Hadoop normalises `hdfs:///p` to `hdfs:/p`. The JVM write gate must read both as
+        // `hdfs` (unsupported) rather than admit the hostless form as `file`.
+        assert_eq!(scheme_of("hdfs:/warehouse/t"), "hdfs");
+        assert_eq!(scheme_of("hdfs:///warehouse/t"), "hdfs");
+        assert_eq!(scheme_of("hdfs://nn:8020/warehouse/t"), "hdfs");
+        assert_eq!(scheme_of("memory:/x"), "memory");
         assert_eq!(scheme_of("file:///tmp/x"), "file");
+        assert_eq!(scheme_of("file:/tmp/x"), "file");
         // Schemeless and colon-in-path locals default to the local FS.
         assert_eq!(scheme_of("/tmp/no-scheme"), "file");
         assert_eq!(scheme_of("/tmp/a:b"), "file");
