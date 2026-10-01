@@ -1649,6 +1649,50 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
+  test("native scan reads files with nothing to decode whose types Spark rejects") {
+    // Regression guard for #6506. Spark checks a conversion only while it decodes a row group,
+    // so an empty file, or one whose only row group a filter prunes, reads even when a column
+    // has a type the read schema can't convert. The native scan used to reject such a file
+    // when it opened it.
+    withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> "parquet") {
+      val cases = Seq(
+        // (written expression of the read type, written expression of another type, read type)
+        ("named_struct('x', 1)", "named_struct('x', 'a')", "struct<x:int>"),
+        (
+          "named_struct('d', cast(1.23 as decimal(10,2)))",
+          "named_struct('d', cast(1.2345 as decimal(10,4)))",
+          "struct<d:decimal(10,2)>"),
+        ("array(1)", "array('a')", "array<int>"),
+        ("map('k', 1)", "map('k', 'v')", "map<string,int>"),
+        ("named_struct('x', array(1))", "named_struct('x', 1)", "struct<x:array<int>>"),
+        ("1", "'a'", "int"))
+      cases.foreach { case (matching, mismatched, readType) =>
+        withClue(s"$mismatched read as $readType: ") {
+          withTempPath { dir =>
+            val path = dir.getCanonicalPath
+            spark.sql(s"select $matching as s").write.parquet(path)
+            spark.sql(s"select $mismatched as s where false").write.mode("append").parquet(path)
+            checkSparkAnswerAndOperator(spark.read.schema(s"s $readType").parquet(path))
+          }
+          withTempPath { dir =>
+            val path = dir.getCanonicalPath
+            spark.sql(s"select 100 as id, $matching as s").repartition(1).write.parquet(path)
+            spark
+              .sql(s"select 1 as id, $mismatched as s")
+              .repartition(1)
+              .write
+              .mode("append")
+              .parquet(path)
+            val df = spark.read.schema(s"id int, s $readType").parquet(path)
+            checkSparkAnswerAndOperator(df.where("id = 100"))
+            // The pruned row group still fails when it is decoded.
+            intercept[SparkException](df.collect())
+          }
+        }
+      }
+    }
+  }
+
   test("nested schema evolution follows Spark's per-version widening rules") {
     // Companion to "schema evolution": `INT32 -> bigint` inside a struct is gated by the same
     // per-Spark-version constant as the top level (see ShimCometConf), and accepted nested
