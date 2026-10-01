@@ -19,11 +19,13 @@
 
 use std::sync::Arc;
 
+use datafusion::common::{JoinType, NullEquality};
 use datafusion::execution::disk_manager::{DiskManagerBuilder, DiskManagerMode};
 use datafusion::execution::memory_pool::FairSpillPool;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode, PhysicalGroupBy};
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
+use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::Partitioning;
 use datafusion::physical_plan::{
@@ -31,7 +33,7 @@ use datafusion::physical_plan::{
 };
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_comet_local::LocalQuery;
-use datafusion_comet_proto::local::LocalAggregate;
+use datafusion_comet_proto::local::{LocalAggregate, LocalJoin};
 use datafusion_comet_proto::spark_operator::{operator::OpStruct, Operator, SparkFilePartition};
 use prost::Message;
 
@@ -58,9 +60,31 @@ pub(super) fn parquet_query(
         .iter()
         .map(|b| SparkFilePartition::decode(b.as_slice()))
         .collect::<Result<Vec<_>, _>>()?;
+    let context = query_context(batch_size, groups.len(), row_filter_pushdown, &settings)?;
+    let planner = PhysicalPlanner::new(Arc::clone(&context), 0).with_sql_text_pool(&root);
+    let plan = build(&root, &groups, &planner)?;
+    let plan = if settings.aggregate.is_empty() {
+        plan
+    } else {
+        aggregate_plan(plan, &LocalAggregate::decode(settings.aggregate)?, &planner)?
+    };
+    if plan.schema().fields().len() != columns {
+        return Err(ExecutionError::GeneralError(
+            "Local output schema width mismatch".into(),
+        ));
+    }
+    Ok(LocalQuery::new(plan, context.task_ctx()))
+}
+
+fn query_context(
+    batch_size: usize,
+    partitions: usize,
+    row_filter_pushdown: bool,
+    settings: &QuerySettings<'_>,
+) -> Result<Arc<SessionContext>, ExecutionError> {
     let mut config = SessionConfig::new()
         .with_batch_size(batch_size)
-        .with_target_partitions(groups.len().max(1));
+        .with_target_partitions(partitions.max(1));
     config.options_mut().execution.parquet.pushdown_filters = row_filter_pushdown;
     config.options_mut().execution.parquet.reorder_filters = row_filter_pushdown;
     // Registry and configuration are query-owned. Never inherit another query's credentials.
@@ -79,19 +103,122 @@ pub(super) fn parquet_query(
         config,
         Arc::new(runtime),
     ));
-    let planner = PhysicalPlanner::new(Arc::clone(&context), 0).with_sql_text_pool(&root);
-    let plan = build(&root, &groups, &planner)?;
-    let plan = if settings.aggregate.is_empty() {
-        plan
-    } else {
-        aggregate_plan(plan, &LocalAggregate::decode(settings.aggregate)?, &planner)?
-    };
+    Ok(context)
+}
+
+pub(super) fn join_query(
+    bytes: &[u8],
+    batch_size: usize,
+    columns: usize,
+    row_filter_pushdown: bool,
+    settings: QuerySettings<'_>,
+) -> Result<LocalQuery, ExecutionError> {
+    let join = LocalJoin::decode(bytes)?;
+    if join.left_files.len() > 1024 || join.right_files.len() > 1024 {
+        return Err(ExecutionError::GeneralError(
+            "Too many local join file groups".into(),
+        ));
+    }
+    let context = query_context(
+        batch_size,
+        join.partitions as usize,
+        row_filter_pushdown,
+        &settings,
+    )?;
+    let invalid = || ExecutionError::GeneralError("Missing local join input".into());
+    let left = join.left.as_ref().ok_or_else(invalid)?;
+    let right = join.right.as_ref().ok_or_else(invalid)?;
+    // Each input retains its own SQL text pool; neither borrows the other's scan metadata.
+    let left_planner = PhysicalPlanner::new(Arc::clone(&context), 0).with_sql_text_pool(left);
+    let right_planner = PhysicalPlanner::new(Arc::clone(&context), 0).with_sql_text_pool(right);
+    let left = build(left, &join.left_files, &left_planner)?;
+    let right = build(right, &join.right_files, &right_planner)?;
+    let planner = PhysicalPlanner::new(Arc::clone(&context), 0);
+    let plan = join_plan(left, right, &join, &planner)?;
     if plan.schema().fields().len() != columns {
         return Err(ExecutionError::GeneralError(
-            "Local output schema width mismatch".into(),
+            "Local join output schema width mismatch".into(),
         ));
     }
     Ok(LocalQuery::new(plan, context.task_ctx()))
+}
+
+fn join_plan(
+    left: Arc<dyn ExecutionPlan>,
+    right: Arc<dyn ExecutionPlan>,
+    join: &LocalJoin,
+    planner: &PhysicalPlanner,
+) -> Result<Arc<dyn ExecutionPlan>, ExecutionError> {
+    use datafusion_comet_proto::spark_operator::JoinType as SparkJoinType;
+    if !(1..=1024).contains(&join.partitions)
+        || join.left_keys.is_empty()
+        || join.left_keys.len() != join.right_keys.len()
+        || join.result.is_empty()
+    {
+        return Err(ExecutionError::GeneralError("Invalid local join".into()));
+    }
+    let kind = match SparkJoinType::try_from(join.join_type) {
+        Ok(SparkJoinType::Inner) => JoinType::Inner,
+        Ok(SparkJoinType::LeftOuter) => JoinType::Left,
+        Ok(SparkJoinType::RightOuter) => JoinType::Right,
+        Ok(SparkJoinType::FullOuter) => JoinType::Full,
+        Ok(SparkJoinType::LeftSemi) => JoinType::LeftSemi,
+        Ok(SparkJoinType::LeftAnti) => JoinType::LeftAnti,
+        Err(_) => {
+            return Err(ExecutionError::GeneralError(
+                "Invalid local join type".into(),
+            ))
+        }
+    };
+    let left_keys = join
+        .left_keys
+        .iter()
+        .map(|e| planner.create_expr(e, left.schema()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let right_keys = join
+        .right_keys
+        .iter()
+        .map(|e| planner.create_expr(e, right.schema()))
+        .collect::<Result<Vec<_>, _>>()?;
+    // Both exchanges use the same DataFusion hash implementation and partition count.
+    // Spark's partition IDs and hash algorithm never cross this boundary.
+    let left = Arc::new(RepartitionExec::try_new(
+        left,
+        Partitioning::Hash(left_keys.clone(), join.partitions as usize),
+    )?);
+    let right = Arc::new(RepartitionExec::try_new(
+        right,
+        Partitioning::Hash(right_keys.clone(), join.partitions as usize),
+    )?);
+    let on = left_keys.into_iter().zip(right_keys).collect();
+    let hash = HashJoinExec::try_new(
+        left,
+        right,
+        on,
+        None,
+        &kind,
+        None,
+        PartitionMode::Partitioned,
+        NullEquality::NullEqualsNothing,
+        false,
+    )?;
+    // swap_inputs restores Spark's logical output order with a projection when needed.
+    let plan: Arc<dyn ExecutionPlan> = if join.build_right {
+        hash.swap_inputs(PartitionMode::Partitioned)?
+    } else {
+        Arc::new(hash)
+    };
+    let result = join
+        .result
+        .iter()
+        .enumerate()
+        .map(|(i, e)| {
+            planner
+                .create_expr(e, plan.schema())
+                .map(|expr| (expr, format!("col_{i}")))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Arc::new(ProjectionExec::try_new(result, plan)?))
 }
 
 fn build(
@@ -396,6 +523,123 @@ mod tests {
         drop(plan);
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             while pool.reserved() != 0 || context.runtime_env().disk_manager.used_disk_space() != 0
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+    #[tokio::test]
+    async fn partitioned_join_one_worker_releases_both_exchanges() {
+        join_case(false, false).await;
+    }
+
+    #[tokio::test]
+    async fn partitioned_join_early_drop_releases_both_exchanges() {
+        join_case(true, false).await;
+    }
+
+    #[tokio::test]
+    async fn partitioned_join_resource_error_releases_both_exchanges() {
+        join_case(false, true).await;
+    }
+
+    async fn join_case(early: bool, fail: bool) {
+        let context = query_context(
+            128,
+            7,
+            false,
+            &QuerySettings {
+                aggregate: &[],
+                memory_limit: if fail { 1 } else { 32 * 1024 * 1024 },
+                spill_enabled: true,
+            },
+        )
+        .unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("key", DataType::Int64, false)]));
+        let batches: Vec<_> = (0..64)
+            .map(|chunk| {
+                RecordBatch::try_new(
+                    Arc::clone(&schema),
+                    vec![Arc::new(Int64Array::from_iter_values(
+                        (0..1024).map(|i| chunk * 1024 + i),
+                    ))],
+                )
+                .unwrap()
+            })
+            .collect();
+        let left = MemorySourceConfig::try_new_exec(
+            std::slice::from_ref(&batches),
+            Arc::clone(&schema),
+            None,
+        )
+        .unwrap();
+        let right = MemorySourceConfig::try_new_exec(&[batches], schema, None).unwrap();
+        let plan = join_plan(
+            left,
+            right,
+            &LocalJoin {
+                left_keys: vec![bound(0)],
+                right_keys: vec![bound(0)],
+                partitions: 7,
+                build_right: true,
+                result: vec![bound(0), bound(1)],
+                ..Default::default()
+            },
+            &PhysicalPlanner::new(Arc::clone(&context), 0),
+        )
+        .unwrap();
+        let output = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            if early {
+                use futures::StreamExt;
+                let mut stream = datafusion::physical_plan::execute_stream(
+                    Arc::clone(&plan),
+                    context.task_ctx(),
+                )?;
+                let batch = stream.next().await.unwrap()?;
+                drop(stream);
+                Ok(vec![batch])
+            } else {
+                collect(Arc::clone(&plan), context.task_ctx()).await
+            }
+        })
+        .await
+        .unwrap();
+        if fail {
+            let error = output.unwrap_err().to_string();
+            assert!(
+                error.contains("Resources exhausted") || error.contains("memory"),
+                "{error}"
+            );
+        } else {
+            let mut keys = std::collections::BTreeSet::new();
+            for batch in output.unwrap() {
+                let left = batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .unwrap();
+                let right = batch
+                    .column(1)
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .unwrap();
+                for row in 0..batch.num_rows() {
+                    assert_eq!(left.value(row), right.value(row));
+                    assert!(keys.insert(left.value(row)));
+                }
+            }
+            if early {
+                assert!(!keys.is_empty() && keys.len() < 65536);
+            } else {
+                assert_eq!(keys.len(), 65536);
+            }
+        }
+        drop(plan);
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while context.runtime_env().memory_pool.reserved() != 0
+                || context.runtime_env().disk_manager.used_disk_space() != 0
             {
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }

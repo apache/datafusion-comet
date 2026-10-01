@@ -208,3 +208,35 @@ pub extern "system" fn Java_org_apache_comet_local_NativeLocal_createParquet(
         register(QueryHandle::start(query, &get_runtime())?, columns as usize)
     })
 }
+
+#[no_mangle]
+pub extern "system" fn Java_org_apache_comet_local_NativeLocal_createJoin(
+    e: EnvUnowned,
+    _: JObject,
+    plan: JByteArray,
+    batch_size: jint,
+    columns: jint,
+    row_filter_pushdown: jboolean,
+    memory_limit: jlong,
+    spill_enabled: jboolean,
+) -> jlong {
+    try_unwrap_or_throw(&e, |env| {
+        if memory_limit <= 0 || !(1..=65536).contains(&batch_size) || !(1..=1024).contains(&columns)
+        {
+            return Err(CometError::Internal("Invalid local join parameters".into()));
+        }
+        let bytes = env.convert_byte_array(plan)?;
+        let query = planner::join_query(
+            &bytes,
+            batch_size as usize,
+            columns as usize,
+            row_filter_pushdown,
+            planner::QuerySettings {
+                aggregate: &[],
+                memory_limit: memory_limit as usize,
+                spill_enabled,
+            },
+        )?;
+        register(QueryHandle::start(query, &get_runtime())?, columns as usize)
+    })
+}

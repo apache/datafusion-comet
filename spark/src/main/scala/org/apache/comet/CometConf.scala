@@ -239,7 +239,8 @@ object CometConf extends ShimCometConf {
     .doc(
       "Enable experimental whole-query local execution. " +
         "Requires Spark 4.1 in local mode with AQE disabled. Supports range projections and " +
-        "admitted local Parquet/filter/project/aggregate queries; unsupported queries fall back.")
+        "admitted local Parquet/filter/project/aggregate/hash-join queries; " +
+        "unsupported queries fall back.")
     .booleanConf
     .createWithDefault(false)
 

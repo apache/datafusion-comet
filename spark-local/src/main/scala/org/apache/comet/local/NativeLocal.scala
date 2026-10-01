@@ -41,6 +41,13 @@ private[local] class NativeLocal extends NativeBase {
       aggregate: Array[Byte],
       memoryLimit: Long,
       spillEnabled: Boolean): Long
+  @native def createJoin(
+      plan: Array[Byte],
+      batchSize: Int,
+      columns: Int,
+      rowFilterPushdown: Boolean,
+      memoryLimit: Long,
+      spillEnabled: Boolean): Long
   @native def nextBatch(id: Long, arrays: Array[Long], schemas: Array[Long]): Long
   @native def close(id: Long): Unit
   @native def activeQueries(): Long

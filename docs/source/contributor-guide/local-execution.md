@@ -19,8 +19,8 @@ under the License.
 
 # Local execution development plan
 
-Status: stage 4a checkpoint, experimental local range and Parquet execution with
-COUNT/MIN/MAX aggregation across native exchanges. Local execution and bridge
+Status: stage 4b checkpoint, experimental local range and Parquet execution with
+COUNT/MIN/MAX aggregation and partitioned hash joins across native exchanges. Local execution and bridge
 tests pass; Spark SQL validation remains deferred at the user's request.
 `spark.comet.exec.local.enabled=true` opts in through the existing Comet extension.
 The option defaults to false. Unsupported whole queries use ordinary Comet/Spark planning.
@@ -339,8 +339,52 @@ formatting and strict Clippy passed. Spark 3.5 main/test compilation with strict
 warnings also passed; local mode remains disabled on that profile. Spark SQL
 remains deliberately unrun.
 
-Stop here before checkpoint 4b (partitioned joins). The remaining stage-4 ordering,
-join and broader semantic gates have not passed.
+This checkpoint stopped before 4b (partitioned joins). Ordering and broader
+semantic gates remained outstanding.
+
+#### 4b. Partitioned hash join checkpoint
+
+`LocalJoinPlanner` admits a single `ShuffledHashJoinExec` over two independently
+admitted Parquet/filter/project inputs, optionally followed by a projection.
+Each child must have a hash exchange matching every join key in the same order,
+with equal partition counts from 1 to 1,024. Keys must be same-type, supported
+non-floating-point attribute references. Both input file groups and expression
+metadata travel in `LocalJoin`; scans reuse the existing local Parquet builder.
+Both sides share one query context, memory pool, runtime environment and result
+stream, while each scan retains its own SQL text pool.
+
+Two DataFusion hash repartitions feed a `PartitionMode::Partitioned` hash join.
+Spark hash buckets, shuffle files and task scheduling are removed from this query.
+Build-side selection is retained; DataFusion's input-swap projection restores the
+logical output order. Inner, left/right/full outer, left semi and left anti joins
+are supported with ordinary equality (null keys do not match). Output ordering is
+empty, and Spark sees one result partition.
+
+This first join checkpoint requires Spark to select shuffled hash join, for
+example with a `SHUFFLE_HASH` hint. It does not convert sort-merge or broadcast
+joins. Residual join conditions, computed or floating-point keys, nested joins,
+aggregates around joins, extra exchanges and range inputs retain whole-query
+fallback. Native hash-join and projection enablement flags are honored.
+
+The same reservation budget covers both inputs, both repartitions and the join.
+DataFusion 55.1's hash join build does not spill: enabling local spill does not
+make an oversized hash table executable. A failed reservation ends the query,
+with no mid-execution fallback. Partitioned/spilling join algorithms are deferred;
+there is no claim that this checkpoint handles arbitrary joins under low memory.
+
+Verification includes Spark result multiset comparisons for both build sides,
+outer/semi/anti joins, duplicate/null keys, empty inputs, composite keys, result
+projection, repeated actions, early limits, fallback and reservation failure.
+Native tests run seven join partitions on one Tokio worker, checking 65,536
+matching rows and reservation/disk cleanup on completion, early drop and error.
+Checkpoint (2026-09-30): 66 JVM tests passed (33 local execution, 21 iterator
+lifecycle and 12 NativeUtil), together with 18 native lifecycle tests and six
+native planner tests (three aggregation/spill and three join tests). Rust
+formatting, strict Clippy and Spark 3.5 main/test compilation with strict warnings
+passed. Spark SQL validation remains deferred at the user's request.
+
+Stop at this checkpoint before stage 4c (sort and limit). General join coverage,
+ordering contracts and the broader Spark SQL gate remain outstanding.
 
 ### 5. Hardening and performance
 

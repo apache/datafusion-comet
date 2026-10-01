@@ -44,6 +44,15 @@ private[local] case class LocalParquetSpec(
     spillEnabled: Boolean)
     extends LocalQuerySpec
 
+private[local] case class LocalJoinSpec(
+    plan: Array[Byte],
+    batchSize: Int,
+    columns: Int,
+    rowFilterPushdown: Boolean,
+    memoryLimit: Long,
+    spillEnabled: Boolean)
+    extends LocalQuerySpec
+
 private[local] case class LocalRangeSpec(
     start: Long,
     end: Long,
@@ -65,7 +74,7 @@ case class CometLocalExec private[local] (
     spec match {
       case range: LocalRangeSpec =>
         Seq(SortOrder(output.head, if (range.step > 0) Ascending else Descending))
-      case _: LocalParquetSpec => Nil
+      case _: LocalParquetSpec | _: LocalJoinSpec => Nil
     }
   override lazy val metrics = Map(
     "numOutputRows" -> SQLMetrics.createMetric(sparkContext, "number of output rows"))

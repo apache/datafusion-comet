@@ -65,7 +65,7 @@ none of the driver plugin's steps run for them.
 
 The experimental `spark.comet.exec.local.enabled` option invokes whole-query
 admission before ordinary Comet conversion in `CometRule`. Admitted Spark 4.1
-local-mode range and admitted Parquet/filter/project/aggregate queries run through
+local-mode range and admitted Parquet/filter/project/aggregate/hash-join queries run through
 `spark-local` and `native/local`; unsupported
 queries retain the existing conversion path. See the [local execution development
 plan](local-execution.md) for admission limits, ownership and validation status.

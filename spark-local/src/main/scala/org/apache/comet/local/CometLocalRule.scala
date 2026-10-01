@@ -63,8 +63,9 @@ private[comet] case class CometLocalRule(session: SparkSession) extends Rule[Spa
         (limit.child, (p: SparkPlan) => limit.copy(child = p))
       case other => (other, (p: SparkPlan) => p)
     }
-    LocalAggregatePlanner
+    LocalJoinPlanner
       .plan(body, session)
+      .orElse(LocalAggregatePlanner.plan(body, session))
       .orElse(LocalParquetPlanner.plan(body, session))
       .foreach { spec =>
         return wrap(CometLocalExec(body.output, spec))
@@ -96,7 +97,7 @@ private[comet] case class CometLocalRule(session: SparkSession) extends Rule[Spa
         withInfo(
           plan,
           "Local execution supports range projections or admitted " +
-            "local Parquet/filter/project queries " +
+            "local Parquet/filter/project/aggregate/hash-join queries " +
             "(up to 1024 partitions/columns and batch size 65536)")
     }
   }

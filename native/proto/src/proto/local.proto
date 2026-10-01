@@ -20,6 +20,7 @@
 syntax = "proto3";
 package spark.local;
 import "expr.proto";
+import "operator.proto";
 option java_package = "org.apache.comet.serde";
 option java_outer_classname = "LocalOuterClass";
 
@@ -30,4 +31,18 @@ message LocalAggregate {
   repeated spark.spark_expression.AggExpr aggregates = 2;
   repeated spark.spark_expression.Expr result = 3;
   uint32 partitions = 4;
+}
+
+// Two independent Parquet inputs, repartitioned together within one query runtime.
+message LocalJoin {
+  spark.spark_operator.Operator left = 1;
+  spark.spark_operator.Operator right = 2;
+  repeated spark.spark_operator.SparkFilePartition left_files = 3;
+  repeated spark.spark_operator.SparkFilePartition right_files = 4;
+  repeated spark.spark_expression.Expr left_keys = 5;
+  repeated spark.spark_expression.Expr right_keys = 6;
+  spark.spark_operator.JoinType join_type = 7;
+  uint32 partitions = 8;
+  bool build_right = 9;
+  repeated spark.spark_expression.Expr result = 10;
 }

@@ -602,4 +602,124 @@ class CometLocalExecutionSuite
     }
   }
 
+  private def joinQuery(
+      input: DataFrame,
+      kind: String,
+      buildRight: Boolean,
+      emptyLeft: Boolean = false,
+      emptyRight: Boolean = false): DataFrame = {
+    val left = input
+      .filter(if (emptyLeft) "id < 0" else "id < 80")
+      .selectExpr("id AS l", "CASE WHEN id % 3 = 0 THEN NULL ELSE k END AS lk", "amount")
+      .alias("a")
+    val right = input
+      .filter(if (emptyRight) "id < 0" else "id >= 60 AND id < 150")
+      .selectExpr("id AS r", "CASE WHEN id % 5 = 0 THEN NULL ELSE k END AS rk", "text")
+      .alias("b")
+    val l = if (buildRight) left else left.hint("SHUFFLE_HASH")
+    val r = if (buildRight) right.hint("SHUFFLE_HASH") else right
+    l.join(r, l("lk") === r("rk"), kind)
+  }
+
+  test(
+    "local partitioned joins preserve duplicate null and unmatched rows for both build sides") {
+    withParquetData { path =>
+      withConf("spark.sql.autoBroadcastJoinThreshold", "-1") {
+        withConf("spark.sql.shuffle.partitions", "7") {
+          for (kind <- Seq("inner", "left_outer", "right_outer", "full_outer");
+            buildRight <- Seq(false, true)) {
+            val query = compareParquet(path)(joinQuery(_, kind, buildRight))
+            val spec = localNodes(query).head.spec.asInstanceOf[LocalJoinSpec]
+            val proto = org.apache.comet.serde.LocalOuterClass.LocalJoin.parseFrom(spec.plan)
+            assert(proto.getPartitions == 7)
+            assert(proto.getBuildRight == buildRight)
+            assert(proto.getLeftFilesCount > 1 && proto.getRightFilesCount > 1)
+            assert(query.take(1).length == 1)
+          }
+        }
+      }
+    }
+  }
+
+  test("local semi and anti joins preserve left output and empty input semantics") {
+    withParquetData { path =>
+      withConf("spark.sql.autoBroadcastJoinThreshold", "-1") {
+        withConf("spark.sql.shuffle.partitions", "3") {
+          for (kind <- Seq(
+              "left_semi",
+              "left_anti",
+              "inner",
+              "left_outer",
+              "right_outer",
+              "full_outer");
+            empty <- Seq((false, true), (true, false), (true, true))) {
+            compareParquet(path)(joinQuery(_, kind, true, empty._1, empty._2))
+          }
+          for (kind <- Seq("left_semi", "left_anti")) {
+            compareParquet(path)(joinQuery(_, kind, true))
+          }
+        }
+      }
+    }
+  }
+
+  test("local join supports composite keys result projection and repeated execution") {
+    withParquetData { path =>
+      withConf("spark.sql.shuffle.partitions", "7") {
+        val query = compareParquet(path) { input =>
+          val left = input.filter("id < 100").alias("a")
+          val right = input.filter("id >= 50").alias("b").hint("SHUFFLE_HASH")
+          left
+            .join(right, left("k") === right("k") && left("amount") === right("amount"))
+            .selectExpr("a.id + b.id AS total", "a.amount", "b.text")
+        }
+        def rows = query.collect().toSeq.groupBy(identity).map { case (row, copies) =>
+          row -> copies.size
+        }
+        val first = rows
+        assert(first.nonEmpty)
+        assert(rows == first)
+      }
+    }
+  }
+
+  test("local join rejects broadcast residual conditions float keys and nested joins") {
+    withParquetData { path =>
+      val input = spark.read.parquet(path)
+      val left = input.filter("id < 80").alias("a")
+      val right = input.filter("id >= 60").alias("b")
+      val hash = right.hint("SHUFFLE_HASH")
+      val floats = input.selectExpr("CAST(k AS DOUBLE) AS key", "id").alias("f")
+      val queries = Seq(
+        left.join(right.hint("BROADCAST"), org.apache.spark.sql.functions.expr("a.k = b.k")),
+        left.join(hash, org.apache.spark.sql.functions.expr("a.k = b.k AND a.id < b.id")),
+        floats.join(floats.alias("g").hint("SHUFFLE_HASH"), Seq("key")),
+        joinQuery(input, "inner", true)
+          .join(right.hint("SHUFFLE_HASH"), org.apache.spark.sql.functions.expr("l = b.id")))
+      queries.foreach { query =>
+        assert(localNodes(query).isEmpty, query.queryExecution.executedPlan.toString)
+        query.collect()
+      }
+      withConf(CometConf.COMET_EXEC_HASH_JOIN_ENABLED.key, "false") {
+        assert(localNodes(joinQuery(input, "inner", true)).isEmpty)
+      }
+    }
+  }
+
+  test("local join reservation failure releases both inputs and permits a subsequent query") {
+    withParquetData { path =>
+      withConf("spark.sql.shuffle.partitions", "7") {
+        withConf(CometConf.COMET_EXEC_LOCAL_MEMORY_LIMIT.key, "1b") {
+          withConf(CometConf.COMET_EXEC_LOCAL_SPILL_ENABLED.key, "false") {
+            val query = joinQuery(spark.read.parquet(path), "inner", true)
+            assert(localNodes(query).nonEmpty)
+            intercept[Exception] { query.collect() }
+            assert(new NativeLocal().activeQueries() == 0)
+          }
+        }
+        compareParquet(path)(joinQuery(_, "inner", true))
+      }
+    }
+  }
+
 }

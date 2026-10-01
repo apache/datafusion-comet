@@ -50,6 +50,14 @@ private[local] class LocalQueryIterator(spec: LocalQuerySpec, context: TaskConte
           range.partitions,
           range.batchSize,
           range.columns)
+      case join: LocalJoinSpec =>
+        native.createJoin(
+          join.plan,
+          join.batchSize,
+          join.columns,
+          join.rowFilterPushdown,
+          join.memoryLimit,
+          join.spillEnabled)
       case scan: LocalParquetSpec =>
         native.createParquet(
           scan.plan,
