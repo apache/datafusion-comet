@@ -19,9 +19,9 @@ under the License.
 
 # Local execution development plan
 
-Status: experimental local range and Parquet execution. Stage 3 adds admitted
-Parquet/filter/project queries. Local execution and bridge tests pass; Spark SQL
-validation remains deferred at the user's request.
+Status: stage 4a checkpoint, experimental local range and Parquet execution with
+COUNT/MIN/MAX aggregation across native exchanges. Local execution and bridge
+tests pass; Spark SQL validation remains deferred at the user's request.
 `spark.comet.exec.local.enabled=true` opts in through the existing Comet extension.
 The option defaults to false. Unsupported whole queries use ordinary Comet/Spark planning.
 The development baseline is local `upstream/main` at `9c7fcc5aa`.
@@ -261,8 +261,8 @@ Stage-3 admission and reuse:
 
 The admission caps remain 1,024 file groups, 1,024 output columns and batch size
 65,536. These bound some execution overhead, not total memory. The driver currently
-captures all admitted file metadata in the physical plan. A query memory budget,
-spilling policy and bounded driver result streaming are still deferred.
+captures all admitted file metadata in the physical plan. A query memory budget and
+spilling policy were deferred to stage 4a; bounded driver result streaming remains deferred.
 
 Checkpoint (2026-09-30): 55 Spark 4.1 JVM tests passed: 22 local execution tests,
 21 iterator lifecycle tests and 12 `NativeUtil` tests. The local tests compare
@@ -276,7 +276,7 @@ All 18 native lifecycle/repartition tests, strict Rust Clippy, formatting and CI
 configuration checks also passed. Spark 3.5 main/test compilation with
 `-Pstrict-warnings` passed; local execution stays disabled on that profile.
 Spark SQL remains deliberately unrun. No scan,
-join or aggregate performance claim is made, and stage 4 has not started.
+join or aggregate performance claim was made at this checkpoint.
 
 ### 4. Operators across exchange boundaries
 
@@ -295,6 +295,52 @@ Gate: cross-partition joins and groups, null/duplicate keys, empty join sides,
 global ordering, limit cleanup, one worker, skew, constrained memory and spilling.
 Compare results with Spark and inspect plans for eliminated Spark shuffle stages.
 Obtain the Spark SQL gate before expanding admission further.
+
+#### 4a. Hash aggregation checkpoint
+
+Implemented grouped and global COUNT, MIN and MAX over admitted Parquet input.
+`LocalAggregatePlanner` recognizes a matching final/partial Spark hash aggregation
+pair and its optional exchange, including the complete grouping expressions rather
+than just partition counts. It replaces the whole tree with one local query.
+`spark-local` owns admission; `native/core/src/local/planner.rs` reuses Comet's
+aggregate expression builder. A separate `local.proto` describes complete
+aggregation on raw input, without importing Spark's partial buffer protocol.
+
+Grouped multi-partition input goes through one shared DataFusion hash
+`RepartitionExec` and `AggregateMode::SinglePartitioned`. Global aggregation and
+single-partition groups use native coalescing and `AggregateMode::Single`.
+Result expressions run as a native projection. Hash buckets remain internal to
+DataFusion; Spark sees one result partition and no shuffle exchange. This version
+repartitions raw input without a partial-combine optimization or performance claim.
+
+The Parquet path now owns a `FairSpillPool` per query. The internal setting
+`spark.comet.exec.local.memoryLimit` defaults to 256 MiB and limits DataFusion
+reservations, not process RSS, scan buffers, driver collection or the sum of
+concurrent queries. It does not borrow a Spark task memory consumer.
+`spark.comet.exec.local.spill.enabled` defaults to true and permits query-owned
+spill files in the OS temporary directory. There is no local-mode disk quota yet.
+The separate range adapter is unchanged. Disabling spill permits resource errors
+under constrained memory; execution errors never trigger fallback after output.
+
+Admission still rejects DISTINCT, SUM/AVG, floating-point grouping keys or MIN/MAX
+outputs, extra/nested exchanges, range aggregation, HAVING, sort and joins. Existing
+aggregate, filter and projection enablement flags are honored. Unsupported whole
+queries retain ordinary Comet/Spark planning.
+
+Checkpoint (2026-09-30): 61 Spark 4.1 JVM tests passed (28 local execution,
+21 iterator lifecycle, 12 NativeUtil). Coverage includes multiple input files and
+seven hash partitions, grouped/global empty input, null and duplicate keys, skew,
+aggregate filters, repeated actions, early limits, whole-query fallback and
+resource-error cleanup followed by a successful query. Three native tests force
+spill with 204,800 groups, including seven repartition outputs on one Tokio worker
+and early stream drop. Results are checked and reservations and spill disk usage
+return to zero after teardown. All 18 native lifecycle/repartition tests, Rust
+formatting and strict Clippy passed. Spark 3.5 main/test compilation with strict
+warnings also passed; local mode remains disabled on that profile. Spark SQL
+remains deliberately unrun.
+
+Stop here before checkpoint 4b (partitioned joins). The remaining stage-4 ordering,
+join and broader semantic gates have not passed.
 
 ### 5. Hardening and performance
 

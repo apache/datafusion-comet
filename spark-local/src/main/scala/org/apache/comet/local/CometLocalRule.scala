@@ -63,9 +63,12 @@ private[comet] case class CometLocalRule(session: SparkSession) extends Rule[Spa
         (limit.child, (p: SparkPlan) => limit.copy(child = p))
       case other => (other, (p: SparkPlan) => p)
     }
-    LocalParquetPlanner.plan(body, session).foreach { spec =>
-      return wrap(CometLocalExec(body.output, spec))
-    }
+    LocalAggregatePlanner
+      .plan(body, session)
+      .orElse(LocalParquetPlanner.plan(body, session))
+      .foreach { spec =>
+        return wrap(CometLocalExec(body.output, spec))
+      }
     def source(p: SparkPlan): Option[RangeExec] = p match {
       case range: RangeExec => Some(range)
       case project: ProjectExec

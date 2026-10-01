@@ -447,7 +447,10 @@ class CometLocalExecutionSuite
             spec.filePartitions,
             spec.batchSize,
             spec.columns,
-            spec.rowFilterPushdown)
+            spec.rowFilterPushdown,
+            spec.aggregate,
+            spec.memoryLimit,
+            spec.spillEnabled)
         }
         assert(native.activeQueries() == 2)
         native.close(ids.head)
@@ -502,6 +505,101 @@ class CometLocalExecutionSuite
           localNodes(query).head.spec.asInstanceOf[LocalParquetSpec].filePartitions.length > 1)
       }
     } finally org.apache.commons.io.FileUtils.deleteDirectory(directory)
+  }
+
+  test("local grouped aggregation replaces Spark shuffle with shared native exchange") {
+    withParquetData { path =>
+      withConf("spark.sql.shuffle.partitions", "7") {
+        val query = compareParquet(path)(
+          _.groupBy("k")
+            .agg(
+              org.apache.spark.sql.functions.count("text").as("n"),
+              org.apache.spark.sql.functions.min("amount").as("lo"),
+              org.apache.spark.sql.functions.max("id").as("hi")))
+        val spec = localNodes(query).head.spec.asInstanceOf[LocalParquetSpec]
+        val aggregate =
+          org.apache.comet.serde.LocalOuterClass.LocalAggregate.parseFrom(spec.aggregate)
+        assert(aggregate.getPartitions == 7)
+        assert(spec.filePartitions.length > 1)
+        assert(query.collect().length == 7)
+        assert(query.take(1).length == 1)
+      }
+    }
+  }
+
+  test("local global aggregation and empty input retain Spark null and count semantics") {
+    withParquetData { path =>
+      compareParquet(path)(_.selectExpr("count(*) AS n"))
+      compareParquet(path)(_.selectExpr("count(text) + 1 AS n", "min(day)", "max(ts)"))
+      compareParquet(path)(_.filter("id < 0").selectExpr("count(*)", "min(amount)", "max(id)"))
+      compareParquet(path)(_.filter("id < 0").groupBy("k").count())
+    }
+  }
+
+  test("local aggregation handles null keys skew duplicate keys and aggregate filters") {
+    withParquetData { path =>
+      withConf("spark.sql.shuffle.partitions", "7") {
+        compareParquet(path) { df =>
+          df.selectExpr("CASE WHEN id % 3 = 0 THEN NULL ELSE 1 END AS key", "id", "text")
+            .groupBy("key")
+            .agg(
+              org.apache.spark.sql.functions.expr("count(text) FILTER (WHERE id > 50)"),
+              org.apache.spark.sql.functions.min("id"))
+        }
+      }
+    }
+  }
+
+  test("local aggregate admission rejects distinct sums float keys and nested exchanges") {
+    withParquetData { path =>
+      val input = spark.read.parquet(path)
+      for (query <- Seq(
+          input.selectExpr("count(DISTINCT k)"),
+          input.selectExpr("sum(id)"),
+          input.selectExpr("CAST(k AS DOUBLE) AS key").groupBy("key").count(),
+          input.repartition(3).groupBy("k").count())) {
+        assert(localNodes(query).isEmpty, query.queryExecution.executedPlan.toString)
+        query.collect()
+      }
+    }
+  }
+
+  test("local aggregate reservation failure closes the whole query without fallback") {
+    withParquetData { path =>
+      withConf(CometConf.COMET_EXEC_LOCAL_MEMORY_LIMIT.key, "1b") {
+        withConf(CometConf.COMET_EXEC_LOCAL_SPILL_ENABLED.key, "false") {
+          val query = spark.read.parquet(path).groupBy("id").count()
+          assert(localNodes(query).nonEmpty)
+          val spec = localNodes(query).head.spec.asInstanceOf[LocalParquetSpec]
+          assert(spec.memoryLimit == 1L && !spec.spillEnabled)
+          val failure = intercept[Exception] { query.collect() }
+          assert(
+            Iterator
+              .iterate[Throwable](failure)(_.getCause)
+              .takeWhile(_ != null)
+              .exists(e =>
+                Option(e.getMessage).exists(m =>
+                  m.contains("memory") || m.contains("Memory") || m.contains(
+                    "Resources exhausted"))))
+          assert(new NativeLocal().activeQueries() == 0)
+        }
+      }
+      compareParquet(path)(_.groupBy("k").count())
+    }
+  }
+
+  test("local admission respects native operator disablement") {
+    withParquetData { path =>
+      withConf(CometConf.COMET_EXEC_AGGREGATE_ENABLED.key, "false") {
+        assert(localNodes(spark.read.parquet(path).groupBy("k").count()).isEmpty)
+      }
+      withConf(CometConf.COMET_EXEC_FILTER_ENABLED.key, "false") {
+        assert(localNodes(spark.read.parquet(path).filter("id > 10")).isEmpty)
+      }
+      withConf(CometConf.COMET_EXEC_PROJECT_ENABLED.key, "false") {
+        assert(localNodes(spark.read.parquet(path).selectExpr("id + 1")).isEmpty)
+      }
+    }
   }
 
 }

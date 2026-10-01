@@ -15,28 +15,19 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Build script for generating codes from .proto files.
 
-use std::{fs, io::Result, path::Path};
 
-fn main() -> Result<()> {
-    println!("cargo:rerun-if-changed=src/proto/");
+syntax = "proto3";
+package spark.local;
+import "expr.proto";
+option java_package = "org.apache.comet.serde";
+option java_outer_classname = "LocalOuterClass";
 
-    let out_dir = "src/generated";
-    if !Path::new(out_dir).is_dir() {
-        fs::create_dir(out_dir)?;
-    }
-
-    prost_build::Config::new().out_dir(out_dir).compile_protos(
-        &[
-            "src/proto/expr.proto",
-            "src/proto/metric.proto",
-            "src/proto/partitioning.proto",
-            "src/proto/operator.proto",
-            "src/proto/config.proto",
-            "src/proto/local.proto",
-        ],
-        &["src/proto"],
-    )?;
-    Ok(())
+// Complete aggregation over raw local input. Never a Spark partial-buffer protocol.
+// Grouped inputs are repartitioned by the complete group key; global inputs are gathered.
+message LocalAggregate {
+  repeated spark.spark_expression.Expr grouping = 1;
+  repeated spark.spark_expression.AggExpr aggregates = 2;
+  repeated spark.spark_expression.Expr result = 3;
+  uint32 partitions = 4;
 }

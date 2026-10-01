@@ -47,7 +47,7 @@ private[local] object LocalParquetPlanner {
     case _ => false
   }
 
-  private def supportedExpression(e: Expression): Boolean =
+  private[local] def supportedExpression(e: Expression): Boolean =
     supportedType(e.dataType) && e.deterministic && (e match {
       case _: AttributeReference | _: Literal | _: Alias | _: Add | _: Subtract | _: Multiply |
           _: Divide | _: Remainder | _: Cast | _: EqualTo | _: EqualNullSafe | _: GreaterThan |
@@ -86,7 +86,7 @@ private[local] object LocalParquetPlanner {
     "IF",
     "CASEWHEN")
 
-  private def nativeOnly(message: Message): Boolean = {
+  private[local] def nativeOnly(message: Message): Boolean = {
     val accepted = message match {
       case expression: Expr => nativeExpressions.contains(expression.getExprStructCase.name())
       case _ => true
@@ -103,14 +103,20 @@ private[local] object LocalParquetPlanner {
   private def expression(e: Expression, child: SparkPlan): Option[Expr] =
     if (supportedExpression(e)) exprToProto(e, child.output).filter(nativeOnly) else None
 
-  def plan(root: SparkPlan, session: SparkSession): Option[LocalParquetSpec] = {
+  def plan(
+      root: SparkPlan,
+      session: SparkSession,
+      allowEmptyOutput: Boolean = false): Option[LocalParquetSpec] = {
     val batchSize = CometConf.COMET_BATCH_SIZE.get(root.conf)
-    if (batchSize < 1 || batchSize > 65536 || root.output.isEmpty || root.output.size > 1024) {
+    if (batchSize < 1 || batchSize > 65536 ||
+      (root.output.isEmpty && !allowEmptyOutput) || root.output.size > 1024) {
       return None
     }
     var scan: Option[CometScanExec] = None
     def convert(node: SparkPlan): Option[Operator] = node match {
-      case project: ProjectExec if project.projectList.nonEmpty =>
+      case project: ProjectExec
+          if project.projectList.nonEmpty &&
+            CometConf.COMET_EXEC_PROJECT_ENABLED.get(project.conf) =>
         val expressions = project.projectList.map(expression(_, project.child))
         if (!expressions.forall(_.isDefined)) { None }
         else {
@@ -124,7 +130,7 @@ private[local] object LocalParquetPlanner {
               .build()
           }
         }
-      case filter: FilterExec =>
+      case filter: FilterExec if CometConf.COMET_EXEC_FILTER_ENABLED.get(filter.conf) =>
         for {
           predicate <- expression(filter.condition, filter.child)
           child <- convert(filter.child)
@@ -179,7 +185,10 @@ private[local] object LocalParquetPlanner {
                 .toArray,
               batchSize,
               root.output.size,
-              CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.get(root.conf)))
+              CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.get(root.conf),
+              Array.emptyByteArray,
+              CometConf.COMET_EXEC_LOCAL_MEMORY_LIMIT.get(root.conf),
+              CometConf.COMET_EXEC_LOCAL_SPILL_ENABLED.get(root.conf)))
         }
       }
     }

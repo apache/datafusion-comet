@@ -56,7 +56,10 @@ private[local] class LocalQueryIterator(spec: LocalQuerySpec, context: TaskConte
           scan.filePartitions,
           scan.batchSize,
           scan.columns,
-          scan.rowFilterPushdown)
+          scan.rowFilterPushdown,
+          scan.aggregate,
+          scan.memoryLimit,
+          scan.spillEnabled)
     }
   } catch {
     case failure: Throwable =>

@@ -38,7 +38,10 @@ private[local] case class LocalParquetSpec(
     filePartitions: Array[Array[Byte]],
     batchSize: Int,
     columns: Int,
-    rowFilterPushdown: Boolean)
+    rowFilterPushdown: Boolean,
+    aggregate: Array[Byte],
+    memoryLimit: Long,
+    spillEnabled: Boolean)
     extends LocalQuerySpec
 
 private[local] case class LocalRangeSpec(

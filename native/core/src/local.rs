@@ -169,11 +169,18 @@ pub extern "system" fn Java_org_apache_comet_local_NativeLocal_createParquet(
     batch_size: jint,
     columns: jint,
     row_filter_pushdown: jboolean,
+    aggregate: JByteArray,
+    memory_limit: jlong,
+    spill_enabled: jboolean,
 ) -> jlong {
     try_unwrap_or_throw(&e, |env| {
         let bytes = env.convert_byte_array(plan)?;
         let count = partitions.len(env)?;
-        if count > 1024 || !(1..=65536).contains(&batch_size) || !(1..=1024).contains(&columns) {
+        if memory_limit <= 0
+            || count > 1024
+            || !(1..=65536).contains(&batch_size)
+            || !(1..=1024).contains(&columns)
+        {
             return Err(CometError::Internal(
                 "Invalid local Parquet parameters".into(),
             ));
@@ -185,12 +192,18 @@ pub extern "system" fn Java_org_apache_comet_local_NativeLocal_createParquet(
             groups.push(env.convert_byte_array(&array)?);
             env.delete_local_ref(array);
         }
+        let aggregate = env.convert_byte_array(aggregate)?;
         let query = planner::parquet_query(
             &bytes,
             &groups,
             batch_size as usize,
             columns as usize,
             row_filter_pushdown,
+            planner::QuerySettings {
+                aggregate: &aggregate,
+                memory_limit: memory_limit as usize,
+                spill_enabled,
+            },
         )?;
         register(QueryHandle::start(query, &get_runtime())?, columns as usize)
     })
