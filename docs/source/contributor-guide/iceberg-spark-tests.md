@@ -37,8 +37,7 @@ Here is an overview of the changes that the diffs make to Iceberg:
   commit, and row-level-operation tests. See [#5259]
 - Enable Comet's native (iceberg-rust) Parquet writer (`spark.comet.write.iceberg.enabled`) in the same sessions.
   The native writer is experimental and off by default for users, so this is where it runs against Iceberg's
-  write, commit, and row-level-operation tests. The diffs set it through its previous name,
-  `spark.comet.iceberg.write.enabled`, which remains a deprecated alias.
+  write, commit, and row-level-operation tests.
 - Enable `spark.comet.exec.localTableScan.enabled` in the same sessions. `CometIcebergNativeWrite` sets
   `requiresNativeChildren`, so without this flag a write fed by an inline `VALUES` list keeps Spark's row-based
   `LocalTableScanExec`, the conversion is declined, and the write silently runs on the JVM writer. Many Iceberg

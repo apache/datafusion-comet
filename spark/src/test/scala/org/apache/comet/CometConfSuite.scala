@@ -166,20 +166,6 @@ class CometConfSuite extends AnyFunSuite {
     }
   }
 
-  test("COMET_NATIVE_PARQUET_WRITE_ENABLED reads the deprecated parquet.write.enabled key") {
-    val conf = new SQLConf
-    conf.setConfString("spark.comet.parquet.write.enabled", "true")
-
-    assert(CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.get(conf))
-  }
-
-  test("COMET_ICEBERG_NATIVE_WRITE_ENABLED reads the deprecated iceberg.write.enabled key") {
-    val conf = new SQLConf
-    conf.setConfString("spark.comet.iceberg.write.enabled", "true")
-
-    assert(CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.get(conf))
-  }
-
   test("remote shuffle frame and admission limits have bounded defaults") {
     val conf = new SQLConf
 
