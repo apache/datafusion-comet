@@ -1,6 +1,0 @@
-Initial diagnostic: 20 measured + 2 warmup iterations per case; five cases.
-Execution samples: 197; with local planner/rule frame: 3.
-Main-thread recorded ThreadPark seconds, inclusive, overlapping (do not add):
-org/apache/spark/SparkContext.runJob: 2.873701668
-org/apache/spark/sql/execution/datasources/parquet/ParquetUtils$.inferSchema: 1.575252000
-Unprofiled comparisons are stored separately.

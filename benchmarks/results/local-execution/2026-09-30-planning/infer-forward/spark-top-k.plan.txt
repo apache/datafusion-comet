@@ -1,4 +1,0 @@
-TakeOrderedAndProject(limit=1000, orderBy=[rank#222L ASC NULLS FIRST,id#218L ASC NULLS FIRST], output=[id#218L,rank#222L])
-+- *(1) Project [id#218L, ((id#218L * 37) % 1000003) AS rank#222L]
-   +- *(1) ColumnarToRow
-      +- FileScan parquet [id#218L] Batched: true, DataFilters: [], Format: Parquet, Location: InMemoryFileIndex(1 paths)[file:/private/tmp/comet-local-stage5b-data/fact], PartitionFilters: [], PushedFilters: [], ReadSchema: struct<id:bigint>

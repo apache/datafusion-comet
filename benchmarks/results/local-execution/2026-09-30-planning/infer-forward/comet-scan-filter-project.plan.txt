@@ -1,4 +1,0 @@
-*(1) CometColumnarToRow
-+- CometProject [value#159L, amount#156, text#157], [(id#154L + 1) AS value#159L, amount#156, text#157]
-   +- CometFilter [id#154L, amount#156, text#157], (isnotnull(id#154L) AND ((id#154L % 100) = 0))
-      +- CometNativeScan parquet [id#154L,amount#156,text#157] Batched: true, DataFilters: [isnotnull(id#154L), ((id#154L % 100) = 0)], Format: Parquet, Location: InMemoryFileIndex(1 paths)[file:/private/tmp/comet-local-stage5b-data/fact], PartitionFilters: [], PushedFilters: [IsNotNull(id)], ReadSchema: struct<id:bigint,amount:decimal(18,2),text:string>

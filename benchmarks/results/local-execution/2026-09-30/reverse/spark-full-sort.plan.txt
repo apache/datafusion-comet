@@ -1,5 +1,0 @@
-*(2) Sort [rank#233L ASC NULLS FIRST, id#229L ASC NULLS FIRST], true, 0
-+- Exchange rangepartitioning(rank#233L ASC NULLS FIRST, id#229L ASC NULLS FIRST, 8), ENSURE_REQUIREMENTS, [plan_id=477]
-   +- *(1) Project [id#229L, ((id#229L * 37) % 1000003) AS rank#233L]
-      +- *(1) ColumnarToRow
-         +- FileScan parquet [id#229L] Batched: true, DataFilters: [], Format: Parquet, Location: InMemoryFileIndex(1 paths)[file:/private/tmp/comet-local-stage5b-data/fact], PartitionFilters: [], PushedFilters: [], ReadSchema: struct<id:bigint>

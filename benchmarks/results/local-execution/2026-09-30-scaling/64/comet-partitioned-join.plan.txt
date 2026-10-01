@@ -1,9 +1,0 @@
-*(1) CometColumnarToRow
-+- CometProject [id#197L, value#202L], [id#197L, value#202L]
-   +- CometHashJoin [id#197L], [rid#201L], Inner, BuildRight
-      :- CometExchange hashpartitioning(id#197L, 8), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=582]
-      :  +- CometFilter [id#197L], isnotnull(id#197L)
-      :     +- CometNativeScan parquet [id#197L] Batched: true, DataFilters: [isnotnull(id#197L)], Format: Parquet, Location: InMemoryFileIndex(1 paths)[file:/private/tmp/comet-local-stage5d-data/fact], PartitionFilters: [], PushedFilters: [IsNotNull(id)], ReadSchema: struct<id:bigint>
-      +- CometExchange hashpartitioning(rid#201L, 8), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=584]
-         +- CometFilter [rid#201L, value#202L], isnotnull(rid#201L)
-            +- CometNativeScan parquet [rid#201L,value#202L] Batched: true, DataFilters: [isnotnull(rid#201L)], Format: Parquet, Location: InMemoryFileIndex(1 paths)[file:/private/tmp/comet-local-stage5d-data/dimension], PartitionFilters: [], PushedFilters: [IsNotNull(rid)], ReadSchema: struct<rid:bigint,value:bigint>
