@@ -191,10 +191,11 @@ class CometInMemoryCacheSuite extends CometTestBase {
   // https://github.com/apache/spark/blob/v4.1.2/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala#L2780-L2832
   test("AQE SPARK-37742: use valid Comet cache statistics for join selection") {
     withAQECache {
-      // Comet reports compressed Arrow bytes, so use a threshold below the compressed
-      // large cache as well as below its logical estimate. The single-row side still fits.
+      // Spark's own threshold. The large cache has to stay above it once materialized: its 60k
+      // 20-byte keys are about 1.4 MB decoded but compress to a small fraction of that, so a cache
+      // that reported its compressed size would be broadcast by the third join.
       withSQLConf(
-        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "1024",
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "1048584",
         SQLConf.ADAPTIVE_OPTIMIZER_EXCLUDED_RULES.key ->
           "org.apache.spark.sql.execution.adaptive.AQEPropagateEmptyRelation") {
         withTempView("cache_large", "cache_other", "cache_small") {
@@ -235,7 +236,7 @@ class CometInMemoryCacheSuite extends CometTestBase {
           val stats = relation.computeStats()
           assert(stats.rowCount.contains(BigInt(60000)))
           assert(stats.sizeInBytes == batches.map(_.sizeInBytes).sum)
-          assert(stats.sizeInBytes > 1024L)
+          assert(stats.sizeInBytes > 1048584L)
         }
       }
     }
@@ -2036,9 +2037,6 @@ class CometInMemoryCacheSuite extends CometTestBase {
         assert(
           CometCachedBatchHelper.chunkCount(batch) > 1,
           "a payload larger than the chunk size must be stored in more than one chunk")
-        assert(
-          CometCachedBatchHelper.payloadSize(batch) == batch.sizeInBytes,
-          "sizeInBytes must report the whole payload across its chunks")
       }
 
       projections.zip(expected).foreach { case (cols, rows) =>
@@ -2066,30 +2064,74 @@ class CometInMemoryCacheSuite extends CometTestBase {
     }
   }
 
-  test("Comet in-memory cache records per-column sizes in its statistics") {
-    // SimpleMetricsCachedBatch reserves a fifth field per column for its size. A column owns a
-    // known run of buffers in the payload, so the real stored size is known and must be reported
-    // rather than left at zero. Run over the nested relation as well: a nested column's size is
+  test("Comet in-memory cache records per-column decoded sizes in its statistics") {
+    // Each column's size field must be its decoded size (see ArrowCachedBatchSerializer.statsRow),
+    // so each field is compared with its column decoded back out of the payload, not with what the
+    // column occupies compressed. Run over the nested relation as well: a nested column's size is
     // the sum of its whole subtree, so this is also where a size attributed to the wrong column
-    // surfaces.
+    // surfaces. And over the dictionary relation, whose columns reach the writer dictionary
+    // encoded: a size measured before they are decoded would be the size of their indices.
     def checkSizes(
         relation: org.apache.spark.sql.execution.columnar.InMemoryRelation,
         batches: Array[CachedBatch]): Unit = {
       val cacheSchema = Utils.fromAttributes(relation.output)
-      batches.foreach { batch =>
-        val sizes = CometCachedBatchHelper.columnSizes(batch, cacheSchema)
-        val stats = batch.asInstanceOf[SimpleMetricsCachedBatch].stats
-        sizes.zipWithIndex.foreach { case (size, i) =>
-          assert(
-            stats.getLong(i * 5 + 4) == size,
-            s"column ${relation.output(i).name} should report the stored size of its own " +
-              "buffers in the statistics row")
+      val allocator = CometArrowAllocator.newChildAllocator("decoded-sizes", 0, Long.MaxValue)
+      try {
+        batches.foreach { batch =>
+          val sizes = CometCachedBatchHelper.decodedColumnSizes(batch, cacheSchema, allocator)
+          val stats = batch.asInstanceOf[SimpleMetricsCachedBatch].stats
+          sizes.zipWithIndex.foreach { case (size, i) =>
+            assert(
+              stats.getLong(i * 5 + 4) == size,
+              s"column ${relation.output(i).name} should report its decoded size in the " +
+                "statistics row")
+          }
+          assert(batch.sizeInBytes == sizes.sum)
         }
+      } finally {
+        allocator.close()
       }
     }
 
     withProjectionCache(checkSizes _)
     withNestedProjectionCache(checkSizes _)
+    withDictionaryCache(relation =>
+      checkSizes(relation, relation.cacheBuilder.cachedColumnBuffers.collect()))
+  }
+
+  test("Comet in-memory cache reports the same relation size under every codec") {
+    // The planner compares this size with broadcast thresholds and with the other side of a
+    // shuffled hash join, so it must not depend on the codec (see
+    // ArrowCachedBatchSerializer.statsRow).
+    val measured = Seq.newBuilder[(String, Long, Long)]
+    Seq("zstd", "none").foreach { codec =>
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_IN_MEMORY_CACHE_COMPRESSION_CODEC.key -> codec) {
+        spark.catalog.clearCache()
+        spark
+          .range(0, 20000, 1, 2)
+          .selectExpr("id", "id % 7 AS k", "concat('v_', cast(id % 100 AS string)) AS s")
+          .createOrReplaceTempView("codec_size_cache")
+        spark.catalog.cacheTable("codec_size_cache")
+        assert(spark.table("codec_size_cache").count() == 20000)
+        val relation = spark.sharedState.cacheManager
+          .lookupCachedData(spark.table("codec_size_cache"))
+          .get
+          .cachedRepresentation
+        val batches = relation.cacheBuilder.cachedColumnBuffers.collect()
+        val payload = batches.map(CometCachedBatchHelper.payloadSize).sum
+        measured += ((codec, relation.computeStats().sizeInBytes.toLong, payload))
+        spark.catalog.clearCache()
+      }
+    }
+
+    val sizes = measured.result()
+    val (_, zstdSize, zstdPayload) = sizes(0)
+    val (_, plainSize, _) = sizes(1)
+    assert(zstdPayload * 2 < zstdSize, s"zstd should compress this relation: $sizes")
+    assert(zstdSize == plainSize, s"the relation size should not depend on the codec: $sizes")
   }
 
   test("Comet in-memory cache scans no columns for a row-count-only query") {
