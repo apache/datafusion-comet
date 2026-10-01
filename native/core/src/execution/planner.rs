@@ -89,8 +89,8 @@ use datafusion::{
 use datafusion_comet_spark_expr::{
     create_comet_physical_fun, create_comet_physical_fun_with_eval_mode, BinaryOutputStyle,
     BloomFilterAgg, BloomFilterMightContain, CometCollectList, CometCollectSet, CsvWriteOptions,
-    EvalMode, SparkArraysZipFunc, SparkBloomFilterVersion, SparkListAgg, SparkPercentile,
-    SumInteger, ToCsv,
+    EvalMode, SparkArrayExtrema, SparkArraysZipFunc, SparkBloomFilterVersion, SparkListAgg,
+    SparkPercentile, SumInteger, ToCsv,
 };
 use datafusion_datasource::TableSchema;
 use iceberg::expr::Bind;
@@ -918,6 +918,23 @@ impl PhysicalPlanner {
                 Ok(Arc::new(GetArrayStructFields::new(
                     child,
                     expr.ordinal as usize,
+                )))
+            }
+            ExprStruct::ArrayExtrema(expr) => {
+                let child =
+                    self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                let udf = Arc::new(ScalarUDF::from(SparkArrayExtrema::with_collations(
+                    expr.is_min,
+                    &expr.string_collations,
+                    expr.collation_unicode_version,
+                )?));
+                let data_type = udf.return_type(&[child.data_type(&input_schema)?])?;
+                Ok(Arc::new(ScalarFunctionExpr::new(
+                    udf.name(),
+                    Arc::clone(&udf),
+                    vec![child],
+                    Arc::new(Field::new(udf.name(), data_type, true)),
+                    Arc::new(ConfigOptions::default()),
                 )))
             }
             ExprStruct::ArrayInsert(expr) => {
@@ -5209,6 +5226,55 @@ mod tests {
 
     struct BoundedShufflePartitionPusher {
         max_frame_size: usize,
+    }
+
+    #[test]
+    fn array_extrema_proto_preserves_mode_and_collation() {
+        let values = ListArray::new(
+            Arc::new(Field::new("item", DataType::Utf8, true)),
+            arrow::buffer::OffsetBuffer::new(vec![0, 2].into()),
+            Arc::new(StringArray::from(vec!["a", "B"])),
+            None,
+        );
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "values",
+            values.data_type().clone(),
+            true,
+        )]));
+        let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(values)]).unwrap();
+        let planner = PhysicalPlanner::default();
+
+        for (is_min, collations, expected) in [
+            (true, vec![], "B"),
+            (false, vec![], "a"),
+            (true, vec!["UTF8_LCASE".to_string()], "a"),
+            (false, vec!["UTF8_LCASE".to_string()], "B"),
+        ] {
+            let expr = Expr {
+                expr_struct: Some(ExprStruct::ArrayExtrema(Box::new(
+                    spark_expression::ArrayExtrema {
+                        child: Some(Box::new(Expr {
+                            expr_struct: Some(Bound(spark_expression::BoundReference {
+                                index: 0,
+                                datatype: None,
+                            })),
+                            ..Default::default()
+                        })),
+                        is_min,
+                        string_collations: collations,
+                        collation_unicode_version: 16,
+                    },
+                ))),
+                ..Default::default()
+            };
+            let physical = planner.create_expr(&expr, Arc::clone(&schema)).unwrap();
+            assert_eq!(physical.data_type(&schema).unwrap(), DataType::Utf8);
+            let result = physical.evaluate(&batch).unwrap().into_array(1).unwrap();
+            assert_eq!(
+                ScalarValue::try_from_array(&result, 0).unwrap(),
+                ScalarValue::Utf8(Some(expected.to_string()))
+            );
+        }
     }
 
     #[test]

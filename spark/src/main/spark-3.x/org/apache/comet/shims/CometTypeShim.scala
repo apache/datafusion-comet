@@ -23,7 +23,7 @@ import java.nio.ByteBuffer
 import java.nio.charset.{CharacterCodingException, CodingErrorAction, StandardCharsets}
 
 import org.apache.spark.sql.catalyst.expressions.aggregate.Mode
-import org.apache.spark.sql.types.{DataType, StructType}
+import org.apache.spark.sql.types.{DataType, StringType, StructType}
 import org.apache.spark.unsafe.types.UTF8String
 
 trait CometTypeShim {
@@ -36,6 +36,11 @@ trait CometTypeShim {
 
   // Spark 4 feature; stubbed to false in Spark 3.x for compatibility.
   def hasNonDefaultStringCollation(dt: DataType): Boolean = false
+
+  // Spark 3.x strings always use binary ordering.
+  def stringCollationName(dt: StringType): String = "UTF8_BINARY"
+
+  def collationUnicodeVersion: Int = 0
 
   // Spark 4 feature; collation does not exist in Spark 3.x.
   def hasCollationSupport: Boolean = false

@@ -1721,6 +1721,22 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("collation casts retain Spark fallback") {
+    assume(CometSparkSessionExtensions.isSpark40Plus)
+    withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
+      withParquetTable(Seq(("a", "A"), ("x ", "x")), "collation_cast") {
+        for (collation <- Seq("UTF8_LCASE", "UTF8_BINARY_RTRIM")) {
+          val a = s"CAST(_1 AS STRING COLLATE $collation)"
+          val b = s"CAST(_2 AS STRING COLLATE $collation)"
+          checkSparkAnswerAndFallbackReason(
+            s"SELECT array_contains(array($a), $b), " +
+              s"arrays_overlap(array($a), array($b)) FROM collation_cast",
+            "Cast from StringType")
+        }
+      }
+    }
+  }
+
   // CAST from BinaryType
 
   test("cast BinaryType to StringType") {
