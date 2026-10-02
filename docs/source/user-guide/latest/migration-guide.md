@@ -79,9 +79,9 @@ setting when the application:
 - starts with `spark.comet.enabled` or `spark.comet.exec.enabled` set to `false`.
 - leaves Comet shuffle enabled without one of Comet's shuffle managers, so that Comet disables
   itself.
-- uses Kryo with `spark.kryo.registrationRequired=true` and does not list
-  `org.apache.comet.CometKryoRegistrator` in `spark.kryo.registrator`, because Kryo would reject
-  Comet's cached batches. Add the registrator to use Comet's format; see
+- uses Kryo with `spark.kryo.registrationRequired=true` and has not registered Comet's cached
+  batch, because Kryo would reject it. To use Comet's format, register Comet's classes with
+  `spark.kryo.registrator=org.apache.comet.CometKryoRegistrator`; see
   [Kryo](in-memory-cache.md#kryo).
 
 An application that sets `spark.sql.cache.serializer` itself keeps the serializer it chose.
