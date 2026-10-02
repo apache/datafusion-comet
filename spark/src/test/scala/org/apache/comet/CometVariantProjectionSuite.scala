@@ -96,53 +96,25 @@ class CometVariantProjectionSuite extends CometTestBase {
     assert(collect(plan) { case scan: CometNativeScanExec => scan }.isEmpty, plan.toString)
   }
 
-  test("direct Variant projection preserves values and siblings") {
-    withVariantFile("""
-      SELECT id, parse_json(json) AS v, id + 10 AS tail FROM VALUES
-        (1, '{"a":1,"nested":{"b":[true,null,2.5]}}'),
-        (2, '[1,"text",false,{"x":2}]'),
-        (3, '42'), (4, '"text"'), (5, 'null'), (6, NULL),
-        (7, '{}'), (8, '[]') AS input(id, json)
-      """) { path =>
-      checkNative(spark.read.parquet(path).select("v"))
-      checkNative(spark.read.parquet(path).select("id", "v", "tail"))
-    }
-    withVariantFile("SELECT 1 AS id, CAST(NULL AS VARIANT) AS v") { path =>
-      checkNative(spark.read.parquet(path))
-    }
-  }
-
-  test("Variant objects with empty keys match Spark") {
-    for (shredding <- Seq("false", "true")) {
-      withSQLConf("spark.sql.variant.writeShredding.enabled" -> shredding) {
+  test("whole Variant scans preserve native plans and Spark row conversion") {
+    // SQL result cases live in variant.sql; retain explicit native scan and row conversion checks.
+    for (push <- Seq("false", "true"); shredding <- Seq("false", "true")) {
+      withSQLConf(
+        "spark.sql.variant.pushVariantIntoScan" -> push,
+        "spark.sql.variant.writeShredding.enabled" -> shredding,
+        "spark.sql.variant.forceShreddingSchemaForTest" -> "a INT") {
         withVariantFile("""
-          SELECT id, parse_json(json) AS v FROM VALUES
-            (1, '{"":1}'), (2, '{"z":1,"":2,"a":{"":3}}'),
-            (3, '[{"z":4,"":5},{"":6}]'), (4, NULL) AS input(id, json)
+          SELECT id, parse_json(json) AS v, id + 10 AS tail FROM VALUES
+            (1, '{"a":1,"":2,"nested":[true,null]}'),
+            (2, NULL) AS input(id, json)
           """) { path =>
-          checkNative(spark.read.parquet(path))
+          checkNative(
+            spark.read.parquet(path).select("id", "v", "tail"),
+            allowSparkProject = push.toBoolean)
         }
       }
     }
-  }
-
-  test("pushed whole-value Variant projection preserves Spark bytes and nulls") {
     withSQLConf("spark.sql.variant.pushVariantIntoScan" -> "true") {
-      for (shredding <- Seq("false", "true")) {
-        withSQLConf("spark.sql.variant.writeShredding.enabled" -> shredding) {
-          withVariantFile("""
-            SELECT id, parse_json(json) AS v, id + 10 AS tail FROM VALUES
-              (1, '{"a":1,"":2,"nested":[true,null]}'),
-              (2, '{"a":3,"extra":"text"}'), (3, '[1,"text",false]'),
-              (4, '42'), (5, 'null'), (6, NULL), (7, '{}'), (8, '[]') AS input(id, json)
-            """) { path =>
-            checkNative(spark.read.parquet(path).select("v"), allowSparkProject = true)
-            checkNative(
-              spark.read.parquet(path).select("id", "v", "tail"),
-              allowSparkProject = true)
-          }
-        }
-      }
       withVariantFile("""
         SELECT named_struct('metadata', X'010000', 'typed_value',
           named_struct('a', named_struct('typed_value', 1))) AS v
