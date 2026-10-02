@@ -19,22 +19,24 @@
 
 package org.apache.spark.sql.comet
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, SortOrder}
-import org.apache.spark.sql.catalyst.plans.physical.Partitioning
+import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.execution.{RangeExec, SparkPlan}
 
 import com.google.common.base.Objects
 
 import org.apache.comet.{CometConf, ConfigEntry}
+import org.apache.comet.CometSparkSessionExtensions.isWholeStageCodegenDisabled
 import org.apache.comet.serde.{CometOperatorSerde, Compatible, OperatorOuterClass, SupportLevel, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.Operator
 
 /**
  * Comet's version of Spark's `RangeExec`, which produces the rows of `spark.range` and SQL
- * `range()`. The values are generated in native code, by the native `RangeExec`. Each task
- * computes its own partition from the partition index, so this operator reports Spark's
- * partitioning, and the native plan it belongs to runs one task per slice with no JVM input.
- * Partitions, values and their order match Spark's generated code for `RangeExec`.
+ * `range()`. The values are generated in native code (`range_exec` in the native operators
+ * crate). Each task computes its own partition from the partition index, so this operator reports
+ * Spark's partitioning, and the native plan it belongs to runs one task per slice with no JVM
+ * input. Partitions, values and their order match Spark's generated code for `RangeExec`. Where
+ * no native operator consumes the range, `EliminateRedundantTransitions` restores Spark's
+ * `RangeExec`.
  */
 case class CometRangeExec(
     override val nativeOp: Operator,
@@ -42,10 +44,6 @@ case class CometRangeExec(
     override val output: Seq[Attribute],
     override val serializedPlanOpt: SerializedPlan)
     extends CometLeafExec {
-
-  override def outputPartitioning: Partitioning = originalPlan.outputPartitioning
-
-  override def outputOrdering: Seq[SortOrder] = originalPlan.outputOrdering
 
   override def simpleString(maxFields: Int): String = {
     s"$nodeName (${originalPlan.start}, ${originalPlan.end}, step=${originalPlan.step}, " +
@@ -87,7 +85,7 @@ object CometRangeExec extends CometOperatorSerde[RangeExec] {
   override def getSupportLevel(op: RangeExec): SupportLevel = {
     if (!op.isEmptyRange && op.numSlices < 1) {
       Unsupported(Some(s"Spark fails a range with ${op.numSlices} slices"))
-    } else if (!op.conf.wholeStageEnabled && mayOverflow(op)) {
+    } else if (isWholeStageCodegenDisabled(op.conf) && mayOverflow(op)) {
       Unsupported(
         Some(
           "Spark's interpreted RangeExec, which runs when whole-stage codegen is disabled, " +

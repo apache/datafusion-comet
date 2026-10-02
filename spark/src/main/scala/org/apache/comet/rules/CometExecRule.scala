@@ -448,6 +448,19 @@ case class CometExecRule(session: SparkSession)
       case c: CometSparkToColumnarExec =>
         convertToComet(c, CometScanWrapper).getOrElse(c)
 
+      // A leaf with its own enabled Comet operator, such as RangeExec, uses that operator. The
+      // Spark-to-Arrow conversion is the fallback for a leaf the operator declines.
+      case op: LeafExecNode if hasEnabledHandler(op) =>
+        convertToComet(op, allExecs(op.getClass))
+          .orElse {
+            if (shouldApplySparkToColumnar(conf, op)) {
+              convertToComet(op, CometSparkToColumnarExec)
+            } else {
+              None
+            }
+          }
+          .getOrElse(op)
+
       case op if shouldApplySparkToColumnar(conf, op) =>
         convertToComet(op, CometSparkToColumnarExec).getOrElse(op)
 
@@ -1150,6 +1163,9 @@ case class CometExecRule(session: SparkSession)
     }
   }
 
+  private def hasEnabledHandler(op: SparkPlan): Boolean =
+    allExecs.get(op.getClass).exists(_.enabledConfig.forall(_.get(op.conf)))
+
   private def shouldApplySparkToColumnar(conf: SQLConf, op: SparkPlan): Boolean = {
     // Only consider converting leaf nodes to columnar currently, so that all the following
     // operators can have a chance to be converted to columnar. Leaf operators that output
@@ -1174,12 +1190,6 @@ case class CometExecRule(session: SparkSession)
             case _: ParquetScan => CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.get(conf)
             case _ => isSparkToArrowEnabled(conf, op)
           }
-        // CometRangeExec generates the values natively, so it takes precedence over converting
-        // Spark's rows wherever it supports the range.
-        case r: RangeExec
-            if CometConf.COMET_EXEC_RANGE_ENABLED.get(conf) &&
-              CometRangeExec.getSupportLevel(r).isInstanceOf[Compatible] =>
-          false
         // other leaf nodes
         case _: LeafExecNode =>
           isSparkToArrowEnabled(conf, op)

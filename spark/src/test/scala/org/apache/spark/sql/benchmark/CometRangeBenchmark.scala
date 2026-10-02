@@ -50,9 +50,6 @@ object CometRangeBenchmark extends CometBenchmarkBase {
 
   private case class Arm(name: String, confs: Seq[(String, String)], check: SparkPlan => Unit)
 
-  private def nodes[T](plan: SparkPlan)(pf: PartialFunction[SparkPlan, T]): Seq[T] =
-    collect(plan)(pf)
-
   private val cometConfs =
     Seq(CometConf.COMET_ENABLED.key -> "true", CometConf.COMET_EXEC_ENABLED.key -> "true")
 
@@ -61,8 +58,8 @@ object CometRangeBenchmark extends CometBenchmarkBase {
       "Spark",
       Seq(CometConf.COMET_ENABLED.key -> "false"),
       plan => {
-        assert(nodes(plan) { case r: RangeExec => r }.nonEmpty, plan)
-        assert(nodes(plan) { case c: CometPlan => c }.isEmpty, plan)
+        assert(collect(plan) { case r: RangeExec => r }.nonEmpty, plan)
+        assert(collect(plan) { case c: CometPlan => c }.isEmpty, plan)
       }),
     Arm(
       "SparkToColumnar",
@@ -70,8 +67,8 @@ object CometRangeBenchmark extends CometBenchmarkBase {
         CometConf.COMET_EXEC_RANGE_ENABLED.key -> "false",
         CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true"),
       plan => {
-        assert(nodes(plan) { case c: CometSparkToColumnarExec => c }.nonEmpty, plan)
-        assert(nodes(plan) { case a: CometHashAggregateExec => a }.nonEmpty, plan)
+        assert(collect(plan) { case c: CometSparkToColumnarExec => c }.nonEmpty, plan)
+        assert(collect(plan) { case a: CometHashAggregateExec => a }.nonEmpty, plan)
       }),
     Arm(
       "CometRange",
@@ -79,8 +76,8 @@ object CometRangeBenchmark extends CometBenchmarkBase {
         CometConf.COMET_EXEC_RANGE_ENABLED.key -> "true",
         CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "false"),
       plan => {
-        assert(nodes(plan) { case r: CometRangeExec => r }.nonEmpty, plan)
-        assert(nodes(plan) { case a: CometHashAggregateExec => a }.nonEmpty, plan)
+        assert(collect(plan) { case r: CometRangeExec => r }.nonEmpty, plan)
+        assert(collect(plan) { case a: CometHashAggregateExec => a }.nonEmpty, plan)
       }))
 
   private def groupedCount(keys: Long): DataFrame =
@@ -113,11 +110,12 @@ object CometRangeBenchmark extends CometBenchmarkBase {
     cases.foreach { case (name, query) =>
       runBenchmark(name) {
         // Check every arm's plan and result before timing anything.
-        val expected = runArm(arms.head, query)._1
-        arms.foreach { arm =>
-          val (rows, plan) = runArm(arm, query)
+        val results = arms.map(runArm(_, query))
+        arms.zip(results).foreach { case (arm, (rows, plan)) =>
           arm.check(plan)
-          assert(rows == expected, s"${arm.name} returned $rows, expected $expected")
+          assert(
+            rows == results.head._1,
+            s"${arm.name} returned $rows, expected ${results.head._1}")
         }
 
         val benchmark = new Benchmark(name, numRows, output = output)

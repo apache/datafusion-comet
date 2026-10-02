@@ -24,6 +24,7 @@ import java.nio.ByteOrder
 import org.apache.spark.{SparkConf, SparkEnv}
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.{SparkSession, SparkSessionExtensions}
+import org.apache.spark.sql.catalyst.expressions.CodegenObjectFactoryMode
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.trees.{TreeNode, TreeNodeTag}
 import org.apache.spark.sql.comet._
@@ -266,6 +267,17 @@ object CometSparkSessionExtensions extends Logging {
 
   def isSpark42Plus: Boolean = {
     org.apache.spark.SPARK_VERSION >= "4.2"
+  }
+
+  /**
+   * Whether Spark's configuration turns whole-stage codegen off, so that operators run their
+   * interpreted paths. The NO_CODEGEN factory mode does so only from Spark 3.5 (SPARK-44236).
+   */
+  def isWholeStageCodegenDisabled(conf: SQLConf): Boolean = {
+    !conf.wholeStageEnabled ||
+    (isSpark35Plus && conf
+      .getConfString(SQLConf.CODEGEN_FACTORY_MODE.key)
+      .equalsIgnoreCase(CodegenObjectFactoryMode.NO_CODEGEN.toString))
   }
 
   def isOffHeapEnabled(sparkConf: SparkConf): Boolean = {

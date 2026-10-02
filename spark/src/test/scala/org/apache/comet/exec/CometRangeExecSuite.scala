@@ -94,11 +94,17 @@ class CometRangeExecSuite extends CometTestBase {
   rangeTest("range matches Spark for edge-case bounds, steps and splits") {
     ranges.foreach { case (start, end, step, splits) =>
       withClue(s"range($start, $end, $step, $splits): ") {
-        // Read the range on its own, and under a native projection.
-        checkCometRange(spark.range(start, end, step, splits).toDF())
         checkCometRange(spark.range(start, end, step, splits).selectExpr("id", "id % 7 AS m"))
       }
     }
+  }
+
+  rangeTest("a range no native operator consumes stays on Spark") {
+    // Generating it natively would only add a conversion back to rows.
+    val df = spark.range(0, 100, 1, 2).toDF()
+    val (_, plan) = checkSparkAnswer(df)
+    assert(cometRanges(plan).isEmpty, plan)
+    assert(collect(plan) { case r: RangeExec => r }.nonEmpty, plan)
   }
 
   rangeTest("empty ranges") {
@@ -165,16 +171,9 @@ class CometRangeExecSuite extends CometTestBase {
       val stepAbs = (math.abs(end - start) / numSteps) + 1
       val step = if (start < end) stepAbs else -stepAbs
       val partitions = random.nextInt(20) + 1
-      val expected = start until end by step
 
       withClue(s"seed = $seed start = $start end = $end step = $step partitions = $partitions") {
-        val df = spark.range(start, end, step, partitions).agg(count("id"), sum("id"))
-        checkCometRange(df)
-        val row = df.collect().head
-        assert(row.getLong(0) == expected.size)
-        if (expected.nonEmpty) {
-          assert(row.getLong(1) == expected.sum)
-        }
+        checkCometRange(spark.range(start, end, step, partitions).agg(count("id"), sum("id")))
       }
     }
   }
@@ -185,10 +184,9 @@ class CometRangeExecSuite extends CometTestBase {
       Seq((0L, 10000L, 3L, 1), (10000L, 0L, -3L, 1), (-5000L, 5000L, 1L, 7)).foreach {
         case (start, end, step, splits) =>
           withClue(s"range($start, $end, $step, $splits): ") {
-            val df = spark.range(start, end, step, splits).toDF()
-            assert(cometRanges(df.queryExecution.executedPlan).nonEmpty)
-            assert(df.collect().toSeq == (start until end by step).map(Row(_)))
-            checkCometRange(spark.range(start, end, step, splits).selectExpr("id * 3"))
+            val df = spark.range(start, end, step, splits).selectExpr("id", "id * 3 AS tripled")
+            checkCometRange(df)
+            assert(df.collect().map(_.getLong(0)).toSeq == (start until end by step))
           }
       }
     }
@@ -222,16 +220,11 @@ class CometRangeExecSuite extends CometTestBase {
     }
   }
 
-  rangeTest("exchanges over different ranges are not reused") {
+  rangeTest("exchanges are reused over equal ranges but not different ones") {
     def counts(end: Long): DataFrame =
       spark.range(0, end, 1, 4).groupBy((col("id") % 10).as("k")).count()
     checkCometRange(counts(100).union(counts(200)))
-  }
-
-  rangeTest("exchanges over equal ranges are reused") {
-    def counts(): DataFrame =
-      spark.range(0, 100, 1, 4).groupBy((col("id") % 10).as("k")).count()
-    val plan = checkCometRange(counts().union(counts()))
+    val plan = checkCometRange(counts(100).union(counts(100)))
     assertExchangeReuseOver(plan, "equal ranges") { case r: CometRangeExec => r }
   }
 }
