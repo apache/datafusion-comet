@@ -1532,46 +1532,55 @@ pub extern "system" fn Java_org_apache_comet_Native_getShufflePartitionOffsets(
 ) -> jlongArray {
     try_unwrap_or_throw(&e, |env| {
         let context = get_execution_context(exec_context);
-
-        let root_op = context.root_op.as_ref().ok_or_else(|| {
-            CometError::Internal(
-                "Cannot read shuffle partition offsets before the plan has been executed"
-                    .to_string(),
-            )
-        })?;
-
-        // `ExecutionPlan` has `Any` as a supertrait but no `as_any` method of its own, so upcast
-        // the trait object before downcasting to the writer.
-        let writer = (root_op.native_plan.as_ref() as &dyn std::any::Any)
-            .downcast_ref::<ShuffleWriterExec>()
-            .ok_or_else(|| {
-                CometError::Internal(
-                    "Shuffle partition offsets are only available on a native shuffle write plan"
-                        .to_string(),
-                )
-            })?;
-
-        let offsets = writer
-            .partition_offsets()
-            .ok_or_else(|| {
-                CometError::Internal(
-                    "Shuffle partition offsets are not published by a remote shuffle destination"
-                        .to_string(),
-                )
-            })?
-            .get()
-            .ok_or_else(|| {
-                CometError::Internal(
-                    "Shuffle writer has not published its partition offsets; the plan was not \
-                     drained to completion"
-                        .to_string(),
-                )
-            })?;
+        let root_plan = context.root_op.as_ref().map(|op| op.native_plan.as_ref());
+        let offsets = shuffle_partition_offsets(root_plan)?;
 
         let long_array = env.new_long_array(offsets.len())?;
         long_array.set_region(env, 0, offsets)?;
         Ok(long_array.into_raw())
     })
+}
+
+/// The partition offsets published by `root_plan`, which must be a native shuffle write plan that
+/// has been drained to completion. `root_plan` is `None` before the plan has been executed. Core
+/// of `Native.getShufflePartitionOffsets`.
+fn shuffle_partition_offsets(
+    root_plan: Option<&dyn datafusion::physical_plan::ExecutionPlan>,
+) -> CometResult<&[i64]> {
+    let root_plan = root_plan.ok_or_else(|| {
+        CometError::Internal(
+            "Cannot read shuffle partition offsets before the plan has been executed".to_string(),
+        )
+    })?;
+
+    // `ExecutionPlan` has `Any` as a supertrait but no `as_any` method of its own, so upcast
+    // the trait object before downcasting to the writer.
+    let writer = (root_plan as &dyn std::any::Any)
+        .downcast_ref::<ShuffleWriterExec>()
+        .ok_or_else(|| {
+            CometError::Internal(
+                "Shuffle partition offsets are only available on a native shuffle write plan"
+                    .to_string(),
+            )
+        })?;
+
+    let offsets = writer
+        .partition_offsets()
+        .ok_or_else(|| {
+            CometError::Internal(
+                "Shuffle partition offsets are not published by a remote shuffle destination"
+                    .to_string(),
+            )
+        })?
+        .get()
+        .ok_or_else(|| {
+            CometError::Internal(
+                "Shuffle writer has not published its partition offsets; the plan was not \
+                 drained to completion"
+                    .to_string(),
+            )
+        })?;
+    Ok(offsets)
 }
 
 /// Used by Comet shuffle external sorter to write sorted records to disk.
@@ -1600,63 +1609,87 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
             tracing_enabled != JNI_FALSE,
             || {
                 let data_types = convert_datatype_arrays(env, serialized_datatypes)?;
-
-                let row_num = row_addresses.len(env)?;
                 let row_addresses = row_addresses.get_elements(env, ReleaseMode::NoCopyBack)?;
-
                 let row_sizes = row_sizes.get_elements(env, ReleaseMode::NoCopyBack)?;
-
-                let row_addresses_ptr = row_addresses.as_ptr();
-                let row_sizes_ptr = row_sizes.as_ptr();
-
                 let output_path: String = file_path.try_to_string(env).unwrap();
-
-                let current_checksum = if current_checksum == i64::MIN {
-                    // Initial checksum is not available.
-                    None
-                } else {
-                    Some(current_checksum as u32)
-                };
-
                 let compression_codec: String = compression_codec.try_to_string(env).unwrap();
 
-                let compression_codec = match compression_codec.as_str() {
-                    "zstd" => CompressionCodec::Zstd(compression_level),
-                    "lz4" => CompressionCodec::Lz4Frame,
-                    "snappy" => CompressionCodec::Snappy,
-                    _ => CompressionCodec::Lz4Frame,
-                };
-
-                let (written_bytes, checksum, encode_nanos) = process_sorted_row_partition(
-                    row_num,
-                    batch_size as usize,
-                    row_addresses_ptr,
-                    row_sizes_ptr,
+                let results = write_sorted_file(
+                    &row_addresses,
+                    &row_sizes,
                     &data_types,
                     output_path,
                     prefer_dictionary_ratio,
+                    batch_size as usize,
                     checksum_enabled,
                     checksum_algo,
                     current_checksum,
                     &compression_codec,
+                    compression_level,
                 )?;
 
-                let checksum = if let Some(checksum) = checksum {
-                    checksum as i64
-                } else {
-                    // Spark checksums (CRC32 or Adler32) are both u32, so we use i64::MIN to indicate
-                    // checksum is not available.
-                    i64::MIN
-                };
-
-                // results[0] = bytes written, results[1] = checksum, results[2] = encode nanos
-                let long_array = env.new_long_array(3)?;
-                long_array.set_region(env, 0, &[written_bytes, checksum, encode_nanos])?;
+                let long_array = env.new_long_array(results.len())?;
+                long_array.set_region(env, 0, &results)?;
 
                 Ok(long_array.into_raw())
             },
         )
     })
+}
+
+/// Converts the Spark `UnsafeRow`s at `row_addresses`, with the sizes in `row_sizes`, into Arrow
+/// batches of `data_types` and writes them to `output_path`. Returns `[bytes written, checksum,
+/// encode nanos]`. Checksums cross the boundary as `i64`, with `i64::MIN` meaning none: Spark's
+/// CRC32 and Adler32 checksums are both `u32`. Core of `Native.writeSortedFileNative`.
+///
+/// # Safety
+/// Each address must point to a readable row of the corresponding size, and `row_sizes` must be
+/// at least as long as `row_addresses`.
+#[allow(clippy::too_many_arguments)]
+unsafe fn write_sorted_file(
+    row_addresses: &[i64],
+    row_sizes: &[i32],
+    data_types: &[ArrowDataType],
+    output_path: String,
+    prefer_dictionary_ratio: f64,
+    batch_size: usize,
+    checksum_enabled: bool,
+    checksum_algo: i32,
+    current_checksum: i64,
+    compression_codec: &str,
+    compression_level: i32,
+) -> CometResult<[i64; 3]> {
+    let current_checksum = if current_checksum == i64::MIN {
+        // Initial checksum is not available.
+        None
+    } else {
+        Some(current_checksum as u32)
+    };
+
+    let compression_codec = match compression_codec {
+        "zstd" => CompressionCodec::Zstd(compression_level),
+        "lz4" => CompressionCodec::Lz4Frame,
+        "snappy" => CompressionCodec::Snappy,
+        _ => CompressionCodec::Lz4Frame,
+    };
+
+    // `process_sorted_row_partition` only reads through the pointers.
+    let (written_bytes, checksum, encode_nanos) = process_sorted_row_partition(
+        row_addresses.len(),
+        batch_size,
+        row_addresses.as_ptr() as *mut i64,
+        row_sizes.as_ptr() as *mut i32,
+        data_types,
+        output_path,
+        prefer_dictionary_ratio,
+        checksum_enabled,
+        checksum_algo,
+        current_checksum,
+        &compression_codec,
+    )?;
+
+    let checksum = checksum.map_or(i64::MIN, |checksum| checksum as i64);
+    Ok([written_bytes, checksum, encode_nanos])
 }
 
 #[no_mangle]
@@ -1683,11 +1716,17 @@ pub extern "system" fn Java_org_apache_comet_Native_sortRowPartitionsNative(
                 );
                 let array =
                     unsafe { std::slice::from_raw_parts_mut(address as *mut i64, size as usize) };
-                array.rdxsort();
+                sort_row_partitions(array);
                 Ok(())
             },
         )
     })
+}
+
+/// Sorts packed shuffle record pointers in place by the partition id in their upper 24 bits,
+/// keeping the order of the pointers within a partition. Core of `Native.sortRowPartitionsNative`.
+fn sort_row_partitions(packed_pointers: &mut [i64]) {
+    packed_pointers.rdxsort();
 }
 
 #[no_mangle]
@@ -1966,50 +2005,12 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_columnarToRowConvert(
             .as_mut()
             .ok_or_else(|| CometError::Internal("Null columnar to row context".to_string()))?;
 
-        let num_cols = array_addrs.len(env)?;
-
         // Get array and schema addresses
-        let array_addrs_elements =
-            unsafe { array_addrs.get_elements(env, ReleaseMode::NoCopyBack)? };
-        let schema_addrs_elements =
-            unsafe { schema_addrs.get_elements(env, ReleaseMode::NoCopyBack)? };
+        let array_addrs = unsafe { array_addrs.get_elements(env, ReleaseMode::NoCopyBack)? };
+        let schema_addrs = unsafe { schema_addrs.get_elements(env, ReleaseMode::NoCopyBack)? };
 
-        // Import Arrow arrays from FFI
-        let mut arrays = Vec::with_capacity(num_cols);
-        for i in 0..num_cols {
-            let array_ptr = array_addrs_elements[i] as *mut FFI_ArrowArray;
-            let schema_ptr = schema_addrs_elements[i] as *mut FFI_ArrowSchema;
-
-            debug_assert!(
-                !array_ptr.is_null(),
-                "columnarToRowConvert: null array pointer at index {}",
-                i
-            );
-            debug_assert!(
-                !schema_ptr.is_null(),
-                "columnarToRowConvert: null schema pointer at index {}",
-                i
-            );
-
-            // Take ownership of the FFI structures
-            let ffi_array = unsafe { std::ptr::read(array_ptr) };
-            let ffi_schema = unsafe { std::ptr::read(schema_ptr) };
-
-            // Convert to Arrow ArrayData
-            let array_data = from_ffi(ffi_array, &ffi_schema)
-                .map_err(|e| CometError::Internal(format!("Failed to import array: {}", e)))?;
-
-            let imported = arrow::array::make_array(array_data);
-            arrays.push(decode_string_arrays(&imported)?);
-        }
-
-        // Convert columnar to row
-        debug_assert!(
-            num_rows >= 0,
-            "columnarToRowConvert: num_rows is negative: {}",
-            num_rows
-        );
-        let (buffer_ptr, offsets, lengths) = ctx.convert(&arrays, num_rows as usize)?;
+        let (buffer_ptr, offsets, lengths) =
+            unsafe { columnar_to_row_convert(ctx, &array_addrs, &schema_addrs, num_rows)? };
 
         // Create Java int arrays for offsets and lengths
         let offsets_array = env.new_int_array(offsets.len())?;
@@ -2033,6 +2034,60 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_columnarToRowConvert(
 
         Ok(info_obj.into_raw())
     })
+}
+
+/// Imports the columns at `array_addrs` and `schema_addrs` and converts their first `num_rows`
+/// rows to Spark `UnsafeRow`s in `ctx`'s buffer. Returns the buffer address and the offset and
+/// length of each row in it, valid until the next conversion. Core of
+/// `Native.columnarToRowConvert`.
+///
+/// # Safety
+/// Each address must point to an exported `FFI_ArrowArray` / `FFI_ArrowSchema`, whose ownership
+/// moves to this call.
+unsafe fn columnar_to_row_convert<'a>(
+    ctx: &'a mut ColumnarToRowContext,
+    array_addrs: &[i64],
+    schema_addrs: &[i64],
+    num_rows: i32,
+) -> CometResult<(*const u8, &'a [i32], &'a [i32])> {
+    let num_cols = array_addrs.len();
+
+    // Import Arrow arrays from FFI
+    let mut arrays = Vec::with_capacity(num_cols);
+    for i in 0..num_cols {
+        let array_ptr = array_addrs[i] as *mut FFI_ArrowArray;
+        let schema_ptr = schema_addrs[i] as *mut FFI_ArrowSchema;
+
+        debug_assert!(
+            !array_ptr.is_null(),
+            "columnarToRowConvert: null array pointer at index {}",
+            i
+        );
+        debug_assert!(
+            !schema_ptr.is_null(),
+            "columnarToRowConvert: null schema pointer at index {}",
+            i
+        );
+
+        // Take ownership of the FFI structures
+        let ffi_array = unsafe { std::ptr::read(array_ptr) };
+        let ffi_schema = unsafe { std::ptr::read(schema_ptr) };
+
+        // Convert to Arrow ArrayData
+        let array_data = from_ffi(ffi_array, &ffi_schema)
+            .map_err(|e| CometError::Internal(format!("Failed to import array: {}", e)))?;
+
+        let imported = arrow::array::make_array(array_data);
+        arrays.push(decode_string_arrays(&imported)?);
+    }
+
+    // Convert columnar to row
+    debug_assert!(
+        num_rows >= 0,
+        "columnarToRowConvert: num_rows is negative: {}",
+        num_rows
+    );
+    ctx.convert(&arrays, num_rows as usize)
 }
 
 /// Close and release the native columnar to row converter.
@@ -2999,5 +3054,126 @@ mod tests {
         assert!(producer.next_batch().unwrap().is_some());
         assert!(producer.next_batch().unwrap().is_none());
         producer.stop().unwrap();
+    }
+
+    #[test]
+    fn sort_row_partitions_sorts_in_place() {
+        let mut pointers = vec![
+            5_i64 << 40 | 3,
+            1,
+            2_i64 << 40,
+            1_i64 << 40 | 7,
+            0,
+            5_i64 << 40,
+        ];
+        let mut expected = pointers.clone();
+        // Stable, so the lower 40 bits keep their input order within a partition.
+        expected.sort_by_key(|pointer| (*pointer as u64) >> 40);
+        sort_row_partitions(&mut pointers);
+        assert_eq!(pointers, expected);
+        assert_eq!(&pointers[..2], &[1, 0]);
+    }
+
+    #[test]
+    fn shuffle_partition_offsets_requires_an_executed_shuffle_write() {
+        let error = shuffle_partition_offsets(None).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("before the plan has been executed"),
+            "{error}"
+        );
+
+        let plan = datafusion::physical_plan::empty::EmptyExec::new(Arc::new(Schema::empty()));
+        let error = shuffle_partition_offsets(Some(&plan)).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("only available on a native shuffle write plan"),
+            "{error}"
+        );
+    }
+
+    /// Spark `UnsafeRow`s with one non-null `long` field each: an 8-byte null bitset, then the
+    /// value.
+    fn long_rows(values: &[i64]) -> Vec<[u8; 16]> {
+        values
+            .iter()
+            .map(|value| {
+                let mut row = [0_u8; 16];
+                row[8..].copy_from_slice(&value.to_le_bytes());
+                row
+            })
+            .collect()
+    }
+
+    #[test]
+    fn write_sorted_file_reports_bytes_and_checksum() {
+        let rows = long_rows(&[1, 2, 3, 4, 5]);
+        let addresses: Vec<i64> = rows.iter().map(|row| row.as_ptr() as i64).collect();
+        let sizes = vec![16_i32; rows.len()];
+        let dir = tempfile::tempdir().unwrap();
+
+        let write = |name: &str, checksum_enabled: bool, codec: &str| {
+            let path = dir.path().join(name);
+            let results = unsafe {
+                write_sorted_file(
+                    &addresses,
+                    &sizes,
+                    &[DataType::Int64],
+                    path.to_str().unwrap().to_string(),
+                    1.0,
+                    2,
+                    checksum_enabled,
+                    0,
+                    i64::MIN,
+                    codec,
+                    1,
+                )
+            }
+            .unwrap();
+            (results, std::fs::metadata(path).unwrap().len() as i64)
+        };
+
+        let ([written, checksum, _], file_len) = write("plain", false, "lz4");
+        assert!(written > 0);
+        assert_eq!(written, file_len);
+        assert_eq!(checksum, i64::MIN, "no checksum without checksum_enabled");
+
+        let ([written, checksum, _], file_len) = write("checksummed", true, "zstd");
+        assert_eq!(written, file_len);
+        assert_ne!(checksum, i64::MIN);
+        assert!((0..=u32::MAX as i64).contains(&checksum));
+        // The checksum covers the written bytes, so the same input gives the same checksum.
+        let ([_, again, _], _) = write("checksummed-again", true, "zstd");
+        assert_eq!(checksum, again);
+    }
+
+    #[test]
+    fn columnar_to_row_convert_imports_and_converts() {
+        let column: ArrayRef = Arc::new(Int32Array::from(vec![Some(1), None, Some(3)]));
+        let mut ffi_array = Box::new(FFI_ArrowArray::new(&column.to_data()));
+        let mut ffi_schema = Box::new(FFI_ArrowSchema::try_from(column.data_type()).unwrap());
+        let array_addrs = [ffi_array.as_mut() as *mut FFI_ArrowArray as i64];
+        let schema_addrs = [ffi_schema.as_mut() as *mut FFI_ArrowSchema as i64];
+
+        let mut ctx = ColumnarToRowContext::new(vec![DataType::Int32], 8);
+        let (buffer, offsets, lengths) =
+            unsafe { columnar_to_row_convert(&mut ctx, &array_addrs, &schema_addrs, 3) }.unwrap();
+        let (offsets, lengths) = (offsets.to_vec(), lengths.to_vec());
+        let total = (offsets[2] + lengths[2]) as usize;
+        let rows = unsafe { std::slice::from_raw_parts(buffer, total) }.to_vec();
+        // The call took ownership of the exported structs; they must not be released again.
+        std::mem::forget(ffi_array);
+        std::mem::forget(ffi_schema);
+
+        let mut expected_ctx = ColumnarToRowContext::new(vec![DataType::Int32], 8);
+        let (expected_buffer, expected_offsets, expected_lengths) =
+            expected_ctx.convert(&[column], 3).unwrap();
+        assert_eq!(offsets, expected_offsets);
+        assert_eq!(lengths, expected_lengths);
+        assert_eq!(rows, unsafe {
+            std::slice::from_raw_parts(expected_buffer, total)
+        });
     }
 }
