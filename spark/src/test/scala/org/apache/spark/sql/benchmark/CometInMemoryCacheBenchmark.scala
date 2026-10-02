@@ -27,6 +27,8 @@ import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.AttributeReference
 import org.apache.spark.sql.comet.CometInMemoryTableScanExec
 import org.apache.spark.sql.comet.execution.arrow.{ArrowCachedBatchSerializer, CometCachedBatchHelper}
+import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanExec
+import org.apache.spark.sql.execution.aggregate.HashAggregateExec
 import org.apache.spark.sql.execution.columnar.{CometInMemoryRelationHelper, DefaultCachedBatchSerializer, InMemoryRelation, InMemoryTableScanExec}
 import org.apache.spark.sql.execution.vectorized.OnHeapColumnVector
 import org.apache.spark.sql.internal.{SQLConf, StaticSQLConf}
@@ -236,6 +238,7 @@ object CometInMemoryCacheBenchmark extends CometBenchmarkBase {
 
       runCodecBenchmark(flatRelation)
       runSparkOperatorBenchmark(flatRelation)
+      runAdaptiveBenchmark(flatRelation)
     }
   }
 
@@ -346,9 +349,9 @@ object CometInMemoryCacheBenchmark extends CometBenchmarkBase {
    * Reads that feed Spark operators rather than Comet ones, against Spark's own cache format.
    *
    * Comet is off in every case, so this measures Spark consuming the cached data: the shape where
-   * Comet's format has something to lose, and the reason the feature is off by default. Both
-   * formats are cached from the same relation, one copy at a time as in runCodecBenchmark, and
-   * each case checks which serializer cached the relation it reads.
+   * Comet's format has the most to lose. Both formats are cached from the same relation, one copy
+   * at a time as in runCodecBenchmark, and each case checks which serializer cached the relation
+   * it reads.
    */
   private def runSparkOperatorBenchmark(relation: CachedRelation): Unit = {
     val view = s"${relation.table}_spark_operators"
@@ -375,14 +378,7 @@ object CometInMemoryCacheBenchmark extends CometBenchmarkBase {
         cachedBy = serializer
       }
 
-      Seq(
-        ("row count only (0 of 6 columns)", s"SELECT count(*) FROM $view", 0),
-        ("narrow projection (1 of 6 columns)", s"SELECT count(k) FROM $view", 1),
-        ("3 of 6 columns", s"SELECT sum(id), sum(k), sum(v) FROM $view", 3),
-        (
-          "full projection (6 of 6 columns)",
-          s"SELECT count(id), count(k), count(v), count(s1), count(s2), count(s3) FROM $view",
-          6)).foreach { case (label, query, scanned) =>
+      readShapes(view).foreach { case (label, query, scanned) =>
         val benchmark = new Benchmark(
           s"in-memory cache read by Spark operators, $label",
           relation.rows.toLong,
@@ -409,6 +405,127 @@ object CometInMemoryCacheBenchmark extends CometBenchmarkBase {
 
       spark.catalog.uncacheTable(view)
     }
+  }
+
+  /**
+   * What the feature changes for a query that runs with Comet, against Spark's own cache format,
+   * with AQE on and Comet's other settings at their defaults. This is the comparison an
+   * application gets from turning the feature on or off. Both formats are cached from the same
+   * relation, one copy at a time as in runSparkOperatorBenchmark.
+   *
+   * Two shapes of plan read the cache. With Comet operators above the cache scan, Comet's format
+   * runs the whole query natively, while Spark's leaves the operators directly above its scan on
+   * Spark: Comet reads Spark's cache scan only through spark.comet.sparkToColumnar.enabled, which
+   * is off by default. With a Spark operator above the scan, Comet's format is read by the native
+   * scan and converted to rows for that operator, where Spark's is read by Spark's own scan. The
+   * Spark operator is the aggregate, with Comet's turned off, standing in for any operator Comet
+   * does not support.
+   */
+  private def runAdaptiveBenchmark(relation: CachedRelation): Unit = {
+    val view = s"${relation.table}_adaptive"
+    val formats = Seq(
+      "Spark's cache format" -> classOf[DefaultCachedBatchSerializer].getName,
+      "Comet's cache format" -> classOf[ArrowCachedBatchSerializer].getName)
+    val operatorsAbove = Seq(
+      "Comet operators" -> Seq.empty[(String, String)],
+      "a Spark operator" -> Seq(CometConf.COMET_EXEC_AGGREGATE_ENABLED.key -> "false"))
+
+    spark.catalog.clearCache()
+    withTempTable(view) {
+      spark
+        .sql(s"SELECT ${relation.columns.mkString(", ")} FROM ${relation.source}")
+        .createOrReplaceTempView(view)
+
+      var cachedBy: String = null
+      def cacheBy(serializer: String): Unit = if (cachedBy != serializer) {
+        spark.catalog.uncacheTable(view)
+        cachedBy = null
+        withCacheSerializer(serializer) {
+          withSQLConf(adaptiveConf: _*) {
+            spark.catalog.cacheTable(view)
+            spark.table(view).count()
+          }
+        }
+        cachedBy = serializer
+      }
+
+      for {
+        (operators, operatorConf) <- operatorsAbove
+        (label, query, scanned) <- readShapes(view)
+      } {
+        val benchmark = new Benchmark(
+          s"in-memory cache with AQE, $operators above the scan, $label",
+          relation.rows.toLong,
+          output = output)
+        formats.foreach { case (name, serializer) =>
+          var verified = false
+          // Re-caching in this case's format is setup, so it is outside the timer, and it only
+          // happens on the case's first call, which is a warmup iteration.
+          benchmark.addTimerCase(name) { timer =>
+            cacheBy(serializer)
+            withSQLConf(adaptiveConf ++ operatorConf: _*) {
+              if (!verified) {
+                verifyAdaptiveRead(query, scanned, serializer, operatorConf.nonEmpty)
+                verified = true
+              }
+              timer.startTiming()
+              spark.sql(query).noop()
+              timer.stopTiming()
+            }
+          }
+        }
+        benchmark.run()
+      }
+
+      spark.catalog.uncacheTable(view)
+    }
+  }
+
+  // The reads runSparkOperatorBenchmark and runAdaptiveBenchmark measure: no columns of the flat
+  // relation, one, three, and all six.
+  private def readShapes(view: String): Seq[(String, String, Int)] = Seq(
+    ("row count only (0 of 6 columns)", s"SELECT count(*) FROM $view", 0),
+    ("narrow projection (1 of 6 columns)", s"SELECT count(k) FROM $view", 1),
+    ("3 of 6 columns", s"SELECT sum(id), sum(k), sum(v) FROM $view", 3),
+    (
+      "full projection (6 of 6 columns)",
+      s"SELECT count(id), count(k), count(v), count(s1), count(s2), count(s3) FROM $view",
+      6))
+
+  // Pins what an adaptive case claims, in the plan AQE settles on, which it does only by running
+  // the query: one cache scan, native exactly when it reads Comet's format, reading the columns its
+  // label counts from a relation the named serializer cached. Spark aggregates run only where the
+  // case puts them: above Spark's scan, which nothing bridges into Comet, or wherever Comet's
+  // aggregate is turned off.
+  private def verifyAdaptiveRead(
+      query: String,
+      scanned: Int,
+      serializer: String,
+      sparkOperator: Boolean): Unit = {
+    val df = spark.sql(query)
+    df.collect()
+    val executed = df.queryExecution.executedPlan
+    val plan = executed.toString()
+    assert(executed.isInstanceOf[AdaptiveSparkPlanExec], s"Expected an adaptive plan:\n$plan")
+
+    val nativeScans = collect(executed) { case s: CometInMemoryTableScanExec => s }
+    val sparkScans = collect(executed) { case s: InMemoryTableScanExec => s }
+    assert(nativeScans.length + sparkScans.length == 1, s"Expected exactly one cache scan:\n$plan")
+    val cometFormat = serializer == classOf[ArrowCachedBatchSerializer].getName
+    assert(
+      nativeScans.nonEmpty == cometFormat,
+      s"Expected a native scan exactly for Comet's format:\n$plan")
+    val (relation, columns) = nativeScans.headOption
+      .map(s => (s.originalPlan.relation, s.scanOutput.length))
+      .getOrElse((sparkScans.head.relation, sparkScans.head.attributes.length))
+    assert(columns == scanned, s"Expected the scan to read $scanned columns:\n$plan")
+    val actual = relation.cacheBuilder.serializer.getClass.getName
+    assert(actual == serializer, s"Expected a relation cached by $serializer, not $actual")
+
+    val sparkAggregates = collect(executed) { case a: HashAggregateExec => a }
+    assert(
+      sparkAggregates.nonEmpty == (sparkOperator || !cometFormat),
+      s"Expected Spark aggregates only where this case puts them:\n$plan")
   }
 
   // spark.sql.cache.serializer is static, and InMemoryRelation memoizes the serializer it names
@@ -540,8 +657,8 @@ object CometInMemoryCacheBenchmark extends CometBenchmarkBase {
     // scan and convert" -- which is the overhead this feature exists to remove.
     //
     // Neither case is a baseline for Spark's own cache format: both read the same Comet-written
-    // CometCachedBatch. Spark's format is only measured by runSparkOperatorBenchmark, with Comet
-    // off, since that is the only comparison it answers.
+    // CometCachedBatch. Spark's format is measured by runSparkOperatorBenchmark, with Comet off,
+    // and by runAdaptiveBenchmark, with Comet on.
     withSQLConf(cacheConf(nativeCacheEnabled = true): _*) {
       spark
         .sql(s"SELECT ${relation.columns.mkString(", ")} FROM ${relation.source}")
@@ -610,5 +727,15 @@ object CometInMemoryCacheBenchmark extends CometBenchmarkBase {
   private val sparkOperatorConf: Seq[(String, String)] = Seq(
     CometConf.COMET_ENABLED.key -> "false",
     CometConf.COMET_EXEC_ENABLED.key -> "false",
+    "spark.sql.inMemoryColumnarStorage.batchSize" -> "10000")
+
+  // Comet and AQE on, and Comet's other settings at their defaults, unlike cacheConf. The batch
+  // size matches the other confs, and on-heap mode is what lets Comet run in this session.
+  private val adaptiveConf: Seq[(String, String)] = Seq(
+    CometConf.COMET_ENABLED.key -> "true",
+    CometConf.COMET_EXEC_ENABLED.key -> "true",
+    CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
+    SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+    "spark.comet.exec.onHeap.enabled" -> "true",
     "spark.sql.inMemoryColumnarStorage.batchSize" -> "10000")
 }
