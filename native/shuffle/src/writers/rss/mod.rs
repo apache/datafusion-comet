@@ -18,7 +18,7 @@
 pub(crate) mod rss_partition_writer;
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::rss_partition_writer::RssPartitionWriter;
     use crate::metrics::ShufflePartitionerMetrics;
     use crate::writers::PartitionWriter;
@@ -44,7 +44,8 @@ mod tests {
     /// Test-only allocation observation on a synchronous encoder thread. Production execution
     /// does not use thread-local state. Zstd's C allocations are covered separately by its public
     /// streaming-workspace estimate; this observes Rust buffers and their realloc overlap.
-    mod allocations {
+    /// Shared with the reader tests in `ipc.rs`, since a crate has one global allocator.
+    pub(crate) mod allocations {
         use std::alloc::{GlobalAlloc, Layout, System};
         use std::cell::Cell;
 
@@ -125,7 +126,7 @@ mod tests {
         }
 
         // Allocation/reallocation requests and requested bytes, not retained memory.
-        pub(super) fn totals() -> (usize, usize) {
+        pub(crate) fn totals() -> (usize, usize) {
             COUNTERS.with(|counter| {
                 let value = counter.get().unwrap();
                 (value.allocations, value.allocated_bytes)
@@ -155,7 +156,7 @@ mod tests {
             });
         }
 
-        pub(super) fn measure<T>(run: impl FnOnce() -> T) -> (T, usize) {
+        pub(crate) fn measure<T>(run: impl FnOnce() -> T) -> (T, usize) {
             struct Reset;
             impl Drop for Reset {
                 fn drop(&mut self) {

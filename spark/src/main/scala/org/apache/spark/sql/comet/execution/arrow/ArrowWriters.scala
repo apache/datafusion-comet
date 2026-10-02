@@ -165,9 +165,21 @@ class ArrowWriter(val root: VectorSchemaRoot, fields: Array[ArrowFieldWriter]) {
     count = input.numElements()
   }
 
+  // Driven by the writer's fields rather than by the input's width, because a producer may hand
+  // over a batch wider than the schema it is written under. Iceberg's vectorized reader does:
+  // it reads with the schema its delete filter required, which carries `_pos` after the projected
+  // columns when a data file has position deletes, and trims the extras back only when the file
+  // also has equality deletes. Those extras are trailing -- `removeExtraColumns` keeps the leading
+  // `expectedSchema` prefix when it does trim -- so writing the first `fields.length` columns
+  // writes exactly the columns the schema describes. A batch with fewer columns than the schema
+  // has no such reading and is refused rather than written short.
   def writeColumns(input: ColumnarBatch, startRow: Int, numRows: Int): Unit = {
+    require(
+      input.numCols() >= fields.length,
+      s"Cannot write ${fields.length} columns from a batch of ${input.numCols()} " +
+        (if (input.numCols() == 1) "column" else "columns"))
     var columnIndex = 0
-    while (columnIndex < input.numCols()) {
+    while (columnIndex < fields.length) {
       fields(columnIndex).writeColumnSlice(input.column(columnIndex), startRow, numRows)
       columnIndex += 1
     }
@@ -473,9 +485,22 @@ private[arrow] class StringWriter(val valueVector: VarCharVector) extends ArrowF
 
   override def setValue(input: SpecializedGetters, ordinal: Int): Unit = {
     val utf8 = input.getUTF8String(ordinal)
-    val utf8ByteBuffer = utf8.getByteBuffer
-    // todo: for off-heap UTF8String, how to pass in to arrow without copy?
-    valueVector.setSafe(count, utf8ByteBuffer, utf8ByteBuffer.position(), utf8.numBytes())
+    if (utf8.getBaseObject == null) {
+      val length = utf8.numBytes()
+      require(length >= 0, "String length must be non-negative")
+      valueVector.setValueLengthSafe(count, length)
+
+      // Reservation can replace the buffer. Copy into its current address while Spark still owns
+      // the source bytes, without staging the off-heap payload in a JVM byte array.
+      val data = valueVector.getDataBuffer
+      val offset = valueVector.getStartOffset(count).toLong
+      require(offset >= 0 && offset + length <= data.capacity(), "Invalid Arrow string range")
+      utf8.writeToMemory(null, Math.addExact(data.memoryAddress(), offset))
+      valueVector.setIndexDefined(count)
+    } else {
+      val utf8ByteBuffer = utf8.getByteBuffer
+      valueVector.setSafe(count, utf8ByteBuffer, utf8ByteBuffer.position(), utf8.numBytes())
+    }
   }
 }
 

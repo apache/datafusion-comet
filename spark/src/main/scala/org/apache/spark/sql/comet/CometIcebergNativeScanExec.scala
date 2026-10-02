@@ -223,6 +223,13 @@ case class CometIcebergNativeScanExec(
     baseMetrics ++ icebergPlanningMetrics + ("num_splits" -> numSplitsMetric)
   }
 
+  // Execution id this scan last posted its driver metrics under. Guards against a second post:
+  // SQLAppStatusListener.onDriverAccumUpdates appends driver updates and aggregateMetrics sums them
+  // for SUM-typed metrics, so re-posting the same (id, value) pairs would double totalDataManifest,
+  // resultDataFiles, etc. (and skew the size/timing min/med/max). @transient because it is only
+  // meaningful on the driver instance that posts.
+  @transient private var postedExecutionId: String = _
+
   /**
    * Posts the Iceberg planning metrics (data/delete file and manifest counts, file sizes, and
    * total planning duration) to the SQL UI as driver metrics. Iceberg-Java produces these during
@@ -237,19 +244,26 @@ case class CometIcebergNativeScanExec(
    * for a pushed predicate), the parent runs the whole subtree as one RDD and this node's
    * doExecuteColumnar is never invoked. CometNativeExec.findAllPlanData walks the subtree at
    * execution time and reaches every leaf scan (calling this leaf lifecycle hook alongside
-   * ensureSubqueriesResolved), so it calls this too. Re-posting the same values is harmless.
+   * ensureSubqueriesResolved), so it calls this too. The two paths are mutually exclusive for a
+   * given scan today, but the [[postedExecutionId]] guard makes a second post a no-op so the hook
+   * stays correct if that ever changes -- a re-post would otherwise double the summed counters.
    */
   override def sendDriverMetrics(): Unit = {
     if (icebergPlanningMetrics.isEmpty) {
       return
     }
-    // Force planning so originalPlan.metrics are populated; LazyIcebergMetric.value reads them.
-    val _ = serializedPartitionData
     val executionId = sparkContext.getLocalProperty(SQLExecution.EXECUTION_ID_KEY)
+    if (executionId != null && executionId == postedExecutionId) {
+      return
+    }
+    // No explicit planning force here: postDriverMetricUpdates reads each metric's value, and
+    // LazyIcebergMetric.value resolves DPP subqueries and then forces serializedPartitionData
+    // itself, keeping the "resolve DPP before planning" ordering in a single place.
     SQLMetrics.postDriverMetricUpdates(
       sparkContext,
       executionId,
       icebergPlanningMetrics.values.toSeq)
+    postedExecutionId = executionId
   }
 
   /** Executes using CometExecRDD - planning data is computed lazily on first access. */
@@ -257,9 +271,9 @@ case class CometIcebergNativeScanExec(
     sendDriverMetrics()
     val nativeMetrics = CometMetricNode.fromCometPlan(this)
     val serializedPlan = CometExec.serializeNativePlan(nativeOp)
-    // Key by the same (metadata_location, scan_hash_code) pair PlanDataInjector.injectPlanData
-    // looks up via IcebergPlanDataInjector.getKey (see the scan_hash_code field comment in
-    // operator.proto for why metadata_location alone cannot identify a scan).
+    // Key by metadata_location, scan_hash_code and the op's plan_id, the same key
+    // PlanDataInjector.injectPlanData looks up via IcebergPlanDataInjector.getKey (see
+    // PlanDataInjector.withPlanId for why the content parts alone cannot identify a scan).
     val injectorKey = IcebergPlanDataInjector.getKey(nativeOp).getOrElse(metadataLocation)
     new CometExecRDD(
       sparkContext,
@@ -273,9 +287,10 @@ case class CometIcebergNativeScanExec(
       nativeMetrics = nativeMetrics,
       subqueries = Seq.empty) {
       override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
-        val res = super.compute(split, context)
+        // Register before super.compute creates the CometExecIterator, so this listener runs
+        // after the iterator's close has published the final scan metrics.
         Option(context).foreach(nativeMetrics.reportScanInputMetrics)
-        res
+        super.compute(split, context)
       }
     }
   }

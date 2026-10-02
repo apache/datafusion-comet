@@ -19,6 +19,9 @@
 
 package org.apache.comet.parquet
 
+import java.util.concurrent.atomic.AtomicReference
+
+import org.apache.spark.CometListenerBusUtils
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.comet.{CometNativeWriteExec, CometWriteFilesExec}
 import org.apache.spark.sql.execution.{QueryExecution, SparkPlan}
@@ -61,12 +64,12 @@ abstract class CometParquetWriterTestBase extends CometTestBase {
 
   /** As above, for a write that names its own target (an `INSERT INTO`, for example). */
   protected def captureWritePlan(writeOp: => Unit): SparkPlan = {
-    var capturedPlan: Option[QueryExecution] = None
+    val capturedPlan = new AtomicReference[QueryExecution]()
 
     val listener = new org.apache.spark.sql.util.QueryExecutionListener {
       override def onSuccess(funcName: String, qe: QueryExecution, durationNs: Long): Unit = {
         if (funcName == "save" || funcName.contains("command")) {
-          capturedPlan = Some(qe)
+          capturedPlan.set(qe)
         }
       }
 
@@ -76,27 +79,18 @@ abstract class CometParquetWriterTestBase extends CometTestBase {
           exception: Exception): Unit = {}
     }
 
+    // Listener events are delivered asynchronously, so drain the bus before registering: an
+    // earlier write's event still in flight would otherwise be captured in place of this one.
+    CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
     spark.listenerManager.register(listener)
 
     try {
       writeOp
+      CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
 
-      // Wait for listener to be called with timeout
-      val maxWaitTimeMs = 15000
-      val checkIntervalMs = 100
-      val maxIterations = maxWaitTimeMs / checkIntervalMs
-      var iterations = 0
-
-      while (capturedPlan.isEmpty && iterations < maxIterations) {
-        Thread.sleep(checkIntervalMs)
-        iterations += 1
-      }
-
-      assert(
-        capturedPlan.isDefined,
-        s"Listener was not called within ${maxWaitTimeMs}ms - no execution plan captured")
-
-      stripAQEPlan(capturedPlan.get.executedPlan)
+      val plan = capturedPlan.get()
+      assert(plan != null, "Listener was not called - no execution plan captured")
+      stripAQEPlan(plan.executedPlan)
     } finally {
       spark.listenerManager.unregister(listener)
     }

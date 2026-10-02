@@ -157,11 +157,20 @@ INSERT INTO test_intersect_dbl VALUES
 query
 SELECT a, b, array_intersect(a, b) FROM test_intersect_dbl
 
+-- negative zero (literal). Same signed-zero membership divergence as the
+-- column-sourced cases below: NormalizeFloatingNumbers does not rewrite
+-- array-function inputs, so a plain SELECT keeps the -0.0 literal intact.
+query ignore(https://issues.apache.org/jira/browse/SPARK-54918)
+SELECT array_intersect(array(double('-0.0')), array(double('0.0'))),
+       array_intersect(array(double('0.0')), array(double('-0.0'))),
+       array_intersect(array(double('-0.0')), array(double('-0.0')))
+
 -- Signed-zero membership. Spark keeps -0.0 distinct from 0.0 while Comet (DataFusion)
 -- collapses them, so array_intersect([-0.0], [0.0]) is [] in Spark but [0.0] in Comet,
 -- and array_intersect([-0.0], [-0.0]) is [-0.0] in Spark but [0.0] in Comet.
--- NormalizeFloatingNumbers only rewrites literals, not parquet columns. Skip until
--- Spark normalizes these zeros (Spark 4.2+, SPARK-54918).
+-- The divergence is not limited to parquet columns; the literal case above is
+-- skipped for the same reason. Skip until Spark normalizes these zeros
+-- (Spark 4.2+, SPARK-54918).
 statement
 CREATE TABLE test_intersect_flt_negzero(a array<float>, b array<float>) USING parquet
 

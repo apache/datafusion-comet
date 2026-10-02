@@ -17,6 +17,7 @@
 
 use crate::datetime_funcs::spark_seconds_of_time;
 use crate::hash_funcs::*;
+use crate::hll_scalar::{spark_hll_sketch_estimate, spark_hll_union};
 use crate::json_funcs::JsonArrayLength;
 use crate::map_funcs::spark_map_sort;
 use crate::math_funcs::abs::abs;
@@ -29,11 +30,12 @@ use crate::{
     spark_ceil, spark_day_name, spark_decimal_div, spark_decimal_integral_div, spark_floor,
     spark_isnan, spark_lpad, spark_make_decimal, spark_month_name, spark_read_side_padding,
     spark_round, spark_rpad, spark_sequence, spark_to_time, spark_unhex, spark_unscaled_value,
-    EvalMode, SparkArrayPositionFunc, SparkArraySlice, SparkArraysOverlap, SparkContains,
-    SparkDateDiff, SparkDateFromUnixDate, SparkDateTrunc, SparkDayOfWeek, SparkFlatten,
-    SparkIcebergBucket, SparkIcebergTemporalTransform, SparkIcebergTruncate, SparkMakeDate,
-    SparkMakeInterval, SparkMakeTime, SparkMapExtract, SparkMapFromArrays, SparkMapFromEntries,
-    SparkNextDay, SparkSecondsToTimestamp, SparkSizeFunc, SparkStrToMap, SparkWeekDay,
+    EvalMode, SparkArrayExtrema, SparkArrayPositionFunc, SparkArraySlice, SparkArraysOverlap,
+    SparkContains, SparkDateDiff, SparkDateFromUnixDate, SparkDateTrunc, SparkDayOfWeek,
+    SparkFlatten, SparkIcebergBucket, SparkIcebergTemporalTransform, SparkIcebergTruncate,
+    SparkMakeDate, SparkMakeInterval, SparkMakeTime, SparkMapExtract, SparkMapFromArrays,
+    SparkMapFromEntries, SparkNextDay, SparkSecondsToTimestamp, SparkSizeFunc, SparkStrToMap,
+    SparkWeekDay,
 };
 use arrow::datatypes::DataType;
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
@@ -263,9 +265,21 @@ pub fn create_comet_physical_fun_with_eval_mode(
             let func = Arc::new(crate::string_funcs::spark_get_json_object);
             make_comet_scalar_udf!("get_json_object", func, without data_type)
         }
+        "get_json_object_spark34" => {
+            let func = Arc::new(crate::string_funcs::spark_get_json_object_spark34);
+            make_comet_scalar_udf!("get_json_object_spark34", func, without data_type)
+        }
         "map_sort" => {
             let func = Arc::new(spark_map_sort);
             make_comet_scalar_udf!("spark_map_sort", func, without data_type)
+        }
+        "hll_sketch_estimate" => {
+            let func = Arc::new(|args: &[ColumnarValue]| spark_hll_sketch_estimate(args));
+            make_comet_scalar_udf!("hll_sketch_estimate", func, without data_type)
+        }
+        "hll_union" => {
+            let func = Arc::new(|args: &[ColumnarValue]| spark_hll_union(args));
+            make_comet_scalar_udf!("hll_union", func, without data_type)
         }
         "seconds_of_time" => {
             let func = Arc::new(spark_seconds_of_time);
@@ -311,6 +325,8 @@ pub fn create_comet_physical_fun_with_eval_mode(
 
 fn all_scalar_functions() -> Vec<Arc<ScalarUDF>> {
     vec![
+        Arc::new(ScalarUDF::new_from_impl(SparkArrayExtrema::new(true))),
+        Arc::new(ScalarUDF::new_from_impl(SparkArrayExtrema::new(false))),
         Arc::new(ScalarUDF::new_from_impl(SparkArrayPositionFunc::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkArraySlice::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkArraysOverlap::default())),
