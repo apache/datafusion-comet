@@ -25,21 +25,15 @@ use std::any::Any;
 use std::fmt;
 use std::sync::Arc;
 
-/// The number of values per batch in Spark's generated code for `RangeExec`.
-const SPARK_BATCH_SIZE: i64 = 1000;
-
 /// Builds the plan for one Spark partition of `spark.range` or SQL `range()`: a single non-null
 /// `BIGINT` column, produced `batch_size` rows at a time.
 ///
-/// Partition bounds and values follow Spark's generated code for `RangeExec` (`initRange` and
-/// `doProduce`). It computes the partition's bounds in `BigInteger` arithmetic, then walks the
-/// partition in batches of [`SPARK_BATCH_SIZE`] values with wrapping `long` arithmetic, which
-/// gives different values from `start + i * step` where that arithmetic overflows. Spark's
-/// interpreted `RangeExec` disagrees with its generated code in those cases; this operator matches
-/// the generated code, which Spark runs by default.
+/// Partition bounds follow Spark's `RangeExec`. The JVM side sends only ranges whose arithmetic
+/// cannot overflow in Spark, where both Spark's generated code and its interpreted path produce
+/// the values `partition_start + i * step`. Those values fit in a long, so computing them with
+/// wrapping arithmetic gives them exactly even where `i * step` alone does not fit.
 ///
-/// `num_elements` is Spark's element count truncated to a long, which is how Spark's generated
-/// code reads it, and `partition` is the Spark partition index.
+/// `num_elements` is Spark's element count, and `partition` is the Spark partition index.
 pub fn range_exec(
     start: i64,
     step: i64,
@@ -51,21 +45,22 @@ pub fn range_exec(
     let (partition_start, partition_elements) =
         partition_bounds(start, step, num_elements, num_slices, partition);
     let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
-    let generator = RangeGenerator::new(
-        Arc::clone(&schema),
+    let generator = RangeGenerator {
+        schema: Arc::clone(&schema),
         step,
         partition_start,
         partition_elements,
         batch_size,
-    );
+        produced: 0,
+    };
     let mut exec = LazyMemoryExec::try_new(schema, vec![Arc::new(RwLock::new(generator))])?;
     exec.try_set_partitioning(Partitioning::UnknownPartitioning(1))?;
     Ok(exec)
 }
 
 /// The first value of partition `partition` and the number of values in it, computed the way
-/// Spark's generated code for `RangeExec` does (`initRange`): in `BigInteger` arithmetic, with the
-/// partition's start and end clamped to the `Long` range.
+/// Spark's `RangeExec` does (`initRange` in its generated code): in `BigInteger` arithmetic, with
+/// the partition's start and end clamped to the `Long` range.
 ///
 /// `i128` holds every intermediate value. The product `partition * num_elements` is below 2^94,
 /// and dividing by `num_slices` before multiplying by `step` keeps the next product below 2^126.
@@ -90,7 +85,6 @@ fn partition_bounds(
     let partition_start = clamp(index * num_elements / num_slices * step + start);
     let partition_end = clamp((index + 1) * num_elements / num_slices * step + start);
     let start_to_end = partition_end as i128 - partition_start as i128;
-    // `BigInteger.longValue` keeps the low 64 bits, as `as i64` does.
     let count = (start_to_end / step) as i64;
     if count < 0 {
         (partition_start, 0)
@@ -101,8 +95,7 @@ fn partition_bounds(
     }
 }
 
-/// Generates one partition's values, keeping the state of the loop in Spark's generated code for
-/// `RangeExec` across output batches.
+/// Generates one partition's values.
 #[derive(Debug)]
 struct RangeGenerator {
     schema: SchemaRef,
@@ -110,74 +103,8 @@ struct RangeGenerator {
     partition_start: i64,
     partition_elements: i64,
     batch_size: usize,
-    /// The first value of the current Spark batch.
-    next_index: i64,
-    /// The end of the current Spark batch.
-    batch_end: i64,
-    /// The number of values not yet assigned to a Spark batch.
-    num_elements_todo: i64,
-    /// How many values the current Spark batch holds, and how many of them have been produced.
-    local_end: i32,
-    local_idx: i32,
-}
-
-impl RangeGenerator {
-    fn new(
-        schema: SchemaRef,
-        step: i64,
-        partition_start: i64,
-        partition_elements: i64,
-        batch_size: usize,
-    ) -> Self {
-        Self {
-            schema,
-            step,
-            partition_start,
-            partition_elements,
-            batch_size,
-            next_index: partition_start,
-            batch_end: partition_start,
-            num_elements_todo: partition_elements,
-            local_end: 0,
-            local_idx: 0,
-        }
-    }
-
-    /// Produces up to `batch_size` values, or none once the partition is exhausted.
-    fn next_values(&mut self) -> Vec<i64> {
-        // `local_end` never exceeds the size of its Spark batch, so this bounds what is left.
-        let remaining = (self.local_end - self.local_idx).max(0) as i64 + self.num_elements_todo;
-        let limit = remaining.min(self.batch_size as i64) as usize;
-        let mut values = Vec::with_capacity(limit);
-        while values.len() < limit {
-            if self.local_idx >= self.local_end {
-                // The current Spark batch is done, so start the next one where it ended.
-                let todo = self.num_elements_todo.min(SPARK_BATCH_SIZE);
-                if todo == 0 {
-                    break;
-                }
-                self.num_elements_todo -= todo;
-                self.next_index = self.batch_end;
-                self.batch_end = self.batch_end.wrapping_add(todo.wrapping_mul(self.step));
-                // Java's `long` division wraps where Rust's `/` panics (`i64::MIN / -1`), and
-                // Spark casts the quotient to `int`.
-                self.local_end = self
-                    .batch_end
-                    .wrapping_sub(self.next_index)
-                    .wrapping_div(self.step) as i32;
-                self.local_idx = 0;
-            } else {
-                let count = (self.local_end - self.local_idx).min((limit - values.len()) as i32);
-                values.extend((self.local_idx..self.local_idx + count).map(|local_idx| {
-                    (local_idx as i64)
-                        .wrapping_mul(self.step)
-                        .wrapping_add(self.next_index)
-                }));
-                self.local_idx += count;
-            }
-        }
-        values
-    }
+    /// The number of values produced so far.
+    produced: i64,
 }
 
 impl fmt::Display for RangeGenerator {
@@ -196,25 +123,28 @@ impl LazyBatchGenerator for RangeGenerator {
     }
 
     fn generate_next_batch(&mut self) -> Result<Option<RecordBatch>> {
-        let values = self.next_values();
-        if values.is_empty() {
+        let first = self.produced;
+        let count = (self.partition_elements - first).min(self.batch_size as i64);
+        if count <= 0 {
             return Ok(None);
         }
-        let column = Arc::new(Int64Array::from(values));
+        self.produced += count;
+        let (start, step) = (self.partition_start, self.step);
+        let values = Int64Array::from_iter_values(
+            (first..first + count).map(|i| start.wrapping_add(i.wrapping_mul(step))),
+        );
         Ok(Some(RecordBatch::try_new(
             Arc::clone(&self.schema),
-            vec![column],
+            vec![Arc::new(values)],
         )?))
     }
 
     fn reset_state(&self) -> Arc<RwLock<dyn LazyBatchGenerator>> {
-        Arc::new(RwLock::new(RangeGenerator::new(
-            Arc::clone(&self.schema),
-            self.step,
-            self.partition_start,
-            self.partition_elements,
-            self.batch_size,
-        )))
+        Arc::new(RwLock::new(RangeGenerator {
+            schema: Arc::clone(&self.schema),
+            produced: 0,
+            ..*self
+        }))
     }
 }
 
@@ -305,14 +235,16 @@ mod tests {
         );
     }
 
-    /// Spark's generated code returns no rows here because the end of its batch wraps around,
-    /// while its interpreted `RangeExec` returns four.
+    /// Spanning nearly the whole `Long` range, `i * step` stops fitting in a long before the
+    /// values do.
     #[tokio::test]
-    async fn test_generated_code_overflow() {
-        let step = 1i64 << 62;
+    async fn test_values_where_the_offset_does_not_fit() {
+        let step = 1i64 << 52;
         let n = num_elements(i64::MIN, i64::MAX, step);
-        assert_eq!(n, 4);
-        assert!(collect(i64::MIN, step, n, 1, 8192).await.is_empty());
+        let expected: Vec<i64> = (0..n as i128)
+            .map(|i| (i64::MIN as i128 + i * step as i128) as i64)
+            .collect();
+        assert_eq!(collect(i64::MIN, step, n, 1, 1000).await, expected);
     }
 
     #[test]

@@ -269,8 +269,10 @@ object CometConf extends ShimCometConf {
       "range",
       defaultValue = false,
       notes = Some(
-        "Experimental. When enabled, Comet generates the rows of `spark.range` and SQL " +
-          "`range()` in native code, so the operators above them can run natively"))
+        "When enabled, Comet generates the rows of `spark.range` and SQL `range()` in native " +
+          "code, so the operators above them can run natively. It is off by default because " +
+          "it can be slower than Spark when those operators are only cheap expressions, such " +
+          "as a filter, which Spark compiles together with the range into one loop"))
   val COMET_EXEC_EMPTY_RELATION_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("emptyRelation", defaultValue = true)
   val COMET_EXEC_SAMPLE_ENABLED: ConfigEntry[Boolean] =

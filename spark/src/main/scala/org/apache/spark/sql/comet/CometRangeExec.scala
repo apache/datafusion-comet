@@ -25,7 +25,6 @@ import org.apache.spark.sql.execution.{RangeExec, SparkPlan}
 import com.google.common.base.Objects
 
 import org.apache.comet.{CometConf, ConfigEntry}
-import org.apache.comet.CometSparkSessionExtensions.isWholeStageCodegenDisabled
 import org.apache.comet.serde.{CometOperatorSerde, Compatible, OperatorOuterClass, SupportLevel, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.Operator
 
@@ -34,9 +33,8 @@ import org.apache.comet.serde.OperatorOuterClass.Operator
  * `range()`. The values are generated in native code (`range_exec` in the native operators
  * crate). Each task computes its own partition from the partition index, so this operator reports
  * Spark's partitioning, and the native plan it belongs to runs one task per slice with no JVM
- * input. Partitions, values and their order match Spark's generated code for `RangeExec`. Where
- * no native operator consumes the range, `EliminateRedundantTransitions` restores Spark's
- * `RangeExec`.
+ * input. Partitions, values and their order match Spark's `RangeExec`. Where no native operator
+ * consumes the range, `EliminateRedundantTransitions` restores Spark's `RangeExec`.
  */
 case class CometRangeExec(
     override val nativeOp: Operator,
@@ -77,33 +75,37 @@ object CometRangeExec extends CometOperatorSerde[RangeExec] {
     CometConf.COMET_EXEC_RANGE_ENABLED)
 
   /**
-   * Comet follows Spark's generated code for `RangeExec`. With whole-stage codegen disabled,
-   * Spark runs the interpreted `RangeExec.doExecute` instead, and the two can return different
-   * rows when the generated code's arithmetic overflows, so those ranges stay on Spark. So does a
-   * range with fewer than one slice, which Spark fails when it runs and Comet would return empty.
+   * A range whose arithmetic may overflow stays on Spark. Spark's generated code for `RangeExec`
+   * and its interpreted `RangeExec.doExecute`, which runs when whole-stage codegen is off or the
+   * generated code is too large, can return different rows for it. So does a range with fewer
+   * than one slice, which Spark fails when it runs and Comet would return empty.
    */
   override def getSupportLevel(op: RangeExec): SupportLevel = {
-    if (!op.isEmptyRange && op.numSlices < 1) {
+    if (op.isEmptyRange) {
+      // Spark produces no partitions for it whatever its slice count, and so does Comet.
+      Compatible()
+    } else if (op.numSlices < 1) {
       Unsupported(Some(s"Spark fails a range with ${op.numSlices} slices"))
-    } else if (isWholeStageCodegenDisabled(op.conf) && mayOverflow(op)) {
+    } else if (mayOverflow(op)) {
       Unsupported(
         Some(
-          "Spark's interpreted RangeExec, which runs when whole-stage codegen is disabled, " +
-            "can return different rows for this range"))
+          "Spark can return different rows for a range whose arithmetic overflows, " +
+            "depending on whether whole-stage codegen runs it"))
     } else {
       Compatible()
     }
   }
 
   /**
-   * Whether Spark's generated code for `RangeExec` can overflow for `op`, which is when it can
-   * disagree with the interpreted `RangeExec`. It reads the element count as a long, which
-   * truncates a count that does not fit, and walks each partition in batches of up to 1000 values
-   * whose end wraps if the batch spans 2^63 or more.
+   * Whether Spark's generated code for `RangeExec` can overflow for `op`. It reads the element
+   * count as a long, and walks each slice in batches of up to 1000 values, computing a batch's
+   * end as its start plus the batch's span. The span wraps if it does not fit in a long. No slice
+   * holds more than `ceil(numElements / numSlices)` values. Otherwise both of Spark's paths
+   * produce the values `start + i * step` that Comet does.
    */
   private def mayOverflow(op: RangeExec): Boolean = {
-    op.numElements > Long.MaxValue ||
-    BigInt(op.step).abs * op.numElements.min(1000) >= (BigInt(1) << 63)
+    val maxSliceElements = (op.numElements + op.numSlices - 1) / op.numSlices
+    !op.numElements.isValidLong || !(BigInt(op.step) * maxSliceElements.min(1000)).isValidLong
   }
 
   override def convert(
@@ -114,7 +116,7 @@ object CometRangeExec extends CometOperatorSerde[RangeExec] {
       .newBuilder()
       .setStart(op.start)
       .setStep(op.step)
-      // Spark's generated code reads the element count as a long, so it is truncated the same way.
+      // getSupportLevel declines a count that does not fit in a long.
       .setNumElements(op.numElements.toLong)
       .setNumSlices(op.numSlices)
     Some(builder.setRangeScan(rangeScan).build())

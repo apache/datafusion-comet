@@ -71,10 +71,8 @@ class CometRangeExecSuite extends CometTestBase {
     // Ranges that end at the edges of the Long range.
     (Long.MaxValue - 10, Long.MaxValue, 3L, 2),
     (Long.MinValue + 10, Long.MinValue, -3L, 2),
-    // Spark's generated code returns no rows here: the batch end wraps around, while the
-    // interpreted RangeExec returns four. Comet follows the generated code, which Spark runs by
-    // default.
-    (Long.MinValue, Long.MaxValue, 1L << 62, 1))
+    // A product of the index and the step that does not fit in a long, with values that do.
+    (Long.MinValue, Long.MaxValue, 1L << 52, 1))
 
   // Ranges with no rows, which Spark plans as RangeExec over an empty RDD.
   private val emptyRanges: Seq[(Long, Long, Long, Int)] = Seq(
@@ -124,20 +122,25 @@ class CometRangeExecSuite extends CometTestBase {
     assert(df.collect().toSeq == Seq(Row(0L, null)))
   }
 
-  rangeTest("whole-stage codegen disabled") {
-    withSQLConf(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false") {
-      // Spark's interpreted RangeExec returns the same rows as its generated code here.
-      checkCometRange(spark.range(0, 1000, 3, 4).selectExpr("id + 1"))
-      // Here it returns four rows where the generated code, which Comet follows, returns none.
-      val overflowing = spark.range(Long.MinValue, Long.MaxValue, 1L << 62, 1)
-      checkSparkAnswerAndFallbackReason(
-        overflowing.selectExpr("id + 1"),
-        "Spark's interpreted RangeExec")
-      // A range CometRangeExec declines can still use the Spark-to-Arrow conversion.
-      withSQLConf(CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true") {
-        val (_, plan) = checkSparkAnswer(overflowing.selectExpr("id + 1"))
-        assert(collect(plan) { case c: CometSparkToColumnarExec => c }.nonEmpty, plan)
+  rangeTest("a range whose arithmetic may overflow stays on Spark") {
+    val reason = "Spark can return different rows for a range whose arithmetic overflows"
+    // Spark's generated code returns no rows here, because the end of its batch wraps, and its
+    // interpreted RangeExec returns four.
+    val overflowing = spark.range(Long.MinValue, Long.MaxValue, 1L << 62, 1).selectExpr("id + 1")
+    Seq("true", "false").foreach { codegen =>
+      withSQLConf(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> codegen) {
+        checkSparkAnswerAndFallbackReason(overflowing, reason)
       }
+    }
+    // An element count that does not fit in a long. Only with codegen, since Spark's interpreted
+    // RangeExec would produce every value.
+    checkSparkAnswerAndFallbackReason(
+      spark.range(Long.MinValue, Long.MaxValue, 1, 4).selectExpr("id + 1"),
+      reason)
+    // A range CometRangeExec declines can still use the Spark-to-Arrow conversion.
+    withSQLConf(CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true") {
+      val (_, plan) = checkSparkAnswer(overflowing)
+      assert(collect(plan) { case c: CometSparkToColumnarExec => c }.nonEmpty, plan)
     }
   }
 

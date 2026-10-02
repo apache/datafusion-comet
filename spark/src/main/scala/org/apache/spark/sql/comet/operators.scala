@@ -30,7 +30,7 @@ import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSeq, AttributeSet, Expression, ExpressionSet, Generator, LeafExpression, Literal, NamedExpression, SortOrder, XXH64}
+import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSeq, AttributeSet, CodegenObjectFactoryMode, Expression, ExpressionSet, Generator, LeafExpression, Literal, NamedExpression, SortOrder, XXH64}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, CollectList, CollectSet, Final, ImperativeAggregate, Mode, Partial, PartialMerge, Percentile, Sum}
 import org.apache.spark.sql.catalyst.expressions.codegen.CodegenFallback
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
@@ -45,6 +45,7 @@ import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregat
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, StructField, StructType, TimestampNTZType, TimestampType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.unsafe.Platform
@@ -55,7 +56,7 @@ import com.google.common.base.Objects
 import com.google.protobuf.CodedOutputStream
 
 import org.apache.comet.{CometConf, CometExecIterator, CometRuntimeException, ConfigEntry, ContribServices}
-import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleEnabled, isWholeStageCodegenDisabled, withFallbackReason}
+import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleEnabled, isSpark35Plus, withFallbackReason}
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.rules.CometExecRule
 import org.apache.comet.serde.{CometOperatorSerde, Compatible, OperatorOuterClass, QueryContextInterner, SupportLevel, Unsupported}
@@ -2321,7 +2322,10 @@ object CometHashAggregateExec
     // Spark turns codegen off by config, for an imperative aggregate, for a non-leaf
     // CodegenFallback expression, or when the output or an input exceeds its field limit. The
     // NO_CODEGEN factory mode turns whole-stage codegen off only from Spark 3.5 (SPARK-44236).
-    val codegenOff = isWholeStageCodegenDisabled(op.conf) ||
+    val codegenOff = !op.conf.wholeStageEnabled ||
+      (isSpark35Plus && op.conf
+        .getConfString(SQLConf.CODEGEN_FACTORY_MODE.key)
+        .equalsIgnoreCase(CodegenObjectFactoryMode.NO_CODEGEN.toString)) ||
       op.aggregateExpressions.exists(_.aggregateFunction.isInstanceOf[ImperativeAggregate]) ||
       WholeStageCodegenExec.isTooManyFields(op.conf, op.schema) ||
       op.children.exists(child => WholeStageCodegenExec.isTooManyFields(op.conf, child.schema)) ||

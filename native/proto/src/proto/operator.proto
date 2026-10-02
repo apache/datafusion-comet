@@ -846,11 +846,11 @@ message Sample {
 
 // Spark's `RangeExec`, which produces the rows of `spark.range` and SQL `range()`. The native side
 // computes its partition's values from these fields and the partition index, the way Spark's
-// generated code for `RangeExec` does.
+// `RangeExec` does.
 message RangeScan {
   int64 start = 1;
   int64 step = 2;
-  // Spark's element count, truncated to a long as Spark's generated code reads it.
+  // Spark's element count. Comet sends only ranges whose count fits in a long.
   int64 num_elements = 3;
   int32 num_slices = 4;
 }
