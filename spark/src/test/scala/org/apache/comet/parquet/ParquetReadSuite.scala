@@ -51,6 +51,7 @@ import com.google.common.primitives.UnsignedLong
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark41Plus}
+import org.apache.comet.hadoop.fs.StatusCountingFileSystem
 import org.apache.comet.vector.CometVector
 
 abstract class ParquetReadSuite extends CometTestBase {
@@ -2775,6 +2776,47 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
       assert(!requiresRebase(Seq(correctedInfo)))
       fs.delete(correctedFile, false)
       assert(!requiresRebase(Seq(correctedInfo)))
+    }
+  }
+
+  test("datetime rebase check reads footers with the listed file status") {
+    // The listing already holds each file's status. Asking the file system for it again costs a
+    // HEAD request per file on an object store, so the footer reads must not do it.
+    withTempPath { path =>
+      withSQLConf(SQLConf.PARQUET_REBASE_MODE_IN_WRITE.key -> "CORRECTED") {
+        (0 until 3).foreach { i =>
+          sql(s"SELECT date_add(date'2000-01-01', $i) AS d")
+            .coalesce(1)
+            .write
+            .mode("append")
+            .parquet(path.toString)
+        }
+      }
+      val hadoopConf = spark.sessionState.newHadoopConf()
+      hadoopConf.set(
+        s"fs.${StatusCountingFileSystem.SCHEME}.impl",
+        classOf[StatusCountingFileSystem].getName)
+      hadoopConf.setBoolean(s"fs.${StatusCountingFileSystem.SCHEME}.impl.disable.cache", true)
+      val dir = new Path(StatusCountingFileSystem.PREFIX + path.getAbsolutePath)
+      val files = dir
+        .getFileSystem(hadoopConf)
+        .listStatus(dir)
+        .filter(_.getPath.getName.endsWith(".parquet"))
+        .map(s => CometScanUtils.ParquetFileInfo(s.getPath, s.getLen, s.getModificationTime))
+        .toSeq
+      assert(files.size == 3)
+
+      StatusCountingFileSystem.resetGetFileStatusCalls()
+      // None of the files is cached or legacy, so every footer is read.
+      assert(
+        !CometScanUtils.requiresDatetimeRebase(
+          files,
+          hadoopConf,
+          "CORRECTED",
+          "CORRECTED",
+          hasDate = true,
+          hasTimestamp = false))
+      assert(StatusCountingFileSystem.getFileStatusCalls() == 0)
     }
   }
 

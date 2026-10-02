@@ -24,7 +24,7 @@ import java.util.concurrent.{Callable, ExecutorCompletionService}
 import scala.collection.mutable.ListBuffer
 
 import org.apache.hadoop.conf.Configuration
-import org.apache.hadoop.fs.Path
+import org.apache.hadoop.fs.{FileStatus, Path}
 import org.apache.parquet.HadoopReadOptions
 import org.apache.parquet.format.converter.ParquetMetadataConverter.SKIP_ROW_GROUPS
 import org.apache.parquet.hadoop.ParquetFileReader
@@ -35,7 +35,11 @@ import org.apache.spark.util.ThreadUtils
 
 object CometScanUtils {
 
-  /** Identity of one Parquet file for the datetime rebase check. */
+  /**
+   * One Parquet file of the scan's listing, as the datetime rebase check sees it: its cache
+   * identity and the status its footer is read with. The length and modification time must be the
+   * listing's.
+   */
   case class ParquetFileInfo(path: Path, length: Long, modificationTime: Long)
 
   /** Datetime-relevant footer metadata of one Parquet file, independent of any read mode. */
@@ -84,10 +88,14 @@ object CometScanUtils {
           modeNeedsRebase(int96Mode, "3.1.0", facts.hasLegacyInt96)))
     }
 
-    def readFacts(path: Path): DatetimeFooterFacts = {
-      val inputFile = HadoopInputFile.fromPath(path, conf)
+    def readFacts(file: ParquetFileInfo): DatetimeFooterFacts = {
+      // Open the file with the status the listing already returned: HadoopInputFile.fromPath
+      // would ask the file system for it again, a HEAD request per file on object stores. The
+      // footer is located from the end of the file, so the length must be the listed one.
+      val status = new FileStatus(file.length, false, 0, 0, file.modificationTime, file.path)
+      val inputFile = HadoopInputFile.fromStatus(status, conf)
       val readOptions = HadoopReadOptions
-        .builder(conf, path)
+        .builder(conf, file.path)
         .withMetadataFilter(SKIP_ROW_GROUPS)
         .build()
       val reader = ParquetFileReader.open(inputFile, readOptions)
@@ -104,14 +112,14 @@ object CometScanUtils {
 
     // Answer from the cache where possible; only cache misses pay a footer read.
     var cachedNeedsRebase = false
-    val misses = new ListBuffer[(FooterCacheKey, Path)]
+    val misses = new ListBuffer[(FooterCacheKey, ParquetFileInfo)]
     files.foreach { file =>
       val key = (file.path.toString, file.length, file.modificationTime)
       val cached = footerFactsCache.get(key)
       if (cached != null) {
         cachedNeedsRebase = cachedNeedsRebase || needsRebase(cached)
       } else {
-        misses += ((key, file.path))
+        misses += ((key, file))
       }
     }
     if (cachedNeedsRebase) {
@@ -131,9 +139,9 @@ object CometScanUtils {
     // Keep only `parallelism` reads in flight so finding one legacy footer stops further reads.
 
     def submitNext(): Unit = {
-      val (key, path) = remaining.next()
+      val (key, file) = remaining.next()
       completion.submit(new Callable[(FooterCacheKey, DatetimeFooterFacts)] {
-        override def call(): (FooterCacheKey, DatetimeFooterFacts) = (key, readFacts(path))
+        override def call(): (FooterCacheKey, DatetimeFooterFacts) = (key, readFacts(file))
       })
       inFlight += 1
     }
