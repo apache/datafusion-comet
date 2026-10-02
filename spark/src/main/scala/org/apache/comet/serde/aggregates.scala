@@ -22,7 +22,7 @@ package org.apache.comet.serde
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Expression, Literal}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateFunction, ApproximatePercentile, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, CollectList, CollectSet, Complete, Corr, Count, Covariance, CovPopulation, CovSample, First, HyperLogLogPlusPlus, Last, Max, MaxBy, MaxMinBy, Min, MinBy, Mode, Partial, Percentile, RegrIntercept, RegrR2, RegrReplacement, RegrSlope, RegrSXY, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, ApproximatePercentile, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, CollectList, CollectSet, Complete, Corr, Count, Covariance, CovPopulation, CovSample, First, HyperLogLogPlusPlus, Last, Max, MaxBy, MaxMinBy, Min, MinBy, Mode, Partial, Percentile, RegrIntercept, RegrR2, RegrReplacement, RegrSlope, RegrSXY, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
 import org.apache.spark.sql.catalyst.util.ArrayData
 import org.apache.spark.sql.comet.CometExecUtils
 import org.apache.spark.sql.internal.SQLConf
@@ -929,27 +929,7 @@ private[comet] object RegrSparkVersions {
  * variable (y) and `child2` is the independent variable (x), matching the native accumulator's
  * `regr_*(y, x)` convention.
  */
-trait CometRegrBase[T <: AggregateFunction] extends CometAggregateExpressionSerde[T] {
-
-  /** The SQL function or functions this serde implements, named in the incompatibility note. */
-  protected def sqlFunctions: String
-
-  // The native merge (`variance_merge` and `covariance_merge` in welford.rs) orders its
-  // floating-point operations differently from Spark's CentralMomentAgg and Covariance. Merging
-  // the first partial buffer into the zero-initialized final buffer can leave a one-ULP error on
-  // the mean, so a constant variable ends up with a tiny non-zero m2 and Spark's exact `m2 == 0`
-  // degenerate-case checks never fire. Porting Spark's merge order would make these Compatible.
-  private def mergeOrderReason: String =
-    s"Comet merges the partial aggregates of $sqlFunctions in a different floating-point " +
-      "operation order from Spark. When a group's rows come from more than one partial " +
-      "aggregate and a variable is constant at a value that binary floating point cannot " +
-      "represent exactly, such as 0.1, Comet returns a wrong value where Spark returns NULL, " +
-      "0.0 or 1.0 (https://github.com/apache/datafusion-comet/issues/6423)"
-
-  override def getIncompatibleReasons(): Seq[String] = Seq(mergeOrderReason)
-
-  override def getSupportLevel(expr: T): SupportLevel = Incompatible(Some(mergeOrderReason))
-
+trait CometRegrBase {
   def convertRegr(
       aggExpr: AggregateExpression,
       regrType: ExprOuterClass.Regr.RegrType,
@@ -986,9 +966,7 @@ trait CometRegrBase[T <: AggregateFunction] extends CometAggregateExpressionSerd
   }
 }
 
-object CometRegrSlope extends CometRegrBase[RegrSlope] {
-  override protected def sqlFunctions: String = "`regr_slope`"
-
+object CometRegrSlope extends CometAggregateExpressionSerde[RegrSlope] with CometRegrBase {
   override def convert(
       aggExpr: AggregateExpression,
       expr: RegrSlope,
@@ -1004,9 +982,9 @@ object CometRegrSlope extends CometRegrBase[RegrSlope] {
       binding)
 }
 
-object CometRegrIntercept extends CometRegrBase[RegrIntercept] {
-  override protected def sqlFunctions: String = "`regr_intercept`"
-
+object CometRegrIntercept
+    extends CometAggregateExpressionSerde[RegrIntercept]
+    with CometRegrBase {
   override def convert(
       aggExpr: AggregateExpression,
       expr: RegrIntercept,
@@ -1022,9 +1000,7 @@ object CometRegrIntercept extends CometRegrBase[RegrIntercept] {
       binding)
 }
 
-object CometRegrR2 extends CometRegrBase[RegrR2] {
-  override protected def sqlFunctions: String = "`regr_r2`"
-
+object CometRegrR2 extends CometAggregateExpressionSerde[RegrR2] with CometRegrBase {
   override def convert(
       aggExpr: AggregateExpression,
       expr: RegrR2,
@@ -1034,9 +1010,7 @@ object CometRegrR2 extends CometRegrBase[RegrR2] {
     convertRegr(aggExpr, ExprOuterClass.Regr.RegrType.R2, expr.y, expr.x, inputs, binding)
 }
 
-object CometRegrSXY extends CometRegrBase[RegrSXY] {
-  override protected def sqlFunctions: String = "`regr_sxy`"
-
+object CometRegrSXY extends CometAggregateExpressionSerde[RegrSXY] with CometRegrBase {
   override def convert(
       aggExpr: AggregateExpression,
       expr: RegrSXY,
@@ -1053,9 +1027,9 @@ object CometRegrSXY extends CometRegrBase[RegrSXY] {
  * deviations) of its single child. We serialize it as the `SXX` regression statistic with the
  * child duplicated, since `regr_sxx(c, c) = m2(c)`.
  */
-object CometRegrReplacement extends CometRegrBase[RegrReplacement] {
-  override protected def sqlFunctions: String = "`regr_sxx` and `regr_syy`"
-
+object CometRegrReplacement
+    extends CometAggregateExpressionSerde[RegrReplacement]
+    with CometRegrBase {
   override def convert(
       aggExpr: AggregateExpression,
       expr: RegrReplacement,
