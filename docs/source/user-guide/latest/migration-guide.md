@@ -67,9 +67,9 @@ need none either, but check whether any of them applies to your deployment.
 `spark.comet.exec.inMemoryCache.enabled` now defaults to `true`. An application that loads
 `CometPlugin` now stores what it caches with `CACHE TABLE`, `df.cache()` or `df.persist()` in
 Comet's Arrow format instead of Spark's, and Comet scans it natively. The format does not change
-query results, but it can change performance: Spark operators read Comet's format more slowly than
-Spark's own, which matters when a session turns Comet or its native execution off after caching.
-Comet records a fallback reason on such a scan. See
+query results, but it can change performance. Spark's own cache scan reads Comet's format more
+slowly than Spark's, which matters when a session turns Comet or its native execution off after
+caching, and Comet records a fallback reason on such a scan. See
 [In-Memory Cache](in-memory-cache.md#limitations).
 
 The format is chosen once, when the application starts. To keep Spark's format, set

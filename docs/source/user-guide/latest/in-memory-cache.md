@@ -21,8 +21,9 @@
 
 Comet can store Spark's in-memory cache (`CACHE TABLE`, `df.cache()`, `df.persist()`) in an Arrow
 format that Comet operators read directly. Without it, a cached table is stored in Spark's own
-format and every scan of it has to convert each batch before Comet can continue, which shows up in
-the plan as a `CometSparkColumnarToColumnar` above the cache scan.
+format, which Comet operators cannot read. Under Comet's default settings the operators above the
+cache scan then run on Spark. With `spark.comet.sparkToColumnar.enabled`, a
+`CometSparkColumnarToColumnar` above the scan converts each batch for Comet operators instead.
 
 This feature is **experimental and enabled by default**. To turn it off, set the config at startup,
 alongside the rest of Comet's configuration:
@@ -160,10 +161,43 @@ back to Spark row execution above the scan and the two columns stop measuring th
 Read what this compares carefully. Comet execution is on in both columns, so the aggregation runs
 on Comet either way and only the cache-scan boundary moves: on the left, Spark's
 `InMemoryTableScanExec` feeds those same Comet operators through a `CometSparkColumnarToColumnar`
-bridge; on the right, `CometInMemoryTableScan` feeds them directly. Both columns read the same
+bridge, which the benchmark turns on with `spark.comet.sparkToColumnar.enabled`; on the right,
+`CometInMemoryTableScan` feeds them directly. Both columns read the same
 Comet-written `CometCachedBatch`. These numbers are therefore "keep the cached scan native" against
 "fall back to a Spark cache scan and convert", not Comet against Spark execution, and not a
-comparison with Spark's own cache format. That comparison is under [Limitations](#limitations).
+comparison with Spark's own cache format, which follows.
+
+### Against Spark's cache format
+
+What turning the feature on changes for a query that Comet runs is measured against Spark's own
+cache format by the benchmark's adaptive cases. Comet and AQE are on, Comet's other settings are at
+their defaults, and the same 5M-row relation is cached in each format. The defaults leave
+`spark.comet.sparkToColumnar.enabled` off, so Comet operators cannot read Spark's cache scan, and
+with Spark's format the operators directly above the scan run on Spark. Measured on an AMD Ryzen 9
+7950X3D (JDK 17, Spark 4.1, release build):
+
+| Query shape                | Spark's cache format | Comet's cache format | Relative |
+| -------------------------- | -------------------: | -------------------: | -------: |
+| Row count only (0 of 6)    |                29 ms |                24 ms |     1.2x |
+| Narrow projection (1 of 6) |                52 ms |                34 ms |     1.5x |
+| 3 of 6 columns             |               102 ms |               112 ms |     0.9x |
+| Full projection (6 of 6)   |               299 ms |               224 ms |     1.3x |
+
+A Spark operator above the cache scan, standing in for any operator Comet does not support, is
+measured the same way, with Comet's aggregate turned off. With Comet's format, the native scan feeds
+that operator through a columnar-to-row transition:
+
+| Query shape                | Spark's cache format | Comet's cache format | Relative |
+| -------------------------- | -------------------: | -------------------: | -------: |
+| Row count only (0 of 6)    |                39 ms |                16 ms |     2.4x |
+| Narrow projection (1 of 6) |                50 ms |                27 ms |     1.8x |
+| 3 of 6 columns             |                97 ms |               112 ms |     0.9x |
+| Full projection (6 of 6)   |               303 ms |               299 ms |     1.0x |
+
+Comet's format is as fast or faster in every shape but one: the read of three of the six columns,
+all of them longs, is about 10% slower under either kind of operator. That cost is `zstd`
+decompression. With the `none` codec, the same read is 2.7x faster than Spark's format with Comet
+operators above the scan, and 1.6x faster with a Spark operator above it.
 
 ## Kryo
 
@@ -194,9 +228,11 @@ Spark's cached batch too.
 
 ## Limitations
 
-Reads that feed **Spark** operators rather than Comet ones are slower than Spark's own cache
-format, and the narrower the read, the wider the gap. Measured by the same benchmark over the same
-5M-row relation, with Comet off so that Spark operators consume the cached data:
+Spark's own cache scan, `InMemoryTableScanExec`, reads Comet's format more slowly than Spark's, and
+the narrower the read, the wider the gap. Spark's scan reads a cached relation when a session turns
+Comet or its native execution off after caching, and when the relation's cached plan records
+`Dataset.observe` metrics, and Comet records a fallback reason on the scan in either case. Measured
+by the same benchmark over the same 5M-row relation, with Comet off:
 
 | Read shape              | Spark's cache format | Comet's cache format | Slowdown |
 | ----------------------- | -------------------: | -------------------: | -------: |
@@ -205,7 +241,8 @@ format, and the narrower the read, the wider the gap. Measured by the same bench
 | 3 of 6 columns          |                98 ms |               331 ms |     3.4x |
 | 6 of 6 columns          |               410 ms |               623 ms |     1.5x |
 
-This is the main reason the feature is still described as experimental. The cause is not yet
+A Spark operator above Comet's native cache scan does not pay this; see [Performance](#performance).
+This gap is the main reason the feature is still described as experimental. The cause is not yet
 established; [#5485](https://github.com/apache/datafusion-comet/issues/5485) tracks it.
 
 Comet's serializer exists because Spark's own Arrow cache format
