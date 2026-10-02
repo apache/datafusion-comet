@@ -160,6 +160,5 @@ an edge case that is not of concern for many users. Setting `spark.comet.exec.st
 nested cases fall back to Spark, and they can be forced back onto the native path with
 `spark.comet.expression.SortOrder.allowIncompatible=true`.
 
-`sort_array` is separate. It sorts array elements rather than ordering rows, and its elements are compared with Arrow's
-raw total ordering, so `spark.comet.exec.strictFloatingPoint=true` makes it fall back even for a scalar floating-point
-element type. Use `spark.comet.expression.SortArray.allowIncompatible=true` to keep it native.
+`sort_array` sorts array elements rather than ordering rows. It follows Spark's floating-point ordering as well, so it
+also stays native with `spark.comet.exec.strictFloatingPoint=true`.
