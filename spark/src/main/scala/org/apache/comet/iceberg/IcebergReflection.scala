@@ -765,6 +765,46 @@ object IcebergReflection extends Logging {
   }
 
   /**
+   * The partition fields of `spec` whose source column is a `float` or `double`, as (partition
+   * field name, Iceberg type name). Only the identity transform applies to those types, so such a
+   * field holds the column's own values. A `void` field is skipped: it only ever holds null, and
+   * its source column may no longer exist. Each field is resolved through its own `sourceId`
+   * rather than by position in `partitionType()`. Throws on reflection failure, or when a field
+   * that is not `void` has no source column, so the caller can fail closed.
+   */
+  def floatingPointPartitionFields(spec: Any): Seq[(String, String)] = {
+    import scala.jdk.CollectionConverters._
+    val schema = getMethod(spec.getClass, "schema").invoke(spec)
+    val findField = getMethod(schema.getClass, "findField", classOf[Int])
+    getMethod(spec.getClass, "fields")
+      .invoke(spec)
+      .asInstanceOf[java.util.List[_]]
+      .asScala
+      .flatMap { partitionField =>
+        val transform =
+          getMethod(partitionField.getClass, "transform").invoke(partitionField).toString
+        if (transform == "void") {
+          None
+        } else {
+          val name =
+            getMethod(partitionField.getClass, "name").invoke(partitionField).asInstanceOf[String]
+          val sourceId =
+            getMethod(partitionField.getClass, "sourceId")
+              .invoke(partitionField)
+              .asInstanceOf[Int]
+          val source = findField.invoke(schema, sourceId.asInstanceOf[Object])
+          if (source == null) {
+            throw new IllegalStateException(
+              s"partition field $name has no source column with id $sourceId")
+          }
+          val sourceType = getMethod(source.getClass, "type").invoke(source).toString
+          if (sourceType == "float" || sourceType == "double") Some(name -> sourceType) else None
+        }
+      }
+      .toSeq
+  }
+
+  /**
    * Gets the partition spec from an Iceberg table.
    */
   def getPartitionSpec(table: Any): Option[Any] = {
