@@ -19,14 +19,15 @@
 
 package org.apache.comet.contrib.delta
 
-import java.io.File
+import java.io.{File, IOException}
 import java.net.URI
 import java.nio.file.Files
 import java.util.{Locale, UUID}
+import java.util.concurrent.atomic.AtomicBoolean
 
 import org.apache.hadoop.conf.Configuration
-import org.apache.hadoop.fs.Path
-import org.apache.hadoop.fs.s3a.S3AUtils
+import org.apache.hadoop.fs.{Path, RawLocalFileSystem}
+import org.apache.hadoop.fs.s3a.{S3AFileSystem, S3AUtils}
 import org.apache.hadoop.security.alias.CredentialProviderFactory
 import org.apache.spark.sql.delta.actions.DeletionVectorDescriptor
 
@@ -129,6 +130,77 @@ class DeltaScanContribSuite extends CometDeltaTestBase {
         val df = spark.read.format("delta").load(path)
         checkSparkAnswer(df)
         assert(deltaNativeScans(df).nonEmpty)
+      }
+    }
+  }
+
+  test("_metadata.file_block_start and file_block_length fall back on a split Delta file") {
+    // When a file is split, Spark keeps a row group in the split holding its midpoint while
+    // DataFusion keeps it in the split holding its first page, so these per-split values differ.
+    withSQLConf("spark.sql.files.maxPartitionBytes" -> "4096") {
+      withTempPath { dir =>
+        val path = dir.getAbsolutePath
+        spark
+          .range(0, 5000)
+          .selectExpr("id", "concat('value_', cast(id as string)) as s")
+          .coalesce(1)
+          .write
+          .format("delta")
+          .save(path)
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          assert(
+            spark.read.format("delta").load(path).rdd.getNumPartitions > 1,
+            "the file has to be split across partitions for this test to mean anything")
+        }
+
+        val df = spark.read.format("delta").load(path)
+        for (column <- Seq("file_block_start", "file_block_length")) {
+          checkSparkAnswerAndFallbackReason(
+            df.selectExpr("id", "s", s"_metadata.$column"),
+            s"Native Delta scan does not support metadata column(s) $column")
+        }
+        // A filter alone consumes the value too, as does selecting the whole struct.
+        checkSparkAnswerAndFallbackReason(
+          df.filter("_metadata.file_block_start > 0").select("id"),
+          "Native Delta scan does not support metadata column(s) file_block_start")
+        checkSparkAnswerAndFallbackReason(
+          df.selectExpr("id", "_metadata"),
+          "Native Delta scan does not support metadata column(s) " +
+            "file_block_start, file_block_length")
+        // The per-file constants do not depend on which split reads a row group.
+        checkDeltaNativeScanAnswer(df.selectExpr("id", "s", "_metadata.file_path"))
+      }
+    }
+  }
+
+  test("_metadata.file_block_start falls back on a split deletion-vector Delta file") {
+    // A deletion-vector read puts every _metadata field in the scan output; the plain read stays
+    // native (see the claim test above) while a query consuming file_block_start falls back.
+    withSQLConf("spark.sql.files.maxPartitionBytes" -> "4096") {
+      withTempPath { dir =>
+        val path = dir.getAbsolutePath
+        spark
+          .range(0, 5000)
+          .selectExpr("id", "concat('value_', cast(id as string)) as s")
+          .coalesce(1)
+          .write
+          .format("delta")
+          .save(path)
+        spark.sql(
+          s"ALTER TABLE delta.`$path` SET TBLPROPERTIES ('delta.enableDeletionVectors' = 'true')")
+        spark.sql(s"DELETE FROM delta.`$path` WHERE id % 7 = 0")
+
+        val df = spark.read.format("delta").load(path)
+        checkDeltaNativeScanAnswer(df)
+        val expected = "Native Delta scan does not support metadata column(s) file_block_start"
+        val (_, cometPlan) = checkSparkAnswerAndFallbackReason(
+          df.selectExpr("id", "s", "_metadata.file_block_start"),
+          expected)
+        // file_block_length is in the scan output too, but nothing above the scan reads it.
+        val reasons = new ExtendedExplainInfo().getFallbackReasons(cometPlan)
+        assert(
+          reasons.exists(r => r.contains(expected) && !r.contains("file_block_length")),
+          s"expected '$expected' naming only file_block_start among: $reasons")
       }
     }
   }
@@ -1481,14 +1553,15 @@ class DeltaScanContribSuite extends CometDeltaTestBase {
 
   test(
     "providerClassGateReason declines an unsupported credential provider class, naming the " +
-      "class and the bucket") {
+      "key and the bucket but never the configured value") {
     val conf = new Configuration(false)
     conf.set("fs.s3a.aws.credentials.provider", "com.example.CustomCredentialsProvider")
     val reason =
       DeltaScanSupport
         .providerClassGateReason(conf, Seq(new URI("s3a://mybucket/part-0.parquet")))
     assert(reason.isDefined)
-    assert(reason.get.contains("com.example.CustomCredentialsProvider"))
+    assert(reason.get.contains("fs.s3a.aws.credentials.provider"))
+    assert(!reason.get.contains("com.example.CustomCredentialsProvider"))
     assert(reason.get.contains("mybucket"))
   }
 
@@ -1506,7 +1579,7 @@ class DeltaScanContribSuite extends CometDeltaTestBase {
       DeltaScanSupport
         .providerClassGateReason(conf, Seq(new URI("s3a://mybucket/part-0.parquet")))
     assert(reason.isDefined)
-    assert(reason.get.contains("com.example.CustomCredentialsProvider"))
+    assert(!reason.get.contains("com.example.CustomCredentialsProvider"))
   }
 
   test(
@@ -1525,7 +1598,7 @@ class DeltaScanContribSuite extends CometDeltaTestBase {
 
   test(
     "providerClassGateReason declines a comma-separated list containing one unsupported " +
-      "class, naming only the unsupported one") {
+      "class, naming neither class") {
     val conf = new Configuration(false)
     conf.set(
       "fs.s3a.aws.credentials.provider",
@@ -1534,7 +1607,7 @@ class DeltaScanContribSuite extends CometDeltaTestBase {
       DeltaScanSupport
         .providerClassGateReason(conf, Seq(new URI("s3a://mybucket/part-0.parquet")))
     assert(reason.isDefined)
-    assert(reason.get.contains("com.example.Bogus"))
+    assert(!reason.get.contains("com.example.Bogus"))
     assert(!reason.get.contains("SimpleAWSCredentialsProvider"))
   }
 
@@ -1592,7 +1665,7 @@ class DeltaScanContribSuite extends CometDeltaTestBase {
       DeltaScanSupport
         .providerClassGateReason(conf, Seq(new URI("s3a://mybucket/part-0.parquet")))
     assert(reason.isDefined)
-    assert(reason.get.contains("com.example.BogusBaseProvider"))
+    assert(!reason.get.contains("com.example.BogusBaseProvider"))
     assert(reason.get.contains("fs.s3a.assumed.role.credentials.provider"))
   }
 
@@ -1729,7 +1802,7 @@ class DeltaScanContribSuite extends CometDeltaTestBase {
       DeltaScanSupport
         .providerClassGateReason(badConf, Seq(new URI("s3a://mybucket/part-0.parquet")))
     assert(reason.isDefined)
-    assert(reason.get.contains("com.example.CustomCredentialsProvider"))
+    assert(!reason.get.contains("com.example.CustomCredentialsProvider"))
   }
 
   test(
@@ -1954,6 +2027,122 @@ class DeltaScanContribSuite extends CometDeltaTestBase {
     assert(reason.get.contains("SSE-C"))
   }
 
+  private val EncryptionAlgorithmKeys =
+    Seq("fs.s3a.encryption.algorithm", "fs.s3a.server-side-encryption-algorithm")
+
+  private val DataBucketUris = Seq(new URI("s3a://data-bucket/part-0.parquet"))
+
+  /** The algorithm Hadoop's own S3AFileSystem selects for `bucket`: propagate, then resolve. */
+  private def hadoopEncryptionAlgorithm(conf: Configuration, bucket: String): String = {
+    // S3AFileSystem's static initializer registers the deprecated algorithm key as an alias of
+    // the canonical one; a real filesystem always has it loaded before it resolves anything.
+    // The alias is process-wide, so afterwards setting the deprecated key also stores the
+    // canonical one and the deprecated-key iterations mostly re-test the canonical path.
+    new S3AFileSystem()
+    S3AUtils
+      .getEncryptionAlgorithm(bucket, S3AUtils.propagateBucketOptions(conf, bucket))
+      .getMethod
+  }
+
+  /** An algorithm key set to `${fs.s3a.custom.ref}`, with a global and optional bucket ref. */
+  private def referencedAlgorithmConf(
+      algorithmKey: String,
+      globalRef: String,
+      bucketRef: Option[String]): Configuration = {
+    val conf = new Configuration(false)
+    conf.set("fs.s3a.custom.ref", globalRef)
+    bucketRef.foreach(conf.set("fs.s3a.bucket.data-bucket.custom.ref", _))
+    conf.set(algorithmKey, "${fs.s3a.custom.ref}")
+    conf
+  }
+
+  test(
+    "unsupportedEncryptionAlgorithmReason declines SSE-C that a bucket override selects " +
+      "through a ${...} reference, resolving the algorithm on the propagated view as Hadoop " +
+      "does, and never names the customer key") {
+    val customerKey = "c3VwZXItc2VjcmV0LWN1c3RvbWVyLWtleQ=="
+    for (algorithmKey <- EncryptionAlgorithmKeys) {
+      val conf = referencedAlgorithmConf(algorithmKey, "AES256", Some("SSE-C"))
+      conf.set("fs.s3a.encryption.key", customerKey)
+      assert(hadoopEncryptionAlgorithm(conf, "data-bucket") == "SSE-C")
+
+      val reason = DeltaScanSupport.unsupportedEncryptionAlgorithmReason(conf, DataBucketUris)
+      assert(reason.isDefined, s"expected a decline for $algorithmKey")
+      assert(reason.get.contains("SSE-C"))
+      assert(reason.get.contains("data-bucket"))
+      assert(!reason.get.contains(customerKey))
+    }
+  }
+
+  test(
+    "unsupportedEncryptionAlgorithmReason passes AES256 selected through a ${...} reference " +
+      "when no bucket override redirects it") {
+    for (algorithmKey <- EncryptionAlgorithmKeys) {
+      val conf = referencedAlgorithmConf(algorithmKey, "AES256", None)
+      assert(hadoopEncryptionAlgorithm(conf, "data-bucket") == "AES256")
+      assert(
+        DeltaScanSupport.unsupportedEncryptionAlgorithmReason(conf, DataBucketUris).isEmpty,
+        s"expected $algorithmKey to pass")
+    }
+  }
+
+  test(
+    "unsupportedEncryptionAlgorithmReason passes SSE-KMS that a bucket override selects " +
+      "through a ${...} reference (both views resolve an allowlisted algorithm)") {
+    for (algorithmKey <- EncryptionAlgorithmKeys) {
+      val conf = referencedAlgorithmConf(algorithmKey, "AES256", Some("SSE-KMS"))
+      assert(hadoopEncryptionAlgorithm(conf, "data-bucket") == "SSE-KMS")
+      assert(
+        DeltaScanSupport.unsupportedEncryptionAlgorithmReason(conf, DataBucketUris).isEmpty,
+        s"expected $algorithmKey to pass")
+    }
+  }
+
+  test(
+    "unsupportedEncryptionAlgorithmReason declines when the unpropagated view resolves SSE-C " +
+      "even though the bucket override makes Hadoop select AES256 (a disagreement only " +
+      "declines)") {
+    for (algorithmKey <- EncryptionAlgorithmKeys) {
+      val conf = referencedAlgorithmConf(algorithmKey, "SSE-C", Some("AES256"))
+      assert(hadoopEncryptionAlgorithm(conf, "data-bucket") == "AES256")
+      val reason = DeltaScanSupport.unsupportedEncryptionAlgorithmReason(conf, DataBucketUris)
+      assert(reason.isDefined, s"expected a decline for $algorithmKey")
+      assert(reason.get.contains("SSE-C"))
+    }
+  }
+
+  test(
+    "unsupportedEncryptionAlgorithmReason never prints an algorithm value that expands to the " +
+      "customer key, whether the propagated or the raw view resolves it") {
+    val customerKey = "TESTKEY-NEVER-PRINT-123"
+    val keyRef = "${fs.s3a.encryption.key}"
+    // (global ref, bucket ref): both views, propagated view only, raw view only.
+    val shapes = Seq((keyRef, None), ("AES256", Some(keyRef)), (keyRef, Some("AES256")))
+    for (algorithmKey <- EncryptionAlgorithmKeys; (globalRef, bucketRef) <- shapes) {
+      val conf = referencedAlgorithmConf(algorithmKey, globalRef, bucketRef)
+      conf.set("fs.s3a.encryption.key", customerKey)
+      val reason = DeltaScanSupport.unsupportedEncryptionAlgorithmReason(conf, DataBucketUris)
+      assert(reason.isDefined, s"expected a decline for $algorithmKey, $globalRef, $bucketRef")
+      assert(reason.get.contains("not a recognised S3 encryption algorithm"))
+      assert(!reason.get.contains(customerKey))
+    }
+  }
+
+  test("providerClassGateReason never prints a provider value that expands to a credential") {
+    val secret = "TESTKEY-NEVER-PRINT-123"
+    val providerKeys =
+      Seq("fs.s3a.aws.credentials.provider", "fs.s3a.bucket.mybucket.aws.credentials.provider")
+    for (key <- providerKeys) {
+      val conf = new Configuration(false)
+      conf.set("fs.s3a.secret.key", secret)
+      conf.set(key, "${fs.s3a.secret.key}")
+      val reason = DeltaScanSupport
+        .providerClassGateReason(conf, Seq(new URI("s3a://mybucket/part-0.parquet")))
+      assert(reason.isDefined, s"expected a decline for $key")
+      assert(!reason.get.contains(secret))
+    }
+  }
+
   test(
     "unsupportedEncryptionAlgorithmReason declines CSE-KMS (client-side encryption): the " +
       "native Parquet reader has no client-side decryption layer, so it would read raw " +
@@ -1988,7 +2177,9 @@ class DeltaScanContribSuite extends CometDeltaTestBase {
     val reason = DeltaScanSupport
       .unsupportedEncryptionAlgorithmReason(conf, Seq(new URI("s3a://mybucket/part-0.parquet")))
     assert(reason.isDefined)
-    assert(reason.get.contains("SOME-FUTURE-ALGORITHM"))
+    // Only a value from the fixed list of known algorithm names is ever printed.
+    assert(reason.get.contains("not a recognised S3 encryption algorithm"))
+    assert(!reason.get.contains("SOME-FUTURE-ALGORITHM"))
   }
 
   test(
@@ -2099,6 +2290,69 @@ class DeltaScanContribSuite extends CometDeltaTestBase {
       assert(reason.get.contains("fs.s3a.security.credential.provider.path"))
     } finally {
       Files.delete(tempDir)
+    }
+  }
+
+  test(
+    "unsupportedEncryptionAlgorithmReason declines a global provider path with any entry that " +
+      "is not a local keystore, without opening it") {
+    val expected = "Native Delta scan cannot verify the S3 settings for data-bucket " +
+      "(hadoop.security.credential.provider.path names a credential keystore that is not on " +
+      "the local filesystem, and the settings cannot be verified without reading it)"
+    val recorder = classOf[OpenRecordingFileSystem].getName
+    // (provider path, whether fs.file.impl names a non-default class)
+    val shapes = Seq(
+      // A scheme of any name can map to S3AFileSystem; only the class decides for Hadoop.
+      ("jceks://s3x@keys/s3.jceks", false),
+      ("jceks://s3a@keys-bucket/s3.jceks", false),
+      ("jceks://file/tmp/local.jceks,jceks://s3@keys-bucket/s3.jceks", false),
+      ("jceks://hdfs@namenode/keys.jceks", false),
+      ("jceks://viewfs@cluster/keys.jceks", false),
+      ("not a uri", false),
+      // Hadoop resolves the nested file scheme through fs.file.impl too.
+      ("jceks://file/etc/k.jceks", true),
+      // A third-party provider factory would run its own code during planning.
+      ("vault://file/k", false))
+    val failures = shapes.flatMap { case (providerPath, overrideFileImpl) =>
+      OpenRecordingFileSystem.opened.set(false)
+      val conf = new Configuration(false)
+      conf.set("hadoop.security.credential.provider.path", providerPath)
+      val schemes = Seq("s3", "s3a", "s3x", "hdfs", "viewfs") ++
+        (if (overrideFileImpl) Seq("file") else Nil)
+      schemes.foreach { scheme =>
+        conf.set(s"fs.$scheme.impl", recorder)
+        conf.set(s"fs.$scheme.impl.disable.cache", "true")
+      }
+      conf.set("fs.s3a.encryption.algorithm", "SSE-C")
+      val reason = DeltaScanSupport.unsupportedEncryptionAlgorithmReason(conf, DataBucketUris)
+      if (OpenRecordingFileSystem.opened.get()) {
+        Some(s"$providerPath was opened")
+      } else if (!reason.contains(expected)) {
+        Some(s"unexpected reason for $providerPath: $reason")
+      } else {
+        None
+      }
+    }
+    assert(failures.isEmpty, failures.mkString("\n"))
+  }
+
+  test(
+    "unsupportedEncryptionAlgorithmReason still evaluates a local keystore or user:/// " +
+      "provider path, falling back to the plaintext algorithm") {
+    for (providerPath <- Seq("jceks://file/tmp/does-not-exist.jceks", "user:///")) {
+      val passing = new Configuration(false)
+      passing.set("hadoop.security.credential.provider.path", providerPath)
+      passing.set("fs.s3a.encryption.algorithm", "AES256")
+      assert(
+        DeltaScanSupport.unsupportedEncryptionAlgorithmReason(passing, DataBucketUris).isEmpty,
+        s"expected $providerPath with AES256 to pass")
+
+      val declining = new Configuration(false)
+      declining.set("hadoop.security.credential.provider.path", providerPath)
+      declining.set("fs.s3a.encryption.algorithm", "SSE-C")
+      val reason =
+        DeltaScanSupport.unsupportedEncryptionAlgorithmReason(declining, DataBucketUris)
+      assert(reason.exists(_.contains("fs.s3a.encryption.algorithm=SSE-C")), s"got $reason")
     }
   }
 
@@ -2588,4 +2842,16 @@ object DeltaScanContribSuite {
       .map(new File(_, relativePath))
       .find(_.isFile)
   }
+}
+
+/** A filesystem that records any attempt to open it, then refuses. */
+class OpenRecordingFileSystem extends RawLocalFileSystem {
+  override def initialize(name: URI, conf: Configuration): Unit = {
+    OpenRecordingFileSystem.opened.set(true)
+    throw new IOException(s"$name must not be opened")
+  }
+}
+
+object OpenRecordingFileSystem {
+  val opened = new AtomicBoolean(false)
 }

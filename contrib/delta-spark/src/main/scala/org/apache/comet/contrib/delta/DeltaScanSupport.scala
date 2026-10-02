@@ -20,7 +20,7 @@
 package org.apache.comet.contrib.delta
 
 import java.io.IOException
-import java.net.URI
+import java.net.{URI, URISyntaxException}
 import java.util.Locale
 
 import scala.collection.mutable.{ListBuffer, Map => MutableMap}
@@ -28,7 +28,7 @@ import scala.jdk.CollectionConverters._
 
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.Path
-import org.apache.spark.sql.catalyst.expressions.{Alias, GenericInternalRow, InputFileBlockLength, InputFileBlockStart, InputFileName}
+import org.apache.spark.sql.catalyst.expressions.{Alias, ExprId, GenericInternalRow, InputFileBlockLength, InputFileBlockStart, InputFileName}
 import org.apache.spark.sql.catalyst.util.{ArrayBasedMapData, GenericArrayData}
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
 import org.apache.spark.sql.comet.CometScanExec
@@ -158,6 +158,21 @@ object DeltaScanSupport {
     if (unknownFeatures.nonEmpty) {
       return Some(
         s"Native Delta scan does not support reader feature(s) ${unknownFeatures.mkString(", ")}")
+    }
+
+    // file_block_start and file_block_length describe the split reading a row. For a split file,
+    // DataFusion keeps a row group in the split holding its first page while Spark's reader
+    // keeps it in the split holding its midpoint, so rows would report the wrong split. Core
+    // declines the same two columns (https://github.com/apache/datafusion-comet/issues/6505).
+    // A deletion-vector read carries Delta's whole _metadata struct, so the two columns can sit
+    // in the scan output unused; only a value consumed above the scan declines.
+    val consumedSplitDependentCols = scanExec.fileConstantMetadataColumns
+      .filter(a => Set("file_block_start", "file_block_length").contains(a.name))
+      .filterNot(a => attributesUnusedAbove(plan, scanExec, Set(a.exprId)))
+    if (consumedSplitDependentCols.nonEmpty) {
+      return Some(
+        "Native Delta scan does not support metadata column(s) " +
+          consumedSplitDependentCols.map(_.name).mkString(", "))
     }
 
     // Non-constant metadata columns are generated per-row by Spark's reader and unsupported,
@@ -348,17 +363,18 @@ object DeltaScanSupport {
     // the credential-divergence gates below, which do not otherwise notice this table is readable
     // through Hadoop only because Hadoop's request factory (SSE-C) or SDK-level decryption layer
     // (CSE-*) does something native never learns about.
-    val encryptionReason =
-      unsupportedEncryptionAlgorithmReason(hadoopConf, dataFileUris ++ dvUris)
+    //
+    // Shared across this gate and the ones below: propagateBucketOptions is a full Configuration
+    // deep copy, and each gate would otherwise recompute it independently for the same bucket(s).
+    // One cache, populated lazily per bucket on first use, makes it a single copy per bucket.
+    val propagatedConfCache = MutableMap.empty[String, Configuration]
+    val encryptionReason = unsupportedEncryptionAlgorithmReason(
+      hadoopConf,
+      dataFileUris ++ dvUris,
+      propagatedConfCache)
     if (encryptionReason.isDefined) {
       return encryptionReason
     }
-
-    // Shared across the two gates below: propagateBucketOptions is a full Configuration deep
-    // copy, and both gates would otherwise recompute it independently for the same bucket(s)
-    // (once here, then again per-key inside s3ConfigDivergenceReason). One cache, populated
-    // lazily per bucket on first use, makes it a single copy total per bucket across both gates.
-    val propagatedConfCache = MutableMap.empty[String, Configuration]
 
     // Always zero-I/O (plain propagated-conf read, no keystore): native's S3 client has no
     // HTTP proxy support at all (no fs.s3a.proxy.* key is read anywhere in s3.rs), so a bucket
@@ -957,6 +973,11 @@ object DeltaScanSupport {
    * fall through straight to the canonical GLOBAL value ahead of a SET deprecated bucket key, the
    * wrong answer).
    *
+   * The three-argument `lookupPassword` defaults to `""`, not `null`, so the last call in the
+   * block above never runs: Hadoop reads the deprecated global key only through `Configuration`'s
+   * deprecation alias of the canonical one. This function still reads it as a fourth lookup,
+   * which can only add a decline.
+   *
    * THE FIX for the SSE-C long-bucket-alias gap is entirely inside the bucket tier:
    * `lookupBucketSecret` itself is long-then-short, decompiled from `hadoop-aws` 3.3.4's
    * `S3AUtils.class`:
@@ -970,12 +991,12 @@ object DeltaScanSupport {
    * return getPassword(conf, shortBucketKey, initialVal, null);
    * }}}
    * i.e. the SAME long-bucket-key construction and long-wins-if-nonempty semantics as
-   * `S3AUtils#lookupPassword` (see [[LookupPasswordConsumer]]/[[hadoopLookupPasswordEffective]])
-   * -- the encryption algorithm is NOT one of the keys that flows through
-   * `S3AUtils#propagateBucketOptions` (which folds an unrelated per-bucket LONG form into an
-   * unread key). An earlier version of this function modeled the bucket tier as SHORT-only,
-   * documented as "the LONG bucket form is genuinely never consulted for this key" -- that
-   * documentation was wrong (this decompilation supersedes it): a bucket configured only via
+   * `S3AUtils#lookupPassword` (see [[LookupPasswordConsumer]]/[[hadoopLookupPasswordEffective]]).
+   * `buildEncryptionSecrets` runs on the [[propagateBucketOptions]] view, so
+   * [[unsupportedEncryptionAlgorithmReason]] calls this on that view (and on the raw conf, which
+   * can only add a decline). An earlier version of this function modeled the bucket tier as
+   * SHORT-only, documented as "the LONG bucket form is genuinely never consulted for this key" --
+   * that documentation was wrong (this decompilation supersedes it): a bucket configured only via
    * `fs.s3a.bucket.B.fs.s3a.encryption.algorithm=SSE-C` bypassed the SSE-C gate entirely, because
    * Hadoop's own reader DOES read that long form (and picks SSE-C), while this function reported
    * `None` (nothing set) and the allowlist check below never even ran.
@@ -1042,14 +1063,27 @@ object DeltaScanSupport {
         bucketTier(DeprecatedS3EncryptionAlgorithmKey),
         orElseTier(
           globalTier(S3EncryptionAlgorithmKey),
+          // Hadoop reaches this key only through the deprecation alias (see above); reading
+          // it directly can only over-decline.
           globalTier(DeprecatedS3EncryptionAlgorithmKey))))
   }
+
+  /**
+   * The only algorithm values a decline reason may print. Any other resolved value is withheld,
+   * since a `${...}` reference can expand the algorithm key to a customer key or token.
+   */
+  private val PrintableEncryptionAlgorithms: Seq[String] =
+    Seq("AES256", "SSE-S3", "SSE-KMS", "DSSE-KMS", "SSE-C", "CSE-KMS", "CSE-CUSTOM")
 
   private def unsupportedEncryptionAlgorithmDeclineReason(
       bucket: String,
       algorithmKey: String,
-      algorithm: String): String =
-    s"Native Delta scan does not support $algorithmKey=$algorithm for $bucket " +
+      algorithm: String): String = {
+    val setting = PrintableEncryptionAlgorithms
+      .find(_.equalsIgnoreCase(algorithm))
+      .map(name => s"$algorithmKey=$name")
+      .getOrElse(s"$algorithmKey set to a value that is not a recognised S3 encryption algorithm")
+    s"Native Delta scan does not support $setting for $bucket " +
       "(the native S3 client only supports unencrypted objects and S3's transparent " +
       "server-side algorithms -- AES256/SSE-S3, SSE-KMS, and DSSE-KMS decrypt on GET/HEAD given " +
       "read permission alone, with no extra request header; SSE-C additionally requires the " +
@@ -1057,6 +1091,7 @@ object DeltaScanSupport {
       "client's extract_s3_config_options never forwards, and CSE-KMS/CSE-CUSTOM decrypt object " +
       "bytes client-side, a layer the native Parquet reader does not have -- any of these would " +
       "fail outright or silently read ciphertext where Hadoop's own reader succeeds)"
+  }
 
   /**
    * First reason any bucket among `uris` is configured for an encryption algorithm the native S3
@@ -1073,25 +1108,43 @@ object DeltaScanSupport {
    */
   private[delta] def unsupportedEncryptionAlgorithmReason(
       hadoopConf: Configuration,
-      uris: Seq[URI]): Option[String] = {
+      uris: Seq[URI],
+      propagatedConfCache: MutableMap[String, Configuration] = MutableMap.empty)
+      : Option[String] = {
     val buckets = uris.flatMap(s3Bucket).distinct
     buckets.foldLeft(Option.empty[String]) { (declined, bucket) =>
       if (declined.isDefined) {
         declined
       } else {
-        effectiveEncryptionAlgorithm(hadoopConf, bucket) match {
-          case Left(reason) => Some(reason)
-          case Right(None) => None
-          case Right(Some((key, value))) =>
-            if (!AllowedEncryptionAlgorithms.exists(_.equalsIgnoreCase(value))) {
-              Some(unsupportedEncryptionAlgorithmDeclineReason(bucket, key, value))
-            } else {
-              None
-            }
+        try {
+          // Hadoop resolves the algorithm on the propagated view, where a bucket override can
+          // change what a `${...}` reference expands to. The raw view is checked as well, so a
+          // disagreement between the two can only decline.
+          val propagatedConf =
+            propagatedConfCache.getOrElseUpdate(
+              bucket,
+              propagateBucketOptions(hadoopConf, bucket))
+          encryptionAlgorithmReason(propagatedConf, bucket)
+            .orElse(encryptionAlgorithmReason(hadoopConf, bucket))
+        } catch {
+          case e @ (_: IOException | _: RuntimeException) =>
+            Some(unverifiableValueReason(bucket, S3EncryptionAlgorithmKey, e))
         }
       }
     }
   }
+
+  private def encryptionAlgorithmReason(conf: Configuration, bucket: String): Option[String] =
+    effectiveEncryptionAlgorithm(conf, bucket) match {
+      case Left(reason) => Some(reason)
+      case Right(None) => None
+      case Right(Some((key, value))) =>
+        if (!AllowedEncryptionAlgorithms.exists(_.equalsIgnoreCase(value))) {
+          Some(unsupportedEncryptionAlgorithmDeclineReason(bucket, key, value))
+        } else {
+          None
+        }
+    }
 
   /**
    * Canonical Hadoop S3A HTTP-proxy host config key, verified via CFR decompilation of
@@ -1327,14 +1380,57 @@ object DeltaScanSupport {
    * Three-way Hadoop credential-provider-path precheck shared by every `getPassword`-based
    * resolution below, a property of the bucket alone. An S3A- or bucket-scoped provider path,
    * which `Configuration#getPassword` never consults, yields [[UnverifiableProvider]] with no
-   * keystore I/O. Only the global path set yields [[GlobalProviderOnly]], the one arm whose
-   * callers do real keystore I/O and must wrap their own `getPassword` calls in try/catch. No
-   * provider path anywhere yields [[NoProvider]], zero-I/O plain conf reads only.
+   * keystore I/O. A global path with any entry that is not a local keystore yields
+   * [[NonLocalGlobalProvider]], also with no I/O (see [[globalProviderPathHasNonLocalEntry]]).
+   * Only a global path of local entries yields [[GlobalProviderOnly]], the one arm whose callers
+   * do real keystore I/O and must wrap their own `getPassword` calls in try/catch. No provider
+   * path anywhere yields [[NoProvider]], zero-I/O plain conf reads only.
    */
   private sealed trait CredentialProviderArm
   private case class UnverifiableProvider(offendingKey: String) extends CredentialProviderArm
+  private case object NonLocalGlobalProvider extends CredentialProviderArm
   private case object GlobalProviderOnly extends CredentialProviderArm
   private case object NoProvider extends CredentialProviderArm
+
+  /**
+   * True when the global provider path has an entry other than a local keystore or a
+   * filesystem-free provider. An entry passes only as `jceks`, `localjceks`, `bcfks` or
+   * `localbcfks` with nested scheme `file` (as in `jceks://file/...`) while `fs.file.impl` is
+   * unset or `org.apache.hadoop.fs.LocalFileSystem`, or as `user` with no authority (`user:///`).
+   * Any other entry would run a third-party provider or open a filesystem during planning, and
+   * S3AFileSystem drops entries whose filesystem class is S3A-compatible before it resolves
+   * anything (`ProviderUtils.excludeIncompatibleCredentialProviders`), so reading one could also
+   * disagree with Hadoop. An unparseable or empty entry counts as non-local. The nested scheme is
+   * the part of the authority before `@`, as in `ProviderUtils.unnestUri`.
+   */
+  private def globalProviderPathHasNonLocalEntry(hadoopConf: Configuration): Boolean =
+    Option(hadoopConf.get(HadoopCredentialProviderPathKey)).filter(_.nonEmpty).exists { path =>
+      val isLocalFileSystem = Option(hadoopConf.get("fs.file.impl"))
+        .forall(_ == "org.apache.hadoop.fs.LocalFileSystem")
+      path.split(",").exists(entry => !isLocalOrFilesystemFreeProvider(entry, isLocalFileSystem))
+    }
+
+  private val KeystoreProviderSchemes = Set("jceks", "localjceks", "bcfks", "localbcfks")
+
+  private def isLocalOrFilesystemFreeProvider(
+      entry: String,
+      isLocalFileSystem: Boolean): Boolean =
+    try {
+      val uri = new URI(entry)
+      Option(uri.getAuthority) match {
+        case Some(authority) =>
+          KeystoreProviderSchemes.contains(uri.getScheme) && isLocalFileSystem &&
+          authority.split("@", 2)(0) == "file"
+        case None => uri.getScheme == "user"
+      }
+    } catch {
+      case _: URISyntaxException => false
+    }
+
+  private def nonLocalProviderPathReason(bucket: String): String =
+    s"Native Delta scan cannot verify the S3 settings for $bucket " +
+      s"($HadoopCredentialProviderPathKey names a credential keystore that is not on the local " +
+      "filesystem, and the settings cannot be verified without reading it)"
 
   private def credentialProviderArm(
       hadoopConf: Configuration,
@@ -1350,6 +1446,8 @@ object DeltaScanSupport {
         else if (bucketPathSet) bucketPathKey
         else bucketLongPathKey
       UnverifiableProvider(offendingKey)
+    } else if (globalProviderPathHasNonLocalEntry(hadoopConf)) {
+      NonLocalGlobalProvider
     } else if (nonEmptyConf(hadoopConf, HadoopCredentialProviderPathKey)) {
       GlobalProviderOnly
     } else {
@@ -1360,13 +1458,13 @@ object DeltaScanSupport {
   /**
    * Resolves `aliases` in order under `hadoopConf`/`bucket`, keeping the first non-empty value,
    * or `Left(reason)` when the value cannot be safely verified. Dispatches on
-   * [[credentialProviderArm]]: [[UnverifiableProvider]] declines with zero I/O;
-   * [[GlobalProviderOnly]] resolves each alias via `Configuration#getPassword`, keystore I/O
-   * contained in try/catch so a corrupt store declines this bucket rather than aborting planning;
-   * [[NoProvider]] resolves each alias via zero-I/O [[plainValue]] reads, which honor
-   * [[ClearTextFallbackKey]] the way a real `getPassword` consumer would. Callers such as
-   * [[hadoopLookupPasswordEffective]] and [[effectiveEncryptionAlgorithm]] supply the alias lists
-   * that match their consumer's real per-tier `getPassword` calls.
+   * [[credentialProviderArm]]: [[UnverifiableProvider]] and [[NonLocalGlobalProvider]] decline
+   * with zero I/O; [[GlobalProviderOnly]] resolves each alias via `Configuration#getPassword`,
+   * keystore I/O contained in try/catch so a corrupt store declines this bucket rather than
+   * aborting planning; [[NoProvider]] resolves each alias via zero-I/O [[plainValue]] reads,
+   * which honor [[ClearTextFallbackKey]] the way a real `getPassword` consumer would. Callers
+   * such as [[hadoopLookupPasswordEffective]] and [[effectiveEncryptionAlgorithm]] supply the
+   * alias lists that match their consumer's real per-tier `getPassword` calls.
    */
   private def resolveViaCredentialAliases(
       hadoopConf: Configuration,
@@ -1375,6 +1473,8 @@ object DeltaScanSupport {
     credentialProviderArm(hadoopConf, bucket) match {
       case UnverifiableProvider(offendingKey) =>
         Left(s3aScopedProviderPathReason(bucket, offendingKey))
+      case NonLocalGlobalProvider =>
+        Left(nonLocalProviderPathReason(bucket))
       case GlobalProviderOnly =>
         try {
           Right(
@@ -1595,8 +1695,10 @@ object DeltaScanSupport {
   private def parseProviderClassNames(value: String): Seq[String] =
     value.split(",").map(_.trim).filter(_.nonEmpty).toSeq
 
-  private def unsupportedProviderReason(bucket: String, key: String, className: String): String =
-    s"Native Delta scan does not support the credential provider class $className " +
+  // The class name is withheld: an unsupported value is never one of the known classes, and a
+  // `${...}` reference can expand the key to a credential.
+  private def unsupportedProviderReason(bucket: String, key: String): String =
+    "Native Delta scan does not support a credential provider class " +
       s"configured via $key for $bucket (the native S3 client only supports a fixed set of " +
       "provider classes; an unsupported class would fail at scan execution time, after the " +
       "scan was already claimed, rather than at planning time)"
@@ -1615,9 +1717,11 @@ object DeltaScanSupport {
       bucket: String,
       key: String,
       names: Seq[String]): Option[String] =
-    names
-      .find(name => !SupportedCredentialProviderClasses.contains(name))
-      .map(unsupportedProviderReason(bucket, key, _))
+    if (names.exists(name => !SupportedCredentialProviderClasses.contains(name))) {
+      Some(unsupportedProviderReason(bucket, key))
+    } else {
+      None
+    }
 
   /**
    * [[shortThenGlobal]] for `key` under `bucket`, or `Left(reason)` when `Configuration#get`
@@ -1830,18 +1934,27 @@ object DeltaScanSupport {
    * `V2TableWriteExec` -- persisting it) makes the value live and must decline. Conservative: any
    * unrecognized consumption pattern returns false.
    */
-  private def rowIndexUnusedAbove(plan: SparkPlan, scanExec: FileSourceScanExec): Boolean = {
-    val rowIndexAttrs = scanExec.output
-      .filter(_.name == CometDeltaNativeScan.RowIndexColumn)
-      .map(_.exprId)
-      .toSet
-    if (rowIndexAttrs.isEmpty) {
+  private def rowIndexUnusedAbove(plan: SparkPlan, scanExec: FileSourceScanExec): Boolean =
+    attributesUnusedAbove(
+      plan,
+      scanExec,
+      scanExec.output.filter(_.name == CometDeltaNativeScan.RowIndexColumn).map(_.exprId).toSet)
+
+  /**
+   * True when the values of the scan output attributes `attrIds` are provably dead above the
+   * scan, by the analysis described on [[rowIndexUnusedAbove]].
+   */
+  private def attributesUnusedAbove(
+      plan: SparkPlan,
+      scanExec: FileSourceScanExec,
+      attrIds: Set[ExprId]): Boolean = {
+    if (attrIds.isEmpty) {
       return true
     }
-    // Transitive taint analysis: everything derived from the row-index attribute within the
+    // Transitive taint analysis: everything derived from the seed attributes within the
     // visible plan, via Project aliases or positionally across a union. The plan may be an AQE
     // stage fragment, so tainted values escaping to the fragment's own output must decline too.
-    var tainted = rowIndexAttrs
+    var tainted = attrIds
     var changed = true
     while (changed) {
       changed = false
