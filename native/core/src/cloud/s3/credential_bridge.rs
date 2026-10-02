@@ -186,9 +186,10 @@ pub enum AccessMode {
 /// Granularity: although the JVM SPI accepts `(bucket, path)`, neither
 /// `object_store::CredentialProvider::get_credential` nor
 /// `reqsign_core::ProvideCredential::provide_credential` carries a per-request path, so the
-/// effective identity is per-bucket (Parquet) or per-table-location (Iceberg). A Parquet provider
-/// that implements `CometS3LocationScopedCredentialProvider` gets one bridge per policy location
-/// instead; see `parquet::objectstore::location_scoped`.
+/// effective identity is per-bucket (Parquet) or per-table-location (Iceberg). A provider that
+/// implements `CometS3LocationScopedCredentialProvider` gets one bridge per policy location
+/// instead, on both paths; see `parquet::objectstore::location_scoped` and
+/// `execution::operators::iceberg_location_scoped`.
 pub struct CometS3CredentialBridge {
     provider_class: String,
     dispatch_key: String,
@@ -294,6 +295,48 @@ impl CometS3CredentialBridge {
     fn credential(&self) -> Result<RawCredentials, String> {
         self.cache.get_or_fetch(Timestamp::now(), || {
             self.fetch_raw().map_err(|e| e.to_string())
+        })
+    }
+
+    /// Returns a bridge to the same provider registration for a path in any bucket. Like
+    /// [`Self::for_path`] it makes no `ensureInitialized` call. The Iceberg path keys the
+    /// registration by catalog name, or by the reference bucket when there is none, and the
+    /// provider is always given the bucket it is asked about, so one registration serves every
+    /// bucket a table's files are in.
+    pub fn for_location(
+        &self,
+        bucket: impl Into<String>,
+        path: impl Into<String>,
+    ) -> Result<Self, ExecutionError> {
+        let bucket = bucket.into();
+        let path = path.into();
+        let (bucket_jstr, path_jstr) = JVMClasses::with_env(|env| -> Result<_, ExecutionError> {
+            let b = env
+                .new_string(&bucket)
+                .map_err(|e| ExecutionError::GeneralError(format!("new_string(bucket): {e}")))?;
+            let p = env
+                .new_string(&path)
+                .map_err(|e| ExecutionError::GeneralError(format!("new_string(path): {e}")))?;
+            let b_g =
+                Arc::new(jni_new_global_ref!(env, b).map_err(|e| {
+                    ExecutionError::GeneralError(format!("global_ref(bucket): {e}"))
+                })?);
+            let p_g = Arc::new(
+                jni_new_global_ref!(env, p)
+                    .map_err(|e| ExecutionError::GeneralError(format!("global_ref(path): {e}")))?,
+            );
+            Ok((b_g, p_g))
+        })?;
+        Ok(Self {
+            provider_class: self.provider_class.clone(),
+            dispatch_key: self.dispatch_key.clone(),
+            bucket,
+            path,
+            mode: self.mode,
+            handle: self.handle,
+            bucket_jstr,
+            path_jstr,
+            cache: CredentialCache::default(),
         })
     }
 
