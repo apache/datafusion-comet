@@ -169,10 +169,16 @@ case class CometScanRule(session: SparkSession)
 
     // fileConstantMetadataColumns (file_path, file_name, file_size, file_block_start,
     // file_block_length, file_modification_time) are known before opening the file and
-    // supported below via the same projection mechanism as partition columns. Any other
-    // metadata column (currently only `_metadata.row_index`, generated per row by the reader)
-    // is not.
-    val constantMetadataColNames = scanExec.fileConstantMetadataColumns.map(_.name).toSet
+    // supported below via the same projection mechanism as partition columns. The exceptions
+    // are file_block_start and file_block_length. They are constant per split, but when Spark
+    // splits a file, which split reads a row group is a reader decision: DataFusion keeps a row
+    // group in the split that holds its first page, while Spark's parquet-mr reader keeps it in
+    // the split that holds its midpoint, so rows would report the wrong split
+    // (https://github.com/apache/datafusion-comet/issues/6505). Those two, and any other metadata
+    // column (currently only `_metadata.row_index`, generated per row by the reader), fall back.
+    val constantMetadataColNames = scanExec.fileConstantMetadataColumns
+      .map(_.name)
+      .toSet -- Set("file_block_start", "file_block_length")
     val unsupportedMetadataColNames =
       metadataCols(scanExec).filterNot(constantMetadataColNames.contains)
     if (unsupportedMetadataColNames.nonEmpty) {

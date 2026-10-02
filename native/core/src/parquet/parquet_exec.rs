@@ -195,7 +195,15 @@ pub(crate) fn init_datasource_exec(
             parquet_source.metrics(),
         )
         .with_spark_variant_schema(projects_variant)
-        .with_require_field_ids(require_field_ids),
+        .with_require_field_ids(require_field_ids)
+        .with_conversion_check(
+            Arc::clone(&required_schema),
+            spark_parquet_options.clone(),
+            session_config.options().execution.parquet.pushdown_filters
+                && data_filters
+                    .as_ref()
+                    .is_some_and(|filters| !filters.is_empty()),
+        ),
     );
     parquet_source = parquet_source.with_parquet_file_reader_factory(reader_factory);
 
