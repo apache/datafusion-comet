@@ -19,8 +19,26 @@ name: PR Build (macOS)
 
 # Reusable: invoked by ci.yml. Triggering, path filters, and concurrency
 # live in the umbrella workflow.
+#
+# Two modes, selected by `cache-refresh-only`, the same split as
+# pr_build_linux.yml:
+#
+#   false  the full pipeline: the native build and the test matrix. The merge
+#          queue, and pull requests carrying `run-macos-tests`.
+#   true   `build-native` alone, and only far enough to keep main's macOS cargo
+#          cache warm. This is the push-to-main tier. Nothing else ever runs on
+#          main, and a cache entry written anywhere else is invisible to the
+#          queue, so without this run every queue build compiled the native
+#          library from scratch. See issue #6390.
 on:
   workflow_call:
+    inputs:
+      cache-refresh-only:
+        description: >-
+          Populate main's macOS cargo cache without running any test. Set by
+          ci.yml on push to main.
+        type: boolean
+        default: false
 
 env:
   RUST_VERSION: stable
@@ -42,7 +60,11 @@ jobs:
           rustup component add rustfmt
           cd native && cargo fmt --all -- --check
 
-  # Build native library once and share with all test jobs
+  # Build native library once and share with all test jobs. Also the owner of
+  # main's macOS `cargo-ci-v2` cache entry, which is why it runs in
+  # cache-refresh-only mode. The key covers the dependency set only, as in
+  # pr_build_linux.yml, so the push run builds once per dependency change and
+  # otherwise stops at the lookup.
   build-native:
     needs: lint
     name: Build Native Library (macOS)
@@ -50,7 +72,22 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # In cache-refresh-only mode this job is only here to write the entry, so
+      # if the entry already exists there is nothing left to do.
+      - name: Look up Cargo cache
+        id: cargo-lookup
+        if: ${{ inputs.cache-refresh-only }}
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/target
+          key: ${{ runner.os }}-cargo-ci-v2-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}
+          lookup-only: true
+
       - name: Setup Rust & Java toolchain
+        if: steps.cargo-lookup.outputs.cache-hit != 'true'
         uses: ./.github/actions/setup-macos-builder
         with:
           rust-version: ${{ env.RUST_VERSION }}
@@ -59,17 +96,18 @@ jobs:
           protoc-architecture: aarch_64
 
       - name: Restore Cargo cache
+        id: cargo-cache
+        if: steps.cargo-lookup.outputs.cache-hit != 'true'
         uses: actions/cache/restore@v6
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             native/target
-          key: ${{ runner.os }}-cargo-ci-v2-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-ci-v2-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-
+          key: ${{ runner.os }}-cargo-ci-v2-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}
 
       - name: Build native library (CI profile)
+        if: steps.cargo-lookup.outputs.cache-hit != 'true'
         run: |
           cd native
           # CI profile: same overflow behavior as release, but faster compilation
@@ -79,6 +117,7 @@ jobs:
           RUSTFLAGS: "-Ctarget-cpu=apple-m1"
 
       - name: Upload native library
+        if: ${{ !inputs.cache-refresh-only }}
         uses: ./.github/actions/upload-artifact-retry
         with:
           name: native-lib-macos
@@ -87,16 +126,17 @@ jobs:
 
       - name: Save Cargo cache
         uses: actions/cache/save@v6
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' && steps.cargo-lookup.outputs.cache-hit != 'true' && steps.cargo-cache.outputs.cache-hit != 'true'
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             native/target
-          key: ${{ runner.os }}-cargo-ci-v2-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
+          key: ${{ runner.os }}-cargo-ci-v2-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}
 
   macos-aarch64-test:
     needs: build-native
+    if: ${{ !inputs.cache-refresh-only }}
     strategy:
       matrix:
         os: [macos-14]
@@ -119,20 +159,24 @@ jobs:
           - name: "scans"
             value: |
               org.apache.comet.parquet.CometParquetWriterSuite
+              org.apache.comet.parquet.CometEmptyRelationParquetWriterSuite
               org.apache.comet.parquet.ParquetReadV1Suite
               org.apache.comet.parquet.ParquetReadV2Suite
-              org.apache.comet.parquet.ParquetReadFromFakeHadoopFsSuite
               org.apache.comet.parquet.ParquetTimestampLtzAsNtzSuite
               org.apache.spark.sql.comet.ParquetDatetimeRebaseV1Suite
               org.apache.spark.sql.comet.ParquetDatetimeRebaseV2Suite
               org.apache.spark.sql.comet.ParquetEncryptionITCase
               org.apache.comet.exec.CometNativeReaderSuite
+              org.apache.comet.CometVariantProjectionSuite
+              org.apache.spark.sql.CometVariantShreddingSuite
               org.apache.comet.CometIcebergNativeSuite
               org.apache.comet.CometIcebergEncryptionSuite
               org.apache.comet.CometIcebergRewriteActionSuite
               org.apache.comet.CometIcebergWriteActionSuite
               org.apache.comet.CometIcebergWriteDetectionSuite
               org.apache.comet.CometIcebergSystemFunctionSuite
+              org.apache.comet.CometIcebergSystemFunctionExtensionsSuite
+              org.apache.comet.CometIcebergResidualPushdownSuite
               org.apache.comet.iceberg.IcebergReflectionSuite
               org.apache.comet.serde.operator.IcebergWriteProtoTranslationSuite
               org.apache.comet.csv.CometCsvNativeReadSuite
@@ -155,20 +199,25 @@ jobs:
               org.apache.spark.sql.comet.execution.shuffle.CometCelebornShuffleReaderSuite
               org.apache.spark.sql.comet.execution.shuffle.CometCelebornShufflePlanningSuite
               org.apache.spark.sql.comet.execution.shuffle.CometNativeShuffleInputRDDSuite
+              org.apache.spark.sql.comet.execution.shuffle.CometNativeShuffleWriterSuite
+              org.apache.spark.sql.comet.execution.shuffle.CometNativePositionalRoundRobinSuite
               org.apache.spark.sql.comet.execution.shuffle.CometDiskBlockWriterSuite
               org.apache.comet.exec.CometShuffleEncryptionSuite
               org.apache.comet.exec.CometShuffleManagerSuite
               org.apache.comet.exec.CometAsyncShuffleSuite
               org.apache.comet.exec.DisableAQECometShuffleSuite
               org.apache.comet.exec.DisableAQECometAsyncShuffleSuite
-              org.apache.spark.shuffle.comet.CometBoundedShuffleMemoryAllocatorSuite
+              org.apache.spark.shuffle.comet.CometUnboundedShuffleMemoryAllocatorSuite
               org.apache.spark.shuffle.sort.SpillSorterSuite
           - name: "exec"
             value: |
               org.apache.comet.exec.CometAggregateSuite
               org.apache.comet.exec.CometExec3_4PlusSuite
               org.apache.comet.exec.CometExecSuite
+              org.apache.comet.exec.CometTopKSuite
+              org.apache.comet.exec.CometEmptyRelationExecSuite
               org.apache.comet.exec.CometInMemoryCacheSuite
+              org.apache.comet.exec.CometInMemoryCachePruningSuite
               org.apache.comet.exec.CometInMemoryCacheKryoSuite
               org.apache.comet.exec.CometGenerateExecSuite
               org.apache.comet.exec.CometWindowExecSuite
@@ -181,17 +230,25 @@ jobs:
               org.apache.comet.QueryContextInternerSuite
               org.apache.comet.CometSetOpWithGroupBySuite
               org.apache.comet.CometSparkSessionExtensionsSuite
+              org.apache.spark.sql.comet.CometSessionExtensionsSuite
               org.apache.spark.CometPluginsSuite
               org.apache.spark.CometRuntimeShutdownSuite
               org.apache.spark.CometTaskMemoryManagerSuite
               org.apache.spark.CometExecIteratorLifecycleSuite
               org.apache.spark.CometPluginsDefaultSuite
-              org.apache.spark.CometPluginsNonOverrideSuite
-              org.apache.spark.CometPluginsUnifiedModeOverrideSuite
+              org.apache.spark.CometPluginsMemoryOverheadWarningSuite
+              org.apache.spark.CometPluginsMemoryPoolFractionWarningSuite
+              org.apache.spark.CometPluginsUnifiedModeSuite
+              org.apache.spark.CometPluginsExtensionOnlySuite
+              org.apache.spark.CometPluginsSparkShuffleManagerSuite
+              org.apache.spark.CometPluginsEventLogSuite
               org.apache.comet.rules.CometScanRuleSuite
               org.apache.comet.rules.CometScanContribSuite
               org.apache.comet.rules.CometScanSchemeFallbackSuite
               org.apache.comet.rules.CometExecRuleSuite
+              org.apache.spark.sql.comet.CometPlanEqualitySuite
+              org.apache.comet.rules.CometEmptyRelationExecRuleSuite
+              org.apache.comet.rules.EliminateRedundantTransitionsSuite
               org.apache.comet.rules.RevertNativeForTransitionHeavyStagesSuite
               org.apache.spark.sql.CometTPCDSQuerySuite
               org.apache.spark.sql.CometTPCDSQueryTestSuite
@@ -202,22 +259,28 @@ jobs:
               org.apache.spark.sql.comet.CometDppFallbackRepro3949Suite
               org.apache.spark.sql.comet.CometShuffleFallbackStickinessSuite
               org.apache.spark.sql.comet.PlanDataInjectorSuite
+              org.apache.spark.sql.comet.PlanDataInjectorShuffleLifecycleSuite
               org.apache.spark.sql.comet.CometDecimalArithmeticViewSuite
               org.apache.spark.sql.comet.CometDecimalPromotionSuite
               org.apache.spark.sql.comet.CometScanWithPlanDataSuite
               org.apache.spark.sql.comet.util.UtilsSuite
               org.apache.comet.vector.NativeUtilSuite
+              org.apache.comet.vector.CometVectorUtilsSuite
+              org.apache.comet.udf.CometUdfBridgeSuite
               org.apache.comet.objectstore.NativeConfigSuite
               org.apache.comet.serde.operator.CometIcebergNativeScanSuite
               org.apache.comet.serde.operator.CometNativeScanSuite
               org.apache.spark.sql.CometToPrettyStringSuite
               org.apache.spark.sql.CometCollationSuite
+              org.apache.spark.sql.CometSortCollationSuite
               org.apache.comet.CometFuzzAggregateSuite
               org.apache.spark.sql.comet.execution.arrow.CometArrowStreamSuite
+              org.apache.spark.sql.comet.execution.arrow.CometStringWriterSuite
               org.apache.spark.sql.CometSparkInternalFunctionsSuite
           - name: "expressions"
             value: |
               org.apache.comet.CometExpressionSuite
+              org.apache.comet.GenerateDocsSuite
               org.apache.comet.CometSqlFileTestSuite
               org.apache.comet.SqlFileTestParserSuite
               org.apache.comet.CometExpressionCoverageSuite
@@ -226,6 +289,7 @@ jobs:
               org.apache.comet.CometTemporalExpressionSuite
               org.apache.comet.CometArrayExpressionSuite
               org.apache.comet.CometNativeCastSuite
+              org.apache.comet.CometCastCollatedStringSuite
               org.apache.comet.CometDateTimeUtilsSuite
               org.apache.comet.CometMathExpressionSuite
               org.apache.comet.CometStringExpressionSuite
@@ -235,10 +299,13 @@ jobs:
               org.apache.comet.CometJsonExpressionSuite
               org.apache.comet.CometJsonJvmSuite
               org.apache.comet.SparkErrorConverterSuite
+              org.apache.comet.serde.SerdeRegistrationSuite
               org.apache.comet.expressions.conditional.CometIfSuite
               org.apache.comet.expressions.conditional.CometCoalesceSuite
               org.apache.comet.expressions.conditional.CometCaseWhenSuite
               org.apache.comet.CometRegExpJvmSuite
+              org.apache.comet.CometRegexParitySuite
+              org.apache.comet.expressions.CometRegexSuite
               org.apache.comet.CometCodegenSuite
               org.apache.comet.CometCoverageStatsSuite
               org.apache.comet.CometCodegenSourceSuite
@@ -252,6 +319,7 @@ jobs:
               org.apache.comet.CometUuidExpressionSuite
               org.apache.comet.serde.CometScalarFunctionSuite
               org.apache.comet.serde.CometLiteralSuite
+              org.apache.comet.serde.QueryPlanSerdeSuite
               org.apache.comet.CometFallbackInvarianceSuite
 
       fail-fast: false
@@ -276,8 +344,8 @@ jobs:
           path: native/target/release/
 
       # Restore cargo registry cache (for any cargo commands that might run)
-      - name: Cache Cargo registry
-        uses: actions/cache@v6
+      - name: Restore Cargo registry
+        uses: actions/cache/restore@v6
         with:
           path: |
             ~/.cargo/registry

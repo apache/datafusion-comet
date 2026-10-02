@@ -269,6 +269,7 @@ case class CometNativeScanExec(
       Map(sourceKey -> commonData),
       Map(sourceKey -> perPartitionData),
       serializedPlan,
+      PlanDataInjector.planFingerprint(serializedPlan),
       perPartitionData.length,
       output.length,
       nativeMetrics,
@@ -277,12 +278,10 @@ case class CometNativeScanExec(
       encryptedFilePaths,
       perPartitionFilePaths = perPartitionFilePaths) {
       override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
-        val res = super.compute(split, context)
-
-        // Report scan input metrics after the iterator is fully consumed.
+        // Register before super.compute creates the CometExecIterator, so this listener runs
+        // after the iterator's close has published the final scan metrics.
         Option(context).foreach(nativeMetrics.reportScanInputMetrics)
-
-        res
+        super.compute(split, context)
       }
     }
   }
@@ -365,12 +364,23 @@ object CometNativeScanExec {
       session: SparkSession,
       scan: CometScanExec): CometNativeScanExec = {
     // Generate unique key for this scan so PlanDataInjector can match common+partition data.
-    // Multiple scans of same table with different projections/filters get different keys.
-    // Derived by the injector that will look it up, so the two sides cannot drift apart.
-    val sourceKey = NativeScanPlanDataInjector.sourceKey(nativeOp.getNativeScan.getCommon)
+    // Multiple scans of same table with different projections/filters get different keys, and
+    // the op's plan_id separates scans that match on those but read different files (see
+    // PlanDataInjector.withPlanId). It must be the same key NativeScanPlanDataInjector.getKey
+    // rebuilds from nativeOp.
+    // The hash is computed once here and embedded in the NativeScan proto, so executors
+    // (including the native shuffle writer) rebuild the key instead of hashing per task.
+    val common = nativeOp.getNativeScan.getCommon
+    val sourceKeyHash = NativeScanPlanDataInjector.sourceKeyHash(common)
+    val sourceKey = PlanDataInjector.withPlanId(
+      NativeScanPlanDataInjector.sourceKey(common.getSource, sourceKeyHash),
+      nativeOp.getPlanId)
+    val opWithKey = nativeOp.toBuilder
+      .setNativeScan(nativeOp.getNativeScan.toBuilder.setSourceKeyHash(sourceKeyHash))
+      .build()
 
     val batchScanExec = CometNativeScanExec(
-      nativeOp,
+      opWithKey,
       scanExec.relation,
       scanExec.output,
       scanExec.requiredSchema,

@@ -23,6 +23,7 @@ import java.io.{ByteArrayInputStream, IOException}
 import java.nio.{ByteBuffer, ByteOrder}
 
 import scala.collection.mutable
+import scala.collection.mutable.ListBuffer
 import scala.concurrent.duration.DurationInt
 import scala.util.Random
 
@@ -33,17 +34,22 @@ import org.apache.arrow.memory.ArrowBuf
 import org.apache.arrow.vector.ipc.ArrowReader
 import org.apache.arrow.vector.types.pojo.{Field, Schema}
 import org.apache.hadoop.fs.Path
-import org.apache.spark.SparkEnv
+import org.apache.spark.{SparkEnv, TaskContext}
 import org.apache.spark.sql.{CometTestBase, DataFrame, Dataset, Row}
-import org.apache.spark.sql.comet.{CometExec, CometMetricNode, CometTakeOrderedAndProjectExec}
+import org.apache.spark.sql.catalyst.expressions.AttributeReference
+import org.apache.spark.sql.catalyst.plans.logical.LocalRelation
+import org.apache.spark.sql.catalyst.plans.physical.HashPartitioning
+import org.apache.spark.sql.comet.{CometExec, CometLocalTableScanExec, CometMetricNode, CometScanWrapper, CometSparkToColumnarExec, CometTakeOrderedAndProjectExec}
 import org.apache.spark.sql.comet.execution.arrow.CometArrowStream
-import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
+import org.apache.spark.sql.comet.execution.shuffle.{CometNativeShuffle, CometShuffleExchangeExec}
+import org.apache.spark.sql.execution.LocalTableScanExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
 import org.apache.spark.sql.functions.{col, count, sum}
-import org.apache.spark.sql.types.StructType
+import org.apache.spark.sql.types.{ArrayType, DataType, LongType, MapType, StructField, StructType}
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 
-import org.apache.comet.{CometConf, CometExecIterator, CometShuffleBlockIterator, CometShuffleSizeLimitException, Native}
+import org.apache.comet.{CometConf, CometExecIterator, CometExplainInfo, CometShuffleBlockIterator, CometShuffleSizeLimitException, Native}
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.serde.{OperatorOuterClass, PartitioningOuterClass}
 import org.apache.comet.shuffle.ShufflePartitionPusher
@@ -274,12 +280,18 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
   test(
     "failed RSS callback registration closes every Arrow and shuffle input and preserves its error") {
     val planBytes = rssShufflePlanBytes
+    val arrowInputsClosed = spark.sparkContext.longAccumulator("arrowInputsClosed")
 
     val results = spark.sparkContext
       .parallelize(Seq(17), 1)
       .mapPartitions { _ =>
         var readerClosed = false
         var ownedBuffer: ArrowBuf = null
+        // The task-completion listener that exports the Arrow input releases it. Registered
+        // before that one, this listener runs after it.
+        TaskContext.get().addTaskCompletionListener[Unit] { _ =>
+          if (readerClosed && ownedBuffer.refCnt() == 0) arrowInputsClosed.add(1)
+        }
         val arrowInput = CometArrowStream
           .stream(
             "native-rss-registration-failure-test",
@@ -327,13 +339,12 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
             shuffleBlockIterators = shuffleInputs,
             shufflePartitionPusher = Some(null))
           iterator.close()
-          Iterator.single((false, false, false, false))
+          Iterator.single((false, false, false))
         } catch {
           case failure: Throwable =>
             Iterator.single(
               (
                 failure.getMessage.contains("Remote shuffle callback must not be null"),
-                readerClosed && ownedBuffer.refCnt() == 0,
                 closedInputs.toSet == Set("failing", "remaining"),
                 failure.getSuppressed.exists(
                   _.getMessage.contains("shuffle input cleanup sentinel"))))
@@ -341,21 +352,19 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
       }
       .collect()
 
-    assert(results.sameElements(Array((true, true, true, true))))
+    assert(results.sameElements(Array((true, true, true))))
+    assert(arrowInputsClosed.value == 1, "the Arrow input was not released by task end")
   }
 
-  test("native shuffle plan preserves local partition writer and legacy output paths") {
+  test("native shuffle plan preserves local partition writer and legacy output path") {
     val dataFile = "/tmp/comet-shuffle.data"
-    val indexFile = "/tmp/comet-shuffle.index"
     val localWriter = OperatorOuterClass.LocalPartitionWriter
       .newBuilder()
       .setOutputDataFile(dataFile)
-      .setOutputIndexFile(indexFile)
       .build()
     val writer = OperatorOuterClass.ShuffleWriter
       .newBuilder()
       .setOutputDataFile(dataFile)
-      .setOutputIndexFile(indexFile)
       .setPartitionWriter(
         OperatorOuterClass.PartitionWriter.newBuilder().setLocal(localWriter).build())
       .build()
@@ -366,16 +375,13 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
     assert(decoded.getPartitionWriter.hasLocal)
     assert(!decoded.getPartitionWriter.hasRss)
     assert(decoded.getPartitionWriter.getLocal.getOutputDataFile == dataFile)
-    assert(decoded.getPartitionWriter.getLocal.getOutputIndexFile == indexFile)
     assert(decoded.getOutputDataFile == dataFile)
-    assert(decoded.getOutputIndexFile == indexFile)
   }
 
   test("native shuffle plan preserves RSS partition writer and excludes local destination") {
     val localWriter = OperatorOuterClass.LocalPartitionWriter
       .newBuilder()
       .setOutputDataFile("/tmp/comet-shuffle.data")
-      .setOutputIndexFile("/tmp/comet-shuffle.index")
       .build()
     val partitionWriter = OperatorOuterClass.PartitionWriter
       .newBuilder()
@@ -393,23 +399,19 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
     assert(decoded.getPartitionWriter.hasRss)
     assert(!decoded.getPartitionWriter.hasLocal)
     assert(decoded.getOutputDataFile.isEmpty)
-    assert(decoded.getOutputIndexFile.isEmpty)
   }
 
   test("legacy native shuffle plans remain valid without a partition writer") {
     val dataFile = "/tmp/legacy-shuffle.data"
-    val indexFile = "/tmp/legacy-shuffle.index"
     val writer = OperatorOuterClass.ShuffleWriter
       .newBuilder()
       .setOutputDataFile(dataFile)
-      .setOutputIndexFile(indexFile)
       .build()
 
     val decoded = OperatorOuterClass.ShuffleWriter.parseFrom(writer.toByteArray)
 
     assert(!decoded.hasPartitionWriter)
     assert(decoded.getOutputDataFile == dataFile)
-    assert(decoded.getOutputIndexFile == indexFile)
   }
 
   // TODO: this test takes a long time to run, we should reduce the test time.
@@ -428,7 +430,7 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
         makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 1000)
-        var allTypes: Seq[Int] = (1 to 20)
+        val allTypes: Seq[Int] = (1 to 20)
         allTypes.map(i => s"_$i").foreach { c =>
           withSQLConf("parquet.enable.dictionary" -> dictionaryEnabled.toString) {
             readParquetFile(path.toString) { df =>
@@ -686,6 +688,86 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
           "FROM VALUES (1), (2), (3) AS t(id)")
       val shuffled = df.repartition(2, $"id")
       checkShuffleAnswer(shuffled, 1)
+    }
+  }
+
+  test("native shuffle declines a struct data column with duplicate field names") {
+    // Java Arrow keys a struct vector's children by name, so a struct with two same-named
+    // fields cannot be imported back across the C data interface after a native shuffle, and
+    // a local table scan cannot build it either. Both must decline the shape.
+    withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      val df = spark.sql(
+        "SELECT id, named_struct('a', id, 'a', id + 1) AS st " +
+          "FROM VALUES (1), (2), (3) AS t(id)")
+      val shuffled = df.repartition(2, $"id")
+      checkCometExchange(shuffled, 0, native = true)
+      checkSparkAnswerAndFallbackReason(shuffled, "struct with duplicate field names")
+    }
+  }
+
+  test("row conversion sinks decline a struct with duplicate field names") {
+    // The shared type gate is what keeps a local table scan and row-to-columnar from
+    // building the struct through Java Arrow, where same-named children collapse into one.
+    val duplicate = StructType(Seq(StructField("a", LongType), StructField("a", LongType)))
+    def schemaWith(dt: DataType): StructType =
+      StructType(Seq(StructField("id", LongType), StructField("col", dt)))
+    for (sink <- Seq(CometLocalTableScanExec, CometSparkToColumnarExec)) {
+      val reasons = ListBuffer.empty[String]
+      assert(
+        !sink.isSchemaSupported(schemaWith(duplicate), reasons),
+        s"$sink accepted duplicate field names")
+      assert(reasons.exists(_.contains("struct with duplicate field names")), reasons.toString)
+    }
+    // The gate recurses, so a duplicate struct nested in an array or map is declined too.
+    for (nested <- Seq(ArrayType(duplicate), MapType(LongType, duplicate))) {
+      val reasons = ListBuffer.empty[String]
+      assert(!CometLocalTableScanExec.isSchemaSupported(schemaWith(nested), reasons), s"$nested")
+      assert(reasons.exists(_.contains("struct with duplicate field names")), reasons.toString)
+    }
+    // Names that differ only by case are distinct to Java Arrow and stay supported.
+    val distinctCase = StructType(Seq(StructField("a", LongType), StructField("A", LongType)))
+    assert(CometLocalTableScanExec.isSchemaSupported(schemaWith(distinctCase), ListBuffer.empty))
+  }
+
+  test("native shuffle predicate declines a struct with duplicate field names") {
+    // A synthetic native child bypasses the sinks that decline the shape earlier, so this
+    // reaches the native shuffle predicate itself.
+    withSQLConf(CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+      def exchange(structType: StructType): ShuffleExchangeExec = {
+        val attrs =
+          Seq(AttributeReference("id", LongType)(), AttributeReference("st", structType)())
+        val leaf = spark.sessionState.planner
+          .plan(LocalRelation(attrs))
+          .next()
+          .asInstanceOf[LocalTableScanExec]
+        val child = CometScanWrapper(OperatorOuterClass.Operator.getDefaultInstance, leaf)
+        ShuffleExchangeExec(HashPartitioning(Seq(child.output.head), 2), child)
+      }
+      val duplicate =
+        exchange(StructType(Seq(StructField("a", LongType), StructField("a", LongType))))
+      assert(CometShuffleExchangeExec.shuffleSupported(duplicate).isEmpty)
+      val reasons =
+        duplicate.getTagValue(CometExplainInfo.FALLBACK_REASONS).getOrElse(Set.empty[String])
+      assert(reasons.exists(_.contains("unsupported shuffle data type")), reasons.toString)
+
+      val distinct =
+        exchange(StructType(Seq(StructField("a", LongType), StructField("A", LongType))))
+      assert(CometShuffleExchangeExec.shuffleSupported(distinct).contains(CometNativeShuffle))
+    }
+  }
+
+  test("native shuffle declines duplicate struct field names from a cached relation") {
+    // A cached relation would reach native shuffle through CometSparkRowToColumnar under the
+    // default configuration; the row-to-columnar type gate declines the shape first, so the
+    // exchange stays on Spark.
+    val base = spark.range(50).selectExpr("id", "named_struct('a', id, 'a', id + 1) AS st")
+    base.cache()
+    try {
+      val shuffled = base.repartition(4, $"id")
+      checkCometExchange(shuffled, 0, native = true)
+      checkSparkAnswer(shuffled)
+    } finally {
+      base.unpersist()
     }
   }
 
@@ -1067,38 +1149,24 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
     (doubleValue, i)
   }
 
-  test("range partitioning on floating-point falls back when strictFloatingPoint=true") {
-    withSQLConf(
-      CometConf.COMET_SHUFFLE_NATIVE_RANGE_PARTITIONING_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true",
-      // Bypass the CometSortOrder-level Incompatible check so that only
-      // supportedRangePartitioningDataType is exercised as the guard.
-      CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "true") {
-      withParquetTable(floatingPointRangePartitionData, "tbl") {
-        Seq(("FLOAT", "FloatType"), ("DOUBLE", "DoubleType")).foreach {
-          case (sqlType, sparkType) =>
+  // The native range partitioner normalizes its comparison keys and its sampled boundary rows the
+  // same way the native sort does, so scalar floating-point keys match Spark's ordering whether or
+  // not strict floating point is on. Neither gate needs the allowIncompatible escape hatch.
+  Seq("true", "false").foreach { strict =>
+    test(
+      "range partitioning on floating-point uses native shuffle when " +
+        s"strictFloatingPoint=$strict") {
+      withSQLConf(
+        CometConf.COMET_SHUFFLE_NATIVE_RANGE_PARTITIONING_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> strict,
+        CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false") {
+        withParquetTable(floatingPointRangePartitionData, "tbl") {
+          Seq("FLOAT", "DOUBLE").foreach { sqlType =>
             val df = sql(s"SELECT CAST(_1 AS $sqlType) AS c, _2 FROM tbl")
               .repartitionByRange(4, $"c")
 
-            checkSparkAnswerAndFallbackReason(
-              df,
-              s"Range partitioning on $sparkType is not 100% compatible with Spark")
-        }
-      }
-    }
-  }
-
-  test(
-    "range partitioning on floating-point uses native shuffle when strictFloatingPoint=false") {
-    withSQLConf(
-      CometConf.COMET_SHUFFLE_NATIVE_RANGE_PARTITIONING_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "false") {
-      withParquetTable(floatingPointRangePartitionData, "tbl") {
-        Seq("FLOAT", "DOUBLE").foreach { sqlType =>
-          val df = sql(s"SELECT CAST(_1 AS $sqlType) AS c, _2 FROM tbl")
-            .repartitionByRange(4, $"c")
-
-          checkShuffleAnswer(df, 1)
+            checkShuffleAnswer(df, 1)
+          }
         }
       }
     }

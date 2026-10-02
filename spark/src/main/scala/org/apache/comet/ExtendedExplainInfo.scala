@@ -19,17 +19,17 @@
 
 package org.apache.comet
 
-import java.util.Locale
+import java.util.{Collections, IdentityHashMap, Locale}
 
 import scala.collection.mutable
 
 import org.apache.spark.sql.ExtendedExplainGenerator
 import org.apache.spark.sql.catalyst.expressions.{Attribute, BoundReference, Expression, Literal, ScalaUDF}
 import org.apache.spark.sql.catalyst.trees.{TreeNode, TreeNodeTag}
-import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometNativeColumnarToRowExec, CometPlan, CometSparkToColumnarExec}
+import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometEmptyRelationExec, CometNativeColumnarToRowExec, CometPlan, CometSparkToColumnarExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, InputAdapter, ReusedSubqueryExec, RowToColumnarExec, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, QueryStageExec}
-import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
+import org.apache.spark.sql.execution.exchange.{Exchange, ReusedExchangeExec}
 
 import org.apache.comet.CometExplainInfo.getActualPlan
 import org.apache.comet.annotation.Public
@@ -42,16 +42,22 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
   def generateExtendedInfo(plan: SparkPlan): String = {
     CometConf.COMET_EXTENDED_EXPLAIN_FORMAT.get() match {
       case CometConf.COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE =>
-        // Generates the extended info in a verbose manner, printing each node along with the
-        // extended information in a tree display.
-        val planStats = new CometCoverageStats()
-        val outString = new StringBuilder()
-        generateTreeString(getActualPlan(plan), 0, Seq(), 0, outString, planStats)
-        s"${outString.toString()}\n$planStats"
+        generateVerboseInfo(plan)
       case CometConf.COMET_EXTENDED_EXPLAIN_FORMAT_FALLBACK =>
         // Generates the extended info as a list of fallback reasons
         getFallbackReasons(plan).mkString("\n").trim
     }
+  }
+
+  /**
+   * The `verbose` format regardless of `spark.comet.explain.format`: each node along with its
+   * extended information in a tree display, followed by the coverage summary.
+   */
+  def generateVerboseInfo(plan: SparkPlan): String = {
+    val planStats = new CometCoverageStats()
+    val outString = new StringBuilder()
+    generateTreeString(getActualPlan(plan), 0, Seq(), 0, outString, planStats)
+    s"${outString.toString()}\n$planStats"
   }
 
   def getFallbackReasons(plan: SparkPlan): Seq[String] = {
@@ -99,6 +105,13 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
     info.toSet
   }
 
+  private def executionInnerChildren(node: TreeNode[_]): Seq[TreeNode[_]] = node match {
+    // Spark's treeString displays the eliminated plan, but it does not execute and must not
+    // contribute Spark operators, fallback reasons, or expressions to Comet's reporting.
+    case _: CometEmptyRelationExec => Seq.empty
+    case _ => node.innerChildren
+  }
+
   // get all plan nodes, breadth first traversal, then returned the reversed list so
   // leaf nodes are first
   private def sortup(node: TreeNode[_]): mutable.Queue[TreeNode[_]] = {
@@ -107,8 +120,9 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
     while (traversed.nonEmpty) {
       val s = traversed.dequeue()
       ordered += s
-      if (s.innerChildren.nonEmpty) {
-        s.innerChildren.foreach {
+      val innerChildrenLocal = executionInnerChildren(s)
+      if (innerChildrenLocal.nonEmpty) {
+        innerChildrenLocal.foreach {
           case c @ (_: TreeNode[_]) => traversed.enqueue(getActualPlan(c))
           case _ =>
         }
@@ -132,6 +146,15 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
       outString: StringBuilder,
       planStats: CometCoverageStats): Unit = {
 
+    // `getActualPlan` unwraps a `ReusedExchangeExec` to the exchange it points at, so a reused
+    // exchange is rendered in full at every reference. It runs only once, so its subtree is
+    // counted at whichever reference the traversal reaches first (the original or a reuse) and
+    // the other references are rendered into throwaway stats.
+    val stats = node match {
+      case e: Exchange if !planStats.markCounted(e) => new CometCoverageStats()
+      case _ => planStats
+    }
+
     node match {
       case _: AdaptiveSparkPlanExec | _: InputAdapter | _: QueryStageExec |
           _: WholeStageCodegenExec | _: ReusedExchangeExec | _: ReusedSubqueryExec |
@@ -141,14 +164,14 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
       // shown, so counting the wrapper too would invent an un-accelerated Spark operator.
       case _: RowToColumnarExec | _: ColumnarToRowExec | _: CometColumnarToRowExec |
           _: CometNativeColumnarToRowExec | _: CometSparkToColumnarExec =>
-        planStats.transitions += 1
+        stats.transitions += 1
       case _: CometPlan =>
-        planStats.cometOperators += 1
+        stats.cometOperators += 1
       case _ =>
-        planStats.sparkOperators += 1
+        stats.sparkOperators += 1
     }
 
-    planStats.recordExpressions(node)
+    stats.recordExpressions(node)
 
     outString.append("   " * indent)
     if (depth > 0) {
@@ -174,7 +197,7 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
     outString.append(str)
     outString.append("\n")
 
-    val innerChildrenLocal = node.innerChildren
+    val innerChildrenLocal = executionInnerChildren(node)
     if (innerChildrenLocal.nonEmpty) {
       innerChildrenLocal.init.foreach {
         case c @ (_: TreeNode[_]) =>
@@ -184,7 +207,7 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
             lastChildren :+ node.children.isEmpty :+ false,
             indent,
             outString,
-            planStats)
+            stats)
         case _ =>
       }
       generateTreeString(
@@ -193,7 +216,7 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
         lastChildren :+ node.children.isEmpty :+ true,
         indent,
         outString,
-        planStats)
+        stats)
     }
     if (node.children.nonEmpty) {
       node.children.init.foreach {
@@ -204,7 +227,7 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
             lastChildren :+ false,
             indent,
             outString,
-            planStats)
+            stats)
         case _ =>
       }
       node.children.last match {
@@ -215,7 +238,7 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
             lastChildren :+ true,
             indent,
             outString,
-            planStats)
+            stats)
         case _ =>
       }
     }
@@ -232,6 +255,16 @@ class CometCoverageStats {
 
   /** Distinct names of expressions routed through the JVM codegen dispatcher. */
   val codegenDispatchExpressions: mutable.Set[String] = mutable.HashSet.empty
+
+  /**
+   * Exchanges whose subtree has been counted, compared by reference: a `ReusedExchangeExec`
+   * points at the same instance as the exchange it reuses.
+   */
+  private val countedExchanges =
+    Collections.newSetFromMap(new IdentityHashMap[Exchange, java.lang.Boolean]())
+
+  /** Records `exchange` as counted. Returns false if it was already counted. */
+  private[comet] def markCounted(exchange: Exchange): Boolean = countedExchanges.add(exchange)
 
   /**
    * Accumulate the expression coverage that `CometExecRule.rollUpInfoMessages` rolled up onto a

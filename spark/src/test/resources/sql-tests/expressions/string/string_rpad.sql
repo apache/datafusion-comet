@@ -15,39 +15,47 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
+-- Config: spark.comet.exec.scalaUDF.codegen.enabled=true
+
 statement
 CREATE TABLE test_rpad(s string, len int, pad string) USING parquet
 
 statement
-INSERT INTO test_rpad VALUES ('hi', 5, 'x'), ('hello', 3, 'x'), ('hi', 5, 'xy'), ('', 3, 'a'), (NULL, 5, 'x'), ('hi', 0, 'x'), ('hi', -1, 'x'), ('hi', NULL, 'x'), (NULL, NULL, 'x'), ('hi', 5, NULL), ('hi', 5, ''), ('', 3, ''), ('hi', -100, 'x'), (NULL, NULL, NULL), ('"hi', 7, '"x'), ('café', 7, '中文'), ('é', 5, '🙂')
+INSERT INTO test_rpad VALUES ('hi', 5, 'x'), ('hello', 3, 'x'), ('hi', 5, 'xy'), ('', 3, 'a'), ('', 0, 'x'), (NULL, 5, 'x'), ('hi', 0, 'x'), ('hi', -1, 'x'), ('hi', NULL, 'x'), (NULL, NULL, 'x'), ('hi', 5, NULL), ('hi', 5, ''), ('', 3, ''), ('hi', -100, 'x'), (NULL, NULL, NULL), ('"hi', 7, '"x'), ('café', 7, '中文'), ('é', 5, '🙂')
 
 -- Column padding runs through the codegen dispatcher (issue #5579).
-query
+query expect_dispatch(rpad)
 SELECT rpad(s, len, pad) FROM test_rpad
 
-query
+query expect_dispatch(rpad)
 SELECT rpad(s, 5, pad) FROM test_rpad
 
-query
+query expect_dispatch(rpad)
 SELECT rpad('hi', len, pad) FROM test_rpad
 
-query
+query expect_dispatch(rpad)
 SELECT rpad('hi', len, 'xy') FROM test_rpad
 
-query
+query expect_dispatch(rpad)
 SELECT rpad('hi', len) FROM test_rpad
 
-query
+query expect_native(rpad)
 SELECT rpad(s, len) FROM test_rpad
 
 -- column + column + literal
-query
+query expect_native(rpad)
 SELECT rpad(s, len, 'x') FROM test_rpad
 
+query expect_native(rpad)
+SELECT rpad(s, len, 'xy') FROM test_rpad
+
 -- column + literal + literal
-query
+query expect_native(rpad)
 SELECT rpad(s, 5, 'x') FROM test_rpad
 
 -- literal + literal + literal
-query
+query expect_dispatch(rpad)
 SELECT rpad('hi', 5, 'x'), rpad('hello', 3, 'x'), rpad('', 3, 'a'), rpad(NULL, 5, 'x')
+
+query expect_dispatch(rpad)
+SELECT rpad('hi', 5, 'xy') FROM test_rpad

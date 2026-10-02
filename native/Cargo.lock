@@ -1474,7 +1474,15 @@ dependencies = [
 
 [[package]]
 name = "comet-contrib-delta"
-version = "0.18.0"
+version = "1.2.0"
+dependencies = [
+ "datafusion",
+ "datafusion-comet-proto",
+]
+
+[[package]]
+name = "comet-contrib-lance"
+version = "1.2.0"
 dependencies = [
  "datafusion",
  "datafusion-comet-proto",
@@ -1956,20 +1964,26 @@ dependencies = [
 
 [[package]]
 name = "datafusion-comet"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "arrow",
  "assertables",
  "async-trait",
  "aws-config",
  "aws-credential-types",
+ "aws-sdk-sts",
+ "aws-smithy-runtime-api",
+ "aws-smithy-types",
  "base64 0.23.1",
  "bytes",
+ "chrono-tz",
  "comet-contrib-delta",
+ "comet-contrib-lance",
  "criterion",
  "datafusion",
  "datafusion-comet-common",
  "datafusion-comet-jni-bridge",
+ "datafusion-comet-operators",
  "datafusion-comet-proto",
  "datafusion-comet-shuffle",
  "datafusion-comet-spark-expr",
@@ -1981,6 +1995,7 @@ dependencies = [
  "hdfs-sys",
  "hdrs",
  "hex",
+ "http 1.5.0",
  "iceberg",
  "iceberg-storage-opendal",
  "itertools 0.15.0",
@@ -2001,6 +2016,7 @@ dependencies = [
  "procfs",
  "prost",
  "rand 0.10.2",
+ "reqsign-aws-v4",
  "reqsign-core",
  "reqwest 0.12.28",
  "serde",
@@ -2016,18 +2032,19 @@ dependencies = [
 
 [[package]]
 name = "datafusion-comet-common"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "arrow",
  "datafusion",
  "serde",
  "serde_json",
+ "simdutf8",
  "thiserror 2.0.20",
 ]
 
 [[package]]
 name = "datafusion-comet-jni-bridge"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "arrow",
  "assertables",
@@ -2040,12 +2057,26 @@ dependencies = [
  "paste",
  "prost",
  "regex",
+ "serde_json",
  "thiserror 2.0.20",
 ]
 
 [[package]]
+name = "datafusion-comet-operators"
+version = "1.2.0"
+dependencies = [
+ "arrow",
+ "criterion",
+ "datafusion",
+ "datafusion-comet-common",
+ "datafusion-comet-spark-expr",
+ "futures",
+ "tokio",
+]
+
+[[package]]
 name = "datafusion-comet-proto"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "prost",
  "prost-build",
@@ -2053,9 +2084,10 @@ dependencies = [
 
 [[package]]
 name = "datafusion-comet-shuffle"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "arrow",
+ "arrow-data",
  "arrow-select",
  "async-trait",
  "bytes",
@@ -2082,7 +2114,7 @@ dependencies = [
 
 [[package]]
 name = "datafusion-comet-spark-expr"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "arrow",
  "base64 0.23.1",
@@ -2092,14 +2124,18 @@ dependencies = [
  "datafusion-comet-common",
  "datafusion-comet-jni-bridge",
  "datafusion-spark",
+ "datasketches",
  "futures",
  "jni 0.22.4",
+ "memchr",
  "num",
+ "paste",
  "rand 0.10.2",
  "regex",
  "ryu",
  "serde",
  "serde_json",
+ "smallvec",
  "tokio",
  "twox-hash",
  "uuid",
@@ -2697,6 +2733,12 @@ dependencies = [
  "regex",
  "sqlparser",
 ]
+
+[[package]]
+name = "datasketches"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "46c4cf71a36b46dcfc00e5014c0c20ccad2b1b6a008304d7d57d2749b2d41b3d"
 
 [[package]]
 name = "debugid"
@@ -3313,9 +3355,9 @@ dependencies = [
 
 [[package]]
 name = "hdfs-sys"
-version = "0.3.0"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "33e2d5cefba2d51a26b44d2a493f963a32725a0f6593c91be4a610ad449c49cb"
+checksum = "18138c3dacdf0e95f834369f996b21d2b6fa99e71787ef45e2ece09b37bd1dd1"
 dependencies = [
  "cc",
  "java-locator",
@@ -3534,7 +3576,7 @@ dependencies = [
 [[package]]
 name = "iceberg"
 version = "0.10.1"
-source = "git+https://github.com/apache/iceberg-rust?rev=665c64e48e8d33797ecb1a421f327edd9b024879#665c64e48e8d33797ecb1a421f327edd9b024879"
+source = "git+https://github.com/apache/iceberg-rust?rev=bb1e4a4861f02377489eff818b75138f414c4cb0#bb1e4a4861f02377489eff818b75138f414c4cb0"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -3593,7 +3635,7 @@ dependencies = [
 [[package]]
 name = "iceberg-property-macro"
 version = "0.10.1"
-source = "git+https://github.com/apache/iceberg-rust?rev=665c64e48e8d33797ecb1a421f327edd9b024879#665c64e48e8d33797ecb1a421f327edd9b024879"
+source = "git+https://github.com/apache/iceberg-rust?rev=bb1e4a4861f02377489eff818b75138f414c4cb0#bb1e4a4861f02377489eff818b75138f414c4cb0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3603,7 +3645,7 @@ dependencies = [
 [[package]]
 name = "iceberg-storage-opendal"
 version = "0.10.1"
-source = "git+https://github.com/apache/iceberg-rust?rev=665c64e48e8d33797ecb1a421f327edd9b024879#665c64e48e8d33797ecb1a421f327edd9b024879"
+source = "git+https://github.com/apache/iceberg-rust?rev=bb1e4a4861f02377489eff818b75138f414c4cb0#bb1e4a4861f02377489eff818b75138f414c4cb0"
 dependencies = [
  "anyhow",
  "async-trait",
