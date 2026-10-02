@@ -386,8 +386,13 @@ case class CometExecRule(session: SparkSession)
         val cometCacheFormat = usesCometCacheSerializer &&
           ArrowCachedBatchSerializer.supportsSchema(scan.relation.output)
         val nativeCacheEnabled = CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.get(conf)
+        // Walks the cached plan, so it is lazy: only consulted once the native scan is otherwise
+        // possible. See CometInMemoryTableScanExec.recordsObservedMetrics.
+        lazy val recordsObservedMetrics =
+          CometInMemoryTableScanExec.recordsObservedMetrics(scan.relation)
+        val nativeScan = nativeCacheEnabled && cometCacheFormat && !recordsObservedMetrics
 
-        if (nativeCacheEnabled && cometCacheFormat) {
+        if (nativeScan) {
           convertToComet(scan, CometInMemoryTableScanExec).getOrElse(scan)
         } else {
           // The native cache scan is not available for this relation. Record why, then take the
@@ -398,7 +403,7 @@ case class CometExecRule(session: SparkSession)
               scan,
               s"Comet in-memory cache requires ${classOf[ArrowCachedBatchSerializer].getName} " +
                 s"but this relation was cached with ${serializer.getClass.getName}")
-          } else if (nativeCacheEnabled) {
+          } else if (nativeCacheEnabled && !cometCacheFormat) {
             val unsupported = scan.relation.output
               .filterNot(a => ArrowCachedBatchSerializer.supportsType(a.dataType))
               .map(a => s"${a.name}: ${a.dataType.simpleString}")
@@ -406,6 +411,12 @@ case class CometExecRule(session: SparkSession)
               scan,
               "Comet in-memory cache does not support the type of these cached columns, so the " +
                 s"relation was cached in Spark's default format: ${unsupported.mkString(", ")}")
+          } else if (nativeCacheEnabled && recordsObservedMetrics) {
+            withFallbackReason(
+              scan,
+              "Comet in-memory cache does not scan a relation whose cached plan records " +
+                "Dataset.observe metrics, because Spark collects those metrics only through " +
+                "InMemoryTableScanExec")
           } else if (usesCometCacheSerializer) {
             withFallbackReason(
               scan,
