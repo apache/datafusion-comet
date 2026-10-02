@@ -1489,10 +1489,10 @@ TPCDS_KIT_CHECKOUT = re.compile(
     r"[ \t]+ref:[ \t]*([0-9a-f]{40})"
 )
 TPCH_CACHE_KEY = re.compile(
-    r"key:\s*tpch-sf1-\$\{\{\s*hashFiles\("
+    r"key:\s*tpch-sf.*-\$\{\{\s*hashFiles\("
     r"'spark/src/test/scala/org/apache/spark/sql/GenTPCHData\.scala'\)\s*\}\}"
 )
-TPCDS_CACHE_KEY = re.compile(r"key:\s*tpcds-sf1-([0-9a-f]{12})\b")
+TPCDS_CACHE_KEY = re.compile(r"key:\s*tpcds-sf.*-([0-9a-f]{12})\b")
 GIT_COMMIT = re.compile(r"\b[0-9a-f]{40}\b")
 GIT_CHECKOUT = re.compile(r"git checkout")
 
@@ -1508,7 +1508,7 @@ def check_tpc_dataset_caches():
     multi-hundred-megabyte dataset -- and the dataset kept competing with the
     ~4.1 GiB `Linux-cargo-debug` cache whose eviction costs a ~26 minute cold
     build. Key them on the generator input and pin the generators themselves, so
-    a dataset is regenerated only when the generator changes.
+    a dataset is regenerated only when the generator or its arguments change.
     """
     failures = []
     text = TPC_WORKFLOW.read_text(encoding="utf-8")
@@ -1550,6 +1550,40 @@ def check_tpc_dataset_caches():
             f"no `if:` can reach. Split it into `actions/cache/restore` plus a "
             f"main-only `actions/cache/save`"
         )
+    for dataset in ("tpch", "tpcds"):
+        job = f"verify-benchmark-results-{dataset}"
+        block = re.search(rf"(?ms)^  {job}:\n(.*?)(?=^  [A-Za-z0-9_-]+:|\Z)", text)
+        if not block:
+            failures.append(f"{TPC_WORKFLOW}: missing dataset job `{job}`")
+            continue
+        body = block.group(1)
+        for option, variable in (
+            ("scaleFactor", "TPC_SCALE_FACTOR"),
+            ("numPartitions", "TPC_NUM_PARTITIONS"),
+        ):
+            if not re.search(rf"(?m)^      {variable}: [1-9][0-9]*$", body):
+                failures.append(f"{job}: define positive `{variable}` in job env")
+            if re.findall(rf"--{option}\s+([^\s\"]+)", body) != [f"${variable}"]:
+                failures.append(f"{job}: generator `--{option}` must use `${variable}`")
+        keys = re.findall(rf"(?m)^          key: ({dataset}-.*)$", body)
+        prefix = f"{dataset}-sf${{{{ env.TPC_SCALE_FACTOR }}}}-p${{{{ env.TPC_NUM_PARTITIONS }}}}-"
+        if len(keys) != 2 or keys[0] != keys[1] or not keys[0].startswith(prefix):
+            failures.append(
+                f"{job}: restore/save keys must match and include actual "
+                f"scale factor and partition count"
+            )
+        restore = re.search(
+            r"(?ms)^      - name: Restore TPC-[A-Z-]+ data\n(.*?)(?=^      - |\Z)", body
+        )
+        if restore and re.search(r"(?m)^          restore-keys:", restore.group(1)):
+            failures.append(
+                f"{job}: dataset restore must not fall back to different generation inputs"
+            )
+        for _, uses, step in _cache_steps(body.splitlines()):
+            step_body = "\n".join(step)
+            if CACHE_SAVE_USES.match(uses) and f"key: {dataset}-" in step_body:
+                if not CACHE_MAIN_GUARD.search(step_body):
+                    failures.append(f"{job}: dataset saves must be main-only")
     generator = Path("spark/src/test/scala/org/apache/spark/sql/GenTPCHData.scala")
     generator_text = generator.read_text(encoding="utf-8")
     if not (GIT_COMMIT.search(generator_text) and GIT_CHECKOUT.search(generator_text)):

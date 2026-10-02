@@ -429,10 +429,12 @@ any of the paths above, and rejects a `save` that is missing the `github.ref`
 guard. `publish_snapshot.yml` is exempt in `CACHE_SAVE_SCOPE_EXEMPT`, because
 it runs from main on a schedule already.
 
-The TPC-H and TPC-DS dataset caches keep the read-write form and are out of
-scope entirely: `./tpch` and `./tpcds-sf-1` are a few hundred MB, they are not
-dependency trees, and they are keyed on this workflow file, so a pull request
-that edits it would regenerate the data on every run rather than once.
+The TPC-H and TPC-DS dataset caches also use separate restore and main-only
+save steps. Their keys include the generator (`GenTPCHData.scala` for TPC-H,
+the pinned `tpcds-kit` commit for TPC-DS), scale factor and partition count.
+The generation arguments, keys and dataset paths use the same job environment
+values, so changing an input invalidates the dataset without unrelated workflow
+edits rotating its key. `dev/ci/check-ci-config.py` guards this coupling.
 
 A job that only ever runs on a pull request or in the queue keeps the guard
 anyway, and so never writes. That is deliberate — it restores from main's
