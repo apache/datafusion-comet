@@ -54,6 +54,11 @@ impl ParquetErrorContext {
     pub(crate) fn wrap(source: Arc<dyn FileSource>) -> Arc<dyn FileSource> {
         Arc::new(Self(source))
     }
+
+    /// The wrapped source, for a caller that rebuilds it and then wraps the result again.
+    pub(crate) fn inner(&self) -> &Arc<dyn FileSource> {
+        &self.0
+    }
 }
 
 impl FileSource for ParquetErrorContext {

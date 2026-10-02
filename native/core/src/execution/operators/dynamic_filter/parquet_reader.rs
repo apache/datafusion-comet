@@ -31,8 +31,8 @@ use datafusion::physical_expr::utils::collect_columns;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ExecutionPlan;
 
-use datafusion_comet_operators::CometFilterExec;
 use crate::parquet::file_error_context::ParquetErrorContext;
+use datafusion_comet_operators::CometFilterExec;
 
 mod schema_adapter;
 
@@ -64,6 +64,20 @@ pub(super) fn parquet_file_source(
     }
     scan.downcast_to_file_source::<ParquetErrorContext>()
         .map(|(config, source)| (config, source as &dyn FileSource))
+}
+
+/// The scan's concrete `ParquetSource`, looking through `ParquetErrorContext`, and whether it was
+/// wrapped. A caller that rebuilds the source must wrap the result again so read errors keep
+/// their file path.
+pub(super) fn concrete_parquet_source(
+    scan: &DataSourceExec,
+) -> Option<(&FileScanConfig, &ParquetSource, bool)> {
+    if let Some((config, source)) = scan.downcast_to_file_source::<ParquetSource>() {
+        return Some((config, source, false));
+    }
+    let (config, wrapper) = scan.downcast_to_file_source::<ParquetErrorContext>()?;
+    let source = wrapper.inner().downcast_ref::<ParquetSource>()?;
+    Some((config, source, true))
 }
 
 pub(super) fn try_attach_parquet_reader_filter(
