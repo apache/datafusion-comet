@@ -99,12 +99,16 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
   // catalog properties consumed by iceberg-rust. Derive the set from the translation itself so a
   // new mapping cannot be forwarded by the write path while this gate still rejects it.
   // Per-bucket spellings for the data bucket are admitted through the same suffix list; settings
-  // for other buckets do not affect this write.
+  // for other buckets do not affect this write. The bucket name is the whole name left after the
+  // property suffix, so `fs.s3a.bucket.target.other.endpoint` belongs to `target.other`, not
+  // `target`.
   private val SupportedHadoopS3Suffixes: Set[String] =
     NativeConfig.s3aSuffixToIcebergGlobalKey.keySet
 
   private val SupportedHadoopS3Keys: Set[String] =
     SupportedHadoopS3Suffixes.map("fs.s3a." + _)
+
+  private val FsS3aBucketPrefix = "fs.s3a.bucket."
 
   // Spark seeds these Hadoop S3A compatibility/read settings into every session as if they came
   // from spark.hadoop.*. They do not alter an Iceberg data-file write request, so they must not
@@ -151,10 +155,20 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
   // the property name so it falls back during planning instead of failing in the native task.
   private val SupportedS3SseTypes: Set[String] = Set("none", "s3", "kms", "custom")
 
-  private case class IcebergAwsPropertyNames(exact: Set[String], prefixes: Seq[String]) {
+  private[comet] case class IcebergAwsPropertyNames(exact: Set[String], prefixes: Seq[String]) {
     def contains(key: String): Boolean =
       exact.contains(key) || prefixes.exists(key.startsWith)
   }
+
+  // Used when S3FileIOProperties / AwsClientProperties cannot be linked. Every non-allow-listed
+  // s3.* / client.* key then counts as Iceberg-owned. An empty vocabulary would do the opposite
+  // and admit s3.acl once a custom credential provider is configured.
+  private val UnclassifiedIcebergAwsProperties =
+    IcebergAwsPropertyNames(Set.empty, Seq("client.", "s3."))
+
+  private val IcebergAwsPropertyClasses = Seq(
+    "org.apache.iceberg.aws.s3.S3FileIOProperties",
+    "org.apache.iceberg.aws.AwsClientProperties")
 
   // A configured Comet credential provider receives the complete, unfiltered FileIO property
   // bag. It may therefore consume vendor-owned s3.* / client.* keys that neither iceberg-java nor
@@ -162,25 +176,34 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
   // storage path cannot honour, however. Reading the constants from the runtime Iceberg version
   // keeps this classification aligned with every supported profile and makes newly-added Iceberg
   // properties fail closed without mistaking them for provider-owned configuration.
-  private lazy val IcebergAwsProperties: IcebergAwsPropertyNames = {
-    val propertyNames = Seq(
-      "org.apache.iceberg.aws.s3.S3FileIOProperties",
-      "org.apache.iceberg.aws.AwsClientProperties").flatMap { className =>
-      IcebergReflection
-        .loadClass(className)
-        .getDeclaredFields
-        .iterator
-        .filter(field =>
-          Modifier.isStatic(field.getModifiers) && field.getType == classOf[String])
-        .flatMap { field =>
-          field.setAccessible(true)
-          Option(field.get(null).asInstanceOf[String])
-        }
-        .filter(key => key.startsWith("s3.") || key.startsWith("client."))
+  //
+  // Those classes reference the AWS SDK. HadoopFileIO and Comet's provider SPI do not require it,
+  // and linking the classes then throws NoClassDefFoundError. getSupportLevel only catches
+  // NonFatal, so the lookup itself must turn that linkage failure into a support decision.
+  private lazy val IcebergAwsProperties: IcebergAwsPropertyNames =
+    icebergAwsPropertyNames(IcebergReflection.loadClass)
+
+  private[comet] def icebergAwsPropertyNames(
+      loadClass: String => Class[_]): IcebergAwsPropertyNames =
+    try {
+      val propertyNames = IcebergAwsPropertyClasses.flatMap { className =>
+        staticStringConstants(loadClass(className))
+      }
+      val (prefixes, exact) = propertyNames.distinct.partition(_.endsWith("."))
+      IcebergAwsPropertyNames(exact.toSet, prefixes.sorted)
+    } catch {
+      case _: ClassNotFoundException => UnclassifiedIcebergAwsProperties
+      case _: LinkageError => UnclassifiedIcebergAwsProperties
     }
-    val (prefixes, exact) = propertyNames.distinct.partition(_.endsWith("."))
-    IcebergAwsPropertyNames(exact.toSet, prefixes.sorted)
-  }
+
+  private def staticStringConstants(cls: Class[_]): Iterator[String] =
+    cls.getDeclaredFields.iterator
+      .filter(field => Modifier.isStatic(field.getModifiers) && field.getType == classOf[String])
+      .flatMap { field =>
+        field.setAccessible(true)
+        Option(field.get(null).asInstanceOf[String])
+      }
+      .filter(key => key.startsWith("s3.") || key.startsWith("client."))
 
   // Hadoop-side `parquet.*` keys that iceberg-java's writer never consumes, so seeing them
   // in the session Hadoop configuration does not indicate the native writer would diverge.
@@ -455,15 +478,15 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
   /**
    * Return effective Hadoop S3A keys that the native write path cannot reproduce. Global keys and
    * keys scoped to the data bucket affect this write; per-bucket settings for other buckets do
-   * not. Values are deliberately never returned because this result is used in EXPLAIN fallback
-   * reasons and may include credentials.
+   * not. The data bucket must match in full: `fs.s3a.bucket.target.other.endpoint` is bucket
+   * `target.other` and suffix `endpoint`, so it does not affect a write to `target`. Values are
+   * deliberately never returned because this result is used in EXPLAIN fallback reasons and may
+   * include credentials.
    */
   private[comet] def unsupportedHadoopS3Settings(
       hadoopConf: Configuration,
       targetBucket: Option[String]): Seq[String] = {
-    val targetBucketPrefix = targetBucket.map(bucket => s"fs.s3a.bucket.$bucket.")
-
-    hadoopConf
+    val keys = hadoopConf
       .iterator()
       .asScala
       .map(_.getKey)
@@ -478,23 +501,51 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
         Option(hadoopConf.getPropertySources(key))
           .forall(sources => sources.isEmpty || !sources.forall(_.endsWith("-default.xml")))
       }
-      .filter { key =>
-        targetBucketPrefix match {
-          case Some(prefix) if key.startsWith(prefix) =>
-            !SupportedHadoopS3Suffixes.contains(key.stripPrefix(prefix))
-          case _ if key.startsWith("fs.s3a.bucket.") =>
-            false
-          case _ =>
-            !SupportedHadoopS3Keys.contains(key)
-        }
-      }
       .toSeq
-      .sorted
+
+    keys.filter(key => isUnsupportedHadoopS3Key(key, targetBucket)).sorted
   }
 
+  /**
+   * Bucket of `fs.s3a.bucket.<bucket>.<suffix>` when `<suffix>` is exactly one supported S3A
+   * suffix. The longest suffix wins, so `endpoint.region` stays one property and a dotted bucket
+   * name is what remains.
+   */
+  private def supportedPerBucketOwner(key: String): Option[String] = {
+    if (!key.startsWith(FsS3aBucketPrefix)) {
+      None
+    } else {
+      val rest = key.substring(FsS3aBucketPrefix.length)
+      val suffix = SupportedHadoopS3Suffixes.foldLeft(Option.empty[String]) { (best, candidate) =>
+        val matches = rest == candidate || rest.endsWith("." + candidate)
+        if (matches && best.forall(_.length < candidate.length)) Some(candidate) else best
+      }
+      suffix.flatMap { matched =>
+        val bucket = rest.substring(0, rest.length - matched.length).stripSuffix(".")
+        if (bucket.isEmpty) None else Some(bucket)
+      }
+    }
+  }
+
+  private def isUnsupportedHadoopS3Key(key: String, targetBucket: Option[String]): Boolean =
+    if (key.startsWith(FsS3aBucketPrefix)) {
+      // A supported suffix names the bucket exactly, including a longer dotted name such as
+      // `target.other`. An unrecognized suffix still uses the target prefix, so an unsupported
+      // setting of the data bucket itself continues to fall back.
+      supportedPerBucketOwner(key).isEmpty && targetBucket.exists { bucket =>
+        key.startsWith(s"$FsS3aBucketPrefix$bucket.")
+      }
+    } else {
+      !SupportedHadoopS3Keys.contains(key)
+    }
+
   /** Return unsupported FileIO S3/client property names in deterministic order. */
+  private[comet] def unsupportedS3FileIOProperties(properties: Map[String, String]): Seq[String] =
+    unsupportedS3FileIOProperties(properties, IcebergAwsProperties)
+
   private[comet] def unsupportedS3FileIOProperties(
-      properties: Map[String, String]): Seq[String] = {
+      properties: Map[String, String],
+      icebergAwsProperties: IcebergAwsPropertyNames): Seq[String] = {
     val customCredentialProviderConfigured = properties
       .get(CometS3CredentialProviderClassProperty)
       .exists(_.trim.nonEmpty)
@@ -507,7 +558,7 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
           key == "s3.sse.type" && !Option(value).exists(value =>
             SupportedS3SseTypes.contains(value.toLowerCase(Locale.ROOT)))
         unsupportedValue || (unsupportedName &&
-          (!customCredentialProviderConfigured || IcebergAwsProperties.contains(key)))
+          (!customCredentialProviderConfigured || icebergAwsProperties.contains(key)))
       }
       .map(_._1)
       .toSeq

@@ -604,6 +604,50 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
       unsupportedWithCustomProvider)
   }
 
+  test("a longer dotted bucket is not the target bucket") {
+    val hadoopConf = new Configuration(false)
+    hadoopConf.set("fs.s3a.bucket.target.access.key", "access")
+    hadoopConf.set("fs.s3a.bucket.target.endpoint.region", "us-east-1")
+    hadoopConf.set("fs.s3a.bucket.target.path.style.access", "true")
+    // Bucket `target.other` plus suffix `endpoint`, not bucket `target` plus `other.endpoint`.
+    hadoopConf.set("fs.s3a.bucket.target.other.endpoint", "https://other.example")
+    hadoopConf.set("fs.s3a.bucket.target.encryption.algorithm", "SSE-KMS")
+
+    assert(
+      CometIcebergNativeWrite.unsupportedHadoopS3Settings(hadoopConf, Some("target")) == Seq(
+        "fs.s3a.bucket.target.encryption.algorithm"))
+
+    val longerBucket = new Configuration(false)
+    longerBucket.set("fs.s3a.bucket.target.other.endpoint", "https://other.example")
+    longerBucket.set("fs.s3a.bucket.target.other.encryption.algorithm", "SSE-KMS")
+    assert(
+      CometIcebergNativeWrite.unsupportedHadoopS3Settings(longerBucket, Some("target.other")) ==
+        Seq("fs.s3a.bucket.target.other.encryption.algorithm"))
+  }
+
+  test("missing AWS SDK falls back instead of aborting S3 FileIO classification") {
+    val secret = "SECRET_VALUE_MUST_NOT_APPEAR"
+    val properties = Map(
+      "s3.endpoint" -> "https://example",
+      "s3.comet.credential.provider.class" -> "provider",
+      "s3.vendor.credential-scope" -> secret,
+      "client.vendor.tenant-id" -> secret,
+      "s3.acl" -> secret,
+      "s3.write.tags.foo" -> secret)
+    val expected =
+      Seq("client.vendor.tenant-id", "s3.acl", "s3.vendor.credential-scope", "s3.write.tags.foo")
+    val loadFailures = Seq[Throwable](
+      new NoClassDefFoundError("software/amazon/awssdk/auth/credentials/AwsCredentialsProvider"),
+      new ClassNotFoundException("org.apache.iceberg.aws.s3.S3FileIOProperties"))
+    loadFailures.foreach { failure =>
+      val names = CometIcebergNativeWrite.icebergAwsPropertyNames(_ => throw failure)
+      val unsupported =
+        CometIcebergNativeWrite.unsupportedS3FileIOProperties(properties, names)
+      assert(unsupported == expected, unsupported)
+      assert(!unsupported.exists(_.contains(secret)), unsupported)
+    }
+  }
+
   test("Hadoop S3A defaults are ignored but site and programmatic settings are effective") {
     def xml(key: String, value: String): java.io.ByteArrayInputStream =
       new java.io.ByteArrayInputStream(s"""<configuration>

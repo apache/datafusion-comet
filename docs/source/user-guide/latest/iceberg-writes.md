@@ -218,7 +218,10 @@ therefore fall back at planning time instead of being silently ignored by the na
 backend. The exception is a vendor-owned `s3.*` / `client.*` property when
 `s3.comet.credential.provider.class` is configured: the provider receives the unfiltered FileIO
 bag and can consume that property. Iceberg-defined settings that the native storage path cannot
-honour still fall back even with a provider. The fall-back reason reports only sorted property
+honour still fall back even with a provider. A per-bucket Hadoop setting counts only for the exact
+data-bucket name, so configuration for a longer dotted bucket does not by itself disable the
+native write. If Iceberg's AWS property classes cannot be loaded, vendor `s3.*` / `client.*` keys
+fall back too and planning still completes. The fall-back reason reports only sorted property
 names, never their values, so credentials and tokens do not enter EXPLAIN or plan logs.
 
 Other `write.*` properties are intentionally not gated because they cannot make the native

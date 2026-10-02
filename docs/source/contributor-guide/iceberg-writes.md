@@ -249,7 +249,13 @@ When a Comet credential provider is configured, vendor-owned `s3.*` / `client.*`
 part of Iceberg's own S3 property vocabulary are preserved because the provider receives and may
 consume the unfiltered FileIO bag. Iceberg-defined properties remain subject to the storage
 allow-list, so configuring a provider does not make unsupported ACL, tag, storage-class, or other
-write settings eligible.
+write settings eligible. That vocabulary is read from `S3FileIOProperties` and
+`AwsClientProperties`. Those classes link the AWS SDK, which HadoopFileIO does not always provide.
+If loading them fails with a linkage or class-not-found error, every non-allow-listed `s3.*` /
+`client.*` key falls back and planning continues; an empty vocabulary would admit `s3.acl`.
+Per-bucket `fs.s3a.bucket.<bucket>.*` keys are split into a complete bucket name and property
+suffix. `fs.s3a.bucket.target.other.endpoint` belongs to bucket `target.other`, so it does not
+make a write to `target` ineligible.
 The Hadoop check excludes keys whose only source is a built-in `*-default.xml`, while retaining
 programmatic and site-XML settings. It also ignores Spark's session-wide S3A vectored-read and
 `downgrade.syncable.exceptions` settings, which cannot affect a data-file write request. Keep
