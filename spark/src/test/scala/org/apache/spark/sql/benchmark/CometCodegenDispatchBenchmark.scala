@@ -27,7 +27,7 @@ import org.apache.spark.sql.catalyst.optimizer.ConstantFolding
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark41Plus}
+import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
 import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 
 /**
@@ -96,16 +96,14 @@ object CometCodegenDispatchBenchmark extends CometBenchmarkBase {
     // supported Spark version.
     DispatchCase("lpad(binary)", "select lpad(c_bin, 24, c_pad) from parquetV1Table"),
     DispatchCase("rpad(binary)", "select rpad(c_bin, 24, c_pad) from parquetV1Table"),
-    // Spark 4.0+ lowers `encode`, and the `utf-8` form of `to_binary`, to
-    // `StaticInvoke(Encode, "encode", ...)`. On 3.x they are ordinary expressions.
-    DispatchCase(
-      "encode(utf-8)",
-      "select encode(c_str, 'utf-8') from parquetV1Table",
-      isSpark40Plus),
-    DispatchCase(
-      "to_binary(utf-8)",
-      "select to_binary(c_str, 'utf-8') from parquetV1Table",
-      isSpark40Plus),
+    // `encode`, and the `utf-8` form of `to_binary`, reach the dispatcher on every supported
+    // version, but by two different routes. On 4.0+ `Encode` is `RuntimeReplaceable` and lowers
+    // to `StaticInvoke(Encode, "encode", ...)`, which the catch-all picks up. On 3.x it stays an
+    // ordinary `Encode` expression and `CometEncode` routes it. Both are worth timing: they are
+    // the same Spark implementation behind the same bridge, so a large gap between the versions
+    // would say something about the routing rather than about `encode`.
+    DispatchCase("encode(utf-8)", "select encode(c_str, 'utf-8') from parquetV1Table"),
+    DispatchCase("to_binary(utf-8)", "select to_binary(c_str, 'utf-8') from parquetV1Table"),
     // Spark 4.1's `to_time` with a format lowers to an evaluator-backed `Invoke`, the receiver
     // call the `Invoke` half of the catch-all exists for. `spark.sql.timeType.enabled` defaults
     // to `Utils.isTesting`, so a benchmark JVM has to opt in the way Spark's own test runs do,
@@ -115,6 +113,14 @@ object CometCodegenDispatchBenchmark extends CometBenchmarkBase {
       "select to_time(c_time, 'HH:mm:ss') from parquetV1Table",
       isSpark41Plus,
       Seq("spark.sql.timeType.enabled" -> "true")),
+    // `timestamp_seconds` lowers to a native kernel for int, long, float and double input, but
+    // decimal, byte and short input have no native implementation and are dispatched instead.
+    DispatchCase(
+      "timestamp_seconds(decimal)",
+      "select timestamp_seconds(c_dec) from parquetV1Table"),
+    DispatchCase(
+      "timestamp_seconds(tinyint)",
+      "select timestamp_seconds(c_byte) from parquetV1Table"),
     // The case the catch-all is really about: one unhandled expression used to cost the whole
     // projection, including the three expressions next to it that do have native kernels.
     DispatchCase(
@@ -209,8 +215,7 @@ object CometCodegenDispatchBenchmark extends CometBenchmarkBase {
     emit("  average of the timed iterations.")
     emit(s"Row counts: $SmallRows (sub-batch) and $LargeRows (multi-batch).")
     val skipped =
-      Seq("encode(utf-8) / to_binary(utf-8)" -> isSpark40Plus, "to_time(fmt)" -> isSpark41Plus)
-        .collect { case (name, false) => name }
+      Seq("to_time(fmt)" -> isSpark41Plus).collect { case (name, false) => name }
     if (skipped.nonEmpty) {
       emit(
         "Not lowered to StaticInvoke/Invoke on this Spark version, skipped: " +
@@ -297,7 +302,7 @@ object CometCodegenDispatchBenchmark extends CometBenchmarkBase {
 
   private def runSteadyState(c: DispatchCase, rows: Int): Unit = {
     runBenchmark(s"${c.name} -- $rows rows") {
-      val benchmark = new Benchmark(s"${c.name} -- $rows rows", rows, output = output)
+      val benchmark = new Benchmark(s"${c.name} -- $rows rows", rows.toLong, output = output)
       checkPlans(benchmark, c)
       // The dispatch-off arm goes first so the `Relative` column reads as the speedup this
       // change buys over the behaviour that shipped before it.
@@ -367,7 +372,7 @@ object CometCodegenDispatchBenchmark extends CometBenchmarkBase {
   private def withCorpus(rows: Int)(f: => Unit): Unit = {
     withTempPath { dir =>
       withTempTable(tbl, "parquetV1Table") {
-        spark.range(rows).createOrReplaceTempView(tbl)
+        spark.range(rows.toLong).createOrReplaceTempView(tbl)
         prepareTable(dir, spark.sql(corpusQuery))
         f
       }
@@ -385,16 +390,17 @@ object CometCodegenDispatchBenchmark extends CometBenchmarkBase {
       // Short, so `lpad` / `rpad` have padding to do on most rows.
       "c_pad" -> "CAST(CAST(PMOD(id, 100) AS STRING) AS BINARY)",
       "c_long" -> "id",
+      // `timestamp_seconds` has no native path for decimal, byte or short input, so these are
+      // dispatched. The scale stops at microseconds because Spark's decimal branch is
+      // `longValueExact`, which raises on a nonzero digit past the sixth. The cast is applied to
+      // the sum so that the column is exactly `DECIMAL(20, 6)`: casting each operand instead
+      // would leave `Add.resultDecimalType` to widen the result to `DECIMAL(21, 6)`.
+      "c_dec" -> "CAST(id + 0.123456 AS DECIMAL(20, 6))",
+      "c_byte" -> "CAST(PMOD(id, 100) AS TINYINT)",
       "c_time" -> ("CONCAT(LPAD(CAST(PMOD(id, 24) AS STRING), 2, '0'), ':', " +
         "LPAD(CAST(PMOD(id, 60) AS STRING), 2, '0'), ':', " +
         "LPAD(CAST(PMOD(id * 7, 60) AS STRING), 2, '0'))"))
     s"SELECT ${columns.map { case (name, expr) => s"$expr AS $name" }.mkString(", ")} FROM $tbl"
-  }
-
-  /** Writes a warning to the results file as well as the console, ordered against the table. */
-  private def warn(benchmark: Benchmark, message: String): Unit = {
-    val border = "=" * 80
-    benchmark.out.println(s"\n$border\n$message\n$border")
   }
 
   /** [[Benchmark]] tees console and results file; this benchmark's own tables need the same. */

@@ -31,16 +31,18 @@ import org.scalatest.Tag
 
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
-import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Expression, Literal}
+import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.catalyst.expressions.{ApplyFunctionExpression, AttributeReference, Expression, Literal}
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.comet.{CometIcebergWriteExec, CometSortExec}
 import org.apache.spark.sql.comet.execution.shuffle.{CometNativeShuffle, CometShuffleExchangeExec}
+import org.apache.spark.sql.connector.catalog.functions.ScalarFunction
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
-import org.apache.comet.serde.{CometExpressionSerde, CometIcebergBucket, CometIcebergTruncate, CometStaticInvoke, Compatible, SupportLevel, Unsupported}
+import org.apache.comet.serde.{CometApplyFunctionExpression, CometExpressionSerde, CometIcebergBucket, CometIcebergSystemFunctions, CometIcebergTruncate, CometStaticInvoke, Compatible, SupportLevel, Unsupported}
 
 /**
  * Native support for Iceberg's system functions (`bucket`, `truncate`, `years`, `months`, `days`,
@@ -261,6 +263,45 @@ class CometIcebergSystemFunctionSuite
     }
   }
 
+  test("native partitioned write puts pre-1970 timestamps ending in .999999 where Iceberg does") {
+    // The sort in front of the write runs the native kernels and the native writer computes each
+    // row's partition value, so both have to follow Iceberg for the table to hold the partitions
+    // iceberg-java would have written. A spec takes one time transform per source column, hence a
+    // column per transform. The kernels' results in projections and filters are checked by
+    // sql-tests/iceberg/temporal_functions_pre_epoch.sql.
+    withHadoopCatalog(catalog) {
+      withPreEpochTable {
+        val table = s"$catalog.db.pre_epoch_partitions"
+        sql(s"""
+          CREATE TABLE $table (id INT, y TIMESTAMP, m TIMESTAMP, d TIMESTAMP, h TIMESTAMP)
+          USING iceberg
+          PARTITIONED BY (years(y), months(m), days(d), hours(h))""")
+        try {
+          val plans = capturePlans(spark) {
+            sql(s"INSERT INTO $table SELECT id, ts, ts, ts, ts FROM pre_epoch")
+          }
+          assert(
+            plans.exists(plan =>
+              collectWithSubqueries(plan) { case w: CometIcebergWriteExec => w }.nonEmpty),
+            s"expected a native Iceberg write in the captured plans:\n${plans.mkString("\n--\n")}")
+
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            val expected = sql(
+              s"SELECT id, $catalog.system.years(y), $catalog.system.months(m), " +
+                s"$catalog.system.days(d), $catalog.system.hours(h) FROM $table").collect()
+            checkAnswer(
+              sql(
+                "SELECT id, _partition.y_year, _partition.m_month, _partition.d_day, " +
+                  s"_partition.h_hour FROM $table"),
+              expected)
+          }
+        } finally {
+          sql(s"DROP TABLE IF EXISTS $table")
+        }
+      }
+    }
+  }
+
   test("non-literal or non-positive parameters fall back to Spark") {
     withSourceTable {
       checkSparkAnswerAndFallbackReason(
@@ -283,7 +324,7 @@ class CometIcebergSystemFunctionSuite
     val float = AttributeReference("f", FloatType)()
     val date = AttributeReference("d", DateType)()
     def level(
-        serde: CometExpressionSerde[StaticInvoke],
+        serde: CometExpressionSerde[_ >: StaticInvoke <: Expression],
         cls: Class[_],
         args: Expression*): SupportLevel =
       serde.getSupportLevel(StaticInvoke(cls, IntegerType, "invoke", args, propagateNull = false))
@@ -335,6 +376,60 @@ class CometIcebergSystemFunctionSuite
         Unsupported(Some(CometIcebergTruncate.DecimalNote)))
   }
 
+  test("ApplyFunctionExpression reaches the same handlers as StaticInvoke") {
+    // Spark's `V2ExpressionUtils.resolveScalarFunction` wraps a DSv2 catalog scalar function as
+    // `ApplyFunctionExpression` when the implementation class does not expose a static `invoke`
+    // magic method. Iceberg's per-type functions carry the same class as their identity on both
+    // paths, so a single set of handlers keyed by class name must cover both.
+    val value = AttributeReference("v", IntegerType)()
+    val bucketIntCls =
+      Class.forName("org.apache.iceberg.spark.functions.BucketFunction$BucketInt")
+    // Iceberg's per-type implementations take the bound input type; there is no no-arg
+    // constructor on any of the runtimes these profiles build against.
+    val bucketInt = bucketIntCls
+      .getDeclaredConstructor(classOf[DataType])
+      .newInstance(IntegerType)
+      .asInstanceOf[ScalarFunction[_]]
+    val expr = ApplyFunctionExpression(bucketInt, Seq(Literal(4), value))
+    assert(CometApplyFunctionExpression.getSupportLevel(expr) == Compatible())
+
+    // Support level alone would still leave the arguments and result type unread: the wrapper
+    // carries them on `children` / `dataType` rather than the `arguments` / `dataType` the
+    // StaticInvoke path uses, so assert the serialized call to cover that extraction.
+    val proto = CometApplyFunctionExpression.convert(expr, Seq(value), binding = true)
+    assert(
+      proto.exists(_.getScalarFunc.getFunc == "iceberg_bucket"),
+      s"expected a native iceberg_bucket call, got $proto")
+
+    // The same argument-shape checks that gate the StaticInvoke path have to gate this one, or a
+    // zero-bucket call would land natively and diverge from Iceberg's own ArithmeticException.
+    val zeroBuckets = ApplyFunctionExpression(bucketInt, Seq(Literal(0), value))
+    assert(CometApplyFunctionExpression.getSupportLevel(zeroBuckets).isInstanceOf[Unsupported])
+
+    // A V2 catalog function Comet has no handler for has to stay on Spark rather than reaching
+    // the Iceberg handlers by argument shape alone: `ApplyFunctionExpression` is the generic DSv2
+    // lowering, so most expressions arriving here belong to some other catalog entirely.
+    val unlisted = ApplyFunctionExpression(new UnlistedScalarFunction, Seq(Literal(4), value))
+    assert(CometApplyFunctionExpression.getSupportLevel(unlisted).isInstanceOf[Unsupported])
+    assert(CometApplyFunctionExpression.convert(unlisted, Seq(value), binding = true).isEmpty)
+  }
+
+  test("Iceberg handler map is keyed by Iceberg implementation class names") {
+    // The map is keyed by class name because Iceberg is not on Comet's compile classpath, so a
+    // rename on Iceberg's side would silently drop the native path rather than fail to compile.
+    // These names are the ones both lowerings carry as their identity.
+    val expected = Seq(
+      "org.apache.iceberg.spark.functions.BucketFunction$BucketInt" -> CometIcebergBucket,
+      "org.apache.iceberg.spark.functions.BucketFunction$BucketLong" -> CometIcebergBucket,
+      "org.apache.iceberg.spark.functions.TruncateFunction$TruncateInt" -> CometIcebergTruncate,
+      "org.apache.iceberg.spark.functions.TruncateFunction$TruncateString" -> CometIcebergTruncate)
+    expected.foreach { case (className, expectedHandler) =>
+      assert(
+        CometIcebergSystemFunctions.handlers.get(className).contains(expectedHandler),
+        s"missing handler for $className")
+    }
+  }
+
   test("an unlisted static invoke routes through the codegen dispatcher") {
     val attr = AttributeReference("v", IntegerType)()
     val expr =
@@ -366,14 +461,8 @@ class CometIcebergSystemFunctionSuite
   }
 
   /** Runs `f` with the Iceberg catalog registered and the source parquet table in scope. */
-  private def withSourceTable(f: => Unit): Unit = withTempIcebergDir { warehouseDir =>
-    withSQLConf(
-      s"spark.sql.catalog.$catalog" -> "org.apache.iceberg.spark.SparkCatalog",
-      s"spark.sql.catalog.$catalog.type" -> "hadoop",
-      s"spark.sql.catalog.$catalog.warehouse" -> warehouseDir.getAbsolutePath) {
-      withParquetTable(sourcePath, source)(f)
-    }
-  }
+  private def withSourceTable(f: => Unit): Unit =
+    withHadoopCatalog(catalog)(withParquetTable(sourcePath, source)(f))
 
   private val sourceSchema = StructType(
     Seq(
@@ -427,7 +516,7 @@ class CometIcebergSystemFunctionSuite
         maybeNull(randomDecimal38()),
         maybeNull(randomString()),
         maybeNull(randomBinary()),
-        maybeNull(LocalDate.ofEpochDay(random.nextInt(40000) - 20000)),
+        maybeNull(LocalDate.ofEpochDay((random.nextInt(40000) - 20000).toLong)),
         maybeNull(instant(randomMicros())),
         maybeNull(localDateTime(randomMicros())))
     }
@@ -478,4 +567,18 @@ class CometIcebergSystemFunctionSuite
       spark.sparkContext.parallelize(randomRows ++ boundaryRows, 3),
       sourceSchema)
   }
+}
+
+/**
+ * A DataSourceV2 catalog scalar function with no static `invoke` magic method, so Spark's
+ * `V2ExpressionUtils.resolveScalarFunction` would lower a call to it as
+ * `ApplyFunctionExpression`. Stands in for the third-party catalogs that share that lowering with
+ * Iceberg but have no native handler in Comet.
+ */
+private class UnlistedScalarFunction extends ScalarFunction[Integer] {
+  override def inputTypes(): Array[DataType] = Array(IntegerType, IntegerType)
+  override def resultType(): DataType = IntegerType
+  override def name(): String = "unlisted"
+  override def canonicalName(): String = "test.unlisted"
+  override def produceResult(input: InternalRow): Integer = input.getInt(0)
 }

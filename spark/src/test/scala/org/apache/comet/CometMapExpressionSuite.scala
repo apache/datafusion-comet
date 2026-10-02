@@ -126,6 +126,96 @@ class CometMapExpressionSuite extends CometTestBase {
     }
   }
 
+  for (codegenEnabled <- Seq("false", "true")) {
+    test(s"map_from_arrays short-circuits null keys (codegen=$codegenEnabled)") {
+      withSQLConf(
+        SQLConf.ANSI_ENABLED.key -> "true",
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> codegenEnabled) {
+        withTable("map_null_keys") {
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            // Keep null and non-null keys in one batch. Only the null-key row divides by zero,
+            // and only that row has two values for no keys. Spark skips both evaluation and
+            // length validation before constructing the non-null rows' maps.
+            spark
+              .range(0, 3, 1, 1)
+              .selectExpr("CAST(id AS INT) AS k")
+              .write
+              .format("parquet")
+              .saveAsTable("map_null_keys")
+          }
+          val query = """SELECT map_from_arrays(
+                        |  CASE WHEN k = 0 THEN CAST(NULL AS ARRAY<INT>) ELSE array(1) END,
+                        |  CASE WHEN k = 0 THEN array(1 / k, 2) ELSE array(1 / k) END)
+                        |FROM map_null_keys""".stripMargin
+          val plan = sql(query).queryExecution.executedPlan
+          assert(new ExtendedExplainInfo().getNativeExpressions(plan).contains("map_from_arrays"))
+          checkSparkAnswerAndOperator(sql(query))
+        }
+      }
+    }
+
+    test(s"map_from_arrays rejects unequal batched row lengths (codegen=$codegenEnabled)") {
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> codegenEnabled) {
+        withTable("map_unequal_lengths") {
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            // Each operand has four flattened elements, but row lengths are [1, 3] and [2, 2].
+            spark
+              .range(0, 2, 1, 1)
+              .selectExpr("CAST(id AS INT) AS k")
+              .write
+              .format("parquet")
+              .saveAsTable("map_unequal_lengths")
+          }
+          val uneven = "CASE WHEN k = 0 THEN array(1) ELSE array(2, 3, 4) END"
+          for ((keys, values) <- Seq(
+              (uneven, "array(k, k + 10)"),
+              (uneven, "array(10, 20)"),
+              ("array(10, 20)", uneven))) {
+            val query = s"SELECT map_from_arrays($keys, $values) FROM map_unequal_lengths"
+            val plan = sql(query).queryExecution.executedPlan
+            assert(
+              new ExtendedExplainInfo().getNativeExpressions(plan).contains("map_from_arrays"))
+            // Spark exposes this through the same legacy condition on every supported version.
+            // checkSparkError also verifies the exception class and SQLSTATE match Spark.
+            checkSparkError(sql(query), "_LEGACY_ERROR_TEMP_2128")
+          }
+        }
+      }
+    }
+
+    test(s"map_from_arrays broadcasts scalar operands (codegen=$codegenEnabled)") {
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> codegenEnabled) {
+        withTable("map_mixed_inputs") {
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            spark
+              .range(0, 3, 1, 1)
+              .selectExpr("CAST(id AS INT) AS k")
+              .write
+              .format("parquet")
+              .saveAsTable("map_mixed_inputs")
+          }
+          val query = """SELECT
+                        |  map_from_arrays(array(10, 20), array(k, CAST(NULL AS INT))),
+                        |  map_from_arrays(array(k, k + 10), array(100, 200)),
+                        |  map_from_arrays(
+                        |    CASE WHEN k = 0 THEN CAST(NULL AS ARRAY<INT>) ELSE array(k) END,
+                        |    array(100)),
+                        |  map_from_arrays(array(100),
+                        |    CASE WHEN k = 0 THEN CAST(NULL AS ARRAY<INT>) ELSE array(k) END)
+                        |FROM map_mixed_inputs""".stripMargin
+          val plan = sql(query).queryExecution.executedPlan
+          assert(new ExtendedExplainInfo().getNativeExpressions(plan).contains("map_from_arrays"))
+          checkSparkAnswerAndOperator(sql(query))
+        }
+      }
+    }
+  }
+
   test("size with map input") {
     withTempDir { dir =>
       withTempView("t1") {
@@ -457,6 +547,71 @@ class CometMapExpressionSuite extends CometTestBase {
       checkSparkAnswerAndOperator(
         "SELECT _1 AS id, element_at(" +
           "map_from_arrays(sequence(1, 100000), sequence(1, 100000)), _1) AS v FROM tbl")
+    }
+  }
+
+  // A folded `map('z', 0)` has `valueContainsNull = false`, and a `MAP<STRING, INT>` column has
+  // `valueContainsNull = true`. Spark's `If` treats the two as one type and adds no cast, so the
+  // native planner has to cast the branch whose Arrow type differs from the common type (#6334).
+  // Each INSERT writes its own files and a batch never spans files, so there are batches in which
+  // every row takes the THEN branch, batches in which every row takes the ELSE branch, and batches
+  // that mix the two. The ones in which every row takes the ELSE branch failed with "column types
+  // must match schema types". `if_nested_nullability.sql` covers the constructor path.
+  test("IF with a folded map literal branch and a map column (multirow)") {
+    withTable("t") {
+      sql("CREATE TABLE t(c BOOLEAN, m MAP<STRING, INT>) USING parquet")
+      // Write the rows in Spark, so that only the queries below run in Comet
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        // c is true and m is not NULL in every row
+        sql("INSERT INTO t VALUES (true, map('a', 1)), (true, map('b', CAST(NULL AS INT)))")
+        // c is false or NULL and m is NULL in every row
+        sql("INSERT INTO t VALUES (false, NULL), (NULL, NULL)")
+        // pairs of rows that take different branches
+        val mixed =
+          (0 until 10).map(i => if (i % 2 == 0) s"(true, map('k', $i))" else "(false, NULL)")
+        sql(s"INSERT INTO t VALUES ${mixed.mkString(", ")}")
+      }
+      Seq("IF(c, m, map('z', 0))", "IF(c, map('z', 0), m)", "IF(m IS NULL, map('z', 0), m)")
+        .foreach { expr =>
+          checkSparkAnswerAndOperator(s"SELECT $expr AS r FROM t")
+        }
+    }
+  }
+
+  // The native lookup compares a whole batch of map entries in one pass and then reads each row's
+  // window out of the resulting mask. A native OFFSET slices the batch, and Arrow keeps a sliced
+  // MapArray's original entry offsets, so the visible entries start part way into the keys child --
+  // the same trap `mapsort` hit below. Reading the mask from index 0 would answer every row with
+  // some other row's entries.
+  //
+  // `_2[k]` is the load-bearing form here. `element_at` on a nullable operand is wrapped in
+  // `CASE WHEN _2 IS NOT NULL` under ANSI, and DataFusion's CaseExpr evaluates the THEN branch
+  // through `filter_record_batch`, which compacts the entries child and resets the first offset to
+  // 0 as soon as any row is NULL -- so an `element_at`-only test would quietly stop slicing.
+  // `GetMapValue` has no such guard, so the sliced map reaches the kernel on every Spark version
+  // and in both ANSI modes. The NULL rows are here to keep that distinction honest.
+  test("map lookup on a sliced map reads the visible entries") {
+    val rows = (0 until 20).map { i =>
+      val map = if (i % 7 == 3) null else Map(s"a${i % 5}" -> i, "shared" -> (i * 10))
+      (i, map)
+    }
+    withParquetTable(rows, "t") {
+      checkSparkAnswerAndOperator(
+        "SELECT _1, _2['a3'], _2['shared'], element_at(_2, 'a3') " +
+          "FROM (SELECT * FROM t ORDER BY _1 LIMIT 15 OFFSET 5)")
+    }
+  }
+
+  // A lookup key that varies per row takes a different path than a constant key: the key has to be
+  // lined up against every entry of its own row. Rows whose key is missing, whose map is NULL, and
+  // whose key is NULL all have to come back NULL.
+  test("element_at on a map column with a per-row lookup key") {
+    val rows = (0 until 20).map { i =>
+      val map = if (i % 7 == 0) null else Map(s"a${i % 5}" -> i, s"b${i % 3}" -> (i * 10))
+      (if (i % 11 == 0) null else s"a${i % 6}", map)
+    }
+    withParquetTable(rows, "t") {
+      checkSparkAnswerAndOperator("SELECT _1, element_at(_2, _1), _2[_1] FROM t")
     }
   }
 

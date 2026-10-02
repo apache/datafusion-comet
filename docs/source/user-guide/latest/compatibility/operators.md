@@ -19,6 +19,31 @@ under the License.
 
 # Operator Compatibility
 
+## Empty Relations
+
+On Spark 4.0 and later, Comet supports `EmptyRelationExec` as a native input. It is enabled by
+default and can be disabled with `spark.comet.exec.emptyRelation.enabled=false`. The operator
+preserves Spark's output attributes and zero partitions; the eliminated logical subtree is not
+executed.
+
+Supported parent joins and aggregates remain eligible for native execution. Global aggregates
+still return one row (`COUNT = 0`, `SUM = NULL`), and grouped aggregates return no rows. Independent
+operator restrictions and aggregate buffer compatibility checks still apply.
+Parquet writes whose input plans contain an empty relation use Spark's writer to preserve
+readable empty output files and their schema metadata.
+
+## In-Memory Cache
+
+Comet can store cached relations (`df.cache()`, `CACHE TABLE`) in Arrow format and scan them
+natively. This is experimental and disabled by default; see [In-Memory Cache](../in-memory-cache.md)
+for how to enable it. Comet does not replace a `spark.sql.cache.serializer` that the application
+has already set. Relations whose schema Comet's Arrow writer does not support are cached in
+Spark's default format, and their scans fall back to Spark. Reads that feed Spark operators rather
+than Comet operators can be slower than Spark's cache.
+
+With Kryo and `spark.kryo.registrationRequired=true`, Comet needs its Kryo registrator whether or
+not the cache is enabled; see [Kryo serialization](../installation.md#kryo-serialization).
+
 ## Sampling
 
 Comet runs `SampleExec` natively when sampling is performed without replacement, which covers
@@ -67,8 +92,6 @@ incorrect result. When any single window expression in a `WindowExec` falls back
   ([#4835](https://github.com/apache/datafusion-comet/issues/4835)).
 - `lag` / `lead` with a non-literal default value ([#4268](https://github.com/apache/datafusion-comet/issues/4268)).
 - A `ROWS` offset that is not an integer or long, or a `RANGE` offset that is not numeric.
-- `GROUPS` frames ([#4836](https://github.com/apache/datafusion-comet/issues/4836)). `DISTINCT` aggregates over a
-  window are not supported by Spark either.
 - Any `PARTITION BY` or `ORDER BY` expression that Comet cannot serialize.
 
 `WindowGroupLimitExec` (window-based limit pushdown for `ROW_NUMBER`, `RANK`, and `DENSE_RANK`)
@@ -79,11 +102,20 @@ runs natively; it is controlled by `spark.comet.exec.windowGroupLimit.enabled` (
 - Any `PARTITION BY` or `ORDER BY` key whose type carries a non-default `StringType` collation
   (e.g. `UTF8_LCASE`). The native operator detects partitions and order-key peer groups by
   comparing Arrow row-encoded keys for byte equality, which splits peers that Spark ties.
+- `RANK` and `DENSE_RANK` whose `ORDER BY` key has a `FLOAT` or `DOUBLE` nested in an array or
+  struct. The same byte equality decides their ties, and nested floating-point values aren't
+  normalized, so `-0.0` and `+0.0`, or two NaN representations, would get different ranks and the
+  cutoff would drop rows that Spark keeps
+  ([#5507](https://github.com/apache/datafusion-comet/issues/5507)).
 
 **Known incompatibilities:**
 
-- Signed-zero ordering (`-0.0` vs `+0.0`) diverges from Spark's `RankLimitIterator`; see
-  [floating-point ordering](./floating-point.md#ordering-signed-zero-00-vs-00).
+- `ROW_NUMBER` over such a key still runs natively and follows the native sort, which compares
+  nested floating-point values with Arrow's raw total ordering. Which of two rows that differ only
+  in `-0.0` and `+0.0`, or in their NaN representation, gets the lower row number can therefore
+  differ from Spark ([#5507](https://github.com/apache/datafusion-comet/issues/5507)). Scalar
+  `FLOAT` and `DOUBLE` keys are normalized and match Spark; see
+  [floating-point ordering](./floating-point.md).
 
 ## Round-Robin Partitioning
 
