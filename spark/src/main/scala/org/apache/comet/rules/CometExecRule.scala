@@ -1247,12 +1247,14 @@ case class CometExecRule(session: SparkSession)
   /**
    * The early tagging pass cannot know whether a Final's child will become native. Check the
    * actual conversion result before serialization or AQE stage creation, restoring the feeding
-   * aggregate/exchange chain while keeping native work below its Partial. Return the repaired
-   * plan, or preserve an unrepairable path and record one warning on its Spark Final if an unsafe
+   * aggregate/exchange chain while keeping native work below its Partial. When the Partial is
+   * already in Spark, restore the native merge stages above it instead. Return the repaired plan,
+   * or preserve an unrepairable path and record one warning on its Spark Final if an unsafe
    * native producer remains. Existing stages and their buffers are never rewritten by this pass.
    */
   private[rules] def revertUnsafePartialAggregates(plan: SparkPlan): SparkPlan = {
-    def revertChain(node: SparkPlan): Option[SparkPlan] = node match {
+    // `belowNativeMerge` is set once the walk has passed a native aggregate that merges buffers.
+    def revertChain(node: SparkPlan, belowNativeMerge: Boolean): Option[SparkPlan] = node match {
       case agg: CometHashAggregateExec if agg.modes == Seq(Partial) =>
         Some(
           restoreSparkPartial(
@@ -1262,25 +1264,40 @@ case class CometExecRule(session: SparkSession)
 
       case agg: CometHashAggregateExec
           if agg.modes.forall(m => m == Partial || m == PartialMerge) =>
-        revertChain(agg.child).map(child => agg.originalPlan.withNewChildren(Seq(child)))
+        val merges = agg.aggregateExpressions.nonEmpty
+        revertChain(agg.child, belowNativeMerge || merges).map { child =>
+          val restored = agg.originalPlan.withNewChildren(Seq(child))
+          // A native PartialMerge decodes a Spark partial's collect_list / collect_set buffer,
+          // so without the tag the transform below would convert the restored merge again.
+          if (merges) {
+            val reason = "Partial-merge aggregate disabled: corresponding final aggregate " +
+              "cannot be converted to Comet and intermediate buffer formats are incompatible"
+            restored.setTagValue(CometExecRule.COMET_UNSAFE_PARTIAL, reason)
+            withFallbackReason(restored, reason)
+          } else {
+            restored
+          }
+        }
 
       case agg: BaseAggregateExec
           if agg.aggregateExpressions.nonEmpty &&
             agg.aggregateExpressions.forall(_.mode == Partial) =>
         // This producer already emits Spark buffers. Do not reach through it to an unrelated
-        // aggregate below it.
-        None
+        // aggregate below it, but do restore a native merge above it that reads those buffers.
+        if (belowNativeMerge) Some(agg) else None
 
       case agg: BaseAggregateExec
           if agg.aggregateExpressions.forall(e => e.mode == Partial || e.mode == PartialMerge) =>
-        revertChain(agg.child).map(child => agg.withNewChildren(Seq(child)))
+        revertChain(agg.child, belowNativeMerge).map(child => agg.withNewChildren(Seq(child)))
 
       case CometSinkPlaceHolder(_, _, shuffle: CometShuffleExchangeExec) =>
-        revertChain(shuffle)
+        revertChain(shuffle, belowNativeMerge)
       case shuffle: CometShuffleExchangeExec =>
-        revertChain(shuffle.child).map(child => shuffle.originalPlan.withNewChildren(Seq(child)))
+        revertChain(shuffle.child, belowNativeMerge)
+          .map(child => shuffle.originalPlan.withNewChildren(Seq(child)))
       case shuffle: ShuffleExchangeExec =>
-        revertChain(shuffle.child).map(child => shuffle.withNewChildren(Seq(child)))
+        revertChain(shuffle.child, belowNativeMerge)
+          .map(child => shuffle.withNewChildren(Seq(child)))
 
       // Stop at materialized stages and operators outside the feeding aggregate/exchange chain.
       case _ => None
@@ -1290,7 +1307,7 @@ case class CometExecRule(session: SparkSession)
       case agg: BaseAggregateExec
           if agg.aggregateExpressions.map(_.mode).distinct == Seq(Final) &&
             !QueryPlanSerde.allAggsSupportNativePartialToSparkFinal(agg.aggregateExpressions) =>
-        revertChain(agg.child)
+        revertChain(agg.child, belowNativeMerge = false)
           // Rebuild native consumers and shuffles from their original Spark operators. Merely
           // replacing their children would leave a native protobuf reading the old buffers.
           .map(child => transform(agg.withNewChildren(Seq(child))))

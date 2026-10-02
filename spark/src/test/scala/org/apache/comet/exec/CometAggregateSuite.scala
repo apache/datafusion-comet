@@ -371,6 +371,26 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("native collect_list merge stages over a Spark partial are restored for a Spark final") {
+    // The JVM shuffle cannot carry the native interval list state, so the exchange above the
+    // native merge stages, and the final behind it, stay in Spark. The merges read the buffer of
+    // a partial that is already in Spark, so the repair must restore the merges instead.
+    for (adaptive <- Seq(false, true)) {
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "false",
+        CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
+        val (_, cometPlan) = checkSparkAnswer(
+          "SELECT x, count(DISTINCT y), size(collect_list(v)) FROM VALUES " +
+            "(1, 1, INTERVAL '1-2' YEAR TO MONTH), (1, 2, INTERVAL '-3-4' YEAR TO MONTH) " +
+            "AS t(x, y, v) GROUP BY x")
+        assert(
+          collect(cometPlan) { case agg: CometHashAggregateExec => agg }.isEmpty,
+          s"Expected every aggregate stage to stay in Spark; plan:\n$cometPlan")
+      }
+    }
+  }
+
   test("collect_list merge stages stay in Spark when a distinct SUM keeps the upper stages") {
     // A grouped SUM at maximum decimal precision keeps the upper two stages of the distinct
     // rewrite in Spark. The collect_list PartialMerge below them must stay in Spark as well:
