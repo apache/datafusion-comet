@@ -19,11 +19,12 @@
 
 package org.apache.comet.parquet
 
-import java.io.File
+import java.io.{File, FileNotFoundException}
 import java.math.{BigDecimal, BigInteger}
 import java.sql.Timestamp
 import java.time.{ZoneId, ZoneOffset}
 import java.util.{Base64, Collections}
+import java.util.concurrent.ExecutionException
 
 import scala.reflect.ClassTag
 import scala.reflect.runtime.universe.TypeTag
@@ -2817,6 +2818,52 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
           hasDate = true,
           hasTimestamp = false))
       assert(StatusCountingFileSystem.getFileStatusCalls() == 0)
+    }
+  }
+
+  test("datetime rebase footer cache holds at most the configured number of files") {
+    withTempPath { path =>
+      withSQLConf(SQLConf.PARQUET_REBASE_MODE_IN_WRITE.key -> "CORRECTED") {
+        (0 until 3).foreach { i =>
+          sql(s"SELECT date_add(date'2000-01-01', $i) AS d")
+            .coalesce(1)
+            .write
+            .mode("append")
+            .parquet(path.toString)
+        }
+      }
+      val hadoopConf = spark.sessionState.newHadoopConf()
+      val dir = new Path(path.getAbsolutePath)
+      val fs = dir.getFileSystem(hadoopConf)
+      val files = fs
+        .listStatus(dir)
+        .filter(_.getPath.getName.endsWith(".parquet"))
+        .map(s => CometScanUtils.ParquetFileInfo(s.getPath, s.getLen, s.getModificationTime))
+        .toSeq
+      assert(files.size == 3)
+      def requiresRebase(): Boolean =
+        CometScanUtils.requiresDatetimeRebase(
+          files,
+          hadoopConf,
+          "CORRECTED",
+          "CORRECTED",
+          hasDate = true,
+          hasTimestamp = false)
+
+      val maxCachedFiles =
+        CometConf.COMET_SCAN_PARQUET_CHECK_DATETIME_REBASE_MAX_CACHED_FILES.key
+      withSQLConf(maxCachedFiles -> "3") {
+        assert(!requiresRebase())
+        // Every footer is cached, so the check needs no I/O even once the files are gone.
+        files.foreach(f => fs.delete(f.path, false))
+        assert(!requiresRebase())
+      }
+      withSQLConf(maxCachedFiles -> "2") {
+        // A lower bound evicts the least recently used file at once, and its footer can no
+        // longer be read.
+        val e = intercept[ExecutionException](requiresRebase())
+        assert(e.getCause.isInstanceOf[FileNotFoundException], e)
+      }
     }
   }
 

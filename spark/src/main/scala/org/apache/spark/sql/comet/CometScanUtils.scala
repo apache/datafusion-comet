@@ -33,6 +33,8 @@ import org.apache.spark.sql.catalyst.expressions.{DynamicPruningExpression, Expr
 import org.apache.spark.sql.execution.{InSubqueryExec, SubqueryAdaptiveBroadcastExec}
 import org.apache.spark.util.ThreadUtils
 
+import org.apache.comet.CometConf
+
 object CometScanUtils {
 
   /**
@@ -50,7 +52,9 @@ object CometScanUtils {
 
   private type FooterCacheKey = (String, Long, Long)
 
-  private val footerFactsCacheMaxSize = 32 * 1024
+  // The cache bound most recently applied by applyFooterFactsCacheMaxSize.
+  @volatile private var footerFactsCacheMaxSize: Int =
+    CometConf.COMET_SCAN_PARQUET_CHECK_DATETIME_REBASE_MAX_CACHED_FILES.defaultValue.get
 
   // Bounded LRU cache of per-file footer facts, keyed by (path, length, modificationTime) so a
   // rewritten file is re-read. The cached facts are independent of the read modes and requested
@@ -64,6 +68,25 @@ object CometScanUtils {
           size() > footerFactsCacheMaxSize
       })
 
+  /**
+   * Applies the configured bound to the cache. The cache outlives any one session, so the bound
+   * in effect is the one from the session that last ran the check. A lower bound evicts the least
+   * recently used entries at once, since `removeEldestEntry` only evicts one entry per insert.
+   */
+  private def applyFooterFactsCacheMaxSize(maxSize: Int): Unit = {
+    if (maxSize != footerFactsCacheMaxSize) {
+      footerFactsCache.synchronized {
+        footerFactsCacheMaxSize = maxSize
+        // The map is in access order, so iteration starts at the least recently used entry.
+        val keys = footerFactsCache.keySet.iterator
+        while (footerFactsCache.size() > maxSize && keys.hasNext) {
+          keys.next()
+          keys.remove()
+        }
+      }
+    }
+  }
+
   def requiresDatetimeRebase(
       files: Seq[ParquetFileInfo],
       conf: Configuration,
@@ -71,6 +94,8 @@ object CometScanUtils {
       int96Mode: String,
       hasDate: Boolean,
       hasTimestamp: Boolean): Boolean = {
+    applyFooterFactsCacheMaxSize(
+      CometConf.COMET_SCAN_PARQUET_CHECK_DATETIME_REBASE_MAX_CACHED_FILES.get())
 
     // Mirrors Spark's DataSourceUtils.datetimeRebaseSpec/int96RebaseSpec: when the file has no
     // Spark version key the configured mode decides (EXCEPTION must also fall back, because

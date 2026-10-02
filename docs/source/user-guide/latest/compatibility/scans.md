@@ -49,8 +49,10 @@ The following features are not supported and cause Comet to fall back to Spark:
   `spark.sql.parquet.int96RebaseModeInRead` requires legacy-calendar handling. This includes
   files written by any Spark version with a corresponding legacy rebase mode, not only files
   written before Spark 3.0. Detecting this requires reading each input file's footer on the
-  driver during planning (results are cached per file); users whose data is known to be free
-  of legacy-calendar values can skip the check by setting
+  driver during planning. The results are cached for up to
+  `spark.comet.scan.parquet.checkDatetimeRebase.maxCachedFiles` files (32768 by default), so
+  raise it for scans over more files than that. Users whose data is known to be free of
+  legacy-calendar values can skip the check by setting
   `spark.comet.scan.parquet.checkDatetimeRebase=false`.
   See [#5010](https://github.com/apache/datafusion-comet/issues/5010).
   Files written by engines other than Spark, such as Trino, Hive, Flink, pyarrow or DuckDB, carry

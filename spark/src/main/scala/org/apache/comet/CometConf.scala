@@ -1077,6 +1077,22 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(true)
 
+  val COMET_SCAN_PARQUET_CHECK_DATETIME_REBASE_MAX_CACHED_FILES: ConfigEntry[Int] =
+    conf("spark.comet.scan.parquet.checkDatetimeRebase.maxCachedFiles")
+      .category(CATEGORY_SCAN)
+      .doc(
+        "The maximum number of Parquet files for which the datetime rebase check " +
+          s"(`${COMET_SCAN_PARQUET_CHECK_DATETIME_REBASE.key}`) caches footer metadata on " +
+          "the driver. The cache is shared by every scan in the driver JVM and evicts the " +
+          "least recently used files first. A scan over more files than this can never be " +
+          "fully cached, so each time it is planned the footers that did not fit are read " +
+          "again. Set this above the number of files in the largest scans; each cached file " +
+          "takes a few hundred bytes of driver memory. The value in effect is the one from " +
+          "the session that last ran the check.")
+      .intConf
+      .checkValue(v => v > 0, "The maximum number of cached files must be positive")
+      .createWithDefault(32768)
+
   val COMET_SCAN_ALLOW_DISABLED_PARQUET_VECTORIZED_READER: ConfigEntry[Boolean] =
     conf("spark.comet.scan.allowDisabledParquetVectorizedReader")
       .category(CATEGORY_SCAN)
