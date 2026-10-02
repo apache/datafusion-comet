@@ -1072,8 +1072,8 @@ object CometConf extends ShimCometConf {
           "Disable only when all input files are known to contain datetime values written " +
           "with the proleptic Gregorian calendar (for example, written by Spark 3.x or later " +
           "with corrected rebase modes). When disabled, Comet reads legacy files without " +
-          "rebasing, which produces results that differ from Spark for dates and timestamps " +
-          s"before 1582-10-15. $COMPAT_GUIDE.")
+          "rebasing, which produces results that differ from Spark for dates before " +
+          s"1582-10-15 or timestamps before 1900-01-01T00:00:00Z. $COMPAT_GUIDE.")
       .booleanConf
       .createWithDefault(true)
 
