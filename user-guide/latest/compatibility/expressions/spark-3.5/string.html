@@ -918,6 +918,10 @@ under the License.
 <li><p>native reverse does not support arrays whose element type contains binary, struct, or map</p></li>
 <li><p>reverse does not support non-UTF8_BINARY collations (https://github.com/apache/datafusion-comet/issues/2190)</p></li>
 </ul>
+<p>The following cases have no native implementation and always run in the JVM using Spark’s code-generated implementation (inside the Comet pipeline):</p>
+<ul class="simple">
+<li><p>reverse has no native implementation for binary input</p></li>
+</ul>
 </section>
 <section id="startswith">
 <h2>StartsWith<a class="headerlink" href="#startswith" title="Link to this heading">#</a></h2>

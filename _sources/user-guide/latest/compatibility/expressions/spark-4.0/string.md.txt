@@ -127,6 +127,10 @@ By default, `Reverse` is evaluated in the JVM using Spark's own code-generated i
 - native reverse does not support arrays whose element type contains binary, struct, or map
 - reverse does not support non-UTF8_BINARY collations (https://github.com/apache/datafusion-comet/issues/2190)
 
+The following cases have no native implementation and always run in the JVM using Spark's code-generated implementation (inside the Comet pipeline):
+
+- reverse has no native implementation for binary input
+
 ## StartsWith
 
 The following cases have no native implementation and always run in the JVM using Spark's code-generated implementation (inside the Comet pipeline):
