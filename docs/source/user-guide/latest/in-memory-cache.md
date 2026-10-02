@@ -34,8 +34,8 @@ $SPARK_HOME/bin/spark-shell \
 ```
 
 It has to be set before the `SparkContext` starts. Comet's driver plugin chooses
-`spark.sql.cache.serializer` once, while the context is initializing, so a session that started
-with the default goes on using Spark's cache format however the config is set afterwards. The
+`spark.sql.cache.serializer` once, while the context is initializing, so an application keeps the
+cache format it started with however the config is set afterwards. The
 plugin installs Comet's serializer only if `spark.comet.enabled` and `spark.comet.exec.enabled`
 are enabled at that point too, because an application that starts without native execution could
 not scan Comet's format natively. It also keeps Spark's format when Comet shuffle is enabled but

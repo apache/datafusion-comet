@@ -57,6 +57,35 @@ Treat setting one of these keys as a temporary measure. If you find you cannot s
 legacy behavior, please open an issue describing your use case so it can be considered before the
 key is removed.
 
+## Upgrading to Comet 1.2.0
+
+Comet `1.2.0` makes no behavior changes that need a `spark.comet.legacy.*` key. The changes below
+need none either, but check whether any of them applies to your deployment.
+
+### In-Memory Cache Enabled by Default
+
+`spark.comet.exec.inMemoryCache.enabled` now defaults to `true`. An application that loads
+`CometPlugin` now stores what it caches with `CACHE TABLE`, `df.cache()` or `df.persist()` in
+Comet's Arrow format instead of Spark's, and Comet scans it natively. The format does not change
+query results, but it can change performance: Spark operators read Comet's format more slowly than
+Spark's own, which matters when a session turns Comet or its native execution off after caching.
+Comet records a fallback reason on such a scan. See
+[In-Memory Cache](in-memory-cache.md#limitations).
+
+The format is chosen once, when the application starts. To keep Spark's format, set
+`spark.comet.exec.inMemoryCache.enabled=false` then. Comet also keeps Spark's format without that
+setting when the application:
+
+- starts with `spark.comet.enabled` or `spark.comet.exec.enabled` set to `false`.
+- leaves Comet shuffle enabled without one of Comet's shuffle managers, so that Comet disables
+  itself.
+- uses Kryo with `spark.kryo.registrationRequired=true` and does not list
+  `org.apache.comet.CometKryoRegistrator` in `spark.kryo.registrator`, because Kryo would reject
+  Comet's cached batches. Add the registrator to use Comet's format; see
+  [Kryo](in-memory-cache.md#kryo).
+
+An application that sets `spark.sql.cache.serializer` itself keeps the serializer it chose.
+
 ## Upgrading to Comet 1.1.0
 
 Comet `1.1.0` makes no behavior changes that need a `spark.comet.legacy.*` key. The changes below
