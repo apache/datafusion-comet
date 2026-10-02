@@ -372,6 +372,7 @@ impl PhysicalExpr for WideDecimalBinaryExpr {
 /// intermediate), not the rescaled result. Multiplication also applies Spark's
 /// MathContext(39, DOWN).
 #[inline]
+#[allow(clippy::too_many_arguments)]
 fn check_overflow_and_convert(
     result: i256,
     bound: i256,
