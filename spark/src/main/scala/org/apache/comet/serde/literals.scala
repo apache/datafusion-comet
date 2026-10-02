@@ -26,7 +26,7 @@ import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, CreateArray, CreateMap, Expression, KnownNullable, Literal, MapFromArrays}
 import org.apache.spark.sql.catalyst.util.{ArrayData, MapData, TypeUtils}
 import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, CalendarIntervalType, DataType, DateType, DayTimeIntervalType, Decimal, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, NullType, ShortType, StringType, StructType, TimestampNTZType, TimestampType}
-import org.apache.spark.unsafe.types.{CalendarInterval, UTF8String}
+import org.apache.spark.unsafe.types.UTF8String
 
 import com.google.protobuf.ByteString
 
@@ -342,39 +342,32 @@ object CometLiteral extends CometExpressionSerde[Literal] with CometTypeShim wit
 
   /**
    * True when some scalar inside `value` has no faithful Arrow encoding, in which case the
-   * literal has to stay on Spark. Two of the copies a Literal takes towards the native side are
-   * not total:
-   *   - a `UTF8String` holding malformed UTF-8 (`CAST(X'FF' AS STRING)`). A rebuilt `CreateMap`
-   *     reaches the JVM codegen dispatcher, whose generated writer copies the bytes verbatim into
-   *     a `VarCharVector`; native string kernels then read them through unchecked Arrow FFI and
-   *     abort the JVM on a `hint::unreachable_unchecked`, or silently mis-count characters. The
-   *     direct paths (`convert`'s `StringType` arm and [[makeListLiteral]]'s) instead go through
-   *     `UTF8String.toString`, which substitutes U+FFFD. Neither is fixable on the wire, because
-   *     `string_val` and `string_values` are proto `string` fields.
-   *   - a `CalendarInterval` beyond about 292 years of elapsed time overflows
-   *     `Math.multiplyExact(microseconds, 1000L)` on the way into `IntervalMonthDayNanoVector`,
-   *     whose nanosecond field cannot represent it (#5279). Spark itself accepts the value.
+   * literal has to stay on Spark. One of the copies a Literal takes towards the native side is
+   * not total: a `UTF8String` holding malformed UTF-8 (`CAST(X'FF' AS STRING)`). A rebuilt
+   * `CreateMap` reaches the JVM codegen dispatcher, whose generated writer copies the bytes
+   * verbatim into a `VarCharVector`; native string kernels then read them through unchecked Arrow
+   * FFI and abort the JVM on a `hint::unreachable_unchecked`, or silently mis-count characters.
+   * The direct paths (`convert`'s `StringType` arm and [[makeListLiteral]]'s) instead go through
+   * `UTF8String.toString`, which substitutes U+FFFD. Neither is fixable on the wire, because
+   * `string_val` and `string_values` are proto `string` fields.
    *
-   * The same hazards exist for a non-folded `map(...)` / a scanned string column, which never
-   * reach this serde; this only keeps a Literal from newly admitting them.
+   * The same hazard exists for a non-folded `map(...)` / a scanned string column, which never
+   * reach this serde; this only keeps a Literal from newly admitting it.
    */
   private def hasUnwritableValue(value: Any, dataType: DataType): Boolean =
     mayHoldUnwritableValue(dataType) && unwritableValueIn(value, dataType)
 
   /**
-   * Type-level precondition for [[hasUnwritableValue]]: only a string or a calendar interval
-   * reaches one of its hazardous arms, so a large all-numeric literal is never walked element by
-   * element. Applied once per collection rather than once per element.
+   * Type-level precondition for [[hasUnwritableValue]]: only a string reaches its hazardous arm,
+   * so a large literal without strings is never walked element by element. Applied once per
+   * collection rather than once per element.
    */
   private def mayHoldUnwritableValue(dataType: DataType): Boolean =
-    SupportLevel.containsType(dataType, classOf[StringType], classOf[CalendarIntervalType])
+    SupportLevel.containsType(dataType, classOf[StringType])
 
   private def unwritableValueIn(value: Any, dataType: DataType): Boolean = dataType match {
     case _ if value == null => false
     case _: StringType => !isValidUtf8(value.asInstanceOf[UTF8String])
-    case CalendarIntervalType =>
-      val micros = value.asInstanceOf[CalendarInterval].microseconds
-      micros > MaxArrowIntervalMicros || micros < -MaxArrowIntervalMicros
     case ArrayType(et, _) => unwritableElementIn(value.asInstanceOf[ArrayData], et)
     case MapType(kt, vt, _) =>
       val mapData = value.asInstanceOf[MapData]
@@ -392,9 +385,6 @@ object CometLiteral extends CometExpressionSerde[Literal] with CometTypeShim wit
   private def unwritableElementIn(arr: ArrayData, elementType: DataType): Boolean =
     (0 until arr.numElements()).exists(i =>
       unwritableValueIn(arr.get(i, elementType), elementType))
-
-  /** Largest `CalendarInterval.microseconds` that survives conversion to Arrow nanoseconds. */
-  private final val MaxArrowIntervalMicros: Long = Long.MaxValue / 1000
 
   /**
    * True when every map key type reachable inside `dataType` can be rebuilt and consumed
