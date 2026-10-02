@@ -828,8 +828,8 @@ level as in legacy mode. See the <a class="reference internal" href="#ansi-mode"
 </section>
 <section id="whitespace-trimming-in-casts-from-string">
 <h2>Whitespace Trimming in Casts from String<a class="headerlink" href="#whitespace-trimming-in-casts-from-string" title="Link to this heading">#</a></h2>
-<p>Spark uses two different notions of whitespace when casting from string. Comet reproduces both,
-with one known exception noted below:</p>
+<p>Spark uses two different notions of whitespace when casting from string, and Comet reproduces
+both:</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Trim set</p></th>
@@ -838,7 +838,7 @@ with one known exception noted below:</p>
 </thead>
 <tbody>
 <tr class="row-even"><td><p>Bytes <code class="docutils literal notranslate"><span class="pre">0x00</span></code>-<code class="docutils literal notranslate"><span class="pre">0x20</span></code> and <code class="docutils literal notranslate"><span class="pre">0x7F</span></code> (<code class="docutils literal notranslate"><span class="pre">DEL</span></code>)</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">BOOLEAN</span></code>, <code class="docutils literal notranslate"><span class="pre">TINYINT</span></code>, <code class="docutils literal notranslate"><span class="pre">SMALLINT</span></code>, <code class="docutils literal notranslate"><span class="pre">INT</span></code>, <code class="docutils literal notranslate"><span class="pre">BIGINT</span></code>, <code class="docutils literal notranslate"><span class="pre">DATE</span></code>, <code class="docutils literal notranslate"><span class="pre">TIMESTAMP</span></code> *</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">BOOLEAN</span></code>, <code class="docutils literal notranslate"><span class="pre">TINYINT</span></code>, <code class="docutils literal notranslate"><span class="pre">SMALLINT</span></code>, <code class="docutils literal notranslate"><span class="pre">INT</span></code>, <code class="docutils literal notranslate"><span class="pre">BIGINT</span></code>, <code class="docutils literal notranslate"><span class="pre">DATE</span></code>, <code class="docutils literal notranslate"><span class="pre">TIMESTAMP</span></code>, <code class="docutils literal notranslate"><span class="pre">TIMESTAMP_NTZ</span></code></p></td>
 </tr>
 <tr class="row-odd"><td><p>Bytes <code class="docutils literal notranslate"><span class="pre">0x00</span></code>-<code class="docutils literal notranslate"><span class="pre">0x20</span></code> only</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">FLOAT</span></code>, <code class="docutils literal notranslate"><span class="pre">DOUBLE</span></code>, <code class="docutils literal notranslate"><span class="pre">DECIMAL</span></code></p></td>
@@ -850,8 +850,6 @@ with one known exception noted below:</p>
 <code class="docutils literal notranslate"><span class="pre">U+1680</span></code>, <code class="docutils literal notranslate"><span class="pre">U+2000</span></code>-<code class="docutils literal notranslate"><span class="pre">U+200A</span></code>, <code class="docutils literal notranslate"><span class="pre">U+2028</span></code>, <code class="docutils literal notranslate"><span class="pre">U+2029</span></code>, <code class="docutils literal notranslate"><span class="pre">U+202F</span></code>, <code class="docutils literal notranslate"><span class="pre">U+205F</span></code> or <code class="docutils literal notranslate"><span class="pre">U+3000</span></code> produces <code class="docutils literal notranslate"><span class="pre">NULL</span></code>
 (or raises under ANSI mode), even though those codepoints are whitespace to Unicode. Whitespace
 inside a value is never trimmed.</p>
-<p>* <code class="docutils literal notranslate"><span class="pre">CAST(string</span> <span class="pre">AS</span> <span class="pre">TIMESTAMP)</span></code> and <code class="docutils literal notranslate"><span class="pre">CAST(string</span> <span class="pre">AS</span> <span class="pre">TIMESTAMP_NTZ)</span></code> still trim Unicode whitespace
-in Comet; see <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5149">#5149</a>.</p>
 </section>
 <section id="string-to-decimal">
 <h2>String to Decimal<a class="headerlink" href="#string-to-decimal" title="Link to this heading">#</a></h2>
