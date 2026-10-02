@@ -62,6 +62,11 @@ impl SparkBitArray {
         self.data.len()
     }
 
+    /// Bytes allocated for the word buffer.
+    pub fn heap_size(&self) -> usize {
+        self.data.capacity() * std::mem::size_of::<u64>()
+    }
+
     pub fn data(&self) -> Vec<u64> {
         self.data.clone()
     }
