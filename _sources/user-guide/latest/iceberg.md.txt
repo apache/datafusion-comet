@@ -192,6 +192,10 @@ The following scenarios will fall back to the JVM Iceberg reader:
 - Scans with residual filters using `truncate`, `bucket`, `year`, `month`, `day`, or `hour`
   transform functions (partition pruning still works, but row-level filtering of these
   transforms falls back)
+- Scans that read a struct, array, or map column with a nested field that schema evolution added
+  or renamed. The native reader cannot yet match such a field to data files written before the
+  change. The check uses the table's schema history, so the fallback stays after those files are
+  rewritten
 
 Writes are not covered by this list. By default Iceberg writes use Spark's own writer; see
 [Iceberg Writes](iceberg-writes.md) for the experimental native writer and when it applies.
@@ -220,7 +224,9 @@ Iceberg's system functions `bucket`, `truncate`, `years`, `months`, `days`, and 
 form of its partition transforms, for example `SELECT system.bucket(16, id) FROM t`) run natively.
 Spark binds them as static invocations of Iceberg's per-type implementations under
 `org.apache.iceberg.spark.functions`, and Comet recognizes those classes wherever the expression
-appears: in a projection, a filter, a sort key, or the hash partitioning of a shuffle.
+appears: in a projection, a filter, a sort key, or the hash partitioning of a shuffle. The
+exception is a call nested inside an expression that Comet runs through the JVM codegen
+dispatcher, such as `map(...)`. That makes the operator fall back to Spark.
 
 The native kernels reproduce Iceberg's Java semantics exactly rather than approximately:
 

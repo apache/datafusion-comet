@@ -959,6 +959,10 @@ object-store configuration per scan)</p></li>
 <li><p>Scans with residual filters using <code class="docutils literal notranslate"><span class="pre">truncate</span></code>, <code class="docutils literal notranslate"><span class="pre">bucket</span></code>, <code class="docutils literal notranslate"><span class="pre">year</span></code>, <code class="docutils literal notranslate"><span class="pre">month</span></code>, <code class="docutils literal notranslate"><span class="pre">day</span></code>, or <code class="docutils literal notranslate"><span class="pre">hour</span></code>
 transform functions (partition pruning still works, but row-level filtering of these
 transforms falls back)</p></li>
+<li><p>Scans that read a struct, array, or map column with a nested field that schema evolution added
+or renamed. The native reader cannot yet match such a field to data files written before the
+change. The check uses the table’s schema history, so the fallback stays after those files are
+rewritten</p></li>
 </ul>
 <p>Writes are not covered by this list. By default Iceberg writes use Spark’s own writer; see
 <a class="reference internal" href="iceberg-writes.html"><span class="std std-doc">Iceberg Writes</span></a> for the experimental native writer and when it applies.</p>
@@ -987,7 +991,9 @@ Spark, which forces a columnar-to-row roundtrip and demotes the surrounding shuf
 form of its partition transforms, for example <code class="docutils literal notranslate"><span class="pre">SELECT</span> <span class="pre">system.bucket(16,</span> <span class="pre">id)</span> <span class="pre">FROM</span> <span class="pre">t</span></code>) run natively.
 Spark binds them as static invocations of Iceberg’s per-type implementations under
 <code class="docutils literal notranslate"><span class="pre">org.apache.iceberg.spark.functions</span></code>, and Comet recognizes those classes wherever the expression
-appears: in a projection, a filter, a sort key, or the hash partitioning of a shuffle.</p>
+appears: in a projection, a filter, a sort key, or the hash partitioning of a shuffle. The
+exception is a call nested inside an expression that Comet runs through the JVM codegen
+dispatcher, such as <code class="docutils literal notranslate"><span class="pre">map(...)</span></code>. That makes the operator fall back to Spark.</p>
 <p>The native kernels reproduce Iceberg’s Java semantics exactly rather than approximately:</p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">bucket</span></code> hashes the spec’s byte encoding of each value (8-byte little-endian for integers, dates,
