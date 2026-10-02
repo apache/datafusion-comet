@@ -56,6 +56,21 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   import testImplicits._
 
+  test("S3 HTTP metrics are independent scan counters") {
+    val first = CometMetricNode.nativeScanMetrics(spark.sparkContext)
+    val second = CometMetricNode.nativeScanMetrics(spark.sparkContext)
+    val names = Seq("http_observed_gets", "http_attempts", "http_retries")
+    names.foreach { name =>
+      val key = s"scan_io_$name"
+      assert(first(key).metricType == "sum")
+      assert(first(key).id != second(key).id)
+      first(key).add(1)
+      assert(first(key).value == 1)
+      assert(second(key).value == 0)
+    }
+    assert(names.map(name => first(s"scan_io_$name").id).distinct.size == names.size)
+  }
+
   test("spill metric tree counts nested shared accumulators once") {
     def metric(name: String, value: Long): SQLMetric = {
       val sqlMetric = new SQLMetric(name)

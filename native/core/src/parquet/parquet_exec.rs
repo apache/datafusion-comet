@@ -872,7 +872,7 @@ mod tests {
             .iter()
             .filter(|metric| metric.value().name().starts_with("scan_io_"))
             .collect::<Vec<_>>();
-        assert_eq!(scan_io_metrics.len(), 9);
+        assert_eq!(scan_io_metrics.len(), 12);
         for metric in scan_io_metrics {
             assert!(metric.labels().is_empty());
             assert_eq!(metric.partition(), None);
@@ -919,6 +919,10 @@ mod tests {
         assert_eq!(reader_metric(&metrics, "scan_io_data_bytes"), 128);
         assert_eq!(reader_metric(&metrics, "scan_io_metadata_bytes"), 0);
         assert_eq!(reader_metric(&metrics, "scan_io_object_store_get_calls"), 1);
+        // Logical GETs do not imply coverage by the S3 HTTP connector.
+        assert_eq!(reader_metric(&metrics, "scan_io_http_observed_gets"), 0);
+        assert_eq!(reader_metric(&metrics, "scan_io_http_attempts"), 0);
+        assert_eq!(reader_metric(&metrics, "scan_io_http_retries"), 0);
         assert_eq!(
             reader_metric(&metrics, "scan_io_object_store_get_requested_bytes"),
             file_size
