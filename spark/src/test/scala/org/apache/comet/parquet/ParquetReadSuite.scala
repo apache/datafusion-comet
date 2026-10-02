@@ -320,11 +320,16 @@ abstract class ParquetReadSuite extends CometTestBase {
           }
           writer.close()
 
+          // Spark orders a task's files by size, largest first. Make the healthy file the larger
+          // one, so the task reads it before the failing file and the error cannot just name the
+          // task's first file.
           val healthyWriter = createParquetWriter(schema, healthyPath, dictionaryEnabled)
-          val healthyRecord = new SimpleGroup(schema)
-          healthyRecord.add(0, 0L)
-          healthyRecord.add(1, 0L)
-          healthyWriter.write(healthyRecord)
+          (0 until 2000).foreach { i =>
+            val healthyRecord = new SimpleGroup(schema)
+            healthyRecord.add(0, i.toLong)
+            healthyRecord.add(1, i.toLong)
+            healthyWriter.write(healthyRecord)
+          }
           healthyWriter.close()
 
           val footerReader = org.apache.parquet.hadoop.ParquetFileReader.open(
@@ -359,6 +364,8 @@ abstract class ParquetReadSuite extends CometTestBase {
                   scans.foreach { scan =>
                     assert(scan.perPartitionFilePaths.length == 1)
                     assert(scan.perPartitionFilePaths.head.size == 2)
+                    assert(
+                      new java.net.URI(scan.perPartitionFilePaths.head.head) == healthyPath.toUri)
                   }
 
                   val error = checkSparkError(selected, errorClass)
