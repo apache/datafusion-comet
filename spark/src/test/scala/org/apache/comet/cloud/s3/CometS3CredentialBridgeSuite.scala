@@ -315,4 +315,66 @@ class CometS3CredentialBridgeSuite
         "/warehouse/finance"),
       s"Unexpected credential paths: ${MinioLocationScopedCredentialProvider.credentialPaths()}")
   }
+
+  // The expiry tests are declared last: a bridge keeps the credential they report an expiry for, so
+  // a later test reading the same data through the same bridge would not see the provider asked.
+  test("Parquet reads reuse a credential until shortly before its expiry") {
+    val path = s"s3a://$testBucketName/data/bridge-expiry.parquet"
+    spark.range(0, 1000).write.format("parquet").mode(SaveMode.Overwrite).save(path)
+    val expectedSum = (0L until 1000L).sum
+    MinioCometS3CredentialProvider.installExpiration(System.currentTimeMillis() + 60 * 60 * 1000L)
+    try {
+      // Fetches the credential with its expiry, which the bridge then keeps.
+      assert(
+        spark.read.format("parquet").load(path).agg(sum(col("id"))).first().getLong(0) ==
+          expectedSum)
+
+      MinioCometS3CredentialProvider.resetCounters()
+      for (_ <- 1 to 2) {
+        val df = spark.read.format("parquet").load(path).agg(sum(col("id")))
+        assertHasCometParquetScan(df.queryExecution.executedPlan)
+        assert(df.first().getLong(0) == expectedSum)
+      }
+      assert(
+        MinioCometS3CredentialProvider.callCount() == 0,
+        s"Provider asked ${MinioCometS3CredentialProvider.callCount()} times for a fresh credential")
+    } finally {
+      MinioCometS3CredentialProvider.installExpiration(0L)
+    }
+  }
+
+  test("Iceberg reads reuse a credential until shortly before its expiry") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    spark.sql("""
+      CREATE TABLE s3_catalog.db.bridge_iceberg_expiry (
+        id INT,
+        name STRING
+      ) USING iceberg
+    """)
+    spark.sql("""
+      INSERT INTO s3_catalog.db.bridge_iceberg_expiry
+      VALUES (1, 'a'), (2, 'b'), (3, 'c')
+    """)
+    // No ORDER BY: its range partitioning runs the scan a second time to sample it. Each read
+    // runs the scan once, as one task over the table's three data files.
+    val query = "SELECT * FROM s3_catalog.db.bridge_iceberg_expiry"
+    MinioCometS3CredentialProvider.installExpiration(System.currentTimeMillis() + 60 * 60 * 1000L)
+    try {
+      MinioCometS3CredentialProvider.resetCounters()
+      for (_ <- 1 to 2) {
+        val df = spark.sql(query)
+        assertHasCometIcebergScan(df.queryExecution.executedPlan)
+        assert(df.collect().length == 3)
+      }
+      // Each task builds its own FileIO, and with it a bridge, so each read asks the provider once.
+      // Its other storage calls reuse that credential, where without reuse each data file asks.
+      assert(
+        MinioCometS3CredentialProvider.callCount() == 2,
+        s"Provider asked ${MinioCometS3CredentialProvider.callCount()} times, not once per read")
+    } finally {
+      MinioCometS3CredentialProvider.installExpiration(0L)
+      spark.sql("DROP TABLE s3_catalog.db.bridge_iceberg_expiry")
+    }
+  }
 }
