@@ -222,7 +222,7 @@ Spark binds them as static invocations of Iceberg's per-type implementations und
 `org.apache.iceberg.spark.functions`, and Comet recognizes those classes wherever the expression
 appears: in a projection, a filter, a sort key, or the hash partitioning of a shuffle. The
 exception is a call nested inside an expression that Comet runs through the JVM codegen
-dispatcher, such as `map(...)`, which makes the operator fall back to Spark.
+dispatcher, such as `map(...)`. That makes the operator fall back to Spark.
 
 The native kernels reproduce Iceberg's Java semantics exactly rather than approximately:
 

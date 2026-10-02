@@ -2424,10 +2424,7 @@ class CometCodegenSuite
       "spark.sql.catalog.decfn" -> classOf[CometCodegenSuite.DecimalFunctionCatalog].getName) {
       withTable("t") {
         sql("CREATE TABLE t (i INT) USING parquet")
-        // One file, so that each aggregate sees every row in one partition.
-        sql(
-          "INSERT INTO t SELECT /*+ REPARTITION(1) */ * FROM VALUES " +
-            values.map(v => s"($v)").mkString(", ") + " AS v(i)")
+        sql("INSERT INTO t VALUES " + values.map(v => s"($v)").mkString(", "))
         f
       }
     }

@@ -234,8 +234,7 @@ object CometInvokeTargets {
         } else {
           s"${cls.getName}, which is not part of Spark"
         }
-      s"${CometExplainInfo.exprDisplayName(node)} calls $target, and only Spark's own code " +
-        "runs in the dispatcher"
+      s"${CometExplainInfo.exprDisplayName(node)} calls $target"
     }
 
   private def isAllowed(expr: Expression): Boolean = (expr, callee(expr)) match {
