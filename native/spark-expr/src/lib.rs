@@ -57,6 +57,8 @@ mod bloom_filter;
 pub use bloom_filter::{BloomFilterAgg, BloomFilterMightContain, SparkBloomFilterVersion};
 
 pub mod jvm_udf;
+mod subquery;
+pub use subquery::Subquery;
 
 mod conditional_funcs;
 mod conversion_funcs;
@@ -96,8 +98,8 @@ pub use math_funcs::{
     abs, checked_add, checked_div, checked_mul, checked_sub, create_modulo_expr,
     create_negate_expr, spark_ceil, spark_decimal_div, spark_decimal_integral_div, spark_floor,
     spark_log, spark_make_decimal, spark_modulo, spark_pow, spark_round, spark_sqrt, spark_unhex,
-    spark_unscaled_value, CheckOverflow, DecimalRescaleCheckOverflow, NegativeExpr,
-    WideDecimalBinaryExpr, WideDecimalOp,
+    spark_unscaled_value, CheckOverflow, CheckedBinaryExpr, DecimalRescaleCheckOverflow,
+    NegativeExpr, WideDecimalBinaryExpr, WideDecimalOp,
 };
 pub use query_context::{create_query_context_map, QueryContext, QueryContextMap};
 pub use string_funcs::*;

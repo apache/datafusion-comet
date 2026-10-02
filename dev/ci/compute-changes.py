@@ -62,6 +62,7 @@ FILTERS = {
         "!**.md",
         "!native/core/benches/**",
         "!native/spark-expr/benches/**",
+        "!native/operators/benches/**",
         "!spark/src/test/scala/org/apache/spark/sql/benchmark/**",
         "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala",
     ],
@@ -97,12 +98,14 @@ FILTERS = {
         "!**.md",
         "!native/core/benches/**",
         "!native/spark-expr/benches/**",
+        "!native/operators/benches/**",
         "!spark/src/test/scala/org/apache/spark/sql/benchmark/**",
         "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala",
     ],
     "benchmark": [
         "native/core/benches/**",
         "native/spark-expr/benches/**",
+        "native/operators/benches/**",
         "spark/src/test/scala/org/apache/spark/sql/benchmark/**",
     ],
     # dev/verify-contrib-delta-gate.sh proves the default cargo, Maven and
@@ -128,6 +131,7 @@ FILTERS = {
         "!**.md",
         "!native/core/benches/**",
         "!native/spark-expr/benches/**",
+        "!native/operators/benches/**",
         "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala",
     ],
     # A real Python worker against each Spark 4.x Arrow runner. The list is
@@ -433,6 +437,7 @@ FILTERS = {
 }
 FILTERS["spark_4_1_hive"] = FILTERS["spark_4_1"]
 FILTERS["build_linux_full"] = FILTERS["build_linux"]
+FILTERS["build_macos_full"] = FILTERS["build_macos"]
 FILTERS["build_linux_all_profiles"] = FILTERS["build_linux"]
 
 # Which events may run each job, independent of the path filters above.
@@ -500,7 +505,7 @@ POLICY = {
     # day apiece on pull requests in mid-September 2026, and together they
     # were three quarters of the Linux build. A pull request and the queue run
     # the Comet test suites against Spark 4.1 only; the nightly run covers the
-    # other four. The lint-java matrix still compiles Spark 3.4/3.5/4.0 on
+    # other four. The lint-java matrix still compiles every Spark profile on
     # every pull request, so what waits for the nightly is runtime behaviour,
     # not a shim that fails to build. ci.yml turns this output into the
     # workflow's `profiles` input.
@@ -508,7 +513,16 @@ POLICY = {
     # macOS runners are the scarcest capacity we have, and the Linux build
     # already covers rustfmt and the Rust/JVM compile on every PR. The label
     # is for a change that touches platform-specific code.
-    "build_macos": ["queue", "label:run-macos-tests"],
+    #
+    # Split like the Linux build: `build_macos` runs pr_build_macos.yml at all,
+    # `build_macos_full` runs its test matrix too. Push to main sets only the
+    # first, so the workflow runs in cache-refresh-only mode there and keeps
+    # main's macOS cargo cache warm. Nothing else runs on main, and an entry
+    # written from the queue's throwaway branch is visible to nobody, so
+    # without the push run every queue build compiled the native library from
+    # scratch (issue #6390).
+    "build_macos": ["queue", "push", "label:run-macos-tests"],
+    "build_macos_full": ["queue", "label:run-macos-tests"],
     # Benchmark sources are compiled and linted, never run, so a break there
     # cannot affect a PR's correctness verdict; the queue catches it.
     "benchmark": ["queue", "label:run-benchmark-check"],

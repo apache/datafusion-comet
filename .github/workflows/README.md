@@ -24,13 +24,13 @@ ruleset in `.asf.yaml`. That splits CI into three tiers:
   and one Iceberg version, both the default profile's.
 - **Nightly tier** (`nightly`): the regression sweep of everything else, once
   a day against `main` as it stands. The Comet test suites against the other
-  four Spark profiles, Spark SQL on Spark 3.5 and 4.0, and Iceberg
+  four Spark profiles, Spark SQL on Spark 3.5, 4.0 and 4.2, and Iceberg
   1.8/1.9/1.10. See [Nightly tier](#nightly-tier) below for how a failure
   surfaces.
 
 Every queue-only and nightly job has a `run-*` label that opts a pull request
 into it early, listed in the diagram below. The Lint Java matrix compiles
-Spark 3.4/3.5/4.0 on every pull request, so a shim that fails to build is
+every Spark profile on every pull request, so a shim that fails to build is
 caught there; only the runtime suites wait for the queue or the nightly.
 
 `spark_3_4` is in none of the tiers. Spark 3.4 is deprecated, so its Spark SQL
@@ -43,17 +43,11 @@ required one, so a red 3.4 there changes nothing. It is the next push with
 the label still applied that runs 3.4 under `Required Checks`, and with the
 queue run gone that push is the only thing that makes a 3.4 failure blocking.
 
-`spark_4_2` is in the nightly tier despite Spark 4.2 support being
-experimental. Nightly is what keeps `dev/diffs/4.2.0.diff` honest: the diff
-files for the supported versions are updated together whenever a Comet change
-needs one, and a 4.2 suite that only ran on request would let its diff rot
-unnoticed between requests.
-
 Heavy jobs have no `push` tier. The queue already tested the exact tree that
 lands, so re-running them on push to main would double the cost of every
-merge. Two jobs are still on `push`: `docs`, because it deploys to `asf-site`
-and has to run after the commit is on main, and `pr_build_linux`, because of
-`actions/cache` scoping. A pull request can only restore caches saved on its
+merge. Three jobs are still on `push`: `docs`, because it deploys to
+`asf-site` and has to run after the commit is on main, and `pr_build_linux` and
+`pr_build_macos`, because of `actions/cache` scoping. A pull request can only restore caches saved on its
 own branch or on `main`, and the queue runs on a throwaway
 `gh-readonly-queue/*` branch whose caches are deleted with it. Without a push
 run, a `Cargo.lock` or `pom.xml` change would leave the cargo-ci, Maven and
@@ -73,6 +67,16 @@ second into the workflow's `cache-refresh-only` input and the third into its
 `profiles` input. `dev/ci/check-ci-config.py` fails if a job is added to
 `pr_build_linux.yml` without either the guard or an entry in
 `CACHE_REFRESH_JOBS` naming the cache it writes. See issue #5929.
+
+`pr_build_macos` has the same split, through `build_macos` and
+`build_macos_full`, for the one entry it owns: main's macOS cargo cache. On
+push only its `build-native` job runs, and it looks the entry up first and
+stops there when the dependency set already has one, so most pushes cost it
+about a minute of a macOS runner. Before that push run existed nothing ever
+wrote the entry, since the macOS build ran only in the queue and on labelled
+pull requests, and every queue run compiled the macOS native library from
+scratch (issue #6390). `check-ci-config.py` holds `pr_build_macos.yml` to the
+same guard rule as `pr_build_linux.yml`.
 
 The profile rows of the `linux-test` matrix live in
 `dev/ci/linux-test-profiles.py` rather than in the workflow, because a
@@ -107,7 +111,8 @@ tiers partition the list and that the `pr` tier is exactly the default profile.
   PR + queue tier                     push to main only         queue tier, or PR with label
   ---------------                     -----------------         ---------------------------
   pr_build_linux (+ push, cache only) docs                      pr_build_macos      run-macos-tests
-    (Spark 4.1 profile only)                                    pr_benchmark_check  run-benchmark-check
+    (Spark 4.1 profile only)                                      (+ push, cache only)
+                                                                pr_benchmark_check  run-benchmark-check
                                                                 delta_build_gate    run-delta-build-gate
                                                                 pyarrow_udf_test    run-pyarrow-udf-tests
                                                                 spark_4_1           run-spark-4.1-tests
@@ -156,7 +161,7 @@ tiers partition the list and that the `pr` tier is exactly the default profile.
 | `preflight`          | every PR / merge group / push / schedule / dispatch / label                                                                                                                                                                                            | none (always runs)                  |
 | `changes`            | every PR / merge group / push / schedule / dispatch / label                                                                                                                                                                                            | runs `dev/ci/compute-changes.py`    |
 | `pr_build_linux`     | PR, merge group or push to main, paths matched; on push only the cache-writing jobs, via `build_linux_full`; the test matrix's non-default Spark profiles only in the nightly run **or** with `run-all-spark-profiles`, via `build_linux_all_profiles` | `dev/ci/compute-changes.py`         |
-| `pr_build_macos`     | merge group, **or** PR with `run-macos-tests`                                                                                                                                                                                                          | `dev/ci/compute-changes.py`         |
+| `pr_build_macos`     | merge group, **or** PR with `run-macos-tests`; on push to main only `build-native`, to keep main's macOS cargo cache warm, via `build_macos_full`                                                                                                      | `dev/ci/compute-changes.py`         |
 | `pr_benchmark_check` | merge group, **or** PR with `run-benchmark-check`                                                                                                                                                                                                      | benchmark sources only              |
 | `delta_build_gate`   | merge group, **or** PR with `run-delta-build-gate`                                                                                                                                                                                                     | main sources, poms, `contrib/delta` |
 | `pyarrow_udf_test`   | merge group, **or** PR with `run-pyarrow-udf-tests`                                                                                                                                                                                                    | map-in-batch and Python runner code |
