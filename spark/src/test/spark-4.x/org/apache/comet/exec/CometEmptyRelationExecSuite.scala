@@ -81,7 +81,7 @@ class CometEmptyRelationExecSuite extends CometTestBase {
     }
   }
 
-  test("EmptyRelationExec discovered by AQE feeds native aggregates and Spark existence joins") {
+  test("EmptyRelationExec discovered by AQE feeds native aggregates and native existence joins") {
     withSQLConf(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
       SQLConf.SHUFFLE_PARTITIONS.key -> "2",
@@ -102,7 +102,8 @@ class CometEmptyRelationExecSuite extends CometTestBase {
           collect(aggregatePlan) { case a: CometHashAggregateExec => a }.nonEmpty,
           aggregatePlan.toString)
 
-        // Existence joins retain Spark's fallback and preserve probe rows with false markers.
+        // Existence joins now run natively over the CometEmptyRelation, preserving probe rows with
+        // false markers.
         val existence = "SELECT l._1, EXISTS (SELECT /*+ BROADCAST(r) */ 1 FROM " +
           s"$empty r WHERE r.k = l._1) AS matched FROM aqe_empty_input l"
         val (_, joinPlan) = checkSparkAnswer(existence)
@@ -111,9 +112,9 @@ class CometEmptyRelationExecSuite extends CometTestBase {
           collect(joinPlan) { case e: CometEmptyRelationExec => e }.nonEmpty,
           joinPlan.toString)
         assert(
-          collect(joinPlan) { case j: BroadcastHashJoinExec => j }.nonEmpty,
+          collect(joinPlan) { case j: CometBroadcastHashJoinExec => j }.nonEmpty,
           joinPlan.toString)
-        assert(collect(joinPlan) { case j: CometBroadcastHashJoinExec => j }.isEmpty)
+        assert(collect(joinPlan) { case j: BroadcastHashJoinExec => j }.isEmpty)
       }
     }
   }
