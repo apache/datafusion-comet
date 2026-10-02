@@ -275,7 +275,8 @@ object CometConf extends ShimCometConf {
       .doc("Whether to enable Comet native execution for in-memory cached tables. Its value at " +
         "startup also decides whether CometDriverPlugin installs Comet's cache serializer, " +
         "which stores cached data in Arrow format. The plugin installs it only if " +
-        "spark.comet.enabled and spark.comet.exec.enabled are also enabled at startup. " +
+        "spark.comet.enabled and spark.comet.exec.enabled are also enabled at startup, and " +
+        "only with one of Comet's shuffle managers while Comet shuffle is enabled. " +
         "Because spark.sql.cache.serializer is a " +
         "static config, the cached format is fixed for the application, and disabling this " +
         "at runtime only sends cached scans back to Spark's execution path. Relations whose " +
@@ -284,10 +285,11 @@ object CometConf extends ShimCometConf {
         "zstd compression, and a scan copies out only the buffers of the columns it projected, " +
         "so the unselected ones are never decompressed. Reads that feed Spark operators rather " +
         "than Comet ones still pay a row conversion the default format avoids, and can be " +
-        "slower than Spark's cache. With spark.kryo.registrationRequired=true, also set " +
-        "spark.kryo.registrator=org.apache.comet.CometKryoRegistrator before creating the " +
-        "SparkContext, otherwise caching fails as soon as a block is serialized, including " +
-        "the disk half of the default MEMORY_AND_DISK storage level.")
+        "slower than Spark's cache. With spark.kryo.registrationRequired=true, the plugin " +
+        "installs it only if spark.kryo.registrator includes " +
+        "org.apache.comet.CometKryoRegistrator, which has to be set before creating the " +
+        "SparkContext, because Kryo would otherwise reject a cached block as soon as it is " +
+        "serialized, including the disk half of the default MEMORY_AND_DISK storage level.")
       .booleanConf
       .createWithDefault(true)
 

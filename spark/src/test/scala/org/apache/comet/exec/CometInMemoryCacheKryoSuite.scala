@@ -20,10 +20,15 @@
 package org.apache.comet.exec
 
 import org.apache.spark.SparkConf
+import org.apache.spark.serializer.KryoRegistrator
 import org.apache.spark.sql.{CometTestBase, Row}
-import org.apache.spark.sql.execution.columnar.CometInMemoryRelationHelper
-import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.catalyst.expressions.GenericInternalRow
+import org.apache.spark.sql.execution.columnar.{CometInMemoryRelationHelper, DefaultCachedBatch}
+import org.apache.spark.sql.internal.{SQLConf, StaticSQLConf}
 import org.apache.spark.storage.StorageLevel
+import org.apache.spark.unsafe.types.UTF8String
+
+import com.esotericsoftware.kryo.Kryo
 
 import org.apache.comet.{CometConf, CometKryoRegistrator}
 
@@ -192,5 +197,88 @@ class CometInMemoryCacheKryoSuite extends CometTestBase {
         spark.catalog.clearCache()
       }
     }
+  }
+}
+
+/**
+ * The application that `CometDriverPlugin` warns about: Kryo with registration required and no
+ * [[CometKryoRegistrator]]. The plugin then leaves `spark.sql.cache.serializer` alone rather than
+ * install Comet's serializer, whose cached batch Kryo would reject, so caching works as it does
+ * without Comet.
+ *
+ * Spark registers its own cached batch with Kryo only from 4.1, so on earlier versions an
+ * application whose caches work under registration has to register it itself. The registrator
+ * this suite installs does that, and nothing of Comet's.
+ */
+class CometInMemoryCacheKryoUnregisteredSuite extends CometTestBase {
+
+  override protected def beforeAll(): Unit = {
+    CometInMemoryRelationHelper.clearSerializer()
+    super.beforeAll()
+  }
+
+  override protected def afterAll(): Unit = {
+    try {
+      super.afterAll()
+    } finally {
+      CometInMemoryRelationHelper.clearSerializer()
+    }
+  }
+
+  override protected def sparkConf: SparkConf = {
+    val conf = super.sparkConf
+    conf.set("spark.plugins", "org.apache.spark.CometPlugin")
+    conf.set(CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key, "true")
+    conf.set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
+    conf.set("spark.kryo.registrationRequired", "true")
+    conf.set("spark.kryo.registrator", classOf[SparkCachedBatchKryoRegistrator].getName)
+    conf
+  }
+
+  private def cachedBatchTypes(table: String): Array[String] = {
+    val cached = spark.sharedState.cacheManager.lookupCachedData(spark.table(table)).get
+    cached.cachedRepresentation.cacheBuilder.cachedColumnBuffers
+      .map(_.getClass.getName)
+      .distinct()
+      .collect()
+  }
+
+  test("Comet plugin keeps Spark's cache format when Kryo would reject Comet's") {
+    assert(!spark.sparkContext.getConf.contains(StaticSQLConf.SPARK_CACHE_SERIALIZER.key))
+
+    withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      spark.catalog.clearCache()
+      try {
+        spark
+          .range(0, 100, 1, 2)
+          .selectExpr("id", "cast(id as string) AS s")
+          .createOrReplaceTempView("kryo_unregistered")
+
+        // DISK_ONLY serializes every block as it is put, so this reaches Kryo in local mode.
+        spark.catalog.cacheTable("kryo_unregistered", StorageLevel.DISK_ONLY)
+        assert(spark.table("kryo_unregistered").count() == 100)
+        assert(
+          cachedBatchTypes("kryo_unregistered").sameElements(
+            Array("org.apache.spark.sql.execution.columnar.DefaultCachedBatch")))
+
+        checkAnswer(
+          spark.sql("SELECT s FROM kryo_unregistered WHERE id > 97"),
+          Seq(Row("98"), Row("99")))
+      } finally {
+        spark.catalog.clearCache()
+      }
+    }
+  }
+}
+
+/** Registers what Spark's own cached batch needs, over a long and a string column, with Kryo. */
+class SparkCachedBatchKryoRegistrator extends KryoRegistrator {
+  override def registerClasses(kryo: Kryo): Unit = {
+    // The batch and its statistics row, whose bounds include UTF8String.
+    Seq(
+      classOf[DefaultCachedBatch],
+      classOf[GenericInternalRow],
+      classOf[Array[Any]],
+      classOf[UTF8String]).foreach(kryo.register)
   }
 }
