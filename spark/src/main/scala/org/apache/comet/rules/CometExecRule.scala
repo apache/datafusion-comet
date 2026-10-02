@@ -1174,7 +1174,7 @@ case class CometExecRule(session: SparkSession)
             case _: ParquetScan => CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.get(conf)
             case _ => isSparkToArrowEnabled(conf, op)
           }
-        // CometRangeExec writes Arrow batches directly, so it takes precedence over converting
+        // CometRangeExec generates the values natively, so it takes precedence over converting
         // Spark's rows.
         case _: RangeExec if CometConf.COMET_EXEC_RANGE_ENABLED.get(conf) =>
           false

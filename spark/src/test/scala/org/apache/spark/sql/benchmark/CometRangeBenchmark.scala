@@ -21,20 +21,19 @@ package org.apache.spark.sql.benchmark
 
 import org.apache.spark.benchmark.Benchmark
 import org.apache.spark.sql.{DataFrame, Row}
-import org.apache.spark.sql.comet.{CometHashAggregateExec, CometNativeRangeExec, CometPlan, CometRangeExec, CometSparkToColumnarExec}
+import org.apache.spark.sql.comet.{CometHashAggregateExec, CometPlan, CometRangeExec, CometSparkToColumnarExec}
 import org.apache.spark.sql.execution.{RangeExec, SparkPlan}
 import org.apache.spark.sql.functions.{col, sum}
 
 import org.apache.comet.CometConf
 
 /**
- * Compares four ways to run a query over `spark.range`:
+ * Compares three ways to run a query over `spark.range`:
  *
  *   - Spark: Comet disabled.
  *   - SparkToColumnar: Spark's `RangeExec`, whose rows `CometSparkToColumnarExec` converts to
  *     Arrow for the native operators above it.
- *   - CometRange (JVM): `CometRangeExec`, which writes the Arrow batches on the JVM.
- *   - CometRange (native): `CometNativeRangeExec`, which generates the values in native code.
+ *   - CometRange: `CometRangeExec`, which generates the values in native code.
  *
  * The cases sweep how much work sits above the range, from a sum that Spark's whole-stage codegen
  * fuses with the range loop to a high-cardinality aggregate. Every arm's result and plan are
@@ -75,23 +74,12 @@ object CometRangeBenchmark extends CometBenchmarkBase {
         assert(nodes(plan) { case a: CometHashAggregateExec => a }.nonEmpty, plan)
       }),
     Arm(
-      "CometRange (JVM)",
+      "CometRange",
       cometConfs ++ Seq(
         CometConf.COMET_EXEC_RANGE_ENABLED.key -> "true",
-        CometConf.COMET_EXEC_RANGE_NATIVE_ENABLED.key -> "false",
         CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "false"),
       plan => {
         assert(nodes(plan) { case r: CometRangeExec => r }.nonEmpty, plan)
-        assert(nodes(plan) { case a: CometHashAggregateExec => a }.nonEmpty, plan)
-      }),
-    Arm(
-      "CometRange (native)",
-      cometConfs ++ Seq(
-        CometConf.COMET_EXEC_RANGE_ENABLED.key -> "true",
-        CometConf.COMET_EXEC_RANGE_NATIVE_ENABLED.key -> "true",
-        CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "false"),
-      plan => {
-        assert(nodes(plan) { case r: CometNativeRangeExec => r }.nonEmpty, plan)
         assert(nodes(plan) { case a: CometHashAggregateExec => a }.nonEmpty, plan)
       }))
 
