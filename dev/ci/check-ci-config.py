@@ -110,6 +110,7 @@ BUILD_JOBS = {
     "build_linux_full",
     "build_linux_all_profiles",
     "build_macos",
+    "build_macos_full",
     "spark_3_4",
     "spark_3_5",
     "spark_4_0",
@@ -155,6 +156,7 @@ ROUTING_CASES = [
             "build_linux_full",
             "build_linux_all_profiles",
             "build_macos",
+            "build_macos_full",
         },
     ),
     # The Delta gate script is read by nothing else; the contrib crate feeds
@@ -170,6 +172,7 @@ ROUTING_CASES = [
             "build_linux_full",
             "build_linux_all_profiles",
             "build_macos",
+            "build_macos_full",
             "pyarrow_udf",
         },
     ),
@@ -189,6 +192,7 @@ QUEUE_TIER = PR_TIER | {
     "spark_4_1_hive",
     "iceberg_1_11",
     "build_macos",
+    "build_macos_full",
     "benchmark",
     "delta_gate",
     "pyarrow_udf",
@@ -229,12 +233,13 @@ POLICY_CASES = [
     # ran everything in QUEUE_TIER against the tree that is now main, so a
     # queue job showing up here is a suite being paid for twice a day.
     ({"name": "schedule"}, NIGHTLY_TIER),
-    # Push to main is the site deploy plus the Linux build, which is there to
-    # refresh main's actions/cache entries (see POLICY). `build_linux_full`
-    # must stay out: it is what turns the lints and the test matrix back on,
-    # and the queue has already run those against the tree that landed. Any
-    # other test job showing up here means every merge is paying for it twice.
-    ({"name": "push"}, {"docs", "build_linux"}),
+    # Push to main is the site deploy plus the Linux and macOS builds, which
+    # are there to refresh main's actions/cache entries (see POLICY).
+    # `build_linux_full` and `build_macos_full` must stay out: they are what
+    # turn the lints and the test matrices back on, and the queue has already
+    # run those against the tree that landed. Any other test job showing up
+    # here means every merge is paying for it twice.
+    ({"name": "push"}, {"docs", "build_linux", "build_macos"}),
     # A plain pull request: the PR tier only. docs must never run here, and the
     # opt-in suites stay off without their label.
     ({"name": "pull_request", "action": "opened", "labels": []}, PR_TIER),
@@ -248,7 +253,7 @@ POLICY_CASES = [
     # with its own label. Neither label pulls in the other.
     (
         {"name": "pull_request", "action": "synchronize", "labels": ["run-macos-tests"]},
-        PR_TIER | {"build_macos"},
+        PR_TIER | {"build_macos", "build_macos_full"},
     ),
     (
         {"name": "pull_request", "action": "synchronize", "labels": ["run-benchmark-check"]},
@@ -281,7 +286,7 @@ POLICY_CASES = [
             "label": "run-macos-tests",
             "labels": ["run-macos-tests"],
         },
-        {"build_macos"},
+        {"build_macos", "build_macos_full"},
     ),
     # The linux-test matrix's non-default Spark profiles run nightly, with
     # their own label. On a pushed commit the label adds them to the PR tier's
@@ -495,9 +500,8 @@ CHECKOUT_USES = re.compile(r"uses:\s*actions/checkout@")
 # file has to carry the guard.
 CACHE_REFRESH_WORKFLOW = WORKFLOWS / "pr_build_linux.yml"
 CACHE_REFRESH_JOBS = {
-    "lint": "gates build-native and linux-test-rust, and costs 40 seconds",
+    "lint": "gates build-native, and costs 40 seconds",
     "build-native": "writes the cargo-ci cache (native/target, CI profile)",
-    "linux-test-rust": "writes the cargo-debug cache (native/target, debug)",
     "verify-benchmark-results-tpch": "writes the TPC-H SF=1 dataset and java-maven caches",
     "verify-benchmark-results-tpcds": "writes the TPC-DS SF=1 dataset and java-maven caches",
 }
@@ -505,6 +509,17 @@ CACHE_REFRESH_JOBS = {
 # indented further, and those are expected rather than a reason to exempt the
 # whole job.
 CACHE_REFRESH_GUARD = re.compile(r"^    if:.*!\s*inputs\.cache-refresh-only")
+# pr_build_macos.yml has the same two modes. Its push run exists only to keep
+# main's macOS cargo cache warm, so the test matrix carries the guard.
+MACOS_CACHE_REFRESH_WORKFLOW = WORKFLOWS / "pr_build_macos.yml"
+MACOS_CACHE_REFRESH_JOBS = {
+    "lint": "gates build-native, and costs 40 seconds on Linux",
+    "build-native": "writes the macOS cargo-ci-v2 cache (native/target, CI profile)",
+}
+CACHE_REFRESH_SCOPES = (
+    (CACHE_REFRESH_WORKFLOW, CACHE_REFRESH_JOBS),
+    (MACOS_CACHE_REFRESH_WORKFLOW, MACOS_CACHE_REFRESH_JOBS),
+)
 # The same file's third mode: with `profiles: nightly` only the jobs the
 # linux-test matrix needs run. See check_nightly_scope.
 NIGHTLY_JOBS = {
@@ -1191,6 +1206,20 @@ def check_label_runs_separate():
     return not failures
 
 
+def caller_passes_cache_refresh(ci_lines, workflow_name):
+    """Does the ci.yml job that `uses:` this workflow set `cache-refresh-only:`?"""
+    job_start = None
+    for index, line in enumerate(ci_lines):
+        if JOB_KEY.match(line):
+            job_start = index
+        if job_start is not None and f"uses: ./.github/workflows/{workflow_name}" in line:
+            end = index + 1
+            while end < len(ci_lines) and not JOB_KEY.match(ci_lines[end]):
+                end += 1
+            return any(CACHE_REFRESH_INPUT.match(entry) for entry in ci_lines[job_start:end])
+    return False
+
+
 def check_cache_refresh_scope():
     """Every job in pr_build_linux.yml is either a cache writer or guarded.
 
@@ -1207,40 +1236,41 @@ def check_cache_refresh_scope():
     minutes a push, which is what this check exists to notice.
     """
     failures = []
-    jobs, guarded = guarded_jobs(CACHE_REFRESH_WORKFLOW, CACHE_REFRESH_GUARD)
-
-    for stale in sorted(set(CACHE_REFRESH_JOBS) - set(jobs)):
-        failures.append(
-            f"CACHE_REFRESH_JOBS names `{stale}`, which no longer exists in "
-            f"{CACHE_REFRESH_WORKFLOW}; drop it here, or restore the job"
-        )
-    for name in jobs:
-        if name in CACHE_REFRESH_JOBS and name in guarded:
-            failures.append(
-                f"{CACHE_REFRESH_WORKFLOW}: job `{name}` is listed in "
-                f"CACHE_REFRESH_JOBS ({CACHE_REFRESH_JOBS[name]}) but carries "
-                f"the cache-refresh-only guard, so it is skipped on push and "
-                f"the cache it owns goes stale on main"
-            )
-        if name not in CACHE_REFRESH_JOBS and name not in guarded:
-            failures.append(
-                f"{CACHE_REFRESH_WORKFLOW}: job `{name}` has no "
-                f"`if: ${{{{ !inputs.cache-refresh-only }}}}`, so it runs on "
-                f"every push to main where the merge queue has already tested "
-                f"the same tree. Add the guard, or add the job to "
-                f"CACHE_REFRESH_JOBS with the cache entry it writes"
-            )
-
-    # The guards above do nothing unless the caller actually sets the input;
-    # its default is false, so a dropped `with:` block silently restores the
-    # full pipeline on push.
     ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8").splitlines()
-    if not any(CACHE_REFRESH_INPUT.match(line) for line in ci):
-        failures.append(
-            "ci.yml never passes `cache-refresh-only:` to pr_build_linux.yml. "
-            "The input defaults to false, so without it every push to main runs "
-            "the full pipeline again"
-        )
+    for workflow, writers in CACHE_REFRESH_SCOPES:
+        jobs, guarded = guarded_jobs(workflow, CACHE_REFRESH_GUARD)
+
+        for stale in sorted(set(writers) - set(jobs)):
+            failures.append(
+                f"the cache writers listed for {workflow} name `{stale}`, which "
+                f"no longer exists there; drop it, or restore the job"
+            )
+        for name in jobs:
+            if name in writers and name in guarded:
+                failures.append(
+                    f"{workflow}: job `{name}` is listed as a cache writer "
+                    f"({writers[name]}) but carries the cache-refresh-only "
+                    f"guard, so it is skipped on push and the cache it owns "
+                    f"goes stale on main"
+                )
+            if name not in writers and name not in guarded:
+                failures.append(
+                    f"{workflow}: job `{name}` has no "
+                    f"`if: ${{{{ !inputs.cache-refresh-only }}}}`, so it runs on "
+                    f"every push to main where the merge queue has already "
+                    f"tested the same tree. Add the guard, or list the job as a "
+                    f"cache writer with the cache entry it writes"
+                )
+
+        # The guards above do nothing unless the caller actually sets the
+        # input; its default is false, so a dropped `with:` block silently
+        # restores the full pipeline on push.
+        if not caller_passes_cache_refresh(ci, workflow.name):
+            failures.append(
+                f"ci.yml never passes `cache-refresh-only:` to {workflow.name}. "
+                f"The input defaults to false, so without it every push to main "
+                f"runs the full pipeline again"
+            )
 
     for failure in failures:
         print(f"cache refresh scope: {failure}")

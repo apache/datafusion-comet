@@ -21,6 +21,7 @@ package org.apache.comet.rules
 
 import java.lang.{Boolean => JBoolean}
 import java.net.URI
+import java.time.ZoneOffset
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 
@@ -31,9 +32,9 @@ import scala.jdk.CollectionConverters._
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.expressions.{Attribute, DynamicPruningExpression, Expression, GenericInternalRow, InputFileBlockLength, InputFileBlockStart, InputFileName, PlanExpression}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, DynamicPruningExpression, Expression, GenericInternalRow, InputFileBlockLength, InputFileBlockStart, InputFileName}
 import org.apache.spark.sql.catalyst.rules.Rule
-import org.apache.spark.sql.catalyst.util.{sideBySide, ArrayBasedMapData, GenericArrayData, MetadataColumnHelper}
+import org.apache.spark.sql.catalyst.util.{sideBySide, ArrayBasedMapData, DateTimeUtils, GenericArrayData, MetadataColumnHelper}
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
 import org.apache.spark.sql.comet.{CometBatchScanExec, CometScanExec}
 import org.apache.spark.sql.execution.{FileSourceScanExec, InSubqueryExec, SparkPlan, SubqueryAdaptiveBroadcastExec}
@@ -435,8 +436,19 @@ case class CometScanRule(session: SparkSession)
           fallbackReasons +=
             s"Comet supports only single-character delimiters, but got: '$delimiter'"
         }
+        // The native reader parses a timestamp without an offset as UTC. Spark parses it in the
+        // CSV `timeZone` option, which defaults to the session timezone.
+        val timeZone = Option(scan.options.get(DateTimeUtils.TIMEZONE_OPTION))
+          .getOrElse(SQLConf.get.sessionLocalTimeZone)
+        val parsesTimestampsLikeSpark =
+          !scan.readDataSchema.exists(_.dataType == TimestampType) ||
+            DateTimeUtils.getZoneId(timeZone).normalized() == ZoneOffset.UTC
+        if (!parsesTimestampsLikeSpark) {
+          fallbackReasons += "Comet's native CSV reader parses timestamps in UTC, but the CSV " +
+            s"timezone is $timeZone"
+        }
         if (schemaSupported && partitionSchemaSupported && containsCorruptedRecordsColumn
-          && !isInferSchemaEnabled && isSingleCharacterDelimiter) {
+          && !isInferSchemaEnabled && isSingleCharacterDelimiter && parsesTimestampsLikeSpark) {
           CometBatchScanExec(
             scanExec.clone().asInstanceOf[BatchScanExec],
             runtimeFilters = scanExec.runtimeFilters)
@@ -1004,9 +1016,6 @@ case class CometScanRule(session: SparkSession)
             "Comet Scan only supports Parquet and Iceberg Parquet file formats")
     }
   }
-
-  private def isDynamicPruningFilter(e: Expression): Boolean =
-    e.exists(_.isInstanceOf[PlanExpression[_]])
 
   /**
    * Detects AQE DPP (SubqueryAdaptiveBroadcastExec), as opposed to non-AQE DPP.
