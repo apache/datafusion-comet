@@ -368,12 +368,6 @@ object CometFloatSemanticsSuite {
       in("key", "nested ORDER BY")),
     KnownGap(
       issue(6385),
-      "hash, xxhash64 and the native shuffle's hash partitioner hash a NaN's raw bits.",
-      c =>
-        in("expression", "hash", "xxhash64", "hash of array", "hash of struct")(c) ||
-          in("key", "hash repartition")(c)),
-    KnownGap(
-      issue(6385),
       "min, max, greatest and least order floats by IEEE 754 total order.",
       c =>
         in("expression", "greatest", "least")(c) ||
