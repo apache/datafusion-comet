@@ -541,7 +541,8 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
       "file:///tmp/x" -> "file",
       "file:/tmp/x" -> "file",
       "/tmp/no-scheme" -> "file",
-      "/tmp/a:b" -> "file").foreach { case (location, expected) =>
+      "/tmp/a:b" -> "file",
+      "S3://bucket/key" -> "S3").foreach { case (location, expected) =>
       assert(CometIcebergNativeWrite.storageScheme(location) == expected, location)
     }
   }

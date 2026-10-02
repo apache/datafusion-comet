@@ -339,10 +339,9 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
    * `scheme_of` in `native/core/src/execution/operators/iceberg_common.rs`: split on the first
    * `:`, not `://`, so a hostless `hdfs:/warehouse/t` (as Hadoop normalises `hdfs:///...`) is
    * read as `hdfs` rather than admitted as `file`. An empty prefix, or one containing `/` (a `:`
-   * inside a path segment such as `/tmp/a:b`), means there is no scheme.
-   *
-   * Unlike `scheme_of`, this lowercases the scheme, so `S3://bucket/key` is admitted here but
-   * rejected natively.
+   * inside a path segment such as `/tmp/a:b`), means there is no scheme. The scheme is kept as
+   * written, not lowercased: `storage_factory_for` matches it case-sensitively, so `S3://` must
+   * be declined here rather than fail at execution.
    *
    * String-based rather than `java.net.URI` (`NativeConfig.lowerScheme`): `URI` throws on
    * characters an Iceberg location may carry unencoded, and its scheme grammar is not the
@@ -351,7 +350,7 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
   private[comet] def storageScheme(location: String): String = {
     val colon = location.indexOf(':')
     val prefix = if (colon > 0) location.substring(0, colon) else ""
-    if (prefix.isEmpty || prefix.contains('/')) "file" else prefix.toLowerCase(Locale.ROOT)
+    if (prefix.isEmpty || prefix.contains('/')) "file" else prefix
   }
 
   /**

@@ -403,8 +403,8 @@ fn env_region_present() -> bool {
 /// `:` sits inside a path segment, e.g. `/tmp/a:b`), so those and truly schemeless paths default
 /// to `file`.
 ///
-/// The JVM write gate (`CometIcebergNativeWrite.storageScheme`) mirrors this rule, except that it
-/// lowercases the scheme. Change both together, and keep the cases in
+/// The JVM write gate (`CometIcebergNativeWrite.storageScheme`) mirrors this rule exactly, case
+/// included. Change both together, and keep the cases in
 /// `scheme_of_extracts_scheme_from_all_uri_forms` in step with its `storageScheme` test.
 fn scheme_of(path: &str) -> &str {
     match path.split_once(':') {
@@ -652,6 +652,8 @@ mod tests {
         assert_eq!(scheme_of("memory:/x"), "memory");
         assert_eq!(scheme_of("file:///tmp/x"), "file");
         assert_eq!(scheme_of("file:/tmp/x"), "file");
+        // Not lowercased: `storage_factory_for` matches case-sensitively.
+        assert_eq!(scheme_of("S3://bucket/key"), "S3");
         // Schemeless and colon-in-path locals default to the local FS.
         assert_eq!(scheme_of("/tmp/no-scheme"), "file");
         assert_eq!(scheme_of("/tmp/a:b"), "file");
