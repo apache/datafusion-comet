@@ -46,7 +46,7 @@ not, inherits it. There is no query that fails to tell you.
 | Layer                | Flag                                              | Code                                                                                                                         |
 | -------------------- | ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
 | Split-operator plan  | `spark.comet.write.iceberg.splitOperator.enabled` | `IcebergWriteStrategy`, `IcebergWriteLogical`, `IcebergWriteExec`, `IcebergCommitExec`, the `spark-*/.../iceberg/` shims     |
-| Native writer        | `spark.comet.iceberg.write.enabled`               | `CometIcebergNativeWrite` (gate and serde), `IcebergWriteProtoTranslation`, `CometIcebergWriteExec`, `iceberg_write.rs`      |
+| Native writer        | `spark.comet.write.iceberg.enabled`               | `CometIcebergNativeWrite` (gate and serde), `IcebergWriteProtoTranslation`, `CometIcebergWriteExec`, `iceberg_write.rs`      |
 | Shared with the scan | both                                              | `iceberg_common.rs` (`load_file_io`, `storage_factory_for`, `scheme_of`), `IcebergReflection`, `NativeConfig` S3 translation |
 
 A change to the split plan affects every Iceberg write once that flag is on, including writes that
@@ -194,7 +194,7 @@ Ask specifically:
       that only compares results passes when both sides used iceberg-java. Look for
       `assertNativeWriteEngages` or a collected `CometIcebergWriteExec`.
 - [ ] **Is the input native?** `withNativeEnabled` also sets `localTableScan`; a test that sets
-      `spark.comet.iceberg.write.enabled` by hand and inserts `VALUES` usually tests the JVM writer.
+      `spark.comet.write.iceberg.enabled` by hand and inserts `VALUES` usually tests the JVM writer.
 - [ ] **Is the comparison against iceberg-java** (a sibling table written by the JVM writer) rather
       than hand-written expected values?
 - [ ] **Enough partitions for an ordering bug?** Two partitions pass half the time; use eight or
