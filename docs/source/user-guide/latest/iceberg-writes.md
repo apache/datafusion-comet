@@ -172,6 +172,7 @@ A write is eligible only when ALL of the following hold:
 | `write.spark.fanout.enabled`                                                                                                                | any value (the native writer implements both clustered and fanout modes)                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `write.target-file-size-bytes`                                                                                                              | any value (the two writers can choose different roll points; see accepted divergences)                                                                                                                                                                                                                                                                                                                                                                                          |
 | data location URI scheme                                                                                                                    | `file`, `memory`, `s3`, `s3a`, `gs` (`gs` only when the `FileIO` opening the data location is a `GCSFileIO`; see below)                                                                                                                                                                                                                                                                                                                                                         |
+| resolved `table.locationProvider()`                                                                                                         | Iceberg's built-in `DefaultLocationProvider`                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | partition spec                                                                                                                              | any                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | column types                                                                                                                                | any except `uuid` (Spark plans it as a string; no Arrow cast reaches `fixed(16)`)                                                                                                                                                                                                                                                                                                                                                                                               |
 
@@ -184,12 +185,13 @@ key in the session Hadoop configuration other than the reader-only
 iceberg-java's writer but not the native one). Also gated explicitly: any `encryption.*` key,
 `write.object-storage.enabled=true`, `write.location-provider.impl`, and `io-impl`.
 
-Two checks look past properties at the table's instantiated state, because both can be
+Three checks look past properties at the table's instantiated state, because they can be
 configured at the catalog level (or by a custom `TableOperations`) without any table or write
-property changing: `table.io()` must be a recognized `FileIO` (the same allowlist the native
-scan uses, minus the `EncryptingFileIO` family — the native writer produces plaintext files,
-so an encrypting `FileIO` is rejected on the write side), and `table.encryption()` must be
-Iceberg's `PlaintextEncryptionManager`. Anything else falls back.
+property changing: `table.locationProvider()` must be Iceberg's `DefaultLocationProvider`;
+`table.io()` must be a recognized `FileIO` (the same allowlist the native scan uses, minus the
+`EncryptingFileIO` family — the native writer produces plaintext files, so an encrypting `FileIO`
+is rejected on the write side); and `table.encryption()` must be Iceberg's
+`PlaintextEncryptionManager`. Anything else falls back.
 
 A `gs` data location additionally requires that the `FileIO` actually opening it is a
 `GCSFileIO` (for a `ResolvingFileIO`, the delegate it instantiates for that location,

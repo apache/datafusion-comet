@@ -1,0 +1,72 @@
+<!---
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+# Miscellaneous Expressions
+
+<!--BEGIN:EXPR_COMPAT[misc]-->
+
+## CheckOverflow
+
+The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
+
+- Only `DecimalType` is supported
+
+## Literal
+
+The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
+
+- Not all data types are supported for literal values
+
+## MakeDecimal
+
+The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
+
+- Only `LongType` input is supported
+
+## ScalarSubquery
+
+The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
+
+- Not all data types are supported for scalar subquery results
+
+## SortOrder
+
+The following incompatibilities cause `SortOrder` to fall back to Spark by default. Set `spark.comet.expression.SortOrder.allowIncompatible=true` to enable Comet acceleration despite these differences.
+
+- Sorting on floating-point values nested in arrays, structs, or maps is not 100% compatible with Spark when `spark.comet.exec.strictFloatingPoint=true`
+
+## StaticInvoke
+
+The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
+
+- Iceberg's `truncate(width, value)` system function on a `decimal` column. Iceberg's TruncateDecimal returns a Decimal that can exceed the column's declared precision, and Spark only turns that into null when the row is materialized. An Arrow Decimal128(precision, scale) array cannot carry that intermediate, so a native kernel would null it during evaluation and change what an enclosing predicate or hash sees. Truncating `-99999999999999.9999` in a `decimal(18,4)` column by a width of 10 is one such value: the result has 19 digits. The other `truncate` input types, and `bucket` on decimals, are unaffected.
+
+## ToPrettyString
+
+The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
+
+- Falls back to Spark when the input type cannot be cast to string.
+
+## Uuid
+
+The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
+
+- uuid requires a resolved random seed
+
+<!--END:EXPR_COMPAT-->

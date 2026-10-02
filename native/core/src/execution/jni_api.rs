@@ -28,8 +28,7 @@ use crate::{
 };
 use std::collections::HashSet;
 
-use arrow::array::{Array, RecordBatch, UInt32Array};
-use arrow::compute::{take, TakeOptions};
+use arrow::array::{Array, RecordBatch};
 use arrow::datatypes::DataType as ArrowDataType;
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
 use datafusion::execution::disk_manager::DiskManagerMode;
@@ -117,7 +116,8 @@ use crate::execution::tracing::{
 
 use crate::execution::memory_pools::logging_pool::LoggingMemoryPool;
 use crate::execution::spark_config::{
-    SparkConfig, COMET_DEBUG_ENABLED, COMET_DEBUG_MEMORY, COMET_EXPLAIN_NATIVE_ENABLED,
+    SparkConfig, COMET_DEBUG_ENABLED, COMET_DEBUG_MEMORY,
+    COMET_EXEC_AGGREGATE_SKIP_PARTIAL_ENABLED, COMET_EXPLAIN_NATIVE_ENABLED,
     COMET_MAX_TEMP_DIRECTORY_SIZE, COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED,
     COMET_TRACING_ENABLED, SPARK_EXECUTOR_CORES,
 };
@@ -784,10 +784,15 @@ pub extern "system" fn Java_org_apache_comet_Native_setShufflePartitionPusher(
     })
 }
 
-/// Only admit the validated native-shuffle path. A session belongs to one fused Spark plan,
-/// so an unsafe partial aggregate disables skipping for the whole plan, including its children.
-/// This deliberately gives up some opportunities rather than changing execution contexts per op.
-fn configure_skip_partial_aggregation(config: &mut SessionConfig, plan: &Operator) {
+/// Skipping is opt-in (`spark.comet.exec.aggregate.skipPartial.enabled`): once DataFusion's probe
+/// decides to skip, it never aggregates again, so a task whose keys repeat after a mostly distinct
+/// start shuffles every later row (#6466).
+///
+/// When enabled, only admit the validated native-shuffle path. A session belongs to one fused
+/// Spark plan, so an unsafe partial aggregate disables skipping for the whole plan, including its
+/// children. This deliberately gives up some opportunities rather than changing execution
+/// contexts per op.
+fn configure_skip_partial_aggregation(config: &mut SessionConfig, plan: &Operator, enabled: bool) {
     fn supported(plan: &Operator) -> bool {
         let supported_aggregate = match &plan.op_struct {
             Some(OpStruct::HashAgg(agg)) => match AggregateMode::try_from(agg.mode) {
@@ -810,9 +815,12 @@ fn configure_skip_partial_aggregation(config: &mut SessionConfig, plan: &Operato
         supported_aggregate && plan.children.iter().all(supported)
     }
 
-    if !matches!(&plan.op_struct, Some(OpStruct::ShuffleWriter(_))) || !supported(plan) {
-        // Enforce safety after config pass-through: a testing override cannot make unsupported
-        // accumulators convertible. DF 55 removed supports_convert_to_state().
+    let eligible =
+        enabled && matches!(&plan.op_struct, Some(OpStruct::ShuffleWriter(_))) && supported(plan);
+    if !eligible {
+        // Enforce this after config pass-through: a testing override can neither turn skipping
+        // on nor make unsupported accumulators convertible. DF 55 removed
+        // supports_convert_to_state().
         config
             .options_mut()
             .execution
@@ -871,7 +879,11 @@ fn prepare_datafusion_session_context(
         }
     }
 
-    configure_skip_partial_aggregation(&mut session_config, spark_plan);
+    configure_skip_partial_aggregation(
+        &mut session_config,
+        spark_plan,
+        spark_config.get_bool(COMET_EXEC_AGGREGATE_SKIP_PARTIAL_ENABLED),
+    );
 
     let runtime = rt_config.build()?;
 
@@ -974,27 +986,9 @@ fn prepare_output(
             let array_ref = results.get(i).ok_or(CometError::IndexOutOfBounds(i))?;
             let field = output_schema.field(i);
 
-            if array_ref.offset() != 0 {
-                // https://github.com/apache/datafusion-comet/issues/2051
-                // Bug with non-zero offset FFI, so take to a new array which will have an offset of 0.
-                // We expect this to be a cold code path, hence the check_bounds: true and assert_eq.
-                let indices = UInt32Array::from((0..num_rows as u32).collect::<Vec<u32>>());
-                let new_array = take(
-                    array_ref,
-                    &indices,
-                    Some(TakeOptions { check_bounds: true }),
-                )?;
-
-                assert_eq!(new_array.offset(), 0);
-
-                new_array
-                    .to_data()
-                    .move_to_spark(field, array_addrs[i], schema_addrs[i])?;
-            } else {
-                array_ref
-                    .to_data()
-                    .move_to_spark(field, array_addrs[i], schema_addrs[i])?;
-            }
+            array_ref
+                .to_data()
+                .move_to_spark(field, array_addrs[i], schema_addrs[i])?;
             i += 1;
         }
     }
@@ -1933,7 +1927,7 @@ mod tests {
             }],
             ..Default::default()
         };
-        let ratio = |plan: &Operator, requested: f64| {
+        let ratio = |plan: &Operator, requested: f64, enabled: bool| {
             let mut config = SessionConfig::new();
             config
                 .options_mut()
@@ -1943,7 +1937,7 @@ mod tests {
                 .options_mut()
                 .execution
                 .skip_partial_aggregation_probe_ratio_threshold = requested;
-            configure_skip_partial_aggregation(&mut config, plan);
+            configure_skip_partial_aggregation(&mut config, plan, enabled);
             assert_eq!(
                 config
                     .options()
@@ -1969,11 +1963,13 @@ mod tests {
             },
         ] {
             let plan = writer(agg);
-            assert_eq!(ratio(&plan, 0.8), 0.8);
-            assert_eq!(ratio(&plan, 0.5), 0.5);
-            assert_eq!(ratio(&plan, 1.1), 1.1);
+            assert_eq!(ratio(&plan, 0.8, true), 0.8);
+            assert_eq!(ratio(&plan, 0.5, true), 0.5);
+            assert_eq!(ratio(&plan, 1.1, true), 1.1);
+            // Skipping is opt-in, and a DataFusion override cannot turn it on.
+            assert_eq!(ratio(&plan, 0.8, false), 1.1);
             // Non-native shuffle / standalone native blocks stay disabled.
-            assert_eq!(ratio(&plan.children[0], 0.8), 1.1);
+            assert_eq!(ratio(&plan.children[0], 0.8, true), 1.1);
         }
 
         for agg in [
@@ -2008,14 +2004,14 @@ mod tests {
             },
         ] {
             let plan = writer(agg);
-            assert_eq!(ratio(&plan, 0.8), 1.1);
+            assert_eq!(ratio(&plan, 0.8, true), 1.1);
             // An eligible sibling or a Final parent must not hide the unsafe child.
             let mut nested = writer(HashAggregate {
                 mode: AggregateMode::Final as i32,
                 ..partial.clone()
             });
             nested.children[0].children = plan.children;
-            assert_eq!(ratio(&nested, 0.8), 1.1);
+            assert_eq!(ratio(&nested, 0.8, true), 1.1);
         }
     }
 

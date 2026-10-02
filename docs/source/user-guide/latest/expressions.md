@@ -114,7 +114,7 @@ The tables below list every Spark built-in expression with its current status.
 | `median` | ✅ | — | Rewrites to `percentile(col, 0.5)` and runs natively for supported percentile inputs |
 | `min` | ✅ | Native |  |
 | `min_by` | ✅ | Native | Value and ordering must be fixed-length types |
-| `mode` | ✅ | Native | `mode(col)` only; Spark breaks ties non-deterministically, so Comet returns the smallest tied value and falls back by default, opt-in via allowIncompatible |
+| `mode` | ✅ | — | `mode(col)` only; Spark breaks ties non-deterministically, so Comet returns the smallest tied value and falls back by default, opt-in via allowIncompatible |
 | `percentile` | ✅ | Native | Single literal percentage on numeric input runs natively; array of percentages and a frequency argument fall back to Spark |
 | `percentile_approx` | ✅ | Native | Alias of `approx_percentile`; same restrictions apply |
 | `percentile_cont` | ✅ | — | Spark 4.0+ `WITHIN GROUP (ORDER BY ...)`; ascending only runs natively, `DESC` falls back to Spark |
@@ -125,9 +125,9 @@ The tables below list every Spark built-in expression with its current status.
 | `regr_intercept` | ✅ | Native |  |
 | `regr_r2` | ✅ | Native |  |
 | `regr_slope` | ✅ | Native |  |
-| `regr_sxx` | ✅ | Native |  |
+| `regr_sxx` | ✅ | — |  |
 | `regr_sxy` | ✅ | Native |  |
-| `regr_syy` | ✅ | Native |  |
+| `regr_syy` | ✅ | — |  |
 | `skewness` | 🔜 | — | Not yet implemented natively |
 | `some` | ✅ | — |  |
 | `std` | ✅ | Native |  |
@@ -151,7 +151,7 @@ The tables below list every Spark built-in expression with its current status.
 | `array` | ✅ | Native |  |
 | `array_append` | ✅ | Native |  |
 | `array_compact` | ✅ | — |  |
-| `array_contains` | ✅ | Native | Float/double element arrays route through the JVM codegen dispatcher by default; the native path is opt-in via allowIncompatible |
+| `array_contains` | ✅ | Hybrid | Float/double element arrays route through the JVM codegen dispatcher by default; the native path is opt-in via allowIncompatible |
 | `array_distinct` | ✅ | Native | NaN/signed-zero handling may differ ([details](compatibility/floating-point.md)) |
 | `array_except` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default; the incompatible native path is opt-in via allowIncompatible ([details](compatibility/expressions/array.md)) |
 | `array_insert` | ✅ | Native |  |
@@ -181,9 +181,9 @@ The tables below list every Spark built-in expression with its current status.
 | Function | Status | Implementation | Notes |
 | --- | --- | --- | --- |
 | `&` | ✅ | Native |  |
-| `<<` | ✅ | — |  |
-| `>>` | ✅ | — |  |
-| `>>>` | ✅ | — | Operator alias for `shiftrightunsigned` (Spark 4.0+) |
+| `<<` | ✅ | Native |  |
+| `>>` | ✅ | Native |  |
+| `>>>` | ✅ | Native | Operator alias for `shiftrightunsigned` (Spark 4.0+) |
 | `^` | ✅ | Native |  |
 | `bit_count` | ✅ | Native |  |
 | `bit_get` | ✅ | Native |  |
@@ -230,7 +230,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 
 | Function | Status | Implementation | Notes |
 | --- | --- | --- | --- |
-| `cast` | ✅ | Native | Casts without a native path (for example boolean to decimal) route through the JVM codegen dispatcher ([details](compatibility/expressions/cast.md)) |
+| `cast` | ✅ | Hybrid | Casts without a native path (for example boolean to decimal) route through the JVM codegen dispatcher ([details](compatibility/expressions/cast.md)) |
 
 ---
 
@@ -273,25 +273,25 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `extract` | ✅ | — | `SECOND FROM TIME` is native for Spark 4.1+ with `Decimal(8,6)` output |
 | `from_unixtime` | ✅ | Hybrid |  |
 | `from_utc_timestamp` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default (handles all timezone forms); the native path is opt-in via allowIncompatible ([details](compatibility/expressions/datetime.md)) |
-| `hour` | ✅ | Native |  |
+| `hour` | ✅ | — |  |
 | `last_day` | ✅ | Native |  |
 | `localtimestamp` | ✅ | — |  |
 | `make_date` | ✅ | Native |  |
 | `make_dt_interval` | ✅ | Codegen dispatch |  |
 | `make_interval` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default; intervals outside Arrow's nanosecond range are tracked by [#5279](https://github.com/apache/datafusion-comet/issues/5279); the native path is opt-in via allowIncompatible ([details](compatibility/expressions/datetime.md)) |
 | `make_time` | ✅ | — | Spark 4.1+; requires `spark.sql.timeType.enabled=true`, which Spark leaves off by default. Runs natively; remaining TIME type work is tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
-| `make_timestamp` | ✅ | Hybrid |  |
+| `make_timestamp` | ✅ | — |  |
 | `make_timestamp_ltz` | ✅ | — | 2-arg TIME form falls back |
 | `make_timestamp_ntz` | ✅ | — | 2-arg TIME form falls back |
 | `make_ym_interval` | ✅ | Codegen dispatch |  |
-| `minute` | ✅ | Native |  |
+| `minute` | ✅ | — |  |
 | `month` | ✅ | Native |  |
 | `monthname` | ✅ | — | Abbreviated month name (Spark 4.0+) |
 | `months_between` | ✅ | Codegen dispatch |  |
 | `next_day` | ✅ | Hybrid | Non-UTF8_BINARY collated `dayOfWeek` routes through the JVM codegen dispatcher; other input runs natively |
 | `now` | ✅ | — | Constant-folded to a literal (alias of `current_timestamp`) |
 | `quarter` | ✅ | Native |  |
-| `second` | ✅ | Native |  |
+| `second` | ✅ | — |  |
 | `session_window` | 🔜 | — | Batch session-window grouping falls back (`UpdatingSessionsExec` is not yet native); tracked by [#4785](https://github.com/apache/datafusion-comet/issues/4785) |
 | `time_diff` | 🔜 | — | Spark 4.1 TIME type; tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
 | `time_trunc` | 🔜 | — | Spark 4.1 TIME type; tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
@@ -306,7 +306,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `to_timestamp` | ✅ | — | Rewrites to `Cast` (or `GetTimestamp` with a format) before Comet sees the plan |
 | `to_timestamp_ltz` | ✅ | — | Rewrites to `to_timestamp` (`TimestampType`) |
 | `to_timestamp_ntz` | ✅ | — | Rewrites to `to_timestamp` (`TimestampNTZType`) |
-| `to_unix_timestamp` | ✅ | Hybrid |  |
+| `to_unix_timestamp` | ✅ | Codegen dispatch |  |
 | `to_utc_timestamp` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default (handles all timezone forms); the native path is opt-in via allowIncompatible ([details](compatibility/expressions/datetime.md)) |
 | `trunc` | ✅ | Hybrid |  |
 | `try_make_interval` | ✅ | — | Rewrites to `MakeInterval`; same support as `make_interval` (Spark 4.0+) |
@@ -611,15 +611,15 @@ to Spark ([#2837](https://github.com/apache/datafusion-comet/issues/2837)). Enab
 | `substring` | ✅ | Native |  |
 | `substring_index` | ✅ | Native |  |
 | `to_binary` | ✅ | — | The hex form runs natively; the base64 and `utf-8` forms route through the JVM codegen dispatcher |
-| `to_char` | ✅ | Codegen dispatch |  |
+| `to_char` | ✅ | — |  |
 | `to_number` | ✅ | Codegen dispatch |  |
-| `to_varchar` | ✅ | Codegen dispatch |  |
+| `to_varchar` | ✅ | — |  |
 | `translate` | ✅ | Hybrid | Codegen dispatch by default: DataFusion's `translate` iterates over Unicode graphemes (Spark uses code points) and substitutes U+0000 instead of treating it as a deletion sentinel, so the native path is opt-in via allowIncompatible |
 | `trim` | ✅ | Native |  |
 | `try_to_binary` | ✅ | — | Rewrites to `try_eval(to_binary(...))`, which routes through the JVM codegen dispatcher |
 | `try_to_number` | ✅ | Codegen dispatch | Routed through the JVM codegen dispatcher |
 | `ucase` | ✅ | Hybrid |  |
-| `unbase64` | ✅ | Codegen dispatch | Column or literal input runs natively; other child expressions, and the strict form used by `to_binary(str, 'base64')`, route through the JVM codegen dispatcher |
+| `unbase64` | ✅ | Hybrid | Column or literal input runs natively; other child expressions, and the strict form used by `to_binary(str, 'base64')`, route through the JVM codegen dispatcher |
 | `upper` | ✅ | Hybrid |  |
 
 ---
