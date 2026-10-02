@@ -235,6 +235,15 @@ object CometConf extends ShimCometConf {
     createExecEnabledConfig("broadcastNestedLoopJoin", defaultValue = true)
   val COMET_EXEC_SORT_MERGE_JOIN_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("sortMergeJoin", defaultValue = true)
+  val COMET_EXEC_EXISTENCE_JOIN_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.exec.existenceJoin.enabled")
+      .category(CATEGORY_ENABLE_EXEC)
+      .doc(
+        "Whether to enable native ExistenceJoin, produced when EXISTS / NOT EXISTS / IN is " +
+          "combined with another predicate via OR. Sort-merge joins, residual (non-equi) join " +
+          "conditions, computed (non-column) join keys, and NOT IN fall back to Spark.")
+      .booleanConf
+      .createWithDefault(true)
   val COMET_EXEC_AGGREGATE_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("aggregate", defaultValue = true)
   val COMET_EXEC_COLLECT_LIMIT_ENABLED: ConfigEntry[Boolean] =
@@ -1079,10 +1088,10 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_EXEC)
       .doc(
         "When enabled, fall back to Spark for floating-point operations that may differ from " +
-          "Spark, such as comparing -0.0 and 0.0, sorting floating-point values nested in " +
-          "arrays, structs, or maps, or sorting the elements of a floating-point array with " +
-          "`sort_array`. Scalar `ORDER BY`, window ordering and range partitioning keys are " +
-          "unaffected, because Comet normalizes those comparison keys to match Spark. " +
+          "Spark, such as comparing -0.0 and 0.0, or sorting floating-point values nested in " +
+          "arrays, structs, or maps. Scalar `ORDER BY`, window ordering and range partitioning " +
+          "keys are unaffected, because Comet normalizes those comparison keys to match Spark, " +
+          "and so is `sort_array`, which follows Spark's ordering. " +
           s"$COMPAT_GUIDE.")
       .booleanConf
       .createWithDefault(false)
