@@ -840,7 +840,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     // declared type, and the kernel has nulled such a value at its own output: Spark counts it
     // and takes it as the maximum, and the row writer nulls the result afterwards. An aggregate
     // cannot run in the kernel, so it falls back. See [[readsDispatchedDsv2Decimal]].
-    if (fn.children.exists(isDispatchedDsv2DecimalCall)) {
+    if (fn.children.exists(_.exists(isDispatchedDsv2DecimalCall))) {
       withFallbackReason(
         aggExpr,
         s"${fn.prettyName} aggregates the decimal result of a DSv2 function, which Spark " +
@@ -1144,8 +1144,8 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   }
 
   /**
-   * Whether `expr` takes the decimal result of a DSv2 scalar function call, which the codegen
-   * dispatcher runs, as an argument.
+   * Whether `expr` consumes a decimal result of a dispatched DSv2 scalar function anywhere in its
+   * argument trees, including through intermediate expressions and container access.
    *
    * Spark does not rescale such a result to the type the function declares, or write null when it
    * does not fit, until it writes a row. An expression around the call reads the `Decimal` the
@@ -1154,11 +1154,13 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
    * something else. `IS NULL` of a value that does not fit is false in Spark, a cast to string
    * keeps the function's scale, and `hash` reads the unscaled value at that scale (#6425). So
    * such an expression runs in the same kernel as the call, where Spark's own code reads the
-   * value the function returned. `Alias` is skipped because it computes nothing: the call under
-   * it is the root, and Spark writes a root as a row.
+   * value the function returned. Checking only immediate children would let an intermediate
+   * expression, such as `abs(call)` or `call[0]`, normalize the decimal before its parent reads
+   * it. `Alias` is skipped because it computes nothing: the call under it is the root, and Spark
+   * writes a root as a row.
    */
   private def readsDispatchedDsv2Decimal(expr: Expression): Boolean =
-    !isStructuralExpr(expr) && expr.children.exists(isDispatchedDsv2DecimalCall)
+    !isStructuralExpr(expr) && expr.children.exists(_.exists(isDispatchedDsv2DecimalCall))
 
   private def isDispatchedDsv2DecimalCall(expr: Expression): Boolean = {
     val dispatchedDsv2Call = expr match {
