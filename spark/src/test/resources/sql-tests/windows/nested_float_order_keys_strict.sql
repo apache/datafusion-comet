@@ -101,3 +101,25 @@ SELECT id FROM (
     DENSE_RANK() OVER (PARTITION BY g ORDER BY named_struct('x', coalesce(IF(s, -f, f), 0.0F)) DESC) AS r
   FROM nested_float_strict
 ) WHERE r <= 1
+
+-- DataFusion cannot compare an array of structs or arrays, or a struct holding an array, to find
+-- the CURRENT ROW bound of a RANGE frame (apache/datafusion#24937), so a running aggregate over
+-- such a key falls back even when the key cannot hold a null. window_functions.sql checks the
+-- same without floats.
+query expect_fallback(RANGE frame on array<struct<x:double>> ORDER BY is not supported)
+SELECT id, COUNT(id) OVER (ORDER BY array(named_struct('x', coalesce(d, 0.0D))), id) AS running
+FROM nested_float_strict
+
+query expect_fallback(RANGE frame on struct<a:array<float>> ORDER BY is not supported)
+SELECT id,
+  SUM(id) OVER (PARTITION BY g
+                ORDER BY named_struct('a', array(coalesce(IF(s, -f, f), 0.0F))) DESC) AS by_group
+FROM nested_float_strict
+
+-- Ranks and ROWS frames over the same keys stay native
+query
+SELECT id,
+  RANK() OVER (PARTITION BY g ORDER BY array(named_struct('x', coalesce(IF(s, -d, d), 0.0D)))) AS r,
+  SUM(id) OVER (PARTITION BY g ORDER BY array(named_struct('x', coalesce(IF(s, -d, d), 0.0D))), id
+                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS running
+FROM nested_float_strict
