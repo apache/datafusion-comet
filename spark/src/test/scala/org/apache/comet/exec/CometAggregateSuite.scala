@@ -31,7 +31,7 @@ import org.apache.spark.sql.catalyst.expressions.Cast
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.optimizer.EliminateSorts
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, RangePartitioning}
-import org.apache.spark.sql.comet.{CometFilterExec, CometHashAggregateExec, CometNativeExec, CometProjectExec, CometSortAggregateExec}
+import org.apache.spark.sql.comet.{CometBaseAggregateExec, CometFilterExec, CometHashAggregateExec, CometNativeExec, CometProjectExec, CometSortAggregateExec}
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.SQLExecution
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AdaptiveSparkPlanHelper, ShuffleQueryStageExec}
@@ -815,26 +815,34 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   // cascade so that neither half runs in Comet - a Spark final cannot read a Comet-produced list,
   // and adjustOutputForNativeState would misinterpret Spark's Binary buffer as a list if a Comet
   // final ran above a Spark partial. count(*) is included so the aggregate also carries a
-  // buffer-compatible function, which is the shape most likely to be split by mistake.
-  Seq(
-    ("Comet partial + Spark final", CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE),
-    ("Spark partial + Comet final", CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE)).foreach {
-    case (name, disabledHalf) =>
-      test(s"mixed engine collect_list: $name matches Spark") {
-        val data = (0 until 100).map(i => (if (i % 11 == 0) None else Some(i), i % 7))
-        withParquetTable(data, "tbl") {
-          withSQLConf(
-            disabledHalf.key -> "false",
-            CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
-            CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
-            val df = sql("SELECT _2, sort_array(collect_list(_1)), count(*) FROM tbl GROUP BY _2")
-            checkSparkAnswer(df)
-            // Without the cascade the surviving half would still convert, so pinning this at zero
-            // is what keeps the test from passing on a regression.
-            assert(getNumCometHashAggregate(df) == 0)
-          }
+  // buffer-compatible function, which is the shape most likely to be split by mistake. Disabling
+  // ObjectHashAggregate plans the same aggregate as SortAggregateExec, which puts a sort between
+  // each half and its exchange.
+  for {
+    (name, disabledHalf) <- Seq(
+      ("Comet partial + Spark final", CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE),
+      ("Spark partial + Comet final", CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE))
+    objectHash <- Seq(true, false)
+  } {
+    val suffix = if (objectHash) "" else " with sort aggregates"
+    test(s"mixed engine collect_list: $name matches Spark$suffix") {
+      val data = (0 until 100).map(i => (if (i % 11 == 0) None else Some(i), i % 7))
+      withParquetTable(data, "tbl") {
+        withSQLConf(
+          disabledHalf.key -> "false",
+          SQLConf.USE_OBJECT_HASH_AGG.key -> objectHash.toString,
+          CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+          CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
+          val df = sql("SELECT _2, sort_array(collect_list(_1)), count(*) FROM tbl GROUP BY _2")
+          checkSparkAnswer(df)
+          val plan = stripAQEPlan(df.queryExecution.executedPlan)
+          assert(plan.find(_.isInstanceOf[SortAggregateExec]).isDefined != objectHash, plan)
+          // Without the cascade the surviving half would still convert, so pinning this at zero
+          // is what keeps the test from passing on a regression.
+          assert(plan.collect { case agg: CometBaseAggregateExec => agg }.isEmpty, plan)
         }
       }
+    }
   }
 
   test("Aggregation without aggregate expressions should use correct result expressions") {
