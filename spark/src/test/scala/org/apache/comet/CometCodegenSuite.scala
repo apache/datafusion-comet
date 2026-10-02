@@ -263,7 +263,7 @@ class CometCodegenSuite
     }
   }
 
-  test("closing an allocateOutput vector releases everything it allocated") {
+  test("a closed allocateOutput vector releases all of its memory") {
     // Arrow's StructVector creates its writer in a field initializer. The writer creates and
     // allocates a child vector for each child of the struct's field. Then allocateOutput replaces
     // these children. Thus, allocateOutput must close them, or each batch with a struct output
@@ -290,7 +290,9 @@ class CometCodegenSuite
         CometArrowAllocator.newChildAllocator(s"allocateOutput($dataType)", 0, Long.MaxValue)
       try {
         CometBatchKernelCodegen.allocateOutput(field, 4, 0, allocator).close()
-        assert(allocator.getAllocatedMemory == 0, s"closing a $dataType output leaked")
+        assert(
+          allocator.getAllocatedMemory == 0,
+          s"the $dataType output did not release all of its memory")
       } finally {
         allocator.close()
       }
