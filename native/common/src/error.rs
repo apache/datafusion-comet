@@ -74,10 +74,6 @@ pub enum SparkError {
     #[error("[ARITHMETIC_OVERFLOW] {from_type} overflow. If necessary set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error.")]
     ArithmeticOverflow { from_type: String },
 
-    // Spark's checked date/timestamp conversions throw this even with ANSI disabled.
-    #[error("long overflow")]
-    LongOverflow,
-
     #[error("[ARITHMETIC_OVERFLOW] Overflow in integral divide. Use 'try_divide' to tolerate overflow and return NULL instead. If necessary set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error.")]
     IntegralDivideOverflow,
 
@@ -324,7 +320,6 @@ impl SparkError {
             SparkError::CastOverFlow { .. } => "CastOverFlow",
             SparkError::CannotParseDecimal => "CannotParseDecimal",
             SparkError::ArithmeticOverflow { .. } => "ArithmeticOverflow",
-            SparkError::LongOverflow => "LongOverflow",
             SparkError::IntegralDivideOverflow => "IntegralDivideOverflow",
             SparkError::DecimalSumOverflow { .. } => "DecimalSumOverflow",
             SparkError::DivideByZero => "DivideByZero",
@@ -661,8 +656,6 @@ impl SparkError {
     /// Returns the appropriate Spark exception class for this error
     pub fn exception_class(&self) -> &'static str {
         match self {
-            SparkError::LongOverflow => "java/lang/ArithmeticException",
-
             // ArithmeticException
             SparkError::DivideByZero
             | SparkError::RemainderByZero
@@ -773,7 +766,6 @@ impl SparkError {
             SparkError::RemainderByZero => Some("REMAINDER_BY_ZERO"),
             SparkError::IntervalDividedByZero => Some("INTERVAL_DIVIDED_BY_ZERO"),
             SparkError::ArithmeticOverflow { .. } => Some("ARITHMETIC_OVERFLOW"),
-            SparkError::LongOverflow => None,
             SparkError::IntegralDivideOverflow => Some("ARITHMETIC_OVERFLOW"),
             SparkError::DecimalSumOverflow { .. } => Some("ARITHMETIC_OVERFLOW"),
             SparkError::BinaryArithmeticOverflow { .. } => Some("BINARY_ARITHMETIC_OVERFLOW"),
@@ -993,38 +985,6 @@ mod tests {
     }
 
     #[test]
-    fn test_long_overflow_json() {
-        for (error, error_type, exception_class, params) in [
-            (
-                SparkError::LongOverflow,
-                "LongOverflow",
-                "java/lang/ArithmeticException",
-                serde_json::json!({}),
-            ),
-            (
-                SparkError::ParquetTimestampOverflow {
-                    file_path: "file:///bad%20timestamp.parquet".to_string(),
-                },
-                "ParquetTimestampOverflow",
-                "org/apache/spark/SparkException",
-                serde_json::json!({ "filePath": "file:///bad%20timestamp.parquet" }),
-            ),
-        ] {
-            let parsed: serde_json::Value = serde_json::from_str(&error.to_json()).unwrap();
-            assert_eq!(
-                parsed,
-                serde_json::json!({
-                    "errorType": error_type,
-                    "errorClass": "",
-                    "params": params,
-                })
-            );
-            assert_eq!(error.exception_class(), exception_class);
-            assert_eq!(error.to_string(), "long overflow");
-        }
-    }
-
-    #[test]
     fn test_binary_overflow_json() {
         let error = SparkError::BinaryArithmeticOverflow {
             value1: "32767".to_string(),
@@ -1119,6 +1079,24 @@ mod tests {
         assert_eq!(parsed["errorClass"], "NULL_MAP_KEY");
         // Params should be an empty object
         assert_eq!(parsed["params"], serde_json::json!({}));
+    }
+
+    #[test]
+    fn test_parquet_timestamp_overflow_json() {
+        let error = SparkError::ParquetTimestampOverflow {
+            file_path: "file:///bad%20timestamp.parquet".to_string(),
+        };
+        let parsed: serde_json::Value = serde_json::from_str(&error.to_json()).unwrap();
+        assert_eq!(
+            parsed,
+            serde_json::json!({
+                "errorType": "ParquetTimestampOverflow",
+                "errorClass": "",
+                "params": { "filePath": "file:///bad%20timestamp.parquet" },
+            })
+        );
+        assert_eq!(error.exception_class(), "org/apache/spark/SparkException");
+        assert_eq!(error.to_string(), "long overflow");
     }
 
     #[test]

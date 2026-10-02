@@ -291,12 +291,12 @@ mod tests {
             assert!(matches!(error.downcast_ref::<SparkError>(),
                 Some(SparkError::ParquetTimestampOverflow { file_path }) if file_path == path));
         }
-        let error = stream("file:///first%20file.parquet", SparkError::LongOverflow)
+        let error = stream("file:///first%20file.parquet", SparkError::DivideByZero)
             .next()
             .await
             .unwrap()
             .unwrap_err();
         assert!(matches!(error, DataFusionError::External(source)
-            if matches!(source.downcast_ref::<SparkError>(), Some(SparkError::LongOverflow))));
+            if matches!(source.downcast_ref::<SparkError>(), Some(SparkError::DivideByZero))));
     }
 }
