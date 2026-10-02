@@ -1983,6 +1983,7 @@ dependencies = [
  "datafusion",
  "datafusion-comet-common",
  "datafusion-comet-jni-bridge",
+ "datafusion-comet-operators",
  "datafusion-comet-proto",
  "datafusion-comet-shuffle",
  "datafusion-comet-spark-expr",
@@ -2061,6 +2062,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "datafusion-comet-operators"
+version = "1.2.0"
+dependencies = [
+ "arrow",
+ "criterion",
+ "datafusion",
+ "datafusion-comet-common",
+ "datafusion-comet-spark-expr",
+ "futures",
+ "tokio",
+]
+
+[[package]]
 name = "datafusion-comet-proto"
 version = "1.2.0"
 dependencies = [
@@ -2115,6 +2129,7 @@ dependencies = [
  "jni 0.22.4",
  "memchr",
  "num",
+ "paste",
  "rand 0.10.2",
  "regex",
  "ryu",
