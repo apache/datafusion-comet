@@ -38,11 +38,22 @@ guide is split into the following pages:
 
 ## Configuring Tokio Runtime
 
-Comet uses a global tokio runtime per executor process. By default it starts one worker thread per executor core
-(`spark.executor.cores`, or the thread count of `local[N]` and `local[*]` masters) and allows up to 512 blocking
-threads, which is tokio's default. If `spark.executor.cores` is not set outside local mode, Comet starts a single
-worker thread. These values can be overridden using the environment variables `COMET_WORKER_THREADS` and
-`COMET_MAX_BLOCKING_THREADS`.
+Comet uses a global tokio runtime per executor process. By default it starts one worker thread per core that the
+executor runs tasks on, and allows up to 512 blocking threads, which is tokio's default. Comet takes the number of
+cores from the first of these that applies:
+
+- the thread count of a `local`, `local[N]` or `local[*]` master, in local mode
+- `spark.executor.cores`, when it is set
+- the cores per worker `C` of a `local-cluster[N, C, M]` master
+- the number of processors available to the executor's JVM on a standalone (`spark://`) cluster, since a standalone
+  executor without `spark.executor.cores` takes every core its worker offers, and a worker offers all of its
+  machine's cores unless it is started with a different number (`SPARK_WORKER_CORES`)
+- one on YARN and Kubernetes, which is their default for `spark.executor.cores`
+
+On any other cluster manager, Comet starts a single worker thread when `spark.executor.cores` is not set, and logs a
+warning. Native plans that read no input from the JVM, such as a native Parquet scan feeding a sort, run entirely on
+the worker threads, so tasks share them when an executor runs more tasks at once than it has worker threads. These
+values can be overridden using the environment variables `COMET_WORKER_THREADS` and `COMET_MAX_BLOCKING_THREADS`.
 
 ## Metrics Overhead
 
