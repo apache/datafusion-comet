@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Expression, Literal}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Divide, Expression, Literal}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, ApproximatePercentile, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, CollectList, CollectSet, Complete, Corr, Count, Covariance, CovPopulation, CovSample, First, HyperLogLogPlusPlus, Last, Max, MaxBy, MaxMinBy, Min, MinBy, Mode, Partial, Percentile, RegrIntercept, RegrR2, RegrReplacement, RegrSlope, RegrSXY, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
 import org.apache.spark.sql.catalyst.util.ArrayData
 import org.apache.spark.sql.comet.CometExecUtils
@@ -936,7 +936,8 @@ trait CometRegrBase {
       y: Expression,
       x: Expression,
       inputs: Seq[Attribute],
-      binding: Boolean): Option[ExprOuterClass.AggExpr] = {
+      binding: Boolean,
+      evalMode: CometEvalMode.Value = CometEvalMode.LEGACY): Option[ExprOuterClass.AggExpr] = {
     val child1Expr = exprToProto(y, inputs, binding)
     val child2Expr = exprToProto(x, inputs, binding)
     val dataType = serializeDataType(DoubleType)
@@ -947,6 +948,7 @@ trait CometRegrBase {
       builder.setChild2(child2Expr.get)
       builder.setRegrType(regrType)
       builder.setDatatype(dataType.get)
+      builder.setEvalMode(evalModeToProto(evalMode))
       // Both regression fixes shipped in patch releases, so the running Spark's exact version
       // decides which behaviour the native accumulator mirrors.
       val sparkVersion = org.apache.spark.SPARK_VERSION
@@ -1006,8 +1008,27 @@ object CometRegrR2 extends CometAggregateExpressionSerde[RegrR2] with CometRegrB
       expr: RegrR2,
       inputs: Seq[Attribute],
       binding: Boolean,
-      conf: SQLConf): Option[ExprOuterClass.AggExpr] =
-    convertRegr(aggExpr, ExprOuterClass.Regr.RegrType.R2, expr.y, expr.x, inputs, binding)
+      conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
+    // Divide captures its mode when Spark constructs the expression. Reading the
+    // current SQLConf could change semantics if ANSI mode has changed since then.
+    val evalMode = expr.evaluateExpression.collectFirst { case divide: Divide =>
+      CometEvalModeUtil.fromSparkEvalMode(divide.evalMode)
+    }
+    evalMode match {
+      case Some(mode) =>
+        convertRegr(
+          aggExpr,
+          ExprOuterClass.Regr.RegrType.R2,
+          expr.y,
+          expr.x,
+          inputs,
+          binding,
+          mode)
+      case None =>
+        withFallbackReason(aggExpr, "REGR_R2 division evaluation mode not supported")
+        None
+    }
+  }
 }
 
 object CometRegrSXY extends CometAggregateExpressionSerde[RegrSXY] with CometRegrBase {
