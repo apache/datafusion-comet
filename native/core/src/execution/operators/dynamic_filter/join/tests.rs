@@ -22,7 +22,6 @@ use super::*;
 use std::fmt::Display;
 use std::hash::{Hash, Hasher};
 
-use crate::execution::operators::CometFilterExec;
 use crate::execution::planner::PhysicalPlanner;
 use crate::parquet::parquet_exec::init_datasource_exec;
 use crate::parquet::parquet_support::ObjectStoreBackend;
@@ -47,6 +46,7 @@ use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::statistics::{StatisticsArgs, StatisticsContext};
 use datafusion::physical_plan::{ChildrenPropertiesMode, Distribution, ReplaceChildrenOptions};
 use datafusion::prelude::{SessionConfig, SessionContext};
+use datafusion_comet_operators::CometFilterExec;
 use datafusion_comet_spark_expr::RandExpr;
 use datafusion_datasource::file::FileSource;
 use parquet::arrow::ArrowWriter;

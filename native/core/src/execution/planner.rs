@@ -40,12 +40,8 @@ use crate::execution::operators::DynamicFilterJoinExec;
 use crate::execution::operators::IcebergScanExec;
 use crate::execution::operators::IcebergWriteExec;
 use crate::execution::operators::TopKReaderFilterExec;
-use crate::execution::operators::{PartitionedRankLimitExec, WindowFnKind};
 use crate::execution::{
-    operators::{
-        CometFilterExec, ExecutionError, ExpandExec, ExplodeExec, ParquetCompression,
-        ParquetWriterExec, SampleExec, ScanExec, ShuffleScanExec,
-    },
+    operators::{ExecutionError, ParquetCompression, ParquetWriterExec, ScanExec, ShuffleScanExec},
     planner::expression_registry::ExpressionRegistry,
     planner::operator_registry::OperatorRegistry,
     serde::{to_arrow_datatype, to_arrow_field},
@@ -86,6 +82,9 @@ use datafusion::{
         ChildrenPropertiesMode, ExecutionPlan, ReplaceChildrenOptions,
     },
     prelude::SessionContext,
+};
+use datafusion_comet_operators::{
+    CometFilterExec, ExpandExec, ExplodeExec, PartitionedRankLimitExec, SampleExec, WindowFnKind,
 };
 use datafusion_comet_spark_expr::{
     create_comet_physical_fun, create_comet_physical_fun_with_eval_mode, BinaryOutputStyle,
@@ -5223,7 +5222,7 @@ mod tests {
     };
     use crate::jvm_bridge::{JavaShufflePartitionPusher, ShufflePartitionPusher};
 
-    use crate::execution::operators::{ExecutionError, PartitionedRankLimitExec, WindowFnKind};
+    use crate::execution::operators::ExecutionError;
     use crate::execution::planner::{
         convert_spark_types_to_arrow_schema, literal_to_array_ref,
         parse_file_scan_tasks_from_common,
@@ -5231,6 +5230,7 @@ mod tests {
     use crate::execution::shuffle::CometPartitioning;
     use crate::parquet::parquet_support::SparkParquetOptions;
     use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
+    use datafusion_comet_operators::{PartitionedRankLimitExec, WindowFnKind};
     use datafusion_comet_proto::spark_expression::expr::ExprStruct;
     use datafusion_comet_proto::spark_expression::ListLiteral;
     use datafusion_comet_proto::{

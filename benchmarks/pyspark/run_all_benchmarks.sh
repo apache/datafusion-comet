@@ -80,7 +80,7 @@ $SPARK_HOME/bin/spark-submit \
   --conf spark.comet.enabled=true \
   --conf spark.comet.operator.WriteFilesExec.allowIncompatible=true \
   --conf spark.comet.operator.DataWritingCommandExec.allowIncompatible=true \
-  --conf spark.comet.parquet.write.enabled=true \
+  --conf spark.comet.write.parquet.enabled=true \
   --conf spark.comet.explain.fallback.log.enabled=true \
   --conf spark.comet.explain.fallback.enabled=true \
   --conf spark.comet.shuffle.mode=jvm \
@@ -109,7 +109,7 @@ $SPARK_HOME/bin/spark-submit \
   --conf spark.comet.enabled=true \
   --conf spark.comet.operator.WriteFilesExec.allowIncompatible=true \
   --conf spark.comet.operator.DataWritingCommandExec.allowIncompatible=true \
-  --conf spark.comet.parquet.write.enabled=true \
+  --conf spark.comet.write.parquet.enabled=true \
   --conf spark.comet.explain.fallback.log.enabled=true \
   --conf spark.comet.explain.fallback.enabled=true \
   --conf spark.comet.shuffle.mode=native \
