@@ -24,13 +24,13 @@ ruleset in `.asf.yaml`. That splits CI into three tiers:
   and one Iceberg version, both the default profile's.
 - **Nightly tier** (`nightly`): the regression sweep of everything else, once
   a day against `main` as it stands. The Comet test suites against the other
-  four Spark profiles, Spark SQL on Spark 3.5 and 4.0, and Iceberg
+  four Spark profiles, Spark SQL on Spark 3.5, 4.0 and 4.2, and Iceberg
   1.8/1.9/1.10. See [Nightly tier](#nightly-tier) below for how a failure
   surfaces.
 
 Every queue-only and nightly job has a `run-*` label that opts a pull request
 into it early, listed in the diagram below. The Lint Java matrix compiles
-Spark 3.4/3.5/4.0 on every pull request, so a shim that fails to build is
+every Spark profile on every pull request, so a shim that fails to build is
 caught there; only the runtime suites wait for the queue or the nightly.
 
 `spark_3_4` is in none of the tiers. Spark 3.4 is deprecated, so its Spark SQL
@@ -45,20 +45,21 @@ queue run gone that push is the only thing that makes a 3.4 failure blocking.
 
 Heavy jobs have no `push` tier. The queue already tested the exact tree that
 lands, so re-running them on push to main would double the cost of every
-merge. Two jobs are still on `push`: `docs`, because it deploys to `asf-site`
-and has to run after the commit is on main, and `pr_build_linux`, because of
-`actions/cache` scoping. A pull request can only restore caches saved on its
+merge. Three jobs are still on `push`: `docs`, because it deploys to
+`asf-site` and has to run after the commit is on main, and `pr_build_linux` and
+`pr_build_macos`, because of `actions/cache` scoping. A pull request can only restore caches saved on its
 own branch or on `main`, and the queue runs on a throwaway
 `gh-readonly-queue/*` branch whose caches are deleted with it. Without a push
-run, a `Cargo.lock` or `pom.xml` change would leave the cargo-ci, cargo-debug,
-Maven and TPC-H/TPC-DS caches on `main` stale until the next unrelated change.
+run, a `Cargo.lock` or `pom.xml` change would leave the cargo-ci, Maven and
+TPC-H/TPC-DS caches on `main` stale until the next unrelated change.
 
 Warming those caches is the only thing the push run is for, so on `push` the
-Linux build runs in **cache-refresh-only** mode: `build-native`,
-`linux-test-rust` and the two TPC-H/TPC-DS jobs, each stopping once its cache
-entry is written, and nothing else. The lints, the `linux-test` matrix and
-the TPC query runs are skipped, which takes the push tier from 587
-runner-minutes to about 73. Three POLICY outputs express this: `build_linux`
+Linux build runs in **cache-refresh-only** mode: `build-native` and the two
+TPC-H/TPC-DS jobs, each stopping once its cache entry is written, and nothing
+else. The lints, the Rust tests, the `linux-test` matrix and the TPC query runs
+are skipped, which takes the push tier from 587 runner-minutes to about 40.
+`linux-test-rust` writes no cache: a debug `native/target` is 4-5 GB, more than
+the rest of main's entries could leave room for (issue #6387). Three POLICY outputs express this: `build_linux`
 says whether the workflow runs at all, `build_linux_full` whether it runs the
 lints and tests too, and `build_linux_all_profiles` whether the `linux-test`
 matrix covers every Spark profile or only the default one. `ci.yml` folds the
@@ -66,6 +67,16 @@ second into the workflow's `cache-refresh-only` input and the third into its
 `profiles` input. `dev/ci/check-ci-config.py` fails if a job is added to
 `pr_build_linux.yml` without either the guard or an entry in
 `CACHE_REFRESH_JOBS` naming the cache it writes. See issue #5929.
+
+`pr_build_macos` has the same split, through `build_macos` and
+`build_macos_full`, for the one entry it owns: main's macOS cargo cache. On
+push only its `build-native` job runs, and it looks the entry up first and
+stops there when the dependency set already has one, so most pushes cost it
+about a minute of a macOS runner. Before that push run existed nothing ever
+wrote the entry, since the macOS build ran only in the queue and on labelled
+pull requests, and every queue run compiled the macOS native library from
+scratch (issue #6390). `check-ci-config.py` holds `pr_build_macos.yml` to the
+same guard rule as `pr_build_linux.yml`.
 
 The profile rows of the `linux-test` matrix live in
 `dev/ci/linux-test-profiles.py` rather than in the workflow, because a
@@ -100,7 +111,8 @@ tiers partition the list and that the `pr` tier is exactly the default profile.
   PR + queue tier                     push to main only         queue tier, or PR with label
   ---------------                     -----------------         ---------------------------
   pr_build_linux (+ push, cache only) docs                      pr_build_macos      run-macos-tests
-    (Spark 4.1 profile only)                                    pr_benchmark_check  run-benchmark-check
+    (Spark 4.1 profile only)                                      (+ push, cache only)
+                                                                pr_benchmark_check  run-benchmark-check
                                                                 delta_build_gate    run-delta-build-gate
                                                                 pyarrow_udf_test    run-pyarrow-udf-tests
                                                                 spark_4_1           run-spark-4.1-tests
@@ -113,6 +125,7 @@ tiers partition the list and that the `pr` tier is exactly the default profile.
                                         (other profiles)
                                       spark_3_5           run-spark-3.5-tests
                                       spark_4_0           run-spark-4.0-tests
+                                      spark_4_2           run-spark-4.2-tests
                                       iceberg_1_8         run-iceberg-tests
                                       iceberg_1_9         run-iceberg-tests
                                       iceberg_1_10        run-iceberg-tests
@@ -148,7 +161,7 @@ tiers partition the list and that the `pr` tier is exactly the default profile.
 | `preflight`          | every PR / merge group / push / schedule / dispatch / label                                                                                                                                                                                            | none (always runs)                  |
 | `changes`            | every PR / merge group / push / schedule / dispatch / label                                                                                                                                                                                            | runs `dev/ci/compute-changes.py`    |
 | `pr_build_linux`     | PR, merge group or push to main, paths matched; on push only the cache-writing jobs, via `build_linux_full`; the test matrix's non-default Spark profiles only in the nightly run **or** with `run-all-spark-profiles`, via `build_linux_all_profiles` | `dev/ci/compute-changes.py`         |
-| `pr_build_macos`     | merge group, **or** PR with `run-macos-tests`                                                                                                                                                                                                          | `dev/ci/compute-changes.py`         |
+| `pr_build_macos`     | merge group, **or** PR with `run-macos-tests`; on push to main only `build-native`, to keep main's macOS cargo cache warm, via `build_macos_full`                                                                                                      | `dev/ci/compute-changes.py`         |
 | `pr_benchmark_check` | merge group, **or** PR with `run-benchmark-check`                                                                                                                                                                                                      | benchmark sources only              |
 | `delta_build_gate`   | merge group, **or** PR with `run-delta-build-gate`                                                                                                                                                                                                     | main sources, poms, `contrib/delta` |
 | `pyarrow_udf_test`   | merge group, **or** PR with `run-pyarrow-udf-tests`                                                                                                                                                                                                    | map-in-batch and Python runner code |
@@ -157,6 +170,7 @@ tiers partition the list and that the `pr` tier is exactly the default profile.
 | `spark_4_1`          | merge group, **or** PR with `run-spark-4.1-tests`; the `sql_hive` shards alone with `run-spark-4.1-hive-tests`                                                                                                                                         | Spark 4.1 sources                   |
 | `spark_3_4`          | PR with `run-spark-3.4-tests`, or dispatch                                                                                                                                                                                                             | Spark 3.4 sources                   |
 | `spark_4_0`          | nightly, **or** PR with `run-spark-4.0-tests`                                                                                                                                                                                                          | Spark 4.0 sources                   |
+| `spark_4_2`          | nightly, **or** PR with `run-spark-4.2-tests`                                                                                                                                                                                                          | Spark 4.2 sources                   |
 | `iceberg_1_11`       | merge group, **or** PR with `run-iceberg-tests`                                                                                                                                                                                                        | Iceberg sources                     |
 | `iceberg_1_8`        | nightly, **or** PR with `run-iceberg-tests`                                                                                                                                                                                                            | Iceberg sources                     |
 | `iceberg_1_9`        | nightly, **or** PR with `run-iceberg-tests`                                                                                                                                                                                                            | Iceberg sources                     |
@@ -283,16 +297,16 @@ umbrella doesn't watch, or operate independently of the rest of CI:
 
 ## Reusable workflows (called by `ci.yml`)
 
-| File                              | Called from `ci.yml` job(s)                                  |
-| --------------------------------- | ------------------------------------------------------------ |
-| `pr_build_linux.yml`              | `pr_build_linux`                                             |
-| `pr_build_macos.yml`              | `pr_build_macos`                                             |
-| `pr_benchmark_check.yml`          | `pr_benchmark_check`                                         |
-| `delta_build_gate.yml`            | `delta_build_gate`                                           |
-| `pyarrow_udf_test.yml`            | `pyarrow_udf_test`                                           |
-| `docs.yaml`                       | `docs`                                                       |
-| `spark_sql_test_reusable.yml`     | `spark_3_4`, `spark_3_5`, `spark_4_0`, `spark_4_1`           |
-| `iceberg_spark_test_reusable.yml` | `iceberg_1_8`, `iceberg_1_9`, `iceberg_1_10`, `iceberg_1_11` |
+| File                              | Called from `ci.yml` job(s)                                     |
+| --------------------------------- | --------------------------------------------------------------- |
+| `pr_build_linux.yml`              | `pr_build_linux`                                                |
+| `pr_build_macos.yml`              | `pr_build_macos`                                                |
+| `pr_benchmark_check.yml`          | `pr_benchmark_check`                                            |
+| `delta_build_gate.yml`            | `delta_build_gate`                                              |
+| `pyarrow_udf_test.yml`            | `pyarrow_udf_test`                                              |
+| `docs.yaml`                       | `docs`                                                          |
+| `spark_sql_test_reusable.yml`     | `spark_3_4`, `spark_3_5`, `spark_4_0`, `spark_4_1`, `spark_4_2` |
+| `iceberg_spark_test_reusable.yml` | `iceberg_1_8`, `iceberg_1_9`, `iceberg_1_10`, `iceberg_1_11`    |
 
 ## Changing what runs when
 
@@ -517,11 +531,15 @@ head, so a semantic conflict between two PRs that each pass in isolation is
 caught before either lands.
 
 The `merge_queue` rule parameters in `.asf.yaml` are the tuning dials, and
-`max_entries_to_build: 2` is the one that matters. Every entry gets its own
+`max_entries_to_build: 4` is the one that matters. Every entry gets its own
 `merge_group` build — [merge limits do not combine
 builds](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-a-merge-queue) —
 so this caps how many pipelines are in flight, and with them how fast the queue
-drains: roughly 19 merges a day at the ~2.5h pipeline we see today.
+drains. With the ~90 minute pipeline of September 2026, a queue that never runs
+dry merges roughly 58 PRs a day at 4, against roughly 30 at 2. Each entry's
+build is based on the queue commit of the entry ahead (`merge_group.base_sha`),
+so it runs only the suites its own changes select; `ALLGREEN` is what makes
+that sufficient.
 `max_entries_to_merge: 5` only says how many already-green entries land in one
 merge operation, and saves no CI at all. The saving in this design comes from
 the PR tier being small, not from batching inside the queue.

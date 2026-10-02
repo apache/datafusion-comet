@@ -23,6 +23,7 @@ import java.io.File
 import java.nio.file.{FileAlreadyExistsException, Files, Path}
 import java.sql.Timestamp
 import java.util.concurrent.{CountDownLatch, TimeUnit}
+import java.util.concurrent.atomic.AtomicReference
 
 import scala.collection.mutable
 import scala.concurrent.{Await, Future}
@@ -851,6 +852,82 @@ class CometIcebergWriteActionSuite
     }
   }
 
+  test("native acceleration: a driver commit failure aborts all completed task files") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { warehouseDir =>
+      val table = "native_commit_failure"
+      createTable(warehouseDir, table, partitionSpec = "")
+      // Native writes stay off for the seed. The second append is a committed change after
+      // `validateFrom`, so the overwrite below asks Iceberg for serializable validation from
+      // that older snapshot. The check runs inside BatchWrite.commit, after the native tasks
+      // have already written their data files, and the stale snapshot makes it fail every time.
+      coalesceInsert(table, Seq((1, "us-east", 10.0)))
+      val validateFrom = spark
+        .sql(s"SELECT snapshot_id FROM $catalog.$ns.$table.snapshots")
+        .first()
+        .getLong(0)
+      coalesceInsert(table, Seq((2, "us-west", 20.0)))
+
+      val before = countSnapshots(table)
+      val root = dataDir(table).toPath.toAbsolutePath
+
+      def relativePath(location: String): String = {
+        val uri = new java.net.URI(location)
+        val file = if (uri.getScheme == null) new File(location) else new File(uri)
+        root.relativize(file.toPath.toAbsolutePath).toString
+      }
+
+      def metadataFiles: Set[String] = spark
+        .sql(s"SELECT file_path FROM $catalog.$ns.$table.files")
+        .collect()
+        .map(row => relativePath(row.getString(0)))
+        .toSet
+
+      val committedBefore = metadataFiles
+      val physicalBefore = parquetFiles(root.toFile)
+      assert(committedBefore.nonEmpty, "seed writes did not create a data file")
+      assert(physicalBefore == committedBefore)
+
+      val session = spark
+      import session.implicits._
+      val overwrite = Seq((2, "us-west", 99.0)).toDF("id", "region", "amount")
+      val (failedPlans, error) = withNativeEnabled {
+        captureFailedPlans(spark) {
+          overwrite
+            .coalesce(1)
+            .writeTo(s"$catalog.$ns.$table")
+            .option("isolation-level", "serializable")
+            .option("validate-from-snapshot-id", validateFrom.toString)
+            .overwrite($"id" === 2)
+        }
+      }
+
+      assert(
+        error.toSeq
+          .flatMap(exceptionChain)
+          .exists(t => Option(t.getMessage).exists(_.toLowerCase.contains("conflict"))),
+        s"expected Iceberg commit-time conflict, got $error")
+      val nativeWrites =
+        failedPlans.flatMap(p => collectWithSubqueries(p) { case w: CometIcebergWriteExec => w })
+      val commits =
+        failedPlans.flatMap(p => collectWithSubqueries(p) { case c: IcebergCommitExec => c })
+      assert(
+        nativeWrites.nonEmpty && commits.nonEmpty,
+        "failed overwrite did not use the native writer and Iceberg committer:\n" +
+          failedPlans.mkString("\n--\n"))
+
+      assert(countSnapshots(table) == before, "failed commit must not create a snapshot")
+      assertRows(table, expectedIds = Seq(1, 2))
+      val physical = parquetFiles(root.toFile)
+      val referenced = metadataFiles
+      assert(
+        physical == physicalBefore,
+        "commit failure changed data files: " +
+          s"left ${physical -- physicalBefore}, missing ${physicalBefore -- physical}")
+      assert(physical == referenced, s"orphan files: ${physical -- referenced}")
+    }
+  }
+
   // https://github.com/apache/datafusion-comet/issues/5689: the Iceberg CoW rewrite plan mixes a
   // Spark-columnar `BatchScan` with row-based joins/filters underneath the write, so the write's
   // subtree needs Spark to insert columnar-to-row transitions inside it. With AQE on those
@@ -1292,6 +1369,82 @@ class CometIcebergWriteActionSuite
           "f=-0.5/d=1.7976931348623157E308",
           "f=3.4028235E38/d=4.9E-324",
           "f=0.001/d=1.0E20"))
+    }
+  }
+
+  // https://github.com/apache/datafusion-comet/issues/6145. iceberg-rust splits the calendar with
+  // `chrono`, which stops at year 262142, while a Spark date reaches year 5881580 and a timestamp
+  // year 294247. Past that, rendering a `days` or identity-date partition directory panicked the
+  // task, and `years` / `months` came back as NULL partition values, committed without an error.
+  // Both writers run in both modes: the fanout writer and the clustered one behind Iceberg's sort.
+  test("native acceleration: partitions past year 262142 match iceberg-java") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { warehouseDir =>
+      // `date_from_unix_date(100000000)` and `timestamp_micros(9000000000000000000)` from the
+      // issue, their negations, and both ends of Spark's date and timestamp domains.
+      val values = Seq(
+        (1, "100000000", "9000000000000000000L"),
+        (2, "-100000000", "-9000000000000000000L"),
+        (3, "2147483647", "9223372036854775807L"),
+        (4, "-2147483647 - 1", "-9223372036854775807L - 1L"))
+        .map { case (id, days, micros) =>
+          val d = s"date_from_unix_date($days)"
+          val ts = s"timestamp_micros($micros)"
+          s"($id, $d, $d, $d, $d, $ts, $ts, $ts, $ts)"
+        }
+        .mkString(", ")
+      Seq("false", "true").foreach { fanout =>
+        val (nativeTable, jvmTable) = (s"far_native_$fanout", s"far_jvm_$fanout")
+        Seq(nativeTable, jvmTable).foreach { table =>
+          // One source column per time transform, which is all Iceberg allows.
+          spark.sql(s"""
+            CREATE TABLE $catalog.$ns.$table (
+              id INT, d_ident DATE, d_day DATE, d_month DATE, d_year DATE,
+              ts_hour TIMESTAMP, ts_day TIMESTAMP, ts_month TIMESTAMP, ts_year TIMESTAMP)
+            USING iceberg
+            PARTITIONED BY (d_ident, days(d_day), months(d_month), years(d_year),
+              hours(ts_hour), days(ts_day), months(ts_month), years(ts_year))
+            TBLPROPERTIES ('write.spark.fanout.enabled'='$fanout')
+          """)
+        }
+        assertNativeWriteEngages(nativeTable, Seq(1, 2, 3, 4)) {
+          spark.sql(s"INSERT INTO $catalog.$ns.$nativeTable VALUES $values")
+        }
+        spark.sql(s"INSERT INTO $catalog.$ns.$jvmTable VALUES $values")
+
+        val nativeDirs = partitionDirs(warehouseDir, nativeTable)
+        assert(nativeDirs == partitionDirs(warehouseDir, jvmTable), s"native: $nativeDirs")
+        assert(
+          nativeDirs.contains(
+            "d_ident=275760-09-13/d_day_day=275760-09-13/d_month_month=275760-09/" +
+              "d_year_year=275760/ts_hour_hour=-202799-02-07-00/ts_day_day=287168-08-24/" +
+              "ts_month_month=287168-08/ts_year_year=287168"),
+          s"native: $nativeDirs")
+
+        // The committed partition values, not just their spelling in the path.
+        def partitionValues(table: String): Seq[String] = spark
+          .sql(s"SELECT CAST(partition AS STRING) FROM $catalog.$ns.$table.files")
+          .collect()
+          .map(_.getString(0))
+          .toSeq
+          .sorted
+        assert(
+          partitionValues(nativeTable) == partitionValues(jvmTable),
+          s"native: ${partitionValues(nativeTable)}")
+        assert(!partitionValues(nativeTable).exists(_.contains("null")))
+
+        // `java.sql.Date` cannot hold these dates (`collect` overflows rebasing them), so read
+        // them back as `LocalDate` and `Instant`.
+        Seq("true", "false").foreach { cometEnabled =>
+          withSQLConf(
+            CometConf.COMET_ENABLED.key -> cometEnabled,
+            SQLConf.DATETIME_JAVA8API_ENABLED.key -> "true") {
+            def rows(table: String): Seq[Row] =
+              spark.sql(s"SELECT * FROM $catalog.$ns.$table ORDER BY id").collect().toSeq
+            assert(rows(nativeTable) == rows(jvmTable), s"comet=$cometEnabled")
+          }
+        }
+      }
     }
   }
 
@@ -1855,6 +2008,86 @@ class CometIcebergWriteActionSuite
           s"the failed task left data files behind: ${remaining -- committed}")
         assertRows("cleanup_target", expectedIds = Seq(0))
       })
+    }
+  }
+
+  test("native acceleration: a post-native handoff failure cleans up task files") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { warehouseDir =>
+      createTable(warehouseDir, "handoff_target", partitionSpec = "")
+      coalesceInsert("handoff_target", Seq((0, "seed", 0.0)))
+      val before = countSnapshots("handoff_target")
+      val root = dataDir("handoff_target").toPath.toAbsolutePath
+
+      def relativePath(location: String): String = {
+        val uri = new java.net.URI(location)
+        val file = if (uri.getScheme == null) new File(location) else new File(uri)
+        root.relativize(file.toPath.toAbsolutePath).toString
+      }
+
+      def metadataFiles: Set[String] = spark
+        .sql(s"SELECT file_path FROM $catalog.$ns.handoff_target.files")
+        .collect()
+        .map(row => relativePath(row.getString(0)))
+        .toSet
+
+      val committed = metadataFiles
+      assert(committed.nonEmpty, "seed write did not create a data file")
+      assert(parquetFiles(root.toFile) == committed)
+
+      val session = spark
+      import session.implicits._
+      (1 to 1000)
+        .map(i => (i, s"r$i", i.toDouble))
+        .toDF("id", "region", "amount")
+        .coalesce(1)
+        .createOrReplaceTempView("handoff_src")
+
+      val attempts = new AtomicReference[Vector[(Int, Int, Vector[String])]](Vector.empty)
+      val (failedPlans, error) = withNativeEnabled {
+        CometIcebergWriteExec.withPostNativeHandoffFailpoint { locations =>
+          val tc = TaskContext.get()
+          attempts.getAndUpdate(_ :+ ((tc.partitionId(), tc.attemptNumber(), locations.toVector)))
+          throw new RuntimeException("post-native handoff injected failure")
+        } {
+          captureFailedPlans(spark) {
+            spark.sql(s"INSERT INTO $catalog.$ns.handoff_target " +
+              "SELECT id, region, amount FROM handoff_src")
+          }
+        }
+      }
+      assert(
+        error.toSeq
+          .flatMap(exceptionChain)
+          .exists(t =>
+            Option(t.getMessage).exists(_.contains("post-native handoff injected failure"))),
+        s"expected the handoff failure to reach Spark, got $error")
+      assert(
+        failedPlans.exists(p =>
+          collectWithSubqueries(p) { case w: CometIcebergWriteExec => w }.nonEmpty),
+        s"failed write did not run natively:\n${failedPlans.mkString("\n--\n")}")
+      val handoffs = attempts.get()
+      assert(handoffs.forall(_._1 == 0), s"expected only partition 0: $handoffs")
+      assert(
+        handoffs.map(_._2) == handoffs.indices.toVector,
+        s"expected consecutive attempts: $handoffs")
+      assert(
+        handoffs.forall(_._3.nonEmpty),
+        s"native payload reported no written files: $handoffs")
+      val failedPaths = handoffs.flatMap(_._3).map(relativePath).toSet
+
+      assert(countSnapshots("handoff_target") == before, "failed write must not commit")
+      assertRows("handoff_target", expectedIds = Seq(0))
+      val physical = parquetFiles(root.toFile)
+      val referenced = metadataFiles
+      assert(physical == referenced, s"orphan files: ${physical -- referenced}")
+      assert(referenced == committed, s"failed write changed the table files: $referenced")
+      assert(
+        (failedPaths intersect physical).isEmpty,
+        s"failed task files survived: $failedPaths")
+      assert(
+        (failedPaths intersect referenced).isEmpty,
+        s"failed task files were committed: $failedPaths")
     }
   }
 

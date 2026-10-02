@@ -21,12 +21,11 @@ package org.apache.comet
 
 import java.lang.management.ManagementFactory
 import java.util.Locale
-import java.util.concurrent.{Executors, ThreadFactory, TimeUnit}
+import java.util.concurrent.{ConcurrentHashMap, Executors, ThreadFactory, TimeUnit}
 import java.util.concurrent.atomic.AtomicBoolean
 
 import scala.util.control.NonFatal
 
-import org.apache.arrow.c.ArrowArrayStream
 import org.apache.arrow.memory.BufferAllocator
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark._
@@ -97,8 +96,9 @@ class CometExecIterator(
   private val nativeLib = new Native()
   private val nativeUtil = new NativeUtil()
   private val taskAttemptId = TaskContext.get().taskAttemptId()
-  private val taskCPUs = TaskContext.get().cpus()
-  private val cometTaskMemoryManager = new CometTaskMemoryManager(id, taskAttemptId)
+  private val taskCPUs = TaskContext.get().cpus().toLong
+  private val taskMemory = CometExecIterator.taskMemory(TaskContext.get(), id)
+  private val cometTaskMemoryManager = taskMemory.manager
 
   private val plan = {
     val conf = SparkEnv.get.conf
@@ -161,16 +161,9 @@ class CometExecIterator(
           case closeFailure: Throwable => failure.addSuppressed(closeFailure)
         }
 
-        // Native only takes ownership of Arrow streams during the first executePlan call.
-        inputObjects.foreach {
-          case stream: ArrowArrayStream =>
-            try {
-              stream.release()
-            } catch {
-              case releaseFailure: Throwable => failure.addSuppressed(releaseFailure)
-            }
-          case _ =>
-        }
+        // Native has not taken the Arrow input streams yet (it does on the first executePlan), so
+        // the task-completion listener that `CometArrowStream.stream` registered for each one
+        // releases it.
 
         shuffleBlockIterators.values.foreach { iterator =>
           try {
@@ -217,6 +210,9 @@ class CometExecIterator(
   private var prevBatch: ColumnarBatch = null
   private var currentBatch: ColumnarBatch = null
   private var closed: Boolean = false
+
+  // Open until close(), which the listener below makes sure is called.
+  taskMemory.planOpened()
 
   // Register a task completion listener to ensure native resources are released
   // when the task is done.
@@ -350,9 +346,12 @@ class CometExecIterator(
       }
 
       attempt {
-        val memInUse = cometTaskMemoryManager.getUsed
-        if (memInUse != 0) {
-          logWarning(s"CometExecIterator closed with non-zero memory usage : $memInUse")
+        // The manager holds the memory of every native plan in the task, so this only checks it
+        // once the task's last open plan has closed.
+        taskMemory.planClosed().filter(_ != 0).foreach { memInUse =>
+          logWarning(
+            s"CometExecIterator closed with non-zero memory usage : $memInUse bytes, held by " +
+              s"task $taskAttemptId after its last native plan closed")
         }
       }
 
@@ -370,6 +369,49 @@ class CometExecIterator(
 
 object CometExecIterator extends Logging {
 
+  /** The [[TaskMemory]] of each task running native plans, until the task completes. */
+  private val taskMemories = new ConcurrentHashMap[TaskContext, TaskMemory]()
+
+  /**
+   * The memory manager that every native plan in a task acquires memory from Spark through, and
+   * how many of those plans are open.
+   *
+   * All of a task's native plans reserve memory in one native memory pool, which acquires it
+   * through the manager passed with whichever plan created the pool. So the plans share one
+   * manager too, and what it holds belongs to the whole task. Memory that a plan failed to return
+   * can only be told apart from memory another plan is still using once none of them is open.
+   */
+  final class TaskMemory(val manager: CometTaskMemoryManager) {
+    private var openPlans = 0
+
+    def planOpened(): Unit = synchronized {
+      openPlans += 1
+    }
+
+    /** Returns the bytes the task still holds if this closed the last of its open plans. */
+    def planClosed(): Option[Long] = synchronized {
+      openPlans -= 1
+      if (openPlans == 0) Some(manager.getUsed) else None
+    }
+  }
+
+  /**
+   * Returns the [[TaskMemory]] of `context`'s task, creating it for the task's first native plan,
+   * `planId`.
+   */
+  def taskMemory(context: TaskContext, planId: Long): TaskMemory = {
+    Option(taskMemories.get(context)).getOrElse {
+      val created = new TaskMemory(new CometTaskMemoryManager(planId, context.taskAttemptId()))
+      Option(taskMemories.putIfAbsent(context, created)).getOrElse {
+        // Added once the entry is in place, since a completed task runs a new listener at once.
+        context.addTaskCompletionListener[Unit] { _ =>
+          val _ = taskMemories.remove(context)
+        }
+        created
+      }
+    }
+  }
+
   private val memoryUsageLogStarted = new AtomicBoolean(false)
 
   /** Native plans running at the previous memory usage log. Only the log's own thread uses it. */
@@ -382,6 +424,14 @@ object CometExecIterator extends Logging {
   private var limitExceededAtLastLog = false
 
   /**
+   * Whether the memory usage log failed to send a sample to the driver, after which it stops
+   * sending them. Only the log's own thread sets it.
+   */
+  private var eventLogSendFailed = false
+
+  private val EVENT_LOG_SUMMARY_INTERVAL_NS = TimeUnit.MINUTES.toNanos(1)
+
+  /**
    * Starts the executor's native memory usage log when the first native plan is created, unless
    * `spark.comet.memory.logInterval` is 0.
    *
@@ -392,6 +442,12 @@ object CometExecIterator extends Logging {
    * whole run inside one `executePlan` call: a plan rooted at a native shuffle writer consumes
    * all of its input before it returns, and a plan fed directly by native scans parks the task
    * thread until its next batch is ready.
+   *
+   * When the application writes an event log and runs the Comet plugin, each sample also goes to
+   * the driver, which writes a summary of them to the event log; see [[sendToEventLog]].
+   * Executors' own logs are spread over the cluster and often go away with their containers,
+   * while the event log keeps every executor's samples in one place, next to the jobs and stages
+   * they ran alongside.
    */
   private def startMemoryUsageLog(): Unit = {
     if (memoryUsageLogStarted.compareAndSet(false, true)) {
@@ -413,7 +469,7 @@ object CometExecIterator extends Logging {
       if (intervalMs > 0) {
         val nativeLib = new Native()
         val limitBytes = nativeMemoryLimit(conf)
-        Executors
+        val _ = Executors
           .newSingleThreadScheduledExecutor(new ThreadFactory {
             override def newThread(runnable: Runnable): Thread = {
               val thread = new Thread(runnable, "comet-memory-usage-log")
@@ -456,15 +512,30 @@ object CometExecIterator extends Logging {
     }
 
   /**
-   * The executor's memory overhead in bytes, sized the way Spark sizes the default resource
-   * profile's container: `spark.executor.memoryOverhead` if set, otherwise
-   * `spark.executor.memoryOverheadFactor` of `spark.executor.memory`, but at least
-   * `spark.executor.minMemoryOverhead`. None in local mode, where there is no container, or if
-   * the settings do not parse. An executor running a non-default resource profile may have a
+   * Whether the cluster manager for `master` runs each executor in a container whose memory it
+   * sizes from the memory overhead settings: YARN and Kubernetes. Local mode, local-cluster
+   * included, has no executor container, and a standalone worker starts its executors with no
+   * memory limit and never reads those settings. Comet does not know how any other cluster
+   * manager sizes its executors.
+   */
+  def isContainerSizedFromOverhead(master: String): Boolean =
+    master == "yarn" || master.startsWith("k8s://")
+
+  /**
+   * The executor's memory overhead in bytes, sized the way YARN and Kubernetes size the default
+   * resource profile's container: `spark.executor.memoryOverhead` if set, otherwise a factor of
+   * `spark.executor.memory`, but at least `spark.executor.minMemoryOverhead` (a fixed 384 MiB
+   * before Spark 4.0 added that setting). The factor is `spark.executor.memoryOverheadFactor`,
+   * 0.1 by default, except that Kubernetes falls back to `spark.kubernetes.memoryOverheadFactor`
+   * when it is unset. In cluster mode spark-submit always sets that for the driver, to 0.4 for a
+   * PySpark or SparkR application that did not set it, and the executors get the driver's value.
+   * None where no container is sized from the overhead (see [[isContainerSizedFromOverhead]]), or
+   * if the settings do not parse. An executor running a non-default resource profile may have a
    * different overhead.
    */
   def executorMemoryOverhead(conf: SparkConf): Option[Long] = {
-    if (conf.get("spark.master", "").startsWith("local")) {
+    val master = conf.get("spark.master", "")
+    if (!isContainerSizedFromOverhead(master)) {
       None
     } else {
       try {
@@ -472,8 +543,20 @@ object CometExecIterator extends Logging {
           case Some(_) => conf.getSizeAsMb("spark.executor.memoryOverhead")
           case None =>
             val executorMiB = conf.getSizeAsMb("spark.executor.memory", "1g")
-            val factor = conf.getDouble("spark.executor.memoryOverheadFactor", 0.1)
-            val minimumMiB = conf.getSizeAsMb("spark.executor.minMemoryOverhead", "384m")
+            val kubernetesFactor = if (master.startsWith("k8s://")) {
+              conf.getOption("spark.kubernetes.memoryOverheadFactor")
+            } else {
+              None
+            }
+            val factor = conf
+              .getOption("spark.executor.memoryOverheadFactor")
+              .orElse(kubernetesFactor)
+              .fold(0.1)(_.toDouble)
+            val minimumMiB = if (CometSparkSessionExtensions.isSpark40Plus) {
+              conf.getSizeAsMb("spark.executor.minMemoryOverhead", "384m")
+            } else {
+              384L
+            }
             math.max((executorMiB * factor).toLong, minimumMiB)
         }
         Some(ByteUnit.MiB.toBytes(overheadMiB))
@@ -484,11 +567,13 @@ object CometExecIterator extends Logging {
   }
 
   /**
-   * The memory the executor's container has for native memory: `spark.memory.offHeap.size` plus
-   * the memory overhead; see [[executorMemoryOverhead]]. None, so that nothing is compared
-   * against it, in local mode, when off-heap memory is disabled (a testing-only mode in which
-   * Comet's reservations do not come from Spark's off-heap pool), or if the settings do not
-   * parse.
+   * The memory the executor's container has outside the JVM heap: `spark.memory.offHeap.size`,
+   * plus the memory overhead (see [[executorMemoryOverhead]]), plus
+   * `spark.executor.pyspark.memory` for an application that spark-submit marked as Python, with
+   * `spark.yarn.isPython` for YARN and with `spark.kubernetes.resource.type` in Kubernetes
+   * cluster mode. None, so that nothing is compared against it, where the overhead is None, when
+   * off-heap memory is disabled (a testing-only mode in which Comet's reservations do not come
+   * from Spark's off-heap pool), or if the settings do not parse.
    */
   def nativeMemoryLimit(conf: SparkConf): Option[Long] = {
     if (!CometSparkSessionExtensions.isOffHeapEnabled(conf)) {
@@ -496,7 +581,16 @@ object CometExecIterator extends Logging {
     } else {
       executorMemoryOverhead(conf).flatMap { overhead =>
         try {
-          Some(overhead + conf.getSizeAsBytes("spark.memory.offHeap.size", "0"))
+          val pythonApp = if (conf.get("spark.master", "") == "yarn") {
+            conf.getBoolean("spark.yarn.isPython", false)
+          } else {
+            conf.get("spark.kubernetes.resource.type", "") == "python"
+          }
+          val pysparkMiB =
+            if (pythonApp) conf.getSizeAsMb("spark.executor.pyspark.memory", "0") else 0L
+          Some(
+            overhead + conf.getSizeAsBytes("spark.memory.offHeap.size", "0") +
+              ByteUnit.MiB.toBytes(pysparkMiB))
         } catch {
           case NonFatal(_) => None
         }
@@ -508,7 +602,10 @@ object CometExecIterator extends Logging {
     try {
       val usage = nativeLib.getMemoryUsage()
       val jvmArrow = JvmArrowMemory.current()
-      memoryUsageMessage(usage, jvmArrow, plansAtLastMemoryUsageLog).foreach(logInfo(_))
+      memoryUsageMessage(usage, jvmArrow, plansAtLastMemoryUsageLog).foreach { message =>
+        logInfo(message)
+        sendToEventLog(usage, jvmArrow)
+      }
       plansAtLastMemoryUsageLog = usage(3)
       val warning = limitBytes.flatMap(
         nativeMemoryLimitWarning(usage, jvmArrow, CometTaskMemoryManager.sparkOffHeapUsed(), _))
@@ -526,6 +623,102 @@ object CometExecIterator extends Logging {
         throw e
     }
   }
+
+  /**
+   * Sends a memory usage sample to the driver, which writes a summary of the samples to the event
+   * log; see [[MemoryUsageSummary]]. The executor plugin is looked up for every sample rather
+   * than once, because in local mode each SparkContext starts its own. Executors receive the
+   * driver's `spark.*` settings, so the plugin sees whether the driver writes an event log. The
+   * send is one-way, so Spark reports a failure to reach a remote driver in its own log. A
+   * failure that surfaces here, such as a driver endpoint that could not be found, persists, so
+   * the log stops sending after it.
+   */
+  private[apache] def sendToEventLog(usage: Array[Long], jvmArrow: JvmArrowMemory): Unit =
+    if (!eventLogSendFailed) {
+      CometExecutorPlugin.eventLogContext.foreach { pluginContext =>
+        try {
+          pluginContext.send(
+            memoryUsageEvent(
+              pluginContext.executorID(),
+              System.currentTimeMillis(),
+              usage,
+              jvmArrow))
+        } catch {
+          case NonFatal(e) =>
+            logWarning(
+              "Not sending native memory usage to the event log from now on: could not send " +
+                "it to the driver",
+              e)
+            eventLogSendFailed = true
+        }
+      }
+    }
+
+  /**
+   * The memory usage samples that one executor sent the driver since the event log last recorded
+   * any of them. The driver writes, and flushes, each event it records, so rather than one event
+   * per executor per interval it records two samples for each minute an executor reports: the one
+   * with the most untracked memory, and the last, which is the one after the last plan finishes
+   * when the executor goes idle. Spark's executor metrics reach the event log as peaks in the
+   * same way. The driver holds the summary rather than the executor: an executor that the
+   * application stops, or the cluster manager kills, has no chance to send what it holds.
+   */
+  class MemoryUsageSummary {
+
+    /** The sample with the most untracked memory since the previous summary, and that memory. */
+    private var peak: Option[(CometExecutorMemoryUsage, Long)] = None
+
+    private var last: Option[CometExecutorMemoryUsage] = None
+
+    /**
+     * When the driver received the first sample since the previous summary, in nanoseconds by its
+     * own monotonic clock, rather than when the executor took it by a clock that can differ.
+     */
+    private var openedAt = 0L
+
+    /** Adds `sample`, which the driver received at `receivedAt`, by its monotonic clock. */
+    def add(sample: CometExecutorMemoryUsage, receivedAt: Long): Unit = {
+      if (last.isEmpty) openedAt = receivedAt
+      val jvmArrow = JvmArrowMemory(sample.jvmArrowAllocated, sample.jvmArrowImported)
+      val untracked = untrackedMemory(sample.nativeAllocated, sample.poolsReserved, jvmArrow)
+      if (peak.forall(_._2 < untracked)) peak = Some((sample, untracked))
+      last = Some(sample)
+    }
+
+    /**
+     * The samples to record, if the first of them arrived a minute or more before `now`, by the
+     * same clock as `add`, after which the summary starts over, or nothing.
+     */
+    def flushIfDue(now: Long): Seq[CometExecutorMemoryUsage] =
+      if (last.nonEmpty && now - openedAt >= EVENT_LOG_SUMMARY_INTERVAL_NS) flush() else Nil
+
+    /** The samples to record since the previous summary, after which the summary starts over. */
+    def flush(): Seq[CometExecutorMemoryUsage] = {
+      val summary = (peak.map(_._1).toSeq ++ last).distinct
+      peak = None
+      last = None
+      summary
+    }
+  }
+
+  /**
+   * The event log's record of the memory usage sample `usage`, as returned by
+   * [[Native.getMemoryUsage]], and `jvmArrow`, which `executorId` took at `time`.
+   */
+  def memoryUsageEvent(
+      executorId: String,
+      time: Long,
+      usage: Array[Long],
+      jvmArrow: JvmArrowMemory): CometExecutorMemoryUsage =
+    CometExecutorMemoryUsage(
+      executorId,
+      time,
+      nativeAllocated = usage(0),
+      poolsReserved = usage(1),
+      pools = usage(2),
+      plans = usage(3),
+      jvmArrowAllocated = jvmArrow.allocated,
+      jvmArrowImported = jvmArrow.imported)
 
   /**
    * The Arrow memory Comet holds on the JVM side, read from its allocators' own accounting:
@@ -561,9 +754,9 @@ object CometExecIterator extends Logging {
 
   /**
    * The memory usage log line for `usage`, as returned by [[Native.getMemoryUsage]], and
-   * `jvmArrow`, or None to stay quiet. The log reports while native plans are running, and once
-   * more after the last of them finishes, so that allocation that outlives them is visible, then
-   * waits for plans to run again.
+   * `jvmArrow`, or None to stay quiet, in the executor's log and in the event log alike. The log
+   * reports while native plans are running, and once more after the last of them finishes, so
+   * that allocation that outlives them is visible, then waits for plans to run again.
    */
   def memoryUsageMessage(
       usage: Array[Long],
@@ -581,18 +774,28 @@ object CometExecIterator extends Logging {
   }
 
   /**
+   * The memory Comet holds outside the JVM heap that Spark's off-heap pool does not account for:
+   * `allocated` native memory, less the `reserved` part, plus the Arrow memory the JVM allocated
+   * itself; see [[nativeMemoryLimitWarning]].
+   */
+  def untrackedMemory(allocated: Long, reserved: Long, jvmArrow: JvmArrowMemory): Long =
+    math.max(allocated + jvmArrow.allocatedByJvm - reserved, 0L)
+
+  /**
    * A warning if the executor's native footprint exceeds `limitBytes`, the container's memory
    * outside the JVM heap; see [[nativeMemoryLimit]].
    *
-   * The footprint is the memory Comet holds outside the JVM heap that its pools do not track,
+   * The footprint is the memory Comet holds outside the JVM heap that Spark does not account for,
    * `allocated + jvmArrow.allocatedByJvm - reserved`, plus `sparkOffHeapUsed`, everything in use
    * in Spark's off-heap pool, which includes Comet's reservations as well as Spark's own off-heap
    * execution and storage memory. The JVM's Arrow memory is added before the reservations are
    * subtracted, because a native operator that holds on to a batch the JVM allocated, such as a
    * sort buffering its input, reserves it: those bytes are in `reserved` and in the JVM figure
-   * but not in `allocated`, and are counted once. Comparing the sum rather than the untracked
-   * part against the overhead alone counts the part of `spark.memory.offHeap.size` that nothing
-   * has acquired at that moment, which untracked memory can occupy until Spark hands it out. The
+   * but not in `allocated`, and are counted once. Neither `reserved` nor `sparkOffHeapUsed`
+   * includes memory that a pool recorded beyond what Spark granted it, so that memory is counted
+   * as untracked; see [[Native.getMemoryUsage]]. Comparing the sum rather than the untracked part
+   * against the overhead alone counts the part of `spark.memory.offHeap.size` that nothing has
+   * acquired at that moment, which untracked memory can occupy until Spark hands it out. The
    * limit also has to hold the JVM's own non-heap memory, so by the time the footprint exceeds it
    * the executor has likely outgrown its container.
    */
@@ -601,16 +804,17 @@ object CometExecIterator extends Logging {
       jvmArrow: JvmArrowMemory,
       sparkOffHeapUsed: Long,
       limitBytes: Long): Option[String] = {
-    val untracked = math.max(usage(0) + jvmArrow.allocatedByJvm - usage(1), 0L)
+    val untracked = untrackedMemory(usage(0), usage(1), jvmArrow)
     val footprint = untracked + sparkOffHeapUsed
     if (footprint > limitBytes) {
-      Some(s"Comet memory not tracked by any memory pool (${toMiB(untracked)}, native and JVM " +
+      Some(s"Comet memory that Spark does not account for (${toMiB(untracked)}, native and JVM " +
         s"Arrow) plus Spark's off-heap memory in use (${toMiB(sparkOffHeapUsed)}, including " +
         s"Comet's reservations) is ${toMiB(footprint)}, more than the ${toMiB(limitBytes)} the " +
         "executor's container has outside the JVM heap (spark.memory.offHeap.size plus the " +
-        "memory overhead), which also has to hold the JVM's own non-heap memory. The cluster " +
-        "manager may kill this executor for exceeding its container limit. Raise " +
-        s"spark.executor.memoryOverhead. ${CometConf.TUNING_GUIDE}.")
+        "memory overhead, and spark.executor.pyspark.memory for a PySpark application), which " +
+        "also has to hold the JVM's own non-heap memory. The cluster manager may kill this " +
+        "executor for exceeding its container limit. Raise spark.executor.memoryOverhead. " +
+        s"${CometConf.TUNING_GUIDE}.")
     } else {
       None
     }
@@ -646,6 +850,7 @@ object CometExecIterator extends Logging {
     Seq[ConfigEntry[_]](
       CometConf.COMET_DEBUG_ENABLED,
       CometConf.COMET_DEBUG_MEMORY_ENABLED,
+      CometConf.COMET_EXEC_AGGREGATE_SKIP_PARTIAL_ENABLED,
       CometConf.COMET_EXPLAIN_NATIVE_ENABLED,
       CometConf.COMET_MAX_TEMP_DIRECTORY_SIZE,
       CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED,

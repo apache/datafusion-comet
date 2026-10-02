@@ -27,8 +27,8 @@ guide is split into the following pages:
   memory overhead, choosing a memory pool, batch size, and limiting spill disk usage.
 - [Shuffle Tuning](tuning/shuffle.md): enabling Comet shuffle, the native and columnar shuffle
   implementations, and shuffle compression.
-- [Remote Shuffle with Celeborn](tuning/celeborn.md): using Comet native shuffle with Apache
-  Celeborn.
+- [Remote Shuffle with Celeborn](tuning/celeborn.md): bounding frame sizes and memory admission
+  for native remote shuffle.
 - [Scan Tuning](tuning/scans.md): Parquet filter pushdown, Parquet split sizing, and Iceberg data
   file concurrency.
 - [Operator Tuning](tuning/operators.md): joins, adaptive partial aggregation, and sorting on

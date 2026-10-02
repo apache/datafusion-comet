@@ -737,8 +737,8 @@ abstract class ParquetReadSuite extends CometTestBase {
         opt match {
           case Some(i) =>
             record.add(0, i % 2 == 0)
-            record.add(1, i.toByte)
-            record.add(2, i.toShort)
+            record.add(1, i.toByte.toInt)
+            record.add(2, i.toShort.toInt)
             record.add(3, i)
             record.add(4, i.toLong)
             record.add(5, i.toFloat)
@@ -824,6 +824,7 @@ abstract class ParquetReadSuite extends CometTestBase {
     // TODO(https://github.com/apache/datafusion-comet/issues/3432): `_metadata.row_index` is
     // generated per row by the reader, not constant per file, so it needs DataFusion's
     // virtual-column mechanism rather than the partition-value path used here. Not covered.
+    // file_block_start and file_block_length fall back; see the test below.
     withTempPath { dir =>
       (1 to 100).toDF("id").repartition(1).write.parquet(dir.getCanonicalPath)
       val df = spark.read
@@ -833,10 +834,39 @@ abstract class ParquetReadSuite extends CometTestBase {
           $"_metadata.file_path",
           $"_metadata.file_name",
           $"_metadata.file_size",
-          $"_metadata.file_block_start",
-          $"_metadata.file_block_length",
           $"_metadata.file_modification_time")
       checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("_metadata.file_block_start and file_block_length fall back to Spark") {
+    // When Spark splits a file, DataFusion keeps a row group in the split that holds its first
+    // page and Spark keeps it in the split that holds its midpoint, so these per-split values
+    // would be wrong for some rows if the scan ran natively (#6505).
+    withSQLConf(SQLConf.FILES_MAX_PARTITION_BYTES.key -> "4096") {
+      withTempPath { dir =>
+        spark
+          .range(0, 5000)
+          .selectExpr("id", "concat('value_', cast(id as string)) as s")
+          .coalesce(1)
+          .write
+          .parquet(dir.getCanonicalPath)
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          assert(
+            spark.read.parquet(dir.getCanonicalPath).rdd.getNumPartitions > 1,
+            "the file has to be split across partitions for this test to mean anything")
+        }
+
+        val df = spark.read.parquet(dir.getCanonicalPath)
+        for (column <- Seq("file_block_start", "file_block_length")) {
+          checkSparkAnswerAndFallbackReason(
+            df.select($"id", $"s", $"_metadata.$column"),
+            s"Metadata column(s) $column is not supported")
+        }
+        // The per-file constants don't depend on which split reads a row group.
+        checkSparkAnswerAndOperator(
+          df.select($"id", $"s", $"_metadata.file_path", $"_metadata.file_size"))
+      }
     }
   }
 
@@ -1154,7 +1184,7 @@ abstract class ParquetReadSuite extends CometTestBase {
         var b = record.addGroup("b")
         b.add("b1", 1)
         b.add("b2", 1)
-        var c = record.addGroup("c")
+        val c = record.addGroup("c")
         c.add("c1", 1)
         c.add("c2", 1)
         writer.write(record)
@@ -1224,7 +1254,7 @@ abstract class ParquetReadSuite extends CometTestBase {
         var b = record.addGroup("b")
         b.add("b1", 1)
         b.add("b2", 1)
-        var c = record.addGroup("c")
+        val c = record.addGroup("c")
         c.add("c1", 1)
         c.add("c2", 1)
         writer.write(record)
@@ -1901,7 +1931,7 @@ abstract class ParquetReadSuite extends CometTestBase {
   }
 
   private def withId(id: Int) =
-    new MetadataBuilder().putLong(ParquetUtils.FIELD_ID_METADATA_KEY, id).build()
+    new MetadataBuilder().putLong(ParquetUtils.FIELD_ID_METADATA_KEY, id.toLong).build()
 
   // Based on Spark ParquetIOSuite.test("vectorized reader: array of nested struct")
   test("array of nested struct with and without field id") {
@@ -2427,7 +2457,10 @@ abstract class ParquetReadSuite extends CometTestBase {
 
   // Spark checks each file on its own. A directory holding one file with ids and one without
   // raises on the second, and with `ignoreMissing` the file without ids reads as nulls because
-  // no root field of it carries the requested id.
+  // no root field of it carries the requested id. Each side is written as one file. Spread over
+  // the session's cores, each write would also leave an empty `part-00000`, and on Spark 3.x a
+  // file without ids read after an empty one in the same task raises inside one more
+  // `SparkException`, so the error the job reports would depend on which task failed first.
   test("a file without ids next to a file with ids is checked on its own") {
     withSQLConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
       withTempPath { dir =>
@@ -2436,11 +2469,13 @@ abstract class ParquetReadSuite extends CometTestBase {
         val readSchema = new StructType().add("a", IntegerType, true, withId(1))
         spark
           .createDataFrame(spark.sparkContext.parallelize(Seq(Row(100), Row(200))), idSchema)
+          .repartition(1)
           .write
           .mode("overwrite")
           .parquet(dir.getCanonicalPath)
         spark
           .createDataFrame(spark.sparkContext.parallelize(Seq(Row(1), Row(2))), plainSchema)
+          .repartition(1)
           .write
           .mode("append")
           .parquet(dir.getCanonicalPath)

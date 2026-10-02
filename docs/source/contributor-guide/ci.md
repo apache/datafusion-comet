@@ -45,9 +45,9 @@ flowchart LR
 
   PRTIER["PR tier<br>Linux build, lint, Rust tests<br>TPC-H / TPC-DS<br>Comet suites, Spark 4.1"]
   QUEUE["Queue tier, on top of the PR tier<br>Spark SQL, Spark 4.1<br>Iceberg 1.11<br>macOS build and Comet suites<br>Benchmark check, Delta gate<br>PyArrow UDF, Spark 4.0 / 4.1 / 4.2"]
-  NIGHTLY["Nightly tier<br>Comet suites, Spark 3.4 / 3.5 / 4.0 / 4.2<br>Spark SQL, Spark 3.5 / 4.0<br>Iceberg 1.8 / 1.9 / 1.10"]
+  NIGHTLY["Nightly tier<br>Comet suites, Spark 3.4 / 3.5 / 4.0 / 4.2<br>Spark SQL, Spark 3.5 / 4.0 / 4.2<br>Iceberg 1.8 / 1.9 / 1.10"]
   S34["Neither tier<br>Spark SQL, Spark 3.4"]
-  CACHE["Cache-refresh-only mode<br>the four cache-writing jobs, plus Lint"]
+  CACHE["Cache-refresh-only mode<br>the three cache-writing jobs, plus Lint"]
 ```
 
 Suite by suite:
@@ -64,7 +64,7 @@ Suite by suite:
 | Delta contrib build gate                          | with label   | yes         | no      |
 | PyArrow UDF tests, Spark 4.0 / 4.1 / 4.2          | with label   | yes         | no      |
 | Comet test suites, Spark 3.4 / 3.5 / 4.0 / 4.2    | with label   | no          | yes     |
-| Spark SQL tests, Spark 3.5 / 4.0                  | with label   | no          | yes     |
+| Spark SQL tests, Spark 3.5 / 4.0 / 4.2            | with label   | no          | yes     |
 | Iceberg Spark SQL tests, Iceberg 1.8 / 1.9 / 1.10 | with label   | no          | yes     |
 | Spark SQL tests, Spark 3.4                        | with label   | no          | no      |
 
@@ -74,16 +74,17 @@ a change lands, evaluated against the merge result rather than the pull request 
 runs one Spark version and one Iceberg version, the ones the default build profile targets. The
 **nightly tier** runs the other Spark and Iceberg versions once a day against `main` as it stands;
 see [Nightly runs](#nightly-runs) below. Nothing in the queue tier runs again
-on push to `main`, because the queue already tested the exact tree that landed. The one exception
-is the Linux build, which also runs on push so that the dependency caches on `main` stay fresh: a
-pull request can only restore caches saved on its own branch or on `main`, and the queue's
-temporary branch takes its caches with it when it is deleted.
+on push to `main`, because the queue already tested the exact tree that landed. The exceptions are
+the Linux and macOS builds, which also run on push so that the dependency caches on `main` stay
+fresh: a pull request can only restore caches saved on its own branch or on `main`, and the queue's
+temporary branch takes its caches with it when it is deleted. On push the macOS build runs only its
+native build, and only when `main` has no cache entry yet for the current dependency set.
 
 That push run is for the caches and nothing else, so it runs in **cache-refresh-only** mode: only
-the four jobs that own a cache entry (the native CI build, the Rust tests, and the two TPC-H/TPC-DS
-jobs, the last two stopping before their query passes), plus the short `Lint` job the native jobs
-depend on. The lints and the Comet test matrix are skipped, which is the difference between 587
-runner-minutes a push and about 73. If you add a job to `pr_build_linux.yml`, give it
+the three jobs that own a cache entry (the native CI build and the two TPC-H/TPC-DS jobs, the last
+two stopping before their query passes), plus the short `Lint` job the native build depends on. The
+lints, the Rust tests and the Comet test matrix are skipped, which is the difference between 587
+runner-minutes a push and about 40. If you add a job to `pr_build_linux.yml`, give it
 `if: ${{ !inputs.cache-refresh-only }}` unless it writes a cache that `main` needs;
 `dev/ci/check-ci-config.py` fails the build if you forget.
 
@@ -124,6 +125,7 @@ Each suite outside the PR tier has a label that runs it on a pull request:
 | `run-spark-3.4-tests`      | Spark SQL tests against Spark 3.4                     |
 | `run-spark-3.5-tests`      | Spark SQL tests against Spark 3.5                     |
 | `run-spark-4.0-tests`      | Spark SQL tests against Spark 4.0                     |
+| `run-spark-4.2-tests`      | Spark SQL tests against Spark 4.2                     |
 | `run-iceberg-tests`        | Iceberg Spark SQL tests against every Iceberg version |
 
 For a queue-tier suite the label only brings the run forward; the queue would have run it anyway
@@ -165,7 +167,7 @@ does not cover. Some examples:
 - code under `spark/src/main/spark-3.4/`, `spark-3.5/`, `spark-4.0/` or the shared `spark-3.x/`
   directory, or any change to `CometExprShim` and friends; `run-all-spark-profiles` runs the Comet
   test suites against every Spark version rather than 4.1 alone (the Lint Java matrix already
-  compiles the 3.4/3.5/4.0 profiles on every pull request, so this is for runtime differences)
+  compiles every Spark profile on every pull request, so this is for runtime differences)
 - a change to a Spark SQL diff under `dev/diffs/`
 - anything that touches Hive table support, `InsertIntoHiveTable`, or the `sql/hive` parts of
   the 4.1 diff
@@ -197,16 +199,17 @@ The pull request's own checks do not have to be finished, though it is polite no
 request whose PR tier is red.
 
 GitHub then builds a temporary branch named `gh-readonly-queue/main/...` containing the pull
-request's commits squashed on top of the current `main`, batched with up to four other queued pull
-requests, and runs `ci.yml` against it with a `merge_group` event. When `Required Checks` on that
-branch is green, every pull request in the batch merges. If it is red, GitHub removes the pull
-request whose entry failed, rebuilds the remaining entries without it, and records the removal on
-the pull request's timeline.
+request's commits squashed on top of `main` and of every entry ahead of it in the queue, and runs
+`ci.yml` against it with a `merge_group` event. Up to four entries build at once. An entry merges
+once `Required Checks` on its branch is green and every entry ahead of it has merged; up to five
+green entries land together. If an entry's build is red, GitHub removes that pull request,
+rebuilds the entries behind it without it, and records the removal on the pull request's
+timeline.
 
 The queue tests the merge result rather than the pull request head. That is the point of it: a
 semantic conflict between two pull requests that each pass in isolation is caught before either
 lands. It also means a pull request can be evicted for a failure it did not cause on its own,
-because `main` moved or because another entry in the batch broke the combined tree.
+because `main` moved or because an entry ahead of it broke the combined tree.
 
 ## When a queue run fails
 
@@ -229,8 +232,8 @@ through these in order:
 
 3. **Reproduce it on the pull request.** Merge `main` into the branch so the pull request head
    matches what the queue tested, then apply the label for the suite that failed. If the labeled
-   run passes, the failure came from the batch, not from this change, and re-queuing is the right
-   next step. If it fails, fix it on the branch like any other CI failure.
+   run passes, the failure came from the entries ahead of it, not from this change, and
+   re-queuing is the right next step. If it fails, fix it on the branch like any other CI failure.
 
 4. **Check for flakiness.** A test that is flaky in the queue tier blocks everyone's merges, not
    just one pull request. If a queue failure looks like a flake, do not just re-queue: file or
@@ -243,7 +246,7 @@ re-armed automatically.
 
 `ci.yml` also runs on a schedule, at 06:00 UTC every day, against what landed on `main` since the
 last successful scheduled run. That run executes only the nightly tier: the Comet test suites against the Spark
-profiles other than 4.1, the Spark SQL suites for Spark 3.5 and 4.0, and the Iceberg suites for
+profiles other than 4.1, the Spark SQL suites for Spark 3.5, 4.0 and 4.2, and the Iceberg suites for
 1.8, 1.9 and 1.10, each only when the day's changes touched files it covers. The queue already ran
 everything else against the same tree, so nothing in the queue tier is repeated. A day with no
 merges, or with only documentation changes, runs nothing.
@@ -338,8 +341,9 @@ gh run view "$run" --repo apache/datafusion-comet --json jobs \
         | group_by(.conclusion)[] | "\(length)\t\(.[0].conclusion)"'
 ```
 
-A healthy run over a day of normal merges reports about 40 successes, with the handful of skips
-being the suites that belong to the queue tier rather than the nightly one — Spark 3.4, Spark 4.1
+A healthy run over a day of normal merges reports about 53 successes — nine Spark SQL shards for
+each of 3.5, 4.0 and 4.2, plus the Iceberg shards — with the handful of skips being the suites that
+belong to the queue tier rather than the nightly one — Spark 3.4, Spark 4.1
 and Iceberg 1.11. If everything is skipped, open the run's `Detect changes` job: it logs the
 `Nightly base:` commit it diffed against and the list of changed files, which is enough to tell a
 genuinely quiet day from a base that has drifted.
@@ -403,12 +407,12 @@ the sbt projects the selected rows need.
 changing Comet or the run tests the previously installed JAR and goes green regardless.
 
 When more than one Spark row is selected they all run **at once**, each in its own copy of the
-prepared tree, which is what CI does: seven matrix rows, seven runners, seven extracted trees.
+prepared tree, which is what CI does: nine matrix rows, nine runners, nine extracted trees.
 Because each row owns a tree there is no shared sbt server, `target/` or metastore tmpdir, so the
 per-row settings stay identical to CI's. On APFS and btrfs the copies are copy-on-write, so a 4 GB
 tree costs kilobytes until the rows write their own reports.
 
-Seven concurrent sbt processes would interleave unreadably, so each row logs to
+Nine concurrent sbt processes would interleave unreadably, so each row logs to
 `$COMET_LOCAL_CI_HOME/logs-spark-<version>/<row>.log`, named on the line that reports the row
 starting. Each row then reports again when it finishes, with its elapsed time, and a failing row
 prints the last 20 lines of its log. Follow a row live with `tail -f`. The trees persist so the
@@ -419,8 +423,8 @@ Four caveats:
 
 - The sandbox lives under `/tmp`, so a reboot or a tmp reaper means downloading and compiling again.
   Point `COMET_LOCAL_CI_HOME` somewhere durable to keep it.
-- Running every row at once wants the memory and disk for it: seven sbt processes each forking a
-  test JVM, and seven trees diverging from their copy-on-write base. Select fewer rows, or one, on a
+- Running every row at once wants the memory and disk for it: nine sbt processes each forking a
+  test JVM, and nine trees diverging from their copy-on-write base. Select fewer rows, or one, on a
   smaller machine.
 - Preparing deletes `org/apache/parquet` from your local Maven repository as the workflows do, and
   additionally sweeps the **whole** repository for POMs with no sibling JAR. That is a shared cache,
@@ -448,7 +452,7 @@ actionlint --shellcheck=off
 ```
 
 A new test suite has to be registered in the workflow files by hand; see
-[Register New Test Suites in CI](development.md#5-register-new-test-suites-in-ci). A new job in
+[Register New Test Suites in CI](development.md#6-register-new-test-suites-in-ci). A new job in
 `ci.yml` needs an entry in both `FILTERS` and `POLICY` in `dev/ci/compute-changes.py`, a case in
 `dev/ci/check-ci-config.py`, and a line in `required_checks.needs`. The check will tell you which
 of those is missing.

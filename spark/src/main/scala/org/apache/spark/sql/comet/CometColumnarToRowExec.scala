@@ -125,7 +125,7 @@ case class CometColumnarToRowExec(child: SparkPlan)
         val numOutputRows = longMetric("numOutputRows")
         val numInputBatches = longMetric("numInputBatches")
         val localOutput = this.output
-        val broadcastColumnar = child.executeBroadcast()
+        val broadcastColumnar = child.executeBroadcast[Any]()
         val serializedBatches = broadcastColumnar.value.asInstanceOf[Array[ChunkedByteBuffer]]
         val batches = serializedBatches.iterator
           .flatMap(CometUtils.decodeBatches(_, this.getClass.getSimpleName))
@@ -342,7 +342,7 @@ object CometColumnarToRowExec {
       lazy val toUnsafe = UnsafeProjection.create(output, output)
       batches.flatMap { batch =>
         numInputBatches += 1
-        numOutputRows += batch.numRows()
+        numOutputRows += batch.numRows().toLong
         if (batch.numRows() >= minBatchSize) {
           converter.setBatch(batch)
           val numRows = batch.numRows()
@@ -363,7 +363,7 @@ object CometColumnarToRowExec {
       val toUnsafe = UnsafeProjection.create(output, output)
       batches.flatMap { batch =>
         numInputBatches += 1
-        numOutputRows += batch.numRows()
+        numOutputRows += batch.numRows().toLong
         batch.rowIterator().asScala.map(toUnsafe)
       }
     }
