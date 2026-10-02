@@ -90,6 +90,25 @@ FROM (
   DISTRIBUTE BY years
 )
 
+-- Spark negates, adds and subtracts calendar intervals with IntervalUtils. CometUnaryMinus,
+-- CometAdd and CometSubtract only admit numeric types, so these projections stay on Spark rather
+-- than handing the interval struct to a numeric kernel.
+query expect_fallback(Unsupported datatype CalendarIntervalType)
+SELECT -make_interval(years, months, weeks, days, hours, mins, secs),
+       make_interval(years) + make_interval(0, months),
+       make_interval(years, months, weeks, days) - make_interval(0, 0, 0, 0, hours, mins, secs)
+FROM test_make_interval
+
+-- The same arithmetic over intervals that native make_interval built below a native shuffle, so
+-- Spark reads them back from the interval struct.
+query expect_fallback(Unsupported datatype CalendarIntervalType)
+SELECT -i, i + make_interval(years), i - make_interval(0, months)
+FROM (
+  SELECT years, months, make_interval(years, months, weeks, days, hours, mins, secs) AS i
+  FROM test_make_interval
+  DISTRIBUTE BY years
+)
+
 query
 SELECT make_interval(0, 1, 0, 1, 0, 0, 100.000001)
 
