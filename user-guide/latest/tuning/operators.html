@@ -924,9 +924,8 @@ differ from Spark when the data contains both zero and negative zero, or more th
 an edge case that is not of concern for many users. Setting <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.strictFloatingPoint=true</span></code> makes those
 nested cases fall back to Spark, and they can be forced back onto the native path with
 <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.SortOrder.allowIncompatible=true</span></code>.</p>
-<p><code class="docutils literal notranslate"><span class="pre">sort_array</span></code> is separate. It sorts array elements rather than ordering rows, and its elements are compared with Arrow’s
-raw total ordering, so <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.strictFloatingPoint=true</span></code> makes it fall back even for a scalar floating-point
-element type. Use <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.SortArray.allowIncompatible=true</span></code> to keep it native.</p>
+<p><code class="docutils literal notranslate"><span class="pre">sort_array</span></code> sorts array elements rather than ordering rows. It follows Spark’s floating-point ordering as well, so it
+also stays native with <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.strictFloatingPoint=true</span></code>.</p>
 </section>
 </section>
 

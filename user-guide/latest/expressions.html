@@ -1339,7 +1339,7 @@ expressions. The following function families are <strong>not currently planned</
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">sort_array</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Hybrid</p></td>
-<td><p>Struct, nested-array, and null elements run natively; other element types (for example intervals), and floating-point elements when <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.strictFloatingPoint=true</span></code>, route through the JVM codegen dispatcher</p></td>
+<td><p>Struct, nested-array, floating-point, and null elements run natively; other element types (for example intervals) route through the JVM codegen dispatcher</p></td>
 </tr>
 </tbody>
 </table>
