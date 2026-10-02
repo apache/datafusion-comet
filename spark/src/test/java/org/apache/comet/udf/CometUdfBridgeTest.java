@@ -20,9 +20,14 @@
 package org.apache.comet.udf;
 
 import java.io.IOException;
+import java.lang.ref.WeakReference;
+import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.Iterator;
 import java.util.Queue;
+import java.util.Set;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -30,6 +35,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -70,12 +76,14 @@ public class CometUdfBridgeTest {
   // What the memory-pressure tests leave free in the pool: less than one UDF output needs.
   private static final long FREE_BYTES = 4096L;
   private static final int NUM_ROWS = 1024;
+  private static final long SCRATCH_BYTES = 8192L;
 
   private static SparkSession spark;
   private static JavaSparkContext jsc;
   private static final AtomicReference<ArrowArray> DEFERRED_ARRAY = new AtomicReference<>();
   private static final AtomicReference<TaskContext> COMPLETED_CONTEXT = new AtomicReference<>();
   private static final Queue<ArrowBuf> RETAINED_BUFFERS = new ConcurrentLinkedQueue<>();
+  private static final Queue<WeakReference<Object>> TASK_OBJECTS = new ConcurrentLinkedQueue<>();
 
   @BeforeClass
   public static void setUp() {
@@ -102,6 +110,8 @@ public class CometUdfBridgeTest {
       deferred.close();
     }
     closeRetainedBuffers();
+    ScratchUdf.releaseUnclosed();
+    LeakingScratchUdf.releaseLeaked();
     if (spark != null) {
       spark.stop();
       spark = null;
@@ -276,6 +286,7 @@ public class CometUdfBridgeTest {
     LongAccumulator afterRelease = jsc.sc().longAccumulator("short-grant-after-release");
     LongAccumulator afterCompletion = jsc.sc().longAccumulator("short-grant-after-completion");
     LongAccumulator end = jsc.sc().longAccumulator("short-grant-end");
+    Set<BufferAllocator> allocatorsBefore = taskAllocators();
 
     jsc.parallelize(Collections.singletonList(0), 1)
         .foreachPartition(
@@ -327,15 +338,22 @@ public class CometUdfBridgeTest {
         0L,
         afterCompletion.value().longValue());
     assertEquals("nothing should remain charged", 0L, end.value().longValue());
+    try {
+      assertEquals(
+          "the completed task should be dropped even while its buffers live on",
+          0,
+          CometUdfBridge.taskStateCount());
+      assertEquals(
+          "buffers outliving the task should keep its allocator open",
+          1,
+          newTaskAllocators(allocatorsBefore).size());
+    } finally {
+      closeRetainedBuffers();
+    }
     assertEquals(
-        "buffers outliving the task should keep its allocator open",
-        1,
-        CometUdfBridge.taskStateCount());
-    closeRetainedBuffers();
-    assertEquals(
-        "closing the last buffer should clean up the task state",
-        0,
-        CometUdfBridge.taskStateCount());
+        "closing the last buffer should close the allocator",
+        Collections.emptySet(),
+        newTaskAllocators(allocatorsBefore));
   }
 
   private static void closeRetainedBuffers() {
@@ -723,5 +741,206 @@ public class CometUdfBridgeTest {
             + "returned by its own close",
         before.value(),
         end.value());
+  }
+
+  /**
+   * A UDF that keeps a scratch buffer from the task allocator across calls releases it in {@code
+   * close()}, which the bridge calls once the task has completed. Over three sequential tasks
+   * nothing is left behind: no task state, and no task allocator, which Arrow would otherwise keep
+   * registered with the root for the life of the executor.
+   */
+  @Test
+  public void scratchReleasedInCloseLeavesNothingBehindAcrossTasks() {
+    Set<BufferAllocator> allocatorsBefore = taskAllocators();
+    ScratchUdf.CLOSED.set(0);
+
+    jsc.parallelize(Arrays.asList(0, 1, 2), 3)
+        .foreachPartition(
+            (VoidFunction<Iterator<Integer>>)
+                ignored -> {
+                  TaskContext context = TaskContext.get();
+                  CometUdfBridge.registerTask(context);
+                  // Twice, so the second call reuses the scratch buffer the first one kept.
+                  evaluateThroughBridge(ScratchUdf.class.getName(), context);
+                  evaluateThroughBridge(ScratchUdf.class.getName(), context);
+                });
+
+    try {
+      assertEquals("close() should run once per task", 3, ScratchUdf.CLOSED.get());
+      assertEquals("no task state should outlive its task", 0, CometUdfBridge.taskStateCount());
+      assertEquals(
+          "no task allocator should outlive its task",
+          Collections.emptySet(),
+          newTaskAllocators(allocatorsBefore));
+    } finally {
+      ScratchUdf.releaseUnclosed();
+    }
+  }
+
+  /**
+   * A UDF that never releases the scratch buffer it keeps leaks the buffer's bytes, as it would on
+   * the root allocator, but must not keep its completed tasks alive. Arrow keeps the task allocator
+   * it cannot close registered with the root for good, so anything the allocator's listener still
+   * refers to would be pinned for the life of the executor.
+   */
+  @Test
+  public void unreleasedScratchDoesNotPinCompletedTasks() throws InterruptedException {
+    Set<BufferAllocator> allocatorsBefore = taskAllocators();
+    TASK_OBJECTS.clear();
+
+    jsc.parallelize(Arrays.asList(0, 1, 2), 3)
+        .foreachPartition(
+            (VoidFunction<Iterator<Integer>>)
+                ignored -> {
+                  TaskContext context = TaskContext.get();
+                  CometUdfBridge.registerTask(context);
+                  TASK_OBJECTS.add(new WeakReference<>(context));
+                  TASK_OBJECTS.add(
+                      new WeakReference<>(CometTaskContextShim.taskMemoryManager(context)));
+                  evaluateThroughBridge(LeakingScratchUdf.class.getName(), context);
+                });
+
+    try {
+      assertEquals(
+          "each task should record its context and memory manager", 6, TASK_OBJECTS.size());
+      assertTrue(
+          "a completed task's TaskContext and TaskMemoryManager should not be retained",
+          awaitCollected(TASK_OBJECTS));
+      assertEquals("no task state should outlive its task", 0, CometUdfBridge.taskStateCount());
+      Set<BufferAllocator> leaking = newTaskAllocators(allocatorsBefore);
+      assertEquals("each task allocator should stay open for its leaked buffer", 3, leaking.size());
+      for (BufferAllocator allocator : leaking) {
+        assertEquals(
+            "only the leaked scratch buffer should remain",
+            SCRATCH_BYTES,
+            allocator.getAllocatedMemory());
+      }
+    } finally {
+      LeakingScratchUdf.releaseLeaked();
+    }
+    assertEquals(
+        "releasing the leaked buffers should close their allocators",
+        Collections.emptySet(),
+        newTaskAllocators(allocatorsBefore));
+  }
+
+  /** Calls the UDF through the bridge as native execution does, then releases the result. */
+  private static void evaluateThroughBridge(String udfClassName, TaskContext context) {
+    BufferAllocator rootAllocator = org.apache.comet.package$.MODULE$.CometArrowAllocator();
+    try (ArrowArray outArray = ArrowArray.allocateNew(rootAllocator);
+        ArrowSchema outSchema = ArrowSchema.allocateNew(rootAllocator)) {
+      CometUdfBridge.evaluate(
+          udfClassName,
+          new long[0],
+          new long[0],
+          outArray.memoryAddress(),
+          outSchema.memoryAddress(),
+          NUM_ROWS,
+          context,
+          Thread.currentThread().getContextClassLoader());
+      Data.importVector(rootAllocator, outArray, outSchema, null).close();
+    }
+  }
+
+  /** The task allocators currently registered with the root allocator. */
+  private static Set<BufferAllocator> taskAllocators() {
+    Set<BufferAllocator> allocators = Collections.newSetFromMap(new IdentityHashMap<>());
+    for (BufferAllocator child :
+        org.apache.comet.package$.MODULE$.CometArrowAllocator().getChildAllocators()) {
+      if (child.getName().startsWith("comet-udf-task-")) {
+        allocators.add(child);
+      }
+    }
+    return allocators;
+  }
+
+  private static Set<BufferAllocator> newTaskAllocators(Set<BufferAllocator> before) {
+    Set<BufferAllocator> allocators = taskAllocators();
+    allocators.removeAll(before);
+    return allocators;
+  }
+
+  /** Whether every referent is collected within a few garbage collections. */
+  private static boolean awaitCollected(Collection<WeakReference<Object>> references)
+      throws InterruptedException {
+    for (int attempt = 0; attempt < 20; attempt++) {
+      if (references.stream().allMatch(reference -> reference.get() == null)) {
+        return true;
+      }
+      System.gc();
+      Thread.sleep(100);
+    }
+    return references.stream().allMatch(reference -> reference.get() == null);
+  }
+
+  /** Keeps a scratch buffer from the task allocator across calls and releases it in close(). */
+  public static final class ScratchUdf implements CometUDF {
+    static final AtomicInteger CLOSED = new AtomicInteger();
+    // Scratch buffers close() has not released, so that a failing test does not leave them behind.
+    private static final Queue<ArrowBuf> UNCLOSED = new ConcurrentLinkedQueue<>();
+    private ArrowBuf scratch;
+
+    @Override
+    public ValueVector evaluate(BufferAllocator allocator, ValueVector[] inputs, int numRows) {
+      if (scratch == null) {
+        scratch = allocator.buffer(SCRATCH_BYTES);
+        UNCLOSED.add(scratch);
+      }
+      return nullResult(allocator, numRows);
+    }
+
+    @Override
+    public void close() {
+      if (scratch != null) {
+        UNCLOSED.remove(scratch);
+        scratch.close();
+      }
+      CLOSED.incrementAndGet();
+    }
+
+    static void releaseUnclosed() {
+      ArrowBuf buffer;
+      while ((buffer = UNCLOSED.poll()) != null) {
+        buffer.close();
+      }
+    }
+  }
+
+  /**
+   * Keeps a scratch buffer from the task allocator across calls and never releases it. The buffer
+   * is also queued here so the test can release it once it has checked what the leak retains.
+   */
+  public static final class LeakingScratchUdf implements CometUDF {
+    private static final Queue<ArrowBuf> LEAKED = new ConcurrentLinkedQueue<>();
+    private ArrowBuf scratch;
+
+    @Override
+    public ValueVector evaluate(BufferAllocator allocator, ValueVector[] inputs, int numRows) {
+      if (scratch == null) {
+        scratch = allocator.buffer(SCRATCH_BYTES);
+        LEAKED.add(scratch);
+      }
+      return nullResult(allocator, numRows);
+    }
+
+    static void releaseLeaked() {
+      ArrowBuf buffer;
+      while ((buffer = LEAKED.poll()) != null) {
+        buffer.close();
+      }
+    }
+  }
+
+  /** A result of {@code numRows} null values. */
+  private static IntVector nullResult(BufferAllocator allocator, int numRows) {
+    IntVector out = new IntVector("out", allocator);
+    try {
+      out.allocateNew(numRows);
+      out.setValueCount(numRows);
+    } catch (RuntimeException e) {
+      out.close();
+      throw e;
+    }
+    return out;
   }
 }

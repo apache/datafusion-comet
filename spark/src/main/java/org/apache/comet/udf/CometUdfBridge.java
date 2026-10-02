@@ -20,12 +20,16 @@
 package org.apache.comet.udf;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.IdentityHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
+
+import scala.util.control.NonFatal;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -66,8 +70,10 @@ import org.apache.comet.util.ClassLoaders;
  *       it. Two task attempts observing the same class name receive distinct instances.
  *   <li>Calls for a task may arrive concurrently from different Tokio workers. Implementations with
  *       mutable state are responsible for synchronizing {@code evaluate()}.
- *   <li>All instances for a task are dropped by the {@link TaskCompletionListener} registered by
- *       {@link #registerTask(TaskContext)}. No UDF instance outlives its task.
+ *   <li>All instances for a task are closed ({@link CometUDF#close()}) and dropped once the task
+ *       has completed and no evaluation for it is in flight: by the {@link TaskCompletionListener}
+ *       registered by {@link #registerTask(TaskContext)}, or by the last in-flight evaluation to
+ *       finish. No UDF instance outlives its task.
  *   <li>When {@code taskContext} is {@code null} (unit tests, direct native driver), instances live
  *       in a process-lifetime fallback cache because no task-completion event will fire.
  * </ol>
@@ -85,10 +91,12 @@ public class CometUdfBridge {
   private static final BufferAllocator ROOT_ALLOCATOR = CometUDF.rootAllocator();
 
   /**
-   * Task-scoped UDF instances and output allocator. Entries are removed after task completion once
-   * in-flight evaluations finish and the task allocator holds no memory. Exported output buffers do
-   * not pin an entry: their accounting moves to the root allocator when the result is handed to
-   * native execution.
+   * Task-scoped UDF instances and output allocator. An entry is removed once its task has completed
+   * and in-flight evaluations have finished, right after its UDF instances are closed. The task
+   * allocator closes then too, or, if buffers allocated from it are still live, when the last of
+   * them is released (see {@link TaskAllocationListener}). Exported output buffers are not among
+   * them: their accounting moves to the root allocator when the result is handed to native
+   * execution.
    */
   private static final ConcurrentHashMap<TaskContext, TaskState> TASKS = new ConcurrentHashMap<>();
 
@@ -104,12 +112,12 @@ public class CometUdfBridge {
    * has stopped calling UDFs, before this state marks itself completed.
    *
    * <p>That ordering is for orderly shutdown, not memory safety: an evaluation that races task
-   * completion either runs under the normal guards (the allocator only closes once in-flight
-   * evaluations finish and it holds no memory) or is rejected by {@code beginEvaluation} once the
-   * state is completed. A straggler arriving after the state was removed recreates it, and the
-   * completion listener registered on the finished task either completes it immediately (no
-   * listener drain active, so the evaluation is rejected) or is queued behind the active drain,
-   * which completes and removes the state as soon as the straggler finishes.
+   * completion either runs under the normal guards (UDF instances are closed only once in-flight
+   * evaluations finish, and the allocator only once it holds no memory) or is rejected by {@code
+   * beginEvaluation} once the state is completed. A straggler arriving after the state was removed
+   * recreates it, and the completion listener registered on the finished task either completes it
+   * immediately (no listener drain active, so the evaluation is rejected) or is queued behind the
+   * active drain, which completes and removes the state as soon as the straggler finishes.
    */
   public static void registerTask(TaskContext taskContext) {
     if (taskContext != null) {
@@ -460,7 +468,9 @@ public class CometUdfBridge {
   }
 
   /**
-   * Per-task Arrow listener and non-spillable Spark memory consumer.
+   * Per-task UDF instances, Arrow allocation accounting and non-spillable Spark memory consumer.
+   * Arrow reaches it through a {@link TaskAllocationListener}, which lets go of it when the task
+   * retires (see {@link #closeIfIdle}).
    *
    * <p>Spark accounting requires off-heap Tungsten memory ({@code spark.memory.offHeap.enabled}).
    * Arrow buffers are off-heap, so with on-heap Tungsten memory there is no matching Spark pool to
@@ -476,43 +486,47 @@ public class CometUdfBridge {
    * overcommit (see {@code SparkMemory} in {@code spark_memory.rs}).
    *
    * <p>Accounting invariant. Let <i>recorded</i> be the bytes passed to {@link #onPreAllocation}
-   * and not yet returned through {@link #release} (from {@link #onRelease}, {@link
-   * #onFailedAllocation} or {@link #releaseExportedCharge}). Outside an allocation in progress,
-   * {@code consumer.getUsed() + shortfall == recorded}: every recorded byte is backed by Spark's
-   * grant or by the shortfall, never both. A release repays the shortfall before handing anything
-   * back, so afterwards Spark is charged {@code min(its previous grant, recorded)}: for as much of
-   * the outstanding memory as it granted, and only the excess of its grant over what is still
-   * outstanding is returned. Independently, {@link TaskMemoryConsumer#freeMemory} never hands back
-   * more than the consumer holds. That bound needs no bookkeeping to be right, so it also holds for
-   * chunks Arrow moves into or out of the task allocator without a listener callback (ownership
-   * transfers), where the invariant above cannot see the change. Task completion returns exactly
-   * what Spark still has granted and forgets the shortfall.
+   * and not yet returned through {@link #release} (from {@link TaskAllocationListener#onRelease},
+   * {@link TaskAllocationListener#onFailedAllocation} or {@link #releaseExportedCharge}). Outside
+   * an allocation in progress, {@code consumer.getUsed() + shortfall == recorded}: every recorded
+   * byte is backed by Spark's grant or by the shortfall, never both. A release repays the shortfall
+   * before handing anything back, so afterwards Spark is charged {@code min(its previous grant,
+   * recorded)}: for as much of the outstanding memory as it granted, and only the excess of its
+   * grant over what is still outstanding is returned. Independently, {@link
+   * TaskMemoryConsumer#freeMemory} never hands back more than the consumer holds. That bound needs
+   * no bookkeeping to be right, so it also holds for chunks Arrow moves into or out of the task
+   * allocator without a listener callback (ownership transfers), where the invariant above cannot
+   * see the change. Task completion returns exactly what Spark still has granted and forgets the
+   * shortfall.
    *
    * <p>Lock order: the {@link TaskMemoryManager} monitor, then this {@code TaskState} monitor, then
    * Spark's {@code MemoryManager} monitor (taken inside {@code acquireExecutionMemory} / {@code
    * releaseExecutionMemory}). {@link #onPreAllocation} takes all three in that order; every other
-   * path ({@link #onRelease}, {@link #releaseExportedCharge}, {@link #taskCompleted}) takes a
-   * suffix: this monitor, then the MemoryManager monitor via {@code MemoryConsumer.freeMemory},
-   * which never touches the TaskMemoryManager monitor (verified against Spark 3.5 and 4.1). Never
-   * acquire the TaskMemoryManager monitor while holding this monitor. Spark's {@code
-   * acquireExecutionMemory} may call {@code spill()} on other consumers while holding the
-   * TaskMemoryManager monitor; a spill that releases Arrow buffers re-enters {@link #onRelease} in
-   * the same TaskMemoryManager-then-TaskState order, so no inversion arises there either.
+   * path ({@link #release}, which buffer releases and exports go through, and {@link
+   * #taskCompleted}) takes a suffix: this monitor, then the MemoryManager monitor via {@code
+   * MemoryConsumer.freeMemory}, which never touches the TaskMemoryManager monitor (verified against
+   * Spark 3.5 and 4.1). Never acquire the TaskMemoryManager monitor while holding this monitor.
+   * Spark's {@code acquireExecutionMemory} may call {@code spill()} on other consumers while
+   * holding the TaskMemoryManager monitor; a spill that releases Arrow buffers re-enters {@link
+   * #release} in the same TaskMemoryManager-then-TaskState order, so no inversion arises there
+   * either. The {@link TaskAllocationListener} monitor comes last: {@link #allocator()} takes it
+   * under this monitor, and nothing takes another of these monitors while holding it.
    */
-  private static final class TaskState implements AllocationListener {
+  private static final class TaskState {
     private final TaskContext taskContext;
     private final long taskAttemptId;
     private final TaskMemoryManager taskMemoryManager;
     private final TaskMemoryConsumer consumer;
+    private final TaskAllocationListener listener;
     private final ConcurrentHashMap<String, CometUDF> instances = new ConcurrentHashMap<>();
 
-    private BufferAllocator allocator;
     // Arrow updates allocator accounting after onPreAllocation returns.
     private int evaluationsInFlight;
     // Recorded bytes Spark did not grant and no release has repaid yet. See the class comment.
     private long shortfall;
     private boolean completed;
-    private boolean closed;
+    // Set once the task has completed and nothing is in flight; see closeIfIdle.
+    private boolean retired;
     private boolean completionListenerRegistered;
 
     private TaskState(TaskContext taskContext, TaskMemoryManager taskMemoryManager) {
@@ -529,6 +543,7 @@ public class CometUdfBridge {
                 + "mode is on-heap and Arrow buffers are off-heap",
             taskAttemptId);
       }
+      this.listener = new TaskAllocationListener(this);
     }
 
     private void ensureCompletionListenerRegistered() {
@@ -548,16 +563,10 @@ public class CometUdfBridge {
         throw new IllegalStateException(
             "Cannot allocate JVM UDF memory after task " + taskAttemptId + " completed");
       }
-      if (allocator == null) {
-        allocator =
-            ROOT_ALLOCATOR.newChildAllocator(
-                "comet-udf-task-" + taskAttemptId, this, 0L, Long.MAX_VALUE);
-      }
-      return allocator;
+      return listener.allocator();
     }
 
-    @Override
-    public void onPreAllocation(long size) {
+    private void onPreAllocation(long size) {
       // Spark's executor cleanup also synchronizes on TaskMemoryManager. Keep that cleanup from
       // overtaking an allocation in progress, while leaving this TaskState monitor free for buffer
       // releases that can satisfy a blocking acquire.
@@ -600,23 +609,11 @@ public class CometUdfBridge {
       }
     }
 
-    @Override
-    public boolean onFailedAllocation(long size, AllocationOutcome outcome) {
-      // Arrow gives up on an allocation that onPreAllocation already recorded.
-      release(size);
-      return false;
-    }
-
-    @Override
-    public void onRelease(long size) {
-      release(size);
-      closeIfIdle();
-    }
-
     /**
      * Drops the Spark charge for output buffers whose accounting ownership moved to the root
-     * allocator at export; from that point native execution owns them and {@link #onRelease} will
-     * never fire for their chunks. After completion the consumer was already drained wholesale.
+     * allocator at export; from that point native execution owns them and {@link
+     * TaskAllocationListener#onRelease} will never fire for their chunks. After completion the
+     * consumer was already drained wholesale.
      */
     private void releaseExportedCharge(long size) {
       release(size);
@@ -649,7 +646,6 @@ public class CometUdfBridge {
     private void taskCompleted() {
       synchronized (this) {
         completed = true;
-        instances.clear();
         // Bytes Spark never granted have nothing to return.
         shortfall = 0L;
         if (consumer != null) {
@@ -668,35 +664,151 @@ public class CometUdfBridge {
       closeIfIdle();
     }
 
+    /**
+     * Retires the task once it has completed and no evaluation is in flight, which happens exactly
+     * once, on task completion or as the last in-flight evaluation finishes: closes the UDF
+     * instances, so they release what they kept from the allocator, then forgets the task and
+     * detaches it from the allocator listener, which closes the allocator once it holds no memory.
+     * After this nothing reachable from the bridge or from the allocator refers to the task, so
+     * buffers a UDF never releases leak their bytes but do not keep the task's {@code TaskContext}
+     * or {@code TaskMemoryManager} alive.
+     */
     private void closeIfIdle() {
-      BufferAllocator toClose = null;
-      boolean removeOnly = false;
+      List<CometUDF> udfs;
       synchronized (this) {
-        if (completed
-            && evaluationsInFlight == 0
-            && (allocator == null || allocator.getAllocatedMemory() == 0)
-            && !closed) {
-          closed = true;
-          toClose = allocator;
-          removeOnly = allocator == null;
+        if (!completed || evaluationsInFlight > 0 || retired) {
+          return;
         }
+        retired = true;
+        udfs = new ArrayList<>(instances.values());
+        instances.clear();
       }
-      if (toClose != null) {
-        close(toClose);
-      } else if (removeOnly) {
+      try {
+        for (CometUDF udf : udfs) {
+          closeUdf(udf);
+        }
+      } finally {
         TASKS.remove(taskContext, this);
+        listener.detach();
       }
     }
 
-    private void close(BufferAllocator allocator) {
+    /**
+     * Logs rather than throws a non-fatal failure: this runs in a task completion listener or as an
+     * evaluation exits, so a throw would fail the task or hide the evaluation's own failure.
+     */
+    private void closeUdf(CometUDF udf) {
       try {
-        allocator.close();
+        udf.close();
+      } catch (Throwable t) {
+        if (!NonFatal.apply(t)) {
+          throw t;
+        }
+        LOG.warn(
+            "CometUDF {} for task {} failed to close", udf.getClass().getName(), taskAttemptId, t);
+      }
+    }
+  }
+
+  /**
+   * The task allocator's {@link AllocationListener}. It forwards to the task's {@link TaskState}
+   * until the task retires, then lets go of it. Arrow keeps a child allocator registered with the
+   * root until the allocator closes, which it can only do once it holds no memory, so a buffer that
+   * a {@link CometUDF} never releases keeps the allocator and this listener reachable for the life
+   * of the executor. With the task no longer behind them, what leaks is the buffer's bytes, as it
+   * would be on the root allocator, and not the task's {@code TaskContext} and {@code
+   * TaskMemoryManager} as well. A retired listener refuses allocations, as the task state does once
+   * the task completes, and closes the allocator when its last buffer is released.
+   */
+  private static final class TaskAllocationListener implements AllocationListener {
+    private final long taskAttemptId;
+    // The task's state until it retires, then null.
+    private volatile TaskState state;
+    // Guarded by this.
+    private BufferAllocator allocator;
+    private boolean closed;
+
+    private TaskAllocationListener(TaskState state) {
+      this.taskAttemptId = state.taskAttemptId;
+      this.state = state;
+    }
+
+    private synchronized BufferAllocator allocator() {
+      if (allocator == null) {
+        allocator =
+            ROOT_ALLOCATOR.newChildAllocator(
+                "comet-udf-task-" + taskAttemptId, this, 0L, Long.MAX_VALUE);
+      }
+      return allocator;
+    }
+
+    @Override
+    public void onPreAllocation(long size) {
+      TaskState current = state;
+      if (current == null) {
+        throw new OutOfMemoryException(
+            "Cannot allocate " + size + " JVM UDF bytes after task completion");
+      }
+      current.onPreAllocation(size);
+    }
+
+    @Override
+    public boolean onFailedAllocation(long size, AllocationOutcome outcome) {
+      // Arrow gives up on an allocation that onPreAllocation already recorded.
+      TaskState current = state;
+      if (current != null) {
+        current.release(size);
+      }
+      return false;
+    }
+
+    @Override
+    public void onRelease(long size) {
+      TaskState current = state;
+      if (current != null) {
+        current.release(size);
+      } else {
+        // The task has retired, so this may be the allocator's last buffer. Arrow has already
+        // deducted it, and detach reads the allocator only after clearing the state, so either
+        // this release or detach sees the allocator empty.
+        closeIfEmpty();
+      }
+    }
+
+    /** Lets go of the retired task, and closes the allocator now if it already holds no memory. */
+    private void detach() {
+      state = null;
+      long leaked;
+      synchronized (this) {
+        leaked = allocator == null ? 0L : allocator.getAllocatedMemory();
+      }
+      if (leaked > 0) {
+        LOG.warn(
+            "The JVM UDF allocator of task {} still holds {} bytes after the task's CometUDF "
+                + "instances were closed. It stays open until those buffers are released, and they "
+                + "leak if they never are. A CometUDF must release buffers it keeps from the "
+                + "allocator in close()",
+            taskAttemptId,
+            leaked);
+      }
+      closeIfEmpty();
+    }
+
+    private void closeIfEmpty() {
+      BufferAllocator toClose;
+      synchronized (this) {
+        if (state != null || closed || allocator == null || allocator.getAllocatedMemory() != 0) {
+          return;
+        }
+        closed = true;
+        toClose = allocator;
+      }
+      try {
+        toClose.close();
       } catch (RuntimeException e) {
         // AllocationListener.onRelease must not throw. Preserve the original task outcome and
         // leave an actionable leak report instead.
-        LOG.warn("JVM UDF allocator for task {} failed to close cleanly", taskAttemptId, e);
-      } finally {
-        TASKS.remove(taskContext, this);
+        LOG.warn("JVM UDF allocator {} failed to close cleanly", toClose.getName(), e);
       }
     }
   }

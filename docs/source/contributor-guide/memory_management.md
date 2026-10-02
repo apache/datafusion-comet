@@ -147,6 +147,13 @@ charge buys is that while there is room, Spark's arbitration sees the output, an
 consumers find correspondingly less headroom. The UDF's inputs are imported native buffers and stay
 uncharged on the import allocator.
 
+Once the task has completed and no evaluation is in flight, `CometUdfBridge` calls `CometUDF.close`
+on each of the task's UDF instances, drops the task, and closes the per-task child as soon as it
+holds no memory. A UDF that keeps scratch buffers from the allocator across calls must release them
+in `close`. One that does not leaks their bytes, as it would have on the root allocator, and the
+child stays registered with the root until they are released. The child no longer refers to the
+task by then, so the leak does not keep the task's `TaskContext` or `TaskMemoryManager` alive.
+
 **The JVM shuffle allocator is an ordinary Spark consumer.** `CometShuffleMemoryAllocator.getInstance`
 returns `CometUnifiedShuffleMemoryAllocator`, a Spark `MemoryConsumer` drawing from
 `spark.memory.offHeap.size`, so shuffle pages are arbitrated against Spark's other consumers in the

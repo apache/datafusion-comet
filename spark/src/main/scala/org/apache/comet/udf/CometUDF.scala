@@ -35,7 +35,8 @@ object CometUDF {
  *   - Vector arguments arrive at the row count of the current batch.
  *   - Scalar (literal-folded) arguments arrive as length-1 vectors and must be read at index 0.
  *   - The returned vector's length must match `numRows`.
- *   - Returned vectors and temporary buffers must use `allocator`. With off-heap Tungsten memory
+ *   - Returned vectors and temporary buffers must use `allocator`, and buffers kept past the call
+ *     must be released in `close` (see below). With off-heap Tungsten memory
  *     (`spark.memory.offHeap.enabled`), allocations are charged to the current Spark task while
  *     the UDF holds them; when the returned vector is handed to native execution its accounting
  *     moves with it, so native operators that retain the buffers do not charge the task a second
@@ -52,8 +53,11 @@ object CometUDF {
  *
  * Implementations must have a public no-arg constructor. A fresh instance is created per Spark
  * task attempt per class and reused for every call within that task. Instances may hold per-task
- * state in fields (counters, compiled patterns, scratch buffers); instances are dropped at task
- * completion. Do not hold state that must persist across tasks.
+ * state in fields (counters, compiled patterns, scratch buffers). Do not hold state that must
+ * persist across tasks. Once the task has completed and no `evaluate` call is in flight, the
+ * instance is closed with `close` and dropped. A scratch buffer kept in a field must come from
+ * `allocator` and be released in `close`: the task's allocator closes only once it holds no
+ * memory, so a buffer that is never released leaks for the life of the executor.
  *
  * Native execution may call `evaluate` concurrently from multiple Tokio workers within one task:
  * DataFusion operators can pipeline through spawned Tokio tasks (e.g. `HashJoinExec` overlaps
@@ -63,4 +67,13 @@ object CometUDF {
  */
 trait CometUDF {
   def evaluate(allocator: BufferAllocator, inputs: Array[ValueVector], numRows: Int): ValueVector
+
+  /**
+   * Releases what this instance holds, in particular buffers it kept from the `allocator` passed
+   * to `evaluate`. Called once, after the Spark task that created the instance has completed and
+   * no `evaluate` call is in flight, possibly on a different thread from the last `evaluate`. Not
+   * called for instances created outside a Spark task, which live for the life of the process. A
+   * non-fatal failure is logged and does not fail the task. The default does nothing.
+   */
+  def close(): Unit = {}
 }
