@@ -55,10 +55,10 @@ The JVM-side planner marshals everything iceberg-rust needs — the write schema
 spec as JSON, the data location, the resolved parquet writer settings, the writer mode
 (unpartitioned / fanout / clustered, mirroring `SparkWrite`'s own choice), object-store
 configuration (the table's `FileIO` properties, e.g. REST-vended credentials, merged over
-`fs.s3a.*` settings translated from the session Hadoop configuration — the same translation
-the native scan uses, since `HadoopFileIO` carries its S3 configuration in the Hadoop
-Configuration rather than in `FileIO` properties), and per-task IDs — into the serialized
-native plan. On each task, iceberg-rust writes the Parquet files and
+`fs.s3a.*` settings translated from the effective Hadoop configuration carried by the table's
+`FileIO`, including catalog-specific `hadoop.*` overrides, since `HadoopFileIO` carries its S3
+configuration in the Hadoop Configuration rather than in `FileIO` properties), and per-task IDs —
+into the serialized native plan. On each task, iceberg-rust writes the Parquet files and
 returns its `DataFile` metadata packed as a single in-memory Iceberg V2 data manifest; the JVM
 decodes those bytes with Iceberg's own `ManifestFiles.read`, re-derives each file's manifest
 metrics from the written Parquet footer with Iceberg's `MetricsConfig` logic (so metrics modes,
@@ -207,15 +207,16 @@ could resolve a different storage identity or endpoint than the JVM writer would
 combination falls back; a `GCSFileIO` carries its `gcs.*` settings in `FileIO.properties()`,
 which are forwarded.
 
-For an `s3` or `s3a` data location, the gate also inspects both the effective session Hadoop
+For an `s3` or `s3a` data location, the gate also inspects both the table FileIO's effective Hadoop
 configuration and `table.io().properties()`. These are separate allowlists because Hadoop S3A
 keys are translated before they reach iceberg-rust, while Iceberg `FileIO` keys are forwarded
-directly. Hadoop's built-in `*-default.xml` values are not treated as explicit settings, but
-programmatic settings and values from site XML are. Spark's session-wide S3A vectored-read and
-`downgrade.syncable.exceptions` compatibility settings are also ignored because they cannot alter
-an Iceberg data-file write request. Unknown explicit `fs.s3a.*`, `s3.*`, or `client.*` settings
-therefore fall back at planning time instead of being silently ignored by the native storage
-backend. The exception is a vendor-owned `s3.*` / `client.*` property when
+directly. Hadoop's built-in `core-default.xml` values are not treated as explicit settings, but
+programmatic settings and values from site or custom `*-default.xml` resources are. Spark's
+session-wide S3A vectored-read and `downgrade.syncable.exceptions` compatibility settings are also
+ignored because they cannot alter an Iceberg data-file write request. Unknown explicit
+`fs.s3a.*`, `s3.*`, or `client.*` settings therefore fall back at planning time instead of being
+silently ignored by the native storage backend. The exception is a vendor-owned `s3.*` /
+`client.*` property when
 `s3.comet.credential.provider.class` is configured: the provider receives the unfiltered FileIO
 bag and can consume that property. Iceberg-defined settings that the native storage path cannot
 honour still fall back even with a provider. A per-bucket Hadoop setting counts only for the exact

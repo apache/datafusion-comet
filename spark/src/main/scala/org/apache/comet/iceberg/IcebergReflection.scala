@@ -24,6 +24,7 @@ import java.util.concurrent.ConcurrentHashMap
 
 import scala.util.control.NonFatal
 
+import org.apache.hadoop.conf.Configuration
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
 
@@ -598,6 +599,18 @@ object IcebergReflection extends Logging {
     }
   }
 
+  /** Gets the fully qualified name reported by an Iceberg table. */
+  def getTableName(table: Any): Option[String] = {
+    try {
+      val nameMethod = getMethod(table.getClass, "name")
+      Option(nameMethod.invoke(table)).collect { case name: String => name }
+    } catch {
+      case e: Exception =>
+        logError(s"Iceberg reflection failure: Failed to get table name: ${e.getMessage}")
+        None
+    }
+  }
+
   /**
    * Gets storage properties from an Iceberg table's FileIO.
    *
@@ -623,6 +636,21 @@ object IcebergReflection extends Logging {
       }
     }
   }
+
+  /**
+   * Gets the effective Hadoop configuration carried by an Iceberg table's FileIO.
+   *
+   * SparkCatalog overlays `spark.sql.catalog.<catalog>.hadoop.*` settings onto the configuration
+   * installed in HadoopConfigurable FileIO implementations. Reading the Spark session's Hadoop
+   * configuration directly misses those catalog-specific overrides. FileIO is test-scoped on the
+   * main classpath, so invoke `getConf` reflectively instead of linking HadoopConfigurable.
+   */
+  def getFileIOHadoopConf(table: Any): Option[Configuration] =
+    getFileIO(table).flatMap { fileIO =>
+      findMethodInHierarchy(fileIO.getClass, "getConf").flatMap { confMethod =>
+        Option(confMethod.invoke(fileIO)).collect { case conf: Configuration => conf }
+      }
+    }
 
   /**
    * Gets the schema from an Iceberg table.

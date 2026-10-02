@@ -592,12 +592,18 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
       "s3.vendor.credential-scope" -> secret,
       "client.vendor.tenant-id" -> secret,
       // Standard Iceberg settings remain unsupported even when a provider is configured.
+      "client.factory" -> secret,
+      "client.assume-role.tags.department" -> secret,
       "s3.acl" -> secret,
       "s3.write.tags.foo" -> secret)
     val unsupportedWithCustomProvider =
       CometIcebergNativeWrite.unsupportedS3FileIOProperties(withCustomProvider)
     assert(
-      unsupportedWithCustomProvider == Seq("s3.acl", "s3.write.tags.foo"),
+      unsupportedWithCustomProvider == Seq(
+        "client.assume-role.tags.department",
+        "client.factory",
+        "s3.acl",
+        "s3.write.tags.foo"),
       unsupportedWithCustomProvider)
     assert(
       !unsupportedWithCustomProvider.exists(_.contains(secret)),
@@ -648,7 +654,7 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     }
   }
 
-  test("Hadoop S3A defaults are ignored but site and programmatic settings are effective") {
+  test("Hadoop S3A built-in defaults are ignored but custom resources are effective") {
     def xml(key: String, value: String): java.io.ByteArrayInputStream =
       new java.io.ByteArrayInputStream(s"""<configuration>
            |  <property><name>$key</name><value>$value</value></property>
@@ -656,21 +662,105 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
 
     val key = "fs.s3a.encryption.algorithm"
 
-    val defaultOnly = new Configuration(false)
-    defaultOnly.addResource(xml(key, "SSE-KMS"), "probe-default.xml")
-    assert(defaultOnly.get(key) == "SSE-KMS")
+    val coreDefaultOnly = new Configuration(false)
+    coreDefaultOnly.addResource(xml(key, "SSE-KMS"), "core-default.xml")
+    assert(coreDefaultOnly.get(key) == "SSE-KMS")
     assert(
-      CometIcebergNativeWrite.unsupportedHadoopS3Settings(defaultOnly, Some("target")).isEmpty)
+      CometIcebergNativeWrite
+        .unsupportedHadoopS3Settings(coreDefaultOnly, Some("target"))
+        .isEmpty)
+
+    val customDefault = new Configuration(false)
+    customDefault.addResource(xml(key, "SSE-KMS"), "tenant-default.xml")
+    assert(customDefault.get(key) == "SSE-KMS")
+    assert(
+      CometIcebergNativeWrite.unsupportedHadoopS3Settings(customDefault, Some("target")) == Seq(
+        key))
 
     val site = new Configuration(false)
     site.addResource(xml(key, "SSE-KMS"), "probe-site.xml")
     assert(site.get(key) == "SSE-KMS")
     assert(CometIcebergNativeWrite.unsupportedHadoopS3Settings(site, Some("target")) == Seq(key))
 
-    defaultOnly.set(key, "SSE-S3")
+    coreDefaultOnly.set(key, "SSE-S3")
     assert(
-      CometIcebergNativeWrite.unsupportedHadoopS3Settings(defaultOnly, Some("target")) == Seq(
+      CometIcebergNativeWrite.unsupportedHadoopS3Settings(coreDefaultOnly, Some("target")) == Seq(
         key))
+  }
+
+  test("catalog Hadoop S3A overrides use the FileIO configuration") {
+    withTempIcebergDir { warehouseDir =>
+      val catalogWithOverride = "s3_hadoop_override_cat"
+      val hadoopKey = "fs.s3a.encryption.algorithm"
+      withSQLConf(
+        s"spark.sql.catalog.$catalogWithOverride" -> "org.apache.iceberg.spark.SparkCatalog",
+        s"spark.sql.catalog.$catalogWithOverride.type" -> "hadoop",
+        s"spark.sql.catalog.$catalogWithOverride.warehouse" -> warehouseDir.getAbsolutePath,
+        s"spark.sql.catalog.$catalogWithOverride.hadoop.$hadoopKey" -> "SSE-KMS") {
+        spark.sql(s"""
+          CREATE TABLE $catalogWithOverride.$ns.catalog_hadoop_override (
+            id INT,
+            region STRING,
+            amount DOUBLE
+          ) USING iceberg
+          TBLPROPERTIES (
+            'write.data.path'='s3a://probe-bucket/iceberg/db/catalog_hadoop_override'
+          )
+        """)
+
+        val writeExec =
+          planInsertWriteExec(s"$catalogWithOverride.$ns.catalog_hadoop_override")
+        val sparkWrite = IcebergReflection
+          .getOuterSparkWrite(writeExec.batchWrite)
+          .getOrElse(fail("could not unwrap SparkWrite"))
+        val table = IcebergReflection
+          .getTableFromSparkWrite(sparkWrite)
+          .getOrElse(fail("could not extract Iceberg table"))
+        val fileIOConf = IcebergReflection
+          .getFileIOHadoopConf(table)
+          .getOrElse(fail("FileIO did not expose its Hadoop configuration"))
+        assert(fileIOConf.get(hadoopKey) == "SSE-KMS")
+        assertUnsupportedContains(
+          writeExec,
+          "catalog_hadoop_override",
+          s"unsupported Hadoop S3A setting: $hadoopKey")
+      }
+    }
+  }
+
+  test("supported catalog Hadoop S3A overrides are forwarded to the native write") {
+    withTempIcebergDir { warehouseDir =>
+      val catalogWithOverride = "s3_hadoop_forwarding_cat"
+      val endpoint = "https://s3.example.test"
+      withSQLConf(
+        "fs.s3a.endpoint" -> "https://session.example.test",
+        s"spark.sql.catalog.$catalogWithOverride" -> "org.apache.iceberg.spark.SparkCatalog",
+        s"spark.sql.catalog.$catalogWithOverride.type" -> "hadoop",
+        s"spark.sql.catalog.$catalogWithOverride.warehouse" -> warehouseDir.getAbsolutePath,
+        s"spark.sql.catalog.$catalogWithOverride.hadoop.fs.s3a.endpoint" -> endpoint,
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        spark.sql(s"""
+          CREATE TABLE $catalogWithOverride.$ns.catalog_hadoop_forwarding (
+            id INT,
+            region STRING,
+            amount DOUBLE
+          ) USING iceberg
+          TBLPROPERTIES (
+            'write.data.path'='s3a://probe-bucket/iceberg/db/catalog_hadoop_forwarding'
+          )
+        """)
+
+        val plan = captureWritePlan("catalog_hadoop_forwarding", allowWriteFailure = true) {
+          spark.sql(
+            s"INSERT INTO $catalogWithOverride.$ns.catalog_hadoop_forwarding " +
+              "VALUES (1, 'us', 1.0)")
+        }
+        val cometWrite = findCometWriteExec(plan)
+          .getOrElse(fail(s"expected CometIcebergWriteExec in:\n$plan"))
+        val properties = cometWrite.nativeOp.getIcebergWrite.getCommon.getCatalogPropertiesMap
+        assert(properties.get("s3.endpoint") == endpoint, properties)
+      }
+    }
   }
 
   test("fall-back: unsupported Hadoop S3A setting on an S3 data location") {

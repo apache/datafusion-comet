@@ -168,7 +168,8 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
 
   private val IcebergAwsPropertyClasses = Seq(
     "org.apache.iceberg.aws.s3.S3FileIOProperties",
-    "org.apache.iceberg.aws.AwsClientProperties")
+    "org.apache.iceberg.aws.AwsClientProperties",
+    "org.apache.iceberg.aws.AwsProperties")
 
   // A configured Comet credential provider receives the complete, unfiltered FileIO property
   // bag. It may therefore consume vendor-owned s3.* / client.* keys that neither iceberg-java nor
@@ -267,7 +268,7 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
       table,
       tableProperties ++ writeProperties,
       sparkWrite,
-      op.session.sessionState.newHadoopConf())
+      effectiveHadoopConf(op, table))
     triggers.iterator.map(rule => rule(context)).collectFirst { case Some(reason) => reason }
   }
 
@@ -278,6 +279,52 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
       hadoopConf: Configuration)
 
   private type TriggerRule = TriggerContext => Option[String]
+
+  private def effectiveHadoopConf(op: IcebergWriteExec, table: Any): Configuration = {
+    val sessionConf = op.session.sessionState.newHadoopConf()
+    val catalogOverrides = IcebergReflection
+      .getTableName(table)
+      .flatMap(_.split("\\.", 2).headOption)
+      .map { catalogName =>
+        val prefix = s"spark.sql.catalog.$catalogName.hadoop."
+        op.session.sessionState.conf.getAllConfs.collect {
+          case (key, value) if key.startsWith(prefix) => key.substring(prefix.length) -> value
+        }
+      }
+      .getOrElse(Map.empty)
+
+    IcebergReflection.getFileIOHadoopConf(table) match {
+      case None =>
+        catalogOverrides.foreach { case (key, value) => sessionConf.set(key, value) }
+        sessionConf
+      case Some(fileIOConf) =>
+        // HadoopFileIO stores its configuration in Iceberg's SerializableConfiguration. That
+        // class rebuilds a Configuration(false) by calling set() for every entry, so Hadoop's
+        // property-source metadata is lost and core-default.xml values look programmatic. Keep
+        // the current session configuration as the base so built-in defaults retain their
+        // provenance and write-time settings are not replaced by stale FileIO defaults. Retain
+        // other FileIO-only values, then apply SparkCatalog's explicit catalog hadoop.* overrides
+        // last because Iceberg gives them precedence over the session configuration.
+        val effectiveConf = new Configuration(sessionConf)
+        fileIOConf.iterator().asScala.foreach { entry =>
+          val key = entry.getKey
+          val fileIOValue = fileIOConf.getRaw(key)
+          if (!catalogOverrides.contains(key) &&
+            !hasExplicitSource(sessionConf, key) &&
+            fileIOValue != sessionConf.getRaw(key)) {
+            effectiveConf.set(key, fileIOValue)
+          }
+        }
+        catalogOverrides.foreach { case (key, value) => effectiveConf.set(key, value) }
+        effectiveConf
+    }
+  }
+
+  private def hasExplicitSource(conf: Configuration, key: String): Boolean =
+    Option(conf.getPropertySources(key)) match {
+      case Some(sources) if sources.nonEmpty => !sources.forall(isCoreDefaultResource)
+      case _ => conf.getRaw(key) != null
+    }
 
   private lazy val triggers: Seq[TriggerRule] = Seq(
     requireFormatParquet,
@@ -496,15 +543,19 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
       // Those are library implementation defaults, not settings selected by the user, and
       // treating them as explicit would reject every ordinary S3 write. Preserve settings from
       // site XML and programmatic/Spark sources; exclude a key only when every recorded source is
-      // a Hadoop *-default.xml resource.
+      // Hadoop's built-in core-default.xml resource. A user resource merely named
+      // `tenant-default.xml` is still explicit configuration.
       .filter { key =>
         Option(hadoopConf.getPropertySources(key))
-          .forall(sources => sources.isEmpty || !sources.forall(_.endsWith("-default.xml")))
+          .forall(sources => sources.isEmpty || !sources.forall(isCoreDefaultResource))
       }
       .toSeq
 
     keys.filter(key => isUnsupportedHadoopS3Key(key, targetBucket)).sorted
   }
+
+  private def isCoreDefaultResource(source: String): Boolean =
+    source == "core-default.xml" || source.endsWith("/core-default.xml")
 
   /**
    * Bucket of `fs.s3a.bucket.<bucket>.<suffix>` when `<suffix>` is exactly one supported S3A
@@ -923,9 +974,10 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     // Configuration instead (fs.s3a.* credentials, custom endpoint, path-style access), which
     // the JVM writer would honour but iceberg-rust would never see. Mirror the scan side
     // (`CometScanRule`): extract the object-store options for the data location from the
-    // session Hadoop configuration, translate them to the s3.* keys iceberg-rust consumes, and
-    // let FileIO/vended properties win on conflict.
-    val writeHadoopConf = op.session.sessionState.newHadoopConf()
+    // effective FileIO Hadoop configuration, translate them to the s3.* keys iceberg-rust
+    // consumes, and let FileIO/vended properties win on conflict. The FileIO configuration
+    // includes SparkCatalog's catalog-specific `hadoop.*` overrides.
+    val writeHadoopConf = effectiveHadoopConf(op, table)
     val dataUri = new java.net.URI(dataLocation)
     // Promote the data bucket's per-bucket `fs.s3a.bucket.<b>.*` settings to global, mirroring the
     // scan path: iceberg-rust's pinned S3 parser reads only global `s3.*`. Only an S3-family data

@@ -175,8 +175,8 @@ on the driver. Almost all of it is the per-write `IcebergWriteCommon`:
   `IcebergWriteProtoTranslation`
 - the sort order id, which the native side ignores and the JVM stamps onto the files afterwards
 - `catalog_properties` for the native `FileIO`: the table's `FileIO.properties()` merged over the
-  `fs.s3a.*` settings translated from the Hadoop configuration, the same translation the native
-  scan uses
+  `fs.s3a.*` settings translated from the effective Hadoop configuration carried by the table's
+  `FileIO`, including SparkCatalog's catalog-specific `hadoop.*` overrides
 
 The per-task `partition_id` and `task_attempt_id` are stamped onto a copy of the proto inside the
 task closure in `CometIcebergWriteExec.doExecuteColumnar`. The native side refuses to run without
@@ -254,19 +254,20 @@ When a Comet credential provider is configured, vendor-owned `s3.*` / `client.*`
 part of Iceberg's own S3 property vocabulary are preserved because the provider receives and may
 consume the unfiltered FileIO bag. Iceberg-defined properties remain subject to the storage
 allow-list, so configuring a provider does not make unsupported ACL, tag, storage-class, or other
-write settings eligible. That vocabulary is read from `S3FileIOProperties` and
-`AwsClientProperties`. Those classes link the AWS SDK, which HadoopFileIO does not always provide.
+write settings eligible. That vocabulary is read from `S3FileIOProperties`,
+`AwsClientProperties`, and `AwsProperties`. Those classes link the AWS SDK, which HadoopFileIO does
+not always provide.
 If loading them fails with a linkage or class-not-found error, every non-allow-listed `s3.*` /
 `client.*` key falls back and planning continues; an empty vocabulary would admit `s3.acl`.
 Per-bucket `fs.s3a.bucket.<bucket>.*` keys are split into a complete bucket name and property
 suffix. `fs.s3a.bucket.target.other.endpoint` belongs to bucket `target.other`, so it does not
 make a write to `target` ineligible.
-The Hadoop check excludes keys whose only source is a built-in `*-default.xml`, while retaining
-programmatic and site-XML settings. It also ignores Spark's session-wide S3A vectored-read and
-`downgrade.syncable.exceptions` settings, which cannot affect a data-file write request. Keep
-those allowlists aligned when adding storage support. Reaching `FileIOBuilder.with_prop` is not
-proof of support: the builder accepts unknown properties and the backend ignores them. A fallback
-reason must contain property names only, never values.
+The Hadoop check excludes keys whose only source is Hadoop's built-in `core-default.xml`, while
+retaining programmatic, site-XML, and custom `*-default.xml` settings. It also ignores Spark's
+session-wide S3A vectored-read and `downgrade.syncable.exceptions` settings, which cannot affect a
+data-file write request. Keep those allowlists aligned when adding storage support. Reaching
+`FileIOBuilder.with_prop` is not proof of support: the builder accepts unknown properties and the
+backend ignores them. A fallback reason must contain property names only, never values.
 
 ### Native to JVM: the task payload
 
