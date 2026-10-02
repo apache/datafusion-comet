@@ -101,7 +101,7 @@ object CometConf extends ShimCometConf {
     .createWithDefault(true)
 
   val COMET_NATIVE_PARQUET_WRITE_ENABLED: ConfigEntry[Boolean] =
-    conf("spark.comet.parquet.write.enabled")
+    conf("spark.comet.write.parquet.enabled")
       .category(CATEGORY_TESTING)
       .doc(
         "Whether to enable native Parquet write through Comet. When enabled, " +
@@ -132,7 +132,7 @@ object CometConf extends ShimCometConf {
       .createWithDefault(false)
 
   val COMET_ICEBERG_NATIVE_WRITE_ENABLED: ConfigEntry[Boolean] =
-    conf("spark.comet.iceberg.write.enabled")
+    conf("spark.comet.write.iceberg.enabled")
       .category(CATEGORY_TESTING)
       .doc(
         "Whether to delegate the executor-side Parquet write to Comet's native (iceberg-rust) " +
@@ -235,6 +235,15 @@ object CometConf extends ShimCometConf {
     createExecEnabledConfig("broadcastNestedLoopJoin", defaultValue = true)
   val COMET_EXEC_SORT_MERGE_JOIN_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("sortMergeJoin", defaultValue = true)
+  val COMET_EXEC_EXISTENCE_JOIN_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.exec.existenceJoin.enabled")
+      .category(CATEGORY_ENABLE_EXEC)
+      .doc(
+        "Whether to enable native ExistenceJoin, produced when EXISTS / NOT EXISTS / IN is " +
+          "combined with another predicate via OR. Sort-merge joins, residual (non-equi) join " +
+          "conditions, computed (non-column) join keys, and NOT IN fall back to Spark.")
+      .booleanConf
+      .createWithDefault(true)
   val COMET_EXEC_AGGREGATE_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("aggregate", defaultValue = true)
   val COMET_EXEC_COLLECT_LIMIT_ENABLED: ConfigEntry[Boolean] =
