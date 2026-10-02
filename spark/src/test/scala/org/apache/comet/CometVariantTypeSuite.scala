@@ -102,24 +102,26 @@ class CometVariantTypeSuite extends AnyFunSuite {
       val whole = StructType(Seq(child))
       assert(Utils.isWholeVariantStruct(whole))
       val arrowVariant = variantField(Some("arrow.parquet.variant"))
-      val arrowMetadata = arrowVariant.getMetadata.asScala.toMap +
-        ("__VARIANT_METADATA_KEY" -> request)
-      val arrowChild = new Field(
-        "0",
-        new FieldType(true, arrowVariant.getType, null, arrowMetadata.asJava),
-        arrowVariant.getChildren)
-      val arrowWhole =
-        new Field("v", FieldType.nullable(ArrowType.Struct.INSTANCE), Seq(arrowChild).asJava)
+      val arrowChild = new Field("0", arrowVariant.getFieldType, arrowVariant.getChildren)
+      val arrowWhole = new Field(
+        "v",
+        new FieldType(
+          true,
+          ArrowType.Struct.INSTANCE,
+          null,
+          Collections.singletonMap("comet.variant.full_value", "true")),
+        Seq(arrowChild).asJava)
       assert(Utils.fromArrowField(arrowWhole) == whole)
+      val unmarkedWhole =
+        new Field("v", FieldType.nullable(ArrowType.Struct.INSTANCE), Seq(arrowChild).asJava)
+      assert(!Utils.isWholeVariantStruct(Utils.fromArrowField(unmarkedWhole)))
       val serialized = QueryPlanSerde
         .serializeDataType(whole)
         .get
         .getTypeInfo
         .getStruct
-        .getFieldMetadata(0)
-        .getMetadataMap
-        .get("__VARIANT_METADATA_KEY")
-      assert(Metadata.fromJson(serialized) == Metadata.fromJson(request))
+      assert(serialized.getFullVariantRequest)
+      assert(serialized.getFieldMetadataCount == 0)
       assert(!Utils.isWholeVariantStruct(StructType(Seq(child.copy(metadata = Metadata.empty)))))
       assert(!Utils.isWholeVariantStruct(StructType(Seq(child.copy(name = "1")))))
       assert(!Utils.isWholeVariantStruct(StructType(Seq(child, child.copy(name = "1")))))
@@ -130,7 +132,15 @@ class CometVariantTypeSuite extends AnyFunSuite {
           request.replace("UTC", "America/Los_Angeles"),
           "{}")) {
         val other = Metadata.fromJson(s"""{"__VARIANT_METADATA_KEY":$changed}""")
-        assert(!Utils.isWholeVariantStruct(StructType(Seq(child.copy(metadata = other)))))
+        val unsupported = StructType(Seq(child.copy(metadata = other)))
+        assert(!Utils.isWholeVariantStruct(unsupported))
+        assert(
+          !QueryPlanSerde
+            .serializeDataType(unsupported)
+            .get
+            .getTypeInfo
+            .getStruct
+            .getFullVariantRequest)
       }
     }
   }

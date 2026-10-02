@@ -23,7 +23,7 @@ import java.nio.ByteBuffer
 import java.nio.charset.{CharacterCodingException, CodingErrorAction, StandardCharsets}
 
 import org.apache.spark.sql.catalyst.expressions.aggregate.Mode
-import org.apache.spark.sql.types.{DataType, StructField, StructType}
+import org.apache.spark.sql.types.{DataType, Metadata, StructType}
 import org.apache.spark.unsafe.types.UTF8String
 
 trait CometTypeShim {
@@ -45,7 +45,7 @@ trait CometTypeShim {
 
   def isWholeVariantStruct(dt: DataType): Boolean = false
 
-  def variantRequestMetadata(field: StructField): Option[(String, String)] = None
+  def wholeVariantRequestMetadata: Metadata = Metadata.empty
 
   // Spark 4 feature; VariantType doesn't exist in Spark 3.x.
   def isVariantType(dt: DataType): Boolean = false

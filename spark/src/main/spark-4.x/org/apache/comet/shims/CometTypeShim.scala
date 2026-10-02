@@ -23,7 +23,7 @@ import scala.util.Try
 
 import org.apache.spark.sql.catalyst.expressions.aggregate.Mode
 import org.apache.spark.sql.execution.datasources.{RequestedVariantField, VariantMetadata}
-import org.apache.spark.sql.types.{ArrayType, DataType, MapType, StringType, StructField, StructType, VariantType}
+import org.apache.spark.sql.types.{ArrayType, DataType, MapType, Metadata, StringType, StructType, VariantType}
 import org.apache.spark.unsafe.types.UTF8String
 
 trait CometTypeShim {
@@ -68,12 +68,7 @@ trait CometTypeShim {
     case _ => false
   }
 
-  def variantRequestMetadata(field: StructField): Option[(String, String)] =
-    if (field.metadata.contains(VariantMetadata.METADATA_KEY)) {
-      Try(
-        VariantMetadata.METADATA_KEY ->
-          field.metadata.getMetadata(VariantMetadata.METADATA_KEY).json).toOption
-    } else None
+  def wholeVariantRequestMetadata: Metadata = RequestedVariantField.fullVariant.path.toMetadata
 
   // Outside direct Parquet projection, Comet has no native execution path for Spark 4's
   // `VariantType`. Serdes call this to route casts/expressions touching the type back to Spark

@@ -35,6 +35,9 @@ use parquet::{arrow::PARQUET_FIELD_ID_META_KEY, variant::VariantType};
 use prost::Message;
 use std::{io::Cursor, sync::Arc};
 
+/// Carries the validated whole-value request through Arrow FFI back to Spark.
+pub(crate) const WHOLE_VARIANT_REQUEST_META_KEY: &str = "comet.variant.full_value";
+
 /// Deserialize bytes to protobuf type of expression
 pub fn deserialize_expr(buf: &[u8]) -> Result<spark_expression::Expr, ExpressionError> {
     match spark_expression::Expr::decode(&mut Cursor::new(buf)) {
@@ -181,7 +184,7 @@ pub fn to_arrow_datatype(dt_value: &DataType) -> ArrowDataType {
                             &info.field_datatypes[idx],
                             info.field_nullable[idx],
                         );
-                        // Attach Spark field IDs and Variant request metadata when present.
+                        // Attach Spark field IDs when present.
                         // field_metadata is parallel to field_names; either empty or full length.
                         if let Some(meta) = info.field_metadata.get(idx) {
                             if !meta.metadata.is_empty() {
@@ -206,12 +209,23 @@ pub(crate) fn to_arrow_field(
     data_type: &DataType,
     nullable: bool,
 ) -> Field {
-    let field = Field::new(name, to_arrow_datatype(data_type), nullable);
+    let mut field = Field::new(name, to_arrow_datatype(data_type), nullable);
     if DataTypeId::try_from(data_type.type_id).unwrap() == DataTypeId::Variant {
-        field.with_extension_type(VariantType)
-    } else {
-        field
+        field = field.with_extension_type(VariantType);
     }
+    if let Some(DatatypeStruct::Struct(info)) = data_type
+        .type_info
+        .as_ref()
+        .and_then(|info| info.datatype_struct.as_ref())
+    {
+        if info.full_variant_request {
+            field.metadata_mut().insert(
+                WHOLE_VARIANT_REQUEST_META_KEY.to_string(),
+                "true".to_string(),
+            );
+        }
+    }
+    field
 }
 
 /// Attach a Parquet field ID without changing synthetic fields when Catalyst did not supply one.
@@ -229,7 +243,9 @@ fn with_parquet_field_id(field: Field, field_id: Option<i32>) -> Field {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use datafusion_comet_proto::spark_expression::data_type::{DataTypeInfo, ListInfo, MapInfo};
+    use datafusion_comet_proto::spark_expression::data_type::{
+        DataTypeInfo, FieldMetadata, ListInfo, MapInfo, StructInfo,
+    };
 
     fn primitive_type(type_id: DataTypeId) -> DataType {
         DataType {
@@ -378,5 +394,46 @@ mod tests {
             element.metadata().get(PARQUET_FIELD_ID_META_KEY),
             Some(&"7".to_string())
         );
+    }
+
+    #[test]
+    fn full_variant_request_preserves_identity_and_field_ids() {
+        let mut info = StructInfo {
+            field_names: vec!["0".to_string()],
+            field_datatypes: vec![primitive_type(DataTypeId::Variant)],
+            field_nullable: vec![true],
+            field_metadata: vec![FieldMetadata {
+                metadata: std::collections::HashMap::from([(
+                    PARQUET_FIELD_ID_META_KEY.to_string(),
+                    "7".to_string(),
+                )]),
+            }],
+            full_variant_request: true,
+        };
+        for full_variant_request in [true, false] {
+            info.full_variant_request = full_variant_request;
+            let datatype = DataType {
+                type_id: DataTypeId::Struct as i32,
+                type_info: Some(Box::new(DataTypeInfo {
+                    datatype_struct: Some(DatatypeStruct::Struct(info.clone())),
+                })),
+            };
+            let field = to_arrow_field("v", &datatype, true);
+            let ArrowDataType::Struct(fields) = field.data_type() else {
+                panic!("expected a struct data type");
+            };
+            assert!(fields[0].has_valid_extension_type::<VariantType>());
+            assert_eq!(
+                fields[0].metadata().get(PARQUET_FIELD_ID_META_KEY),
+                Some(&"7".to_string())
+            );
+            assert_eq!(
+                field
+                    .metadata()
+                    .get(WHOLE_VARIANT_REQUEST_META_KEY)
+                    .map(|value| value.as_str()),
+                full_variant_request.then_some("true")
+            );
+        }
     }
 }

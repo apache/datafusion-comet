@@ -22,7 +22,7 @@ use arrow::{
     },
     buffer::OffsetBuffer,
     compute::{cast, cast_with_options},
-    datatypes::{DataType, FieldRef, TimeUnit, DECIMAL128_MAX_PRECISION},
+    datatypes::{DataType, Field, FieldRef, TimeUnit, DECIMAL128_MAX_PRECISION},
     error::ArrowError,
 };
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
@@ -40,7 +40,7 @@ use std::{
 
 pub(super) fn normalize_variant_array(
     array: &ArrayRef,
-    target_field: &FieldRef,
+    target_field: &Field,
 ) -> DataFusionResult<ArrayRef> {
     let DataType::Struct(fields) = target_field.data_type() else {
         return Err(DataFusionError::Execution(

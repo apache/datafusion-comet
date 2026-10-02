@@ -50,7 +50,7 @@ import org.apache.comet.vector.CometVector
 
 object Utils extends CometTypeShim with Logging {
   private val VariantExtensionName = "arrow.parquet.variant"
-  private val VariantRequestMetadataKey = "__VARIANT_METADATA_KEY"
+  private val WholeVariantRequestMetadataKey = "comet.variant.full_value"
 
   def getConfPath(confFileName: String): String = {
     sys.env
@@ -90,16 +90,16 @@ object Utils extends CometTypeShim with Logging {
           .getOrElse {
             val fields = field.getChildren().asScala.map { child =>
               val dt = fromArrowField(child)
-              val metadata = Option(child.getMetadata)
-                .flatMap(m => Option(m.get(VariantRequestMetadataKey)))
-                .map(json =>
-                  new MetadataBuilder()
-                    .putMetadata(VariantRequestMetadataKey, Metadata.fromJson(json))
-                    .build())
-                .getOrElse(Metadata.empty)
-              StructField(child.getName, dt, child.isNullable, metadata)
+              StructField(child.getName, dt, child.isNullable)
             }
-            StructType(fields.toSeq)
+            val wholeVariantRequest = Option(field.getMetadata)
+              .exists(_.get(WholeVariantRequestMetadataKey) == "true")
+            if (wholeVariantRequest && fields.length == 1 && fields.head.name == "0" &&
+              isVariantType(fields.head.dataType)) {
+              StructType(Seq(fields.head.copy(metadata = wholeVariantRequestMetadata)))
+            } else {
+              StructType(fields.toSeq)
+            }
           }
       case arrowType => fromArrowType(arrowType)
     }

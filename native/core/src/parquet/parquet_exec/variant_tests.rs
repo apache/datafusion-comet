@@ -196,22 +196,20 @@ async fn full_value_variant_request_reads_canonical_and_shredded_parquet() {
         &DataType::Struct(Fields::from(vec![Field::new("a", DataType::Int64, true)])),
     )
     .unwrap();
-    let mut child = required_variant_schema()
+    let child = required_variant_schema()
         .field(0)
         .clone()
         .with_name("0")
         .with_nullable(true);
-    let mut metadata = child.metadata().clone();
-    metadata.insert(
-        "__VARIANT_METADATA_KEY".to_string(),
-        r#"{"path":"$","failOnError":true,"timeZoneId":"UTC"}"#.to_string(),
-    );
-    child = child.with_metadata(metadata);
     let required = Arc::new(Schema::new(vec![Field::new(
         "v",
         DataType::Struct(Fields::from(vec![child])),
         true,
-    )]));
+    )
+    .with_metadata(std::collections::HashMap::from([(
+        crate::execution::serde::WHOLE_VARIANT_REQUEST_META_KEY.to_string(),
+        "true".to_string(),
+    )]))]));
 
     for input in [canonical.inner(), shredded.inner()] {
         let schema = Arc::new(Schema::new(vec![Field::new(
@@ -229,6 +227,10 @@ async fn full_value_variant_request_reads_canonical_and_shredded_parquet() {
 
         let batch = scan_variant_batch(file.path().to_path_buf(), Arc::clone(&required)).await;
         assert_eq!(batch.column(0).data_type(), required.field(0).data_type());
+        assert_eq!(
+            batch.schema().field(0).metadata(),
+            required.field(0).metadata()
+        );
         let wrapped = batch
             .column(0)
             .as_any()

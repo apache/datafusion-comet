@@ -764,20 +764,19 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
         struct.addAllFieldNames(fieldNames)
         struct.addAllFieldDatatypes(fieldDatatypes.map(_.get).asJava)
         struct.addAllFieldNullable(fieldNullable)
+        struct.setFullVariantRequest(isWholeVariantStruct(s))
 
         val fieldIds = s.fields.map { f =>
           if (includeFieldIds && ParquetUtils.hasFieldId(f)) Some(ParquetUtils.getFieldId(f))
           else None
         }
-        val variantMetadata = s.fields.map(variantRequestMetadata)
-        if (fieldIds.exists(_.isDefined) || variantMetadata.exists(_.isDefined)) {
+        if (fieldIds.exists(_.isDefined)) {
           // Keep metadata entries aligned with field_names, including empty slots.
-          fieldIds.zip(variantMetadata).foreach { case (idOpt, variantMeta) =>
+          fieldIds.foreach { idOpt =>
             val metaBuilder = Types.DataType.FieldMetadata.newBuilder()
             idOpt.foreach { id =>
               metaBuilder.putMetadata(CometParquetUtils.PARQUET_FIELD_ID_META_KEY, id.toString)
             }
-            variantMeta.foreach { case (key, value) => metaBuilder.putMetadata(key, value) }
             struct.addFieldMetadata(metaBuilder.build())
           }
         }
