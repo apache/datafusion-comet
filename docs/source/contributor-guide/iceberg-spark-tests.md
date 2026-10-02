@@ -51,7 +51,8 @@ Here is an overview of the changes that the diffs make to Iceberg:
 [#5259]: https://github.com/apache/datafusion-comet/issues/5259
 [apache/iceberg#15674]: https://github.com/apache/iceberg/pull/15674
 
-`dev/local-ci.sh` runs all of the steps below the way CI runs them:
+`dev/local-ci.sh` performs the preparation below and runs the same test targets. It runs core
+tests in shards, but runs extensions unsharded, unlike CI's four extensions workers:
 
 ```shell
 dev/local-ci.sh iceberg              # every target the workflow runs
@@ -96,6 +97,25 @@ The three Gradle targets tested in CI are:
 | `iceberg-spark-<ver>:test`                    | Core read/write paths (Parquet, Avro, ORC, vectorized), scan operations, filtering, bloom filters, runtime filtering, deletion handling, structured streaming, DDL/DML (create/alter/drop, writes, deletes), filter and aggregate pushdown, actions (snapshot expiration, file rewriting, orphan cleanup, table migration), serialization, and data format conversions. |
 | `iceberg-spark-extensions-<ver>:test`         | SQL extensions: stored procedures (migrate, snapshot, cherrypick, rollback, rewrite-data-files, rewrite-manifests, expire-snapshots, remove-orphan-files, etc.), row-level operations (copy-on-write and merge-on-read update/delete/merge), DDL extensions (branches, tags, alter schema, partition fields), changelog tables/views, metadata tables, and views.       |
 | `iceberg-spark-runtime-<ver>:integrationTest` | A single smoke test (`SmokeTest.java`) that validates the shaded runtime JAR. The `spark-runtime` module has no main source — it packages Iceberg and all dependencies into a shaded uber-JAR. The smoke test exercises basic create, insert, merge, query, partition field, and sort order operations to confirm the shaded JAR works end-to-end.                      |
+
+### Reproducing an extensions shard
+
+The local runner's `extensions` target runs the full extensions suite once. To reproduce a CI
+extensions shard instead, install Comet and patch the matching Iceberg tree as above, then run
+Gradle directly. For Iceberg 1.11.0 with Spark 4.1 and Scala 2.13:
+
+```shell
+ENABLE_COMET=true ENABLE_COMET_ONHEAP=true ./gradlew \
+  -DsparkVersions=4.1 -DscalaVersion=2.13 -DflinkVersions= -DkafkaVersions= \
+  :iceberg-spark:iceberg-spark-extensions-4.1_2.13:test \
+  --init-script ../datafusion-comet/dev/ci/iceberg-test-shards.gradle \
+  -PcometShardTask=:iceberg-spark:iceberg-spark-extensions-4.1_2.13:test \
+  -PcometShardIndex=1 -PcometShardCount=4 -Pquick=true -x javadoc
+```
+
+Run this command separately with `cometShardIndex=1`, `2`, `3`, and `4` to cover all four shards.
+The init-script path assumes the adjacent checkouts used above. For another supported version,
+use its matching Iceberg diff and Spark/Scala target and properties.
 
 ## Updating Diffs
 
@@ -178,8 +198,9 @@ records one of three writers:
 
 `dev/ci/summarize-iceberg-writes.py` turns these records into a table on the job's summary page. It
 shows the count and share of each writer, the most common fallback reasons, and the Spark write
-operators. Each shard and the extensions job gets its own table. The shard coverage job adds one for
-all shards together, counting only the latest attempt of each shard. A shard whose latest attempt
+operators. Each core and extensions shard gets its own table. Their coverage jobs add a table for
+all shards of that target together, counting only the latest attempt of each shard. A shard whose latest attempt
 recorded no writes is named above the table rather than counted from an earlier attempt. The raw
 records are uploaded with the job's other reports. The summary never fails a job.
-`dev/local-ci.sh iceberg` prints the same summary after each shard and after the extensions target.
+`dev/local-ci.sh iceberg` prints the same summary after each core shard and after its single,
+unsharded extensions target.
