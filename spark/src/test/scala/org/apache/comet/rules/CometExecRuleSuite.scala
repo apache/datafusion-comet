@@ -1379,6 +1379,28 @@ class CometExecRuleSuite extends CometTestBase {
     }
   }
 
+  test("CometExecRule should not split distinct collect_list aggregate (Spark final)") {
+    withTempView("test_data") {
+      createTestDataFrame.createOrReplaceTempView("test_data")
+
+      val sparkPlan =
+        createSparkPlan(spark, "SELECT collect_list(id), COUNT(DISTINCT name) FROM test_data")
+
+      assert(countOperators(sparkPlan, classOf[ObjectHashAggregateExec]) > 1)
+
+      withSQLConf(
+        CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> "false",
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        val transformedPlan = applyCometExecRule(sparkPlan)
+
+        // A native PartialMerge can decode a Spark partial's collect_list buffer, so a Spark
+        // partial alone does not keep the merge stages above it in Spark. They must be disabled
+        // too, or their native list state would reach the Spark final.
+        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 0)
+      }
+    }
+  }
+
   test(
     "CometExecRule should not split distinct aggregate with incompatible buffer (Spark part)") {
     withTempView("test_data") {

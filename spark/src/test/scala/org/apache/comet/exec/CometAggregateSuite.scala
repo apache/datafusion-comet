@@ -371,6 +371,25 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("collect_list merge stages stay in Spark when a distinct SUM keeps the upper stages") {
+    // A grouped SUM at maximum decimal precision keeps the upper two stages of the distinct
+    // rewrite in Spark. The collect_list PartialMerge below them must stay in Spark as well:
+    // a native one would hand native list state to a Spark consumer that reads Spark's
+    // serialized buffer.
+    val df = Seq((1, "1.50", "a"), (1, "2.25", "b"), (1, "1.50", "c"), (2, "3.00", "d"))
+      .toDF("k", "d", "v")
+      .selectExpr("k", "CAST(d AS DECIMAL(30, 2)) AS d", "v")
+    withParquetTable(df, "t_sum_distinct_collect") {
+      val (_, cometPlan) = checkSparkAnswerAndFallbackReason(
+        "SELECT k, sum(DISTINCT d), sort_array(collect_list(v)) " +
+          "FROM t_sum_distinct_collect GROUP BY k",
+        "Partial-merge aggregate disabled")
+      assert(
+        collect(cometPlan) { case agg: CometHashAggregateExec => agg }.isEmpty,
+        s"Expected every aggregate stage to stay in Spark; plan:\n$cometPlan")
+    }
+  }
+
   test("min/max floating point with negative zero") {
     val r = new Random(42)
     val schema = StructType(

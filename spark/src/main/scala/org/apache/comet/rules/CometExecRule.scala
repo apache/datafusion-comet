@@ -72,9 +72,10 @@ object CometExecRule {
   }
 
   /**
-   * Tag applied to Partial-mode aggregate operators that must NOT be converted to Comet because a
-   * corresponding buffer-consuming aggregate cannot be converted, and the aggregate functions
-   * have incompatible intermediate buffer formats between Spark and Comet.
+   * Tag applied to Partial-mode aggregate operators, and to the PartialMerge stages above them,
+   * that must NOT be converted to Comet because a corresponding buffer-consuming aggregate cannot
+   * be converted, and the aggregate functions have incompatible intermediate buffer formats
+   * between Spark and Comet.
    */
   val COMET_UNSAFE_PARTIAL: TreeNodeTag[String] =
     TreeNodeTag[String]("comet.unsafePartialAgg")
@@ -1166,8 +1167,8 @@ case class CometExecRule(session: SparkSession)
 
   /**
    * Walk the plan to find buffer-consuming aggregates that cannot be converted to Comet. If the
-   * aggregate functions have incompatible intermediate buffer formats, tag the corresponding
-   * Partial-mode aggregate so it will also be skipped during conversion.
+   * aggregate functions have incompatible intermediate buffer formats, tag the aggregates that
+   * produce those buffers so they will also be skipped during conversion.
    *
    * This prevents the crash described in issue #1389 where a Comet Partial produces intermediate
    * data in a format that the Spark consumer cannot interpret.
@@ -1177,10 +1178,11 @@ case class CometExecRule(session: SparkSession)
       case agg: BaseAggregateExec =>
         // A Final or PartialMerge that consumes an incompatible buffer and cannot itself be
         // converted must not sit above a Comet aggregate that produces that buffer, otherwise
-        // Spark would try to read a Comet-encoded buffer and crash. Tagging the
-        // bottom Partial so it falls back is enough: once it is Spark, the missingCometProducer
-        // guard in CometBaseAggregate.doConvert cascades the fallback up through any intermediate
-        // PartialMerge stages of a distinct-aggregate rewrite. See issues #1389 and #4813.
+        // Spark would try to read a Comet-encoded buffer and crash. Tag every aggregate between
+        // it and the bottom Partial, which doConvert honors in any mode. Tagging only the bottom
+        // Partial is not enough: a native PartialMerge decodes a Spark Partial's collect_list /
+        // collect_set buffer, so the intermediate PartialMerge stages of a distinct-aggregate
+        // rewrite would still convert above a Spark Partial. See issues #1389, #4724 and #4813.
         val modes = agg.aggregateExpressions.map(_.mode).distinct
         val consumesBuffers = modes == Seq(Final) || modes.contains(PartialMerge)
         val consumerMode: AggregateMode =
@@ -1188,16 +1190,23 @@ case class CometExecRule(session: SparkSession)
         if (consumesBuffers &&
           !QueryPlanSerde.allAggsSupportNativePartialToSparkFinal(agg.aggregateExpressions) &&
           !canAggregateBeConverted(agg, consumerMode)) {
-          findPartialAggInPlan(agg.child).foreach { partial =>
-            // Only tag if the Partial would otherwise have been converted. If the Partial itself
-            // cannot be converted (e.g. an incompatible input type or a map-typed grouping key),
-            // there is no buffer-format mismatch to guard against, and tagging would mask the
-            // natural, more specific fallback reason.
-            if (canAggregateBeConverted(partial, Partial)) {
-              val consumer = if (consumerMode == Final) "final" else "partial-merge"
-              partial.setTagValue(
+          val consumer = if (consumerMode == Final) "final" else "partial-merge"
+          findBufferProducersInPlan(agg.child).foreach { producer =>
+            val producerMode: AggregateMode =
+              if (producer.aggregateExpressions.nonEmpty &&
+                producer.aggregateExpressions.forall(_.mode == Partial)) {
+                Partial
+              } else {
+                PartialMerge
+              }
+            // Only tag if the producer would otherwise have been converted. If it cannot be
+            // converted itself (e.g. an incompatible input type or a map-typed grouping key),
+            // tagging would mask the natural, more specific fallback reason.
+            if (canAggregateBeConverted(producer, producerMode)) {
+              val stage = if (producerMode == Partial) "Partial" else "Partial-merge"
+              producer.setTagValue(
                 CometExecRule.COMET_UNSAFE_PARTIAL,
-                s"Partial aggregate disabled: corresponding $consumer aggregate " +
+                s"$stage aggregate disabled: corresponding $consumer aggregate " +
                   "cannot be converted to Comet and intermediate buffer formats are incompatible")
             }
           }
@@ -1305,28 +1314,32 @@ case class CometExecRule(session: SparkSession)
 
   /**
    * Look for the bottom Partial-mode aggregate that feeds into the given plan (the child of a
-   * Final). Walks through exchanges and AQE stages, and continues down through intermediate
-   * aggregate stages whose modes are all Partial / PartialMerge - these are the PartialMerge (and
-   * mixed Partial/PartialMerge) stages that Spark's distinct-aggregate rewrite inserts between
-   * the Partial and the Final. Stops at anything else. Requires `aggregateExpressions.nonEmpty`
-   * so that group-by-only dedup stages are traversed rather than mistaken for the partial.
+   * Final or PartialMerge), and return it after the aggregates passed on the way down. Walks
+   * through exchanges and AQE stages, and continues down through intermediate aggregate stages
+   * whose modes are all Partial / PartialMerge - these are the PartialMerge (and mixed
+   * Partial/PartialMerge) stages that Spark's distinct-aggregate rewrite inserts between the
+   * Partial and the Final. Stops at anything else, returning nothing if no Partial was reached.
+   * Requires `aggregateExpressions.nonEmpty` so that group-by-only dedup stages are traversed
+   * rather than mistaken for the partial.
    */
-  private def findPartialAggInPlan(plan: SparkPlan): Option[BaseAggregateExec] = plan match {
+  private def findBufferProducersInPlan(plan: SparkPlan): Seq[BaseAggregateExec] = plan match {
     case agg: BaseAggregateExec
         if agg.aggregateExpressions.nonEmpty &&
           agg.aggregateExpressions.forall(e => e.mode == Partial) =>
-      Some(agg)
+      Seq(agg)
     case agg: BaseAggregateExec
         if agg.aggregateExpressions.forall(e => e.mode == Partial || e.mode == PartialMerge) =>
       // Intermediate PartialMerge / mixed stage of a distinct-aggregate rewrite, or a group-by
       // only dedup stage; keep walking down towards the bottom Partial.
-      findPartialAggInPlan(agg.child)
-    case a: AQEShuffleReadExec => findPartialAggInPlan(a.child)
-    case s: ShuffleQueryStageExec => findPartialAggInPlan(s.plan)
-    case e: ShuffleExchangeExec => findPartialAggInPlan(e.child)
+      val below = findBufferProducersInPlan(agg.child)
+      if (below.isEmpty) below else agg +: below
+    case a: AQEShuffleReadExec => findBufferProducersInPlan(a.child)
+    case s: ShuffleQueryStageExec => findBufferProducersInPlan(s.plan)
+    case e: ShuffleExchangeExec => findBufferProducersInPlan(e.child)
     case other =>
-      logDebug(s"findPartialAggInPlan: stopping at ${other.nodeName}; not a known passthrough")
-      None
+      logDebug(
+        s"findBufferProducersInPlan: stopping at ${other.nodeName}; not a known passthrough")
+      Seq.empty
   }
 
   /**
