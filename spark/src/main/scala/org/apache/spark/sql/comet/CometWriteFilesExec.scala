@@ -354,7 +354,7 @@ object CometWriteFilesExec extends Logging {
       if (!tracker.isInstanceOf[BasicWriteTaskStatsTracker]) {
         logWarning(
           s"${tracker.getClass.getName} receives row counts but not row contents from Comet's " +
-            "native Parquet writer. Set spark.comet.parquet.write.enabled=false if this tracker " +
+            "native Parquet writer. Set spark.comet.write.parquet.enabled=false if this tracker " +
             "needs to inspect written rows.")
       }
       var i = 0L
