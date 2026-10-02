@@ -28,33 +28,51 @@ use std::sync::Arc;
 mod common;
 use common::{timestamp_micros_array, NULL_RATIOS, ROW_COUNTS};
 
-// Non-UTC session timezone so the benchmark exercises the `array_with_timezone` resolution path
-// (the hot part of `TimestampTruncExpr`), not just the truncation kernel.
-const TZ: &str = "America/Los_Angeles";
+// Cover the default UTC path and non-UTC timezone resolution with identical input shapes.
 const MICROS_PER_DAY: i64 = 86_400_000_000;
+const BASE_MICROS: i64 = 1_704_067_200_123_456; // 2024-01-01T00:00:00.123456Z
 
 fn criterion_benchmark(c: &mut Criterion) {
-    let schema = Arc::new(Schema::new(vec![Field::new(
-        "a",
-        DataType::Timestamp(TimeUnit::Microsecond, Some(TZ.into())),
-        true,
-    )]));
-
     let mut group = c.benchmark_group("timestamp_trunc");
-    for format in ["YEAR", "MONTH", "DAY", "HOUR"] {
-        let expr =
-            TimestampTruncExpr::new(Arc::new(Column::new("a", 0)), lit(format), TZ.to_string());
-        for rows in ROW_COUNTS {
-            for (null_ratio, tag) in NULL_RATIOS {
-                let ts = timestamp_micros_array(rows, null_ratio, Some(TZ), |i| {
-                    (i as i64) * MICROS_PER_DAY
-                });
-                let batch = RecordBatch::try_new(Arc::clone(&schema), vec![ts]).unwrap();
-                group.bench_with_input(
-                    BenchmarkId::from_parameter(format!("{format}/{rows}/{tag}")),
-                    &batch,
-                    |b, batch| b.iter(|| black_box(expr.evaluate(black_box(batch)).unwrap())),
-                );
+    for timezone in ["UTC", "America/Los_Angeles"] {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "a",
+            DataType::Timestamp(TimeUnit::Microsecond, Some(timezone.into())),
+            true,
+        )]));
+        for format in [
+            "YEAR",
+            "QUARTER",
+            "MONTH",
+            "WEEK",
+            "DAY",
+            "HOUR",
+            "MINUTE",
+            "SECOND",
+            "MILLISECOND",
+            "MICROSECOND",
+        ] {
+            let expr = TimestampTruncExpr::new(
+                Arc::new(Column::new("a", 0)),
+                lit(format),
+                timezone.to_string(),
+            );
+            for rows in ROW_COUNTS {
+                for (null_ratio, tag) in NULL_RATIOS.into_iter().chain([(0.875, "dense")]) {
+                    // Keep every row in the modern range, including the largest batch. Vary
+                    // sub-day values so fine-unit truncation does actual work as well.
+                    let ts = timestamp_micros_array(rows, null_ratio, Some(timezone), |i| {
+                        BASE_MICROS
+                            + (i % 366) as i64 * MICROS_PER_DAY
+                            + (i as i64 * 1_234_567).rem_euclid(MICROS_PER_DAY)
+                    });
+                    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![ts]).unwrap();
+                    group.bench_with_input(
+                        BenchmarkId::from_parameter(format!("{timezone}/{format}/{rows}/{tag}")),
+                        &batch,
+                        |b, batch| b.iter(|| black_box(expr.evaluate(black_box(batch)).unwrap())),
+                    );
+                }
             }
         }
     }

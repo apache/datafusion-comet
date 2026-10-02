@@ -17,6 +17,7 @@
 
 -- Dictionary-encoded dates reuse the scalar Date32 path for dictionary values.
 -- ConfigMatrix: parquet.enable.dictionary=false,true
+-- Config: spark.sql.parquet.datetimeRebaseModeInWrite=CORRECTED
 
 statement
 CREATE TABLE test_trunc_date(d date) USING parquet
@@ -41,6 +42,8 @@ INSERT INTO test_trunc_date VALUES
   (date('1969-12-31')),
   (date('1960-02-29')),
   (date('1900-01-01')),
+  (date('1500-06-15')),
+  (date('1678-06-01')),
   -- Valid Spark Date32 outside TimestampNanosecond's range.
   (date('3333-05-17')),
   (NULL)
@@ -70,3 +73,19 @@ SELECT d, trunc(d, NULL) FROM test_trunc_date ORDER BY d
 
 query
 SELECT trunc(NULL, 'YEAR'), trunc(NULL, NULL)
+
+-- Literal arguments exercise the scalar date input branch.
+query
+SELECT
+  trunc(DATE '2024-05-17', 'YEAR'),
+  trunc(DATE '2024-05-17', 'QUARTER'),
+  trunc(DATE '2024-05-17', 'MONTH'),
+  trunc(DATE '2024-05-17', 'WEEK')
+
+-- Literal arguments exercise the scalar date input branch.
+query
+SELECT
+  trunc(DATE '3333-05-17', 'YEAR'),
+  trunc(DATE '3333-05-17', 'QUARTER'),
+  trunc(DATE '3333-05-17', 'MONTH'),
+  trunc(DATE '3333-05-17', 'WEEK')

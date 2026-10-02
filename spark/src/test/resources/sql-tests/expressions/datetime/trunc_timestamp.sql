@@ -17,6 +17,7 @@
 
 -- Keep the wide-range fallback fixture independent of far-future JVM/native timezone rules.
 -- Config: spark.sql.session.timeZone=UTC
+-- Config: spark.sql.parquet.int96RebaseModeInWrite=CORRECTED
 -- Dictionary-encoded timestamps reuse the scalar timestamp path for dictionary values.
 -- ConfigMatrix: parquet.enable.dictionary=false,true
 
@@ -30,6 +31,9 @@ INSERT INTO test_trunc_ts VALUES
   (timestamp('2000-02-29 00:00:00')),
   (timestamp('1900-02-28 00:00:00')),
   (timestamp('1969-12-31 23:59:59.123456')),
+  -- Below the nanosecond lower bound and inside its 370-day truncation margin.
+  (timestamp('1500-06-15 12:34:56.123456')),
+  (timestamp('1678-06-01 12:34:56.123456')),
   -- Valid Spark timestamp outside TimestampNanosecond's range.
   (timestamp('3333-05-17 12:34:56.123456')),
   (NULL)
@@ -76,3 +80,31 @@ SELECT ts, date_trunc(NULL, ts) FROM test_trunc_ts ORDER BY ts
 
 query
 SELECT date_trunc('YEAR', NULL), date_trunc(NULL, NULL)
+
+-- Literal arguments exercise the scalar timestamp input branch.
+query
+SELECT
+  date_trunc('YEAR', TIMESTAMP '2024-05-17 12:34:56.123456'),
+  date_trunc('QUARTER', TIMESTAMP '2024-05-17 12:34:56.123456'),
+  date_trunc('MONTH', TIMESTAMP '2024-05-17 12:34:56.123456'),
+  date_trunc('WEEK', TIMESTAMP '2024-05-17 12:34:56.123456'),
+  date_trunc('DAY', TIMESTAMP '2024-05-17 12:34:56.123456'),
+  date_trunc('HOUR', TIMESTAMP '2024-05-17 12:34:56.123456'),
+  date_trunc('MINUTE', TIMESTAMP '2024-05-17 12:34:56.123456'),
+  date_trunc('SECOND', TIMESTAMP '2024-05-17 12:34:56.123456'),
+  date_trunc('MILLISECOND', TIMESTAMP '2024-05-17 12:34:56.123456'),
+  date_trunc('MICROSECOND', TIMESTAMP '2024-05-17 12:34:56.123456')
+
+-- Literal arguments exercise the scalar timestamp input branch.
+query
+SELECT
+  date_trunc('YEAR', TIMESTAMP '3333-05-17 12:34:56.123456'),
+  date_trunc('QUARTER', TIMESTAMP '3333-05-17 12:34:56.123456'),
+  date_trunc('MONTH', TIMESTAMP '3333-05-17 12:34:56.123456'),
+  date_trunc('WEEK', TIMESTAMP '3333-05-17 12:34:56.123456'),
+  date_trunc('DAY', TIMESTAMP '3333-05-17 12:34:56.123456'),
+  date_trunc('HOUR', TIMESTAMP '3333-05-17 12:34:56.123456'),
+  date_trunc('MINUTE', TIMESTAMP '3333-05-17 12:34:56.123456'),
+  date_trunc('SECOND', TIMESTAMP '3333-05-17 12:34:56.123456'),
+  date_trunc('MILLISECOND', TIMESTAMP '3333-05-17 12:34:56.123456'),
+  date_trunc('MICROSECOND', TIMESTAMP '3333-05-17 12:34:56.123456')

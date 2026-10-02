@@ -886,7 +886,8 @@ fn timestamp_trunc_minute_tz(
 ///
 /// Spark resolves these boundaries with `LocalDate.atStartOfDay`. Unlike
 /// `ZonedDateTime.truncatedTo`, an overlap always selects the earlier instant, independent of
-/// the input timestamp's offset. A midnight in a gap advances by the gap length.
+/// the input timestamp's offset. A midnight in a gap resolves to the transition instant,
+/// the first valid local time after the gap, even when the gap starts before midnight.
 fn timestamp_trunc_coarse_tz(
     array: &TimestampMicrosecondArray,
     format: &str,
@@ -908,20 +909,38 @@ fn timestamp_trunc_coarse_tz(
                 // `LocalDate.atStartOfDay` takes the earlier occurrence in an overlap.
                 LocalResult::Ambiguous(earlier, _) => earlier.timestamp_micros(),
                 LocalResult::None => {
-                    // Java advances a nonexistent local midnight by the gap. Resolving it with
-                    // the offset before the transition yields that same post-gap instant.
-                    let probe = truncated_local - Duration::hours(3);
-                    let pre_gap_offset_secs = match tz.from_local_datetime(&probe) {
-                        LocalResult::Single(resolved) | LocalResult::Ambiguous(resolved, _) => {
-                            resolved.offset().fix().local_minus_utc()
-                        }
-                        LocalResult::None => {
-                            // A timezone gap cannot normally span three hours. Retain the
-                            // existing resolver's conservative fallback for malformed data.
-                            return naive_to_micros(truncated_local);
+                    // atStartOfDay returns the end of the gap, not midnight shifted by its
+                    // length. Find a valid pre-gap instant, extending the usual three-hour
+                    // probe for zones that skipped an entire date (e.g. Pacific/Apia).
+                    let mut probe = truncated_local - Duration::hours(3);
+                    let before_gap = loop {
+                        match tz.from_local_datetime(&probe) {
+                            LocalResult::Single(resolved) | LocalResult::Ambiguous(resolved, _) => {
+                                break resolved;
+                            }
+                            LocalResult::None => probe -= Duration::hours(3),
                         }
                     };
-                    naive_to_micros(truncated_local) - i64::from(pre_gap_offset_secs) * 1_000_000
+                    let pre_gap_offset_secs = before_gap.offset().fix().local_minus_utc();
+                    let mut low = before_gap.timestamp();
+                    let mut high =
+                        truncated_local.and_utc().timestamp() - i64::from(pre_gap_offset_secs);
+                    // TZ offsets and transitions have whole-second precision. The old offset
+                    // holds at low, and has changed by high; find the first changed second.
+                    while high - low > 1 {
+                        let mid = low + (high - low) / 2;
+                        let utc = DateTime::from_timestamp(mid, 0)
+                            .expect("midnight gap probe must be a valid datetime")
+                            .naive_utc();
+                        if tz.offset_from_utc_datetime(&utc).fix().local_minus_utc()
+                            == pre_gap_offset_secs
+                        {
+                            low = mid;
+                        } else {
+                            high = mid;
+                        }
+                    }
+                    high * 1_000_000
                 }
             }
         },
@@ -933,6 +952,19 @@ fn timestamp_trunc_upstream(
     format: &str,
 ) -> Result<TimestampMicrosecondArray, SparkError> {
     let granularity = normalize_timestamp_trunc_format(format)?;
+
+    if matches!(
+        granularity,
+        "hour" | "day" | "week" | "month" | "quarter" | "year"
+    ) && array.timezone().is_some_and(is_utc_timezone)
+    {
+        // UTC local time equals the instant. Removing its label lets DataFusion use arithmetic
+        // for HOUR/DAY (without a nanosecond limit) and integer calendar code for coarse units.
+        // The unlabelled call still applies the coarse-unit range guard and calendar fallback.
+        let input = array.clone().with_timezone_opt(None::<Arc<str>>);
+        let result = timestamp_trunc_upstream(&input, format)?;
+        return Ok(result.with_timezone_opt(array.timezone()));
+    }
 
     if granularity == "minute" {
         if let Some(timezone) = array.timezone().filter(|tz| !is_utc_timezone(tz)) {
@@ -1611,6 +1643,55 @@ mod tests {
     }
 
     #[test]
+    fn test_timestamp_trunc_utc_aliases_and_wide_range() {
+        let input = [
+            Some("1500-06-15T12:34:56.123456Z"),
+            Some("1678-06-01T12:34:56.123456Z"),
+            Some("1969-12-31T23:59:59.123456Z"),
+            Some("3333-05-17T12:34:56.123456Z"),
+            None,
+        ];
+        for timezone in [
+            "UTC", "Etc/UTC", "Etc/GMT", "GMT", "Z", "+00:00", "-00:00", "00:00",
+        ] {
+            for (format, expected) in [
+                (
+                    "HOUR",
+                    [
+                        Some("1500-06-15T12:00:00Z"),
+                        Some("1678-06-01T12:00:00Z"),
+                        Some("1969-12-31T23:00:00Z"),
+                        Some("3333-05-17T12:00:00Z"),
+                        None,
+                    ],
+                ),
+                (
+                    "DAY",
+                    [
+                        Some("1500-06-15T00:00:00Z"),
+                        Some("1678-06-01T00:00:00Z"),
+                        Some("1969-12-31T00:00:00Z"),
+                        Some("3333-05-17T00:00:00Z"),
+                        None,
+                    ],
+                ),
+                (
+                    "YEAR",
+                    [
+                        Some("1500-01-01T00:00:00Z"),
+                        Some("1678-01-01T00:00:00Z"),
+                        Some("1969-01-01T00:00:00Z"),
+                        Some("3333-01-01T00:00:00Z"),
+                        None,
+                    ],
+                ),
+            ] {
+                assert_timestamp_trunc(format, Some(timezone), &input, &expected);
+            }
+        }
+    }
+
+    #[test]
     fn test_timestamp_trunc_wide_range_fallback() {
         let input = [
             Some("2024-05-17T12:34:56.123456Z"),
@@ -1693,6 +1774,42 @@ mod tests {
             ],
             &[Some("2018-11-03T03:00:00Z"), Some("2018-11-04T03:00:00Z")],
         );
+    }
+
+    #[test]
+    fn test_timestamp_trunc_coarse_midnight_gap() {
+        // Toronto's gap starts on the previous date at 23:30 and ends at 00:30.
+        // atStartOfDay selects 00:30, rather than shifting midnight to 01:00.
+        for timezone in [
+            "America/Toronto",
+            "Canada/Eastern",
+            "America/Montreal",
+            "America/Nassau",
+        ] {
+            assert_timestamp_trunc(
+                "WEEK",
+                Some(timezone),
+                &[
+                    Some("1919-04-02T16:00:00Z"),
+                    Some("1919-03-31T04:30:00Z"),
+                    None,
+                ],
+                &[
+                    Some("1919-03-31T04:30:00Z"),
+                    Some("1919-03-31T04:30:00Z"),
+                    None,
+                ],
+            );
+        }
+        // Asuncion's gap starts exactly at midnight, at both a month and quarter boundary.
+        for format in ["MONTH", "QUARTER"] {
+            assert_timestamp_trunc(
+                format,
+                Some("America/Asuncion"),
+                &[Some("2023-10-15T12:00:00Z"), None],
+                &[Some("2023-10-01T04:00:00Z"), None],
+            );
+        }
     }
 
     #[test]
