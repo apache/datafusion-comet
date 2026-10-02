@@ -62,3 +62,22 @@ longer forces a fallback for them: scalar `FLOAT` and `DOUBLE` sort keys, window
 keys, and range partitioning keys all stay native under strict mode. Floating-point values nested
 in arrays, structs, or maps still fall back under strict mode, because their ordering is the raw
 total ordering described above.
+
+`array_min` and `array_max` use Spark-compatible native comparisons in both strict and non-strict
+floating-point modes. Signed zeros compare equal, and all NaN representations compare equal and
+greater than non-NaN values. The original first equal element is retained: for example,
+`array_min(array(0.0D, -0.0D))` returns `0.0`, while reversing those elements returns `-0.0`.
+The same ordering applies recursively to floating-point fields in arrays and structs. These
+expressions do not require Spark's codegen dispatcher for floating-point compatibility.
+
+## `array_remove` and `sort_array`
+
+`array_remove` compares `FLOAT` and `DOUBLE` elements as Spark does: `-0.0` equals `0.0`, and all
+NaN representations are equal, inside nested arrays too. The elements it keeps retain their
+original NaN representations and zero signs.
+
+`sort_array` sorts in Spark's order, in which NaN sorts above every other value and all NaN
+representations tie, and keeps equal elements in their original order. In an array whose elements
+can be null, such as one built from nullable columns, `-0.0` and `0.0` therefore tie. Sorting an
+array whose elements cannot be null in ascending order, Spark's generated code puts `-0.0` before
+`0.0`, and so does Comet. Both expressions run natively in strict floating-point mode.

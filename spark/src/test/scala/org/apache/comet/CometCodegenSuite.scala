@@ -25,11 +25,12 @@ import org.scalatest.exceptions.TestFailedException
 
 import org.apache.arrow.vector._
 import org.apache.spark.{SparkConf, SparkEnv, TaskContext}
-import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.{CometTestBase, Row}
 import org.apache.spark.sql.api.java.UDF1
 import org.apache.spark.sql.catalyst.expressions.{Add, Alias, AttributeReference, BoundReference, Cast, CreateArray, CreateMap, CreateNamedStruct, Expression, Hypot, Literal, MapConcat}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial}
 import org.apache.spark.sql.catalyst.expressions.objects.Invoke
-import org.apache.spark.sql.comet.CometProjectExec
+import org.apache.spark.sql.comet.{CometFilterExec, CometHashAggregateExec, CometProjectExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
@@ -963,6 +964,86 @@ class CometCodegenSuite
         checkSparkAnswerAndOperator(sql("SELECT javaLen(s) FROM t"))
       }
       assertKernelSignaturePresent(Seq(classOf[VarCharVector]), IntegerType)
+    }
+  }
+
+  // Arrow Java ignores ArrowArray.offset on import, so the bridge has to zero a sliced boolean's
+  // offset before handing it over, at the top level and inside a struct.
+  // https://github.com/apache/datafusion-comet/issues/6288
+  private def withSlicedGroups(f: => Unit): Unit = {
+    withTempPath { dir =>
+      spark
+        .range(0, 4000)
+        .selectExpr(
+          "id % 2000 AS k",
+          "id % 2000 % 3 = 0 AS b",
+          "CAST(id % 2000 AS STRING) AS s",
+          "named_struct('x', IF(id % 5 = 0, NULL, id % 2000 % 3 = 0)) AS st")
+        .write
+        .parquet(dir.getCanonicalPath)
+      // The hash aggregate slices its emitted groups into batch-size chunks, so with one
+      // partition every output batch after the first is a slice.
+      withSQLConf(
+        SQLConf.SHUFFLE_PARTITIONS.key -> "1",
+        CometConf.COMET_BATCH_SIZE.key -> "100") {
+        withParquetTable(dir.getCanonicalPath, "g")(f)
+      }
+    }
+  }
+
+  test("boolean ScalaUDF argument sliced by an aggregate keeps its values") {
+    spark.udf.register("flip", (x: Boolean) => !x)
+    withSlicedGroups {
+      assertCodegenRan {
+        checkSparkAnswerAndOperator(
+          sql("SELECT k, flip(b) FROM (SELECT k, b, count(*) FROM g GROUP BY k, b)"))
+      }
+    }
+  }
+
+  test("typed Dataset.filter reads sliced booleans from a native aggregate") {
+    // https://github.com/apache/datafusion-comet/issues/6424
+    import testImplicits._
+    withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      withSlicedGroups {
+        def filtered = spark
+          .table("g")
+          .groupBy("k", "b")
+          .count()
+          .as[(Long, Boolean, Long)]
+          .filter(_._2)
+          .toDF()
+
+        assertCodegenRan {
+          val (_, plan) = checkSparkAnswerAndOperator(filtered)
+          val aggregates = plan.collect { case a: CometHashAggregateExec => a }
+          assert(aggregates.exists(_.modes.contains(Partial)))
+          assert(aggregates.exists(_.modes.contains(Final)))
+          assert(plan.collect { case f: CometFilterExec => f }.nonEmpty)
+          // Check every retained row, since the offset bug both adds and drops rows.
+          checkAnswer(filtered, (0 until 2000 by 3).map(k => Row(k.toLong, true, 2L)))
+        }
+      }
+    }
+  }
+
+  test("dispatched regexp_replace reads a sliced boolean with its own values") {
+    withSlicedGroups {
+      assertCodegenRan {
+        checkSparkAnswerAndOperator(sql("""SELECT k, regexp_replace(IF(b, s, 'zz'), '1', 'y')
+            |FROM (SELECT k, b, s, count(*) FROM g GROUP BY k, b, s)""".stripMargin))
+      }
+    }
+  }
+
+  test("struct ScalaUDF input with a sliced boolean child keeps its values") {
+    spark.udf.register("flip", (x: Boolean) => !x)
+    withSlicedGroups {
+      // `st.x` is dispatched along with the UDF, so the kernel's input is the whole struct.
+      assertCodegenRan {
+        checkSparkAnswerAndOperator(
+          sql("SELECT k, flip(st.x) FROM (SELECT k, st, count(*) FROM g GROUP BY k, st)"))
+      }
     }
   }
 

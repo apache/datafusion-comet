@@ -379,7 +379,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       throw new IllegalStateException(
         s"Iceberg equality delete file '$deletePath' has no equality field IDs")
     }
-    equalityFieldIds.forEach(id => deleteBuilder.addEqualityIds(id))
+    deleteBuilder.addAllEqualityIds(equalityFieldIds)
 
     // Gated on the format, not on the accessors returning a value: Iceberg also sets
     // referencedDataFile on file-scoped Parquet position deletes, where iceberg-rust ignores
@@ -529,7 +529,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                 commonBuilder.addPartitionTypePool(partitionTypeJson)
                 idx
               })
-            taskBuilder.setPartitionSpecIdx(specIdx)
+            val _ = taskBuilder.setPartitionSpecIdx(specIdx)
           } catch {
             case e: Exception =>
               logWarning(s"Failed to serialize partition spec to JSON: ${e.getMessage}")
@@ -589,7 +589,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
               commonBuilder.addPartitionDataPool(partitionDataProto)
               idx
             })
-          taskBuilder.setPartitionDataIdx(partitionDataIdx)
+          val _ = taskBuilder.setPartitionDataIdx(partitionDataIdx)
         } else {
           // Defensive: ContentScanTask.partition() returns an empty struct (never null) for
           // unpartitioned tables in practice. If it is ever null we cannot compute values, so
