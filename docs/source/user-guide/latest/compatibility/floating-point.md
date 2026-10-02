@@ -73,9 +73,12 @@ expressions do not require Spark's codegen dispatcher for floating-point compati
 ## Array distinct and union
 
 `array_distinct` and `array_union` fall back to Spark when their element type contains
-`FLOAT` or `DOUBLE` and the running Spark version predates SPARK-54918. Native execution
-is enabled for Spark 4.0.5+, 4.1.4+, and 4.2+, which normalize signed zeros and NaNs in these
-functions. Spark 3.4 and 3.5 retain the fallback. Other element types remain native.
+`FLOAT` or `DOUBLE`, on every Spark version except 4.2.0. Spark 4.2.0 normalizes signed zeros
+and NaNs in the arguments of these functions before they run (SPARK-54918), so native execution
+returns the same results. Spark 3.4, 3.5, 4.0.0 to 4.0.4, and 4.1.0 to 4.1.3 keep positive and
+negative zero distinct in flat arrays. Spark 4.0.5+, 4.1.4+, and 4.2.1+ normalize while these
+functions evaluate instead (SPARK-59602), which native execution does not match for NaNs or for
+zeros nested in arrays or structs. Other element types remain native.
 
 The check is based on the element type, not the values. It also applies to NULL or empty
 floating-point arrays and columns that never contain negative zero. The entire projection
@@ -89,11 +92,15 @@ projection fallback about 15 times slower than native opt-in (best of five runs)
 The slowdown depends on the workload.
 
 Setting `spark.comet.expression.ArrayDistinct.allowIncompatible=true` or
-`spark.comet.expression.ArrayUnion.allowIncompatible=true` restores native execution on older
+`spark.comet.expression.ArrayUnion.allowIncompatible=true` restores native execution on other
 versions, but signed-zero and NaN results may differ from Spark. Native execution can keep
 NaNs with different signs or payloads distinct. Signed-zero differences also depend on the
 element type: native execution merges positive and negative zero in flat floating-point arrays,
 but can keep them distinct inside nested arrays or structs. Only opt in if these differences
 are acceptable for your data.
 
-A vendor backport that retains an older Spark version number may still fall back.
+The check uses the Spark version number, not the changes a build contains. A build that reports
+any version other than 4.2.0 falls back even if it includes SPARK-54918. A vendor build that
+reports 4.2.0 but includes SPARK-59602 still runs natively; set
+`spark.comet.expression.ArrayDistinct.enabled=false` and
+`spark.comet.expression.ArrayUnion.enabled=false` on such a build.

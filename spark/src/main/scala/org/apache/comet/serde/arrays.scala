@@ -528,22 +528,21 @@ object CometSlice extends CometExpressionSerde[Slice] {
 
 private[comet] object ArraySetSupport {
   val floatingPointReason: String =
-    "Floating-point array elements require Spark with SPARK-54918 " +
-      "(4.0.5+, 4.1.4+, or 4.2+) for matching signed-zero and NaN semantics"
+    "Floating-point elements match Spark's signed-zero and NaN semantics natively only on " +
+      "Spark 4.2.0, whose optimizer normalizes the arguments (SPARK-54918)"
 
-  // A top-level KnownFloatingPointNormalized marker is insufficient: Spark also normalizes
+  // The native kernels match Spark only when the plan has already normalized the arguments, and
+  // only Spark 4.2.0 does that (SPARK-54918). Earlier releases keep flat signed zeros apart.
+  // From 4.0.5, 4.1.4 and 4.2.1, SPARK-59602 normalizes during evaluation instead, which the
+  // native kernels do not match for NaN payloads or nested zeros. A top-level
+  // KnownFloatingPointNormalized marker cannot replace the version check: Spark also normalizes
   // CreateArray, If, CaseWhen, and Coalesce recursively without wrapping the resulting array.
-  def normalizesSignedZero(version: String): Boolean = {
-    Utils.majorMinorPatchVersion(version).exists {
-      case (4, 0, patch) => patch >= 5
-      case (4, 1, patch) => patch >= 4
-      case (major, minor, _) => major > 4 || (major == 4 && minor >= 2)
-    }
-  }
+  def normalizesArgumentsInPlan(version: String): Boolean =
+    Utils.majorMinorPatchVersion(version).contains((4, 2, 0))
 
   def supportLevel(dataType: DataType): SupportLevel = {
     if (SupportLevel.containsType(dataType, classOf[FloatType], classOf[DoubleType]) &&
-      !normalizesSignedZero(SPARK_VERSION)) {
+      !normalizesArgumentsInPlan(SPARK_VERSION)) {
       Incompatible(Some(floatingPointReason))
     } else {
       Compatible()

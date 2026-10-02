@@ -39,18 +39,32 @@ import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOpti
 class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("array set signed-zero Spark patch versions") {
-    Seq("3.4.9", "3.5.10", "4.0.4", "4.1.3").foreach { version =>
-      assert(!ArraySetSupport.normalizesSignedZero(version), version)
+    // Only 4.2.0 normalizes the arguments in the plan. Earlier releases do not normalize them, and
+    // 4.0.5+, 4.1.4+ and 4.2.1+ normalize during evaluation instead (SPARK-59602).
+    Seq(
+      "3.4.3",
+      "3.5.9",
+      "4.0.4",
+      "4.0.5",
+      "4.0.10",
+      "4.1.3",
+      "4.1.4",
+      "4.1.10",
+      "4.2.1",
+      "4.2.1-SNAPSHOT",
+      "4.2.10",
+      "4.3.0",
+      "5.0.0").foreach { version =>
+      assert(!ArraySetSupport.normalizesArgumentsInPlan(version), version)
     }
-    Seq("4.0.5", "4.0.10", "4.1.4", "4.1.10", "4.2.0", "4.2.0-SNAPSHOT", "5.0.0")
-      .foreach { version =>
-        assert(ArraySetSupport.normalizesSignedZero(version), version)
-      }
+    Seq("4.2.0", "4.2.0-SNAPSHOT").foreach { version =>
+      assert(ArraySetSupport.normalizesArgumentsInPlan(version), version)
+    }
   }
 
   test("array set signed-zero support levels") {
     // This test covers element-type detection; the preceding test pins the version boundaries.
-    val fixed = ArraySetSupport.normalizesSignedZero(org.apache.spark.SPARK_VERSION)
+    val fixed = ArraySetSupport.normalizesArgumentsInPlan(org.apache.spark.SPARK_VERSION)
     Seq(FloatType, DoubleType, ArrayType(FloatType), new StructType().add("x", DoubleType))
       .foreach { elementType =>
         val child = AttributeReference("a", ArrayType(elementType))()
@@ -76,7 +90,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
           "array_union" -> s"array($dataType('0.0')), array($dataType('-0.0'))")
           .foreach { case (function, arguments) =>
             val query = s"SELECT $function($arguments)"
-            if (ArraySetSupport.normalizesSignedZero(org.apache.spark.SPARK_VERSION)) {
+            if (ArraySetSupport.normalizesArgumentsInPlan(org.apache.spark.SPARK_VERSION)) {
               checkSparkAnswerAndOperator(query)
             } else {
               checkSparkAnswerAndFallbackReason(query, "SPARK-54918")
@@ -107,12 +121,38 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
             s"array_distinct(array($column, -$column))",
             s"array_union(array($column), array(-$column))").foreach { expression =>
             val query = s"SELECT size($expression) FROM array_set_nan"
-            if (ArraySetSupport.normalizesSignedZero(org.apache.spark.SPARK_VERSION)) {
+            if (ArraySetSupport.normalizesArgumentsInPlan(org.apache.spark.SPARK_VERSION)) {
               checkSparkAnswerAndOperator(query)
             } else {
               checkSparkAnswerAndFallbackReason(query, "SPARK-54918")
             }
           }
+        }
+      }
+    }
+  }
+
+  test("array set nested signed-zero normalization") {
+    withTempDir { dir =>
+      withTempView("array_set_zero") {
+        sql("SELECT float('0.0') AS f, double('0.0') AS d").write.parquet(dir + "/data")
+        spark.read.parquet(dir + "/data").createOrReplaceTempView("array_set_zero")
+        // Spark deduplicates nested -0.0 and 0.0 on every version, while the native kernels only
+        // normalize flat zeros.
+        Seq("f", "d").foreach { column =>
+          Seq(
+            s"array_distinct(array(array($column), array(-$column)))",
+            s"array_distinct(array(named_struct('x', $column), named_struct('x', -$column)))",
+            s"array_union(array(array($column)), array(array(-$column)))",
+            s"array_union(array(named_struct('x', $column)), array(named_struct('x', -$column)))")
+            .foreach { expression =>
+              val query = s"SELECT $expression FROM array_set_zero"
+              if (ArraySetSupport.normalizesArgumentsInPlan(org.apache.spark.SPARK_VERSION)) {
+                checkSparkAnswerAndOperator(query)
+              } else {
+                checkSparkAnswerAndFallbackReason(query, "SPARK-54918")
+              }
+            }
         }
       }
     }

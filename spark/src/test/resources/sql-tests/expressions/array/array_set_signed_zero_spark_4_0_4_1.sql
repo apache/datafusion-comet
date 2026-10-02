@@ -18,7 +18,9 @@
 -- MinSparkVersion: 4.0
 -- MaxSparkVersion: 4.1
 
--- These lines received SPARK-54918 in 4.0.5 and 4.1.4. Accept the runtime-dependent fallback.
+-- 4.0.0-4.0.4 and 4.1.0-4.1.3 keep signed zeros distinct. 4.0.5+ and 4.1.4+ normalize during
+-- evaluation (SPARK-59602), which native distinct/union do not match for NaNs or nested zeros, so
+-- distinct/union fall back on every 4.0 and 4.1 release.
 
 statement
 CREATE TABLE test_array_set_signed_zero_float(a array<float>, b array<float>) USING parquet
@@ -32,16 +34,16 @@ INSERT INTO test_array_set_signed_zero_float VALUES
   (array(float('-0.0')), array(float('-0.0'))),
   (array(float('0.0'), float('-0.0')), array(float('0.0')))
 
-query spark_answer_only
+query expect_fallback(SPARK-54918)
 SELECT array_distinct(array(float('0.0'), float('-0.0'), float('1.0')))
 
-query spark_answer_only
+query expect_fallback(SPARK-54918)
 SELECT array_union(array(float('0.0')), array(float('-0.0')))
 
-query spark_answer_only
+query expect_fallback(SPARK-54918)
 SELECT a, b, array_distinct(a) FROM test_array_set_signed_zero_float
 
-query spark_answer_only
+query expect_fallback(SPARK-54918)
 SELECT a, b, array_union(a, b) FROM test_array_set_signed_zero_float
 
 query
@@ -62,10 +64,10 @@ INSERT INTO test_array_set_signed_zero_double VALUES
   (array(double('-0.0')), array(double('-0.0'))),
   (array(double('0.0'), double('-0.0')), array(double('0.0')))
 
-query spark_answer_only
+query expect_fallback(SPARK-54918)
 SELECT array_distinct(array(double('0.0'), double('-0.0'), double('1.0')))
 
-query spark_answer_only
+query expect_fallback(SPARK-54918)
 SELECT array_union(array(double('0.0')), array(double('-0.0')))
 
 query
@@ -77,10 +79,10 @@ SELECT array_intersect(array(double('-0.0')), array(double('0.0'))),
        array_intersect(array(double('0.0')), array(double('-0.0'))),
        array_intersect(array(double('-0.0')), array(double('-0.0')))
 
-query spark_answer_only
+query expect_fallback(SPARK-54918)
 SELECT a, b, array_distinct(a) FROM test_array_set_signed_zero_double
 
-query spark_answer_only
+query expect_fallback(SPARK-54918)
 SELECT a, b, array_union(a, b) FROM test_array_set_signed_zero_double
 
 query

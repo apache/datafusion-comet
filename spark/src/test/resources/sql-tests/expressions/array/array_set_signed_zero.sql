@@ -17,7 +17,12 @@
 
 -- MinSparkVersion: 4.2
 
--- SPARK-54918 normalizes signed zeros. Require native execution, including except/intersect.
+-- Every 4.2+ release normalizes signed zeros in these functions: 4.2.0 in the plan (SPARK-54918),
+-- later releases during evaluation (SPARK-59602). The native kernels normalize flat zeros too, so
+-- require native execution through the opt-ins. By default distinct/union run natively only on
+-- 4.2.0; CometArrayExpressionSuite covers that choice and the NaN and nested cases.
+-- Config: spark.comet.expression.ArrayDistinct.allowIncompatible=true
+-- Config: spark.comet.expression.ArrayUnion.allowIncompatible=true
 -- Config: spark.comet.expression.ArrayExcept.allowIncompatible=true
 -- Config: spark.comet.expression.ArrayIntersect.allowIncompatible=true
 
