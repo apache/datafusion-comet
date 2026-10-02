@@ -127,7 +127,7 @@ object CometCachedBatchHelper {
 
   /** A payload [[serialize]] wrote, as the cached batch the writer would have stored it in. */
   def cachedBatch(payload: ChunkedByteBuffer, numRows: Int): CachedBatch =
-    CometCachedBatch(numRows, payload.size, InternalRow.empty, payload)
+    CometCachedBatch(numRows, InternalRow.empty, payload)
 
   /**
    * Decode the `selected` columns of a cached batch the way a scan does, into a root the caller
@@ -196,6 +196,20 @@ object CometCachedBatchHelper {
   /** Stored size of each top-level column: the sum of its buffers' on-body lengths. */
   def columnSizes(batch: CachedBatch, cacheSchema: StructType): Seq[Long] =
     columnBufferRanges(batch, cacheSchema).map(_.map(_._2).sum)
+
+  /**
+   * Decoded size of each top-level column: the column read back out of the payload the way a scan
+   * reads it, measured with `getBufferSize`.
+   */
+  def decodedColumnSizes(
+      batch: CachedBatch,
+      cacheSchema: StructType,
+      allocator: BufferAllocator): Seq[Long] =
+    cacheSchema.indices.map { i =>
+      val root = load(batch, cacheSchema, Array(i), allocator)
+      try root.getVector(0).getBufferSize.toLong
+      finally root.close()
+    }
 
   /**
    * Whether any of a column's buffers is actually stored compressed.

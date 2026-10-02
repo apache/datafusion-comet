@@ -91,6 +91,7 @@ class CometExecSuite extends CometTestBase {
     val flags = Seq(
       CometConf.COMET_DEBUG_ENABLED,
       CometConf.COMET_DEBUG_MEMORY_ENABLED,
+      CometConf.COMET_EXEC_AGGREGATE_SKIP_PARTIAL_ENABLED,
       CometConf.COMET_EXPLAIN_NATIVE_ENABLED,
       CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED,
       CometConf.COMET_TRACING_ENABLED)
@@ -3037,7 +3038,7 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("bloom_filter_agg") {
-    assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4142")
+    assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4968")
     val funcId_bloom_filter_agg = new FunctionIdentifier("bloom_filter_agg")
     spark.sessionState.functionRegistry.registerFunction(
       funcId_bloom_filter_agg,
@@ -3450,19 +3451,11 @@ class CometExecSuite extends CometTestBase {
     val df2 =
       (0 until 50).map(i => (i % 7, i % 11, i.toString)).toDF("i", "j", "k").as("df2")
 
-    val BucketedTableTestSpec(
-      bucketSpecLeft,
-      numPartitionsLeft,
-      shuffleLeft,
-      sortLeft,
-      numOutputPartitionsLeft) = bucketedTableTestSpecLeft
+    val BucketedTableTestSpec(bucketSpecLeft, numPartitionsLeft, _, _, _) =
+      bucketedTableTestSpecLeft
 
-    val BucketedTableTestSpec(
-      bucketSpecRight,
-      numPartitionsRight,
-      shuffleRight,
-      sortRight,
-      numOutputPartitionsRight) = bucketedTableTestSpecRight
+    val BucketedTableTestSpec(bucketSpecRight, numPartitionsRight, _, _, _) =
+      bucketedTableTestSpecRight
 
     withTable("bucketed_table1", "bucketed_table2") {
       withBucket(df1.repartition(numPartitionsLeft).write.format("parquet"), bucketSpecLeft)
@@ -3650,7 +3643,7 @@ class CometExecSuite extends CometTestBase {
         withTable("t1") {
           val numRows = 10
           spark
-            .range(numRows)
+            .range(numRows.toLong)
             .selectExpr("if (id % 2 = 0, null, id) AS a", s"$numRows - id AS b")
             .repartition(3) // Move data across multiple partitions
             .write
@@ -3687,7 +3680,7 @@ class CometExecSuite extends CometTestBase {
         withTable("t1") {
           val numRows = 10
           spark
-            .range(numRows)
+            .range(numRows.toLong)
             .selectExpr("if (id % 2 = 0, null, id) AS a", s"$numRows - id AS b")
             .repartition(3) // Force repartition to test data will come to single partition
             .write
@@ -3718,7 +3711,7 @@ class CometExecSuite extends CometTestBase {
         withTable("t1") {
           val numRows = 10
           spark
-            .range(numRows)
+            .range(numRows.toLong)
             .selectExpr("if (id % 2 = 0, null, id) AS a", s"$numRows - id AS b")
             .repartition(3) // Force repartition to test data will come to single partition
             .write
@@ -3727,6 +3720,65 @@ class CometExecSuite extends CometTestBase {
           checkSparkAnswerAndOperator(df)
         }
       })
+  }
+
+  // Arrow Java ignores ArrowArray.offset on import, and a sliced boolean is the one array arrow-rs
+  // exports with a non-zero offset, so native has to zero it at every level, not only the top.
+  // https://github.com/apache/datafusion-comet/issues/6288
+  test("boolean struct children sliced by an OFFSET keep their values") {
+    withTempPath { dir =>
+      spark
+        .range(0, 1000)
+        .selectExpr(
+          "id AS v",
+          "named_struct('x', id % 7 = 0, 'y', id) AS st",
+          "named_struct('x', IF(id % 3 = 0, NULL, id % 7 = 0)) AS stn")
+        .write
+        .parquet(dir.getCanonicalPath)
+      withParquetTable(dir.getCanonicalPath, "t") {
+        // The OFFSET slices the sorted batch 17 rows in, which is not a whole byte of bits.
+        checkSparkAnswerAndOperator("SELECT st FROM t ORDER BY v LIMIT 40 OFFSET 17")
+        checkSparkAnswerAndOperator("SELECT stn FROM t ORDER BY v LIMIT 40 OFFSET 17")
+      }
+    }
+  }
+
+  test("boolean struct children built over sliced aggregate output keep their values") {
+    withTempPath { dir =>
+      spark
+        .range(0, 4000)
+        .selectExpr("id % 2000 AS k", "IF(id % 5 = 0, NULL, id % 2000 % 3 = 0) AS b")
+        .write
+        .parquet(dir.getCanonicalPath)
+      // The hash aggregate slices its emitted groups into batch-size chunks, so with one
+      // partition every output batch after the first is a slice, at offsets both on and off a
+      // byte boundary.
+      withSQLConf(
+        SQLConf.SHUFFLE_PARTITIONS.key -> "1",
+        CometConf.COMET_BATCH_SIZE.key -> "100") {
+        withParquetTable(dir.getCanonicalPath, "g") {
+          checkSparkAnswerAndOperator(
+            "SELECT named_struct('b', b, 'k', k) FROM (SELECT k, b, count(*) FROM g GROUP BY k, b)")
+        }
+      }
+    }
+  }
+
+  test("collect_list of structs with sliced boolean children keeps their values") {
+    withTempPath { dir =>
+      // One file, so the partial and final aggregates share a native plan and see one batch.
+      spark
+        .range(0, 100, 1, 1)
+        .selectExpr("0 AS k", "IF(id < 5, NULL, named_struct('b', id % 3 = 0)) AS st")
+        .write
+        .parquet(dir.getCanonicalPath)
+      withParquetTable(dir.getCanonicalPath, "t") {
+        // Dropping the leading null structs starts the group's only run past row 0, and
+        // collect_list returns a single run as a slice rather than a copy.
+        checkSparkAnswerAndOperator(
+          spark.table("t").coalesce(1).groupBy("k").agg(collect_list("st")))
+      }
+    }
   }
 
   test("collect limit") {
@@ -3792,21 +3844,34 @@ class CometExecSuite extends CometTestBase {
     })
   }
 
-  test("SparkToColumnar admits only binary string arrays through the array gate") {
+  test("SparkToColumnar admits only binary string arrays and maps through the collection gate") {
     for (nullable <- Seq(false, true); containsNull <- Seq(false, true)) {
-      val field = StructField("tags", ArrayType(StringType, containsNull), nullable)
-      Seq(StructType(Seq(field)), StructType(Seq(StructField("nested", StructType(Seq(field))))))
-        .foreach { schema =>
-          assert(CometSparkToColumnarExec.isSchemaSupported(schema, ListBuffer.empty))
-        }
+      for (dataType <- Seq(
+          ArrayType(StringType, containsNull),
+          MapType(StringType, StringType, containsNull))) {
+        val field = StructField("tags", dataType, nullable)
+        Seq(
+          StructType(Seq(field)),
+          StructType(Seq(StructField("nested", StructType(Seq(field))))))
+          .foreach { schema =>
+            assert(CometSparkToColumnarExec.isSchemaSupported(schema, ListBuffer.empty))
+          }
+      }
     }
     val unsupported = Seq(
       ArrayType(IntegerType),
       ArrayType(BinaryType),
       ArrayType(ArrayType(StringType)),
       ArrayType(StructType(Seq(StructField("s", StringType)))),
-      MapType(StringType, StringType)) ++
-      (if (isSpark40Plus) Seq(DataType.fromDDL("ARRAY<STRING COLLATE UTF8_LCASE>"))
+      MapType(StringType, IntegerType),
+      MapType(IntegerType, StringType),
+      MapType(StringType, ArrayType(StringType)),
+      MapType(StringType, StructType(Seq(StructField("s", StringType))))) ++
+      (if (isSpark40Plus)
+         Seq(
+           DataType.fromDDL("ARRAY<STRING COLLATE UTF8_LCASE>"),
+           DataType.fromDDL("MAP<STRING COLLATE UTF8_LCASE,STRING>"),
+           DataType.fromDDL("MAP<STRING,STRING COLLATE UTF8_LCASE>"))
        else Seq.empty)
     unsupported.foreach { dataType =>
       val schema = StructType(Seq(StructField("value", dataType)))
@@ -3876,6 +3941,78 @@ class CometExecSuite extends CometTestBase {
           // Stop before draining the input to exercise normal task-completion cleanup.
           checkSparkAnswer(query.limit(1))
           withSQLConf(convertKey -> "false") {
+            val (_, disabled) = checkSparkAnswer(query)
+            assert(collect(disabled) { case c: CometSparkToColumnarExec => c }.isEmpty)
+          }
+        }
+      }
+    }
+  }
+
+  test("SparkToColumnar string maps cross RDD and Parquet native boundaries") {
+    val schema = new StructType()
+      .add("id", IntegerType)
+      .add("partitionValues", MapType(StringType, StringType))
+      .add("nested", new StructType().add("tags", MapType(StringType, StringType)))
+    val rows = Seq(
+      Row(1, null, null),
+      Row(2, Map.empty[String, String], Row(null)),
+      Row(3, Map("hour" -> null), Row(Map.empty[String, String])),
+      Row(
+        4,
+        Map("hour" -> "2026-09-02T22", "" -> "é", "東京" -> "a\u0000b"),
+        Row(Map("nullable" -> null, "x" -> "value"))),
+      Row(5, Map("hour" -> "2026-09-03T00", "long" -> ("東京" * 32768)), null),
+      Row(6, Map("hour" -> "2026-09-03T01"), Row(Map("x" -> "value"))))
+    for (sourceType <- Seq("rdd", "parquet-row", "parquet-columnar")) {
+      val vectorized = sourceType == "parquet-columnar"
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> vectorized.toString,
+        "spark.sql.parquet.enableNestedColumnVectorizedReader" -> "true",
+        CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
+        CometConf.COMET_BATCH_SIZE.key -> "2",
+        CometConf.COMET_SHUFFLE_MODE.key -> "native",
+        CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true",
+        CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
+        CometConf.COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST.key -> "RDDScan") {
+        withTempPath { dir =>
+          def rdd = spark.createDataFrame(spark.sparkContext.parallelize(rows, 1), schema)
+          if (sourceType != "rdd") {
+            withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+              rdd.write.parquet(dir.toString)
+            }
+          }
+          def source =
+            if (sourceType == "rdd") rdd else spark.read.schema(schema).parquet(dir.toString)
+          def query = source
+            .filter("id > 0")
+            .selectExpr("id", "partitionValues", "nested", "partitionValues['hour'] AS hour")
+          val (_, plan) = checkSparkAnswerAndOperator(
+            query,
+            includeClasses = Seq(
+              classOf[CometSparkToColumnarExec],
+              classOf[CometProjectExec],
+              classOf[CometFilterExec]))
+          val conversions = collect(plan) { case c: CometSparkToColumnarExec => c }
+          assert(conversions.size == 1)
+          assert(conversions.head.child.supportsColumnar == vectorized)
+          if (sourceType == "rdd") {
+            assert(conversions.head.child.collect { case scan: RDDScanExec => scan }.nonEmpty)
+          }
+          checkSparkSchema(query)
+          checkSparkAnswerAndOperator(
+            source.filter("partitionValues['hour'] BETWEEN '2026-09-02T22' AND '2026-09-03T00'"),
+            includeClasses = Seq(classOf[CometSparkToColumnarExec], classOf[CometFilterExec]))
+          val (_, shuffled) = checkSparkAnswerAndOperator(
+            query.repartition(2, col("id")),
+            includeClasses = Seq(classOf[CometShuffleExchangeExec]))
+          val exchanges = collect(shuffled) { case s: CometShuffleExchangeExec => s }
+          assert(exchanges.nonEmpty && exchanges.forall(_.shuffleType == CometNativeShuffle))
+          checkSparkAnswer(query.limit(1))
+          withSQLConf(
+            CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "false",
+            CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "false") {
             val (_, disabled) = checkSparkAnswer(query)
             assert(collect(disabled) { case c: CometSparkToColumnarExec => c }.isEmpty)
           }
