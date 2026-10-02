@@ -201,7 +201,8 @@ writes the same Arrow IPC block format as native shuffle, so direct read applies
   That mode exists only so the Spark SQL tests can run against Comet. See
   [Memory Management](memory_management.md).
 - Row count still triggers spilling in either mode. `CometDiskBlockWriter` spills at
-  `min(spark.comet.shuffle.jvm.spillThreshold, spark.comet.shuffle.jvm.batchSize)`.
+  `min(spark.comet.shuffle.jvm.spillThreshold, batch size)`, where the batch size is
+  `spark.comet.shuffle.jvm.batchSize` capped at `spark.comet.batchSize`.
   `CometShuffleExternalSorter` spills at `spark.comet.shuffle.jvm.spillThreshold` alone, which
   defaults to `Int.MaxValue`, so on the sort path that trigger is effectively off by default.
 - `CometDiskBlockWriter` coordinates spilling across all partition writers (largest first)

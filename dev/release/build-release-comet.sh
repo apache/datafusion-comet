@@ -215,6 +215,7 @@ LOCAL_REPO=$(mktemp -d /tmp/comet-staging-repo-XXXXX)
 # corresponding Spark release, so the scala-2.13 profile is not used here.
 ./mvnw  "-Dmaven.repo.local=${LOCAL_REPO}" -P spark-4.0                 -DskipTests install
 ./mvnw  "-Dmaven.repo.local=${LOCAL_REPO}" -P spark-4.1                 -DskipTests install
+./mvnw  "-Dmaven.repo.local=${LOCAL_REPO}" -P spark-4.2                 -DskipTests install
 
 echo "Installed to local repo: ${LOCAL_REPO}"
 
