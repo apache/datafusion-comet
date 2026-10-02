@@ -56,7 +56,7 @@ class CometCodegenMemoryPressureSuite
       val path = dir.getCanonicalPath
       // 100-character strings that the UDF shrinks to 20 characters.
       spark
-        .range(numRows)
+        .range(numRows.toLong)
         .selectExpr(
           "concat(lpad(cast(id AS string), 10, '0'), repeat('b', 10), repeat('a', 80)) AS s")
         .coalesce(1)
