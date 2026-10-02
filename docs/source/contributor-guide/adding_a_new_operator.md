@@ -459,7 +459,7 @@ pub fn create_your_operator_exec(
 }
 ```
 
-For custom operators, you'll need to implement the `ExecutionPlan` trait. See `native/core/src/execution/operators/expand.rs` or `scan.rs` for examples.
+For custom operators, you'll need to implement the `ExecutionPlan` trait. Operators that need nothing else from `core` live in the `datafusion-comet-operators` crate under `native/operators/src/`. See `native/operators/src/expand.rs` or `native/core/src/execution/operators/scan.rs` for examples.
 
 ### Step 6: Add Tests
 

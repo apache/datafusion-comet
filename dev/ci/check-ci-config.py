@@ -145,6 +145,7 @@ ROUTING_CASES = [
     # Spot checks that the additions above did not widen unrelated routes.
     (["docs/source/user-guide/overview.md"], {"docs"}),
     (["native/core/benches/parquet_read.rs"], {"benchmark"}),
+    (["native/operators/benches/explode.rs"], {"benchmark"}),
     # The mermaid guard is run by preflight, which is unconditional, and again
     # by the docs deploy, which is not, so the deploy has to be routed. The
     # build jobs come along because `dev/ci/**` already feeds them.
