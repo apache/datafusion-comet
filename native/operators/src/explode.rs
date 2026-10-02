@@ -23,16 +23,18 @@
 //! however many rows the unnesting produced, and never consulted
 //! `datafusion.execution.batch_size`. That fix is now upstream
 //! (apache/datafusion#24384, in DataFusion 55.1.0), so it is no longer the reason to keep
-//! the fork. What is left are two performance paths that have not been upstreamed:
+//! the fork. What is left are performance improvements that have not been upstreamed:
 //!
 //! * `list_output_lens`, which computes the per-row output lengths of a single `List` column
 //!   in one pass over the offsets instead of chaining six arrow kernels;
 //! * the contiguous-run fast path in `unnest_list_array`, which returns a slice of the child
 //!   values instead of gathering them, and the buffer fills in `create_take_indices`.
+//! * retaining input arrays as unnest placeholders and skipping take indices when no column
+//!   consumes them, avoiding allocations whose contents never reach the output.
 //!
 //! # Deleting this file
 //!
-//! Upstream those two paths, then delete this module and go back to
+//! Upstream these improvements, then delete this module and go back to
 //! `datafusion::physical_plan::unnest::UnnestExec` in the planner. Deleting it before that
 //! would regress `explode`, so measure with `native/operators/benches/explode.rs` first.
 //!
@@ -51,14 +53,13 @@
 //! * dropping upstream's `ListUnnest` declaration in favor of importing the public one;
 //! * `find_longest_length` applies the empty-list bump once after the row-wise maximum rather
 //!   than once per array, which is equivalent because `max` is associative;
-//! * `list_output_lens` and the contiguous-run fast path described above.
+//! * the performance improvements described above.
 //!
 //! `ExplodeExec` and `ExplodeStream` were always Comet's own.
 
 use arrow::array::{
-    new_null_array, Array, ArrayRef, AsArray, BooleanBufferBuilder, FixedSizeListArray, Int64Array,
-    LargeListArray, LargeListViewArray, ListArray, ListViewArray, PrimitiveArray, Scalar,
-    StructArray,
+    Array, ArrayRef, AsArray, BooleanBufferBuilder, FixedSizeListArray, Int64Array, LargeListArray,
+    LargeListViewArray, ListArray, ListViewArray, PrimitiveArray, Scalar, StructArray,
 };
 use arrow::compute::kernels::length::length;
 use arrow::compute::kernels::zip::zip;
@@ -685,8 +686,6 @@ fn list_unnest_at_level(
     let unnested_temp_arrays =
         unnest_list_arrays(arrs_to_unnest.as_ref(), unnested_length, total_length)?;
 
-    // Create the take indices array for other columns
-    let take_indices = create_take_indices(unnested_length, total_length);
     unnested_temp_arrays
         .into_iter()
         .zip(list_unnest_specs.iter())
@@ -715,7 +714,13 @@ fn list_unnest_at_level(
 
     // Dimension of arrays in batch is untouched, but the values are repeated
     // as the side effect of unnesting
-    let ret = repeat_arrs_from_indices(batch, &take_indices, &repeat_mask)?;
+    let ret = if repeat_mask.iter().any(|&repeat| repeat) {
+        let take_indices = create_take_indices(unnested_length, total_length);
+        repeat_arrs_from_indices(batch, &take_indices, &repeat_mask)?
+    } else {
+        // Every column is a placeholder for an unnest result. No column consumes take indices.
+        batch.to_vec()
+    };
 
     Ok(Some(ret))
 }
@@ -1250,8 +1255,8 @@ fn create_take_indices(
 /// Create a batch of arrays based on an input `batch` and a `indices` array.
 /// The `indices` array is used by the take kernel to repeat values in the arrays
 /// that are marked with `true` in the `repeat_mask`. Arrays marked with `false`
-/// in the `repeat_mask` will be replaced with arrays filled with nulls of the
-/// appropriate length.
+/// are placeholders: they are replaced by their unnested versions before the
+/// output batch is built. Keep those arrays instead of allocating unused null arrays.
 ///
 /// For example if we have the following batch:
 ///
@@ -1281,18 +1286,6 @@ fn create_take_indices(
 /// c2: 'a', 'b', 'c', 'c', 'c', null, 'd', 'd'
 /// ```
 ///
-/// The `repeat_mask` determines whether an array's values are repeated or replaced with nulls.
-/// For example, if the `repeat_mask` is:
-///
-/// ```ignore
-/// [true, false]
-/// ```
-///
-/// The final batch will look like:
-///
-/// ```ignore
-/// c1: 1, null, 2, 3, 4, null, 5, 6  // Repeated using `indices`
-/// c2: null, null, null, null, null, null, null, null  // Replaced with nulls
 fn repeat_arrs_from_indices(
     batch: &[ArrayRef],
     indices: &PrimitiveArray<Int64Type>,
@@ -1305,7 +1298,7 @@ fn repeat_arrs_from_indices(
             if repeat {
                 Ok(kernels::take::take(arr, indices, None)?)
             } else {
-                Ok(new_null_array(arr.data_type(), arr.len()))
+                Ok(Arc::clone(arr))
             }
         })
         .collect()
@@ -1324,6 +1317,95 @@ mod tests {
     use datafusion::prelude::SessionConfig;
     use std::collections::VecDeque;
     use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+
+    #[test]
+    fn unnest_placeholders_share_the_input() {
+        let list = Arc::clone(list_batch(&[Some(2), Some(1)]).column(0));
+        let carried: ArrayRef = Arc::new(Int32Array::from(vec![10, 20]));
+        let indices = Int64Array::from(vec![0, 0, 1]);
+        let result =
+            repeat_arrs_from_indices(&[Arc::clone(&list), carried], &indices, &[false, true])
+                .unwrap();
+        assert!(Arc::ptr_eq(&result[0], &list));
+        assert_eq!(
+            result[1].as_primitive::<Int32Type>().values(),
+            &[10, 10, 20]
+        );
+    }
+
+    #[test]
+    fn recursive_unnest_replaces_placeholders_with_and_without_carried_columns() {
+        let inner = ListArray::from_iter_primitive::<Int32Type, _, _>(vec![
+            Some(vec![Some(10), None]),
+            None,
+            Some(vec![]),
+            Some(vec![Some(20)]),
+            Some(vec![Some(30), Some(40)]),
+        ]);
+        let outer: ArrayRef = Arc::new(ListArray::new(
+            Arc::new(Field::new("item", inner.data_type().clone(), true)),
+            OffsetBuffer::new(ScalarBuffer::from(vec![0, 3, 5, 5, 5])),
+            Arc::new(inner),
+            Some(NullBuffer::from(vec![true, true, false, true])),
+        ));
+        for carried in [false, true] {
+            for handling in [NullHandling::Drop, NullHandling::PreserveAndExpandEmpty] {
+                let mut columns = vec![Arc::clone(&outer)];
+                let mut fields = vec![Field::new("lists", outer.data_type().clone(), true)];
+                let mut output_fields = vec![Field::new("value", DataType::Int32, true)];
+                if carried {
+                    columns.push(Arc::new(Int32Array::from(vec![1, 2, 3, 4])));
+                    fields.push(Field::new("id", DataType::Int32, false));
+                    output_fields.push(Field::new("id", DataType::Int32, false));
+                }
+                let input = RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap();
+                let output = build_batch(
+                    &input,
+                    &Arc::new(Schema::new(output_fields)),
+                    &[ListUnnest {
+                        index_in_input_schema: 0,
+                        depth: 2,
+                    }],
+                    &HashSet::new(),
+                    &UnnestOptions::new().with_null_handling(handling),
+                    None,
+                )
+                .unwrap()
+                .unwrap();
+                let (expected, ids) = if handling == NullHandling::Drop {
+                    (
+                        vec![Some(10), None, Some(20), Some(30), Some(40)],
+                        vec![1, 1, 2, 2, 2],
+                    )
+                } else {
+                    (
+                        vec![
+                            Some(10),
+                            None,
+                            None,
+                            None,
+                            Some(20),
+                            Some(30),
+                            Some(40),
+                            None,
+                            None,
+                        ],
+                        vec![1, 1, 1, 1, 2, 2, 2, 3, 4],
+                    )
+                };
+                assert_eq!(
+                    output.column(0).as_primitive::<Int32Type>(),
+                    &Int32Array::from(expected)
+                );
+                if carried {
+                    assert_eq!(
+                        output.column(1).as_primitive::<Int32Type>(),
+                        &Int32Array::from(ids)
+                    );
+                }
+            }
+        }
+    }
 
     /// Build a single-column `List<Int32>` batch where row `i` holds `lens[i]` elements,
     /// numbered consecutively across the whole batch. `None` is a NULL list.
