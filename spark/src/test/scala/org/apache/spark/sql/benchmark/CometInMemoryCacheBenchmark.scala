@@ -510,7 +510,9 @@ object CometInMemoryCacheBenchmark extends CometBenchmarkBase {
 
     val nativeScans = collect(executed) { case s: CometInMemoryTableScanExec => s }
     val sparkScans = collect(executed) { case s: InMemoryTableScanExec => s }
-    assert(nativeScans.length + sparkScans.length == 1, s"Expected exactly one cache scan:\n$plan")
+    assert(
+      nativeScans.length + sparkScans.length == 1,
+      s"Expected exactly one cache scan:\n$plan")
     val cometFormat = serializer == classOf[ArrowCachedBatchSerializer].getName
     assert(
       nativeScans.nonEmpty == cometFormat,
