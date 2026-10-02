@@ -824,6 +824,7 @@ abstract class ParquetReadSuite extends CometTestBase {
     // TODO(https://github.com/apache/datafusion-comet/issues/3432): `_metadata.row_index` is
     // generated per row by the reader, not constant per file, so it needs DataFusion's
     // virtual-column mechanism rather than the partition-value path used here. Not covered.
+    // file_block_start and file_block_length fall back; see the test below.
     withTempPath { dir =>
       (1 to 100).toDF("id").repartition(1).write.parquet(dir.getCanonicalPath)
       val df = spark.read
@@ -833,10 +834,39 @@ abstract class ParquetReadSuite extends CometTestBase {
           $"_metadata.file_path",
           $"_metadata.file_name",
           $"_metadata.file_size",
-          $"_metadata.file_block_start",
-          $"_metadata.file_block_length",
           $"_metadata.file_modification_time")
       checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("_metadata.file_block_start and file_block_length fall back to Spark") {
+    // When Spark splits a file, DataFusion keeps a row group in the split that holds its first
+    // page and Spark keeps it in the split that holds its midpoint, so these per-split values
+    // would be wrong for some rows if the scan ran natively (#6505).
+    withSQLConf(SQLConf.FILES_MAX_PARTITION_BYTES.key -> "4096") {
+      withTempPath { dir =>
+        spark
+          .range(0, 5000)
+          .selectExpr("id", "concat('value_', cast(id as string)) as s")
+          .coalesce(1)
+          .write
+          .parquet(dir.getCanonicalPath)
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          assert(
+            spark.read.parquet(dir.getCanonicalPath).rdd.getNumPartitions > 1,
+            "the file has to be split across partitions for this test to mean anything")
+        }
+
+        val df = spark.read.parquet(dir.getCanonicalPath)
+        for (column <- Seq("file_block_start", "file_block_length")) {
+          checkSparkAnswerAndFallbackReason(
+            df.select($"id", $"s", $"_metadata.$column"),
+            s"Metadata column(s) $column is not supported")
+        }
+        // The per-file constants don't depend on which split reads a row group.
+        checkSparkAnswerAndOperator(
+          df.select($"id", $"s", $"_metadata.file_path", $"_metadata.file_size"))
+      }
     }
   }
 
