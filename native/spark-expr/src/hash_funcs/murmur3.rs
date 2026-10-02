@@ -820,18 +820,29 @@ mod tests {
 
     /// Spark hashes a float through `doubleToLongBits` or `floatToIntBits`, which canonicalize
     /// NaN, so a NaN with the sign bit set or with a payload hashes like the canonical NaN inside
-    /// lists, structs and dictionaries too. Checks both hashes, which expand the same macros.
+    /// lists, structs, maps and dictionaries too. Checks both hashes, which expand the same macros.
     #[test]
     fn test_non_canonical_nan_hashes_like_canonical_nan() {
         use crate::hash_funcs::create_xxhash64_hashes;
         use arrow::array::{
-            DictionaryArray, FixedSizeListArray, Int32Array, LargeListArray, ListArray, StructArray,
+            DictionaryArray, FixedSizeListArray, Int32Array, LargeListArray, ListArray, MapArray,
+            StructArray,
         };
         use arrow::buffer::OffsetBuffer;
-        use arrow::datatypes::Field;
+        use arrow::datatypes::{DataType, Field, Fields};
 
         let shapes = |values: ArrayRef| -> Vec<ArrayRef> {
             let field = Arc::new(Field::new("item", values.data_type().clone(), true));
+            // One entry per row, with the float as both the key and the value.
+            let entry_fields = Fields::from(vec![
+                Field::new("key", values.data_type().clone(), false),
+                Field::new("value", values.data_type().clone(), true),
+            ]);
+            let entries = StructArray::new(
+                entry_fields.clone(),
+                vec![Arc::clone(&values), Arc::clone(&values)],
+                None,
+            );
             vec![
                 Arc::clone(&values),
                 Arc::new(ListArray::new(
@@ -860,6 +871,13 @@ mod tests {
                 Arc::new(DictionaryArray::new(
                     Int32Array::from(vec![0, 1, 2]),
                     values,
+                )),
+                Arc::new(MapArray::new(
+                    Arc::new(Field::new("entries", DataType::Struct(entry_fields), false)),
+                    OffsetBuffer::from_lengths([1; 3]),
+                    entries,
+                    None,
+                    false,
                 )),
             ]
         };

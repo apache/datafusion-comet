@@ -528,6 +528,42 @@ mod tests {
         assert_eq!(eval(&mut a), 2);
     }
 
+    /// The hash kernel canonicalizes floats inside nested types, so a struct or list holding a
+    /// negative zero or a non-canonical NaN counts the same as one holding the plain value.
+    #[test]
+    fn nested_floats_fold_negative_zero_and_nan() {
+        use arrow::array::{ListArray, StructArray};
+        use arrow::buffer::OffsetBuffer;
+        use arrow::datatypes::Field;
+
+        let floats: ArrayRef = Arc::new(Float64Array::from(vec![
+            0.0,
+            -0.0,
+            f64::NAN,
+            f64::from_bits(0xfff8_0000_0000_0000),
+            f64::from_bits(0x7ff0_0000_0000_0001),
+        ]));
+        let field = Arc::new(Field::new("item", DataType::Float64, true));
+        let nested: Vec<ArrayRef> = vec![
+            Arc::new(StructArray::new(
+                vec![Arc::clone(&field)].into(),
+                vec![Arc::clone(&floats)],
+                None,
+            )),
+            Arc::new(ListArray::new(
+                field,
+                OffsetBuffer::from_lengths([1; 5]),
+                floats,
+                None,
+            )),
+        ];
+        for values in nested {
+            let mut a = acc(9);
+            a.update_batch(&[Arc::clone(&values)]).unwrap();
+            assert_eq!(eval(&mut a), 2, "{}", values.data_type());
+        }
+    }
+
     #[test]
     fn strings_small_cardinality() {
         let mut a = acc(9);

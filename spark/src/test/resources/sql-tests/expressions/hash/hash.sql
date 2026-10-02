@@ -15,6 +15,8 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
+-- Config: spark.sql.legacy.allowHashOnMapType=true
+
 -- hash functions
 statement
 CREATE TABLE test(col string, a int, b float) USING parquet
@@ -46,3 +48,8 @@ SELECT hash(d), hash(-d), xxhash64(d), xxhash64(-d), hash(f), hash(-f), xxhash64
 
 query
 SELECT hash(array(-d)), xxhash64(array(-d)), hash(named_struct('a', -d, 'b', -f)), xxhash64(named_struct('a', -d, 'b', -f)) FROM test_nan
+
+-- Spark rejects hashing a map unless the legacy config above is set. Map keys cannot be null,
+-- so the null row is filtered out.
+query
+SELECT hash(map(-d, -f)), xxhash64(map(-d, -f)) FROM test_nan WHERE d IS NOT NULL
