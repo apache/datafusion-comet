@@ -19,11 +19,14 @@
 
 package org.apache.comet.serde
 
+import org.apache.spark.api.java.function.FilterFunction
 import org.apache.spark.sql.catalyst.expressions.{ApplyFunctionExpression, Attribute, Base64, Expression, ExpressionImplUtils, Literal, StringDecode, TryEval, UrlCodec}
 import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
 import org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils
-import org.apache.spark.sql.types.StringType
+import org.apache.spark.sql.connector.catalog.functions.ScalarFunction
+import org.apache.spark.sql.types.{BooleanType, ObjectType, StringType}
 
+import org.apache.comet.CometExplainInfo
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType}
 
@@ -119,7 +122,9 @@ object CometStaticInvoke extends CometExpressionSerde[StaticInvoke] {
             // `StaticInvoke.doGenCode` emits a static method call, so the kernel matches Spark by
             // construction. Spark 4.x keeps lowering more `RuntimeReplaceable` functions this way
             // (`encode`, `is_valid_utf8`, the `TIME` family, ...) and `lpad` / `rpad` on binary
-            // has lowered to `StaticInvoke(ByteArray, ...)` since Spark 3.4.
+            // has lowered to `StaticInvoke(ByteArray, ...)` since Spark 3.4. The dispatcher
+            // declines a call into any class that is not Spark's, such as a DataSource V2
+            // function, so that falls back (see [[CometInvokeTargets]]).
             //
             // The encoder and deserializer trees that make up most `StaticInvoke` usage in typed
             // Dataset operations are unaffected: their arguments are `ObjectType`, which
@@ -167,16 +172,92 @@ object CometApplyFunctionExpression extends CometExpressionSerde[ApplyFunctionEx
 }
 
 /**
- * Catch-all for `Invoke`, which has no allowlist at all. Spark 4.x lowers a growing number of
+ * Catch-all for `Invoke`, which has no allowlist of its own. Spark 4.x lowers a growing number of
  * `RuntimeReplaceable` expressions to evaluator-backed `Invoke` nodes; the Spark 4.x shim
  * reconstructs the handful it recognizes and everything else lands here. `Invoke.doGenCode` emits
  * a method call on the target object, so the dispatcher runs Spark's own implementation inside
  * the Comet pipeline rather than failing the operator back to Spark.
  *
+ * A DataSource V2 function with an instance `invoke` method lowers to `Invoke` too. The
+ * dispatcher declines that, and any other call into a class that is not Spark's, so the operator
+ * falls back (see [[CometInvokeTargets]]).
+ *
  * As with [[CometStaticInvoke]], the object-typed `Invoke` nodes in encoder / deserializer trees
  * are rejected by `CometBatchKernelCodegen.canHandle` and fall back as before.
  */
 object CometInvoke extends CometCodegenDispatch[Invoke]
+
+/**
+ * The classes the codegen dispatcher may call into from a `StaticInvoke` or an `Invoke`: Spark's
+ * own, other than a DataSource V2 function, plus the predicate of a typed `Dataset.filter`. The
+ * kernel runs every node of the tree it is given, so a call anywhere in a dispatched tree runs in
+ * the kernel, not only one at its root, and [[CometScalaUDF.emitJvmCodegenDispatch]] checks the
+ * whole tree.
+ *
+ * Spark's helpers return values that already have their declared type. Other code need not, and
+ * Spark corrects such a value only when it writes a row. A DataSource V2 function can return a
+ * `Decimal` at a different scale from the type it declares, or one that does not fit it: Spark
+ * rescales it, or writes null, when it writes the row, and an expression around the call reads
+ * the value as returned (#6425). The kernel has to write an Arrow vector of the declared type, so
+ * a native consumer of its output would read something else, and where Spark writes rows depends
+ * on whole-stage codegen, so Comet cannot reproduce it. Any other call, including every
+ * `ApplyFunctionExpression`, makes the operator fall back to Spark instead, as it did before
+ * #5692 routed these calls through the dispatcher.
+ */
+object CometInvokeTargets {
+
+  /** The packages of Spark's expression helpers and evaluators, and of its internal values. */
+  private val SparkPackages = Seq("org.apache.spark.sql.catalyst.", "org.apache.spark.unsafe.")
+
+  /**
+   * The types Spark's `TypedFilter` calls the predicate of a typed `Dataset.filter` through. The
+   * predicate is user code, but it returns a boolean, which a row write has nothing to correct
+   * in.
+   */
+  private val TypedFilterPredicates: Set[Class[_]] =
+    Set(classOf[scala.Function1[_, _]], classOf[FilterFunction[_]])
+
+  private def isSparkCode(cls: Class[_]): Boolean =
+    !classOf[ScalarFunction[_]].isAssignableFrom(cls) &&
+      SparkPackages.exists(p => cls.getName.startsWith(p))
+
+  /**
+   * Why the dispatcher must not run `expr`, naming the first call in it that the dispatcher does
+   * not allow, or `None` when it allows them all.
+   */
+  def declineReason(expr: Expression): Option[String] =
+    expr.find(!isAllowed(_)).map { node =>
+      val cls = callee(node).get
+      val target =
+        if (classOf[ScalarFunction[_]].isAssignableFrom(cls)) {
+          s"the DataSource V2 function ${cls.getName}"
+        } else {
+          s"${cls.getName}, which is not part of Spark"
+        }
+      s"${CometExplainInfo.exprDisplayName(node)} calls $target, and only Spark's own code " +
+        "runs in the dispatcher"
+    }
+
+  private def isAllowed(expr: Expression): Boolean = (expr, callee(expr)) match {
+    case (i: Invoke, Some(cls)) if TypedFilterPredicates.contains(cls) =>
+      i.dataType == BooleanType
+    case (_, cls) => cls.forall(isSparkCode)
+  }
+
+  /** The class whose code `expr` calls, unless it calls a method of a Catalyst value. */
+  private def callee(expr: Expression): Option[Class[_]] = expr match {
+    case s: StaticInvoke => Some(s.staticObject)
+    case i: Invoke =>
+      i.targetObject.dataType match {
+        case ObjectType(cls) => Some(cls)
+        // Any other target is a Catalyst value, such as the `UTF8String` that Spark 4 lowers
+        // `is_valid_utf8` to call `isValid` on.
+        case _ => None
+      }
+    case a: ApplyFunctionExpression => Some(a.function.getClass)
+    case _ => None
+  }
+}
 
 object CometUrlEncodeStaticInvoke extends CometExpressionSerde[StaticInvoke] {
   override def convert(
