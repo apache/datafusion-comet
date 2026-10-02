@@ -58,6 +58,13 @@ impl SparkGreatestLeast {
             || (data_type.is_nested() && has_float_leaf(data_type))
     }
 
+    fn validate_arg_count(&self, count: usize) -> Result<()> {
+        if count < 2 {
+            return exec_err!("{} requires at least two arguments", self.name());
+        }
+        Ok(())
+    }
+
     /// The result of `current` and then `candidate`, row by row: `candidate` replaces `current`
     /// when it is not null and either `current` is null or `candidate` ranks strictly before it.
     fn pick(&self, current: &ArrayRef, candidate: &ArrayRef) -> Result<ArrayRef> {
@@ -164,10 +171,12 @@ impl ScalarUDFImpl for SparkGreatestLeast {
     }
 
     fn return_type(&self, arg_types: &[DataType]) -> Result<DataType> {
+        self.validate_arg_count(arg_types.len())?;
         Ok(arg_types[0].clone())
     }
 
     fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        self.validate_arg_count(args.args.len())?;
         let all_scalars = args
             .args
             .iter()
@@ -188,7 +197,7 @@ impl ScalarUDFImpl for SparkGreatestLeast {
             });
         }
         let Some(result) = result else {
-            return exec_err!("{} requires at least one argument", self.name());
+            return exec_err!("{} requires at least two arguments", self.name());
         };
         if all_scalars {
             Ok(ColumnarValue::Scalar(ScalarValue::try_from_array(
@@ -340,6 +349,32 @@ mod tests {
             }
         }
         Ok(())
+    }
+
+    #[test]
+    fn rejects_fewer_than_two_arguments() {
+        let scalar = ColumnarValue::Scalar(ScalarValue::Float64(Some(1.0)));
+        for greatest in [true, false] {
+            let function = SparkGreatestLeast::new(greatest);
+            for arg_types in [vec![], vec![DataType::Float64]] {
+                let error = function.return_type(&arg_types).unwrap_err();
+                assert!(
+                    error
+                        .to_string()
+                        .contains("requires at least two arguments"),
+                    "unexpected error: {error}"
+                );
+            }
+            for args in [vec![], vec![scalar.clone()]] {
+                let error = invoke(greatest, args, 1, DataType::Float64).unwrap_err();
+                assert!(
+                    error
+                        .to_string()
+                        .contains("requires at least two arguments"),
+                    "unexpected error: {error}"
+                );
+            }
+        }
     }
 
     /// Lists compare their elements in Spark's order too. The second argument's element field has

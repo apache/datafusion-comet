@@ -3925,7 +3925,9 @@ impl PhysicalPlanner {
 /// `min` or `max` over `data_type`: Spark's version for floats, which DataFusion orders
 /// differently, and DataFusion's for every other type.
 fn min_max_udaf(data_type: &DataType, is_max: bool) -> Arc<AggregateUDF> {
-    if data_type.is_floating() {
+    // Spark has only 32- and 64-bit floating-point types. Keep Float16 on DataFusion's path so
+    // an internal plan using it does not reach SparkMinMax, whose accumulators reject that type.
+    if matches!(data_type, DataType::Float32 | DataType::Float64) {
         Arc::new(AggregateUDF::new_from_impl(SparkMinMax::new(is_max)))
     } else if is_max {
         max_udaf()
