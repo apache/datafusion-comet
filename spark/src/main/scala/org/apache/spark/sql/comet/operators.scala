@@ -1969,6 +1969,12 @@ trait CometBaseAggregate[T <: BaseAggregateExec] extends CometOperatorSerde[T] {
   /** Operator-specific support checks, run after the shared ones in `getSupportLevel`. */
   protected def operatorSupportLevel(op: T): SupportLevel = Compatible()
 
+  /**
+   * Whether Spark reports the operator's output as ordered by its grouping keys, which the native
+   * aggregate must then preserve.
+   */
+  protected def orderedByGroupingKeys: Boolean = false
+
   override final def getSupportLevel(op: T): SupportLevel = {
     // Some unit tests disable partial or final aggregate conversion to check that CometExecRule
     // does not allow mixed Spark/Comet aggregates. Despite their names, these knobs gate every
@@ -2126,6 +2132,7 @@ trait CometBaseAggregate[T <: BaseAggregateExec] extends CometOperatorSerde[T] {
     if (aggregateExpressions.isEmpty) {
       val hashAggBuilder = OperatorOuterClass.HashAggregate.newBuilder()
       hashAggBuilder.addAllGroupingExprs(groupingExprs.map(_.get).asJava)
+      hashAggBuilder.setOrderedByGroupingKeys(orderedByGroupingKeys)
       // Spark has no expression mode to serialize here. An empty aggregate with a required child
       // distribution must fully deduplicate its keys (Final, or a pre-distinct PartialMerge), so
       // use native Final to keep skip-partial disabled.
@@ -2190,6 +2197,7 @@ trait CometBaseAggregate[T <: BaseAggregateExec] extends CometOperatorSerde[T] {
         hashAggBuilder.addAllGroupingExprs(groupingExprs.map(_.get).asJava)
         hashAggBuilder.addAllAggExprs(aggExprs.map(_.get).asJava)
         hashAggBuilder.setModeValue(mode.getNumber)
+        hashAggBuilder.setOrderedByGroupingKeys(orderedByGroupingKeys)
 
         // Send per-expression modes and buffer offset for PartialMerge handling
         if (hasPartialMerge) {
@@ -2444,11 +2452,15 @@ object CometSortAggregateExec extends CometBaseAggregate[SortAggregateExec] {
     Compatible()
   }
 
+  // CometExec.outputOrdering reports SortAggregateExec's grouping-key ordering, and Spark may have
+  // removed sorts above it on that basis, so the native aggregate must emit its groups in that
+  // order. DataFusion does so on its own when it sees its input sorted on the grouping keys, which
+  // holds when the sort below runs in the same native plan. Otherwise, for example over a cached
+  // sorted relation that reaches native code as an unordered scan, its hash table can emit groups
+  // in any order, and the native planner sorts the aggregate output instead.
+  override protected def orderedByGroupingKeys: Boolean = true
+
   override def createExec(nativeOp: Operator, op: SortAggregateExec): CometNativeExec = {
-    // The native AggregateExec auto-detects Sorted input mode from the child's output ordering
-    // and produces output sorted by the grouping keys; CometExec.outputOrdering defaults to
-    // originalPlan.outputOrdering, which is SortAggregateExec's grouping-key ordering, so
-    // downstream operators that elided a sort against it still see a satisfying ordering.
     CometSortAggregateExec(
       nativeOp,
       op,
@@ -2466,9 +2478,9 @@ object CometSortAggregateExec extends CometBaseAggregate[SortAggregateExec] {
 /**
  * Common base for Comet's aggregate wrapper operators. The hash-based and sort-based variants
  * share the same native AggregateExec serialization and rendering; they are kept as distinct plan
- * node types only so the executed plan reflects whether Spark planned a HashAggregateExec /
- * ObjectHashAggregateExec or a SortAggregateExec (the native AggregateExec auto-detects sorted
- * input mode from the child ordering, so execution is otherwise identical).
+ * node types so the executed plan reflects whether Spark planned a HashAggregateExec /
+ * ObjectHashAggregateExec or a SortAggregateExec. The sort variant also keeps the grouping-key
+ * output ordering that SortAggregateExec reports; see `CometSortAggregateExec`.
  */
 abstract class CometBaseAggregateExec
     extends CometUnaryExec
