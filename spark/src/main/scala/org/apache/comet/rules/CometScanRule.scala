@@ -21,6 +21,7 @@ package org.apache.comet.rules
 
 import java.lang.{Boolean => JBoolean}
 import java.net.URI
+import java.time.ZoneOffset
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 
@@ -32,9 +33,9 @@ import scala.util.control.NonFatal
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.expressions.{Attribute, DynamicPruningExpression, Expression, GenericInternalRow, InputFileBlockLength, InputFileBlockStart, InputFileName, PlanExpression}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, DynamicPruningExpression, Expression, GenericInternalRow, InputFileBlockLength, InputFileBlockStart, InputFileName}
 import org.apache.spark.sql.catalyst.rules.Rule
-import org.apache.spark.sql.catalyst.util.{sideBySide, ArrayBasedMapData, GenericArrayData, MetadataColumnHelper}
+import org.apache.spark.sql.catalyst.util.{sideBySide, ArrayBasedMapData, DateTimeUtils, GenericArrayData, MetadataColumnHelper}
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
 import org.apache.spark.sql.comet.{CometBatchScanExec, CometScanExec, CometScanUtils}
 import org.apache.spark.sql.execution.{FileSourceScanExec, InSubqueryExec, SparkPlan, SubqueryAdaptiveBroadcastExec}
@@ -171,10 +172,16 @@ case class CometScanRule(session: SparkSession)
 
     // fileConstantMetadataColumns (file_path, file_name, file_size, file_block_start,
     // file_block_length, file_modification_time) are known before opening the file and
-    // supported below via the same projection mechanism as partition columns. Any other
-    // metadata column (currently only `_metadata.row_index`, generated per row by the reader)
-    // is not.
-    val constantMetadataColNames = scanExec.fileConstantMetadataColumns.map(_.name).toSet
+    // supported below via the same projection mechanism as partition columns. The exceptions
+    // are file_block_start and file_block_length. They are constant per split, but when Spark
+    // splits a file, which split reads a row group is a reader decision: DataFusion keeps a row
+    // group in the split that holds its first page, while Spark's parquet-mr reader keeps it in
+    // the split that holds its midpoint, so rows would report the wrong split
+    // (https://github.com/apache/datafusion-comet/issues/6505). Those two, and any other metadata
+    // column (currently only `_metadata.row_index`, generated per row by the reader), fall back.
+    val constantMetadataColNames = scanExec.fileConstantMetadataColumns
+      .map(_.name)
+      .toSet -- Set("file_block_start", "file_block_length")
     val unsupportedMetadataColNames =
       metadataCols(scanExec).filterNot(constantMetadataColNames.contains)
     if (unsupportedMetadataColNames.nonEmpty) {
@@ -328,6 +335,13 @@ case class CometScanRule(session: SparkSession)
           s"${COMET_SCAN_ALLOW_DISABLED_PARQUET_VECTORIZED_READER.key}=true to opt in")
       return None
     }
+    // Check the projected and partition schemas before the scan-level checks so that an
+    // unsupported column type is reported as such (e.g. "Unsupported s of type VariantType")
+    // rather than as the coarser serialization failure that CometNativeScan.isSupported would
+    // report for the same column.
+    if (!isSchemaSupported(scanExec, r)) {
+      return None
+    }
     if (!CometNativeScan.isSupported(scanExec)) {
       return None
     }
@@ -363,9 +377,6 @@ case class CometScanRule(session: SparkSession)
     if (scanExec.requiredSchema.fieldNames.contains(
         ShimFileFormat.ROW_INDEX_TEMPORARY_COLUMN_NAME)) {
       withFallbackReason(scanExec, "Native Parquet scan does not support row index generation")
-      return None
-    }
-    if (!isSchemaSupported(scanExec, r)) {
       return None
     }
     val cometScan = CometScanExec(scanExec, session)
@@ -472,8 +483,19 @@ case class CometScanRule(session: SparkSession)
           fallbackReasons +=
             s"Comet supports only single-character delimiters, but got: '$delimiter'"
         }
+        // The native reader parses a timestamp without an offset as UTC. Spark parses it in the
+        // CSV `timeZone` option, which defaults to the session timezone.
+        val timeZone = Option(scan.options.get(DateTimeUtils.TIMEZONE_OPTION))
+          .getOrElse(SQLConf.get.sessionLocalTimeZone)
+        val parsesTimestampsLikeSpark =
+          !scan.readDataSchema.exists(_.dataType == TimestampType) ||
+            DateTimeUtils.getZoneId(timeZone).normalized() == ZoneOffset.UTC
+        if (!parsesTimestampsLikeSpark) {
+          fallbackReasons += "Comet's native CSV reader parses timestamps in UTC, but the CSV " +
+            s"timezone is $timeZone"
+        }
         if (schemaSupported && partitionSchemaSupported && containsCorruptedRecordsColumn
-          && !isInferSchemaEnabled && isSingleCharacterDelimiter) {
+          && !isInferSchemaEnabled && isSingleCharacterDelimiter && parsesTimestampsLikeSpark) {
           CometBatchScanExec(
             scanExec.clone().asInstanceOf[BatchScanExec],
             runtimeFilters = scanExec.runtimeFilters)
@@ -1041,9 +1063,6 @@ case class CometScanRule(session: SparkSession)
             "Comet Scan only supports Parquet and Iceberg Parquet file formats")
     }
   }
-
-  private def isDynamicPruningFilter(e: Expression): Boolean =
-    e.exists(_.isInstanceOf[PlanExpression[_]])
 
   /**
    * Detects AQE DPP (SubqueryAdaptiveBroadcastExec), as opposed to non-AQE DPP.
