@@ -376,13 +376,40 @@ object CometArrayExcept
         return None
       case None =>
     }
-    val leftArrayExprProto = exprToProtoInternal(expr.left, inputs, binding)
-    val rightArrayExprProto = exprToProtoInternal(expr.right, inputs, binding)
+
+    // Fix for issue #3646: Normalize element type nullability to avoid DataFusion type mismatch.
+    // DataFusion's array_except requires both arrays to have the same element nullability.
+    // Without this normalization, we get errors like:
+    // "array_except received incompatible types: List(Int32), List(non-null Int32)"
+    val leftType = expr.left.dataType.asInstanceOf[ArrayType]
+    val rightType = expr.right.dataType.asInstanceOf[ArrayType]
+
+    val normalizedLeft = if (!leftType.containsNull && rightType.containsNull) {
+      // Left is non-null but right is nullable, cast left to nullable
+      org.apache.spark.sql.catalyst.expressions.Cast(
+        expr.left,
+        ArrayType(leftType.elementType, containsNull = true))
+    } else {
+      expr.left
+    }
+
+    val normalizedRight = if (leftType.containsNull && !rightType.containsNull) {
+      // Right is non-null but left is nullable, cast right to nullable
+      org.apache.spark.sql.catalyst.expressions.Cast(
+        expr.right,
+        ArrayType(rightType.elementType, containsNull = true))
+    } else {
+      expr.right
+    }
+
+    val leftArrayExprProto = exprToProtoInternal(normalizedLeft, inputs, binding)
+    val rightArrayExprProto = exprToProtoInternal(normalizedRight, inputs, binding)
 
     val arrayExceptScalarExpr =
       scalarFunctionExprToProto("array_except", leftArrayExprProto, rightArrayExprProto)
     arrayExceptScalarExpr
   }
+
 }
 
 object CometArrayJoin
