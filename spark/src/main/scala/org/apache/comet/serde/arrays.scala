@@ -334,6 +334,14 @@ object CometArrayExcept
 
   private val incompatReason = "Null handling and ordering may differ from Spark"
 
+  // Helper function to recursively make an array type fully nullable
+  // This ensures nested arrays are also made nullable at all levels
+  private def makeRecursivelyNullable(dt: DataType): DataType = dt match {
+    case ArrayType(elementType, _) =>
+      ArrayType(makeRecursivelyNullable(elementType), containsNull = true)
+    case other => other
+  }
+
   override def getIncompatibleReasons(): Seq[String] = Seq(incompatReason)
 
   override def getSupportLevel(expr: ArrayExcept): SupportLevel = {
@@ -377,27 +385,27 @@ object CometArrayExcept
       case None =>
     }
 
-    // Fix for issue #3646: Normalize element type nullability to avoid DataFusion type mismatch.
-    // DataFusion's array_except requires both arrays to have the same element nullability.
-    // Without this normalization, we get errors like:
-    // "array_except received incompatible types: List(Int32), List(non-null Int32)"
-    val leftType = expr.left.dataType.asInstanceOf[ArrayType]
-    val rightType = expr.right.dataType.asInstanceOf[ArrayType]
+    // Fix for issue #3646: Normalize element type nullability recursively to avoid DataFusion
+    // type mismatch. DataFusion's array_except requires both arrays to have the same element
+    // nullability at all levels (including nested arrays).
+    // 
+    // We recursively make both types fully nullable to match the existing widen-nullability
+    // behavior of CometCreateArray. This ensures compatibility with DataFusion's type system
+    // while preserving the ability to handle nested arrays.
+    val leftType = expr.left.dataType
+    val rightType = expr.right.dataType
+    
+    val normalizedLeftType = makeRecursivelyNullable(leftType)
+    val normalizedRightType = makeRecursivelyNullable(rightType)
 
-    val normalizedLeft = if (!leftType.containsNull && rightType.containsNull) {
-      // Left is non-null but right is nullable, cast left to nullable
-      org.apache.spark.sql.catalyst.expressions.Cast(
-        expr.left,
-        ArrayType(leftType.elementType, containsNull = true))
+    val normalizedLeft = if (leftType != normalizedLeftType) {
+      org.apache.spark.sql.catalyst.expressions.Cast(expr.left, normalizedLeftType)
     } else {
       expr.left
     }
 
-    val normalizedRight = if (leftType.containsNull && !rightType.containsNull) {
-      // Right is non-null but left is nullable, cast right to nullable
-      org.apache.spark.sql.catalyst.expressions.Cast(
-        expr.right,
-        ArrayType(rightType.elementType, containsNull = true))
+    val normalizedRight = if (rightType != normalizedRightType) {
+      org.apache.spark.sql.catalyst.expressions.Cast(expr.right, normalizedRightType)
     } else {
       expr.right
     }
@@ -409,9 +417,7 @@ object CometArrayExcept
       scalarFunctionExprToProto("array_except", leftArrayExprProto, rightArrayExprProto)
     arrayExceptScalarExpr
   }
-
 }
-
 object CometArrayJoin
     extends CometExpressionSerde[ArrayJoin]
     with CometTypeShim
