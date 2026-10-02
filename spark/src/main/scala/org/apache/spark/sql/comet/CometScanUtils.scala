@@ -154,7 +154,7 @@ object CometScanUtils {
       }
       requiresRebase
     } finally {
-      pool.shutdownNow()
+      val _ = pool.shutdownNow()
     }
   }
 
