@@ -56,6 +56,11 @@ impl NormalizeNaNAndZero {
         Self { data_type, child }
     }
 
+    /// Whether `evaluate` cannot fail, which it does by panicking for anything but a float.
+    pub(crate) fn is_infallible(&self) -> bool {
+        matches!(self.data_type, DataType::Float32 | DataType::Float64)
+    }
+
     /// Wraps a Float32 or Float64 key so that keys equal under Spark's SQL ordering also compare
     /// equal in Arrow. Other types are returned as is, and so is a key that is already wrapped,
     /// because Spark may have normalized a partition or join key itself.

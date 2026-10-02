@@ -15,15 +15,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::{
-    execution::utils::bytes_to_i128,
-    jvm_bridge::{BinaryWrapper, JVMClasses, StringWrapper},
-};
 use arrow::array::RecordBatch;
 use arrow::datatypes::{DataType, Schema, TimeUnit};
 use datafusion::common::{internal_err, ScalarValue};
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_expr::PhysicalExpr;
+use datafusion_comet_common::bytes_to_i128;
+use datafusion_comet_jni_bridge::{jni_static_call, BinaryWrapper, JVMClasses, StringWrapper};
 use jni::{
     objects::{JByteArray, JString},
     sys::{jboolean, jbyte, jint, jlong, jshort},

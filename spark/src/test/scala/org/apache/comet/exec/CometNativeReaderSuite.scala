@@ -36,7 +36,7 @@ import org.apache.spark.sql.functions.{array, col}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
-import org.apache.comet.{CometConf, CometNativeException}
+import org.apache.comet.{CometConf, CometNativeException, ExtendedExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
 
 class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper {
@@ -1366,6 +1366,52 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
         rc.endMessage()
       },
       StructType(Seq(withFieldId("x", 1), withFieldId("y", 1))))
+  }
+
+  test("native scan declines a nested struct whose field names collide case-insensitively") {
+    // #6136: `s` in the file has the requested type, so the native scan read it positionally
+    // instead of raising like Spark. `writeDirect` reproduces the issue's metadata-free file.
+    withTempPath { dir =>
+      writeDirect(
+        new Path(dir.getCanonicalPath, "case-colliding-names.parquet").toString,
+        """message spark_schema {
+          |  optional group s {
+          |    optional int64 x;
+          |    optional int64 X;
+          |  }
+          |}
+        """.stripMargin,
+        { rc: RecordConsumer =>
+          rc.startMessage()
+          rc.startField("s", 0)
+          rc.startGroup()
+          rc.startField("x", 0)
+          rc.addLong(10L)
+          rc.endField("x", 0)
+          rc.startField("X", 1)
+          rc.addLong(20L)
+          rc.endField("X", 1)
+          rc.endGroup()
+          rc.endField("s", 0)
+          rc.endMessage()
+        })
+
+      // Spark's analyzer rejects this schema case-insensitively, so analyze case-sensitively and
+      // plan and run case-insensitively.
+      withSQLConf(SQLConf.CASE_SENSITIVE.key -> "true") {
+        val df = spark.read.schema("s struct<x: bigint, X: bigint>").parquet(dir.getCanonicalPath)
+        withSQLConf(SQLConf.CASE_SENSITIVE.key -> "false") {
+          val plan = df.queryExecution.executedPlan
+          val reasons = new ExtendedExplainInfo().getFallbackReasons(plan)
+          assert(reasons.exists(_.contains("collide case-insensitively")), s"$reasons\n$plan")
+          val messages = causeMessages(intercept[Exception](df.collect()))
+          assert(
+            messages.contains(
+              """Found duplicate field(s) "x": [x, X] in case-insensitive mode"""),
+            messages)
+        }
+      }
+    }
   }
 
   /** Write a Parquet file using a raw RecordConsumer for full schema control. */
