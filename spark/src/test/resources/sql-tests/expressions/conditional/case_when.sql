@@ -33,3 +33,7 @@ SELECT CASE WHEN s IS NULL THEN 'null_val' ELSE s END FROM test_case_when
 -- literal arguments
 query
 SELECT CASE WHEN i = 1 THEN s WHEN i = 2 THEN 'fixed' ELSE s END FROM test_case_when
+
+-- A NullType result whose rows come from both the THEN and the implicit ELSE runs natively.
+query expect_native(casewhen)
+SELECT CASE WHEN i = 1 THEN aggregate(array(i), NULL, (acc, x) -> NULL) END FROM test_case_when

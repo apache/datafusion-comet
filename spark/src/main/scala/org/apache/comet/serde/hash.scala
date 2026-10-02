@@ -20,7 +20,7 @@
 package org.apache.comet.serde
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, Murmur3Hash, Sha1, Sha2, XxHash64}
-import org.apache.spark.sql.types.{ArrayType, DataType, DecimalType, IntegerType, LongType, MapType, StringType, StructType}
+import org.apache.spark.sql.types.{ArrayType, DataType, DecimalType, IntegerType, LongType, MapType, NullType, StringType, StructType}
 
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, isTimeType, scalarFunctionExprToProtoWithReturnType, serializeDataType, supportedDataType}
 
@@ -119,9 +119,15 @@ private object HashUtils {
   private val unsupportedDecimalReason =
     "`DecimalType` with precision > 18 is not supported (Spark hashes via Java `BigDecimal`)"
   private val unsupportedTimeTypeReason = "`TimeType` is not supported"
+  private val unsupportedNullTypeReason =
+    "`NullType` is not supported (the native hasher has no arm for it)"
 
   val unsupportedReasons: Seq[String] =
-    Seq(unsupportedDecimalReason, unsupportedTimeTypeReason, "Unsupported child data type")
+    Seq(
+      unsupportedDecimalReason,
+      unsupportedTimeTypeReason,
+      unsupportedNullTypeReason,
+      "Unsupported child data type")
 
   def supportLevelForChildren(expr: Expression): SupportLevel = {
     expr.children.iterator
@@ -135,6 +141,7 @@ private object HashUtils {
 
   private def unsupportedReasonFor(dt: DataType): Option[String] = dt match {
     case d: DecimalType if d.precision > 18 => Some(unsupportedDecimalReason)
+    case _: NullType => Some(unsupportedNullTypeReason)
     case s: StructType =>
       s.fields.iterator.flatMap(f => unsupportedReasonFor(f.dataType).iterator).toSeq.headOption
     case a: ArrayType => unsupportedReasonFor(a.elementType)

@@ -44,10 +44,10 @@
 ## size
 
 - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
-- Spark 3.5.8 (audited 2026-05-27): baseline. `Size(child, legacySizeOfNull) extends UnaryExpression with ExpectsInputTypes`; `inputTypes = Seq(TypeCollection(ArrayType, MapType)) -> IntegerType`. `legacySizeOfNull=true` returns `-1` for NULL input; `false` returns NULL. Comet routes via `CometSize`, which emits a `CaseWhen(isNotNull(child), size_scalar(child), Literal(legacySizeOfNull))`.
+- Spark 3.5.8 (audited 2026-05-27): baseline. `Size(child, legacySizeOfNull) extends UnaryExpression with ExpectsInputTypes`; `inputTypes = Seq(TypeCollection(ArrayType, MapType)) -> IntegerType`. `legacySizeOfNull=true` returns `-1` for NULL input; `false` returns NULL. Comet routes via `CometSize`, which emits `size_scalar(child)` directly when `legacySizeOfNull` is true or the child is non-nullable (native `size` already answers `-1` for NULL), and otherwise `CaseWhen(isNotNull(child), size_scalar(child), NULL)`; a nullable non-deterministic child falls back to Spark, since the guard would evaluate it twice.
 - Spark 4.0.1 (audited 2026-05-27): byte-for-byte identical to 3.5.8.
 - Spark 4.1.1 (audited 2026-05-27): byte-for-byte identical to 3.5.8.
-- Both `ArrayType` and `MapType` inputs are `Compatible` and run natively; every other child type is `Unsupported`.
+- `ArrayType` and `MapType` inputs are `Compatible` and run natively, except for the nullable non-deterministic child above; every other child type is `Unsupported`.
 - Performance (tuned 2026-07-10, PR [#4877](https://github.com/apache/datafusion-comet/pull/4877)): compute list row sizes from the offset buffer instead of allocating a sliced `ArrayRef` per row via `list_array.value(i)`, removing one heap allocation per row. ~94% faster. Benchmark: `benches/array_size.rs`.
 
 [Spark Expression Support]: ../../user-guide/latest/expressions.md

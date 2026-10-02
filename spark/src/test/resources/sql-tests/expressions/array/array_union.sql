@@ -47,7 +47,9 @@ query
 SELECT a, b, array_union(a, b) FROM test_union_nulls
 
 -- empty array combinations
-query
+-- Both sides are Null-typed empty arrays; the NullType-element gate hands them to the JVM
+-- codegen dispatcher, which keeps the projection in the Comet pipeline.
+query expect_dispatch(array_union)
 SELECT array_union(array(), array()) FROM test_union_nulls
 
 query
@@ -56,7 +58,7 @@ SELECT array_union(array(), array(1, 2)) FROM test_union_nulls
 query
 SELECT array_union(array(1, 2), array()) FROM test_union_nulls
 
-query
+query expect_dispatch(array_union)
 SELECT array_union(array(), array(NULL)) FROM test_union_nulls
 
 -- both-NULL arrays
@@ -255,3 +257,41 @@ SELECT array_union(array(NULL, 99), b) FROM test_array_union
 -- conditional (CASE WHEN) arrays
 query
 SELECT array_union(CASE WHEN a IS NOT NULL THEN a ELSE array(0) END, b) FROM test_array_union
+
+-- DataFusion's set-op kernel treats a Null element type as "return distinct(other side)" and
+-- drops the NULL entries the Null-typed list actually holds, so NullType-element unions run
+-- through the JVM codegen dispatcher instead of the kernel.
+query expect_dispatch(array_union)
+SELECT array_union(transform(a, x -> NULL), array()) FROM test_array_union
+
+-- The set-op kernel asserts identical element types, nested nullability included, and two sides
+-- of one Spark type can still reach it with different nested nullability: `map_entries` keeps
+-- its key field non-nullable, while the JVM codegen dispatcher and the native constructors
+-- declare every nested field nullable. Both sides are cast to a deeply-nullable element type
+-- first; without that the kernel's type assertion fails the query.
+query expect_native(array_union)
+SELECT array_union(map_entries(map(coalesce(b[0], 0), 1)), transform(array(coalesce(b[0], 0)), x -> named_struct('key', x, 'value', 1))) FROM test_array_union
+
+-- With case-insensitive analysis Spark accepts struct sides whose field names differ only in
+-- case, without a cast, and compares the structs by position. The set-op kernel's type
+-- assertion compares field names too, so both sides are cast to the set op's own element type.
+query expect_native(array_union)
+SELECT array_union(array(named_struct('a', b[0])), array(named_struct('A', b[0]))) FROM test_array_union
+
+query expect_native(array_union)
+SELECT array_union(transform(b, x -> named_struct('a', x, 'n', NULL)), transform(b, x -> named_struct('A', x, 'n', NULL))) FROM test_array_union
+
+-- Spark names a merged IF / CASE struct's fields after its first branch, a native CASE after
+-- its ELSE branch. Here the IF side's Spark type already equals the set op's element type, so
+-- it is cast anyway: its native type does not.
+statement
+CREATE TABLE test_union_branch_names(id bigint, s struct<a:bigint>) USING parquet
+
+statement
+INSERT INTO test_union_branch_names VALUES (0, named_struct('a', 1)), (1, named_struct('a', 2)), (2, NULL)
+
+query expect_native(array_union)
+SELECT array_union(array(IF(id < 0, s, named_struct('A', id))), array(s)) FROM test_union_branch_names
+
+query expect_native(array_union)
+SELECT array_union(array(CASE WHEN id < 0 THEN s ELSE named_struct('A', id) END), array(s)) FROM test_union_branch_names

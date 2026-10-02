@@ -41,7 +41,7 @@ import org.apache.spark.sql.execution.adaptive.ShuffleQueryStageExec
 import org.apache.spark.sql.execution.exchange.{ENSURE_REQUIREMENTS, ShuffleExchangeExec, ShuffleExchangeLike, ShuffleOrigin}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics, SQLShuffleReadMetricsReporter, SQLShuffleWriteMetricsReporter}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, StructField, StructType, TimestampNTZType, TimestampType}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, NullType, ShortType, StringType, StructField, StructType, TimestampNTZType, TimestampType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.MutablePair
 import org.apache.spark.util.collection.unsafe.sort.{PrefixComparators, RecordComparator}
@@ -670,11 +670,37 @@ object CometShuffleExchangeExec
         if (!config.get(conf)) {
           reasons += s"${config.key} is disabled"
         }
+        // Unless it places rows by position, native round-robin hashes the leading
+        // `maxHashColumns` columns (all of them for 0), and the native hasher has no NullType
+        // arm, at the top level or nested.
+        val hashed =
+          if (positionalRoundRobinSpec(partitioning, s.child).isDefined) {
+            Seq.empty
+          } else {
+            val maxHashColumns =
+              CometConf.COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_MAX_HASH_COLUMNS.get(conf)
+            if (maxHashColumns <= 0) inputs else inputs.take(maxHashColumns)
+          }
+        if (hashed.exists(a => containsNullType(a.dataType))) {
+          reasons += nullTypeRoundRobinReason
+        }
       case _ =>
         reasons +=
           s"unsupported Spark partitioning for native shuffle: ${partitioning.getClass.getName}"
     }
     reasons.toSeq
+  }
+
+  private val nullTypeRoundRobinReason =
+    "native round-robin shuffle hashes the row's columns, and the native hasher does not " +
+      "support NullType columns or fields"
+
+  private def containsNullType(dt: DataType): Boolean = dt match {
+    case NullType => true
+    case ArrayType(element, _) => containsNullType(element)
+    case MapType(key, value, _) => containsNullType(key) || containsNullType(value)
+    case StructType(fields) => fields.exists(f => containsNullType(f.dataType))
+    case _ => false
   }
 
   /**

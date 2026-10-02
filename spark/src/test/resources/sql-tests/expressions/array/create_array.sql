@@ -140,3 +140,26 @@ SELECT array(named_struct('a', 1), named_struct('a', a)) FROM test_create_array
 -- Empty array cast to a nested array type: the element type has to survive with no children.
 query
 SELECT CAST(array() AS ARRAY<ARRAY<INT>>)
+
+-- A non-foldable all-NullType argument (built by the JVM codegen dispatcher) would make native
+-- make_array collapse the whole batch into a single list row, so the whole expression runs
+-- through the dispatcher instead.
+query expect_dispatch(array)
+SELECT array(aggregate(arr, NULL, (acc, x) -> NULL)) FROM test_create_array_complex
+
+-- A foldable NullType argument is not necessarily a scalar at native: with constant folding
+-- excluded (as in these fixtures), `element_at(array(NULL), 1)` and a dispatched `map(...)` chain
+-- arrive as one value per row, and make_array would return one list row for the whole batch. Only
+-- a literal is guaranteed to arrive as a scalar, so anything else goes through the dispatcher.
+statement
+CREATE TABLE test_create_array_batch(id bigint) USING parquet
+
+-- One file, so the rows share a batch.
+statement
+INSERT INTO test_create_array_batch SELECT id FROM range(0, 4, 1, 1)
+
+query expect_dispatch(array)
+SELECT id, array(element_at(array(NULL), 1)) FROM test_create_array_batch
+
+query expect_dispatch(array)
+SELECT id, array(map_values(map(1, NULL))[0]) FROM test_create_array_batch

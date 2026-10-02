@@ -35,7 +35,8 @@ import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.types.{BinaryType, DataType, StringType}
 
-import org.apache.comet.codegen.{CometBatchKernel, CometBatchKernelCodegen}
+import org.apache.comet.DataTypeSupport
+import org.apache.comet.codegen.{CometBatchKernel, CometBatchKernelCodegen, DispatchOccurrence}
 import org.apache.comet.codegen.CometBatchKernelCodegen.{ArrayColumnSpec, ArrowColumnSpec, MapColumnSpec, ScalarColumnSpec, StructColumnSpec, StructFieldSpec}
 import org.apache.comet.udf.CometUDF
 
@@ -81,7 +82,9 @@ class CometScalaUDFCodegen extends CometUDF with Logging {
    * Per-task cache keyed on serialized expression bytes plus per-column specs. The deserialized
    * `boundExpr` carries mutable state (`NamedLambdaVariable.value` for HOFs, `Rand`'s
    * `XORShiftRandom`) that must not be shared across concurrent tasks running the same query;
-   * keeping the cache per-task gives each task its own copy. Guarded by `this.synchronized`.
+   * keeping the cache per-task gives each task its own copy. Within a task, two occurrences of
+   * one non-deterministic expression get their own entries too, since the serde ships each with
+   * its own [[DispatchOccurrence]]. Guarded by `this.synchronized`.
    */
   private val kernelCache
       : mutable.Map[CometScalaUDFCodegen.CacheKey, CometScalaUDFCodegen.CacheEntry] =
@@ -155,9 +158,10 @@ class CometScalaUDFCodegen extends CometUDF with Logging {
           .getOrElse(classOf[Expression].getClassLoader)
         val boundExpr =
           try {
-            SparkEnv.get.closureSerializer
-              .newInstance()
-              .deserialize[Expression](ByteBuffer.wrap(bytes), loader)
+            DispatchOccurrence.untag(
+              SparkEnv.get.closureSerializer
+                .newInstance()
+                .deserialize[Expression](ByteBuffer.wrap(bytes), loader))
           } catch {
             case NonFatal(t) =>
               logError(
@@ -169,9 +173,13 @@ class CometScalaUDFCodegen extends CometUDF with Logging {
         val compiled = CometBatchKernelCodegen.compile(boundExpr, specs)
         val kernel = compiled.newInstance()
         kernel.init(CometScalaUDFCodegen.currentPartitionIndex())
+        // Exported deep-nullable, matching the return type the serde declares
+        // (`CometScalaUDF`): nested nullability is Arrow metadata only, so the kernel still
+        // writes with Spark's flags, but native consumers see the same field types a native
+        // producer of this Spark type would give them.
         val outputField = CometBatchKernelCodegen.toFfiArrowField(
           "codegen_result",
-          boundExpr.dataType,
+          DataTypeSupport.deepNullable(boundExpr.dataType),
           boundExpr.nullable)
         val entry =
           CometScalaUDFCodegen.CacheEntry(compiled, kernel, boundExpr.dataType, outputField)

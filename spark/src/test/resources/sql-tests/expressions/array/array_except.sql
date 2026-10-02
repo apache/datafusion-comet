@@ -106,3 +106,17 @@ INSERT INTO test_except_flt_negzero VALUES
 
 query ignore(https://issues.apache.org/jira/browse/SPARK-54918)
 SELECT a, b, array_except(a, b) FROM test_except_flt_negzero
+
+-- Coverage for nested-list elements from two native producers, `map_keys` on one side and a
+-- lambda on the other; the sides are cast to one deeply-nullable element type like the other set
+-- ops. Not a regression witness: both producers already declare a nullable list item, so the
+-- except kernel accepts the pair without the cast. A nested list rather than a struct, because
+-- `isTypeSupported` declines struct elements before `convert` runs.
+query expect_native(array_except)
+SELECT array_except(array(map_keys(map(coalesce(b[0], 0), 1))), transform(array(coalesce(b[0], 0)), x -> array(x))) FROM test_array_except
+
+-- Struct elements have no native kernel. The branch reports Unsupported, which the JVM codegen
+-- dispatcher runs even with this file's allowIncompatible=true (the Incompatible branch would
+-- hand them to the kernel instead).
+query expect_dispatch(array_except)
+SELECT array_except(transform(a, x -> named_struct('i', x)), transform(b, x -> named_struct('i', x))) FROM test_array_except

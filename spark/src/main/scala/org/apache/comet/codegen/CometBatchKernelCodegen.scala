@@ -19,12 +19,16 @@
 
 package org.apache.comet.codegen
 
+import scala.util.control.NonFatal
+
 import org.apache.arrow.vector._
 import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
 import org.apache.arrow.vector.types.pojo.Field
 import org.apache.spark.internal.Logging
-import org.apache.spark.sql.catalyst.expressions.{BoundReference, Expression, Literal, Unevaluable}
+import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.catalyst.expressions.{ApplyFunctionExpression, BoundReference, CallMethodViaReflection, Expression, Literal, Nondeterministic, PlanExpression, ScalaUDF, UnaryExpression, Unevaluable}
 import org.apache.spark.sql.catalyst.expressions.codegen._
+import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
@@ -82,11 +86,8 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
    * Type surface the kernel covers on both input and output sides. Recursive: complex types are
    * supported when their children are.
    *
-   * Duplicate struct field names are excluded, an output-side rule: Arrow addresses a
-   * `StructVector`'s children by name, so `named_struct('x', 10, 'x', 20)` collapses into a
-   * single child and the generated writer NPEs on the missing ordinal-1 vector.
-   * `CometCreateNamedStruct` declines them on the native path for the same reason, but a struct
-   * nested inside a dispatcher-built value (a `CreateMap` value) never reaches that check.
+   * Duplicate struct field names are a separate rule, [[hasDuplicateStructFieldNames]], so that
+   * [[canHandle]] can name them in its reason.
    *
    * The `StringType` case admits non-default collations (Spark 4+), on purpose. Collation is
    * carried by the expression, not by the value: the kernel runs Spark's own `doGenCode` against
@@ -102,8 +103,15 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
    * operator against the Catalyst `DataType`, which keeps its collation, and does not depend on
    * what this predicate admits. Rejecting collated strings here would force a full Spark fallback
    * for a route that is already correct.
+   *
+   * `NullType` is output-only: [[CometBatchKernelCodegenOutput]] can write an all-null Arrow
+   * `NullVector`, but `CometScalaUDFCodegen.specFor` cannot build an [[ArrowColumnSpec]] for one,
+   * so a `NullType` input (nested or not) has to keep falling back to Spark.
    */
-  def isSupportedDataType(dt: DataType): Boolean = dt match {
+  def isSupportedDataType(dt: DataType): Boolean = isSupportedDataType(dt, allowNullType = false)
+
+  private def isSupportedDataType(dt: DataType, allowNullType: Boolean): Boolean = dt match {
+    case NullType => allowNullType
     case BooleanType | ByteType | ShortType | IntegerType | LongType => true
     case FloatType | DoubleType => true
     case _: DecimalType => true
@@ -111,15 +119,42 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
     case DateType | TimestampType | TimestampNTZType => true
     case dt if isTimeType(dt) => true
     case _: YearMonthIntervalType | _: DayTimeIntervalType | CalendarIntervalType => true
-    case ArrayType(inner, _) => isSupportedDataType(inner)
+    case ArrayType(inner, _) => isSupportedDataType(inner, allowNullType)
+    case st: StructType => st.fields.forall(f => isSupportedDataType(f.dataType, allowNullType))
+    case mt: MapType =>
+      isSupportedDataType(mt.keyType, allowNullType) &&
+      isSupportedDataType(mt.valueType, allowNullType)
+    case _ => false
+  }
+
+  /**
+   * Spark keeps duplicate struct field names as distinct positional fields, but Arrow's
+   * `StructVector` keys its children by name (`ConflictPolicy.CONFLICT_REPLACE`), so
+   * `named_struct('x', 10, 'x', 20)` collapses into a single child and the generated
+   * ordinal-based child casts hit a missing or differently typed vector. `CometCreateNamedStruct`
+   * refuses the same shape on the native path, but whole-expression dispatch never consults that
+   * rule for a `named_struct` nested inside e.g. a `transform` lambda or a `CreateMap` value.
+   */
+  private def hasDuplicateStructFieldNames(dt: DataType): Boolean = dt match {
     case st: StructType =>
       // `fieldNames` rebuilds an array on each call, so read it once.
       val names = st.fieldNames
-      names.distinct.length == names.length &&
-      st.fields.forall(f => isSupportedDataType(f.dataType))
-    case mt: MapType => isSupportedDataType(mt.keyType) && isSupportedDataType(mt.valueType)
+      names.distinct.length != names.length ||
+      st.fields.exists(f => hasDuplicateStructFieldNames(f.dataType))
+    case ArrayType(inner, _) => hasDuplicateStructFieldNames(inner)
+    case MapType(k, v, _) => hasDuplicateStructFieldNames(k) || hasDuplicateStructFieldNames(v)
     case _ => false
   }
+
+  /** Why `dt` cannot cross the kernel boundary as `side` ("output" or "input"), if it cannot. */
+  private def typeRejection(dt: DataType, allowNullType: Boolean, side: String): Option[String] =
+    if (!isSupportedDataType(dt, allowNullType)) {
+      Some(s"codegen dispatch: unsupported $side type $dt")
+    } else if (hasDuplicateStructFieldNames(dt)) {
+      Some(s"codegen dispatch: unsupported $side type $dt (duplicate struct field name)")
+    } else {
+      None
+    }
 
   /**
    * Mirrors `WholeStageCodegenExec.numOfNestedFields` so [[canHandle]] can reuse
@@ -138,17 +173,19 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
    * back cleanly rather than crashing the Janino compile at execute time.
    *
    * Checks every `BoundReference`'s data type and the root `expr.dataType` against
-   * [[isSupportedDataType]], rejects aggregates / generators / `Unevaluable`, and gates total
-   * nested-field count on `spark.sql.codegen.maxFields`.
+   * [[isSupportedDataType]] and [[hasDuplicateStructFieldNames]], rejects aggregates, generators
+   * and `Unevaluable`, and gates total nested-field count on `spark.sql.codegen.maxFields`.
    */
   def canHandle(boundExpr: Expression): Option[String] = {
-    if (!isSupportedDataType(boundExpr.dataType)) {
-      return Some(s"codegen dispatch: unsupported output type ${boundExpr.dataType}")
+    typeRejection(boundExpr.dataType, allowNullType = true, "output") match {
+      case Some(reason) => return Some(reason)
+      case None =>
     }
     // Mirror WSCG's `spark.sql.codegen.maxFields` gate. Wide schemas blow the generated class's
     // typed input field count, the typed-getter switch, and the constant pool. Refuse here so the
     // operator falls back to Spark cleanly rather than tripping a Janino compile failure
-    // mid-execution (Comet has no recovery for that).
+    // mid-execution: the interpreted fallback in `compile` only replaces the expression's own
+    // code, and still generates the same typed Arrow accessors.
     val maxFields = SQLConf.get.wholeStageMaxNumFields
     val totalFields = numOfNestedFields(boundExpr.dataType) +
       boundExpr.collect { case b: BoundReference => numOfNestedFields(b.dataType) }.sum
@@ -167,15 +204,14 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
     // `CometScalaUDFCodegen.kernelCache` prevents concurrent partitions from racing on shared
     // state inside the expression.
     //
-    // Nondeterministic / stateful expressions are accepted: each cache entry holds one kernel
+    // Nondeterministic / stateful built-ins are accepted: each cache entry holds one kernel
     // instance with a single `init(partitionIndex)` call, so `Rand` / `MonotonicallyIncreasingID`
-    // state advances correctly across batches.
+    // state advances correctly across batches, and each occurrence gets its own entry
+    // (`DispatchOccurrence`). A non-deterministic user function is refused (`userStateReason`).
     //
-    // `ExecSubqueryExpression` (`ScalarSubquery`, `InSubqueryExec`) is accepted: the surrounding
-    // Comet operator's inherited `SparkPlan.waitForSubqueries` populates the subquery's
-    // `result` field before evaluation. The closure serializer captures that value into the
-    // arg-0 bytes, and the dispatcher keys its compile cache on those bytes, so distinct subquery
-    // results produce distinct cache entries.
+    // A subquery is refused (`subqueryReason`): the plan is serialized before the operator's
+    // `prepare` starts its subqueries, so the shipped copy never receives the result and its
+    // evaluation fails with "has not finished".
     //
     // `Unevaluable`: rejected by default. `isCodegenInertUnevaluable` exempts version-specific
     // leaves that are `Unevaluable` but never invoked by codegen (e.g. Spark 4.0's
@@ -193,12 +229,30 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
             "(aggregate, generator, or unevaluable)")
       case None =>
     }
-    val badRef = boundExpr.collectFirst {
-      case b: BoundReference if !isSupportedDataType(b.dataType) =>
-        b
+    if (boundExpr.exists(_.isInstanceOf[PlanExpression[_]])) {
+      return Some(subqueryReason)
     }
-    badRef.map(b =>
-      s"codegen dispatch: unsupported input type ${b.dataType} at ordinal ${b.ordinal}")
+    if (boundExpr.exists(DispatchOccurrence.holdsSharedState)) {
+      return Some(userStateReason)
+    }
+    boundExpr.collectFirst(Function.unlift(inputRejection))
+  }
+
+  val userStateReason: String =
+    "codegen dispatch: a non-deterministic user-defined function or reflected method keeps " +
+      "state that Spark shares between all of its calls and advances row by row, which the " +
+      "dispatcher, evaluating each expression over a whole batch, cannot reproduce"
+
+  val subqueryReason: String =
+    "codegen dispatch: a subquery inside the expression would be evaluated before its result " +
+      "is available"
+
+  /** Why `expr` cannot be read as a codegen input, if it cannot. */
+  private def inputRejection(expr: Expression): Option[String] = expr match {
+    case b: BoundReference =>
+      typeRejection(b.dataType, allowNullType = false, "input")
+        .map(reason => s"$reason at ordinal ${b.ordinal}")
+    case _ => None
   }
 
   /**
@@ -215,7 +269,27 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
   def toFfiArrowField(name: String, dataType: DataType, nullable: Boolean): Field =
     CometBatchKernelCodegenOutput.toFfiArrowField(name, dataType, nullable)
 
-  def compile(boundExpr: Expression, inputSchema: Seq[ArrowColumnSpec]): CompiledKernel = {
+  def compile(boundExpr: Expression, inputSchema: Seq[ArrowColumnSpec]): CompiledKernel =
+    try {
+      compileAs(boundExpr, inputSchema)
+    } catch {
+      // Spark's own `doGenCode` does not always compile: `ElementAt` on an in-bounds literal
+      // index is non-nullable, yet with ANSI off its generated code still assigns an undeclared
+      // `isNull` on the out-of-bounds branch. Spark's whole-stage codegen falls back to the
+      // interpreted path on a compile failure, and so does the kernel: the expression is wrapped
+      // in `InterpretedKernelExpr`, a `CodegenFallback`, so only the Arrow reads and writes stay
+      // generated and the expression itself runs through its interpreted `eval`.
+      case NonFatal(t) if !boundExpr.isInstanceOf[InterpretedKernelExpr] =>
+        logWarning(
+          s"CometBatchKernelCodegen: generated code for ${boundExpr.getClass.getSimpleName} " +
+            "did not compile; evaluating it through its interpreted eval instead",
+          t)
+        compileAs(InterpretedKernelExpr(boundExpr), inputSchema)
+    }
+
+  private def compileAs(
+      boundExpr: Expression,
+      inputSchema: Seq[ArrowColumnSpec]): CompiledKernel = {
     val src = generateSource(boundExpr, inputSchema)
     val (clazz, _) =
       try {
@@ -620,5 +694,77 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
       case ScalarColumnSpec(c, n) => Some((c, n))
       case _ => None
     }
+  }
+}
+
+/**
+ * Runs `child` through its interpreted `eval` inside a dispatcher kernel. Used when the code
+ * Spark generates for `child` does not compile (see `CometBatchKernelCodegen.compile`).
+ * `CodegenFallback.doGenCode` emits one `eval(row)` call against the kernel's typed Arrow getters
+ * and registers the partition initialization of any `Nondeterministic` node under it.
+ */
+private[comet] case class InterpretedKernelExpr(child: Expression)
+    extends UnaryExpression
+    with CodegenFallback {
+  override def dataType: DataType = child.dataType
+  override def nullable: Boolean = child.nullable
+  override def eval(input: InternalRow): Any = child.eval(input)
+  override protected def withNewChildInternal(newChild: Expression): InterpretedKernelExpr =
+    copy(child = newChild)
+}
+
+/**
+ * Ships one occurrence of a non-deterministic `child` to the dispatcher. The dispatcher caches a
+ * kernel instance per serialized expression, and a non-deterministic kernel keeps state across
+ * batches (`monotonically_increasing_id`'s counter, `rand`'s generator). Two identical
+ * occurrences in one plan serialize to the same bytes, so without a distinct `occurrence` the
+ * second would continue the first one's state, where Spark gives each its own. The dispatcher
+ * unwraps this before it compiles `child`, so it never reaches generated code.
+ *
+ * Only the state of Catalyst's `Nondeterministic` nodes is per occurrence in Spark. A
+ * non-deterministic user function (`ScalaUDF`, `Invoke`, `StaticInvoke`,
+ * `ApplyFunctionExpression`) keeps its state in one object every call references, and a reflected
+ * method (`CallMethodViaReflection`) can keep it in static fields, which no arrangement of
+ * kernels reproduces, so `CometBatchKernelCodegen.canHandle` refuses them (see
+ * [[DispatchOccurrence.holdsSharedState]]).
+ */
+private[comet] case class DispatchOccurrence(child: Expression, occurrence: Long)
+    extends UnaryExpression
+    with Unevaluable {
+  override def dataType: DataType = child.dataType
+  override def nullable: Boolean = child.nullable
+  override protected def withNewChildInternal(newChild: Expression): DispatchOccurrence =
+    copy(child = newChild)
+}
+
+private[comet] object DispatchOccurrence {
+  private val nextOccurrence = new java.util.concurrent.atomic.AtomicLong()
+
+  /** `expr` as the dispatcher should receive it: tagged when it keeps per-occurrence state. */
+  def tag(expr: Expression): Expression =
+    if (expr.exists(_.isInstanceOf[Nondeterministic])) {
+      DispatchOccurrence(expr, nextOccurrence.getAndIncrement())
+    } else {
+      expr
+    }
+
+  /**
+   * Non-deterministic in itself, whatever its children are, without being a Catalyst
+   * `Nondeterministic`: its state lives in an object the plan shares between its calls.
+   */
+  def holdsSharedState(e: Expression): Boolean = e match {
+    case _: CallMethodViaReflection => true
+    case _: Nondeterministic | _: PlanExpression[_] => false
+    case u: ScalaUDF => !u.udfDeterministic
+    case i: Invoke => !i.isDeterministic
+    case s: StaticInvoke => !s.isDeterministic
+    case f: ApplyFunctionExpression => !f.function.isDeterministic
+    case other => !other.deterministic && other.children.forall(_.deterministic)
+  }
+
+  /** The expression to compile from what the dispatcher received. */
+  def untag(expr: Expression): Expression = expr match {
+    case DispatchOccurrence(child, _) => child
+    case other => other
   }
 }

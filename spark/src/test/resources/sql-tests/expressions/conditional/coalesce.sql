@@ -33,3 +33,19 @@ SELECT coalesce(a, 99) FROM test_coalesce
 -- literal arguments
 query
 SELECT coalesce(NULL, NULL, 99), coalesce(1, NULL, 99), coalesce(NULL)
+
+-- The serde guards every argument but the last with CASE WHEN arg IS NOT NULL THEN arg, and the
+-- two copies of a non-deterministic argument advance their state independently: the THEN copy
+-- can answer NULL for a row the guard selected, in a column declared non-nullable. The JVM
+-- codegen dispatcher evaluates Spark's own code once per row, so it runs there instead.
+query expect_dispatch(coalesce)
+SELECT coalesce(IF(monotonically_increasing_id() % 2 = 0, a, NULL), b, 0) FROM test_coalesce
+
+-- A non-deterministic last argument is the ELSE, serialized and evaluated once, so it stays on
+-- the native CASE.
+query expect_native(coalesce)
+SELECT coalesce(a, monotonically_increasing_id()) FROM test_coalesce
+
+-- A NullType result runs on the native CASE the serde builds.
+query expect_native(coalesce)
+SELECT coalesce(aggregate(array(a), NULL, (acc, x) -> NULL), aggregate(array(b), NULL, (acc, x) -> NULL)) FROM test_coalesce

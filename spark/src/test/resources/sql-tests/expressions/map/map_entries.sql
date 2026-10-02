@@ -63,3 +63,8 @@ SELECT array(
   map_entries(element_at(map(1, map(1, true)), id))[0],
   named_struct('key', 1, 'value', id IS NOT NULL)) AS a
 FROM test_map_entries_nested
+
+-- A NullType map value built by the JVM codegen dispatcher (valueContainsNull=false in Spark)
+-- must reach DataFusion's map_entries declared nullable, or its ListArray build panics
+query
+SELECT map_entries(map_filter(map(), (k, v) -> true)) FROM test_map_entries

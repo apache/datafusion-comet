@@ -468,3 +468,12 @@ INSERT INTO cl_src_map VALUES
 
 query spark_answer_only
 SELECT size(collect_list(m)) FROM cl_src_map
+
+-- Without a grouping key the native final merge can see a nested element with the non-nullable
+-- fields its producer declared, and fails the batch; the serde cannot see the grouping keys, so a
+-- NullType-bearing element stays in Spark either way.
+query expect_fallback(collect_list over a NullType-bearing input falls back to Spark)
+SELECT grp, sort_array(collect_list(named_struct('i', i, 'n', NULL))) FROM cl_src_int GROUP BY grp
+
+query expect_fallback(collect_list over a NullType-bearing input falls back to Spark)
+SELECT sort_array(collect_list(named_struct('i', i, 'n', NULL))) FROM cl_src_int

@@ -80,3 +80,10 @@ SELECT a FROM test_transform WHERE transform(a, x -> array(x)) = nested
 -- all literals (constant folding is disabled by the test harness)
 query
 SELECT transform(array(1, 2, 3), x -> x * x)
+
+-- an untyped empty array leaves the element type as NullType
+query
+SELECT transform(array(), x -> x)
+
+query
+SELECT transform(array(NULL), x -> x)
