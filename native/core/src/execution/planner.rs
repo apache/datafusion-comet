@@ -20,6 +20,7 @@
 pub mod expression_registry;
 pub mod macros;
 pub mod operator_registry;
+mod write;
 
 // Glue that wires the optional Delta integration into core's plan-tree builder.
 // Compiled only under `--features contrib-delta`; default builds carry zero Delta
@@ -35,10 +36,9 @@ mod lance_scan;
 use crate::execution::operators::init_csv_datasource_exec;
 use crate::execution::operators::DynamicFilterJoinExec;
 use crate::execution::operators::IcebergScanExec;
-use crate::execution::operators::IcebergWriteExec;
 use crate::execution::operators::TopKReaderFilterExec;
 use crate::execution::{
-    operators::{ExecutionError, ParquetCompression, ParquetWriterExec, ScanExec, ShuffleScanExec},
+    operators::{ExecutionError, ScanExec, ShuffleScanExec},
     planner::expression_registry::ExpressionRegistry,
     planner::operator_registry::OperatorRegistry,
     serde::{to_arrow_datatype, to_arrow_field},
@@ -142,12 +142,12 @@ use datafusion_comet_proto::{
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
 use datafusion_comet_spark_expr::{
-    create_case_when, jvm_udf::JvmScalarUdfExpr, normalize_floats, spark_in_list, ApproxPercentile,
-    ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Correlation, Covariance, CreateNamedStruct,
-    DecimalRescaleCheckOverflow, GetArrayStructFields, GetStructField, HllPlusPlus, HllSketchAgg,
-    HllUnionAgg, IfExpr, ListExtract, MaxMinBy, Mode, NormalizeNaNAndZero, Regr, RegrType,
-    SparkCastOptions, Stddev, SumDecimal, ToJson, UnboundColumn, Variance, WideDecimalBinaryExpr,
-    WideDecimalOp,
+    create_case_when, create_if_expr, jvm_udf::JvmScalarUdfExpr, normalize_floats, spark_in_list,
+    ApproxPercentile, ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Correlation, Covariance,
+    CreateNamedStruct, DecimalRescaleCheckOverflow, GetArrayStructFields, GetStructField,
+    HllPlusPlus, HllSketchAgg, HllUnionAgg, IfExpr, ListExtract, MaxMinBy, Mode,
+    NormalizeNaNAndZero, Regr, RegrType, SparkCastOptions, Stddev, SumDecimal, ToJson,
+    UnboundColumn, Variance, WideDecimalBinaryExpr, WideDecimalOp,
 };
 use itertools::Itertools;
 use jni::objects::{Global, JObject};
@@ -797,8 +797,8 @@ impl PhysicalPlanner {
                 let true_expr =
                     self.create_expr(expr.true_expr.as_ref().unwrap(), Arc::clone(&input_schema))?;
                 let false_expr =
-                    self.create_expr(expr.false_expr.as_ref().unwrap(), input_schema)?;
-                Ok(Arc::new(IfExpr::new(if_expr, true_expr, false_expr)))
+                    self.create_expr(expr.false_expr.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                create_if_expr(if_expr, true_expr, false_expr, &input_schema).map_err(|e| e.into())
             }
             ExprStruct::NormalizeNanAndZero(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
@@ -2009,71 +2009,6 @@ impl PhysicalPlanner {
                     )),
                 ))
             }
-            OpStruct::IcebergWrite(iceberg_write) => {
-                assert_eq!(children.len(), 1);
-                let (scans, shuffle_scans, child) =
-                    self.create_plan(&children[0], inputs, partition_count)?;
-                let exec = Arc::new(IcebergWriteExec::try_new(
-                    Arc::clone(&child.native_plan),
-                    iceberg_write.clone(),
-                )?);
-                Ok((
-                    scans,
-                    shuffle_scans,
-                    Arc::new(SparkPlan::new(
-                        spark_plan.plan_id,
-                        exec,
-                        vec![Arc::clone(&child)],
-                    )),
-                ))
-            }
-            OpStruct::ParquetWriter(writer) => {
-                assert_eq!(children.len(), 1);
-                let (scans, shuffle_scans, child) =
-                    self.create_plan(&children[0], inputs, partition_count)?;
-
-                let codec = match writer.compression.try_into() {
-                    Ok(SparkCompressionCodec::None) => Ok(ParquetCompression::None),
-                    Ok(SparkCompressionCodec::Snappy) => Ok(ParquetCompression::Snappy),
-                    Ok(SparkCompressionCodec::Zstd) => Ok(ParquetCompression::Zstd(3)),
-                    Ok(SparkCompressionCodec::Lz4) => Ok(ParquetCompression::Lz4),
-                    Ok(SparkCompressionCodec::Gzip) => Ok(ParquetCompression::Gzip),
-                    _ => Err(GeneralError(format!(
-                        "Unsupported parquet compression codec: {:?}",
-                        writer.compression
-                    ))),
-                }?;
-
-                let object_store_options: HashMap<String, String> = writer
-                    .object_store_options
-                    .iter()
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect();
-
-                let parquet_writer = Arc::new(ParquetWriterExec::try_new(
-                    Arc::clone(&child.native_plan),
-                    writer.output_path.clone(),
-                    writer.work_dir.clone(),
-                    writer.job_id.clone(),
-                    writer.task_attempt_id,
-                    codec,
-                    self.partition,
-                    writer.column_names.clone(),
-                    (!writer.output_schema.is_empty())
-                        .then(|| convert_spark_types_to_arrow_schema(&writer.output_schema)),
-                    object_store_options,
-                )?);
-
-                Ok((
-                    scans,
-                    shuffle_scans,
-                    Arc::new(SparkPlan::new(
-                        spark_plan.plan_id,
-                        parquet_writer,
-                        vec![Arc::clone(&child)],
-                    )),
-                ))
-            }
             OpStruct::Expand(expand) => {
                 assert_eq!(children.len(), 1);
                 let (scans, shuffle_scans, child) =
@@ -2753,6 +2688,7 @@ impl PhysicalPlanner {
             Ok(JoinType::FullOuter) => DFJoinType::Full,
             Ok(JoinType::LeftSemi) => DFJoinType::LeftSemi,
             Ok(JoinType::LeftAnti) => DFJoinType::LeftAnti,
+            Ok(JoinType::Existence) => DFJoinType::LeftMark,
             Err(_) => {
                 return Err(GeneralError(format!(
                     "Unsupported join type: {join_type:?}"
