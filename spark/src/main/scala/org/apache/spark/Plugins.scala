@@ -31,9 +31,10 @@ import org.apache.spark.sql.internal.StaticSQLConf
 
 import org.apache.comet.{COMET_VERSION, CometSparkSessionExtensions, NativeBase}
 import org.apache.comet.{CometConf, ConfigEntry}
-import org.apache.comet.CometConf.{COMET_METRICS_ENABLED, COMET_ONHEAP_ENABLED}
+import org.apache.comet.CometConf.{COMET_ICEBERG_WRITE_REPORT_DIR, COMET_METRICS_ENABLED, COMET_ONHEAP_ENABLED}
 import org.apache.comet.CometKryoRegistrator
 import org.apache.comet.annotation.Public
+import org.apache.comet.iceberg.IcebergWriteReportListener
 
 /**
  * Comet driver plugin. This class is loaded by Spark's plugin framework. It will be instantiated
@@ -73,6 +74,7 @@ class CometDriverPlugin extends DriverPlugin with Logging {
 
     // Register Comet metrics
     CometDriverPlugin.registerCometMetrics(sc)
+    CometDriverPlugin.registerIcebergWriteReport(sc.conf)
 
     CometDriverPlugin.warnIfExecutorMemoryOverheadUnset(sc.getConf)
     CometDriverPlugin.warnIfMemoryPoolFractionSet(sc.getConf)
@@ -229,24 +231,36 @@ object CometDriverPlugin extends Logging {
         COMET_METRICS_ENABLED.key,
         COMET_METRICS_ENABLED.defaultValue.get)) {
       sc.env.metricsSystem.registerSource(CometSource)
-
-      val listenerKey = "spark.sql.queryExecutionListeners"
-      val listenerClass = "org.apache.comet.CometMetricsListener"
-      val listeners = sc.conf.get(listenerKey, "")
-      if (listeners.isEmpty) {
-        logInfo(s"Setting $listenerKey=$listenerClass")
-        sc.conf.set(listenerKey, listenerClass)
-      } else {
-        val currentListeners = listeners.split(",").map(_.trim)
-        if (!currentListeners.contains(listenerClass)) {
-          val newValue = s"$listeners,$listenerClass"
-          logInfo(s"Setting $listenerKey=$newValue")
-          sc.conf.set(listenerKey, newValue)
-        }
-      }
+      registerQueryExecutionListener(sc.conf, "org.apache.comet.CometMetricsListener")
     } else {
       logInfo(
         "Comet metrics reporting is disabled. Set spark.comet.metrics.enabled=true to enable.")
+    }
+  }
+
+  // Test-only: see COMET_ICEBERG_WRITE_REPORT_DIR. The value may come from the environment, which
+  // lets the Iceberg Spark test jobs turn the report on without changing the Iceberg diffs.
+  def registerIcebergWriteReport(conf: SparkConf): Unit = {
+    if (conf
+        .get(COMET_ICEBERG_WRITE_REPORT_DIR.key, COMET_ICEBERG_WRITE_REPORT_DIR.defaultValue.get)
+        .nonEmpty) {
+      registerQueryExecutionListener(conf, classOf[IcebergWriteReportListener].getName)
+    }
+  }
+
+  private def registerQueryExecutionListener(conf: SparkConf, listenerClass: String): Unit = {
+    val listenerKey = "spark.sql.queryExecutionListeners"
+    val listeners = conf.get(listenerKey, "")
+    if (listeners.isEmpty) {
+      logInfo(s"Setting $listenerKey=$listenerClass")
+      conf.set(listenerKey, listenerClass)
+    } else {
+      val currentListeners = listeners.split(",").map(_.trim)
+      if (!currentListeners.contains(listenerClass)) {
+        val newValue = s"$listeners,$listenerClass"
+        logInfo(s"Setting $listenerKey=$newValue")
+        conf.set(listenerKey, newValue)
+      }
     }
   }
 
