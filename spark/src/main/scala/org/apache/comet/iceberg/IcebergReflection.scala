@@ -1150,6 +1150,74 @@ object IcebergReflection extends Logging {
   }
 
   /**
+   * Returns the nested fields of the `fieldIds` columns of `schema` that some schema in the
+   * table's history (`table.schemas()`) lacks or names differently. Each is a dotted path with
+   * the change, for example `items.element.z (renamed from a)`. A data file written under that
+   * older schema lacks the field, or has it under the old name. Fields are matched by id at every
+   * level (struct fields, list elements, map keys and values), so a reorder or a type promotion
+   * is not a change, and an older schema that lacks the column itself is skipped. Throws on
+   * reflection failure so the caller can fall back.
+   */
+  def nestedFieldsAddedOrRenamed(table: Any, schema: Any, fieldIds: Set[Int]): Seq[String] = {
+    import scala.jdk.CollectionConverters._
+    val findField = getMethod(schema.getClass, "findField", classOf[Int])
+    def fieldById(s: Any, id: Int): Option[Any] =
+      Option(findField.invoke(s, id.asInstanceOf[AnyRef]))
+    lazy val history = getMethod(table.getClass, "schemas")
+      .invoke(table)
+      .asInstanceOf[java.util.Map[_, _]]
+      .values()
+      .asScala
+      .toSeq
+    fieldIds.toSeq.flatMap { id =>
+      fieldById(schema, id).filter(childFields(_).nonEmpty).toSeq.flatMap { field =>
+        history.flatMap(fieldById(_, id)).flatMap { older =>
+          childFieldsChangedFrom(field, older, fieldName(field))
+        }
+      }
+    }.distinct
+  }
+
+  /** The nested fields under `field`, at any depth, that `older` lacks or names differently. */
+  private def childFieldsChangedFrom(field: Any, older: Any, path: String): Seq[String] = {
+    val olderChildren = childFields(older).map(child => fieldIdOf(child) -> child).toMap
+    childFields(field).flatMap { child =>
+      val name = fieldName(child)
+      val childPath = s"$path.$name"
+      olderChildren.get(fieldIdOf(child)) match {
+        case Some(olderChild) =>
+          val olderName = fieldName(olderChild)
+          val renamed =
+            if (olderName != name) Seq(s"$childPath (renamed from $olderName)") else Nil
+          renamed ++ childFieldsChangedFrom(child, olderChild, childPath)
+        case None => Seq(s"$childPath (added)")
+      }
+    }
+  }
+
+  /** A struct's fields, a list's element, or a map's key and value. Empty for other types. */
+  private def childFields(field: Any): Seq[Any] = {
+    import scala.jdk.CollectionConverters._
+    val fieldType = getMethod(field.getClass, "type").invoke(field)
+    if (getMethod(fieldType.getClass, "isNestedType").invoke(fieldType).asInstanceOf[Boolean]) {
+      val nestedType = getMethod(fieldType.getClass, "asNestedType").invoke(fieldType)
+      getMethod(nestedType.getClass, "fields")
+        .invoke(nestedType)
+        .asInstanceOf[java.util.List[_]]
+        .asScala
+        .toSeq
+    } else {
+      Nil
+    }
+  }
+
+  private def fieldName(field: Any): String =
+    getMethod(field.getClass, "name").invoke(field).asInstanceOf[String]
+
+  private def fieldIdOf(field: Any): Int =
+    getMethod(field.getClass, "fieldId").invoke(field).asInstanceOf[Int]
+
+  /**
    * Converts an Iceberg `Schema` to the Spark `StructType` it reads as, via
    * `SparkSchemaUtil.convert`. Comet serializes the whole table/scan schema to native (not just
    * projected columns), so callers use this to run the schema through Comet's existing type
