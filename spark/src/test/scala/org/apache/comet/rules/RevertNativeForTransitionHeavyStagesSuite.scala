@@ -28,7 +28,7 @@ import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial}
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution._
-import org.apache.spark.sql.execution.adaptive.QueryStageExec
+import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, QueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.command.DataWritingCommandExec
 import org.apache.spark.sql.execution.datasources.WriteFilesExec
 import org.apache.spark.sql.internal.SQLConf
@@ -696,13 +696,66 @@ class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
     }
   }
 
+  for (adaptive <- Seq(false, true); columnarRoot <- Seq(false, true)) {
+    test(
+      s"transition-heavy map-stage fallback supplies Arrow: AQE=$adaptive, columnar=$columnarRoot") {
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true",
+        CometConf.COMET_SHUFFLE_MODE.key -> "native",
+        CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "false") {
+        val rows = (0 until 100).map(i => (i, i % 10))
+        withParquetTable(rows, "tbl") {
+          val df = sql("SELECT _1, _2 FROM tbl DISTRIBUTE BY _2")
+          df.collect()
+          val exchange = stripAQEPlan(df.queryExecution.executedPlan)
+            .collectFirst { case node: CometShuffleExchangeExec => node }
+            .getOrElse(fail("test requires a native shuffle"))
+          assert(exchange.child.isInstanceOf[CometNativeScanExec])
+          val input = if (columnarRoot) exchange.child else cometFilter(exchange.child)
+          val stage = exchange.withNewChildren(
+            Seq(CometSparkToColumnarExec(CometNativeColumnarToRowExec(input))))
+          val rule = RevertNativeForTransitionHeavyStages(spark)
+          assert(rule.countTransitions(stage.children.head) == 1)
+
+          withSQLConf(
+            SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+            CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "true",
+            CometConf.COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS.key -> "0") {
+            val reverted = rule(stage).asInstanceOf[CometShuffleExchangeExec]
+            val bridge = reverted.child match {
+              case node: CometSparkToColumnarExec => node
+              case other => fail(s"expected an Arrow bridge after map-stage fallback:\n$other")
+            }
+            assert(bridge.child.supportsColumnar == columnarRoot)
+            assert(bridge.child.collect { case _: FileSourceScanExec => true }.nonEmpty)
+            assert(countCometExecs(bridge.child) == 0)
+            // Execute the native shuffle, not just its Spark fallback child: Spark batches
+            // satisfy supportsColumnar but cannot be cast to CometVector by the Arrow stream.
+            SQLExecution.withNewExecutionId(df.queryExecution) {
+              val actual = ColumnarToRowExec(reverted)
+                .executeCollect()
+                .map(row => (row.getInt(0), row.getInt(1)))
+                .toSeq
+              assert(actual.sorted == rows.sorted)
+            }
+          }
+        }
+      }
+    }
+  }
+
   for (adaptive <- Seq(false, true)) {
     test(s"transition-heavy revert preserves native exchange for DISTRIBUTE BY: AQE=$adaptive") {
       withSQLConf(
         CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "true",
         CometConf.COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS.key -> "0",
         CometConf.COMET_SHUFFLE_MODE.key -> "native",
-        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString) {
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        SQLConf.SHUFFLE_PARTITIONS.key -> "8",
+        "spark.sql.adaptive.coalescePartitions.enabled" -> "true",
+        "spark.sql.adaptive.coalescePartitions.parallelismFirst" -> "false",
+        "spark.sql.adaptive.advisoryPartitionSizeInBytes" -> "67108864") {
         withParquetTable((0 until 100).map(i => (i, i % 10)), "tbl") {
           val query = "SELECT _1, _2 FROM tbl DISTRIBUTE BY _2"
           var sparkAnswer: Seq[Row] = Seq.empty
@@ -720,7 +773,17 @@ class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
             resultStageRoot.isInstanceOf[ColumnarToRowTransition],
             s"the result stage must end with a columnar-to-row transition:\n$executedPlan")
 
-          if (!adaptive) {
+          if (adaptive) {
+            val read = executedPlan
+              .collectFirst { case node: AQEShuffleReadExec => node }
+              .getOrElse(fail(s"expected a coalesced AQE shuffle read:\n$executedPlan"))
+            assert(read.partitionSpecs.size < 8, s"shuffle must be coalesced:\n$read")
+            val stage = read.child match {
+              case node: ShuffleQueryStageExec => node
+              case other => fail(s"expected a shuffle query stage:\n$other")
+            }
+            assert(stage.plan.isInstanceOf[CometShuffleExchangeExec])
+          } else {
             val exchange = executedPlan
               .collectFirst { case node: CometShuffleExchangeExec => node }
               .getOrElse(fail(s"expected a native shuffle:\n$executedPlan"))

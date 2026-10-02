@@ -24,6 +24,7 @@ import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometExec, CometHashAggregateExec, CometLocalTopKExec, CometNativeColumnarToRowExec, CometSparkToColumnarExec}
+import org.apache.spark.sql.comet.execution.shuffle.{CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, ColumnarToRowTransition, RowToColumnarExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.QueryStageExec
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeLike, ShuffleExchangeLike}
@@ -62,7 +63,7 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession, wholePlan
     plan match {
       case _: BroadcastExchangeLike => plan
       case exchange: ShuffleExchangeLike =>
-        revertStageIfNeeded(exchange.child, exchange.supportsColumnar)
+        revertShuffleStageIfNeeded(exchange)
           .map(reverted => exchange.withNewChildren(Seq(reverted)))
           .getOrElse(plan)
       case _ =>
@@ -73,12 +74,20 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession, wholePlan
 
   private def applyForNonAQE(plan: SparkPlan): SparkPlan = {
     val withRevertedStages = plan.transformUp { case exchange: ShuffleExchangeLike =>
-      revertStageIfNeeded(exchange.child, exchange.supportsColumnar)
+      revertShuffleStageIfNeeded(exchange)
         .map(reverted => exchange.withNewChildren(Seq(reverted)))
         .getOrElse(exchange)
     }
     revertStageIfNeeded(withRevertedStages, outputColumnar = false)
       .getOrElse(withRevertedStages)
+  }
+
+  private def revertShuffleStageIfNeeded(exchange: ShuffleExchangeLike): Option[SparkPlan] = {
+    val outputArrow = exchange match {
+      case comet: CometShuffleExchangeExec => comet.shuffleType == CometNativeShuffle
+      case _ => false
+    }
+    revertStageIfNeeded(exchange.child, exchange.supportsColumnar, outputArrow)
   }
 
   /**
@@ -87,7 +96,8 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession, wholePlan
    */
   private def revertStageIfNeeded(
       stagePlan: SparkPlan,
-      outputColumnar: Boolean): Option[SparkPlan] = {
+      outputColumnar: Boolean,
+      outputArrow: Boolean = false): Option[SparkPlan] = {
     val transitionCount = countTransitions(stagePlan)
     if (transitionCount <= maxTransitions) return None
 
@@ -112,7 +122,11 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession, wholePlan
           return None
       }
     val revertedWithReason = withFallbackReason(reverted, reason)
-    val result = if (outputColumnar && !reverted.supportsColumnar) {
+    val result = if (outputArrow) {
+      // Native shuffle consumes Arrow-backed Comet vectors, not arbitrary Spark columnar
+      // batches. This bridge converts both row-based and vectorized Spark fallback roots.
+      CometSparkToColumnarExec(revertedWithReason)
+    } else if (outputColumnar && !reverted.supportsColumnar) {
       RowToColumnarExec(revertedWithReason)
     } else if (!outputColumnar && reverted.supportsColumnar) {
       ColumnarToRowExec(revertedWithReason)
