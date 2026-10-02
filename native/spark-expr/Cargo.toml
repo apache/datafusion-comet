@@ -453,3 +453,7 @@ harness = false
 [[bench]]
 name = "nested_comparison"
 harness = false
+
+[[bench]]
+name = "float_arrays"
+harness = false

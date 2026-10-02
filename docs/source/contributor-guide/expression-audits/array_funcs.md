@@ -122,9 +122,11 @@
 ## array_remove
 
 - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
-- Spark 3.5.8 (audited 2026-05-27): baseline. `ArrayRemove(left, right)`; removes all occurrences equal to `right`. Wired as `CometScalarFunction("array_remove")`. Falls back via `ArraysBase.isTypeSupported` for binary/struct/map/null child types.
+- Spark 3.5.8 (audited 2026-05-27): baseline. `ArrayRemove(left, right)`; removes all occurrences equal to `right`. Falls back via `ArraysBase.isTypeSupported` for binary/struct/map/null child types.
 - Spark 4.0.1 (audited 2026-05-27): `NullIntolerant` -> `nullIntolerant` field refactor.
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
+- Current status: `CometArrayRemove` sends arrays whose elements hold a `FLOAT` or `DOUBLE` at any depth to the native `spark_array_remove`, which compares as Spark's `genEqual` does (`-0.0` equals `0.0`, all NaNs are equal, nested elements through `spark_equality`) and keeps the bits of the elements it keeps. Other element types use DataFusion's `array_remove_all`. Null elements stay, and a null array or value gives null.
+- Performance (tuned 2026-10-01, PR [#6518](https://github.com/apache/datafusion-comet/pull/6518)): with a constant value, `FLOAT` and `DOUBLE` elements get one keep mask over all the values from `BooleanBuffer::collect_bool`, with the inverted validity ORed in, one running popcount over the mask's words for each row's kept count, and one `filter`. 41-76% less time than DataFusion's `array_remove_all` with a constant value, and 47-95% less with a value per row. Benchmark: `benches/float_arrays.rs`.
 
 ## array_repeat
 
@@ -196,8 +198,10 @@
 ## sort_array
 
 - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
-- Spark 3.5.8 (audited 2026-05-27): baseline. `SortArray(base, ascendingOrder) extends BinaryExpression with ArraySortLike`; the second arg must be a `Literal(_: Boolean, BooleanType)`. Comet `CometSortArray` flags `Incompatible` under strict floating-point and falls back for nested arrays whose innermost element is `Struct` or `Null`.
-- Spark 4.0.1 (audited 2026-05-27): trait set changes substantively: `ArraySortLike` and `NullIntolerant` are removed, `nullIntolerant = true` becomes an override, and `ascendingOrder` is widened to accept any foldable boolean (not just `Literal`). Comet's `CometSortArray` still requires a `Literal`, so the new foldable form falls back at convert time.
+- Spark 3.5.8 (audited 2026-05-27): baseline. `SortArray(base, ascendingOrder) extends BinaryExpression with ArraySortLike`; the second arg must be a `Literal(_: Boolean, BooleanType)`.
+- Spark 4.0.1 (audited 2026-05-27): trait set changes substantively: `ArraySortLike` and `NullIntolerant` are removed, `nullIntolerant = true` becomes an override, and `ascendingOrder` is widened to accept any foldable boolean (not just `Literal`).
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
+- Current status: elements with a `FLOAT` or `DOUBLE` at any depth go to the native `spark_sort_array`, which sorts as Spark's generated code does: a stable sort in Spark's SQL ordering, except that for an ascending sort of `FLOAT` or `DOUBLE` elements that cannot be null, the serde has it put `-0.0` before `0.0`, as `java.util.Arrays.sort` does. This holds in strict floating-point mode too. Other supported element types use DataFusion's `array_sort`, and unsupported ones route through the codegen dispatcher. `ascendingOrder` may be any foldable boolean, which the serde evaluates.
+- Performance (tuned 2026-10-01, PR [#6518](https://github.com/apache/datafusion-comet/pull/6518)): `FLOAT` and `DOUBLE` rows sort within one copy of all the values, each row's valid values copied without branching next to its nulls. Rows of up to 20 elements use the stable `sort_by`. Longer rows use `sort_unstable_by` and then put the zero and NaN runs back in their original order, because Rust's stable sort is up to 1.8 times slower between 33 and 63 elements. From 2% more to 21% less time than DataFusion's `array_sort`. Benchmark: `benches/float_arrays.rs`.
 
 [Spark Expression Support]: ../../user-guide/latest/expressions.md
