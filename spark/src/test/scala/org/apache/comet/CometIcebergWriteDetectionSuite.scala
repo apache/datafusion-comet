@@ -902,6 +902,21 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     }
   }
 
+  test("fall-back: identity partition on a nested double field") {
+    // The source of a partition field can be nested inside a struct. `Schema.findField` resolves
+    // a nested id too, so the rule must not fail open for it.
+    withDetectionCatalog { _ =>
+      spark.sql(s"""
+        CREATE TABLE $catalog.$ns.part_nested (id INT, s STRUCT<v: DOUBLE>)
+        USING iceberg PARTITIONED BY (s.v)
+      """)
+      val writeExec = captureWriteExec("part_nested", allowWriteFailure = false) {
+        spark.sql(s"INSERT INTO $catalog.$ns.part_nested VALUES (1, named_struct('v', 1.5D))")
+      }
+      assertUnsupportedContains(writeExec, "part_nested", "partition field s.v", "double", "-0.0")
+    }
+  }
+
   test("fall-back: double identity partition beside a dropped partition field") {
     // A format-version-1 spec keeps a dropped partition field as a `void` transform, and that
     // field's source column can be dropped afterwards. The surviving double field must still be
