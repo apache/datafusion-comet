@@ -210,7 +210,9 @@ which are forwarded.
 For an `s3` or `s3a` data location, the gate also inspects both the table FileIO's effective Hadoop
 configuration and `table.io().properties()`. These are separate allowlists because Hadoop S3A
 keys are translated before they reach iceberg-rust, while Iceberg `FileIO` keys are forwarded
-directly. Hadoop's built-in `core-default.xml` values are not treated as explicit settings, but
+directly. When the FileIO exposes a Hadoop configuration, its initialized values govern both the
+gate and native translation, including after session or catalog options change. Hadoop's built-in
+`core-default.xml` values are not treated as explicit settings, but
 programmatic settings and values from site or custom `*-default.xml` resources are. Spark's
 session-wide S3A vectored-read and `downgrade.syncable.exceptions` compatibility settings are also
 ignored because they cannot alter an Iceberg data-file write request. Unknown explicit

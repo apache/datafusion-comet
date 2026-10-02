@@ -307,6 +307,7 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
       table,
       tableProperties ++ writeProperties,
       sparkWrite,
+      op.session.sessionState.newHadoopConf(),
       effectiveHadoopConf(op, table))
     triggers.iterator.map(rule => rule(context)).collectFirst { case Some(reason) => reason }
   }
@@ -315,7 +316,8 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
       table: Any,
       properties: Map[String, String],
       sparkWrite: Any,
-      hadoopConf: Configuration)
+      hadoopConf: Configuration,
+      s3HadoopConf: Configuration)
 
   private type TriggerRule = TriggerContext => Option[String]
 
@@ -338,22 +340,26 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
       case Some(fileIOConf) =>
         // HadoopFileIO stores its configuration in Iceberg's SerializableConfiguration. That
         // class rebuilds a Configuration(false) by calling set() for every entry, so Hadoop's
-        // property-source metadata is lost and core-default.xml values look programmatic. Keep
-        // the current session configuration as the base so built-in defaults retain their
-        // provenance and write-time settings are not replaced by stale FileIO defaults. Retain
-        // other FileIO-only values, then apply SparkCatalog's explicit catalog hadoop.* overrides
-        // last because Iceberg gives them precedence over the session configuration.
-        val effectiveConf = new Configuration(sessionConf)
+        // property-source metadata is lost and core-default.xml values look programmatic.
+        // The initialized FileIO remains authoritative for values: SparkCatalog does not
+        // reinitialize it when session or catalog options change. Recover only default-source
+        // metadata, without adding or replacing any FileIO configuration. Load core-default.xml
+        // separately so later session settings cannot change the default values used here.
+        val coreDefaults = new Configuration(false)
+        coreDefaults.addResource("core-default.xml")
+        val effectiveConf = new Configuration(fileIOConf)
         fileIOConf.iterator().asScala.foreach { entry =>
           val key = entry.getKey
           val fileIOValue = fileIOConf.getRaw(key)
-          if (!catalogOverrides.contains(key) &&
-            !hasExplicitSource(sessionConf, key) &&
-            fileIOValue != sessionConf.getRaw(key)) {
-            effectiveConf.set(key, fileIOValue)
+          val explicitlyConfiguredValue = catalogOverrides.get(key).contains(fileIOValue) ||
+            (hasExplicitSource(sessionConf, key) && fileIOValue == sessionConf.getRaw(key))
+          if (!explicitlyConfiguredValue &&
+            Option(fileIOConf.getPropertySources(key))
+              .exists(_.toSeq == Seq("programmatically")) &&
+            fileIOValue == coreDefaults.getRaw(key)) {
+            effectiveConf.set(key, fileIOValue, "core-default.xml")
           }
         }
-        catalogOverrides.foreach { case (key, value) => effectiveConf.set(key, value) }
         effectiveConf
     }
   }
@@ -656,7 +662,7 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
       val dataBucket = NativeConfig.bucketForUri(new java.net.URI(location), Set.empty)
       unsupportedSettingsReason(
         "Hadoop S3A",
-        unsupportedHadoopS3Settings(ctx.hadoopConf, dataBucket))
+        unsupportedHadoopS3Settings(ctx.s3HadoopConf, dataBucket))
     }
 
   private val requireSupportedS3FileIOProperties: TriggerRule = ctx =>

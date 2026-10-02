@@ -176,7 +176,9 @@ on the driver. Almost all of it is the per-write `IcebergWriteCommon`:
 - the sort order id, which the native side ignores and the JVM stamps onto the files afterwards
 - `catalog_properties` for the native `FileIO`: the table's `FileIO.properties()` merged over the
   `fs.s3a.*` settings translated from the effective Hadoop configuration carried by the table's
-  `FileIO`, including SparkCatalog's catalog-specific `hadoop.*` overrides
+  `FileIO`, including SparkCatalog's catalog-specific `hadoop.*` overrides at initialization.
+  Later session or catalog changes do not replace values in that FileIO snapshot. Hadoop's
+  built-in default-source metadata is recovered separately for the S3 eligibility gate.
 
 The per-task `partition_id` and `task_attempt_id` are stamped onto a copy of the proto inside the
 task closure in `CometIcebergWriteExec.doExecuteColumnar`. The native side refuses to run without

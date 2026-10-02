@@ -709,22 +709,25 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
           )
         """)
 
-        val writeExec =
-          planInsertWriteExec(s"$catalogWithOverride.$ns.catalog_hadoop_override")
-        val sparkWrite = IcebergReflection
-          .getOuterSparkWrite(writeExec.batchWrite)
-          .getOrElse(fail("could not unwrap SparkWrite"))
-        val table = IcebergReflection
-          .getTableFromSparkWrite(sparkWrite)
-          .getOrElse(fail("could not extract Iceberg table"))
-        val fileIOConf = IcebergReflection
-          .getFileIOHadoopConf(table)
-          .getOrElse(fail("FileIO did not expose its Hadoop configuration"))
-        assert(fileIOConf.get(hadoopKey) == "SSE-KMS")
-        assertUnsupportedContains(
-          writeExec,
-          "catalog_hadoop_override",
-          s"unsupported Hadoop S3A setting: $hadoopKey")
+        // SparkCatalog retains the initialized FileIO even after its options change.
+        withSQLConf(s"spark.sql.catalog.$catalogWithOverride.hadoop.$hadoopKey" -> "") {
+          val writeExec =
+            planInsertWriteExec(s"$catalogWithOverride.$ns.catalog_hadoop_override")
+          val sparkWrite = IcebergReflection
+            .getOuterSparkWrite(writeExec.batchWrite)
+            .getOrElse(fail("could not unwrap SparkWrite"))
+          val table = IcebergReflection
+            .getTableFromSparkWrite(sparkWrite)
+            .getOrElse(fail("could not extract Iceberg table"))
+          val fileIOConf = IcebergReflection
+            .getFileIOHadoopConf(table)
+            .getOrElse(fail("FileIO did not expose its Hadoop configuration"))
+          assert(fileIOConf.get(hadoopKey) == "SSE-KMS")
+          assertUnsupportedContains(
+            writeExec,
+            "catalog_hadoop_override",
+            s"unsupported Hadoop S3A setting: $hadoopKey")
+        }
       }
     }
   }
@@ -764,16 +767,54 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     }
   }
 
+  test("native write preserves FileIO values after catalog initialization") {
+    withTempIcebergDir { warehouseDir =>
+      val initializedCatalog = "s3_initialized_cat"
+      val endpoint = "https://original.example.test"
+      withSQLConf(
+        "fs.s3a.endpoint" -> endpoint,
+        s"spark.sql.catalog.$initializedCatalog" -> "org.apache.iceberg.spark.SparkCatalog",
+        s"spark.sql.catalog.$initializedCatalog.type" -> "hadoop",
+        s"spark.sql.catalog.$initializedCatalog.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        spark.sql(s"""
+          CREATE TABLE $initializedCatalog.$ns.initialized_s3 (id INT, region STRING, amount DOUBLE)
+          USING iceberg
+          TBLPROPERTIES ('write.data.path'='s3a://probe-bucket/iceberg/db/initialized_s3')
+        """)
+
+        withSQLConf(
+          "fs.s3a.endpoint" -> "https://session-changed.example.test",
+          "fs.s3a.encryption.algorithm" -> "SSE-KMS",
+          s"spark.sql.catalog.$initializedCatalog.hadoop.fs.s3a.endpoint" ->
+            "https://changed.example.test",
+          s"spark.sql.catalog.$initializedCatalog.hadoop.fs.s3a.encryption.algorithm" ->
+            "SSE-KMS") {
+          // Planning only: inspect the native proto without issuing any S3 requests.
+          val insert = spark.sessionState.sqlParser.parsePlan(
+            s"INSERT INTO $initializedCatalog.$ns.initialized_s3 VALUES (1, 'us', 1.0)")
+          val plan =
+            spark.sessionState.executePlan(insert, CommandExecutionMode.SKIP).executedPlan
+          val cometWrite = findCometWriteExec(plan)
+            .getOrElse(fail(s"expected CometIcebergWriteExec in:\n$plan"))
+          val properties = cometWrite.nativeOp.getIcebergWrite.getCommon.getCatalogPropertiesMap
+          assert(properties.get("s3.endpoint") == endpoint, properties)
+          assert(!properties.containsKey("s3.sse.type"), properties)
+        }
+      }
+    }
+  }
+
   test("fall-back: unsupported Hadoop S3A setting on an S3 data location") {
-    withDetectionCatalog { dir =>
-      createTable(
-        dir,
-        "s3a_hadoop_unsupported",
-        partitionSpec = "",
-        properties =
-          Some("'write.data.path'='s3a://probe-bucket/iceberg/db/s3a_hadoop_unsupported'"))
-      val secret = "SECRET_VALUE_MUST_NOT_APPEAR"
-      withSQLConf("fs.s3a.encryption.algorithm" -> secret) {
+    val secret = "SECRET_VALUE_MUST_NOT_APPEAR"
+    withSQLConf("fs.s3a.encryption.algorithm" -> secret) {
+      withDetectionCatalog { dir =>
+        createTable(
+          dir,
+          "s3a_hadoop_unsupported",
+          partitionSpec = "",
+          properties =
+            Some("'write.data.path'='s3a://probe-bucket/iceberg/db/s3a_hadoop_unsupported'"))
         val writeExec = planInsertWriteExec(s"$catalog.$ns.s3a_hadoop_unsupported")
         val support = CometIcebergNativeWrite.getSupportLevel(writeExec)
         support match {
@@ -1082,17 +1123,17 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     // proto assembly see. LocalTableScan conversion is enabled the same way the write action
     // suite does, so the VALUES insert converts and the built proto is inspectable.
     withDetectionCatalog { dir =>
-      createTable(
-        dir,
-        "s3a_props",
-        partitionSpec = "",
-        properties = Some("'write.data.path'='s3a://probe-bucket/iceberg/db/s3a_props'"))
       val conf = spark.sessionState.conf
       conf.setConfString(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key, "true")
       conf.setConfString("fs.s3a.endpoint", "http://localhost:9000")
       conf.setConfString("fs.s3a.access.key", "probe-access-key")
       conf.setConfString("fs.s3a.path.style.access", "true")
       try {
+        createTable(
+          dir,
+          "s3a_props",
+          partitionSpec = "",
+          properties = Some("'write.data.path'='s3a://probe-bucket/iceberg/db/s3a_props'"))
         val plan = captureWritePlan("s3a_props", allowWriteFailure = true) {
           spark.sql(s"INSERT INTO $catalog.$ns.s3a_props VALUES (1, 'us', 1.0)")
         }
@@ -1272,10 +1313,13 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     }
   }
 
-  private val catalog = "cat"
+  private var catalog = "cat"
   private val ns = "db"
 
   private def withDetectionCatalog(f: File => Unit): Unit = withTempIcebergDir { warehouseDir =>
+    // Spark caches catalog instances, including their initialized Hadoop configurations.
+    // Each fixture needs a fresh catalog to observe the settings selected by this test.
+    catalog = "cat_" + java.util.UUID.randomUUID().toString.replace("-", "")
     withSQLConf(
       s"spark.sql.catalog.$catalog" -> "org.apache.iceberg.spark.SparkCatalog",
       s"spark.sql.catalog.$catalog.type" -> "hadoop",
