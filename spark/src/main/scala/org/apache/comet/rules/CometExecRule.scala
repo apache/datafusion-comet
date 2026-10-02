@@ -772,7 +772,7 @@ case class CometExecRule(session: SparkSession)
   private def explainSparkReadsOfCometCache(plan: SparkPlan, cause: String): Unit =
     plan.foreach {
       case scan: InMemoryTableScanExec if CometExecRule.readsCometCacheFormat(scan) =>
-        withFallbackReason(
+        val _ = withFallbackReason(
           scan,
           s"$cause, so Spark reads this relation from Comet's cache format, which is slower " +
             "than reading Spark's own. Set " +
