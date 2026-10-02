@@ -3663,6 +3663,102 @@ class CometIcebergNativeSuite
     }
   }
 
+  test("partial residual pushdown preserves complex filters and reduces reader work") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withHadoopCatalog("test_cat") {
+      withSQLConf(
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+        val table = "test_cat.db.partial_residual_test"
+        // Keep split sizing fixed so repeated footer reads do not dominate the byte comparison.
+        spark.sql(s"""
+          CREATE TABLE $table (
+            id INT,
+            l ARRAY<INT>,
+            m MAP<STRING, INT>,
+            s STRUCT<v: INT>,
+            payload STRING
+          ) USING iceberg
+          TBLPROPERTIES (
+            'read.split.adaptive-size.enabled' = 'false',
+            'write.parquet.row-group-size-bytes' = '16384',
+            'write.parquet.compression-codec' = 'uncompressed'
+          )
+        """)
+        try {
+          spark
+            .range(10000)
+            .repartition(1)
+            .sortWithinPartitions("id")
+            .selectExpr(
+              "CASE WHEN id % 97 = 0 THEN NULL ELSE CAST(id AS INT) END AS id",
+              "CASE WHEN id % 2 = 0 THEN array(CAST(id AS INT)) ELSE NULL END AS l",
+              "CASE WHEN id % 3 = 0 THEN map('v', CAST(id AS INT)) ELSE NULL END AS m",
+              "CASE WHEN id % 5 = 0 THEN named_struct('v', CAST(id AS INT)) ELSE NULL END AS s",
+              "repeat(sha2(CAST(id AS STRING), 256), 2) AS payload")
+            .write
+            .format("iceberg")
+            .mode("append")
+            .saveAsTable(table)
+
+          // One unpartitioned file containing several row groups: the byte savings must come
+          // from the reader, rather than Iceberg's manifest/file pruning or partition selection.
+          val files = spark.sql(s"SELECT file_path FROM $table.files").collect()
+          assert(files.length == 1, s"Expected one data file, got ${files.length}")
+          val reader = org.apache.parquet.hadoop.ParquetFileReader.open(
+            org.apache.parquet.hadoop.util.HadoopInputFile.fromPath(
+              new org.apache.hadoop.fs.Path(files.head.getString(0)),
+              spark.sessionState.newHadoopConf()))
+          try {
+            assert(reader.getRowGroups.size > 3, "Fixture needs multiple row groups for pruning")
+          } finally {
+            reader.close()
+          }
+
+          def checkAndGetScan(predicate: String): CometIcebergNativeScanExec = {
+            val query = s"SELECT * FROM $table WHERE $predicate"
+            val (_, plan) = checkSparkAnswer(query)
+            val scans = collectIcebergNativeScans(plan)
+            assert(scans.length == 1, s"Expected one native scan for $query:\n$plan")
+            scans.head
+          }
+
+          val fullScan = checkAndGetScan("l IS NOT NULL")
+          val fullBytes = fullScan.metrics("bytes_scanned").value
+          assert(fullBytes > 0, "Full read must report bytes")
+          assert(fullScan.metrics("output_rows").value == 10000L)
+
+          val partialScan = checkAndGetScan("l IS NOT NULL AND id BETWEEN 1000 AND 1099")
+          val partialBytes = partialScan.metrics("bytes_scanned").value
+          assert(fullScan.metrics("num_splits").value > 0L)
+          assert(partialScan.metrics("num_splits").value == fullScan.metrics("num_splits").value)
+          assert(
+            partialScan.metrics("output_rows").value < 1000L,
+            "The native reader must apply the primitive residual before the complex filter")
+          assert(
+            partialBytes * 2 < fullBytes,
+            s"Partial residual must prune reads: partial=$partialBytes, full=$fullBytes")
+
+          Seq(
+            "m IS NOT NULL AND id BETWEEN 1000 AND 1099",
+            "s IS NULL AND id BETWEEN 1000 AND 1099",
+            "id >= 1000 AND (l IS NOT NULL OR m IS NULL)",
+            "(id < 100 AND l IS NOT NULL) OR (id >= 9900 AND m IS NOT NULL)",
+            "id < 100 OR l IS NOT NULL",
+            "NOT (id < 2000 AND l IS NOT NULL)",
+            "NOT ((id < 100 AND l IS NOT NULL) OR (id >= 9900 AND m IS NOT NULL))")
+            .foreach { predicate =>
+              val _ = checkAndGetScan(predicate)
+            }
+        } finally {
+          spark.sql(s"DROP TABLE $table")
+        }
+      }
+    }
+  }
+
   // A residual can arrive as NOT over an AND that mixes a supported conjunct with an unsupported
   // (FIXED_LEN_BYTE_ARRAY) one. Dropping only the unsupported conjunct is safe in positive
   // position (it weakens the pruning predicate), but under a NOT it strengthens it: NOT(id < 200
