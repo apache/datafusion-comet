@@ -140,17 +140,20 @@ object CometMapExtract extends CometExpressionSerde[GetMapValue] {
  */
 private object MapBuilderSupport {
 
-  /** Floating-point keys on Spark 4.0 and later: see the map_funcs expression audit. */
+  /** Top-level floating-point keys: see the map_funcs expression audit. */
   val floatingPointKeyNote: String =
-    "On Spark 4.0 and later, `ArrayBasedMapBuilder` normalizes a floating-point map key before " +
-      "comparing it, so `-0.0` counts as the same key as `+0.0` and all `NaN`s count as one " +
-      "key. Comet's native map construction compares the raw Arrow values, so a map built from " +
-      "both `-0.0` and `+0.0` keeps two entries where Spark reports a duplicate key. " +
+    "On Spark 4.0 and later, `ArrayBasedMapBuilder` normalizes a `FLOAT` or `DOUBLE` map key " +
+      "before comparing it, so `-0.0` counts as the same key as `+0.0` and all `NaN`s count as " +
+      "one key. Comet's native map construction compares the raw Arrow values, so a map built " +
+      "from both `-0.0` and `+0.0` keeps two entries where Spark reports a duplicate key. " +
       "`map_from_entries` also stores the normalized key, so Spark returns `+0.0` for a `-0.0` " +
       "key where Comet returns `-0.0`; `map_from_arrays` keeps the original keys in both " +
-      "engines when nothing repeated. Spark 3.4 and 3.5 do not normalize at all, so they match " +
-      s"Comet already. Set `${COMET_EXEC_STRICT_FLOATING_POINT.key}=true` to keep a " +
-      "floating-point map key off the native path."
+      "engines when nothing repeated. Spark 3.4 and 3.5 do not normalize such a key, so `-0.0` " +
+      "and `+0.0` are two keys in both engines there, but Spark still treats `NaN`s with " +
+      "different bit patterns as one key. This applies to a top-level key only: a struct or " +
+      "array key that contains a floating-point field does not run natively on any Spark " +
+      s"version. Set `${COMET_EXEC_STRICT_FLOATING_POINT.key}=true` to keep a floating-point " +
+      "map key off the native path."
 
   val strictFloatingPointKeyReason: String =
     s"When `${COMET_EXEC_STRICT_FLOATING_POINT.key}=true`, map construction on a floating-point " +
@@ -167,10 +170,25 @@ private object MapBuilderSupport {
     "Comet's native map construction compares string keys as `UTF8_BINARY`, so it cannot honour " +
       "a non-default collation when it looks for a duplicate key."
 
+  /**
+   * On every Spark version, `ArrayBasedMapBuilder` keys its dedup map for a struct or array key
+   * type on `TypeUtils.getInterpretedOrdering`, whose `SQLOrderingUtil.compareDoubles` and
+   * `compareFloats` treat `-0.0` and `+0.0` as equal and all `NaN`s as equal. The native builders
+   * hash the nested values by their bits and would keep both keys, missing the duplicate that
+   * Spark reports (or, under `LAST_WIN`, the overwrite Spark performs).
+   */
+  val nestedFloatingPointKeyReason: String =
+    "Spark finds duplicate struct or array keys by interpreted ordering, where `-0.0` equals " +
+      "`+0.0` and all `NaN`s are equal; Comet's native map construction compares the nested " +
+      "floating-point values bit by bit."
+
   /** The support level for a map constructor whose result has key type `keyType`. */
   def keySupport(keyType: DataType): SupportLevel =
     if (hasNonDefaultStringCollation(keyType)) {
       Incompatible(Some(collationKeyReason))
+    } else if (isComplexType(keyType) &&
+      SupportLevel.containsType(keyType, classOf[FloatType], classOf[DoubleType])) {
+      Incompatible(Some(nestedFloatingPointKeyReason))
     } else {
       SupportLevel
         .strictFloatingPointReason(keyType, "Map construction on a floating-point key")
@@ -186,7 +204,10 @@ object CometMapFromArrays extends CometExpressionSerde[MapFromArrays] {
       "twice, and the two copies of a stateful expression drift apart"
 
   override def getIncompatibleReasons(): Seq[String] =
-    Seq(MapBuilderSupport.collationKeyReason, MapBuilderSupport.strictFloatingPointKeyReason)
+    Seq(
+      MapBuilderSupport.collationKeyReason,
+      MapBuilderSupport.nestedFloatingPointKeyReason,
+      MapBuilderSupport.strictFloatingPointKeyReason)
 
   override def getUnsupportedReasons(): Seq[String] = Seq(nondeterministicKeysReason)
 
@@ -243,6 +264,7 @@ object CometMapFromEntries
       keyUnsupportedReason,
       valueUnsupportedReason,
       MapBuilderSupport.collationKeyReason,
+      MapBuilderSupport.nestedFloatingPointKeyReason,
       MapBuilderSupport.strictFloatingPointKeyReason)
 
   override def getCompatibleNotes(): Seq[String] =

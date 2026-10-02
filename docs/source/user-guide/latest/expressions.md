@@ -408,8 +408,8 @@ to Spark ([#2837](https://github.com/apache/datafusion-comet/issues/2837)). Enab
 | `map_concat` | ✅ | Codegen dispatch |  |
 | `map_contains_key` | ✅ | — |  |
 | `map_entries` | ✅ | Native |  |
-| `map_from_arrays` | ✅ | Native |  |
-| `map_from_entries` | ✅ | Hybrid | BinaryType keys/values and `spark.sql.mapKeyDedupPolicy=LAST_WIN` route through the JVM codegen dispatcher ([details](compatibility/expressions/map.md)) |
+| `map_from_arrays` | ✅ | Native | Struct or array keys with floating-point fields fall back ([details](compatibility/expressions/map.md)) |
+| `map_from_entries` | ✅ | Hybrid | BinaryType keys/values and struct or array keys with floating-point fields route through the JVM codegen dispatcher ([details](compatibility/expressions/map.md)) |
 | `map_keys` | ✅ | Native |  |
 | `map_values` | ✅ | Native |  |
 | `str_to_map` | ✅ | Hybrid |  |
