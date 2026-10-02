@@ -35,6 +35,9 @@ trait CometExprShim {
 
   def binaryOutputStyle: BinaryOutputStyle = BinaryOutputStyle.HEX_DISCRETE
 
+  // Jackson 2.14 does not impose the default numeric-token length limit.
+  def getJsonObjectNativeFunctionName: String = "get_json_object_spark34"
+
   def sparkVersionSpecificStringExpressions
       : Map[Class[_ <: Expression], CometExpressionSerde[_]] =
     Map(classOf[StringDecode] -> CometStringDecode, classOf[Encode] -> CometEncode)
