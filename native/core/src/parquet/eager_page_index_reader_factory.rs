@@ -45,8 +45,7 @@
 //!
 //! Filed upstream as apache/datafusion#23978. Once the opener merges its deferred page-index
 //! load back into `FileMetadataCache` instead of bypassing it, the eager policy can go, but the
-//! factory cannot: `get_metadata` is the one per-file hook that sees the raw footer, and two
-//! other things hang off it.
+//! factory cannot: `get_metadata` is the per-file hook that sees the raw footer.
 //!
 //! The first is Spark's missing field id check. `ParquetReadSupport` refuses to open a file
 //! whose Parquet schema carries no field id when the requested schema carries one, unless
@@ -59,8 +58,17 @@
 //!
 //! The second is the Variant footer rewrite, `with_spark_arrow_schema`, which replaces the
 //! Arrow schema hint in the footer for scans that project Variant.
+//!
+//! Conversion checks also use the raw footer to preserve legacy LIST clipping failures. With
+//! row filters enabled, a deferred conversion failure is raised on the first data-page request.
+//! Footer, Bloom-filter and page-index reads still proceed, so format pruning can discard a file
+//! without decoding it, but row selection cannot hide the failure.
 
-use arrow::datatypes::{DataType, FieldRef, Schema};
+use crate::parquet::parquet_support::SparkParquetOptions;
+use crate::parquet::schema_adapter::{
+    check_file_conversions, RejectOnNonEmpty, REPEATED_PRIMITIVE_KEY,
+};
+use arrow::datatypes::{DataType, FieldRef, Schema, SchemaRef};
 use async_trait::async_trait;
 use bytes::Bytes;
 use datafusion::common::Result as DFResult;
@@ -93,10 +101,11 @@ use parquet::file::metadata::{
     FooterTail, PageIndexPolicy, ParquetMetaData, ParquetMetaDataReader,
 };
 use parquet::schema::types::{ColumnDescPtr, SchemaDescriptor, Type as ParquetType};
+use std::collections::HashMap;
 use std::fmt::{Debug, Display, Formatter};
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ScanIoSource {
@@ -181,6 +190,8 @@ pub struct EagerPageIndexReaderFactory {
     // Refuse a file whose Parquet schema carries no field id, as Spark's `ParquetReadSupport`
     // does when the requested schema carries one and `ignoreMissing` is not set.
     require_field_ids: bool,
+    conversion_check: Option<(SchemaRef, SparkParquetOptions, bool)>,
+    deferred_rejections: Arc<Mutex<HashMap<Path, (ObjectMeta, RejectOnNonEmpty)>>>,
 }
 
 impl EagerPageIndexReaderFactory {
@@ -210,7 +221,21 @@ impl EagerPageIndexReaderFactory {
             scan_io_metrics,
             spark_variant_schema: false,
             require_field_ids: false,
+            conversion_check: None,
+            deferred_rejections: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// Retain raw LIST encoding for open-time validation. When row filters are enabled,
+    /// enforce deferred failures at the first data-page read, after format pruning.
+    pub(crate) fn with_conversion_check(
+        mut self,
+        required: SchemaRef,
+        options: SparkParquetOptions,
+        row_filters: bool,
+    ) -> Self {
+        self.conversion_check = Some((required, options, row_filters));
+        self
     }
 
     pub fn with_spark_variant_schema(mut self, enabled: bool) -> Self {
@@ -254,6 +279,15 @@ impl ParquetFileReaderFactory for EagerPageIndexReaderFactory {
             metrics,
         );
 
+        // DataFusion replaces the metadata reader after Bloom-filter pruning. The replacement
+        // receives already-loaded metadata, so retain deferred failures in this scan's factory.
+        let deferred_rejection = self
+            .deferred_rejections
+            .lock()
+            .unwrap()
+            .get(&partitioned_file.object_meta.location)
+            .filter(|(meta, _)| meta == &partitioned_file.object_meta)
+            .map(|(_, rejection)| rejection.clone());
         Ok(Box::new(EagerPageIndexReader {
             file_metrics,
             scan_io_metrics: Arc::clone(&self.scan_io_metrics),
@@ -263,6 +297,9 @@ impl ParquetFileReaderFactory for EagerPageIndexReaderFactory {
             metadata_size_hint,
             spark_variant_schema: self.spark_variant_schema,
             require_field_ids: self.require_field_ids,
+            conversion_check: self.conversion_check.clone(),
+            deferred_rejections: Arc::clone(&self.deferred_rejections),
+            deferred_rejection,
         }))
     }
 }
@@ -279,6 +316,9 @@ struct EagerPageIndexReader {
     metadata_size_hint: Option<usize>,
     spark_variant_schema: bool,
     require_field_ids: bool,
+    conversion_check: Option<(SchemaRef, SparkParquetOptions, bool)>,
+    deferred_rejections: Arc<Mutex<HashMap<Path, (ObjectMeta, RejectOnNonEmpty)>>>,
+    deferred_rejection: Option<RejectOnNonEmpty>,
 }
 
 // Arrow infers ENUM as Binary, losing the distinction from raw binary that Spark needs.
@@ -411,6 +451,53 @@ fn with_spark_arrow_schema(metadata: Arc<ParquetMetaData>) -> ParquetResult<Arc<
     ))
 }
 
+/// Arrow normalizes both standard and legacy LISTs to the same type. Carry the repeated
+/// primitive distinction in an ephemeral schema used by the conversion check, never in the
+/// shared footer cache or in the schema given to the decoder.
+fn mark_repeated_primitives(schema: &Schema, parquet: &SchemaDescriptor) -> Schema {
+    fn mark(field: &FieldRef, columns: &[ColumnDescPtr], index: &mut usize) -> FieldRef {
+        let data_type = match field.data_type() {
+            DataType::Struct(fields) => DataType::Struct(
+                fields
+                    .iter()
+                    .map(|f| mark(f, columns, index))
+                    .collect::<Vec<_>>()
+                    .into(),
+            ),
+            DataType::List(item) => DataType::List(mark(item, columns, index)),
+            DataType::LargeList(item) => DataType::LargeList(mark(item, columns, index)),
+            DataType::FixedSizeList(item, size) => {
+                DataType::FixedSizeList(mark(item, columns, index), *size)
+            }
+            DataType::Map(entries, sorted) => DataType::Map(mark(entries, columns, index), *sorted),
+            _ => {
+                let repeated = columns.get(*index).is_some_and(|column| {
+                    column.self_type().get_basic_info().repetition()
+                        == parquet::basic::Repetition::REPEATED
+                });
+                *index += 1;
+                let mut field = field.as_ref().clone();
+                if repeated {
+                    let mut metadata = field.metadata().clone();
+                    metadata.insert(REPEATED_PRIMITIVE_KEY.to_string(), "true".to_string());
+                    field = field.with_metadata(metadata);
+                }
+                return Arc::new(field);
+            }
+        };
+        Arc::new(field.as_ref().clone().with_data_type(data_type))
+    }
+    let mut index = 0;
+    Schema::new_with_metadata(
+        schema
+            .fields()
+            .iter()
+            .map(|f| mark(f, parquet.columns(), &mut index))
+            .collect::<Vec<_>>(),
+        schema.metadata().clone(),
+    )
+}
+
 impl AsyncFileReader for EagerPageIndexReader {
     /// Reads a metadata range, counting its requested size before I/O and its returned
     /// bytes only on success. The returned future borrows this reader; store errors retain
@@ -449,6 +536,12 @@ impl AsyncFileReader for EagerPageIndexReader {
     where
         Self: Send,
     {
+        if ranges.iter().any(|range| !range.is_empty()) {
+            if let Some(rejection) = &self.deferred_rejection {
+                let error = ParquetError::External(Box::new(rejection.error()));
+                return async move { Err(error) }.boxed();
+            }
+        }
         let requested = ranges_bytes(&ranges);
         self.file_metrics.bytes_scanned.add(requested);
         let scan_io_metrics = Arc::clone(&self.scan_io_metrics);
@@ -550,11 +643,43 @@ impl AsyncFileReader for EagerPageIndexReader {
                     },
                 )));
             }
-            if spark_variant_schema {
-                with_spark_arrow_schema(metadata)
+            let metadata = if spark_variant_schema {
+                with_spark_arrow_schema(metadata)?
             } else {
-                Ok(metadata)
+                metadata
+            };
+            if let Some((required, conversion_options, row_filters)) =
+                self.conversion_check.as_ref()
+            {
+                let file = metadata.file_metadata();
+                let needs_check = *row_filters
+                    || file.schema_descr().columns().iter().any(|column| {
+                        column.self_type().get_basic_info().repetition()
+                            == parquet::basic::Repetition::REPEATED
+                    });
+                if !needs_check {
+                    return Ok(metadata);
+                }
+                let schema =
+                    parquet_to_arrow_schema(file.schema_descr(), file.key_value_metadata())?;
+                let schema = mark_repeated_primitives(&schema, file.schema_descr());
+                let rejection = check_file_conversions(
+                    Arc::clone(required),
+                    Arc::new(schema),
+                    conversion_options.clone(),
+                )
+                .map_err(|e| ParquetError::External(Box::new(e)))?;
+                if *row_filters {
+                    if let Some(rejection) = &rejection {
+                        self.deferred_rejections.lock().unwrap().insert(
+                            object_meta.location.clone(),
+                            (object_meta.clone(), rejection.clone()),
+                        );
+                    }
+                    self.deferred_rejection = rejection;
+                }
             }
+            Ok(metadata)
         }
         .boxed()
     }

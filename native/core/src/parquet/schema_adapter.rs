@@ -771,12 +771,25 @@ fn check_conversion(
             | DataType::FixedSizeList(target_item, _)
             | DataType::ListView(target_item)
             | DataType::LargeListView(target_item),
-        ) => check_conversion(
-            physical_item.data_type(),
-            target_item.data_type(),
-            &format!("{column}, list, {}", physical_item.name()),
-            options,
-        ),
+        ) => {
+            if physical_item
+                .metadata()
+                .contains_key(REPEATED_PRIMITIVE_KEY)
+                && is_complex(target_item.data_type())
+            {
+                return Err(parquet_schema_convert_err(
+                    column,
+                    physical_type,
+                    target_type,
+                ));
+            }
+            check_conversion(
+                physical_item.data_type(),
+                target_item.data_type(),
+                &format!("{column}, list, {}", physical_item.name()),
+                options,
+            )
+        }
         (
             DataType::Map(physical_entries, physical_sorted),
             DataType::Map(target_entries, target_sorted),
@@ -1542,6 +1555,33 @@ impl SparkPhysicalExprAdapter {
     }
 }
 
+/// Private, in-memory hint used only while checking the raw footer's LIST encoding.
+pub(crate) const REPEATED_PRIMITIVE_KEY: &str = "comet.parquet.repeated_primitive";
+
+/// Check only requested columns, using the same resolver and conversion rules as projection
+/// adaptation. Return the first deferred failure, but continue to let open-time errors win.
+pub(crate) fn check_file_conversions(
+    required: SchemaRef,
+    physical: SchemaRef,
+    options: SparkParquetOptions,
+) -> DataFusionResult<Option<RejectOnNonEmpty>> {
+    let adapter = SparkPhysicalExprAdapterFactory::new(options, None)
+        .create(Arc::clone(&required), physical)?;
+    let mut deferred = None;
+    for (index, field) in required.fields().iter().enumerate() {
+        let expr = adapter.rewrite(Arc::new(Column::new(field.name(), index)))?;
+        expr.apply(|node| {
+            if deferred.is_none() {
+                if let Some(rejection) = node.downcast_ref::<RejectOnNonEmpty>() {
+                    deferred = Some(rejection.clone());
+                }
+            }
+            Ok(datafusion::common::tree_node::TreeNodeRecursion::Continue)
+        })?;
+    }
+    Ok(deferred)
+}
+
 /// Defers a Parquet type conversion rejection to runtime: returns an empty array
 /// when the input batch has no rows, and raises `ParquetSchemaConvert` otherwise.
 ///
@@ -1551,8 +1591,8 @@ impl SparkPhysicalExprAdapter {
 /// never triggers the per-row-group check, so a partition mixing such a file
 /// with another whose schema would otherwise fail the conversion check
 /// (SPARK-26709) is still readable.
-#[derive(Debug, Eq)]
-struct RejectOnNonEmpty {
+#[derive(Debug, Clone, Eq)]
+pub(crate) struct RejectOnNonEmpty {
     child: Arc<dyn PhysicalExpr>,
     target_field: FieldRef,
     column: String,
@@ -1587,6 +1627,17 @@ impl Display for RejectOnNonEmpty {
             "REJECT_PARQUET_TYPE_PROMOTION({} AS {})",
             self.column, self.spark_type
         )
+    }
+}
+
+impl RejectOnNonEmpty {
+    pub(crate) fn error(&self) -> SparkError {
+        SparkError::ParquetSchemaConvert {
+            file_path: String::new(),
+            column: self.column.clone(),
+            physical_type: self.physical_type.clone(),
+            spark_type: self.spark_type.clone(),
+        }
     }
 }
 
@@ -2268,13 +2319,41 @@ pub(crate) mod test {
         writer.write(batch)?;
         writer.close()?;
 
+        scan_parquet_file(filename, required_schema, options, predicate, false)
+    }
+
+    fn scan_parquet_file(
+        filename: String,
+        required_schema: SchemaRef,
+        options: SparkParquetOptions,
+        predicate: Option<Arc<dyn PhysicalExpr>>,
+        row_filters: bool,
+    ) -> Result<SendableRecordBatchStream, DataFusionError> {
+        use crate::parquet::eager_page_index_reader_factory::{
+            EagerPageIndexReaderFactory, ScanIoSource,
+        };
+        use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
+        let context = Arc::new(TaskContext::default());
+        let reader_factory = EagerPageIndexReaderFactory::new(
+            Arc::new(object_store::local::LocalFileSystem::new()),
+            context
+                .runtime_env()
+                .cache_manager
+                .get_file_metadata_cache(),
+            ScanIoSource::Local,
+            &ExecutionPlanMetricsSet::new(),
+        )
+        .with_conversion_check(Arc::clone(&required_schema), options.clone(), row_filters);
         let object_store_url = ObjectStoreUrl::local_filesystem();
 
         // Create expression adapter factory for Spark-compatible schema adaptation
         let expr_adapter_factory: Arc<dyn PhysicalExprAdapterFactory> =
             Arc::new(SparkPhysicalExprAdapterFactory::new(options, None));
 
-        let mut parquet_source = ParquetSource::new(required_schema);
+        let mut parquet_source = ParquetSource::new(required_schema)
+            .with_pushdown_filters(row_filters)
+            .with_enable_page_index(true)
+            .with_parquet_file_reader_factory(Arc::new(reader_factory));
         if let Some(predicate) = predicate {
             parquet_source = parquet_source.with_predicate(predicate);
         }
@@ -2287,7 +2366,7 @@ pub(crate) mod test {
                 .build();
 
         let parquet_exec = DataSourceExec::new(Arc::new(file_scan_config));
-        parquet_exec.execute(0, Arc::new(TaskContext::default()))
+        parquet_exec.execute(0, context)
     }
 
     /// Create a Parquet file containing a single batch and then read the batch back using
@@ -3124,6 +3203,213 @@ pub(crate) mod test {
             let err = nested_rejection_message(&batch, required_schema).await;
             let column = if nested { "[[s, d]]" } else { "[[s]]" };
             assert!(err.contains(column), "nested: {nested}: {err}");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn rejected_conversion_precedes_row_filter() -> Result<(), DataFusionError> {
+        use parquet::file::properties::WriterProperties;
+        for nested in [false, true] {
+            let strings: ArrayRef = Arc::new(StringArray::from(vec!["bad", "bad"]));
+            let (values, read_type) = if nested {
+                let fields = Fields::from(vec![Field::new("x", DataType::Utf8, true)]);
+                (
+                    Arc::new(StructArray::try_new(fields, vec![strings], None)?) as ArrayRef,
+                    struct_type(vec![("x", DataType::Int32)]),
+                )
+            } else {
+                (strings, DataType::Int32)
+            };
+            let schema = Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int32, false),
+                Field::new("s", values.data_type().clone(), true),
+            ]));
+            let batch = RecordBatch::try_new(
+                Arc::clone(&schema),
+                vec![Arc::new(Int32Array::from(vec![1, 3])), values],
+            )?;
+            let required = Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int32, false),
+                Field::new("s", read_type, true),
+            ]));
+            let filename = get_temp_filename().to_str().unwrap().to_string();
+            let props = WriterProperties::builder()
+                .set_dictionary_enabled(false)
+                .build();
+            let mut writer = ArrowWriter::try_new(File::create(&filename)?, schema, Some(props))?;
+            writer.write(&batch)?;
+            writer.close()?;
+            for row_filters in [false, true] {
+                for id in [2, 100] {
+                    let predicate: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+                        Arc::new(Column::new("id", 0)),
+                        Operator::Eq,
+                        Arc::new(Literal::new(ScalarValue::Int32(Some(id)))),
+                    ));
+                    let mut stream = scan_parquet_file(
+                        filename.clone(),
+                        Arc::clone(&required),
+                        default_options(),
+                        Some(predicate),
+                        row_filters,
+                    )?;
+                    if id == 100 {
+                        while let Some(batch) = stream.next().await {
+                            assert_eq!(batch?.num_rows(), 0);
+                        }
+                    } else {
+                        let error = stream
+                            .next()
+                            .await
+                            .unwrap()
+                            .expect_err("conversion must precede row selection")
+                            .to_string();
+                        let column = if nested { "[[s, x]]" } else { "[[s]]" };
+                        assert!(
+                            error.contains(column)
+                                && error.contains("Expected: int")
+                                && error.contains("Found: BINARY"),
+                            "{error}"
+                        );
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Page-index pruning, like row-group pruning, must finish before the data-read guard.
+    #[tokio::test]
+    async fn deferred_conversion_respects_page_pruning() -> Result<(), DataFusionError> {
+        use parquet::file::properties::{EnabledStatistics, WriterProperties};
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("s", DataType::Utf8, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 3])),
+                Arc::new(StringArray::from(vec!["bad", "bad"])),
+            ],
+        )?;
+        let required = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("s", DataType::Int32, false),
+        ]));
+        let filename = get_temp_filename().to_str().unwrap().to_string();
+        let props = WriterProperties::builder()
+            .set_dictionary_enabled(false)
+            .set_statistics_enabled(EnabledStatistics::Page)
+            .set_data_page_row_count_limit(1)
+            .set_write_batch_size(1)
+            .build();
+        let mut writer = ArrowWriter::try_new(File::create(&filename)?, schema, Some(props))?;
+        writer.write(&batch)?;
+        writer.close()?;
+        let predicate: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+            Arc::new(Column::new("id", 0)),
+            Operator::Eq,
+            Arc::new(Literal::new(ScalarValue::Int32(Some(2)))),
+        ));
+        for row_filters in [false, true] {
+            let mut stream = scan_parquet_file(
+                filename.clone(),
+                Arc::clone(&required),
+                default_options(),
+                Some(Arc::clone(&predicate)),
+                row_filters,
+            )?;
+            while let Some(batch) = stream.next().await {
+                assert_eq!(batch?.num_rows(), 0);
+            }
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn legacy_list_shape_rejects_empty_and_pruned_files() -> Result<(), DataFusionError> {
+        use parquet::data_type::Int32Type as ParquetInt32;
+        use parquet::file::writer::SerializedFileWriter;
+        use parquet::schema::parser::parse_message_type;
+        for nested in [false, true] {
+            for legacy in [false, true] {
+                for empty in [false, true] {
+                    let list = if legacy {
+                        "REPEATED INT32 element;"
+                    } else {
+                        "REPEATED GROUP list { REQUIRED INT32 element; }"
+                    };
+                    let field = format!("REQUIRED GROUP a (LIST) {{ {list} }}");
+                    let field = if nested {
+                        format!("REQUIRED GROUP s {{ {field} }}")
+                    } else {
+                        field
+                    };
+                    let schema = Arc::new(parse_message_type(&format!(
+                        "message schema {{ REQUIRED INT32 id; {field} }}"
+                    ))?);
+                    let filename = get_temp_filename().to_str().unwrap().to_string();
+                    let mut writer = SerializedFileWriter::new(
+                        File::create(&filename)?,
+                        schema,
+                        Default::default(),
+                    )?;
+                    if !empty {
+                        let mut row_group = writer.next_row_group()?;
+                        let mut id = row_group.next_column()?.unwrap();
+                        id.typed::<ParquetInt32>().write_batch(&[1], None, None)?;
+                        id.close()?;
+                        let mut a = row_group.next_column()?.unwrap();
+                        a.typed::<ParquetInt32>()
+                            .write_batch(&[1], Some(&[1]), Some(&[0]))?;
+                        a.close()?;
+                        row_group.close()?;
+                    }
+                    writer.close()?;
+                    for element in [list_type(DataType::Int32), map_type(DataType::Int32)] {
+                        let required = Arc::new(Schema::new(vec![
+                            Field::new("id", DataType::Int32, false),
+                            if nested {
+                                Field::new("s", struct_type(vec![("a", list_type(element))]), false)
+                            } else {
+                                Field::new("a", list_type(element), false)
+                            },
+                        ]));
+                        let predicate: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+                            Arc::new(Column::new("id", 0)),
+                            Operator::Eq,
+                            Arc::new(Literal::new(ScalarValue::Int32(Some(100)))),
+                        ));
+                        let mut stream = scan_parquet_file(
+                            filename.clone(),
+                            required,
+                            default_options(),
+                            Some(predicate),
+                            true,
+                        )?;
+                        if legacy {
+                            let error = stream
+                                .next()
+                                .await
+                                .unwrap()
+                                .expect_err("legacy repeated primitive cannot be clipped")
+                                .to_string();
+                            let column = if nested {
+                                "Column: [[s, a]]"
+                            } else {
+                                "Column: [[a]]"
+                            };
+                            assert!(error.contains(column), "{error}");
+                        } else {
+                            while let Some(batch) = stream.next().await {
+                                assert_eq!(batch?.num_rows(), 0);
+                            }
+                        }
+                    }
+                }
+            }
         }
         Ok(())
     }

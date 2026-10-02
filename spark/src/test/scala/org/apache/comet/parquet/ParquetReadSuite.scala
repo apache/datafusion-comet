@@ -1703,6 +1703,68 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
+  test("native scan rejects legacy LIST shape mismatches before decoding") {
+    for (legacy <- Seq(false, true); empty <- Seq(false, true)) {
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        SQLConf.PARQUET_WRITE_LEGACY_FORMAT.key -> legacy.toString) {
+        withTempPath { dir =>
+          val path = dir.getCanonicalPath
+          val rows = spark.sql("select 1 as id, array(1) as a")
+          (if (empty) rows.where("false") else rows).write.parquet(path)
+          for (element <- Seq("array<int>", "map<int,int>")) {
+            val df = spark.read
+              .schema(s"id int, a array<$element>")
+              .parquet(path)
+              .where("id = 100")
+            if (legacy) {
+              checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+              val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+              assert(sparkError.isDefined && cometError.isDefined, s"$sparkError, $cometError")
+            } else {
+              checkSparkAnswerAndOperator(df)
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("native scan preserves conversion errors with row filter pushdown") {
+    for (pushdown <- Seq(false, true); nested <- Seq(false, true)) {
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.key -> pushdown.toString) {
+        withTempPath { dir =>
+          val path = dir.getCanonicalPath
+          val value = if (nested) "named_struct('x', 'bad')" else "'bad'"
+          val readType = if (nested) "struct<x:int>" else "int"
+          spark
+            .sql(s"select 1 as id, $value as s union all select 3 as id, $value as s")
+            .coalesce(1)
+            .write
+            .option("parquet.enable.dictionary", "false")
+            .parquet(path)
+          val df = spark.read.schema(s"id int, s $readType").parquet(path)
+          // Statistics retain [1, 3], but no row passes id = 2.
+          checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+          val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df.where("id = 2"))
+          Seq("Spark" -> sparkError, "Comet" -> cometError).foreach { case (engine, error) =>
+            val chain = error.toSeq.flatMap(causeChain)
+            assert(
+              chain.exists(
+                _.isInstanceOf[org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException]),
+              s"$engine: ${chain.mkString("\n")}")
+          }
+          // Format pruning must still suppress the decode-time mismatch (#6506).
+          checkSparkAnswerAndOperator(df.where("id = 100"))
+          // A mismatch in an unrequested column must not affect the scan.
+          checkSparkAnswerAndOperator(df.select("id").where("id = 2"))
+        }
+      }
+    }
+  }
+
   test("nested schema evolution follows Spark's per-version widening rules") {
     // Companion to "schema evolution": `INT32 -> bigint` inside a struct is gated by the same
     // per-Spark-version constant as the top level (see ShimCometConf), and accepted nested
