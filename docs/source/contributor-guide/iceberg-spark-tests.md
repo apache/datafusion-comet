@@ -134,7 +134,8 @@ The core Spark test target runs in four independent workers. The workflow passes
 `TestStructuredStreamingRead` family, and the others hash the remaining class names into three
 buckets. New tests are assigned automatically. Nested classes and all parameterized cases stay
 with their enclosing class; Gradle's existing includes, exclusions, and JUnit configuration are
-unchanged. The extensions and shaded-runtime targets remain unsharded.
+unchanged. The extensions target also runs in four workers, hashing class names across all four
+buckets because it has no streaming family. The shaded-runtime target remains unsharded.
 
 The matrix and partition count come from the same definition in `dev/ci/check-iceberg-shards.py`;
 adding another matrix dimension does not change the partition count. Each worker records its
@@ -147,9 +148,10 @@ attempt per shard, so rerunning only failed jobs can reuse earlier successful sh
 
 These candidate inventories include classes that JUnit may not execute, so the runtime job also
 runs `dev/ci/check-iceberg-shards.py`, a small Gradle/JUnit fixture that checks the four shards'
-combined candidate classes and executed test cases equal an unsharded run exactly once. It also
-checks nested, parameterized, inherited, and dynamically generated tests, existing exclusions,
-and failure propagation. The fixture does not compile Spark or Iceberg.
+combined candidate classes and executed test cases equal an unsharded run exactly once for both
+core and extensions allocation. It covers extensions inventories without streaming tests, including
+small and empty candidate sets. It also checks nested, parameterized, inherited, and dynamically
+generated tests, existing exclusions, and failure propagation. The fixture does not compile Spark or Iceberg.
 
 Apply the `run-iceberg-tests` label to a pull request whenever it touches the Iceberg scan or write
 path, reflection code (`org.apache.comet.iceberg.IcebergReflection`), or other logic whose behavior

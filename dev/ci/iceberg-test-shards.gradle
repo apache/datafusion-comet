@@ -25,13 +25,17 @@ import org.gradle.api.tasks.testing.Test
 // its includes, replacing its exclusions, or changing JUnit's discovery/parameters.
 // All classes remain on the test classpath, including inherited test fixtures.
 class CometIcebergTestShard {
-  static int owner(String classFileName, int count) {
+  static int owner(String classFileName, int count, boolean extensions) {
     if (count == 1) {
       return 1
     }
     // Keep JUnit @Nested classes with their enclosing class.
     String outer = classFileName.substring(0, classFileName.length() - '.class'.length())
         .split('\\$', 2)[0]
+    // Extensions have no streaming family, so use every shard.
+    if (extensions) {
+      return 1 + Math.floorMod(outer.hashCode(), count)
+    }
     // This family exists in all supported Iceberg versions. In the 1.11 run used
     // to size these shards it took ~19 of ~67 test minutes. The remaining classes
     // hash to ~18.5 / 16.4 / 13.2 minutes; new classes need no allowlist update.
@@ -69,10 +73,11 @@ gradle.projectsEvaluated {
   int runAttempt = Integer.parseInt(System.getenv('GITHUB_RUN_ATTEMPT') ?: '1')
   testTask.inputs.property('cometShardRunAttempt', runAttempt)
   testTask.inputs.files(gradle.startParameter.initScripts).withPropertyName('cometShardScripts')
+  boolean extensions = properties.cometShardTask.contains(':iceberg-spark-extensions-')
   boolean applyShardFilter = true
   testTask.exclude { FileTreeElement entry ->
     applyShardFilter && !entry.directory && entry.name.endsWith('.class') &&
-        CometIcebergTestShard.owner(entry.name, shardCount) != shardIndex
+        CometIcebergTestShard.owner(entry.name, shardCount, extensions) != shardIndex
   }
 
   // Keep a machine-readable inventory next to the normal JUnit reports. This is
