@@ -126,12 +126,12 @@ The tables below list every Spark built-in expression with its current status.
 | `regr_avgx` | ✅ | — | Native: Spark rewrites to `Average` (tests in [#4551](https://github.com/apache/datafusion-comet/pull/4551)) |
 | `regr_avgy` | ✅ | — | Native: Spark rewrites to `Average` (tests in [#4551](https://github.com/apache/datafusion-comet/pull/4551)) |
 | `regr_count` | ✅ | — | Native: Spark rewrites to `Count` (tests in [#4551](https://github.com/apache/datafusion-comet/pull/4551)) |
-| `regr_intercept` | ✅ | Native |  |
-| `regr_r2` | ✅ | Native |  |
-| `regr_slope` | ✅ | Native |  |
-| `regr_sxx` | ✅ | Native |  |
-| `regr_sxy` | ✅ | Native |  |
-| `regr_syy` | ✅ | Native |  |
+| `regr_intercept` | ✅ | Native | Falls back by default because the native merge of partial aggregates differs from Spark ([#6423](https://github.com/apache/datafusion-comet/issues/6423)); the native path is opt-in via `spark.comet.expression.RegrIntercept.allowIncompatible=true` |
+| `regr_r2` | ✅ | Native | Falls back by default because the native merge of partial aggregates differs from Spark ([#6423](https://github.com/apache/datafusion-comet/issues/6423)); the native path is opt-in via `spark.comet.expression.RegrR2.allowIncompatible=true` |
+| `regr_slope` | ✅ | Native | Falls back by default because the native merge of partial aggregates differs from Spark ([#6423](https://github.com/apache/datafusion-comet/issues/6423)); the native path is opt-in via `spark.comet.expression.RegrSlope.allowIncompatible=true` |
+| `regr_sxx` | ✅ | Native | Falls back by default because the native merge of partial aggregates differs from Spark ([#6423](https://github.com/apache/datafusion-comet/issues/6423)); the native path is opt-in via `spark.comet.expression.RegrReplacement.allowIncompatible=true` (Spark plans `regr_sxx` as `RegrReplacement`) |
+| `regr_sxy` | ✅ | Native | Falls back by default because the native merge of partial aggregates differs from Spark ([#6423](https://github.com/apache/datafusion-comet/issues/6423)); the native path is opt-in via `spark.comet.expression.RegrSXY.allowIncompatible=true` |
+| `regr_syy` | ✅ | Native | Falls back by default because the native merge of partial aggregates differs from Spark ([#6423](https://github.com/apache/datafusion-comet/issues/6423)); the native path is opt-in via `spark.comet.expression.RegrReplacement.allowIncompatible=true` (Spark plans `regr_syy` as `RegrReplacement`) |
 | `skewness` | 🔜 | — | Not yet implemented natively |
 | `some` | ✅ | — |  |
 | `std` | ✅ | Native |  |
@@ -176,7 +176,7 @@ The tables below list every Spark built-in expression with its current status.
 | `sequence` | ✅ | Hybrid | Integral types run natively; date/timestamp sequences use codegen dispatch |
 | `shuffle` | ✅ | Native | Binary/struct/map elements fall back |
 | `slice` | ✅ | Native | Native ([#4149](https://github.com/apache/datafusion-comet/pull/4149)) |
-| `sort_array` | ✅ | Hybrid | Struct, nested-array, and null elements run natively; other element types (for example intervals), and floating-point elements when `spark.comet.exec.strictFloatingPoint=true`, route through the JVM codegen dispatcher |
+| `sort_array` | ✅ | Hybrid | Struct, nested-array, floating-point, and null elements run natively; other element types (for example intervals) route through the JVM codegen dispatcher |
 
 ---
 
@@ -206,7 +206,7 @@ The tables below list every Spark built-in expression with its current status.
 | `array_size` | ✅ | — |  |
 | `cardinality` | ✅ | Native |  |
 | `concat` | ✅ | Hybrid | Binary/array children and non-UTF8_BINARY collations route through the JVM codegen dispatcher |
-| `reverse` | ✅ | Hybrid | Arrays with binary, struct, or map elements, and collated strings, route through the JVM codegen dispatcher ([details](compatibility/expressions/array.md)) |
+| `reverse` | ✅ | Hybrid | Binary input (Spark 4.2), arrays with binary, struct, or map elements, and collated strings, route through the JVM codegen dispatcher ([details](compatibility/expressions/array.md)) |
 | `size` | ✅ | Native |  |
 
 ---
