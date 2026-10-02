@@ -990,6 +990,9 @@ omitted from the tables below and may be reconsidered based on demand:</p>
 </tbody>
 </table>
 </div>
+<p><code class="docutils literal notranslate"><span class="pre">ExistenceJoin</span></code> (produced when <code class="docutils literal notranslate"><span class="pre">EXISTS</span></code> / <code class="docutils literal notranslate"><span class="pre">IN</span></code> is combined with another predicate via <code class="docutils literal notranslate"><span class="pre">OR</span></code>) runs
+natively on <code class="docutils literal notranslate"><span class="pre">BroadcastHashJoinExec</span></code> and <code class="docutils literal notranslate"><span class="pre">ShuffledHashJoinExec</span></code>. Existence sort-merge joins, residual
+(non-equi) join conditions, computed (non-column) join keys, and <code class="docutils literal notranslate"><span class="pre">NOT</span> <span class="pre">IN</span></code> fall back to Spark.</p>
 </section>
 <section id="exchanges">
 <h2>Exchanges<a class="headerlink" href="#exchanges" title="Link to this heading">#</a></h2>
