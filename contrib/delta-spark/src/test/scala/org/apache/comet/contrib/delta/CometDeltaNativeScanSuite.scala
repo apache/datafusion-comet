@@ -3425,6 +3425,53 @@ class CometDeltaNativeScanSuite extends CometDeltaTestBase {
     }
   }
 
+  test("ancient timestamps and dates read as BIGINT and INT are never rebase-checked") {
+    // Spark's ParquetVectorUpdaterFactory picks LongUpdater for INT64 read as BIGINT and
+    // IntegerUpdater for INT32 read as INT before any timestamp or date arm, so the stored
+    // integers come back unchanged even under EXCEPTION. NANOS columns read as BIGINT only with
+    // spark.sql.legacy.parquet.nanosAsLong.
+    val nanos1800 = Micros1800 * 1000L
+    withTempPath { dir =>
+      val path = dir.getAbsolutePath
+      writeRawParquetFile(
+        path,
+        """message m {
+          |  required int32 id;
+          |  required int64 v (TIMESTAMP(NANOS,true));
+          |  optional int64 us (TIMESTAMP(MICROS,true));
+          |  optional int32 d (DATE);
+          |}""".stripMargin) { factory =>
+        Seq(
+          factory
+            .newGroup()
+            .append("id", 1)
+            .append("v", nanos1800)
+            .append("us", Micros1800)
+            .append("d", Days1800),
+          factory.newGroup().append("id", 2).append("v", 1717243200000000000L))
+      }
+      val table = "comet_temporal_as_int_" + java.util.UUID.randomUUID().toString.replace("-", "")
+      withSQLConf("spark.sql.legacy.parquet.nanosAsLong" -> "true") {
+        withTable(table) {
+          spark.sql(
+            s"CREATE TABLE $table (id INT, v BIGINT, us BIGINT, d INT) USING PARQUET " +
+              s"LOCATION '$path'")
+          spark.sql(s"CONVERT TO DELTA $table NO STATISTICS")
+          withSQLConf(
+            SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC",
+            "spark.sql.parquet.datetimeRebaseModeInRead" -> "EXCEPTION",
+            "spark.sql.parquet.int96RebaseModeInRead" -> "EXCEPTION") {
+            val df = spark.read.format("delta").load(path)
+            checkDeltaNativeScanAnswer(df)
+            val rows = df.collect().sortBy(_.getInt(0))
+            assert(rows(0) == Row(1, nanos1800, Micros1800, Days1800), s"got ${rows(0)}")
+            assert(rows(1) == Row(2, 1717243200000000000L, null, null), s"got ${rows(1)}")
+          }
+        }
+      }
+    }
+  }
+
   private val NestedRawSchema = """message m {
       |  required int32 id;
       |  optional group s {

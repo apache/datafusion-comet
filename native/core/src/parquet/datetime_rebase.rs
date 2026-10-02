@@ -66,7 +66,10 @@
 //! reproduces); a leaf read as `TIMESTAMP` rebases under the datetime spec even when the file
 //! declares it `isAdjustedToUTC=false` (`isTimestampTypeMatched` checks the unit only); and a
 //! `DATE` leaf keeps the date policy whether read as `DATE` or, on Spark 4.x, as
-//! `TIMESTAMP_NTZ` (`DateToTimestampNTZWithRebaseUpdater`).
+//! `TIMESTAMP_NTZ` (`DateToTimestampNTZWithRebaseUpdater`). A date or timestamp leaf read as a
+//! number (a `DATE` as `INT`, a `TIMESTAMP` of any unit as `BIGINT`, e.g. NANOS under
+//! `spark.sql.legacy.parquet.nanosAsLong`) never rebases: the numeric updaters come first in
+//! `getUpdater` and return the stored value.
 //!
 //! Currently only enabled by the Delta scan arms via
 //! `SparkParquetOptions::rebase_from_file_metadata`, which also carries the session read modes
@@ -425,6 +428,11 @@ pub(crate) struct FileRebasePolicies {
     /// `LongWithRebaseUpdater` under the datetime spec, adjusted or not, so these leaves take
     /// the same policy as adjusted INT64 leaves. Filled by [`Self::restrict_to_requested`].
     pub ltz_requested_leaves: Vec<usize>,
+    /// Sorted physical leaf ordinals of dates and timestamps the query reads as a number
+    /// (`INT`, `BIGINT`, ...). Spark's `ParquetVectorUpdaterFactory` picks the numeric updaters
+    /// before any date or timestamp arm, and none of them rebase, so their policy is the
+    /// identity whatever the file's calendar. Filled by [`Self::restrict_to_requested`].
+    pub numeric_requested_leaves: Vec<usize>,
 }
 
 /// The leaf ordinals [`push_unrequested_leaves`] records while pairing a physical type with
@@ -435,6 +443,7 @@ struct LeafPairing {
     unrequested: Vec<usize>,
     ntz_requested: Vec<usize>,
     ltz_requested: Vec<usize>,
+    numeric_requested: Vec<usize>,
 }
 
 impl FileRebasePolicies {
@@ -446,8 +455,11 @@ impl FileRebasePolicies {
             || self.int96_timestamp != RebasePolicy::Corrected
     }
 
+    /// True when the query reads the leaf as a date or timestamp: it is requested, and not
+    /// as a number.
     fn is_requested(&self, leaf: usize) -> bool {
         self.unrequested_leaves.binary_search(&leaf).is_err()
+            && self.numeric_requested_leaves.binary_search(&leaf).is_err()
     }
 
     /// The policy of the `Date32` leaf at depth-first ordinal `leaf`: the file's date policy,
@@ -536,6 +548,7 @@ impl FileRebasePolicies {
         self.unrequested_leaves = pairing.unrequested;
         self.ntz_requested_leaves = pairing.ntz_requested;
         self.ltz_requested_leaves = pairing.ltz_requested;
+        self.numeric_requested_leaves = pairing.numeric_requested;
         self
     }
 }
@@ -554,7 +567,11 @@ struct FieldMatching {
 /// drops, and records in `out.ntz_requested` / `out.ltz_requested` the timestamp leaves whose
 /// requested type has the opposite timezone presence (a timezone-carrying leaf read as
 /// `TIMESTAMP_NTZ`, a timezone-free leaf read as `TIMESTAMP`); the unit is irrelevant to
-/// either, as it is to Spark's `isTimestampTypeMatched`.
+/// either, as it is to Spark's `isTimestampTypeMatched`. A date leaf read as `TINYINT`,
+/// `SMALLINT`, `INT`, `BIGINT` or `DOUBLE`, and a timestamp leaf read as `BIGINT`, go to
+/// `out.numeric_requested`: Spark's INT32 and INT64 numeric updaters for those pairings never
+/// rebase. Spark accepts a date as `BIGINT` or `DOUBLE` only on 4.x (3.x refuses the read);
+/// the identity is still the right policy for it.
 ///
 /// Recurses through exactly the pairings `parquet_convert_array` narrows, and no others: a
 /// struct child is dropped only when NO requested child selects it by either rule the struct
@@ -583,6 +600,18 @@ fn push_unrequested_leaves(
         }
         (DataType::Timestamp(_, None), DataType::Timestamp(_, Some(_))) => {
             out.ltz_requested.push(*next_leaf);
+            *next_leaf += 1;
+        }
+        (
+            DataType::Date32,
+            DataType::Int8
+            | DataType::Int16
+            | DataType::Int32
+            | DataType::Int64
+            | DataType::Float64,
+        )
+        | (DataType::Timestamp(_, _), DataType::Int64) => {
+            out.numeric_requested.push(*next_leaf);
             *next_leaf += 1;
         }
         (DataType::Struct(physical_fields), DataType::Struct(requested_fields)) => {
@@ -731,6 +760,7 @@ pub(crate) fn resolve_file_rebase_policies(
         unrequested_leaves: Vec::new(),
         ntz_requested_leaves: Vec::new(),
         ltz_requested_leaves: Vec::new(),
+        numeric_requested_leaves: Vec::new(),
     }
 }
 
@@ -1341,6 +1371,7 @@ mod tests {
             unrequested_leaves: Vec::new(),
             ntz_requested_leaves: Vec::new(),
             ltz_requested_leaves: Vec::new(),
+            numeric_requested_leaves: Vec::new(),
         }
     }
 
@@ -3188,5 +3219,189 @@ mod tests {
                 "{requested}"
             );
         }
+    }
+
+    #[test]
+    fn numeric_requests_on_temporal_leaves_never_rebase() {
+        // Spark's ParquetVectorUpdaterFactory picks the numeric updaters (IntegerUpdater,
+        // ByteUpdater, ShortUpdater for INT32, plus IntegerToLongUpdater and
+        // IntegerToDoubleUpdater on 4.x; LongUpdater for INT64) before any DATE or TIMESTAMP
+        // arm, so a temporal leaf read as a number returns the stored value with no calendar
+        // check. Each pair is checked under a metadata-free file with EXCEPTION and LEGACY
+        // session modes, and under a Spark 2.4 file whose footer forces LEGACY.
+        let utc = || Some("UTC".into());
+        let cases: Vec<(DataType, Vec<DataType>)> = vec![
+            (
+                DataType::Timestamp(TimeUnit::Nanosecond, utc()),
+                vec![DataType::Int64],
+            ),
+            (
+                DataType::Timestamp(TimeUnit::Microsecond, utc()),
+                vec![DataType::Int64],
+            ),
+            (
+                DataType::Timestamp(TimeUnit::Millisecond, utc()),
+                vec![DataType::Int64],
+            ),
+            (
+                DataType::Timestamp(TimeUnit::Microsecond, None),
+                vec![DataType::Int64],
+            ),
+            (
+                DataType::Date32,
+                vec![
+                    DataType::Int32,
+                    DataType::Int8,
+                    DataType::Int16,
+                    DataType::Int64,
+                    DataType::Float64,
+                ],
+            ),
+        ];
+        let legacy_metadata = spark_metadata(&[
+            (SPARK_VERSION_METADATA_KEY, "2.4.8"),
+            (SPARK_TIMEZONE_KEY, "UTC"),
+        ]);
+        let session_modes = [
+            modes(RebaseReadMode::Exception, RebaseReadMode::Exception),
+            modes(RebaseReadMode::Legacy, RebaseReadMode::Legacy),
+        ];
+        for (physical, numeric) in cases {
+            let plain = Schema::new(vec![Field::new("v", physical.clone(), true)]);
+            let legacy = Schema::new_with_metadata(
+                vec![Field::new("v", physical.clone(), true)],
+                legacy_metadata.clone(),
+            );
+            for requested in &numeric {
+                for session in session_modes {
+                    for schema in [&plain, &legacy] {
+                        assert_eq!(
+                            wrapped_policies_reading(schema, Some(requested), session),
+                            None,
+                            "{physical} read as {requested} under {session:?}"
+                        );
+                    }
+                }
+            }
+            // Control: the same leaf read as its own temporal type keeps its policy. A
+            // timezone-free leaf is read as TIMESTAMP, the request that rebases it.
+            let temporal = match &physical {
+                DataType::Timestamp(unit, None) => DataType::Timestamp(*unit, utc()),
+                other => other.clone(),
+            };
+            assert_eq!(
+                wrapped_policies_reading(&plain, Some(&temporal), session_modes[0]),
+                Some(vec![RebasePolicy::CheckAncient]),
+                "{physical} read as {temporal}"
+            );
+            assert_eq!(
+                wrapped_policies_reading(&legacy, Some(&temporal), session_modes[0]),
+                Some(vec![RebasePolicy::Legacy(WriterTimeZone::Utc)]),
+                "{physical} read as {temporal}"
+            );
+        }
+
+        // No Spark updater reads a timestamp as anything narrower than BIGINT, so those
+        // requests are not numeric reads and keep the physical rule.
+        let ts = Schema::new(vec![Field::new(
+            "v",
+            DataType::Timestamp(TimeUnit::Microsecond, utc()),
+            true,
+        )]);
+        for requested in [
+            DataType::Int8,
+            DataType::Int16,
+            DataType::Int32,
+            DataType::Float64,
+        ] {
+            let policies = resolve_file_rebase_policies(&ts, default_modes())
+                .restrict_to_requested(&ts, &[Some(&requested)], true, false);
+            assert!(policies.numeric_requested_leaves.is_empty(), "{requested}");
+            assert_eq!(
+                wrapped_policies_reading(&ts, Some(&requested), default_modes()),
+                Some(vec![RebasePolicy::CheckAncient]),
+                "{requested}"
+            );
+        }
+    }
+
+    #[test]
+    fn numeric_requests_suppress_rebase_inside_nested_columns() {
+        // The pairing recurses through structs, lists and maps, so a nested temporal leaf read
+        // as a number is the identity while its temporal siblings keep their policy.
+        let ts = DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into()));
+        let pair = |d: DataType, t: DataType| {
+            struct_of(vec![Field::new("d", d, true), Field::new("t", t, true)])
+        };
+        let list = |dt: DataType| DataType::List(Arc::new(Field::new("item", dt, true)));
+        let map = |dt: DataType| {
+            DataType::Map(
+                Arc::new(Field::new(
+                    "entries",
+                    struct_of(vec![
+                        Field::new("key", DataType::Int32, false),
+                        Field::new("value", dt, true),
+                    ]),
+                    false,
+                )),
+                false,
+            )
+        };
+        let physical = struct_of(vec![
+            Field::new("s", pair(DataType::Date32, ts.clone()), true),
+            Field::new("l", list(ts.clone()), true),
+            Field::new("m", map(DataType::Date32), true),
+        ]);
+        let requested = |s: DataType, l: DataType, m: DataType| {
+            struct_of(vec![
+                Field::new("s", s, true),
+                Field::new("l", list(l), true),
+                Field::new("m", map(m), true),
+            ])
+        };
+        let schema = Schema::new(vec![Field::new("c", physical.clone(), true)]);
+        let check = RebasePolicy::CheckAncient;
+        let pass = RebasePolicy::Corrected;
+        assert_eq!(
+            wrapped_policies_reading(
+                &schema,
+                Some(&requested(
+                    pair(DataType::Int32, DataType::Int64),
+                    DataType::Int64,
+                    DataType::Int32,
+                )),
+                default_modes(),
+            ),
+            None
+        );
+        assert_eq!(
+            wrapped_policies_reading(
+                &schema,
+                Some(&requested(
+                    pair(DataType::Date32, DataType::Int64),
+                    ts.clone(),
+                    DataType::Int32,
+                )),
+                default_modes(),
+            ),
+            Some(vec![check, pass, check, pass, pass])
+        );
+        assert_eq!(
+            wrapped_policies_reading(
+                &schema,
+                Some(&requested(
+                    pair(DataType::Int32, ts.clone()),
+                    DataType::Int64,
+                    DataType::Date32,
+                )),
+                default_modes(),
+            ),
+            Some(vec![pass, check, pass, pass, check])
+        );
+        // Control: read as stored, every temporal leaf keeps its policy.
+        assert_eq!(
+            wrapped_policies_reading(&schema, Some(&physical), default_modes()),
+            Some(vec![check, check, check, pass, check])
+        );
     }
 }
