@@ -37,6 +37,15 @@ all native execution can be turned off with `spark.comet.exec.enabled=false`. Se
 | ⚠️ Supported (caveats) | Experimental or disabled by default, or accelerates only a limited subset. See the [Compatibility Guide](compatibility/index.md). |
 | 🔜 Planned             | Intended; tracked by an open issue or pull request.                                                                               |
 
+## Wrapper nodes
+
+Some nodes in a Spark plan do no work of their own: `AdaptiveSparkPlan`, the AQE query stages
+(including `ResultQueryStage` on Spark 4.0 and later), `AQEShuffleRead`, `InputAdapter`,
+`WholeStageCodegen`, and the reuse markers `ReusedExchange` and `ReusedSubquery`. Comet leaves
+them in place around the operators it converts, so this page does not list them, and seeing one in
+a plan does not mean that part of the query fell back to Spark. The coverage summary described in
+[Understanding Comet Plans](understanding-comet-plans.md) does not count them.
+
 ## Not currently planned
 
 The following operator families fall back to Spark and are not on the current roadmap. They are
@@ -46,6 +55,7 @@ omitted from the tables below and may be reconsidered based on demand:
 - **Cartesian / cross joins** (`CartesianProductExec`): rare and expensive, with little acceleration benefit.
 - **Range generation** (`RangeExec`): niche leaf operator.
 - **Pickled (non-Arrow) Python UDFs** (`BatchEvalPythonExec`): Comet accelerates Arrow-based Python UDFs only ([#4234](https://github.com/apache/datafusion-comet/pull/4234)).
+- **Typed Dataset operators** (`DeserializeToObjectExec`, `SerializeFromObjectExec`, `MapElementsExec`, `MapPartitionsExec`, `MapGroupsExec`, `CoGroupExec`, `AppendColumnsExec`, and similar): produced by `map`, `mapPartitions`, `groupByKey`, `cogroup`, and other typed `Dataset` transformations. They exist to run user JVM functions on JVM objects, which Comet cannot do natively.
 
 ## Scans
 
