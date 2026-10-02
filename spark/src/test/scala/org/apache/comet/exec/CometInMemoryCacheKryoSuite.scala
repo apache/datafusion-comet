@@ -23,8 +23,9 @@ import org.apache.spark.SparkConf
 import org.apache.spark.serializer.KryoRegistrator
 import org.apache.spark.sql.{CometTestBase, Row}
 import org.apache.spark.sql.catalyst.expressions.GenericInternalRow
+import org.apache.spark.sql.comet.execution.arrow.ArrowCachedBatchSerializer
 import org.apache.spark.sql.execution.columnar.{CometInMemoryRelationHelper, DefaultCachedBatch}
-import org.apache.spark.sql.internal.{SQLConf, StaticSQLConf}
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.storage.StorageLevel
 import org.apache.spark.unsafe.types.UTF8String
 
@@ -201,16 +202,20 @@ class CometInMemoryCacheKryoSuite extends CometTestBase {
 }
 
 /**
- * The application that `CometDriverPlugin` warns about: Kryo with registration required and no
- * [[CometKryoRegistrator]]. The plugin then leaves `spark.sql.cache.serializer` alone rather than
- * install Comet's serializer, whose cached batch Kryo would reject, so caching works as it does
- * without Comet.
+ * Comet's driver plugin under Kryo with registration required, in an application that does not
+ * list [[CometKryoRegistrator]]. The plugin installs Comet's cache serializer only if Kryo has
+ * Comet's cached batch registered, whatever registered it, so the format it picks has to survive
+ * a `DISK_ONLY` cache, which serializes every block as it is put.
  *
  * Spark registers its own cached batch with Kryo only from 4.1, so on earlier versions an
- * application whose caches work under registration has to register it itself. The registrator
- * this suite installs does that, and nothing of Comet's.
+ * application whose caches work under registration registers it itself, as the suite that expects
+ * Spark's format does.
  */
-class CometInMemoryCacheKryoUnregisteredSuite extends CometTestBase {
+abstract class CometInMemoryCacheKryoRegistrationSuite(expectedBatch: String)
+    extends CometTestBase {
+
+  /** The Kryo registrations the application makes instead of listing CometKryoRegistrator. */
+  protected def registrations: Seq[(String, String)]
 
   override protected def beforeAll(): Unit = {
     CometInMemoryRelationHelper.clearSerializer()
@@ -231,8 +236,7 @@ class CometInMemoryCacheKryoUnregisteredSuite extends CometTestBase {
     conf.set(CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key, "true")
     conf.set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
     conf.set("spark.kryo.registrationRequired", "true")
-    conf.set("spark.kryo.registrator", classOf[SparkCachedBatchKryoRegistrator].getName)
-    conf
+    conf.setAll(registrations)
   }
 
   private def cachedBatchTypes(table: String): Array[String] = {
@@ -243,32 +247,49 @@ class CometInMemoryCacheKryoUnregisteredSuite extends CometTestBase {
       .collect()
   }
 
-  test("Comet plugin keeps Spark's cache format when Kryo would reject Comet's") {
-    assert(!spark.sparkContext.getConf.contains(StaticSQLConf.SPARK_CACHE_SERIALIZER.key))
-
+  test("Comet plugin picks a cache format that Kryo can store") {
     withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
       spark.catalog.clearCache()
       try {
         spark
           .range(0, 100, 1, 2)
           .selectExpr("id", "cast(id as string) AS s")
-          .createOrReplaceTempView("kryo_unregistered")
+          .createOrReplaceTempView("kryo_registration")
 
-        // DISK_ONLY serializes every block as it is put, so this reaches Kryo in local mode.
-        spark.catalog.cacheTable("kryo_unregistered", StorageLevel.DISK_ONLY)
-        assert(spark.table("kryo_unregistered").count() == 100)
-        assert(
-          cachedBatchTypes("kryo_unregistered").sameElements(
-            Array("org.apache.spark.sql.execution.columnar.DefaultCachedBatch")))
+        spark.catalog.cacheTable("kryo_registration", StorageLevel.DISK_ONLY)
+        assert(spark.table("kryo_registration").count() == 100)
+        assert(cachedBatchTypes("kryo_registration").sameElements(Array(expectedBatch)))
 
         checkAnswer(
-          spark.sql("SELECT s FROM kryo_unregistered WHERE id > 97"),
+          spark.sql("SELECT s FROM kryo_registration WHERE id > 97"),
           Seq(Row("98"), Row("99")))
       } finally {
         spark.catalog.clearCache()
       }
     }
   }
+}
+
+/** Registers Spark's cached batch and nothing of Comet's, so the plugin keeps Spark's format. */
+class CometInMemoryCacheKryoUnregisteredSuite
+    extends CometInMemoryCacheKryoRegistrationSuite(classOf[DefaultCachedBatch].getName) {
+  override protected def registrations: Seq[(String, String)] =
+    Seq("spark.kryo.registrator" -> classOf[SparkCachedBatchKryoRegistrator].getName)
+}
+
+/**
+ * Registers Comet's classes through `spark.kryo.classesToRegister` rather than
+ * [[CometKryoRegistrator]], and not Spark's cached batch, so before Spark 4.1 only Comet's format
+ * can be stored, and the plugin has to install it.
+ */
+class CometInMemoryCacheKryoClassesToRegisterSuite
+    extends CometInMemoryCacheKryoRegistrationSuite(
+      ArrowCachedBatchSerializer.cachedBatchClass.getName) {
+  override protected def registrations: Seq[(String, String)] = Seq(
+    "spark.kryo.classesToRegister" -> CometKryoRegistrator.classes
+      .filterNot(_ == classOf[DefaultCachedBatch])
+      .map(_.getName)
+      .mkString(","))
 }
 
 /** Registers what Spark's own cached batch needs, over a long and a string column, with Kryo. */

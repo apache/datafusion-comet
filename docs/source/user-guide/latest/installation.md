@@ -269,9 +269,9 @@ If the application uses Kryo (`spark.serializer=org.apache.spark.serializer.Kryo
 
 Without it, any query that uses Comet's native broadcast exchange, which is enabled by default,
 fails with Kryo's "Class is not registered" error, for example on the first broadcast hash join.
-Comet's [in-memory cache](in-memory-cache.md#kryo) format needs the same registrator, and without
-it Comet's plugin keeps caches in Spark's format. Set it before the
-`SparkContext` is created: `KryoSerializer` reads it before Comet's plugin runs, so Comet cannot
-add it for you. `spark.kryo.registrator` accepts a comma-separated list, so an application with
-its own registrator can list both. Comet logs a warning at startup when Kryo requires registration
-and this registrator is missing.
+Comet's [in-memory cache](in-memory-cache.md#kryo) format needs the same registrations, and while
+Kryo has not registered Comet's cached batch, Comet's plugin keeps caches in Spark's format. Set it
+before the `SparkContext` is created: `KryoSerializer` reads it before Comet's plugin runs, so
+Comet cannot add it for you. `spark.kryo.registrator` accepts a comma-separated list, so an
+application with its own registrator can list both. Comet logs a warning at startup when Kryo
+requires registration and has not registered the classes this registrator covers.
