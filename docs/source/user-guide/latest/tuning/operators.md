@@ -61,43 +61,41 @@ with the setting disabled to distinguish reduced hash-probe work from reader I/O
 
 ## Adaptive Partial Aggregation
 
-For high-cardinality grouping, Comet can bypass partial hash aggregation when it is not
-reducing the number of rows enough. This currently applies only to fused native shuffle-writer
-plans whose partial aggregates are grouping-only or single-argument `COUNT`. Low-cardinality
-inputs continue to aggregate normally. The SQL metric `rows bypassing partial aggregation`
-shows whether skipping occurred.
+Set `spark.comet.exec.aggregate.skipPartial.enabled=true` to let Comet bypass partial hash
+aggregation for high-cardinality grouping when it is not reducing the number of rows enough. This
+experimental optimization is disabled by default. It currently applies only to fused native
+shuffle-writer plans whose partial aggregates are grouping-only or single-argument `COUNT`.
+Low-cardinality inputs continue to aggregate normally. The SQL metric
+`rows bypassing partial aggregation` shows whether skipping occurred.
+
+DataFusion makes the decision separately in each task. It starts checking after the first 100,000
+input rows, and as soon as the number of groups divided by the number of input rows exceeds `0.8`,
+it stops aggregating and sends the rest of the task's rows to the shuffle as they are. It does not
+check again, so a task whose keys repeat after a mostly distinct start, such as several snapshot
+files of the same keys packed into one split, can shuffle many times more rows than it would with
+skipping disabled. Compare the shuffle write metrics with the setting enabled and disabled before
+enabling it for a workload.
 
 Eligibility is conservative for the whole fused native plan: any unsupported partial accumulator,
 Spark `PartialMerge`, or mixed-mode aggregate disables skipping in that plan. Multi-argument
 `COUNT` and other accumulators are not admitted. Distribution-required grouping-only stages
 still fully deduplicate, and non-native-shuffle plans retain ordinary aggregation.
-The DataFusion testing configuration override does not bypass these safety checks.
 
-DataFusion 55 defaults to probing after 100,000 input rows per partial aggregation
-partition and skipping when the number of groups divided by input rows exceeds `0.8`.
-To experiment with these thresholds, enable `spark.comet.exec.respectDataFusionConfigs`,
+To experiment with the thresholds, also enable `spark.comet.exec.respectDataFusionConfigs`,
 a development and testing option that defaults to `false`. For example, the following
 SQL settings pass through the default threshold values, which you can adjust:
 
 ```sql
+SET spark.comet.exec.aggregate.skipPartial.enabled=true;
 SET spark.comet.exec.respectDataFusionConfigs=true;
 SET spark.comet.datafusion.execution.skip_partial_aggregation_probe_rows_threshold=100000;
 SET spark.comet.datafusion.execution.skip_partial_aggregation_probe_ratio_threshold=0.8;
 ```
 
 A lower row threshold allows an earlier decision; a lower ratio threshold makes
-skipping more likely. Skipping can increase the number of partial states emitted
-and the amount of shuffle data, so measure the effect on your workload.
-
-To disable skipping, keep `spark.comet.exec.respectDataFusionConfigs=true` and set
-the ratio threshold above the maximum possible groups/input-rows ratio:
-
-```sql
-SET spark.comet.datafusion.execution.skip_partial_aggregation_probe_ratio_threshold=1.1;
-```
-
-These settings only tune eligible plans. Unsupported accumulators and modes remain
-disabled even when configuration overrides are enabled.
+skipping more likely. These settings only tune eligible plans. They cannot enable skipping
+while `spark.comet.exec.aggregate.skipPartial.enabled` is `false`, or for unsupported
+accumulators and modes.
 
 ## Optimizing Sorting on Floating-Point Values
 
