@@ -264,12 +264,12 @@ class CometCodegenSuite
   }
 
   test("a closed allocateOutput vector releases all of its memory") {
-    // Arrow's StructVector creates its writer in a field initializer. The writer creates and
-    // allocates a child vector for each child of the struct's field. Then allocateOutput replaces
-    // these children. Thus, allocateOutput must close them, or each batch with a struct output
-    // leaks them. ListVector and MapVector create a writer only in getWriter(), so List and Map
-    // outputs do not leak. The test includes these outputs to make sure that they do not leak in
-    // the future.
+    // Arrow's StructVector creates its writer in a field initializer. If the field of the struct
+    // has children, the writer creates and allocates a child vector for each of them.
+    // initializeChildrenFromFields then replaces these children, but it does not close them.
+    // Thus, a struct vector that gets such a field in its constructor leaks memory on each batch.
+    // ListVector and MapVector create a writer only in getWriter(), so List and Map outputs do
+    // not leak. The test includes these outputs to make sure that they do not leak in the future.
     val pair = StructType(
       Seq(StructField("name", StringType), StructField("age", IntegerType, nullable = false)))
     val outputTypes = Seq(

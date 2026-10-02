@@ -101,12 +101,6 @@ private[codegen] object CometBatchKernelCodegenOutput extends CometTypeShim {
         v
       case _: ArrowType.Struct =>
         val v = new RenamedStructVector(field, allocator)
-        // StructVector creates its writer in a field initializer. The writer creates and
-        // allocates a child vector for each child of `field`. initializeChildrenFromFields
-        // replaces these children, but it does not close them. Thus, close them first. The writer
-        // keeps its references to the closed vectors. These references are not a problem, because
-        // the kernel writes to the children through getChildByOrdinal.
-        v.getChildrenFromFields.asScala.foreach(_.close())
         v.initializeChildrenFromFields(field.getChildren)
         v
       case _ =>
@@ -147,9 +141,26 @@ private[codegen] object CometBatchKernelCodegenOutput extends CometTypeShim {
     override def getField: Field = exportField
   }
 
+  /**
+   * StructVector creates its writer in a field initializer. The writer creates and allocates a
+   * child vector for each child of `getField`. initializeChildrenFromFields replaces these
+   * children, but it does not close them. Thus, this class gives the StructVector constructor a
+   * field without children. `getField` returns `exportField` only after
+   * initializeChildrenFromFields. The writer creates no child vectors, and the vector owns all of
+   * the memory that it allocates.
+   */
   private final class RenamedStructVector(exportField: Field, allocator: BufferAllocator)
-      extends StructVector(exportField, allocator, null) {
-    override def getField: Field = exportField
+      extends StructVector(exportField.getName, allocator, exportField.getFieldType, null) {
+    // The StructVector constructor runs before this class initializes its fields. Thus, this
+    // field is false when the writer reads getField.
+    private var childrenInitialized = false
+
+    override def initializeChildrenFromFields(children: java.util.List[Field]): Unit = {
+      super.initializeChildrenFromFields(children)
+      childrenInitialized = true
+    }
+
+    override def getField: Field = if (childrenInitialized) exportField else super.getField
   }
 
   /**
