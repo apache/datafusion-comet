@@ -44,7 +44,7 @@ writes into two operators:
 With only the split plan enabled, data files are still written by iceberg-java; only the plan
 shape changes. The split moves data-file writing inside AQE and separates it from the commit,
 and it is the foundation for the second toggle: when
-`spark.comet.iceberg.write.enabled=true` and the write passes the eligibility check below, the
+`spark.comet.write.iceberg.enabled=true` and the write passes the eligibility check below, the
 `IcebergWrite` operator's per-task Parquet write is delegated to
 [iceberg-rust](https://github.com/apache/iceberg-rust) via Comet's native execution pipeline
 ([#5361](https://github.com/apache/datafusion-comet/pull/5361)).
@@ -83,7 +83,7 @@ spark.sql.catalog.<name>.warehouse=...
 spark.comet.write.iceberg.splitOperator.enabled=true
 
 # Native Parquet writer (experimental, off by default; requires the split plan)
-spark.comet.iceberg.write.enabled=true
+spark.comet.write.iceberg.enabled=true
 
 # Lets writes whose input is a local relation (INSERT ... VALUES, a local DataFrame) use the
 # native writer; see "Native Parquet write eligibility" below
@@ -129,7 +129,7 @@ trade-off, only no plan change.
 
 ## Native Parquet write eligibility
 
-When `spark.comet.iceberg.write.enabled=true`
+When `spark.comet.write.iceberg.enabled=true`
 ([#5361](https://github.com/apache/datafusion-comet/pull/5361)), the `IcebergWrite` operator's
 per-task Parquet write is delegated to [iceberg-rust](https://github.com/apache/iceberg-rust).
 The native writer must produce the same outcome as iceberg-java — the same Parquet features,
@@ -283,7 +283,7 @@ unchanged.
 
 Some differences between parquet-mr and the pinned parquet-rs / iceberg-rust are unconditional —
 they apply to every native write and cannot be configured away. Enabling
-`spark.comet.iceberg.write.enabled` accepts them. They fall into three classes with very
+`spark.comet.write.iceberg.enabled` accepts them. They fall into three classes with very
 different blast radius: differences confined to the physical bytes of a data file (cosmetic —
 no reader decision is based on them), differences visible in manifest metadata (these outlive
 the write and feed later readers' pruning decisions, so each one is analyzed individually
