@@ -45,18 +45,26 @@ INSERT INTO mm_float VALUES
   (12, 8, double('Infinity'), float('Infinity')),
   (13, 8, double('NaN'), float('NaN'))
 
--- Without grouping
+-- Without grouping. The extrema are NaN and infinities, so scan/merge order cannot change them.
 query
 SELECT max(d), min(d), max(-d), min(-d), max(f), min(f), max(-f), min(-f) FROM mm_float
 
--- Of equal values the first one seen wins
+-- Signed-zero ties need an explicit input order, not just an ORDER BY on the aggregate result.
+-- Use windows for groups 2 and 3: neither file layout nor partial-aggregate merge order is fixed.
+-- The native accumulator tests check first-value preservation by bits for ordinary and grouped
+-- aggregates, including partial-state merges.
 query
-SELECT max(d), min(d), max(-d), min(-d), max(f), min(f) FROM mm_float WHERE g IN (2, 3)
+SELECT id, g,
+  max(d) OVER w, min(d) OVER w, max(-d) OVER w, min(-d) OVER w,
+  max(f) OVER w, min(f) OVER w, max(-f) OVER w, min(-f) OVER w
+FROM mm_float WHERE g IN (2, 3)
+WINDOW w AS (PARTITION BY g ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)
 
--- Grouped. Groups 4 and 5 hold only an infinity, group 6 only NaN and group 7 only NULL.
+-- Grouped, excluding the order-sensitive signed-zero groups. Groups 4 and 5 hold only an
+-- infinity, group 6 only NaN and group 7 only NULL.
 query
 SELECT g, max(d), min(d), max(-d), min(-d), max(f), min(f), max(-f), min(-f)
-FROM mm_float GROUP BY g ORDER BY g
+FROM mm_float WHERE g NOT IN (2, 3) GROUP BY g ORDER BY g
 
 -- Window frames: growing, sliding and the whole partition. Each frame is ordered by id, so the
 -- first of two equal values is well defined. The sliding frames use FOLLOWING offsets because the
