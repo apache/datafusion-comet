@@ -25,18 +25,20 @@ import java.nio.file.Files
 import scala.collection.mutable
 
 import org.apache.spark.CometListenerBusUtils
-import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.{CometTestBase, SparkSession}
 import org.apache.spark.sql.connector.catalog.{Identifier, TableCatalog}
 import org.apache.spark.sql.execution.{QueryExecution, SparkPlan}
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.util.QueryExecutionListener
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark42Plus
 import org.apache.comet.iceberg.IcebergReflection
 
 /**
- * Shared fixtures for Iceberg-backed test suites: classpath probe and per-test temp directory.
+ * Shared fixtures for Iceberg-backed test suites: classpath probe, per-test temp directory, a
+ * Hadoop catalog, and a table of pre-1970 timestamps. Mix in alongside `CometTestBase`.
  */
-trait CometIcebergTestBase {
+trait CometIcebergTestBase { this: CometTestBase =>
 
   // No Iceberg spark-runtime is published for Spark 4.2 yet, so the build reuses the 4.0 runtime.
   // That jar is binary-incompatible with Spark 4.2, whose `connector.catalog.View` is a class
@@ -135,6 +137,51 @@ trait CometIcebergTestBase {
   protected def deleteRecursively(file: File): Unit = {
     if (file.isDirectory) file.listFiles().foreach(deleteRecursively)
     file.delete()
+  }
+
+  /** Runs `f` with an Iceberg `hadoop` catalog registered as `catalog`, in a temp warehouse. */
+  protected def withHadoopCatalog(catalog: String)(f: => Unit): Unit =
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        s"spark.sql.catalog.$catalog" -> "org.apache.iceberg.spark.SparkCatalog",
+        s"spark.sql.catalog.$catalog.type" -> "hadoop",
+        s"spark.sql.catalog.$catalog.warehouse" -> warehouseDir.getAbsolutePath)(f)
+    }
+
+  /**
+   * Timestamps just after pre-1970 unit boundaries, where Iceberg does not floor. Its
+   * `DateTimeUtil` places a pre-1970 timestamp whose microsecond of second is 999999 by the
+   * second before it, so right after a boundary it gets the unit before: 1969-01-01
+   * 00:00:00.999999 is in year -2, month -13, day 1968-12-31, and hour -8761, where a floor gives
+   * -1, -12, 1969-01-01, and -8760. `sql-tests/iceberg/temporal_functions_pre_epoch.sql` runs the
+   * system functions over the same timestamps in projections and filters.
+   */
+  protected val preEpochTimestamps: Seq[String] = Seq(
+    "1969-01-01 00:00:00.999999", // a year, month, day, and hour boundary
+    "1969-12-01 00:00:00.999999", // a month, day, and hour boundary
+    "1969-12-31 00:00:00.999999", // a day and hour boundary
+    "1969-12-31 23:00:00.999999", // an hour boundary
+    "1969-12-31 22:30:00",
+    "1968-12-31 12:00:00",
+    // After the epoch, where Iceberg floors.
+    "1970-01-01 01:00:00.999999")
+
+  /**
+   * Runs `f` with a parquet table `pre_epoch (id, ts)` holding `preEpochTimestamps`, numbered
+   * from 1. A parquet table, so that no scan absorbs a filter on `ts` and Comet evaluates it. The
+   * session timezone is UTC, so that the values sit on the unit boundaries.
+   */
+  protected def withPreEpochTable(f: => Unit): Unit = withSQLConf(
+    SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC",
+    SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> "TIMESTAMP_MICROS") {
+    withTable("pre_epoch") {
+      sql("CREATE TABLE pre_epoch (id INT, ts TIMESTAMP) USING parquet")
+      val rows = preEpochTimestamps.zipWithIndex.map { case (timestamp, i) =>
+        s"(${i + 1}, TIMESTAMP '$timestamp')"
+      }
+      sql(s"INSERT INTO pre_epoch VALUES ${rows.mkString(", ")}")
+      f
+    }
   }
 
   /**

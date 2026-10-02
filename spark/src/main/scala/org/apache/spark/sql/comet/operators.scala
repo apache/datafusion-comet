@@ -30,7 +30,7 @@ import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSeq, AttributeSet, CodegenObjectFactoryMode, Expression, ExpressionSet, Generator, LeafExpression, NamedExpression, SortOrder, XXH64}
+import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSeq, AttributeSet, CodegenObjectFactoryMode, Expression, ExpressionSet, Generator, LeafExpression, Literal, NamedExpression, SortOrder, XXH64}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, CollectList, CollectSet, Final, ImperativeAggregate, Mode, Partial, PartialMerge, Percentile, Sum}
 import org.apache.spark.sql.catalyst.expressions.codegen.CodegenFallback
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
@@ -2574,6 +2574,32 @@ trait CometHashJoin {
         case FullOuter => JoinType.FullOuter
         case LeftSemi => JoinType.LeftSemi
         case LeftAnti => JoinType.LeftAnti
+        case ExistenceJoin(_) if CometConf.COMET_EXEC_EXISTENCE_JOIN_ENABLED.get(join.conf) =>
+          // Native only for equi-key joins with bare column/literal keys and no residual.
+          if (join.condition.isDefined) {
+            withFallbackReason(
+              join,
+              "ExistenceJoin with a residual (non-equi) condition is not supported natively")
+            return None
+          } else if (!(join.leftKeys ++ join.rightKeys).forall {
+              case _: Attribute | _: Literal => true
+              case _ => false
+            }) {
+            withFallbackReason(
+              join,
+              "ExistenceJoin with a computed (non-column) join key is not supported natively")
+            return None
+          } else {
+            JoinType.Existence
+          }
+        case ExistenceJoin(_) =>
+          // The guard above matched only when the flag is enabled; reaching here means it is off.
+          // Report a toggle-specific reason so the plan does not read like a permanent limitation.
+          withFallbackReason(
+            join,
+            "Native ExistenceJoin is disabled; set " +
+              s"${CometConf.COMET_EXEC_EXISTENCE_JOIN_ENABLED.key}=true to enable it")
+          return None
         case _ =>
           // Spark doesn't support other join types
           withFallbackReason(join, s"Unsupported join type ${join.joinType}")
@@ -2844,6 +2870,11 @@ case class CometHashJoinExec(
   override def withNewChildrenInternal(newLeft: SparkPlan, newRight: SparkPlan): SparkPlan =
     this.copy(left = newLeft, right = newRight)
 
+  override def producedAttributes: AttributeSet = joinType match {
+    case ExistenceJoin(exists) => AttributeSet(exists)
+    case _ => AttributeSet.empty
+  }
+
   override def stringArgs: Iterator[Any] =
     Iterator(leftKeys, rightKeys, joinType, buildSide, condition, left, right)
 
@@ -2993,6 +3024,11 @@ case class CometBroadcastHashJoinExec(
   override def withNewChildrenInternal(newLeft: SparkPlan, newRight: SparkPlan): SparkPlan =
     this.copy(left = newLeft, right = newRight)
 
+  override def producedAttributes: AttributeSet = joinType match {
+    case ExistenceJoin(exists) => AttributeSet(exists)
+    case _ => AttributeSet.empty
+  }
+
   override def stringArgs: Iterator[Any] =
     Iterator(leftKeys, rightKeys, joinType, condition, buildSide, left, right)
 
@@ -3089,6 +3125,9 @@ object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {
         case FullOuter => JoinType.FullOuter
         case LeftSemi => JoinType.LeftSemi
         case LeftAnti => JoinType.LeftAnti
+        // Existence SMJ falls back to Spark: DF 55.1.0's BitwiseSortMergeJoin buffers output
+        // before emitting, risking OOM on large equal-key groups. Tracked in
+        // https://github.com/apache/datafusion-comet/issues/6514.
         case _ =>
           // Spark doesn't support other join types
           withFallbackReason(join, s"Unsupported join type ${join.joinType}")
