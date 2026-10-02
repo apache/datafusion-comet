@@ -19,7 +19,7 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Base64, BitLength, Cast, Concat, ConcatWs, Contains, Elt, Empty2Null, EndsWith, Expression, FindInSet, FormatNumber, FormatString, GetJsonObject, InitCap, Left, Length, Levenshtein, Like, Literal, Lower, Mask, OctetLength, Overlay, RegExpExtract, RegExpExtractAll, RegExpInStr, RegExpReplace, Right, RLike, SoundEx, StartsWith, StringLocate, StringLPad, StringRepeat, StringReplace, StringRPad, StringSplit, StringTranslate, Substring, SubstringIndex, ToCharacter, ToNumber, TryToNumber, UnBase64, Upper}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Base64, BitLength, Cast, Concat, ConcatWs, Contains, Elt, Empty2Null, EndsWith, Expression, FindInSet, FormatNumber, FormatString, GetJsonObject, InitCap, Left, Length, Levenshtein, Like, Literal, Lower, Mask, OctetLength, Overlay, RegExpExtract, RegExpExtractAll, RegExpInStr, RegExpReplace, Right, RLike, SoundEx, StartsWith, StringInstr, StringLocate, StringLPad, StringRepeat, StringReplace, StringRPad, StringSplit, StringTranslate, StringTrim, StringTrimLeft, StringTrimRight, Substring, SubstringIndex, ToCharacter, ToNumber, TryToNumber, UnBase64, Upper}
 import org.apache.spark.sql.types.{ArrayType, BinaryType, DataTypes, IntegerType, LongType, StringType}
 import org.apache.spark.unsafe.types.UTF8String
 
@@ -27,7 +27,7 @@ import org.apache.comet.CometConf
 import org.apache.comet.expressions.{CometRegex, RegexFlavor}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType}
-import org.apache.comet.shims.CometTypeShim
+import org.apache.comet.shims.{CometExprShim, CometTypeShim}
 
 object CometStringRepeat extends CometExpressionSerde[StringRepeat] {
 
@@ -218,7 +218,78 @@ object CometStringReplace
 
 object CometSubstring extends CometScalarFunction[Substring]("substring")
 
-object CometSubstringIndex extends CometExpressionSerde[SubstringIndex] {
+/**
+ * Support level for native string kernels that search, trim or compare strings by raw bytes
+ * (`instr`, `substring_index`, `trim` with a trim string, `greatest`, `least`). They ignore a
+ * non-UTF8_BINARY collation, for example UTF8_LCASE where 'a' equals 'A', and give wrong answers.
+ * Reporting Incompatible routes the expression through the JVM codegen dispatcher, which runs
+ * Spark's collation-aware implementation.
+ */
+private[serde] object StringCollationSupport extends CometTypeShim {
+  def collationReason(name: String): String =
+    "Spark evaluates non-UTF8_BINARY collated string input under its collation, while " +
+      s"Comet's native $name compares raw bytes"
+
+  def getSupportLevel(name: String, operands: Seq[Expression]): SupportLevel =
+    if (operands.exists(op => hasNonDefaultStringCollation(op.dataType))) {
+      Incompatible(Some(collationReason(name)))
+    } else {
+      Compatible()
+    }
+}
+
+object CometStringInstr
+    extends CometScalarFunction[StringInstr]("instr")
+    with CodegenDispatchFallback {
+
+  override def hasConditionalNativeDefault: Boolean = true
+
+  override def getIncompatibleReasons(): Seq[String] =
+    Seq(StringCollationSupport.collationReason("instr"))
+
+  override def getSupportLevel(expr: StringInstr): SupportLevel =
+    StringCollationSupport.getSupportLevel("instr", expr.children)
+}
+
+/**
+ * `trim`, `ltrim` and `rtrim`. Without a trim string they remove only spaces, which does not
+ * depend on the collation, so only the form with an explicit trim string is collation sensitive.
+ */
+class CometStringTrimBase[T <: Expression](function: String)
+    extends CometScalarFunction[T](function)
+    with CodegenDispatchFallback {
+
+  override def hasConditionalNativeDefault: Boolean = true
+
+  override def getIncompatibleReasons(): Seq[String] =
+    Seq(StringCollationSupport.collationReason(s"$function with a trim string"))
+
+  // The children are the source string followed by the optional trim string.
+  override def getSupportLevel(expr: T): SupportLevel =
+    if (expr.children.length > 1) {
+      StringCollationSupport.getSupportLevel(function, expr.children)
+    } else {
+      Compatible()
+    }
+}
+
+object CometStringTrim extends CometStringTrimBase[StringTrim]("trim")
+
+object CometStringTrimLeft extends CometStringTrimBase[StringTrimLeft]("ltrim")
+
+object CometStringTrimRight extends CometStringTrimBase[StringTrimRight]("rtrim")
+
+object CometSubstringIndex
+    extends CometExpressionSerde[SubstringIndex]
+    with CodegenDispatchFallback {
+
+  override def hasConditionalNativeDefault: Boolean = true
+
+  override def getIncompatibleReasons(): Seq[String] =
+    Seq(StringCollationSupport.collationReason("substring_index"))
+
+  override def getSupportLevel(expr: SubstringIndex): SupportLevel =
+    StringCollationSupport.getSupportLevel("substring_index", Seq(expr.strExpr, expr.delimExpr))
 
   override def convert(
       expr: SubstringIndex,
@@ -691,15 +762,23 @@ object CometRegExpInStr extends CometCodegenDispatch[RegExpInStr]
  * `spark.comet.expression.GetJsonObject.allowIncompatible`; otherwise it rides the codegen
  * dispatcher via [[CometCodegenDispatch]].
  */
-object CometGetJsonObject extends CometCodegenDispatch[GetJsonObject] with NativeOptInAvailable {
+object CometGetJsonObject
+    extends CometCodegenDispatch[GetJsonObject]
+    with NativeOptInAvailable
+    with CometExprShim {
 
   override def getIncompatibleReasons(): Seq[String] =
     Seq(
       "Spark allows single-quoted JSON and unescaped control characters" +
         " which Comet does not support",
-      "For JSON objects containing duplicate keys, Spark returns the value of the first" +
-        " occurrence while Comet's native implementation returns the last occurrence" +
-        " ([#4947](https://github.com/apache/datafusion-comet/issues/4947))")
+      "Very long numbers near Jackson's 1000-digit limit can depend on Spark's" +
+        " recycled parser buffer, which Comet cannot reproduce from the input alone",
+      "Selected JSON integers outside the 64-bit range and very long numbers" +
+        " can lose precision or fail during Comet's native JSON materialization",
+      "Some selected floating-point values can differ from Spark at decimal" +
+        " parsing or Java-version formatting boundaries",
+      "When a returned object or array contains duplicate keys, Spark preserves them" +
+        " while Comet's native JSON materialization keeps only the last value")
 
   override def getSupportLevel(expr: GetJsonObject): SupportLevel =
     if (!CometConf.isExprAllowIncompat(getExprConfigName(expr))) {
@@ -717,7 +796,7 @@ object CometGetJsonObject extends CometCodegenDispatch[GetJsonObject] with Nativ
       val jsonExpr = exprToProtoInternal(expr.json, inputs, binding)
       val pathExpr = exprToProtoInternal(expr.path, inputs, binding)
       val optExpr = scalarFunctionExprToProtoWithReturnType(
-        "get_json_object",
+        getJsonObjectNativeFunctionName,
         expr.dataType,
         false,
         jsonExpr,

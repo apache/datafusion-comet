@@ -2235,6 +2235,43 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("cast StructType and MapType with DateType to numeric routes through codegen dispatch") {
+    // LEGACY DATE to a numeric or boolean type is always null. `convert` folds the top-level cast
+    // to a null literal, but a struct field or map value reaches the native cast, which returns
+    // the day count for INT and fails for the other targets. Results are covered by
+    // `cast_complex.sql`; this pins the support levels that keep those casts off the native path.
+    def struct(dt: DataType): StructType = StructType(Seq(StructField("d", dt)))
+    val nullResultTypes = Seq(
+      BooleanType,
+      ByteType,
+      ShortType,
+      IntegerType,
+      LongType,
+      FloatType,
+      DoubleType,
+      DecimalType(10, 2))
+    nullResultTypes.foreach { toElementType =>
+      Seq(
+        struct(DateType) -> struct(toElementType),
+        MapType(StringType, DateType) -> MapType(StringType, toElementType),
+        ArrayType(struct(DateType)) -> ArrayType(struct(toElementType))).foreach {
+        case (fromType, toType) =>
+          val level = CometCast.isSupported(fromType, toType, None, CometEvalMode.LEGACY)
+          assert(level.isInstanceOf[Unsupported], s"$fromType to $toType: $level")
+      }
+    }
+    // Other DATE casts nested in a struct or map keep the support level of the element cast.
+    Seq(TimestampType, DataTypes.TimestampNTZType, StringType).foreach { toElementType =>
+      Seq(
+        struct(DateType) -> struct(toElementType),
+        MapType(StringType, DateType) -> MapType(StringType, toElementType)).foreach {
+        case (fromType, toType) =>
+          val level = CometCast.isSupported(fromType, toType, None, CometEvalMode.LEGACY)
+          assert(level.isInstanceOf[Compatible], s"$fromType to $toType: $level")
+      }
+    }
+  }
+
   // https://github.com/apache/datafusion-comet/issues/3906
   test("cast nested ArrayType to nested ArrayType") {
     val types = Seq(
@@ -2706,28 +2743,7 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     values.map(v => Some(v)) ++ Seq(None)
   }
 
-  private def castFallbackTest(
-      input: DataFrame,
-      toType: DataType,
-      expectedMessage: String): Unit = {
-    withTempPath { dir =>
-      val data = roundtripParquet(input, dir).coalesce(1)
-      data.createOrReplaceTempView("t")
-
-      withSQLConf((SQLConf.ANSI_ENABLED.key, "false")) {
-        val df = data.withColumn("converted", col("a").cast(toType))
-        df.collect()
-        val str =
-          new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
-        assert(str.contains(expectedMessage))
-      }
-    }
-  }
-
-  private def castTimestampTest(
-      input: DataFrame,
-      toType: DataType,
-      assertNative: Boolean = false) = {
+  private def castTimestampTest(input: DataFrame, toType: DataType, assertNative: Boolean) = {
     withTempPath { dir =>
       val data = roundtripParquet(input, dir).coalesce(1)
       data.createOrReplaceTempView("t")
