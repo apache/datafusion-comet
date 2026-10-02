@@ -21,9 +21,10 @@
 //!
 //! Reference: `org.apache.spark.sql.catalyst.util.QuantileSummaries`.
 //!
-//! Results are bit-identical to Spark for deterministic plans. What is
-//! load-bearing for that identity, and must not change:
+//! Results match Spark for deterministic plans (NaN bit patterns are not
+//! specified). What is load-bearing for that identity, and must not change:
 //!   - the 50000-value head-buffer flush boundary (`DEFAULT_HEAD_SIZE`),
+//!   - Java's primitive-array ordering of that buffer (all NaNs last, -0.0 before 0.0),
 //!   - the integer arithmetic: `floor(2 * relative_error * count)` for `delta`,
 //!     `2 * relative_error * count` for the compress/merge threshold, `/ 2` for
 //!     `target_error`, and `ceil(percentile * count)` for the query rank,
@@ -158,10 +159,24 @@ impl QuantileSummaries {
         }
         let mut current_count = self.count;
         let mut sorted = std::mem::take(&mut self.head_sampled);
-        // Spark relies on `Array[Double].sorted`. The sort key is the value
-        // itself, so equal keys are bit-equal elements and stability is
-        // irrelevant; `total_cmp` gives a deterministic total order.
+        // Spark's `Array[Double].sorted` puts every NaN last, regardless of
+        // sign or payload. IEEE total order agrees for every other value,
+        // including -0.0 before 0.0, but puts negative NaNs at the front.
         sorted.sort_unstable_by(|a, b| a.total_cmp(b));
+        // Move that leading NaN block behind the already sorted values and
+        // positive NaNs. Java compares all NaNs equal, so their suffix order
+        // does not affect ranks. This preserves their original bits and adds
+        // no per-comparison cost. Negative NaNs form a prefix in total order,
+        // so finding its end needs only a binary search, even for all-NaN input.
+        // Most buffers have no negative NaN. Avoid the binary search in that
+        // case, especially for the many small buffers of grouped aggregates.
+        if sorted
+            .first()
+            .is_some_and(|v| v.is_nan() && v.is_sign_negative())
+        {
+            let leading_nans = sorted.partition_point(|v| v.is_nan() && v.is_sign_negative());
+            sorted.rotate_left(leading_nans);
+        }
 
         scratch.sampled.clear();
         scratch.sampled.reserve(self.sampled.len() + sorted.len());
@@ -597,14 +612,99 @@ mod tests {
 
     #[test]
     fn signed_zero_ordering_is_deterministic() {
-        // `total_cmp` orders -0.0 before 0.0; inserting both must not panic and
-        // must produce a value drawn from the input.
+        // Java's primitive-array ordering puts -0.0 before 0.0, including at
+        // the percentile endpoints. SQL ordering treats the two zeros as equal.
         let qs = summary_of(&[-0.0, 0.0, -0.0, 0.0, 1.0]);
-        let got = qs.query(&[0.5]).unwrap()[0];
-        assert!(
-            got == 0.0 || got == 1.0,
-            "median of signed zeros produced {got}"
-        );
+        assert_eq!(qs.query(&[0.0]).unwrap()[0].to_bits(), (-0.0f64).to_bits());
+        let zeros = summary_of(&[0.0, -0.0, 0.0, -0.0]);
+        assert_eq!(zeros.query(&[1.0]).unwrap()[0].to_bits(), 0.0f64.to_bits());
+    }
+
+    #[test]
+    fn non_finite_values_use_java_primitive_array_order() {
+        let qs = summary_of(&[
+            -f64::NAN,
+            f64::INFINITY,
+            1.5,
+            -0.0,
+            f64::from_bits(0xfff0_0000_0000_0001),
+            f64::NEG_INFINITY,
+            0.0,
+            -1.5,
+            f64::NAN,
+        ]);
+        let expected = [f64::NEG_INFINITY, -1.5, -0.0, 0.0, 1.5, f64::INFINITY];
+        assert_eq!(qs.sampled.len(), 9);
+        for (sample, value) in qs.sampled.iter().zip(expected) {
+            assert_eq!(sample.value.to_bits(), value.to_bits());
+        }
+        assert!(qs.sampled[expected.len()..]
+            .iter()
+            .all(|s| s.value.is_nan()));
+        let mut nan_bits: Vec<_> = qs.sampled[expected.len()..]
+            .iter()
+            .map(|s| s.value.to_bits())
+            .collect();
+        nan_bits.sort_unstable();
+        let mut expected_nan_bits = [
+            (-f64::NAN).to_bits(),
+            f64::NAN.to_bits(),
+            0xfff0_0000_0000_0001,
+        ];
+        expected_nan_bits.sort_unstable();
+        assert_eq!(nan_bits, expected_nan_bits);
+    }
+
+    #[test]
+    fn nan_sign_and_payload_match_spark_across_head_flushes() {
+        // Spark's result for 300000 ascending values with the first replaced
+        // by NaN, at the default accuracy. Six head-buffer flushes exercise
+        // both the initial sort and its interleave with an existing summary.
+        let percentages = [0.0, 0.25, 0.5, 0.75, 1.0];
+        let expected = [1.0, 75001.0, 150000.0, 225013.0];
+        for bits in [
+            0x7ff8_0000_0000_0000,
+            0xfff8_0000_0000_0000,
+            0x7ff8_0000_0000_0042,
+            0xfff8_0000_0000_0042,
+            0x7ff0_0000_0000_0001,
+            0xfff0_0000_0000_0001,
+        ] {
+            let mut values: Vec<f64> = (0..300_000).map(|i| i as f64).collect();
+            values[0] = f64::from_bits(bits);
+            let qs = summary_of(&values);
+            let got = qs.query(&percentages).unwrap();
+            assert_eq!(qs.count(), values.len() as i64);
+            assert_eq!(&got[..4], &expected, "NaN bits: {bits:#x}");
+            assert!(got[4].is_nan(), "maximum for NaN bits {bits:#x}: {got:?}");
+        }
+    }
+
+    #[test]
+    fn nan_sign_does_not_change_serialized_partial_merges() {
+        let percentages = [0.0, 0.25, 0.5, 0.75, 1.0];
+        let mut merged = Vec::new();
+        for nan in [f64::NAN, -f64::NAN] {
+            let mut summary =
+                QuantileSummaries::new(QuantileSummaries::DEFAULT_COMPRESS_THRESHOLD, EPS);
+            let mut scratch = QuantileSummariesScratch::default();
+            for partition in 0..3 {
+                let start = partition * 100_000;
+                let mut values: Vec<f64> = (start..start + 100_000).map(|i| i as f64).collect();
+                values[0] = nan;
+                let partial = summary_of(&values);
+                let decoded = QuantileSummaries::from_bytes(
+                    QuantileSummaries::DEFAULT_COMPRESS_THRESHOLD,
+                    &partial.to_bytes(),
+                );
+                summary.merge(&decoded, &mut scratch);
+            }
+            assert_eq!(summary.count(), 300_000);
+            let got = summary.query(&percentages).unwrap();
+            assert!(got[4].is_nan(), "maximum after merging: {got:?}");
+            merged.push(got);
+        }
+        assert_eq!(&merged[0][..4], &merged[1][..4]);
     }
 
     #[test]
