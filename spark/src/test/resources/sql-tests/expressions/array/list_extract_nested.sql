@@ -22,8 +22,10 @@
 statement
 CREATE TABLE test_list_extract_nested(a array<array<int>>, m array<map<int,int>>, s array<struct<n:array<int>>>, idx int) USING parquet
 
+-- Long unselected children force compaction when the empty first element is selected.
 statement
 INSERT INTO test_list_extract_nested VALUES
+  (array(array(), sequence(1, 64)), array(map(), map_from_arrays(sequence(1, 64), sequence(1, 64))), array(named_struct('n', array()), named_struct('n', sequence(1, 64))), 0),
   (array(array(), array(1, NULL, 3)), array(map(), map(1, 2)), array(named_struct('n', array()), named_struct('n', array(1, NULL, 3))), 0),
   (array(array(10), array(20, 21)), array(map(10, 11), map(20, 21)), array(named_struct('n', array(10)), named_struct('n', array(20, 21))), 1),
   (array(NULL, array(1)), array(NULL, map(1, 2)), array(NULL, named_struct('n', array(1))), 0),
@@ -55,8 +57,10 @@ SELECT element_at(a, idx + 1), element_at(m, idx + 1), element_at(s, idx + 1) FR
 statement
 CREATE TABLE test_list_extract_deep(a array<array<array<int>>>, m array<map<int,array<int>>>, idx int) USING parquet
 
+-- Equal middle lengths with long unselected descendants exercise recursive compaction.
 statement
 INSERT INTO test_list_extract_deep VALUES
+  (array(array_repeat(array(), 32), array_repeat(sequence(1, 4), 32)), array(map_from_arrays(sequence(1, 32), array_repeat(array(), 32)), map_from_arrays(sequence(1, 32), array_repeat(sequence(1, 4), 32))), 0),
   (array(array(array(), array()), array(array(1, 2), array(3, 4))), array(map(1, array(), 2, array()), map(1, array(1, 2), 2, array(3, 4))), 0),
   (array(array(array(10), array(20)), array(array(30, 31), array(40, 41))), array(map(1, array(10), 2, array(20)), map(1, array(30, 31), 2, array(40, 41))), 1),
   (array(array(NULL, array()), array(array(1))), array(map(1, NULL, 2, array()), map(1, array(1))), 0),
