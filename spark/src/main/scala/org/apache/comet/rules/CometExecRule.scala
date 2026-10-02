@@ -107,6 +107,7 @@ object CometExecRule {
       classOf[SortMergeJoinExec] -> CometSortMergeJoinExec,
       classOf[SortExec] -> CometSortExec,
       classOf[LocalTableScanExec] -> CometLocalTableScanExec,
+      classOf[RangeExec] -> CometRangeExec,
       classOf[InMemoryTableScanExec] -> CometInMemoryTableScanExec,
       classOf[SampleExec] -> CometSampleExec,
       classOf[WindowExec] -> CometWindowExec) ++
@@ -1173,6 +1174,10 @@ case class CometExecRule(session: SparkSession)
             case _: ParquetScan => CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.get(conf)
             case _ => isSparkToArrowEnabled(conf, op)
           }
+        // CometRangeExec writes Arrow batches directly, so it takes precedence over converting
+        // Spark's rows.
+        case _: RangeExec if CometConf.COMET_EXEC_RANGE_ENABLED.get(conf) =>
+          false
         // other leaf nodes
         case _: LeafExecNode =>
           isSparkToArrowEnabled(conf, op)
