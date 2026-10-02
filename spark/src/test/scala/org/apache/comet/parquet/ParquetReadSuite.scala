@@ -1730,6 +1730,33 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
+  test("native scan preserves duplicate field error types with row filter pushdown") {
+    withTempPath { dir =>
+      val path = dir.getCanonicalPath
+      withSQLConf(SQLConf.CASE_SENSITIVE.key -> "true") {
+        spark.range(5).selectExpr("id as A", "id as B", "id as b").write.parquet(path)
+      }
+      for (pushdown <- Seq(false, true)) {
+        withSQLConf(
+          SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+          SQLConf.CASE_SENSITIVE.key -> "false",
+          CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.key -> pushdown.toString) {
+          val df = spark.read.schema("A long, B long").parquet(path).where("A = 1")
+          checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+          val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+          Seq("Spark" -> sparkError, "Comet" -> cometError).foreach { case (engine, error) =>
+            val chain = error.toSeq.flatMap(causeChain)
+            assert(
+              chain.exists(e =>
+                e.getClass.getName == "org.apache.spark.SparkRuntimeException" &&
+                  e.getMessage.contains("Found duplicate field")),
+              s"$engine: ${chain.mkString("\n")}")
+          }
+        }
+      }
+    }
+  }
+
   test("native scan preserves conversion errors with row filter pushdown") {
     for (pushdown <- Seq(false, true); nested <- Seq(false, true)) {
       withSQLConf(

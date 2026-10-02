@@ -71,7 +71,7 @@ use crate::parquet::schema_adapter::{
 use arrow::datatypes::{DataType, FieldRef, Schema, SchemaRef};
 use async_trait::async_trait;
 use bytes::Bytes;
-use datafusion::common::Result as DFResult;
+use datafusion::common::{DataFusionError, Result as DFResult};
 use datafusion::datasource::physical_plan::parquet::metadata::DFParquetMetadata;
 use datafusion::datasource::physical_plan::parquet::{
     ParquetFileMetrics, ParquetFileReaderFactory,
@@ -668,7 +668,12 @@ impl AsyncFileReader for EagerPageIndexReader {
                     Arc::new(schema),
                     conversion_options.clone(),
                 )
-                .map_err(|e| ParquetError::External(Box::new(e)))?;
+                .map_err(|e| match e {
+                    // Keep structured Spark errors directly inside the Parquet wrapper so
+                    // the JNI error converter preserves Spark's exception type and class.
+                    DataFusionError::External(source) => ParquetError::External(source),
+                    other => ParquetError::External(Box::new(other)),
+                })?;
                 if *row_filters {
                     if let Some(rejection) = &rejection {
                         self.deferred_rejections.lock().unwrap().insert(
@@ -1306,6 +1311,64 @@ mod tests {
         }
         assert!(metadata_for(true, with_ids).await.is_ok());
         assert!(metadata_for(false, without_ids).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn conversion_check_preserves_structured_spark_errors() {
+        let store = Arc::new(InMemory::new());
+        let schema = Arc::new(Schema::new(vec![
+            arrow::datatypes::Field::new("B", DataType::Int32, false),
+            arrow::datatypes::Field::new("b", DataType::Int32, false),
+        ]));
+        let values: arrow::array::ArrayRef = Arc::new(Int32Array::from(vec![1, 2]));
+        let batch =
+            RecordBatch::try_new(Arc::clone(&schema), vec![Arc::clone(&values), values]).unwrap();
+        let mut bytes = Vec::new();
+        let mut writer = ArrowWriter::try_new(&mut bytes, schema, None).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+        let size = bytes.len() as u64;
+        let location = "duplicates.parquet";
+        store
+            .put(&Path::from(location), Bytes::from(bytes).into())
+            .await
+            .unwrap();
+        let runtime = datafusion::execution::runtime_env::RuntimeEnv::default();
+        let metrics = ExecutionPlanMetricsSet::new();
+        let required = Arc::new(Schema::new(vec![arrow::datatypes::Field::new(
+            "B",
+            DataType::Int32,
+            false,
+        )]));
+        let mut options =
+            SparkParquetOptions::new(datafusion_comet_spark_expr::EvalMode::Legacy, "UTC", false);
+        options.case_sensitive = false;
+        let factory = EagerPageIndexReaderFactory::new(
+            store,
+            runtime.cache_manager.get_file_metadata_cache(),
+            ScanIoSource::Local,
+            &metrics,
+        )
+        .with_conversion_check(required, options, true);
+        let mut reader = factory
+            .create_reader(
+                0,
+                PartitionedFile::new(location.to_string(), size),
+                None,
+                &metrics,
+            )
+            .unwrap();
+        let error = reader.get_metadata(None).await.unwrap_err();
+        let ParquetError::External(source) = error else {
+            panic!("expected structured Spark error, got {error}");
+        };
+        assert!(
+            matches!(
+                source.downcast_ref::<SparkError>(),
+                Some(SparkError::DuplicateFieldCaseInsensitive { .. })
+            ),
+            "unexpected error: {source}"
+        );
     }
 
     #[test]
