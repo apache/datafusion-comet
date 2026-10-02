@@ -767,11 +767,16 @@ use Comet’s Java <code class="docutils literal notranslate"><span class="pre">
 <code class="docutils literal notranslate"><span class="pre">LocationGenerator::generate_location</span></code> cannot return an error.</p></li>
 <li><p><strong>Partition values.</strong> <code class="docutils literal notranslate"><span class="pre">PartitionValueCalculator</span></code> (<code class="docutils literal notranslate"><span class="pre">iceberg_partition_value.rs</span></code>) replaces
 iceberg-rust’s calculator of the same name, and <code class="docutils literal notranslate"><span class="pre">PartitionSplitter</span></code> replaces its
-<code class="docutils literal notranslate"><span class="pre">RecordBatchPartitionSplitter</span></code>. <code class="docutils literal notranslate"><span class="pre">year</span></code> and <code class="docutils literal notranslate"><span class="pre">month</span></code> go through Comet’s <code class="docutils literal notranslate"><span class="pre">iceberg_years</span></code> /
-<code class="docutils literal notranslate"><span class="pre">iceberg_months</span></code> kernels, the ones the sort in front of a clustered write runs. iceberg-rust
-computes them with Arrow’s <code class="docutils literal notranslate"><span class="pre">date_part</span></code>, which returns NULL past <code class="docutils literal notranslate"><span class="pre">chrono</span></code>’s calendar
-(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6145">#6145</a>). Every other transform stays on
-iceberg-rust.</p></li>
+<code class="docutils literal notranslate"><span class="pre">RecordBatchPartitionSplitter</span></code>. <code class="docutils literal notranslate"><span class="pre">year</span></code>, <code class="docutils literal notranslate"><span class="pre">month</span></code>, <code class="docutils literal notranslate"><span class="pre">day</span></code> and <code class="docutils literal notranslate"><span class="pre">hour</span></code> of a date or timestamp go
+through Comet’s <code class="docutils literal notranslate"><span class="pre">iceberg_years</span></code> / <code class="docutils literal notranslate"><span class="pre">iceberg_months</span></code> / <code class="docutils literal notranslate"><span class="pre">iceberg_days</span></code> / <code class="docutils literal notranslate"><span class="pre">iceberg_hours</span></code> kernels, the
+ones the sort in front of a clustered write runs (<code class="docutils literal notranslate"><span class="pre">day</span></code> of a date is the date itself and stays on
+iceberg-rust). iceberg-rust computes <code class="docutils literal notranslate"><span class="pre">year</span></code> and <code class="docutils literal notranslate"><span class="pre">month</span></code> with Arrow’s <code class="docutils literal notranslate"><span class="pre">date_part</span></code>, which returns
+NULL past <code class="docutils literal notranslate"><span class="pre">chrono</span></code>’s calendar (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6145">#6145</a>).
+All four of its transforms floor a pre-1970 timestamp that lies exactly 999999 microseconds into a
+unit, which iceberg-java puts in the unit before
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6426">#6426</a>), and its <code class="docutils literal notranslate"><span class="pre">day</span></code> puts some
+timestamps from the last second before a pre-1970 midnight in the next day. Every other transform
+stays on iceberg-rust.</p></li>
 <li><p><strong>File names.</strong> <code class="docutils literal notranslate"><span class="pre">file_name_prefix</span></code> embeds the partition id, the task attempt id and the operation
 id, so a retried or speculative attempt never reuses another attempt’s file names.</p></li>
 <li><p><strong>Row pacing.</strong> iceberg-java’s rolling writer checks the target file size every 1000 rows of the
