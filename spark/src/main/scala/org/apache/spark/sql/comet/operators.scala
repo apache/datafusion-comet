@@ -1217,6 +1217,22 @@ abstract class CometNativeExec extends CometExec {
   }
 
   /**
+   * Copies this operator with `newOp` as its native plan and no serialized plan, so that
+   * `convertBlock` serializes the block again.
+   */
+  def withRefreshedNativeOp(newOp: Operator): CometNativeExec = {
+    def transform(arg: Any): AnyRef = arg match {
+      case op: Operator if op eq nativeOp => newOp
+      case _: SerializedPlan => SerializedPlan(None)
+      case other: AnyRef => other
+      case null => null
+    }
+
+    val newArgs = mapProductIterator(transform)
+    makeCopy(newArgs).asInstanceOf[CometNativeExec]
+  }
+
+  /**
    * Cleans the serialized plan from this native Comet operator. Used to canonicalize the plan.
    */
   def cleanBlock(): CometNativeExec = {

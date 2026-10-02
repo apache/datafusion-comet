@@ -20,6 +20,7 @@
 package org.apache.comet.rules
 
 import scala.collection.mutable.ListBuffer
+import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Divide, DoubleLiteral, EqualNullSafe, EqualTo, Expression, FloatLiteral, GreaterThan, GreaterThanOrEqual, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, NamedExpression, Remainder}
@@ -57,6 +58,7 @@ import org.apache.comet.CometConf.{COMET_SPARK_TO_ARROW_ENABLED, COMET_SPARK_TO_
 import org.apache.comet.CometSparkSessionExtensions._
 import org.apache.comet.rules.CometExecRule.allExecs
 import org.apache.comet.serde._
+import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.operator._
 import org.apache.comet.shims.{CometTypeShim, ShimCometStreaming, ShimCometWindowGroupLimit, ShimSubqueryBroadcast}
 
@@ -599,13 +601,96 @@ case class CometExecRule(session: SparkSession)
     }
 
     plan.transformUp { case op =>
-      val converted = convertNode(op)
+      val converted = convertNode(refreshStaleShuffleScans(op))
       // Replace SubqueryBroadcastExec with CometSubqueryBroadcastExec in DPP expressions
       // when the broadcast child has a Comet plan underneath. This enables exchange reuse
       // between the DPP subquery and the join's CometBroadcastExchangeExec because both
       // will have the same CometBroadcastExchangeExec type and canonical form.
       convertSubqueryBroadcasts(converted)
     }
+  }
+
+  /**
+   * AQE re-plans around a materialized stage by reusing the physical node linked to it, so a
+   * native operator that shares its logical node with a shuffle stage (the final aggregate of a
+   * two-phase aggregate) keeps the native plan it got while that input was a bare exchange, read
+   * through a plain `Scan`. Once the input is a sink that reads the shuffle directly, its
+   * `ShuffleScan` takes the place of the stale leaf. The leaf is patched in place because
+   * converting the node again from `originalPlan` would drop the stage's logical link that AQE
+   * relies on and re-run serde on a node that is already planned.
+   */
+  private def refreshStaleShuffleScans(op: SparkPlan): SparkPlan = op match {
+    // These build their own `Scan` over the child rather than embedding the child's plan.
+    case _: CometNativeWriteExec | _: CometIcebergWriteExec | _: CometWriteFilesExec => op
+    case native: CometNativeExec if native.children.nonEmpty =>
+      refreshedNativeOp(native) match {
+        case Some(newOp) =>
+          val refreshed = native.withRefreshedNativeOp(newOp)
+          // An operator that does not hold its native plan as a field cannot take a new one.
+          if (refreshed.nativeOp eq newOp) refreshed else op
+        case None => op
+      }
+    case _ => op
+  }
+
+  /**
+   * The native plan of `native` with each `Scan` leaf whose input is now a `ShuffleScan` of the
+   * same field types replaced by that `ShuffleScan`, or None if there is no such leaf or the plan
+   * children cannot be matched to the leaves.
+   */
+  private def refreshedNativeOp(native: CometNativeExec): Option[Operator] = {
+    val children = native.children.collect { case child: CometNativeExec => child }
+    // Only a sink that reads a shuffle directly, or a native child that may hold one, can feed
+    // a `ShuffleScan`.
+    val mayFeedShuffleScan = children.exists {
+      case sink: CometSinkPlaceHolder => sink.nativeOp.hasShuffleScan
+      case _ => true
+    }
+    if (children.length != native.children.length || !mayFeedShuffleScan) return None
+    val leaves = nativeLeaves(native.nativeOp)
+    if (!leaves.exists(_.hasScan)) return None
+
+    // Each plan child feeds a run of leaves, in order: a sink feeds one, and a native child
+    // feeds the leaves of its own native plan.
+    val current = children.flatMap {
+      case sink: CometSinkPlaceHolder => Seq(sink.nativeOp)
+      case child => nativeLeaves(child.nativeOp)
+    }
+    def isStale(leaf: Operator, input: Operator): Boolean = leaf.hasScan && input.hasShuffleScan
+    val stale = leaves.zip(current).filter { case (leaf, input) => isStale(leaf, input) }
+    val isRefreshable = current.length == leaves.length && stale.nonEmpty &&
+      stale.forall { case (leaf, input) =>
+        leaf.getScan.getFieldsList == input.getShuffleScan.getFieldsList
+      }
+    if (isRefreshable) {
+      val newLeaves = leaves.zip(current).map { case (leaf, input) =>
+        if (isStale(leaf, input)) input else leaf
+      }
+      Some(withLeaves(native.nativeOp, newLeaves))
+    } else {
+      None
+    }
+  }
+
+  private def nativeLeaves(op: Operator): Seq[Operator] =
+    if (op.getChildrenCount == 0) Seq(op)
+    else op.getChildrenList.asScala.toSeq.flatMap(nativeLeaves)
+
+  /** `op` with its leaves, in walk order, replaced by `leaves`. */
+  private def withLeaves(op: Operator, leaves: Seq[Operator]): Operator = {
+    def rebuild(node: Operator, remaining: List[Operator]): (Operator, List[Operator]) =
+      if (node.getChildrenCount == 0) {
+        (remaining.head, remaining.tail)
+      } else {
+        val (children, rest) =
+          node.getChildrenList.asScala.foldLeft((Vector.empty[Operator], remaining)) {
+            case ((done, left), child) =>
+              val (newChild, next) = rebuild(child, left)
+              (done :+ newChild, next)
+          }
+        (node.toBuilder.clearChildren().addAllChildren(children.asJava).build(), rest)
+      }
+    rebuild(op, leaves.toList)._1
   }
 
   /**
