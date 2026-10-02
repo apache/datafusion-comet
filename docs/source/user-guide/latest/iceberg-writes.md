@@ -55,10 +55,10 @@ The JVM-side planner marshals everything iceberg-rust needs — the write schema
 spec as JSON, the data location, the resolved parquet writer settings, the writer mode
 (unpartitioned / fanout / clustered, mirroring `SparkWrite`'s own choice), object-store
 configuration (the table's `FileIO` properties, e.g. REST-vended credentials, merged over
-`fs.s3a.*` settings translated from the session Hadoop configuration — the same translation
-the native scan uses, since `HadoopFileIO` carries its S3 configuration in the Hadoop
-Configuration rather than in `FileIO` properties), and per-task IDs — into the serialized
-native plan. On each task, iceberg-rust writes the Parquet files and
+`fs.s3a.*` settings translated from the effective Hadoop configuration carried by the table's
+`FileIO`, including catalog-specific `hadoop.*` overrides, since `HadoopFileIO` carries its S3
+configuration in the Hadoop Configuration rather than in `FileIO` properties), and per-task IDs —
+into the serialized native plan. On each task, iceberg-rust writes the Parquet files and
 returns its `DataFile` metadata packed as a single in-memory Iceberg V2 data manifest; the JVM
 decodes those bytes with Iceberg's own `ManifestFiles.read`, re-derives each file's manifest
 metrics from the written Parquet footer with Iceberg's `MetricsConfig` logic (so metrics modes,
@@ -176,6 +176,8 @@ A write is eligible only when ALL of the following hold:
 | `write.target-file-size-bytes`                                                                                                              | any value (the two writers can choose different roll points; see accepted divergences)                                                                                                                                                                                                                                                                                                                                                                                          |
 | data location URI scheme                                                                                                                    | `file`, `memory`, `s3`, `s3a`, `gs` (`gs` only when the `FileIO` opening the data location is a `GCSFileIO`; see below)                                                                                                                                                                                                                                                                                                                                                         |
 | resolved `table.locationProvider()`                                                                                                         | Iceberg's built-in `DefaultLocationProvider`                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| Hadoop S3A settings for an `s3` / `s3a` data location                                                                                       | only `fs.s3a.access.key`, `secret.key`, `session.token`, `endpoint`, `endpoint.region`, and `path.style.access`, including their `fs.s3a.bucket.<data-bucket>.*` forms; any other effective `fs.s3a.*` setting falls back                                                                                                                                                                                                                                                       |
+| Iceberg `FileIO` S3 settings for an `s3` / `s3a` data location                                                                              | the S3 endpoint, region, static/session credentials, path-style, SSE (`none`, `s3`, `kms`, or `custom`; not `dsse-kms`), assume-role, anonymous/config-chain settings parsed by the pinned iceberg-rust version, plus Comet's credential-provider class and built-in web-identity properties. When a custom provider is configured, its vendor-owned `s3.*` / `client.*` properties are also forwarded; unsupported Iceberg-defined S3 settings still fall back                 |
 | partition spec                                                                                                                              | any                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | column types                                                                                                                                | any except `uuid` (Spark plans it as a string; no Arrow cast reaches `fixed(16)`)                                                                                                                                                                                                                                                                                                                                                                                               |
 
@@ -204,6 +206,28 @@ Configuration, and only `fs.s3a.*` is translated into the native `FileIO`, so th
 could resolve a different storage identity or endpoint than the JVM writer would. That
 combination falls back; a `GCSFileIO` carries its `gcs.*` settings in `FileIO.properties()`,
 which are forwarded.
+
+For an `s3` or `s3a` data location, the gate also inspects both the table FileIO's effective Hadoop
+configuration and `table.io().properties()`. These are separate allowlists because Hadoop S3A
+keys are translated before they reach iceberg-rust, while Iceberg `FileIO` keys are forwarded
+directly. When the FileIO exposes a Hadoop configuration, its initialized values govern both the
+gate and native translation, including after session or catalog options change. FileIO
+implementations without a Hadoop configuration, such as `S3FileIO`, use only their initialized
+properties; session and catalog Hadoop options are neither checked nor forwarded. Hadoop's built-in
+`core-default.xml` values are not treated as explicit settings, but
+programmatic settings and values from site or custom `*-default.xml` resources are. Spark's
+session-wide S3A vectored-read and `downgrade.syncable.exceptions` compatibility settings are also
+ignored because they cannot alter an Iceberg data-file write request. Unknown explicit
+`fs.s3a.*`, `s3.*`, or `client.*` settings therefore fall back at planning time instead of being
+silently ignored by the native storage backend. The exception is a vendor-owned `s3.*` /
+`client.*` property when
+`s3.comet.credential.provider.class` is configured: the provider receives the unfiltered FileIO
+bag and can consume that property. Iceberg-defined settings that the native storage path cannot
+honour still fall back even with a provider. A per-bucket Hadoop setting counts only for the exact
+data-bucket name, so configuration for a longer dotted bucket does not by itself disable the
+native write. If Iceberg's AWS property classes cannot be loaded, vendor `s3.*` / `client.*` keys
+fall back too and planning still completes. The fall-back reason reports only sorted property
+names, never their values, so credentials and tokens do not enter EXPLAIN or plan logs.
 
 Other `write.*` properties are intentionally not gated because they cannot make the native
 writer produce different data files: distribution and ordering settings shape the Spark plan
