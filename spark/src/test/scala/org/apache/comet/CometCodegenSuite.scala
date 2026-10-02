@@ -2513,6 +2513,59 @@ class CometCodegenSuite
     }
   }
 
+  test("transitive consumers of DSv2 decimals preserve materialization timing (#6425)") {
+    withDecimalFunctions(3, null, 100000000, -100000000) {
+      for (ansi <- Seq("true", "false")) {
+        withSQLConf(SQLConf.ANSI_ENABLED.key -> ansi) {
+          val projected = sql(
+            "SELECT i, abs(decfn.ns.as_money(i)) IS NULL, " +
+              "abs(decfn.ns.static_as_money(i)) IS NULL, " +
+              "decfn.ns.money_array(i)[0] IS NULL, " +
+              "decfn.ns.money_struct(i).m IS NULL, " +
+              "CAST(abs(decfn.ns.as_money(i)) AS STRING) FROM t")
+          assertCodegenRan {
+            checkSparkAnswerAndImpl(projected, dispatched = Seq("isnull", "cast"))
+          }
+          checkAnswer(
+            projected,
+            Seq(
+              Row(3, false, false, false, false, "3"),
+              Row(null, true, true, true, true, null),
+              Row(100000000, false, false, false, false, "100000000"),
+              Row(-100000000, false, false, false, false, "100000000")))
+          val filtered = sql("SELECT i FROM t WHERE abs(decfn.ns.as_money(i)) IS NULL")
+          checkSparkAnswerAndImpl(filtered, dispatched = Seq("isnull"))
+          checkAnswer(filtered, Seq(Row(null)))
+          val aggregated = sql(
+            "SELECT count(abs(decfn.ns.as_money(i))), " +
+              "count(abs(decfn.ns.static_as_money(i))), " +
+              "count(decfn.ns.money_array(i)[0]), " +
+              "count(decfn.ns.money_struct(i).m), max(abs(decfn.ns.as_money(i))), " +
+              "sum(abs(decfn.ns.as_money(i))) FROM t")
+          checkSparkAnswerAndFallbackReason(
+            aggregated,
+            "aggregates the decimal result of a DSv2 function")
+          checkAnswer(aggregated, Row(3L, 3L, 3L, 3L, null, dec("200000003.00")))
+          withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
+            checkSparkAnswerAndFallbackReason(
+              "SELECT abs(decfn.ns.as_money(i)) IS NULL FROM t",
+              "spark.comet.exec.scalaUDF.codegen.enabled=false")
+          }
+          // A physical write is a real boundary; a view would be collapsed by Catalyst.
+          withTable("decimal_materialized") {
+            sql(
+              "CREATE TABLE decimal_materialized USING parquet AS " +
+                "SELECT i, abs(decfn.ns.as_money(i)) AS d FROM t")
+            checkSparkAnswerAndOperator("SELECT i, d IS NULL FROM decimal_materialized")
+            checkAnswer(
+              sql("SELECT i FROM decimal_materialized WHERE d IS NULL"),
+              Seq(Row(null), Row(100000000), Row(-100000000)))
+          }
+        }
+      }
+    }
+  }
+
   test(
     "an aggregate over a DSv2 decimal result falls back, as Spark aggregates the value (#6425)") {
     // Spark aggregates the `Decimal` the function returned, and the row writer nulls the result
