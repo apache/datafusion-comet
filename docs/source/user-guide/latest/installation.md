@@ -59,6 +59,7 @@ demand. We recommend moving to Spark 3.5 or later.
 | 3.5.9         | 17           | 2.12/2.13     | Nightly           | Nightly               |
 | 4.0.4         | 17/21        | 2.13          | Nightly           | Nightly               |
 | 4.1.3         | 17/21        | 2.13          | Before merge      | Before merge          |
+| 4.2.0         | 17           | 2.13          | Nightly           | Nightly               |
 
 Note that we do not test the full matrix of supported Java and Scala versions in CI for every Spark version.
 
@@ -67,13 +68,6 @@ the suite runs once a day against the `main` branch, so a regression it finds is
 has been merged rather than before. "On demand" means the suite does not run automatically at all. A
 contributor can still run it against an individual pull request, but Spark 3.4 is no longer covered by
 default.
-
-Experimental support is provided for the following versions of Apache Spark and is intended for development/testing
-use only and should not be used in production yet.
-
-| Spark Version | Java Version | Scala Version | Comet Tests in CI | Spark SQL Tests in CI |
-| ------------- | ------------ | ------------- | ----------------- | --------------------- |
-| 4.2.0         | 17           | 2.13          | Nightly           | No                    |
 
 Note that Comet may not fully work with proprietary forks of Apache Spark such as the Spark versions offered by
 Cloud Service Providers.
@@ -103,6 +97,7 @@ The following artifacts are published:
 - `comet-spark-spark3.5_2.12`
 - `comet-spark-spark4.0_2.13`
 - `comet-spark-spark4.1_2.13`
+- `comet-spark-spark4.2_2.13`
 
 To download a snapshot jar, browse to the artifact directory in the snapshot repository, for example
 [comet-spark-spark4.1_2.13/$COMET_VERSION](https://repository.apache.org/content/repositories/snapshots/org/apache/datafusion/comet-spark-spark4.1_2.13/$COMET_VERSION/),
@@ -144,6 +139,7 @@ Here are the direct links for downloading the Comet $COMET_VERSION jar file.
 - [Comet plugin for Spark 3.5 / Scala 2.13](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.5_2.13/$COMET_VERSION/comet-spark-spark3.5_2.13-$COMET_VERSION.jar)
 - [Comet plugin for Spark 4.0 / Scala 2.13](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark4.0_2.13/$COMET_VERSION/comet-spark-spark4.0_2.13-$COMET_VERSION.jar)
 - [Comet plugin for Spark 4.1 / Scala 2.13](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark4.1_2.13/$COMET_VERSION/comet-spark-spark4.1_2.13-$COMET_VERSION.jar)
+- [Comet plugin for Spark 4.2 / Scala 2.13](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark4.2_2.13/$COMET_VERSION/comet-spark-spark4.2_2.13-$COMET_VERSION.jar)
 
 <!-- ENDIF -->
 
@@ -191,7 +187,7 @@ Comet will log output similar to this on Spark 4.0 and later:
 INFO core/src/lib.rs: Comet native library version $COMET_VERSION initialized
 WARN CometExecRule: Comet cannot execute some parts of this plan natively (set spark.comet.explain.fallback.enabled=false to disable this logging):
   Execute InsertIntoHadoopFsRelationCommand
-+- WriteFiles [COMET: Native support for operator WriteFilesExec is disabled. Set spark.comet.parquet.write.enabled=true to enable it.]
++- WriteFiles [COMET: Native support for operator WriteFilesExec is disabled. Set spark.comet.write.parquet.enabled=true to enable it.]
    +-  LocalTableScan [COMET: Native support for operator LocalTableScanExec is disabled. Set spark.comet.exec.localTableScan.enabled=true to enable it.]
 ```
 

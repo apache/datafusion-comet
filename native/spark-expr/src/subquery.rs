@@ -1,0 +1,195 @@
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//   http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+use arrow::array::RecordBatch;
+use arrow::datatypes::{DataType, Schema, TimeUnit};
+use datafusion::common::{internal_err, ScalarValue};
+use datafusion::logical_expr::ColumnarValue;
+use datafusion::physical_expr::PhysicalExpr;
+use datafusion_comet_common::bytes_to_i128;
+use datafusion_comet_jni_bridge::{jni_static_call, BinaryWrapper, JVMClasses, StringWrapper};
+use jni::{
+    objects::{JByteArray, JString},
+    sys::{jboolean, jbyte, jint, jlong, jshort},
+};
+use std::{
+    fmt::{Display, Formatter},
+    hash::Hash,
+    sync::Arc,
+};
+
+#[derive(Debug, Hash, PartialEq, Eq)]
+pub struct Subquery {
+    /// The ID of the execution context that owns this subquery. We use this ID to retrieve the
+    /// subquery result.
+    exec_context_id: i64,
+    /// The ID of the subquery, we retrieve the subquery result from JVM using this ID.
+    pub id: i64,
+    /// The data type of the subquery result.
+    pub data_type: DataType,
+}
+
+impl Subquery {
+    pub fn new(exec_context_id: i64, id: i64, data_type: DataType) -> Self {
+        Self {
+            exec_context_id,
+            id,
+            data_type,
+        }
+    }
+}
+
+impl Display for Subquery {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Subquery [id: {}]", self.id)
+    }
+}
+
+impl PhysicalExpr for Subquery {
+    fn fmt_sql(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        Display::fmt(self, f)
+    }
+
+    fn data_type(&self, _: &Schema) -> datafusion::common::Result<DataType> {
+        Ok(self.data_type.clone())
+    }
+
+    fn nullable(&self, _: &Schema) -> datafusion::common::Result<bool> {
+        Ok(true)
+    }
+
+    fn evaluate(&self, _: &RecordBatch) -> datafusion::common::Result<ColumnarValue> {
+        JVMClasses::with_env(|env| unsafe {
+            let is_null = jni_static_call!(env,
+                comet_exec.is_null(self.exec_context_id, self.id) -> jboolean
+            )?;
+
+            if is_null {
+                return Ok(ColumnarValue::Scalar(ScalarValue::try_from(
+                    &self.data_type,
+                )?));
+            }
+
+            match &self.data_type {
+                DataType::Boolean => {
+                    let r = jni_static_call!(env,
+                        comet_exec.get_bool(self.exec_context_id, self.id) -> jboolean
+                    )?;
+                    Ok(ColumnarValue::Scalar(ScalarValue::Boolean(Some(r))))
+                }
+                DataType::Int8 => {
+                    let r = jni_static_call!(env,
+                        comet_exec.get_byte(self.exec_context_id, self.id) -> jbyte
+                    )?;
+                    Ok(ColumnarValue::Scalar(ScalarValue::Int8(Some(r))))
+                }
+                DataType::Int16 => {
+                    let r = jni_static_call!(env,
+                        comet_exec.get_short(self.exec_context_id, self.id) -> jshort
+                    )?;
+                    Ok(ColumnarValue::Scalar(ScalarValue::Int16(Some(r))))
+                }
+                DataType::Int32 => {
+                    let r = jni_static_call!(env,
+                        comet_exec.get_int(self.exec_context_id, self.id) -> jint
+                    )?;
+                    Ok(ColumnarValue::Scalar(ScalarValue::Int32(Some(r))))
+                }
+                DataType::Int64 => {
+                    let r = jni_static_call!(env,
+                        comet_exec.get_long(self.exec_context_id, self.id) -> jlong
+                    )?;
+                    Ok(ColumnarValue::Scalar(ScalarValue::Int64(Some(r))))
+                }
+                DataType::Float32 => {
+                    let r = jni_static_call!(env,
+                        comet_exec.get_float(self.exec_context_id, self.id) -> f32
+                    )?;
+                    Ok(ColumnarValue::Scalar(ScalarValue::Float32(Some(r))))
+                }
+                DataType::Float64 => {
+                    let r = jni_static_call!(env,
+                        comet_exec.get_double(self.exec_context_id, self.id) -> f64
+                    )?;
+
+                    Ok(ColumnarValue::Scalar(ScalarValue::Float64(Some(r))))
+                }
+                DataType::Decimal128(p, s) => {
+                    let bytes = jni_static_call!(env,
+                        comet_exec.get_decimal(self.exec_context_id, self.id) -> BinaryWrapper
+                    )?;
+                    let bytes = JByteArray::from_raw(env, bytes.get().as_raw());
+                    let slice = env.convert_byte_array(bytes).unwrap();
+
+                    Ok(ColumnarValue::Scalar(ScalarValue::Decimal128(
+                        Some(bytes_to_i128(&slice)),
+                        *p,
+                        *s,
+                    )))
+                }
+                DataType::Date32 => {
+                    let r = jni_static_call!(env,
+                        comet_exec.get_int(self.exec_context_id, self.id) -> jint
+                    )?;
+
+                    Ok(ColumnarValue::Scalar(ScalarValue::Date32(Some(r))))
+                }
+                DataType::Timestamp(TimeUnit::Microsecond, timezone) => {
+                    let r = jni_static_call!(env,
+                        comet_exec.get_long(self.exec_context_id, self.id) -> jlong
+                    )?;
+
+                    Ok(ColumnarValue::Scalar(ScalarValue::TimestampMicrosecond(
+                        Some(r),
+                        timezone.clone(),
+                    )))
+                }
+                DataType::Utf8 => {
+                    let string = jni_static_call!(env,
+                        comet_exec.get_string(self.exec_context_id, self.id) -> StringWrapper
+                    )?;
+
+                    let string = JString::from_raw(env, string.get().as_raw())
+                        .try_to_string(env)
+                        .unwrap();
+                    Ok(ColumnarValue::Scalar(ScalarValue::Utf8(Some(string))))
+                }
+                DataType::Binary => {
+                    let bytes = jni_static_call!(env,
+                        comet_exec.get_binary(self.exec_context_id, self.id) -> BinaryWrapper
+                    )?;
+                    let bytes = JByteArray::from_raw(env, bytes.get().as_raw());
+                    let slice = env.convert_byte_array(bytes).unwrap();
+
+                    Ok(ColumnarValue::Scalar(ScalarValue::Binary(Some(slice))))
+                }
+                _ => internal_err!("Unsupported scalar subquery data type {:?}", self.data_type),
+            }
+        })
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
+        vec![]
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        _: Vec<Arc<dyn PhysicalExpr>>,
+    ) -> datafusion::common::Result<Arc<dyn PhysicalExpr>> {
+        Ok(self)
+    }
+}

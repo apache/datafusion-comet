@@ -211,6 +211,32 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  for (grouped <- Seq(false, true)) {
+    test(s"collect_list/collect_set over typed nested NULL (grouped=$grouped)") {
+      // A folded typed NULL reaches native collection normalization as a scalar. Both scalar
+      // and grouped accumulators must ignore the NULL and return empty collections with the
+      // declared nested element type. Require executed native Partial/Final aggregates so that
+      // constant folding or Spark fallback cannot hide the normalization path.
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.SHUFFLE_PARTITIONS.key -> "2") {
+        withParquetTable(Seq((0, 1), (0, 2), (1, 3)), "tbl") {
+          val typedNull = "CAST(NULL AS ARRAY<STRUCT<a: INT, b: STRUCT<x: INT>>>)"
+          val projection = if (grouped) "_1, " else ""
+          val grouping = if (grouped) " GROUP BY _1" else ""
+          val (_, cometPlan) = checkSparkAnswerAndOperator(
+            sql(s"SELECT ${projection}collect_list($typedNull), collect_set($typedNull) " +
+              s"FROM tbl$grouping"))
+          val aggregates = collect(cometPlan) { case aggregate: CometHashAggregateExec =>
+            aggregate
+          }
+          assert(aggregates.exists(_.modes.contains(Partial)))
+          assert(aggregates.exists(_.modes.contains(Final)))
+        }
+      }
+    }
+  }
+
   test("collect_list/collect_set combined with distinct aggregate falls back safely") {
     // SPARK-17616: a distinct aggregate combined with collect_list/collect_set produces a
     // multi-stage plan where the buffer-producing Partial may run in Spark (e.g. over a
@@ -2381,6 +2407,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           SQLConf.SHUFFLE_PARTITIONS.key -> writers.toString,
           CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
           CometConf.COMET_SHUFFLE_MODE.key -> "native",
+          CometConf.COMET_EXEC_AGGREGATE_SKIP_PARTIAL_ENABLED.key -> "true",
           CometConf.COMET_RESPECT_DATAFUSION_CONFIGS.key -> "true",
           "spark.comet.datafusion.execution.skip_partial_aggregation_probe_rows_threshold" -> "100",
           "spark.comet.datafusion.execution.skip_partial_aggregation_probe_ratio_threshold" -> "0.8") {
@@ -2388,6 +2415,33 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             "SELECT count(*) FROM (SELECT DISTINCT k FROM skip_partial_distinct)")
           checkSparkAnswerAndOperator("SELECT count(DISTINCT k) FROM skip_partial_distinct")
         }
+      }
+    }
+  }
+
+  test("skip partial aggregation is disabled by default") {
+    // https://github.com/apache/datafusion-comet/issues/6466. DataFusion stops aggregating for
+    // the rest of a task once its first 100,000 rows look mostly distinct, so a task whose keys
+    // repeat after a distinct start shuffled every later row.
+    withTempPath { dir =>
+      val path = dir.getCanonicalPath
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        // One file, read by one task. Keys 0 to 199999 cycle 10 times, so the first 100,000
+        // rows are all distinct, but every key repeats 10 times within the task.
+        spark.range(0, 2000000, 1, 1).selectExpr("id % 200000 AS k").write.parquet(path)
+      }
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.FILES_MAX_PARTITION_BYTES.key -> (1L << 30).toString,
+        SQLConf.SHUFFLE_PARTITIONS.key -> "4",
+        CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+        val df = spark.read.parquet(path).groupBy("k").count()
+        df.collect()
+        val written = collect(df.queryExecution.executedPlan) {
+          case e: CometShuffleExchangeExec =>
+            e.metrics("shuffleRecordsWritten").value
+        }.sum
+        assert(written == 200000, s"the partial aggregate shuffled $written rows")
       }
     }
   }
@@ -2412,6 +2466,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           CometConf.COMET_BATCH_SIZE.key -> "128",
           CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
           CometConf.COMET_SHUFFLE_MODE.key -> "native",
+          CometConf.COMET_EXEC_AGGREGATE_SKIP_PARTIAL_ENABLED.key -> "true",
           CometConf.COMET_RESPECT_DATAFUSION_CONFIGS.key -> "true",
           "spark.comet.datafusion.execution.skip_partial_aggregation_probe_rows_threshold" -> "100") {
           def aggregates(query: String): Seq[CometHashAggregateExec] = {
@@ -2429,6 +2484,12 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             "(SELECT k, count(*) n FROM skip_partial_eligibility GROUP BY k)"
           // No ratio override: the eligible plan uses DataFusion's adaptive default.
           assert(aggregates(countQuery).map(skipped).sum > 0L)
+          // The Comet config gates skipping, whatever the DataFusion thresholds say.
+          withSQLConf(
+            CometConf.COMET_EXEC_AGGREGATE_SKIP_PARTIAL_ENABLED.key -> "false",
+            "spark.comet.datafusion.execution.skip_partial_aggregation_probe_ratio_threshold" -> "0.8") {
+            assert(aggregates(countQuery).map(skipped).sum == 0L)
+          }
           assert(
             aggregates("SELECT sum(n) FROM " +
               "(SELECT k % 2, count(*) n FROM skip_partial_eligibility GROUP BY k % 2)")
