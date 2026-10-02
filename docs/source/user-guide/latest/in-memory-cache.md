@@ -35,7 +35,10 @@ $SPARK_HOME/bin/spark-shell \
 
 It has to be set before the `SparkContext` starts. Comet's driver plugin chooses
 `spark.sql.cache.serializer` once, while the context is initializing, so a session that started
-with the default goes on using Spark's cache format however the config is set afterwards.
+with the default goes on using Spark's cache format however the config is set afterwards. The
+plugin installs Comet's serializer only if `spark.comet.enabled` and `spark.comet.exec.enabled`
+are enabled at that point too, because an application that starts without native execution could
+not scan Comet's format natively.
 
 ## What changes when it is enabled
 
@@ -45,6 +48,9 @@ With Comet's serializer installed as `spark.sql.cache.serializer`:
 - Cached tables are scanned by `CometInMemoryTableScan`, which feeds Comet operators directly.
 - Per-batch column statistics are recorded in the layout Spark's `SimpleMetricsCachedBatchSerializer`
   expects, so Spark can prune whole cached batches on a predicate before any of them is decoded.
+- The size Spark's planner sees for a cached relation is its decoded Arrow size, not the compressed
+  size it occupies in memory, as with Spark's own cache formats. Compression therefore does not
+  change how queries over a cached relation are planned, such as whether a join broadcasts it.
 
 Relations whose schema Comet's Arrow writer cannot store — interval types, most notably — are
 delegated in full to Spark's default cache format, per relation. Which format a relation uses does
@@ -54,6 +60,10 @@ codec is a runtime config, but each batch records the codec it was written with,
 under one setting stays readable after the setting changes. Turning
 `spark.comet.exec.inMemoryCache.enabled` off at runtime only sends cached scans back to Spark's
 execution path; the cached data stays readable either way.
+
+A relation whose cached plan records observed metrics, from `Dataset.observe`, is still stored in
+Comet's format but is scanned by Spark's `InMemoryTableScanExec`, because Spark collects those
+metrics only through that scan.
 
 ## Storage format
 

@@ -30,14 +30,17 @@ import org.apache.comet.serde.OperatorOuterClass.Operator
 class PlanDataInjectorSuite extends AnyFunSuite {
 
   /** Builds an un-injected IcebergScan operator: hasCommon, zero file_scan_tasks. */
-  private def icebergScanOp(metadataLocation: String, scanHashCode: Int): Operator = {
+  private def icebergScanOp(
+      metadataLocation: String,
+      scanHashCode: Int,
+      planId: Int = 0): Operator = {
     val common = OperatorOuterClass.IcebergScanCommon
       .newBuilder()
       .setMetadataLocation(metadataLocation)
       .setScanHashCode(scanHashCode)
       .build()
     val icebergScan = OperatorOuterClass.IcebergScan.newBuilder().setCommon(common).build()
-    Operator.newBuilder().setIcebergScan(icebergScan).build()
+    Operator.newBuilder().setPlanId(planId).setIcebergScan(icebergScan).build()
   }
 
   /** Serialized (commonBytes, partitionBytes) a real CometIcebergNativeScanExec would produce. */
@@ -144,21 +147,36 @@ class PlanDataInjectorSuite extends AnyFunSuite {
     assert(IcebergPlanDataInjector.getKey(targetOp) != IcebergPlanDataInjector.getKey(sourceOp))
   }
 
-  test("two Iceberg scans of the same table with equal scan_hash_code get the same key") {
-    val opA = icebergScanOp("s3://table/metadata/v1.json", scanHashCode = 111)
-    val opB = icebergScanOp("s3://table/metadata/v1.json", scanHashCode = 111)
+  test("an Iceberg scan with equal scan_hash_code and plan_id gets the same key") {
+    // The same scan node's op, for example on the driver and again in a task.
+    val opA = icebergScanOp("s3://table/metadata/v1.json", scanHashCode = 111, planId = 7)
+    val opB = icebergScanOp("s3://table/metadata/v1.json", scanHashCode = 111, planId = 7)
 
     assert(IcebergPlanDataInjector.getKey(opA) == IcebergPlanDataInjector.getKey(opB))
+  }
+
+  test("two Iceberg scans with equal scan_hash_code but different plan_id get distinct keys") {
+    // The two sides of a storage-partitioned self-join share table, snapshot and read schema,
+    // yet read different files per partition.
+    val location = "s3://table/metadata/v1.json"
+    val opA = icebergScanOp(location, scanHashCode = 111, planId = 1)
+    val opB = icebergScanOp(location, scanHashCode = 111, planId = 2)
+
+    assert(IcebergPlanDataInjector.getKey(opA) != IcebergPlanDataInjector.getKey(opB))
   }
 
   /**
    * Builds an un-injected NativeScan operator the way the driver ships it: hasCommon, no
    * file_partition, source_key_hash embedded (see CometNativeScanExec.apply).
    */
-  private def nativeScanOp(source: String, columnNames: Seq[String]): Operator = {
+  private def nativeScanOp(
+      source: String,
+      columnNames: Seq[String],
+      planId: Int = 0): Operator = {
     val common = nativeScanCommon(source, columnNames)
     Operator
       .newBuilder()
+      .setPlanId(planId)
       .setNativeScan(
         OperatorOuterClass.NativeScan
           .newBuilder()
@@ -622,11 +640,38 @@ class PlanDataInjectorSuite extends AnyFunSuite {
     assert(injectedB.getNativeScan.getCommon == commonB)
   }
 
+  test("NativeScan scans with the same content but different plan_id read their own files") {
+    // Two scans of one table and schema, such as different partitions of a bucketed self-join,
+    // sit under one parent. Each must be injected with its own file list.
+    val scanA = nativeScanOp("file:///self-join-tbl", Seq("k", "v"), planId = 1)
+    val scanB = nativeScanOp("file:///self-join-tbl", Seq("k", "v"), planId = 2)
+    val keyA = NativeScanPlanDataInjector.getKey(scanA).get
+    val keyB = NativeScanPlanDataInjector.getKey(scanB).get
+    assert(keyA != keyB)
+    val sameNode = nativeScanOp("file:///self-join-tbl", Seq("k", "v"), planId = 1)
+    assert(NativeScanPlanDataInjector.getKey(sameNode).contains(keyA))
+
+    val common = scanA.getNativeScan.getCommon.toByteArray
+    val root = Operator.newBuilder().setPlanId(1).addChildren(scanA).addChildren(scanB).build()
+    val injected = PlanDataInjector.injectPlanData(
+      parseBasePlan(root.toByteArray),
+      Map(keyA -> common, keyB -> common),
+      Map(
+        keyA -> nativeScanPartitionBytes("p=1.parquet"),
+        keyB -> nativeScanPartitionBytes("p=2.parquet")))
+
+    def filePath(scan: Operator): String =
+      scan.getNativeScan.getFilePartition.getPartitionedFile(0).getFilePath
+    assert(filePath(injected.getChildren(0)) == "p=1.parquet")
+    assert(filePath(injected.getChildren(1)) == "p=2.parquet")
+  }
+
   test("NativeScan getKey rebuilds the key from the source and the transported hash") {
     // Only the hash travels in the plan; the source is already in the common next to it.
     val common = nativeScanCommon("file:///transported-tbl", Seq("id", "v"))
     val op = Operator
       .newBuilder()
+      .setPlanId(5)
       .setNativeScan(
         OperatorOuterClass.NativeScan
           .newBuilder()
@@ -634,7 +679,7 @@ class PlanDataInjectorSuite extends AnyFunSuite {
           .setSourceKeyHash(1234))
       .build()
 
-    assert(NativeScanPlanDataInjector.getKey(op).contains("file:///transported-tbl_1234"))
+    assert(NativeScanPlanDataInjector.getKey(op).contains("file:///transported-tbl_1234#5"))
     assert(
       NativeScanPlanDataInjector.sourceKey(common) ==
         s"file:///transported-tbl_${NativeScanPlanDataInjector.sourceKeyHash(common)}",
@@ -645,21 +690,23 @@ class PlanDataInjectorSuite extends AnyFunSuite {
     val common = nativeScanCommon("file:///zero-hash-tbl", Seq("id"))
     val op = Operator
       .newBuilder()
+      .setPlanId(5)
       .setNativeScan(
         OperatorOuterClass.NativeScan.newBuilder().setCommon(common).setSourceKeyHash(0))
       .build()
 
-    assert(NativeScanPlanDataInjector.getKey(op).contains("file:///zero-hash-tbl_0"))
+    assert(NativeScanPlanDataInjector.getKey(op).contains("file:///zero-hash-tbl_0#5"))
   }
 
   test("NativeScan getKey derives the key only when the plan carries none") {
     val common = nativeScanCommon("file:///fallback-tbl", Seq("id", "v", "w"))
     val op = Operator
       .newBuilder()
+      .setPlanId(5)
       .setNativeScan(OperatorOuterClass.NativeScan.newBuilder().setCommon(common))
       .build()
 
-    val derived = NativeScanPlanDataInjector.sourceKey(common)
+    val derived = PlanDataInjector.withPlanId(NativeScanPlanDataInjector.sourceKey(common), 5)
     assert(NativeScanPlanDataInjector.getKey(op).contains(derived))
   }
 
@@ -669,10 +716,11 @@ class PlanDataInjectorSuite extends AnyFunSuite {
     val common = nativeScanCommon("file:///shuffle-tbl", Seq("id"))
     val op = Operator
       .newBuilder()
+      .setPlanId(9)
       .setNativeScan(
         OperatorOuterClass.NativeScan.newBuilder().setCommon(common).setSourceKeyHash(77))
       .build()
-    val key = "file:///shuffle-tbl_77"
+    val key = "file:///shuffle-tbl_77#9"
 
     val injected = PlanDataInjector.injectPlanDataForShuffle(
       424242,

@@ -69,7 +69,9 @@ impl SparkPhysicalExprAdapterFactory {
     }
 }
 
-fn schema_has_field_ids(schema: &SchemaRef) -> bool {
+/// True when a root field of `schema` carries a field id. Root only on purpose: it gates the
+/// root name remap, and Spark's `clipParquetGroupFields` decides id matching one level at a time.
+fn any_root_field_has_id(schema: &SchemaRef) -> bool {
     schema.fields().iter().any(|f| field_id(f).is_some())
 }
 
@@ -194,17 +196,8 @@ fn remap_physical_schema(
     physical_schema: &SchemaRef,
     case_sensitive: bool,
     use_field_id: bool,
-    ignore_missing_field_id: bool,
 ) -> DataFusionResult<(SchemaRef, HashMap<String, String>)> {
-    let should_match_by_id = use_field_id && schema_has_field_ids(logical_schema);
-
-    if should_match_by_id && !ignore_missing_field_id && !schema_has_field_ids(physical_schema) {
-        // Mirrors `ParquetReadSupport.inferSchema`'s eager check (Spark throws a runtime
-        // error rather than silently returning null columns).
-        return Err(DataFusionError::External(Box::new(
-            SparkError::ParquetMissingFieldIds,
-        )));
-    }
+    let should_match_by_id = use_field_id && any_root_field_has_id(logical_schema);
 
     // Build id -> all matching physical field names. We need the full list so we can mirror
     // Spark's `_LEGACY_ERROR_TEMP_2094` "Found duplicate field(s)" error when an ID-bearing
@@ -882,7 +875,7 @@ impl PhysicalExprAdapterFactory for SparkPhysicalExprAdapterFactory {
         // which uses the original physical file column names.
         let case_sensitive = self.parquet_options.case_sensitive;
         let should_match_by_id =
-            self.parquet_options.use_field_id && schema_has_field_ids(&logical_file_schema);
+            self.parquet_options.use_field_id && any_root_field_has_id(&logical_file_schema);
         let needs_remap = !case_sensitive || should_match_by_id;
         let (adapted_physical_schema, logical_to_physical_names) = if needs_remap {
             let (remapped, logical_to_physical) = remap_physical_schema(
@@ -890,7 +883,6 @@ impl PhysicalExprAdapterFactory for SparkPhysicalExprAdapterFactory {
                 &physical_file_schema,
                 case_sensitive,
                 self.parquet_options.use_field_id,
-                self.parquet_options.ignore_missing_field_id,
             )?;
             (
                 remapped,
@@ -3473,7 +3465,7 @@ pub(crate) mod test {
         let logical = Arc::new(Schema::new(vec![Field::new("Name", DataType::Int32, true)]));
         let physical = Arc::new(Schema::new(vec![Field::new("NAME", DataType::Int32, true)]));
         let (remapped, name_map) =
-            super::remap_physical_schema(&logical, &physical, false, false, false).unwrap();
+            super::remap_physical_schema(&logical, &physical, false, false).unwrap();
         assert_eq!(remapped.field(0).name(), "Name");
         assert_eq!(name_map.get("Name").map(String::as_str), Some("NAME"));
     }
@@ -3490,7 +3482,7 @@ pub(crate) mod test {
         ]));
         let physical = Arc::new(Schema::new(vec![Field::new("FOO", DataType::Int32, true)]));
         let (remapped, _name_map) =
-            super::remap_physical_schema(&logical, &physical, false, true, true).unwrap();
+            super::remap_physical_schema(&logical, &physical, false, true).unwrap();
         assert!(
             remapped
                 .field(0)
@@ -3518,7 +3510,7 @@ pub(crate) mod test {
             Field::new("a", DataType::Int32, true).with_metadata(id_meta("9"))
         ]));
         let (remapped, _name_map) =
-            super::remap_physical_schema(&logical, &physical, true, true, false).unwrap();
+            super::remap_physical_schema(&logical, &physical, true, true).unwrap();
         assert_eq!(remapped.field(0).name(), "a");
     }
 
