@@ -22,7 +22,7 @@ package org.apache.comet.rules
 import scala.collection.mutable.ListBuffer
 
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.expressions.{Divide, DoubleLiteral, EqualNullSafe, EqualTo, Expression, FloatLiteral, GreaterThan, GreaterThanOrEqual, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, NamedExpression, Remainder}
+import org.apache.spark.sql.catalyst.expressions.{Divide, DoubleLiteral, EqualNullSafe, EqualTo, Expression, ExprId, FloatLiteral, GreaterThan, GreaterThanOrEqual, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, NamedExpression, Remainder}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, Final, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 import org.apache.spark.sql.catalyst.rules.Rule
@@ -78,6 +78,10 @@ object CometExecRule {
    */
   val COMET_UNSAFE_PARTIAL: TreeNodeTag[String] =
     TreeNodeTag[String]("comet.unsafePartialAgg")
+
+  /** Keep a DSv2 decimal producer and its consumers within Spark's row-materialization path. */
+  val COMET_UNMATERIALIZED_DECIMAL: TreeNodeTag[Unit] =
+    TreeNodeTag[Unit]("comet.unmaterializedDecimal")
 
   /**
    * Fully native operators.
@@ -351,6 +355,12 @@ case class CometExecRule(session: SparkSession)
   // spotless:on
   private def transform(plan: SparkPlan): SparkPlan = {
     def convertNode(op: SparkPlan): SparkPlan = op match {
+      case op if op.getTagValue(CometExecRule.COMET_UNMATERIALIZED_DECIMAL).isDefined =>
+        withFallbackReason(
+          op,
+          "DSv2 decimal projection and its consumers must share Spark materialization")
+        op
+
       // Scan marker produced by an optional, out-of-tree scan contrib (e.g. contrib/delta).
       // Matched by trait (no compile-time dependency on the contrib) and present only when that
       // contrib is on the classpath. The marker carries its own serde handler and typically wraps
@@ -704,6 +714,55 @@ case class CometExecRule(session: SparkSession)
     }
   }
 
+  /**
+   * Spark can pass a Decimal between fused operators without writing a row. A retained Project
+   * therefore cannot write a dispatched DSv2 decimal to Arrow before its consumers run: that
+   * would rescale/null the value early. Follow projected attributes and keep both ends, including
+   * intervening operators, in Spark. Declining only the consumer would leave the early write.
+   *
+   * Paths are propagated conservatively through decimal outputs, including row boundaries. This
+   * may retain more Spark operators after a real materialization, but never introduces a new one
+   * before a consumer. Unrelated inputs, and trees that consume the call within one expression,
+   * remain eligible for native execution.
+   */
+  private def tagUnmaterializedDecimals(plan: SparkPlan): Unit = {
+    type Paths = Map[ExprId, Set[SparkPlan]]
+    def visit(op: SparkPlan): Paths = {
+      val inputs = op.children.flatMap(visit).groupBy(_._1).map { case (id, paths) =>
+        id -> paths.flatMap(_._2).toSet
+      }
+      val consumed = op.references.toSeq.flatMap(a => inputs.getOrElse(a.exprId, Set.empty)).toSet
+      if (consumed.nonEmpty) {
+        (consumed + op).foreach(_.setTagValue(CometExecRule.COMET_UNMATERIALIZED_DECIMAL, ()))
+      }
+      val sources = op match {
+        case p: ProjectExec =>
+          p.projectList
+            .filter(QueryPlanSerde.producesUnmaterializedDsv2Decimal)
+            .map(_.exprId)
+            .toSet
+        case _ => Set.empty[ExprId]
+      }
+      op.output.flatMap { attr =>
+        val inherited = inputs.getOrElse(attr.exprId, Set.empty)
+        // Computed decimal outputs can retain the raw value as well (e.g. abs(d), or max(d)).
+        val derived = if (containsDecimal(attr.dataType)) consumed else Set.empty[SparkPlan]
+        val path = inherited ++ derived
+        if (sources.contains(attr.exprId) || path.nonEmpty) Some(attr.exprId -> (path + op))
+        else None
+      }.toMap
+    }
+    visit(plan)
+  }
+
+  private def containsDecimal(dataType: DataType): Boolean = dataType match {
+    case _: DecimalType => true
+    case ArrayType(elementType, _) => containsDecimal(elementType)
+    case MapType(keyType, valueType, _) => containsDecimal(keyType) || containsDecimal(valueType)
+    case StructType(fields) => fields.exists(f => containsDecimal(f.dataType))
+    case _ => false
+  }
+
   private def normalizePlan(plan: SparkPlan): SparkPlan = {
     plan.transformUp {
       case p: ProjectExec =>
@@ -797,6 +856,7 @@ case class CometExecRule(session: SparkSession)
       // corresponding Final or PartialMerge cannot be converted and the intermediate buffer
       // formats are incompatible. This runs before transform() so the tags are checked
       // during the bottom-up conversion. Tags persist through AQE stage creation.
+      tagUnmaterializedDecimals(planWithJoinRewritten)
       tagUnsafePartialAggregates(planWithJoinRewritten)
 
       var newPlan = revertUnsafePartialAggregates(transform(planWithJoinRewritten))

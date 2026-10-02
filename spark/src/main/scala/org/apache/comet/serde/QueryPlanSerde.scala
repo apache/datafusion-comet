@@ -1172,11 +1172,15 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
    * such an expression runs in the same kernel as the call, where Spark's own code reads the
    * value the function returned. Checking only immediate children would let an intermediate
    * expression, such as `abs(call)` or `call[0]`, normalize the decimal before its parent reads
-   * it. `Alias` is skipped because it computes nothing: the call under it is the root, and Spark
-   * writes a root as a row.
+   * it. `Alias` is skipped because it computes nothing. A projected root is not necessarily a
+   * row-materialization boundary: CometExecRule keeps retained decimal aliases and their
+   * consumers in Spark until those consumers have read the original value.
    */
   private def readsDispatchedDsv2Decimal(expr: Expression): Boolean =
     !isStructuralExpr(expr) && expr.children.exists(_.exists(isDispatchedDsv2DecimalCall))
+
+  private[comet] def producesUnmaterializedDsv2Decimal(expr: Expression): Boolean =
+    containsDecimal(expr.dataType) && expr.exists(isDispatchedDsv2DecimalCall)
 
   private def isDispatchedDsv2DecimalCall(expr: Expression): Boolean = {
     val dispatchedDsv2Call = expr match {
