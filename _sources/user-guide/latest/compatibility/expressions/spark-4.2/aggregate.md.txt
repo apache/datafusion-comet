@@ -133,4 +133,34 @@ The following cases are not supported by Comet and always fall back to Spark, re
 - A frequency argument is not supported.
 - Descending order in `WITHIN GROUP (ORDER BY ... DESC)` is not supported.
 - Only numeric input types are supported.
+
+## RegrIntercept
+
+The following incompatibilities cause `RegrIntercept` to fall back to Spark by default. Set `spark.comet.expression.RegrIntercept.allowIncompatible=true` to enable Comet acceleration despite these differences.
+
+- Comet merges the partial aggregates of `regr_intercept` in a different floating-point operation order from Spark. When a group's rows come from more than one partial aggregate and a variable is constant at a value that binary floating point cannot represent exactly, such as 0.1, Comet returns a wrong value where Spark returns NULL, 0.0 or 1.0 (https://github.com/apache/datafusion-comet/issues/6423)
+
+## RegrR2
+
+The following incompatibilities cause `RegrR2` to fall back to Spark by default. Set `spark.comet.expression.RegrR2.allowIncompatible=true` to enable Comet acceleration despite these differences.
+
+- Comet merges the partial aggregates of `regr_r2` in a different floating-point operation order from Spark. When a group's rows come from more than one partial aggregate and a variable is constant at a value that binary floating point cannot represent exactly, such as 0.1, Comet returns a wrong value where Spark returns NULL, 0.0 or 1.0 (https://github.com/apache/datafusion-comet/issues/6423)
+
+## RegrReplacement
+
+The following incompatibilities cause `RegrReplacement` to fall back to Spark by default. Set `spark.comet.expression.RegrReplacement.allowIncompatible=true` to enable Comet acceleration despite these differences.
+
+- Comet merges the partial aggregates of `regr_sxx` and `regr_syy` in a different floating-point operation order from Spark. When a group's rows come from more than one partial aggregate and a variable is constant at a value that binary floating point cannot represent exactly, such as 0.1, Comet returns a wrong value where Spark returns NULL, 0.0 or 1.0 (https://github.com/apache/datafusion-comet/issues/6423)
+
+## RegrSXY
+
+The following incompatibilities cause `RegrSXY` to fall back to Spark by default. Set `spark.comet.expression.RegrSXY.allowIncompatible=true` to enable Comet acceleration despite these differences.
+
+- Comet merges the partial aggregates of `regr_sxy` in a different floating-point operation order from Spark. When a group's rows come from more than one partial aggregate and a variable is constant at a value that binary floating point cannot represent exactly, such as 0.1, Comet returns a wrong value where Spark returns NULL, 0.0 or 1.0 (https://github.com/apache/datafusion-comet/issues/6423)
+
+## RegrSlope
+
+The following incompatibilities cause `RegrSlope` to fall back to Spark by default. Set `spark.comet.expression.RegrSlope.allowIncompatible=true` to enable Comet acceleration despite these differences.
+
+- Comet merges the partial aggregates of `regr_slope` in a different floating-point operation order from Spark. When a group's rows come from more than one partial aggregate and a variable is constant at a value that binary floating point cannot represent exactly, such as 0.1, Comet returns a wrong value where Spark returns NULL, 0.0 or 1.0 (https://github.com/apache/datafusion-comet/issues/6423)
 <!--END:EXPR_COMPAT-->

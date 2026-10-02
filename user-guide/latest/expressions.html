@@ -1108,32 +1108,32 @@ expressions. The following function families are <strong>not currently planned</
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">regr_intercept</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Native</p></td>
-<td><p></p></td>
+<td><p>Falls back by default because the native merge of partial aggregates differs from Spark (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6423">#6423</a>); the native path is opt-in via <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.RegrIntercept.allowIncompatible=true</span></code></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">regr_r2</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Native</p></td>
-<td><p></p></td>
+<td><p>Falls back by default because the native merge of partial aggregates differs from Spark (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6423">#6423</a>); the native path is opt-in via <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.RegrR2.allowIncompatible=true</span></code></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">regr_slope</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Native</p></td>
-<td><p></p></td>
+<td><p>Falls back by default because the native merge of partial aggregates differs from Spark (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6423">#6423</a>); the native path is opt-in via <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.RegrSlope.allowIncompatible=true</span></code></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">regr_sxx</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>—</p></td>
-<td><p></p></td>
+<td><p>Falls back by default because the native merge of partial aggregates differs from Spark (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6423">#6423</a>); the native path is opt-in via <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.RegrReplacement.allowIncompatible=true</span></code> (Spark plans <code class="docutils literal notranslate"><span class="pre">regr_sxx</span></code> as <code class="docutils literal notranslate"><span class="pre">RegrReplacement</span></code>)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">regr_sxy</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Native</p></td>
-<td><p></p></td>
+<td><p>Falls back by default because the native merge of partial aggregates differs from Spark (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6423">#6423</a>); the native path is opt-in via <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.RegrSXY.allowIncompatible=true</span></code></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">regr_syy</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>—</p></td>
-<td><p></p></td>
+<td><p>Falls back by default because the native merge of partial aggregates differs from Spark (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6423">#6423</a>); the native path is opt-in via <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.RegrReplacement.allowIncompatible=true</span></code> (Spark plans <code class="docutils literal notranslate"><span class="pre">regr_syy</span></code> as <code class="docutils literal notranslate"><span class="pre">RegrReplacement</span></code>)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">skewness</span></code></p></td>
 <td><p>🔜</p></td>

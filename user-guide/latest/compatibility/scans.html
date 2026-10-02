@@ -905,6 +905,11 @@ and <code class="docutils literal notranslate"><span class="pre">INT32</span> <s
 is rejected by Spark 3.x but accepted by Spark 4.0+). Comet aims to follow the per-version Spark
 behavior.</p>
 <ul class="simple">
+<li><p><strong>Conversion errors precede pushed row filters</strong>. Empty files and files whose row groups or
+pages are all pruned read without decode-time conversion errors. When row-filter pushdown is
+enabled, Comet checks rejected conversions before reading surviving data pages, so a row filter
+cannot suppress the error by discarding every row. Legacy LIST shape mismatches that Spark cannot
+clip are rejected when the file is opened, including for empty and fully pruned files.</p></li>
 <li><p><strong>List conversion error paths assume Spark’s standard encoding</strong>. Comet inserts <code class="docutils literal notranslate"><span class="pre">list</span></code>
 before the element name when reporting a rejected array element conversion. Arrow’s schema
 omits the repeated group name, so paths for legacy LIST encodings or custom group names may

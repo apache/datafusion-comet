@@ -892,6 +892,41 @@ under the License.
 <li><p>Descending order in <code class="docutils literal notranslate"><span class="pre">WITHIN</span> <span class="pre">GROUP</span> <span class="pre">(ORDER</span> <span class="pre">BY</span> <span class="pre">...</span> <span class="pre">DESC)</span></code> is not supported.</p></li>
 <li><p>Only numeric input types are supported.</p></li>
 </ul>
+</section>
+<section id="regrintercept">
+<h2>RegrIntercept<a class="headerlink" href="#regrintercept" title="Link to this heading">#</a></h2>
+<p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">RegrIntercept</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.RegrIntercept.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
+<ul class="simple">
+<li><p>Comet merges the partial aggregates of <code class="docutils literal notranslate"><span class="pre">regr_intercept</span></code> in a different floating-point operation order from Spark. When a group’s rows come from more than one partial aggregate and a variable is constant at a value that binary floating point cannot represent exactly, such as 0.1, Comet returns a wrong value where Spark returns NULL, 0.0 or 1.0 (https://github.com/apache/datafusion-comet/issues/6423)</p></li>
+</ul>
+</section>
+<section id="regrr2">
+<h2>RegrR2<a class="headerlink" href="#regrr2" title="Link to this heading">#</a></h2>
+<p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">RegrR2</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.RegrR2.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
+<ul class="simple">
+<li><p>Comet merges the partial aggregates of <code class="docutils literal notranslate"><span class="pre">regr_r2</span></code> in a different floating-point operation order from Spark. When a group’s rows come from more than one partial aggregate and a variable is constant at a value that binary floating point cannot represent exactly, such as 0.1, Comet returns a wrong value where Spark returns NULL, 0.0 or 1.0 (https://github.com/apache/datafusion-comet/issues/6423)</p></li>
+</ul>
+</section>
+<section id="regrreplacement">
+<h2>RegrReplacement<a class="headerlink" href="#regrreplacement" title="Link to this heading">#</a></h2>
+<p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">RegrReplacement</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.RegrReplacement.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
+<ul class="simple">
+<li><p>Comet merges the partial aggregates of <code class="docutils literal notranslate"><span class="pre">regr_sxx</span></code> and <code class="docutils literal notranslate"><span class="pre">regr_syy</span></code> in a different floating-point operation order from Spark. When a group’s rows come from more than one partial aggregate and a variable is constant at a value that binary floating point cannot represent exactly, such as 0.1, Comet returns a wrong value where Spark returns NULL, 0.0 or 1.0 (https://github.com/apache/datafusion-comet/issues/6423)</p></li>
+</ul>
+</section>
+<section id="regrsxy">
+<h2>RegrSXY<a class="headerlink" href="#regrsxy" title="Link to this heading">#</a></h2>
+<p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">RegrSXY</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.RegrSXY.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
+<ul class="simple">
+<li><p>Comet merges the partial aggregates of <code class="docutils literal notranslate"><span class="pre">regr_sxy</span></code> in a different floating-point operation order from Spark. When a group’s rows come from more than one partial aggregate and a variable is constant at a value that binary floating point cannot represent exactly, such as 0.1, Comet returns a wrong value where Spark returns NULL, 0.0 or 1.0 (https://github.com/apache/datafusion-comet/issues/6423)</p></li>
+</ul>
+</section>
+<section id="regrslope">
+<h2>RegrSlope<a class="headerlink" href="#regrslope" title="Link to this heading">#</a></h2>
+<p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">RegrSlope</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.RegrSlope.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
+<ul class="simple">
+<li><p>Comet merges the partial aggregates of <code class="docutils literal notranslate"><span class="pre">regr_slope</span></code> in a different floating-point operation order from Spark. When a group’s rows come from more than one partial aggregate and a variable is constant at a value that binary floating point cannot represent exactly, such as 0.1, Comet returns a wrong value where Spark returns NULL, 0.0 or 1.0 (https://github.com/apache/datafusion-comet/issues/6423)</p></li>
+</ul>
 <!--END:EXPR_COMPAT-->
 </section>
 </section>
@@ -953,6 +988,11 @@ under the License.
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#minby">MinBy</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#mode">Mode</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#percentile">Percentile</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#regrintercept">RegrIntercept</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#regrr2">RegrR2</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#regrreplacement">RegrReplacement</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#regrsxy">RegrSXY</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#regrslope">RegrSlope</a></li>
 </ul>
   </nav></div>
 
