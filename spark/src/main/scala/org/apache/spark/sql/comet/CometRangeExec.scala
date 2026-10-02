@@ -81,10 +81,13 @@ object CometRangeExec extends CometOperatorSerde[RangeExec] {
   /**
    * Comet follows Spark's generated code for `RangeExec`. With whole-stage codegen disabled,
    * Spark runs the interpreted `RangeExec.doExecute` instead, and the two can return different
-   * rows when the generated code's arithmetic overflows, so those ranges stay on Spark.
+   * rows when the generated code's arithmetic overflows, so those ranges stay on Spark. So does a
+   * range with fewer than one slice, which Spark fails when it runs and Comet would return empty.
    */
   override def getSupportLevel(op: RangeExec): SupportLevel = {
-    if (!op.conf.wholeStageEnabled && mayOverflow(op)) {
+    if (!op.isEmptyRange && op.numSlices < 1) {
+      Unsupported(Some(s"Spark fails a range with ${op.numSlices} slices"))
+    } else if (!op.conf.wholeStageEnabled && mayOverflow(op)) {
       Unsupported(
         Some(
           "Spark's interpreted RangeExec, which runs when whole-stage codegen is disabled, " +

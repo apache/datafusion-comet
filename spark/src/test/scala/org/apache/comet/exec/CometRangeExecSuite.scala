@@ -123,9 +123,27 @@ class CometRangeExecSuite extends CometTestBase {
       // Spark's interpreted RangeExec returns the same rows as its generated code here.
       checkCometRange(spark.range(0, 1000, 3, 4).selectExpr("id + 1"))
       // Here it returns four rows where the generated code, which Comet follows, returns none.
+      val overflowing = spark.range(Long.MinValue, Long.MaxValue, 1L << 62, 1)
       checkSparkAnswerAndFallbackReason(
-        spark.range(Long.MinValue, Long.MaxValue, 1L << 62, 1).selectExpr("id + 1"),
+        overflowing.selectExpr("id + 1"),
         "Spark's interpreted RangeExec")
+      // A range CometRangeExec declines can still use the Spark-to-Arrow conversion.
+      withSQLConf(CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true") {
+        val (_, plan) = checkSparkAnswer(overflowing.selectExpr("id + 1"))
+        assert(collect(plan) { case c: CometSparkToColumnarExec => c }.nonEmpty, plan)
+      }
+    }
+  }
+
+  rangeTest("a range with fewer than one slice fails as in Spark") {
+    Seq(0, -1).foreach { splits =>
+      withClue(s"$splits slices: ") {
+        val df = spark.range(0, 10, 1, splits).selectExpr("id + 1")
+        val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+        assert(sparkError.isDefined && cometError.isDefined, (sparkError, cometError))
+        assert(cometError.get.getMessage == sparkError.get.getMessage)
+        assert(cometRanges(df.queryExecution.executedPlan).isEmpty)
+      }
     }
   }
 

@@ -1175,8 +1175,10 @@ case class CometExecRule(session: SparkSession)
             case _ => isSparkToArrowEnabled(conf, op)
           }
         // CometRangeExec generates the values natively, so it takes precedence over converting
-        // Spark's rows.
-        case _: RangeExec if CometConf.COMET_EXEC_RANGE_ENABLED.get(conf) =>
+        // Spark's rows wherever it supports the range.
+        case r: RangeExec
+            if CometConf.COMET_EXEC_RANGE_ENABLED.get(conf) &&
+              CometRangeExec.getSupportLevel(r).isInstanceOf[Compatible] =>
           false
         // other leaf nodes
         case _: LeafExecNode =>
