@@ -15,27 +15,24 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Operators
+//! Native execution operators for Apache DataFusion Comet.
+//!
+//! These are the `ExecutionPlan` implementations that need nothing from the rest of the plugin
+//! beyond `datafusion-comet-common` and `datafusion-comet-spark-expr`. The planner in the `core`
+//! crate builds them from Spark's protobuf plan.
 
-pub use crate::errors::ExecutionError;
+// The clippy throws an error if the reference clone not wrapped into `Arc::clone`
+// The lint makes easier for code reader/reviewer separate references clones from more heavyweight ones
+#![deny(clippy::clone_on_ref_ptr)]
 
-pub use iceberg_scan::*;
-pub use scan::*;
+mod expand;
+mod explode;
+mod filter;
+mod rank_limit;
+mod sample;
 
-mod dynamic_filter;
-pub(crate) use dynamic_filter::{DynamicFilterJoinExec, TopKReaderFilterExec};
-pub(crate) mod iceberg_common;
-pub use iceberg_common::clear_file_io_cache;
-mod iceberg_partition_path;
-mod iceberg_partition_value;
-mod iceberg_scan;
-mod iceberg_write;
-pub use iceberg_write::IcebergWriteExec;
-mod parquet_writer;
-pub use parquet_writer::{ParquetCompression, ParquetWriterExec};
-mod csv_scan;
-pub mod projection;
-mod scan;
-mod shuffle_scan;
-pub use csv_scan::init_csv_datasource_exec;
-pub use shuffle_scan::ShuffleScanExec;
+pub use expand::ExpandExec;
+pub use explode::ExplodeExec;
+pub use filter::CometFilterExec;
+pub use rank_limit::{PartitionedRankLimitExec, WindowFnKind};
+pub use sample::SampleExec;

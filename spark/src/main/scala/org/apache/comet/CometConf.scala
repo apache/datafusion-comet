@@ -101,7 +101,7 @@ object CometConf extends ShimCometConf {
     .createWithDefault(true)
 
   val COMET_NATIVE_PARQUET_WRITE_ENABLED: ConfigEntry[Boolean] =
-    conf("spark.comet.parquet.write.enabled")
+    conf("spark.comet.write.parquet.enabled")
       .category(CATEGORY_TESTING)
       .doc(
         "Whether to enable native Parquet write through Comet. When enabled, " +
@@ -132,7 +132,7 @@ object CometConf extends ShimCometConf {
       .createWithDefault(false)
 
   val COMET_ICEBERG_NATIVE_WRITE_ENABLED: ConfigEntry[Boolean] =
-    conf("spark.comet.iceberg.write.enabled")
+    conf("spark.comet.write.iceberg.enabled")
       .category(CATEGORY_TESTING)
       .doc(
         "Whether to delegate the executor-side Parquet write to Comet's native (iceberg-rust) " +

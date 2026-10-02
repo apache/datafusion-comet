@@ -19,7 +19,7 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Abs, Add, Atan2, Attribute, BRound, Ceil, CheckOverflow, Conv, Expression, Floor, Hex, Hypot, If, LessThanOrEqual, Literal, Log, Log10, Log1p, Log2, Logarithm, NaNvl, Pmod, Pow, Sqrt, UnaryPositive, Unhex, WidthBucket}
+import org.apache.spark.sql.catalyst.expressions.{Abs, Add, Atan2, Attribute, BRound, Ceil, CheckOverflow, Conv, Expression, Floor, Greatest, Hex, Hypot, If, Least, LessThanOrEqual, Literal, Log, Log10, Log1p, Log2, Logarithm, NaNvl, Pmod, Pow, Sqrt, UnaryPositive, Unhex, WidthBucket}
 import org.apache.spark.sql.types.{DecimalType, DoubleType, NumericType}
 
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType, serializeDataType}
@@ -300,3 +300,24 @@ object CometPmod extends CometCodegenDispatch[Pmod]
 object CometWidthBucket extends CometCodegenDispatch[WidthBucket]
 
 object CometUnaryPositive extends CometCodegenDispatch[UnaryPositive]
+
+/**
+ * `greatest` and `least` order string inputs by raw bytes natively, while Spark orders them under
+ * the input collation.
+ */
+class CometStringOrderingExtremum[T <: Expression](function: String)
+    extends CometScalarFunction[T](function)
+    with CodegenDispatchFallback {
+
+  override def hasConditionalNativeDefault: Boolean = true
+
+  override def getIncompatibleReasons(): Seq[String] =
+    Seq(StringCollationSupport.collationReason(function))
+
+  override def getSupportLevel(expr: T): SupportLevel =
+    StringCollationSupport.getSupportLevel(function, expr.children)
+}
+
+object CometGreatest extends CometStringOrderingExtremum[Greatest]("greatest")
+
+object CometLeast extends CometStringOrderingExtremum[Least]("least")

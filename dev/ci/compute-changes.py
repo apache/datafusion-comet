@@ -62,6 +62,7 @@ FILTERS = {
         "!**.md",
         "!native/core/benches/**",
         "!native/spark-expr/benches/**",
+        "!native/operators/benches/**",
         "!spark/src/test/scala/org/apache/spark/sql/benchmark/**",
         "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala",
     ],
@@ -97,12 +98,14 @@ FILTERS = {
         "!**.md",
         "!native/core/benches/**",
         "!native/spark-expr/benches/**",
+        "!native/operators/benches/**",
         "!spark/src/test/scala/org/apache/spark/sql/benchmark/**",
         "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala",
     ],
     "benchmark": [
         "native/core/benches/**",
         "native/spark-expr/benches/**",
+        "native/operators/benches/**",
         "spark/src/test/scala/org/apache/spark/sql/benchmark/**",
     ],
     # dev/verify-contrib-delta-gate.sh proves the default cargo, Maven and
@@ -128,6 +131,7 @@ FILTERS = {
         "!**.md",
         "!native/core/benches/**",
         "!native/spark-expr/benches/**",
+        "!native/operators/benches/**",
         "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala",
     ],
     # A real Python worker against each Spark 4.x Arrow runner. The list is

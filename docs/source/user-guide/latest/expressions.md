@@ -451,10 +451,10 @@ to Spark ([#2837](https://github.com/apache/datafusion-comet/issues/2837)). Enab
 | `expm1` | ✅ | Native |  |
 | `factorial` | ✅ | Native |  |
 | `floor` | ✅ | — | Two-arg form falls back |
-| `greatest` | ✅ | Native |  |
+| `greatest` | ✅ | Hybrid | Non-UTF8_BINARY collated input routes through the JVM codegen dispatcher; other input runs natively |
 | `hex` | ✅ | Native |  |
 | `hypot` | ✅ | Codegen dispatch |  |
-| `least` | ✅ | Native |  |
+| `least` | ✅ | Hybrid | Non-UTF8_BINARY collated input routes through the JVM codegen dispatcher; other input runs natively |
 | `ln` | ✅ | Native |  |
 | `log` | ✅ | Native |  |
 | `log10` | ✅ | Native |  |
@@ -581,7 +581,7 @@ to Spark ([#2837](https://github.com/apache/datafusion-comet/issues/2837)). Enab
 | `format_number` | ✅ | Codegen dispatch |  |
 | `format_string` | ✅ | Codegen dispatch |  |
 | `initcap` | ✅ | Hybrid |  |
-| `instr` | ✅ | Native |  |
+| `instr` | ✅ | Hybrid | Non-UTF8_BINARY collated input routes through the JVM codegen dispatcher; other input runs natively |
 | `lcase` | ✅ | Hybrid |  |
 | `left` | ✅ | Native |  |
 | `len` | ✅ | Native |  |
@@ -590,7 +590,7 @@ to Spark ([#2837](https://github.com/apache/datafusion-comet/issues/2837)). Enab
 | `locate` | ✅ | Codegen dispatch |  |
 | `lower` | ✅ | Hybrid |  |
 | `lpad` | ✅ | Hybrid | String inputs use the native kernel with a column string and literal padding; literal strings and column padding use codegen dispatch. Binary inputs use codegen dispatch. |
-| `ltrim` | ✅ | Native |  |
+| `ltrim` | ✅ | Hybrid | Non-UTF8_BINARY collated input with a trim string routes through the JVM codegen dispatcher; other input runs natively |
 | `luhn_check` | ✅ | — | Native via `StaticInvoke` (tests: luhn_check.sql) |
 | `mask` | ✅ | — | Routed through the JVM codegen dispatcher |
 | `octet_length` | ✅ | Native |  |
@@ -607,7 +607,7 @@ to Spark ([#2837](https://github.com/apache/datafusion-comet/issues/2837)). Enab
 | `replace` | ✅ | Hybrid |  |
 | `right` | ✅ | Native |  |
 | `rpad` | ✅ | Hybrid | String inputs use the native kernel with a column string and literal padding; literal strings and column padding use codegen dispatch. Binary inputs use codegen dispatch. |
-| `rtrim` | ✅ | Native |  |
+| `rtrim` | ✅ | Hybrid | Non-UTF8_BINARY collated input with a trim string routes through the JVM codegen dispatcher; other input runs natively |
 | `soundex` | ✅ | Native |  |
 | `space` | ✅ | Native |  |
 | `split` | ✅ | Hybrid |  |
@@ -615,13 +615,13 @@ to Spark ([#2837](https://github.com/apache/datafusion-comet/issues/2837)). Enab
 | `startswith` | ✅ | — |  |
 | `substr` | ✅ | Native |  |
 | `substring` | ✅ | Native |  |
-| `substring_index` | ✅ | Native |  |
+| `substring_index` | ✅ | Hybrid | Non-UTF8_BINARY collated input routes through the JVM codegen dispatcher; other input runs natively |
 | `to_binary` | ✅ | — | The hex form runs natively; the base64 and `utf-8` forms route through the JVM codegen dispatcher |
 | `to_char` | ✅ | Codegen dispatch |  |
 | `to_number` | ✅ | Codegen dispatch |  |
 | `to_varchar` | ✅ | Codegen dispatch |  |
 | `translate` | ✅ | Hybrid | Codegen dispatch by default: DataFusion's `translate` iterates over Unicode graphemes (Spark uses code points) and substitutes U+0000 instead of treating it as a deletion sentinel, so the native path is opt-in via allowIncompatible |
-| `trim` | ✅ | Native |  |
+| `trim` | ✅ | Hybrid | Non-UTF8_BINARY collated input with a trim string routes through the JVM codegen dispatcher; other input runs natively |
 | `try_to_binary` | ✅ | — | Rewrites to `try_eval(to_binary(...))`, which routes through the JVM codegen dispatcher |
 | `try_to_number` | ✅ | Codegen dispatch | Routed through the JVM codegen dispatcher |
 | `ucase` | ✅ | Hybrid |  |
