@@ -335,8 +335,10 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
 
     IcebergReflection.getFileIOHadoopConf(table) match {
       case None =>
-        catalogOverrides.foreach { case (key, value) => sessionConf.set(key, value) }
-        sessionConf
+        // S3FileIO and other non-Hadoop FileIO implementations use their initialized
+        // properties, not Spark's Hadoop options. Forwarding session or catalog settings here
+        // can redirect native writes away from the FileIO used for footer reads and cleanup.
+        new Configuration(false)
       case Some(fileIOConf) =>
         // HadoopFileIO stores its configuration in Iceberg's SerializableConfiguration. That
         // class rebuilds a Configuration(false) by calling set() for every entry, so Hadoop's

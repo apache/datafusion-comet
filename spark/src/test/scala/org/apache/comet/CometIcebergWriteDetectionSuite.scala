@@ -26,6 +26,7 @@ import org.scalatest.Tag
 
 import org.apache.hadoop.conf.Configuration
 import org.apache.iceberg.{PartitionSpec, StructLike, TableMetadata, TableOperations}
+import org.apache.iceberg.aws.s3.S3FileIO
 import org.apache.iceberg.catalog.TableIdentifier
 import org.apache.iceberg.encryption.EncryptionManager
 import org.apache.iceberg.hadoop.{HadoopCatalog, HadoopConfigurable, HadoopFileIO}
@@ -799,6 +800,45 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
             .getOrElse(fail(s"expected CometIcebergWriteExec in:\n$plan"))
           val properties = cometWrite.nativeOp.getIcebergWrite.getCommon.getCatalogPropertiesMap
           assert(properties.get("s3.endpoint") == endpoint, properties)
+          assert(!properties.containsKey("s3.sse.type"), properties)
+        }
+      }
+    }
+  }
+
+  test("S3FileIO ignores Hadoop options after catalog initialization") {
+    withTempIcebergDir { warehouseDir =>
+      val s3Catalog = "s3_non_hadoop_cat"
+      withSQLConf(
+        s"spark.sql.catalog.$s3Catalog" -> "org.apache.iceberg.spark.SparkCatalog",
+        s"spark.sql.catalog.$s3Catalog.catalog-impl" ->
+          classOf[DetectionS3FileIOHadoopCatalog].getName,
+        s"spark.sql.catalog.$s3Catalog.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        spark.sql(s"""
+          CREATE TABLE $s3Catalog.$ns.initialized_s3 (id INT, region STRING, amount DOUBLE)
+          USING iceberg
+          TBLPROPERTIES ('write.data.path'='s3://probe-bucket/iceberg/db/initialized_s3')
+        """)
+
+        withSQLConf(
+          "fs.s3a.endpoint" -> "https://session-changed.example.test",
+          "fs.s3a.encryption.algorithm" -> "SSE-KMS",
+          s"spark.sql.catalog.$s3Catalog.hadoop.fs.s3a.endpoint" ->
+            "https://changed.example.test",
+          s"spark.sql.catalog.$s3Catalog.hadoop.fs.s3a.encryption.algorithm" -> "SSE-KMS") {
+          // Plan only: the real S3FileIO retains its default endpoint and no S3 requests run.
+          val insert = spark.sessionState.sqlParser.parsePlan(
+            s"INSERT INTO $s3Catalog.$ns.initialized_s3 VALUES (1, 'us', 1.0)")
+          val plan =
+            spark.sessionState.executePlan(insert, CommandExecutionMode.SKIP).executedPlan
+          val cometWrite = findCometWriteExec(plan)
+            .getOrElse(fail(s"expected CometIcebergWriteExec in:\n$plan"))
+          assert(IcebergReflection.getFileIO(cometWrite.table).exists(_.isInstanceOf[S3FileIO]))
+          assert(IcebergReflection.getFileIOHadoopConf(cometWrite.table).isEmpty)
+          val properties = cometWrite.nativeOp.getIcebergWrite.getCommon.getCatalogPropertiesMap
+          assert(properties.get("client.region") == "us-east-1", properties)
+          assert(!properties.containsKey("s3.endpoint"), properties)
           assert(!properties.containsKey("s3.sse.type"), properties)
         }
       }
@@ -1635,4 +1675,21 @@ class DetectionDelegatingLocationProvider(delegate: LocationProvider) extends Lo
       partitionData: StructLike,
       filename: String): String =
     delegate.newDataLocation(spec, partitionData, filename)
+}
+
+/** A real S3FileIO for data, with local metadata managed by HadoopCatalog. Planning only. */
+class DetectionS3FileIOHadoopCatalog extends HadoopCatalog {
+  override protected def newTableOps(identifier: TableIdentifier): TableOperations =
+    new DetectionS3FileIOTableOperations(super.newTableOps(identifier))
+}
+
+class DetectionS3FileIOTableOperations(delegate: TableOperations)
+    extends DetectionLocationProviderTableOperations(delegate) {
+  private val s3FileIO = new S3FileIO()
+  s3FileIO.initialize(java.util.Collections.singletonMap("client.region", "us-east-1"))
+
+  override def io(): FileIO = s3FileIO
+  override def locationProvider(): LocationProvider = delegate.locationProvider()
+  override def temp(uncommittedMetadata: TableMetadata): TableOperations =
+    new DetectionS3FileIOTableOperations(delegate.temp(uncommittedMetadata))
 }
