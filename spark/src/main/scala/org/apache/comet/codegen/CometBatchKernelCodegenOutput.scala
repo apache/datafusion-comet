@@ -30,7 +30,6 @@ import org.apache.spark.sql.catalyst.expressions.codegen.CodegenContext
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.types._
 
-import org.apache.comet.CometArrowAllocator
 import org.apache.comet.shims.CometTypeShim
 
 /**
@@ -86,22 +85,31 @@ private[codegen] object CometBatchKernelCodegenOutput extends CometTypeShim {
    *
    * Closes the vector on any failure so a partially-initialized tree doesn't leak buffers.
    */
-  def allocateOutput(field: Field, numRows: Int, estimatedBytes: Int): FieldVector = {
+  def allocateOutput(
+      field: Field,
+      numRows: Int,
+      estimatedBytes: Int,
+      allocator: BufferAllocator): FieldVector = {
     val vec: FieldVector = field.getType match {
       case _: ArrowType.List | _: ArrowType.LargeList | _: ArrowType.FixedSizeList =>
-        val v = new RenamedListVector(field, CometArrowAllocator)
+        val v = new RenamedListVector(field, allocator)
         v.initializeChildrenFromFields(field.getChildren)
         v
       case _: ArrowType.Map =>
-        val v = new RenamedMapVector(field, CometArrowAllocator)
+        val v = new RenamedMapVector(field, allocator)
         v.initializeChildrenFromFields(field.getChildren)
         v
       case _: ArrowType.Struct =>
-        val v = new RenamedStructVector(field, CometArrowAllocator)
+        val v = new RenamedStructVector(field, allocator)
+        // StructVector builds its writer in a field initializer, and that writer has already
+        // created and allocated a child for each child of `field`. initializeChildrenFromFields
+        // replaces those children without closing them, so close them first. The writer keeps
+        // pointing at them, which is harmless: the kernel writes through getChildByOrdinal.
+        v.getChildrenFromFields.asScala.foreach(_.close())
         v.initializeChildrenFromFields(field.getChildren)
         v
       case _ =>
-        field.createVector(CometArrowAllocator).asInstanceOf[FieldVector]
+        field.createVector(allocator).asInstanceOf[FieldVector]
     }
     try {
       vec.setInitialCapacity(numRows)
