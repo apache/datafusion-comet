@@ -20,6 +20,7 @@ mod fair_pool;
 pub mod logging_pool;
 mod plan_pool;
 mod spark_memory;
+mod spill_replay;
 mod task_shared;
 mod unified_pool;
 
