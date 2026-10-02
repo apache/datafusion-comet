@@ -386,10 +386,11 @@ case class CometExecRule(session: SparkSession)
         val cometCacheFormat = usesCometCacheSerializer &&
           ArrowCachedBatchSerializer.supportsSchema(scan.relation.output)
         val nativeCacheEnabled = CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.get(conf)
-        // Walks the cached plan, so it is only consulted once the native scan is otherwise
+        // Walks the cached plan, so it is lazy: only consulted once the native scan is otherwise
         // possible. See CometInMemoryTableScanExec.recordsObservedMetrics.
-        val nativeScan = nativeCacheEnabled && cometCacheFormat &&
-          !CometInMemoryTableScanExec.recordsObservedMetrics(scan.relation)
+        lazy val recordsObservedMetrics =
+          CometInMemoryTableScanExec.recordsObservedMetrics(scan.relation)
+        val nativeScan = nativeCacheEnabled && cometCacheFormat && !recordsObservedMetrics
 
         if (nativeScan) {
           convertToComet(scan, CometInMemoryTableScanExec).getOrElse(scan)
@@ -410,7 +411,7 @@ case class CometExecRule(session: SparkSession)
               scan,
               "Comet in-memory cache does not support the type of these cached columns, so the " +
                 s"relation was cached in Spark's default format: ${unsupported.mkString(", ")}")
-          } else if (nativeCacheEnabled) {
+          } else if (nativeCacheEnabled && recordsObservedMetrics) {
             withFallbackReason(
               scan,
               "Comet in-memory cache does not scan a relation whose cached plan records " +

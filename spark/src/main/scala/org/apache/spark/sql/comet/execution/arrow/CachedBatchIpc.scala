@@ -186,10 +186,10 @@ private[comet] object CachedBatchIpc {
    * batch arrives at whatever size the plan above produced. Chunks are appended rather than grown
    * and recopied, so the write also never holds the payload twice.
    *
-   * Returns the message and the decoded size of each top-level column, which the caller records
-   * in the statistics row. Each size is measured on the batch before compression, from the plain
-   * lengths of the column's own buffers, which is what `getBufferSize` reports for a vector and
-   * what Spark's own Arrow cache format records.
+   * Returns the message and the decoded size of each top-level column. Each size is measured on
+   * the batch before compression, from the plain lengths of the column's own buffers, which is
+   * what `getBufferSize` reports for a vector. The caller records the sizes in the statistics
+   * row; `ArrowCachedBatchSerializer.statsRow` explains why they are decoded sizes.
    *
    * Dictionary-encoded columns are decoded to their plain form first. A payload with no Schema
    * message cannot describe a dictionary encoding, and the schema the reader rebuilds from Spark
