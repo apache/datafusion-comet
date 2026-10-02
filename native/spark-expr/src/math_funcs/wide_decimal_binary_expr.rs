@@ -266,7 +266,7 @@ impl PhysicalExpr for WideDecimalBinaryExpr {
                         s_out,
                         raw,
                         max_scale,
-                        false,
+                        op,
                         eval_mode,
                         &overflowed,
                     )
@@ -304,7 +304,7 @@ impl PhysicalExpr for WideDecimalBinaryExpr {
                         s_out,
                         raw,
                         natural_scale,
-                        true,
+                        op,
                         eval_mode,
                         &overflowed,
                     )
@@ -369,7 +369,8 @@ impl PhysicalExpr for WideDecimalBinaryExpr {
 /// value that will be nullified by `null_if_overflow_precision`.
 ///
 /// ANSI overflow messages format `report_value` at `report_scale` (Spark's pre-toPrecision
-/// intermediate), not the rescaled result. Multiply also applies Spark's MathContext(39, DOWN).
+/// intermediate), not the rescaled result. Multiplication also applies Spark's
+/// MathContext(39, DOWN).
 #[inline]
 fn check_overflow_and_convert(
     result: i256,
@@ -379,18 +380,21 @@ fn check_overflow_and_convert(
     scale: i8,
     report_value: i256,
     report_scale: i8,
-    apply_spark_multiply_math_context: bool,
+    op: WideDecimalOp,
     eval_mode: EvalMode,
     overflowed: &Cell<bool>,
 ) -> Result<i128, ArrowError> {
     if result > bound || result < neg_bound {
         if eval_mode == EvalMode::Ansi {
-            let value = if apply_spark_multiply_math_context {
-                spark_multiply_overflow_value(&report_value.to_string(), report_scale)
-            } else {
-                let unscaled = report_value.to_string();
-                let digits = unscaled.trim_start_matches('-').len();
-                format_decimal_str(&unscaled, digits, report_scale)
+            let value = match op {
+                WideDecimalOp::Multiply => {
+                    spark_multiply_overflow_value(&report_value.to_string(), report_scale)?
+                }
+                WideDecimalOp::Add | WideDecimalOp::Subtract => {
+                    let unscaled = report_value.to_string();
+                    let digits = unscaled.trim_start_matches('-').len();
+                    format_decimal_str(&unscaled, digits, report_scale)
+                }
             };
             return Err(ArrowError::ExternalError(Box::new(
                 SparkError::NumericValueOutOfRange {
@@ -411,27 +415,31 @@ fn check_overflow_and_convert(
 }
 
 /// Emulate Spark multiply's `MathContext(39, DOWN)` before `toPlainString()`.
-fn spark_multiply_overflow_value(unscaled: &str, scale: i8) -> String {
+fn spark_multiply_overflow_value(unscaled: &str, scale: i8) -> Result<String, ArrowError> {
     const MC_PRECISION: usize = 39; // DecimalType.MAX_PRECISION + 1
     let negative = unscaled.starts_with('-');
     let digits = unscaled.trim_start_matches('-');
     if digits.is_empty() {
-        return "0".to_string();
+        return Ok("0".to_string());
     }
 
     if digits.len() <= MC_PRECISION {
-        return format_decimal_str(unscaled, digits.len(), scale);
+        return Ok(format_decimal_str(unscaled, digits.len(), scale));
     }
 
     let truncated = &digits[..MC_PRECISION];
     let dropped = digits.len() - MC_PRECISION;
-    let new_scale = scale as i32 - dropped as i32;
+    let new_scale = i8::try_from(scale as i16 - dropped as i16).map_err(|_| {
+        ArrowError::ComputeError(format!(
+            "Spark multiply overflow value scale is out of range: scale={scale}, dropped={dropped}"
+        ))
+    })?;
     let truncated = if negative {
         format!("-{truncated}")
     } else {
         truncated.to_string()
     };
-    format_decimal_str(&truncated, MC_PRECISION, new_scale as i8)
+    Ok(format_decimal_str(&truncated, MC_PRECISION, new_scale))
 }
 
 #[cfg(test)]
