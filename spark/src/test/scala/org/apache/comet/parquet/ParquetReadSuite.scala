@@ -2634,25 +2634,12 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
-  test("missing field ids are recognized through nested read exceptions") {
-    val message = "Parquet file schema doesn't contain any field Ids"
-    val missingIds = new RuntimeException(message)
-    val readError = new SparkException("Encountered error while reading file", missingIds)
-    val taskError = new SparkException("Job aborted", readError)
-    Seq(taskError, readError, missingIds, new RuntimeException(null: String, missingIds))
-      .foreach(error => assert(isMissingFieldIdsError(error)))
-
-    Seq(new RuntimeException("unrelated failure"), new RuntimeException(), new Exception(message))
-      .foreach(error => assert(!isMissingFieldIdsError(error)))
-  }
-
-  // Spark may wrap the `RuntimeException` from `ParquetReadSupport` in multiple read/task errors.
+  // Spark's own assertion from `ParquetFieldIdIOSuite`: the `SparkException` a read raises has
+  // the `RuntimeException` from `ParquetReadSupport` as its cause.
   private def isMissingFieldIdsError(error: Throwable): Boolean = {
-    causeChain(error).exists { cause =>
-      cause.isInstanceOf[RuntimeException] &&
-      Option(cause.getMessage).exists(
-        _.contains("Parquet file schema doesn't contain any field Ids"))
-    }
+    val cause = error.getCause
+    cause.isInstanceOf[RuntimeException] &&
+    cause.getMessage.contains("Parquet file schema doesn't contain any field Ids")
   }
 
   // Spark and Comet both raise the missing field ids error for `df`, and Comet plans the read

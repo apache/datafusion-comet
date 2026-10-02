@@ -47,6 +47,55 @@ query
 SELECT id, p, k, v FROM explode_maps LATERAL VIEW OUTER posexplode(m) e AS p, k, v
 WHERE p = 0 OR p IS NULL
 
+-- Native map producers feed the generator directly, without a Parquet map column.
+statement
+CREATE TABLE explode_map_inputs(
+  id int, k array<int>, v array<string>,
+  entries array<struct<key: int, value: string>>, text string) USING parquet
+
+statement
+INSERT INTO explode_map_inputs VALUES
+  (1, array(2, 1), array('b', 'a'), array(struct(2, 'b'), struct(1, 'a')), 'b:2,a:1'),
+  (2, array(), array(), array(), ''),
+  (3, NULL, NULL, NULL, NULL),
+  (4, array(3), array(NULL), array(struct(3, NULL)), 'missing')
+
+query expect_native(map_from_arrays)
+SELECT id, explode(map_from_arrays(k, v)) FROM explode_map_inputs
+
+query expect_native(map_from_arrays)
+SELECT id, explode_outer(map_from_arrays(k, v)) FROM explode_map_inputs
+
+query expect_native(map_from_arrays)
+SELECT id, posexplode(map_from_arrays(k, v)) FROM explode_map_inputs
+
+query expect_native(map_from_arrays)
+SELECT id, posexplode_outer(map_from_arrays(k, v)) FROM explode_map_inputs
+
+query expect_native(map_from_entries)
+SELECT id, explode(map_from_entries(entries)) FROM explode_map_inputs
+
+query expect_native(map_from_entries)
+SELECT id, explode_outer(map_from_entries(entries)) FROM explode_map_inputs
+
+query expect_native(map_from_entries)
+SELECT id, posexplode(map_from_entries(entries)) FROM explode_map_inputs
+
+query expect_native(map_from_entries)
+SELECT id, posexplode_outer(map_from_entries(entries)) FROM explode_map_inputs
+
+query expect_native(str_to_map)
+SELECT id, explode(str_to_map(text)) FROM explode_map_inputs
+
+query expect_native(str_to_map)
+SELECT id, explode_outer(str_to_map(text)) FROM explode_map_inputs
+
+query expect_native(str_to_map)
+SELECT id, posexplode(str_to_map(text)) FROM explode_map_inputs
+
+query expect_native(str_to_map)
+SELECT id, posexplode_outer(str_to_map(text)) FROM explode_map_inputs
+
 -- Computed and scalar maps, including non-nullable values and nested fields.
 query
 SELECT id, posexplode(map(id, named_struct('v', coalesce(id, 0)))) FROM explode_maps
