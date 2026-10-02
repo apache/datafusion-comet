@@ -386,9 +386,5 @@ object CometFloatSemanticsSuite {
     KnownGap(
       issue(5312),
       "collect_set before Spark 4.2 treats -0.0 and 0.0 as one value and NaNs as distinct.",
-      c => in("aggregate", "collect_set")(c) && !CometSparkSessionExtensions.isSpark42Plus),
-    KnownGap(
-      issue(6522),
-      "signum(-0.0) returns 0.0, where Spark returns -0.0.",
-      in("expression", "signum")))
+      c => in("aggregate", "collect_set")(c) && !CometSparkSessionExtensions.isSpark42Plus))
 }
