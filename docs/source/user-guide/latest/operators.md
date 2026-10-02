@@ -80,7 +80,7 @@ omitted from the tables below and may be reconsidered based on demand:
 | Operator                  | Status | Notes                                                                                                                                                                                                                                                                                                                              |
 | ------------------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `HashAggregateExec`       | ✅     |                                                                                                                                                                                                                                                                                                                                    |
-| `ObjectHashAggregateExec` | ✅     | Runs the object-buffer aggregates Comet supports, such as `collect_list`, `collect_set`, `percentile`, `approx_percentile`, `mode`, `bloom_filter_agg`, and (Spark 4.0+) `listagg`. Falls back when Comet shuffle is disabled, which would otherwise split the aggregate across Comet and Spark. See [Shuffle](tuning.md#shuffle). |
+| `ObjectHashAggregateExec` | ✅     | Runs the object-buffer aggregates Comet supports, such as `collect_list`, `collect_set`, `percentile`, `approx_percentile`, `mode`, `bloom_filter_agg`, and (Spark 4.0+) `listagg`. Falls back when Comet shuffle is disabled, which would otherwise split the aggregate across Comet and Spark. See [Shuffle](tuning/shuffle.md). |
 | `SortAggregateExec`       | 🔜     | Falls back today; Comet currently accelerates hash aggregates.                                                                                                                                                                                                                                                                     |
 
 ## Joins
@@ -91,6 +91,10 @@ omitted from the tables below and may be reconsidered based on demand:
 | `ShuffledHashJoinExec`        | ✅     |                                                                                                                                                                               |
 | `SortMergeJoinExec`           | ✅     | Supports `BINARY` join keys. Nested-type (struct, array, map) and collated-string join keys fall back to Spark.                                                               |
 | `BroadcastNestedLoopJoinExec` | ✅     | Falls back to Spark when the preserved side is broadcast (for example LEFT OUTER with BROADCAST on the left) ([#4429](https://github.com/apache/datafusion-comet/pull/4429)). |
+
+`ExistenceJoin` (produced when `EXISTS` / `IN` is combined with another predicate via `OR`) runs
+natively on `BroadcastHashJoinExec` and `ShuffledHashJoinExec`. Existence sort-merge joins, residual
+(non-equi) join conditions, computed (non-column) join keys, and `NOT IN` fall back to Spark.
 
 ## Exchanges
 

@@ -63,6 +63,13 @@ keys, and range partitioning keys all stay native under strict mode. Floating-po
 in arrays, structs, or maps still fall back under strict mode, because their ordering is the raw
 total ordering described above.
 
+`array_min` and `array_max` use Spark-compatible native comparisons in both strict and non-strict
+floating-point modes. Signed zeros compare equal, and all NaN representations compare equal and
+greater than non-NaN values. The original first equal element is retained: for example,
+`array_min(array(0.0D, -0.0D))` returns `0.0`, while reversing those elements returns `-0.0`.
+The same ordering applies recursively to floating-point fields in arrays and structs. These
+expressions do not require Spark's codegen dispatcher for floating-point compatibility.
+
 ## Array distinct and union
 
 `array_distinct` and `array_union` fall back to Spark when their element type contains

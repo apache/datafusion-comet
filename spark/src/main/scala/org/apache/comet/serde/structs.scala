@@ -130,7 +130,8 @@ object CometStructsToJson extends CometCodegenDispatch[StructsToJson] with Nativ
         " (https://github.com/apache/datafusion-comet/issues/3016)")
 
   private def nativeSupported(expr: StructsToJson): Boolean =
-    expr.options.isEmpty && isSupportedType(expr.child.dataType)
+    expr.options.isEmpty && isSupportedType(expr.child.dataType) &&
+      CometTimeZone.nativeId(expr.timeZoneId).isDefined
 
   override def getSupportLevel(expr: StructsToJson): SupportLevel =
     if (!CometConf.isExprAllowIncompat(getExprConfigName(expr)) && nativeSupported(expr)) {
@@ -151,7 +152,7 @@ object CometStructsToJson extends CometCodegenDispatch[StructsToJson] with Nativ
           val toJson = ExprOuterClass.ToJson
             .newBuilder()
             .setChild(p)
-            .setTimezone(expr.timeZoneId.getOrElse("UTC"))
+            .setTimezone(CometTimeZone.nativeId(expr.timeZoneId).get)
             .setIgnoreNullFields(ignoreNullFields)
             .build()
           Some(
@@ -198,7 +199,8 @@ object CometJsonToStructs extends CometCodegenDispatch[JsonToStructs] with Nativ
     Seq("Partially implemented and not comprehensively tested")
 
   private def nativeSupported(expr: JsonToStructs): Boolean =
-    expr.schema != null && isSupportedSchema(expr.schema)
+    expr.schema != null && isSupportedSchema(expr.schema) &&
+      CometTimeZone.nativeId(expr.timeZoneId).isDefined
 
   override def getSupportLevel(expr: JsonToStructs): SupportLevel =
     if (!CometConf.isExprAllowIncompat(getExprConfigName(expr)) && nativeSupported(expr)) {
@@ -242,7 +244,7 @@ object CometJsonToStructs extends CometCodegenDispatch[JsonToStructs] with Nativ
         .newBuilder()
         .setChild(childProto)
         .setSchema(schemaProto)
-        .setTimezone(expr.timeZoneId.getOrElse("UTC"))
+        .setTimezone(CometTimeZone.nativeId(expr.timeZoneId).get)
         .build()
       ExprOuterClass.Expr.newBuilder().setFromJson(fromJson).build()
     }
@@ -289,6 +291,9 @@ object CometStructsToCsv extends CometExpressionSerde[StructsToCsv] with Codegen
           s"The schema ${expr.inputSchema} is not supported because " +
             s"it includes a incompatible data types: $incompatibleDataTypes"))
     }
+    if (CometTimeZone.nativeId(expr.timeZoneId).isEmpty) {
+      return CometTimeZone.supportLevel(expr.timeZoneId)
+    }
     // https://github.com/apache/datafusion-comet/issues/3232
     Incompatible()
   }
@@ -299,8 +304,9 @@ object CometStructsToCsv extends CometExpressionSerde[StructsToCsv] with Codegen
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     for {
       childProto <- exprToProtoInternal(expr.child, inputs, binding)
+      timeZone <- CometTimeZone.nativeId(expr.timeZoneId)
     } yield {
-      val optionsProto = options2Proto(expr.options, expr.timeZoneId)
+      val optionsProto = options2Proto(expr.options, timeZone)
       val toCsv = ExprOuterClass.ToCsv
         .newBuilder()
         .setChild(childProto)
@@ -312,14 +318,14 @@ object CometStructsToCsv extends CometExpressionSerde[StructsToCsv] with Codegen
 
   private def options2Proto(
       options: Map[String, String],
-      timeZoneId: Option[String]): ExprOuterClass.CsvWriteOptions = {
+      timeZone: String): ExprOuterClass.CsvWriteOptions = {
     ExprOuterClass.CsvWriteOptions
       .newBuilder()
       .setDelimiter(options.getOrElse("delimiter", ","))
       .setQuote(options.getOrElse("quote", "\""))
       .setEscape(options.getOrElse("escape", "\\"))
       .setNullValue(options.getOrElse("nullValue", ""))
-      .setTimezone(timeZoneId.getOrElse("UTC"))
+      .setTimezone(timeZone)
       .setIgnoreLeadingWhiteSpace(options
         .get("ignoreLeadingWhiteSpace")
         .flatMap(ignoreLeadingWhiteSpace => Try(ignoreLeadingWhiteSpace.toBoolean).toOption)
