@@ -1202,9 +1202,55 @@ def check_label_runs_separate():
                 f"and nothing else; any other type would run ci.yml twice per push"
             )
 
+    # ci_label.yml calls ci.yml with an explicit `permissions:` ceiling, and
+    # GitHub refuses to start the run at all if any job in ci.yml asks for more,
+    # even a job the `labeled` event would skip. That is how the `docs` job's
+    # `contents: write` stopped every label run on 2026-09-29.
+    if label_workflow.exists():
+        granted = permission_blocks(label_workflow.read_text(encoding="utf-8").splitlines())
+        ceiling = {}
+        for block in granted:
+            for scope, level in block.items():
+                ceiling[scope] = max(ceiling.get(scope, 0), PERMISSION_RANK[level])
+        ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8").splitlines()
+        for block in permission_blocks(ci):
+            for scope, level in block.items():
+                if PERMISSION_RANK[level] > ceiling.get(scope, 0):
+                    failures.append(
+                        f"ci.yml requests `{scope}: {level}`, but ci_label.yml grants "
+                        f"the call at most `{scope}: "
+                        f"{PERMISSION_NAME[ceiling.get(scope, 0)]}`, so every label "
+                        f"run fails at startup. Raise the grant in ci_label.yml"
+                    )
+
     for failure in failures:
         print(f"label runs: {failure}")
     return not failures
+
+
+PERMISSION_RANK = {"none": 0, "read": 1, "write": 2}
+PERMISSION_NAME = {rank: name for name, rank in PERMISSION_RANK.items()}
+PERMISSIONS_KEY = re.compile(r"^(\s*)permissions:\s*(\{\s*\})?\s*$")
+PERMISSION_ENTRY = re.compile(r"^(\s*)([a-z-]+):\s*(read|write|none)\s*$")
+
+
+def permission_blocks(lines):
+    """Every `permissions:` mapping in a workflow, as a list of {scope: level}."""
+    blocks = []
+    for index, line in enumerate(lines):
+        match = PERMISSIONS_KEY.match(line)
+        if not match:
+            continue
+        indent, block = len(match.group(1)), {}
+        for entry in lines[index + 1:]:
+            if not entry.strip() or entry.lstrip().startswith("#"):
+                continue
+            found = PERMISSION_ENTRY.match(entry)
+            if not found or len(found.group(1)) <= indent:
+                break
+            block[found.group(2)] = found.group(3)
+        blocks.append(block)
+    return blocks
 
 
 def caller_passes_cache_refresh(ci_lines, workflow_name):
