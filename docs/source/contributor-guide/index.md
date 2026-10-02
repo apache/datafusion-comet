@@ -25,7 +25,7 @@ how data and plans flow between Spark and the DataFusion execution engine.
 
 It also documents day-to-day workflows including building and testing locally, debugging,
 benchmarking, profiling, tracing, running the SQL test suites, adding new operators and
-expressions, triaging bugs, and the Comet release process.
+expressions, triaging bugs, backporting fixes to release branches, and the Comet release process.
 
 New contributors should start with the Getting Started page. Select a topic from the navigation
 menu to read more.
@@ -104,6 +104,7 @@ Configuration Conventions <config_conventions>
 :hidden:
 
 Bug Triage <bug_triage>
+Backporting <backporting>
 Release Process <release_process>
 Roadmap <roadmap.md>
 Github and Issue Tracker <https://github.com/apache/datafusion-comet>

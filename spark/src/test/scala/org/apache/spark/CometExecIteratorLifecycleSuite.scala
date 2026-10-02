@@ -22,11 +22,15 @@ package org.apache.spark
 import java.io.ByteArrayInputStream
 import java.lang.ref.WeakReference
 import java.util.Properties
-import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger}
 
 import scala.reflect.ClassTag
 
+import org.apache.arrow.c.ArrowArrayStream
 import org.apache.arrow.memory.RootAllocator
+import org.apache.arrow.vector.ipc.ArrowReader
+import org.apache.arrow.vector.types.pojo.{ArrowType, Field, Schema}
 import org.apache.spark.executor.TaskMetrics
 import org.apache.spark.memory.{TaskMemoryManager, TestMemoryManager}
 import org.apache.spark.rdd.RDD
@@ -36,8 +40,9 @@ import org.apache.spark.sql.comet.{CometExec, CometExecUtils, CometMetricNode, C
 import org.apache.spark.sql.comet.execution.arrow.CometArrowStream
 import org.apache.spark.sql.functions.{col, udf}
 import org.apache.spark.sql.types.{LongType, StructField, StructType}
+import org.apache.spark.util.JsonProtocol
 
-import org.apache.comet.{CometConf, CometExecIterator, CometShuffleBlockIterator, Native}
+import org.apache.comet.{CometConf, CometExecIterator, CometExecutorMemoryUsage, CometNativeException, CometShuffleBlockIterator, Native}
 import org.apache.comet.serde.Config.ConfigMap
 import org.apache.comet.serde.OperatorOuterClass
 
@@ -68,8 +73,13 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
     try {
       f
     } finally {
-      taskMemoryManager.cleanUpAllAllocatedMemory()
-      TaskContext.unset()
+      try {
+        // Runs the task completion listeners, as the end of a real task does.
+        taskContext.markTaskCompleted(None)
+      } finally {
+        taskMemoryManager.cleanUpAllAllocatedMemory()
+        TaskContext.unset()
+      }
     }
   }
 
@@ -98,10 +108,10 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
       // Unique synthetic task attempt ids keep each iteration's pool entry independent.
       val taskAttemptId = 4200000L + i
       withTaskContext(taskAttemptId) {
-        val manager = new CometTaskMemoryManager(i, taskAttemptId)
+        val manager = new CometTaskMemoryManager(i.toLong, taskAttemptId)
         val thrown = intercept[Throwable] {
           nativeLib.createPlan(
-            i,
+            i.toLong,
             Array.empty[Object],
             emptyPlan,
             badConfigs,
@@ -345,6 +355,105 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
     assert(nativeLib.getMemoryUsage()(3) == plansBefore, "a released plan must not be counted")
   }
 
+  test("a native plan that closes while another plan in its task holds memory does not warn") {
+    withTempPath { path =>
+      spark
+        .range(0, 100000, 1, 1)
+        .selectExpr("id", "CAST(id AS STRING) AS s")
+        .write
+        .parquet(path.getAbsolutePath)
+      withParquetTable(path.getAbsolutePath, "tbl") {
+        val first = sql("SELECT id FROM tbl WHERE id < 10")
+        val second = sql("SELECT * FROM tbl SORT BY id DESC")
+        for (df <- Seq(first, second)) {
+          val plan = df.queryExecution.executedPlan
+          assert(
+            plan.find(_.isInstanceOf[CometNativeScanExec]).isDefined,
+            s"Expected a native scan:\n$plan")
+        }
+        val sorted = second.queryExecution.executedPlan
+        assert(sorted.find(_.isInstanceOf[CometSortExec]).isDefined, s"Expected a sort:\n$sorted")
+
+        var heldBySort = Array.empty[Long]
+        val warnings = nonZeroMemoryUsageWarnings {
+          // Zipping runs both plans in one task. The first is created first, so the task's native
+          // memory pool is created along with it.
+          heldBySort = first.queryExecution.toRdd
+            .zipPartitions(second.queryExecution.toRdd) { (firstRows, secondRows) =>
+              // The sort takes in all of its input to produce its first row, and holds on to it.
+              assert(secondRows.hasNext)
+              val held = TaskContext.get().taskMemoryManager().getMemoryConsumptionForThisTask
+              // Reading the first plan to its end closes it while the sort holds its memory.
+              firstRows.foreach(_ => ())
+              Iterator.single(held)
+            }
+            .collect()
+        }
+        // Guards against a vacuous pass: the sort must hold memory when the first plan closes.
+        assert(heldBySort.length == 1 && heldBySort.head > 0, heldBySort.mkString(", "))
+        assert(warnings.isEmpty, warnings.mkString("\n"))
+      }
+    }
+  }
+
+  test("the last native plan in a task to close warns about the memory the task still holds") {
+    withTaskContext(4600000L) {
+      val first = planWithoutInput(4600001L)
+      val second = planWithoutInput(4600002L)
+      // Stands in for native memory that outlives the plans that reserved it: every native plan
+      // in the task acquires memory through the task's manager.
+      val manager = CometExecIterator.taskMemory(TaskContext.get(), 4600003L).manager
+      assert(manager.acquireMemory(1234L) == 1234L)
+      try {
+        val whileAnotherPlanIsOpen = nonZeroMemoryUsageWarnings(first.close())
+        assert(whileAnotherPlanIsOpen.isEmpty, whileAnotherPlanIsOpen.mkString("\n"))
+        val warnings = nonZeroMemoryUsageWarnings(second.close())
+        assert(
+          warnings.size == 1 && warnings.head.contains(": 1234 bytes, held by task 4600000"),
+          warnings.mkString("\n"))
+      } finally {
+        manager.releaseMemory(1234L)
+      }
+    }
+  }
+
+  test("a task's memory manager is released when the task ends, even with a plan left open") {
+    val managerRef = withTaskContext(4700000L) {
+      // Closed by the end of the task.
+      planWithoutInput(4700001L)
+      new WeakReference(CometExecIterator.taskMemory(TaskContext.get(), 4700002L).manager)
+    }
+    assert(survivorsAfterGc(Seq(managerRef)) == 0, "the task's memory manager outlived the task")
+  }
+
+  /** A native plan with no input, in the current task. */
+  private def planWithoutInput(id: Long): CometExecIterator = {
+    val limitOp =
+      CometExecUtils.getLimitNativePlan(Seq(PrettyAttribute("test", LongType)), 100).get
+    new CometExecIterator(
+      id = id,
+      inputObjects = Array.empty[Object],
+      numOutputCols = 1,
+      protobufQueryPlan = limitOp.toByteArray,
+      nativeMetrics = CometMetricNode(Map.empty),
+      numParts = 1,
+      partitionIndex = 0)
+  }
+
+  /** The warnings about a native plan closing with memory still in use that `f` logs. */
+  private def nonZeroMemoryUsageWarnings(f: => Unit): Seq[String] = {
+    import org.apache.logging.log4j.Level
+    // Listen on the package logger. For a logger with no config of its own, withLogAppender
+    // creates one that outlives the test and does not pass events up, which would hide
+    // CometExecIterator's warnings from later appenders on org.apache.comet.
+    val appender = new LogAppender("non-zero memory usage warnings")
+    withLogAppender(appender, Seq("org.apache.comet"), Some(Level.WARN))(f)
+    appender.loggingEvents
+      .map(_.getMessage.getFormattedMessage)
+      .filter(_.contains("closed with non-zero memory usage"))
+      .toSeq
+  }
+
   test("the memory usage log reports while plans run and once after the last one finishes") {
     import CometExecIterator.JvmArrowMemory
     val mib = 1024L * 1024
@@ -366,6 +475,72 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
         .memoryUsageMessage(idle, noArrow, plansAtLastLog = 3)
         .exists(_.contains("allocated 20.0 MiB, reserved 0.0 MiB (0 native plans")))
     assert(CometExecIterator.memoryUsageMessage(idle, noArrow, plansAtLastLog = 0).isEmpty)
+  }
+
+  test("the memory usage log's event log record reads back from the event log's JSON") {
+    import CometExecIterator.{memoryUsageEvent, JvmArrowMemory}
+    val mib = 1024L * 1024
+    val event = memoryUsageEvent(
+      executorId = "7",
+      time = 1700000000000L,
+      usage = Array(300 * mib, 100 * mib, 2L, 3L),
+      jvmArrow = JvmArrowMemory(allocated = 40 * mib, imported = 10 * mib))
+    assert(
+      event == CometExecutorMemoryUsage(
+        executorId = "7",
+        time = 1700000000000L,
+        nativeAllocated = 300 * mib,
+        poolsReserved = 100 * mib,
+        pools = 2L,
+        plans = 3L,
+        jvmArrowAllocated = 40 * mib,
+        jvmArrowImported = 10 * mib))
+
+    // The event log writes an event it has no format of its own for with Jackson, under its class
+    // name, which is how the history server reads it back, or skips it when Comet is not on its
+    // classpath.
+    val json = JsonProtocol.sparkEventToJsonString(event)
+    assert(json.contains(s""""Event":"${classOf[CometExecutorMemoryUsage].getName}""""), json)
+    assert(json.contains(s""""poolsReserved":${100 * mib}"""), json)
+    assert(JsonProtocol.sparkEventFromJson(json) == event)
+  }
+
+  test("the event log records the peak and the last memory usage sample of each minute") {
+    import CometExecIterator.{memoryUsageEvent, JvmArrowMemory, MemoryUsageSummary}
+    val mib = 1024L * 1024
+    // A sample taken `seconds` in, with `untrackedMiB` of native memory that no pool reserves.
+    def sample(
+        seconds: Int,
+        untrackedMiB: Long,
+        jvmArrow: JvmArrowMemory = JvmArrowMemory(0L, 0L)) =
+      memoryUsageEvent(
+        executorId = "7",
+        time = 1700000000000L + seconds * 1000L,
+        usage = Array((100 + untrackedMiB) * mib, 100 * mib, 2L, 3L),
+        jvmArrow = jvmArrow)
+
+    val summary = new MemoryUsageSummary
+    val peak = sample(10, 50)
+    val last = sample(50, 20)
+    // What decides is when the driver received the samples, by its own monotonic clock in
+    // nanoseconds, not the times the executor took them.
+    val second = TimeUnit.SECONDS.toNanos(1)
+    summary.add(sample(0, 10), receivedAt = 0L)
+    summary.add(peak, receivedAt = 10 * second)
+    summary.add(last, receivedAt = 50 * second)
+    // The summary ends a minute after the driver received its first sample.
+    assert(summary.flushIfDue(60 * second - 1).isEmpty)
+    assert(summary.flushIfDue(60 * second) == Seq(peak, last))
+
+    // Arrow memory that the JVM allocated counts as untracked, and the part imported from native
+    // does not, since the native figure already counts it.
+    val imported = sample(70, 0, JvmArrowMemory(allocated = 900 * mib, imported = 900 * mib))
+    val jvm = sample(80, 0, JvmArrowMemory(allocated = 40 * mib, imported = 0L))
+    Seq(sample(60, 30), imported, jvm).foreach(summary.add(_, receivedAt = 70 * second))
+    // What is left when the executor goes away or the application stops, a peak that is also the
+    // last sample recorded once.
+    assert(summary.flush() == Seq(jvm))
+    assert(summary.flush().isEmpty)
   }
 
   test("the memory usage log reads JVM Arrow memory from the allocators, imports apart") {
@@ -453,7 +628,9 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
         == fourGiB)
   }
 
-  test("the native memory limit is the off-heap size plus the memory overhead") {
+  private val kubernetesMaster = "k8s://https://kubernetes.default.svc:443"
+
+  test("the native memory limit is the container's memory outside the JVM heap") {
     import CometExecIterator.nativeMemoryLimit
     val mib = 1024L * 1024
     val offHeap = new SparkConf(false)
@@ -464,9 +641,28 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
     assert(nativeMemoryLimit(offHeap) == Some((4096 + 1638) * mib))
     assert(nativeMemoryLimit(offHeap.clone.set("spark.memory.offHeap.enabled", "false")).isEmpty)
     assert(nativeMemoryLimit(offHeap.clone.set("spark.master", "local[*]")).isEmpty)
+
+    // The container also holds spark.executor.pyspark.memory for an application that
+    // spark-submit marked as Python: with spark.yarn.isPython for YARN, and with
+    // spark.kubernetes.resource.type in Kubernetes cluster mode.
+    val pyspark = offHeap.clone.set("spark.executor.pyspark.memory", "2g")
+    assert(nativeMemoryLimit(pyspark) == Some((4096 + 1638) * mib))
+    assert(
+      nativeMemoryLimit(pyspark.clone.set("spark.yarn.isPython", "true"))
+        == Some((4096 + 1638 + 2048) * mib))
+    val kubernetes = pyspark.clone
+      .set("spark.master", kubernetesMaster)
+      .set("spark.kubernetes.memoryOverheadFactor", "0.1")
+    // Nothing sets the resource type in client mode, and Kubernetes then leaves it out.
+    assert(nativeMemoryLimit(kubernetes) == Some((4096 + 1638) * mib))
+    Seq("java" -> 0, "r" -> 0, "python" -> 2048).foreach { case (resourceType, pysparkMiB) =>
+      val conf = kubernetes.clone.set("spark.kubernetes.resource.type", resourceType)
+      assert(nativeMemoryLimit(conf) == Some((4096 + 1638 + pysparkMiB) * mib), resourceType)
+    }
   }
 
-  test("the executor memory overhead is sized as Spark sizes the container") {
+  test("the executor memory overhead is sized as YARN sizes the container") {
+    import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
     import CometExecIterator.executorMemoryOverhead
     val mib = 1024L * 1024
     def conf(settings: (String, String)*): SparkConf =
@@ -485,8 +681,80 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
         conf(
           "spark.executor.memory" -> "10g",
           "spark.executor.memoryOverheadFactor" -> "0.25")) == Some(2560 * mib))
+    // Spark 4.0 made the 384 MiB minimum configurable; earlier versions ignore the setting.
+    assert(
+      executorMemoryOverhead(
+        conf("spark.executor.memory" -> "4g", "spark.executor.minMemoryOverhead" -> "1g")) ==
+        Some((if (isSpark40Plus) 1024 else 409) * mib))
+    // Only Kubernetes reads the Kubernetes factor.
+    assert(
+      executorMemoryOverhead(
+        conf(
+          "spark.executor.memory" -> "8g",
+          "spark.kubernetes.memoryOverheadFactor" -> "0.4")) == Some(819 * mib))
     assert(executorMemoryOverhead(conf("spark.executor.memoryOverhead" -> "lots")).isEmpty)
-    assert(executorMemoryOverhead(new SparkConf(false).set("spark.master", "local[4]")).isEmpty)
+  }
+
+  test("the executor memory overhead is sized as Kubernetes sizes the pod") {
+    import CometExecIterator.executorMemoryOverhead
+    val mib = 1024L * 1024
+    def conf(settings: (String, String)*): SparkConf =
+      new SparkConf(false)
+        .set("spark.master", kubernetesMaster)
+        .set("spark.executor.memory", "8g")
+        .setAll(settings)
+
+    // In cluster mode spark-submit passes spark.kubernetes.memoryOverheadFactor on to the
+    // executors, 0.4 for a PySpark or SparkR application that did not set it, and Kubernetes
+    // uses it when spark.executor.memoryOverheadFactor is unset.
+    Seq("python", "r").foreach { resourceType =>
+      val pod = conf(
+        "spark.kubernetes.resource.type" -> resourceType,
+        "spark.kubernetes.memoryOverheadFactor" -> "0.4")
+      assert(executorMemoryOverhead(pod) == Some(3276 * mib), resourceType)
+    }
+    // A factor the application set is passed on in the same way.
+    assert(
+      executorMemoryOverhead(conf("spark.kubernetes.memoryOverheadFactor" -> "0.3")) ==
+        Some(2457 * mib))
+    // Nothing sets it in client mode, where it defaults to 0.1.
+    assert(executorMemoryOverhead(conf()) == Some(819 * mib))
+    assert(
+      executorMemoryOverhead(
+        conf(
+          "spark.kubernetes.memoryOverheadFactor" -> "0.4",
+          "spark.executor.memoryOverheadFactor" -> "0.2")) == Some(1638 * mib))
+    assert(
+      executorMemoryOverhead(
+        conf(
+          "spark.kubernetes.memoryOverheadFactor" -> "0.4",
+          "spark.executor.memoryOverhead" -> "1g")) == Some(1024 * mib))
+    assert(
+      executorMemoryOverhead(
+        conf(
+          "spark.executor.memory" -> "512m",
+          "spark.kubernetes.memoryOverheadFactor" -> "0.4")) == Some(384 * mib))
+    assert(
+      executorMemoryOverhead(conf("spark.kubernetes.memoryOverheadFactor" -> "lots")).isEmpty)
+  }
+
+  test("the executor memory overhead is unknown without a container sized from it") {
+    import CometExecIterator.executorMemoryOverhead
+    // Local mode has no executor container, and a standalone worker starts executors without
+    // a memory limit, never reading the overhead settings.
+    val masters =
+      Seq(
+        "local",
+        "local[4]",
+        "local-cluster[2,1,1024]",
+        "spark://host:7077",
+        "mesos://host:5050")
+    masters.foreach { master =>
+      val conf = new SparkConf(false)
+        .set("spark.master", master)
+        .set("spark.executor.memoryOverhead", "2g")
+      assert(executorMemoryOverhead(conf).isEmpty, master)
+    }
   }
 
   test("the memory usage log interval disables the log on a value it cannot use") {
@@ -501,6 +769,82 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
     assert(memoryUsageLogInterval(Some("-5s")) == 0L)
     assert(memoryUsageLogInterval(Some("false")) == 0L)
     assert(memoryUsageLogInterval(Some("10 seconds please")) == 0L)
+  }
+
+  /**
+   * Exports an empty input stream the way a native plan's JVM input is exported, over a reader
+   * that counts how many times it is closed. Only the stream's release callback closes it.
+   */
+  private def closeCountingInput(closes: AtomicInteger): ArrowArrayStream =
+    CometArrowStream
+      .stream(
+        "input-release-test",
+        allocator =>
+          new ArrowReader(allocator) {
+            override protected def readSchema(): Schema =
+              new Schema(
+                java.util.Collections
+                  .singletonList(Field.nullable("test", new ArrowType.Int(64, true))))
+
+            override def loadNextBatch(): Boolean = false
+
+            override def bytesRead(): Long = 0L
+
+            override protected def closeReadSource(): Unit = closes.incrementAndGet()
+          })
+      .next()
+
+  private def iteratorOver(input: ArrowArrayStream, planBytes: Array[Byte]): CometExecIterator =
+    new CometExecIterator(
+      id = CometExec.newIterId,
+      inputObjects = Array[Object](input),
+      numOutputCols = 1,
+      protobufQueryPlan = planBytes,
+      nativeMetrics = CometMetricNode(Map.empty),
+      numParts = 1,
+      partitionIndex = 0)
+
+  private def limitPlanBytes: Array[Byte] =
+    CometExecUtils.getLimitNativePlan(Seq(PrettyAttribute("test", LongType)), 100).get.toByteArray
+
+  test("an input stream native took is released once, when its plan is released") {
+    withTaskContext(4600000L) {
+      val closes = new AtomicInteger()
+      val iter = iteratorOver(closeCountingInput(closes), limitPlanBytes)
+      // The first executePlan takes the stream, and exhausting the empty input closes the
+      // iterator, whose releasePlan drops the native reader and so releases the stream.
+      assert(!iter.hasNext)
+      assert(closes.get() == 1, s"the input reader closed ${closes.get()} times on plan release")
+      // Taking the stream left a released struct on the JVM side, so the release at task end
+      // must not close the reader a second time.
+      TaskContext.get().markTaskCompleted(None)
+      assert(closes.get() == 1, s"the input reader closed ${closes.get()} times by task end")
+    }
+  }
+
+  test("an input stream native never took is released when the task ends") {
+    withTaskContext(4700000L) {
+      val closes = new AtomicInteger()
+      // Never polled, as when the task is killed before its first hasNext, so native never takes
+      // the stream.
+      iteratorOver(closeCountingInput(closes), limitPlanBytes)
+      TaskContext.get().markTaskCompleted(None)
+      assert(closes.get() == 1, s"the input reader closed ${closes.get()} times")
+    }
+  }
+
+  test("an input stream is released when the task ends after its plan fails to be created") {
+    withTaskContext(4800000L) {
+      val closes = new AtomicInteger()
+      val input = closeCountingInput(closes)
+      val thrown = intercept[CometNativeException](iteratorOver(input, Array[Byte](1, 2, 3)))
+      // Guard against a vacuous pass: createPlan must have failed on the plan bytes.
+      assert(
+        thrown.getMessage.contains("Fail to deserialize to native operator"),
+        s"expected a plan deserialization failure, got: $thrown")
+      TaskContext.get().markTaskCompleted(None)
+      assert(closes.get() == 1, s"the input reader closed ${closes.get()} times")
+    }
   }
 }
 

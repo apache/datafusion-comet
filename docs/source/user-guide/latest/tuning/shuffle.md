@@ -35,7 +35,7 @@ Once it is disabled, the configured shuffle manager handles ordinary Spark shuff
 without Comet's shuffle implementation.
 
 Applications that use Apache Celeborn set a different shuffle manager. See
-[Remote Shuffle with Celeborn](celeborn.md).
+[Celeborn guide](../celeborn.md).
 
 ## Shuffle Implementations
 

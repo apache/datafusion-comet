@@ -41,7 +41,10 @@ paths depending on whether the plan reads data from the JVM:
 **Async I/O path (no JVM data sources, e.g. Iceberg scans):** The DataFusion stream is spawned
 onto a tokio worker thread and batches are delivered to the executor thread via an `mpsc` channel.
 The executor thread parks in `blocking_recv()` until the next batch is ready. This avoids
-busy-polling on I/O-bound workloads.
+busy-polling on I/O-bound workloads. The channel closes when the task ends, and a task also ends
+when it is cancelled, as every task is when the runtime shuts down. So the task records that the
+stream has ended before it closes the channel, and a channel that closes without that record fails
+the Spark task instead of ending its output early.
 
 **JVM data source path (ScanExec or ShuffleScanExec present):** The executor thread calls
 `block_on()` and polls the DataFusion stream directly. On `Poll::Pending` it calls
@@ -113,7 +116,9 @@ The runtime is stored in a `Mutex<Option<Runtime>>` static and created lazily on
 is torn down on plugin shutdown (via `release_runtime`) so that the tokio worker threads exit
 and the JVM can shut down cleanly:
 
-- **Worker threads:** `num_cpus` by default, configurable via `COMET_WORKER_THREADS`
+- **Worker threads:** one per executor core by default (`spark.executor.cores`, or the thread
+  count of a `local[N]` or `local[*]` master, and one when `spark.executor.cores` is not set
+  outside local mode), configurable via `COMET_WORKER_THREADS`
 - **Max blocking threads:** 512 by default, configurable via `COMET_MAX_BLOCKING_THREADS`
 - All async I/O (S3, HTTP, Parquet reads) runs on worker threads as non-blocking futures
 
@@ -627,7 +632,17 @@ cargo clippy --color=never --all-targets --workspace -- -D warnings
 
 Make sure to resolve any Clippy warnings before submitting your pull request, as the CI/CD pipeline will fail if warnings are present.
 
-### 4. Run Tests
+### 4. Compile With Strict Scala Warnings (Recommended)
+
+The `Strict Scala warnings` job runs on every pull request and in the merge queue. It compiles the main and test sources with scalac warnings promoted to errors, so anything it reports fails the build — an `Int` widened into a `Long` metric, or a discarded builder result, for example. Reproduce it locally with:
+
+```sh
+./mvnw test-compile -Pspark-3.5 -Pstrict-warnings -DskipTests
+```
+
+Use the Spark 3.5 profile: it is the one the job runs, and the default build profile will not reproduce it. The default is Spark 4.1 on Scala 2.13, where `-Pstrict-warnings` still fails on warnings unrelated to your change (tracked in [#5893](https://github.com/apache/datafusion-comet/issues/5893)), and where the compiler reports a different set — an adapted argument list, for instance, is flagged under Scala 2.12 but not under 2.13.
+
+### 5. Run Tests
 
 Run the relevant tests for your changes:
 
@@ -642,7 +657,7 @@ make test-rust
 make test-jvm
 ```
 
-### 5. Register New Test Suites in CI
+### 6. Register New Test Suites in CI
 
 Comet's CI does not automatically discover test suites. Instead, test suites are explicitly listed
 in the GitHub Actions workflow files so they can be grouped by category and run as separate parallel
