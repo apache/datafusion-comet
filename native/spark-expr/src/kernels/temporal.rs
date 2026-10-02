@@ -882,6 +882,52 @@ fn timestamp_trunc_minute_tz(
     )
 }
 
+/// Truncate timezone-aware timestamps to a coarse local-date boundary.
+///
+/// Spark resolves these boundaries with `LocalDate.atStartOfDay`. Unlike
+/// `ZonedDateTime.truncatedTo`, an overlap always selects the earlier instant, independent of
+/// the input timestamp's offset. A midnight in a gap advances by the gap length.
+fn timestamp_trunc_coarse_tz(
+    array: &TimestampMicrosecondArray,
+    format: &str,
+    timezone: &str,
+) -> Result<TimestampMicrosecondArray, SparkError> {
+    let trunc_fn = ntz_trunc_fn_for_format(format)?;
+    let tz: Tz = timezone.parse()?;
+
+    as_timestamp_tz_with_op::<&TimestampMicrosecondArray, TimestampMicrosecondType, _>(
+        ArrayIter::new(array),
+        TimestampMicrosecondBuilder::with_capacity(array.len()),
+        timezone,
+        |dt| {
+            let truncated_local = trunc_fn(dt.naive_local())
+                .expect("truncated coarse local datetime must be a valid datetime");
+
+            match tz.from_local_datetime(&truncated_local) {
+                LocalResult::Single(resolved) => resolved.timestamp_micros(),
+                // `LocalDate.atStartOfDay` takes the earlier occurrence in an overlap.
+                LocalResult::Ambiguous(earlier, _) => earlier.timestamp_micros(),
+                LocalResult::None => {
+                    // Java advances a nonexistent local midnight by the gap. Resolving it with
+                    // the offset before the transition yields that same post-gap instant.
+                    let probe = truncated_local - Duration::hours(3);
+                    let pre_gap_offset_secs = match tz.from_local_datetime(&probe) {
+                        LocalResult::Single(resolved) | LocalResult::Ambiguous(resolved, _) => {
+                            resolved.offset().fix().local_minus_utc()
+                        }
+                        LocalResult::None => {
+                            // A timezone gap cannot normally span three hours. Retain the
+                            // existing resolver's conservative fallback for malformed data.
+                            return naive_to_micros(truncated_local);
+                        }
+                    };
+                    naive_to_micros(truncated_local) - i64::from(pre_gap_offset_secs) * 1_000_000
+                }
+            }
+        },
+    )
+}
+
 fn timestamp_trunc_upstream(
     array: &TimestampMicrosecondArray,
     format: &str,
@@ -891,6 +937,12 @@ fn timestamp_trunc_upstream(
     if granularity == "minute" {
         if let Some(timezone) = array.timezone().filter(|tz| !is_utc_timezone(tz)) {
             return timestamp_trunc_minute_tz(array, timezone);
+        }
+    }
+
+    if matches!(granularity, "week" | "month" | "quarter" | "year") {
+        if let Some(timezone) = array.timezone().filter(|tz| !is_utc_timezone(tz)) {
+            return timestamp_trunc_coarse_tz(array, format, timezone);
         }
     }
 
@@ -1640,6 +1692,18 @@ mod tests {
                 Some("2018-11-04T03:30:15.123456Z"),
             ],
             &[Some("2018-11-03T03:00:00Z"), Some("2018-11-04T03:00:00Z")],
+        );
+    }
+
+    #[test]
+    fn test_timestamp_trunc_coarse_midnight_overlap() {
+        // Havana repeated local midnight on 2026-11-01. MONTH must use the first occurrence
+        // (UTC-4), even though the input is after the fall-back transition and has UTC-5.
+        assert_timestamp_trunc(
+            "MONTH",
+            Some("America/Havana"),
+            &[Some("2026-11-15T12:00:00Z")],
+            &[Some("2026-11-01T04:00:00Z")],
         );
     }
 

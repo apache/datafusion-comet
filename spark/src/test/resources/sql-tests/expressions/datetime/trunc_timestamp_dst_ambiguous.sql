@@ -20,10 +20,11 @@
 -- hour. The 2018 Sao Paulo values exercise its historic midnight spring-forward gap: truncating a
 -- valid 01:30 local timestamp to DAY targets the nonexistent local midnight. Africa/Monrovia used
 -- UTC-00:44:30 until 1972, so its local minute boundaries do not align with UTC minute boundaries.
--- Asia/Aden covers minute truncation across a historical offset transition.
+-- Asia/Aden covers minute truncation across a historical offset transition. Havana repeated
+-- midnight on 2026-11-01, which makes MONTH select the earlier UTC occurrence.
 
 -- Config: spark.comet.expression.TruncTimestamp.allowIncompatible=true
--- ConfigMatrix: spark.sql.session.timeZone=America/Los_Angeles,America/New_York,America/Sao_Paulo,Africa/Monrovia,Asia/Aden
+-- ConfigMatrix: spark.sql.session.timeZone=America/Los_Angeles,America/New_York,America/Sao_Paulo,Africa/Monrovia,Asia/Aden,America/Havana
 
 statement
 CREATE TABLE test_trunc_ambiguous(ts timestamp) USING parquet
@@ -49,6 +50,7 @@ INSERT INTO test_trunc_ambiguous VALUES
   (timestamp('2024-11-03T08:30:15.123456Z')),
   (timestamp('2024-11-03T09:30:15.123456Z')),
   (timestamp('2024-11-03T10:30:15.123456Z')),
+  (timestamp('2026-11-15T12:00:00Z')),
   (NULL)
 
 query
