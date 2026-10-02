@@ -2539,6 +2539,60 @@ class CometCodegenSuite
     }
   }
 
+  test("retained DSv2 decimal aliases preserve Spark materialization timing (#6425)") {
+    withDecimalFunctions(3, null, 100000000, -100000000) {
+      val reason = "DSv2 decimal projection and its consumers must share Spark materialization"
+      for (ansi <- Seq("true", "false"); aqe <- Seq("true", "false")) {
+        withSQLConf(
+          SQLConf.ANSI_ENABLED.key -> ansi,
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe) {
+          for (expr <- Seq(
+              "decfn.ns.as_money(i)",
+              "decfn.ns.static_as_money(i)",
+              "abs(decfn.ns.as_money(i))")) {
+            val from = s"FROM (SELECT $expr AS d FROM t)"
+            val projected = sql(s"SELECT d, d IS NULL $from")
+            checkSparkAnswerAndFallbackReason(projected, reason)
+            checkAnswer(
+              projected,
+              Seq(Row(dec("3.00"), false), Row(null, true), Row(null, false), Row(null, false)))
+            // The retained inner projection must also fall back. A Spark consumer above a
+            // Comet producer would still read the prematurely normalized Arrow value.
+            assert(
+              !projected.queryExecution.executedPlan.exists(_.isInstanceOf[CometProjectExec]))
+            val aggregated = sql(s"SELECT count(d), max(d) $from")
+            checkSparkAnswerAndFallbackReason(aggregated, reason)
+            assert(aggregated.collect().head.getLong(0) == 3L)
+            checkSparkAnswerAndFallbackReason(
+              s"SELECT d, d IS NULL $from WHERE d IS NOT NULL",
+              reason)
+            checkSparkAnswerAndFallbackReason(
+              s"SELECT d, e, e IS NULL FROM (SELECT d, abs(d) AS e $from)",
+              reason)
+          }
+          for ((call, access) <- Seq("money_array" -> "d[0]", "money_struct" -> "d.m")) {
+            checkSparkAnswerAndFallbackReason(
+              s"SELECT d, $access IS NULL FROM (SELECT decfn.ns.$call(i) AS d FROM t)",
+              reason)
+            checkSparkAnswerAndFallbackReason(
+              s"SELECT count($access), max($access) FROM (SELECT decfn.ns.$call(i) AS d FROM t)",
+              reason)
+          }
+          checkSparkAnswerAndFallbackReason(
+            "SELECT d, CAST(d AS STRING) FROM (SELECT decfn.ns.mills_as_money(i) AS d FROM t)",
+            reason)
+          // Without fusion, Spark materializes each Project. Retaining the same operators also
+          // preserves that earlier boundary, rather than always exposing the raw Decimal.
+          withSQLConf(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false") {
+            checkSparkAnswerAndFallbackReason(
+              "SELECT d, d IS NULL FROM (SELECT decfn.ns.as_money(i) AS d FROM t)",
+              reason)
+          }
+        }
+      }
+    }
+  }
+
   test(
     "an aggregate over a DSv2 decimal result falls back, as Spark aggregates the value (#6425)") {
     // Spark aggregates the `Decimal` the function returned, and the row writer nulls the result
