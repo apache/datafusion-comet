@@ -24,6 +24,7 @@ import scala.util.Try
 import org.apache.arrow.vector.types.TimeUnit
 import org.apache.arrow.vector.types.pojo.{ArrowType, Field, FieldType}
 import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.catalyst.expressions.{Alias, Literal}
 import org.apache.spark.sql.catalyst.util.GenericArrayData
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.types._
@@ -134,6 +135,30 @@ class CometLiteralSuite extends CometTestBase with CometTypeShim {
         sql("SELECT array(INTERVAL '1-2' YEAR TO MONTH, INTERVAL '-3' MONTH, NULL) FROM tbl"))
       checkSparkAnswerAndOperator(
         sql("SELECT array(array(INTERVAL '2-1' YEAR TO MONTH), array()) FROM tbl"))
+    }
+  }
+
+  // Spark folds each projection into one literal whose arrays all declare non-nullable elements,
+  // while `literal_to_array_ref` rebuilds every populated level with nullable fields. The empty
+  // `array()` branch used to keep the declared fields instead, so it could not be concatenated
+  // with its populated sibling and native planning failed. The SQL file tests cannot cover this,
+  // since their harness excludes `ConstantFolding`.
+  test("a folded nested array literal with an empty branch and non-nullable elements") {
+    def nonNullableAtEveryLevel(dataType: DataType): Boolean = dataType match {
+      case ArrayType(elementType, containsNull) =>
+        !containsNull && nonNullableAtEveryLevel(elementType)
+      case _ => true
+    }
+    withParquetTable(Seq((1, 2), (3, 4)), "tbl") {
+      Seq("INTERVAL '1' MONTH", "1").foreach { leaf =>
+        val df = sql(s"SELECT array(array(array()), array(array(array($leaf)))) FROM tbl")
+        val folded = df.queryExecution.optimizedPlan.expressions.exists {
+          case Alias(literal: Literal, _) => nonNullableAtEveryLevel(literal.dataType)
+          case _ => false
+        }
+        assert(folded, s"expected a folded literal with non-nullable arrays for leaf $leaf")
+        checkSparkAnswerAndOperator(df)
+      }
     }
   }
 }
