@@ -334,6 +334,14 @@ object CometArrayExcept
 
   private val incompatReason = "Null handling and ordering may differ from Spark"
 
+  // Helper function to recursively make an array type fully nullable
+  // This ensures nested arrays are also made nullable at all levels
+  private def makeRecursivelyNullable(dt: DataType): DataType = dt match {
+    case ArrayType(elementType, _) =>
+      ArrayType(makeRecursivelyNullable(elementType), containsNull = true)
+    case other => other
+  }
+
   override def getIncompatibleReasons(): Seq[String] = Seq(incompatReason)
 
   override def getSupportLevel(expr: ArrayExcept): SupportLevel = {
@@ -376,15 +384,40 @@ object CometArrayExcept
         return None
       case None =>
     }
-    val leftArrayExprProto = exprToProtoInternal(expr.left, inputs, binding)
-    val rightArrayExprProto = exprToProtoInternal(expr.right, inputs, binding)
+
+    // Fix for issue #3646: Normalize element type nullability recursively to avoid DataFusion
+    // type mismatch. DataFusion's array_except requires both arrays to have the same element
+    // nullability at all levels (including nested arrays).
+    // 
+    // We recursively make both types fully nullable to match the existing widen-nullability
+    // behavior of CometCreateArray. This ensures compatibility with DataFusion's type system
+    // while preserving the ability to handle nested arrays.
+    val leftType = expr.left.dataType
+    val rightType = expr.right.dataType
+    
+    val normalizedLeftType = makeRecursivelyNullable(leftType)
+    val normalizedRightType = makeRecursivelyNullable(rightType)
+
+    val normalizedLeft = if (leftType != normalizedLeftType) {
+      org.apache.spark.sql.catalyst.expressions.Cast(expr.left, normalizedLeftType)
+    } else {
+      expr.left
+    }
+
+    val normalizedRight = if (rightType != normalizedRightType) {
+      org.apache.spark.sql.catalyst.expressions.Cast(expr.right, normalizedRightType)
+    } else {
+      expr.right
+    }
+
+    val leftArrayExprProto = exprToProtoInternal(normalizedLeft, inputs, binding)
+    val rightArrayExprProto = exprToProtoInternal(normalizedRight, inputs, binding)
 
     val arrayExceptScalarExpr =
       scalarFunctionExprToProto("array_except", leftArrayExprProto, rightArrayExprProto)
     arrayExceptScalarExpr
   }
 }
-
 object CometArrayJoin
     extends CometExpressionSerde[ArrayJoin]
     with CometTypeShim
