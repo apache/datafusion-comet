@@ -358,7 +358,7 @@ case class CometExecRule(session: SparkSession)
       case op if op.getTagValue(CometExecRule.COMET_UNMATERIALIZED_DECIMAL).isDefined =>
         withFallbackReason(
           op,
-          "DSv2 decimal projection and its consumers must share Spark materialization")
+          "DSv2 decimal result and its consumers must share Spark materialization")
         op
 
       // Scan marker produced by an optional, out-of-tree scan contrib (e.g. contrib/delta).
@@ -715,10 +715,13 @@ case class CometExecRule(session: SparkSession)
   }
 
   /**
-   * Spark can pass a Decimal between fused operators without writing a row. A retained Project
-   * therefore cannot write a dispatched DSv2 decimal to Arrow before its consumers run: that
-   * would rescale/null the value early. Follow projected attributes and keep both ends, including
-   * intervening operators, in Spark. Declining only the consumer would leave the early write.
+   * Spark can pass a Decimal between fused operators without writing a row. An operator that
+   * defines an attribute from a dispatched DSv2 decimal call therefore cannot write it to Arrow
+   * before its consumers run: that would rescale/null the value early. The operator can be a
+   * retained Project, a generator (`explode` passes the array's elements on as they are), an
+   * Expand, or an aggregate whose result expression makes the call. Follow those attributes and
+   * keep both ends, including intervening operators, in Spark. Declining only the consumer would
+   * leave the early write.
    *
    * Paths are propagated conservatively through decimal outputs, including row boundaries. This
    * may retain more Spark operators after a real materialization, but never introduces a new one
@@ -741,26 +744,36 @@ case class CometExecRule(session: SparkSession)
             .filter(QueryPlanSerde.producesUnmaterializedDsv2Decimal)
             .map(_.exprId)
             .toSet
+        // A result expression such as `fn(max(i))`, which HAVING can read. QueryPlanSerde already
+        // falls back an aggregate whose function makes the call.
+        case a: BaseAggregateExec =>
+          a.resultExpressions
+            .filter(QueryPlanSerde.producesUnmaterializedDsv2Decimal)
+            .map(_.exprId)
+            .toSet
+        // Other operators, such as a generator or an Expand, do not tie each new attribute to one
+        // expression, so take every decimal attribute that one defines. A Comet operator from an
+        // earlier pass is already decided.
+        case _
+            if !op.isInstanceOf[CometPlan] &&
+              op.expressions.exists(QueryPlanSerde.evaluatesDispatchedDsv2Decimal) =>
+          op.output
+            .filter(a => !op.inputSet.contains(a) && QueryPlanSerde.containsDecimal(a.dataType))
+            .map(_.exprId)
+            .toSet
         case _ => Set.empty[ExprId]
       }
       op.output.flatMap { attr =>
         val inherited = inputs.getOrElse(attr.exprId, Set.empty)
         // Computed decimal outputs can retain the raw value as well (e.g. abs(d), or max(d)).
-        val derived = if (containsDecimal(attr.dataType)) consumed else Set.empty[SparkPlan]
+        val derived =
+          if (QueryPlanSerde.containsDecimal(attr.dataType)) consumed else Set.empty[SparkPlan]
         val path = inherited ++ derived
         if (sources.contains(attr.exprId) || path.nonEmpty) Some(attr.exprId -> (path + op))
         else None
       }.toMap
     }
     val _ = visit(plan)
-  }
-
-  private def containsDecimal(dataType: DataType): Boolean = dataType match {
-    case _: DecimalType => true
-    case ArrayType(elementType, _) => containsDecimal(elementType)
-    case MapType(keyType, valueType, _) => containsDecimal(keyType) || containsDecimal(valueType)
-    case StructType(fields) => fields.exists(f => containsDecimal(f.dataType))
-    case _ => false
   }
 
   private def normalizePlan(plan: SparkPlan): SparkPlan = {
@@ -1430,6 +1443,8 @@ case class CometExecRule(session: SparkSession)
     if (handler.isEmpty) return false
     val serde = handler.get.asInstanceOf[CometOperatorSerde[SparkPlan]]
     if (!isOperatorEnabled(serde, agg.asInstanceOf[SparkPlan])) return false
+    // tagUnmaterializedDecimals runs first, and transform() leaves a tagged operator in Spark.
+    if (agg.getTagValue(CometExecRule.COMET_UNMATERIALIZED_DECIMAL).isDefined) return false
 
     val aggregateExpressions = agg.aggregateExpressions
     val groupingExpressions = agg.groupingExpressions

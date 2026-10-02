@@ -1172,15 +1172,21 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
    * such an expression runs in the same kernel as the call, where Spark's own code reads the
    * value the function returned. Checking only immediate children would let an intermediate
    * expression, such as `abs(call)` or `call[0]`, normalize the decimal before its parent reads
-   * it. `Alias` is skipped because it computes nothing. A projected root is not necessarily a
-   * row-materialization boundary: CometExecRule keeps retained decimal aliases and their
-   * consumers in Spark until those consumers have read the original value.
+   * it. `Alias` is skipped because it computes nothing. An operator's output is not necessarily a
+   * row-materialization boundary: CometExecRule keeps an operator that defines a decimal
+   * attribute from such a call, such as a Project, a generator or an aggregate's result, in Spark
+   * with that attribute's consumers until they have read the original value.
    */
   private def readsDispatchedDsv2Decimal(expr: Expression): Boolean =
     !isStructuralExpr(expr) && expr.children.exists(_.exists(isDispatchedDsv2DecimalCall))
 
-  private[comet] def producesUnmaterializedDsv2Decimal(expr: Expression): Boolean =
-    containsDecimal(expr.dataType) && expr.exists(isDispatchedDsv2DecimalCall)
+  /** Whether `expr` produces a decimal that holds the value a dispatched DSv2 call returned. */
+  def producesUnmaterializedDsv2Decimal(expr: Expression): Boolean =
+    containsDecimal(expr.dataType) && evaluatesDispatchedDsv2Decimal(expr)
+
+  /** Whether `expr` calls a dispatched DSv2 scalar function that returns a decimal. */
+  private[comet] def evaluatesDispatchedDsv2Decimal(expr: Expression): Boolean =
+    expr.exists(isDispatchedDsv2DecimalCall)
 
   private def isDispatchedDsv2DecimalCall(expr: Expression): Boolean = {
     val dispatchedDsv2Call = expr match {
@@ -1197,7 +1203,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     dispatchedDsv2Call && containsDecimal(expr.dataType)
   }
 
-  private def containsDecimal(dataType: DataType): Boolean = dataType match {
+  private[comet] def containsDecimal(dataType: DataType): Boolean = dataType match {
     case _: DecimalType => true
     case ArrayType(elementType, _) => containsDecimal(elementType)
     case MapType(keyType, valueType, _) => containsDecimal(keyType) || containsDecimal(valueType)

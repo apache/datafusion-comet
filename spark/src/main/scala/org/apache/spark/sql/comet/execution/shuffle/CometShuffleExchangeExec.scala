@@ -616,6 +616,13 @@ object CometShuffleExchangeExec
           if (QueryPlanSerde.exprToProto(expr, inputs).isEmpty) {
             reasons += s"unsupported hash partitioning expression: $expr"
           }
+          // Spark hashes the `Decimal` a DSv2 function returned, at the scale the function chose,
+          // while the native shuffle would hash the dispatcher's rescaled output, and so place
+          // rows in other partitions (#6425). The JVM columnar shuffle computes the partition with
+          // Spark's own projection.
+          if (QueryPlanSerde.producesUnmaterializedDsv2Decimal(expr)) {
+            reasons += s"hash partitioning expression reads a DSv2 decimal result: $expr"
+          }
         }
         for (dt <- expressions.map(_.dataType).distinct) {
           if (!supportedHashPartitioningDataType(dt)) {

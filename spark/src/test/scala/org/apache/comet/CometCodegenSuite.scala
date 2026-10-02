@@ -34,6 +34,7 @@ import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial}
 import org.apache.spark.sql.catalyst.expressions.objects.Invoke
 import org.apache.spark.sql.catalyst.util.GenericArrayData
 import org.apache.spark.sql.comet.{CometFilterExec, CometHashAggregateExec, CometProjectExec}
+import org.apache.spark.sql.comet.execution.shuffle.{CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.connector.catalog.{FunctionCatalog, Identifier}
 import org.apache.spark.sql.connector.catalog.functions.{BoundFunction, ScalarFunction, UnboundFunction}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
@@ -2568,7 +2569,7 @@ class CometCodegenSuite
 
   test("retained DSv2 decimal aliases preserve Spark materialization timing (#6425)") {
     withDecimalFunctions(3, null, 100000000, -100000000) {
-      val reason = "DSv2 decimal projection and its consumers must share Spark materialization"
+      val reason = "DSv2 decimal result and its consumers must share Spark materialization"
       for (ansi <- Seq("true", "false"); aqe <- Seq("true", "false")) {
         withSQLConf(
           SQLConf.ANSI_ENABLED.key -> ansi,
@@ -2616,6 +2617,68 @@ class CometCodegenSuite
               reason)
           }
         }
+      }
+    }
+  }
+
+  test("other operators that define DSv2 decimal attributes preserve Spark timing (#6425)") {
+    // A Project is not the only operator that defines an attribute from a DSv2 call. `explode`
+    // passes the array's elements on as the function returned them, Spark's rewrite of two
+    // distinct aggregates evaluates the call in an `Expand`, and an aggregate's result expression
+    // can make the call. A fused Spark parent reads each of those values before any row write, so
+    // the operator and its consumers stay in Spark, as a retained Project alias does.
+    withDecimalFunctions(3, null, 100000000, -100000000) {
+      val reason = "DSv2 decimal result and its consumers must share Spark materialization"
+      val exploded = "FROM t LATERAL VIEW explode(decfn.ns.money_array(i)) e AS x"
+      for (ansi <- Seq("true", "false"); aqe <- Seq("true", "false")) {
+        withSQLConf(
+          SQLConf.ANSI_ENABLED.key -> ansi,
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe) {
+          val counted = sql(s"SELECT count(x) $exploded")
+          checkSparkAnswerAndFallbackReason(counted, reason)
+          checkAnswer(counted, Row(3L))
+          val projected = sql(s"SELECT i, x IS NULL $exploded")
+          checkSparkAnswerAndFallbackReason(projected, reason)
+          checkAnswer(
+            projected,
+            Seq(Row(3, false), Row(100000000, false), Row(-100000000, false)))
+          for (query <- Seq(
+              s"SELECT i $exploded WHERE x IS NOT NULL",
+              "SELECT i, x IS NULL FROM t " +
+                "LATERAL VIEW OUTER explode(decfn.ns.money_array(i)) e AS x",
+              "SELECT i, p, x IS NULL FROM t " +
+                "LATERAL VIEW posexplode(decfn.ns.money_array(i)) e AS p, x",
+              // Comet runs `array` natively, and dispatches only the call.
+              "SELECT i, x IS NULL FROM t " +
+                "LATERAL VIEW explode(array(decfn.ns.as_money(i))) e AS x",
+              "SELECT i, x.m IS NULL FROM t " +
+                "LATERAL VIEW explode(array(decfn.ns.money_struct(i))) e AS x")) {
+            checkSparkAnswerAndFallbackReason(query, reason)
+          }
+          val expanded = sql(
+            "SELECT count(DISTINCT i), count(DISTINCT i % 2), count(decfn.ns.as_money(i)) FROM t")
+          checkSparkAnswerAndFallbackReason(expanded, reason)
+          checkAnswer(expanded, Row(3L, 2L, 3L))
+          val having = sql("SELECT decfn.ns.as_money(max(i)) AS d FROM t HAVING d IS NULL")
+          checkSparkAnswerAndFallbackReason(having, reason)
+          checkAnswer(having, Seq.empty)
+          // A Spark final `avg` cannot read the buffer of a native partial, so that stays in
+          // Spark too.
+          val (_, averaged) = checkSparkAnswerAndFallbackReason(
+            "SELECT decfn.ns.as_money(CAST(avg(i) AS INT)) AS d FROM t WHERE i > 5 " +
+              "HAVING d IS NULL",
+            reason)
+          assert(collect(averaged) { case a: CometHashAggregateExec => a }.isEmpty)
+        }
+      }
+      // Spark hashes the value the function returned, so the native shuffle, which would hash
+      // the rescaled value, gives way to the columnar one. AQE would coalesce the partitions.
+      withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+        val (_, distributed) = checkSparkAnswer(
+          "SELECT i, spark_partition_id() FROM " +
+            "(SELECT * FROM t DISTRIBUTE BY decfn.ns.as_money(i))")
+        val shuffles = collect(distributed) { case s: CometShuffleExchangeExec => s.shuffleType }
+        assert(shuffles.nonEmpty && !shuffles.contains(CometNativeShuffle), shuffles)
       }
     }
   }
