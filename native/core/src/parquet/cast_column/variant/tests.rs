@@ -938,6 +938,66 @@ fn normalize_nested_list_residuals_use_their_root_metadata() {
 }
 
 #[test]
+fn normalize_shredded_empty_key_with_nested_residual() {
+    let mut nested = VariantBuilder::new();
+    nested
+        .new_list()
+        .with_value(true)
+        .with_value(Variant::Null)
+        .finish();
+    let (nested_metadata, nested_value) = nested.finish();
+    let mut builder = VariantArrayBuilder::new(1);
+    builder
+        .new_object()
+        .with_field("", 2_i8)
+        .with_field("a", 1_i8)
+        .with_field("nested", Variant::new(&nested_metadata, &nested_value))
+        .finish();
+    let canonical = builder.build();
+    let shredded = shred_variant(
+        &canonical,
+        &DataType::Struct(Fields::from(vec![Field::new("a", DataType::Int64, true)])),
+    )
+    .unwrap();
+    // Spark leaves the sorted flag unset, including dictionaries with empty keys.
+    let mut metadata = binary_value(shredded.metadata_column(), 0)
+        .unwrap()
+        .to_vec();
+    metadata[0] &= !0x10;
+    let mut fields = shredded.inner().fields().to_vec();
+    let mut columns = shredded.inner().columns().to_vec();
+    let index = fields.iter().position(|f| f.name() == "metadata").unwrap();
+    fields[index] = Arc::new(
+        fields[index]
+            .as_ref()
+            .clone()
+            .with_data_type(DataType::Binary),
+    );
+    columns[index] = Arc::new(BinaryArray::from(vec![metadata.as_slice()]));
+    let input: ArrayRef = Arc::new(StructArray::new(fields.into(), columns, None));
+    let output = normalize_variant_array(&input, &target_field(false)).unwrap();
+    let output = VariantArray::try_new(output.as_ref()).unwrap();
+    assert_eq!(output.value(0), canonical.value(0));
+    // Spark visits typed fields first, then residual fields, rebuilding dictionary IDs.
+    let mut expected = VariantBuilder::new().with_field_names(["a", "", "nested"]);
+    expected
+        .new_object()
+        .with_field("a", 1_i8)
+        .with_field("", 2_i8)
+        .with_field("nested", Variant::new(&nested_metadata, &nested_value))
+        .finish();
+    let (expected_metadata, expected_value) = expected.finish();
+    assert_eq!(
+        binary_value(output.value_column(), 0).unwrap(),
+        expected_value
+    );
+    assert_eq!(
+        binary_value(output.metadata_column(), 0).unwrap(),
+        expected_metadata
+    );
+}
+
+#[test]
 fn normalize_spark_empty_key_metadata_rejects_other_malformed_encodings() {
     // Spark dictionary ["z", "", "a"], deliberately requiring field ID remapping.
     let metadata = [1, 3, 0, 1, 1, 2, b'z', b'a'];
