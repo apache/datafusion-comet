@@ -101,10 +101,11 @@ private[codegen] object CometBatchKernelCodegenOutput extends CometTypeShim {
         v
       case _: ArrowType.Struct =>
         val v = new RenamedStructVector(field, allocator)
-        // StructVector builds its writer in a field initializer, and that writer has already
-        // created and allocated a child for each child of `field`. initializeChildrenFromFields
-        // replaces those children without closing them, so close them first. The writer keeps
-        // pointing at them, which is harmless: the kernel writes through getChildByOrdinal.
+        // StructVector creates its writer in a field initializer. The writer creates and
+        // allocates a child vector for each child of `field`. initializeChildrenFromFields
+        // replaces these children, but it does not close them. Thus, close them first. The writer
+        // keeps its references to the closed vectors. These references are not a problem, because
+        // the kernel writes to the children through getChildByOrdinal.
         v.getChildrenFromFields.asScala.foreach(_.close())
         v.initializeChildrenFromFields(field.getChildren)
         v
