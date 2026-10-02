@@ -983,7 +983,7 @@ iceberg-java resolves per-write options and <code class="docutils literal notran
 <td><p>Iceberg’s built-in <code class="docutils literal notranslate"><span class="pre">DefaultLocationProvider</span></code></p></td>
 </tr>
 <tr class="row-even"><td><p>partition spec</p></td>
-<td><p>any</p></td>
+<td><p>any, except an identity partition on a <code class="docutils literal notranslate"><span class="pre">float</span></code> or <code class="docutils literal notranslate"><span class="pre">double</span></code> column (see below)</p></td>
 </tr>
 <tr class="row-odd"><td><p>column types</p></td>
 <td><p>any except <code class="docutils literal notranslate"><span class="pre">uuid</span></code> (Spark plans it as a string; no Arrow cast reaches <code class="docutils literal notranslate"><span class="pre">fixed(16)</span></code>)</p></td>
@@ -1014,6 +1014,12 @@ Configuration, and only <code class="docutils literal notranslate"><span class="
 could resolve a different storage identity or endpoint than the JVM writer would. That
 combination falls back; a <code class="docutils literal notranslate"><span class="pre">GCSFileIO</span></code> carries its <code class="docutils literal notranslate"><span class="pre">gcs.*</span></code> settings in <code class="docutils literal notranslate"><span class="pre">FileIO.properties()</span></code>,
 which are forwarded.</p>
+<p>An identity partition on a <code class="docutils literal notranslate"><span class="pre">float</span></code> or <code class="docutils literal notranslate"><span class="pre">double</span></code> column falls back. iceberg-rust compares float
+partition values with an equality that treats <code class="docutils literal notranslate"><span class="pre">-0.0</span></code> and <code class="docutils literal notranslate"><span class="pre">0.0</span></code> as one value, so the native writer
+would put rows with either value in the same partition, where iceberg-java writes two. A read
+that prunes on the other value’s partition would then miss rows. The fall-back stays until
+iceberg-rust distinguishes the two values
+(<a class="reference external" href="https://github.com/apache/iceberg-rust/issues/3325">apache/iceberg-rust#3325</a>).</p>
 <p>Other <code class="docutils literal notranslate"><span class="pre">write.*</span></code> properties are intentionally not gated because they cannot make the native
 writer produce different data files: distribution and ordering settings shape the Spark plan
 identically on both paths, WAP / branch / snapshot properties act on the JVM committer,
@@ -1102,8 +1108,9 @@ parquet-rs buffers by row count. File naming follows the same cadence-style diff
 (iceberg-java names files <code class="docutils literal notranslate"><span class="pre">&lt;partition&gt;-&lt;task&gt;-&lt;operation&gt;-&lt;count&gt;</span></code>; iceberg-rust uses a
 process-local counter).</p></li>
 <li><p>Partition directory names match iceberg-java 1.8+’s <code class="docutils literal notranslate"><span class="pre">PartitionSpec.partitionToPath</span></code> for every
-partition type. <code class="docutils literal notranslate"><span class="pre">float</span></code> and <code class="docutils literal notranslate"><span class="pre">double</span></code> values are rendered with Java’s <code class="docutils literal notranslate"><span class="pre">Float.toString</span></code> /
-<code class="docutils literal notranslate"><span class="pre">Double.toString</span></code> rules (<code class="docutils literal notranslate"><span class="pre">f=1.0</span></code>, <code class="docutils literal notranslate"><span class="pre">f=1.0E10</span></code>), as iceberg-java renders them. On Iceberg 1.5.x,
+partition type the native writer accepts. Identity partitions on <code class="docutils literal notranslate"><span class="pre">float</span></code> and <code class="docutils literal notranslate"><span class="pre">double</span></code> columns
+fall back (see <a class="reference internal" href="#native-parquet-write-eligibility">Native Parquet write eligibility</a>), so
+iceberg-java names those directories itself. On Iceberg 1.5.x,
 which the Spark 3.4 profile pins, iceberg-java itself spelled <code class="docutils literal notranslate"><span class="pre">timestamp</span></code> and <code class="docutils literal notranslate"><span class="pre">timestamptz</span></code>
 directories with <code class="docutils literal notranslate"><span class="pre">LocalDateTime.toString()</span></code> / <code class="docutils literal notranslate"><span class="pre">OffsetDateTime.toString()</span></code>
 (<code class="docutils literal notranslate"><span class="pre">ts=1969-12-31T23:59:58.500Z</span></code>) and left the partition field name unescaped; Comet uses the

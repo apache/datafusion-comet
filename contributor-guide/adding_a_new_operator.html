@@ -641,6 +641,40 @@ type, they are converted to <code class="docutils literal notranslate"><span cla
 execution blocks. The original Spark operator is wrapped with <code class="docutils literal notranslate"><span class="pre">CometScanWrapper</span></code> or <code class="docutils literal notranslate"><span class="pre">CometSinkPlaceHolder</span></code> which
 manages the boundary between JVM and native execution.</p>
 </section>
+<section id="operators-that-should-not-be-converted">
+<h3>Operators That Should Not Be Converted<a class="headerlink" href="#operators-that-should-not-be-converted" title="Link to this heading">#</a></h3>
+<p>Before adding an operator, check that converting it would speed anything up. Comet deliberately
+leaves three kinds of Spark plan nodes in place.</p>
+<p><strong>Wrappers and scheduling nodes.</strong> <code class="docutils literal notranslate"><span class="pre">AdaptiveSparkPlanExec</span></code>, the AQE query stages
+(<code class="docutils literal notranslate"><span class="pre">ShuffleQueryStageExec</span></code>, <code class="docutils literal notranslate"><span class="pre">BroadcastQueryStageExec</span></code>, <code class="docutils literal notranslate"><span class="pre">TableCacheQueryStageExec</span></code>, and, on Spark 4.0
+and later, <code class="docutils literal notranslate"><span class="pre">ResultQueryStageExec</span></code>), <code class="docutils literal notranslate"><span class="pre">AQEShuffleReadExec</span></code>, <code class="docutils literal notranslate"><span class="pre">InputAdapter</span></code>, <code class="docutils literal notranslate"><span class="pre">WholeStageCodegenExec</span></code>,
+<code class="docutils literal notranslate"><span class="pre">ReusedExchangeExec</span></code>, and <code class="docutils literal notranslate"><span class="pre">ReusedSubqueryExec</span></code> do no data processing of their own. They schedule
+stages, mark whole-stage code generation boundaries, choose which shuffle blocks each task reads,
+or point at a plan that runs elsewhere. AQE creates the query stages itself, after Comet’s rules
+have run on the plan inside them, and depends on their exact class. For example, it casts the root
+of the final plan to <code class="docutils literal notranslate"><span class="pre">ResultQueryStageExec</span></code>. When a query stage wraps a Comet shuffle, broadcast,
+or cached relation, <code class="docutils literal notranslate"><span class="pre">CometExecRule</span></code> reads from it as a native input through <code class="docutils literal notranslate"><span class="pre">CometExchangeSink</span></code>
+and leaves the stage itself in place.</p>
+<p><strong>Operators that run user JVM code on JVM objects.</strong> The typed <code class="docutils literal notranslate"><span class="pre">Dataset</span></code> API plans
+<code class="docutils literal notranslate"><span class="pre">DeserializeToObjectExec</span></code>, <code class="docutils literal notranslate"><span class="pre">SerializeFromObjectExec</span></code>, <code class="docutils literal notranslate"><span class="pre">MapElementsExec</span></code>, <code class="docutils literal notranslate"><span class="pre">MapPartitionsExec</span></code>,
+<code class="docutils literal notranslate"><span class="pre">AppendColumnsExec</span></code>, <code class="docutils literal notranslate"><span class="pre">AppendColumnsWithObjectExec</span></code>, <code class="docutils literal notranslate"><span class="pre">MapGroupsExec</span></code>, and <code class="docutils literal notranslate"><span class="pre">CoGroupExec</span></code>. They
+convert rows to JVM objects, run an arbitrary user function on those objects, or convert them back,
+and most of them pass the objects to the next operator as an <code class="docutils literal notranslate"><span class="pre">ObjectType</span></code> column, which has no
+Arrow representation. None of this can run natively. Per-row operators can still stay inside a
+Comet plan: <code class="docutils literal notranslate"><span class="pre">MapElementsExec</span></code>, the operator behind <code class="docutils literal notranslate"><span class="pre">Dataset.map</span></code>, generates its call to the user
+function as a Catalyst <code class="docutils literal notranslate"><span class="pre">Invoke</span></code> expression, so the deserializer, the call, and the serializer could
+run together as one projection in the JVM codegen dispatcher. <code class="docutils literal notranslate"><span class="pre">mapPartitions</span></code>, <code class="docutils literal notranslate"><span class="pre">mapGroups</span></code>, and
+<code class="docutils literal notranslate"><span class="pre">cogroup</span></code> pass the user function an iterator or a whole group, so there is no per-row expression to
+build. A typed <code class="docutils literal notranslate"><span class="pre">filter</span></code> is planned as an ordinary <code class="docutils literal notranslate"><span class="pre">FilterExec</span></code>, not as one of these operators.</p>
+<p><strong>Driver-side commands.</strong> <code class="docutils literal notranslate"><span class="pre">ExecutedCommandExec</span></code> runs a <code class="docutils literal notranslate"><span class="pre">RunnableCommand</span></code>, such as DDL or <code class="docutils literal notranslate"><span class="pre">SET</span></code>, on
+the driver, so there is no data path for Comet to accelerate.</p>
+<p>If a new Spark version adds a wrapper node, do not write a serde for it. Add it to the nodes that
+<code class="docutils literal notranslate"><span class="pre">ExtendedExplainInfo.generateTreeString</span></code> skips when counting operators, and to the wrapper list in
+<a class="reference internal" href="../user-guide/latest/understanding-comet-plans.html"><span class="std std-doc">Understanding Comet Plans</span></a>, so the coverage
+summary does not count it as a Spark operator. If <code class="docutils literal notranslate"><span class="pre">CometExecRule</span></code> visits the node, also add it to
+the operators it leaves in place without recording a fallback reason. <code class="docutils literal notranslate"><span class="pre">ExtendedExplainInfo</span></code>
+already skips every <code class="docutils literal notranslate"><span class="pre">QueryStageExec</span></code>, so a new query stage type needs no change there.</p>
+</section>
 </section>
 <section id="implementing-a-native-operator">
 <h2>Implementing a Native Operator<a class="headerlink" href="#implementing-a-native-operator" title="Link to this heading">#</a></h2>
@@ -1271,6 +1305,7 @@ query-stage wrappers when checking the native operator and reused exchange.</p>
 </ul>
 </li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#choosing-the-right-operator-type">Choosing the Right Operator Type</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#operators-that-should-not-be-converted">Operators That Should Not Be Converted</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#implementing-a-native-operator">Implementing a Native Operator</a><ul class="nav section-nav flex-column">

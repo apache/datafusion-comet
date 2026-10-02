@@ -176,7 +176,7 @@ A write is eligible only when ALL of the following hold:
 | `write.target-file-size-bytes`                                                                                                              | any value (the two writers can choose different roll points; see accepted divergences)                                                                                                                                                                                                                                                                                                                                                                                          |
 | data location URI scheme                                                                                                                    | `file`, `memory`, `s3`, `s3a`, `gs` (`gs` only when the `FileIO` opening the data location is a `GCSFileIO`; see below)                                                                                                                                                                                                                                                                                                                                                         |
 | resolved `table.locationProvider()`                                                                                                         | Iceberg's built-in `DefaultLocationProvider`                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| partition spec                                                                                                                              | any                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| partition spec                                                                                                                              | any, except an identity partition on a `float` or `double` column (see below)                                                                                                                                                                                                                                                                                                                                                                                                   |
 | column types                                                                                                                                | any except `uuid` (Spark plans it as a string; no Arrow cast reaches `fixed(16)`)                                                                                                                                                                                                                                                                                                                                                                                               |
 
 Within the namespaces that shape data-file bytes — `write.parquet.*` and `parquet.*` —
@@ -204,6 +204,13 @@ Configuration, and only `fs.s3a.*` is translated into the native `FileIO`, so th
 could resolve a different storage identity or endpoint than the JVM writer would. That
 combination falls back; a `GCSFileIO` carries its `gcs.*` settings in `FileIO.properties()`,
 which are forwarded.
+
+An identity partition on a `float` or `double` column falls back. iceberg-rust compares float
+partition values with an equality that treats `-0.0` and `0.0` as one value, so the native writer
+would put rows with either value in the same partition, where iceberg-java writes two. A read
+that prunes on the other value's partition would then miss rows. The fall-back stays until
+iceberg-rust distinguishes the two values
+([apache/iceberg-rust#3325](https://github.com/apache/iceberg-rust/issues/3325)).
 
 Other `write.*` properties are intentionally not gated because they cannot make the native
 writer produce different data files: distribution and ordering settings shape the Spark plan
@@ -298,8 +305,9 @@ a data file but not what any reader computes from it:
   (iceberg-java names files `<partition>-<task>-<operation>-<count>`; iceberg-rust uses a
   process-local counter).
 - Partition directory names match iceberg-java 1.8+'s `PartitionSpec.partitionToPath` for every
-  partition type. `float` and `double` values are rendered with Java's `Float.toString` /
-  `Double.toString` rules (`f=1.0`, `f=1.0E10`), as iceberg-java renders them. On Iceberg 1.5.x,
+  partition type the native writer accepts. Identity partitions on `float` and `double` columns
+  fall back (see [Native Parquet write eligibility](#native-parquet-write-eligibility)), so
+  iceberg-java names those directories itself. On Iceberg 1.5.x,
   which the Spark 3.4 profile pins, iceberg-java itself spelled `timestamp` and `timestamptz`
   directories with `LocalDateTime.toString()` / `OffsetDateTime.toString()`
   (`ts=1969-12-31T23:59:58.500Z`) and left the partition field name unescaped; Comet uses the

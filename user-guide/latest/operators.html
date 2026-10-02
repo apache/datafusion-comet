@@ -830,6 +830,15 @@ all native execution can be turned off with <code class="docutils literal notran
 </table>
 </div>
 </section>
+<section id="wrapper-nodes">
+<h2>Wrapper nodes<a class="headerlink" href="#wrapper-nodes" title="Link to this heading">#</a></h2>
+<p>Some nodes in a Spark plan do no work of their own: <code class="docutils literal notranslate"><span class="pre">AdaptiveSparkPlan</span></code>, the AQE query stages
+(including <code class="docutils literal notranslate"><span class="pre">ResultQueryStage</span></code> on Spark 4.0 and later), <code class="docutils literal notranslate"><span class="pre">AQEShuffleRead</span></code>, <code class="docutils literal notranslate"><span class="pre">InputAdapter</span></code>,
+<code class="docutils literal notranslate"><span class="pre">WholeStageCodegen</span></code>, and the reuse markers <code class="docutils literal notranslate"><span class="pre">ReusedExchange</span></code> and <code class="docutils literal notranslate"><span class="pre">ReusedSubquery</span></code>. Comet leaves
+them in place around the operators it converts, so this page does not list them, and seeing one in
+a plan does not mean that part of the query fell back to Spark. The coverage summary described in
+<a class="reference internal" href="understanding-comet-plans.html"><span class="std std-doc">Understanding Comet Plans</span></a> does not count them.</p>
+</section>
 <section id="not-currently-planned">
 <h2>Not currently planned<a class="headerlink" href="#not-currently-planned" title="Link to this heading">#</a></h2>
 <p>The following operator families fall back to Spark and are not on the current roadmap. They are
@@ -839,6 +848,7 @@ omitted from the tables below and may be reconsidered based on demand:</p>
 <li><p><strong>Cartesian / cross joins</strong> (<code class="docutils literal notranslate"><span class="pre">CartesianProductExec</span></code>): rare and expensive, with little acceleration benefit.</p></li>
 <li><p><strong>Range generation</strong> (<code class="docutils literal notranslate"><span class="pre">RangeExec</span></code>): niche leaf operator.</p></li>
 <li><p><strong>Pickled (non-Arrow) Python UDFs</strong> (<code class="docutils literal notranslate"><span class="pre">BatchEvalPythonExec</span></code>): Comet accelerates Arrow-based Python UDFs only (<a class="reference external" href="https://github.com/apache/datafusion-comet/pull/4234">#4234</a>).</p></li>
+<li><p><strong>Typed Dataset operators</strong> (<code class="docutils literal notranslate"><span class="pre">DeserializeToObjectExec</span></code>, <code class="docutils literal notranslate"><span class="pre">SerializeFromObjectExec</span></code>, <code class="docutils literal notranslate"><span class="pre">MapElementsExec</span></code>, <code class="docutils literal notranslate"><span class="pre">MapPartitionsExec</span></code>, <code class="docutils literal notranslate"><span class="pre">MapGroupsExec</span></code>, <code class="docutils literal notranslate"><span class="pre">CoGroupExec</span></code>, <code class="docutils literal notranslate"><span class="pre">AppendColumnsExec</span></code>, and similar): produced by <code class="docutils literal notranslate"><span class="pre">map</span></code>, <code class="docutils literal notranslate"><span class="pre">mapPartitions</span></code>, <code class="docutils literal notranslate"><span class="pre">groupByKey</span></code>, <code class="docutils literal notranslate"><span class="pre">cogroup</span></code>, and other typed <code class="docutils literal notranslate"><span class="pre">Dataset</span></code> transformations. They exist to run user JVM functions on JVM objects, which Comet cannot do natively.</p></li>
 </ul>
 </section>
 <section id="scans">
@@ -1086,9 +1096,9 @@ natively on <code class="docutils literal notranslate"><span class="pre">Broadca
 <td><p>⚠️</p></td>
 <td><p>Spark 3.4/3.5 only. Experimental native Parquet writes, disabled by default (opt-in). Replaced by <code class="docutils literal notranslate"><span class="pre">WriteFilesExec</span></code> on Spark 4.0+ and removed with Spark 3.x support.</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">AppendDataExec</span></code>, <code class="docutils literal notranslate"><span class="pre">OverwriteByExpressionExec</span></code>, <code class="docutils literal notranslate"><span class="pre">OverwritePartitionsDynamicExec</span></code>, <code class="docutils literal notranslate"><span class="pre">ReplaceDataExec</span></code></p></td>
+<tr class="row-even"><td><p>Iceberg writes: <code class="docutils literal notranslate"><span class="pre">AppendDataExec</span></code>, <code class="docutils literal notranslate"><span class="pre">OverwriteByExpressionExec</span></code>, <code class="docutils literal notranslate"><span class="pre">OverwritePartitionsDynamicExec</span></code>, <code class="docutils literal notranslate"><span class="pre">ReplaceDataExec</span></code></p></td>
 <td><p>⚠️</p></td>
-<td><p>Apache Iceberg tables only. Experimental, disabled by default. See <a class="reference internal" href="iceberg-writes.html"><span class="std std-doc">Iceberg Writes</span></a>.</p></td>
+<td><p>Experimental, disabled by default. <code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.splitOperator.enabled=true</span></code> plans the write as <code class="docutils literal notranslate"><span class="pre">IcebergWrite</span></code> and <code class="docutils literal notranslate"><span class="pre">IcebergCommit</span></code>, and Iceberg’s Java writer still writes the data files. <code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.enabled=true</span></code> then writes eligible data files natively (<code class="docutils literal notranslate"><span class="pre">CometIcebergWrite</span></code>). Covers <code class="docutils literal notranslate"><span class="pre">INSERT</span> <span class="pre">INTO</span></code>, <code class="docutils literal notranslate"><span class="pre">INSERT</span> <span class="pre">OVERWRITE</span></code>, and copy-on-write <code class="docutils literal notranslate"><span class="pre">DELETE</span></code> / <code class="docutils literal notranslate"><span class="pre">UPDATE</span></code> / <code class="docutils literal notranslate"><span class="pre">MERGE</span></code>. Merge-on-read writes (<code class="docutils literal notranslate"><span class="pre">WriteDeltaExec</span></code>) fall back. See <a class="reference internal" href="iceberg-writes.html"><span class="std std-doc">Iceberg Writes</span></a>.</p></td>
 </tr>
 </tbody>
 </table>
@@ -1173,6 +1183,7 @@ natively on <code class="docutils literal notranslate"><span class="pre">Broadca
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#status-legend">Status legend</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#wrapper-nodes">Wrapper nodes</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#not-currently-planned">Not currently planned</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#scans">Scans</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#projection-and-filtering">Projection and filtering</a></li>
