@@ -25,11 +25,12 @@ import org.scalatest.exceptions.TestFailedException
 
 import org.apache.arrow.vector._
 import org.apache.spark.{SparkConf, SparkEnv, TaskContext}
-import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.{CometTestBase, Row}
 import org.apache.spark.sql.api.java.UDF1
 import org.apache.spark.sql.catalyst.expressions.{Add, Alias, AttributeReference, BoundReference, Cast, CreateArray, CreateMap, CreateNamedStruct, EvalMode, Expression, Hypot, Literal, MapConcat}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial}
 import org.apache.spark.sql.catalyst.expressions.objects.Invoke
-import org.apache.spark.sql.comet.CometProjectExec
+import org.apache.spark.sql.comet.{CometFilterExec, CometHashAggregateExec, CometProjectExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
@@ -1028,6 +1029,32 @@ class CometCodegenSuite
       assertCodegenRan {
         checkSparkAnswerAndOperator(
           sql("SELECT k, flip(b) FROM (SELECT k, b, count(*) FROM g GROUP BY k, b)"))
+      }
+    }
+  }
+
+  test("typed Dataset.filter reads sliced booleans from a native aggregate") {
+    // https://github.com/apache/datafusion-comet/issues/6424
+    import testImplicits._
+    withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      withSlicedGroups {
+        def filtered = spark
+          .table("g")
+          .groupBy("k", "b")
+          .count()
+          .as[(Long, Boolean, Long)]
+          .filter(_._2)
+          .toDF()
+
+        assertCodegenRan {
+          val (_, plan) = checkSparkAnswerAndOperator(filtered)
+          val aggregates = plan.collect { case a: CometHashAggregateExec => a }
+          assert(aggregates.exists(_.modes.contains(Partial)))
+          assert(aggregates.exists(_.modes.contains(Final)))
+          assert(plan.collect { case f: CometFilterExec => f }.nonEmpty)
+          // Check every retained row, since the offset bug both adds and drops rows.
+          checkAnswer(filtered, (0 until 2000 by 3).map(k => Row(k.toLong, true, 2L)))
+        }
       }
     }
   }

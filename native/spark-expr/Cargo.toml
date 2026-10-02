@@ -36,9 +36,15 @@ regex = { workspace = true }
 # preserve_order: needed for get_json_object to match Spark's JSON key ordering
 serde_json = { version = "1.0", features = ["preserve_order"] }
 serde = { version = "1.0", features = ["derive"] }
+# get_json_object: pre-parse scan for Jackson's numeric length constraint, using
+# the same memchr2-based string skipping as serde_json's own `ignore_str`
+memchr = "2.8"
+smallvec = "1.16"
 datafusion-comet-common = { workspace = true }
 datafusion-comet-jni-bridge = { workspace = true }
 jni = "0.22.4"
+# jni-bridge's `jni_static_call!` expands to `paste::paste!`, so callers need `paste` directly
+paste = "1.0.14"
 futures = { workspace = true }
 twox-hash = "2.1.2"
 rand = { workspace = true }
@@ -55,6 +61,10 @@ criterion = { version = "0.7", features = ["async", "async_tokio", "async_std"] 
 rand = { workspace = true}
 tokio = { version = "1", features = ["rt-multi-thread"] }
 datafusion = { workspace = true, features = ["sql"] }
+
+# `paste` is only used through macro expansion, which cargo machete cannot see
+[package.metadata.cargo-machete]
+ignored = ["paste"]
 
 [lib]
 name = "datafusion_comet_spark_expr"
@@ -442,4 +452,8 @@ harness = false
 
 [[bench]]
 name = "nested_comparison"
+harness = false
+
+[[bench]]
+name = "float_arrays"
 harness = false

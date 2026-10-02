@@ -65,6 +65,7 @@ datafusion-comet-spark-expr = { workspace = true }
 datafusion-comet-jni-bridge = { workspace = true }
 datafusion-comet-proto = { workspace = true }
 datafusion-comet-shuffle = { workspace = true }
+datafusion-comet-operators = { workspace = true }
 object_store = { workspace = true }
 url = { workspace = true }
 aws-config = { workspace = true }
@@ -139,10 +140,6 @@ harness = false
 
 [[bench]]
 name = "array_element_append"
-harness = false
-
-[[bench]]
-name = "explode"
 harness = false
 
 [[bench]]
