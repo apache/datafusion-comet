@@ -263,6 +263,45 @@ class CometIcebergSystemFunctionSuite
     }
   }
 
+  test("native partitioned write puts pre-1970 timestamps ending in .999999 where Iceberg does") {
+    // The sort in front of the write runs the native kernels and the native writer computes each
+    // row's partition value, so both have to follow Iceberg for the table to hold the partitions
+    // iceberg-java would have written. A spec takes one time transform per source column, hence a
+    // column per transform. The kernels' results in projections and filters are checked by
+    // sql-tests/iceberg/temporal_functions_pre_epoch.sql.
+    withHadoopCatalog(catalog) {
+      withPreEpochTable {
+        val table = s"$catalog.db.pre_epoch_partitions"
+        sql(s"""
+          CREATE TABLE $table (id INT, y TIMESTAMP, m TIMESTAMP, d TIMESTAMP, h TIMESTAMP)
+          USING iceberg
+          PARTITIONED BY (years(y), months(m), days(d), hours(h))""")
+        try {
+          val plans = capturePlans(spark) {
+            sql(s"INSERT INTO $table SELECT id, ts, ts, ts, ts FROM pre_epoch")
+          }
+          assert(
+            plans.exists(plan =>
+              collectWithSubqueries(plan) { case w: CometIcebergWriteExec => w }.nonEmpty),
+            s"expected a native Iceberg write in the captured plans:\n${plans.mkString("\n--\n")}")
+
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            val expected = sql(
+              s"SELECT id, $catalog.system.years(y), $catalog.system.months(m), " +
+                s"$catalog.system.days(d), $catalog.system.hours(h) FROM $table").collect()
+            checkAnswer(
+              sql(
+                "SELECT id, _partition.y_year, _partition.m_month, _partition.d_day, " +
+                  s"_partition.h_hour FROM $table"),
+              expected)
+          }
+        } finally {
+          sql(s"DROP TABLE IF EXISTS $table")
+        }
+      }
+    }
+  }
+
   test("non-literal or non-positive parameters fall back to Spark") {
     withSourceTable {
       checkSparkAnswerAndFallbackReason(
@@ -422,14 +461,8 @@ class CometIcebergSystemFunctionSuite
   }
 
   /** Runs `f` with the Iceberg catalog registered and the source parquet table in scope. */
-  private def withSourceTable(f: => Unit): Unit = withTempIcebergDir { warehouseDir =>
-    withSQLConf(
-      s"spark.sql.catalog.$catalog" -> "org.apache.iceberg.spark.SparkCatalog",
-      s"spark.sql.catalog.$catalog.type" -> "hadoop",
-      s"spark.sql.catalog.$catalog.warehouse" -> warehouseDir.getAbsolutePath) {
-      withParquetTable(sourcePath, source)(f)
-    }
-  }
+  private def withSourceTable(f: => Unit): Unit =
+    withHadoopCatalog(catalog)(withParquetTable(sourcePath, source)(f))
 
   private val sourceSchema = StructType(
     Seq(

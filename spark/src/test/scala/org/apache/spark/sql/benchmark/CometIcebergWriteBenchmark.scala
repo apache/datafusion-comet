@@ -432,7 +432,7 @@ object CometIcebergWriteBenchmark extends CometBenchmarkBase {
         s"${arm.name}: expected the iceberg-java writer but the plan contains " +
           "CometIcebergWriteExec, so this case would measure the native writer under a " +
           "JVM-writer label. This arm pins the native-write flags off, so they are leaking in " +
-          "from the session defaults (e.g. `-Dspark.comet.iceberg.write.enabled=true` in " +
+          "from the session defaults (e.g. `-Dspark.comet.write.iceberg.enabled=true` in " +
           s"BENCH_MAVEN_OPTS). Plans:\n${plans.mkString("\n--\n")}")
     }
     if (arm.expectNativeWrite && nativeWrites.isEmpty) {
