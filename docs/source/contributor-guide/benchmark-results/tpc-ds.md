@@ -19,25 +19,26 @@ under the License.
 
 # TPC-DS
 
-The following benchmarks were performed on an EKS cluster (`r6i.24xlarge` instances with EBS storage) with data stored in S3.
+The following benchmarks were performed on an EKS cluster (`r6i.24xlarge` instances with EBS storage) with data stored in S3,
+using Apache Spark 4.2.0 (Scala 2.13) and Comet 1.1.0. Each query was run twice and the mean time is reported.
 
 ## Benchmark Results
 
 Total time to run all queries (lower is better).
 
-![](../../_static/images/benchmark-results/1.0.0/tpcds_allqueries.png)
+![](../../_static/images/benchmark-results/1.1.0/tpcds_allqueries.png)
 
 Per-query breakdown showing the relative performance of Spark and Comet.
 
-![](../../_static/images/benchmark-results/1.0.0/tpcds_queries_compare.png)
+![](../../_static/images/benchmark-results/1.1.0/tpcds_queries_compare.png)
 
 How much Comet accelerates each query in relative terms.
 
-![](../../_static/images/benchmark-results/1.0.0/tpcds_queries_speedup_rel.png)
+![](../../_static/images/benchmark-results/1.1.0/tpcds_queries_speedup_rel.png)
 
 How much Comet accelerates each query in absolute terms.
 
-![](../../_static/images/benchmark-results/1.0.0/tpcds_queries_speedup_abs.png)
+![](../../_static/images/benchmark-results/1.1.0/tpcds_queries_speedup_abs.png)
 
 ## Configuration
 

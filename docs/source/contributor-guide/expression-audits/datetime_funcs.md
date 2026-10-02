@@ -111,6 +111,16 @@
 
 - Rewrites to `Cast(..., EvalMode.LEGACY)` (no format, native) or `GetTimestamp(..., failOnError = false)` (with format, via the codegen dispatcher) before Comet sees the plan. In non-ANSI mode the rewritten tree is identical to `to_timestamp`; invalid inputs return NULL to match Spark.
 
+## unix_timestamp
+
+- Spark 3.4.3 (audited 2026-09-13): baseline. String inputs accept literal or column formats. Date, timestamp, and timestamp without time zone inputs ignore the format argument.
+- Spark 3.5.8 (audited 2026-09-13): parsing failures use structured timestamp parsing errors.
+- Spark 4.0.1 (audited 2026-09-13): `inputTypes` widened to `StringTypeWithCollation` for the input and format arguments.
+- Spark 4.1.1 (audited 2026-09-13): same input types and parsing behavior as Spark 4.0.1.
+- String inputs use Spark's generated parser through codegen dispatch, including collated strings and formats. Literal and column formats preserve null handling, ANSI errors, parser policy, and session time zone.
+- Date, timestamp, and timestamp without time zone inputs retain native execution and ignore the format, including its collation. String input stays unsupported by the native serializer so `allowIncompatible=true` cannot send it to the native kernel.
+- Native timestamp conversion truncates fractional seconds toward zero, matching Spark's `ToTimestamp`. This fixes the previous use of floor division for negative fractional timestamps: at UTC, `1969-12-31 23:59:58.5` produces `-1`, not `-2`. Casting a timestamp to `BIGINT` deliberately uses floor division in Spark and Comet, so that cast still produces `-2`.
+
 [Spark Expression Support]: ../../user-guide/latest/expressions.md
 
 ## weekday

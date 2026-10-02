@@ -88,13 +88,24 @@ Partitioning is where shuffle silently produces wrong answers rather than failin
 - [ ] **Hash partitioning uses Murmur3 with seed 42** and `partition_id = hash % num_partitions`,
       matching Spark. Any change to the hash, the seed, or the modulo changes which rows land in
       which partition, which breaks a join between a Comet-shuffled side and a Spark-shuffled side.
-- [ ] **Round robin is hash-based on purpose, and off by default.** Comet assigns partitions from a
-      Murmur3 hash rather than cycling row by row, because determinism across task retries is
-      required for correctness under fault tolerance. A PR that implements "true" round robin to fix
-      skew breaks that. Two costs are accepted: low-cardinality data distributes unevenly, and
-      unsorted rows land in different partitions than Spark's `UnsafeRow`-sorted assignment would
-      put them, which is why `spark.comet.shuffle.native.partitioning.roundrobin.enabled` defaults
-      to `false`. Sorted output is identical either way.
+- [ ] **Round robin defaults to a content hash, and is off by default.** Comet's default
+      `RoundRobinStrategy::HashAll` assigns partitions from a Murmur3 hash rather than cycling row
+      by row, because placement has to be reproducible across task retries. Two costs are accepted:
+      low-cardinality data distributes unevenly, and unsorted rows land in different partitions
+      than Spark's `UnsafeRow`-sorted assignment would put them, which is why
+      `spark.comet.shuffle.native.partitioning.roundrobin.enabled` defaults to `false`. Sorted
+      output is identical either way.
+- [ ] **Positional round robin is allowed, but its allowlist is the whole safety argument.**
+      `RoundRobinStrategy::RowGroups` is not a bug by construction. It is a function of row order
+      and never sorts, so it needs a retry to replay the same rows in the same order, which is
+      more than Spark's own round robin needs under its default `sortBeforeRepartition=true`.
+      `CometShuffleExchangeExec.replaysRowsInOrder` is what establishes that, and a PR that widens
+      it needs an argument that each operator it admits replays its rows in order, including
+      that the admitted expressions are deterministic; the RDD-level determinism check is defence
+      in depth and cannot fire under today's allowlist. Also check that placement still counts
+      rows rather than batches, that the start still comes from `positionalStartPartition`, and
+      that the group size is still resolved on the driver rather than from executor state. The reasoning behind all three is in `native_shuffle.md` under
+      "Round Robin Partitioning".
 - [ ] **Range partitioning bounds come from the driver.** Spark's `RangePartitioner` samples and
       computes boundaries, they are serialized into the native plan, and native does a binary
       search over comparable-row-format keys. A change to the comparison or the row encoding must
@@ -184,16 +195,16 @@ crates before, and the "Key Classes" tables in the docs are exactly what goes st
 
 ## 7. Tests
 
-| Suite                                                               | Covers                                           |
-| ------------------------------------------------------------------- | ------------------------------------------------ |
-| `org.apache.comet.exec.CometNativeShuffleSuite`                     | Native shuffle end to end                        |
-| `org.apache.comet.exec.CometColumnarShuffleSuite`                   | JVM columnar shuffle end to end                  |
-| `CometShuffle4_0Suite`                                              | Spark 4.x specific behavior                      |
-| `CometDiskBlockWriterSuite`                                         | JVM spill and page handling                      |
-| `NativeBatchDecoderIteratorLifecycleChecks`, `...ConcurrencyChecks` | Reader lifetime and concurrency                  |
-| `CometNativeShuffleInputRDDSuite`                                   | The scheduling-anchor RDD                        |
-| `CometCeleborn*Suite`                                               | The Celeborn path, which is easy to forget       |
-| `CometShuffleBenchmark`                                             | Throughput, needs `-Dspark.comet.memoryOverhead` |
+| Suite                                                               | Covers                                     |
+| ------------------------------------------------------------------- | ------------------------------------------ |
+| `org.apache.comet.exec.CometNativeShuffleSuite`                     | Native shuffle end to end                  |
+| `org.apache.comet.exec.CometColumnarShuffleSuite`                   | JVM columnar shuffle end to end            |
+| `CometShuffle4_0Suite`                                              | Spark 4.x specific behavior                |
+| `CometDiskBlockWriterSuite`                                         | JVM spill and page handling                |
+| `NativeBatchDecoderIteratorLifecycleChecks`, `...ConcurrencyChecks` | Reader lifetime and concurrency            |
+| `CometNativeShuffleInputRDDSuite`                                   | The scheduling-anchor RDD                  |
+| `CometCeleborn*Suite`                                               | The Celeborn path, which is easy to forget |
+| `CometShuffleBenchmark`                                             | Throughput                                 |
 
 Ask specifically:
 

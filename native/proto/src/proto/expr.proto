@@ -166,6 +166,9 @@ message AggExpr {
     Mode mode = 23;
     MaxBy maxBy = 24;
     MinBy minBy = 25;
+    ListAgg listAgg = 26;
+    HllSketchAgg hllSketchAgg = 27;
+    HllUnionAgg hllUnionAgg = 28;
   }
 
   // Optional filter expression for SQL FILTER (WHERE ...) clause.
@@ -338,6 +341,20 @@ enum BloomFilterVersion {
   BLOOM_FILTER_VERSION_V2 = 2;
 }
 
+message HllSketchAgg {
+  // Child value expression (integral, string, or binary).
+  Expr child = 1;
+  // DataSketches lgConfigK (log2 of the number of buckets), Spark default 12.
+  int32 lg_config_k = 2;
+}
+
+message HllUnionAgg {
+  // Child sketch expression (Binary column of serialized HLL sketches).
+  Expr child = 1;
+  // When false, Spark errors if input sketches have differing lgConfigK.
+  bool allow_different_lg_config_k = 2;
+}
+
 message CollectSet {
   Expr child = 1;
   DataType datatype = 2;
@@ -353,6 +370,20 @@ message HllPlusPlus {
   Expr child = 1;
   // Number of addressing bits, computed from relativeSD to match Spark.
   int32 precision = 2;
+}
+
+// Spark 4.0+ LISTAGG / STRING_AGG aggregate.
+//
+// Comet only serializes the simple form: a StringType child with a literal
+// (or NULL) delimiter and no WITHIN GROUP ORDER BY. DISTINCT falls back to
+// Spark because Comet rejects multi-column distinct aggregates in
+// aggExprToProto, so the native side never sees it.
+message ListAgg {
+  Expr child = 1;
+  // Literal delimiter expression. NULL delimiter is normalized to empty string
+  // by Spark's semantics. The result type is always Utf8 (Spark StringType), so
+  // no datatype field is needed.
+  Expr delimiter = 2;
 }
 
 message MaxBy {

@@ -1,6 +1,6 @@
 ---
 name: review-comet-pr
-description: Use when reviewing a DataFusion Comet pull request. Covers the workflow that applies to every PR and routes to the area-specific review skills for expressions, FFI, memory management, and shuffle. Provides guidance to a human reviewer rather than posting comments.
+description: Use when reviewing a DataFusion Comet pull request. Covers the workflow that applies to every PR and routes to the area-specific review skills for expressions, FFI, memory management, shuffle, and Iceberg writes. Provides guidance to a human reviewer rather than posting comments.
 argument-hint: <pr-number>
 ---
 
@@ -36,12 +36,13 @@ sibling skill whose area the PR touches. More than one usually applies. A shuffl
 spilling is also a memory change. An expression that returns a new array type may also be an FFI
 change.
 
-| The PR touches                                                                                                                                                          | Also use                     |
-| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------- |
-| `spark/src/main/scala/org/apache/comet/serde/`, `QueryPlanSerde.scala`, `native/spark-expr/`, `expr.proto`, `comet_scalar_funcs.rs`                                     | `review-comet-expression-pr` |
-| `CometExecIterator`, `CometNativeArrowSource`, `NativeUtil`, `CometVector` subclasses, `jni_api.rs`, `scan.rs`, `aligned_stream_reader.rs`, anything using `FFI_Arrow*` | `review-comet-ffi-pr`        |
-| `native/core/src/execution/memory_pools/`, `CometTaskMemoryManager`, `CometShuffleMemoryAllocator`, `MemoryConsumer` / `try_grow` / `reserve` call sites, pool configs  | `review-comet-memory-pr`     |
-| `native/shuffle/`, `spark/src/main/scala/org/apache/spark/sql/comet/execution/shuffle/`, `spark/src/main/java/org/apache/spark/shuffle/`, `CometShuffleExchangeExec`    | `review-comet-shuffle-pr`    |
+| The PR touches                                                                                                                                                                             | Also use                        |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------- |
+| `spark/src/main/scala/org/apache/comet/serde/`, `QueryPlanSerde.scala`, `native/spark-expr/`, `expr.proto`, `comet_scalar_funcs.rs`                                                        | `review-comet-expression-pr`    |
+| `CometExecIterator`, `CometNativeArrowSource`, `NativeUtil`, `CometVector` subclasses, `jni_api.rs`, `scan.rs`, anything using `FFI_Arrow*`                                                | `review-comet-ffi-pr`           |
+| `native/core/src/execution/memory_pools/`, `CometTaskMemoryManager`, `CometShuffleMemoryAllocator`, `MemoryConsumer` / `try_grow` / `reserve` call sites, pool configs                     | `review-comet-memory-pr`        |
+| `native/shuffle/`, `spark/src/main/scala/org/apache/spark/sql/comet/execution/shuffle/`, `spark/src/main/java/org/apache/spark/shuffle/`, `CometShuffleExchangeExec`                       | `review-comet-shuffle-pr`       |
+| `IcebergWriteStrategy`, `IcebergWriteExec`, `IcebergCommitExec`, `CometIcebergWriteExec`, `CometIcebergNativeWrite`, `iceberg_write.rs`, `iceberg_partition_path.rs`, the iceberg-rust pin | `review-comet-iceberg-write-pr` |
 
 For a new operator, read `docs/source/contributor-guide/adding_a_new_operator.md` alongside this
 skill. There is no dedicated operator review skill yet.
@@ -165,6 +166,25 @@ before merge. If it is, raise it and expect a response. If it is not, cut it. Th
 - This bar is about what gets raised, not about how it is worded. Keep the tone below. A question you
   expect an answer to still counts as something the author needs to address.
 
+## Request Changes for Correctness and Performance Regressions
+
+Two kinds of finding have to block the merge until the author addresses them: a correctness problem
+that the PR introduces, and a performance regression. A correctness problem means Comet can return a
+different answer from Spark, including a result where Spark raises an error, or `Compatible()` over a
+known divergence. Crashes, hangs, leaks, and lost or corrupted data count too. A performance
+regression means an existing path gets slower or uses more memory. A tracking issue for a later fix
+does not address either one.
+
+When any finding is one of these, the review is submitted as **Request changes**. `main` needs a
+single approval to merge, and any committer's approval counts, including one given before this
+review. A **Comment** review does not stop that approval from merging the PR over the finding. A
+**Request changes** review from a reviewer with write access blocks the merge until the same reviewer
+approves the PR or someone with write access dismisses the review.
+
+Requesting changes commits the reviewer to the re-review. Once the author has addressed the findings
+behind it, the reviewer approves the PR or dismisses the review. A later **Comment** review leaves
+the block in place.
+
 ## Output Format
 
 Present your review as guidance for the reviewer:
@@ -176,6 +196,12 @@ Present your review as guidance for the reviewer:
 5. **Suggested Review Comments**, specific comments the reviewer could leave, with file and line
    references. Everything here is something you expect the author to address. Anything that did not
    clear the bar above should not appear.
+6. **Review State**, how to submit the review. Use the first case that applies:
+   - **Request changes** when any finding is a correctness problem that the PR introduces or a
+     performance regression. Name those findings.
+   - **Approve**, or dismiss the earlier review, when this is a re-review and the findings behind the
+     reviewer's earlier **Request changes** review have all been addressed.
+   - **Comment** otherwise.
 
 ## Review Tone and Style
 
@@ -202,3 +228,8 @@ Instead:
 **IMPORTANT: Never post comments or reviews on the PR directly.** This skill and all of its siblings
 are for providing guidance to a human reviewer. Present all findings and suggested comments to the
 user. The user will decide what to post.
+
+When the user tells you to post the review for them, submit it in the review state from the output.
+For **Request changes** that is
+`gh pr review <pr> --repo apache/datafusion-comet --request-changes --body-file <file>`. A PR comment
+or a **Comment** review does not block the merge.
