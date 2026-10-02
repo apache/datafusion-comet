@@ -1151,12 +1151,28 @@ class CometInMemoryCacheSuite extends CometTestBase {
     assert(installed(CometConf.COMET_SHUFFLE_ENABLED.key -> "false"))
     assert(installed("spark.comet.exec.shuffle.enabled" -> "false"))
 
-    // Kryo with registration required rejects Comet's cached batch unless the application lists
-    // CometKryoRegistrator, on its own or beside a registrator of its own.
+    // Kryo with registration required rejects Comet's cached batch unless something registered
+    // it: CometKryoRegistrator, on its own or beside a registrator of the application's, or the
+    // application's own registrations.
     val kryo = "spark.serializer" -> "org.apache.spark.serializer.KryoSerializer"
     val registrationRequired = "spark.kryo.registrationRequired" -> "true"
     val registrator = "spark.kryo.registrator"
+    val sparkOnly = classOf[SparkCachedBatchKryoRegistrator].getName
     assert(!installed(cometShuffle, kryo, registrationRequired))
+    assert(!installed(cometShuffle, kryo, registrationRequired, registrator -> sparkOnly))
+    assert(
+      installed(
+        cometShuffle,
+        kryo,
+        registrationRequired,
+        registrator -> s"$sparkOnly, ${CometKryoRegistrator.CLASS_NAME}"))
+    assert(
+      installed(
+        cometShuffle,
+        kryo,
+        registrationRequired,
+        "spark.kryo.classesToRegister" -> ArrowCachedBatchSerializer.cachedBatchClass.getName))
+    // A registrator that cannot be loaded leaves only spark.kryo.registrator to go by.
     assert(!installed(cometShuffle, kryo, registrationRequired, registrator -> "com.example.R"))
     assert(
       installed(
@@ -1166,6 +1182,31 @@ class CometInMemoryCacheSuite extends CometTestBase {
         registrator -> s"com.example.R, ${CometKryoRegistrator.CLASS_NAME}"))
     // Without registrationRequired, Kryo writes the class name of anything unregistered instead.
     assert(installed(cometShuffle, kryo))
+  }
+
+  test("Comet plugin finds the Kryo registrations Comet needs however they were made") {
+    def unregistered(settings: (String, String)*): Seq[Class[_]] =
+      CometDriverPlugin.unregisteredKryoClasses(new SparkConf().setAll(settings))
+
+    val kryo = "spark.serializer" -> "org.apache.spark.serializer.KryoSerializer"
+    val registrationRequired = "spark.kryo.registrationRequired" -> "true"
+    assert(unregistered().isEmpty)
+    assert(unregistered(kryo).isEmpty)
+    assert(
+      unregistered(kryo, registrationRequired).contains(
+        ArrowCachedBatchSerializer.cachedBatchClass))
+    assert(
+      unregistered(
+        kryo,
+        registrationRequired,
+        "spark.kryo.registrator" -> CometKryoRegistrator.CLASS_NAME).isEmpty)
+    assert(
+      unregistered(
+        kryo,
+        registrationRequired,
+        "spark.kryo.classesToRegister" -> CometKryoRegistrator.classes
+          .map(_.getName)
+          .mkString(",")).isEmpty)
   }
 
   test("Comet in-memory cache supports empty projection scan") {

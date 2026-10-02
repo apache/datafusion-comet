@@ -286,10 +286,11 @@ object CometConf extends ShimCometConf {
         "so the unselected ones are never decompressed. Reads that feed Spark operators rather " +
         "than Comet ones still pay a row conversion the default format avoids, and can be " +
         "slower than Spark's cache. With spark.kryo.registrationRequired=true, the plugin " +
-        "installs it only if spark.kryo.registrator includes " +
-        "org.apache.comet.CometKryoRegistrator, which has to be set before creating the " +
-        "SparkContext, because Kryo would otherwise reject a cached block as soon as it is " +
-        "serialized, including the disk half of the default MEMORY_AND_DISK storage level.")
+        "installs it only if Kryo has registered Comet's cached batch, as " +
+        "spark.kryo.registrator=org.apache.comet.CometKryoRegistrator does when set before " +
+        "creating the SparkContext, because Kryo would otherwise reject a cached block as soon " +
+        "as it is serialized, including the disk half of the default MEMORY_AND_DISK storage " +
+        "level.")
       .booleanConf
       .createWithDefault(true)
 
