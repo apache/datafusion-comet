@@ -31,7 +31,7 @@ import org.apache.spark.sql.catalyst.expressions.Cast
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.optimizer.EliminateSorts
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, RangePartitioning}
-import org.apache.spark.sql.comet.{CometFilterExec, CometHashAggregateExec, CometNativeExec, CometProjectExec}
+import org.apache.spark.sql.comet.{CometFilterExec, CometHashAggregateExec, CometNativeExec, CometProjectExec, CometSortAggregateExec}
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.SQLExecution
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AdaptiveSparkPlanHelper, ShuffleQueryStageExec}
@@ -3402,6 +3402,40 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     // Empty grouping is a distinct plan shape: no pre-aggregate sort, empty output ordering,
     // and adjustOutputForNativeState with zero grouping columns.
     assertSortAggregateRunsNatively("SELECT sort_array(collect_set(v)) FROM tbl")
+  }
+
+  // Spark puts a SortExec between each sort aggregate and the exchange below it, so the passes
+  // that pair a buffer-consuming aggregate with its Partial must walk through it. If they stop
+  // there, a native collect_list Partial stays native under a Spark consumer.
+  private def assertSortAggregateStaysInSpark(query: String, confs: (String, String)*): Unit = {
+    Seq("false", "true").foreach { aqe =>
+      withSQLConf(
+        Seq(
+          SQLConf.USE_OBJECT_HASH_AGG.key -> "false",
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe,
+          CometConf.COMET_SHUFFLE_ENABLED.key -> "true") ++ confs: _*) {
+        withParquetTable((0 until 8).map(i => (i % 2, i)), "tbl") {
+          val df = sql(query)
+          checkSparkAnswer(df)
+          val plan = df.queryExecution.executedPlan
+          assert(collect(plan) { case agg: SortAggregateExec => agg }.nonEmpty, plan)
+          assert(collect(plan) { case agg: CometSortAggregateExec => agg }.isEmpty, plan)
+        }
+      }
+    }
+  }
+
+  test("SortAggregate keeps a collect_list partial in Spark when its final cannot convert") {
+    assertSortAggregateStaysInSpark(
+      "SELECT _1, sort_array(collect_list(_2)) FROM tbl GROUP BY _1",
+      CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> "false")
+  }
+
+  test("SortAggregate runs a distinct collect_list chain in Spark") {
+    // The PartialMerge stages of the distinct rewrite cannot carry the collect_list buffer
+    // natively (issue #4724), so the whole chain falls back.
+    assertSortAggregateStaysInSpark(
+      "SELECT _1, sort_array(collect_list(_2)), count(DISTINCT _2) FROM tbl GROUP BY _1")
   }
 
   // Regression: Catalyst prunes `HashAggregateExec.resultExpressions` to

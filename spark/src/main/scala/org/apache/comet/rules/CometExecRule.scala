@@ -1262,8 +1262,9 @@ case class CometExecRule(session: SparkSession)
    * Inspect a failed repair's buffer path without rewriting it or materializing any stage. Report
    * only a native Partial/PartialMerge whose emitted state is not known to be Spark-compatible.
    * Spark Partials and completed aggregates establish new buffers, so stop there rather than
-   * finding an unrelated native producer below them. Only known aggregate and exchange wrappers
-   * forward the same buffer path; an arbitrary operator is not evidence of a mixed boundary.
+   * finding an unrelated native producer below them. Only known aggregate, sort and exchange
+   * wrappers forward the same buffer path; an arbitrary operator is not evidence of a mixed
+   * boundary.
    */
   private def hasUnrepairedNativeBuffer(plan: SparkPlan): Boolean = plan match {
     case agg: CometBaseAggregateExec if agg.aggregateExpressions.isEmpty =>
@@ -1279,6 +1280,9 @@ case class CometExecRule(session: SparkSession)
       agg.aggregateExpressions.forall(e => e.mode == Partial || e.mode == PartialMerge) &&
       hasUnrepairedNativeBuffer(agg.child)
     case placeholder: CometSinkPlaceHolder => hasUnrepairedNativeBuffer(placeholder.child)
+    // A sort aggregate reads its buffers through the sort that orders them.
+    case sort: SortExec => hasUnrepairedNativeBuffer(sort.child)
+    case sort: CometSortExec => hasUnrepairedNativeBuffer(sort.child)
     case read: AQEShuffleReadExec => hasUnrepairedNativeBuffer(read.child)
     case stage: ShuffleQueryStageExec => hasUnrepairedNativeBuffer(stage.plan)
     case reused: ReusedExchangeExec => hasUnrepairedNativeBuffer(reused.child)
@@ -1290,9 +1294,10 @@ case class CometExecRule(session: SparkSession)
   /**
    * The early tagging pass cannot know whether a Final's child will become native. Check the
    * actual conversion result before serialization or AQE stage creation, restoring the feeding
-   * aggregate/exchange chain while keeping native work below its Partial. Return the repaired
-   * plan, or preserve an unrepairable path and record one warning on its Spark Final if an unsafe
-   * native producer remains. Existing stages and their buffers are never rewritten by this pass.
+   * aggregate/sort/exchange chain while keeping native work below its Partial. Return the
+   * repaired plan, or preserve an unrepairable path and record one warning on its Spark Final if
+   * an unsafe native producer remains. Existing stages and their buffers are never rewritten by
+   * this pass.
    */
   private[rules] def revertUnsafePartialAggregates(plan: SparkPlan): SparkPlan = {
     def revertChain(node: SparkPlan): Option[SparkPlan] = node match {
@@ -1317,6 +1322,12 @@ case class CometExecRule(session: SparkSession)
       case agg: BaseAggregateExec
           if agg.aggregateExpressions.forall(e => e.mode == Partial || e.mode == PartialMerge) =>
         revertChain(agg.child).map(child => agg.withNewChildren(Seq(child)))
+
+      // A sort aggregate reads its buffers through the sort that orders them.
+      case sort: CometSortExec =>
+        revertChain(sort.child).map(child => sort.originalPlan.withNewChildren(Seq(child)))
+      case sort: SortExec =>
+        revertChain(sort.child).map(child => sort.withNewChildren(Seq(child)))
 
       case CometSinkPlaceHolder(_, _, shuffle: CometShuffleExchangeExec) =>
         revertChain(shuffle)
@@ -1357,11 +1368,12 @@ case class CometExecRule(session: SparkSession)
 
   /**
    * Look for the bottom Partial-mode aggregate that feeds into the given plan (the child of a
-   * Final). Walks through exchanges and AQE stages, and continues down through intermediate
-   * aggregate stages whose modes are all Partial / PartialMerge - these are the PartialMerge (and
-   * mixed Partial/PartialMerge) stages that Spark's distinct-aggregate rewrite inserts between
-   * the Partial and the Final. Stops at anything else. Requires `aggregateExpressions.nonEmpty`
-   * so that group-by-only dedup stages are traversed rather than mistaken for the partial.
+   * Final). Walks through exchanges, AQE stages and the sorts that Spark inserts below sort
+   * aggregates, and continues down through intermediate aggregate stages whose modes are all
+   * Partial / PartialMerge - these are the PartialMerge (and mixed Partial/PartialMerge) stages
+   * that Spark's distinct-aggregate rewrite inserts between the Partial and the Final. Stops at
+   * anything else. Requires `aggregateExpressions.nonEmpty` so that group-by-only dedup stages
+   * are traversed rather than mistaken for the partial.
    */
   private def findPartialAggInPlan(plan: SparkPlan): Option[BaseAggregateExec] = plan match {
     case agg: BaseAggregateExec
@@ -1376,6 +1388,7 @@ case class CometExecRule(session: SparkSession)
     case a: AQEShuffleReadExec => findPartialAggInPlan(a.child)
     case s: ShuffleQueryStageExec => findPartialAggInPlan(s.plan)
     case e: ShuffleExchangeExec => findPartialAggInPlan(e.child)
+    case s: SortExec => findPartialAggInPlan(s.child)
     case other =>
       logDebug(s"findPartialAggInPlan: stopping at ${other.nodeName}; not a known passthrough")
       None
