@@ -26,7 +26,7 @@ import org.apache.spark.sql.execution.{RangeExec, SparkPlan}
 import com.google.common.base.Objects
 
 import org.apache.comet.{CometConf, ConfigEntry}
-import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass}
+import org.apache.comet.serde.{CometOperatorSerde, Compatible, OperatorOuterClass, SupportLevel, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.Operator
 
 /**
@@ -38,7 +38,7 @@ import org.apache.comet.serde.OperatorOuterClass.Operator
  */
 case class CometRangeExec(
     override val nativeOp: Operator,
-    override val originalPlan: RangeExec,
+    @transient override val originalPlan: RangeExec,
     override val output: Seq[Attribute],
     override val serializedPlanOpt: SerializedPlan)
     extends CometLeafExec {
@@ -77,6 +77,33 @@ object CometRangeExec extends CometOperatorSerde[RangeExec] {
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
     CometConf.COMET_EXEC_RANGE_ENABLED)
+
+  /**
+   * Comet follows Spark's generated code for `RangeExec`. With whole-stage codegen disabled,
+   * Spark runs the interpreted `RangeExec.doExecute` instead, and the two can return different
+   * rows when the generated code's arithmetic overflows, so those ranges stay on Spark.
+   */
+  override def getSupportLevel(op: RangeExec): SupportLevel = {
+    if (!op.conf.wholeStageEnabled && mayOverflow(op)) {
+      Unsupported(
+        Some(
+          "Spark's interpreted RangeExec, which runs when whole-stage codegen is disabled, " +
+            "can return different rows for this range"))
+    } else {
+      Compatible()
+    }
+  }
+
+  /**
+   * Whether Spark's generated code for `RangeExec` can overflow for `op`, which is when it can
+   * disagree with the interpreted `RangeExec`. It reads the element count as a long, which
+   * truncates a count that does not fit, and walks each partition in batches of up to 1000 values
+   * whose end wraps if the batch spans 2^63 or more.
+   */
+  private def mayOverflow(op: RangeExec): Boolean = {
+    op.numElements > Long.MaxValue ||
+    BigInt(op.step).abs * op.numElements.min(1000) >= (BigInt(1) << 63)
+  }
 
   override def convert(
       op: RangeExec,

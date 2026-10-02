@@ -26,6 +26,7 @@ import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.comet.{CometRangeExec, CometSparkToColumnarExec}
 import org.apache.spark.sql.execution.{RangeExec, SparkPlan}
 import org.apache.spark.sql.functions.{col, count, sum}
+import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
 
@@ -107,6 +108,24 @@ class CometRangeExecSuite extends CometTestBase {
         checkCometRange(df)
         assert(df.collect().isEmpty)
       }
+    }
+  }
+
+  rangeTest("empty range under a global aggregate") {
+    // The native plan has no partitions, and the aggregate still returns its one row.
+    val df = spark.range(1, -2, 1, 4).agg(count("id"), sum("id"))
+    checkSparkAnswer(df)
+    assert(df.collect().toSeq == Seq(Row(0L, null)))
+  }
+
+  rangeTest("whole-stage codegen disabled") {
+    withSQLConf(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false") {
+      // Spark's interpreted RangeExec returns the same rows as its generated code here.
+      checkCometRange(spark.range(0, 1000, 3, 4).selectExpr("id + 1"))
+      // Here it returns four rows where the generated code, which Comet follows, returns none.
+      checkSparkAnswerAndFallbackReason(
+        spark.range(Long.MinValue, Long.MaxValue, 1L << 62, 1).selectExpr("id + 1"),
+        "Spark's interpreted RangeExec")
     }
   }
 
