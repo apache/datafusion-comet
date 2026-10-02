@@ -2478,9 +2478,10 @@ class CometCodegenSuite
         "has no native handler")
       // Spark hashes the value the function returned. AQE would coalesce the partitions.
       withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
-        checkSparkAnswer(
+        checkSparkAnswerAndFallbackReason(
           "SELECT i, spark_partition_id() FROM " +
-            "(SELECT * FROM t DISTRIBUTE BY decfn.ns.as_money(i))")
+            "(SELECT * FROM t DISTRIBUTE BY decfn.ns.as_money(i))",
+          reason)
       }
     }
   }
