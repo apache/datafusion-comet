@@ -825,6 +825,9 @@ not scan Comet’s format natively.</p>
 <li><p>Cached tables are scanned by <code class="docutils literal notranslate"><span class="pre">CometInMemoryTableScan</span></code>, which feeds Comet operators directly.</p></li>
 <li><p>Per-batch column statistics are recorded in the layout Spark’s <code class="docutils literal notranslate"><span class="pre">SimpleMetricsCachedBatchSerializer</span></code>
 expects, so Spark can prune whole cached batches on a predicate before any of them is decoded.</p></li>
+<li><p>The size Spark’s planner sees for a cached relation is its decoded Arrow size, not the compressed
+size it occupies in memory, as with Spark’s own cache formats. Compression therefore does not
+change how queries over a cached relation are planned, such as whether a join broadcasts it.</p></li>
 </ul>
 <p>Relations whose schema Comet’s Arrow writer cannot store — interval types, most notably — are
 delegated in full to Spark’s default cache format, per relation. Which format a relation uses does
@@ -834,6 +837,9 @@ codec is a runtime config, but each batch records the codec it was written with,
 under one setting stays readable after the setting changes. Turning
 <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.inMemoryCache.enabled</span></code> off at runtime only sends cached scans back to Spark’s
 execution path; the cached data stays readable either way.</p>
+<p>A relation whose cached plan records observed metrics, from <code class="docutils literal notranslate"><span class="pre">Dataset.observe</span></code>, is still stored in
+Comet’s format but is scanned by Spark’s <code class="docutils literal notranslate"><span class="pre">InMemoryTableScanExec</span></code>, because Spark collects those
+metrics only through that scan.</p>
 </section>
 <section id="storage-format">
 <h2>Storage format<a class="headerlink" href="#storage-format" title="Link to this heading">#</a></h2>

@@ -125,6 +125,12 @@ The following cases have no native implementation and always run in the JVM usin
 
 - Non-UTF8_BINARY collated operands are routed through the JVM codegen dispatcher (Spark's own `doGenCode`) because native comparison is byte-wise.
 
+## StringInstr
+
+For applicable cases that are not selected for native execution automatically, `StringInstr` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline) by default. Set `spark.comet.expression.StringInstr.allowIncompatible=true` to explicitly select Comet's native implementation, which has the following differences from Spark:
+
+- Spark evaluates non-UTF8_BINARY collated string input under its collation, while Comet's native instr compares raw bytes
+
 ## StringLPad
 
 The following cases have no native implementation and always run in the JVM using Spark's code-generated implementation (inside the Comet pipeline):
@@ -162,6 +168,30 @@ By default, `StringSplit` is evaluated in the JVM using Spark's own code-generat
 By default, `StringTranslate` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set `spark.comet.expression.StringTranslate.allowIncompatible=true` to opt into Comet's native implementation instead, which has the following differences from Spark:
 
 - DataFusion's translate iterates over Unicode graphemes (Spark uses code points) and substitutes U+0000 instead of treating it as a deletion sentinel
+
+## StringTrim
+
+For applicable cases that are not selected for native execution automatically, `StringTrim` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline) by default. Set `spark.comet.expression.StringTrim.allowIncompatible=true` to explicitly select Comet's native implementation, which has the following differences from Spark:
+
+- Spark evaluates non-UTF8_BINARY collated string input under its collation, while Comet's native trim with a trim string compares raw bytes
+
+## StringTrimLeft
+
+For applicable cases that are not selected for native execution automatically, `StringTrimLeft` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline) by default. Set `spark.comet.expression.StringTrimLeft.allowIncompatible=true` to explicitly select Comet's native implementation, which has the following differences from Spark:
+
+- Spark evaluates non-UTF8_BINARY collated string input under its collation, while Comet's native ltrim with a trim string compares raw bytes
+
+## StringTrimRight
+
+For applicable cases that are not selected for native execution automatically, `StringTrimRight` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline) by default. Set `spark.comet.expression.StringTrimRight.allowIncompatible=true` to explicitly select Comet's native implementation, which has the following differences from Spark:
+
+- Spark evaluates non-UTF8_BINARY collated string input under its collation, while Comet's native rtrim with a trim string compares raw bytes
+
+## SubstringIndex
+
+For applicable cases that are not selected for native execution automatically, `SubstringIndex` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline) by default. Set `spark.comet.expression.SubstringIndex.allowIncompatible=true` to explicitly select Comet's native implementation, which has the following differences from Spark:
+
+- Spark evaluates non-UTF8_BINARY collated string input under its collation, while Comet's native substring_index compares raw bytes
 
 ## UnBase64
 

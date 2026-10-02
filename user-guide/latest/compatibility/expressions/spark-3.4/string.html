@@ -926,6 +926,13 @@ under the License.
 <li><p>Non-UTF8_BINARY collated operands are routed through the JVM codegen dispatcher (Spark’s own <code class="docutils literal notranslate"><span class="pre">doGenCode</span></code>) because native comparison is byte-wise.</p></li>
 </ul>
 </section>
+<section id="stringinstr">
+<h2>StringInstr<a class="headerlink" href="#stringinstr" title="Link to this heading">#</a></h2>
+<p>For applicable cases that are not selected for native execution automatically, <code class="docutils literal notranslate"><span class="pre">StringInstr</span></code> is evaluated in the JVM using Spark’s own code-generated implementation (run inside the Comet pipeline) by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StringInstr.allowIncompatible=true</span></code> to explicitly select Comet’s native implementation, which has the following differences from Spark:</p>
+<ul class="simple">
+<li><p>Spark evaluates non-UTF8_BINARY collated string input under its collation, while Comet’s native instr compares raw bytes</p></li>
+</ul>
+</section>
 <section id="stringlpad">
 <h2>StringLPad<a class="headerlink" href="#stringlpad" title="Link to this heading">#</a></h2>
 <p>The following cases have no native implementation and always run in the JVM using Spark’s code-generated implementation (inside the Comet pipeline):</p>
@@ -968,6 +975,34 @@ under the License.
 <p>By default, <code class="docutils literal notranslate"><span class="pre">StringTranslate</span></code> is evaluated in the JVM using Spark’s own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StringTranslate.allowIncompatible=true</span></code> to opt into Comet’s native implementation instead, which has the following differences from Spark:</p>
 <ul class="simple">
 <li><p>DataFusion’s translate iterates over Unicode graphemes (Spark uses code points) and substitutes U+0000 instead of treating it as a deletion sentinel</p></li>
+</ul>
+</section>
+<section id="stringtrim">
+<h2>StringTrim<a class="headerlink" href="#stringtrim" title="Link to this heading">#</a></h2>
+<p>For applicable cases that are not selected for native execution automatically, <code class="docutils literal notranslate"><span class="pre">StringTrim</span></code> is evaluated in the JVM using Spark’s own code-generated implementation (run inside the Comet pipeline) by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StringTrim.allowIncompatible=true</span></code> to explicitly select Comet’s native implementation, which has the following differences from Spark:</p>
+<ul class="simple">
+<li><p>Spark evaluates non-UTF8_BINARY collated string input under its collation, while Comet’s native trim with a trim string compares raw bytes</p></li>
+</ul>
+</section>
+<section id="stringtrimleft">
+<h2>StringTrimLeft<a class="headerlink" href="#stringtrimleft" title="Link to this heading">#</a></h2>
+<p>For applicable cases that are not selected for native execution automatically, <code class="docutils literal notranslate"><span class="pre">StringTrimLeft</span></code> is evaluated in the JVM using Spark’s own code-generated implementation (run inside the Comet pipeline) by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StringTrimLeft.allowIncompatible=true</span></code> to explicitly select Comet’s native implementation, which has the following differences from Spark:</p>
+<ul class="simple">
+<li><p>Spark evaluates non-UTF8_BINARY collated string input under its collation, while Comet’s native ltrim with a trim string compares raw bytes</p></li>
+</ul>
+</section>
+<section id="stringtrimright">
+<h2>StringTrimRight<a class="headerlink" href="#stringtrimright" title="Link to this heading">#</a></h2>
+<p>For applicable cases that are not selected for native execution automatically, <code class="docutils literal notranslate"><span class="pre">StringTrimRight</span></code> is evaluated in the JVM using Spark’s own code-generated implementation (run inside the Comet pipeline) by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StringTrimRight.allowIncompatible=true</span></code> to explicitly select Comet’s native implementation, which has the following differences from Spark:</p>
+<ul class="simple">
+<li><p>Spark evaluates non-UTF8_BINARY collated string input under its collation, while Comet’s native rtrim with a trim string compares raw bytes</p></li>
+</ul>
+</section>
+<section id="substringindex">
+<h2>SubstringIndex<a class="headerlink" href="#substringindex" title="Link to this heading">#</a></h2>
+<p>For applicable cases that are not selected for native execution automatically, <code class="docutils literal notranslate"><span class="pre">SubstringIndex</span></code> is evaluated in the JVM using Spark’s own code-generated implementation (run inside the Comet pipeline) by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.SubstringIndex.allowIncompatible=true</span></code> to explicitly select Comet’s native implementation, which has the following differences from Spark:</p>
+<ul class="simple">
+<li><p>Spark evaluates non-UTF8_BINARY collated string input under its collation, while Comet’s native substring_index compares raw bytes</p></li>
 </ul>
 </section>
 <section id="unbase64">
@@ -1050,12 +1085,17 @@ under the License.
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#regexpreplace">RegExpReplace</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#reverse">Reverse</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#startswith">StartsWith</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#stringinstr">StringInstr</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#stringlpad">StringLPad</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#stringrpad">StringRPad</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#stringrepeat">StringRepeat</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#stringreplace">StringReplace</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#stringsplit">StringSplit</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#stringtranslate">StringTranslate</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#stringtrim">StringTrim</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#stringtrimleft">StringTrimLeft</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#stringtrimright">StringTrimRight</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#substringindex">SubstringIndex</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#unbase64">UnBase64</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#upper">Upper</a></li>
 </ul>

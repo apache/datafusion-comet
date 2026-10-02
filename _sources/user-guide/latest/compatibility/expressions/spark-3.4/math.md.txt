@@ -27,6 +27,18 @@ The following cases have no native implementation and always run in the JVM usin
 
 - `INTERVAL YEAR TO MONTH` and `INTERVAL DAY TO SECOND` inputs
 
+## Greatest
+
+For applicable cases that are not selected for native execution automatically, `Greatest` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline) by default. Set `spark.comet.expression.Greatest.allowIncompatible=true` to explicitly select Comet's native implementation, which has the following differences from Spark:
+
+- Spark evaluates non-UTF8_BINARY collated string input under its collation, while Comet's native greatest compares raw bytes
+
+## Least
+
+For applicable cases that are not selected for native execution automatically, `Least` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline) by default. Set `spark.comet.expression.Least.allowIncompatible=true` to explicitly select Comet's native implementation, which has the following differences from Spark:
+
+- Spark evaluates non-UTF8_BINARY collated string input under its collation, while Comet's native least compares raw bytes
+
 ## Rand
 
 The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:

@@ -814,6 +814,20 @@ under the License.
 <li><p><code class="docutils literal notranslate"><span class="pre">INTERVAL</span> <span class="pre">YEAR</span> <span class="pre">TO</span> <span class="pre">MONTH</span></code> and <code class="docutils literal notranslate"><span class="pre">INTERVAL</span> <span class="pre">DAY</span> <span class="pre">TO</span> <span class="pre">SECOND</span></code> inputs</p></li>
 </ul>
 </section>
+<section id="greatest">
+<h2>Greatest<a class="headerlink" href="#greatest" title="Link to this heading">#</a></h2>
+<p>For applicable cases that are not selected for native execution automatically, <code class="docutils literal notranslate"><span class="pre">Greatest</span></code> is evaluated in the JVM using Spark’s own code-generated implementation (run inside the Comet pipeline) by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Greatest.allowIncompatible=true</span></code> to explicitly select Comet’s native implementation, which has the following differences from Spark:</p>
+<ul class="simple">
+<li><p>Spark evaluates non-UTF8_BINARY collated string input under its collation, while Comet’s native greatest compares raw bytes</p></li>
+</ul>
+</section>
+<section id="least">
+<h2>Least<a class="headerlink" href="#least" title="Link to this heading">#</a></h2>
+<p>For applicable cases that are not selected for native execution automatically, <code class="docutils literal notranslate"><span class="pre">Least</span></code> is evaluated in the JVM using Spark’s own code-generated implementation (run inside the Comet pipeline) by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Least.allowIncompatible=true</span></code> to explicitly select Comet’s native implementation, which has the following differences from Spark:</p>
+<ul class="simple">
+<li><p>Spark evaluates non-UTF8_BINARY collated string input under its collation, while Comet’s native least compares raw bytes</p></li>
+</ul>
+</section>
 <section id="rand">
 <h2>Rand<a class="headerlink" href="#rand" title="Link to this heading">#</a></h2>
 <p>The following cases are not supported by Comet and always fall back to Spark, regardless of any <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code> setting:</p>
@@ -887,6 +901,8 @@ under the License.
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#abs">Abs</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#greatest">Greatest</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#least">Least</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#rand">Rand</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#randn">Randn</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#round">Round</a></li>
