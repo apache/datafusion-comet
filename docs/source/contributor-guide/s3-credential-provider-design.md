@@ -63,15 +63,22 @@ A provider implementation might be tempted to probe an existing static populated
 
 Constructing a fresh provider from `catalogProperties` plus `SparkEnv` is the only strategy that works across all four cases. The trade-off is that on the driver (and any JVM where Hadoop S3A is also active), two credential caches now exist for the same identity: one inside the Hadoop signer's provider, one inside the SPI implementation's. The vendor pays for this with a small number of extra AS round-trips on cold starts and TTL boundaries. A future optional optimization could probe the static first and reuse if non-null, falling back to fresh construction otherwise.
 
-## Why no Comet-side cache
+## Credential reuse, bounded by the reported expiry
 
-Comet's bridge does not maintain a TTL cache, schedule refresh, or broadcast catalog state. All of that is the vendor's responsibility:
+Comet's bridge does not schedule refresh or broadcast catalog state. That stays the vendor's responsibility:
 
 - Iceberg vendors get `software.amazon.awssdk.utils.cache.CachedSupplier` for free inside `org.apache.iceberg.aws.s3.VendedCredentialsProvider`.
 - Custom-STS vendors write whatever cache fits their refresh model.
 - Driver-only state is distributed via `initialize`'s `catalogProperties` (Iceberg path) or read from Hadoop conf via `SparkEnv` (Parquet path). Both are plan-time snapshots: Comet does not re-execute the catalog or push fresh values to running scans. Vendors that need a refreshing bearer compose with Spark's `HadoopDelegationTokenProvider`, which mints and renews on the driver and propagates to executors via `UserGroupInformation`. The two SPIs are orthogonal: Spark covers bearer lifecycle, this SPI covers path-aware AWS credential minting.
 
-A Comet-side cache would have to either expose a tuning knob (TTL, max size, eviction policy) and grow over time, or be hardcoded and surprise vendors whose policies disagree. The bridge intentionally has neither and forwards every call.
+What the bridge does do is reuse a credential for as long as the vendor's expiry allows. Each bridge keeps its last credential with a known `expirationEpochMillis` and serves it until five minutes before that expiry (`REFRESH_BEFORE_EXPIRY` in `credential_bridge.rs`), then asks the provider again. A bridge makes at most one provider call at a time, and a request that waited for one shares its outcome, a credential or an error, even when the credential cannot be kept. A bridge stands for one location on a location-scoped store, so requests for different locations never wait on each other. A credential whose expiry is unknown (`0`), or that does not expire (`Long.MAX_VALUE`), is not kept, and the provider is asked again for every request that does not overlap a call in flight.
+
+The bridge used to forward every call, which left each path with a different and partly wrong answer to expiry:
+
+- object_store asks for a credential on every request and has no notion of expiry, so the Parquet path called the provider once per HTTP request and used a credential however close it was to expiring. object_store also signs a request once and sends that signature again on every retry, for up to 3 minutes by default, so a retry after backoff could arrive after the session token expired, and a 403 is not retried.
+- iceberg-rust builds a new opendal operator, and with it a new reqsign signer, for every storage call, so reqsign's own cache lasts one operation, and a scan called the provider at least once per data and delete file, even with one-hour tokens.
+
+The reuse window is not a tuning knob. It follows the expiry the vendor reports, and a vendor that wants every request to reach it reports `0`. Five minutes is the refresh-ahead of Comet's other credential caches, the native Parquet credential chain and the IRSA web-identity provider, and it covers object_store's retries. A vendor whose credentials can be revoked before the expiry it reports should report an earlier one.
 
 ## Location-scoped credentials on the Parquet path
 
@@ -86,13 +93,13 @@ A Comet-side cache would have to either expose a tuning knob (TTL, max size, evi
 
 The locations come from asking for the bucket's whole list rather than which prefixes one session covers. Asking per session leaves Comet to discover the other scopes from 403s, which needs mutable per-store state and cannot route a partition that spans scopes. With the whole list up front, routing is a function of the path.
 
-This is consistent with [Why no Comet-side cache](#why-no-comet-side-cache): the store caches no credentials, and every request still calls `getCredentialsForPath`. What it keeps is the provider's location list and a store for each location that has been read, so it grows with the vendor's policy list, not with the paths read. The list is only fetched again after a 403 or a credential failure, so a change that causes neither is not seen until the executor builds a new store.
+The store itself caches no credentials. Each location's bridge reuses its own credential until shortly before its expiry, as [Credential reuse, bounded by the reported expiry](#credential-reuse-bounded-by-the-reported-expiry) describes. What it keeps is the provider's location list and a store for each location that has been read, so it grows with the vendor's policy list, not with the paths read. The list is only fetched again after a 403 or a credential failure, so a change that causes neither is not seen until the executor builds a new store.
 
 The dispatcher returns `null` for a provider that does not implement the interface without calling it, and Comet builds the same plain store as before. The Iceberg path does not use locations. Operations other than reads route by path without the retry, since Comet only reads through these stores.
 
-## The IRSA web-identity provider is the exception that does cache
+## The IRSA web-identity provider keeps its own cache
 
-The "no Comet-side cache" rule above is about the vendor _bridge_. There is one Comet-owned credential provider that deliberately does cache: the EKS/IRSA web-identity provider in `native/core/src/cloud/s3/web_identity.rs`. It is not a vendor path -- there is no JVM SPI involved -- so the reasoning above does not apply.
+The bridge's reuse above is bounded by the expiry a vendor reports. The EKS/IRSA web-identity provider in `native/core/src/cloud/s3/web_identity.rs` is Comet's own and keeps a fuller cache. It is not a vendor path -- there is no JVM SPI involved -- so the reasoning above does not apply.
 
 It exists because the implicit IRSA credential path on the **Iceberg scan** mishandles STS throttling. `AssumeRoleWithWebIdentity` is resolved per reader thread; a concurrent startup burst throttles STS; opendal's default reqsign chain does not retry the throttle and falls through to the EKS node instance role, which lacks bucket access, turning a transient throttle into a hard `403` (this is the reported failure). The raw-Parquet path is intentionally left alone: its AWS SDK default chain already retries and stops on a provider error rather than downgrading, and — because `NativeConfig.extractObjectStoreOptions` forwards Hadoop's `core-default.xml` default for `fs.s3a.aws.credentials.provider` — a Parquet take-over gated on "no provider configured" could never engage anyway. So the take-over is Iceberg-only, and covers both reads and writes (both build their `FileIO` through `load_file_io`): when both `AWS_WEB_IDENTITY_TOKEN_FILE` and `AWS_ROLE_ARN` are set, a region is set, and the catalog configures no explicit credentials, `iceberg_common.rs::build_s3_credential_loader` installs `WebIdentityCredentialProvider` (via a `CustomAwsCredentialLoader`) instead of returning `Ok(None)`. It:
 
@@ -109,15 +116,15 @@ STS endpoint selection (`configure_sts_endpoint`) overrides the SDK's own endpoi
 
 `object_store::CredentialProvider` and `reqsign_core::ProvideCredential` differ in what they consume:
 
-| Concern                 | Parquet (`object_store`)                           | Iceberg (`opendal` via `reqsign-core`)                       |
-| ----------------------- | -------------------------------------------------- | ------------------------------------------------------------ |
-| Trait method            | `get_credential() -> AwsCredential`                | `provide_credential(...) -> Option<IcebergAwsCredential>`    |
-| Returns expiry?         | No (only key/secret/token)                         | Yes (`expires_in: Option<Timestamp>`)                        |
-| Comet-side TTL wrapper? | None. Bridge passed straight to `with_credentials` | None. `opendal` schedules the next refresh from `expires_in` |
-| When SPI is called      | Every `get_credential()` call                      | When `expires_in` is exceeded                                |
-| Vendor returns 0 expiry | Field has no use                                   | Bridge substitutes 5 minutes to bound staleness              |
+| Concern                 | Parquet (`object_store`)                                  | Iceberg (`opendal` via `reqsign-core`)                       |
+| ----------------------- | --------------------------------------------------------- | ------------------------------------------------------------ |
+| Trait method            | `get_credential() -> AwsCredential`                       | `provide_credential(...) -> Option<IcebergAwsCredential>`    |
+| Returns expiry?         | No (only key/secret/token)                                | Yes (`expires_in: Option<Timestamp>`)                        |
+| Comet-side TTL wrapper? | The bridge's own reuse, until 5 minutes before the expiry | The bridge's own reuse, until 5 minutes before the expiry    |
+| When SPI is called      | When the bridge's credential is due, or has no expiry     | When the bridge's credential is due, or has no expiry        |
+| Vendor returns 0 expiry | Not reused; the SPI is called per request                 | Not reused; the bridge tells reqsign it expires in 5 minutes |
 
-The 5-minute fallback is a safety net so a vendor that omits expiry cannot leave `opendal` caching a stale token indefinitely. It is intentionally not a configuration knob.
+The 5-minute fallback on the Iceberg path bounds how long reqsign reuses a credential with no reported expiry within one long-lived reader or writer. It can outlast a short-lived token, which is why a vendor that knows the expiry should report it. It is intentionally not a configuration knob. On both paths a value of `Long.MAX_VALUE` means no expiry, and a value before 2000, almost always seconds sent as milliseconds, is treated as unknown with a warning.
 
 ## Property-bag handling on the Iceberg path
 
