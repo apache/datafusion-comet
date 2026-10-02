@@ -696,4 +696,6 @@ message JvmScalarUdf {
 message AtLeastNNonNulls {
   int32 n = 1;
   repeated Expr children = 2;
+  // Row-count/bitmap-count crossover in rows. If absent, use the native default (64).
+  optional uint32 small_batch_threshold = 3;
 }

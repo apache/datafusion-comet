@@ -519,6 +519,8 @@ object CometAtLeastNNonNulls extends CometExpressionSerde[AtLeastNNonNulls] {
             ExprOuterClass.AtLeastNNonNulls
               .newBuilder()
               .setN(expr.n)
+              .setSmallBatchThreshold(
+                CometConf.COMET_AT_LEAST_N_NON_NULLS_SMALL_BATCH_THRESHOLD.get())
               .addAllChildren(children.map(_.get).asJava))
           .build())
     } else {

@@ -22,7 +22,7 @@ use arrow::array::{Array, ArrayRef, AsArray, BooleanArray, RecordBatch};
 use arrow::buffer::{BooleanBuffer, Buffer};
 use arrow::compute::cast;
 use arrow::datatypes::{DataType, Float32Type, Float64Type, Schema};
-use datafusion::common::{Result, ScalarValue};
+use datafusion::common::{plan_err, Result, ScalarValue};
 use datafusion::physical_expr::expressions::{Column, Literal};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ColumnarValue;
@@ -32,15 +32,30 @@ use datafusion::physical_plan::ColumnarValue;
 pub struct AtLeastNNonNulls {
     n: i32,
     children: Vec<Arc<dyn PhysicalExpr>>,
+    small_batch_threshold: usize,
 }
 
 impl AtLeastNNonNulls {
+    pub const DEFAULT_SMALL_BATCH_THRESHOLD: usize = 64;
+
     pub fn new(n: i32, children: Vec<Arc<dyn PhysicalExpr>>) -> Self {
-        Self { n, children }
+        Self {
+            n,
+            children,
+            small_batch_threshold: Self::DEFAULT_SMALL_BATCH_THRESHOLD,
+        }
     }
 
-    // Sub-word batches do not amortize the bitmap counter's bookkeeping. Keep
-    // the row counter for these batches, including single-row scalar inputs.
+    /// Sets the row-count/bitmap-count crossover without changing the bitmap word size.
+    pub fn with_small_batch_threshold(mut self, threshold: usize) -> Result<Self> {
+        if threshold == 0 {
+            return plan_err!("AtLeastNNonNulls small batch threshold must be positive");
+        }
+        self.small_batch_threshold = threshold;
+        Ok(self)
+    }
+
+    // Small batches may not amortize the bitmap counter's bookkeeping.
     fn evaluate_small_batch(&self, batch: &RecordBatch) -> Result<ColumnarValue> {
         let mut counts = vec![0; batch.num_rows()];
         let mut remaining = batch.num_rows();
@@ -141,7 +156,7 @@ impl PhysicalExpr for AtLeastNNonNulls {
                 result, None,
             ))));
         }
-        if batch.num_rows() < 64 {
+        if batch.num_rows() < self.small_batch_threshold {
             return self.evaluate_small_batch(batch);
         }
         // One bit plane per binary digit holds 64 row counts in each chunk.
@@ -224,7 +239,11 @@ impl PhysicalExpr for AtLeastNNonNulls {
         self: Arc<Self>,
         children: Vec<Arc<dyn PhysicalExpr>>,
     ) -> Result<Arc<dyn PhysicalExpr>> {
-        Ok(Arc::new(Self::new(self.n, children)))
+        Ok(Arc::new(Self {
+            n: self.n,
+            children,
+            small_batch_threshold: self.small_batch_threshold,
+        }))
     }
 }
 
@@ -295,6 +314,24 @@ mod tests {
             .unwrap();
         assert_eq!(array.null_count(), 0);
         array.as_boolean().values().iter().collect()
+    }
+
+    #[test]
+    fn at_least_n_non_nulls_threshold_survives_rewrite() {
+        let input = batch(vec![Arc::new(Int32Array::from(vec![Some(1), None]))]);
+        let expr = AtLeastNNonNulls::new(2, vec![]);
+        assert_eq!(expr.small_batch_threshold, 64);
+        assert!(expr.with_small_batch_threshold(0).is_err());
+
+        let expr = Arc::new(
+            AtLeastNNonNulls::new(2, vec![])
+                .with_small_batch_threshold(128)
+                .unwrap(),
+        );
+        let rewritten = expr.with_new_children(columns(&input)).unwrap();
+        let rewritten = rewritten.downcast_ref::<AtLeastNNonNulls>().unwrap();
+        assert_eq!(rewritten.small_batch_threshold, 128);
+        assert_eq!(result(rewritten, &input), [false, false]);
     }
 
     #[test]
@@ -375,10 +412,12 @@ mod tests {
         let mut children = columns(&batch);
         children.push(Arc::new(Literal::new(ScalarValue::Utf8(Some("".into())))));
         children.push(Arc::new(Literal::new(ScalarValue::Float32(Some(f32::NAN)))));
-        assert_eq!(
-            result(&AtLeastNNonNulls::new(3, children), &batch),
-            [true, false, false, false]
-        );
+        for threshold in [1, 64, 128] {
+            let expr = AtLeastNNonNulls::new(3, children.clone())
+                .with_small_batch_threshold(threshold)
+                .unwrap();
+            assert_eq!(result(&expr, &batch), [true, false, false, false]);
+        }
         assert_eq!(
             result(
                 &AtLeastNNonNulls::new(1, vec![Arc::new(Column::new("c1", 1))]),
@@ -460,17 +499,22 @@ mod tests {
                 .collect(),
         );
         for offset in [0, 1, 7, 63] {
-            for len in [0, 1, 63, 64, 65, 129] {
+            for len in [0, 1, 31, 32, 63, 64, 65, 127, 128, 129] {
                 let sliced = input.slice(offset, len);
                 for n in (0..=66).chain([i32::MAX as usize]) {
                     let expected = (offset..offset + len)
                         .map(|row| row % 66 >= n)
                         .collect::<Vec<_>>();
-                    assert_eq!(
-                        result(&AtLeastNNonNulls::new(n as i32, columns(&sliced)), &sliced),
-                        expected,
-                        "offset={offset}, len={len}, n={n}"
-                    );
+                    for threshold in [1, 32, 64, 65, 128, usize::MAX] {
+                        let expr = AtLeastNNonNulls::new(n as i32, columns(&sliced))
+                            .with_small_batch_threshold(threshold)
+                            .unwrap();
+                        assert_eq!(
+                            result(&expr, &sliced),
+                            expected,
+                            "offset={offset}, len={len}, n={n}, threshold={threshold}"
+                        );
+                    }
                 }
             }
         }
@@ -540,14 +584,16 @@ mod tests {
         ];
         for len in [1, 63, 64, 65, 129] {
             let sliced = input.slice(7, len);
-            assert_eq!(
-                result(&AtLeastNNonNulls::new(2, children.clone()), &sliced),
-                vec![true; len]
-            );
-            // These rows still need the cast when n=3, so its error is required.
-            assert!(AtLeastNNonNulls::new(3, children.clone())
-                .evaluate(&sliced)
-                .is_err());
+            for threshold in [1, 64, 128, usize::MAX] {
+                let expr = |n| {
+                    AtLeastNNonNulls::new(n, children.clone())
+                        .with_small_batch_threshold(threshold)
+                        .unwrap()
+                };
+                assert_eq!(result(&expr(2), &sliced), vec![true; len]);
+                // These rows still need the cast when n=3, so its error is required.
+                assert!(expr(3).evaluate(&sliced).is_err());
+            }
         }
     }
 }

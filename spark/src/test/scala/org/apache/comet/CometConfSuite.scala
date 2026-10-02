@@ -25,6 +25,20 @@ import org.apache.spark.sql.internal.SQLConf
 
 class CometConfSuite extends AnyFunSuite {
 
+  test("AtLeastNNonNulls small batch threshold has a positive configurable default") {
+    val conf = new SQLConf
+    val entry = CometConf.COMET_AT_LEAST_N_NON_NULLS_SMALL_BATCH_THRESHOLD
+    assert(entry.get(conf) == 64)
+    for (threshold <- Seq(1, 32, 65, 128, Int.MaxValue)) {
+      conf.setConfString(entry.key, threshold.toString)
+      assert(entry.get(conf) == threshold)
+    }
+    for (invalid <- Seq("0", "-1", "bad", "2147483648")) {
+      conf.setConfString(entry.key, invalid)
+      assertThrows[IllegalArgumentException](entry.get(conf))
+    }
+  }
+
   test("primary key wins over alternative when both are set") {
     val entry = CometConf
       .conf("spark.comet.testing.alias.primaryWins")

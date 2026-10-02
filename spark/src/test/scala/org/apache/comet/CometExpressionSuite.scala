@@ -86,11 +86,15 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     withTempPath { dir =>
       spark.range(137).selectExpr((Seq("id") ++ fields): _*).write.parquet(dir.getCanonicalPath)
       withParquetTable(dir.getCanonicalPath, "nonnulls") {
-        withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "65") {
-          for (n <- Seq(2, 3, 7, 8, 15, 16, 17, 31, 32, 33, 34)) {
-            checkSparkAnswerAndImpl(
-              spark.table("nonnulls").na.drop(n, columns),
-              native = Seq("atleastnnonnulls"))
+        for (threshold <- Seq(1, 65, 128)) {
+          withSQLConf(
+            CometConf.COMET_BATCH_SIZE.key -> "65",
+            CometConf.COMET_AT_LEAST_N_NON_NULLS_SMALL_BATCH_THRESHOLD.key -> threshold.toString) {
+            for (n <- Seq(2, 3, 7, 8, 15, 16, 17, 31, 32, 33, 34)) {
+              checkSparkAnswerAndImpl(
+                spark.table("nonnulls").na.drop(n, columns),
+                native = Seq("atleastnnonnulls"))
+            }
           }
         }
       }
@@ -116,24 +120,28 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("AtLeastNNonNulls: short-circuit child evaluation") {
     withParquetTable(Seq((Some(1), "bad"), (None, "7")), "nonnulls") {
-      withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
-        def query(n: Int, prefix: Boolean = false): DataFrame = {
-          val df = spark.table("nonnulls")
-          val children = Seq(df.col("_1").expr, Cast(df.col("_2").expr, IntegerType))
-          val args = if (prefix) Literal(1) +: children else children
-          df.select(getColumnFromExpression(AtLeastNNonNulls(n, args)))
-        }
-        for (n <- Seq(-1, 0, 1)) {
-          checkSparkAnswerAndImpl(query(n), native = Seq("atleastnnonnulls"))
-        }
-        // Reach the threshold on different children for different rows in the counter path.
-        checkSparkAnswerAndImpl(query(2, prefix = true), native = Seq("atleastnnonnulls"))
-        for (n <- Seq(2, 3)) {
-          assertExpressionImpl(
-            query(n).queryExecution.executedPlan,
-            Seq("atleastnnonnulls"),
-            Seq.empty)
-          checkSparkError(query(n), "CAST_INVALID_INPUT")
+      for (threshold <- Seq(1, 128)) {
+        withSQLConf(
+          SQLConf.ANSI_ENABLED.key -> "true",
+          CometConf.COMET_AT_LEAST_N_NON_NULLS_SMALL_BATCH_THRESHOLD.key -> threshold.toString) {
+          def query(n: Int, prefix: Boolean = false): DataFrame = {
+            val df = spark.table("nonnulls")
+            val children = Seq(df.col("_1").expr, Cast(df.col("_2").expr, IntegerType))
+            val args = if (prefix) Literal(1) +: children else children
+            df.select(getColumnFromExpression(AtLeastNNonNulls(n, args)))
+          }
+          for (n <- Seq(-1, 0, 1)) {
+            checkSparkAnswerAndImpl(query(n), native = Seq("atleastnnonnulls"))
+          }
+          // Reach the threshold on different children for different rows in the counter path.
+          checkSparkAnswerAndImpl(query(2, prefix = true), native = Seq("atleastnnonnulls"))
+          for (n <- Seq(2, 3)) {
+            assertExpressionImpl(
+              query(n).queryExecution.executedPlan,
+              Seq("atleastnnonnulls"),
+              Seq.empty)
+            checkSparkError(query(n), "CAST_INVALID_INPUT")
+          }
         }
       }
     }

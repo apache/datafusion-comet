@@ -31,7 +31,7 @@ fn benchmark(c: &mut Criterion) {
     group.sample_size(30);
     group.warm_up_time(Duration::from_millis(200));
     group.measurement_time(Duration::from_secs(1));
-    for rows in [1, 63, 64, 65, 1024, 8192] {
+    for rows in [1, 32, 63, 64, 65, 128, 129, 1024, 8192] {
         for kind in ["f64", "f32", "utf8"] {
             for width in [4, 32] {
                 for (nulls, nans) in [
@@ -100,10 +100,10 @@ fn benchmark(c: &mut Criterion) {
                         if rows != 8192 && n != width / 2 {
                             continue;
                         }
-                        let children = (0..width)
+                        let children: Vec<Arc<dyn PhysicalExpr>> = (0..width)
                             .map(|i| Arc::new(Column::new(&format!("c{i}"), i)) as _)
                             .collect();
-                        let expr = AtLeastNNonNulls::new(n as i32, children);
+                        let expr = AtLeastNNonNulls::new(n as i32, children.clone());
                         let expected = counts.iter().map(|&count| count >= n).collect::<Vec<_>>();
                         let result = expr
                             .evaluate(&batch)
@@ -125,6 +125,38 @@ fn benchmark(c: &mut Criterion) {
                                 b.iter(|| black_box(expr.evaluate(black_box(batch)).unwrap()))
                             },
                         );
+                        // Compare both strategies on identical input, plus the default crossover.
+                        // Keep this focused rather than multiplying the full density/type matrix.
+                        if kind == "f64" && width == 32 && n == 16 && rows > 1 && rows < 8192 {
+                            for (strategy, threshold) in
+                                [("bitmap", 1), ("default", 64), ("row", rows + 1)]
+                            {
+                                let expr = AtLeastNNonNulls::new(n as i32, children.clone())
+                                    .with_small_batch_threshold(threshold)
+                                    .unwrap();
+                                let result =
+                                    expr.evaluate(&batch).unwrap().into_array(rows).unwrap();
+                                assert_eq!(result.null_count(), 0);
+                                assert_eq!(
+                                    result.as_boolean().values().iter().collect::<Vec<_>>(),
+                                    expected
+                                );
+                                group.bench_with_input(
+                                    BenchmarkId::new(
+                                        format!(
+                                            "crossover/{rows}/{kind}_{width}_null{nulls}_nan{nans}"
+                                        ),
+                                        format!("{strategy}_{threshold}"),
+                                    ),
+                                    &batch,
+                                    |b, batch| {
+                                        b.iter(|| {
+                                            black_box(expr.evaluate(black_box(batch)).unwrap())
+                                        })
+                                    },
+                                );
+                            }
+                        }
                     }
                 }
             }
