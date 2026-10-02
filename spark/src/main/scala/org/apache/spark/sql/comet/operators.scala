@@ -1949,13 +1949,30 @@ case class CometUnionExec(
   override def hashCode(): Int = Objects.hashCode(output, children)
 }
 
-trait CometBaseAggregate {
+/**
+ * Shared serde for Spark's aggregate operators. HashAggregateExec, ObjectHashAggregateExec and
+ * SortAggregateExec all serialize to the same native HashAggregate, so each serde object supplies
+ * only its operator-specific support checks and the Comet plan node it creates.
+ */
+trait CometBaseAggregate[T <: BaseAggregateExec] extends CometOperatorSerde[T] {
+
+  override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
+    CometConf.COMET_EXEC_AGGREGATE_ENABLED)
 
   /**
-   * Shared support-level check used by every aggregate serde: honor the unit-test knobs that
-   * selectively disable Comet conversion for partial or final aggregates.
+   * Whether the operator carries aggregates whose intermediate buffer formats differ between
+   * Spark and Comet, so that its Partial and Final must both run in Comet, with Comet shuffle
+   * between them.
    */
-  protected def baseAggregateSupportLevel(op: BaseAggregateExec): SupportLevel = {
+  protected def requiresCometShuffle: Boolean
+
+  /** Operator-specific support checks, run after the shared ones in `getSupportLevel`. */
+  protected def operatorSupportLevel(op: T): SupportLevel = Compatible()
+
+  override final def getSupportLevel(op: T): SupportLevel = {
+    // Some unit tests disable partial or final aggregate conversion to check that CometExecRule
+    // does not allow mixed Spark/Comet aggregates. Despite their names, these knobs gate every
+    // aggregate operator, sort aggregates included.
     if (!CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE.get(op.conf) &&
       op.aggregateExpressions.exists(expr => expr.mode == Partial || expr.mode == PartialMerge)) {
       return Unsupported(Some("Partial aggregates disabled via test config"))
@@ -1964,8 +1981,29 @@ trait CometBaseAggregate {
       op.aggregateExpressions.exists(_.mode == Final)) {
       return Unsupported(Some("Final aggregates disabled via test config"))
     }
-    Compatible()
+    // When Comet shuffle is disabled we do not want to convert the aggregate, because we would
+    // probably get partial Comet aggregation and final Spark aggregation. The reason text stays
+    // mode-neutral because `getSupportLevel` runs for every stage, so the Final node receives it
+    // too and must not be told it is the partial. Declining here rather than in `convert` is what
+    // lets CometExecRule record the reason centrally, so the fallback is explained rather than
+    // silent - see https://github.com/apache/datafusion-comet/issues/5500. The message
+    // deliberately does not name a config key: `isCometShuffleEnabled` is a conjunction of the
+    // shuffle config, the configured shuffle manager and the Celeborn compatibility check, so
+    // naming one of them would misdirect when another is the cause.
+    if (requiresCometShuffle && !isCometShuffleEnabled(op.conf)) {
+      return Unsupported(
+        Some(
+          s"Comet shuffle is not enabled, so converting ${op.nodeName} would split the " +
+            "aggregate across Comet and Spark"))
+    }
+    operatorSupportLevel(op)
   }
+
+  override def convert(
+      aggregate: T,
+      builder: Operator.Builder,
+      childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] =
+    doConvert(aggregate, builder, childOp: _*)
 
   /**
    * Whether a decimal SUM's result precision is DecimalType.MAX_PRECISION, the only case with no
@@ -2313,24 +2351,11 @@ trait CometBaseAggregate {
 
 }
 
-object CometHashAggregateExec
-    extends CometOperatorSerde[HashAggregateExec]
-    with CometBaseAggregate {
+object CometHashAggregateExec extends CometBaseAggregate[HashAggregateExec] {
 
-  override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
-    CometConf.COMET_EXEC_AGGREGATE_ENABLED)
+  override protected def requiresCometShuffle: Boolean = false
 
-  override def getSupportLevel(op: HashAggregateExec): SupportLevel = {
-    // some unit tests need to disable partial or final hash aggregate support to test that
-    // CometExecRule does not allow mixed Spark/Comet aggregates
-    if (!CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE.get(op.conf) &&
-      op.aggregateExpressions.exists(expr => expr.mode == Partial || expr.mode == PartialMerge)) {
-      return Unsupported(Some("Partial aggregates disabled via test config"))
-    }
-    if (!CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.get(op.conf) &&
-      op.aggregateExpressions.exists(_.mode == Final)) {
-      return Unsupported(Some("Final aggregates disabled via test config"))
-    }
+  override protected def operatorSupportLevel(op: HashAggregateExec): SupportLevel = {
     // Without codegen Spark buffers an ungrouped aggregate in an UnsafeRow, which latches a
     // decimal sum that leaves the precision, while the native accumulator keeps it unbounded.
     // Spark turns codegen off by config, for an imperative aggregate, for a non-leaf
@@ -2354,13 +2379,6 @@ object CometHashAggregateExec
     Compatible()
   }
 
-  override def convert(
-      aggregate: HashAggregateExec,
-      builder: Operator.Builder,
-      childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
-    doConvert(aggregate, builder, childOp: _*)
-  }
-
   override def createExec(nativeOp: Operator, op: HashAggregateExec): CometNativeExec = {
     CometHashAggregateExec(
       nativeOp,
@@ -2376,40 +2394,11 @@ object CometHashAggregateExec
   }
 }
 
-object CometObjectHashAggregateExec
-    extends CometOperatorSerde[ObjectHashAggregateExec]
-    with CometBaseAggregate {
+object CometObjectHashAggregateExec extends CometBaseAggregate[ObjectHashAggregateExec] {
 
-  override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
-    CometConf.COMET_EXEC_AGGREGATE_ENABLED)
+  override protected def requiresCometShuffle: Boolean = true
 
-  override def getSupportLevel(op: ObjectHashAggregateExec): SupportLevel = {
-    // Mirror the same test-knobs as CometHashAggregateExec so that mixed-execution
-    // unit tests can selectively disable partial or final ObjectHashAggregateExec conversion.
-    if (!CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE.get(op.conf) &&
-      op.aggregateExpressions.exists(expr => expr.mode == Partial || expr.mode == PartialMerge)) {
-      return Unsupported(Some("Partial aggregates disabled via test config"))
-    }
-    if (!CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.get(op.conf) &&
-      op.aggregateExpressions.exists(_.mode == Final)) {
-      return Unsupported(Some("Final aggregates disabled via test config"))
-    }
-    // When Comet shuffle is disabled we do not want to transform the ObjectHashAggregate to
-    // CometHashAggregate, because we would probably get partial Comet aggregation and final
-    // Spark aggregation. The reason text stays mode-neutral because `getSupportLevel` runs for
-    // every stage, so the Final node receives it too and must not be told it is the partial.
-    // Declining here rather than in `convert` is what lets CometExecRule
-    // record the reason centrally, so the fallback is explained rather than silent - see
-    // https://github.com/apache/datafusion-comet/issues/5500. The message deliberately does not
-    // name a config key: `isCometShuffleEnabled` is a conjunction of the shuffle config, the
-    // configured shuffle manager and the Celeborn compatibility check, so naming one of them
-    // would misdirect when another is the cause.
-    if (!isCometShuffleEnabled(op.conf)) {
-      return Unsupported(
-        Some(
-          "Comet shuffle is not enabled, so converting ObjectHashAggregate would split the " +
-            "aggregate across Comet and Spark"))
-    }
+  override protected def operatorSupportLevel(op: ObjectHashAggregateExec): SupportLevel = {
     // Spark's object aggregation buffers the intermediate decimal sum unbounded, while Comet's
     // grouped accumulator latches to null once a running sum leaves the precision, so the
     // grouped case declines. Decimal AVG has the same gap and is tracked separately.
@@ -2420,13 +2409,6 @@ object CometObjectHashAggregateExec
             "aggregation buffer"))
     }
     Compatible()
-  }
-
-  override def convert(
-      aggregate: ObjectHashAggregateExec,
-      builder: Operator.Builder,
-      childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
-    doConvert(aggregate, builder, childOp: _*)
   }
 
   override def createExec(nativeOp: Operator, op: ObjectHashAggregateExec): CometNativeExec = {
@@ -2444,27 +2426,13 @@ object CometObjectHashAggregateExec
   }
 }
 
-object CometSortAggregateExec
-    extends CometOperatorSerde[SortAggregateExec]
-    with CometBaseAggregate {
+object CometSortAggregateExec extends CometBaseAggregate[SortAggregateExec] {
 
-  override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
-    CometConf.COMET_EXEC_AGGREGATE_ENABLED)
+  // Spark plans SortAggregate for TypedImperativeAggregate functions whose intermediate buffer
+  // formats differ between Spark and Comet, the same risk as ObjectHashAggregate.
+  override protected def requiresCometShuffle: Boolean = true
 
-  override def getSupportLevel(op: SortAggregateExec): SupportLevel = {
-    baseAggregateSupportLevel(op) match {
-      case unsupported: Unsupported => return unsupported
-      case _ =>
-    }
-    // SortAggregate is planned for TypedImperativeAggregate functions whose intermediate
-    // buffer formats differ between Spark and Comet (same risk as ObjectHashAggregate).
-    // Require Comet shuffle so a Partial->Final pair never spans the JVM/native boundary.
-    if (!isCometShuffleEnabled(op.conf)) {
-      return Unsupported(
-        Some(
-          "Comet shuffle is not enabled, so converting SortAggregate would split the " +
-            "aggregate across Comet and Spark"))
-    }
+  override protected def operatorSupportLevel(op: SortAggregateExec): SupportLevel = {
     // Spark's sort aggregation buffers in an UnsafeRow, which latches a decimal sum that leaves
     // the precision, only when every buffer field is mutable and codegen does not apply;
     // otherwise the sum stays unbounded. Comet latches only when grouped, so decline rather
@@ -2474,13 +2442,6 @@ object CometSortAggregateExec
         Some("Decimal SUM at maximum precision cannot match Spark's sort aggregation buffer"))
     }
     Compatible()
-  }
-
-  override def convert(
-      aggregate: SortAggregateExec,
-      builder: Operator.Builder,
-      childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
-    doConvert(aggregate, builder, childOp: _*)
   }
 
   override def createExec(nativeOp: Operator, op: SortAggregateExec): CometNativeExec = {
@@ -2522,6 +2483,7 @@ abstract class CometBaseAggregateExec
   // The aggExprs could be empty. For example, if the aggregate functions only have
   // distinct aggregate functions or only have group by, the aggExprs is empty and
   // modes is empty too.
+  // lazy: subclass constructor parameters are not assigned yet while this class initializes.
   lazy val modes: Seq[AggregateMode] = aggregateExpressions.map(_.mode).distinct
 
   // Match Spark's aggregate canonicalization, including the original result attributes that
@@ -2545,6 +2507,35 @@ abstract class CometBaseAggregateExec
 
   override def stringArgs: Iterator[Any] =
     Iterator(input, modes, groupingExpressions, aggregateExpressions, child)
+
+  // The wrappers differ only in type, so equality also requires the same class.
+  override def equals(obj: Any): Boolean = {
+    obj match {
+      case other: CometBaseAggregateExec if other.getClass == getClass =>
+        this.output == other.output &&
+        this.groupingExpressions == other.groupingExpressions &&
+        this.aggregateExpressions == other.aggregateExpressions &&
+        this.aggregateAttributes == other.aggregateAttributes &&
+        this.resultExpressions == other.resultExpressions &&
+        this.input == other.input &&
+        this.modes == other.modes &&
+        this.child == other.child &&
+        this.serializedPlanOpt == other.serializedPlanOpt
+      case _ =>
+        false
+    }
+  }
+
+  override def hashCode(): Int =
+    Objects.hashCode(
+      output,
+      groupingExpressions,
+      aggregateExpressions,
+      aggregateAttributes,
+      resultExpressions,
+      input,
+      modes,
+      child)
 
   override lazy val metrics: Map[String, SQLMetric] = {
     val baseline = CometMetricNode.baselineMetrics(sparkContext)
@@ -2573,34 +2564,6 @@ case class CometHashAggregateExec(
 
   override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
     this.copy(child = newChild)
-
-  override def equals(obj: Any): Boolean = {
-    obj match {
-      case other: CometHashAggregateExec =>
-        this.output == other.output &&
-        this.groupingExpressions == other.groupingExpressions &&
-        this.aggregateExpressions == other.aggregateExpressions &&
-        this.aggregateAttributes == other.aggregateAttributes &&
-        this.resultExpressions == other.resultExpressions &&
-        this.input == other.input &&
-        this.modes == other.modes &&
-        this.child == other.child &&
-        this.serializedPlanOpt == other.serializedPlanOpt
-      case _ =>
-        false
-    }
-  }
-
-  override def hashCode(): Int =
-    Objects.hashCode(
-      output,
-      groupingExpressions,
-      aggregateExpressions,
-      aggregateAttributes,
-      resultExpressions,
-      input,
-      modes,
-      child)
 }
 
 case class CometSortAggregateExec(
@@ -2618,34 +2581,6 @@ case class CometSortAggregateExec(
 
   override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
     this.copy(child = newChild)
-
-  override def equals(obj: Any): Boolean = {
-    obj match {
-      case other: CometSortAggregateExec =>
-        this.output == other.output &&
-        this.groupingExpressions == other.groupingExpressions &&
-        this.aggregateExpressions == other.aggregateExpressions &&
-        this.aggregateAttributes == other.aggregateAttributes &&
-        this.resultExpressions == other.resultExpressions &&
-        this.input == other.input &&
-        this.modes == other.modes &&
-        this.child == other.child &&
-        this.serializedPlanOpt == other.serializedPlanOpt
-      case _ =>
-        false
-    }
-  }
-
-  override def hashCode(): Int =
-    Objects.hashCode(
-      output,
-      groupingExpressions,
-      aggregateExpressions,
-      aggregateAttributes,
-      resultExpressions,
-      input,
-      modes,
-      child)
 }
 
 trait CometHashJoin {
