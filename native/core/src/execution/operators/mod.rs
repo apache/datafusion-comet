@@ -35,6 +35,7 @@ pub use expand::ExpandExec;
 mod explode;
 pub use explode::ExplodeExec;
 pub(crate) mod iceberg_common;
+pub(crate) mod iceberg_location_scoped;
 mod iceberg_partition_path;
 mod iceberg_scan;
 mod iceberg_write;

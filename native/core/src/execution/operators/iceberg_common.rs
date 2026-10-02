@@ -18,14 +18,21 @@
 //! Helpers shared between the Iceberg scan and Iceberg write operators.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::hash::Hash;
+use std::sync::{Arc, LazyLock, Weak};
 
 use datafusion::common::DataFusionError;
-use iceberg::io::{FileIO, FileIOBuilder, StorageFactory};
+use iceberg::io::{FileIO, FileIOBuilder, StorageConfig, StorageFactory};
+use iceberg::{Error as IcebergError, ErrorKind as IcebergErrorKind};
 use iceberg_storage_opendal::{CustomAwsCredentialLoader, OpenDalStorageFactory};
+use parking_lot::Mutex;
 
 use crate::cloud::s3::credential_bridge::{AccessMode, CometS3CredentialBridge};
+use crate::cloud::s3::policy_locations::ROOT_CREDENTIAL_PATH;
 use crate::cloud::s3::web_identity::take_over_if_irsa;
+use crate::execution::operators::iceberg_location_scoped::{
+    BucketLocationSource, LocationScopedS3StorageFactory, LocationStorageFactory, SharedLocations,
+};
 use crate::parquet::objectstore::s3_blob_fs_support::{
     is_s3_compliant_alias_scheme, BlobHostPromotingS3StorageFactory,
 };
@@ -77,19 +84,26 @@ pub(crate) fn storage_factory_for(
         // last so the built-in backends above stay authoritative even if one of their schemes is
         // also named in `fs.comet.s3Compliant.schemes`. An alias additionally gets a wrapper that
         // promotes a HOSTLESS `blob:///bucket/key` into the host at the open boundary -- see
-        // s3_blob_fs_support for why that never touches the recorded delete-matching string.
+        // s3_blob_fs_support for why that never touches the recorded delete-matching string. A
+        // location-scoped provider gets a storage that serves each file with the credential of
+        // its policy location -- see iceberg_location_scoped.
         s if is_s3_family_scheme(s, catalog_properties) => {
-            let customized_credential_load =
-                build_s3_credential_loader(path, catalog_properties, catalog_name, access_mode)?;
-            if is_s3_compliant_alias_scheme(s, catalog_properties) {
-                Ok(Arc::new(BlobHostPromotingS3StorageFactory::new(
-                    customized_credential_load,
-                )))
-            } else {
-                Ok(Arc::new(OpenDalStorageFactory::S3 {
-                    customized_credential_load,
-                }))
-            }
+            let alias = is_s3_compliant_alias_scheme(s, catalog_properties);
+            let access = build_s3_access(path, catalog_properties, catalog_name, access_mode)?;
+            let factory: Arc<dyn StorageFactory> = match access {
+                S3Access::LocationScoped(shared) => {
+                    Arc::new(LocationScopedS3StorageFactory::new(shared, alias))
+                }
+                S3Access::Loader(customized_credential_load) if alias => Arc::new(
+                    BlobHostPromotingS3StorageFactory::new(customized_credential_load),
+                ),
+                S3Access::Loader(customized_credential_load) => {
+                    Arc::new(OpenDalStorageFactory::S3 {
+                        customized_credential_load,
+                    })
+                }
+            };
+            Ok(factory)
         }
         _ => Err(DataFusionError::Execution(format!(
             "Unsupported storage scheme: {scheme}"
@@ -148,23 +162,102 @@ pub(crate) fn load_file_io(
     Ok(file_io_builder.build())
 }
 
-/// Wires the configured Comet credential provider into opendal's S3 service. `Ok(None)` means no
-/// provider is configured (or the path carries no bucket) and opendal's default credential chain
-/// applies. When a provider IS configured but fails to initialize, the failure mode depends on
-/// the access intent: reads warn and fall back to the default chain (a wrong-credential read
-/// fails on permissions), but writes fail closed -- silently switching which credentials perform
-/// a write after the configured provider failed is not acceptable.
-pub(crate) fn build_s3_credential_loader(
+fn sorted_properties(catalog_properties: &HashMap<String, String>) -> Vec<(String, String)> {
+    let mut properties: Vec<(String, String)> = catalog_properties
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    properties.sort();
+    properties
+}
+
+/// A provider registration and access mode, which a location-scoped provider's locations and
+/// location storages belong to. The dispatch key and properties are what `ensureInitialized`
+/// registers a provider by.
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct RegistrationKey {
+    access_mode: u8,
+    dispatch_key: String,
+    properties: Vec<(String, String)>,
+}
+
+impl RegistrationKey {
+    fn new(
+        access_mode: AccessMode,
+        dispatch_key: &str,
+        catalog_properties: &HashMap<String, String>,
+    ) -> Self {
+        Self {
+            access_mode: access_mode as u8,
+            dispatch_key: dispatch_key.to_string(),
+            properties: sorted_properties(catalog_properties),
+        }
+    }
+}
+
+/// Values shared by every holder of one key. The registry keeps only a weak reference, so a value
+/// lives as long as some holder still has it.
+struct Registry<K, V> {
+    slots: Mutex<HashMap<K, Arc<Mutex<Weak<V>>>>>,
+}
+
+impl<K: Clone + Eq + Hash, V> Registry<K, V> {
+    fn new() -> Self {
+        Self {
+            slots: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Runs `f` on `key`'s slot, which holds the key's value while it is alive. Calls for one key
+    /// run one at a time, so a value `f` stores is what every later call finds.
+    fn with_slot<R>(&self, key: &K, f: impl FnOnce(&mut Weak<V>) -> R) -> R {
+        let slot = {
+            let mut slots = self.slots.lock();
+            // Drop the slots nobody is using whose value is gone. Only this map holds such a slot,
+            // so nobody else can have it locked.
+            slots.retain(|_, slot| Arc::strong_count(slot) > 1 || slot.lock().strong_count() > 0);
+            Arc::clone(slots.entry(key.clone()).or_default())
+        };
+        let mut value = slot.lock();
+        f(&mut value)
+    }
+}
+
+/// The shared locations of each location-scoped provider registration. A registration's `FileIO`s
+/// keep its locations alive, and `load_file_io` builds one for each scan and write task, so the
+/// tasks that run at the same time share them; see `build_s3_access`.
+static LOCATION_SCOPED: LazyLock<Registry<RegistrationKey, SharedLocations>> =
+    LazyLock::new(Registry::new);
+
+/// How the S3 backend gets its credentials.
+pub(crate) enum S3Access {
+    /// One loader signs every file of the `FileIO`, or `None` leaves opendal's default chain.
+    Loader(Option<CustomAwsCredentialLoader>),
+    /// The configured provider implements `CometS3LocationScopedCredentialProvider`, so each file
+    /// is served with the credential of its policy location. The locations are the registration's,
+    /// shared by every `FileIO` built for it.
+    LocationScoped(Arc<SharedLocations>),
+}
+
+/// Wires the configured Comet credential provider into opendal's S3 service.
+/// `Ok(S3Access::Loader(None))` means no provider is configured (or the path carries no bucket) and
+/// opendal's default credential chain applies. When a provider IS configured but fails to
+/// initialize, the failure mode depends on the access intent: reads warn and fall back to the
+/// default chain (a wrong-credential read fails on permissions), but writes fail closed --
+/// silently switching which credentials perform a write after the configured provider failed is
+/// not acceptable. A location-scoped provider that cannot list its locations fails both, as on the
+/// Parquet path, rather than falling back to one credential for every file.
+pub(crate) fn build_s3_access(
     reference_path: &str,
     catalog_properties: &HashMap<String, String>,
     catalog_name: &str,
     access_mode: AccessMode,
-) -> Result<Option<CustomAwsCredentialLoader>, DataFusionError> {
+) -> Result<S3Access, DataFusionError> {
     let Ok(url) = url::Url::parse(reference_path) else {
-        return Ok(None);
+        return Ok(S3Access::Loader(None));
     };
     let Some(bucket) = url.host_str() else {
-        return Ok(None);
+        return Ok(S3Access::Loader(None));
     };
     let Some(provider_class) = catalog_properties
         .get(ICEBERG_PROVIDER_CLASS_PROPERTY)
@@ -175,17 +268,19 @@ pub(crate) fn build_s3_credential_loader(
         // Comet web-identity provider (retry on STS throttle, no node-role downgrade, shared
         // jittered cache) instead of leaving it to opendal's default reqsign chain, which
         // downgrades to the node instance role under throttling. Non-IRSA setups (static keys,
-        // env, profile) keep the default chain via Ok(None). We also defer to any credentials
-        // the user configured explicitly in the catalog (static keys or an assume-role arn) --
-        // explicit config always wins, same as a named provider class does.
+        // env, profile) keep the default chain via S3Access::Loader(None). We also defer to any
+        // credentials the user configured explicitly in the catalog (static keys or an
+        // assume-role arn) -- explicit config always wins, same as a named provider class does.
         let explicit = has_explicit_s3_credentials(catalog_properties);
         // Config keys arrive on the Iceberg side under the `s3.` prefix (that is how a catalog
         // property reaches the FileIO property bag, the same as `s3.comet.credential.provider.class`),
         // so resolve the bare keys under that prefix.
-        return Ok(take_over_if_irsa(explicit, |key| {
-            catalog_properties.get(&format!("s3.{key}")).cloned()
-        })
-        .map(CustomAwsCredentialLoader::new));
+        return Ok(S3Access::Loader(
+            take_over_if_irsa(explicit, |key| {
+                catalog_properties.get(&format!("s3.{key}")).cloned()
+            })
+            .map(CustomAwsCredentialLoader::new),
+        ));
     };
     // Fall back to the bucket when the table has no catalog identity (e.g. HadoopTables loaded by
     // raw path).
@@ -194,30 +289,103 @@ pub(crate) fn build_s3_credential_loader(
     } else {
         catalog_name
     };
-    let bridge = CometS3CredentialBridge::new(
-        provider_class,
-        dispatch_key,
-        bucket,
-        url.path(),
-        access_mode,
-        catalog_properties,
-    );
-    match bridge {
-        Ok(b) => Ok(Some(CustomAwsCredentialLoader::new(b))),
-        Err(e) => match access_mode {
-            AccessMode::Write => Err(DataFusionError::Execution(format!(
-                "Configured S3 credential provider {provider_class} failed to initialize: {e}; \
-                 refusing to write through the default opendal credential chain"
-            ))),
-            AccessMode::Read => {
-                log::warn!(
-                    "Failed to initialize CometS3CredentialBridge for {provider_class}: {e}; \
-                     falling back to default opendal credential chain"
-                );
-                Ok(None)
+    // A location-scoped provider's locations belong to its registration, not to this table, so
+    // every FileIO of the registration shares them, however many tables and commits it spans.
+    // Builds for one registration run one at a time: a registration already known to be
+    // location-scoped needs no bridge and no provider call, and otherwise the first build asks the
+    // provider while the rest wait for its answer.
+    let key = RegistrationKey::new(access_mode, dispatch_key, catalog_properties);
+    LOCATION_SCOPED.with_slot(&key, |slot| {
+        if let Some(shared) = slot.upgrade() {
+            shared
+                .ensure_bucket(bucket)
+                .map_err(|e| DataFusionError::Execution(e.to_string()))?;
+            return Ok(S3Access::LocationScoped(shared));
+        }
+        let bridge = CometS3CredentialBridge::new(
+            provider_class,
+            dispatch_key,
+            bucket,
+            url.path(),
+            access_mode,
+            catalog_properties,
+        );
+        match bridge {
+            Ok(bridge) => match bridge.policy_locations() {
+                Ok(None) => Ok(S3Access::Loader(Some(CustomAwsCredentialLoader::new(
+                    bridge,
+                )))),
+                Ok(Some(locations)) => {
+                    let shared = Arc::new(location_scoped_state(bridge, bucket, locations)?);
+                    *slot = Arc::downgrade(&shared);
+                    Ok(S3Access::LocationScoped(shared))
+                }
+                Err(e) => Err(DataFusionError::Execution(format!(
+                    "Failed to get policy locations for {bucket} from {provider_class}: {e}"
+                ))),
+            },
+            Err(e) => match access_mode {
+                AccessMode::Write => Err(DataFusionError::Execution(format!(
+                    "Configured S3 credential provider {provider_class} failed to initialize: \
+                     {e}; refusing to write through the default opendal credential chain"
+                ))),
+                AccessMode::Read => {
+                    log::warn!(
+                        "Failed to initialize CometS3CredentialBridge for {provider_class}: {e}; \
+                         falling back to default opendal credential chain"
+                    );
+                    Ok(S3Access::Loader(None))
+                }
+            },
+        }
+    })
+}
+
+/// The shared locations of a location-scoped provider's registration, seeded with `locations` for
+/// `bucket`. A bucket's locations come from a bridge derived from `bridge` for that bucket, and
+/// each location's storage signs with a bridge derived for that location, so neither calls
+/// `ensureInitialized` again.
+fn location_scoped_state(
+    bridge: CometS3CredentialBridge,
+    bucket: &str,
+    locations: Vec<String>,
+) -> Result<SharedLocations, DataFusionError> {
+    let bridge = Arc::new(bridge);
+    let source_bridge = Arc::clone(&bridge);
+    // A blocking JVM call, which the storage makes through `run_blocking`.
+    let source: BucketLocationSource = Arc::new(move |bucket: &str| {
+        source_bridge
+            .for_location(bucket, ROOT_CREDENTIAL_PATH)
+            .and_then(|bridge| bridge.policy_locations())
+            .map_err(|e| {
+                IcebergError::new(
+                    IcebergErrorKind::Unexpected,
+                    format!("Failed to get policy locations for {bucket}: {e}"),
+                )
+            })?
+            .ok_or_else(|| {
+                IcebergError::new(
+                    IcebergErrorKind::Unexpected,
+                    format!("The provider for {bucket} stopped returning policy locations"),
+                )
+            })
+    });
+    let storage_factory: LocationStorageFactory = Arc::new(
+        move |config: &StorageConfig, bucket: &str, credential_path: &str| {
+            let location_bridge = bridge.for_location(bucket, credential_path).map_err(|e| {
+                IcebergError::new(
+                    IcebergErrorKind::Unexpected,
+                    format!("CometS3CredentialBridge init failed for {bucket}: {e}"),
+                )
+            })?;
+            OpenDalStorageFactory::S3 {
+                customized_credential_load: Some(CustomAwsCredentialLoader::new(location_bridge)),
             }
+            .build(config)
         },
-    }
+    );
+    SharedLocations::new(bucket, locations, source, storage_factory)
+        .map_err(|e| DataFusionError::Execution(e.to_string()))
 }
 
 /// True if the catalog configures S3 credentials explicitly: static access keys
@@ -267,6 +435,61 @@ fn is_s3_family_scheme(scheme: &str, catalog_properties: &HashMap<String, String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_registry_shares_a_value_while_it_lives() {
+        let registry = Registry::<&str, String>::new();
+        let value = Arc::new("locations".to_string());
+        registry.with_slot(&"cat", |slot| *slot = Arc::downgrade(&value));
+        let found = registry.with_slot(&"cat", |slot| slot.upgrade()).unwrap();
+        assert!(Arc::ptr_eq(&found, &value));
+        drop((found, value));
+        assert!(registry.with_slot(&"cat", |slot| slot.upgrade()).is_none());
+    }
+
+    #[test]
+    fn a_registry_drops_the_slots_of_values_that_are_gone() {
+        let registry = Registry::<u32, String>::new();
+        for key in 0..100 {
+            let value = Arc::new(key.to_string());
+            registry.with_slot(&key, |slot| *slot = Arc::downgrade(&value));
+        }
+        let kept = Arc::new("kept".to_string());
+        registry.with_slot(&1000, |slot| *slot = Arc::downgrade(&kept));
+        registry.with_slot(&1001, |_| ());
+        assert_eq!(
+            registry.slots.lock().len(),
+            2,
+            "the live value's slot and 1001's"
+        );
+    }
+
+    /// Concurrent builds for one registration wait for the first, which creates the value.
+    #[test]
+    fn concurrent_callers_for_one_key_create_its_value_once() {
+        let registry = Arc::new(Registry::<&str, String>::new());
+        let created = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let callers: Vec<_> = (0..8)
+            .map(|_| {
+                let (registry, created) = (Arc::clone(&registry), Arc::clone(&created));
+                std::thread::spawn(move || {
+                    registry.with_slot(&"cat", |slot| {
+                        if let Some(value) = slot.upgrade() {
+                            return value;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(20));
+                        created.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        let value = Arc::new("locations".to_string());
+                        *slot = Arc::downgrade(&value);
+                        value
+                    })
+                })
+            })
+            .collect();
+        let values: Vec<_> = callers.into_iter().map(|c| c.join().unwrap()).collect();
+        assert_eq!(created.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(values.iter().all(|v| Arc::ptr_eq(v, &values[0])));
+    }
 
     fn factory_result(path: &str, mode: AccessMode) -> Result<(), String> {
         storage_factory_for(path, &HashMap::new(), "test_cat", mode)
