@@ -25,8 +25,11 @@ import org.scalactic.source.Position
 import org.scalatest.Tag
 
 import org.apache.hadoop.conf.Configuration
-import org.apache.iceberg.hadoop.{HadoopConfigurable, HadoopFileIO}
-import org.apache.iceberg.io.{FileIO, InputFile, OutputFile, ResolvingFileIO}
+import org.apache.iceberg.{PartitionSpec, StructLike, TableMetadata, TableOperations}
+import org.apache.iceberg.catalog.TableIdentifier
+import org.apache.iceberg.encryption.EncryptionManager
+import org.apache.iceberg.hadoop.{HadoopCatalog, HadoopConfigurable, HadoopFileIO}
+import org.apache.iceberg.io.{FileIO, InputFile, LocationProvider, OutputFile, ResolvingFileIO}
 import org.apache.iceberg.util.SerializableSupplier
 import org.apache.spark.SparkConf
 import org.apache.spark.rdd.RDD
@@ -126,6 +129,12 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
         "writeProperties")
       assert(IcebergReflection.getMetadataLocation(table).isDefined, "metadataLocation")
       assert(IcebergReflection.getDataLocation(table).isDefined, "dataLocation")
+      val provider = IcebergReflection
+        .getLocationProvider(table)
+        .getOrElse(fail("locationProvider"))
+      assert(
+        provider.getClass.getName == IcebergReflection.ClassNames.DEFAULT_LOCATION_PROVIDER,
+        provider.getClass.getName)
       assert(IcebergReflection.getTableProperties(table).isDefined, "tableProperties")
     }
   }
@@ -182,6 +191,32 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
       assertUnsupportedContainsAllowingWriteFailure(
         "loc_provider",
         "write.location-provider.impl")
+    }
+  }
+
+  test("fall-back: custom TableOperations LocationProvider that no property reveals") {
+    withTempIcebergDir { warehouseDir =>
+      val locationCat = "location_provider_probe_cat"
+      withSQLConf(
+        s"spark.sql.catalog.$locationCat" -> "org.apache.iceberg.spark.SparkCatalog",
+        s"spark.sql.catalog.$locationCat.catalog-impl" ->
+          classOf[DetectionCustomLocationHadoopCatalog].getName,
+        s"spark.sql.catalog.$locationCat.warehouse" -> warehouseDir.getAbsolutePath) {
+        spark.sql(s"""
+          CREATE TABLE $locationCat.$ns.custom_location_provider (
+            id INT,
+            region STRING,
+            amount DOUBLE
+          ) USING iceberg
+        """)
+        val writeExec =
+          planInsertWriteExec(s"$locationCat.$ns.custom_location_provider")
+        assertUnsupportedContains(
+          writeExec,
+          "custom_location_provider",
+          "table.locationProvider()",
+          classOf[DetectionDelegatingLocationProvider].getName)
+      }
     }
   }
 
@@ -1149,4 +1184,40 @@ class DetectionDelegatingFileIO extends FileIO with HadoopConfigurable {
         Configuration,
         SerializableSupplier[Configuration]]): Unit =
     delegate.serializeConfWith(confSerializer)
+}
+
+/**
+ * A catalog whose TableOperations supplies a custom LocationProvider directly, without setting
+ * `write.location-provider.impl`. This is the path the native write gate must inspect explicitly.
+ */
+class DetectionCustomLocationHadoopCatalog extends HadoopCatalog {
+  override protected def newTableOps(identifier: TableIdentifier): TableOperations =
+    new DetectionLocationProviderTableOperations(super.newTableOps(identifier))
+}
+
+class DetectionLocationProviderTableOperations(delegate: TableOperations)
+    extends TableOperations {
+  override def current(): TableMetadata = delegate.current()
+  override def refresh(): TableMetadata = delegate.refresh()
+  override def commit(base: TableMetadata, metadata: TableMetadata): Unit =
+    delegate.commit(base, metadata)
+  override def io(): FileIO = delegate.io()
+  override def encryption(): EncryptionManager = delegate.encryption()
+  override def metadataFileLocation(fileName: String): String =
+    delegate.metadataFileLocation(fileName)
+  override def locationProvider(): LocationProvider =
+    new DetectionDelegatingLocationProvider(delegate.locationProvider())
+  override def temp(uncommittedMetadata: TableMetadata): TableOperations =
+    new DetectionLocationProviderTableOperations(delegate.temp(uncommittedMetadata))
+  override def newSnapshotId(): Long = delegate.newSnapshotId()
+  override def requireStrictCleanup(): Boolean = delegate.requireStrictCleanup()
+}
+
+class DetectionDelegatingLocationProvider(delegate: LocationProvider) extends LocationProvider {
+  override def newDataLocation(filename: String): String = delegate.newDataLocation(filename)
+  override def newDataLocation(
+      spec: PartitionSpec,
+      partitionData: StructLike,
+      filename: String): String =
+    delegate.newDataLocation(spec, partitionData, filename)
 }

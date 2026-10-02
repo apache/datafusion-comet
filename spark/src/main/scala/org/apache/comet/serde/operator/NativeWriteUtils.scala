@@ -183,7 +183,7 @@ object NativeWriteUtils {
       throw new UnsupportedOperationException(
         s"Comet's native Parquet writer cannot write to '$filePath': the path it would create " +
           s"on HDFS is not the one the commit protocol chose ($shown). Set " +
-          "spark.comet.parquet.write.enabled=false to write this table with Spark.")
+          "spark.comet.write.parquet.enabled=false to write this table with Spark.")
     }
 
   /** Compression codecs Comet's native Parquet writer can produce. */

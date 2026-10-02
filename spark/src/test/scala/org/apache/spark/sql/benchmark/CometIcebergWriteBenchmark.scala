@@ -328,7 +328,7 @@ object CometIcebergWriteBenchmark extends CometBenchmarkBase {
     // better-jitted measurement.
     val benchmark = new Benchmark(
       workload.title,
-      values,
+      values.toLong,
       // The iceberg-java baseline is the least repeatable of the three arms - it carries a fifth of
       // its own runtime as spread between iterations, against a few percent for the two Comet arms
       // - and it is also the divisor of every `Relative` figure. Five iterations rather than the
@@ -432,7 +432,7 @@ object CometIcebergWriteBenchmark extends CometBenchmarkBase {
         s"${arm.name}: expected the iceberg-java writer but the plan contains " +
           "CometIcebergWriteExec, so this case would measure the native writer under a " +
           "JVM-writer label. This arm pins the native-write flags off, so they are leaking in " +
-          "from the session defaults (e.g. `-Dspark.comet.iceberg.write.enabled=true` in " +
+          "from the session defaults (e.g. `-Dspark.comet.write.iceberg.enabled=true` in " +
           s"BENCH_MAVEN_OPTS). Plans:\n${plans.mkString("\n--\n")}")
     }
     if (arm.expectNativeWrite && nativeWrites.isEmpty) {
