@@ -475,6 +475,54 @@ class CometInMemoryCacheSuite extends CometTestBase {
     }
   }
 
+  test("Comet explains Spark's scan of a relation cached in Comet's format") {
+    // spark.sql.cache.serializer is static, so a relation cached in Comet's format stays in it
+    // after a session turns Comet or its native execution off, and from then on Spark's
+    // InMemoryTableScanExec reads it, which nothing else in the plan would record. A relation
+    // that Comet's serializer delegated to Spark's format gets no such reason.
+    withNativeCache {
+      spark
+        .sql("SELECT id, id % 7 AS k FROM range(100)")
+        .createOrReplaceTempView("comet_format_cache")
+      spark
+        .sql(s"SELECT id, ${unsupportedForArrowCache.head} FROM range(100)")
+        .createOrReplaceTempView("spark_format_cache")
+      spark.catalog.cacheTable("comet_format_cache")
+      spark.catalog.cacheTable("spark_format_cache")
+      assert(
+        cachedBatchTypes("comet_format_cache").sameElements(
+          Array("org.apache.spark.sql.comet.execution.arrow.CometCachedBatch")))
+      assert(
+        cachedBatchTypes("spark_format_cache").sameElements(
+          Array("org.apache.spark.sql.execution.columnar.DefaultCachedBatch")))
+
+      def reasons(query: String): Seq[String] = {
+        val df = spark.sql(query)
+        df.collect()
+        new ExtendedExplainInfo().getFallbackReasons(df.queryExecution.executedPlan)
+      }
+
+      for {
+        (key, cause) <- Seq(
+          CometConf.COMET_ENABLED.key -> "Comet is disabled",
+          CometConf.COMET_EXEC_ENABLED.key -> s"${CometConf.COMET_EXEC_ENABLED.key} is false")
+        aqe <- Seq("false", "true")
+      } {
+        withSQLConf(key -> "false", SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe) {
+          val explained = reasons("SELECT k, count(*) FROM comet_format_cache GROUP BY k")
+          assert(
+            explained.exists(
+              _.startsWith(s"$cause, so Spark reads this relation from Comet's cache format")),
+            s"$key=false, AQE $aqe: $explained")
+          assert(
+            !reasons("SELECT count(id) FROM spark_format_cache").exists(
+              _.contains("Comet's cache format")),
+            s"$key=false, AQE $aqe")
+        }
+      }
+    }
+  }
+
   test("Comet in-memory cache handles multi-partition cache") {
     withSQLConf(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
