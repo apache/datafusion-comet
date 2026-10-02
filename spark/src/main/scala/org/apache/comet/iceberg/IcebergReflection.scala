@@ -765,30 +765,40 @@ object IcebergReflection extends Logging {
   }
 
   /**
-   * The partition fields of `spec` that hold a `float` or `double` value, as (partition field
-   * name, Iceberg type name). A `void` field is skipped: it only ever holds null. Throws on
-   * reflection failure so the caller can fail closed.
+   * The partition fields of `spec` whose source column is a `float` or `double`, as (partition
+   * field name, Iceberg type name). Only the identity transform applies to those types, so such a
+   * field holds the column's own values. A `void` field is skipped: it only ever holds null, and
+   * its source column may no longer exist. Each field is resolved through its own `sourceId`
+   * rather than by position in `partitionType()`. Throws on reflection failure, or when a field
+   * that is not `void` has no source column, so the caller can fail closed.
    */
   def floatingPointPartitionFields(spec: Any): Seq[(String, String)] = {
     import scala.jdk.CollectionConverters._
-    val specFields =
-      getMethod(spec.getClass, "fields").invoke(spec).asInstanceOf[java.util.List[_]]
-    val partitionType = getMethod(spec.getClass, "partitionType").invoke(spec)
-    val typeFields = getMethod(partitionType.getClass, "fields")
-      .invoke(partitionType)
+    val schema = getMethod(spec.getClass, "schema").invoke(spec)
+    val findField = getMethod(schema.getClass, "findField", classOf[Int])
+    getMethod(spec.getClass, "fields")
+      .invoke(spec)
       .asInstanceOf[java.util.List[_]]
-    specFields.asScala
-      .zip(typeFields.asScala)
-      .flatMap { case (partitionField, typeField) =>
+      .asScala
+      .flatMap { partitionField =>
         val transform =
           getMethod(partitionField.getClass, "transform").invoke(partitionField).toString
-        val fieldType = getMethod(typeField.getClass, "type").invoke(typeField).toString
-        if (transform != "void" && (fieldType == "float" || fieldType == "double")) {
+        if (transform == "void") {
+          None
+        } else {
           val name =
             getMethod(partitionField.getClass, "name").invoke(partitionField).asInstanceOf[String]
-          Some(name -> fieldType)
-        } else {
-          None
+          val sourceId =
+            getMethod(partitionField.getClass, "sourceId")
+              .invoke(partitionField)
+              .asInstanceOf[Int]
+          val source = findField.invoke(schema, sourceId.asInstanceOf[Object])
+          if (source == null) {
+            throw new IllegalStateException(
+              s"partition field $name has no source column with id $sourceId")
+          }
+          val sourceType = getMethod(source.getClass, "type").invoke(source).toString
+          if (sourceType == "float" || sourceType == "double") Some(name -> sourceType) else None
         }
       }
       .toSeq

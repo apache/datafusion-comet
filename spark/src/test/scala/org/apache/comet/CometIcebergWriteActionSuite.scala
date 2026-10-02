@@ -1336,9 +1336,6 @@ class CometIcebergWriteActionSuite
     }
   }
 
-  // iceberg-java renders a `float` or `double` partition value with `Float.toString` /
-  // `Double.toString`. Rust's `Display` spelled `Double.MAX_VALUE` as 309 digits instead, past the
-  // 255-byte limit on one path component (apache/datafusion-comet#5836).
   // https://github.com/apache/datafusion-comet/issues/6138. iceberg-rust compares float partition
   // values with an equality that treats -0.0 and 0.0 as one value, so its writers filed both under
   // whichever arrived first, and a read that pruned on the other value lost rows. iceberg-java
@@ -1378,9 +1375,12 @@ class CometIcebergWriteActionSuite
     }
   }
 
-  // Float and double identity partitions fall back (#6138), so this checks that the fallback keeps
-  // iceberg-java's layout. The unit tests in `iceberg_partition_path.rs` cover how the native
-  // writer renders these values.
+  // iceberg-java renders a `float` or `double` partition value with `Float.toString` /
+  // `Double.toString`. Rust's `Display` spelled `Double.MAX_VALUE` as 309 digits instead, past the
+  // 255-byte limit on one path component (apache/datafusion-comet#5836). Float and double identity
+  // partitions now fall back (#6138), so this checks that the fallback keeps iceberg-java's
+  // layout; the unit tests in `iceberg_partition_path.rs` cover how the native writer renders
+  // these values.
   test("float and double partition paths match iceberg-java") {
     assumeNativeAcceleration()
     withIcebergCatalog { warehouseDir =>

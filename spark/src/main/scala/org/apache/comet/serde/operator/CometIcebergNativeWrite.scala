@@ -272,7 +272,8 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
   // iceberg-rust holds a float partition value as an `OrderedFloat`, whose equality treats -0.0
   // and 0.0 as one value, and its fanout and clustered writers group rows by that equality.
   // iceberg-java keeps the two apart, so the native writer would file both under whichever
-  // arrived first, and a read that prunes on the other value would lose rows (#6138).
+  // arrived first, and a read that prunes on the other value would lose rows (#6138). Remove this
+  // rule once the iceberg-rust pin carries a fix for apache/iceberg-rust#3325; #5643 tracks it.
   private val requireNoFloatingPointPartitionField: TriggerRule = ctx =>
     IcebergReflection
       .getOutputSpecIdFromSparkWrite(ctx.sparkWrite)
