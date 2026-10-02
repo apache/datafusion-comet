@@ -379,10 +379,6 @@ object CometFloatSemanticsSuite {
         in("expression", "greatest", "least")(c) ||
           in("aggregate", "max", "min", "global max and min", "window max and min")(c)),
     KnownGap(
-      issue(6385),
-      "array_remove and sort_array compare floats by IEEE 754 total order.",
-      in("expression", "array_remove", "sort_array", "sort_array descending")),
-    KnownGap(
       issue(5701),
       "array_distinct and array_union fold -0.0 into 0.0 and keep NaNs with different bits " +
         "apart, where Spark before SPARK-54918 keeps the zeros apart and merges the NaNs.",
