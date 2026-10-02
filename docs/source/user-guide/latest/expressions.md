@@ -176,7 +176,7 @@ The tables below list every Spark built-in expression with its current status.
 | `sequence` | ✅ | Hybrid | Integral types run natively; date/timestamp sequences use codegen dispatch |
 | `shuffle` | ✅ | Native | Binary/struct/map elements fall back |
 | `slice` | ✅ | Native | Native ([#4149](https://github.com/apache/datafusion-comet/pull/4149)) |
-| `sort_array` | ✅ | Hybrid | Struct, nested-array, and null elements run natively; other element types (for example intervals), and floating-point elements when `spark.comet.exec.strictFloatingPoint=true`, route through the JVM codegen dispatcher |
+| `sort_array` | ✅ | Hybrid | Struct, nested-array, floating-point, and null elements run natively; other element types (for example intervals) route through the JVM codegen dispatcher |
 
 ---
 
@@ -206,7 +206,7 @@ The tables below list every Spark built-in expression with its current status.
 | `array_size` | ✅ | — |  |
 | `cardinality` | ✅ | Native |  |
 | `concat` | ✅ | Hybrid | Binary/array children and non-UTF8_BINARY collations route through the JVM codegen dispatcher |
-| `reverse` | ✅ | Hybrid | Arrays with binary, struct, or map elements, and collated strings, route through the JVM codegen dispatcher ([details](compatibility/expressions/array.md)) |
+| `reverse` | ✅ | Hybrid | Binary input (Spark 4.2), arrays with binary, struct, or map elements, and collated strings, route through the JVM codegen dispatcher ([details](compatibility/expressions/array.md)) |
 | `size` | ✅ | Native |  |
 
 ---
