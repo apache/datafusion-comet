@@ -26,7 +26,7 @@ SELECT signum(d) FROM test_signum
 
 -- literal arguments
 query
-SELECT signum(-5.0), signum(5.0), signum(0.0), signum(NULL)
+SELECT signum(-5.0), signum(5.0), signum(0.0), signum(-0.0), signum(NULL)
 
 -- java.lang.Math.signum returns the zero it is given, so -0.0 keeps its sign
 -- (https://github.com/apache/datafusion-comet/issues/6522)
