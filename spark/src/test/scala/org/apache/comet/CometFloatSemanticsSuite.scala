@@ -366,10 +366,6 @@ object CometFloatSemanticsSuite {
         in("expression", "greatest", "least")(c) ||
           in("aggregate", "max", "min", "global max and min", "window max and min")(c)),
     KnownGap(
-      issue(6385),
-      "array_remove and sort_array compare floats by IEEE 754 total order.",
-      in("expression", "array_remove", "sort_array", "sort_array descending")),
-    KnownGap(
       issue(5312),
       "collect_set before Spark 4.2 treats -0.0 and 0.0 as one value and NaNs as distinct.",
       c => in("aggregate", "collect_set")(c) && !CometSparkSessionExtensions.isSpark42Plus),
