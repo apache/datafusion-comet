@@ -59,7 +59,7 @@ import org.apache.comet.{CometConf, CometExecIterator, CometRuntimeException, Co
 import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleEnabled, isSpark35Plus, withFallbackReason}
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.rules.CometExecRule
-import org.apache.comet.serde.{CometOperatorSerde, Compatible, OperatorOuterClass, QueryContextInterner, SupportLevel, Unsupported}
+import org.apache.comet.serde.{CometCollectBuffer, CometOperatorSerde, Compatible, OperatorOuterClass, QueryContextInterner, SupportLevel, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, Operator}
 import org.apache.comet.serde.QueryPlanSerde
 import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, isStringCollationType, supportedSortType}
@@ -2011,8 +2011,7 @@ trait CometBaseAggregate {
       val hasUnsupportedAgg = aggregate.aggregateExpressions.exists { aggExpr =>
         aggExpr.mode == PartialMerge &&
         QueryPlanSerde.aggsNotSupportingSparkPartialToNativeFinal(Seq(aggExpr)).nonEmpty &&
-        !aggExpr.aggregateFunction.isInstanceOf[CollectList] &&
-        !aggExpr.aggregateFunction.isInstanceOf[CollectSet]
+        !CometCollectBuffer.nativePartialMergeCanDecode(aggExpr.aggregateFunction)
       }
       if (hasUnsupportedAgg) {
         withFallbackReason(

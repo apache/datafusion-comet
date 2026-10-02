@@ -20,10 +20,13 @@
 use std::{borrow::Cow, sync::Arc};
 
 use arrow::array::{
-    builder::{make_builder, ArrayBuilder, BinaryBuilder, ListBuilder},
+    builder::{make_builder, ArrayBuilder, BinaryBuilder, ListBuilder, PrimitiveBuilder},
     Array, ArrayRef, BinaryArray, GenericByteArray, LargeBinaryArray, OffsetSizeTrait,
 };
-use arrow::datatypes::{DataType, Field, FieldRef, GenericBinaryType};
+use arrow::datatypes::{
+    ArrowPrimitiveType, DataType, DurationMicrosecondType, Field, FieldRef, GenericBinaryType,
+    IntervalUnit, IntervalYearMonthType, TimeUnit,
+};
 use datafusion::common::{DataFusionError, Result};
 use datafusion::physical_expr::aggregate::AggregateFunctionExpr;
 use datafusion_comet_shuffle::spark_unsafe::list::{append_to_builder, SparkUnsafeArray};
@@ -71,7 +74,8 @@ impl PartialMergeStateDecoder {
 pub(crate) struct SparkCollectStateDecoder {
     item_field: FieldRef,
     buffer_element: SparkBufferElement,
-    /// Spark's `bufferElementType`, which the serialized array is validated against.
+    /// Spark's `bufferElementType`, which the serialized array is validated against. An ANSI
+    /// interval is validated as the integer type that stores it.
     buffer_element_type: DataType,
 }
 
@@ -89,6 +93,13 @@ enum SparkBufferElement {
     /// `byte[]` identity, and its `eval` unwraps each value with `ArrayData.toByteArray`.
     /// `CollectList(BinaryType)` stores plain binary values.
     ByteArray,
+    /// A `YearMonthIntervalType`, stored as an `int` of months: the value of Arrow's
+    /// `Interval(YearMonth)`. `SparkUnsafeArray` does not read ANSI intervals, so only top-level
+    /// ones are decoded, and the planner keeps collect states with nested intervals in Spark.
+    YearMonthInterval,
+    /// A `DayTimeIntervalType`, stored as a `long` of microseconds: the value of Arrow's
+    /// `Duration(Microsecond)`.
+    DayTimeInterval,
 }
 
 /// An `UnsafeArrayData` whose header and fixed-width element region were bounds-checked.
@@ -132,6 +143,12 @@ impl SparkCollectStateDecoder {
                 SparkBufferElement::ByteArray,
                 DataType::List(Arc::new(Field::new_list_field(DataType::Int8, true))),
             ),
+            (_, DataType::Interval(IntervalUnit::YearMonth)) => {
+                (SparkBufferElement::YearMonthInterval, DataType::Int32)
+            }
+            (_, DataType::Duration(TimeUnit::Microsecond)) => {
+                (SparkBufferElement::DayTimeInterval, DataType::Int64)
+            }
             (_, item_type) => (SparkBufferElement::Item, item_type.clone()),
         };
         Self {
@@ -215,8 +232,56 @@ impl SparkCollectStateDecoder {
             SparkBufferElement::ByteArray => {
                 Self::append_byte_array_values(array_bytes, &layout, builder.values())?;
             }
+            SparkBufferElement::YearMonthInterval => {
+                Self::append_fixed_width_values::<IntervalYearMonthType, 4>(
+                    array_bytes,
+                    &layout,
+                    builder.values(),
+                    i32::from_le_bytes,
+                )?;
+            }
+            SparkBufferElement::DayTimeInterval => {
+                Self::append_fixed_width_values::<DurationMicrosecondType, 8>(
+                    array_bytes,
+                    &layout,
+                    builder.values(),
+                    i64::from_le_bytes,
+                )?;
+            }
         }
         builder.append(true);
+        Ok(())
+    }
+
+    /// Appends each element of a validated array of `N`-byte little-endian values.
+    fn append_fixed_width_values<T: ArrowPrimitiveType, const N: usize>(
+        array_bytes: &[u8],
+        layout: &UnsafeArrayLayout,
+        values: &mut dyn ArrayBuilder,
+        from_le_bytes: fn([u8; N]) -> T::Native,
+    ) -> Result<()> {
+        const NUM_ELEMENTS_WIDTH: usize = 8;
+
+        let values = values
+            .as_any_mut()
+            .downcast_mut::<PrimitiveBuilder<T>>()
+            .ok_or_else(|| {
+                Self::decode_error(format!(
+                    "expected a {} builder for collect state",
+                    T::DATA_TYPE
+                ))
+            })?;
+        for index in 0..layout.num_elements {
+            if Self::is_null(array_bytes, NUM_ELEMENTS_WIDTH, index)? {
+                values.append_null();
+                continue;
+            }
+            let offset = layout.header_width + index * N;
+            let element = array_bytes[offset..offset + N]
+                .try_into()
+                .expect("slice length checked");
+            values.append_value(from_le_bytes(element));
+        }
         Ok(())
     }
 
@@ -567,7 +632,7 @@ impl SparkCollectStateDecoder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{Int32Array, ListArray, StringArray};
+    use arrow::array::{AsArray, Int32Array, ListArray, StringArray};
 
     /// Spark's `CollectSet(BinaryType).serialize` output for a buffer holding `X'ABCD'`, captured
     /// from Spark 4.1. `collect.scala` and the unsafe writers produce the same bytes in 3.4-4.2.
@@ -608,6 +673,35 @@ mod tests {
         0, 0, 0, 0, 0, 0, 0, 0,
         2, 0, 0, 0, 24, 0, 0, 0,
         0xAB, 0xCD, 0, 0, 0, 0, 0, 0,
+    ];
+
+    /// Spark's `CollectList(YearMonthIntervalType).serialize` output for a buffer holding
+    /// `INTERVAL '1-2' YEAR TO MONTH`, `INTERVAL '-3-4' YEAR TO MONTH` and `INTERVAL '0-0' YEAR TO
+    /// MONTH`, captured from Spark 4.1.3; 3.4.3 and 3.5.9 produce the same bytes, and
+    /// `CollectSet` the same layout. Each element is an `int` of months.
+    #[rustfmt::skip]
+    const SPARK_COLLECT_LIST_YEAR_MONTH_INTERVAL: [u8; 48] = [
+        0, 0, 0, 0, 0, 0, 0, 0,
+        32, 0, 0, 0, 16, 0, 0, 0,
+        // Three elements and their null bitset, then 14, -40 and 0 padded to a word
+        3, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0,
+        0x0E, 0, 0, 0, 0xD8, 0xFF, 0xFF, 0xFF,
+        0, 0, 0, 0, 0, 0, 0, 0,
+    ];
+
+    /// Spark's `CollectList(DayTimeIntervalType).serialize` output for a buffer holding
+    /// `INTERVAL '3 04:05:06' DAY TO SECOND` and `INTERVAL '-5 06:07:08' DAY TO SECOND`, captured
+    /// like the year-month buffer. Each element is a `long` of microseconds.
+    #[rustfmt::skip]
+    const SPARK_COLLECT_LIST_DAY_TIME_INTERVAL: [u8; 48] = [
+        0, 0, 0, 0, 0, 0, 0, 0,
+        32, 0, 0, 0, 16, 0, 0, 0,
+        2, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0,
+        // 273_906_000_000 and -454_028_000_000
+        0x80, 0xE0, 0x11, 0xC6, 0x3F, 0, 0, 0,
+        0, 0x85, 0xD2, 0x49, 0x96, 0xFF, 0xFF, 0xFF,
     ];
 
     fn collect_state_decoder(element_type: DataType) -> SparkCollectStateDecoder {
@@ -879,6 +973,62 @@ mod tests {
         let list = decode_rows(&decoder, &[&SPARK_COLLECT_LIST_BINARY_ABCD]).unwrap();
 
         assert_eq!(binary_values(&list, 0), vec![Some(vec![0xAB, 0xCD])]);
+    }
+
+    #[test]
+    fn decodes_spark_collect_interval_states() {
+        for function_name in ["collect_list", "collect_set"] {
+            let decoder =
+                collect_decoder(function_name, DataType::Interval(IntervalUnit::YearMonth));
+            let with_null = unsafe_row_with_array(unsafe_array_i32(&[None, Some(-1)]));
+            let list = decode_rows(
+                &decoder,
+                &[&SPARK_COLLECT_LIST_YEAR_MONTH_INTERVAL, &with_null],
+            )
+            .unwrap();
+            assert_eq!(
+                list.data_type(),
+                &DataType::List(Arc::new(Field::new_list_field(
+                    DataType::Interval(IntervalUnit::YearMonth),
+                    true
+                )))
+            );
+            let months = list.value(0);
+            let months = months.as_primitive::<IntervalYearMonthType>();
+            assert_eq!(months.values(), &[14, -40, 0]);
+            assert_eq!(months.null_count(), 0);
+            let months = list.value(1);
+            let months = months.as_primitive::<IntervalYearMonthType>();
+            assert!(months.is_null(0));
+            assert_eq!(months.value(1), -1);
+
+            let decoder = collect_decoder(function_name, DataType::Duration(TimeUnit::Microsecond));
+            let list = decode_rows(&decoder, &[&SPARK_COLLECT_LIST_DAY_TIME_INTERVAL]).unwrap();
+            let micros = list.value(0);
+            let micros = micros.as_primitive::<DurationMicrosecondType>();
+            assert_eq!(micros.values(), &[273_906_000_000, -454_028_000_000]);
+        }
+    }
+
+    #[test]
+    fn rejects_malformed_and_nested_spark_collect_interval_states() {
+        // A third day-time element would end past the buffer.
+        let mut overrun = SPARK_COLLECT_LIST_DAY_TIME_INTERVAL.to_vec();
+        overrun[16..24].copy_from_slice(&3_i64.to_le_bytes());
+        let decoder = collect_decoder("collect_list", DataType::Duration(TimeUnit::Microsecond));
+        let error = decode_rows(&decoder, &[&overrun]).unwrap_err().to_string();
+        assert!(error.contains("fixed region is out of bounds"), "{error}");
+
+        // Intervals are only decoded as top-level elements. A nested one is rejected before any
+        // value is read; the planner keeps such states in Spark.
+        let field = Field::new("i", DataType::Interval(IntervalUnit::YearMonth), true);
+        let decoder = collect_decoder("collect_list", DataType::Struct(vec![field].into()));
+        let row = unsafe_row_with_array(unsafe_array_variable(&[Some(&[0_u8; 16][..])]));
+        let error = decode_rows(&decoder, &[&row]).unwrap_err().to_string();
+        assert!(
+            error.contains("Unsupported collect state type: Interval(YearMonth)"),
+            "{error}"
+        );
     }
 
     #[test]

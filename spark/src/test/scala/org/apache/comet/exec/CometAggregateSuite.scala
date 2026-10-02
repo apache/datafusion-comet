@@ -321,6 +321,56 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("collect_list/collect_set of ANSI intervals decode Spark's buffer in PartialMerge") {
+    // Spark stores a year-month interval as an int of months and a day-time interval as a long
+    // of microseconds. The inline VALUES relation keeps the partial in Spark, which serializes
+    // them in its collect buffer for the native PartialMerge to decode.
+    withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "false") {
+      for {
+        (first, second) <- Seq(
+          ("INTERVAL '1-2' YEAR TO MONTH", "INTERVAL '-3-4' YEAR TO MONTH"),
+          ("INTERVAL '3 04:05:06' DAY TO SECOND", "INTERVAL '-5 06:07:08' DAY TO SECOND"))
+        fn <- Seq("collect_list", "collect_set")
+        query <- Seq(
+          s"SELECT x, count(DISTINCT y), size($fn(v)) " +
+            s"FROM VALUES (1, 1, $first), (1, 2, $first) AS t(x, y, v) GROUP BY x",
+          // Each group collects a single distinct value, so its result does not depend on order.
+          s"SELECT x, count(DISTINCT y), $fn(v) " +
+            s"FROM VALUES (1, 1, $first), (1, 2, $first), (2, 1, $second) AS t(x, y, v) " +
+            "GROUP BY x")
+      } {
+        val (_, cometPlan) = checkSparkAnswerAndOperator(
+          sql(query),
+          Seq(classOf[CometHashAggregateExec]),
+          classOf[ObjectHashAggregateExec],
+          classOf[LocalTableScanExec])
+        assert(
+          cometPlan.toString.contains(s"merge_$fn"),
+          s"Expected the $fn PartialMerge stage to run natively; plan:\n$cometPlan")
+      }
+    }
+  }
+
+  test("collect_list/collect_set state the native PartialMerge cannot decode stays in Spark") {
+    // The native PartialMerge decodes ANSI intervals only as top-level elements, and calendar
+    // intervals not at all, so a Spark partial's buffer holding them keeps a Spark PartialMerge.
+    withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "false") {
+      for {
+        value <- Seq(
+          "make_interval(0, 1, 0, 2)",
+          "named_struct('v', INTERVAL '1-2' YEAR TO MONTH)",
+          "array(INTERVAL '3 04:05:06' DAY TO SECOND)")
+        fn <- Seq("collect_list", "collect_set")
+      } {
+        checkSparkAnswerAndFallbackReason(
+          s"SELECT x, count(DISTINCT y), size($fn(v)) " +
+            s"FROM VALUES (1, 1, $value), (1, 2, $value) AS t(x, y, v) GROUP BY x",
+          "Spark PartialMerge aggregate without Comet Partial requires compatible " +
+            "intermediate buffer formats")
+      }
+    }
+  }
+
   test("min/max floating point with negative zero") {
     val r = new Random(42)
     val schema = StructType(
