@@ -729,7 +729,7 @@ case class CometExecRule(session: SparkSession)
         else None
       }.toMap
     }
-    visit(plan)
+    val _ = visit(plan)
   }
 
   private def containsDecimal(dataType: DataType): Boolean = dataType match {
