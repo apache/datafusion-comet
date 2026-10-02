@@ -25,7 +25,8 @@ import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector.ipc.ArrowReader
 import org.apache.spark.TaskContext
 import org.apache.spark.rdd.RDD
-import org.apache.spark.sql.catalyst.expressions.Attribute
+import org.apache.spark.sql.catalyst.expressions.{Attribute, SortOrder}
+import org.apache.spark.sql.catalyst.plans.physical.Partitioning
 import org.apache.spark.sql.comet.execution.arrow.{CometArrowStream, CometNativeArrowSource, RangeArrowReader}
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.{LeafExecNode, RangeExec, SparkPlan}
@@ -34,6 +35,7 @@ import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import com.google.common.base.Objects
 
 import org.apache.comet.{CometConf, ConfigEntry}
+import org.apache.comet.serde.OperatorOuterClass
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.operator.CometSink
 
@@ -121,8 +123,31 @@ object CometRangeExec extends CometSink[RangeExec] {
   override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
     CometConf.COMET_EXEC_RANGE_ENABLED)
 
+  override def convert(
+      op: RangeExec,
+      builder: Operator.Builder,
+      childOp: Operator*): Option[Operator] = {
+    if (CometConf.COMET_EXEC_RANGE_NATIVE_ENABLED.get(op.conf)) {
+      val rangeScan = OperatorOuterClass.RangeScan
+        .newBuilder()
+        .setStart(op.start)
+        .setStep(op.step)
+        // Spark's generated code reads the element count as a long, so it is truncated the same
+        // way.
+        .setNumElements(op.numElements.toLong)
+        .setNumSlices(op.numSlices)
+      Some(builder.setRangeScan(rangeScan).build())
+    } else {
+      super.convert(op, builder, childOp: _*)
+    }
+  }
+
   override def createExec(nativeOp: Operator, op: RangeExec): CometNativeExec =
-    CometScanWrapper(nativeOp, CometRangeExec(op, op.output))
+    if (nativeOp.hasRangeScan) {
+      CometNativeRangeExec(nativeOp, op, op.output, SerializedPlan(None))
+    } else {
+      CometScanWrapper(nativeOp, CometRangeExec(op, op.output))
+    }
 
   /**
    * The first value of partition `index` and the number of values in it, computed the way Spark's
@@ -156,4 +181,46 @@ object CometRangeExec extends CometSink[RangeExec] {
       (partitionStart, count)
     }
   }
+}
+
+/**
+ * Comet's version of Spark's `RangeExec` with its values generated in native code, by the native
+ * `RangeExec`. Each task computes its own partition from the partition index, so this operator
+ * reports Spark's partitioning and the native plan it belongs to runs one task per slice.
+ */
+case class CometNativeRangeExec(
+    override val nativeOp: Operator,
+    override val originalPlan: RangeExec,
+    override val output: Seq[Attribute],
+    override val serializedPlanOpt: SerializedPlan)
+    extends CometLeafExec {
+
+  override def outputPartitioning: Partitioning = originalPlan.outputPartitioning
+
+  override def outputOrdering: Seq[SortOrder] = originalPlan.outputOrdering
+
+  override def simpleString(maxFields: Int): String = {
+    s"$nodeName (${originalPlan.start}, ${originalPlan.end}, step=${originalPlan.step}, " +
+      s"splits=${originalPlan.numSlices})"
+  }
+
+  override protected def doCanonicalize(): SparkPlan = {
+    val canonical = originalPlan.canonicalized.asInstanceOf[RangeExec]
+    CometNativeRangeExec(nativeOp, canonical, canonical.output, SerializedPlan(None))
+  }
+
+  // `originalPlan` carries every parameter that decides the rows: start, end, step and the
+  // number of slices.
+  override def equals(obj: Any): Boolean = {
+    obj match {
+      case other: CometNativeRangeExec =>
+        this.originalPlan == other.originalPlan &&
+        this.output == other.output &&
+        this.serializedPlanOpt == other.serializedPlanOpt
+      case _ =>
+        false
+    }
+  }
+
+  override def hashCode(): Int = Objects.hashCode(originalPlan, output)
 }

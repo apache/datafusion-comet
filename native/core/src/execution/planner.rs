@@ -81,7 +81,8 @@ use datafusion::{
     prelude::SessionContext,
 };
 use datafusion_comet_operators::{
-    CometFilterExec, ExpandExec, ExplodeExec, PartitionedRankLimitExec, SampleExec, WindowFnKind,
+    CometFilterExec, ExpandExec, ExplodeExec, PartitionedRankLimitExec, RangeExec, SampleExec,
+    WindowFnKind,
 };
 use datafusion_comet_spark_expr::{
     create_comet_physical_fun, create_comet_physical_fun_with_eval_mode, BinaryOutputStyle,
@@ -1579,6 +1580,21 @@ impl PhysicalPlanner {
                     scans,
                     shuffle_scans,
                     Arc::new(SparkPlan::new(spark_plan.plan_id, limit, vec![child])),
+                ))
+            }
+            OpStruct::RangeScan(range) => {
+                // A leaf with no JVM input: each task produces its own partition of the range.
+                let range_exec: Arc<dyn ExecutionPlan> = Arc::new(RangeExec::new(
+                    range.start,
+                    range.step,
+                    range.num_elements,
+                    range.num_slices,
+                    self.partition,
+                ));
+                Ok((
+                    vec![],
+                    vec![],
+                    Arc::new(SparkPlan::new(spark_plan.plan_id, range_exec, vec![])),
                 ))
             }
             OpStruct::Sample(sample) => {
