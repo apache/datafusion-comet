@@ -683,7 +683,14 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
   def icebergExprToProto(
       icebergExpr: Any,
       output: Seq[Attribute],
-      pageIndexUnsupportedColumns: Set[String]): Option[OperatorOuterClass.IcebergPredicate] = {
+      pageIndexUnsupportedColumns: Set[String]): Option[OperatorOuterClass.IcebergPredicate] =
+    icebergExprToProto(icebergExpr, output, pageIndexUnsupportedColumns, allowPartial = true)
+
+  private def icebergExprToProto(
+      icebergExpr: Any,
+      output: Seq[Attribute],
+      pageIndexUnsupportedColumns: Set[String],
+      allowPartial: Boolean): Option[OperatorOuterClass.IcebergPredicate] = {
     val exprClass = icebergExpr.getClass
     val attributeMap = output.map(attr => attr.name -> attr).toMap
 
@@ -733,28 +740,31 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       val left = icebergExprToProto(
         IcebergReflection.getMethod(exprClass, "left").invoke(icebergExpr),
         output,
-        pageIndexUnsupportedColumns)
+        pageIndexUnsupportedColumns,
+        allowPartial)
       val right = icebergExprToProto(
         IcebergReflection.getMethod(exprClass, "right").invoke(icebergExpr),
         output,
-        pageIndexUnsupportedColumns)
+        pageIndexUnsupportedColumns,
+        allowPartial)
       (left, right) match {
-        // Push the residual only if it converts whole. Dropping a conjunct is safe in positive
-        // position but strengthens the predicate under a NOT (De Morgan), which would wrongly
-        // prune, and tracking polarity across arbitrary nesting is error prone. So an
-        // unconvertible conjunct elides the whole residual; the post-scan CometFilter is exact.
         case (Some(l), Some(r)) => Some(logicalPredicate(isAnd = true, l, r))
+        // Dropping a positive conjunct weakens the predicate; the post-scan filter stays exact.
+        // Inside NOT, every descendant must convert exactly, including nested AND/OR nodes.
+        case (l, r) if allowPartial => l.orElse(r)
         case _ => None
       }
     } else if (exprClass.getName.endsWith(Constants.ExpressionTypes.OR)) {
       val left = icebergExprToProto(
         IcebergReflection.getMethod(exprClass, "left").invoke(icebergExpr),
         output,
-        pageIndexUnsupportedColumns)
+        pageIndexUnsupportedColumns,
+        allowPartial)
       val right = icebergExprToProto(
         IcebergReflection.getMethod(exprClass, "right").invoke(icebergExpr),
         output,
-        pageIndexUnsupportedColumns)
+        pageIndexUnsupportedColumns,
+        allowPartial)
       // Dropping a disjunct would strengthen the predicate and wrongly prune, so require both.
       (left, right) match {
         case (Some(l), Some(r)) => Some(logicalPredicate(isAnd = false, l, r))
@@ -762,7 +772,10 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       }
     } else if (exprClass.getName.endsWith(Constants.ExpressionTypes.NOT)) {
       val child = IcebergReflection.getMethod(exprClass, "child").invoke(icebergExpr)
-      icebergExprToProto(child, output, pageIndexUnsupportedColumns).map(notPredicate)
+      // Negating a weakened predicate strengthens it and could discard qualifying rows. Keep
+      // the whole child exact rather than attempting partial pushdown through negation.
+      icebergExprToProto(child, output, pageIndexUnsupportedColumns, allowPartial = false)
+        .map(notPredicate)
     } else {
       // Anything else, such as Expressions.alwaysTrue or alwaysFalse, or a node type a future
       // Iceberg introduces, carries no pushdown this serde can express.
