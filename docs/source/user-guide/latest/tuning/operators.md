@@ -161,6 +161,5 @@ field. Spark orders such a null below every other value, and the native sort and
 `spark.comet.exec.strictFloatingPoint=true` makes those keys fall back to Spark. They can be forced back onto the
 native path with `spark.comet.expression.SortOrder.allowIncompatible=true`.
 
-`sort_array` is separate. It sorts array elements rather than ordering rows, and its elements are compared with Arrow's
-raw total ordering, so `spark.comet.exec.strictFloatingPoint=true` makes it fall back even for a scalar floating-point
-element type. Use `spark.comet.expression.SortArray.allowIncompatible=true` to keep it native.
+`sort_array` sorts array elements rather than ordering rows. It follows Spark's floating-point ordering as well, so it
+also stays native with `spark.comet.exec.strictFloatingPoint=true`.

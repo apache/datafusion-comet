@@ -189,8 +189,9 @@ impl FileIoCache {
     }
 }
 
-/// Shared per executor so tasks reuse one FileIO: its factory, parsed config and access bridge,
-/// plus the storage client where the backend caches operators.
+/// Shared per executor so tasks reuse one FileIO: its factory, parsed config and access bridge. The
+/// OpenDAL S3 backend builds an operator, and with it a signer, for each storage call; the bridge's
+/// own credential reuse is what spans calls.
 static FILE_IO_CACHE: LazyLock<Mutex<FileIoCache>> =
     LazyLock::new(|| Mutex::new(FileIoCache::new(FILE_IO_CACHE_CAPACITY)));
 

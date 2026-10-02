@@ -884,6 +884,95 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     }
   }
 
+  test("fall-back: identity partition on a float or double column") {
+    // iceberg-rust groups float partition values with an equality that treats -0.0 and 0.0 as one
+    // value, where iceberg-java keeps them apart (#6138).
+    withDetectionCatalog { _ =>
+      Seq("float" -> "FLOAT", "double" -> "DOUBLE").foreach { case (typeName, sqlType) =>
+        val table = s"part_$typeName"
+        spark.sql(s"""
+          CREATE TABLE $catalog.$ns.$table (id INT, v $sqlType)
+          USING iceberg PARTITIONED BY (v)
+        """)
+        val writeExec = captureWriteExec(table, allowWriteFailure = false) {
+          spark.sql(s"INSERT INTO $catalog.$ns.$table VALUES (1, CAST(1.5 AS $sqlType))")
+        }
+        assertUnsupportedContains(writeExec, table, "partition field v", typeName, "-0.0")
+      }
+    }
+  }
+
+  test("fall-back: identity partition on a nested double field") {
+    // The source of a partition field can be nested inside a struct. `Schema.findField` resolves
+    // a nested id too, so the rule must not fail open for it.
+    withDetectionCatalog { _ =>
+      spark.sql(s"""
+        CREATE TABLE $catalog.$ns.part_nested (id INT, s STRUCT<v: DOUBLE>)
+        USING iceberg PARTITIONED BY (s.v)
+      """)
+      val writeExec = captureWriteExec("part_nested", allowWriteFailure = false) {
+        spark.sql(s"INSERT INTO $catalog.$ns.part_nested VALUES (1, named_struct('v', 1.5D))")
+      }
+      assertUnsupportedContains(writeExec, "part_nested", "partition field s.v", "double", "-0.0")
+    }
+  }
+
+  test("fall-back: double identity partition beside a dropped partition field") {
+    // A format-version-1 spec keeps a dropped partition field as a `void` transform, and that
+    // field's source column can be dropped afterwards. The surviving double field must still be
+    // found, whatever the dropped one does to the spec's partition type.
+    withDetectionCatalog { dir =>
+      createTable(
+        dir,
+        "part_dropped",
+        partitionSpec = "PARTITIONED BY (region, amount)",
+        properties = Some("'format-version'='1'"))
+      // Loaded afresh for each change: the insert in between commits through another handle.
+      def table: org.apache.iceberg.Table =
+        loadIcebergTable(spark, catalog, ns, "part_dropped")
+          .asInstanceOf[org.apache.iceberg.Table]
+      table.updateSpec().removeField("region").commit()
+      spark.sql(s"REFRESH TABLE $catalog.$ns.part_dropped")
+      assertUnsupportedContains("part_dropped", "partition field amount", "double", "-0.0")
+
+      // Iceberg before 1.11 cannot plan a write once the `void` field's source column is gone.
+      // On 1.11 iceberg-java plans it but cannot build a partition key for a spec that mixes that
+      // field with a live one, so the write itself fails on either path; only the gate's decision
+      // is checked.
+      if (icebergVersionAtLeast(1, 11)) {
+        table.updateSchema().deleteColumn("region").commit()
+        spark.sql(s"REFRESH TABLE $catalog.$ns.part_dropped")
+        val writeExec = captureWriteExec("part_dropped", allowWriteFailure = true) {
+          spark.sql(s"INSERT INTO $catalog.$ns.part_dropped VALUES (2, 2.0)")
+        }
+        assertUnsupportedContains(
+          writeExec,
+          "part_dropped",
+          "partition field amount",
+          "double",
+          "-0.0")
+      }
+    }
+  }
+
+  test("Compatible when a dropped double partition field remains as void") {
+    // The `void` field only ever holds null, so there are no signed zeros to keep apart.
+    withDetectionCatalog { dir =>
+      createTable(
+        dir,
+        "part_void",
+        partitionSpec = "PARTITIONED BY (amount)",
+        properties = Some("'format-version'='1'"))
+      loadIcebergTable(spark, catalog, ns, "part_void")
+        .asInstanceOf[org.apache.iceberg.Table]
+        .updateSpec()
+        .removeField("amount")
+        .commit()
+      spark.sql(s"REFRESH TABLE $catalog.$ns.part_void")
+      assertSupportLevelIs[Compatible]("part_void")
+    }
+  }
+
   test("fall-back: uuid column in the write schema") {
     withDetectionCatalog { dir =>
       // Spark DDL cannot declare `uuid`, so evolve the schema through the Iceberg API. Spark
