@@ -66,7 +66,7 @@ pub fn create_case_when(
     // The branches share a Spark type, so any difference is in the Arrow representation. For a
     // timestamp that is the timezone label, and the cast only relabels it, but Comet's cast still
     // needs a timezone. Every `TimestampType` value in a native plan is labelled UTC.
-    let cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC", false);
+    let cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC");
     // A branch that already has the common type is not wrapped in a cast, which would do nothing
     // but hide what the branch is from the evaluation.
     let coerce = |expr: Arc<dyn PhysicalExpr>, data_type: &DataType| -> Arc<dyn PhysicalExpr> {
@@ -1078,7 +1078,7 @@ mod tests {
             Arc::new(Cast::new(
                 e,
                 to,
-                SparkCastOptions::new_without_timezone(EvalMode::Ansi, false),
+                SparkCastOptions::new_without_timezone(EvalMode::Ansi),
                 None,
                 None,
             ))
