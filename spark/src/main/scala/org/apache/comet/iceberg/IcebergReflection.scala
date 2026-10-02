@@ -599,18 +599,6 @@ object IcebergReflection extends Logging {
     }
   }
 
-  /** Gets the fully qualified name reported by an Iceberg table. */
-  def getTableName(table: Any): Option[String] = {
-    try {
-      val nameMethod = getMethod(table.getClass, "name")
-      Option(nameMethod.invoke(table)).collect { case name: String => name }
-    } catch {
-      case e: Exception =>
-        logError(s"Iceberg reflection failure: Failed to get table name: ${e.getMessage}")
-        None
-    }
-  }
-
   /**
    * Gets storage properties from an Iceberg table's FileIO.
    *

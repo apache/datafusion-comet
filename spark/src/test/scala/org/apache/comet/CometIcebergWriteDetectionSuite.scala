@@ -617,6 +617,7 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     hadoopConf.set("fs.s3a.bucket.target.path.style.access", "true")
     // Bucket `target.other` plus suffix `endpoint`, not bucket `target` plus `other.endpoint`.
     hadoopConf.set("fs.s3a.bucket.target.other.endpoint", "https://other.example")
+    hadoopConf.set("fs.s3a.bucket.target.other.encryption.algorithm", "SSE-KMS")
     hadoopConf.set("fs.s3a.bucket.target.encryption.algorithm", "SSE-KMS")
 
     assert(
