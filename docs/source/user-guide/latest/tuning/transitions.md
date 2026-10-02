@@ -54,6 +54,14 @@ back to the default conversion, since the direct converter's per-batch setup doe
 batches. This optimization is experimental: it only affects the operator's non-codegen paths (including
 broadcast relation builds), and the default conversion remains enabled unless explicitly opted in.
 
+The direct converter is not faster for every schema: schemas with strings and no expensive decimals can get
+slower with it enabled. For them the default conversion is already efficient, because its `UnsafeProjection` is
+code generated for the schema, and a string column keeps the direct converter off the fixed-width path described
+below. In the microbenchmarks above, a `long, int, double, string` schema at 8,192 rows per batch took 12.1 ns
+per row with the direct converter against 9.4 ns per row with the default conversion, about 29% slower, even
+though it allocated less. Measure a representative workload before enabling the direct converter, rather than
+turning it on for a whole cluster.
+
 The converter takes a fixed-width path when every column has a fixed width in Spark's row format, that is,
 when the schema has no strings and no decimals with precision above 18. That path converts the whole batch
 as soon as it is set, so a consumer that stops early, such as a `LIMIT`, pays for every row of the batch where
