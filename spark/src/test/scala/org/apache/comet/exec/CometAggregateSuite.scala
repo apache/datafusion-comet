@@ -2420,7 +2420,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               checkSparkAnswerAndNumOfAggregates(query, 2)
               // The raw-moment product can overflow, underflow, or become NaN (0 * Inf).
               // ANSI-off division by a zero denominator returns NULL.
-              checkAnswer(
+              checkCometAnswer(
                 sql(query),
                 Seq(
                   Row(
