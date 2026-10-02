@@ -76,10 +76,10 @@ object CometC2RIsolatedBench {
       .add("l_linestatus", StringType),
     i =>
       InternalRow(
-        Decimal.createUnsafe(i % 5000000, 12, 2),
-        Decimal.createUnsafe(i % 9000000, 12, 2),
-        Decimal.createUnsafe(i % 10, 12, 2),
-        Decimal.createUnsafe(i % 8, 12, 2),
+        Decimal.createUnsafe(i % 5000000L, 12, 2),
+        Decimal.createUnsafe(i % 9000000L, 12, 2),
+        Decimal.createUnsafe(i % 10L, 12, 2),
+        Decimal.createUnsafe(i % 8L, 12, 2),
         8000 + i % 2500,
         UTF8String.fromString(if (i % 2 == 0) "A" else "R"),
         UTF8String.fromString(if (i % 3 == 0) "F" else "O")),
@@ -98,10 +98,10 @@ object CometC2RIsolatedBench {
       .add("f", LongType),
     i =>
       InternalRow(
-        Decimal.createUnsafe(i % 5000000, 12, 2),
-        Decimal.createUnsafe(i % 9000000, 12, 2),
-        Decimal.createUnsafe(i % 10, 12, 2),
-        Decimal.createUnsafe(i % 8, 12, 2),
+        Decimal.createUnsafe(i % 5000000L, 12, 2),
+        Decimal.createUnsafe(i % 9000000L, 12, 2),
+        Decimal.createUnsafe(i % 10L, 12, 2),
+        Decimal.createUnsafe(i % 8L, 12, 2),
         8000 + i % 2500,
         i.toLong),
     row => row.getLong(0) + row.getLong(5))
