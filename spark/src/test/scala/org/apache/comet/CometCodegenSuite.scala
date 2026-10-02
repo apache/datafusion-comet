@@ -28,18 +28,16 @@ import org.apache.spark.{SparkConf, SparkEnv, TaskContext}
 import org.apache.spark.sql.{CometTestBase, Row}
 import org.apache.spark.sql.api.java.UDF1
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.analysis.NoSuchFunctionException
 import org.apache.spark.sql.catalyst.expressions.{Add, Alias, ApplyFunctionExpression, AttributeReference, BoundReference, Cast, CreateArray, CreateMap, CreateNamedStruct, Expression, GenericInternalRow, Hypot, Literal, MapConcat, ScalaUDF}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial}
 import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
 import org.apache.spark.sql.catalyst.util.GenericArrayData
 import org.apache.spark.sql.comet.{CometFilterExec, CometHashAggregateExec, CometProjectExec}
-import org.apache.spark.sql.connector.catalog.{FunctionCatalog, Identifier}
+import org.apache.spark.sql.connector.catalog.{Identifier, InMemoryCatalog}
 import org.apache.spark.sql.connector.catalog.functions.{BoundFunction, ScalarFunction, UnboundFunction}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
-import org.apache.spark.sql.util.CaseInsensitiveStringMap
 import org.apache.spark.unsafe.types.{ByteArray, UTF8String}
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
@@ -2384,20 +2382,13 @@ class CometCodegenSuite
       val reason = CometInvokeTargets.declineReason(call)
       assert(reason.isEmpty, s"$call: $reason")
     }
-    val money = DecimalType(10, 2)
+    val money = CometCodegenSuite.Money
     val asMoney = new CometCodegenSuite.InvokeIntAsDecimalFunction(money)
     val declined = Seq(
       StaticInvoke(classOf[java.lang.Math], IntegerType, "abs", Seq(i)) ->
         "java.lang.Math, which is not part of Spark",
       Invoke(Literal(predicate, function1), "apply", IntegerType, Seq(i)) ->
         "scala.Function1, which is not part of Spark",
-      Invoke(
-        Literal(
-          new CometCodegenSuite.SerializableTarget,
-          ObjectType(classOf[CometCodegenSuite.SerializableTarget])),
-        "twice",
-        StringType,
-        Seq(s)) -> "SerializableTarget, which is not part of Spark",
       // The three ways Spark lowers a call to a DataSource V2 function.
       StaticInvoke(classOf[StaticAsMoneyFunction], money, "invoke", Seq(i)) ->
         s"the DataSource V2 function ${classOf[StaticAsMoneyFunction].getName}",
@@ -2415,24 +2406,8 @@ class CometCodegenSuite
     }
   }
 
-  /**
-   * Runs `f` with [[CometCodegenSuite.DecimalFunctionCatalog]] registered as `decfn` and `values`
-   * in `t (i INT)`, for the #6425 tests.
-   */
-  private def withDecimalFunctions(values: Any*)(f: => Unit): Unit = {
-    withSQLConf(
-      "spark.sql.catalog.decfn" -> classOf[CometCodegenSuite.DecimalFunctionCatalog].getName) {
-      withTable("t") {
-        sql("CREATE TABLE t (i INT) USING parquet")
-        sql("INSERT INTO t VALUES " + values.map(v => s"($v)").mkString(", "))
-        f
-      }
-    }
-  }
-
-  private def dec(s: String) = if (s == null) null else new java.math.BigDecimal(s)
-
   test("calls to a DataSource V2 function run in Spark (#6425)") {
+    import CometCodegenSuite.{IntAsDecimalFunction, InvokeIntAsDecimalFunction, Money}
     // Each function returns `Decimal(i)` at scale 0 for a `DECIMAL(10, 2)`. Spark rescales that
     // value, or writes null when it does not fit, only when it writes a row, and an expression
     // around the call reads it as returned: `IS NULL` is false for 100000000, which needs nine
@@ -2443,93 +2418,91 @@ class CometCodegenSuite
     // lowers to `Invoke`, `static_as_money` has a static one and lowers to `StaticInvoke`, and
     // `apply_as_money` has neither and lowers to `ApplyFunctionExpression`.
     val reason = "calls the DataSource V2 function"
-    withDecimalFunctions(3, null, 100000000, -100000000) {
-      val projected = sql(
-        "SELECT i, decfn.ns.as_money(i), decfn.ns.static_as_money(i), " +
-          "decfn.ns.as_money(i) IS NULL, CAST(decfn.ns.static_as_money(i) AS STRING), " +
-          "abs(decfn.ns.as_money(i)) IS NULL, decfn.ns.money_array(i)[0] IS NULL, " +
-          "decfn.ns.money_struct(i).m IS NULL FROM t")
-      checkSparkAnswerAndFallbackReason(projected, reason)
-      checkAnswer(
-        projected,
-        Seq(
-          Row(3, dec("3.00"), dec("3.00"), false, "3", false, false, false),
-          Row(null, null, null, true, null, true, true, true),
-          Row(100000000, null, null, false, "100000000", false, false, false),
-          Row(-100000000, null, null, false, "-100000000", false, false, false)))
-      val counted =
-        sql("SELECT count(decfn.ns.as_money(i)), count(decfn.ns.static_as_money(i)) FROM t")
-      checkSparkAnswerAndFallbackReason(counted, reason)
-      checkAnswer(counted, Row(3L, 3L))
-      for (query <- Seq(
-          "SELECT max(decfn.ns.as_money(i)), sum(decfn.ns.static_as_money(i)) FROM t",
-          // A projected alias, which Spark passes on without writing a row.
-          "SELECT d, d IS NULL FROM (SELECT decfn.ns.as_money(i) AS d FROM t)",
-          "SELECT count(x) FROM t LATERAL VIEW explode(decfn.ns.money_array(i)) e AS x",
-          // `map(...)` is itself dispatched, so the call would run in its kernel.
-          "SELECT map_values(map('k', decfn.ns.as_money(i)))[0] IS NULL FROM t",
-          "SELECT map('k', decfn.ns.apply_as_money(i)) FROM t")) {
-        checkSparkAnswerAndFallbackReason(query, reason)
-      }
-      // A bare `ApplyFunctionExpression` never reaches the dispatcher: only Iceberg's functions
-      // have a handler.
-      checkSparkAnswerAndFallbackReason(
-        "SELECT decfn.ns.apply_as_money(i) FROM t",
-        "has no native handler")
-      // Spark hashes the value the function returned. AQE would coalesce the partitions.
-      withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+    withSQLConf("spark.sql.catalog.decfn" -> classOf[InMemoryCatalog].getName) {
+      val catalog =
+        spark.sessionState.catalogManager.catalog("decfn").asInstanceOf[InMemoryCatalog]
+      Seq(
+        "as_money" -> new InvokeIntAsDecimalFunction(Money),
+        "static_as_money" -> new StaticAsMoneyFunction,
+        "apply_as_money" -> new IntAsDecimalFunction(Money),
+        "money_array" -> new InvokeIntAsDecimalFunction(ArrayType(Money)),
+        "money_struct" -> new InvokeIntAsDecimalFunction(new StructType().add("m", Money)))
+        .foreach { case (name, function) =>
+          catalog.createFunction(Identifier.of(Array("ns"), name), function)
+        }
+      withTypedCol("INT", "3", "NULL", "100000000", "-100000000") {
+        val lowerings = sql(
+          "SELECT decfn.ns.as_money(c), decfn.ns.static_as_money(c), " +
+            "decfn.ns.apply_as_money(c) FROM t").queryExecution.analyzed.expressions
+          .flatMap(_.collect {
+            case call @ (_: Invoke | _: StaticInvoke | _: ApplyFunctionExpression) =>
+              call.getClass
+          })
+        assert(
+          lowerings == Seq(
+            classOf[Invoke],
+            classOf[StaticInvoke],
+            classOf[ApplyFunctionExpression]))
+        val three = new java.math.BigDecimal("3.00")
+        val projected = sql(
+          "SELECT c, decfn.ns.as_money(c), decfn.ns.static_as_money(c), " +
+            "decfn.ns.as_money(c) IS NULL, CAST(decfn.ns.static_as_money(c) AS STRING), " +
+            "abs(decfn.ns.as_money(c)) IS NULL, decfn.ns.money_array(c)[0] IS NULL, " +
+            "decfn.ns.money_struct(c).m IS NULL FROM t")
+        checkSparkAnswerAndFallbackReason(projected, reason)
+        checkAnswer(
+          projected,
+          Seq(
+            Row(3, three, three, false, "3", false, false, false),
+            Row(null, null, null, true, null, true, true, true),
+            Row(100000000, null, null, false, "100000000", false, false, false),
+            Row(-100000000, null, null, false, "-100000000", false, false, false)))
+        val counted =
+          sql("SELECT count(decfn.ns.as_money(c)), count(decfn.ns.static_as_money(c)) FROM t")
+        checkSparkAnswerAndFallbackReason(counted, reason)
+        checkAnswer(counted, Row(3L, 3L))
+        for (query <- Seq(
+            "SELECT max(decfn.ns.as_money(c)), sum(decfn.ns.static_as_money(c)) FROM t",
+            // A projected alias, which Spark passes on without writing a row.
+            "SELECT d, d IS NULL FROM (SELECT decfn.ns.as_money(c) AS d FROM t)",
+            "SELECT count(x) FROM t LATERAL VIEW explode(decfn.ns.money_array(c)) e AS x",
+            // `map(...)` is itself dispatched, so the call would run in its kernel.
+            "SELECT map_values(map('k', decfn.ns.as_money(c)))[0] IS NULL FROM t",
+            "SELECT map('k', decfn.ns.apply_as_money(c)) FROM t")) {
+          checkSparkAnswerAndFallbackReason(query, reason)
+        }
+        // A bare `ApplyFunctionExpression` never reaches the dispatcher: only Iceberg's functions
+        // have a handler.
         checkSparkAnswerAndFallbackReason(
-          "SELECT i, spark_partition_id() FROM " +
-            "(SELECT * FROM t DISTRIBUTE BY decfn.ns.as_money(i))",
-          reason)
+          "SELECT decfn.ns.apply_as_money(c) FROM t",
+          "has no native handler")
+        // Spark hashes the value the function returned. AQE would coalesce the partitions.
+        withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+          checkSparkAnswerAndFallbackReason(
+            "SELECT c, spark_partition_id() FROM " +
+              "(SELECT * FROM t DISTRIBUTE BY decfn.ns.as_money(c))",
+            reason)
+        }
       }
     }
   }
 }
 
 /**
- * Fixtures for the `Invoke`, closure-serialization and DataSource V2 function tests. Declared
- * inside the companion object so they are static nested classes with no reference to the
- * enclosing suite -- otherwise closure-serializing a tree that holds one would drag the whole
- * suite in and the serialization outcome would say nothing about the fixture itself.
+ * Fixtures for the closure-serialization and DataSource V2 function tests. Declared inside the
+ * companion object so they are static nested classes with no reference to the enclosing suite --
+ * otherwise closure-serializing a tree that holds one would drag the whole suite in and the
+ * serialization outcome would say nothing about the fixture itself.
  */
 object CometCodegenSuite {
-
-  /** Public and `Serializable`, but not Spark's, so the dispatcher declines a call into it. */
-  class SerializableTarget extends Serializable {
-    def twice(s: UTF8String): UTF8String = UTF8String.fromString(s.toString + s.toString)
-  }
 
   /** Deliberately not `Serializable`, to make the closure serializer refuse the bound tree. */
   class NotSerializableTarget {
     def twice(s: UTF8String): UTF8String = UTF8String.fromString(s.toString + s.toString)
   }
 
-  /**
-   * DataSource V2 function catalog for the #6425 tests. Each function returns its argument as a
-   * `Decimal` at scale 0, whatever scale the type it declares has.
-   */
-  class DecimalFunctionCatalog extends FunctionCatalog {
-    private val money = DecimalType(10, 2)
-    private val functions: Map[String, UnboundFunction] = Map(
-      "as_money" -> new InvokeIntAsDecimalFunction(money),
-      "static_as_money" -> new StaticAsMoneyFunction,
-      "apply_as_money" -> new IntAsDecimalFunction(money),
-      "money_array" -> new InvokeIntAsDecimalFunction(ArrayType(money)),
-      "money_struct" -> new InvokeIntAsDecimalFunction(new StructType().add("m", money)))
-    private var catalogName: String = _
-
-    override def initialize(name: String, options: CaseInsensitiveStringMap): Unit =
-      catalogName = name
-
-    override def name(): String = catalogName
-
-    override def listFunctions(namespace: Array[String]): Array[Identifier] =
-      functions.keys.map(Identifier.of(namespace, _)).toArray
-
-    override def loadFunction(ident: Identifier): UnboundFunction =
-      functions.getOrElse(ident.name(), throw new NoSuchFunctionException(ident))
-  }
+  /** The type the #6425 functions declare. Their values are at scale 0 instead. */
+  val Money: DecimalType = DecimalType(10, 2)
 
   /**
    * Returns its `INT` argument as the unscaled value of a `Decimal` at scale 0, whatever scale
@@ -2569,15 +2542,8 @@ object CometCodegenSuite {
  * top-level companion's methods to static methods on the class, so Spark finds a static `invoke`
  * and lowers a call to `StaticInvoke`.
  */
-class StaticAsMoneyFunction extends UnboundFunction with ScalarFunction[Decimal] {
-  override def name(): String = "static_as_money"
-  override def description(): String = "int -> decimal(10, 2), at scale 0"
-  override def bind(inputType: StructType): BoundFunction = this
-  override def inputTypes(): Array[DataType] = Array(IntegerType)
-  override def resultType(): DataType = DecimalType(10, 2)
-  override def produceResult(input: InternalRow): Decimal =
-    StaticAsMoneyFunction.invoke(input.getInt(0))
-}
+class StaticAsMoneyFunction
+    extends CometCodegenSuite.IntAsDecimalFunction(CometCodegenSuite.Money)
 
 object StaticAsMoneyFunction {
   def invoke(v: Int): Decimal = Decimal(v)

@@ -87,7 +87,8 @@ object CometStaticInvoke extends CometExpressionSerde[StaticInvoke] {
    * Arrow `Decimal128(precision, scale)` vector just like a native kernel does, so it produces
    * the out-of-range value instead of a null. The mixin's contract ("the case must be something
    * `doGenCode` can compile") does not cover a limit that lives at the Arrow output boundary, so
-   * enrollment stays with the individual handlers.
+   * enrollment stays with the individual handlers. [[CometInvokeTargets]] now keeps Iceberg's
+   * classes out of the dispatcher as well.
    */
   override def getSupportLevel(expr: StaticInvoke): SupportLevel =
     handlerFor(expr)
@@ -189,10 +190,8 @@ object CometInvoke extends CometCodegenDispatch[Invoke]
 
 /**
  * The classes the codegen dispatcher may call into from a `StaticInvoke` or an `Invoke`: Spark's
- * own, other than a DataSource V2 function, plus the predicate of a typed `Dataset.filter`. The
- * kernel runs every node of the tree it is given, so a call anywhere in a dispatched tree runs in
- * the kernel, not only one at its root, and [[CometScalaUDF.emitJvmCodegenDispatch]] checks the
- * whole tree.
+ * own, other than a DataSource V2 function, plus the predicate of a typed `Dataset.filter`.
+ * [[CometScalaUDF.emitJvmCodegenDispatch]] checks every node of a dispatched tree.
  *
  * Spark's helpers return values that already have their declared type. Other code need not, and
  * Spark corrects such a value only when it writes a row. A DataSource V2 function can return a
@@ -217,19 +216,15 @@ object CometInvokeTargets {
   private val TypedFilterPredicates: Set[Class[_]] =
     Set(classOf[scala.Function1[_, _]], classOf[FilterFunction[_]])
 
-  private def isSparkCode(cls: Class[_]): Boolean =
-    !classOf[ScalarFunction[_]].isAssignableFrom(cls) &&
-      SparkPackages.exists(p => cls.getName.startsWith(p))
-
   /**
-   * Why the dispatcher must not run `expr`, naming the first call in it that the dispatcher does
-   * not allow, or `None` when it allows them all.
+   * Why the dispatcher must not run `expr`, naming the first call in it into a class the
+   * dispatcher does not allow, or `None` when it allows them all.
    */
   def declineReason(expr: Expression): Option[String] =
-    expr.find(!isAllowed(_)).map { node =>
-      val cls = callee(node).get
+    expr.find(checkedCallee(_).exists(!isSparkCode(_))).map { node =>
+      val cls = checkedCallee(node).get
       val target =
-        if (classOf[ScalarFunction[_]].isAssignableFrom(cls)) {
+        if (isV2Function(cls)) {
           s"the DataSource V2 function ${cls.getName}"
         } else {
           s"${cls.getName}, which is not part of Spark"
@@ -237,17 +232,23 @@ object CometInvokeTargets {
       s"${CometExplainInfo.exprDisplayName(node)} calls $target"
     }
 
-  private def isAllowed(expr: Expression): Boolean = (expr, callee(expr)) match {
-    case (i: Invoke, Some(cls)) if TypedFilterPredicates.contains(cls) =>
-      i.dataType == BooleanType
-    case (_, cls) => cls.forall(isSparkCode)
-  }
+  private def isV2Function(cls: Class[_]): Boolean =
+    classOf[ScalarFunction[_]].isAssignableFrom(cls)
 
-  /** The class whose code `expr` calls, unless it calls a method of a Catalyst value. */
-  private def callee(expr: Expression): Option[Class[_]] = expr match {
+  private def isSparkCode(cls: Class[_]): Boolean =
+    !isV2Function(cls) && SparkPackages.exists(p => cls.getName.startsWith(p))
+
+  /**
+   * The class whose code `expr` calls, unless it calls a method of a Catalyst value or is the
+   * predicate of a typed filter.
+   */
+  private def checkedCallee(expr: Expression): Option[Class[_]] = expr match {
     case s: StaticInvoke => Some(s.staticObject)
     case i: Invoke =>
       i.targetObject.dataType match {
+        case ObjectType(cls)
+            if TypedFilterPredicates.contains(cls) && i.dataType == BooleanType =>
+          None
         case ObjectType(cls) => Some(cls)
         // Any other target is a Catalyst value, such as the `UTF8String` that Spark 4 lowers
         // `is_valid_utf8` to call `isValid` on.
