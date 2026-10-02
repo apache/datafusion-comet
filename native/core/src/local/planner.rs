@@ -145,13 +145,14 @@ fn size_sorters(context: &SessionContext, plan: &dyn ExecutionPlan, memory_limit
         (share / 4).min(execution.sort_spill_reservation_bytes);
     // Workaround for DataFusion 55.1's ExternalSorter, fixed upstream in DataFusion 56.0.0:
     // before spilling, it frees its merge reservation and merges buffered batches with a new,
-    // empty, unspillable reservation. Once spillable sorters fill the fair pool, that merge
-    // cannot grow and the query fails instead of spilling. A sorter spills once its buffered
-    // batches reach its fair share, so a threshold of one share makes it sort them in place
-    // instead of merging. This costs unaccounted transient copies and slower multi-column
-    // sorts that fit in memory. Remove this override after upgrading to DataFusion 56.0.0;
-    // `multi_column_sorts_spill_under_a_shared_budget` must still pass without it.
-    execution.sort_in_place_threshold_bytes = share.max(execution.sort_in_place_threshold_bytes);
+    // empty, unspillable reservation. Once spillable consumers fill the fair pool, that merge
+    // cannot grow and the query fails instead of spilling. A sorter's fair share changes as
+    // other consumers register and finish, so no smaller threshold bounds its buffered
+    // batches; always sorting them in place avoids that merge. This costs unaccounted
+    // transient copies and slower multi-column sorts that fit in memory. Remove this override
+    // after upgrading to DataFusion 56.0.0; `multi_column_sorts_spill_under_a_shared_budget`
+    // must still pass without it.
+    execution.sort_in_place_threshold_bytes = usize::MAX;
 }
 
 pub(super) fn join_query(
@@ -933,10 +934,11 @@ mod tests {
     }
 
     /// Several sorters with a two-column key share a budget far below the data size and run
-    /// concurrently, so the pool fills with their spillable batches before they spill. With
-    /// DataFusion 55.1 this fails with an `ExternalSorterMerge` allocation error unless
-    /// `size_sorters` raises the in-place sort threshold. Keep this test when that override is
-    /// removed after upgrading to DataFusion 56.0.0.
+    /// concurrently, so the pool fills with their spillable batches before they spill. The
+    /// partitions are uneven: a sorter that finishes early unregisters and enlarges the fair
+    /// shares of the others. With DataFusion 55.1 this fails with an `ExternalSorterMerge`
+    /// allocation error unless `size_sorters` overrides the in-place sort threshold. Keep this
+    /// test when that override is removed after upgrading to DataFusion 56.0.0.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn multi_column_sorts_spill_under_a_shared_budget() {
         use arrow::array::Array;
@@ -962,7 +964,12 @@ mod tests {
         let mut partitions = vec![vec![]; sorters];
         for (chunk, start) in (0..rows).step_by(4096).enumerate() {
             let ids: Vec<i64> = (start..start + 4096).collect();
-            partitions[chunk % sorters].push(
+            let target = if chunk % 8 == 0 {
+                0
+            } else {
+                1 + chunk % (sorters - 1)
+            };
+            partitions[target].push(
                 RecordBatch::try_new(
                     Arc::clone(&schema),
                     vec![

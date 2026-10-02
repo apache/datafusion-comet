@@ -155,21 +155,23 @@ have no query budget.
 in the OS temporary directory; there is no local-mode disk quota. With spill
 disabled, queries that exceed the budget fail with a resource error.
 
-The planner adjusts two DataFusion sort settings according to the budget divided by
-the number of sorters in the graph (the per-sorter share):
+The planner overrides two DataFusion sort settings:
 
-- `sort_spill_reservation_bytes` is reduced to at most a quarter of the share.
-  Every sorter reserves this amount up front, and the 10 MiB default can exhaust a
-  small budget before any data is sorted.
-- `sort_in_place_threshold_bytes` is raised to the share. This works around a
-  DataFusion 55.1 `ExternalSorter` bug that is fixed in DataFusion 56.0.0: before
-  spilling, the sorter frees its merge reservation and merges buffered batches with
-  a new unspillable reservation. Once spillable sorters fill the fair pool, that
-  reservation cannot grow and the query fails instead of spilling. Sorting buffered
-  batches in place avoids that merge, at the cost of unaccounted transient copies
-  and slower multi-column sorts that fit in memory. Remove this override after
-  upgrading to DataFusion 56.0.0; the native test
-  `multi_column_sorts_spill_under_a_shared_budget` must still pass without it.
+- `sort_spill_reservation_bytes` is reduced to at most a quarter of the budget
+  divided by the number of sorters in the graph. Every sorter reserves this amount
+  up front, and the 10 MiB default can exhaust a small budget before any data is
+  sorted.
+- `sort_in_place_threshold_bytes` is raised so that sorters always sort their
+  buffered batches in place. This works around a DataFusion 55.1 `ExternalSorter`
+  bug that is fixed in DataFusion 56.0.0: before spilling, the sorter frees its
+  merge reservation and merges buffered batches with a new unspillable reservation.
+  Once spillable consumers fill the fair pool, that reservation cannot grow and the
+  query fails instead of spilling. A sorter's fair share changes as other consumers
+  register and finish, so no smaller threshold reliably avoids that merge. The cost
+  is unaccounted transient copies of a partition's buffered data and slower
+  multi-column sorts that fit in memory. Remove this override after upgrading to
+  DataFusion 56.0.0; the native test `multi_column_sorts_spill_under_a_shared_budget`
+  must still pass without it.
 
 DataFusion's hash join build side does not spill, so an oversized build side fails
 regardless of the spill setting.
