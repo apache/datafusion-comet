@@ -17,6 +17,8 @@
 
 //! PoC of vectorization execution through JNI to Rust.
 pub mod columnar_to_row;
+#[cfg(feature = "delta")]
+pub mod delta_dv;
 pub mod expressions;
 pub mod jni_api;
 pub(crate) mod merge_as_partial;
