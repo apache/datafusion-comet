@@ -63,8 +63,8 @@ Native shuffle (`CometExchange`) is selected when all of the following condition
      compares raw bytes. Scalar float and double are supported, including when
      `spark.comet.exec.strictFloatingPoint` is enabled, because the native range partitioner
      normalizes its comparison keys and its sampled boundary rows the same way the native sort
-     does. Strict floating point only affects floating-point values nested in arrays, structs, or
-     maps, which are rejected as range keys for being nested anyway.
+     does. The native sort normalizes floating-point values nested in arrays and structs as well,
+     but those keys are rejected as range keys for being nested.
    - `HashPartitioning` keys must be primitive **by default**. Setting
      `spark.comet.shuffle.native.partitioning.hash.nested.enabled` to `true` admits structs and
      arrays as keys, checked recursively to their leaves, and maps on Spark 4.0 and later, where
