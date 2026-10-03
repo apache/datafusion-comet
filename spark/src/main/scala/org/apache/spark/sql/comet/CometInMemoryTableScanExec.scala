@@ -83,8 +83,7 @@ case class CometInMemoryTableScanExec(
 
   // Spark's own scan lists its InMemoryRelation as an inner child, and the relation lists the
   // cached plan, so EXPLAIN draws the plan that built the cache below the scan. Do the same.
-  // ExtendedExplainInfo leaves them out of Comet's own reporting: the cached plan runs when the
-  // relation is materialized, not as part of every query that reads it.
+  // ExtendedExplainInfo.executionInnerChildren leaves them out of Comet's own reporting.
   override def innerChildren: Seq[QueryPlan[_]] = Seq(originalPlan.relation)
 
   // `originalPlan` is a plan-typed field rather than a child, so QueryPlan's canonicalization

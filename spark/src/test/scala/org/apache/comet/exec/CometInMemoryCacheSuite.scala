@@ -355,10 +355,10 @@ class CometInMemoryCacheSuite extends CometTestBase {
         // EXPLAIN FORMATTED also details the InMemoryRelation drawn below the scan. Before Spark
         // 4.0 that detail prints the relation's CachedRDDBuilder below Spark's own scan as well
         // (SPARK-51861), so there only the scan's own detail is checked.
-        val formatted = df.queryExecution.explainString(FormattedMode)
         Seq(
           plan.treeString,
-          if (isSpark40Plus) formatted else scans.head.verboseStringWithOperatorId())
+          if (isSpark40Plus) df.queryExecution.explainString(FormattedMode)
+          else scans.head.verboseStringWithOperatorId())
           .foreach { text =>
             assert(!text.contains("CachedRDDBuilder"), text)
             assert(!text.contains(classOf[ArrowCachedBatchSerializer].getName), text)
@@ -376,57 +376,54 @@ class CometInMemoryCacheSuite extends CometTestBase {
       tree.linesIterator.map(_.replaceAll("^[ :+-]*", "")).toSeq
 
     Seq("false", "true").foreach { aqe =>
-      withSQLConf(
-        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe,
-        CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true") {
-        spark.catalog.clearCache()
-        spark
-          .range(1000)
-          .selectExpr("id AS key", "id % 8 AS value")
-          .createOrReplaceTempView("explain_cached_plan")
-        // The cached plan is planned here. Keeping its Range on Spark gives it a fallback reason
-        // that the reporting for a query reading the cache must leave out.
+      withClue(s"AQE $aqe: ") {
         withSQLConf(
-          CometConf.COMET_EXEC_RANGE_ENABLED.key -> "false",
-          CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "false") {
-          spark.catalog.cacheTable("explain_cached_plan")
-        }
-        try {
-          val df = spark.sql("SELECT value, count(*) FROM explain_cached_plan GROUP BY value")
-          df.collect()
-          val plan = df.queryExecution.executedPlan
-          val scans = collect(plan) { case s: CometInMemoryTableScanExec => s }
-          assert(scans.size == 1, s"AQE $aqe: $plan")
-          val relation = scans.head.originalPlan.relation
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe,
+          CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true") {
+          withTempView("explain_cached_plan") {
+            spark
+              .range(1000)
+              .selectExpr("id AS key", "id % 8 AS value")
+              .createOrReplaceTempView("explain_cached_plan")
+            // The cached plan is planned here. Keeping its Range on Spark gives it a fallback
+            // reason that the reporting for a query reading the cache must leave out.
+            withSQLConf(
+              CometConf.COMET_EXEC_RANGE_ENABLED.key -> "false",
+              CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "false") {
+              spark.catalog.cacheTable("explain_cached_plan")
+            }
+            val df = spark.sql("SELECT value, count(*) FROM explain_cached_plan GROUP BY value")
+            df.collect()
+            val plan = df.queryExecution.executedPlan
+            val scans = collect(plan) { case s: CometInMemoryTableScanExec => s }
+            assert(scans.size == 1, plan)
+            val relation = scans.head.originalPlan.relation
 
-          // The relation's line, then the cached plan's lines, follow the scan's line.
-          val lines = nodeLines(plan.treeString)
-          val scanAt = lines.indexWhere(_.startsWith("CometInMemoryTableScan "))
-          assert(scanAt >= 0, s"AQE $aqe: ${plan.treeString}")
-          val below = nodeLines(relation.treeString)
-          assert(below.size > 1, relation.treeString)
-          assert(
-            lines.slice(scanAt + 1, scanAt + 1 + below.size) == below,
-            s"AQE $aqe: ${plan.treeString}")
+            // The relation's line, then the cached plan's lines, follow the scan's line.
+            val lines = nodeLines(plan.treeString)
+            val below = nodeLines(relation.treeString)
+            assert(below.size > 1, relation)
+            val scanAt = lines.indexWhere(_.startsWith("CometInMemoryTableScan "))
+            assert(lines.startsWith(below, scanAt + 1), plan)
 
-          // EXPLAIN FORMATTED numbers the relation and draws it below the scan too.
-          val formatted = nodeLines(df.queryExecution.explainString(FormattedMode))
-          val formattedScanAt = formatted.indexWhere(_.startsWith("CometInMemoryTableScan ("))
-          assert(formattedScanAt >= 0, s"AQE $aqe: ${formatted.mkString("\n")}")
-          assert(
-            formatted(formattedScanAt + 1).startsWith("InMemoryRelation ("),
-            s"AQE $aqe: ${formatted.mkString("\n")}")
+            // EXPLAIN FORMATTED numbers the relation and draws it below the scan too.
+            val formatted = df.queryExecution.explainString(FormattedMode)
+            val formattedLines = nodeLines(formatted)
+            val formattedScanAt =
+              formattedLines.indexWhere(_.startsWith("CometInMemoryTableScan ("))
+            assert(
+              formattedLines(formattedScanAt + 1).startsWith("InMemoryRelation ("),
+              formatted)
 
-          // Comet's own reporting leaves the cached plan out.
-          val info = new ExtendedExplainInfo()
-          val cachedReasons = info.getFallbackReasons(relation.cachedPlan)
-          assert(cachedReasons.nonEmpty, relation.cachedPlan.treeString)
-          val reasons = info.getFallbackReasons(plan)
-          assert(cachedReasons.forall(r => !reasons.contains(r)), s"AQE $aqe: $reasons")
-          val verbose = info.generateVerboseInfo(plan)
-          assert(!verbose.contains("InMemoryRelation"), s"AQE $aqe: $verbose")
-        } finally {
-          spark.catalog.clearCache()
+            // Comet's own reporting leaves the cached plan out.
+            val info = new ExtendedExplainInfo()
+            val cachedReasons = info.getFallbackReasons(relation.cachedPlan)
+            assert(cachedReasons.nonEmpty, relation.cachedPlan)
+            val reasons = info.getFallbackReasons(plan)
+            assert(cachedReasons.intersect(reasons).isEmpty, reasons)
+            val verbose = info.generateVerboseInfo(plan)
+            assert(!verbose.contains("InMemoryRelation"), verbose)
+          }
         }
       }
     }
