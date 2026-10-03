@@ -178,7 +178,11 @@ fetched from another executor also count as remote reads. See
 ## Native Metrics
 
 Setting `spark.comet.explain.native.enabled=true` will cause native plans to be logged in each executor. Metrics are
-logged for each native plan (and there is one plan per task, so this is very verbose).
+logged for each native plan (and there is usually one plan per task, so this is very verbose).
+
+The SQL metrics that native plans report accumulate per task. When one task runs several native plans, such as a
+coalesce without a shuffle that reads several partitions, each metric reports their sum, while the two memory
+high-water marks, `peak_mem_used` and `build_mem_used`, report the largest value among them.
 
 Here is a guide to some of the native metrics.
 
