@@ -25,10 +25,14 @@ import org.apache.arrow.vector.types.pojo.Schema
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 /**
- * `ArrowReader` over an iterator of Spark-side `ColumnarBatch`es (not Arrow-backed). Slices up to
- * `maxRecordsPerBatch` rows per `loadNextBatch` from the current Spark batch into the reader's
- * stable VSR via `ArrowWriter.writeColumns`. Spark's `ColumnVector` implementations aren't Arrow
- * buffers, so this reader necessarily copies element values into Arrow format.
+ * `ArrowReader` over an iterator of Spark-side `ColumnarBatch`es (not Arrow-backed). Each
+ * `loadNextBatch` fills the reader's stable VSR with up to `maxRecordsPerBatch` rows via
+ * `ArrowWriter.writeColumns`, slicing a large Spark batch and appending consecutive small ones,
+ * so the output batches are full whatever size the source produces: Spark's vectorized Parquet
+ * reader emits 4096 rows a batch and its in-memory cache 10000. Spark's `ColumnVector`
+ * implementations aren't Arrow buffers, so this reader necessarily copies element values into
+ * Arrow format, and each Spark batch is copied in full before the next is requested, since
+ * producers reuse them.
  */
 private[comet] class SparkColumnarArrowReader(
     allocator: BufferAllocator,
@@ -70,18 +74,30 @@ private[comet] class SparkColumnarArrowReader(
       return false
     }
 
-    val startNs = System.nanoTime()
-    val rowsRemaining = current.numRows() - rowsConsumedInCurrent
-    val rowsToProduce =
-      if (maxRecordsPerBatch <= 0) rowsRemaining
-      else math.min(maxRecordsPerBatch, rowsRemaining)
-
-    val writer = ArrowWriter.create(getVectorSchemaRoot, rowsToProduce)
-    writer.writeColumns(current, rowsConsumedInCurrent, rowsToProduce)
-    rowsConsumedInCurrent += rowsToProduce
-
+    // Without a limit, each Spark batch becomes one Arrow batch.
+    val batchSize =
+      if (maxRecordsPerBatch <= 0) current.numRows() - rowsConsumedInCurrent
+      else maxRecordsPerBatch
+    // Pulling the next source batch is the producer's time, not conversion time.
+    var conversionNs = 0L
+    var startNs = System.nanoTime()
+    val writer = ArrowWriter.create(getVectorSchemaRoot, batchSize)
+    var rowsProduced = 0
+    var more = true
+    while (more) {
+      val rows = math.min(batchSize - rowsProduced, current.numRows() - rowsConsumedInCurrent)
+      writer.writeColumns(current, rowsConsumedInCurrent, rows)
+      rowsConsumedInCurrent += rows
+      rowsProduced += rows
+      more = rowsProduced < batchSize && {
+        conversionNs += System.nanoTime() - startNs
+        val advanced = advanceToNonEmptyBatch()
+        startNs = System.nanoTime()
+        advanced
+      }
+    }
     writer.finish()
-    onConversionNs(System.nanoTime() - startNs)
+    onConversionNs(conversionNs + System.nanoTime() - startNs)
     true
   }
 }
