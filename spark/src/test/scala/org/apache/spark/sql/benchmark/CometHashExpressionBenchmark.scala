@@ -109,7 +109,7 @@ object CometHashExpressionBenchmark extends CometBenchmarkBase {
               ("Comet native", true, true))
             var expected: Seq[Row] = Seq.empty
             val benchmark =
-              new Benchmark(s"$function($column): decimal(38,0)", rows, output = output)
+              new Benchmark(s"$function($column): decimal(38,0)", rows.toLong, output = output)
             cases.foreach { case (name, comet, native) =>
               val conf = Seq(
                 CometConf.COMET_ENABLED.key -> comet.toString,
