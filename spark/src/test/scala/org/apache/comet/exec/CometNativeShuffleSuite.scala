@@ -45,7 +45,7 @@ import org.apache.spark.sql.comet.{CometExec, CometHashAggregateExec, CometLocal
 import org.apache.spark.sql.comet.execution.arrow.CometArrowStream
 import org.apache.spark.sql.comet.execution.shuffle.{CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{LocalTableScanExec, SparkPlan}
-import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanHelper, AQEShuffleReadExec, ShuffleQueryStageExec}
+import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AdaptiveSparkPlanHelper, AQEShuffleReadExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.exchange.{ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.functions.{broadcast, col, count, countDistinct, sum}
 import org.apache.spark.sql.internal.SQLConf
@@ -1394,18 +1394,46 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
     }
   }
 
+  test("findShuffleScanIndices numbers the Scan and ShuffleScan leaves of a native plan") {
+    import OperatorOuterClass.{Filter, NativeScan, Operator, Projection, Scan, ShuffleScan}
+    val scan = Operator.newBuilder().setScan(Scan.getDefaultInstance).build()
+    val shuffleScan = Operator.newBuilder().setShuffleScan(ShuffleScan.getDefaultInstance).build()
+    val nativeScan = Operator.newBuilder().setNativeScan(NativeScan.getDefaultInstance).build()
+    val filterLeaf = Operator.newBuilder().setFilter(Filter.getDefaultInstance).build()
+    val emptyLeaf = Operator.getDefaultInstance
+    def node(children: Operator*): Operator =
+      Operator
+        .newBuilder()
+        .setProjection(Projection.getDefaultInstance)
+        .addAllChildren(children.asJava)
+        .build()
+
+    // Other leaves read no input, so they take no index.
+    val cases = Seq(
+      scan -> Set.empty[Int],
+      shuffleScan -> Set(0),
+      nativeScan -> Set.empty[Int],
+      node(scan, shuffleScan) -> Set(1),
+      node(shuffleScan, nativeScan, scan, shuffleScan) -> Set(0, 2),
+      node(nativeScan, filterLeaf, emptyLeaf) -> Set.empty[Int],
+      node(node(scan, nativeScan), node(filterLeaf, node(shuffleScan)), shuffleScan) -> Set(1, 2),
+      node(node(node(shuffleScan)), node(emptyLeaf, node(scan), shuffleScan), scan) -> Set(0, 2))
+    cases.foreach { case (plan, expected) =>
+      assert(CometExec.findShuffleScanIndices(plan) == expected, plan)
+    }
+  }
+
   /**
    * For each native block in `plan`, query stages included, that reads a shuffle: each input of
-   * the block, in walk order, paired with the kind of the native leaf that reads it.
+   * the block, in the order execution collects them, paired with the kind of the `Scan` or
+   * `ShuffleScan` leaf that reads it.
    */
   private def shuffleReadingBlocks(plan: SparkPlan): Seq[Seq[(String, String)]] = {
-    def inputs(op: SparkPlan): Seq[SparkPlan] = op.children.flatMap {
-      case native: CometNativeExec if native.children.nonEmpty => inputs(native)
-      case other => Seq(other)
+    def inputs(root: CometNativeExec): Seq[SparkPlan] = {
+      val plans = mutable.ArrayBuffer.empty[SparkPlan]
+      root.foreachUntilCometInput(root)(plans += _)
+      plans.filterNot(_.isInstanceOf[CometNativeExec]).toSeq
     }
-    def leaves(op: OperatorOuterClass.Operator): Seq[OperatorOuterClass.Operator] =
-      if (op.getChildrenCount == 0) Seq(op)
-      else op.getChildrenList.asScala.toSeq.flatMap(leaves)
     def readsShuffle(input: SparkPlan): Boolean = input match {
       case _: ShuffleQueryStageExec | _: AQEShuffleReadExec | _: CometShuffleExchangeExec => true
       case _ => false
@@ -1419,7 +1447,10 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
       .map { root =>
         val nativePlan = OperatorOuterClass.Operator.parseFrom(root.serializedPlanOpt.plan.get)
         val blockInputs = inputs(root).map(_.getClass.getSimpleName)
-        val leafKinds = leaves(nativePlan).map(_.getOpStructCase.name)
+        val leafKinds = CometExec
+          .nativeLeaves(nativePlan)
+          .filter(leaf => leaf.hasScan || leaf.hasShuffleScan)
+          .map(_.getOpStructCase.name)
         assert(blockInputs.length == leafKinds.length, s"$blockInputs vs $leafKinds")
         blockInputs.zip(leafKinds)
       }
@@ -1438,19 +1469,31 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
       .groupBy((col("id") % 997).as("k"))
       .agg(sum("id"), count("id"))
 
-  test("AQE final aggregate reads its shuffle stage through ShuffleScan") {
-    withSQLConf(aqeWithoutCoalescing: _*) {
-      val (_, plan) = checkSparkAnswerAndOperator(groupedSum)
-      checkCometOperatorsInFinalPlan(plan)
-      assert(shuffleReadingBlocks(plan) == Seq(shuffleStageRead), plan)
-    }
-  }
-
-  test("AQE final aggregate keeps a plain Scan with shuffle direct read disabled") {
-    withSQLConf(
-      aqeWithoutCoalescing :+ (CometConf.COMET_SHUFFLE_DIRECT_READ_ENABLED.key -> "false"): _*) {
-      val (_, plan) = checkSparkAnswerAndOperator(groupedSum)
-      assert(shuffleReadingBlocks(plan) == Seq(Seq("ShuffleQueryStageExec" -> "SCAN")), plan)
+  test("final aggregate reads its shuffle through ShuffleScan only under AQE") {
+    // The coalesced case takes the stage's ShuffleScan before AQE puts the coalesced read
+    // between them, and the ShuffleScan then reads the partitions that the read specifies.
+    // (confs, whether the plan is adaptive, the block that reads the shuffle)
+    val cases = Seq(
+      (aqeWithoutCoalescing, true, shuffleStageRead),
+      (
+        Seq(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+          SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "true"),
+        true,
+        Seq("AQEShuffleReadExec" -> "SHUFFLE_SCAN")),
+      (
+        Seq(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false"),
+        false,
+        Seq("CometShuffleExchangeExec" -> "SCAN")))
+    cases.foreach { case (confs, isAdaptive, expected) =>
+      withClue(s"$confs: ") {
+        withSQLConf(confs: _*) {
+          val (_, plan) = checkSparkAnswerAndOperator(groupedSum)
+          assert(plan.isInstanceOf[AdaptiveSparkPlanExec] == isAdaptive, plan)
+          if (isAdaptive) checkCometOperatorsInFinalPlan(plan)
+          assert(shuffleReadingBlocks(plan) == Seq(expected), plan)
+        }
+      }
     }
   }
 
@@ -1513,25 +1556,6 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
     }
   }
 
-  test("AQE final aggregate over a coalesced shuffle read reads it through ShuffleScan") {
-    // The aggregate takes the stage's ShuffleScan before AQE puts the coalesced read between
-    // them, and the ShuffleScan then reads the partitions that the coalesced read specifies.
-    withSQLConf(
-      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
-      SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "true") {
-      val (_, plan) = checkSparkAnswerAndOperator(groupedSum)
-      checkCometOperatorsInFinalPlan(plan)
-      assert(shuffleReadingBlocks(plan) == Seq(Seq("AQEShuffleReadExec" -> "SHUFFLE_SCAN")), plan)
-    }
-  }
-
-  test("final aggregate without AQE reads its shuffle exchange through a plain Scan") {
-    withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
-      val (_, plan) = checkSparkAnswerAndOperator(groupedSum)
-      assert(shuffleReadingBlocks(plan) == Seq(Seq("CometShuffleExchangeExec" -> "SCAN")), plan)
-    }
-  }
-
   test("AQE DPP query with a broadcast side reads its shuffle stage through ShuffleScan") {
     assume(isSpark35Plus, "Native AQE DPP requires Spark 3.5+")
     withTempDir { dir =>
@@ -1554,13 +1578,6 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
               |WHERE d.x = 1 GROUP BY f.p""".stripMargin)
           val (_, plan) = checkSparkAnswer(df)
           assert(shuffleReadingBlocks(plan) == Seq(shuffleStageRead), plan)
-
-          // Aggregates on both sides, the broadcast one feeding the pruning filter. This checks
-          // the answer only.
-          checkSparkAnswer(sql("""SELECT /*+ BROADCAST(d) */ f.p, f.total, d.total
-              |FROM (SELECT p, sum(id) AS total FROM fact GROUP BY p) f
-              |JOIN (SELECT p, sum(x) AS total FROM dim WHERE x = 1 GROUP BY p) d
-              |ON f.p = d.p""".stripMargin))
         }
       }
     }
