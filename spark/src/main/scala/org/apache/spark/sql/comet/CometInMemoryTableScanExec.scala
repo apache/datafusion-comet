@@ -86,6 +86,15 @@ case class CometInMemoryTableScanExec(
   // ExtendedExplainInfo.executionInnerChildren leaves them out of Comet's own reporting.
   override def innerChildren: Seq[QueryPlan[_]] = Seq(originalPlan.relation)
 
+  // SparkPlanInfo, which the SQL tab's graph and the event log's plans are built from, gives
+  // Spark's own scan its cached plan as a child, but recognizes that scan by its class. For any
+  // other node it takes the children and the subqueries, so expose the cached plan as the one
+  // subquery. A child would make the cached plan part of the query that reads the cache, but
+  // Spark only walks this list: subqueries run from a plan's expressions. Its other walkers, such
+  // as collectWithSubqueries, follow it into the cached plan too. A lazy val, because Spark 3.x
+  // declares subqueries as one, and a lazy val overrides Spark 4's def as well.
+  @transient override lazy val subqueries: Seq[SparkPlan] = Seq(originalPlan.relation.cachedPlan)
+
   // `originalPlan` is a plan-typed field rather than a child, so QueryPlan's canonicalization
   // walks straight past it: its attributes and predicates keep the expression IDs of whichever
   // occurrence of the cached relation produced them. Two scans of one cache then compare unequal,
