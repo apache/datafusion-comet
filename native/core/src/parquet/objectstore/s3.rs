@@ -27,11 +27,16 @@ use crate::parquet::objectstore::location_scoped::{
 };
 use async_trait::async_trait;
 use aws_config::{
-    ecs::EcsCredentialsProvider, environment::EnvironmentVariableCredentialsProvider,
-    imds::credentials::ImdsCredentialsProvider, meta::credentials::CredentialsProviderChain,
-    profile::ProfileFileCredentialsProvider, provider_config::ProviderConfig,
-    sts::AssumeRoleProvider, web_identity_token::WebIdentityTokenCredentialsProvider,
-    BehaviorVersion,
+    default_provider::region::DefaultRegionChain,
+    ecs::EcsCredentialsProvider,
+    environment::EnvironmentVariableCredentialsProvider,
+    imds::credentials::ImdsCredentialsProvider,
+    meta::{credentials::CredentialsProviderChain, region::ProvideRegion},
+    profile::{ProfileFileCredentialsProvider, ProfileFileRegionProvider},
+    provider_config::ProviderConfig,
+    sts::AssumeRoleProvider,
+    web_identity_token::WebIdentityTokenCredentialsProvider,
+    BehaviorVersion, Region,
 };
 use aws_credential_types::{
     provider::{error::CredentialsError, ProvideCredentials},
@@ -1108,30 +1113,15 @@ impl CredentialProviderMetadata {
                 file,
                 credentials_only,
             } => {
-                let mut builder = ProfileFileCredentialsProvider::builder()
-                    .configure(&ProviderConfig::with_default_region().await);
-                if let Some(name) = name {
-                    builder = builder.profile_name(name);
-                }
-                // Hadoop's ProfileAWSCredentialsProvider loads the configured file, or the
-                // shared credentials file, as a credentials-format file and reads nothing
-                // else, so a same-name role profile in the SDK's config file never applies.
-                let credentials_file = match (file, credentials_only) {
-                    (Some(file), _) => Some(file.clone()),
-                    (None, true) => Some(default_shared_credentials_file(
-                        std::env::var("AWS_SHARED_CREDENTIALS_FILE").ok(),
-                        std::env::var("HOME").ok(),
-                    )),
-                    (None, false) => None,
-                };
-                if let Some(file) = credentials_file {
-                    builder = builder.profile_files(
-                        EnvConfigFiles::builder()
-                            .with_file(EnvConfigFileKind::Credentials, file)
-                            .build(),
-                    );
-                }
-                Ok(Arc::new(builder.build()))
+                let provider = build_profile_provider(
+                    ProviderConfig::without_region(),
+                    &DefaultRegionChain::builder().build(),
+                    name.as_deref(),
+                    file.as_deref(),
+                    *credentials_only,
+                )
+                .await;
+                Ok(Arc::new(provider))
             }
             CredentialProviderMetadata::Static {
                 is_valid,
@@ -1184,11 +1174,80 @@ impl CredentialProviderMetadata {
     }
 }
 
+/// The STS region the Java SDK falls back to for a role profile when no region is found.
+const STS_FALLBACK_REGION: &str = "us-east-1";
+
+/// Builds the profile credentials provider on `provider_config`, with `default_region` standing
+/// in for the SDK's default region chain.
+async fn build_profile_provider(
+    provider_config: ProviderConfig,
+    default_region: &impl ProvideRegion,
+    name: Option<&str>,
+    file: Option<&str>,
+    credentials_only: bool,
+) -> ProfileFileCredentialsProvider {
+    // Hadoop's ProfileAWSCredentialsProvider loads the configured file, or the shared
+    // credentials file, as a credentials-format file and reads nothing else, so a same-name
+    // role profile in the SDK's config file never applies.
+    let credentials_file = match (file, credentials_only) {
+        (Some(file), _) => Some(file.to_string()),
+        (None, true) => Some(default_shared_credentials_file(
+            std::env::var("AWS_SHARED_CREDENTIALS_FILE").ok(),
+            std::env::var("HOME").ok(),
+        )),
+        (None, false) => None,
+    };
+    let profile_files = credentials_file.map(|file| {
+        EnvConfigFiles::builder()
+            .with_file(EnvConfigFileKind::Credentials, file)
+            .build()
+    });
+    let region = if credentials_only {
+        // The Java SDK sends a role profile's STS request to the profile's own `region`, then
+        // to its default region chain's, then to us-east-1. The region provider here also
+        // tries the profile's `source_profile` chain before the default chain. A file that
+        // fails to load yields no region here and surfaces from the credentials provider.
+        let mut region_provider = ProfileFileRegionProvider::builder().configure(&provider_config);
+        if let Some(name) = name {
+            region_provider = region_provider.profile_name(name);
+        }
+        if let Some(files) = &profile_files {
+            region_provider = region_provider.profile_files(files.clone());
+        }
+        // The default chain can probe IMDS, so it runs only when the profile has no region.
+        let region = match ProvideRegion::region(&region_provider.build()).await {
+            Some(region) => region,
+            None => default_region
+                .region()
+                .await
+                .unwrap_or_else(|| Region::from_static(STS_FALLBACK_REGION)),
+        };
+        Some(region)
+    } else {
+        default_region.region().await
+    };
+    let provider_config = provider_config.with_region(region);
+    let mut builder = ProfileFileCredentialsProvider::builder().configure(&provider_config);
+    if let Some(name) = name {
+        builder = builder.profile_name(name);
+    }
+    if let Some(files) = profile_files {
+        builder = builder.profile_files(files);
+    }
+    builder.build()
+}
+
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicI32, Ordering};
+    use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
 
     use super::*;
+    use aws_smithy_runtime_api::client::http::{
+        HttpClient, HttpConnector, HttpConnectorFuture, HttpConnectorSettings, SharedHttpConnector,
+    };
+    use aws_smithy_runtime_api::client::orchestrator::HttpRequest;
+    use aws_smithy_runtime_api::client::runtime_components::RuntimeComponents;
+    use aws_smithy_types::body::SdkBody;
 
     /// Test configuration builder for easier setup Hadoop configurations
     #[derive(Debug, Default)]
@@ -2110,6 +2169,220 @@ mod tests {
                 CredentialProviderMetadata::Imds,
             ])
         );
+    }
+
+    const SYNTHETIC_ASSUME_ROLE_XML: &str = concat!(
+        r#"<AssumeRoleResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/">"#,
+        r#"<AssumeRoleResult><AssumedRoleUser>"#,
+        r#"<AssumedRoleId>synthetic-role-id:session</AssumedRoleId>"#,
+        r#"<Arn>arn:aws:sts::123456789012:assumed-role/synthetic/session</Arn>"#,
+        r#"</AssumedRoleUser><Credentials>"#,
+        r#"<AccessKeyId>synthetic-role-key</AccessKeyId>"#,
+        r#"<SecretAccessKey>synthetic-role-secret</SecretAccessKey>"#,
+        r#"<SessionToken>synthetic-role-token</SessionToken>"#,
+        r#"<Expiration>2999-01-01T00:00:00Z</Expiration>"#,
+        r#"</Credentials></AssumeRoleResult>"#,
+        r#"<ResponseMetadata><RequestId>synthetic</RequestId></ResponseMetadata>"#,
+        r#"</AssumeRoleResponse>"#,
+    );
+
+    /// An in-memory STS that answers every request with synthetic AssumeRole credentials and
+    /// records the URI each one was sent to, so no request leaves the test.
+    #[derive(Debug, Clone, Default)]
+    struct RecordingSts {
+        uris: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl HttpConnector for RecordingSts {
+        fn call(&self, request: HttpRequest) -> HttpConnectorFuture {
+            self.uris.lock().unwrap().push(request.uri().to_string());
+            let response = http::Response::builder()
+                .status(200)
+                .body(SdkBody::from(SYNTHETIC_ASSUME_ROLE_XML))
+                .unwrap();
+            HttpConnectorFuture::ready(Ok(response.try_into().unwrap()))
+        }
+    }
+
+    impl HttpClient for RecordingSts {
+        fn http_connector(
+            &self,
+            _settings: &HttpConnectorSettings,
+            _components: &RuntimeComponents,
+        ) -> SharedHttpConnector {
+            SharedHttpConnector::new(self.clone())
+        }
+    }
+
+    /// A fixed region that counts how often it is asked for, standing in for the default chain.
+    #[derive(Debug)]
+    struct CountingRegion {
+        region: Option<Region>,
+        calls: AtomicUsize,
+    }
+
+    impl ProvideRegion for CountingRegion {
+        fn region(&self) -> aws_config::meta::region::future::ProvideRegion<'_> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            aws_config::meta::region::future::ProvideRegion::ready(self.region.clone())
+        }
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // AWS credential providers call foreign functions
+    async fn test_hadoop_profile_provider_sends_sts_to_the_profile_region() {
+        // An assume-role profile in the Hadoop-selected file, with static source keys. The Java
+        // SDK that Hadoop calls takes the role profile's own region first, then its default
+        // region chain, then us-east-1; fs.s3a.endpoint.region configures the S3 client, not
+        // this provider. The default chain is consulted only when no profile region is found.
+        // (role profile region, source profile region, default chain region,
+        //  fs.s3a.endpoint.region, STS host, default chain consulted)
+        let cases = [
+            (
+                Some("us-west-2"),
+                None,
+                None,
+                None,
+                "sts.us-west-2.amazonaws.com",
+                0,
+            ),
+            (
+                Some("us-west-2"),
+                None,
+                Some("eu-central-1"),
+                None,
+                "sts.us-west-2.amazonaws.com",
+                0,
+            ),
+            (
+                Some("us-west-2"),
+                None,
+                None,
+                Some("ap-south-1"),
+                "sts.us-west-2.amazonaws.com",
+                0,
+            ),
+            (
+                None,
+                None,
+                Some("eu-central-1"),
+                None,
+                "sts.eu-central-1.amazonaws.com",
+                1,
+            ),
+            (
+                None,
+                None,
+                Some("eu-central-1"),
+                Some("ap-south-1"),
+                "sts.eu-central-1.amazonaws.com",
+                1,
+            ),
+            (None, None, None, None, "sts.us-east-1.amazonaws.com", 1),
+            // Native also reads the source profile's region before the default chain, where
+            // Java reads only the role profile's.
+            (
+                None,
+                Some("eu-west-1"),
+                Some("eu-central-1"),
+                None,
+                "sts.eu-west-1.amazonaws.com",
+                0,
+            ),
+        ];
+        let mut actual = Vec::new();
+        let mut expected = Vec::new();
+        for (
+            profile_region,
+            source_region,
+            default_region,
+            endpoint_region,
+            expected_host,
+            calls,
+        ) in cases
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let credentials = dir.path().join("credentials");
+            let region_line = |region: Option<&str>| {
+                region
+                    .map(|region| format!("region = {region}\n"))
+                    .unwrap_or_default()
+            };
+            let (role_region, source_region_line) =
+                (region_line(profile_region), region_line(source_region));
+            std::fs::write(
+                &credentials,
+                format!(
+                    "[analytics]\nrole_arn = arn:aws:iam::123456789012:role/synthetic\n\
+                     source_profile = source\n{role_region}\n[source]\n{source_region_line}\
+                     aws_access_key_id = synthetic-source-key\n\
+                     aws_secret_access_key = synthetic-source-secret\n"
+                ),
+            )
+            .unwrap();
+            let mut builder = TestConfigBuilder::new()
+                .with_credential_provider(HADOOP_PROFILE)
+                .with_property("auth.profile.name", "analytics")
+                .with_property("auth.profile.file", credentials.to_str().unwrap());
+            if let Some(region) = endpoint_region {
+                builder = builder.with_region(region);
+            }
+            let configs = builder.build();
+            let metadata =
+                build_credential_provider(&configs, "test-bucket", Duration::from_secs(300))
+                    .await
+                    .unwrap()
+                    .expect("Should return a credential provider")
+                    .metadata();
+            let CredentialProviderMetadata::Profile {
+                name,
+                file,
+                credentials_only,
+            } = metadata
+            else {
+                panic!("expected a profile provider, got {metadata:?}");
+            };
+
+            let sts = RecordingSts::default();
+            let provider_config = ProviderConfig::without_region().with_http_client(sts.clone());
+            let default_chain = CountingRegion {
+                region: default_region.map(Region::new),
+                calls: AtomicUsize::new(0),
+            };
+            let result = build_profile_provider(
+                provider_config,
+                &default_chain,
+                name.as_deref(),
+                file.as_deref(),
+                credentials_only,
+            )
+            .await
+            .provide_credentials()
+            .await;
+            let hosts: Vec<String> = sts
+                .uris
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|uri| Url::parse(uri).unwrap().host_str().unwrap().to_string())
+                .collect();
+            let case = format!(
+                "{profile_region:?}, {source_region:?}, {default_region:?}, {endpoint_region:?}"
+            );
+            let consulted = default_chain.calls.load(Ordering::SeqCst);
+            let outcome = match result {
+                Ok(credentials) => format!("{} via {hosts:?}", credentials.access_key_id()),
+                Err(e) => format!(
+                    "{} via {hosts:?}",
+                    aws_smithy_types::error::display::DisplayErrorContext(e)
+                ),
+            };
+            actual.push(format!("{case}: {outcome}, chain consulted {consulted}"));
+            expected.push(format!(
+                "{case}: synthetic-role-key via [{expected_host:?}], chain consulted {calls}"
+            ));
+        }
+        assert_eq!(actual, expected);
     }
 
     #[tokio::test]
