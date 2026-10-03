@@ -82,7 +82,7 @@ Native aggregates with grouping keys report these additional metrics:
 | `number of spills`                   | Number of times the aggregate spilled to disk.                                                                                               |
 | `total spilled bytes`                | Bytes written to aggregate spill files.                                                                                                      |
 | `number of spilled rows`             | Rows written to aggregate spill files.                                                                                                       |
-| `peak native aggregate memory`       | Peak memory used by the native aggregate.                                                                                                    |
+| `peak native aggregate memory`       | Peak memory used by the native aggregate. Not currently reported ([#5703](https://github.com/apache/datafusion-comet/issues/5703)).          |
 
 Spill bytes from native sorts, aggregates, and sort-merge joins are also added to Spark's task-level
 `diskBytesSpilled` metric in every stage, not only in shuffle stages.
@@ -164,6 +164,16 @@ partition-index allocations. If a later spill buffers the same backing allocatio
 contributes again. Whether input slices arrive in one batch or separate batches does not change
 the accounting for identical spill boundaries. Other operators may still own the same buffers,
 so this measures memory released from shuffle buffering, not necessarily a drop in process memory.
+
+### Celeborn Shuffle
+
+With the currently released Celeborn 0.6.x and 0.7.x clients, shuffle uses Celeborn's existing
+Spark integration and reports its shuffle metrics in the Spark UI. Comet's operator metrics
+still apply to the other parts of the query that run in Comet.
+
+Spark's remote-read counters do not identify the storage destination: local shuffle files
+fetched from another executor also count as remote reads. See
+[Verifying the Shuffle Path](celeborn.md#verifying-the-shuffle-path) for plan and storage checks.
 
 ## Native Metrics
 

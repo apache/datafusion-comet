@@ -65,9 +65,10 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
    * batch kernel on first invocation per task.
    *
    * Returns `None` (with `withFallbackReason` tagging the reason) when the dispatcher is disabled
-   * via [[CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED]], when [[CometBatchKernelCodegen.canHandle]]
-   * refuses the expression tree, or when the bound tree cannot be closure-serialized. Callers
-   * should treat `None` as a clean Spark-fallback signal; this method never throws.
+   * via [[CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED]], when the tree calls into code other than
+   * Spark's own (see [[CometInvokeTargets]]), when [[CometBatchKernelCodegen.canHandle]] refuses
+   * the expression tree, or when the bound tree cannot be closure-serialized. Callers should
+   * treat `None` as a clean Spark-fallback signal; this method never throws.
    */
   def emitJvmCodegenDispatch(
       expr: Expression,
@@ -90,6 +91,15 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
     val target = expr match {
       case rr: RuntimeReplaceable => rr.replacement
       case other => other
+    }
+
+    // The kernel runs every call in the tree, not only the root, so a DataSource V2 function
+    // under a dispatched `map(...)` would run in it too. Check the whole tree.
+    CometInvokeTargets.declineReason(target) match {
+      case Some(reason) =>
+        withFallbackReason(expr, s"$exprName: codegen dispatch: $reason")
+        return None
+      case None =>
     }
 
     // Bind against only the AttributeReferences the tree actually reads, so ordinals align with
