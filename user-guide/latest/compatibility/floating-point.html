@@ -849,6 +849,37 @@ greater than non-NaN values. The original first equal element is retained: for e
 The same ordering applies recursively to floating-point fields in arrays and structs. These
 expressions do not require Spark’s codegen dispatcher for floating-point compatibility.</p>
 </section>
+<section id="array-distinct-and-union">
+<h2>Array distinct and union<a class="headerlink" href="#array-distinct-and-union" title="Link to this heading">#</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">array_distinct</span></code> and <code class="docutils literal notranslate"><span class="pre">array_union</span></code> fall back to Spark when their element type contains
+<code class="docutils literal notranslate"><span class="pre">FLOAT</span></code> or <code class="docutils literal notranslate"><span class="pre">DOUBLE</span></code>, on every Spark version except 4.2.0. Spark 4.2.0 normalizes signed zeros
+and NaNs in the arguments of these functions before they run (SPARK-54918), so native execution
+returns the same results. Spark 3.4, 3.5, 4.0.0 to 4.0.4, and 4.1.0 to 4.1.3 keep positive and
+negative zero distinct in flat arrays. Spark 4.0.5+, 4.1.4+, and 4.2.1+ normalize while these
+functions evaluate instead (SPARK-59602), which native execution does not match for NaNs or for
+zeros nested in arrays or structs. Other element types remain native.</p>
+<p>The check is based on the element type, not the values. It also applies to NULL or empty
+floating-point arrays and columns that never contain negative zero. The entire projection
+falls back to Spark, introducing a <code class="docutils literal notranslate"><span class="pre">CometColumnarToRow</span></code> transition and moving unrelated
+expressions in the same projection out of Comet. For example,
+<code class="docutils literal notranslate"><span class="pre">SELECT</span> <span class="pre">id</span> <span class="pre">+</span> <span class="pre">1,</span> <span class="pre">array_distinct(a),</span> <span class="pre">i[0]</span> <span class="pre">+</span> <span class="pre">5</span></code> evaluates all three expressions in a Spark <code class="docutils literal notranslate"><span class="pre">Project</span></code>.</p>
+<p>This can have a substantial cost. A local Spark 4.1.3 benchmark of
+<code class="docutils literal notranslate"><span class="pre">sum(cardinality(array_distinct(d)))</span></code> over two million <code class="docutils literal notranslate"><span class="pre">array&lt;double&gt;</span></code> rows found the default
+projection fallback about 15 times slower than native opt-in (best of five runs).
+The slowdown depends on the workload.</p>
+<p>Setting <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.ArrayDistinct.allowIncompatible=true</span></code> or
+<code class="docutils literal notranslate"><span class="pre">spark.comet.expression.ArrayUnion.allowIncompatible=true</span></code> restores native execution on other
+versions, but signed-zero and NaN results may differ from Spark. Native execution can keep
+NaNs with different signs or payloads distinct. Signed-zero differences also depend on the
+element type: native execution merges positive and negative zero in flat floating-point arrays,
+but can keep them distinct inside nested arrays or structs. Only opt in if these differences
+are acceptable for your data.</p>
+<p>The check uses the Spark version number, not the changes a build contains. A build that reports
+any version other than 4.2.0 falls back even if it includes SPARK-54918. A vendor build that
+reports 4.2.0 but includes SPARK-59602 still runs natively; set
+<code class="docutils literal notranslate"><span class="pre">spark.comet.expression.ArrayDistinct.enabled=false</span></code> and
+<code class="docutils literal notranslate"><span class="pre">spark.comet.expression.ArrayUnion.enabled=false</span></code> on such a build.</p>
+</section>
 <section id="array-remove-and-sort-array">
 <h2><code class="docutils literal notranslate"><span class="pre">array_remove</span></code> and <code class="docutils literal notranslate"><span class="pre">sort_array</span></code><a class="headerlink" href="#array-remove-and-sort-array" title="Link to this heading">#</a></h2>
 <p><code class="docutils literal notranslate"><span class="pre">array_remove</span></code> compares <code class="docutils literal notranslate"><span class="pre">FLOAT</span></code> and <code class="docutils literal notranslate"><span class="pre">DOUBLE</span></code> elements as Spark does: <code class="docutils literal notranslate"><span class="pre">-0.0</span></code> equals <code class="docutils literal notranslate"><span class="pre">0.0</span></code>, and all
@@ -911,6 +942,7 @@ array whose elements cannot be null in ascending order, Spark’s generated code
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#nested-equality-and-membership">Nested equality and membership</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#ordering-nan-and-signed-zero-0-0-vs-0-0">Ordering: NaN and signed zero (<code class="docutils literal notranslate"><span class="pre">-0.0</span></code> vs <code class="docutils literal notranslate"><span class="pre">+0.0</span></code>)</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#array-distinct-and-union">Array distinct and union</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#array-remove-and-sort-array"><code class="docutils literal notranslate"><span class="pre">array_remove</span></code> and <code class="docutils literal notranslate"><span class="pre">sort_array</span></code></a></li>
 </ul>
   </nav></div>

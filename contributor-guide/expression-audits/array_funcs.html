@@ -598,10 +598,10 @@ under the License.
 <h2>array_distinct<a class="headerlink" href="#array-distinct" title="Link to this heading">#</a></h2>
 <ul class="simple">
 <li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
-<li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">ArrayDistinct(child)</span></code> over <code class="docutils literal notranslate"><span class="pre">ArraySetLike</span></code>; uses <code class="docutils literal notranslate"><span class="pre">SQLOpenHashSet</span></code> so NaN and <code class="docutils literal notranslate"><span class="pre">+0.0</span></code>/<code class="docutils literal notranslate"><span class="pre">-0.0</span></code> are canonicalized. Wired as <code class="docutils literal notranslate"><span class="pre">CometScalarFunction(&quot;array_distinct&quot;)</span></code>.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">ArrayDistinct(child)</span></code> over <code class="docutils literal notranslate"><span class="pre">ArraySetLike</span></code>; uses <code class="docutils literal notranslate"><span class="pre">SQLOpenHashSet</span></code>, which merges NaNs but keeps <code class="docutils literal notranslate"><span class="pre">+0.0</span></code> and <code class="docutils literal notranslate"><span class="pre">-0.0</span></code> distinct. Wired as <code class="docutils literal notranslate"><span class="pre">CometScalarFunction(&quot;array_distinct&quot;)</span></code>.</p></li>
 <li><p>Spark 4.0.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">NullIntolerant</span></code> -&gt; <code class="docutils literal notranslate"><span class="pre">nullIntolerant</span></code> field refactor.</p></li>
 <li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
-<li><p>Float/double arrays containing NaN and signed zero match Spark; DataFusion canonicalizes them like Spark’s <code class="docutils literal notranslate"><span class="pre">SQLOpenHashSet</span></code>.</p></li>
+<li><p>Float/double element types run natively only on Spark 4.2.0, which normalizes the arguments in the plan (SPARK-54918); every other version falls back by default. See <a class="reference internal" href="../../user-guide/latest/compatibility/floating-point.html#array-distinct-and-union"><span class="std std-ref">Array distinct and union</span></a>.</p></li>
 </ul>
 </section>
 <section id="array-except">
@@ -708,7 +708,7 @@ under the License.
 <li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">ArrayUnion(left,</span> <span class="pre">right)</span> <span class="pre">extends</span> <span class="pre">ArrayBinaryLike</span> <span class="pre">with</span> <span class="pre">ComplexTypeMergingExpression</span></code>; result is left-side distinct elements followed by new right-side elements. Wired as <code class="docutils literal notranslate"><span class="pre">CometScalarFunction(&quot;array_union&quot;)</span></code>.</p></li>
 <li><p>Spark 4.0.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">nullIntolerant</span> <span class="pre">=</span> <span class="pre">true</span></code> moves into <code class="docutils literal notranslate"><span class="pre">ArrayBinaryLike</span></code>; overflow path uses <code class="docutils literal notranslate"><span class="pre">arrayFunctionWithElementsExceedLimitError</span></code>.</p></li>
 <li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
-<li><p>Float/double NaN and signed-zero canonicalization matches <code class="docutils literal notranslate"><span class="pre">array_distinct</span></code>. Result element ordering also matches Spark (left-side distinct elements followed by new right-side elements).</p></li>
+<li><p>Float/double element types follow the same Spark 4.2.0-only gate as <code class="docutils literal notranslate"><span class="pre">array_distinct</span></code>. Result element ordering matches Spark (left-side distinct elements followed by new right-side elements).</p></li>
 </ul>
 </section>
 <section id="arrays-overlap">

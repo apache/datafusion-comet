@@ -814,6 +814,13 @@ under the License.
 <li><p>Spark compares array elements with ordering.equiv, so -0.0 matches +0.0 and all NaNs match each other; Comet’s native array_contains compares the raw Arrow values bitwise</p></li>
 </ul>
 </section>
+<section id="arraydistinct">
+<h2>ArrayDistinct<a class="headerlink" href="#arraydistinct" title="Link to this heading">#</a></h2>
+<p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">ArrayDistinct</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.ArrayDistinct.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
+<ul class="simple">
+<li><p>Floating-point elements match Spark’s signed-zero and NaN semantics natively only on Spark 4.2.0, whose optimizer normalizes the arguments (SPARK-54918)</p></li>
+</ul>
+</section>
 <section id="arrayexcept">
 <h2>ArrayExcept<a class="headerlink" href="#arrayexcept" title="Link to this heading">#</a></h2>
 <p>By default, <code class="docutils literal notranslate"><span class="pre">ArrayExcept</span></code> is evaluated in the JVM using Spark’s own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.ArrayExcept.allowIncompatible=true</span></code> to opt into Comet’s native implementation instead, which has the following differences from Spark:</p>
@@ -849,6 +856,13 @@ under the License.
 <p>For applicable cases that are not selected for native execution automatically, <code class="docutils literal notranslate"><span class="pre">ArrayMin</span></code> is evaluated in the JVM using Spark’s own code-generated implementation (run inside the Comet pipeline) by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.ArrayMin.allowIncompatible=true</span></code> to explicitly select Comet’s native implementation, which has the following differences from Spark:</p>
 <ul class="simple">
 <li><p>Array extrema use binary string ordering for non-UTF8_BINARY collations (https://github.com/apache/datafusion-comet/issues/4496).</p></li>
+</ul>
+</section>
+<section id="arrayunion">
+<h2>ArrayUnion<a class="headerlink" href="#arrayunion" title="Link to this heading">#</a></h2>
+<p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">ArrayUnion</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.ArrayUnion.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
+<ul class="simple">
+<li><p>Floating-point elements match Spark’s signed-zero and NaN semantics natively only on Spark 4.2.0, whose optimizer normalizes the arguments (SPARK-54918)</p></li>
 </ul>
 </section>
 <section id="arrayszip">
@@ -924,11 +938,13 @@ under the License.
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#arraycontains">ArrayContains</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#arraydistinct">ArrayDistinct</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#arrayexcept">ArrayExcept</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#arrayintersect">ArrayIntersect</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#arrayjoin">ArrayJoin</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#arraymax">ArrayMax</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#arraymin">ArrayMin</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#arrayunion">ArrayUnion</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#arrayszip">ArraysZip</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#sequence">Sequence</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#shuffle">Shuffle</a></li>
