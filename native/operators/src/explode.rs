@@ -34,7 +34,7 @@
 //!
 //! Upstream those two paths, then delete this module and go back to
 //! `datafusion::physical_plan::unnest::UnnestExec` in the planner. Deleting it before that
-//! would regress `explode`, so measure with `native/core/benches/explode.rs` first.
+//! would regress `explode`, so measure with `native/operators/benches/explode.rs` first.
 //!
 //! # What was forked
 //!

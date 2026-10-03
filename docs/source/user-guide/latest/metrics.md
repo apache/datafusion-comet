@@ -165,6 +165,16 @@ contributes again. Whether input slices arrive in one batch or separate batches 
 the accounting for identical spill boundaries. Other operators may still own the same buffers,
 so this measures memory released from shuffle buffering, not necessarily a drop in process memory.
 
+### Celeborn Shuffle
+
+With the currently released Celeborn 0.6.x and 0.7.x clients, shuffle uses Celeborn's existing
+Spark integration and reports its shuffle metrics in the Spark UI. Comet's operator metrics
+still apply to the other parts of the query that run in Comet.
+
+Spark's remote-read counters do not identify the storage destination: local shuffle files
+fetched from another executor also count as remote reads. See
+[Verifying the Shuffle Path](celeborn.md#verifying-the-shuffle-path) for plan and storage checks.
+
 ## Native Metrics
 
 Setting `spark.comet.explain.native.enabled=true` will cause native plans to be logged in each executor. Metrics are
