@@ -54,7 +54,7 @@ case class TypedDatasetBenchWide(a: Long, b: String, c: Long, d: String)
  */
 object CometTypedDatasetBenchmark extends CometBenchmarkBase {
 
-  private val numRows = 4 * 1024 * 1024
+  private val numRows = 4L * 1024 * 1024
   private val loKeys = 100
   private val hiKeys = 1024 * 1024
 

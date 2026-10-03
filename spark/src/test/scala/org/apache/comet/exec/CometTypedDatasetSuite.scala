@@ -24,6 +24,7 @@ import java.util.concurrent.atomic.AtomicLong
 import org.apache.spark.sql.{CometTestBase, DataFrame, Dataset}
 import org.apache.spark.sql.catalyst.expressions.aggregate.Partial
 import org.apache.spark.sql.comet.{CometBroadcastHashJoinExec, CometHashAggregateExec, CometSparkToColumnarExec}
+import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, ColumnarToRowTransition, InputAdapter, SerializeFromObjectExec, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.functions.{broadcast, col, size, sum}
 import org.apache.spark.sql.internal.SQLConf
@@ -38,6 +39,10 @@ case class TypedDsWide(i: Int, s: String, d: java.math.BigDecimal, opt: Option[L
 case class TypedDsNested(id: Int, inner: TypedDsRec, tags: Seq[String])
 
 case class TypedDsInts(id: Int, xs: Seq[Int])
+
+case class TypedDsDecimal(k: java.math.BigDecimal, v: Long)
+
+case class TypedDsDecimalInts(k: java.math.BigDecimal, xs: Seq[Int])
 
 /** Counts calls to a user function. Comet tests run in local mode, so tasks see this object. */
 object TypedDsCounter {
@@ -206,6 +211,31 @@ class CometTypedDatasetSuite extends CometTestBase {
         "Comet cannot convert the output of a typed Dataset operation to Arrow because it " +
           "does not support the type of these columns: xs: array<int>")
       assert(conversions(plan).isEmpty, plan)
+    }
+  }
+
+  convertTest("a join on wide decimal keys with an input that is not converted") {
+    // The left input converts and the right one, with its array<int> column, does not. Native
+    // shuffle hashes a decimal wider than 18 digits differently from Spark's partitioner (#5994),
+    // so the shuffle above the conversion has to stay on Comet's columnar shuffle like the right
+    // input's, or matching keys land in different partitions and the join loses rows.
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "10") {
+      val left = spark
+        .range(0, 100, 1, 2)
+        .map(i => TypedDsDecimal(new java.math.BigDecimal(i.longValue), i.longValue))
+        .alias("l")
+      val right = spark
+        .range(0, 100, 1, 2)
+        .map(i => TypedDsDecimalInts(new java.math.BigDecimal(i.longValue), Seq(i.intValue)))
+        .alias("r")
+      val (_, plan) = checkSparkAnswer(
+        left.join(right, col("l.k") === col("r.k")).select(col("l.v"), col("r.xs")))
+      assert(conversions(plan).nonEmpty, plan)
+      val shuffles = collectWithSubqueries(plan) { case s: CometShuffleExchangeExec => s }
+      assert(shuffles.nonEmpty && shuffles.forall(_.shuffleType == CometColumnarShuffle), plan)
     }
   }
 
