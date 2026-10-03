@@ -62,8 +62,8 @@ key is removed.
 Comet `1.1.0` makes no behavior changes that need a `spark.comet.legacy.*` key. The changes below
 need none either, but check whether any of them applies to your deployment.
 
-Comet `1.1.0` also has known regressions, each with a setting that avoids it. They are listed in
-the [1.1.0 release notes](../../release-notes/1.1.0.md).
+Comet `1.1.0` also has a known regression, with a setting that avoids it. It is described in the
+[1.1.0 release notes](../../release-notes/1.1.0.md).
 
 Comet `1.1.0` requires JDK 17 or later. JDK 11 is no longer supported. See
 [Installing Comet](installation.md) for the supported Java, Scala, and Spark versions.
