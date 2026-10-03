@@ -31,11 +31,11 @@ import org.apache.spark.sql.catalyst.expressions.Cast
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.optimizer.EliminateSorts
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, RangePartitioning}
-import org.apache.spark.sql.comet.{CometFilterExec, CometHashAggregateExec, CometNativeExec, CometProjectExec}
+import org.apache.spark.sql.comet.{CometBaseAggregateExec, CometFilterExec, CometHashAggregateExec, CometNativeExec, CometProjectExec, CometSortAggregateExec}
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.SQLExecution
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AdaptiveSparkPlanHelper, ShuffleQueryStageExec}
-import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, ObjectHashAggregateExec}
+import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, ObjectHashAggregateExec, SortAggregateExec}
 import org.apache.spark.sql.execution.exchange.{ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.functions.{avg, col, count_distinct, expr, sum}
 import org.apache.spark.sql.internal.SQLConf
@@ -815,26 +815,34 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   // cascade so that neither half runs in Comet - a Spark final cannot read a Comet-produced list,
   // and adjustOutputForNativeState would misinterpret Spark's Binary buffer as a list if a Comet
   // final ran above a Spark partial. count(*) is included so the aggregate also carries a
-  // buffer-compatible function, which is the shape most likely to be split by mistake.
-  Seq(
-    ("Comet partial + Spark final", CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE),
-    ("Spark partial + Comet final", CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE)).foreach {
-    case (name, disabledHalf) =>
-      test(s"mixed engine collect_list: $name matches Spark") {
-        val data = (0 until 100).map(i => (if (i % 11 == 0) None else Some(i), i % 7))
-        withParquetTable(data, "tbl") {
-          withSQLConf(
-            disabledHalf.key -> "false",
-            CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
-            CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
-            val df = sql("SELECT _2, sort_array(collect_list(_1)), count(*) FROM tbl GROUP BY _2")
-            checkSparkAnswer(df)
-            // Without the cascade the surviving half would still convert, so pinning this at zero
-            // is what keeps the test from passing on a regression.
-            assert(getNumCometHashAggregate(df) == 0)
-          }
+  // buffer-compatible function, which is the shape most likely to be split by mistake. Disabling
+  // ObjectHashAggregate plans the same aggregate as SortAggregateExec, which puts a sort between
+  // each half and its exchange.
+  for {
+    (name, disabledHalf) <- Seq(
+      ("Comet partial + Spark final", CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE),
+      ("Spark partial + Comet final", CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE))
+    objectHash <- Seq(true, false)
+  } {
+    val suffix = if (objectHash) "" else " with sort aggregates"
+    test(s"mixed engine collect_list: $name matches Spark$suffix") {
+      val data = (0 until 100).map(i => (if (i % 11 == 0) None else Some(i), i % 7))
+      withParquetTable(data, "tbl") {
+        withSQLConf(
+          disabledHalf.key -> "false",
+          SQLConf.USE_OBJECT_HASH_AGG.key -> objectHash.toString,
+          CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+          CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
+          val df = sql("SELECT _2, sort_array(collect_list(_1)), count(*) FROM tbl GROUP BY _2")
+          checkSparkAnswer(df)
+          val plan = stripAQEPlan(df.queryExecution.executedPlan)
+          assert(plan.find(_.isInstanceOf[SortAggregateExec]).isDefined != objectHash, plan)
+          // Without the cascade the surviving half would still convert, so pinning this at zero
+          // is what keeps the test from passing on a regression.
+          assert(plan.collect { case agg: CometBaseAggregateExec => agg }.isEmpty, plan)
         }
       }
+    }
   }
 
   test("Aggregation without aggregate expressions should use correct result expressions") {
@@ -3362,6 +3370,76 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           |""".stripMargin,
         "Grouping on map-containing types is not supported")
     }
+  }
+
+  // useObjectHashAggregateExec=false forces Spark to plan SortAggregateExec for
+  // TypedImperativeAggregate functions like collect_set. Comet converts those just like
+  // ObjectHashAggregateExec via the shared CometBaseAggregate path. Broader data-type and
+  // edge-case coverage lives in the SQL file tests collect_set.sql (whose ConfigMatrix runs it
+  // through SortAggregateExec) and sort_aggregate.sql; this test additionally asserts that Spark
+  // actually planned a SortAggregateExec, which the SQL framework cannot check.
+  private def assertSortAggregateRunsNatively(query: String): Unit = {
+    withSQLConf(
+      SQLConf.USE_OBJECT_HASH_AGG.key -> "false",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      withTempView("tbl") {
+        Seq((1, "a"), (2, "a"), (1, "a"), (3, "b"), (4, "b"), (4, "b"))
+          .toDF("v", "g")
+          .createOrReplaceTempView("tbl")
+        // Spark must actually plan a SortAggregateExec for this query; otherwise the test
+        // would pass without exercising the new code path.
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          val plan = stripAQEPlan(sql(query).queryExecution.executedPlan)
+          assert(
+            plan.find(_.isInstanceOf[SortAggregateExec]).isDefined,
+            s"Expected SortAggregateExec in Spark-only plan but got:\n$plan")
+        }
+        checkSparkAnswerAndOperator(sql(query))
+      }
+    }
+  }
+
+  test("SortAggregate with collect_set is converted to native") {
+    Seq(
+      "SELECT g, sort_array(collect_set(v)) FROM tbl GROUP BY g ORDER BY g",
+      // Empty grouping is a distinct plan shape: no pre-aggregate sort, empty output ordering,
+      // and adjustOutputForNativeState with zero grouping columns.
+      "SELECT sort_array(collect_set(v)) FROM tbl").foreach(assertSortAggregateRunsNatively)
+  }
+
+  // Spark puts a SortExec between each sort aggregate and the exchange below it, so the passes
+  // that pair a buffer-consuming aggregate with its Partial must walk through it. If they stop
+  // there, a native collect_list Partial stays native under a Spark consumer.
+  private def assertSortAggregateStaysInSpark(query: String, confs: (String, String)*): Unit = {
+    Seq("false", "true").foreach { aqe =>
+      withSQLConf(
+        Seq(
+          SQLConf.USE_OBJECT_HASH_AGG.key -> "false",
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe,
+          CometConf.COMET_SHUFFLE_ENABLED.key -> "true") ++ confs: _*) {
+        withParquetTable((0 until 8).map(i => (i % 2, i)), "tbl") {
+          val df = sql(query)
+          checkSparkAnswer(df)
+          val plan = df.queryExecution.executedPlan
+          assert(collect(plan) { case agg: SortAggregateExec => agg }.nonEmpty, plan)
+          assert(collect(plan) { case agg: CometSortAggregateExec => agg }.isEmpty, plan)
+        }
+      }
+    }
+  }
+
+  test("SortAggregate keeps a collect_list partial in Spark when its final cannot convert") {
+    assertSortAggregateStaysInSpark(
+      "SELECT _1, sort_array(collect_list(_2)) FROM tbl GROUP BY _1",
+      CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> "false")
+  }
+
+  test("SortAggregate runs a distinct collect_list chain in Spark") {
+    // The PartialMerge stages of the distinct rewrite cannot carry the collect_list buffer
+    // natively (issue #4724), so the whole chain falls back.
+    assertSortAggregateStaysInSpark(
+      "SELECT _1, sort_array(collect_list(_2)), count(DISTINCT _2) FROM tbl GROUP BY _1")
   }
 
   // Regression: Catalyst prunes `HashAggregateExec.resultExpressions` to
