@@ -360,8 +360,9 @@ common ones include:
 - **Signed zero** -- Spark parses a bare `-0.0` as `decimal(1,1)`, which has no signed
   zero, so coercion to `float`/`double` yields `+0.0`. `CAST(-0.0 AS DOUBLE)` and
   `CAST(-0.0 AS FLOAT)` have the same problem because the cast source is still the
-  decimal literal. Use `double('-0.0')` or `float('-0.0')` (equivalently
-  `CAST('-0.0' AS DOUBLE)`). Spark's array comparator also treats `+0.0` and `-0.0` as
+  decimal literal. Use the double literal `-0.0D`, `CAST(-0.0D AS FLOAT)` for a float,
+  or `double('-0.0')` / `float('-0.0')` (equivalently `CAST('-0.0' AS DOUBLE)`), all of
+  which keep the sign. Spark's array comparator also treats `+0.0` and `-0.0` as
   equal, so `sort_array(...)` is not a unique projection when both signs are present
   (the SQL test comparator distinguishes the bits). Prefer a sign-aware form such as
   `sort_array(transform(arr, x -> cast(x AS string)))`. A `query tolerance=...` check
