@@ -23,6 +23,7 @@ import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
+import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, hasNonDefaultStringCollation, scalarFunctionExprToProto}
 import org.apache.comet.shims.CometTypeShim
@@ -132,77 +133,122 @@ object CometMapExtract extends CometExpressionSerde[GetMapValue] {
   }
 }
 
-private object MapKeyDedupPolicySupport {
-  val incompatibleReason: String =
-    s"`${SQLConf.MAP_KEY_DEDUP_POLICY.key}` is set to " +
-      s"`${SQLConf.MapKeyDedupPolicy.LAST_WIN}`; Comet's native map construction " +
-      "does not implement LAST_WIN dedup semantics."
+/**
+ * Shared gate for the native map constructors (`map_from_arrays`, `map_from_entries`), which
+ * reproduce Spark's `ArrayBasedMapBuilder`, including `spark.sql.mapKeyDedupPolicy`. The
+ * map_funcs expression audit covers how, and where they still differ from Spark.
+ */
+private object MapBuilderSupport {
 
-  val nullKeyReason: String =
-    "Spark rejects a `NULL` element inside the keys array with a `RuntimeException`" +
-      " (`Cannot use null as map key`); Comet's native `map_from_arrays` / `map_from_entries`" +
-      " does not detect a per-element `NULL` key and produces a map with a `NULL` key instead" +
-      " ([#4680](https://github.com/apache/datafusion-comet/issues/4680))."
+  /** Top-level floating-point keys: see the map_funcs expression audit. */
+  val floatingPointKeyNote: String =
+    "On Spark 4.0 and later, `ArrayBasedMapBuilder` normalizes a `FLOAT` or `DOUBLE` map key " +
+      "before comparing it, so `-0.0` counts as the same key as `+0.0` and all `NaN`s count as " +
+      "one key. Comet's native map construction compares the raw Arrow values, so a map built " +
+      "from both `-0.0` and `+0.0` keeps two entries where Spark reports a duplicate key. " +
+      "`map_from_entries` also stores the normalized key, so Spark returns `+0.0` for a `-0.0` " +
+      "key where Comet returns `-0.0`; `map_from_arrays` keeps the original keys in both " +
+      "engines when nothing repeated. Spark 3.4 and 3.5 do not normalize such a key, so `-0.0` " +
+      "and `+0.0` are two keys in both engines there, but Spark still treats `NaN`s with " +
+      "different bit patterns as one key. This applies to a top-level key only: a struct or " +
+      "array key that contains a floating-point field does not run natively on any Spark " +
+      s"version. Set `${COMET_EXEC_STRICT_FLOATING_POINT.key}=true` to keep a floating-point " +
+      "map key off the native path."
 
-  def isLastWin: Boolean =
-    SQLConf.get
-      .getConf(SQLConf.MAP_KEY_DEDUP_POLICY)
-      .toString
-      .equalsIgnoreCase(SQLConf.MapKeyDedupPolicy.LAST_WIN.toString)
+  val strictFloatingPointKeyReason: String =
+    s"When `${COMET_EXEC_STRICT_FLOATING_POINT.key}=true`, map construction on a floating-point " +
+      "key is not 100% compatible with Spark"
+
+  /**
+   * `ArrayBasedMapBuilder` keys its dedup map on `TypeUtils.getInterpretedOrdering` once the key
+   * type contains a string, so under `UTF8_LCASE` the keys `'a'` and `'A'` are one key. The
+   * native builders compare the raw Arrow bytes and would keep both, missing the duplicate that
+   * Spark reports (or, under `LAST_WIN`, the overwrite Spark performs). `MapKeySupport` declines
+   * a collated key for `map_extract` for the same reason.
+   */
+  val collationKeyReason: String =
+    "Comet's native map construction compares string keys as `UTF8_BINARY`, so it cannot honour " +
+      "a non-default collation when it looks for a duplicate key."
+
+  /**
+   * On every Spark version, `ArrayBasedMapBuilder` keys its dedup map for a struct or array key
+   * type on `TypeUtils.getInterpretedOrdering`, whose `SQLOrderingUtil.compareDoubles` and
+   * `compareFloats` treat `-0.0` and `+0.0` as equal and all `NaN`s as equal. The native builders
+   * hash the nested values by their bits and would keep both keys, missing the duplicate that
+   * Spark reports (or, under `LAST_WIN`, the overwrite Spark performs).
+   */
+  val nestedFloatingPointKeyReason: String =
+    "Spark finds duplicate struct or array keys by interpreted ordering, where `-0.0` equals " +
+      "`+0.0` and all `NaN`s are equal; Comet's native map construction compares the nested " +
+      "floating-point values bit by bit."
+
+  /** The support level for a map constructor whose result has key type `keyType`. */
+  def keySupport(keyType: DataType): SupportLevel =
+    if (hasNonDefaultStringCollation(keyType)) {
+      Incompatible(Some(collationKeyReason))
+    } else if (isComplexType(keyType) &&
+      SupportLevel.containsType(keyType, classOf[FloatType], classOf[DoubleType])) {
+      Incompatible(Some(nestedFloatingPointKeyReason))
+    } else {
+      SupportLevel
+        .strictFloatingPointReason(keyType, "Map construction on a floating-point key")
+        .map(reason => Incompatible(Some(reason)))
+        .getOrElse(Compatible(None))
+    }
 }
 
 object CometMapFromArrays extends CometExpressionSerde[MapFromArrays] {
 
+  private val nondeterministicKeysReason: String =
+    "a nondeterministic operand as the keys array: the native NULL guard serializes the keys " +
+      "twice, and the two copies of a stateful expression drift apart"
+
   override def getIncompatibleReasons(): Seq[String] =
-    Seq(MapKeyDedupPolicySupport.incompatibleReason)
+    Seq(
+      MapBuilderSupport.collationKeyReason,
+      MapBuilderSupport.nestedFloatingPointKeyReason,
+      MapBuilderSupport.strictFloatingPointKeyReason)
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(nondeterministicKeysReason)
 
   override def getCompatibleNotes(): Seq[String] =
-    Seq(MapKeyDedupPolicySupport.nullKeyReason)
+    Seq(MapBuilderSupport.floatingPointKeyNote)
 
-  override def getSupportLevel(expr: MapFromArrays): SupportLevel = {
-    if (MapKeyDedupPolicySupport.isLastWin) {
-      Incompatible(Some(MapKeyDedupPolicySupport.incompatibleReason))
+  override def getSupportLevel(expr: MapFromArrays): SupportLevel =
+    if (!expr.left.deterministic) {
+      Unsupported(Some(nondeterministicKeysReason))
     } else {
-      Compatible(None)
+      MapBuilderSupport.keySupport(expr.dataType.keyType)
     }
-  }
 
+  /**
+   * `CASE WHEN keys IS NOT NULL THEN map_from_arrays(keys, values) END`. The native function
+   * already returns a NULL map for a NULL input array; the guard is about evaluation order, since
+   * Spark never evaluates `values` for a row whose `keys` is NULL (see the map_funcs expression
+   * audit). It serializes `keys` a second time, which is why `getSupportLevel` declines a
+   * nondeterministic `keys`: https://github.com/apache/datafusion-comet/issues/5781.
+   */
   override def convert(
       expr: MapFromArrays,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val keysExpr = exprToProtoInternal(expr.left, inputs, binding)
     val valuesExpr = exprToProtoInternal(expr.right, inputs, binding)
-    val keyType = expr.left.dataType.asInstanceOf[ArrayType].elementType
-    val valueType = expr.right.dataType.asInstanceOf[ArrayType].elementType
-    val returnType = MapType(keyType = keyType, valueType = valueType)
     for {
       keysNotNullExprProto <- exprToProtoInternal(IsNotNull(expr.left), inputs, binding)
-      valuesNotNullExprProto <- exprToProtoInternal(IsNotNull(expr.right), inputs, binding)
-      mapFromArraysExprProto <- scalarFunctionExprToProto("map", keysExpr, valuesExpr)
-      nullLiteralExprProto <- exprToProtoInternal(Literal(null, returnType), inputs, binding)
+      mapFromArraysExprProto <- scalarFunctionExprToProto("map_from_arrays", keysExpr, valuesExpr)
     } yield {
-      // Spark skips the values expression when keys are null. Nested CASE guards preserve
-      // this evaluation order; a native AND may evaluate both operands for the whole batch.
-      val valuesCaseWhenExprProto = ExprOuterClass.CaseWhen
-        .newBuilder()
-        .addWhen(valuesNotNullExprProto)
-        .addThen(mapFromArraysExprProto)
-        .setElseExpr(nullLiteralExprProto)
-        .build()
-      val caseWhenExprProto = ExprOuterClass.CaseWhen
+      val keysGuardProto = ExprOuterClass.CaseWhen
         .newBuilder()
         .addWhen(keysNotNullExprProto)
-        .addThen(ExprOuterClass.Expr.newBuilder().setCaseWhen(valuesCaseWhenExprProto).build())
-        .setElseExpr(nullLiteralExprProto)
+        .addThen(mapFromArraysExprProto)
         .build()
       ExprOuterClass.Expr
         .newBuilder()
-        .setCaseWhen(caseWhenExprProto)
+        .setCaseWhen(keysGuardProto)
         .build()
     }
   }
-
 }
 
 object CometMapFromEntries
@@ -214,20 +260,23 @@ object CometMapFromEntries
     "`BinaryType` is not supported as a map value in `map_from_entries`"
 
   override def getIncompatibleReasons(): Seq[String] =
-    Seq(keyUnsupportedReason, valueUnsupportedReason, MapKeyDedupPolicySupport.incompatibleReason)
+    Seq(
+      keyUnsupportedReason,
+      valueUnsupportedReason,
+      MapBuilderSupport.collationKeyReason,
+      MapBuilderSupport.nestedFloatingPointKeyReason,
+      MapBuilderSupport.strictFloatingPointKeyReason)
 
   override def getCompatibleNotes(): Seq[String] =
-    Seq(MapKeyDedupPolicySupport.nullKeyReason)
+    Seq(MapBuilderSupport.floatingPointKeyNote)
 
   override def getSupportLevel(expr: MapFromEntries): SupportLevel = {
     if (SupportLevel.containsType(expr.dataType.keyType, classOf[BinaryType])) {
       Incompatible(Some(keyUnsupportedReason))
     } else if (SupportLevel.containsType(expr.dataType.valueType, classOf[BinaryType])) {
       Incompatible(Some(valueUnsupportedReason))
-    } else if (MapKeyDedupPolicySupport.isLastWin) {
-      Incompatible(Some(MapKeyDedupPolicySupport.incompatibleReason))
     } else {
-      Compatible(None)
+      MapBuilderSupport.keySupport(expr.dataType.keyType)
     }
   }
 }

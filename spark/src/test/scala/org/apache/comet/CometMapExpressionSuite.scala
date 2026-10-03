@@ -19,10 +19,10 @@
 
 package org.apache.comet
 
-import scala.util.Random
+import scala.util.{Random, Try}
 
 import org.apache.hadoop.fs.Path
-import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.ArrayContains
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
@@ -213,6 +213,152 @@ class CometMapExpressionSuite extends CometTestBase {
           checkSparkAnswerAndOperator(sql(query))
         }
       }
+    }
+  }
+
+  // Spark builds both `map_from_arrays` and `map_from_entries` through `ArrayBasedMapBuilder`,
+  // which rejects a NULL key and resolves a duplicate key by `spark.sql.mapKeyDedupPolicy`. The
+  // native builders reproduce both (see the map_funcs expression audit), so the engines must agree
+  // on the answer and on the error. Each query reads a column so constant folding cannot evaluate
+  // it on the driver. https://github.com/apache/datafusion-comet/issues/4680
+  private def withMapBuilderTable(f: String => Unit): Unit = {
+    val table = "map_builder_input"
+    withTable(table) {
+      sql(s"CREATE TABLE $table(k INT, v STRING) USING parquet")
+      sql(s"INSERT INTO $table VALUES (1, 'a'), (2, 'b'), (3, 'c')")
+      f(table)
+    }
+  }
+
+  test("map_from_arrays - null key is rejected") {
+    withMapBuilderTable { table =>
+      val exception = checkSparkError(
+        sql(s"SELECT map_from_arrays(array(k, CAST(NULL AS INT)), array(v, v)) FROM $table"),
+        "NULL_MAP_KEY")
+      assert(exception.getMessage.contains("Cannot use null as map key"))
+    }
+  }
+
+  test("map_from_arrays - a duplicate key is rejected under EXCEPTION") {
+    withMapBuilderTable { table =>
+      withSQLConf(SQLConf.MAP_KEY_DEDUP_POLICY.key -> "EXCEPTION") {
+        // One row, so both engines name the same offending key.
+        val exception = checkSparkError(
+          sql(
+            s"SELECT map_from_arrays(array(k, k), array(v, concat(v, 'x'))) FROM $table " +
+              "WHERE k = 2"),
+          "DUPLICATED_MAP_KEY")
+        assert(exception.getMessage.contains("Duplicate map key 2 was found"))
+      }
+    }
+  }
+
+  // Outside whole-stage codegen Spark reads `spark.sql.mapKeyDedupPolicy` again on every action,
+  // and so does Comet; the map_funcs expression audit covers this and the one divergence, inside
+  // whole-stage codegen. Each sequence plans `df` under one policy, runs it under the other, then
+  // runs it again under the first, always collecting `df` itself so the plan it materialized is
+  // the one executed. The first run fails if the policy were fixed when the plan is converted,
+  // the second if it were fixed by the first run.
+  // https://github.com/apache/datafusion-comet/issues/4680
+  test("map constructors read the dedup policy on every action") {
+    // AQE converts each query stage as it runs, which hides when the setting is read.
+    withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      withTempPath { dir =>
+        val path = dir.getCanonicalPath
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          spark.range(0, 1, 1, 1).write.parquet(path)
+        }
+        // The two ways a projection runs outside whole-stage codegen: the flag is off, or the
+        // projection is wider than `spark.sql.codegen.maxFields`.
+        val outsideWholeStageCodegen = Seq(
+          (Seq(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false"), Seq.empty[String]),
+          (Seq.empty[(String, String)], (1 to 100).map(i => s"id + $i AS c$i")))
+        for ((codegenConf, padding) <- outsideWholeStageCodegen;
+          engine <- Seq("Spark", "Comet");
+          (first, second) <- Seq(("LAST_WIN", "EXCEPTION"), ("EXCEPTION", "LAST_WIN"))) {
+          val cometEnabled = CometConf.COMET_ENABLED.key -> (engine == "Comet").toString
+          withSQLConf((codegenConf :+ cometEnabled): _*) {
+            val df = mapPolicyQuery(path, padding)
+            withSQLConf(SQLConf.MAP_KEY_DEDUP_POLICY.key -> first) {
+              val plan = df.queryExecution.executedPlan
+              if (engine == "Comet") {
+                checkCometOperators(stripAQEPlan(plan))
+              }
+            }
+            withSQLConf(SQLConf.MAP_KEY_DEDUP_POLICY.key -> second) {
+              assertMapPolicy(df, second, engine)
+            }
+            withSQLConf(SQLConf.MAP_KEY_DEDUP_POLICY.key -> first) {
+              assertMapPolicy(df, first, engine)
+            }
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * One row whose three map constructors each see the duplicate key `0`, with `padding` extra
+   * columns for callers that need the projection to exceed `spark.sql.codegen.maxFields`.
+   */
+  private def mapPolicyQuery(path: String, padding: Seq[String]): DataFrame =
+    spark.read
+      .parquet(path)
+      .selectExpr(Seq(
+        "map_from_arrays(array(id, id), array(1, 2)) AS a",
+        "map_from_entries(array(struct(id, 1), struct(id, 2))) AS e",
+        "str_to_map(concat(CAST(id AS STRING), ':1,', CAST(id AS STRING), ':2')) AS s") ++
+        padding: _*)
+
+  /** Collects `df` itself, so the run reuses the plan `df` has already materialized. */
+  private def assertMapPolicy(df: DataFrame, policy: String, engine: String): Unit =
+    policy match {
+      case "LAST_WIN" =>
+        // The three maps only, leaving out any padding.
+        val maps = df.collect().toSeq.map(row => Row(row.get(0), row.get(1), row.get(2)))
+        assert(maps == Seq(Row(Map(0L -> 2), Map(0L -> 2), Map("0" -> "2"))), engine)
+      case "EXCEPTION" =>
+        val error =
+          structuredError(Try(df.collect()).failed.toOption, engine, "DUPLICATED_MAP_KEY")
+        assert(error.getErrorClass == "DUPLICATED_MAP_KEY", s"$engine: $error")
+    }
+
+  test("map_from_entries - null key is rejected") {
+    withMapBuilderTable { table =>
+      val exception = checkSparkError(
+        sql(s"SELECT map_from_entries(array(struct(CAST(NULL AS INT), v))) FROM $table"),
+        "NULL_MAP_KEY")
+      assert(exception.getMessage.contains("Cannot use null as map key"))
+    }
+  }
+
+  test("map_from_entries - a duplicate key is rejected under EXCEPTION") {
+    withMapBuilderTable { table =>
+      withSQLConf(SQLConf.MAP_KEY_DEDUP_POLICY.key -> "EXCEPTION") {
+        // `struct` names a column argument after the column, so both entries need explicit field
+        // names for `array` to see one struct type.
+        val exception = checkSparkError(
+          sql(
+            "SELECT map_from_entries(array(struct(k AS key, v AS value), " +
+              s"struct(k AS key, concat(v, 'x') AS value))) FROM $table WHERE k = 2"),
+          "DUPLICATED_MAP_KEY")
+        assert(exception.getMessage.contains("Duplicate map key 2 was found"))
+      }
+    }
+  }
+
+  // A native `LIMIT ... OFFSET` slices the batch, so the constructors see lists whose entries do
+  // not start at offset zero, which the upstream kernels mishandle (apache/datafusion#25419). No
+  // row has a NULL keys array, so `map_from_arrays`'s NULL guard passes the sliced batch through
+  // instead of compacting it.
+  test("map constructors on a sliced list read the visible entries") {
+    val rows = (0 until 20).map { i =>
+      (i, Seq((s"a$i", i), (s"b$i", i * 10)), Seq(s"a$i", s"b$i"), Seq(i, i * 10))
+    }
+    withParquetTable(rows, "t") {
+      checkSparkAnswerAndOperator(
+        "SELECT _1, map_from_entries(_2), map_from_arrays(_3, _4) " +
+          "FROM (SELECT * FROM t ORDER BY _1 LIMIT 15 OFFSET 5)")
     }
   }
 

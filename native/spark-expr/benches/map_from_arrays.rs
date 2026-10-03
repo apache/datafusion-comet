@@ -17,10 +17,10 @@
 
 use arrow::array::builder::{ListBuilder, StringBuilder};
 use arrow::array::ArrayRef;
-use arrow::datatypes::Field;
+use arrow::datatypes::{Field, FieldRef};
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use datafusion::common::config::ConfigOptions;
-use datafusion::logical_expr::{ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl};
+use datafusion::logical_expr::{ColumnarValue, ReturnFieldArgs, ScalarFunctionArgs, ScalarUDFImpl};
 use datafusion_comet_spark_expr::SparkMapFromArrays;
 use std::hint::black_box;
 use std::sync::Arc;
@@ -46,8 +46,17 @@ fn criterion_benchmark(c: &mut Criterion) {
     for entries in [2usize, 8, 32] {
         let keys = string_list(entries, "k");
         let values = string_list(entries, "v");
-        let return_type = udf
-            .return_type(&[keys.data_type().clone(), values.data_type().clone()])
+        // The UDF derives its map type from the argument fields, as DataFusion's planner asks it
+        // to; it does not implement `return_type` alone.
+        let arg_fields: Vec<FieldRef> = vec![
+            Arc::new(Field::new("keys", keys.data_type().clone(), true)),
+            Arc::new(Field::new("values", values.data_type().clone(), true)),
+        ];
+        let return_field = udf
+            .return_field_from_args(ReturnFieldArgs {
+                arg_fields: &arg_fields,
+                scalar_arguments: &[None, None],
+            })
             .unwrap();
         let args = vec![
             ColumnarValue::Array(Arc::clone(&keys)),
@@ -58,9 +67,9 @@ fn criterion_benchmark(c: &mut Criterion) {
                 black_box(
                     udf.invoke_with_args(ScalarFunctionArgs {
                         args: args.to_vec(),
-                        arg_fields: vec![],
+                        arg_fields: arg_fields.clone(),
                         number_rows: BATCH_SIZE,
-                        return_field: Arc::new(Field::new("result", return_type.clone(), true)),
+                        return_field: Arc::clone(&return_field),
                         config_options: Arc::new(ConfigOptions::default()),
                     })
                     .unwrap(),

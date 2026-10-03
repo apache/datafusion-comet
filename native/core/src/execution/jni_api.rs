@@ -67,8 +67,6 @@ use datafusion_spark::function::datetime::to_utc_timestamp::SparkToUtcTimestamp;
 use datafusion_spark::function::hash::crc32::SparkCrc32;
 use datafusion_spark::function::hash::sha1::SparkSha1;
 use datafusion_spark::function::hash::sha2::SparkSha2;
-use datafusion_spark::function::map::map_from_entries::MapFromEntries;
-use datafusion_spark::function::map::str_to_map::SparkStrToMap;
 use datafusion_spark::function::math::expm1::SparkExpm1;
 use datafusion_spark::function::math::factorial::SparkFactorial;
 use datafusion_spark::function::math::hex::SparkHex;
@@ -131,7 +129,7 @@ use crate::execution::spark_config::{
     SparkConfig, COMET_DEBUG_ENABLED, COMET_DEBUG_MEMORY,
     COMET_EXEC_AGGREGATE_SKIP_PARTIAL_ENABLED, COMET_EXPLAIN_NATIVE_ENABLED,
     COMET_MAX_TEMP_DIRECTORY_SIZE, COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED,
-    COMET_TRACING_ENABLED, SPARK_EXECUTOR_CORES,
+    COMET_TRACING_ENABLED, SPARK_EXECUTOR_CORES, SPARK_MAP_KEY_DEDUP_POLICY,
 };
 use crate::parquet::encryption_support::{CometEncryptionFactory, ENCRYPTION_FACTORY_ID};
 use crate::parquet::parquet_support::CometObjectStoreRegistry;
@@ -901,6 +899,14 @@ fn prepare_datafusion_session_context(
             session_config.set_str("datafusion.execution.parquet.reorder_filters", "true");
     }
 
+    // The duplicate-key policy of the native map constructors, which DataFusion spells
+    // `datafusion.spark.map_key_dedup_policy` with the same `EXCEPTION` / `LAST_WIN` values (see
+    // the map_funcs expression audit). Set before the `spark.comet.datafusion.*` testing escape
+    // hatch pass-through below, so an explicit override of the DataFusion key still wins.
+    if let Some(policy) = spark_config.get(SPARK_MAP_KEY_DEDUP_POLICY) {
+        session_config.options_mut().spark.map_key_dedup_policy = policy.parse()?;
+    }
+
     // Pass through DataFusion configs from Spark.
     // e.g: spark-shell --conf spark.comet.datafusion.sql_parser.parse_float_as_decimal=true
     // becomes datafusion.sql_parser.parse_float_as_decimal=true
@@ -946,7 +952,6 @@ fn register_datafusion_spark_function(session_ctx: &SessionContext) {
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitwiseNot::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkHex::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkWidthBucket::default()));
-    session_ctx.register_udf(ScalarUDF::new_from_impl(MapFromEntries::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkCrc32::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkLuhnCheck::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSpace::default()));
@@ -954,7 +959,6 @@ fn register_datafusion_spark_function(session_ctx: &SessionContext) {
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkArrayContains::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkArrayRepeat::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBin::default()));
-    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkStrToMap::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkUrlDecode::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkUrlEncode::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkTryUrlDecode::default()));
