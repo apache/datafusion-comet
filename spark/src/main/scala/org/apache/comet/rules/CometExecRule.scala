@@ -107,6 +107,7 @@ object CometExecRule {
       classOf[SortMergeJoinExec] -> CometSortMergeJoinExec,
       classOf[SortExec] -> CometSortExec,
       classOf[LocalTableScanExec] -> CometLocalTableScanExec,
+      classOf[RangeExec] -> CometRangeExec,
       classOf[InMemoryTableScanExec] -> CometInMemoryTableScanExec,
       classOf[SampleExec] -> CometSampleExec,
       classOf[WindowExec] -> CometWindowExec) ++
@@ -446,6 +447,19 @@ case class CometExecRule(session: SparkSession)
       // because it carries its scan's logical link. Wrap it again so re-planned parents convert.
       case c: CometSparkToColumnarExec =>
         convertToComet(c, CometScanWrapper).getOrElse(c)
+
+      // A leaf with its own enabled Comet operator, such as RangeExec, uses that operator. The
+      // Spark-to-Arrow conversion is the fallback for a leaf the operator declines.
+      case op: LeafExecNode if hasEnabledHandler(op) =>
+        convertToComet(op, allExecs(op.getClass))
+          .orElse {
+            if (shouldApplySparkToColumnar(conf, op)) {
+              convertToComet(op, CometSparkToColumnarExec)
+            } else {
+              None
+            }
+          }
+          .getOrElse(op)
 
       case op if shouldApplySparkToColumnar(conf, op) =>
         convertToComet(op, CometSparkToColumnarExec).getOrElse(op)
@@ -1148,6 +1162,9 @@ case class CometExecRule(session: SparkSession)
       false
     }
   }
+
+  private def hasEnabledHandler(op: SparkPlan): Boolean =
+    allExecs.get(op.getClass).exists(_.enabledConfig.forall(_.get(op.conf)))
 
   private def shouldApplySparkToColumnar(conf: SQLConf, op: SparkPlan): Boolean = {
     // Only consider converting leaf nodes to columnar currently, so that all the following

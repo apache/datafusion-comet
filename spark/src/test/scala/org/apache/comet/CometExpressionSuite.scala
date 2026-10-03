@@ -115,8 +115,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       spark.read.parquet(path).createOrReplaceTempView("tbl")
 
       // Scalar floating-point sort keys are normalized natively, so strict mode admits them even
-      // with allowIncompatible off. Nested floating-point keys are not, and the two tests below
-      // still assert the strict-mode fallback.
+      // with allowIncompatible off. The nested tests below cover array and struct keys.
       withSQLConf(
         CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false",
         CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
@@ -243,51 +242,97 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("sort array of floating point with negative zero") {
-    val schema = StructType(
-      Seq(
-        StructField("c0", DataTypes.createArrayType(DataTypes.FloatType), true),
-        StructField("c1", DataTypes.createArrayType(DataTypes.DoubleType), true)))
+  // Floats nested in array and struct sort keys are normalized natively as well, but strict mode
+  // declines a key whose type can hold a null element or field: Spark orders that null below
+  // every value whatever the key's null order, and the native sort places it by the null order
+  // (#6476). Every field the generator makes is nullable, so these sorts fall back. A unique `id`
+  // sorted last makes the ordering total, as above.
+  private def checkStrictNestedFloatingPointSort(schema: StructType): Unit = {
     val df = FuzzDataGenerator.generateDataFrame(
       new Random(42),
       spark,
       schema,
       1000,
       DataGenOptions(generateNegativeZero = true))
-    df.createOrReplaceTempView("tbl")
 
-    withSQLConf(
-      CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false",
-      CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
-      checkSparkAnswerAndFallbackReason(
-        "select * from tbl order by 1, 2",
-        "unsupported range partitioning sort order")
+    withTempDir { dir =>
+      val path = new Path(dir.toString, "tbl").toString
+      df.withColumn("id", monotonically_increasing_id()).write.parquet(path)
+      spark.read.parquet(path).createOrReplaceTempView("tbl")
+
+      withSQLConf(
+        CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false",
+        CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
+        checkSparkAnswerAndFallbackReason(
+          sql("select * from tbl order by 1, 2, 3"),
+          "can hold a null element or field")
+      }
+
+      // The default null order agrees with Spark's, so opting in keeps the sort native and right.
+      withSQLConf(
+        CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "true",
+        CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
+        checkSparkAnswerAndOperator(
+          sql("select * from tbl order by 1, 2, 3"),
+          Seq(classOf[CometSortExec]))
+      }
     }
   }
 
+  test("sort array of floating point with negative zero") {
+    checkStrictNestedFloatingPointSort(
+      StructType(
+        Seq(
+          StructField("c0", DataTypes.createArrayType(DataTypes.FloatType), true),
+          StructField("c1", DataTypes.createArrayType(DataTypes.DoubleType), true))))
+  }
+
   test("sort struct containing floating point with negative zero") {
-    val schema = StructType(
-      Seq(
+    checkStrictNestedFloatingPointSort(
+      StructType(Seq(
         StructField(
           "float_struct",
           StructType(Seq(StructField("c0", DataTypes.FloatType, true)))),
         StructField(
           "float_double",
-          StructType(Seq(StructField("c0", DataTypes.DoubleType, true))))))
-    val df = FuzzDataGenerator.generateDataFrame(
-      new Random(42),
-      spark,
-      schema,
-      1000,
-      DataGenOptions(generateNegativeZero = true))
-    df.createOrReplaceTempView("tbl")
+          StructType(Seq(StructField("c0", DataTypes.DoubleType, true)))))))
+  }
+
+  test("strict floating point: nested sort keeps NaN payloads and zero signs unchanged") {
+    // As in the scalar test, a local relation keeps the raw bits that Parquet would canonicalize.
+    // `d` is a primitive `Double`, so it is not nullable, and neither are the element of
+    // `array(d)` and the field of `named_struct('v', d)`: these keys cannot hold a null, and
+    // strict mode admits them.
+    val negNan = java.lang.Double.longBitsToDouble(0xfff8000000000002L)
+    val posNan = java.lang.Double.longBitsToDouble(0x7ff8000000000002L)
+    val rows = Seq((0, negNan), (1, posNan), (2, -0.0d), (3, 0.0d), (4, 1.0d))
+    val expected = rows.map { case (id, d) =>
+      id -> java.lang.Double.doubleToRawLongBits(d)
+    }.toMap
+
+    rows.toDF("id", "d").createOrReplaceTempView("strict_fp_nested_bits")
 
     withSQLConf(
       CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false",
       CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
-      checkSparkAnswerAndFallbackReason(
-        "select * from tbl order by 1, 2",
-        "unsupported range partitioning sort order")
+      for ((key, value) <- Seq[(String, Row => Double)](
+          "array(d)" -> (_.getSeq[Double](1).head),
+          "named_struct('v', d)" -> (_.getStruct(1).getDouble(0)))) {
+        val query = s"SELECT id, $key AS k FROM strict_fp_nested_bits ORDER BY k, id"
+        checkSparkAnswerAndOperator(
+          sql(query),
+          Seq(classOf[CometSortExec]),
+          classOf[LocalTableScanExec])
+
+        val actual = sql(query).collect().toSeq
+        actual.foreach { row =>
+          assert(
+            java.lang.Double.doubleToRawLongBits(value(row)) == expected(row.getInt(0)),
+            s"row ${row.getInt(0)} had its floating-point bits rewritten by the sort on $key")
+        }
+        // The zeros are peers, and so are the two NaNs, which sort last.
+        assert(actual.map(_.getInt(0)) == Seq(2, 3, 4, 0, 1), s"sort on $key")
+      }
     }
   }
 
