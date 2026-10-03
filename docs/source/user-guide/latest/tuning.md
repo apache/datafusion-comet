@@ -34,7 +34,7 @@ guide is split into the following pages:
 - [Operator Tuning](tuning/operators.md): joins, adaptive partial aggregation, and sorting on
   floating-point values.
 - [Reducing Row/Columnar Conversion Overhead](tuning/transitions.md): stages in which many
-  operators fall back to Spark.
+  operators fall back to Spark, and the experimental direct columnar-to-row converter.
 
 ## Configuring Tokio Runtime
 
