@@ -23,6 +23,7 @@ import scala.collection.JavaConverters._
 
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.expressions.Attribute
+import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.plans.logical.Statistics
 import org.apache.spark.sql.columnar.{CachedBatch, CachedBatchSerializer}
 import org.apache.spark.sql.comet.shims.ShimCometInMemoryTableScanExec
@@ -79,6 +80,19 @@ case class CometInMemoryTableScanExec(
   // the CachedRDDBuilder with the whole cached plan, physical and logical, inline and with its raw
   // newlines, which breaks the tree of every plan that reads the cache.
   override def stringArgs: Iterator[Any] = Iterator(originalPlan)
+
+  // Spark's own scan lists its InMemoryRelation as an inner child, and the relation lists the
+  // cached plan, so EXPLAIN draws the plan that built the cache below the scan. Do the same.
+  // ExtendedExplainInfo.executionInnerChildren leaves them out of Comet's own reporting.
+  override def innerChildren: Seq[QueryPlan[_]] = Seq(originalPlan.relation)
+
+  // SparkPlanInfo, behind the SQL tab's graph and the event log, gives Spark's own scan (matched
+  // by class) its cached plan as a child, and any other node its children and subqueries. Expose
+  // the cached plan as a subquery: unlike a child it is only walked, never run, since subqueries
+  // run from expressions. Walkers such as collectWithSubqueries reach it too. innerChildren above
+  // leaves out super.innerChildren, which is this list, or EXPLAIN would draw the cached plan
+  // twice. A lazy val overrides both Spark 3.x's lazy val and Spark 4's def.
+  @transient override lazy val subqueries: Seq[SparkPlan] = Seq(originalPlan.relation.cachedPlan)
 
   // `originalPlan` is a plan-typed field rather than a child, so QueryPlan's canonicalization
   // walks straight past it: its attributes and predicates keep the expression IDs of whichever
