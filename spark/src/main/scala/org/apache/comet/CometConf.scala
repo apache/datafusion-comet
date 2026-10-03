@@ -264,6 +264,15 @@ object CometConf extends ShimCometConf {
     createExecEnabledConfig("takeOrderedAndProject", defaultValue = true)
   val COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("localTableScan", defaultValue = false)
+  val COMET_EXEC_RANGE_ENABLED: ConfigEntry[Boolean] =
+    createExecEnabledConfig(
+      "range",
+      defaultValue = false,
+      notes = Some(
+        "When enabled, Comet generates the rows of `spark.range` and SQL `range()` in native " +
+          "code, so the operators above them can run natively. It is off by default because " +
+          "it can be slower than Spark when those operators are only cheap expressions, such " +
+          "as a filter, which Spark compiles together with the range into one loop"))
   val COMET_EXEC_EMPTY_RELATION_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("emptyRelation", defaultValue = true)
   val COMET_EXEC_SAMPLE_ENABLED: ConfigEntry[Boolean] =

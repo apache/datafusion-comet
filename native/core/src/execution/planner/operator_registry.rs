@@ -177,6 +177,7 @@ fn get_operator_type(spark_operator: &Operator) -> Option<OperatorType> {
         OpStruct::CsvScan(_) => Some(OperatorType::CsvScan),
         OpStruct::ShuffleScan(_) => Some(OperatorType::ShuffleScan),
         OpStruct::BroadcastNestedLoopJoin(_) => None,
+        OpStruct::RangeScan(_) => None,
         OpStruct::Sample(_) => None, // Not yet in OperatorType enum
         // Generic extension point for out-of-tree contrib scans (Delta, Lance, ...); not in
         // OperatorType enum. The arm stays unconditional even in non-contrib builds because the
