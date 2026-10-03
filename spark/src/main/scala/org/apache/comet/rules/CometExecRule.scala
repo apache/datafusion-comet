@@ -464,6 +464,14 @@ case class CometExecRule(session: SparkSession)
       case op if shouldApplySparkToColumnar(conf, op) =>
         convertToComet(op, CometSparkToColumnarExec).getOrElse(op)
 
+      // Typed Dataset operations (`map`, `flatMap`, `mapPartitions`, `mapGroups`, ...) pass JVM
+      // objects between their operators, so those stay on Spark. Each of them ends in
+      // `SerializeFromObjectExec`, though, whose output is ordinary rows, and converting those to
+      // Arrow lets the operators above the typed operation run natively.
+      case op: SerializeFromObjectExec
+          if CometConf.COMET_CONVERT_FROM_TYPED_DATASET_ENABLED.get(conf) =>
+        convertTypedDatasetOutput(op)
+
       // Spark 4.0+: replace only the per-task write, leaving DataWritingCommandExec - and
       // therefore Spark's commit protocol, stats trackers and SaveMode handling - in place.
       // `V1WritesUtils.getWriteFilesOpt` matches the `WriteFilesExecBase` trait there, which is
@@ -582,6 +590,10 @@ case class CometExecRule(session: SparkSession)
               _: V2CommandExec =>
             // Some execs should never be replaced. We include
             // these cases specially here so we do not add a misleading 'info' message.
+            op
+          case _: ColumnarToRowTransition =>
+            // A transition does no work of its own. This rule only meets one that
+            // `convertTypedDatasetOutput` inserted on an earlier pass over the same plan.
             op
           case _: WriteFilesExec =>
             // The write is converted at the enclosing DataWritingCommandExec above: on Spark 3.x
@@ -1165,6 +1177,35 @@ case class CometExecRule(session: SparkSession)
 
   private def hasEnabledHandler(op: SparkPlan): Boolean =
     allExecs.get(op.getClass).exists(_.enabledConfig.forall(_.get(op.conf)))
+
+  /**
+   * Converts the rows a typed Dataset operation produces to Arrow, so the operators above it can
+   * run natively. See [[CometConf.COMET_CONVERT_FROM_TYPED_DATASET_ENABLED]].
+   *
+   * Spark inserts the columnar transitions after this rule, but it does not look below a
+   * `RowToColumnarTransition` such as `CometSparkToColumnarExec`. That is harmless above a leaf.
+   * Here the typed operation's own operators sit below the conversion, and without a transition
+   * they would read a Comet child through `CometExec.doExecute`, Spark's interpreted
+   * columnar-to-row path. So the subtree gets its transitions now, from Spark's own rule, and
+   * `EliminateRedundantTransitions` later replaces each one over a Comet child with Comet's own.
+   * Spark's rule leaves existing transitions alone, which matters because this rule runs over the
+   * same plan twice under AQE.
+   */
+  private def convertTypedDatasetOutput(op: SerializeFromObjectExec): SparkPlan = {
+    val unsupported = op.output.filterNot(a =>
+      CometSparkToColumnarExec.isTypeSupported(a.dataType, a.name, ListBuffer.empty))
+    if (unsupported.nonEmpty) {
+      withFallbackReason(
+        op,
+        "Comet cannot convert the output of a typed Dataset operation to Arrow because it does " +
+          "not support the type of these columns: " +
+          unsupported.map(a => s"${a.name}: ${a.dataType.simpleString}").mkString(", "))
+    } else {
+      val withTransitions =
+        ApplyColumnarRulesAndInsertTransitions(Seq.empty, outputsColumnar = false).apply(op)
+      convertToComet(withTransitions, CometSparkToColumnarExec).getOrElse(withTransitions)
+    }
+  }
 
   private def shouldApplySparkToColumnar(conf: SQLConf, op: SparkPlan): Boolean = {
     // Only consider converting leaf nodes to columnar currently, so that all the following
