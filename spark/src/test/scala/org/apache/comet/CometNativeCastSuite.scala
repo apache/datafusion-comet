@@ -1068,6 +1068,29 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       .foreach(castTest(values, _))
   }
 
+  test("cast StringType to DateType - whitespace trim parity") {
+    castTest(trimPaddedValues("2020-01-01").toDF("a"), DataTypes.DateType)
+  }
+
+  test("cast StringType to timestamp types - whitespace trim parity") {
+    withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC") {
+      val values = trimPaddedValues("2020-01-01 12:34:56").toDF("a")
+      Seq(DataTypes.TimestampType, DataTypes.TimestampNTZType).foreach(castTest(values, _))
+    }
+  }
+
+  test("cast StringType to timestamp types - ANSI rejects a value that trims to nothing") {
+    // Spark's parseTimestampString finds no segments in such a value, so ANSI mode raises
+    // CAST_INVALID_INPUT for it like for any other malformed value. The batch-wide ANSI check in
+    // the parity test above cannot see this, since other rows in its batch raise as well.
+    withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC") {
+      for {
+        value <- Seq("", " ", "\t", "\u0001", "\u007f")
+        toType <- Seq(DataTypes.TimestampType, DataTypes.TimestampNTZType)
+      } castTest(Seq(value).toDF("a"), toType, expectAnsiFailure = true)
+    }
+  }
+
   private val castStringToIntegralInputs: Seq[String] = Seq(
     "",
     ".",
@@ -1524,6 +1547,13 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         " T2:30",
         "\tT2:30",
         "\nT2:30",
+        // ISO control characters are trimmed like whitespace, on either side
+        "\u0001T2",
+        "\u007fT2:30",
+        "T2\u0001",
+        // Non-ASCII whitespace is never trimmed (null on all versions)
+        "\u3000T2",
+        "T2\u3000",
         // Full datetime: leading whitespace (valid on all versions — full trim applies)
         " 2020-01-01T12:34:56",
         "\t2020-01-01T12:34:56",

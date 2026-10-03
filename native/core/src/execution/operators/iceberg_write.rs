@@ -855,8 +855,9 @@ fn file_name_prefix(partition_id: i32, task_attempt_id: i64, operation_id: &str)
 ///
 /// This replaces iceberg-rust's `RecordBatchPartitionSplitter`, which computes the values with
 /// iceberg-rust's own transforms -- they turn a `year` or `month` past `chrono`'s calendar into a
-/// NULL (apache/datafusion-comet#6145) -- and groups rows through a HashMap, which emits parts in
-/// unspecified order.
+/// NULL (apache/datafusion-comet#6145) and put some pre-epoch timestamps in a different time
+/// partition from iceberg-java (apache/datafusion-comet#6426) -- and groups rows through a
+/// HashMap, which emits parts in unspecified order.
 struct PartitionSplitter {
     calculator: PartitionValueCalculator,
     partition_spec: PartitionSpecRef,
@@ -3314,11 +3315,11 @@ mod tests {
 /// A partitioned write runs both: the sort in front of [`IcebergWriteExec`] is keyed on the
 /// `datafusion-comet-spark-expr` kernels (Iceberg plans the sort as `bucket(...)`, `days(...)`,
 /// ... system-function calls), while [`ClusteredWriter`] groups the sorted rows by the partition
-/// values that [`PartitionValueCalculator`] computes -- with the same kernels for `years` and
-/// `months`, and with iceberg-rust's transforms for everything else. The writer requires the two
-/// to agree: when they do not it fails at runtime with "The input is not sorted! Cannot write to
-/// partition that was previously closed". These tests make an iceberg-rust bump that changes a
-/// transform break here first.
+/// values that [`PartitionValueCalculator`] computes -- with the same kernels for the time
+/// transforms of dates and timestamps, and with iceberg-rust's transforms for everything else. The
+/// writer requires the two to agree: when they do not it fails at runtime with "The input is not
+/// sorted! Cannot write to partition that was previously closed". These tests make an iceberg-rust
+/// bump that changes a transform break here first.
 #[cfg(test)]
 mod iceberg_rust_transform_parity {
     use arrow::array::{
@@ -3569,7 +3570,10 @@ mod iceberg_rust_transform_parity {
         }
     }
 
-    /// `days` and `hours` are plain floor division on both sides, so the whole domain agrees.
+    /// `days` and `hours` agree with iceberg-rust except on the pre-epoch timestamps where
+    /// iceberg-rust parts from iceberg-java (see `PartitionValueCalculator`), which is why the
+    /// writer computes both for timestamps with the Comet kernels; agreeing here means the switch
+    /// changed no other value. `day` of a date still goes through iceberg-rust.
     #[test]
     fn days_and_hours_agree_with_iceberg_rust() {
         let micros = vec![
@@ -3603,12 +3607,12 @@ mod iceberg_rust_transform_parity {
         assert_agree("days(date)", Transform::Day, &days_udf, &dates);
     }
 
-    /// `years` and `months` agree over the dates iceberg-rust can represent -- it splits the
-    /// calendar with `chrono`, so anything past year 262142 comes back NULL there while Comet and
-    /// the JVM keep going (apache/iceberg-rust#3142; see the kernel's own unit tests for those).
-    /// That is why the writer computes these two with the Comet kernels itself
-    /// (apache/datafusion-comet#6145); agreeing here means the switch changed no value iceberg-rust
-    /// could compute.
+    /// `years` and `months` agree over the dates iceberg-rust can represent, apart from the
+    /// pre-epoch timestamps where it parts from iceberg-java (see `PartitionValueCalculator`). It
+    /// splits the calendar with `chrono`, so anything past year 262142 comes back NULL there while
+    /// Comet and the JVM keep going (apache/iceberg-rust#3142; see the kernel's own unit tests for
+    /// those). That is why the writer computes these two with the Comet kernels itself
+    /// (apache/datafusion-comet#6145); agreeing here means the switch changed no other value.
     #[test]
     fn years_and_months_agree_with_iceberg_rust_within_its_range() {
         let years_udf = SparkIcebergTemporalTransform::years();
@@ -3648,14 +3652,17 @@ mod iceberg_rust_transform_parity {
         }
     }
 
-    /// Why `years` and `months` are not delegated to iceberg-rust even though `bucket`, `days`,
-    /// and `hours` could be: its kernels go through Arrow's `date_part`, which honours the
-    /// array's timezone tag, while Iceberg's Java `DateTimeUtil` is always UTC. Comet only ever
-    /// produces `UTC` and untagged timestamps today, so the parity above holds; this pins the
-    /// reason the local kernel exists. Reported as apache/iceberg-rust#3142; if this ever fails,
-    /// iceberg-rust dropped the tag dependency. Delegating is still unsafe until it also covers
-    /// dates past `chrono`'s calendar, which the writer's own partition values depend on too:
-    /// see `years_and_months_past_chronos_calendar_match_iceberg_java` (`iceberg_partition_value`).
+    /// Why `years` and `months` are not delegated to iceberg-rust even though `bucket` could be:
+    /// its kernels go through Arrow's `date_part`, which honours the array's timezone tag, while
+    /// Iceberg's Java `DateTimeUtil` is always UTC. Comet only ever produces `UTC` and untagged
+    /// timestamps today, so the parity above holds; this pins one reason the local kernel exists.
+    /// Reported as apache/iceberg-rust#3142; if this ever fails, iceberg-rust dropped the tag
+    /// dependency. Delegating is still unsafe until it also covers dates past `chrono`'s calendar,
+    /// which the writer's own partition values depend on too: see
+    /// `years_and_months_past_chronos_calendar_match_iceberg_java` (`iceberg_partition_value`).
+    /// Nor can `days` and `hours` be delegated: all four time transforms place some pre-epoch
+    /// timestamps differently from iceberg-java, see
+    /// `pre_epoch_timestamps_partition_like_iceberg_java` there.
     #[test]
     fn iceberg_rust_years_follow_the_timezone_tag() {
         // 1969-12-31T23:59:59.999999Z, which is 1970-01-01T05:44:59.999999 in Kathmandu.

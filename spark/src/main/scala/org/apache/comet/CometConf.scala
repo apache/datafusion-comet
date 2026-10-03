@@ -101,7 +101,7 @@ object CometConf extends ShimCometConf {
     .createWithDefault(true)
 
   val COMET_NATIVE_PARQUET_WRITE_ENABLED: ConfigEntry[Boolean] =
-    conf("spark.comet.parquet.write.enabled")
+    conf("spark.comet.write.parquet.enabled")
       .category(CATEGORY_TESTING)
       .doc(
         "Whether to enable native Parquet write through Comet. When enabled, " +
@@ -132,7 +132,7 @@ object CometConf extends ShimCometConf {
       .createWithDefault(false)
 
   val COMET_ICEBERG_NATIVE_WRITE_ENABLED: ConfigEntry[Boolean] =
-    conf("spark.comet.iceberg.write.enabled")
+    conf("spark.comet.write.iceberg.enabled")
       .category(CATEGORY_TESTING)
       .doc(
         "Whether to delegate the executor-side Parquet write to Comet's native (iceberg-rust) " +
@@ -235,6 +235,15 @@ object CometConf extends ShimCometConf {
     createExecEnabledConfig("broadcastNestedLoopJoin", defaultValue = true)
   val COMET_EXEC_SORT_MERGE_JOIN_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("sortMergeJoin", defaultValue = true)
+  val COMET_EXEC_EXISTENCE_JOIN_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.exec.existenceJoin.enabled")
+      .category(CATEGORY_ENABLE_EXEC)
+      .doc(
+        "Whether to enable native ExistenceJoin, produced when EXISTS / NOT EXISTS / IN is " +
+          "combined with another predicate via OR. Sort-merge joins, residual (non-equi) join " +
+          "conditions, computed (non-column) join keys, and NOT IN fall back to Spark.")
+      .booleanConf
+      .createWithDefault(true)
   val COMET_EXEC_AGGREGATE_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("aggregate", defaultValue = true)
   val COMET_EXEC_COLLECT_LIMIT_ENABLED: ConfigEntry[Boolean] =
@@ -255,6 +264,15 @@ object CometConf extends ShimCometConf {
     createExecEnabledConfig("takeOrderedAndProject", defaultValue = true)
   val COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("localTableScan", defaultValue = false)
+  val COMET_EXEC_RANGE_ENABLED: ConfigEntry[Boolean] =
+    createExecEnabledConfig(
+      "range",
+      defaultValue = false,
+      notes = Some(
+        "When enabled, Comet generates the rows of `spark.range` and SQL `range()` in native " +
+          "code, so the operators above them can run natively. It is off by default because " +
+          "it can be slower than Spark when those operators are only cheap expressions, such " +
+          "as a filter, which Spark compiles together with the range into one loop"))
   val COMET_EXEC_EMPTY_RELATION_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("emptyRelation", defaultValue = true)
   val COMET_EXEC_SAMPLE_ENABLED: ConfigEntry[Boolean] =
@@ -369,10 +387,14 @@ object CometConf extends ShimCometConf {
         "difference between the first two is native memory that the pools are not accounting " +
         "for. The executor logs one line per interval however many tasks are " +
         "running, and one more after the last plan finishes. It logs a warning when the " +
-        "native memory looks larger than the executor's container allows. This is an executor " +
-        "setting, read when an executor starts its first Comet native plan, so it must be set " +
-        "when the application is submitted. An invalid value disables the log with a warning. " +
-        s"Set to 0 to disable. $TUNING_GUIDE.")
+        "native memory looks larger than the executor's container allows. When " +
+        "spark.eventLog.enabled is true and the application runs the Comet plugin, the " +
+        "executor also sends its samples to the driver, which writes the one with the most " +
+        "untracked memory and the last of every minute to the event log, as " +
+        "CometExecutorMemoryUsage events. This is an " +
+        "executor setting, read when an executor starts its first Comet native plan, so it " +
+        "must be set when the application is submitted. An invalid value disables the log " +
+        s"with a warning. Set to 0 to disable. $TUNING_GUIDE.")
     .timeConf(TimeUnit.MILLISECONDS)
     .checkValue(_ >= 0, "The memory usage log interval must not be negative")
     .createWithDefault(TimeUnit.SECONDS.toMillis(10))
@@ -1091,10 +1113,12 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_EXEC)
       .doc(
         "When enabled, fall back to Spark for floating-point operations that may differ from " +
-          "Spark, such as comparing -0.0 and 0.0, sorting floating-point values nested in " +
-          "arrays, structs, or maps, or sorting the elements of a floating-point array with " +
-          "`sort_array`. Scalar `ORDER BY`, window ordering and range partitioning keys are " +
-          "unaffected, because Comet normalizes those comparison keys to match Spark. " +
+          "Spark, such as comparing -0.0 and 0.0. `ORDER BY`, window ordering and range " +
+          "partitioning keys are unaffected, including floating-point values nested in arrays " +
+          "and structs, because Comet normalizes those comparison keys to match Spark. The " +
+          "exception is a nested key whose type can hold a null element or field, which falls " +
+          "back until the native sort and window frames order those nulls as Spark does. " +
+          "`sort_array` is unaffected too, because it follows Spark's ordering. " +
           s"$COMPAT_GUIDE.")
       .booleanConf
       .createWithDefault(false)
