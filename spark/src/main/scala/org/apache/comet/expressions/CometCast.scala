@@ -110,7 +110,16 @@ object CometCast
     } else if (CometTimeZone.nativeId(cast.timeZoneId).isEmpty) {
       CometTimeZone.supportLevel(cast.timeZoneId)
     } else {
-      isSupported(cast.child.dataType, cast.dataType, cast.timeZoneId, evalMode(cast))
+      // A relabel-only cast runs natively, but main dispatched some of them (`array<date>` with
+      // different nested nullability). The dispatcher evaluates the child the way Spark's
+      // generated code does, skipping an argument an earlier one decides, and a native child
+      // evaluates every argument, so a non-deterministic child keeps main's route.
+      isSupported(
+        cast.child.dataType,
+        cast.dataType,
+        cast.timeZoneId,
+        evalMode(cast),
+        relabel = cast.child.deterministic)
     }
   }
 
@@ -213,7 +222,8 @@ object CometCast
       fromType: DataType,
       toType: DataType,
       timeZoneId: Option[String],
-      evalMode: CometEvalMode.Value): SupportLevel = {
+      evalMode: CometEvalMode.Value,
+      relabel: Boolean = true): SupportLevel = {
 
     // Spark 4's `VariantType` (SPARK-45827) has no native counterpart in Comet, and the codegen
     // dispatcher also cannot serialize `VariantType` in the data args or return type. The
@@ -241,7 +251,7 @@ object CometCast
       return Unsupported(Some(nonDefaultCollationReason))
     }
 
-    if (fromType == toType || isRelabel(fromType, toType)) {
+    if (fromType == toType || (relabel && isRelabel(fromType, toType))) {
       return Compatible()
     }
 
@@ -257,9 +267,9 @@ object CometCast
           if toElementType != DataTypes.IntegerType && toElementType != DataTypes.StringType =>
         unsupported(fromType, toType)
       case (dt: ArrayType, DataTypes.StringType) =>
-        isSupported(dt.elementType, DataTypes.StringType, timeZoneId, evalMode)
+        isSupported(dt.elementType, DataTypes.StringType, timeZoneId, evalMode, relabel)
       case (dt: ArrayType, dt1: ArrayType) =>
-        isSupported(dt.elementType, dt1.elementType, timeZoneId, evalMode)
+        isSupported(dt.elementType, dt1.elementType, timeZoneId, evalMode, relabel)
       case (dt: DataType, _) if dt.typeName == "timestamp_ntz" =>
         toType match {
           case DataTypes.StringType => Compatible()
@@ -301,7 +311,7 @@ object CometCast
           if (isAlwaysCastToNull(a.dataType, b.dataType, evalMode)) {
             return unsupported(fromType, toType)
           }
-          isSupported(a.dataType, b.dataType, timeZoneId, evalMode) match {
+          isSupported(a.dataType, b.dataType, timeZoneId, evalMode, relabel) match {
             case Compatible(_, _) =>
             // all good
             case other =>
@@ -317,9 +327,9 @@ object CometCast
           isAlwaysCastToNull(from_map.valueType, to_map.valueType, evalMode)) {
           unsupported(fromType, toType)
         } else {
-          isSupported(from_map.keyType, to_map.keyType, timeZoneId, evalMode) match {
+          isSupported(from_map.keyType, to_map.keyType, timeZoneId, evalMode, relabel) match {
             case Compatible(_, _) =>
-              isSupported(from_map.valueType, to_map.valueType, timeZoneId, evalMode)
+              isSupported(from_map.valueType, to_map.valueType, timeZoneId, evalMode, relabel)
             case other => other
           }
         }

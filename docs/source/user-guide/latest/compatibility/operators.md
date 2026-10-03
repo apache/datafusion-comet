@@ -52,6 +52,18 @@ exchange, and the join above it falls back to Spark. Comet coalesces the build s
 one Arrow buffer before broadcasting, and Arrow Java's appender cannot grow a `NullVector` in that
 position. A `NullType` element of a list (`array<null>`) is not affected.
 
+## Non-Deterministic Expressions Beside NullType Values
+
+Spark's generated code skips an argument on rows where another argument decides the result (for
+example a `NULL` operand of `+`, or a `NULL` divisor), while a native expression evaluates every
+argument over the whole batch, and some expressions evaluate an argument twice. A stateful
+non-deterministic expression such as `monotonically_increasing_id()` or `rand()` then advances on
+rows Spark does not evaluate. An operator that evaluates a non-deterministic expression, and that
+runs a JVM codegen dispatcher kernel computing a `NullType` value (as its result or inside it)
+itself or in the native plan below it up to a shuffle (for example `map(k, NULL)`, including below a broadcast or a union), falls back to
+Spark. A non-deterministic column that the dispatcher runs as a whole, such as
+`map(monotonically_increasing_id(), NULL)`, is not affected.
+
 ## Sampling
 
 Comet runs `SampleExec` natively when sampling is performed without replacement, which covers
