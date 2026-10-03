@@ -27,7 +27,9 @@ pub mod tracing;
 mod utf8;
 mod utils;
 
-pub use error::{decimal_overflow_error, SparkError, SparkErrorWithContext, SparkResult};
+pub use error::{
+    decimal_overflow_error, error_chain, SparkError, SparkErrorWithContext, SparkResult,
+};
 pub use ffi_offsets::zero_offsets;
 pub use query_context::{create_query_context_map, QueryContext, QueryContextMap};
 pub use schema::{cast_and_stamp_schema, widen_nested_nullability};

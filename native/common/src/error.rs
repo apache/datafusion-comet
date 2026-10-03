@@ -924,6 +924,18 @@ impl std::fmt::Display for SparkErrorWithContext {
 
 impl std::error::Error for SparkErrorWithContext {}
 
+/// Iterates over `err` and every error reachable through `Error::source()`.
+///
+/// DataFusion, Arrow and Parquet wrap an external error in several layers before it reaches
+/// the JNI boundary (`External`, `Context`, `Shared`, `Diagnostic`, `ArrowError::ExternalError`,
+/// `ParquetError::External`, ...). All of them expose the wrapped error through `source()`, so
+/// callers looking for a `SparkError` should search this chain rather than match on variants.
+pub fn error_chain<'a>(
+    err: &'a (dyn std::error::Error + 'static),
+) -> impl Iterator<Item = &'a (dyn std::error::Error + 'static)> {
+    std::iter::successors(Some(err), |e| e.source())
+}
+
 impl From<SparkError> for SparkErrorWithContext {
     fn from(error: SparkError) -> Self {
         SparkErrorWithContext::new(error)
@@ -951,6 +963,53 @@ impl From<SparkError> for DataFusionError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn find_spark_error(err: &DataFusionError) -> Option<&SparkError> {
+        error_chain(err).find_map(|e| e.downcast_ref::<SparkError>())
+    }
+
+    #[test]
+    fn test_error_chain_finds_spark_error_through_wrappers() {
+        let external = || DataFusionError::from(SparkError::DivideByZero);
+        let cases = [
+            ("External", external()),
+            ("Context", external().context("evaluating expression")),
+            (
+                "External(External)",
+                DataFusionError::External(Box::new(external())),
+            ),
+            ("Shared", DataFusionError::Shared(Arc::new(external()))),
+            (
+                "Diagnostic",
+                external().with_diagnostic(datafusion::common::Diagnostic::new_error(
+                    "divide by zero",
+                    None,
+                )),
+            ),
+            (
+                "ArrowError(ExternalError)",
+                DataFusionError::ArrowError(
+                    Box::new(ArrowError::ExternalError(Box::new(
+                        external().context("Error evaluating filter predicate"),
+                    ))),
+                    None,
+                ),
+            ),
+        ];
+        for (name, err) in &cases {
+            assert!(
+                matches!(find_spark_error(err), Some(SparkError::DivideByZero)),
+                "SparkError not found through {name}: {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_error_chain_without_spark_error() {
+        let err = DataFusionError::Execution("boom".to_string()).context("outer");
+        assert!(find_spark_error(&err).is_none());
+        assert_eq!(error_chain(&err).count(), 2);
+    }
 
     #[test]
     fn test_divide_by_zero_json() {
