@@ -37,6 +37,15 @@ all native execution can be turned off with `spark.comet.exec.enabled=false`. Se
 | ⚠️ Supported (caveats) | Experimental or disabled by default, or accelerates only a limited subset. See the [Compatibility Guide](compatibility/index.md). |
 | 🔜 Planned             | Intended; tracked by an open issue or pull request.                                                                               |
 
+## Wrapper nodes
+
+Some nodes in a Spark plan do no work of their own: `AdaptiveSparkPlan`, the AQE query stages
+(including `ResultQueryStage` on Spark 4.0 and later), `AQEShuffleRead`, `InputAdapter`,
+`WholeStageCodegen`, and the reuse markers `ReusedExchange` and `ReusedSubquery`. Comet leaves
+them in place around the operators it converts, so this page does not list them, and seeing one in
+a plan does not mean that part of the query fell back to Spark. The coverage summary described in
+[Understanding Comet Plans](understanding-comet-plans.md) does not count them.
+
 ## Not currently planned
 
 The following operator families fall back to Spark and are not on the current roadmap. They are
@@ -46,6 +55,7 @@ omitted from the tables below and may be reconsidered based on demand:
 - **Cartesian / cross joins** (`CartesianProductExec`): rare and expensive, with little acceleration benefit.
 - **Range generation** (`RangeExec`): niche leaf operator.
 - **Pickled (non-Arrow) Python UDFs** (`BatchEvalPythonExec`): Comet accelerates Arrow-based Python UDFs only ([#4234](https://github.com/apache/datafusion-comet/pull/4234)).
+- **Typed Dataset operators** (`DeserializeToObjectExec`, `SerializeFromObjectExec`, `MapElementsExec`, `MapPartitionsExec`, `MapGroupsExec`, `CoGroupExec`, `AppendColumnsExec`, and similar): produced by `map`, `mapPartitions`, `groupByKey`, `cogroup`, and other typed `Dataset` transformations. They exist to run user JVM functions on JVM objects, which Comet cannot do natively.
 
 ## Scans
 
@@ -121,11 +131,11 @@ natively on `BroadcastHashJoinExec` and `ShuffledHashJoinExec`. Existence sort-m
 
 ## Writes
 
-| Operator                                                                                           | Status | Notes                                                                                                                                                                             |
-| -------------------------------------------------------------------------------------------------- | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `WriteFilesExec`                                                                                   | ⚠️     | Spark 4.0+. Experimental native Parquet writes, disabled by default (opt-in). Non-partitioned, non-bucketed writes only, and not when `spark.sql.files.maxRecordsPerFile` is set. |
-| `DataWritingCommandExec`                                                                           | ⚠️     | Spark 3.4/3.5 only. Experimental native Parquet writes, disabled by default (opt-in). Replaced by `WriteFilesExec` on Spark 4.0+ and removed with Spark 3.x support.              |
-| `AppendDataExec`, `OverwriteByExpressionExec`, `OverwritePartitionsDynamicExec`, `ReplaceDataExec` | ⚠️     | Apache Iceberg tables only. Experimental, disabled by default. See [Iceberg Writes](iceberg-writes.md).                                                                           |
+| Operator                                                                                                           | Status | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| ------------------------------------------------------------------------------------------------------------------ | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `WriteFilesExec`                                                                                                   | ⚠️     | Spark 4.0+. Experimental native Parquet writes, disabled by default (opt-in). Non-partitioned, non-bucketed writes only, and not when `spark.sql.files.maxRecordsPerFile` is set.                                                                                                                                                                                                                                                                                                                       |
+| `DataWritingCommandExec`                                                                                           | ⚠️     | Spark 3.4/3.5 only. Experimental native Parquet writes, disabled by default (opt-in). Replaced by `WriteFilesExec` on Spark 4.0+ and removed with Spark 3.x support.                                                                                                                                                                                                                                                                                                                                    |
+| Iceberg writes: `AppendDataExec`, `OverwriteByExpressionExec`, `OverwritePartitionsDynamicExec`, `ReplaceDataExec` | ⚠️     | Experimental, disabled by default. `spark.comet.write.iceberg.splitOperator.enabled=true` plans the write as `IcebergWrite` and `IcebergCommit`, and Iceberg's Java writer still writes the data files. `spark.comet.write.iceberg.enabled=true` then writes eligible data files natively (`CometIcebergWrite`). Covers `INSERT INTO`, `INSERT OVERWRITE`, and copy-on-write `DELETE` / `UPDATE` / `MERGE`. Merge-on-read writes (`WriteDeltaExec`) fall back. See [Iceberg Writes](iceberg-writes.md). |
 
 ## Python and UDF
 
