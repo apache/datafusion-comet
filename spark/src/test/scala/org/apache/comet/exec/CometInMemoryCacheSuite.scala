@@ -437,33 +437,29 @@ class CometInMemoryCacheSuite extends CometTestBase {
         info.children.flatMap(scanInfos)
 
     Seq("false", "true").foreach { aqe =>
-      withSQLConf(
-        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe,
-        CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true") {
-        spark.catalog.clearCache()
-        // The shuffle gives the cached plan an adaptive plan of its own when AQE is on.
-        spark
-          .range(1000)
-          .selectExpr("id % 10 AS k")
-          .groupBy("k")
-          .count()
-          .createOrReplaceTempView("plan_info_cache")
-        spark.catalog.cacheTable("plan_info_cache")
-        try {
-          val df = spark.sql("SELECT * FROM plan_info_cache WHERE k > 1")
-          df.collect()
-          val plan = df.queryExecution.executedPlan
-          val scans = collect(plan) { case s: CometInMemoryTableScanExec => s }
-          assert(scans.size == 1, s"AQE $aqe: $plan")
-          val cachedPlan = scans.head.originalPlan.relation.cachedPlan
-
-          val infos = scanInfos(CometSparkPlanInfoHelper.fromSparkPlan(plan))
-          assert(infos.size == 1, s"AQE $aqe: $plan")
-          assert(
-            infos.head.children == Seq(CometSparkPlanInfoHelper.fromSparkPlan(cachedPlan)),
-            s"AQE $aqe: ${infos.head.children.map(_.simpleString)}")
-        } finally {
-          spark.catalog.clearCache()
+      withClue(s"AQE $aqe: ") {
+        withSQLConf(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe,
+          CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true") {
+          withTempView("plan_info_cache") {
+            // The shuffle gives the cached plan an adaptive plan of its own when AQE is on.
+            spark
+              .range(1000)
+              .selectExpr("id % 10 AS k")
+              .groupBy("k")
+              .count()
+              .createOrReplaceTempView("plan_info_cache")
+            spark.catalog.cacheTable("plan_info_cache")
+            val df = spark.sql("SELECT * FROM plan_info_cache WHERE k > 1")
+            df.collect()
+            val plan = df.queryExecution.executedPlan
+            val scans = collect(plan) { case s: CometInMemoryTableScanExec => s }
+            assert(scans.size == 1, plan)
+            val cachedPlanInfo =
+              CometSparkPlanInfoHelper.fromSparkPlan(scans.head.originalPlan.relation.cachedPlan)
+            val infos = scanInfos(CometSparkPlanInfoHelper.fromSparkPlan(plan))
+            assert(infos.map(_.children) == Seq(Seq(cachedPlanInfo)), plan)
+          }
         }
       }
     }
