@@ -363,10 +363,6 @@ object CometFloatSemanticsSuite {
           (c.context.startsWith("array operands") || c.context.startsWith("struct operands")) &&
           !Set("=", "!=").contains(c.variant)),
     KnownGap(
-      issue(5507),
-      "Sort keys that nest floats in an array are compared raw.",
-      in("key", "nested ORDER BY")),
-    KnownGap(
       issue(6385),
       "hash, xxhash64 and the native shuffle's hash partitioner hash a NaN's raw bits.",
       c =>
