@@ -267,6 +267,42 @@ class CometCodegenSuite
     }
   }
 
+  test("a closed allocateOutput vector releases all of its memory") {
+    // Arrow's StructVector creates its writer in a field initializer. If the field of the struct
+    // has children, the writer creates and allocates a child vector for each of them.
+    // initializeChildrenFromFields then replaces these children, but it does not close them.
+    // Thus, a struct vector that gets such a field in its constructor leaks memory on each batch.
+    // ListVector and MapVector create a writer only in getWriter(), so List and Map outputs do
+    // not leak. The test includes these outputs to make sure that they do not leak in the future.
+    val pair = StructType(
+      Seq(StructField("name", StringType), StructField("age", IntegerType, nullable = false)))
+    val outputTypes = Seq(
+      pair,
+      StructType(
+        Seq(StructField("_1", LongType, nullable = false), StructField("_2", StringType))),
+      StructType(
+        Seq(
+          StructField("inner", pair),
+          StructField("tags", ArrayType(StringType)),
+          StructField("attrs", MapType(StringType, IntegerType)))),
+      ArrayType(pair),
+      MapType(StringType, pair),
+      StringType)
+    outputTypes.foreach { dataType =>
+      val field = CometBatchKernelCodegen.toFfiArrowField("out", dataType, nullable = true)
+      val allocator =
+        CometArrowAllocator.newChildAllocator(s"allocateOutput($dataType)", 0, Long.MaxValue)
+      try {
+        CometBatchKernelCodegen.allocateOutput(field, 4, 0, allocator).close()
+        assert(
+          allocator.getAllocatedMemory == 0,
+          s"the $dataType output did not release all of its memory")
+      } finally {
+        allocator.close()
+      }
+    }
+  }
+
   test("ScalaUDF over concat(c1, c2) suppresses the null short-circuit") {
     // Concat is not NullIntolerant. The dispatcher's short-circuit guard inspects every node in
     // the bound tree and must skip the whole-tree null short-circuit because one child is

@@ -30,7 +30,6 @@ import org.apache.spark.sql.catalyst.expressions.codegen.CodegenContext
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.types._
 
-import org.apache.comet.CometArrowAllocator
 import org.apache.comet.shims.CometTypeShim
 
 /**
@@ -86,22 +85,26 @@ private[codegen] object CometBatchKernelCodegenOutput extends CometTypeShim {
    *
    * Closes the vector on any failure so a partially-initialized tree doesn't leak buffers.
    */
-  def allocateOutput(field: Field, numRows: Int, estimatedBytes: Int): FieldVector = {
+  def allocateOutput(
+      field: Field,
+      numRows: Int,
+      estimatedBytes: Int,
+      allocator: BufferAllocator): FieldVector = {
     val vec: FieldVector = field.getType match {
       case _: ArrowType.List | _: ArrowType.LargeList | _: ArrowType.FixedSizeList =>
-        val v = new RenamedListVector(field, CometArrowAllocator)
+        val v = new RenamedListVector(field, allocator)
         v.initializeChildrenFromFields(field.getChildren)
         v
       case _: ArrowType.Map =>
-        val v = new RenamedMapVector(field, CometArrowAllocator)
+        val v = new RenamedMapVector(field, allocator)
         v.initializeChildrenFromFields(field.getChildren)
         v
       case _: ArrowType.Struct =>
-        val v = new RenamedStructVector(field, CometArrowAllocator)
+        val v = new RenamedStructVector(field, allocator)
         v.initializeChildrenFromFields(field.getChildren)
         v
       case _ =>
-        field.createVector(CometArrowAllocator).asInstanceOf[FieldVector]
+        field.createVector(allocator).asInstanceOf[FieldVector]
     }
     try {
       vec.setInitialCapacity(numRows)
@@ -138,9 +141,26 @@ private[codegen] object CometBatchKernelCodegenOutput extends CometTypeShim {
     override def getField: Field = exportField
   }
 
+  /**
+   * StructVector creates its writer in a field initializer. The writer creates and allocates a
+   * child vector for each child of `getField`. initializeChildrenFromFields replaces these
+   * children, but it does not close them. Thus, this class gives the StructVector constructor a
+   * field without children. `getField` returns `exportField` only after
+   * initializeChildrenFromFields. The writer creates no child vectors, and the vector owns all of
+   * the memory that it allocates.
+   */
   private final class RenamedStructVector(exportField: Field, allocator: BufferAllocator)
-      extends StructVector(exportField, allocator, null) {
-    override def getField: Field = exportField
+      extends StructVector(exportField.getName, allocator, exportField.getFieldType, null) {
+    // The StructVector constructor runs before this class initializes its fields. Thus, this
+    // field is false when the writer reads getField.
+    private var childrenInitialized = false
+
+    override def initializeChildrenFromFields(children: java.util.List[Field]): Unit = {
+      super.initializeChildrenFromFields(children)
+      childrenInitialized = true
+    }
+
+    override def getField: Field = if (childrenInitialized) exportField else super.getField
   }
 
   /**

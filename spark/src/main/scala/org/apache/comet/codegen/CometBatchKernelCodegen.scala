@@ -19,6 +19,7 @@
 
 package org.apache.comet.codegen
 
+import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector._
 import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
 import org.apache.arrow.vector.types.pojo.Field
@@ -28,6 +29,7 @@ import org.apache.spark.sql.catalyst.expressions.codegen._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
+import org.apache.comet.CometArrowAllocator
 import org.apache.comet.shims.{CometExprTraitShim, CometTypeShim}
 
 /**
@@ -203,10 +205,15 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
 
   /**
    * Allocate an Arrow output vector from a pre-built `Field`. Forwards to
-   * [[CometBatchKernelCodegenOutput.allocateOutput]].
+   * [[CometBatchKernelCodegenOutput.allocateOutput]]. The default value of `allocator` is the
+   * process-wide [[org.apache.comet.CometArrowAllocator]].
    */
-  def allocateOutput(field: Field, numRows: Int, estimatedBytes: Int): FieldVector =
-    CometBatchKernelCodegenOutput.allocateOutput(field, numRows, estimatedBytes)
+  def allocateOutput(
+      field: Field,
+      numRows: Int,
+      estimatedBytes: Int,
+      allocator: BufferAllocator = CometArrowAllocator): FieldVector =
+    CometBatchKernelCodegenOutput.allocateOutput(field, numRows, estimatedBytes, allocator)
 
   /**
    * Spark `DataType` to an Arrow `Field`, resolving mismatches between Arrow Java's default field
