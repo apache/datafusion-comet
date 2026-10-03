@@ -37,7 +37,7 @@ import org.apache.spark.sql.catalyst.plans.physical._
 import org.apache.spark.sql.comet.{CometFilterExec, CometMetricNode, CometNativeExec, CometNativeScanExec, CometPlan, CometProjectExec, CometScanWrapper, CometSinkPlaceHolder, CometSparkToColumnarExec, NativeExecContext}
 import org.apache.spark.sql.comet.execution.arrow.CometArrowStream
 import org.apache.spark.sql.execution._
-import org.apache.spark.sql.execution.adaptive.{QueryStageExec, ShuffleQueryStageExec}
+import org.apache.spark.sql.execution.adaptive.ShuffleQueryStageExec
 import org.apache.spark.sql.execution.exchange.{ENSURE_REQUIREMENTS, Exchange, ShuffleExchangeExec, ShuffleExchangeLike, ShuffleOrigin}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics, SQLShuffleReadMetricsReporter, SQLShuffleWriteMetricsReporter}
 import org.apache.spark.sql.internal.SQLConf
@@ -524,24 +524,14 @@ object CometShuffleExchangeExec
     None
   }
 
-  /** Whether `dt` is, or contains, a decimal that native shuffle does not hash as Spark does. */
-  private def hasWideDecimal(dt: DataType): Boolean = dt match {
-    case d: DecimalType => d.precision > 18
-    case StructType(fields) => fields.exists(f => hasWideDecimal(f.dataType))
-    case ArrayType(elementType, _) => hasWideDecimal(elementType)
-    case MapType(keyType, valueType, _) => hasWideDecimal(keyType) || hasWideDecimal(valueType)
-    case _ => false
-  }
-
   /**
    * Whether the stage feeding a shuffle starts at a typed Dataset conversion (see
    * [[CometConf.COMET_CONVERT_FROM_TYPED_DATASET_ENABLED]]). `CometExecRule` decides the shuffle
    * before it removes its placeholders, so the conversion is still inside its `CometScanWrapper`.
    */
   private def readsTypedDatasetConversion(plan: SparkPlan): Boolean = plan match {
-    case _: Exchange | _: QueryStageExec => false
-    case CometScanWrapper(_, conversion: CometSparkToColumnarExec) =>
-      conversion.child.isInstanceOf[SerializeFromObjectExec]
+    case _: Exchange => false
+    case CometScanWrapper(_, wrapped) => readsTypedDatasetConversion(wrapped)
     case conversion: CometSparkToColumnarExec =>
       conversion.child.isInstanceOf[SerializeFromObjectExec]
     case other => other.children.exists(readsTypedDatasetConversion)
@@ -647,11 +637,13 @@ object CometShuffleExchangeExec
         }
         // A typed Dataset conversion moves the shuffle above it from Comet's columnar shuffle,
         // which partitions with Spark's hash, to native shuffle. Native shuffle hashes a decimal
-        // wider than 18 digits differently from Spark (#5994), so a join with an input that is
-        // still on the columnar shuffle would put matching keys in different partitions. Leave
-        // such a shuffle where it was. A single partition hashes nothing.
-        if (partitioning.numPartitions > 1 &&
-          expressions.exists(e => hasWideDecimal(e.dataType)) &&
+        // wider than 18 digits differently from Spark, so a join with an input that is still on
+        // the columnar shuffle would put matching keys in different partitions. Leave such a
+        // shuffle where it was. A single partition hashes nothing.
+        // TODO: remove once native hashing matches Spark for wide decimals (#5994).
+        if (CometConf.COMET_CONVERT_FROM_TYPED_DATASET_ENABLED.get(conf) && reasons.isEmpty &&
+          partitioning.numPartitions > 1 &&
+          expressions.exists(_.dataType.existsRecursively(DecimalType.isByteArrayDecimalType)) &&
           readsTypedDatasetConversion(s.child)) {
           reasons += "a shuffle above a typed Dataset conversion that hashes a decimal wider " +
             "than 18 digits stays on Comet's columnar shuffle, which hashes it as Spark does"

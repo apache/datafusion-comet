@@ -20,7 +20,7 @@
 package org.apache.spark.sql.benchmark
 
 import org.apache.spark.benchmark.Benchmark
-import org.apache.spark.sql.{DataFrame, Dataset, Encoder, Encoders, Row}
+import org.apache.spark.sql.{DataFrame, Dataset, Row}
 import org.apache.spark.sql.catalyst.expressions.aggregate.Partial
 import org.apache.spark.sql.comet.{CometHashAggregateExec, CometPlan, CometSparkToColumnarExec}
 import org.apache.spark.sql.execution.SparkPlan
@@ -58,12 +58,7 @@ object CometTypedDatasetBenchmark extends CometBenchmarkBase {
   private val loKeys = 100
   private val hiKeys = 1024 * 1024
 
-  // Declared rather than imported from `spark.implicits`, which would start the session while
-  // this object initializes.
-  private implicit val recEncoder: Encoder[TypedDatasetBenchRec] =
-    Encoders.product[TypedDatasetBenchRec]
-  private implicit val wideEncoder: Encoder[TypedDatasetBenchWide] =
-    Encoders.product[TypedDatasetBenchWide]
+  import spark.implicits._
 
   private case class Arm(name: String, confs: Seq[(String, String)], check: SparkPlan => Unit)
 

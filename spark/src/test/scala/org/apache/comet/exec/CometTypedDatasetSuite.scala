@@ -24,8 +24,7 @@ import java.util.concurrent.atomic.AtomicLong
 import org.apache.spark.sql.{CometTestBase, DataFrame, Dataset}
 import org.apache.spark.sql.catalyst.expressions.aggregate.Partial
 import org.apache.spark.sql.comet.{CometBroadcastHashJoinExec, CometHashAggregateExec, CometSparkToColumnarExec}
-import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
-import org.apache.spark.sql.execution.{ColumnarToRowExec, ColumnarToRowTransition, InputAdapter, SerializeFromObjectExec, SparkPlan, WholeStageCodegenExec}
+import org.apache.spark.sql.execution.{ColumnarToRowExec, ColumnarToRowTransition, SerializeFromObjectExec, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.functions.{broadcast, col, size, sum}
 import org.apache.spark.sql.internal.SQLConf
 
@@ -76,15 +75,11 @@ class CometTypedDatasetSuite extends CometTestBase {
    * right answer slowly, so only the plan shows it.
    */
   private def assertRowOperatorsReadThroughTransitions(plan: SparkPlan): Unit = {
-    def unwrap(p: SparkPlan): SparkPlan = p match {
-      case InputAdapter(child) => child
-      case other => other
-    }
+    // `InputAdapter` and `WholeStageCodegenExec` report their child's `supportsColumnar`.
     val bare = collectWithSubqueries(plan) {
       case p
           if !p.supportsColumnar && !p.isInstanceOf[ColumnarToRowTransition] &&
-            !p.isInstanceOf[WholeStageCodegenExec] &&
-            p.children.exists(c => unwrap(c).supportsColumnar) =>
+            p.children.exists(_.supportsColumnar) =>
         p
     }
     assert(bare.isEmpty, s"row operators read a columnar child without a transition:\n$plan")
@@ -97,7 +92,7 @@ class CometTypedDatasetSuite extends CometTestBase {
    * Checks the answer, that everything above the typed operation runs natively, and that the
    * operation's output is converted right above its `SerializeFromObjectExec`.
    */
-  private def checkConverted(df: => DataFrame): SparkPlan = {
+  private def checkConverted(df: DataFrame): SparkPlan = {
     val (_, plan) =
       checkSparkAnswerAndOperator(df, includeClasses = Seq(classOf[CometSparkToColumnarExec]))
     conversions(plan).foreach { c =>
@@ -123,9 +118,9 @@ class CometTypedDatasetSuite extends CometTestBase {
     }
 
   convertTest("the aggregate and the shuffle above a map run natively") {
-    Seq("true", "false").foreach { aqe =>
-      withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe) {
-        withRecs() { ds =>
+    withRecs() { ds =>
+      Seq("true", "false").foreach { aqe =>
+        withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe) {
           val plan = checkConverted(ds.map(r => TypedDsRec(r.a + 1, r.b)).groupBy("b").count())
           assert(nativePartialAggregates(plan).nonEmpty, s"AQE $aqe:\n$plan")
         }
@@ -231,11 +226,11 @@ class CometTypedDatasetSuite extends CometTestBase {
         .range(0, 100, 1, 2)
         .map(i => TypedDsDecimalInts(new java.math.BigDecimal(i.longValue), Seq(i.intValue)))
         .alias("r")
-      val (_, plan) = checkSparkAnswer(
-        left.join(right, col("l.k") === col("r.k")).select(col("l.v"), col("r.xs")))
+      val df = left.join(right, col("l.k") === col("r.k")).select(col("l.v"), col("r.xs"))
+      val (_, plan) = checkSparkAnswer(df)
       assert(conversions(plan).nonEmpty, plan)
-      val shuffles = collectWithSubqueries(plan) { case s: CometShuffleExchangeExec => s }
-      assert(shuffles.nonEmpty && shuffles.forall(_.shuffleType == CometColumnarShuffle), plan)
+      // One columnar shuffle for each input of the join.
+      checkCometExchange(df, 2, native = false)
     }
   }
 
