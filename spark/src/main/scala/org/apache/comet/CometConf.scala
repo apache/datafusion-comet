@@ -203,6 +203,18 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_CONVERT_FROM_TYPED_DATASET_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.convert.typedDataset.enabled")
+      .category(CATEGORY_EXEC)
+      .doc("When enabled, the output of typed Dataset operations, such as `map`, `flatMap`, " +
+        "`mapPartitions` and `groupByKey(...).mapGroups`, will be converted to Arrow format so " +
+        "that the operators above them can run natively. The user function still runs in " +
+        "Spark. This pays off when the operators above do enough work, such as an " +
+        "aggregation over many groups, and can be slower when they are cheap, such as an " +
+        "aggregation over a few groups after a selective filter.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_EXEC_ENABLED: ConfigEntry[Boolean] = conf(s"$COMET_EXEC_CONFIG_PREFIX.enabled")
     .category(CATEGORY_EXEC)
     .doc(
