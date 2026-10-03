@@ -34,7 +34,7 @@ import org.apache.arrow.memory.ArrowBuf
 import org.apache.arrow.vector.ipc.ArrowReader
 import org.apache.arrow.vector.types.pojo.{Field, Schema}
 import org.apache.hadoop.fs.Path
-import org.apache.spark.SparkEnv
+import org.apache.spark.{SparkEnv, TaskContext}
 import org.apache.spark.sql.{CometTestBase, DataFrame, Dataset, Row}
 import org.apache.spark.sql.catalyst.expressions.AttributeReference
 import org.apache.spark.sql.catalyst.plans.logical.LocalRelation
@@ -280,12 +280,18 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
   test(
     "failed RSS callback registration closes every Arrow and shuffle input and preserves its error") {
     val planBytes = rssShufflePlanBytes
+    val arrowInputsClosed = spark.sparkContext.longAccumulator("arrowInputsClosed")
 
     val results = spark.sparkContext
       .parallelize(Seq(17), 1)
       .mapPartitions { _ =>
         var readerClosed = false
         var ownedBuffer: ArrowBuf = null
+        // The task-completion listener that exports the Arrow input releases it. Registered
+        // before that one, this listener runs after it.
+        TaskContext.get().addTaskCompletionListener[Unit] { _ =>
+          if (readerClosed && ownedBuffer.refCnt() == 0) arrowInputsClosed.add(1)
+        }
         val arrowInput = CometArrowStream
           .stream(
             "native-rss-registration-failure-test",
@@ -333,13 +339,12 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
             shuffleBlockIterators = shuffleInputs,
             shufflePartitionPusher = Some(null))
           iterator.close()
-          Iterator.single((false, false, false, false))
+          Iterator.single((false, false, false))
         } catch {
           case failure: Throwable =>
             Iterator.single(
               (
                 failure.getMessage.contains("Remote shuffle callback must not be null"),
-                readerClosed && ownedBuffer.refCnt() == 0,
                 closedInputs.toSet == Set("failing", "remaining"),
                 failure.getSuppressed.exists(
                   _.getMessage.contains("shuffle input cleanup sentinel"))))
@@ -347,7 +352,8 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
       }
       .collect()
 
-    assert(results.sameElements(Array((true, true, true, true))))
+    assert(results.sameElements(Array((true, true, true))))
+    assert(arrowInputsClosed.value == 1, "the Arrow input was not released by task end")
   }
 
   test("native shuffle plan preserves local partition writer and legacy output path") {
@@ -980,6 +986,30 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
       }
     }
   }
+  test("native shuffle on a float hash partitioning key matches Spark's partition assignment") {
+    // Spark hashes a float through doubleToLongBits or floatToIntBits, which canonicalize NaN.
+    // Negating a NaN in a native projection flips its sign bit, which gives the bits arithmetic
+    // produces on x86-64, and the native hash must still send the row where Spark sends it.
+    withParquetTable(
+      Seq(0.0, -0.0, Double.NaN, 1.5, -1.5).zipWithIndex.map { case (d, i) => (i, d, d.toFloat) },
+      "tbl") {
+      Seq("d", "nd", "nf", "nd, nf").foreach { keys =>
+        val repartitioned =
+          s"SELECT /*+ REPARTITION(10, $keys) */ _1, _2 AS d, -_2 AS nd, -_3 AS nf FROM tbl"
+        val query = s"SELECT _1, spark_partition_id() AS pid FROM ($repartitioned)"
+        val cometRows = sql(query).collect().map(r => (r.getInt(0), r.getInt(1))).sorted
+        // `SQLHelper.withSQLConf` returns Unit on Spark 3.x, so capture the rows via a var.
+        var sparkRows: Array[(Int, Int)] = Array.empty
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          sparkRows = sql(query).collect().map(r => (r.getInt(0), r.getInt(1))).sorted
+        }
+        assert(sparkRows.nonEmpty, "Spark produced no rows; the comparison would be vacuous")
+        checkCometExchange(sql(repartitioned), 1, true)
+        assert(cometRows === sparkRows, s"partition assignment differs from Spark for ($keys)")
+      }
+    }
+  }
+
   test("native shuffle on nested hash partitioning key with interval leaf falls back") {
     // CalendarIntervalType is allowed as a shuffle DATA column but the native hasher has no
     // branch for it (https://github.com/apache/datafusion-comet/issues/5059). Because the nested
