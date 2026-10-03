@@ -445,8 +445,10 @@ private[arrow] object ArrowFieldWriter {
     vector.setLastSet(outStart + numRows - 1)
   }
 
-  // Dictionary ids past this are decoded every time rather than cached.
-  private val MaxCachedDictionaryId = 1 << 16
+  // Dictionary ids from this one up are decoded every time rather than cached, which bounds the
+  // cache a batch allocates. A batch holds 8192 rows by default, so a larger dictionary repeats
+  // few of its ids within one.
+  private val MaxCachedDictionaryId = 1 << 14
 
   /**
    * Appends rows `[startRow, startRow + numRows)` of a dictionary-encoded Spark string or binary
@@ -484,7 +486,9 @@ private[arrow] object ArrowFieldWriter {
         if (id >= firstRow.length && id < MaxCachedDictionaryId) {
           firstRow = cache.grow(id)
         }
-        val seen = if (id < firstRow.length) firstRow(id) else 0
+        // A negative id, which only corrupt data holds, fails in Spark's decoding as before.
+        val cached = id >= 0 && id < firstRow.length
+        val seen = if (cached) firstRow(id) else 0
         if (seen > 0) {
           val start = offsets.getInt((seen - 1).toLong * BaseVariableWidthVector.OFFSET_WIDTH)
           val length = offsets.getInt(seen.toLong * BaseVariableWidthVector.OFFSET_WIDTH) - start
@@ -506,7 +510,7 @@ private[arrow] object ArrowFieldWriter {
             data.memoryAddress + end,
             bytes.length)
           end += bytes.length
-          if (id < firstRow.length) {
+          if (cached) {
             firstRow(id) = outStart + i + 1
           }
         }
@@ -704,7 +708,8 @@ private[arrow] abstract class FixedWidthArrowFieldWriter extends ArrowFieldWrite
    * index `count`, leaving validity alone. What lands under a null row is unspecified. Returns
    * false, having written nothing, for a vector type with no such copy.
    *
-   * Spark's own vectors without a dictionary are copied in bulk. Everything else, including a
+   * Spark's own vectors without a dictionary are copied in bulk, on-heap ones from
+   * [[ArrowFieldWriter.MinOnHeapBulkCopyRows]] rows. Everything else, including a
    * dictionary-encoded vector, is read value by value, skipping null rows, because a dictionary
    * id under a null may be garbage.
    */
@@ -1093,7 +1098,8 @@ private[arrow] class DecimalWriter(val valueVector: DecimalVector, precision: In
 
   override def writeColumnSlice(input: ColumnVector, startRow: Int, numRows: Int): Unit = {
     input match {
-      case vector: WritableColumnVector if LittleEndian =>
+      case vector: WritableColumnVector
+          if LittleEndian && ArrowFieldWriter.isSparkVector(vector) =>
         ensureCapacity(count + numRows)
         val target = valueVector.getDataBufferAddress + count.toLong * DecimalVector.TYPE_WIDTH
         val hasNull = vector.hasNull
@@ -1119,11 +1125,7 @@ private[arrow] class DecimalWriter(val valueVector: DecimalVector, precision: In
         } else {
           // Past 18 digits Spark stores the unscaled bytes, read in place unless decoded from a
           // dictionary.
-          val bytes = if (ArrowFieldWriter.isSparkVector(vector) && !vector.hasDictionary) {
-            vector.arrayData()
-          } else {
-            null
-          }
+          val bytes = if (vector.hasDictionary) null else vector.arrayData()
           while (i < numRows) {
             val row = startRow + i
             if (!hasNull || !vector.isNullAt(row)) {
