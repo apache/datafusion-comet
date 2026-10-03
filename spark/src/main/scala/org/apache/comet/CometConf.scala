@@ -264,6 +264,15 @@ object CometConf extends ShimCometConf {
     createExecEnabledConfig("takeOrderedAndProject", defaultValue = true)
   val COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("localTableScan", defaultValue = false)
+  val COMET_EXEC_RANGE_ENABLED: ConfigEntry[Boolean] =
+    createExecEnabledConfig(
+      "range",
+      defaultValue = false,
+      notes = Some(
+        "When enabled, Comet generates the rows of `spark.range` and SQL `range()` in native " +
+          "code, so the operators above them can run natively. It is off by default because " +
+          "it can be slower than Spark when those operators are only cheap expressions, such " +
+          "as a filter, which Spark compiles together with the range into one loop"))
   val COMET_EXEC_EMPTY_RELATION_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("emptyRelation", defaultValue = true)
   val COMET_EXEC_SAMPLE_ENABLED: ConfigEntry[Boolean] =
@@ -1088,10 +1097,12 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_EXEC)
       .doc(
         "When enabled, fall back to Spark for floating-point operations that may differ from " +
-          "Spark, such as comparing -0.0 and 0.0, or sorting floating-point values nested in " +
-          "arrays, structs, or maps. Scalar `ORDER BY`, window ordering and range partitioning " +
-          "keys are unaffected, because Comet normalizes those comparison keys to match Spark, " +
-          "and so is `sort_array`, which follows Spark's ordering. " +
+          "Spark, such as comparing -0.0 and 0.0. `ORDER BY`, window ordering and range " +
+          "partitioning keys are unaffected, including floating-point values nested in arrays " +
+          "and structs, because Comet normalizes those comparison keys to match Spark. The " +
+          "exception is a nested key whose type can hold a null element or field, which falls " +
+          "back until the native sort and window frames order those nulls as Spark does. " +
+          "`sort_array` is unaffected too, because it follows Spark's ordering. " +
           s"$COMPAT_GUIDE.")
       .booleanConf
       .createWithDefault(false)

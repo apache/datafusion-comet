@@ -48,20 +48,25 @@ Spark's `ORDER BY`, `RANK`, `DENSE_RANK`, and window frame comparisons route thr
 `SQLOrderingUtil.compareDoubles` / `compareFloats`, which equate all NaN representations and
 define `-0.0 == 0.0`. NaN sorts above every non-NaN value.
 
-For scalar `FLOAT` and `DOUBLE` keys, Comet normalizes NaNs and signed zeros before native
-sorting, window peer comparisons, and `WindowGroupLimitExec` rank comparisons. Native range
-partitioning normalizes its keys and sampled boundaries in the same way. Only comparison keys
-are normalized; returned values retain their original NaN representations and zero signs.
+For `FLOAT` and `DOUBLE` keys, and for keys that nest them in arrays and structs at any depth,
+Comet normalizes NaNs and signed zeros before native sorting, window peer comparisons, and
+`WindowGroupLimitExec` rank comparisons. Native range partitioning normalizes its keys and
+sampled boundaries in the same way; it only accepts scalar keys. Only comparison keys are
+normalized; returned values retain their original NaN representations and zero signs.
 
-Native sorting of floating-point values nested in arrays or structs still uses Arrow's raw total
-ordering. Nested keys can therefore produce different ordering or rank results from Spark; see
-[#5507](https://github.com/apache/datafusion-comet/issues/5507).
+Because those comparison keys match Spark, `spark.comet.exec.strictFloatingPoint=true` does not
+force a fallback for them: sort keys, window and rank order keys, and range partitioning keys all
+stay native under strict mode, whether the floats in them are scalar or nested.
 
-Because those scalar comparison keys match Spark, `spark.comet.exec.strictFloatingPoint=true` no
-longer forces a fallback for them: scalar `FLOAT` and `DOUBLE` sort keys, window and rank order
-keys, and range partitioning keys all stay native under strict mode. Floating-point values nested
-in arrays, structs, or maps still fall back under strict mode, because their ordering is the raw
-total ordering described above.
+The exception is a key that nests floats in an array or struct whose type can hold a null element
+or field. Spark orders such a null below every other value, whatever the key's `NULLS FIRST` or
+`NULLS LAST`. The native sort places it by that null order, so `ASC NULLS LAST` and
+`DESC NULLS FIRST` can differ from Spark, and a `RANGE` window frame orders it above every other
+value, so a running aggregate can span the whole partition
+([#6476](https://github.com/apache/datafusion-comet/issues/6476),
+[#6477](https://github.com/apache/datafusion-comet/issues/6477)). Strict mode makes those keys fall
+back to Spark. A key whose type cannot hold a null, such as `array(coalesce(x, 0.0D))`, stays
+native.
 
 `array_min` and `array_max` use Spark-compatible native comparisons in both strict and non-strict
 floating-point modes. Signed zeros compare equal, and all NaN representations compare equal and
@@ -69,6 +74,41 @@ greater than non-NaN values. The original first equal element is retained: for e
 `array_min(array(0.0D, -0.0D))` returns `0.0`, while reversing those elements returns `-0.0`.
 The same ordering applies recursively to floating-point fields in arrays and structs. These
 expressions do not require Spark's codegen dispatcher for floating-point compatibility.
+
+## Array distinct and union
+
+`array_distinct` and `array_union` fall back to Spark when their element type contains
+`FLOAT` or `DOUBLE`, on every Spark version except 4.2.0. Spark 4.2.0 normalizes signed zeros
+and NaNs in the arguments of these functions before they run (SPARK-54918), so native execution
+returns the same results. Spark 3.4, 3.5, 4.0.0 to 4.0.4, and 4.1.0 to 4.1.3 keep positive and
+negative zero distinct in flat arrays. Spark 4.0.5+, 4.1.4+, and 4.2.1+ normalize while these
+functions evaluate instead (SPARK-59602), which native execution does not match for NaNs or for
+zeros nested in arrays or structs. Other element types remain native.
+
+The check is based on the element type, not the values. It also applies to NULL or empty
+floating-point arrays and columns that never contain negative zero. The entire projection
+falls back to Spark, introducing a `CometColumnarToRow` transition and moving unrelated
+expressions in the same projection out of Comet. For example,
+`SELECT id + 1, array_distinct(a), i[0] + 5` evaluates all three expressions in a Spark `Project`.
+
+This can have a substantial cost. A local Spark 4.1.3 benchmark of
+`sum(cardinality(array_distinct(d)))` over two million `array<double>` rows found the default
+projection fallback about 15 times slower than native opt-in (best of five runs).
+The slowdown depends on the workload.
+
+Setting `spark.comet.expression.ArrayDistinct.allowIncompatible=true` or
+`spark.comet.expression.ArrayUnion.allowIncompatible=true` restores native execution on other
+versions, but signed-zero and NaN results may differ from Spark. Native execution can keep
+NaNs with different signs or payloads distinct. Signed-zero differences also depend on the
+element type: native execution merges positive and negative zero in flat floating-point arrays,
+but can keep them distinct inside nested arrays or structs. Only opt in if these differences
+are acceptable for your data.
+
+The check uses the Spark version number, not the changes a build contains. A build that reports
+any version other than 4.2.0 falls back even if it includes SPARK-54918. A vendor build that
+reports 4.2.0 but includes SPARK-59602 still runs natively; set
+`spark.comet.expression.ArrayDistinct.enabled=false` and
+`spark.comet.expression.ArrayUnion.enabled=false` on such a build.
 
 ## `array_remove` and `sort_array`
 

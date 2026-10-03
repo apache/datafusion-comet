@@ -25,19 +25,21 @@ import java.util.ArrayList
 import java.util.concurrent.atomic.AtomicBoolean
 
 import scala.jdk.CollectionConverters._
+import scala.util.Try
 
 import org.apache.arrow.memory.{ArrowBuf, BufferAllocator}
 import org.apache.arrow.vector.{BaseFixedWidthVector, BaseLargeVariableWidthVector, BaseVariableWidthVector, FieldVector, NullVector, VectorSchemaRoot, VectorUnloader}
 import org.apache.arrow.vector.complex.StructVector
 import org.apache.arrow.vector.ipc.{ArrowStreamReader, ArrowStreamWriter, WriteChannel}
 import org.apache.arrow.vector.ipc.message.{ArrowFieldNode, ArrowRecordBatch, MessageSerializer}
-import org.apache.arrow.vector.types.pojo.{ArrowType, Field, FieldType}
+import org.apache.arrow.vector.types.TimeUnit
+import org.apache.arrow.vector.types.pojo.{ArrowType, Field, FieldType, Schema}
 import org.apache.spark.{SparkEnv, TaskContext}
-import org.apache.spark.api.python.{BasePythonRunner, PythonRDD, PythonWorker, SpecialLengths}
+import org.apache.spark.api.python.{BasePythonRunner, PythonEvalType, PythonRDD, PythonWorker, SpecialLengths}
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.StructType
+import org.apache.spark.sql.types.{ArrayType, BinaryType, DataType, MapType, NullType, StringType, StructType, TimestampType, UserDefinedType}
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 
 import org.apache.comet.CometArrowAllocator
@@ -96,6 +98,21 @@ private[python] trait CometArrowPythonRunnerBase
    * truth for the field names written into the IPC stream that the Python worker reads by name.
    */
   protected def schema: StructType
+
+  /**
+   * Declared output type of the UDF: a struct of the output columns, which the Python worker
+   * returns as a single struct column.
+   */
+  protected def outputSchema: DataType
+
+  /**
+   * Error for Python output whose Arrow schema cannot be read as [[outputSchema]]. Spark 4.1
+   * added the `ARROW_TYPE_MISMATCH` condition for this; Spark 4.0 has no equivalent.
+   */
+  protected def outputSchemaMismatchError(
+      operation: String,
+      expected: String,
+      actual: String): Throwable
 
   /** Arrow input limits captured from the driver-side SQLConf. */
   protected def arrowMaxRecordsPerBatch: Int
@@ -307,6 +324,7 @@ private[python] trait CometArrowPythonRunnerBase
               case SpecialLengths.START_ARROW_STREAM =>
                 reader = new ArrowStreamReader(stream, allocator)
                 root = reader.getVectorSchemaRoot()
+                checkOutputSchema(root.getSchema)
                 read()
               case SpecialLengths.TIMING_DATA =>
                 handleTimingData()
@@ -321,6 +339,22 @@ private[python] trait CometArrowPythonRunnerBase
         } catch handleException
       }
     }
+  }
+
+  /**
+   * PySpark does not cast mapInArrow output to the declared schema, and Comet's vectors read
+   * buffers at the declared types, so check the output schema before any batch is read. Every
+   * batch in the Arrow stream has the schema read at its start.
+   */
+  private def checkOutputSchema(streamSchema: Schema): Unit = {
+    CometArrowPythonRunnerBase
+      .outputSchemaMismatch(outputSchema, streamSchema.getFields.asScala.toSeq)
+      .foreach { actual =>
+        throw outputSchemaMismatchError(
+          PythonEvalType.toString(evalType),
+          outputSchema.toString,
+          actual)
+      }
   }
 
   /**
@@ -618,6 +652,67 @@ private[python] object CometArrowPythonRunnerBase {
       hasCompatibleSchema(left.getChildren.asScala.toSeq, right.getChildren.asScala.toSeq)
     }
   }
+
+  /**
+   * Checks the schema of a Python output stream, whose single struct column holds the output
+   * columns, against the declared output type. Returns a description of the stream schema when
+   * Comet's vectors cannot read it as the declared type, or None when they can.
+   */
+  private[python] def outputSchemaMismatch(
+      expected: DataType,
+      streamFields: Seq[Field]): Option[String] =
+    streamFields match {
+      case Seq(struct) if isReadableAs(expected, struct, nullable = false) => None
+      case _ => Some(describeOutput(expected, streamFields))
+    }
+
+  /**
+   * Whether Comet's vectors read `actual` as `expected`. The Arrow type must be the one Comet
+   * uses for the Spark type (see `Utils.toArrowType`), except for differences that do not change
+   * the values read, and that Spark's `ArrowColumnVector` reads the same way: field names and
+   * nullability, 64-bit string and binary offsets, the time zone of a timestamp, and an all-null
+   * `null` column where nulls are allowed. A dictionary-encoded column never matches; Spark
+   * cannot read one as a string either.
+   */
+  private def isReadableAs(expected: DataType, actual: Field, nullable: Boolean): Boolean = {
+    val children = actual.getChildren
+    actual.getDictionary == null && ((expected, actual.getType) match {
+      case (udt: UserDefinedType[_], _) => isReadableAs(udt.sqlType, actual, nullable)
+      case (_, ArrowType.Null.INSTANCE) => nullable || expected == NullType
+      case (StructType(fields), ArrowType.Struct.INSTANCE) =>
+        fields.length == children.size &&
+        fields.zip(children.asScala).forall { case (field, child) =>
+          isReadableAs(field.dataType, child, field.nullable)
+        }
+      case (ArrayType(elementType, containsNull), ArrowType.List.INSTANCE) =>
+        isReadableAs(elementType, children.get(0), containsNull)
+      case (MapType(keyType, valueType, valueContainsNull), _: ArrowType.Map) =>
+        val entry = children.get(0).getChildren
+        isReadableAs(keyType, entry.get(0), nullable = false) &&
+        isReadableAs(valueType, entry.get(1), valueContainsNull)
+      case (_: StringType, ArrowType.LargeUtf8.INSTANCE) => true
+      case (BinaryType, ArrowType.LargeBinary.INSTANCE) => true
+      case (TimestampType, timestamp: ArrowType.Timestamp) =>
+        timestamp.getUnit == TimeUnit.MICROSECOND && timestamp.getTimezone != null
+      case (dataType, arrowType) =>
+        Try(Utils.toArrowType(dataType, "UTC")).toOption.contains(arrowType)
+    })
+  }
+
+  /**
+   * Describes the stream schema with Spark type names, as Spark's error does, unless they cannot
+   * show the difference: a dictionary encoding, an Arrow type with no Spark equivalent, or a
+   * layout Comet does not read, such as a 256-bit decimal. Those show the Arrow schema instead.
+   */
+  private def describeOutput(expected: DataType, streamFields: Seq[Field]): String = {
+    val sparkTypes =
+      if (streamFields.exists(hasDictionary)) None
+      else Try(streamFields.map(Utils.fromArrowField).mkString(", ")).toOption
+    sparkTypes.filter(_ != expected.toString).getOrElse(streamFields.mkString(", "))
+  }
+
+  private def hasDictionary(field: Field): Boolean =
+    field.getDictionary != null || field.getChildren.asScala.exists(hasDictionary)
 
   /**
    * Serialize source vectors directly beneath the non-null struct advertised in the IPC stream.
