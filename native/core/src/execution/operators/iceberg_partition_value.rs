@@ -19,8 +19,8 @@
 //!
 //! [`PartitionValueCalculator`] stands in for iceberg-rust's calculator of the same name. It
 //! projects each partition field's source column and applies the field's transform the same way,
-//! but computes `year` and `month` with Comet's own kernels, so that a date or timestamp past
-//! `chrono`'s calendar gets iceberg-java's partition value instead of a NULL.
+//! but computes the time transforms of dates and timestamps with Comet's own kernels, so that they
+//! get iceberg-java's partition values where iceberg-rust's differ.
 
 use std::sync::Arc;
 
@@ -35,20 +35,31 @@ use iceberg::{Error, ErrorKind, Result};
 
 /// Computes a batch's partition values: one row of the partition struct per input row.
 ///
-/// Matches iceberg-rust's `PartitionValueCalculator` except for `year` and `month` over a `date`,
-/// `timestamp`, or `timestamptz` source. iceberg-rust splits the calendar with Arrow's `date_part`,
-/// which returns NULL for anything `chrono` cannot represent -- past year 262142 -- whereas
-/// iceberg-java's `DateTimeUtil` goes through `LocalDate` and covers every Spark date (to year
-/// 5881580) and timestamp (to year 294247). The NULL did not fail the write: the data file was
-/// committed claiming a NULL partition for rows whose source value is not NULL
-/// (apache/datafusion-comet#6145). Those two transforms go through Comet's `iceberg_years` /
-/// `iceberg_months` kernels instead, the ones the sort in front of a clustered write runs, which
-/// are pinned against iceberg-java over the whole domain. Wherever `chrono` can represent the date
-/// the two implementations agree, so every value iceberg-rust could compute is unchanged.
+/// Matches iceberg-rust's `PartitionValueCalculator` except for the time transforms of a `date`,
+/// `timestamp`, or `timestamptz` source, which go through Comet's `iceberg_years` /
+/// `iceberg_months` / `iceberg_days` / `iceberg_hours` kernels instead: the ones the sort in front
+/// of a clustered write runs, pinned against iceberg-java's `DateTimeUtil` over the whole domain.
+/// iceberg-rust's transforms differ from iceberg-java's in three ways:
 ///
-/// `day` and `hour` stay on iceberg-rust: they are floor divisions of the epoch value and never
-/// consult the calendar. So do the nanosecond timestamp types, whose `i64` range (years 1677 to
-/// 2262) lies inside `chrono`'s and which Comet's kernels do not accept.
+/// - `year` and `month` split the calendar with Arrow's `date_part`, which returns NULL for
+///   anything `chrono` cannot represent -- past year 262142 -- whereas iceberg-java goes through
+///   `LocalDate` and covers every Spark date (to year 5881580) and timestamp (to year 294247). The
+///   NULL did not fail the write: the data file was committed claiming a NULL partition for rows
+///   whose source value is not NULL (apache/datafusion-comet#6145).
+/// - All four floor a pre-epoch timestamp that lies exactly 999999 microseconds into a unit, which
+///   iceberg-java puts in the unit before, so `1969-01-01T00:00:00.999999` belongs in the 1968
+///   partitions (apache/datafusion-comet#6426).
+/// - `day` moves a timestamp from the last second of a day before 1969-12-31 into the next day,
+///   unless its microsecond of second is 0 or 999999: it takes the whole seconds with a truncating
+///   division and the microseconds with a flooring one (apache/iceberg-rust#3315).
+///
+/// A partition value that differs from the sort key can also fail a clustered write, which rejects
+/// a row whose partition it has already closed. Everywhere else the two implementations agree, so
+/// no other value changes.
+///
+/// `day` of a `date` is the date itself and stays on iceberg-rust. So do the nanosecond timestamp
+/// types, whose `i64` range (years 1677 to 2262) lies inside `chrono`'s and which Comet's kernels
+/// do not accept.
 pub(crate) struct PartitionValueCalculator {
     projector: RecordBatchProjector,
     transforms: Vec<FieldTransform>,
@@ -125,18 +136,26 @@ enum FieldTransform {
 
 impl FieldTransform {
     fn try_new(transform: Transform, source_type: Option<&Type>) -> Result<Self> {
-        let calendar_source = matches!(
+        let timestamp_source = matches!(
             source_type,
             Some(Type::Primitive(
-                PrimitiveType::Date | PrimitiveType::Timestamp | PrimitiveType::Timestamptz
+                PrimitiveType::Timestamp | PrimitiveType::Timestamptz
             ))
         );
+        let calendar_source =
+            timestamp_source || matches!(source_type, Some(Type::Primitive(PrimitiveType::Date)));
         Ok(match transform {
             Transform::Year if calendar_source => {
                 Self::Comet(SparkIcebergTemporalTransform::years())
             }
             Transform::Month if calendar_source => {
                 Self::Comet(SparkIcebergTemporalTransform::months())
+            }
+            Transform::Day if timestamp_source => {
+                Self::Comet(SparkIcebergTemporalTransform::days())
+            }
+            Transform::Hour if timestamp_source => {
+                Self::Comet(SparkIcebergTemporalTransform::hours())
             }
             _ => Self::IcebergRust(create_transform_function(&transform)?),
         })
@@ -312,9 +331,10 @@ mod tests {
                 source.data_type()
             );
         }
-        // The reason Comet computes these two: iceberg-rust's transforms turn every value above
-        // into a NULL partition value. If this starts failing, iceberg-rust has learned the whole
-        // domain and delegating becomes an option again.
+        // The reason Comet computes these two for dates, and one reason for timestamps (see
+        // `pre_epoch_timestamps_partition_like_iceberg_java` for the other): iceberg-rust's
+        // transforms turn every value above into a NULL partition value. If this starts failing,
+        // iceberg-rust has learned the whole domain and delegating dates becomes an option again.
         for (column, (transform, source, _)) in columns(iceberg_rust.calculate(&batch).unwrap())
             .iter()
             .zip(&cases)
@@ -328,10 +348,11 @@ mod tests {
         }
     }
 
-    // The transforms left on iceberg-rust already agree with iceberg-java this far out (same JVM
-    // run as above). `day` of a date is the date itself, so only timestamps are interesting.
+    // iceberg-rust's `day` and `hour` already agreed with iceberg-java this far out, and the Comet
+    // kernels that now compute them for timestamps still do (same JVM run as above). `day` of a
+    // date is the date itself, so only timestamps are interesting.
     #[test]
-    fn days_and_hours_past_chronos_calendar_already_match_iceberg_java() {
+    fn days_and_hours_past_chronos_calendar_match_iceberg_java() {
         let instants = micros_utc(&INSTANTS_PAST_CHRONO);
         let (comet, _, batch) = calculators(&[
             (Transform::Day, Arc::clone(&instants)),
@@ -362,9 +383,74 @@ mod tests {
         );
     }
 
-    /// Every value iceberg-rust could already compute comes out unchanged, up to both ends of
-    /// `chrono`'s calendar, so what the native writer puts in a table now is consistent with what
-    /// it put there before.
+    // Expectations from iceberg-java 1.11's `DateTimeUtil` on a JDK 17 JVM; 1.5.2, 1.8.1, and
+    // 1.10.0 agree.
+    #[test]
+    fn pre_epoch_timestamps_partition_like_iceberg_java() {
+        let values = [
+            // 1969-01-01T00:00:00.999999, which iceberg-java places by the second before it,
+            // 1968-12-31T23:59:59 (apache/datafusion-comet#6426).
+            Some(-31_535_999_000_001),
+            // 1969-12-31T23:00:00.999999, where that moves only the hour.
+            Some(-3_599_000_001),
+            // 1969-12-30T23:59:59.5 and 1969-12-30T23:59:59.999998.
+            Some(-86_400_500_000),
+            Some(-86_400_000_002),
+            None,
+        ];
+        let day = |days: [i32; 4]| -> ArrayRef {
+            Arc::new(Date32Array::from_iter(
+                days.into_iter().map(Some).chain([None]),
+            ))
+        };
+        let int = |values: [i32; 4]| -> ArrayRef { Arc::new(ints(&values)) };
+        // (transform, iceberg-java's partition values, iceberg-rust's)
+        let cases = [
+            (
+                Transform::Year,
+                int([-2, -1, -1, -1]),
+                int([-1, -1, -1, -1]),
+            ),
+            (
+                Transform::Month,
+                int([-13, -1, -1, -1]),
+                int([-12, -1, -1, -1]),
+            ),
+            (
+                Transform::Day,
+                day([-366, -1, -2, -2]),
+                day([-365, -1, -1, -1]),
+            ),
+            (
+                Transform::Hour,
+                int([-8_761, -2, -25, -25]),
+                int([-8_760, -1, -25, -25]),
+            ),
+        ];
+        for source in [micros(&values), micros_utc(&values)] {
+            let fields: Vec<_> = cases
+                .iter()
+                .map(|(transform, _, _)| (*transform, Arc::clone(&source)))
+                .collect();
+            let (comet, iceberg_rust, batch) = calculators(&fields);
+            let comet = columns(comet.calculate(&batch).unwrap());
+            let iceberg_rust = columns(iceberg_rust.calculate(&batch).unwrap());
+            for (i, (transform, java, rust)) in cases.iter().enumerate() {
+                let label = format!("{transform} of {}", source.data_type());
+                assert_eq!(&comet[i], java, "{label}");
+                // The reason Comet computes these: iceberg-rust floors the first two rows, and its
+                // `day` moves the last two into 1969-12-31 (apache/iceberg-rust#3315). If this
+                // starts failing, iceberg-rust's transforms have changed and delegating needs
+                // another look.
+                assert_eq!(&iceberg_rust[i], rust, "iceberg-rust's {label}");
+            }
+        }
+    }
+
+    /// Away from the values where iceberg-rust parts from iceberg-java (the NULLs past `chrono`'s
+    /// calendar and the pre-epoch timestamps above), every value comes out as iceberg-rust
+    /// computes it, up to both ends of `chrono`'s calendar, so what the native writer puts in a
+    /// table now is consistent with what it put there before.
     #[test]
     fn agrees_with_iceberg_rust_wherever_chrono_can_represent_the_date() {
         let days = dates(&[
@@ -421,13 +507,17 @@ mod tests {
         ];
         let (comet, iceberg_rust, batch) = calculators(&fields);
 
-        // The first four really do run through Comet's kernels, and nothing else does.
+        // The time transforms of dates and timestamps really do run through Comet's kernels, except
+        // `day` of a date, and nothing else does.
         let on_comet = comet
             .transforms
             .iter()
             .map(|transform| matches!(transform, FieldTransform::Comet(_)))
             .collect::<Vec<_>>();
-        assert_eq!(on_comet, [[true; 4].as_slice(), &[false; 9]].concat());
+        assert_eq!(
+            on_comet,
+            [true, true, true, true, false, false, true, true, false, false, false, false, false]
+        );
 
         for ((comet, iceberg_rust), (transform, source)) in
             columns(comet.calculate(&batch).unwrap())
