@@ -28,9 +28,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
-use arrow::array::{
-    Array, ArrayRef, AsArray, BinaryArray, OffsetSizeTrait, RecordBatch, UInt32Array,
-};
+use arrow::array::{Array, ArrayRef, AsArray, BinaryArray, RecordBatch, UInt32Array};
 use arrow::datatypes::{DataType, Field, Schema as ArrowSchema, SchemaRef};
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::error::{DataFusionError, Result as DFResult};
@@ -1171,17 +1169,14 @@ fn contains_float(data_type: &DataType) -> bool {
 /// `true` when `array` holds a float or double under a list or map whose child array reaches
 /// past the rows `array` covers. Slicing a list or map narrows only its offsets and leaves the
 /// child whole, and the NaN-count visitor walks the whole child. A struct's children are sliced
-/// with it, so a struct only matters for the lists and maps inside it. A container this does not
-/// inspect is treated as reaching past whenever it holds a float, which errs toward gathering.
+/// with it, so a struct only matters for the lists and maps inside it. Every batch is cast to the
+/// schema `iceberg::arrow::schema_to_arrow_schema` builds, which nests nothing but lists, maps and
+/// structs. Any other container would be treated as reaching past whenever it holds a float, which
+/// errs toward gathering.
 fn floats_outside_window(array: &dyn Array) -> bool {
     match array.data_type() {
         DataType::List(field) => {
             let list = array.as_list::<i32>();
-            contains_float(field.data_type())
-                && reaches_past(list.value_offsets(), list.values().as_ref())
-        }
-        DataType::LargeList(field) => {
-            let list = array.as_list::<i64>();
             contains_float(field.data_type())
                 && reaches_past(list.value_offsets(), list.values().as_ref())
         }
@@ -1199,10 +1194,11 @@ fn floats_outside_window(array: &dyn Array) -> bool {
 }
 
 /// `true` when `offsets` leave part of `child` outside them, or when `child` itself holds a float
-/// outside its own rows.
-fn reaches_past<O: OffsetSizeTrait>(offsets: &[O], child: &dyn Array) -> bool {
-    offsets[0].as_usize() != 0
-        || offsets[offsets.len() - 1].as_usize() != child.len()
+/// outside its own rows. A list or map has one more offset than it has rows, so `offsets` is never
+/// empty, even for a batch of zero rows.
+fn reaches_past(offsets: &[i32], child: &dyn Array) -> bool {
+    offsets[0] != 0
+        || offsets[offsets.len() - 1] as usize != child.len()
         || floats_outside_window(child)
 }
 
@@ -1733,23 +1729,44 @@ mod tests {
 
     #[test]
     fn floats_outside_window_finds_a_slice_at_any_depth() {
-        use arrow::array::{ListArray, StructArray};
+        use arrow::array::{Float64Array, ListArray, StructArray};
         use arrow::buffer::OffsetBuffer;
-        use arrow::datatypes::Int32Type;
+        use arrow::datatypes::{Float32Type, Int32Type};
 
         // A list spans its child until it is sliced, from either end.
         assert!(!floats_outside_window(&doubles(4)));
         assert!(floats_outside_window(&doubles(4).slice(0, 2)));
         assert!(floats_outside_window(&doubles(4).slice(2, 2)));
+        // A list of no rows still has its one offset.
+        assert!(!floats_outside_window(&doubles(0)));
         // A sliced list with no float under it leaves nothing to miscount.
         let ints = ListArray::from_iter_primitive::<Int32Type, _, _>(
             (0..4).map(|row| Some(vec![Some(row)])),
         );
         assert!(!floats_outside_window(&ints.slice(0, 2)));
+        // A float counts as much as a double does.
+        let floats = ListArray::from_iter_primitive::<Float32Type, _, _>(
+            (0..4).map(|row| Some(vec![Some(row as f32)])),
+        );
+        assert!(floats_outside_window(&floats.slice(2, 2)));
         // Slicing a struct slices its list child, which then reaches past its rows.
         let wrapped = StructArray::try_from(vec![("l", Arc::new(doubles(4)) as ArrayRef)]).unwrap();
         assert!(!floats_outside_window(&wrapped));
         assert!(floats_outside_window(&wrapped.slice(1, 2)));
+        // A sliced list of structs keeps its whole struct child, as a list of doubles does.
+        let points = StructArray::try_from(vec![(
+            "x",
+            Arc::new(Float64Array::from(vec![0.0, 1.0, 2.0, f64::NAN])) as ArrayRef,
+        )])
+        .unwrap();
+        let points = ListArray::new(
+            Arc::new(Field::new("element", points.data_type().clone(), true)),
+            OffsetBuffer::from_lengths([1; 4]),
+            Arc::new(points),
+            None,
+        );
+        assert!(!floats_outside_window(&points));
+        assert!(floats_outside_window(&points.slice(1, 2)));
         // An outer list can span its child while an inner list does not span its own.
         let inner = doubles(4).slice(1, 2);
         let outer = ListArray::new(
@@ -1763,7 +1780,13 @@ mod tests {
 
     #[test]
     fn compact_gathers_only_a_batch_that_reaches_past_its_rows() {
-        let batch = RecordBatch::try_from_iter([("l", Arc::new(doubles(4)) as ArrayRef)]).unwrap();
+        use arrow::datatypes::Float64Type;
+
+        // Row 1 is NULL, and gathering has to keep it NULL.
+        let lists = arrow::array::ListArray::from_iter_primitive::<Float64Type, _, _>(
+            (0..4).map(|row| (row != 1).then(|| vec![Some(row as f64), Some(f64::NAN)])),
+        );
+        let batch = RecordBatch::try_from_iter([("l", Arc::new(lists) as ArrayRef)]).unwrap();
         let slicer = RowSlicer::for_schema(&batch.schema());
 
         let whole = slicer.compact(batch.clone()).unwrap();
@@ -1776,11 +1799,11 @@ mod tests {
         let compacted = slicer.compact(window.clone()).unwrap();
         assert_eq!(
             compacted, window,
-            "gathering keeps the rows and their values"
+            "gathering keeps the rows, their values and their NULLs"
         );
         assert_eq!(
             compacted.column(0).as_list::<i32>().values().len(),
-            4,
+            2,
             "the child holds only the window's elements"
         );
     }
@@ -2764,13 +2787,18 @@ mod tests {
         /// A batch can reach the writer already sliced, as a `LIMIT ... OFFSET` hands it on. Its
         /// list and map children then still hold the rows outside the slice, which are not
         /// written, so their NaNs must not be counted either -- by any of the three writers, each of
-        /// which can pass a single-partition batch through whole.
+        /// which can pass a single-partition batch through whole. The nested columns hold doubles,
+        /// floats and a struct of doubles, and every tenth row of each is NULL.
         /// See https://github.com/apache/datafusion-comet/issues/6146.
         #[tokio::test]
         async fn nan_counts_ignore_rows_outside_an_already_sliced_batch() {
-            use arrow::array::{Array, Float64Builder, ListArray, MapBuilder, StringBuilder};
-            use arrow::datatypes::Float64Type;
-            use iceberg::spec::{ListType, MapType};
+            use arrow::array::{
+                Array, Float64Array, Float64Builder, ListArray, MapBuilder, StringBuilder,
+                StructArray,
+            };
+            use arrow::buffer::{NullBuffer, OffsetBuffer};
+            use arrow::datatypes::{Float32Type, Float64Type};
+            use iceberg::spec::{ListType, MapType, StructType};
 
             const ROWS: usize = ROWS_DIVISOR + 100;
             const NAN_ROWS: [usize; 5] = [3, 50, 60, 90, ROWS_DIVISOR + 70];
@@ -2780,6 +2808,15 @@ mod tests {
                 } else {
                     row as f64
                 }
+            };
+            // A NULL entry holds no elements, as arrow's builders lay one out. NaNs under a NULL
+            // entry that does hold some are still counted, which is
+            // https://github.com/apache/datafusion-comet/issues/6562.
+            let present = |row: usize| row % 10 != 7;
+            let list_type = |id: i32, ty: Type| {
+                Type::List(ListType {
+                    element_field: NestedField::list_element(id, ty, false).into(),
+                })
             };
 
             let schema = Schema::builder()
@@ -2791,14 +2828,7 @@ mod tests {
                     NestedField::optional(
                         3,
                         "vals",
-                        Type::List(ListType {
-                            element_field: NestedField::list_element(
-                                4,
-                                Type::Primitive(PrimitiveType::Double),
-                                false,
-                            )
-                            .into(),
-                        }),
+                        list_type(4, Type::Primitive(PrimitiveType::Double)),
                     )
                     .into(),
                     NestedField::optional(
@@ -2819,32 +2849,70 @@ mod tests {
                         }),
                     )
                     .into(),
+                    NestedField::optional(
+                        8,
+                        "fvals",
+                        list_type(9, Type::Primitive(PrimitiveType::Float)),
+                    )
+                    .into(),
+                    NestedField::optional(
+                        10,
+                        "points",
+                        list_type(
+                            11,
+                            Type::Struct(StructType::new(vec![NestedField::required(
+                                12,
+                                "x",
+                                Type::Primitive(PrimitiveType::Double),
+                            )
+                            .into()])),
+                        ),
+                    )
+                    .into(),
                 ])
                 .build()
                 .unwrap();
 
             let vals = ListArray::from_iter_primitive::<Float64Type, _, _>(
-                (0..ROWS).map(|row| Some(vec![Some(value(row))])),
+                (0..ROWS).map(|row| present(row).then(|| vec![Some(value(row))])),
             );
             let mut map = MapBuilder::new(None, StringBuilder::new(), Float64Builder::new());
             for row in 0..ROWS {
-                map.keys().append_value("k");
-                map.values().append_value(value(row));
-                map.append(true).unwrap();
+                if present(row) {
+                    map.keys().append_value("k");
+                    map.values().append_value(value(row));
+                }
+                map.append(present(row)).unwrap();
             }
             let map = map.finish();
+            let fvals = ListArray::from_iter_primitive::<Float32Type, _, _>(
+                (0..ROWS).map(|row| present(row).then(|| vec![Some(value(row) as f32)])),
+            );
+            let xs =
+                Float64Array::from_iter_values((0..ROWS).filter(|&row| present(row)).map(value));
+            let points = StructArray::try_from(vec![("x", Arc::new(xs) as ArrayRef)]).unwrap();
+            let points = ListArray::new(
+                Arc::new(Field::new("element", points.data_type().clone(), false)),
+                OffsetBuffer::from_lengths((0..ROWS).map(|row| usize::from(present(row)))),
+                Arc::new(points),
+                Some(NullBuffer::from_iter((0..ROWS).map(present))),
+            );
             let full = RecordBatch::try_new(
                 Arc::new(ArrowSchema::new(vec![
                     Field::new("id", DataType::Int32, false),
                     Field::new("region", DataType::Utf8, false),
                     Field::new("vals", vals.data_type().clone(), true),
                     Field::new("m", map.data_type().clone(), true),
+                    Field::new("fvals", fvals.data_type().clone(), true),
+                    Field::new("points", points.data_type().clone(), true),
                 ])),
                 vec![
                     Arc::new(Int32Array::from_iter_values(0..ROWS as i32)),
                     Arc::new(StringArray::from(vec!["us"; ROWS])),
                     Arc::new(vals),
                     Arc::new(map),
+                    Arc::new(fvals),
+                    Arc::new(points),
                 ],
             )
             .unwrap();
@@ -2864,10 +2932,8 @@ mod tests {
             // A limit's leading window, one that leaves rows out at both ends, and one that fills
             // exactly one unit, which `RowSlicer::slice` rather than `detach` hands on whole.
             for (offset, len) in [(0, 10), (40, 25), (50, ROWS_DIVISOR)] {
-                let expected = NAN_ROWS
-                    .iter()
-                    .filter(|row| (offset..offset + len).contains(*row))
-                    .count() as u64;
+                let window = offset..offset + len;
+                let expected = NAN_ROWS.iter().filter(|row| window.contains(*row)).count() as u64;
                 for (mode, spec) in writers {
                     let temp_dir = TempDir::new().unwrap();
                     let common = common(
@@ -2886,11 +2952,13 @@ mod tests {
                     .await
                     .unwrap();
 
-                    let what = format!("{mode:?} over rows {offset}..{}", offset + len);
+                    let what = format!("{mode:?} over rows {window:?}");
                     assert_eq!(record_counts(&data_files), vec![len as u64], "{what}");
                     let nan_counts = data_files[0].nan_value_counts();
                     assert_eq!(nan_counts.get(&4), Some(&expected), "{what}: list NaNs");
                     assert_eq!(nan_counts.get(&7), Some(&expected), "{what}: map NaNs");
+                    assert_eq!(nan_counts.get(&9), Some(&expected), "{what}: float NaNs");
+                    assert_eq!(nan_counts.get(&12), Some(&expected), "{what}: struct NaNs");
                 }
             }
         }
