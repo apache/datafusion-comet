@@ -82,6 +82,7 @@ page:
 | Spark Tungsten (off-heap)               | Off-heap    | `spark.memory.offHeap.size` via `TaskMemoryManager`           | Yes               |
 | Comet native (Rust global allocator)    | Native heap | `memory_limit` (see below), enforced only via the memory pool | Reservations only |
 | Comet JVM Arrow (`CometArrowAllocator`) | Off-heap    | **Nothing**: a `RootAllocator(Long.MaxValue)`                 | No                |
+| Comet JVM UDF output (per-task child)   | Off-heap    | **Nothing**: charged to `TaskMemoryManager`, never refused    | What Spark grants |
 | Comet JVM shuffle pages                 | Off-heap    | `spark.memory.offHeap.size` via `TaskMemoryManager`           | Yes               |
 
 Several observations follow.
@@ -133,6 +134,26 @@ is zero, so every byte still escalates to the root and the inventory above is un
 Being charged there is not the same as having been allocated there; see the scaladoc on the
 allocator before reading anything into the split.
 
+**JVM UDF output is charged to Spark while the UDF holds it.** `CometUdfBridge` cuts one more
+child per task (`comet-udf-task-<id>`) and hands it to `CometUDF.evaluate`, so the codegen
+dispatcher allocates its output there. The child's allocation listener charges each allocation to a
+non-spillable Spark `MemoryConsumer`. When the result crosses to native execution its buffers move
+to the root allocator and the charge is dropped, because a native operator that retains them
+reserves them itself. The charge records memory use but never refuses it, for the reason given in
+[Constraints on a Comet memory consumer](#constraints-on-a-comet-memory-consumer): when Spark grants
+less than an allocation asks for, the allocation still succeeds and the rest is carried as a
+shortfall. Like native overcommit, the shortfall bounds nothing once the pool is full. What the
+charge buys is that while there is room, Spark's arbitration sees the output, and the task's other
+consumers find correspondingly less headroom. The UDF's inputs are imported native buffers and stay
+uncharged on the import allocator.
+
+Once the task has completed and no evaluation is in flight, `CometUdfBridge` calls `CometUDF.close`
+on each of the task's UDF instances, drops the task, and closes the per-task child as soon as it
+holds no memory. A UDF that keeps scratch buffers from the allocator across calls must release them
+in `close`. One that does not leaks their bytes, as it would have on the root allocator, and the
+child stays registered with the root until they are released. The child no longer refers to the
+task by then, so the leak does not keep the task's `TaskContext` or `TaskMemoryManager` alive.
+
 **The JVM shuffle allocator is an ordinary Spark consumer.** `CometShuffleMemoryAllocator.getInstance`
 returns `CometUnifiedShuffleMemoryAllocator`, a Spark `MemoryConsumer` drawing from
 `spark.memory.offHeap.size`, so shuffle pages are arbitrated against Spark's other consumers in the
@@ -144,7 +165,7 @@ Which allocator each call site uses, and who ends up charged for the bytes:
 flowchart LR
   subgraph SITES["JVM Arrow allocation sites"]
     NU["NativeUtil<br>FFI structs, imports, exports"]
-    UDF["CometUdfBridge<br>JVM UDF inputs and result"]
+    UDF["CometUdfBridge<br>JVM UDF inputs"]
     CGO["CometBatchKernelCodegenOutput<br>codegen UDF output"]
     SR["StreamReader<br>shuffle and IPC reads"]
     NAS["CometNativeArrowSource<br>stream and readerBatchIter"]
@@ -154,6 +175,7 @@ flowchart LR
   end
 
   ROOT["CometArrowAllocator<br>RootAllocator, no limit<br>no allocation listener"]
+  UDFT["comet-udf-task-N<br>per-task child allocator"]
   SHUF["Comet JVM shuffle pages<br>CometUnifiedShuffleMemoryAllocator"]
   NPOOL["Comet native memory pool<br>declared reservations only"]
   TMM["Spark off-heap execution pool<br>TaskMemoryManager"]
@@ -161,7 +183,9 @@ flowchart LR
 
   NU --> ROOT
   UDF --> ROOT
-  CGO --> ROOT
+  CGO --> UDFT
+  UDFT -->|"while the UDF holds it, never refused"| TMM
+  UDFT -->|"moved on export to native"| ROOT
   SR --> ROOT
   NAS --> ROOT
   CACHE --> ROOT
@@ -174,8 +198,9 @@ flowchart LR
 
 ### Constraints on a Comet memory consumer
 
-`CometTaskMemoryManager` is the one place where Comet code acts as a Spark `MemoryConsumer`, and the
-rules below are why it is written the way it is. Each is easy to break by accident.
+`CometTaskMemoryManager` and the JVM UDF allocator in `CometUdfBridge` are where Comet code acts as
+a Spark `MemoryConsumer` for memory that Spark does not allocate itself, and the rules below are why
+they are written the way they are. Each is easy to break by accident.
 
 **`getUsed` and `spill` must stay lock-free.** Spark calls both while already holding the
 `TaskMemoryManager` monitor, which is why `NativeMemoryConsumer.getUsed` reads an `AtomicLong` and
@@ -209,6 +234,18 @@ that grant, and the only figure available for doing so is the task-wide one abov
 `NativeMemoryConsumer.spill` returns `0`, so Spark can select it as a spill victim and reclaim
 nothing from it; it is only ever a spill trigger. The bytes it holds are real, so other consumers in
 the same task see correspondingly less headroom and can spill earlier than they otherwise would.
+
+**A JVM allocation in a native task must record a short grant, not refuse it.** Native operators
+keep reserving until their own `try_grow` fails and only then spill, so by the time a task is under
+pressure native execution has already taken the pool. A JVM allocation that asks Spark for memory
+at that moment, such as the next UDF output batch, is granted less than it asked for. Refusing it
+fails the task at the JVM allocation, where a native operator downstream could have spilled
+instead. The JVM UDF allocator therefore charges whatever Spark grants and carries the rest as a
+shortfall. Later releases repay the shortfall before returning anything to Spark, so Spark is never
+handed back more than it granted. This is the rule `grow` follows on the native side (see
+[The unified pools](#the-unified-pools)). Bounding such an allocation when the pool is full needs
+Spark to be able to reclaim native memory first; see
+[#3873](https://github.com/apache/datafusion-comet/issues/3873).
 
 ## Where Comet's budget comes from
 
@@ -440,7 +477,8 @@ diverge for several structural reasons:
   The `overcommit` figure in the pool's `Display` output and `try_grow` errors shows how much is
   outstanding. The executor's memory usage log leaves it out of the `reserved` figure it reports,
   so that the log counts it as untracked: like an undeclared allocation, it needs room beyond what
-  Spark has handed out. Tracing's `comet_memory_reserved_total` still includes it.
+  Spark has handed out. Tracing's `comet_memory_reserved_total` still includes it. The JVM UDF
+  allocator carries a short grant the same way; its shortfall is logged at debug level only.
 
 The practical consequence is that `reserved()` is a lower bound on Comet's real footprint, and the
 gap is workload-dependent. The margin that covers it has to come from
