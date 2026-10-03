@@ -1643,8 +1643,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
 /// CRC32 and Adler32 checksums are both `u32`. Core of `Native.writeSortedFileNative`.
 ///
 /// # Safety
-/// Each address must point to a readable row of the corresponding size, and `row_sizes` must be
-/// at least as long as `row_addresses`.
+/// Each address must point to a readable row of the corresponding size.
 #[allow(clippy::too_many_arguments)]
 unsafe fn write_sorted_file(
     row_addresses: &[i64],
@@ -1659,6 +1658,14 @@ unsafe fn write_sorted_file(
     compression_codec: &str,
     compression_level: i32,
 ) -> CometResult<[i64; 3]> {
+    if row_sizes.len() < row_addresses.len() {
+        return Err(CometError::Internal(format!(
+            "{} row sizes for {} row addresses",
+            row_sizes.len(),
+            row_addresses.len()
+        )));
+    }
+
     let current_checksum = if current_checksum == i64::MIN {
         // Initial checksum is not available.
         None
@@ -2050,6 +2057,13 @@ unsafe fn columnar_to_row_convert<'a>(
     schema_addrs: &[i64],
     num_rows: i32,
 ) -> CometResult<(*const u8, &'a [i32], &'a [i32])> {
+    if schema_addrs.len() != array_addrs.len() {
+        return Err(CometError::Internal(format!(
+            "{} schema addresses for {} array addresses",
+            schema_addrs.len(),
+            array_addrs.len()
+        )));
+    }
     let num_cols = array_addrs.len();
 
     // Import Arrow arrays from FFI
@@ -3094,6 +3108,51 @@ mod tests {
         );
     }
 
+    #[test]
+    fn shuffle_partition_offsets_after_the_write_is_drained() {
+        use datafusion::datasource::memory::MemorySourceConfig;
+        use datafusion::datasource::source::DataSourceExec;
+        use datafusion_comet_shuffle::{CometPartitioning, RoundRobinStrategy};
+
+        let batch = int_batch();
+        let num_partitions = 3;
+        let dir = tempfile::tempdir().unwrap();
+        let data_file = dir.path().join("data.out");
+        let writer = ShuffleWriterExec::try_new(
+            Arc::new(DataSourceExec::new(Arc::new(
+                MemorySourceConfig::try_new(&[vec![batch.clone()]], batch.schema(), None).unwrap(),
+            ))),
+            CometPartitioning::RoundRobin(num_partitions, RoundRobinStrategy::default()),
+            CompressionCodec::Zstd(1),
+            data_file.to_str().unwrap().to_string(),
+            false,
+            1024 * 1024,
+            None,
+        )
+        .unwrap();
+
+        let error = shuffle_partition_offsets(Some(&writer)).unwrap_err();
+        assert!(
+            error.to_string().contains("not drained to completion"),
+            "{error}"
+        );
+
+        let task_ctx = Arc::new(TaskContext::default());
+        let stream = writer.execute(0, task_ctx).unwrap();
+        Runtime::new()
+            .unwrap()
+            .block_on(datafusion::physical_plan::common::collect(stream))
+            .unwrap();
+
+        // One offset per partition plus the data file length.
+        let offsets = shuffle_partition_offsets(Some(&writer)).unwrap();
+        assert_eq!(offsets.len(), num_partitions + 1);
+        assert_eq!(offsets[0], 0);
+        assert!(offsets.windows(2).all(|pair| pair[0] <= pair[1]));
+        let file_len = std::fs::metadata(&data_file).unwrap().len() as i64;
+        assert_eq!(offsets[num_partitions], file_len);
+    }
+
     /// Spark `UnsafeRow`s with one non-null `long` field each: an 8-byte null bitset, then the
     /// value.
     fn long_rows(values: &[i64]) -> Vec<[u8; 16]> {
@@ -3107,73 +3166,198 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn write_sorted_file_reports_bytes_and_checksum() {
-        let rows = long_rows(&[1, 2, 3, 4, 5]);
+    /// Splits a shuffle data file into its blocks, each without the 8-byte length and the 8-byte
+    /// field count, so it starts at the codec tag as `read_ipc_compressed` expects.
+    fn shuffle_blocks(data: &[u8]) -> Vec<&[u8]> {
+        let mut blocks = Vec::new();
+        let mut pos = 0;
+        while pos < data.len() {
+            let length = u64::from_le_bytes(data[pos..pos + 8].try_into().unwrap()) as usize;
+            blocks.push(&data[pos + 16..pos + 8 + length]);
+            pos += 8 + length;
+        }
+        blocks
+    }
+
+    /// Writes `rows` (16-byte `long` rows) with `write_sorted_file` in batches of 2 rows and
+    /// returns the results and the file contents.
+    fn write_long_rows(
+        rows: &[[u8; 16]],
+        sizes: &[i32],
+        path: &std::path::Path,
+        checksum_enabled: bool,
+        current_checksum: i64,
+        codec: &str,
+    ) -> CometResult<([i64; 3], Vec<u8>)> {
         let addresses: Vec<i64> = rows.iter().map(|row| row.as_ptr() as i64).collect();
+        let results = unsafe {
+            write_sorted_file(
+                &addresses,
+                sizes,
+                &[DataType::Int64],
+                path.to_str().unwrap().to_string(),
+                1.0,
+                2,
+                checksum_enabled,
+                0,
+                current_checksum,
+                codec,
+                1,
+            )
+        }?;
+        Ok((results, std::fs::read(path).unwrap()))
+    }
+
+    #[test]
+    fn write_sorted_file_codecs() {
+        let values = [1_i64, 2, 3, 4, 5];
+        let rows = long_rows(&values);
         let sizes = vec![16_i32; rows.len()];
         let dir = tempfile::tempdir().unwrap();
 
-        let write = |name: &str, checksum_enabled: bool, codec: &str| {
-            let path = dir.path().join(name);
-            let results = unsafe {
-                write_sorted_file(
-                    &addresses,
-                    &sizes,
-                    &[DataType::Int64],
-                    path.to_str().unwrap().to_string(),
-                    1.0,
-                    2,
-                    checksum_enabled,
-                    0,
-                    i64::MIN,
-                    codec,
-                    1,
-                )
+        // Unknown codec names fall back to lz4.
+        for (codec, tag) in [
+            ("lz4", b"LZ4_"),
+            ("zstd", b"ZSTD"),
+            ("snappy", b"SNAP"),
+            ("unknown", b"LZ4_"),
+        ] {
+            let path = dir.path().join(codec);
+            let ([written, checksum, _], data) =
+                write_long_rows(&rows, &sizes, &path, false, i64::MIN, codec).unwrap();
+            assert_eq!(written, data.len() as i64, "{codec}");
+            assert_eq!(checksum, i64::MIN, "no checksum without checksum_enabled");
+
+            let blocks = shuffle_blocks(&data);
+            assert_eq!(blocks.len(), 3, "{codec}: 5 rows in batches of 2");
+            let mut decoded = Vec::new();
+            for block in blocks {
+                assert_eq!(&block[..4], tag, "{codec}");
+                let batch = read_ipc_compressed(block).unwrap();
+                let column = arrow::array::AsArray::as_primitive::<arrow::datatypes::Int64Type>(
+                    batch.column(0),
+                );
+                decoded.extend(column.values().iter().copied());
             }
-            .unwrap();
-            (results, std::fs::metadata(path).unwrap().len() as i64)
-        };
+            assert_eq!(decoded, values, "{codec}");
+        }
+    }
 
-        let ([written, checksum, _], file_len) = write("plain", false, "lz4");
-        assert!(written > 0);
-        assert_eq!(written, file_len);
-        assert_eq!(checksum, i64::MIN, "no checksum without checksum_enabled");
+    #[test]
+    fn write_sorted_file_checksums_the_written_bytes() {
+        let rows = long_rows(&[1, 2, 3, 4, 5]);
+        let sizes = vec![16_i32; rows.len()];
+        let dir = tempfile::tempdir().unwrap();
 
-        let ([written, checksum, _], file_len) = write("checksummed", true, "zstd");
-        assert_eq!(written, file_len);
-        assert_ne!(checksum, i64::MIN);
-        assert!((0..=u32::MAX as i64).contains(&checksum));
-        // The checksum covers the written bytes, so the same input gives the same checksum.
-        let ([_, again, _], _) = write("checksummed-again", true, "zstd");
-        assert_eq!(checksum, again);
+        // Without a current checksum the CRC32 starts afresh and covers the file.
+        let ([_, first, _], first_data) =
+            write_long_rows(&rows, &sizes, &dir.path().join("a"), true, i64::MIN, "lz4").unwrap();
+        assert_eq!(first, crc32fast::hash(&first_data) as i64);
+
+        // A current checksum continues it, as across the spill files of one partition.
+        let ([_, second, _], second_data) =
+            write_long_rows(&rows, &sizes, &dir.path().join("b"), true, first, "lz4").unwrap();
+        let mut hasher = crc32fast::Hasher::new();
+        hasher.update(&first_data);
+        hasher.update(&second_data);
+        assert_eq!(second, hasher.finalize() as i64);
+    }
+
+    #[test]
+    fn write_sorted_file_rejects_missing_row_sizes() {
+        let rows = long_rows(&[1, 2]);
+        let dir = tempfile::tempdir().unwrap();
+        let error = write_long_rows(&rows, &[16], &dir.path().join("a"), false, i64::MIN, "lz4")
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("1 row sizes for 2 row addresses"),
+            "{error}"
+        );
+    }
+
+    /// Exports `columns` as Arrow C Data structs and converts them with `columnar_to_row_convert`,
+    /// returning the offsets, the lengths, and the row bytes.
+    fn convert_exported(
+        columns: &[ArrayRef],
+        num_rows: i32,
+    ) -> CometResult<(Vec<i32>, Vec<i32>, Vec<u8>)> {
+        let mut ffi_arrays: Vec<Box<FFI_ArrowArray>> = columns
+            .iter()
+            .map(|column| Box::new(FFI_ArrowArray::new(&column.to_data())))
+            .collect();
+        let mut ffi_schemas: Vec<Box<FFI_ArrowSchema>> = columns
+            .iter()
+            .map(|column| Box::new(FFI_ArrowSchema::try_from(column.data_type()).unwrap()))
+            .collect();
+        let array_addrs: Vec<i64> = ffi_arrays
+            .iter_mut()
+            .map(|array| array.as_mut() as *mut FFI_ArrowArray as i64)
+            .collect();
+        let schema_addrs: Vec<i64> = ffi_schemas
+            .iter_mut()
+            .map(|schema| schema.as_mut() as *mut FFI_ArrowSchema as i64)
+            .collect();
+        let types = columns.iter().map(|c| c.data_type().clone()).collect();
+
+        let mut ctx = ColumnarToRowContext::new(types, 8);
+        let converted =
+            unsafe { columnar_to_row_convert(&mut ctx, &array_addrs, &schema_addrs, num_rows) };
+        // The call takes ownership of the exported structs, so they must not be released again.
+        ffi_arrays.into_iter().for_each(std::mem::forget);
+        ffi_schemas.into_iter().for_each(std::mem::forget);
+
+        let (buffer, offsets, lengths) = converted?;
+        let total = offsets
+            .iter()
+            .zip(lengths)
+            .map(|(offset, length)| (offset + length) as usize)
+            .max()
+            .unwrap_or(0);
+        let rows = unsafe { std::slice::from_raw_parts(buffer, total) }.to_vec();
+        Ok((offsets.to_vec(), lengths.to_vec(), rows))
     }
 
     #[test]
     fn columnar_to_row_convert_imports_and_converts() {
-        let column: ArrayRef = Arc::new(Int32Array::from(vec![Some(1), None, Some(3)]));
-        let mut ffi_array = Box::new(FFI_ArrowArray::new(&column.to_data()));
-        let mut ffi_schema = Box::new(FFI_ArrowSchema::try_from(column.data_type()).unwrap());
-        let array_addrs = [ffi_array.as_mut() as *mut FFI_ArrowArray as i64];
-        let schema_addrs = [ffi_schema.as_mut() as *mut FFI_ArrowSchema as i64];
+        let columns: Vec<ArrayRef> = vec![
+            Arc::new(Int32Array::from(vec![Some(1), None, Some(3)])),
+            Arc::new(arrow::array::StringArray::from(vec![
+                Some("a"),
+                Some("a longer string"),
+                None,
+            ])),
+        ];
+        let (offsets, lengths, rows) = convert_exported(&columns, 3).unwrap();
 
-        let mut ctx = ColumnarToRowContext::new(vec![DataType::Int32], 8);
-        let (buffer, offsets, lengths) =
-            unsafe { columnar_to_row_convert(&mut ctx, &array_addrs, &schema_addrs, 3) }.unwrap();
-        let (offsets, lengths) = (offsets.to_vec(), lengths.to_vec());
-        let total = (offsets[2] + lengths[2]) as usize;
-        let rows = unsafe { std::slice::from_raw_parts(buffer, total) }.to_vec();
-        // The call took ownership of the exported structs; they must not be released again.
-        std::mem::forget(ffi_array);
-        std::mem::forget(ffi_schema);
-
-        let mut expected_ctx = ColumnarToRowContext::new(vec![DataType::Int32], 8);
+        let types = columns.iter().map(|c| c.data_type().clone()).collect();
+        let mut expected_ctx = ColumnarToRowContext::new(types, 8);
         let (expected_buffer, expected_offsets, expected_lengths) =
-            expected_ctx.convert(&[column], 3).unwrap();
+            expected_ctx.convert(&columns, 3).unwrap();
         assert_eq!(offsets, expected_offsets);
         assert_eq!(lengths, expected_lengths);
         assert_eq!(rows, unsafe {
-            std::slice::from_raw_parts(expected_buffer, total)
+            std::slice::from_raw_parts(expected_buffer, rows.len())
         });
+        // The string column makes the rows variable-length.
+        assert_ne!(lengths[0], lengths[1]);
+    }
+
+    #[test]
+    fn columnar_to_row_convert_rejects_mismatched_addresses() {
+        let column: ArrayRef = Arc::new(Int32Array::from(vec![1, 2]));
+        let mut ffi_array = Box::new(FFI_ArrowArray::new(&column.to_data()));
+        let array_addrs = [ffi_array.as_mut() as *mut FFI_ArrowArray as i64];
+        let mut ctx = ColumnarToRowContext::new(vec![DataType::Int32], 8);
+        // Rejected before any struct is imported, so the export is still released on drop.
+        let error = unsafe { columnar_to_row_convert(&mut ctx, &array_addrs, &[], 2) }
+            .expect_err("mismatched addresses are rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("0 schema addresses for 1 array addresses"),
+            "{error}"
+        );
     }
 }

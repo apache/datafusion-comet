@@ -1979,6 +1979,7 @@ dependencies = [
  "chrono-tz",
  "comet-contrib-delta",
  "comet-contrib-lance",
+ "crc32fast",
  "criterion",
  "datafusion",
  "datafusion-comet-common",
