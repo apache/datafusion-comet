@@ -600,8 +600,8 @@ instructions on each step.</p>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Check for fixes missing from the release branches</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Generate the change log and PR it against the release branch</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Run the full CI suite on the release branch</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Build the jars</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Tag the release candidate</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Build the jars from the release candidate tag</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Update documentation for the new release</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Publish Maven artifacts to staging</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Create the release candidate tarball</p></li>
@@ -839,6 +839,19 @@ latest dispatched run of each workflow on the branch:</p>
 <p>Both runs must be green at the commit you are about to tag. If anything merges to the release branch after the
 runs start, run them again. Repeat this for every release candidate.</p>
 </section>
+<section id="tag-the-release-candidate">
+<h3>Tag the Release Candidate<a class="headerlink" href="#tag-the-release-candidate" title="Link to this heading">#</a></h3>
+<p>Ensure that the Maven version update and change log have been merged to the release branch, and that the
+<a class="reference internal" href="#run-the-full-ci-suite">full CI run</a> is green at the commit you are tagging, before tagging.</p>
+<p>Tag the release branch with <code class="docutils literal notranslate"><span class="pre">0.13.0-rc1</span></code> and push to the <code class="docutils literal notranslate"><span class="pre">apache</span></code> repo:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>fetch<span class="w"> </span>apache
+git<span class="w"> </span>checkout<span class="w"> </span>branch-0.13
+git<span class="w"> </span>reset<span class="w"> </span>--hard<span class="w"> </span>apache/branch-0.13
+git<span class="w"> </span>tag<span class="w"> </span><span class="m">0</span>.13.0-rc1
+git<span class="w"> </span>push<span class="w"> </span>apache<span class="w"> </span><span class="m">0</span>.13.0-rc1
+</pre></div>
+</div>
+</section>
 <section id="build-the-jars">
 <h3>Build the jars<a class="headerlink" href="#build-the-jars" title="Link to this heading">#</a></h3>
 <section id="a-note-on-workspace-cleanliness">
@@ -873,8 +886,10 @@ $<span class="w"> </span>docker<span class="w"> </span>context<span class="w"> <
 <h4>Run the build script<a class="headerlink" href="#run-the-build-script" title="Link to this heading">#</a></h4>
 <p>The <code class="docutils literal notranslate"><span class="pre">build-release-comet.sh</span></code> script will create a docker image for each architecture and use the image
 to build the platform specific binaries. These builder images are created every time this script is run.
-The script optionally allows overriding of the repository and branch to build the binaries from (Note that
-the local git repo is not used in the building of the binaries, but it is used to build the final uber jar).</p>
+The branch or tag to build is required, and the script optionally allows overriding the repository. For a release,
+always build from the release candidate tag created in the previous step. The remote tag is used to build the native
+binaries, while the local checkout is used to build the final uber jar, so check out the same tag locally before
+running the script.</p>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>Usage:<span class="w"> </span>build-release-comet.sh<span class="w"> </span><span class="o">[</span>options<span class="o">]</span>
 
 This<span class="w"> </span>script<span class="w"> </span>builds<span class="w"> </span>comet<span class="w"> </span>native<span class="w"> </span>binaries<span class="w"> </span>inside<span class="w"> </span>a<span class="w"> </span>docker<span class="w"> </span>image.<span class="w"> </span>The<span class="w"> </span>image<span class="w"> </span>is<span class="w"> </span>named
@@ -883,12 +898,13 @@ This<span class="w"> </span>script<span class="w"> </span>builds<span class="w">
 Options<span class="w"> </span>are:
 
 -r<span class="w"> </span><span class="o">[</span>repo<span class="o">]</span><span class="w">   </span>:<span class="w"> </span>git<span class="w"> </span>repo<span class="w"> </span><span class="o">(</span>default:<span class="w"> </span>https://github.com/apache/datafusion-comet.git<span class="o">)</span>
--b<span class="w"> </span><span class="o">[</span>branch<span class="o">]</span><span class="w"> </span>:<span class="w"> </span>git<span class="w"> </span>branch<span class="w"> </span><span class="o">(</span>default:<span class="w"> </span>release<span class="o">)</span>
+-b<span class="w"> </span><span class="o">[</span>ref<span class="o">]</span><span class="w">    </span>:<span class="w"> </span>git<span class="w"> </span>branch<span class="w"> </span>or<span class="w"> </span>tag<span class="w"> </span>to<span class="w"> </span>build<span class="w"> </span><span class="o">(</span>required<span class="o">)</span>
 -t<span class="w"> </span><span class="o">[</span>tag<span class="o">]</span><span class="w">    </span>:<span class="w"> </span>tag<span class="w"> </span><span class="k">for</span><span class="w"> </span>the<span class="w"> </span>spark-rm<span class="w"> </span>docker<span class="w"> </span>image<span class="w"> </span>to<span class="w"> </span>use<span class="w"> </span><span class="k">for</span><span class="w"> </span>building<span class="w"> </span><span class="o">(</span>default:<span class="w"> </span><span class="s2">"latest"</span><span class="o">)</span>.
 </pre></div>
 </div>
 <p>Example:</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nb">cd</span><span class="w"> </span>dev/release<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>./build-release-comet.sh<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">cd</span><span class="w"> </span>../..
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>checkout<span class="w"> </span><span class="m">0</span>.13.0-rc1
+<span class="nb">cd</span><span class="w"> </span>dev/release<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>./build-release-comet.sh<span class="w"> </span>-b<span class="w"> </span><span class="m">0</span>.13.0-rc1<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">cd</span><span class="w"> </span>../..
 </pre></div>
 </div>
 </section>
@@ -896,21 +912,8 @@ Options<span class="w"> </span>are:
 <h4>Build output<a class="headerlink" href="#build-output" title="Link to this heading">#</a></h4>
 <p>The build output is installed to a temporary local maven repository. The build script will print the name of the
 repository location at the end. This location will be required at the time of deploying the artifacts to a staging
-repository</p>
+repository.</p>
 </section>
-</section>
-<section id="tag-the-release-candidate">
-<h3>Tag the Release Candidate<a class="headerlink" href="#tag-the-release-candidate" title="Link to this heading">#</a></h3>
-<p>Ensure that the Maven version update and change log have been merged to the release branch, and that the
-<a class="reference internal" href="#run-the-full-ci-suite">full CI run</a> is green at the commit you are tagging, before tagging.</p>
-<p>Tag the release branch with <code class="docutils literal notranslate"><span class="pre">0.13.0-rc1</span></code> and push to the <code class="docutils literal notranslate"><span class="pre">apache</span></code> repo</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>fetch<span class="w"> </span>apache
-git<span class="w"> </span>checkout<span class="w"> </span>branch-0.13
-git<span class="w"> </span>reset<span class="w"> </span>--hard<span class="w"> </span>apache/branch-0.13
-git<span class="w"> </span>tag<span class="w"> </span><span class="m">0</span>.13.0-rc1
-git<span class="w"> </span>push<span class="w"> </span>apache<span class="w"> </span><span class="m">0</span>.13.0-rc1
-</pre></div>
-</div>
 </section>
 <section id="publishing-documentation">
 <h3>Publishing Documentation<a class="headerlink" href="#publishing-documentation" title="Link to this heading">#</a></h3>
@@ -1198,6 +1201,7 @@ See <a class="reference internal" href="#release-cycle">Release Cycle</a>.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#check-for-missing-backports">Check for Missing Backports</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#generate-the-change-log">Generate the Change Log</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#run-the-full-ci-suite">Run the Full CI Suite</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#tag-the-release-candidate">Tag the Release Candidate</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#build-the-jars">Build the jars</a><ul class="nav section-nav flex-column">
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#a-note-on-workspace-cleanliness">A note on workspace cleanliness</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#setup-to-do-the-build">Setup to do the build</a></li>
@@ -1205,7 +1209,6 @@ See <a class="reference internal" href="#release-cycle">Release Cycle</a>.</p>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#build-output">Build output</a></li>
 </ul>
 </li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#tag-the-release-candidate">Tag the Release Candidate</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#publishing-documentation">Publishing Documentation</a></li>
 </ul>
 </li>

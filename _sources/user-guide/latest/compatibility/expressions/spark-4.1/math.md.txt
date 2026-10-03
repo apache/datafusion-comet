@@ -57,4 +57,10 @@ The following cases have no native implementation and always run in the JVM usin
 
 - Float and double inputs. Spark rounds them through a BigDecimal built from `java.lang.Double.toString()` rather than from the exact binary value, and that shortened decimal string can round differently than the value it came from
 - Negative-scale decimal inputs, which are only creatable with spark.sql.legacy.allowNegativeScaleOfDecimal=true
+
+## Signum
+
+The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
+
+- Only `DoubleType` is supported
 <!--END:EXPR_COMPAT-->

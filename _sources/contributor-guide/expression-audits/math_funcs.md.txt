@@ -234,6 +234,7 @@ Internal fused expression that replaces the `CheckOverflow(Cast(expr, Decimal128
 ## signum
 
 - Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): `Signum(child)` over `DoubleType`. Spark also restricts to the two interval types via `inputTypes`; Comet handles only the `Double` case via DataFusion `signum`.
+- Spark 3.4, 3.5, 4.0, 4.1, 4.2 (2026-10-02, [#6522](https://github.com/apache/datafusion-comet/issues/6522)): `Math.signum` returns the zero it is given, so `signum(-0.0)` is `-0.0`, where DataFusion's `signum` returns `0.0`. Comet now uses its own `spark_signum` kernel for the `Double` case. Interval inputs fall back; DataFusion's `signum` failed on them at execution.
 
 ## sin
 
