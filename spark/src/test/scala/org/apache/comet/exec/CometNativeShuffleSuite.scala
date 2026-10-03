@@ -986,6 +986,30 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
       }
     }
   }
+  test("native shuffle on a float hash partitioning key matches Spark's partition assignment") {
+    // Spark hashes a float through doubleToLongBits or floatToIntBits, which canonicalize NaN.
+    // Negating a NaN in a native projection flips its sign bit, which gives the bits arithmetic
+    // produces on x86-64, and the native hash must still send the row where Spark sends it.
+    withParquetTable(
+      Seq(0.0, -0.0, Double.NaN, 1.5, -1.5).zipWithIndex.map { case (d, i) => (i, d, d.toFloat) },
+      "tbl") {
+      Seq("d", "nd", "nf", "nd, nf").foreach { keys =>
+        val repartitioned =
+          s"SELECT /*+ REPARTITION(10, $keys) */ _1, _2 AS d, -_2 AS nd, -_3 AS nf FROM tbl"
+        val query = s"SELECT _1, spark_partition_id() AS pid FROM ($repartitioned)"
+        val cometRows = sql(query).collect().map(r => (r.getInt(0), r.getInt(1))).sorted
+        // `SQLHelper.withSQLConf` returns Unit on Spark 3.x, so capture the rows via a var.
+        var sparkRows: Array[(Int, Int)] = Array.empty
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          sparkRows = sql(query).collect().map(r => (r.getInt(0), r.getInt(1))).sorted
+        }
+        assert(sparkRows.nonEmpty, "Spark produced no rows; the comparison would be vacuous")
+        checkCometExchange(sql(repartitioned), 1, true)
+        assert(cometRows === sparkRows, s"partition assignment differs from Spark for ($keys)")
+      }
+    }
+  }
+
   test("native shuffle on nested hash partitioning key with interval leaf falls back") {
     // CalendarIntervalType is allowed as a shuffle DATA column but the native hasher has no
     // branch for it (https://github.com/apache/datafusion-comet/issues/5059). Because the nested
