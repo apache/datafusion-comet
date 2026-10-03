@@ -516,6 +516,8 @@ jobs:
               org.apache.comet.exec.CometInMemoryCacheSuite
               org.apache.comet.exec.CometInMemoryCachePruningSuite
               org.apache.comet.exec.CometInMemoryCacheKryoSuite
+              org.apache.comet.exec.CometInMemoryCacheKryoUnregisteredSuite
+              org.apache.comet.exec.CometInMemoryCacheKryoClassesToRegisterSuite
               org.apache.comet.exec.CometGenerateExecSuite
               org.apache.comet.exec.CometWindowExecSuite
               org.apache.comet.exec.CometJoinSuite
