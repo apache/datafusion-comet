@@ -45,6 +45,7 @@ use std::sync::Arc;
 
 use crate::agg_funcs::covariance::CovarianceAccumulator;
 use crate::agg_funcs::variance::VarianceAccumulator;
+use crate::{divide_by_zero_error, EvalMode};
 
 /// The kind of linear-regression statistic to compute.
 ///
@@ -80,6 +81,8 @@ pub struct Regr {
     /// onward), a constant dependent variable evaluates to `1.0` and a constant
     /// independent variable to `null`. When `false`, those two cases are reversed.
     r2_constant_dependent_is_perfect_fit: bool,
+    /// Only consulted for `R2` when the raw moment product underflows to zero.
+    eval_mode: EvalMode,
 }
 
 impl Regr {
@@ -88,6 +91,7 @@ impl Regr {
         name: impl Into<String>,
         filter_var_by_pair_nulls: bool,
         r2_constant_dependent_is_perfect_fit: bool,
+        eval_mode: EvalMode,
     ) -> Self {
         Self {
             name: name.into(),
@@ -98,6 +102,7 @@ impl Regr {
             regr_type,
             filter_var_by_pair_nulls,
             r2_constant_dependent_is_perfect_fit,
+            eval_mode,
         }
     }
 
@@ -140,6 +145,7 @@ impl AggregateUDFImpl for Regr {
             RegrType::SXY => Box::new(RegrCovAccumulator::try_new()?),
             RegrType::R2 => Box::new(RegrR2Accumulator::try_new(
                 self.r2_constant_dependent_is_perfect_fit,
+                self.eval_mode,
             )?),
             RegrType::Slope => Box::new(RegrLineAccumulator::try_new(
                 false,
@@ -297,18 +303,22 @@ struct RegrR2Accumulator {
     covar: CovarianceAccumulator,
     var_y: VarianceAccumulator,
     var_x: VarianceAccumulator,
-    /// When `true` (Spark 3.5+), a constant dependent variable yields `1.0` and a
-    /// constant independent variable yields `null`; reversed when `false`.
+    /// When `true` (after SPARK-55969), a constant dependent variable yields
+    /// `1.0` and a constant independent variable yields `null`; reversed otherwise.
     constant_dependent_is_perfect_fit: bool,
+    eval_mode: EvalMode,
 }
 
 impl RegrR2Accumulator {
-    fn try_new(constant_dependent_is_perfect_fit: bool) -> Result<Self> {
+    fn try_new(constant_dependent_is_perfect_fit: bool, eval_mode: EvalMode) -> Result<Self> {
         Ok(Self {
             covar: CovarianceAccumulator::try_new(StatsType::Population, false)?,
-            var_y: VarianceAccumulator::try_new(StatsType::Population, false)?,
-            var_x: VarianceAccumulator::try_new(StatsType::Population, false)?,
+            var_y: VarianceAccumulator::try_new(StatsType::Population, false)?
+                .with_pearson_update(),
+            var_x: VarianceAccumulator::try_new(StatsType::Population, false)?
+                .with_pearson_update(),
             constant_dependent_is_perfect_fit,
+            eval_mode,
         })
     }
 }
@@ -379,12 +389,22 @@ impl Accumulator for RegrR2Accumulator {
         } else if perfect_fit_case {
             Ok(ScalarValue::Float64(Some(1.0)))
         } else {
+            // Nonzero moments can still have a product that underflows to zero.
+            // Spark's Divide handles this only after the constant-input guards.
+            let product = m2_y * m2_x;
+            if product == 0.0 {
+                return if self.eval_mode == EvalMode::Ansi {
+                    Err(divide_by_zero_error().into())
+                } else {
+                    Ok(ScalarValue::Float64(None))
+                };
+            }
             // Mirror Spark's exact evaluation order (corr = ck / sqrt(m2_y * m2_x);
             // corr * corr) so the last-ULP rounding matches bit-for-bit. Writing
             // it as (ck * ck) / (m2_x * m2_y) is mathematically equal but rounds
             // differently.
             let ck = self.covar.get_algo_const();
-            let corr = ck / (m2_y * m2_x).sqrt();
+            let corr = ck / product.sqrt();
             Ok(ScalarValue::Float64(Some(corr * corr)))
         }
     }
@@ -497,13 +517,15 @@ impl Accumulator for RegrLineAccumulator {
 mod tests {
     use super::*;
     use arrow::array::Float64Array;
+    use datafusion::common::DataFusionError;
+    use datafusion_comet_common::SparkError;
 
     fn acc(regr_type: RegrType) -> Box<dyn Accumulator> {
         match regr_type {
             RegrType::SXX | RegrType::SYY => Box::new(RegrMomentAccumulator::try_new().unwrap()),
             RegrType::SXY => Box::new(RegrCovAccumulator::try_new().unwrap()),
             // Default to the post-SPARK-55969 degenerate-case semantics.
-            RegrType::R2 => Box::new(RegrR2Accumulator::try_new(true).unwrap()),
+            RegrType::R2 => Box::new(RegrR2Accumulator::try_new(true, EvalMode::Legacy).unwrap()),
             // Existing tests exercise the Spark 3.5+ both-non-null semantics.
             RegrType::Slope => Box::new(RegrLineAccumulator::try_new(false, true).unwrap()),
             RegrType::Intercept => Box::new(RegrLineAccumulator::try_new(true, true).unwrap()),
@@ -533,6 +555,45 @@ mod tests {
         );
     }
 
+    #[test]
+    fn regr_merge_empty_partials() {
+        for kind in [
+            RegrType::SXX,
+            RegrType::SYY,
+            RegrType::SXY,
+            RegrType::R2,
+            RegrType::Slope,
+            RegrType::Intercept,
+        ] {
+            for empty_first in [false, true] {
+                let mut merged = acc(kind);
+                let counts = if empty_first { [0, 100] } else { [100, 0] };
+                for count in counts {
+                    let mut partial = acc(kind);
+                    let values = vec![Some(1e155); count];
+                    partial.update_batch(&cols(values.clone(), values)).unwrap();
+                    let state = partial
+                        .state()
+                        .unwrap()
+                        .iter()
+                        .map(|v| v.to_array_of_size(1).unwrap())
+                        .collect::<Vec<_>>();
+                    merged.merge_batch(&state).unwrap();
+                }
+                let ScalarValue::Float64(result) = merged.evaluate().unwrap() else {
+                    panic!("expected a double regression result");
+                };
+                if !empty_first {
+                    assert!(result.unwrap().is_nan(), "{kind:?}");
+                } else if matches!(kind, RegrType::SXX | RegrType::SYY | RegrType::SXY) {
+                    assert_eq!(result, Some(0.0));
+                } else {
+                    assert_eq!(result, None);
+                }
+            }
+        }
+    }
+
     fn perfect_line() -> (Vec<Option<f64>>, Vec<Option<f64>>) {
         // y = 2x + 1
         let x = vec![1.0, 2.0, 3.0, 4.0, 5.0];
@@ -556,6 +617,106 @@ mod tests {
         approx(eval(RegrType::R2, y, x), 1.0);
     }
 
+    fn assert_r2_zero_divisor(a: &mut RegrR2Accumulator, eval_mode: EvalMode) {
+        // Both moments are nonzero. It is their product, not a constant input,
+        // that makes Spark's final division have a zero denominator.
+        assert_ne!(a.var_y.get_m2(), 0.0);
+        assert_ne!(a.var_x.get_m2(), 0.0);
+        assert_eq!(a.var_y.get_m2() * a.var_x.get_m2(), 0.0);
+        if eval_mode == EvalMode::Ansi {
+            let DataFusionError::External(error) = a.evaluate().unwrap_err() else {
+                panic!("expected a structured Spark divide-by-zero error");
+            };
+            assert!(matches!(
+                error.downcast_ref::<SparkError>(),
+                Some(SparkError::DivideByZero)
+            ));
+        } else {
+            assert_eq!(a.evaluate().unwrap(), ScalarValue::Float64(None));
+        }
+    }
+
+    #[test]
+    fn r2_moment_product_underflow() {
+        for eval_mode in [EvalMode::Legacy, EvalMode::Ansi] {
+            for perfect_dep in [false, true] {
+                for sign in [-1.0, 1.0] {
+                    for merge in [false, true] {
+                        let mut a = RegrR2Accumulator::try_new(perfect_dep, eval_mode).unwrap();
+                        let y = vec![Some(1e-100), None, Some(2e-100)];
+                        let x = vec![Some(sign * 1e-100), Some(1e200), Some(sign * 2e-100)];
+                        if merge {
+                            // Merge two single-row partials, including an unpaired null.
+                            for range in [0..2, 2..3] {
+                                let mut partial =
+                                    RegrR2Accumulator::try_new(perfect_dep, eval_mode).unwrap();
+                                partial
+                                    .update_batch(&cols(
+                                        y[range.clone()].to_vec(),
+                                        x[range].to_vec(),
+                                    ))
+                                    .unwrap();
+                                let state = partial
+                                    .state()
+                                    .unwrap()
+                                    .iter()
+                                    .map(|v| v.to_array_of_size(1).unwrap())
+                                    .collect::<Vec<_>>();
+                                a.merge_batch(&state).unwrap();
+                            }
+                        } else {
+                            a.update_batch(&cols(y, x)).unwrap();
+                        }
+                        assert_r2_zero_divisor(&mut a, eval_mode);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn r2_zero_covariance_with_underflowed_product() {
+        for eval_mode in [EvalMode::Legacy, EvalMode::Ansi] {
+            for perfect_dep in [false, true] {
+                let mut a = RegrR2Accumulator::try_new(perfect_dep, eval_mode).unwrap();
+                // A zero co-moment still divides by zero, rather than returning NaN.
+                let state = [4.0, 0.0, 0.0, 0.0, 4e-200, 4e-200]
+                    .into_iter()
+                    .map(|v| Arc::new(Float64Array::from(vec![v])) as ArrayRef)
+                    .collect::<Vec<_>>();
+                a.merge_batch(&state).unwrap();
+                assert_r2_zero_divisor(&mut a, eval_mode);
+            }
+        }
+    }
+
+    #[test]
+    fn r2_raw_moment_overflow() {
+        for eval_mode in [EvalMode::Legacy, EvalMode::Ansi] {
+            for perfect_dep in [false, true] {
+                for sign in [-1.0, 1.0] {
+                    for (values, nan) in [(vec![1e100, 2e100], false), (vec![1e200, -1e200], true)]
+                    {
+                        let mut a = RegrR2Accumulator::try_new(perfect_dep, eval_mode).unwrap();
+                        a.update_batch(&cols(
+                            values.iter().copied().map(Some).collect(),
+                            values.iter().map(|v| Some(sign * v)).collect(),
+                        ))
+                        .unwrap();
+                        let ScalarValue::Float64(Some(result)) = a.evaluate().unwrap() else {
+                            panic!("expected a non-null double result");
+                        };
+                        if nan {
+                            assert!(result.is_nan());
+                        } else {
+                            assert_eq!(result.to_bits(), 0.0_f64.to_bits());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn r2_constant_y_is_perfect_fit() {
         // Dependent variable constant: post-SPARK-55969 regr_r2 returns 1.0.
@@ -576,21 +737,22 @@ mod tests {
             vec![Some(5.0), Some(5.0), Some(5.0), Some(5.0)],
         );
 
-        let r2 = |perfect_dep: bool, y: Vec<Option<f64>>, x: Vec<Option<f64>>| {
-            let mut a = RegrR2Accumulator::try_new(perfect_dep).unwrap();
-            a.update_batch(&cols(y, x)).unwrap();
-            match a.evaluate().unwrap() {
-                ScalarValue::Float64(v) => v,
-                other => panic!("unexpected {other:?}"),
-            }
-        };
+        for eval_mode in [EvalMode::Legacy, EvalMode::Ansi] {
+            let r2 = |perfect_dep: bool, y: Vec<Option<f64>>, x: Vec<Option<f64>>| {
+                let mut a = RegrR2Accumulator::try_new(perfect_dep, eval_mode).unwrap();
+                a.update_batch(&cols(y, x)).unwrap();
+                match a.evaluate().unwrap() {
+                    ScalarValue::Float64(v) => v,
+                    other => panic!("unexpected {other:?}"),
+                }
+            };
 
-        // Spark 3.5+: constant dependent -> 1.0, constant independent -> null.
-        approx(r2(true, const_y.0.clone(), const_y.1.clone()), 1.0);
-        assert_eq!(r2(true, const_x.0.clone(), const_x.1.clone()), None);
-        // Spark 3.4: constant dependent -> null, constant independent -> 1.0.
-        assert_eq!(r2(false, const_y.0, const_y.1), None);
-        approx(r2(false, const_x.0, const_x.1), 1.0);
+            // These guards must run before the zero-product check, even in ANSI mode.
+            assert_eq!(r2(true, const_y.0.clone(), const_y.1.clone()), Some(1.0));
+            assert_eq!(r2(true, const_x.0.clone(), const_x.1.clone()), None);
+            assert_eq!(r2(false, const_y.0.clone(), const_y.1.clone()), None);
+            assert_eq!(r2(false, const_x.0.clone(), const_x.1.clone()), Some(1.0));
+        }
     }
 
     #[test]
@@ -677,6 +839,51 @@ mod tests {
         match unfiltered.evaluate().unwrap() {
             ScalarValue::Float64(v) => approx(v, 4.0 / 35.0),
             other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn merge_fractional_constant_partials() {
+        // #6423: the first merge into an empty final buffer used to round the
+        // constant mean away from 0.1. Later merges then produced nonzero M2.
+        for (kind, constant_dependent, expected) in [
+            (RegrType::Slope, false, None),
+            (RegrType::Intercept, false, None),
+            (RegrType::R2, false, None),
+            (RegrType::R2, true, Some(1.0)),
+            (RegrType::SXX, false, Some(0.0)),
+            (RegrType::SYY, true, Some(0.0)),
+            (RegrType::SXY, false, Some(0.0)),
+        ] {
+            for reverse in [false, true] {
+                let mut merged = acc(kind);
+                let starts = if reverse { [3, 0] } else { [0, 3] };
+                for start in starts {
+                    let varying = (start..start + 3).map(|v| Some(v as f64)).collect();
+                    let constant = vec![Some(0.1); 3];
+                    let values = match kind {
+                        // Spark's RegrReplacement duplicates the selected column.
+                        RegrType::SXX | RegrType::SYY => cols(constant.clone(), constant),
+                        _ if constant_dependent => cols(constant, varying),
+                        _ => cols(varying, constant),
+                    };
+                    let mut partial = acc(kind);
+                    partial.update_batch(&values).unwrap();
+                    let state = partial
+                        .state()
+                        .unwrap()
+                        .iter()
+                        .map(|v| v.to_array_of_size(1).unwrap())
+                        .collect::<Vec<_>>();
+                    merged.merge_batch(&state).unwrap();
+                }
+                // A tolerance would hide the tiny nonzero moments behind the bug.
+                assert_eq!(
+                    merged.evaluate().unwrap(),
+                    ScalarValue::Float64(expected),
+                    "{kind:?}, constant_dependent={constant_dependent}, reverse={reverse}"
+                );
+            }
         }
     }
 

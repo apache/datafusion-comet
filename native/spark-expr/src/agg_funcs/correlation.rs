@@ -144,8 +144,10 @@ impl CorrelationAccumulator {
     pub fn try_new(null_on_divide_by_zero: bool) -> Result<Self> {
         Ok(Self {
             covar: CovarianceAccumulator::try_new(StatsType::Population, null_on_divide_by_zero)?,
-            stddev1: StddevAccumulator::try_new(StatsType::Population, null_on_divide_by_zero)?,
-            stddev2: StddevAccumulator::try_new(StatsType::Population, null_on_divide_by_zero)?,
+            stddev1: StddevAccumulator::try_new(StatsType::Population, null_on_divide_by_zero)?
+                .with_pearson_update(),
+            stddev2: StddevAccumulator::try_new(StatsType::Population, null_on_divide_by_zero)?
+                .with_pearson_update(),
             null_on_divide_by_zero,
         })
     }
@@ -227,10 +229,6 @@ impl Accumulator for CorrelationAccumulator {
     }
 
     fn evaluate(&mut self) -> Result<ScalarValue> {
-        let covar = self.covar.evaluate()?;
-        let stddev1 = self.stddev1.evaluate()?;
-        let stddev2 = self.stddev2.evaluate()?;
-
         if self.covar.get_count() == 0.0 {
             return Ok(ScalarValue::Float64(None));
         } else if self.covar.get_count() == 1.0 {
@@ -240,14 +238,17 @@ impl Accumulator for CorrelationAccumulator {
                 return Ok(ScalarValue::Float64(Some(f64::NAN)));
             }
         }
-        match (covar, stddev1, stddev2) {
-            (
-                ScalarValue::Float64(Some(c)),
-                ScalarValue::Float64(Some(s1)),
-                ScalarValue::Float64(Some(s2)),
-            ) if s1 != 0.0 && s2 != 0.0 => Ok(ScalarValue::Float64(Some(c / (s1 * s2)))),
-            _ => Ok(ScalarValue::Float64(None)),
+        let m2_product = self.stddev1.get_m2() * self.stddev2.get_m2();
+        // The product can underflow even when both moments are nonzero.
+        // A zero moment paired with infinity produces NaN, not a zero denominator.
+        if m2_product == 0.0 {
+            return Ok(ScalarValue::Float64(None));
         }
+        // Match Spark and the grouped path's raw-moment evaluation. Normalizing
+        // first changes rounding and can avoid overflow in m2_1 * m2_2.
+        Ok(ScalarValue::Float64(Some(
+            self.covar.get_algo_const() / m2_product.sqrt(),
+        )))
     }
 
     fn size(&self) -> usize {
@@ -280,8 +281,10 @@ impl CorrelationGroupsAccumulator {
         // that intent explicit.
         Self {
             covar: CovarianceGroupsAccumulator::new(StatsType::Population, false),
-            var1: VarianceGroupsAccumulator::new(StatsType::Population, false),
-            var2: VarianceGroupsAccumulator::new(StatsType::Population, false),
+            var1: VarianceGroupsAccumulator::new(StatsType::Population, false)
+                .with_pearson_update(),
+            var2: VarianceGroupsAccumulator::new(StatsType::Population, false)
+                .with_pearson_update(),
             null_on_divide_by_zero,
         }
     }
@@ -403,16 +406,15 @@ impl GroupsAccumulator for CorrelationGroupsAccumulator {
                 }
                 continue;
             }
-            // Population stats: divide m2 / count, c / count. The 1/count
-            // factors cancel in c / (s1 * s2), so we work with raw moments.
-            let s1_sq = m2_1s[i];
-            let s2_sq = m2_2s[i];
-            if s1_sq == 0.0 || s2_sq == 0.0 {
+            // Match Spark's raw-moment product, including overflow, underflow
+            // and NaN from a zero moment paired with infinity.
+            let m2_product = m2_1s[i] * m2_2s[i];
+            if m2_product == 0.0 {
                 values.push(0.0);
                 validity.push(false);
                 continue;
             }
-            values.push(algo_consts[i] / (s1_sq * s2_sq).sqrt());
+            values.push(algo_consts[i] / m2_product.sqrt());
             validity.push(true);
         }
 
@@ -471,6 +473,125 @@ mod groups_tests {
             .as_primitive::<Float64Type>()
             .iter()
             .collect()
+    }
+
+    #[test]
+    fn correlation_evaluates_raw_moments_exactly() {
+        // Spark divides ck by sqrt(m2_1 * m2_2). Normalizing the moments
+        // first changes rounding, and avoids overflow that Spark preserves.
+        for (values, expected) in [
+            ([1e16, 1e16 + 2.0], Some(1.0)),
+            ([1e16 + 2.0, 1e16], None),
+            ([-1e16, -1e16 - 2.0], Some(1.0)),
+            ([1e100, 2e100], Some(0.0)),
+            ([1e-100, 2e-100], None),
+        ] {
+            for sign in [-1.0, 1.0] {
+                for null_on_divide_by_zero in [false, true] {
+                    let input: Vec<ArrayRef> = vec![
+                        Arc::new(Float64Array::from(vec![
+                            Some(values[0]),
+                            None,
+                            Some(values[1]),
+                        ])),
+                        Arc::new(Float64Array::from(vec![
+                            Some(sign * values[0]),
+                            Some(0.0),
+                            Some(sign * values[1]),
+                        ])),
+                    ];
+                    let mut scalar =
+                        CorrelationAccumulator::try_new(null_on_divide_by_zero).unwrap();
+                    let mut grouped = CorrelationGroupsAccumulator::new(null_on_divide_by_zero);
+                    scalar.update_batch(&input).unwrap();
+                    grouped.update_batch(&input, &[0, 0, 0], None, 1).unwrap();
+                    let state = scalar
+                        .state()
+                        .unwrap()
+                        .iter()
+                        .map(|s| s.to_array_of_size(1).unwrap())
+                        .collect::<Vec<_>>();
+                    let mut merged_scalar =
+                        CorrelationAccumulator::try_new(null_on_divide_by_zero).unwrap();
+                    let mut merged_grouped =
+                        CorrelationGroupsAccumulator::new(null_on_divide_by_zero);
+                    merged_scalar.merge_batch(&state).unwrap();
+                    merged_grouped.merge_batch(&state, &[0], 1).unwrap();
+                    for result in [
+                        scalar.evaluate().unwrap(),
+                        merged_scalar.evaluate().unwrap(),
+                    ] {
+                        assert_eq!(result, ScalarValue::Float64(expected.map(|v| sign * v)));
+                    }
+                    for result in [evaluate(&mut grouped)[0], evaluate(&mut merged_grouped)[0]] {
+                        assert_eq!(result, expected.map(|v| sign * v));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn correlation_zero_and_infinite_moments_yield_nan() {
+        let input: Vec<ArrayRef> = vec![
+            Arc::new(Float64Array::from(vec![1e200, -1e200])),
+            Arc::new(Float64Array::from(vec![0.1, 0.1])),
+        ];
+        let mut scalar = CorrelationAccumulator::try_new(true).unwrap();
+        let mut grouped = CorrelationGroupsAccumulator::new(true);
+        scalar.update_batch(&input).unwrap();
+        grouped.update_batch(&input, &[0, 0], None, 1).unwrap();
+        let state = scalar
+            .state()
+            .unwrap()
+            .iter()
+            .map(|s| s.to_array_of_size(1).unwrap())
+            .collect::<Vec<_>>();
+        let mut merged_scalar = CorrelationAccumulator::try_new(true).unwrap();
+        let mut merged_grouped = CorrelationGroupsAccumulator::new(true);
+        merged_scalar.merge_batch(&state).unwrap();
+        merged_grouped.merge_batch(&state, &[0], 1).unwrap();
+        for result in [
+            scalar.evaluate().unwrap(),
+            merged_scalar.evaluate().unwrap(),
+        ] {
+            assert!(matches!(result, ScalarValue::Float64(Some(v)) if v.is_nan()));
+        }
+        for result in [evaluate(&mut grouped)[0], evaluate(&mut merged_grouped)[0]] {
+            assert!(result.unwrap().is_nan());
+        }
+    }
+
+    #[test]
+    fn correlation_merge_empty_partials() {
+        for empty_first in [false, true] {
+            let mut scalar = CorrelationAccumulator::try_new(true).unwrap();
+            let mut grouped = CorrelationGroupsAccumulator::new(true);
+            let counts = if empty_first {
+                [0.0, 100.0]
+            } else {
+                [100.0, 0.0]
+            };
+            for count in counts {
+                let mean = if count == 0.0 { 0.0 } else { 1e155 };
+                let state: Vec<ArrayRef> = [count, mean, mean, 0.0, 0.0, 0.0]
+                    .into_iter()
+                    .map(|v| Arc::new(Float64Array::from(vec![v])) as ArrayRef)
+                    .collect();
+                scalar.merge_batch(&state).unwrap();
+                grouped.merge_batch(&state, &[0], 1).unwrap();
+            }
+            let ScalarValue::Float64(scalar) = scalar.evaluate().unwrap() else {
+                panic!("expected a double correlation");
+            };
+            for result in [scalar, evaluate(&mut grouped)[0]] {
+                if empty_first {
+                    assert_eq!(result, None);
+                } else {
+                    assert!(result.unwrap().is_nan());
+                }
+            }
+        }
     }
 
     #[test]
