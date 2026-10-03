@@ -645,7 +645,6 @@ impl PhysicalPlanner {
                     SparkCastOptions::new_with_version(
                         eval_mode,
                         &expr.timezone,
-                        expr.allow_incompat,
                         expr.is_spark4_plus,
                     ),
                     spark_expr.expr_id,
@@ -738,7 +737,7 @@ impl PhysicalPlanner {
                     "md5" => Ok(Arc::new(Cast::new(
                         func?,
                         DataType::Utf8,
-                        SparkCastOptions::new_without_timezone(EvalMode::Try, true),
+                        SparkCastOptions::new_without_timezone(EvalMode::Try),
                         None,
                         None,
                     ))),
@@ -860,8 +859,7 @@ impl PhysicalPlanner {
                 )))
             }
             ExprStruct::ToPrettyString(expr) => {
-                let mut spark_cast_options =
-                    SparkCastOptions::new(EvalMode::Try, &expr.timezone, true);
+                let mut spark_cast_options = SparkCastOptions::new(EvalMode::Try, &expr.timezone);
                 let null_string = "NULL";
                 spark_cast_options.null_string = null_string.to_string();
                 spark_cast_options.binary_output_style =
@@ -6071,7 +6069,7 @@ mod tests {
                 .with_table_parquet_options(TableParquetOptions::new()),
         ) as Arc<dyn FileSource>;
 
-        let spark_parquet_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        let spark_parquet_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
 
         let expr_adapter_factory: Arc<dyn PhysicalExprAdapterFactory> = Arc::new(
             SparkPhysicalExprAdapterFactory::new(spark_parquet_options, None),
