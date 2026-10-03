@@ -38,6 +38,7 @@ if __name__ == "__main__":
         "org.apache.comet.IcebergReadFromS3Suite", # manual test suite
         "org.apache.comet.cloud.s3.CometS3CredentialBridgeSuite", # manual test suite
         "org.apache.comet.cloud.s3.HadoopS3ACredentialProviderAdapterBridgeSuite", # manual test suite
+        "org.apache.comet.cloud.s3.HadoopProfileCredentialsProviderSuite", # manual test suite
         "org.apache.comet.shuffle.CelebornReflectionCompatibilitySuite", # dedicated version matrix
         "org.apache.spark.sql.comet.CometPlanStabilitySuite", # abstract
         "org.apache.spark.sql.comet.ParquetDatetimeRebaseSuite", # abstract

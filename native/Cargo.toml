@@ -73,7 +73,6 @@ thiserror = "2"
 object_store = { version = "0.13.2", features = ["gcp", "azure", "aws", "http"] }
 url = "2.2"
 aws-config = "1.8.18"
-aws-runtime = "1.9.2"
 aws-credential-types = "1.2.13"
 # default-features off: the STS client is built from a fully-resolved SdkConfig, so it needs none
 # of aws-sdk-sts's own transport/crypto defaults, and enabling them would pull extra crates.

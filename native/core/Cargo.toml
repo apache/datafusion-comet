@@ -69,7 +69,6 @@ datafusion-comet-operators = { workspace = true }
 object_store = { workspace = true }
 url = { workspace = true }
 aws-config = { workspace = true }
-aws-runtime = { workspace = true }
 aws-credential-types = { workspace = true }
 aws-sdk-sts = { workspace = true }
 # Only for the `SharedHttpClient` type in `build_provider`'s test seam; already in the graph.

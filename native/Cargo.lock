@@ -1971,7 +1971,6 @@ dependencies = [
  "async-trait",
  "aws-config",
  "aws-credential-types",
- "aws-runtime",
  "aws-sdk-sts",
  "aws-smithy-runtime-api",
  "aws-smithy-types",
