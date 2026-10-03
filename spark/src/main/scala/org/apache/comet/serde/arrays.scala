@@ -22,8 +22,10 @@ package org.apache.comet.serde
 import scala.annotation.tailrec
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.catalyst.expressions.{And, ArrayAggregate, ArrayAppend, ArrayContains, ArrayExcept, ArrayExists, ArrayFilter, ArrayForAll, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArraySort, ArraysOverlap, ArraysZip, ArrayTransform, ArrayUnion, Attribute, BoundReference, Cast, CreateArray, ElementAt, EmptyRow, Expression, Flatten, GetArrayItem, IsNotNull, IsNull, LambdaFunction, Literal, NamedLambdaVariable, Reverse, Sequence, Size, Slice, SortArray, ZipWith}
+import org.apache.spark.SPARK_VERSION
+import org.apache.spark.sql.catalyst.expressions.{And, ArrayAggregate, ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayExists, ArrayFilter, ArrayForAll, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArraySort, ArraysOverlap, ArraysZip, ArrayTransform, ArrayUnion, Attribute, BoundReference, Cast, CreateArray, ElementAt, EmptyRow, Expression, Flatten, GetArrayItem, IsNotNull, IsNull, LambdaFunction, Literal, NamedLambdaVariable, Reverse, Sequence, Size, Slice, SortArray, ZipWith}
 import org.apache.spark.sql.catalyst.util.GenericArrayData
+import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
@@ -536,7 +538,67 @@ object CometSlice extends CometExpressionSerde[Slice] {
   }
 }
 
+private[comet] object ArraySetSupport {
+  val floatingPointReason: String =
+    "Floating-point elements match Spark's signed-zero semantics natively only on Spark " +
+      "4.0.5+, 4.1.4+ and 4.2+, which treat -0.0 and 0.0 as one value in these functions " +
+      "(SPARK-54918, SPARK-59602)"
+
+  // Spark 4.2.0 normalizes the arguments of these functions in the plan (SPARK-54918), and 4.0.5,
+  // 4.1.4 and 4.2.1 normalize while evaluating them (SPARK-59602). Either way, Spark treats -0.0
+  // and 0.0, and every NaN, as one value at any depth, which the spark_ variants match. Earlier
+  // releases keep -0.0 and 0.0 apart in a flat array. The check reads the version rather than a
+  // KnownFloatingPointNormalized marker, because SPARK-59602 adds no marker, and SPARK-54918
+  // normalizes CreateArray, If, CaseWhen and Coalesce without wrapping the resulting array.
+  def normalizesFloats(version: String): Boolean =
+    Utils.majorMinorPatchVersion(version).exists {
+      case (4, 0, patch) => patch >= 5
+      case (4, 1, patch) => patch >= 4
+      case (major, minor, _) => major > 4 || (major == 4 && minor >= 2)
+    }
+
+  def supportLevel(dataType: DataType): SupportLevel = {
+    if (hasFloats(dataType) && !normalizesFloats(SPARK_VERSION)) {
+      Incompatible(Some(floatingPointReason))
+    } else {
+      Compatible()
+    }
+  }
+
+  // DataFusion folds -0.0 into 0.0 only in a flat float array and compares NaNs by their bits.
+  // The spark_ variants normalize floats at any depth first, as Spark does.
+  def function(name: String, dataType: DataType): String =
+    if (hasFloats(dataType)) s"spark_$name" else name
+
+  private def hasFloats(dataType: DataType): Boolean =
+    SupportLevel.containsType(dataType, classOf[FloatType], classOf[DoubleType])
+}
+
+// Use projection fallback to avoid codegen dispatch overhead for array-valued results.
+// The native implementation remains available through opt-in.
+object CometArrayDistinct extends CometExpressionSerde[ArrayDistinct] {
+  override def getIncompatibleReasons(): Seq[String] = Seq(ArraySetSupport.floatingPointReason)
+
+  override def getSupportLevel(expr: ArrayDistinct): SupportLevel =
+    ArraySetSupport.supportLevel(expr.dataType)
+
+  override def convert(
+      expr: ArrayDistinct,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val childProto = exprToProtoInternal(expr.child, inputs, binding)
+    scalarFunctionExprToProto(
+      ArraySetSupport.function("array_distinct", expr.dataType),
+      childProto)
+  }
+}
+
 object CometArrayUnion extends CometExpressionSerde[ArrayUnion] {
+  override def getIncompatibleReasons(): Seq[String] = Seq(ArraySetSupport.floatingPointReason)
+
+  override def getSupportLevel(expr: ArrayUnion): SupportLevel =
+    ArraySetSupport.supportLevel(expr.dataType)
+
   override def convert(
       expr: ArrayUnion,
       inputs: Seq[Attribute],
@@ -545,7 +607,10 @@ object CometArrayUnion extends CometExpressionSerde[ArrayUnion] {
     val rightArrayExprProto = exprToProtoInternal(expr.children(1), inputs, binding)
 
     val arraysUnionScalarExpr =
-      scalarFunctionExprToProto("array_union", leftArrayExprProto, rightArrayExprProto)
+      scalarFunctionExprToProto(
+        ArraySetSupport.function("array_union", expr.dataType),
+        leftArrayExprProto,
+        rightArrayExprProto)
     arraysUnionScalarExpr
   }
 }
