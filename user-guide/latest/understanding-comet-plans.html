@@ -1108,6 +1108,9 @@ by role. Names match what is shown in the plan output.</p>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CometEmptyRelation</span></code></p></td>
 <td><p>Empty native input that replaces <code class="docutils literal notranslate"><span class="pre">EmptyRelationExec</span></code> (Spark 4.0 and later).</p></td>
 </tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CometRange</span></code></p></td>
+<td><p>Generates the rows of <code class="docutils literal notranslate"><span class="pre">spark.range</span></code> and SQL <code class="docutils literal notranslate"><span class="pre">range()</span></code> in native code, replacing <code class="docutils literal notranslate"><span class="pre">RangeExec</span></code> (disabled by default).</p></td>
+</tr>
 </tbody>
 </table>
 </div>
