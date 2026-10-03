@@ -167,7 +167,7 @@ impl SparkMemory {
     fn repay(&self, size: usize) -> usize {
         let debt = self
             .overcommit
-            .fetch_update(Relaxed, Relaxed, |debt| Some(debt.saturating_sub(size)))
+            .try_update(Relaxed, Relaxed, |debt| Some(debt.saturating_sub(size)))
             .unwrap();
         debt.min(size)
     }

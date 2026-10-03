@@ -1245,7 +1245,6 @@ mod tests {
     use super::*;
     use arrow::array::AsArray;
     use arrow::datatypes::TimestampMicrosecondType;
-    use core::f64;
 
     #[test]
     fn test_spark_cast_int_to_int_overflow() {
