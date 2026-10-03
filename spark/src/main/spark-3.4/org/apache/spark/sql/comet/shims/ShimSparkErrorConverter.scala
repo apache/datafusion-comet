@@ -373,6 +373,17 @@ trait ShimSparkErrorConverter {
           QueryExecutionErrors.readCurrentFileNotFoundError(
             new FileNotFoundException(s"File $path does not exist")))
 
+      case "ParquetTimestampOverflow" =>
+        // Spark 3.4's FileScanRDD wraps a reader error in cannotReadFilesError only while
+        // nextIterator reads the first batch of a file split; an overflow in a later batch
+        // reaches the user as the bare ArithmeticException. Comet wraps the overflow from every
+        // batch, as Spark 4.x does, instead of mirroring those batch boundaries. The difference
+        // is declared in the Parquet compatibility guide (compatibility/scans.md).
+        val filePath = params.get("filePath").map(_.toString).getOrElse("")
+        Some(
+          QueryExecutionErrors
+            .cannotReadFilesError(new ArithmeticException("long overflow"), filePath))
+
       case "CannotReadFile" =>
         // A per-file read failure of a readable-but-broken file (corrupt/truncated parquet,
         // object_store, IO) classified by typed DataFusionError variant on the native side. Wrap

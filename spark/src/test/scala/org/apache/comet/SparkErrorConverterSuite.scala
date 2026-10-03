@@ -21,6 +21,10 @@ package org.apache.comet
 
 import org.scalatest.funsuite.AnyFunSuite
 
+import org.apache.spark.SparkException
+
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
+
 class SparkErrorConverterSuite extends AnyFunSuite {
 
   test("CannotReadFile converts to a FAILED_READ_FILE SparkException naming the file") {
@@ -65,6 +69,23 @@ class SparkErrorConverterSuite extends AnyFunSuite {
       taskFilePaths = Seq("file:/tmp/data/fallback.parquet"))
     assert(ex.getMessage.contains("native.parquet"))
     assert(!ex.getMessage.contains("fallback.parquet"))
+  }
+
+  test("ParquetTimestampOverflow wraps the arithmetic cause in a file-read SparkException") {
+    val path = "file:///tmp/data/bad%20timestamp%25.parquet"
+    val json =
+      s"""{"errorType":"ParquetTimestampOverflow","errorClass":"","params":{"filePath":"$path"}}"""
+    val ex = SparkErrorConverter.convertToSparkException(
+      new org.apache.comet.exceptions.CometQueryExecutionException(json),
+      taskFilePaths = Seq("file:///tmp/data/healthy.parquet", path))
+    assert(ex.getClass == classOf[SparkException])
+    val error = ex.asInstanceOf[SparkException]
+    val errorClass =
+      if (isSpark40Plus) "FAILED_READ_FILE.NO_HINT" else "_LEGACY_ERROR_TEMP_2064"
+    assert(error.getErrorClass == errorClass)
+    assert(error.getMessageParameters.get("path") == path)
+    assert(error.getCause.getClass == classOf[ArithmeticException])
+    assert(error.getCause.getMessage == "long overflow")
   }
 
   private def castOverflowError(fromType: String, value: String): Throwable = {
