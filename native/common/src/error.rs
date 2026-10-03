@@ -240,6 +240,18 @@ pub enum SparkError {
     #[error("Spark read schema expects field Ids, but Parquet file schema doesn't contain any field Ids. Please remove the field ids from Spark schema or ignore missing ids by setting `spark.sql.parquet.fieldId.read.ignoreMissing = true`")]
     ParquetMissingFieldIds { file_path: String },
 
+    /// A Parquet field carries the VARIANT logical type annotation but the requested Spark read
+    /// type is not `VariantType`, while `spark.sql.parquet.ignoreVariantAnnotation` is false.
+    /// Mirrors the `checkConversionRequirement` in Spark's
+    /// `ParquetToSparkSchemaConverter.convertGroupField`, which raises `_LEGACY_ERROR_TEMP_3071`
+    /// during schema conversion -- before any row is read, so an empty file is rejected too.
+    #[error("[_LEGACY_ERROR_TEMP_3071] Invalid Spark read type: expected {column} to be variant type but found {spark_type}")]
+    ParquetVariantAnnotationMismatch {
+        file_path: String,
+        column: String,
+        spark_type: String,
+    },
+
     /// Schema mismatch when reading a Parquet column under a requested schema
     /// that's incompatible with the physical column type. Translated by the JVM
     /// shim into Spark's `SchemaColumnConvertNotSupportedException`. The
@@ -355,6 +367,9 @@ impl SparkError {
             SparkError::DuplicateFieldCaseInsensitive { .. } => "DuplicateFieldCaseInsensitive",
             SparkError::DuplicateFieldByFieldId { .. } => "DuplicateFieldByFieldId",
             SparkError::ParquetMissingFieldIds { .. } => "ParquetMissingFieldIds",
+            SparkError::ParquetVariantAnnotationMismatch { .. } => {
+                "ParquetVariantAnnotationMismatch"
+            }
             SparkError::ParquetSchemaConvert { .. } => "ParquetSchemaConvert",
             SparkError::CannotReadFile { .. } => "CannotReadFile",
             SparkError::Arrow(_) => "Arrow",
@@ -605,6 +620,17 @@ impl SparkError {
                     "matchedFields": matched_fields,
                 })
             }
+            SparkError::ParquetVariantAnnotationMismatch {
+                file_path,
+                column,
+                spark_type,
+            } => {
+                serde_json::json!({
+                    "filePath": file_path,
+                    "column": column,
+                    "sparkType": spark_type,
+                })
+            }
             SparkError::ParquetMissingFieldIds { file_path } => {
                 serde_json::json!({
                     "filePath": file_path,
@@ -723,6 +749,13 @@ impl SparkError {
             // the FAILED_READ_FILE SparkException Spark 4 raises at the task boundary.
             SparkError::ParquetMissingFieldIds { .. } => "java/lang/RuntimeException",
 
+            // ParquetVariantAnnotationMismatch - the shim rebuilds Spark's AnalysisException and
+            // wraps it in a FAILED_READ_FILE SparkException, matching what Spark's own file scan
+            // produces when its schema converter rejects the read type.
+            SparkError::ParquetVariantAnnotationMismatch { .. } => {
+                "org/apache/spark/sql/AnalysisException"
+            }
+
             // ParquetSchemaConvert - converted to SchemaColumnConvertNotSupportedException by the shim
             SparkError::ParquetSchemaConvert { .. } => {
                 "org/apache/spark/sql/execution/datasources/SchemaColumnConvertNotSupportedException"
@@ -828,6 +861,10 @@ impl SparkError {
             // Parquet schema mismatch — translated to SchemaColumnConvertNotSupportedException
             // by the JVM shim. The shim wraps it in the version-appropriate
             // SparkException error class, so no error class is exposed here.
+            // ParquetVariantAnnotationMismatch — the shim rebuilds Spark's AnalysisException with
+            // its own error class and wraps it via cannotReadFilesError, so none is exposed here.
+            SparkError::ParquetVariantAnnotationMismatch { .. } => None,
+
             SparkError::ParquetSchemaConvert { .. } => None,
 
             // CannotReadFile — the JVM shim wraps it via cannotReadFilesError, which supplies the

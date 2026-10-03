@@ -71,6 +71,7 @@ fn partitioned_scan(
         false,
         false,
         false,
+        false,
     )
     .unwrap()
 }
