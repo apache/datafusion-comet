@@ -555,12 +555,11 @@ object CometShuffleExchangeExec
           _: FloatType | _: DoubleType | _: StringType | _: BinaryType | _: TimestampType |
           _: TimestampNTZType | _: DateType =>
         true
-      case _: DecimalType =>
-        // TODO enforce this check
-        // https://github.com/apache/datafusion-comet/issues/3079
-        // Decimals with precision > 18 require Java BigDecimal conversion before hashing
-        // d.precision <= 18
-        true
+      case d: DecimalType =>
+        // Match the SQL hash restriction in serde/HashUtils until #5994 fixes native encoding.
+        // Different partition assignments break mixed native/Spark joins. A single partition
+        // does not hash the key: CometNativeShuffleWriter serializes it as SinglePartition.
+        d.precision <= 18 || s.outputPartitioning.numPartitions == 1
       case dt if isTimeType(dt) =>
         true
       case StructType(fields) if nestedHashPartitioningEnabled =>
