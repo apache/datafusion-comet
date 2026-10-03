@@ -40,7 +40,7 @@ import org.apache.spark.sql.columnar.{CachedBatch, SimpleMetricsCachedBatch}
 import org.apache.spark.sql.comet.{CometBroadcastHashJoinExec, CometInMemoryTableScanExec, CometSortExec, CometSortMergeJoinExec}
 import org.apache.spark.sql.comet.execution.arrow.{ArrowCachedBatchSerializer, CometCachedBatchHelper}
 import org.apache.spark.sql.comet.util.Utils
-import org.apache.spark.sql.execution.SortExec
+import org.apache.spark.sql.execution.{FormattedMode, SortExec}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, QueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.columnar.{CometInMemoryRelationHelper, InMemoryRelation, InMemoryTableScanExec}
 import org.apache.spark.sql.execution.exchange.{Exchange, ReusedExchangeExec, ShuffleExchangeLike}
@@ -352,15 +352,82 @@ class CometInMemoryCacheSuite extends CometTestBase {
           line.startsWith("CometInMemoryTableScan Scan In-memory table explain_cache ["),
           line)
         assert(line.contains("= 3)"), s"the pruning predicates should be shown: $line")
+        // EXPLAIN FORMATTED also details the InMemoryRelation drawn below the scan. Before Spark
+        // 4.0 that detail prints the relation's CachedRDDBuilder below Spark's own scan as well
+        // (SPARK-51861), so there only the scan's own detail is checked.
+        val formatted = df.queryExecution.explainString(FormattedMode)
         Seq(
           plan.treeString,
-          df.queryExecution.explainString(org.apache.spark.sql.execution.FormattedMode))
+          if (isSpark40Plus) formatted else scans.head.verboseStringWithOperatorId())
           .foreach { text =>
             assert(!text.contains("CachedRDDBuilder"), text)
             assert(!text.contains(classOf[ArrowCachedBatchSerializer].getName), text)
           }
       } finally {
         spark.catalog.clearCache()
+      }
+    }
+  }
+
+  test("EXPLAIN draws the cached plan below CometInMemoryTableScan") {
+    // Spark's own cache scan draws its InMemoryRelation, and below that the plan that built the
+    // relation. See https://github.com/apache/datafusion-comet/issues/6572.
+    def nodeLines(tree: String): Seq[String] =
+      tree.linesIterator.map(_.replaceAll("^[ :+-]*", "")).toSeq
+
+    Seq("false", "true").foreach { aqe =>
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe,
+        CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true") {
+        spark.catalog.clearCache()
+        spark
+          .range(1000)
+          .selectExpr("id AS key", "id % 8 AS value")
+          .createOrReplaceTempView("explain_cached_plan")
+        // The cached plan is planned here. Keeping its Range on Spark gives it a fallback reason
+        // that the reporting for a query reading the cache must leave out.
+        withSQLConf(
+          CometConf.COMET_EXEC_RANGE_ENABLED.key -> "false",
+          CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "false") {
+          spark.catalog.cacheTable("explain_cached_plan")
+        }
+        try {
+          val df = spark.sql("SELECT value, count(*) FROM explain_cached_plan GROUP BY value")
+          df.collect()
+          val plan = df.queryExecution.executedPlan
+          val scans = collect(plan) { case s: CometInMemoryTableScanExec => s }
+          assert(scans.size == 1, s"AQE $aqe: $plan")
+          val relation = scans.head.originalPlan.relation
+
+          // The relation's line, then the cached plan's lines, follow the scan's line.
+          val lines = nodeLines(plan.treeString)
+          val scanAt = lines.indexWhere(_.startsWith("CometInMemoryTableScan "))
+          assert(scanAt >= 0, s"AQE $aqe: ${plan.treeString}")
+          val below = nodeLines(relation.treeString)
+          assert(below.size > 1, relation.treeString)
+          assert(
+            lines.slice(scanAt + 1, scanAt + 1 + below.size) == below,
+            s"AQE $aqe: ${plan.treeString}")
+
+          // EXPLAIN FORMATTED numbers the relation and draws it below the scan too.
+          val formatted = nodeLines(df.queryExecution.explainString(FormattedMode))
+          val formattedScanAt = formatted.indexWhere(_.startsWith("CometInMemoryTableScan ("))
+          assert(formattedScanAt >= 0, s"AQE $aqe: ${formatted.mkString("\n")}")
+          assert(
+            formatted(formattedScanAt + 1).startsWith("InMemoryRelation ("),
+            s"AQE $aqe: ${formatted.mkString("\n")}")
+
+          // Comet's own reporting leaves the cached plan out.
+          val info = new ExtendedExplainInfo()
+          val cachedReasons = info.getFallbackReasons(relation.cachedPlan)
+          assert(cachedReasons.nonEmpty, relation.cachedPlan.treeString)
+          val reasons = info.getFallbackReasons(plan)
+          assert(cachedReasons.forall(r => !reasons.contains(r)), s"AQE $aqe: $reasons")
+          val verbose = info.generateVerboseInfo(plan)
+          assert(!verbose.contains("InMemoryRelation"), s"AQE $aqe: $verbose")
+        } finally {
+          spark.catalog.clearCache()
+        }
       }
     }
   }
