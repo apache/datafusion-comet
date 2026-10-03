@@ -88,6 +88,10 @@ incorrect result. When any single window expression in a `WindowExec` falls back
   overflow instead of returning Spark's `NULL`.
 - `RANGE` frame with an explicit offset when the `ORDER BY` column is `DATE` or `DECIMAL`
   ([#4834](https://github.com/apache/datafusion-comet/issues/4834)).
+- `RANGE` frame bounded by `CURRENT ROW` when an `ORDER BY` key is an array of arrays or structs, or a struct
+  holding an array, such as `array(named_struct('x', x))`. DataFusion cannot compare those values to find the
+  frame's bounds ([apache/datafusion#24937](https://github.com/apache/datafusion/issues/24937)). Ranking functions
+  and `ROWS` frames over the same keys run natively.
 - `first_value` / `last_value` on a `RANGE` frame with a literal offset
   ([#4835](https://github.com/apache/datafusion-comet/issues/4835)).
 - `lag` / `lead` with a non-literal default value ([#4268](https://github.com/apache/datafusion-comet/issues/4268)).
@@ -102,20 +106,10 @@ runs natively; it is controlled by `spark.comet.exec.windowGroupLimit.enabled` (
 - Any `PARTITION BY` or `ORDER BY` key whose type carries a non-default `StringType` collation
   (e.g. `UTF8_LCASE`). The native operator detects partitions and order-key peer groups by
   comparing Arrow row-encoded keys for byte equality, which splits peers that Spark ties.
-- `RANK` and `DENSE_RANK` whose `ORDER BY` key has a `FLOAT` or `DOUBLE` nested in an array or
-  struct. The same byte equality decides their ties, and nested floating-point values aren't
-  normalized, so `-0.0` and `+0.0`, or two NaN representations, would get different ranks and the
-  cutoff would drop rows that Spark keeps
-  ([#5507](https://github.com/apache/datafusion-comet/issues/5507)).
 
-**Known incompatibilities:**
-
-- `ROW_NUMBER` over such a key still runs natively and follows the native sort, which compares
-  nested floating-point values with Arrow's raw total ordering. Which of two rows that differ only
-  in `-0.0` and `+0.0`, or in their NaN representation, gets the lower row number can therefore
-  differ from Spark ([#5507](https://github.com/apache/datafusion-comet/issues/5507)). Scalar
-  `FLOAT` and `DOUBLE` keys are normalized and match Spark; see
-  [floating-point ordering](./floating-point.md).
+Floating-point `ORDER BY` keys, including floats nested in arrays and structs, are normalized
+and match Spark's ranks; see [floating-point ordering](./floating-point.md), which also covers
+strict floating-point mode.
 
 ## Round-Robin Partitioning
 
