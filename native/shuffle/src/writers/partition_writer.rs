@@ -17,6 +17,7 @@
 
 use crate::metrics::ShufflePartitionerMetrics;
 use arrow::record_batch::RecordBatch;
+use datafusion::execution::memory_pool::MemoryReservation;
 
 /// Storage backend abstraction for shuffle partition output.
 ///
@@ -73,4 +74,14 @@ pub(crate) trait PartitionWriter: Send {
     /// event), letting the writer drop transient encode state. Staging more batches
     /// afterwards is still allowed.
     fn write_burst_complete(&mut self) {}
+
+    /// Hands the writer an empty reservation to charge its own buffers to, on the same
+    /// consumer as the partitioner's batches. Called once, before any `write`. Writers
+    /// with nothing to charge keep the default and drop the reservation.
+    fn attach_buffer_reservation(
+        &mut self,
+        _reservation: MemoryReservation,
+    ) -> datafusion::common::Result<()> {
+        Ok(())
+    }
 }

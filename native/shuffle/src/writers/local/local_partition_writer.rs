@@ -23,6 +23,7 @@ use crate::writers::BufBatchWriter;
 use crate::{PartitionOffsets, ShuffleBlockWriter};
 use arrow::array::RecordBatch;
 use datafusion::common::DataFusionError;
+use datafusion::execution::memory_pool::MemoryReservation;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, ErrorKind, Read, Seek, SeekFrom, Write};
@@ -80,6 +81,10 @@ enum DataOutput {
 pub(crate) struct LocalPartitionWriter {
     partition_offsets: Arc<PartitionOffsets>,
     data_output: DataOutput,
+    /// Charges the multi-partition buffers (see [`Self::buffer_bytes_held`]) to the
+    /// partitioner's consumer, separately from its batches. `None` until attached and for
+    /// single-partition output. Kept equal to the bytes held at every call boundary.
+    buffers: Option<MemoryReservation>,
     /// Compression state shared by every block this task writes; the per-partition
     /// `BufBatchWriter`s borrow it (see [`ShuffleCodecContext`]). Retention is bounded:
     /// released at spill/finish boundaries and whenever its workspace is oversized.
@@ -143,6 +148,7 @@ impl LocalPartitionWriter {
         Ok(Self {
             partition_offsets,
             data_output,
+            buffers: None,
             codec_context: ShuffleCodecContext::default(),
             offsets: vec![0u64; num_output_partitions + 1],
             batch_size,
@@ -169,6 +175,71 @@ impl LocalPartitionWriter {
             DataOutput::Single { .. } => panic!("single-partition output does not spill"),
         }
     }
+
+    /// Bytes the multi-partition buffers hold right now, which is what the buffer
+    /// reservation tracks: the two file buffers, the spill copy buffer, the encode scratch
+    /// and the cached zstd context.
+    pub(crate) fn buffer_bytes_held(&self) -> usize {
+        match &self.data_output {
+            DataOutput::Multi {
+                output_writer,
+                spill,
+                spill_reader,
+                recycled_buffer,
+                ..
+            } => {
+                output_writer.capacity()
+                    + spill.buffer_capacity()
+                    + spill_reader.as_ref().map_or(0, |(_, buffer)| buffer.len())
+                    + recycled_buffer.capacity()
+                    + self.codec_context.retained_bytes()
+            }
+            DataOutput::Single { .. } => 0,
+        }
+    }
+
+    /// Brings the buffer reservation up to date with the bytes held. A no-op on the pool
+    /// while nothing changed, so steady-state writes make no pool calls.
+    fn sync_buffer_reservation(&self) {
+        if let Some(buffers) = &self.buffers {
+            buffers.resize(self.buffer_bytes_held());
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn buffer_reservation_size(&self) -> usize {
+        self.buffers.as_ref().map_or(0, MemoryReservation::size)
+    }
+
+    /// Test hook: capacity of the encode scratch.
+    #[cfg(test)]
+    pub(crate) fn scratch_capacity(&self) -> usize {
+        match &self.data_output {
+            DataOutput::Multi {
+                recycled_buffer, ..
+            } => recycled_buffer.capacity(),
+            DataOutput::Single { scratch, .. } => scratch.capacity(),
+        }
+    }
+
+    /// Test hook: capacities of the data file buffer, the spill file buffer and the spill
+    /// copy buffer.
+    #[cfg(test)]
+    pub(crate) fn buffer_capacities(&self) -> (usize, usize, usize) {
+        match &self.data_output {
+            DataOutput::Multi {
+                output_writer,
+                spill,
+                spill_reader,
+                ..
+            } => (
+                output_writer.capacity(),
+                spill.buffer_capacity(),
+                spill_reader.as_ref().map_or(0, |(_, buffer)| buffer.len()),
+            ),
+            DataOutput::Single { .. } => panic!("single-partition output has no spill buffers"),
+        }
+    }
 }
 
 impl PartitionWriter for LocalPartitionWriter {
@@ -181,49 +252,55 @@ impl PartitionWriter for LocalPartitionWriter {
     where
         I: Iterator<Item = datafusion::common::Result<RecordBatch>>,
     {
-        match &mut self.data_output {
-            DataOutput::Single { writer, scratch } => {
-                if pid != 0 {
-                    return Err(DataFusionError::Execution(
-                        "LocalPartitionWriter single-partition output only supports partition 0."
-                            .to_string(),
-                    ));
-                }
+        // The reservation is synced on every exit, including errors, so it keeps matching
+        // the buffers a failed write left behind.
+        let result: datafusion::common::Result<()> = (|| {
+            match &mut self.data_output {
+                DataOutput::Single { writer, scratch } => {
+                    if pid != 0 {
+                        return Err(DataFusionError::Execution(
+                            "LocalPartitionWriter single-partition output only supports partition 0."
+                                .to_string(),
+                        ));
+                    }
 
-                // Stream batches through the long-lived writer so small batches keep
-                // coalescing across calls. Do not flush here: flushing also finalizes any
-                // partially coalesced batch, which would defeat cross-call coalescing and
-                // increase flush frequency. The single-partition writer is flushed once, in
-                // `finish_all`.
-                for batch in iter.by_ref() {
-                    let batch = batch?;
-                    writer.write(
-                        &batch,
-                        scratch,
+                    // Stream batches through the long-lived writer so small batches keep
+                    // coalescing across calls. Do not flush here: flushing also finalizes any
+                    // partially coalesced batch, which would defeat cross-call coalescing and
+                    // increase flush frequency. The single-partition writer is flushed once, in
+                    // `finish_all`.
+                    for batch in iter.by_ref() {
+                        let batch = batch?;
+                        writer.write(
+                            &batch,
+                            scratch,
+                            &mut self.codec_context,
+                            &metrics.encode_time,
+                            &metrics.write_time,
+                        )?;
+                    }
+                }
+                DataOutput::Multi {
+                    spill,
+                    runtime,
+                    recycled_buffer,
+                    ..
+                } => {
+                    spill.write(
+                        pid,
+                        iter,
                         &mut self.codec_context,
-                        &metrics.encode_time,
-                        &metrics.write_time,
+                        runtime,
+                        metrics,
+                        recycled_buffer,
+                        self.buffers.as_ref(),
                     )?;
                 }
             }
-            DataOutput::Multi {
-                spill,
-                runtime,
-                recycled_buffer,
-                ..
-            } => {
-                spill.write(
-                    pid,
-                    iter,
-                    &mut self.codec_context,
-                    runtime,
-                    metrics,
-                    recycled_buffer,
-                )?;
-            }
-        }
-
-        Ok(())
+            Ok(())
+        })();
+        self.sync_buffer_reservation();
+        result
     }
 
     fn finish_partition<I>(
@@ -245,88 +322,102 @@ impl PartitionWriter for LocalPartitionWriter {
         let write_buffer_size = self.write_buffer_size;
         let batch_size = self.batch_size;
 
-        match &mut self.data_output {
-            DataOutput::Single { writer, scratch } => {
-                // Single-partition data was already streamed via `write`, starting at
-                // offset 0 (already recorded in `self.offsets[0]`). Stream any trailing
-                // batches (normally none) without flushing; the long-lived writer is
-                // flushed once in `finish_all`.
-                for batch in iter.by_ref() {
-                    let batch = batch?;
-                    writer.write(
-                        &batch,
-                        scratch,
-                        &mut self.codec_context,
-                        &metrics.encode_time,
-                        &metrics.write_time,
-                    )?;
-                }
-            }
-            DataOutput::Multi {
-                output_writer,
-                shuffle_block_writer,
-                spill,
-                spill_reader,
-                recycled_buffer,
-                ..
-            } => {
-                self.offsets[pid] = output_writer.stream_position()?;
-
-                let mut flush_timer = metrics.write_time.timer();
-                spill.flush()?;
-                flush_timer.stop();
-                let ranges = spill.ranges(pid)?;
-                if !ranges.is_empty() {
-                    if spill_reader.is_none() {
-                        let path = spill.path()?.ok_or_else(|| {
-                            DataFusionError::Internal(
-                                "shuffle spill ranges recorded without a spill file".to_string(),
-                            )
-                        })?;
-                        *spill_reader = Some((File::open(path)?, vec![0; write_buffer_size]));
-                    }
-                    let (spill_file, buffer) = spill_reader.as_mut().unwrap();
-                    let mut write_timer = metrics.write_time.timer();
-                    for range in ranges {
-                        copy_spill_range(spill_file, buffer, range, output_writer)?;
-                    }
-                    write_timer.stop();
-                }
-
-                // Write in memory batches to output data file. Each partition uses its
-                // own writer so coalescing does not cross partition boundaries, but the
-                // scratch buffer is shared so its capacity carries over to the next one.
-                let mut buf_batch_writer = BufBatchWriter::new(
-                    shuffle_block_writer,
-                    output_writer,
-                    write_buffer_size,
-                    batch_size,
-                );
-                let codec_context = &mut self.codec_context;
-                let result: datafusion::common::Result<()> = (|| {
+        // The reservation is synced on every exit, including errors, so it keeps matching
+        // the buffers a failed partition left behind.
+        let result: datafusion::common::Result<()> = (|| {
+            match &mut self.data_output {
+                DataOutput::Single { writer, scratch } => {
+                    // Single-partition data was already streamed via `write`, starting at
+                    // offset 0 (already recorded in `self.offsets[0]`). Stream any trailing
+                    // batches (normally none) without flushing; the long-lived writer is
+                    // flushed once in `finish_all`.
                     for batch in iter.by_ref() {
                         let batch = batch?;
-                        buf_batch_writer.write(
+                        writer.write(
                             &batch,
-                            recycled_buffer,
-                            codec_context,
+                            scratch,
+                            &mut self.codec_context,
                             &metrics.encode_time,
                             &metrics.write_time,
                         )?;
                     }
-                    buf_batch_writer.flush(
-                        recycled_buffer,
-                        codec_context,
-                        &metrics.encode_time,
-                        &metrics.write_time,
-                    )
-                })();
-                // An errored partition must hand back a drained buffer, or its bytes
-                // leak into the next partition's block.
-                result.inspect_err(|_| recycled_buffer.clear())?;
+                }
+                DataOutput::Multi {
+                    output_writer,
+                    shuffle_block_writer,
+                    spill,
+                    spill_reader,
+                    recycled_buffer,
+                    ..
+                } => {
+                    self.offsets[pid] = output_writer.stream_position()?;
+
+                    let mut flush_timer = metrics.write_time.timer();
+                    spill.flush()?;
+                    flush_timer.stop();
+                    let ranges = spill.ranges(pid)?;
+                    if !ranges.is_empty() {
+                        if spill_reader.is_none() {
+                            let path = spill.path()?.ok_or_else(|| {
+                                DataFusionError::Internal(
+                                    "shuffle spill ranges recorded without a spill file"
+                                        .to_string(),
+                                )
+                            })?;
+                            // Open before charging, so a failed open leaves nothing on the
+                            // reservation. Ranges larger than the buffer go through io::copy.
+                            let spill_file = File::open(path)?;
+                            let buffer_size =
+                                self.buffers.as_ref().map_or(write_buffer_size, |buffers| {
+                                    super::reserve_buffer(buffers, write_buffer_size)
+                                });
+                            *spill_reader = Some((spill_file, vec![0; buffer_size]));
+                        }
+                        let (spill_file, buffer) = spill_reader.as_mut().unwrap();
+                        let mut write_timer = metrics.write_time.timer();
+                        for range in ranges {
+                            copy_spill_range(spill_file, buffer, range, output_writer)?;
+                        }
+                        write_timer.stop();
+                    }
+
+                    // Write in memory batches to output data file. Each partition uses its
+                    // own writer so coalescing does not cross partition boundaries, but the
+                    // scratch buffer is shared so its capacity carries over to the next one.
+                    let mut buf_batch_writer = BufBatchWriter::new(
+                        shuffle_block_writer,
+                        output_writer,
+                        write_buffer_size,
+                        batch_size,
+                    );
+                    let codec_context = &mut self.codec_context;
+                    let result: datafusion::common::Result<()> = (|| {
+                        for batch in iter.by_ref() {
+                            let batch = batch?;
+                            buf_batch_writer.write(
+                                &batch,
+                                recycled_buffer,
+                                codec_context,
+                                &metrics.encode_time,
+                                &metrics.write_time,
+                            )?;
+                        }
+                        buf_batch_writer.flush(
+                            recycled_buffer,
+                            codec_context,
+                            &metrics.encode_time,
+                            &metrics.write_time,
+                        )
+                    })();
+                    // An errored partition must hand back a drained buffer, or its bytes
+                    // leak into the next partition's block.
+                    result.inspect_err(|_| recycled_buffer.clear())?;
+                }
             }
-        }
-        Ok(())
+            Ok(())
+        })();
+        self.sync_buffer_reservation();
+        result
     }
 
     fn finish_all(
@@ -372,14 +463,41 @@ impl PartitionWriter for LocalPartitionWriter {
 
         // The shuffle output is complete; nothing else encodes through this context.
         self.codec_context.release_zstd();
+        self.sync_buffer_reservation();
 
         Ok(())
     }
 
     fn write_burst_complete(&mut self) {
-        // A spill burst just ended and the next encode may be a long time coming; the zstd
-        // workspace is native memory no reservation tracks, so don't sit on it.
+        // A spill burst just ended and the next encode may be a long time coming, so don't
+        // sit on the zstd workspace.
         self.codec_context.release_zstd();
+        self.sync_buffer_reservation();
+    }
+
+    fn attach_buffer_reservation(
+        &mut self,
+        reservation: MemoryReservation,
+    ) -> datafusion::common::Result<()> {
+        let DataOutput::Multi { output_writer, .. } = &mut self.data_output else {
+            return Ok(());
+        };
+        // Attached once, before any write: the rebuild below must not discard buffered bytes.
+        debug_assert!(self.buffers.is_none() && output_writer.buffer().is_empty());
+        // The data file buffer was allocated at full size before the consumer existed. When
+        // the pool refuses it now, rebuild it at the size that was charged; nothing has been
+        // written yet, so the old buffer is empty.
+        let capacity = super::reserve_buffer(&reservation, self.write_buffer_size);
+        if capacity != output_writer.capacity() {
+            let output_file = output_writer
+                .get_ref()
+                .try_clone()
+                .map_err(|e| DataFusionError::Execution(format!("shuffle write error: {e:?}")))?;
+            *output_writer = BufWriter::with_capacity(capacity, output_file);
+        }
+        self.buffers = Some(reservation);
+        self.sync_buffer_reservation();
+        Ok(())
     }
 }
 
@@ -431,14 +549,20 @@ mod tests {
     use arrow::compute::concat_batches;
     use arrow::datatypes::{DataType, Field, Schema};
     use datafusion::execution::disk_manager::{DiskManagerBuilder, DiskManagerMode};
+    use datafusion::execution::memory_pool::{GreedyMemoryPool, MemoryConsumer, MemoryPool};
     use datafusion::execution::runtime_env::RuntimeEnvBuilder;
     use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
 
     fn test_batch() -> RecordBatch {
+        test_batch_of(100)
+    }
+
+    /// One Int64 column of `rows` rows, eight bytes each.
+    fn test_batch_of(rows: i64) -> RecordBatch {
         let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]));
         RecordBatch::try_new(
             Arc::clone(&schema),
-            vec![Arc::new(Int64Array::from_iter_values(0..100))],
+            vec![Arc::new(Int64Array::from_iter_values(0..rows))],
         )
         .unwrap()
     }
@@ -458,9 +582,25 @@ mod tests {
         dir: &tempfile::TempDir,
         runtime: Arc<RuntimeEnv>,
     ) -> LocalPartitionWriter {
-        let block_writer =
-            ShuffleBlockWriter::try_new(batch.schema_ref().as_ref(), CompressionCodec::None)
-                .unwrap();
+        partition_writer_with_codec(
+            batch,
+            num_partitions,
+            write_buffer_size,
+            CompressionCodec::None,
+            dir,
+            runtime,
+        )
+    }
+
+    fn partition_writer_with_codec(
+        batch: &RecordBatch,
+        num_partitions: usize,
+        write_buffer_size: usize,
+        codec: CompressionCodec,
+        dir: &tempfile::TempDir,
+        runtime: Arc<RuntimeEnv>,
+    ) -> LocalPartitionWriter {
+        let block_writer = ShuffleBlockWriter::try_new(batch.schema_ref().as_ref(), codec).unwrap();
         LocalPartitionWriter::try_new(
             dir.path().join("data.out").to_str().unwrap().to_string(),
             Arc::new(PartitionOffsets::default()),
@@ -680,5 +820,198 @@ mod tests {
                 "write buffer {write_buffer_size}: unexpected error: {err}"
             );
         }
+    }
+
+    fn greedy_pool(limit: usize) -> Arc<dyn MemoryPool> {
+        Arc::new(GreedyMemoryPool::new(limit))
+    }
+
+    /// The reservation tracks exactly the bytes the buffers hold, and the pool sees nothing else.
+    fn assert_buffers_charged(writer: &LocalPartitionWriter, pool: &Arc<dyn MemoryPool>) {
+        assert_eq!(
+            writer.buffer_reservation_size(),
+            writer.buffer_bytes_held(),
+            "reservation must equal the bytes held"
+        );
+        assert_eq!(pool.reserved(), writer.buffer_bytes_held());
+    }
+
+    /// A pool with room for the data and spill file buffers but not the spill copy buffer:
+    /// the copy buffer falls back to 8 KiB, a range larger than that goes through `io::copy`
+    /// while a smaller one still takes the pread path, and the output is what a writer with
+    /// a large pool produces.
+    #[test]
+    fn refused_copy_buffer_falls_back_to_small_buffer() {
+        let write_buffer_size = 1 << 20;
+        let fallback = crate::writers::local::FALLBACK_BUFFER_SIZE;
+        let metrics = ShufflePartitionerMetrics::new(&ExecutionPlanMetricsSet::new(), 0);
+        // Partition 0 spills a block well over the fallback buffer, partition 1 one under it.
+        let batch_for = |pid: usize| {
+            if pid == 0 {
+                test_batch_of(4096)
+            } else {
+                test_batch()
+            }
+        };
+        let mut outputs = Vec::new();
+        // 64 KiB of headroom covers the encode scratch for these blocks.
+        for limit in [1 << 30, 2 * write_buffer_size + 64 * 1024] {
+            let dir = tempfile::tempdir().unwrap();
+            let pool = greedy_pool(limit);
+            let mut writer = partition_writer_with(
+                &test_batch(),
+                2,
+                write_buffer_size,
+                &dir,
+                Arc::new(RuntimeEnv::default()),
+            );
+            let reservation = MemoryConsumer::new("test").register(&pool);
+            writer
+                .attach_buffer_reservation(reservation.new_empty())
+                .unwrap();
+            for pid in 0..2 {
+                writer
+                    .write(pid, &mut vec![Ok(batch_for(pid))].into_iter(), &metrics)
+                    .unwrap();
+            }
+            writer.write_burst_complete();
+            let range_len = |pid: usize| {
+                let ranges = writer.get_spill().ranges(pid).unwrap();
+                assert_eq!(ranges.len(), 1, "one spilled block for partition {pid}");
+                (ranges[0].end - ranges[0].start) as usize
+            };
+            assert!(
+                range_len(0) > fallback,
+                "partition 0 must exceed the fallback buffer"
+            );
+            assert!(
+                range_len(1) <= fallback,
+                "partition 1 must fit the fallback buffer"
+            );
+            for pid in 0..2 {
+                writer
+                    .finish_partition(pid, &mut vec![Ok(batch_for(pid))].into_iter(), &metrics)
+                    .unwrap();
+            }
+            writer.finish_all(&metrics).unwrap();
+
+            let copy_buffer = if limit == 1 << 30 {
+                write_buffer_size
+            } else {
+                fallback
+            };
+            assert_eq!(
+                writer.buffer_capacities(),
+                (write_buffer_size, write_buffer_size, copy_buffer),
+                "pool limit {limit}"
+            );
+            assert_buffers_charged(&writer, &pool);
+            outputs.push(std::fs::read(dir.path().join("data.out")).unwrap());
+        }
+        assert!(!outputs[0].is_empty());
+        assert_eq!(
+            outputs[0], outputs[1],
+            "copying with the fallback buffer changed the output"
+        );
+    }
+
+    /// The encode scratch is charged on its own: a write that grows nothing but the scratch
+    /// moves the reservation by exactly the scratch's capacity delta.
+    #[test]
+    fn encode_scratch_growth_is_charged() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = greedy_pool(1 << 30);
+        let mut writer = partition_writer_with(
+            &test_batch(),
+            2,
+            1 << 20,
+            &dir,
+            Arc::new(RuntimeEnv::default()),
+        );
+        let reservation = MemoryConsumer::new("test").register(&pool);
+        writer
+            .attach_buffer_reservation(reservation.new_empty())
+            .unwrap();
+        let metrics = ShufflePartitionerMetrics::new(&ExecutionPlanMetricsSet::new(), 0);
+
+        // The first write creates the spill file buffer and a scratch sized for a small block.
+        writer
+            .write(0, &mut vec![Ok(test_batch())].into_iter(), &metrics)
+            .unwrap();
+        let (charged, scratch) = (writer.buffer_reservation_size(), writer.scratch_capacity());
+
+        // A larger block grows only the scratch; the file buffers and codec are unchanged.
+        writer
+            .write(1, &mut vec![Ok(test_batch_of(4096))].into_iter(), &metrics)
+            .unwrap();
+        let scratch_delta = writer.scratch_capacity() - scratch;
+        assert!(scratch_delta > 0, "the larger block must grow the scratch");
+        assert_eq!(
+            writer.buffer_reservation_size() - charged,
+            scratch_delta,
+            "the reservation must move by the scratch's growth"
+        );
+        assert_buffers_charged(&writer, &pool);
+    }
+
+    /// The zstd context is charged for as long as it is cached: the reservation grows by its
+    /// size after an encode and drops by it when the burst ends and when the write finishes.
+    #[test]
+    fn zstd_context_is_charged_while_retained() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = greedy_pool(1 << 30);
+        let mut writer = partition_writer_with_codec(
+            &test_batch(),
+            2,
+            1 << 20,
+            CompressionCodec::Zstd(1),
+            &dir,
+            Arc::new(RuntimeEnv::default()),
+        );
+        let reservation = MemoryConsumer::new("test").register(&pool);
+        writer
+            .attach_buffer_reservation(reservation.new_empty())
+            .unwrap();
+        let metrics = ShufflePartitionerMetrics::new(&ExecutionPlanMetricsSet::new(), 0);
+
+        writer
+            .write(0, &mut vec![Ok(test_batch())].into_iter(), &metrics)
+            .unwrap();
+        let retained = writer.codec_context.retained_bytes();
+        assert!(
+            retained > 1 << 20,
+            "level 1 context is over 1 MiB, got {retained}"
+        );
+        assert_buffers_charged(&writer, &pool);
+        let after_write = writer.buffer_reservation_size();
+
+        writer.write_burst_complete();
+        assert!(!writer.holds_zstd_cctx());
+        assert_eq!(writer.buffer_reservation_size(), after_write - retained);
+        assert_buffers_charged(&writer, &pool);
+
+        for pid in 0..2 {
+            writer
+                .finish_partition(pid, &mut vec![Ok(test_batch())].into_iter(), &metrics)
+                .unwrap();
+        }
+        let retained = writer.codec_context.retained_bytes();
+        assert!(
+            retained > 1 << 20,
+            "finish_partition re-created the context"
+        );
+        assert_buffers_charged(&writer, &pool);
+        let after_finish_partition = writer.buffer_reservation_size();
+
+        writer.finish_all(&metrics).unwrap();
+        assert!(!writer.holds_zstd_cctx());
+        assert_eq!(
+            writer.buffer_reservation_size(),
+            after_finish_partition - retained
+        );
+        assert_buffers_charged(&writer, &pool);
+
+        drop(writer);
+        assert_eq!(pool.reserved(), 0);
     }
 }
