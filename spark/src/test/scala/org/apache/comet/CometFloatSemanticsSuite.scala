@@ -288,7 +288,10 @@ object CometFloatSemanticsSuite {
       (name, template) <- expressions
     } yield Case("expression", name, "", t, render(template, t))
 
-  /** Each ordered pair of edge values as a group of two rows, with the position of each. */
+  /**
+   * Each pair is expanded from one input row, so its two values reach the same partial aggregate
+   * in array order. Window tests also order by pos to preserve signed-zero ties after a shuffle.
+   */
   private val pairGroups =
     "(SELECT id, pos, x FROM fs_p LATERAL VIEW posexplode(array({l}, {r})) t AS pos, x)"
 
@@ -311,8 +314,9 @@ object CometFloatSemanticsSuite {
     "global max and min" -> "SELECT max({c}), min({c}) FROM fs_e",
     "global max_by and min_by" -> "SELECT max_by(id, {c}), min_by(id, {c}) FROM fs_e",
     "window max and min" ->
-      ("SELECT id, pos, max(x) OVER (PARTITION BY id), min(x) OVER (PARTITION BY id) " +
-        s"FROM $pairGroups"))
+      (s"SELECT id, pos, max(x) OVER w, min(x) OVER w FROM $pairGroups " +
+        "WINDOW w AS (PARTITION BY id ORDER BY pos " +
+        "ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)"))
 
   private def aggregateCases: Seq[Case] =
     for {
@@ -368,12 +372,6 @@ object CometFloatSemanticsSuite {
       c =>
         in("expression", "hash", "xxhash64", "hash of array", "hash of struct")(c) ||
           in("key", "hash repartition")(c)),
-    KnownGap(
-      issue(6385),
-      "min, max, greatest and least order floats by IEEE 754 total order.",
-      c =>
-        in("expression", "greatest", "least")(c) ||
-          in("aggregate", "max", "min", "global max and min", "window max and min")(c)),
     KnownGap(
       issue(5701),
       "array_distinct and array_union fold -0.0 into 0.0 and keep NaNs with different bits " +

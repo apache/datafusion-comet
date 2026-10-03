@@ -142,6 +142,43 @@ pub(crate) const NEGATIVE_NAN: f64 = f64::from_bits(0xfff8_0000_0000_0000);
 #[cfg(test)]
 pub(crate) const PAYLOAD_NAN: f64 = f64::from_bits(0x7ff0_0000_0000_0001);
 
+/// Values on which Spark's ordering and IEEE 754 total order disagree, with neighbors and a null.
+#[cfg(test)]
+pub(crate) const EDGE_VALUES: [Option<f64>; 10] = [
+    Some(f64::NEG_INFINITY),
+    Some(-1.0),
+    Some(-0.0),
+    Some(0.0),
+    Some(1.0),
+    Some(f64::INFINITY),
+    Some(f64::NAN),
+    Some(NEGATIVE_NAN),
+    Some(PAYLOAD_NAN),
+    None,
+];
+
+/// Spark's `greatest` of `values` in order, or `least` if `greatest` is false, which is also how
+/// `Max` and `Min` update their buffer: nulls are skipped, and a value replaces the result only when
+/// [`compare_floats`] ranks it strictly before, so the first of equal values is kept.
+#[cfg(test)]
+pub(crate) fn spark_extreme(values: &[Option<f64>], greatest: bool) -> Option<f64> {
+    values
+        .iter()
+        .flatten()
+        .fold(None, |best, &value| match best {
+            None => Some(value),
+            Some(best) => {
+                let ordering = compare_floats(value, best);
+                let replace = if greatest {
+                    ordering.is_gt()
+                } else {
+                    ordering.is_lt()
+                };
+                Some(if replace { value } else { best })
+            }
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
