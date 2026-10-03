@@ -27,6 +27,12 @@ By default, `ArrayContains` is evaluated in the JVM using Spark's own code-gener
 
 - Spark compares array elements with ordering.equiv, so -0.0 matches +0.0 and all NaNs match each other; Comet's native array_contains compares the raw Arrow values bitwise
 
+## ArrayDistinct
+
+The following incompatibilities cause `ArrayDistinct` to fall back to Spark by default. Set `spark.comet.expression.ArrayDistinct.allowIncompatible=true` to enable Comet acceleration despite these differences.
+
+- Floating-point elements match Spark's signed-zero and NaN semantics natively only on Spark 4.2.0, whose optimizer normalizes the arguments (SPARK-54918)
+
 ## ArrayExcept
 
 By default, `ArrayExcept` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set `spark.comet.expression.ArrayExcept.allowIncompatible=true` to opt into Comet's native implementation instead, which has the following differences from Spark:
@@ -46,6 +52,12 @@ By default, `ArrayJoin` is evaluated in the JVM using Spark's own code-generated
 
 - array_join does not propagate non-UTF8_BINARY collations to the output string (https://github.com/apache/datafusion-comet/issues/2190)
 - array_join evaluates its delimiter and null replacement eagerly, while Spark short-circuits past them (https://github.com/apache/datafusion-comet/issues/3178)
+
+## ArrayUnion
+
+The following incompatibilities cause `ArrayUnion` to fall back to Spark by default. Set `spark.comet.expression.ArrayUnion.allowIncompatible=true` to enable Comet acceleration despite these differences.
+
+- Floating-point elements match Spark's signed-zero and NaN semantics natively only on Spark 4.2.0, whose optimizer normalizes the arguments (SPARK-54918)
 
 ## ArraysZip
 
