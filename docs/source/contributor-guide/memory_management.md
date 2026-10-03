@@ -286,7 +286,8 @@ JNI, which goes through Spark's ordinary `TaskMemoryManager`. That means:
   `Display` output and their `try_grow` errors report the current overcommit.
 
 `CometFairMemoryPool` additionally applies two local checks before it asks Spark, and refuses the
-request without calling Spark if either fails:
+request without calling Spark if either fails, except for the request described in
+[Final aggregates reading their spill files back](#final-aggregates-reading-their-spill-files-back):
 
 - **The requesting consumer against its share.** The share is `pool_size` divided by the number of
   consumers currently registered with the pool. What the consumer already holds plus the request
@@ -313,6 +314,29 @@ Two details matter for tuning:
 This is why `fair_unified` can spill earlier than `greedy_unified`: a consumer at its share is
 refused even when the rest of the pool is free, which keeps that memory for the task's other
 consumers.
+
+### Final aggregates reading their spill files back
+
+Both pools make one exception to refusing a `try_grow` (`spill_replay.rs`). Once one of
+DataFusion 55's final aggregates has spilled, it merges its spill files and replays them through
+an aggregate that cannot spill, so a refused request during the replay fails the task.
+`FinalHashAggregateStream` does this, and so does `OrderedFinalAggregateStream`, which DataFusion
+uses when the input is sorted on some of the grouping keys. The merge reserves read buffers for as
+many spill files as fit, in a sibling reservation of the same consumer, so the replay often finds
+the consumer's share already taken. The replay asks for memory only after it has aggregated a
+batch, so the memory already exists. The pools therefore record its request the way they record a
+`grow`, past the share and the pool's total, and carry what Spark does not grant as overcommit.
+
+A pool treats a request as part of a replay when it comes from one of these consumers while
+another of the consumer's reservations holds memory. In DataFusion 55.1 that happens only while the
+replay grows and the merge holds its read buffers. Before the replay, the aggregate's table is its
+only reservation holding memory, so a refusal still makes it spill. The merge picks its files while
+nothing else is held, so a refusal still limits how many it opens.
+
+This works around [issue #6254](https://github.com/apache/datafusion-comet/issues/6254) until
+Comet's DataFusion includes
+[apache/datafusion#25383](https://github.com/apache/datafusion/pull/25383), which leaves the replay
+room when the merge picks its files.
 
 ### Task-shared pools and their lifetime
 

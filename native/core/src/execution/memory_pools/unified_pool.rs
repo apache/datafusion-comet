@@ -35,7 +35,7 @@ use parking_lot::Mutex;
 pub struct CometUnifiedMemoryPool {
     spark: SparkMemory,
     used: AtomicUsize,
-    /// Bytes held by each final hash aggregate's consumer across its reservations, keyed by
+    /// Bytes held by each final aggregate's consumer across its reservations, keyed by
     /// [`MemoryConsumer::id`], which [`spill_replay`] needs. Other consumers aren't tracked, so
     /// they never take the lock.
     final_aggregates: Mutex<HashMap<usize, usize>>,
@@ -64,9 +64,9 @@ impl CometUnifiedMemoryPool {
         self.spark.overcommit()
     }
 
-    /// Applies `update` to what `reservation`'s consumer holds, if it is a final hash aggregate.
+    /// Applies `update` to what `reservation`'s consumer holds, if it is a final aggregate.
     fn track(&self, reservation: &MemoryReservation, update: impl FnOnce(&mut usize)) {
-        if spill_replay::is_final_hash_aggregate(reservation.consumer()) {
+        if spill_replay::is_final_aggregate(reservation.consumer()) {
             if let Some(used) = self
                 .final_aggregates
                 .lock()
@@ -77,8 +77,8 @@ impl CometUnifiedMemoryPool {
         }
     }
 
-    /// Whether a refused request from `reservation` comes from a final hash aggregate reading its
-    /// spill files back, which can't spill; see [`spill_replay`].
+    /// Whether a refused request from `reservation` comes from a final aggregate reading its spill
+    /// files back, which can't spill; see [`spill_replay`].
     fn is_spill_replay(&self, reservation: &MemoryReservation) -> bool {
         let consumer_used = self
             .final_aggregates
@@ -119,13 +119,13 @@ impl MemoryPool for CometUnifiedMemoryPool {
     }
 
     fn register(&self, consumer: &MemoryConsumer) {
-        if spill_replay::is_final_hash_aggregate(consumer) {
+        if spill_replay::is_final_aggregate(consumer) {
             self.final_aggregates.lock().insert(consumer.id(), 0);
         }
     }
 
     fn unregister(&self, consumer: &MemoryConsumer) {
-        if spill_replay::is_final_hash_aggregate(consumer) {
+        if spill_replay::is_final_aggregate(consumer) {
             self.final_aggregates.lock().remove(&consumer.id());
         }
     }

@@ -100,9 +100,8 @@ impl CometFairMemoryPool {
         *consumer_used = consumer_used.saturating_add(additional);
     }
 
-    /// Refuses a `try_grow` with `err`, unless it comes from a final hash aggregate reading its
-    /// spill files back, which can't spill. That request is recorded instead; see
-    /// [`spill_replay`].
+    /// Refuses a `try_grow` with `err`, unless it comes from a final aggregate reading its spill
+    /// files back, which can't spill. That request is recorded instead; see [`spill_replay`].
     fn refuse(
         &self,
         state: &mut CometFairPoolState,

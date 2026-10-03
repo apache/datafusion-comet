@@ -31,7 +31,7 @@ import org.apache.spark.sql.catalyst.expressions.Cast
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.optimizer.EliminateSorts
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, RangePartitioning}
-import org.apache.spark.sql.comet.{CometFilterExec, CometHashAggregateExec, CometNativeExec, CometProjectExec}
+import org.apache.spark.sql.comet.{CometFilterExec, CometHashAggregateExec, CometNativeExec, CometProjectExec, CometSortExec}
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.SQLExecution
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AdaptiveSparkPlanHelper, ShuffleQueryStageExec}
@@ -183,6 +183,57 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         assert(
           finalAggregates.nonEmpty,
           s"Expected a native final aggregate:\n${df.queryExecution.executedPlan}")
+        assert(
+          finalAggregates.forall(_.metrics("spill_count").value > 0),
+          "The final aggregate did not spill")
+      }
+    }
+  }
+
+  test("ordered final aggregate that has spilled reads its spill files back (issue #6254)") {
+    withTempPath { dir =>
+      val path = dir.getCanonicalPath
+      spark
+        .range(0, 125000, 1, 1)
+        .selectExpr("0L AS g", "lpad(cast(id % 62500 AS STRING), 128, 'k') AS k", "id AS v")
+        .write
+        .parquet(path)
+      // Sorting on g, the first grouping key, makes DataFusion run the final aggregate as an
+      // OrderedFinalAggregateStream, which spills and reads its spill files back the same way.
+      // Spark drops a sort under an aggregate unless EliminateSorts is excluded. With a 2.5 MiB
+      // pool, merging the runs takes nearly all of the aggregate's share. The sort's merge
+      // reservation is lowered so that the sort fits in the pool too.
+      withSQLConf(
+        SQLConf.OPTIMIZER_EXCLUDED_RULES.key -> EliminateSorts.ruleName,
+        CometConf.COMET_BATCH_SIZE.key -> "1024",
+        CometConf.COMET_RESPECT_DATAFUSION_CONFIGS.key -> "true",
+        "spark.comet.datafusion.execution.sort_spill_reservation_bytes" -> "65536",
+        CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key -> (2.5 / 2048).toString) {
+        val df = spark.read
+          .parquet(path)
+          .repartition(1, col("g"))
+          .sortWithinPartitions("g")
+          .groupBy("g", "k")
+          .agg(expr("count(1)"), expr("max(v)"))
+        val expected = (0 until 62500).map { i =>
+          val key = i.toString
+          Row(0L, "k" * (128 - key.length) + key, 2L, i + 62500L)
+        }
+        // checkAnswer would compare the rows in order, because the plan has a sort. Collecting runs
+        // the query once, so the plan read below is the one that ran.
+        QueryTest.sameRows(expected, df.collect().toSeq).foreach(fail(_))
+
+        val plan = df.queryExecution.executedPlan
+        val finalAggregates = collect(plan) {
+          case aggregate: CometHashAggregateExec if aggregate.modes.contains(Final) => aggregate
+        }
+        // Only a sort in the same native plan keeps the final aggregate's input sorted.
+        assert(
+          finalAggregates.exists(_.child match {
+            case partial: CometHashAggregateExec => partial.child.isInstanceOf[CometSortExec]
+            case _ => false
+          }),
+          s"Expected a native final aggregate over a partial aggregate over a sort:\n$plan")
         assert(
           finalAggregates.forall(_.metrics("spill_count").value > 0),
           "The final aggregate did not spill")
