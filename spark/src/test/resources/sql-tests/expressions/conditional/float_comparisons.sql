@@ -40,18 +40,21 @@ INSERT INTO float_cmp VALUES
   (6, double('Infinity'), float('Infinity')),
   (7, NULL, NULL)
 
--- Project
+-- Project. `IS DISTINCT FROM` is `NOT (a <=> b)`, which Comet plans as one native operator.
 query
-SELECT id, -d = d, -d <=> d, -d < d, -d <= d, -d > d, -d >= d, -d != d FROM float_cmp
+SELECT id, -d = d, -d <=> d, -d < d, -d <= d, -d > d, -d >= d, -d != d, -d IS DISTINCT FROM d
+FROM float_cmp
 
 query
-SELECT id, -f = f, -f <=> f, -f < f, -f <= f, -f > f, -f >= f, -f != f FROM float_cmp
+SELECT id, -f = f, -f <=> f, -f < f, -f <= f, -f > f, -f >= f, -f != f, -f IS DISTINCT FROM f
+FROM float_cmp
 
 -- Comparisons against a constant on either side. `-0.0D` and `-0.0F` are literals with the sign
 -- bit set, while `double('NaN')` is a cast, because the suite turns off constant folding.
 query
 SELECT id, -d > 0.0D, -d >= -0.0D, -0.0D = d, -d = double('NaN'), double('NaN') <= -d,
-  -d < double('-0.0'), -f > 0.0F, -0.0F <=> f, -f = float('NaN'), float('-0.0') >= -f
+  -d < double('-0.0'), -d IS DISTINCT FROM double('NaN'), -0.0D IS DISTINCT FROM d,
+  -f > 0.0F, -0.0F <=> f, -f = float('NaN'), float('-0.0') >= -f
 FROM float_cmp
 
 -- Filter
@@ -81,7 +84,9 @@ SELECT sum(if(-d > 0.0D, 1, 0)), sum(if(-d = d, 1, 0)), sum(if(-f < f, 1, 0)) FR
 
 -- Aggregate FILTER clause
 query
-SELECT count(*) FILTER (WHERE -d >= d), count(*) FILTER (WHERE -f <=> f) FROM float_cmp
+SELECT count(*) FILTER (WHERE -d >= d), count(*) FILTER (WHERE -f <=> f),
+  count(*) FILTER (WHERE -d IS DISTINCT FROM d)
+FROM float_cmp
 
 -- Grouping by a comparison
 query
@@ -141,18 +146,62 @@ INSERT INTO float_cmp_nested VALUES
   (5, NULL, array(0.0D), NULL, named_struct('v', 0.0D), NULL, array(float('0.0')))
 
 query
-SELECT id, a = b, a <=> b, a < b, a <= b, a > b, a >= b FROM float_cmp_nested
+SELECT id, a = b, a <=> b, a < b, a <= b, a > b, a >= b, a IS DISTINCT FROM b
+FROM float_cmp_nested
 
 query
-SELECT id, s = u, s <=> u, s < u, s <= u, s > u, s >= u FROM float_cmp_nested
+SELECT id, s = u, s <=> u, s < u, s <= u, s > u, s >= u, s IS DISTINCT FROM u
+FROM float_cmp_nested
 
 query
-SELECT id, x = y, x <=> y, x < y, x <= y, x > y, x >= y FROM float_cmp_nested
+SELECT id, x = y, x <=> y, x < y, x <= y, x > y, x >= y, x IS DISTINCT FROM y
+FROM float_cmp_nested
 
 -- Negating the elements gives the NaN in row 2 the sign bit
 query
-SELECT id, transform(a, e -> -e) < b, transform(a, e -> -e) <=> a FROM float_cmp_nested
+SELECT id, transform(a, e -> -e) < b, transform(a, e -> -e) <=> a,
+  transform(a, e -> -e) IS DISTINCT FROM a
+FROM float_cmp_nested
 
 -- Nested comparisons outside Project and Filter
 query
 SELECT sum(if(a < b, 1, 0)), count(*) FILTER (WHERE s <=> u) FROM float_cmp_nested
+
+-- Floats two levels deep, in an array of structs and in a struct of arrays
+statement
+CREATE TABLE float_cmp_deep(
+  id INT,
+  a ARRAY<STRUCT<v: DOUBLE>>, b ARRAY<STRUCT<v: DOUBLE>>,
+  s STRUCT<a: ARRAY<DOUBLE>>, u STRUCT<a: ARRAY<DOUBLE>>) USING parquet
+
+statement
+INSERT INTO float_cmp_deep VALUES
+  (1, array(named_struct('v', double('-0.0'))), array(named_struct('v', 0.0D)),
+    named_struct('a', array(double('-0.0'))), named_struct('a', array(0.0D))),
+  (2, array(named_struct('v', double('NaN'))), array(named_struct('v', double('Infinity'))),
+    named_struct('a', array(double('NaN'))), named_struct('a', array(double('Infinity')))),
+  (3, array(named_struct('v', 1.0D), named_struct('v', NULL)),
+    array(named_struct('v', 1.0D), named_struct('v', 2.0D)),
+    named_struct('a', array(1.0D, NULL)), named_struct('a', array(1.0D, 2.0D))),
+  (4, array(named_struct('v', 1.0D)),
+    array(named_struct('v', 1.0D), named_struct('v', double('-0.0'))),
+    named_struct('a', NULL), named_struct('a', array(double('-0.0')))),
+  (5, NULL, array(named_struct('v', 0.0D)), NULL, named_struct('a', array(0.0D)))
+
+query
+SELECT id, a = b, a <=> b, a < b, a <= b, a > b, a >= b, a IS DISTINCT FROM b
+FROM float_cmp_deep
+
+query
+SELECT id, s = u, s <=> u, s < u, s <= u, s > u, s >= u, s IS DISTINCT FROM u
+FROM float_cmp_deep
+
+-- Negating the leaves gives the NaN in row 2 the sign bit
+query
+SELECT id, transform(a, e -> named_struct('v', -e.v)) < b,
+  transform(a, e -> named_struct('v', -e.v)) <=> a,
+  named_struct('a', transform(s.a, e -> -e)) <=> s
+FROM float_cmp_deep
+
+query
+SELECT sum(if(a < b, 1, 0)), count(*) FILTER (WHERE s <=> u) FROM float_cmp_deep

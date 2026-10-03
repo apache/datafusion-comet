@@ -1584,12 +1584,14 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
   test("row-group statistics pruning fires for a floating-point comparison") {
     // Native comparisons normalize float operands to follow Spark's ordering, which pruning
     // cannot see through. A scan's data filters are built without that normalization, so they
-    // still prune, and the Filter above the scan applies Spark's semantics to the rows.
+    // still prune, and the Filter above the scan applies Spark's semantics to the rows. Spark
+    // orders NaN above every other value, so `d > 500.0D` matches the NaN in the first row
+    // group even though every other value there is smaller: pruning must keep that row group.
     withTempPath { dir =>
       withSQLConf(SQLConf.LEAF_NODE_DEFAULT_PARALLELISM.key -> "1") {
         spark
           .range(0, 1000)
-          .selectExpr("CAST(id AS DOUBLE) AS d")
+          .selectExpr("IF(id = 10, double('NaN'), CAST(id AS DOUBLE)) AS d")
           .repartition(1)
           .write
           .option("parquet.block.size", "1024")
@@ -1619,6 +1621,7 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
           pruned > 0 && pruned + matched == numRowGroups,
           "Row-group statistics pruning did not fire " +
             s"(pruned=$pruned, matched=$matched of $numRowGroups total)")
+        assert(df.collect().exists(_.getDouble(0).isNaN), "The NaN row was filtered out")
       }
     }
   }
