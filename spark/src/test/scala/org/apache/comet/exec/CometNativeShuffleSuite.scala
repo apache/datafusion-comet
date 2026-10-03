@@ -1332,6 +1332,24 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
     }
   }
 
+  test("native shuffle: spill metadata can exceed the fair memory limit") {
+    withParquetTable((0 until 1000).map(i => (i, i.toLong)), "tbl") {
+      withSQLConf(
+        CometConf.COMET_OFFHEAP_MEMORY_POOL_TYPE.key -> "fair_unified",
+        CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key -> "0.00000001",
+        CometConf.COMET_BATCH_SIZE.key -> "64") {
+        // The fair allowance is smaller than the range table itself. Every input batch spills,
+        // but recording spill metadata must still succeed and preserve every output row.
+        val shuffled = sql("SELECT * FROM tbl").repartition(10, $"_1")
+        checkShuffleAnswer(shuffled, 1)
+        shuffled.collect()
+        assert(collectFirst(shuffled.queryExecution.executedPlan) {
+          case e: CometShuffleExchangeExec => e.metrics("spill_count").value
+        }.exists(_ > 0))
+      }
+    }
+  }
+
   test("native shuffle: round robin partitioning") {
     withSQLConf(CometConf.COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_ENABLED.key -> "true") {
       withParquetTable((0 until 100).map(i => (i, (i + 1).toLong, s"str$i")), "tbl") {
