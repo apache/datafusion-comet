@@ -19,7 +19,6 @@
 
 package org.apache.spark.sql.comet.execution.arrow
 
-import java.nio.ByteOrder
 import java.nio.charset.StandardCharsets
 
 import scala.collection.mutable.ArrayBuffer
@@ -170,7 +169,7 @@ class CometArrowStreamSuite extends AnyFunSuite with Matchers {
     }
   }
 
-  test("bulk copy dispatch handles heap, off-heap, slices, and dictionary fallback") {
+  test("fixed-width slices skip per-value setters for heap, off-heap, slices and dictionaries") {
     val allocator = new RootAllocator(Long.MaxValue)
     val startRow = 3
     val numRows = 32
@@ -188,11 +187,7 @@ class CometArrowStreamSuite extends AnyFunSuite with Matchers {
       }
     }
 
-    def check(
-        input: ColumnVector,
-        rows: Int,
-        expected: Int => Long,
-        expectedScalarWrites: Int): Unit = {
+    def check(input: ColumnVector, rows: Int, expected: Int => Long): Unit = {
       val output = new BigIntVector("long", allocator)
       output.allocateNew(rows)
       val writer = new CountingLongWriter(output)
@@ -200,7 +195,7 @@ class CometArrowStreamSuite extends AnyFunSuite with Matchers {
         writer.writeColumnSlice(input, startRow, rows)
         writer.finish()
 
-        writer.scalarWrites shouldBe expectedScalarWrites
+        writer.scalarWrites shouldBe 0
         output.getValueCount shouldBe rows
         var i = 0
         while (i < rows) {
@@ -221,11 +216,11 @@ class CometArrowStreamSuite extends AnyFunSuite with Matchers {
         i += 1
       }
 
-      def scalarWrites(rows: Int): Int =
-        if (rows < 32 || ByteOrder.nativeOrder() != ByteOrder.LITTLE_ENDIAN) rows else 0
-      check(onHeap, numRows, i => 1000L + startRow + i, scalarWrites(numRows))
-      check(offHeap, numRows, i => 2000L + startRow + i, scalarWrites(numRows))
-      check(onHeap, numRows - 1, i => 1000L + startRow + i, scalarWrites(numRows - 1))
+      // Large on-heap slices are bulk copied and smaller ones read value by value, both without
+      // going through Arrow's per-value setters.
+      check(onHeap, numRows, i => 1000L + startRow + i)
+      check(offHeap, numRows, i => 2000L + startRow + i)
+      check(onHeap, numRows - 1, i => 1000L + startRow + i)
 
       dictionary.setDictionary(new Dictionary {
         override def decodeToInt(id: Int): Int = id
@@ -240,7 +235,7 @@ class CometArrowStreamSuite extends AnyFunSuite with Matchers {
         dictionaryIds.putInt(i, i)
         i += 1
       }
-      check(dictionary, numRows, i => 3000L + startRow + i, numRows)
+      check(dictionary, numRows, i => 3000L + startRow + i)
     } finally {
       onHeap.close()
       offHeap.close()
@@ -284,8 +279,7 @@ class CometArrowStreamSuite extends AnyFunSuite with Matchers {
 
         try {
           writer.writeColumnSlice(input, 0, numRows)
-          writer.scalarWrites shouldBe
-            (if (ByteOrder.nativeOrder() == ByteOrder.LITTLE_ENDIAN) 0 else numRows)
+          writer.scalarWrites shouldBe 0
         } finally {
           input.close()
           output.close()
@@ -816,6 +810,63 @@ class CometArrowStreamSuite extends AnyFunSuite with Matchers {
     } finally {
       reader.close()
       input.close()
+      allocator.close()
+    }
+  }
+
+  test("Spark columnar reader fills batches across reused input batches") {
+    val allocator = new RootAllocator(Long.MaxValue)
+    val schema = StructType(Seq(StructField("long", LongType), StructField("string", StringType)))
+    // One pair of vectors refilled for every batch, as Spark's vectorized readers reuse theirs.
+    val longs = new OnHeapColumnVector(4, LongType)
+    val strings = new OnHeapColumnVector(4, StringType)
+    val sizes = Seq(3, 4, 1, 4, 2)
+    var next = 0L
+    val source = sizes.iterator.map { size =>
+      longs.reset()
+      strings.reset()
+      (0 until size).foreach { i =>
+        if (next % 5 == 0) {
+          longs.putNull(i)
+          strings.putNull(i)
+        } else {
+          longs.putLong(i, next)
+          strings.putByteArray(i, s"s$next".getBytes(StandardCharsets.UTF_8))
+        }
+        next += 1
+      }
+      new ColumnarBatch(Array[ColumnVector](longs, strings), size)
+    }
+    val reader = new SparkColumnarArrowReader(
+      allocator,
+      Utils.toArrowSchema(schema, "UTC"),
+      source,
+      maxRecordsPerBatch = 5)
+
+    try {
+      var expected = 0L
+      Seq(5, 5, 4).foreach { batchSize =>
+        reader.loadNextBatch() shouldBe true
+        val root = reader.getVectorSchemaRoot
+        root.getRowCount shouldBe batchSize
+        val outLongs = root.getVector(0).asInstanceOf[BigIntVector]
+        val outStrings = root.getVector(1).asInstanceOf[VarCharVector]
+        (0 until batchSize).foreach { i =>
+          outLongs.isNull(i) shouldBe (expected % 5 == 0)
+          outStrings.isNull(i) shouldBe (expected % 5 == 0)
+          if (expected % 5 != 0) {
+            outLongs.get(i) shouldBe expected
+            new String(outStrings.get(i), StandardCharsets.UTF_8) shouldBe s"s$expected"
+          }
+          expected += 1
+        }
+      }
+      reader.loadNextBatch() shouldBe false
+      expected shouldBe sizes.sum
+    } finally {
+      reader.close()
+      longs.close()
+      strings.close()
       allocator.close()
     }
   }
