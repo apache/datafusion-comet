@@ -24,6 +24,7 @@ import java.util.Locale
 import scala.collection.mutable
 import scala.collection.mutable.ListBuffer
 
+import org.apache.spark.sql.comet.util.Utils.isVariantType
 import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
 import org.apache.spark.sql.types._
 
@@ -130,6 +131,26 @@ object DataTypeSupport {
   def hasDuplicateFieldIds(fields: Array[StructField]): Boolean = {
     val ids = fields.flatMap(fieldId)
     ids.distinct.length != ids.length
+  }
+
+  /**
+   * True when a struct, array, map or Variant field anywhere in `schema` declares a Parquet field
+   * id, including one nested under an array element or a map key or value. The native reader sees
+   * each of these as a struct, list or map field.
+   *
+   * Only meaningful under `spark.sql.parquet.fieldId.read.enabled`; callers gate on that.
+   */
+  def hasContainerFieldIds(schema: StructType): Boolean = {
+    def check(dt: DataType): Boolean = dt match {
+      case StructType(fields) =>
+        fields.exists(f =>
+          ((isComplexType(f.dataType) || isVariantType(f.dataType)) &&
+            ParquetUtils.hasFieldId(f)) || check(f.dataType))
+      case ArrayType(elementType, _) => check(elementType)
+      case MapType(keyType, valueType, _) => check(keyType) || check(valueType)
+      case _ => false
+    }
+    check(schema)
   }
 
   private def fieldId(field: StructField): Option[Int] = {

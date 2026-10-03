@@ -51,6 +51,11 @@ The following features are not supported and cause Comet to fall back to Spark:
   Comet Parquet scan regardless.
 - A read schema that repeats a Parquet field id, at the top level or within a struct, when
   `spark.sql.parquet.fieldId.read.enabled=true`.
+- A read schema with a Parquet field id on a struct, array, map or Variant field, at any depth,
+  when `spark.sql.parquet.fieldId.read.enabled=true`. Ids on other fields, including fields
+  nested inside a struct, array or map, are still matched natively. This fallback is temporary,
+  until Comet moves to a DataFusion release with the fix
+  ([#6131](https://github.com/apache/datafusion-comet/issues/6131)).
 - A read schema with sibling struct fields whose names collide case-insensitively, when
   `spark.sql.caseSensitive=false`. Spark's analyzer normally rejects such a schema before the scan
   is planned.

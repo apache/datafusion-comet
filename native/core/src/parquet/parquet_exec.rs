@@ -620,6 +620,86 @@ mod tests {
         assert_eq!(global.coerce_int96_tz, Some("UTC".to_string()));
     }
 
+    // The INT96 coercion set above rebuilds struct, list and map fields without their metadata,
+    // so their field ids are lost while leaf ids survive (#6131). CometScanRule falls back to
+    // Spark for field ids on those fields because of it. When this fails, DataFusion carries
+    // apache/datafusion#24790: remove that fallback and put the container ids back in these
+    // ParquetReadSuite tests: "read nested types by Parquet field id when names differ",
+    // "nested field ids resolve by id below struct, list and map, not by position", "duplicate
+    // field id inside a struct is rejected when a requested id matches two fields" and "ids on
+    // repeated list and key_value groups count as file ids".
+    #[test]
+    fn int96_coercion_drops_container_field_ids() {
+        use crate::parquet::parquet_support::field_id;
+        use arrow::datatypes::{FieldRef, TimeUnit};
+        use datafusion::datasource::physical_plan::parquet::Int96Coercer;
+        use parquet::arrow::parquet_to_arrow_schema;
+        use parquet::schema::parser::parse_message_type;
+        use parquet::schema::types::SchemaDescriptor;
+
+        fn ids_in_pre_order(fields: &[FieldRef], ids: &mut Vec<Option<i32>>) {
+            for field in fields {
+                ids.push(field_id(field));
+                match field.data_type() {
+                    DataType::Struct(children) => ids_in_pre_order(children, ids),
+                    DataType::List(child) | DataType::Map(child, _) => {
+                        ids_in_pre_order(std::slice::from_ref(child), ids)
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let ids = |schema: &Schema| {
+            let mut ids = Vec::new();
+            ids_in_pre_order(schema.fields(), &mut ids);
+            ids
+        };
+
+        // Pre-order: s, a, ts, l, element, m, key_value, key, value.
+        let message = "message schema {
+            optional group s = 1 { optional int32 a = 2; optional int96 ts; }
+            optional group l (LIST) = 3 { repeated group list { optional int96 element = 4; } }
+            optional group m (MAP) = 5 {
+                repeated group key_value { required binary key (STRING); optional int32 value = 6; }
+            }
+        }";
+        let descriptor = SchemaDescriptor::new(Arc::new(parse_message_type(message).unwrap()));
+        let file_schema = parquet_to_arrow_schema(&descriptor, None).unwrap();
+        assert_eq!(
+            ids(&file_schema),
+            [
+                Some(1),
+                Some(2),
+                None,
+                Some(3),
+                Some(4),
+                Some(5),
+                None,
+                None,
+                Some(6)
+            ]
+        );
+
+        let coerced = Int96Coercer::new(&descriptor, &file_schema, &TimeUnit::Microsecond)
+            .with_timezone(Some(Arc::from("UTC")))
+            .coerce()
+            .unwrap();
+        assert_eq!(
+            ids(&coerced),
+            [
+                None,
+                Some(2),
+                None,
+                None,
+                Some(4),
+                None,
+                None,
+                None,
+                Some(6)
+            ]
+        );
+    }
+
     // Regression test for #3978: DataFusion's opener requests `PageIndexPolicy::Skip` on the
     // initial metadata load and only loads the page index later, on demand, when row-group
     // pruning shows it is still needed (apache/datafusion#22857). That on-demand load bypasses
