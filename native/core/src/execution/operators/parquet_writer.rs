@@ -220,18 +220,9 @@ impl ParquetWriter {
 pub struct ParquetWriterExec {
     /// Input execution plan
     input: Arc<dyn ExecutionPlan>,
-    /// Where this task writes. When `work_dir` is set (the Spark 3.x `CometNativeWriteExec`
-    /// path) this is the write's output directory and is unused; the file name is derived from
-    /// `work_dir`. Otherwise (Spark 4.0+, `CometWriteFilesExec`) it is the exact path of the file
-    /// to write, chosen by the JVM commit protocol and used verbatim - this operator then never
-    /// derives file names of its own.
+    /// The exact path of the file this task writes, chosen by Spark's commit protocol on the JVM
+    /// side and used verbatim - this operator never derives file names of its own.
     output_path: String,
-    /// Working directory for temporary files (used by FileCommitProtocol). Spark 3.x only.
-    work_dir: Option<String>,
-    /// Job ID for tracking this write operation
-    job_id: Option<String>,
-    /// Task attempt ID for this specific task
-    task_attempt_id: Option<i32>,
     /// Compression codec
     compression: ParquetCompression,
     /// Partition ID (from Spark TaskContext)
@@ -254,9 +245,6 @@ impl ParquetWriterExec {
     pub fn try_new(
         input: Arc<dyn ExecutionPlan>,
         output_path: String,
-        work_dir: Option<String>,
-        job_id: Option<String>,
-        task_attempt_id: Option<i32>,
         compression: ParquetCompression,
         partition_id: i32,
         column_names: Vec<String>,
@@ -276,9 +264,6 @@ impl ParquetWriterExec {
         Ok(ParquetWriterExec {
             input,
             output_path,
-            work_dir,
-            job_id,
-            task_attempt_id,
             compression,
             partition_id,
             column_names,
@@ -464,9 +449,6 @@ impl ExecutionPlan for ParquetWriterExec {
             1 => Ok(Arc::new(ParquetWriterExec::try_new(
                 Arc::clone(&children[0]),
                 self.output_path.clone(),
-                self.work_dir.clone(),
-                self.job_id.clone(),
-                self.task_attempt_id,
                 self.compression.clone(),
                 self.partition_id,
                 self.column_names.clone(),
@@ -494,8 +476,6 @@ impl ExecutionPlan for ParquetWriterExec {
         let runtime_env = context.runtime_env();
         let input = self.input.execute(partition, context)?;
         let input_schema = self.input.schema();
-        let work_dir = self.work_dir.clone();
-        let task_attempt_id = self.task_attempt_id;
         let compression = self.compression.to_parquet()?;
         let column_names = self.column_names.clone();
 
@@ -514,19 +494,8 @@ impl ExecutionPlan for ParquetWriterExec {
             Arc::new(Schema::new(fields))
         });
 
-        let part_file = match &work_dir {
-            // Spark 4.0+ hands over the exact file to write, chosen by the JVM commit protocol.
-            None => self.output_path.clone(),
-            // Spark 3.x hands over a working directory instead and expects the writer to name the
-            // file; that branch goes away with Spark 3.x support.
-            Some(work_dir) => match task_attempt_id {
-                Some(attempt_id) => format!(
-                    "{}/part-{:05}-{:05}.parquet",
-                    work_dir, self.partition_id, attempt_id
-                ),
-                None => format!("{}/part-{:05}.parquet", work_dir, self.partition_id),
-            },
-        };
+        // The JVM commit protocol has already chosen the exact file to write.
+        let part_file = self.output_path.clone();
 
         // Configure writer properties
         let props = WriterProperties::builder()
@@ -654,11 +623,10 @@ mod tests {
         );
     }
 
-    /// Spark 4.0+ hands over the exact file to write rather than a working directory. The writer
-    /// must use that path verbatim - Spark's commit protocol owns naming and staging, and
+    /// The JVM hands over the exact file to write. The writer must use that path verbatim - Spark's commit protocol owns naming and staging, and
     /// committers that track individual files depend on the name it chose.
     #[tokio::test]
-    async fn test_parquet_writer_uses_output_path_verbatim_without_work_dir() -> Result<()> {
+    async fn test_parquet_writer_uses_output_path_verbatim() -> Result<()> {
         let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, true)]));
         let batch = RecordBatch::try_new(
             Arc::clone(&schema),
@@ -675,9 +643,6 @@ mod tests {
         let writer = ParquetWriterExec::try_new(
             input,
             output_path,
-            None, // work_dir: Spark 4.0+ path
-            None,
-            None,
             ParquetCompression::None,
             // A non-zero partition id must not leak into the file name.
             3,
@@ -742,13 +707,10 @@ mod tests {
         let memory_source = MemorySourceConfig::try_new(&[vec![batch]], input_schema, None)?;
         let input = Arc::new(DataSourceExec::new(Arc::new(memory_source)));
         let temp_dir = tempfile::tempdir()?;
-        let work_dir = format!("file://{}", temp_dir.path().display());
+        let output_path = format!("file://{}/part-00000.parquet", temp_dir.path().display());
         let writer = ParquetWriterExec::try_new(
             input,
-            work_dir.clone(),
-            Some(work_dir),
-            None,
-            None,
+            output_path,
             ParquetCompression::None,
             0,
             vec!["required_id".to_string(), "values".to_string()],
@@ -811,13 +773,10 @@ mod tests {
         let memory_source = MemorySourceConfig::try_new(&[vec![batch]], input_schema, None)?;
         let input = Arc::new(DataSourceExec::new(Arc::new(memory_source)));
         let temp_dir = tempfile::tempdir()?;
-        let work_dir = format!("file://{}", temp_dir.path().display());
+        let output_path = format!("file://{}/part-00000.parquet", temp_dir.path().display());
         let writer = ParquetWriterExec::try_new(
             input,
-            work_dir.clone(),
-            Some(work_dir),
-            None,
-            None,
+            output_path,
             ParquetCompression::None,
             0,
             vec!["values".to_string()],
@@ -1068,16 +1027,14 @@ mod tests {
         let memory_exec = Arc::new(DataSourceExec::new(Arc::new(memory_source_config)));
 
         // Create ParquetWriterExec with DataSourceExec as input
-        let output_path = "unused".to_string();
-        let work_dir = "hdfs://namenode:9000/user/test_parquet_writer_exec".to_string();
+        let output_path =
+            "hdfs://namenode:9000/user/test_parquet_writer_exec/part-00000-00123.parquet"
+                .to_string();
         let column_names = vec!["id".to_string(), "name".to_string()];
 
         let parquet_writer = ParquetWriterExec::try_new(
             memory_exec,
             output_path,
-            Some(work_dir),
-            None,      // job_id
-            Some(123), // task_attempt_id
             ParquetCompression::None,
             0, // partition_id
             column_names,
