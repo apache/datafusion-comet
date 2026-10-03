@@ -122,12 +122,12 @@ natively on `BroadcastHashJoinExec` and `ShuffledHashJoinExec`. Existence sort-m
 
 ## Generators and set operations
 
-| Operator       | Status | Notes                                                                                                            |
-| -------------- | ------ | ---------------------------------------------------------------------------------------------------------------- |
-| `GenerateExec` | ✅     | Supports `explode`, `explode_outer`, `posexplode`, `posexplode_outer` over arrays. `inline` / `stack` fall back. |
-| `ExpandExec`   | ✅     |                                                                                                                  |
-| `UnionExec`    | ✅     |                                                                                                                  |
-| `CoalesceExec` | ✅     |                                                                                                                  |
+| Operator       | Status | Notes                                                                                                                     |
+| -------------- | ------ | ------------------------------------------------------------------------------------------------------------------------- |
+| `GenerateExec` | ✅     | Supports `explode`, `explode_outer`, `posexplode`, `posexplode_outer` over arrays and maps. `inline` / `stack` fall back. |
+| `ExpandExec`   | ✅     |                                                                                                                           |
+| `UnionExec`    | ✅     |                                                                                                                           |
+| `CoalesceExec` | ✅     |                                                                                                                           |
 
 ## Writes
 

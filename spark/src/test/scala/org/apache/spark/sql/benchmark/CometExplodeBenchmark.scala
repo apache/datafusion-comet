@@ -22,6 +22,8 @@ package org.apache.spark.sql.benchmark
 import java.io.File
 
 import org.apache.spark.sql.catalyst.optimizer.InferFiltersFromGenerate
+import org.apache.spark.sql.catalyst.plans.logical.Generate
+import org.apache.spark.sql.comet.CometExplodeExec
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
@@ -59,11 +61,8 @@ import org.apache.comet.CometConf
  * processes. Worth knowing when reading these numbers: real queries do get that filter, so a
  * plain `explode` in production usually sees an array column with no nulls and no empty rows.
  *
- * Only array inputs are covered. Comet declines to convert a generator over a map
- * (https://github.com/apache/datafusion-comet/issues/2837), so the Comet arm of such a case would
- * be Spark's `GenerateExec` behind a columnar-to-row transition and its timing would say nothing
- * about `CometExplodeExec`. The nesting group below therefore reaches its event list through an
- * `array<struct<...>>` where a map would be the more natural modeling choice.
+ * Map cases consume both keys and values. The nesting group models event lists as a map keyed by
+ * platform, including a second generator over the entries in each map value.
  */
 object CometExplodeBenchmark extends CometBenchmarkBase {
 
@@ -109,6 +108,11 @@ object CometExplodeBenchmark extends CometBenchmarkBase {
        |END""".stripMargin
   }
 
+  /** Maps with the same NULL/empty distribution as the array cases and ordered platform keys. */
+  private def mapColumn(elementExpr: String, len: Int): String =
+    s"map_from_arrays(${arrayColumn("concat('p_', CAST(x AS STRING))", len)}, " +
+      s"${arrayColumn(elementExpr, len)})"
+
   /**
    * Types `expr` as nullable without ever evaluating to null, `guard` being a predicate that is
    * never true.
@@ -153,20 +157,19 @@ object CometExplodeBenchmark extends CometBenchmarkBase {
       |  'page', concat('page_', CAST(id + y AS STRING)),
       |  'source', concat('src_', CAST(id % 4 AS STRING)))""".stripMargin
 
-  /** One platform's event list, the element of the array the nesting group explodes. */
+  /** One platform's event list, the value of the map the nesting group explodes. */
   private val eventStruct =
     s"""named_struct(
-       |  'platform', concat('p_', CAST(x AS STRING)),
        |  'entries', ${fullArray(entryStruct, entriesLen, "y")})""".stripMargin
 
-  private val eventsArray = arrayColumn(eventStruct, eventsLen)
+  private val eventsMap = mapColumn(eventStruct, eventsLen)
 
-  /** [[eventsArray]] wrapped in the struct chain that puts it eight accessors down. */
+  /** [[eventsMap]] wrapped in the struct chain that puts it eight accessors down. */
   private val profileColumn = {
     val sessions =
       s"""named_struct(
          |  'device', named_struct('type', 'mobile', 'os', 'iOS'),
-         |  'events', $eventsArray)""".stripMargin
+         |  'events', $eventsMap)""".stripMargin
     val account = accountPath.foldRight(s"named_struct('sessions', $sessions)") {
       (field, inner) => s"named_struct('$field', $inner)"
     }
@@ -179,16 +182,19 @@ object CometExplodeBenchmark extends CometBenchmarkBase {
   /**
    * The temp views the benchmark reads.
    *
-   * Each array column gets its own view rather than sharing one wide table, so that a case is
-   * never charged for scanning an array column it does not read. The nesting group is the
-   * exception: `events` and `profile` hold the same array at two different depths, and keeping
-   * them in one view is what makes them the same array. Nested schema pruning stops either case
-   * from reading the other's copy.
+   * Each collection column gets its own view rather than sharing one wide table, so that a case
+   * is never charged for scanning a column it does not read. The nesting group is the exception:
+   * `events` and `profile` hold the same map at two different depths, and keeping them in one
+   * view is what makes them the same map. Nested schema pruning stops either case from reading
+   * the other's copy.
    */
   private val views: Seq[TempView] = Seq(
     TempView("arr_len2", numRows, Seq(s"${arrayColumn("id + x", 2)} AS arr")),
     TempView("arr_len10", numRows, Seq(s"${arrayColumn("id + x", 10)} AS arr")),
     TempView("arr_len100", numRows, Seq(s"${arrayColumn("id + x", 100)} AS arr")),
+    TempView("map_len2", numRows, Seq(s"${mapColumn("id + x", 2)} AS m")),
+    TempView("map_len10", numRows, Seq(s"${mapColumn("id + x", 10)} AS m")),
+    TempView("map_len100", numRows, Seq(s"${mapColumn("id + x", 100)} AS m")),
     TempView("arr_str10", numRows, Seq(s"${arrayColumn(stringElement, 10)} AS arr")),
     TempView(
       "arr_struct10",
@@ -208,7 +214,7 @@ object CometExplodeBenchmark extends CometBenchmarkBase {
       Seq(
         s"${nullableExpr("id", "id < 0")} AS k",
         s"${nullableExpr("concat('r_', CAST(id % 8 AS STRING))", "id < 0")} AS region",
-        s"$eventsArray AS events",
+        s"$eventsMap AS events",
         s"$profileColumn AS profile")))
 
   /** Writes a view's rows to Parquet and registers it. */
@@ -219,8 +225,8 @@ object CometExplodeBenchmark extends CometBenchmarkBase {
   }
 
   /**
-   * A case that applies `generator` to `arrayExpr` over `view`, carries `carried` through the
-   * generator alongside it, and aggregates every column that comes out.
+   * A case that applies `generator` to `collectionExpr` over `view`, carries `carried` through
+   * the generator alongside it, and aggregates every column that comes out.
    *
    * The position column of the `posexplode` variants is summed rather than counted, because
    * counting it does not read a position. `pos` is declared non-null, so `NullPropagation`
@@ -230,24 +236,26 @@ object CometExplodeBenchmark extends CometBenchmarkBase {
    * `ListPositionsExpr` and unnests it alongside the values — so a sink that ignores them is not
    * measuring the generator it names. `sum` over the same column is value-dependent.
    *
-   * Everything else is counted rather than summed: the element type varies across these cases and
-   * most of the element types cannot be summed, and unlike `pos` the generated column is nullable
-   * everywhere, so the count is not rewritten away.
+   * Map keys are also non-nullable. Sum their lengths to keep the key column in the plan and
+   * consume its bytes. Values and carried columns are nullable and counted, since the value types
+   * vary and most cannot be summed.
    */
   private def generatorCase(
       generator: String,
       view: String,
       len: Int,
       rows: Int = numRows,
-      arrayExpr: String = "arr",
+      collectionExpr: String = "arr",
+      mapInput: Boolean = false,
       carried: Seq[String] = Nil,
       where: Option[String] = None): Case = {
     val position = generator.startsWith("posexplode")
-    val generated = if (position) Seq("pos", "col") else Seq("col")
+    val values = if (mapInput) Seq("key", "col") else Seq("col")
+    val generated = if (position) "pos" +: values else values
     val alias =
       if (generated.length == 1) s"AS ${generated.head}"
       else generated.mkString("AS (", ", ", ")")
-    val projectList = (carried :+ s"$generator($arrayExpr) $alias").mkString(", ")
+    val projectList = (carried :+ s"$generator($collectionExpr) $alias").mkString(", ")
     val filter = where.map(w => s" WHERE $w").getOrElse("")
     val aggregates = (carried ++ generated).map(aggregate)
     val query =
@@ -262,14 +270,20 @@ object CometExplodeBenchmark extends CometBenchmarkBase {
       // Positions run 0 until len on every row that emits, and are null on the rows only an
       // outer variant emits, which `sum` skips.
       case "pos" => elements * (len - 1) / 2
+      case "key" => nonEmptyRows(rows) * (1 to len).map(i => s"p_$i".length.toLong).sum
       case _ => elements
     }
     Case(query, expected)
   }
 
-  /** See [[generatorCase]] for why `pos` alone is summed. */
-  private def aggregate(column: String): String =
-    if (column == "pos") s"sum($column)" else s"count($column)"
+  /**
+   * Map keys are non-nullable, so consume their bytes rather than letting count become count(1).
+   */
+  private def aggregate(column: String): String = column match {
+    case "pos" => s"sum($column)"
+    case "key" | "platform" => s"sum(length($column))"
+    case _ => s"count($column)"
+  }
 
   /**
    * Runs `query` under both engines, untimed, and fails unless each produces exactly `expected`.
@@ -290,7 +304,8 @@ object CometExplodeBenchmark extends CometBenchmarkBase {
       withSQLConf(
         CometConf.COMET_ENABLED.key -> cometEnabled.toString,
         CometConf.COMET_EXEC_ENABLED.key -> cometEnabled.toString) {
-        val actual = spark.sql(query).collect().head.toSeq.map {
+        val df = spark.sql(query)
+        val actual = df.collect().head.toSeq.map {
           case null => null
           case value: Number => value.longValue()
           case other => other
@@ -299,6 +314,18 @@ object CometExplodeBenchmark extends CometBenchmarkBase {
           throw new AssertionError(
             s"$name: $engine produced $actual, expected $expected. The case is not aggregating " +
               s"what it names.\n$query")
+        }
+        if (cometEnabled) {
+          val expectedGenerators = df.queryExecution.optimizedPlan.collect { case _: Generate =>
+            1
+          }.size
+          val nativeGenerators = collect(df.queryExecution.executedPlan) {
+            case e: CometExplodeExec => e
+          }.size
+          assert(
+            expectedGenerators > 0 && nativeGenerators == expectedGenerators,
+            s"$name executed $nativeGenerators of $expectedGenerators generators natively:\n" +
+              df.queryExecution.executedPlan)
         }
       }
     }
@@ -335,6 +362,24 @@ object CometExplodeBenchmark extends CometBenchmarkBase {
                 runCase(
                   s"$generator array<bigint>[10]",
                   generatorCase(generator, "arr_len10", 10))
+            }
+          }
+
+          runBenchmark("Explode - maps") {
+            Seq(2, 10, 100).foreach { len =>
+              runCase(
+                s"explode map<string,bigint>[$len]",
+                generatorCase(
+                  "explode",
+                  s"map_len$len",
+                  len,
+                  collectionExpr = "m",
+                  mapInput = true))
+            }
+            Seq("posexplode", "explode_outer", "posexplode_outer").foreach { generator =>
+              runCase(
+                s"$generator map<string,bigint>[10]",
+                generatorCase(generator, "map_len10", 10, collectionExpr = "m", mapInput = true))
             }
           }
 
@@ -382,17 +427,15 @@ object CometExplodeBenchmark extends CometBenchmarkBase {
    *
    * The shape is the one asked for in review: a customer profile whose event list sits eight
    * struct accessors down, holding a second array of four-field structs inside each element. The
-   * requested outer container was a map keyed by platform, which is where a real schema would put
-   * it; that is an `array<struct<platform, entries>>` here because Comet has no native generator
-   * over maps yet (#2837) and the Comet arm would silently be Spark.
+   * outer container is a `map<string, struct<entries: array<struct<...>>>>` keyed by platform.
    *
    * The whole event struct is counted rather than one of its fields, so nested schema pruning
    * cannot narrow the exploded element and leave the case measuring a two-column gather. It does
    * prune the siblings no case reads: on the executed plan the `depth 8` scan's `profile` column
-   * is `struct<account:struct<...sessions:struct<events:array<...>>>>` with `billing`,
-   * `addresses` and `device` gone, and the `depth 1` scan does not project `profile` at all.
+   * is `struct<account:struct<...sessions:struct<events:map<...>>>>` with `billing`, `addresses`
+   * and `device` gone, and the `depth 1` scan does not project `profile` at all.
    *
-   * `depth 1` and `depth 8` explode the same array, written twice into the same file, so the pair
+   * `depth 1` and `depth 8` explode the same map, written twice into the same file, so the pair
    * measures what the struct chain costs: extra definition levels in the Parquet column and a
    * chain of `GetStructField` above the scan. `then its inner array` chains a second generator
    * onto the first, which is the shape the review asked about; its fan-out is 20 against the
@@ -401,13 +444,14 @@ object CometExplodeBenchmark extends CometBenchmarkBase {
   private def nestedInputCases: Seq[(String, Case)] = {
     val carried = Seq("k", "region")
     val single = Seq("depth 1" -> "events", "depth 8" -> deepEvents).map { case (label, path) =>
-      s"explode array<struct>[$eventsLen] at $label" ->
+      s"explode map<string,struct>[$eventsLen] at $label" ->
         generatorCase(
           "explode",
           "nested",
           eventsLen,
           rows = nestedRows,
-          arrayExpr = path,
+          collectionExpr = path,
+          mapInput = true,
           carried = carried)
     }
 
@@ -416,13 +460,13 @@ object CometExplodeBenchmark extends CometBenchmarkBase {
     val events = nonEmptyRows(nestedRows) * eventsLen
     val entries = events * entriesLen
     val outer =
-      "SELECT k, region, ev.platform AS platform, ev.entries AS entries " +
-        s"FROM (SELECT k, region, explode($deepEvents) AS ev FROM nested)"
+      "SELECT k, region, platform, ev.entries AS entries " +
+        s"FROM (SELECT k, region, explode($deepEvents) AS (platform, ev) FROM nested)"
     val chained =
       s"SELECT ${Seq("k", "region", "platform", "entry").map(aggregate).mkString(", ")} " +
         s"FROM (SELECT k, region, platform, explode(entries) AS entry FROM ($outer))"
 
-    single :+ (s"explode array<struct>[$eventsLen] at depth 8, then its inner array" ->
-      Case(chained, Seq.fill(4)(entries)))
+    single :+ (s"explode map<string,struct>[$eventsLen] at depth 8, then its inner array" ->
+      Case(chained, Seq(entries, entries, entries * 3, entries)))
   }
 }
