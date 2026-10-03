@@ -31,16 +31,20 @@ import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.analysis.UnresolvedRelation
 import org.apache.spark.sql.catalyst.expressions.{And, AttributeReference, DynamicPruningExpression, IsNotNull}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight}
-import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometBroadcastNestedLoopJoinExec, CometFilterExec, CometHashJoinExec, CometNativeScanExec, CometSortMergeJoinExec, CometUnionExec}
+import org.apache.spark.sql.catalyst.plans.Inner
+import org.apache.spark.sql.catalyst.plans.logical.Join
+import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometBroadcastNestedLoopJoinExec, CometFilterExec, CometHashJoinExec, CometNativeScanExec, CometSortExec, CometSortMergeJoinExec, CometUnionExec}
 import org.apache.spark.sql.execution.{LocalTableScanExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec}
 import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException
 import org.apache.spark.sql.execution.exchange.{ReusedExchangeExec, ShuffleExchangeLike}
+import org.apache.spark.sql.execution.joins.{ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, IntegerType, MetadataBuilder, StructField, StructType}
 
-import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.isSpark35Plus
+import org.apache.comet.{CometConf, CometExplainInfo, ExtendedExplainInfo}
+import org.apache.comet.CometSparkSessionExtensions.{hasFallbackReason, isSpark35Plus}
+import org.apache.comet.rules.RewriteJoin
 
 class CometJoinSuite extends CometTestBase {
 
@@ -887,6 +891,199 @@ class CometJoinSuite extends CometTestBase {
           checkSparkAnswerAndOperator(df9)
         }
       }
+    }
+  }
+
+  // The MERGE hint makes Spark plan a SortMergeJoin, which forceShuffledHashJoin then rewrites.
+  private val forcedSmjQuery =
+    "SELECT /*+ MERGE(tbl_a) */ * FROM tbl_a JOIN tbl_b ON tbl_a._2 = tbl_b._1"
+
+  // tbl_b is the smaller side, so the rewrite builds on the right.
+  private def withForcedSmjTables(f: => Unit): Unit = {
+    withParquetTable((0 until 1000).map(i => (i, i % 5)), "tbl_a") {
+      withParquetTable((0 until 10).map(i => (i % 10, i + 2)), "tbl_b") {
+        f
+      }
+    }
+  }
+
+  private def rewriteReason(reason: String): String =
+    s"Cannot rewrite SortMergeJoin to HashJoin: $reason"
+
+  // Checks that the SortMergeJoin and its sorts survived and that the kept join, which still
+  // runs natively, is not reported as a fallback. Returns Spark's size estimate of the build
+  // side, read through the same logical link the rewrite used.
+  private def assertSortMergeJoinKept(plan: SparkPlan): BigInt = {
+    val joins = collect(plan) { case j: CometSortMergeJoinExec => j }
+    assert(joins.size == 1, plan)
+    assert(collect(plan) { case s: CometSortExec => s }.size == 2, plan)
+    assert(collect(plan) { case j: CometHashJoinExec => j }.isEmpty, plan)
+    val kept = joins.head
+    assert(!hasFallbackReason(kept) && !hasFallbackReason(kept.originalPlan), plan)
+    val reasons = new ExtendedExplainInfo().getFallbackReasons(plan)
+    assert(!reasons.exists(_.contains("SortMergeJoin")), reasons)
+    kept.originalPlan.logicalLink match {
+      case Some(join: Join) => join.right.stats.sizeInBytes
+      case other => fail(s"Expected a Join logical link, got $other")
+    }
+  }
+
+  // The refusal is recorded as information on the kept join and rendered as COMET-INFO.
+  private def assertKeptWithInfo(plan: SparkPlan, expected: String): Unit = {
+    val join = collect(plan) { case j: CometSortMergeJoinExec => j }.head
+    assert(join.getTagValue(CometExplainInfo.EXTENSION_INFO).exists(_.contains(expected)), plan)
+    val verbose = new ExtendedExplainInfo().generateVerboseInfo(plan)
+    assert(verbose.contains("[COMET-INFO:") && verbose.contains(expected), verbose)
+  }
+
+  private def assertRewrittenToHashJoin(plan: SparkPlan): Unit = {
+    val joins = collect(plan) { case j: CometHashJoinExec => j }
+    assert(joins.map(_.buildSide) == Seq(BuildRight), plan)
+    assert(collect(plan) { case s: CometSortExec => s }.isEmpty, plan)
+    assert(collect(plan) { case j: CometSortMergeJoinExec => j }.isEmpty, plan)
+  }
+
+  private def assertKeptWithReason(plan: SparkPlan, limit: Long): Unit = {
+    val estimate = assertSortMergeJoinKept(plan)
+    assert(estimate >= limit, estimate)
+    assertKeptWithInfo(
+      plan,
+      rewriteReason(
+        s"build side size estimate of $estimate bytes is not under the limit of $limit bytes"))
+  }
+
+  for (adaptive <- Seq(false, true)) {
+    test(s"forceShuffledHashJoin keeps SortMergeJoin over maxBuildSize, AQE=$adaptive") {
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        CometConf.COMET_FORCE_SHJ.key -> "true",
+        CometConf.COMET_FORCE_SHJ_MAX_BUILD_SIZE.key -> "1") {
+        withForcedSmjTables {
+          val (_, cometPlan) = checkSparkAnswerAndOperator(sql(forcedSmjQuery))
+          assertKeptWithReason(cometPlan, 1)
+        }
+      }
+    }
+
+    test(s"forceShuffledHashJoin rewrites SortMergeJoin under maxBuildSize, AQE=$adaptive") {
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        CometConf.COMET_FORCE_SHJ.key -> "true",
+        CometConf.COMET_FORCE_SHJ_MAX_BUILD_SIZE.key -> "1g") {
+        withForcedSmjTables {
+          val (_, cometPlan) = checkSparkAnswerAndOperator(sql(forcedSmjQuery))
+          assertRewrittenToHashJoin(cometPlan)
+        }
+      }
+    }
+  }
+
+  test("forceShuffledHashJoin matches Spark's strict size rule at the limit") {
+    // AQE off, so the estimate read from the first plan is the one the later runs compare.
+    withForcedSmjTables {
+      var estimate = BigInt(0)
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        CometConf.COMET_FORCE_SHJ.key -> "true",
+        CometConf.COMET_FORCE_SHJ_MAX_BUILD_SIZE.key -> "1") {
+        val (_, cometPlan) = checkSparkAnswerAndOperator(sql(forcedSmjQuery))
+        estimate = assertSortMergeJoinKept(cometPlan)
+      }
+      // A build side exactly at the limit is not under it, as in canBuildLocalHashMapBySize.
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        CometConf.COMET_FORCE_SHJ.key -> "true",
+        CometConf.COMET_FORCE_SHJ_MAX_BUILD_SIZE.key -> estimate.toString) {
+        val (_, cometPlan) = checkSparkAnswerAndOperator(sql(forcedSmjQuery))
+        assertKeptWithReason(cometPlan, estimate.toLong)
+      }
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        CometConf.COMET_FORCE_SHJ.key -> "true",
+        CometConf.COMET_FORCE_SHJ_MAX_BUILD_SIZE.key -> (estimate + 1).toString) {
+        val (_, cometPlan) = checkSparkAnswerAndOperator(sql(forcedSmjQuery))
+        assertRewrittenToHashJoin(cometPlan)
+      }
+    }
+  }
+
+  test("forceShuffledHashJoin with a non-positive maxBuildSize rewrites regardless of size") {
+    withSQLConf(
+      CometConf.COMET_FORCE_SHJ.key -> "true",
+      CometConf.COMET_FORCE_SHJ_MAX_BUILD_SIZE.key -> "0",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "1") {
+      withForcedSmjTables {
+        val (_, cometPlan) = checkSparkAnswerAndOperator(sql(forcedSmjQuery))
+        assertRewrittenToHashJoin(cometPlan)
+      }
+    }
+  }
+
+  test("forceShuffledHashJoin without maxBuildSize uses Spark's shuffled hash join size rule") {
+    // The limit is autoBroadcastJoinThreshold times the shuffle partition count.
+    withSQLConf(
+      CometConf.COMET_FORCE_SHJ.key -> "true",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "2",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "1") {
+      withForcedSmjTables {
+        val (_, cometPlan) = checkSparkAnswerAndOperator(sql(forcedSmjQuery))
+        assertKeptWithReason(cometPlan, 2)
+      }
+    }
+    withSQLConf(
+      CometConf.COMET_FORCE_SHJ.key -> "true",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "2",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "1g") {
+      withForcedSmjTables {
+        val (_, cometPlan) = checkSparkAnswerAndOperator(sql(forcedSmjQuery))
+        assertRewrittenToHashJoin(cometPlan)
+      }
+    }
+  }
+
+  test("forceShuffledHashJoin uses Spark's default threshold when broadcasts are disabled") {
+    // Disabling broadcasts says nothing about the hash table an executor can hold, so the limit
+    // falls back to Spark's default threshold times the partition count. AQE is off so the
+    // decision uses the planning estimate, which fileCompressionFactor scales past 10 MB without
+    // writing a 10 MB table.
+    val defaultThreshold = SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.defaultValue.get
+    assert(defaultThreshold == 10L * 1024 * 1024)
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      CometConf.COMET_FORCE_SHJ.key -> "true",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "1",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+      withForcedSmjTables {
+        val (_, cometPlan) = checkSparkAnswerAndOperator(sql(forcedSmjQuery))
+        assertRewrittenToHashJoin(cometPlan)
+      }
+      withSQLConf(SQLConf.FILE_COMPRESSION_FACTOR.key -> "1000000") {
+        withForcedSmjTables {
+          val (_, cometPlan) = checkSparkAnswerAndOperator(sql(forcedSmjQuery))
+          assertKeptWithReason(cometPlan, defaultThreshold)
+        }
+      }
+    }
+  }
+
+  test("forceShuffledHashJoin keeps a SortMergeJoin that has no statistics") {
+    val left = spark.range(1).toDF("a").queryExecution.sparkPlan
+    val right = spark.range(1).toDF("b").queryExecution.sparkPlan
+    def smj: SortMergeJoinExec =
+      SortMergeJoinExec(left.output, right.output, Inner, None, left, right)
+    assert(smj.logicalLink.isEmpty)
+
+    val kept = smj
+    assert(RewriteJoin.rewrite(kept, spark.sessionState.conf) eq kept)
+    assert(!hasFallbackReason(kept))
+    val info = kept.getTagValue(CometExplainInfo.EXTENSION_INFO)
+    assert(
+      info.exists(_.contains(rewriteReason("no statistics are available for the build side"))),
+      info)
+
+    withSQLConf(CometConf.COMET_FORCE_SHJ_MAX_BUILD_SIZE.key -> "-1") {
+      val rewritten = RewriteJoin.rewrite(smj, spark.sessionState.conf)
+      assert(rewritten.isInstanceOf[ShuffledHashJoinExec], rewritten)
     }
   }
 
