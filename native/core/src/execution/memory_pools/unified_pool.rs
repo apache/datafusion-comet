@@ -16,16 +16,18 @@
 // under the License.
 
 use std::{
+    collections::HashMap,
     fmt::{Debug, Display, Formatter, Result as FmtResult},
     sync::atomic::{AtomicUsize, Ordering::Relaxed},
 };
 
-use super::spark_memory::SparkMemory;
+use super::{spark_memory::SparkMemory, spill_replay};
 use datafusion::{
     common::{resources_datafusion_err, DataFusionError},
-    execution::memory_pool::{MemoryPool, MemoryReservation},
+    execution::memory_pool::{MemoryConsumer, MemoryPool, MemoryReservation},
 };
-use log::warn;
+use log::{debug, warn};
+use parking_lot::Mutex;
 
 /// A DataFusion `MemoryPool` implementation for Comet that delegates to
 /// Spark's off-heap executor memory pool via JNI by calling
@@ -33,6 +35,10 @@ use log::warn;
 pub struct CometUnifiedMemoryPool {
     spark: SparkMemory,
     used: AtomicUsize,
+    /// Bytes held by each final aggregate's consumer across its reservations, keyed by
+    /// [`MemoryConsumer::id`], which [`spill_replay`] needs. Other consumers aren't tracked, so
+    /// they take the lock only when Spark refuses them.
+    final_aggregates: Mutex<HashMap<usize, usize>>,
 }
 
 impl Debug for CometUnifiedMemoryPool {
@@ -49,12 +55,38 @@ impl CometUnifiedMemoryPool {
         Self {
             spark,
             used: AtomicUsize::new(0),
+            final_aggregates: Mutex::new(HashMap::new()),
         }
     }
 
     /// The part of [`MemoryPool::reserved`] that Spark has not granted; see [`SparkMemory`].
     pub(super) fn overcommit(&self) -> usize {
         self.spark.overcommit()
+    }
+
+    /// Applies `update` to what `reservation`'s consumer holds, if it is a final aggregate.
+    fn track(&self, reservation: &MemoryReservation, update: impl FnOnce(&mut usize)) {
+        if spill_replay::is_final_aggregate(reservation.consumer()) {
+            if let Some(used) = self
+                .final_aggregates
+                .lock()
+                .get_mut(&reservation.consumer().id())
+            {
+                update(used);
+            }
+        }
+    }
+
+    /// Whether a refused request from `reservation` comes from a final aggregate reading its spill
+    /// files back, which can't spill; see [`spill_replay`].
+    fn is_spill_replay(&self, reservation: &MemoryReservation) -> bool {
+        let consumer_used = self
+            .final_aggregates
+            .lock()
+            .get(&reservation.consumer().id())
+            .copied()
+            .unwrap_or(0);
+        spill_replay::is_spill_replay(reservation, consumer_used)
     }
 }
 
@@ -86,11 +118,23 @@ impl MemoryPool for CometUnifiedMemoryPool {
         "CometUnifiedMemoryPool"
     }
 
+    fn register(&self, consumer: &MemoryConsumer) {
+        if spill_replay::is_final_aggregate(consumer) {
+            self.final_aggregates.lock().insert(consumer.id(), 0);
+        }
+    }
+
+    fn unregister(&self, consumer: &MemoryConsumer) {
+        if spill_replay::is_final_aggregate(consumer) {
+            self.final_aggregates.lock().remove(&consumer.id());
+        }
+    }
+
     /// Records memory that already exists, so it must not fail; see [`SparkMemory`].
     // Rust 1.99 deprecates `fetch_update` in favor of `try_update`, which needs Rust 1.95, newer
     // than the workspace `rust-version`.
     #[allow(deprecated)]
-    fn grow(&self, _: &MemoryReservation, additional: usize) {
+    fn grow(&self, reservation: &MemoryReservation, additional: usize) {
         if additional == 0 {
             return;
         }
@@ -98,12 +142,13 @@ impl MemoryPool for CometUnifiedMemoryPool {
         self.used
             .fetch_update(Relaxed, Relaxed, |old| Some(old.saturating_add(additional)))
             .unwrap();
+        self.track(reservation, |used| *used = used.saturating_add(additional));
     }
 
     // Rust 1.99 deprecates `fetch_update` in favor of `try_update`, which needs Rust 1.95, newer
     // than the workspace `rust-version`.
     #[allow(deprecated)]
-    fn shrink(&self, _: &MemoryReservation, size: usize) {
+    fn shrink(&self, reservation: &MemoryReservation, size: usize) {
         if let Err(e) = self.spark.release(size) {
             panic!(
                 "Task {} failed to return {size} bytes to Spark: {e:?}",
@@ -119,23 +164,38 @@ impl MemoryPool for CometUnifiedMemoryPool {
                 self.spark.task_attempt_id()
             );
         }
+        self.track(reservation, |used| *used = used.saturating_sub(size));
     }
 
     // Rust 1.99 deprecates `fetch_update` in favor of `try_update`, which needs Rust 1.95, newer
     // than the workspace `rust-version`.
     #[allow(deprecated)]
-    fn try_grow(&self, _: &MemoryReservation, additional: usize) -> Result<(), DataFusionError> {
+    fn try_grow(
+        &self,
+        reservation: &MemoryReservation,
+        additional: usize,
+    ) -> Result<(), DataFusionError> {
         if additional > 0 {
             // A partial grant is handed back and refused, which triggers spilling in the caller.
             if let Err(refusal) = self.spark.try_acquire(additional)? {
-                return Err(resources_datafusion_err!(
+                let err = resources_datafusion_err!(
                     "Task {} failed to acquire {} bytes plus {} bytes overcommitted, only got {}. Reserved: {}",
                     self.spark.task_attempt_id(),
                     additional,
                     refusal.overcommit,
                     refusal.granted,
                     self.reserved()
-                ));
+                );
+                if !self.is_spill_replay(reservation) {
+                    return Err(err);
+                }
+                debug!(
+                    "Task {} records {additional} bytes for {} while it reads its spill files back: {err}",
+                    self.spark.task_attempt_id(),
+                    reservation.consumer().name()
+                );
+                self.grow(reservation, additional);
+                return Ok(());
             }
             if let Err(prev) = self
                 .used
@@ -148,6 +208,7 @@ impl MemoryPool for CometUnifiedMemoryPool {
                     prev
                 ));
             }
+            self.track(reservation, |used| *used = used.saturating_add(additional));
         }
         Ok(())
     }
@@ -161,7 +222,6 @@ impl MemoryPool for CometUnifiedMemoryPool {
 mod tests {
     use super::super::spark_memory::fake::FakeSpark;
     use super::*;
-    use datafusion::execution::memory_pool::MemoryConsumer;
     use std::sync::Arc;
 
     #[test]
@@ -230,5 +290,24 @@ mod tests {
         assert_eq!(pool.reserved(), 0);
         assert_eq!(pool.spark.overcommit(), 0);
         assert_eq!(fake.held(), 0);
+    }
+
+    #[test]
+    fn a_final_aggregate_is_tracked_across_its_reservations_until_it_unregisters() {
+        let pool = Arc::new(CometUnifiedMemoryPool::with_spark(
+            FakeSpark::with(100).memory(),
+        ));
+        let dyn_pool: Arc<dyn MemoryPool> = Arc::clone(&pool) as _;
+        let merge = MemoryConsumer::new("FinalHashAggregateStream[0]").register(&dyn_pool);
+        let replay = merge.new_empty();
+        merge.try_grow(90).unwrap();
+        replay.grow(20);
+        replay.shrink(5);
+        let id = merge.consumer().id();
+        assert_eq!(pool.final_aggregates.lock().get(&id), Some(&105));
+
+        drop(merge);
+        drop(replay);
+        assert!(pool.final_aggregates.lock().is_empty());
     }
 }
