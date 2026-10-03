@@ -15,8 +15,8 @@
 -- specific language governing permissions and limitations
 -- under the License.
 -- A TRY cast whose key cast can fail turns an out-of-range key into a null key, and Spark keeps
--- the row. Arrow cannot hold a null key, and Spark's own readers disagree about it, so any tree
--- holding such a cast must fall back to Spark. See #6172.
+-- the row. Arrow cannot hold a null key, so a dispatched tree whose output can carry a map must
+-- fall back to Spark. See #6172.
 
 statement
 CREATE TABLE test_null_map_key(id int, m map<bigint, int>) USING parquet
@@ -37,9 +37,13 @@ query expect_fallback(null map key)
 SELECT id, map_keys(map_filter(try_cast(m AS map<int, int>), (k, v) -> true))
 FROM test_null_map_key ORDER BY id
 
--- Refused even though the result carries no map, since the tree still holds the cast
-query expect_fallback(null map key)
+-- The output carries no map, so the kernel's answer is Spark's own generated code
+query expect_dispatch(cast)
 SELECT id, cast(try_cast(m AS map<int, int>) AS string) FROM test_null_map_key ORDER BY id
+
+query expect_dispatch(exists)
+SELECT id, exists(map_keys(try_cast(m AS map<int, int>)), k -> k IS NULL)
+FROM test_null_map_key ORDER BY id
 
 -- A widening key cast cannot fail, so the tree stays in the dispatcher
 query expect_dispatch(transform_values)

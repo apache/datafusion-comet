@@ -23,12 +23,15 @@ import org.apache.arrow.vector._
 import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
 import org.apache.arrow.vector.types.pojo.Field
 import org.apache.spark.internal.Logging
+import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{BoundReference, Cast, Expression, Literal, Unevaluable}
 import org.apache.spark.sql.catalyst.expressions.codegen._
+import org.apache.spark.sql.catalyst.util.{ArrayData, MapData}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import org.apache.comet.expressions.CometCast
+import org.apache.comet.serde.SupportLevel
 import org.apache.comet.shims.{CometExprTraitShim, CometTypeShim}
 
 /**
@@ -133,30 +136,50 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
     case _ => 1
   }
 
+  /** Whether a literal value holds a map with a null key at any depth. */
+  private def hasNullMapKey(value: Any, dataType: DataType): Boolean = (value, dataType) match {
+    case (null, _) => false
+    case (map: MapData, MapType(keyType, valueType, _)) =>
+      val keys = map.keyArray()
+      (0 until keys.numElements()).exists(keys.isNullAt) ||
+      hasNullMapKey(keys, ArrayType(keyType)) ||
+      hasNullMapKey(map.valueArray(), ArrayType(valueType))
+    case (array: ArrayData, ArrayType(elementType, _))
+        if SupportLevel.containsType(elementType, classOf[MapType]) =>
+      (0 until array.numElements()).exists(i =>
+        !array.isNullAt(i) && hasNullMapKey(array.get(i, elementType), elementType))
+    case (row: InternalRow, StructType(fields)) =>
+      fields.indices.exists(i =>
+        !row.isNullAt(i) && hasNullMapKey(row.get(i, fields(i).dataType), fields(i).dataType))
+    case _ => false
+  }
+
   /**
    * Plan-time predicate. `None` greenlights the serde to emit the codegen proto; `Some(reason)`
    * forces a Spark fallback (typically `withFallbackReason(...) + None`) so the operator falls
    * back cleanly rather than crashing the Janino compile at execute time.
    *
    * Checks every `BoundReference`'s data type and the root `expr.dataType` against
-   * [[isSupportedDataType]], rejects aggregates / generators / `Unevaluable`, and gates total
-   * nested-field count on `spark.sql.codegen.maxFields`.
+   * [[isSupportedDataType]], refuses a tree whose output can carry a map with a null key, rejects
+   * aggregates / generators / `Unevaluable`, and gates total nested-field count on
+   * `spark.sql.codegen.maxFields`.
    */
   def canHandle(boundExpr: Expression): Option[String] = {
     if (!isSupportedDataType(boundExpr.dataType)) {
       return Some(s"codegen dispatch: unsupported output type ${boundExpr.dataType}")
     }
-    // A TRY cast whose key cast can fail can produce a map with a null key. Arrow's map format
-    // cannot hold one, and Spark's own readers disagree about it: `map_keys` shows the null while
-    // `collect`, `element_at` and a cast to string read the key as the type's default. Only Spark
-    // evaluating the whole tree matches Spark for every consumer, so refuse any tree holding such
-    // a cast. See https://github.com/apache/datafusion-comet/issues/6172.
-    if (boundExpr.find {
+    // Arrow cannot hold a null map key, so the output writer would lose one. Only refuse when the
+    // output can carry a map, since inside the kernel it is Spark's own generated code.
+    // https://github.com/apache/datafusion-comet/issues/6172
+    if (SupportLevel.containsType(boundExpr.dataType, classOf[MapType]) &&
+      boundExpr.find {
         case c: Cast => CometCast.canProduceNullMapKey(c)
+        // A TRY cast over a foldable map is already folded into a literal holding the null key.
+        case l: Literal => hasNullMapKey(l.value, l.dataType)
         case _ => false
       }.isDefined) {
       return Some(
-        "codegen dispatch: a TRY cast can produce a null map key, which Arrow cannot hold " +
+        "codegen dispatch: the output can carry a null map key, which Arrow cannot hold " +
           "(https://github.com/apache/datafusion-comet/issues/6172)")
     }
     // Mirror WSCG's `spark.sql.codegen.maxFields` gate. Wide schemas blow the generated class's
