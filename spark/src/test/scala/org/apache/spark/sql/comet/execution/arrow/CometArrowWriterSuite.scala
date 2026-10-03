@@ -32,7 +32,7 @@ import org.apache.arrow.vector.{DecimalVector, FieldVector, IntVector, ValueVect
 import org.apache.arrow.vector.complex.{ListVector, StructVector}
 import org.apache.spark.sql.catalyst.expressions.GenericInternalRow
 import org.apache.spark.sql.comet.util.Utils
-import org.apache.spark.sql.execution.vectorized.{Dictionary, OffHeapColumnVector, OnHeapColumnVector, WritableColumnVector}
+import org.apache.spark.sql.execution.vectorized.{ConstantColumnVector, Dictionary, OffHeapColumnVector, OnHeapColumnVector, WritableColumnVector}
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 
@@ -442,6 +442,22 @@ class CometArrowWriterSuite extends AnyFunSuite with Matchers {
     } finally {
       root.close()
       allocator.close()
+      v.close()
+    }
+  }
+
+  test("the fields of a null constant struct are not read") {
+    // ConstantColumnVector never creates the fields of a null struct.
+    val dt = new StructType().add("a", IntegerType).add("s", StringType)
+    val v = new ConstantColumnVector(numRows, dt)
+    try {
+      v.setNull()
+      assertColumnarMatchesRows(
+        new ColumnarBatch(Array[ColumnVector](v), numRows),
+        new StructType().add("st", dt),
+        0,
+        numRows)
+    } finally {
       v.close()
     }
   }

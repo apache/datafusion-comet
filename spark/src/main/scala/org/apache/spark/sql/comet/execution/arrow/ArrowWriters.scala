@@ -1444,9 +1444,17 @@ private[arrow] class StructWriter(
 
   // Writes each field as a column. Under a null struct the fields must come out null, as setNull
   // writes them, so with nulls this takes the row path unless every field can be masked after.
+  // Writing the fields as columns also reads them under a null struct, so with nulls it is only
+  // done for Spark's own vectors, whose producers write those fields. A struct missing from a
+  // Parquet file is the exception: Spark marks it all null and never writes its fields.
   override def writeColumnSlice(input: ColumnVector, startRow: Int, numRows: Int): Unit = {
     val hasNull = input.hasNull
-    if (numRows == 0 || (hasNull && !childrenSupportNullMask)) {
+    val readsFields = input match {
+      case vector: WritableColumnVector if ArrowFieldWriter.isSparkVector(vector) =>
+        !vector.isAllNull && (!hasNull || childrenSupportNullMask)
+      case _ => !hasNull
+    }
+    if (numRows == 0 || !readsFields) {
       super.writeColumnSlice(input, startRow, numRows)
       return
     }

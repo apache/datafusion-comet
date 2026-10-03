@@ -4127,6 +4127,37 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("SparkToColumnar reads structs the Parquet file does not have as null") {
+    withTempPath { dir =>
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        spark
+          .range(5000)
+          .selectExpr("id", "if(id % 7 = 0, null, named_struct('a', cast(id as int))) as st")
+          .repartition(1)
+          .write
+          .parquet(dir.toString)
+      }
+      // Spark's reader marks a missing struct all null and never writes its fields, whether the
+      // struct is a column of its own or a field of one the file has.
+      val fields = "s: string, d: decimal(38,10)"
+      val schema = s"id long, st struct<a: int, inner: struct<$fields>>, missing struct<$fields>"
+      Seq("false", "true").foreach { offHeap =>
+        withSQLConf(
+          CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
+          CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true",
+          SQLConf.PARQUET_VECTORIZED_READER_NESTED_COLUMN_ENABLED.key -> "true",
+          SQLConf.COLUMN_VECTOR_OFFHEAP_ENABLED.key -> offHeap) {
+          val df = spark.read.schema(schema).parquet(dir.toString).where("id >= 0")
+          checkSparkAnswer(df)
+          val conversions = collect(df.queryExecution.executedPlan) {
+            case c: CometSparkToColumnarExec => c
+          }
+          assert(conversions.nonEmpty, df.queryExecution.executedPlan)
+        }
+      }
+    }
+  }
+
   test("SparkToColumnar over InMemoryTableScanExec") {
     Seq("true", "false").foreach(cacheVectorized => {
       withSQLConf(
