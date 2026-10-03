@@ -45,8 +45,9 @@ macro_rules! cast_utf8_to_timestamp {
             if $array.is_null(i) {
                 cast_array.append_null()
             } else {
-                // trim_end only: leading spaces affect parsing (e.g. " T2" -> null, "T2" -> valid)
-                match $cast_method($array.value(i).trim_end(), $eval_mode $(, $extra_arg)*) {
+                // Untrimmed: the parsers trim, and Spark 4 needs the raw start to reject
+                // padding before a time-only `T` (" T2" -> null, "T2" -> valid).
+                match $cast_method($array.value(i), $eval_mode $(, $extra_arg)*) {
                     Ok(Some(cast_value)) => cast_array.append_value(cast_value),
                     Ok(None) => cast_array.append_null(),
                     Err(e) => {
@@ -1415,15 +1416,19 @@ fn timestamp_parser<T: TimeZone>(
     tz: &T,
     is_spark4_plus: bool,
 ) -> SparkResult<Option<i64>> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return Ok(None);
-    }
-    // Spark 4.0+ rejects leading whitespace for ALL T-prefixed time-only strings
-    // (T<h>, T<h>:<m>, T<h>:<m>:<s>, T<h>:<m>:<s>.<f>), but accepts trailing whitespace.
-    // Spark 3.x trims all whitespace first, so leading whitespace is accepted there.
+    // `SparkDateTimeUtils.getTrimmedStart`/`getTrimmedEnd` trim the same byte set as
+    // `UTF8String.trimAll`.
+    let (start, end) = trim_all_range(value.as_bytes());
+    let trimmed = &value[start..end];
+    // A value that trims to nothing has no segments, so Spark treats it as malformed like any
+    // other: null, or CAST_INVALID_INPUT under ANSI.
+    //
+    // Spark 4.0+ also rejects leading padding for ALL T-prefixed time-only strings
+    // (T<h>, T<h>:<m>, T<h>:<m>:<s>, T<h>:<m>:<s>.<f>), but accepts trailing padding: it only
+    // treats the `T` as a time-only marker at raw byte 0. Spark 3.x trims first, so leading
+    // padding is accepted there.
     // Check the prefix, not the base patterns: a zone suffix can hide a time-only match.
-    if is_spark4_plus && value.len() > value.trim_start().len() && trimmed.starts_with('T') {
+    if trimmed.is_empty() || (is_spark4_plus && start > 0 && trimmed.starts_with('T')) {
         return if eval_mode == EvalMode::Ansi {
             Err(SparkError::InvalidInputInCastToDatetime {
                 value: value.to_string(),
@@ -1761,18 +1766,14 @@ fn timestamp_ntz_parser(
     allow_time_zone: bool,
     _is_spark4_plus: bool,
 ) -> SparkResult<Option<i64>> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return Ok(None);
-    }
+    // Trimmed as in `timestamp_parser`. NTZ rejects time-only strings outright, so it needs no
+    // Spark 4 check for padding before a `T`.
+    let value = trim_all(value);
 
-    // NTZ rejects leading whitespace for T-prefixed time-only strings on Spark 4+
-    // (same logic as timestamp_parser), but time-only is rejected entirely for NTZ anyway.
-
-    let value = trimmed;
-
-    // Reject time-only patterns: NTZ requires a date component
-    if RE_TIME_ONLY_H.is_match(value)
+    // Reject a value that trims to nothing, and time-only patterns: NTZ requires a date
+    // component
+    if value.is_empty()
+        || RE_TIME_ONLY_H.is_match(value)
         || RE_TIME_ONLY_HM.is_match(value)
         || RE_TIME_ONLY_HMS.is_match(value)
         || RE_TIME_ONLY_HMSU.is_match(value)
@@ -2315,32 +2316,15 @@ mod tests {
         }
     }
 
-    /// Pins the one trim divergence this PR leaves behind, so that resolving
-    /// <https://github.com/apache/datafusion-comet/issues/5149> has to update this test rather
-    /// than change behaviour silently. `timestamp_parser` and `timestamp_ntz_parser` still use
-    /// `str::trim`, so they accept the non-ASCII whitespace that Spark's
-    /// `SparkDateTimeUtils.getTrimmedStart` / `getTrimmedEnd` leave in place, where Spark returns
-    /// NULL. `CometNativeCastSuite` cannot cover this, because Spark is the oracle there and Comet does
-    /// not fall back -- it silently returns a value.
+    /// Timestamps trim the `trimAll` set too, through `SparkDateTimeUtils.getTrimmedStart` /
+    /// `getTrimmedEnd`.
     #[test]
-    fn test_cast_string_to_timestamp_unicode_whitespace_divergence() {
-        let to_types = [
+    fn test_cast_string_to_timestamp_trim_parity() {
+        for to_type in [
             DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
             DataType::Timestamp(TimeUnit::Microsecond, None),
-        ];
-        for pad in ["\u{85}", "\u{a0}", "\u{2028}", "\u{3000}"] {
-            for to_type in &to_types {
-                let input = format!("{pad}2020-01-01 12:34:56{pad}");
-                let array: ArrayRef = Arc::new(StringArray::from(vec![Some(input.as_str())]));
-                let options = SparkCastOptions::new(EvalMode::Legacy, "UTC", false);
-                let result = cast_array(array, to_type, &options).unwrap();
-                assert!(
-                    !result.is_null(0),
-                    "cast {input:?} to {to_type}: Comet still trims {pad:?} where Spark returns \
-                     NULL. If this now returns NULL, the parsers have moved to the trim helpers \
-                     -- delete this test and extend `assert_trim_parity` to the timestamp targets."
-                );
-            }
+        ] {
+            assert_trim_parity(&to_type, "2020-01-01 12:34:56", trim_all);
         }
     }
 
@@ -2570,7 +2554,8 @@ mod tests {
     #[test]
     fn test_leading_whitespace_t_hm() {
         let tz = &Tz::from_str("UTC").unwrap();
-        // Spark 4.0+ rejects leading whitespace for ALL T-prefixed time-only patterns.
+        // Spark 4.0+ rejects leading whitespace for ALL T-prefixed time-only patterns, and the
+        // ISO control characters Spark trims along with it count as whitespace here too.
         for ws_input in &[
             " T2:30",
             "\tT2:30",
@@ -2580,6 +2565,8 @@ mod tests {
             "\nT2",
             "\tT1:2:3 +08:00",
             " T1:2:3.4 +08:00",
+            "\u{1}T2",
+            "\u{7f}T2:30",
         ] {
             for mode in [EvalMode::Legacy, EvalMode::Try] {
                 assert!(
@@ -2603,12 +2590,28 @@ mod tests {
             );
         }
         // Without leading whitespace, these must be valid on all versions.
-        for ok_input in &["T2:30", "T2", "T1:2:3 +08:00", "T1:2:3.4 +08:00"] {
+        for ok_input in &[
+            "T2:30",
+            "T2",
+            "T1:2:3 +08:00",
+            "T1:2:3.4 +08:00",
+            "T2\u{1}",
+            "T2:30\u{7f}",
+        ] {
             assert!(
                 timestamp_parser(ok_input, EvalMode::Legacy, tz, true)
                     .unwrap()
                     .is_some(),
                 "'{ok_input}' should be valid"
+            );
+        }
+        // Non-ASCII whitespace is never trimmed, so it is malformed on every version.
+        for spark4 in [false, true] {
+            assert!(
+                timestamp_parser("\u{3000}T2", EvalMode::Legacy, tz, spark4)
+                    .unwrap()
+                    .is_none(),
+                "'\\u{{3000}}T2' should be null (spark4={spark4})"
             );
         }
     }
