@@ -57,6 +57,36 @@ Treat setting one of these keys as a temporary measure. If you find you cannot s
 legacy behavior, please open an issue describing your use case so it can be considered before the
 key is removed.
 
+## Upgrading to Comet 1.2.0
+
+Comet `1.2.0` makes no behavior changes that need a `spark.comet.legacy.*` key. The changes below
+need none either, but check whether any of them applies to your deployment.
+
+### S3 Request Addressing
+
+Comet's native Parquet and CSV scans now address S3 requests the way Hadoop S3A does (native
+Iceberg reads go through iceberg-rust's FileIO and are unchanged). With `fs.s3a.path.style.access`
+unset or `false` they use virtual-hosted addressing (`<bucket>.<host>`), and with `true` they use
+path-style addressing (`<host>/<bucket>`). Comet `1.1.0` and earlier addressed every custom
+`fs.s3a.endpoint` path-style whatever the setting said, and applied the setting the wrong way round
+when no endpoint was set.
+
+With a custom endpoint and the setting unset or `false`, a read of `s3a://bucket/key` through
+`fs.s3a.endpoint=http://minio.internal:9000` now goes to `http://bucket.minio.internal:9000/key`
+instead of `http://minio.internal:9000/bucket/key`. A MinIO or Ceph RGW deployment whose DNS does
+not resolve the bucket host fails with a DNS error. Set `fs.s3a.path.style.access=true` to keep the
+old addressing.
+
+Reads with no custom endpoint change too. With only `spark.hadoop.fs.s3a.endpoint.region=us-east-1`
+set, a read of `s3a://my-bucket/key` moves from `https://s3.us-east-1.amazonaws.com/my-bucket/key`
+to `https://my-bucket.s3.us-east-1.amazonaws.com/key`. With `fs.s3a.path.style.access=true` and no
+endpoint it moves the other way, from virtual-hosted to path-style. Both match Hadoop S3A's
+addressing, but a proxy or egress rule that matches on host names will see the new hosts.
+
+Comet still addresses a request path-style on its own when the endpoint's host is an IP address or
+the bucket name cannot be a host name. See
+[Additional S3 Configuration Options](datasources.md#additional-s3-configuration-options).
+
 ## Upgrading to Comet 1.1.0
 
 Comet `1.1.0` makes no behavior changes that need a `spark.comet.legacy.*` key. The changes below
@@ -89,16 +119,6 @@ already exists restores the old effect.
   as `16g`, is unaffected. To get the old behavior back, set
   `spark.comet.exec.memoryPool=greedy_unified`, which leaves every limit to Spark. See
   [Configuring Comet Memory](tuning/memory.md#configuring-comet-memory).
-
-The native Parquet scan now honors `fs.s3a.path.style.access` for a custom `fs.s3a.endpoint`. Comet
-`1.0.0` addressed every such endpoint path-style whatever the setting said. Comet `1.1.0` follows
-Hadoop S3A: with the setting unset or `false`, a read of `s3a://bucket/key` through
-`fs.s3a.endpoint=http://minio.internal:9000` now goes to `http://bucket.minio.internal:9000/key`
-instead of `http://minio.internal:9000/bucket/key`, and a MinIO or Ceph RGW deployment whose DNS
-does not resolve the bucket host fails with a DNS error. Set `fs.s3a.path.style.access=true` to keep
-the old addressing. See
-[Additional S3 Configuration Options](datasources.md#additional-s3-configuration-options) for when
-Comet still addresses path-style on its own.
 
 A malformed value of `spark.comet.maxTempDirectorySize` or `spark.comet.explain.native.enabled` now
 fails the query instead of being replaced by the default. `spark.comet.debug.enabled`,
