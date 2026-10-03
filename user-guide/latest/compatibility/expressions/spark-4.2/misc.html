@@ -861,7 +861,7 @@ under the License.
 <h2>SortOrder<a class="headerlink" href="#sortorder" title="Link to this heading">#</a></h2>
 <p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">SortOrder</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.SortOrder.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
 <ul class="simple">
-<li><p>Sorting on floating-point values nested in arrays, structs, or maps is not 100% compatible with Spark when <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.strictFloatingPoint=true</span></code></p></li>
+<li><p>Sorting on floating-point values nested in an array or struct that can hold a null element or field is not 100% compatible with Spark when <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.strictFloatingPoint=true</span></code></p></li>
 </ul>
 </section>
 <section id="staticinvoke">

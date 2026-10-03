@@ -864,6 +864,10 @@ support as the batch aggregates, so these fall back in both contexts.</p></li>
 overflow instead of returning Spark’s <code class="docutils literal notranslate"><span class="pre">NULL</span></code>.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">RANGE</span></code> frame with an explicit offset when the <code class="docutils literal notranslate"><span class="pre">ORDER</span> <span class="pre">BY</span></code> column is <code class="docutils literal notranslate"><span class="pre">DATE</span></code> or <code class="docutils literal notranslate"><span class="pre">DECIMAL</span></code>
 (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4834">#4834</a>).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">RANGE</span></code> frame bounded by <code class="docutils literal notranslate"><span class="pre">CURRENT</span> <span class="pre">ROW</span></code> when an <code class="docutils literal notranslate"><span class="pre">ORDER</span> <span class="pre">BY</span></code> key is an array of arrays or structs, or a struct
+holding an array, such as <code class="docutils literal notranslate"><span class="pre">array(named_struct('x',</span> <span class="pre">x))</span></code>. DataFusion cannot compare those values to find the
+frame’s bounds (<a class="reference external" href="https://github.com/apache/datafusion/issues/24937">apache/datafusion#24937</a>). Ranking functions
+and <code class="docutils literal notranslate"><span class="pre">ROWS</span></code> frames over the same keys run natively.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">first_value</span></code> / <code class="docutils literal notranslate"><span class="pre">last_value</span></code> on a <code class="docutils literal notranslate"><span class="pre">RANGE</span></code> frame with a literal offset
 (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4835">#4835</a>).</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">lag</span></code> / <code class="docutils literal notranslate"><span class="pre">lead</span></code> with a non-literal default value (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4268">#4268</a>).</p></li>
@@ -877,21 +881,10 @@ runs natively; it is controlled by <code class="docutils literal notranslate"><s
 <li><p>Any <code class="docutils literal notranslate"><span class="pre">PARTITION</span> <span class="pre">BY</span></code> or <code class="docutils literal notranslate"><span class="pre">ORDER</span> <span class="pre">BY</span></code> key whose type carries a non-default <code class="docutils literal notranslate"><span class="pre">StringType</span></code> collation
 (e.g. <code class="docutils literal notranslate"><span class="pre">UTF8_LCASE</span></code>). The native operator detects partitions and order-key peer groups by
 comparing Arrow row-encoded keys for byte equality, which splits peers that Spark ties.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">RANK</span></code> and <code class="docutils literal notranslate"><span class="pre">DENSE_RANK</span></code> whose <code class="docutils literal notranslate"><span class="pre">ORDER</span> <span class="pre">BY</span></code> key has a <code class="docutils literal notranslate"><span class="pre">FLOAT</span></code> or <code class="docutils literal notranslate"><span class="pre">DOUBLE</span></code> nested in an array or
-struct. The same byte equality decides their ties, and nested floating-point values aren’t
-normalized, so <code class="docutils literal notranslate"><span class="pre">-0.0</span></code> and <code class="docutils literal notranslate"><span class="pre">+0.0</span></code>, or two NaN representations, would get different ranks and the
-cutoff would drop rows that Spark keeps
-(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5507">#5507</a>).</p></li>
 </ul>
-<p><strong>Known incompatibilities:</strong></p>
-<ul class="simple">
-<li><p><code class="docutils literal notranslate"><span class="pre">ROW_NUMBER</span></code> over such a key still runs natively and follows the native sort, which compares
-nested floating-point values with Arrow’s raw total ordering. Which of two rows that differ only
-in <code class="docutils literal notranslate"><span class="pre">-0.0</span></code> and <code class="docutils literal notranslate"><span class="pre">+0.0</span></code>, or in their NaN representation, gets the lower row number can therefore
-differ from Spark (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5507">#5507</a>). Scalar
-<code class="docutils literal notranslate"><span class="pre">FLOAT</span></code> and <code class="docutils literal notranslate"><span class="pre">DOUBLE</span></code> keys are normalized and match Spark; see
-<a class="reference internal" href="floating-point.html"><span class="std std-doc">floating-point ordering</span></a>.</p></li>
-</ul>
+<p>Floating-point <code class="docutils literal notranslate"><span class="pre">ORDER</span> <span class="pre">BY</span></code> keys, including floats nested in arrays and structs, are normalized
+and match Spark’s ranks; see <a class="reference internal" href="floating-point.html"><span class="std std-doc">floating-point ordering</span></a>, which also covers
+strict floating-point mode.</p>
 </section>
 <section id="round-robin-partitioning">
 <h2>Round-Robin Partitioning<a class="headerlink" href="#round-robin-partitioning" title="Link to this heading">#</a></h2>

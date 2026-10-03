@@ -995,6 +995,17 @@ and <code class="docutils literal notranslate"><span class="pre">binary</span></
 requested by the configuration. <code class="docutils literal notranslate"><span class="pre">EliminateRedundantTransitions</span></code> therefore skips the rewrite
 and vanilla Spark handles the operation. Comet can read <code class="docutils literal notranslate"><span class="pre">large_string</span></code> and <code class="docutils literal notranslate"><span class="pre">large_binary</span></code>
 columns returned by a Python worker; that output support does not widen the input vectors.</p></li>
+<li><p>PySpark does not convert the batches a <code class="docutils literal notranslate"><span class="pre">mapInArrow</span></code> UDF returns to the declared output schema,
+so Comet checks their Arrow schema before reading them. When a column cannot be read as its
+declared type, Comet raises Spark’s <code class="docutils literal notranslate"><span class="pre">ARROW_TYPE_MISMATCH</span></code> error (on Spark 4.0, a
+<code class="docutils literal notranslate"><span class="pre">SparkException</span></code> with the same message). Column names, nullability, <code class="docutils literal notranslate"><span class="pre">large_string</span></code> and
+<code class="docutils literal notranslate"><span class="pre">large_binary</span></code> offsets, the time zone of a timestamp, and an all-null column of Arrow type
+<code class="docutils literal notranslate"><span class="pre">null</span></code> may differ from the declared schema. Vanilla Spark reads some mismatches that Comet
+rejects, unless <code class="docutils literal notranslate"><span class="pre">spark.sql.execution.arrow.pyspark.validateSchema.enabled</span></code> is set: it rescales
+a decimal to the declared precision and scale, reads a timestamp without a time zone as
+<code class="docutils literal notranslate"><span class="pre">TimestampType</span></code>, reads other types of the same width (for example <code class="docutils literal notranslate"><span class="pre">int64</span></code> as a timestamp), and
+ignores extra columns. Return the declared types, or set
+<code class="docutils literal notranslate"><span class="pre">spark.comet.exec.pyarrowUDF.enabled=false</span></code> for such UDFs.</p></li>
 <li><p>Comet applies <code class="docutils literal notranslate"><span class="pre">spark.sql.execution.arrow.maxRecordsPerBatch</span></code> to every input batch, including
 batches with only plain columns. Before decoding dictionary-encoded shuffle columns, Comet also
 compares their estimated decoded size with <code class="docutils literal notranslate"><span class="pre">spark.sql.execution.arrow.maxBytesPerBatch</span></code>.

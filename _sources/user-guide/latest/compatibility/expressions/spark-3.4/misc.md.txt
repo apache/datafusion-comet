@@ -49,7 +49,7 @@ The following cases are not supported by Comet and always fall back to Spark, re
 
 The following incompatibilities cause `SortOrder` to fall back to Spark by default. Set `spark.comet.expression.SortOrder.allowIncompatible=true` to enable Comet acceleration despite these differences.
 
-- Sorting on floating-point values nested in arrays, structs, or maps is not 100% compatible with Spark when `spark.comet.exec.strictFloatingPoint=true`
+- Sorting on floating-point values nested in an array or struct that can hold a null element or field is not 100% compatible with Spark when `spark.comet.exec.strictFloatingPoint=true`
 
 ## StaticInvoke
 

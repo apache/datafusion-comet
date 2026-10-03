@@ -915,15 +915,16 @@ See <a class="reference internal" href="../metrics.html#local-topk"><span class=
 </section>
 <section id="optimizing-sorting-on-floating-point-values">
 <h2>Optimizing Sorting on Floating-Point Values<a class="headerlink" href="#optimizing-sorting-on-floating-point-values" title="Link to this heading">#</a></h2>
-<p>Comet normalizes NaN payloads and signed zeros in scalar <code class="docutils literal notranslate"><span class="pre">FLOAT</span></code> and <code class="docutils literal notranslate"><span class="pre">DOUBLE</span></code> ordering keys, so <code class="docutils literal notranslate"><span class="pre">ORDER</span> <span class="pre">BY</span></code>, window
-ordering and range partitioning on them match Spark and stay native even with
-<code class="docutils literal notranslate"><span class="pre">spark.comet.exec.strictFloatingPoint=true</span></code>. Only the comparison key is normalized; returned values keep their original
-NaN representation and zero sign.</p>
-<p>Floating-point values nested in arrays, structs, or maps are compared with Arrow’s raw total ordering instead, which can
-differ from Spark when the data contains both zero and negative zero, or more than one NaN representation. This is likely
-an edge case that is not of concern for many users. Setting <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.strictFloatingPoint=true</span></code> makes those
-nested cases fall back to Spark, and they can be forced back onto the native path with
-<code class="docutils literal notranslate"><span class="pre">spark.comet.expression.SortOrder.allowIncompatible=true</span></code>.</p>
+<p>Comet normalizes NaN payloads and signed zeros in <code class="docutils literal notranslate"><span class="pre">FLOAT</span></code> and <code class="docutils literal notranslate"><span class="pre">DOUBLE</span></code> ordering keys, including floating-point values
+nested in arrays and structs, so <code class="docutils literal notranslate"><span class="pre">ORDER</span> <span class="pre">BY</span></code>, window ordering and range partitioning on them match Spark and stay native
+even with <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.strictFloatingPoint=true</span></code>. Only the comparison key is normalized; returned values keep their
+original NaN representation and zero sign.</p>
+<p>The exception is a key that nests floating-point values in an array or struct whose type can hold a null element or
+field. Spark orders such a null below every other value, and the native sort and <code class="docutils literal notranslate"><span class="pre">RANGE</span></code> window frames do not
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6476">#6476</a>,
+<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6477">#6477</a>), so
+<code class="docutils literal notranslate"><span class="pre">spark.comet.exec.strictFloatingPoint=true</span></code> makes those keys fall back to Spark. They can be forced back onto the
+native path with <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.SortOrder.allowIncompatible=true</span></code>.</p>
 <p><code class="docutils literal notranslate"><span class="pre">sort_array</span></code> sorts array elements rather than ordering rows. It follows Spark’s floating-point ordering as well, so it
 also stays native with <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.strictFloatingPoint=true</span></code>.</p>
 </section>
