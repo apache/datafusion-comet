@@ -141,10 +141,10 @@ use datafusion_comet_proto::{
 use datafusion_comet_spark_expr::{
     create_case_when, create_if_expr, jvm_udf::JvmScalarUdfExpr, spark_in_list, ApproxPercentile,
     ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Correlation, Covariance, CreateNamedStruct,
-    DecimalRescaleCheckOverflow, GetArrayStructFields, GetStructField, HllPlusPlus, HllSketchAgg,
-    HllUnionAgg, IfExpr, ListExtract, MaxMinBy, Mode, NormalizeNaNAndZero, NormalizeNestedFloats,
-    Regr, RegrType, SparkCastOptions, Stddev, SumDecimal, ToJson, UnboundColumn, Variance,
-    WideDecimalBinaryExpr, WideDecimalOp,
+    DecimalRescaleCheckOverflow, FloatOperands, GetArrayStructFields, GetStructField, HllPlusPlus,
+    HllSketchAgg, HllUnionAgg, IfExpr, ListExtract, MaxMinBy, Mode, NormalizeNaNAndZero,
+    NormalizeNestedFloats, Regr, RegrType, SparkCastOptions, Stddev, SumDecimal, ToJson,
+    UnboundColumn, Variance, WideDecimalBinaryExpr, WideDecimalOp,
 };
 use itertools::Itertools;
 use jni::objects::{Global, JObject};
@@ -277,6 +277,7 @@ pub struct BinaryExprOptions {
 pub const TEST_EXEC_CONTEXT_ID: i64 = -1;
 
 /// The query planner for converting Spark query plans to DataFusion query plans.
+#[derive(Clone)]
 pub struct PhysicalPlanner {
     // The execution context id of this planner.
     exec_context_id: i64,
@@ -298,6 +299,9 @@ pub struct PhysicalPlanner {
     /// Task-owned destination for remote shuffle blocks, registered on the driving Spark task
     /// thread before native planning. Only explicit RSS destinations may use it.
     shuffle_partition_pusher: Option<Arc<dyn ShufflePartitionPusher>>,
+    /// How comparisons treat floating-point operands. `Raw` only while planning a scan's data
+    /// filters; see [`Self::create_data_filter`].
+    float_operands: FloatOperands,
 }
 
 impl Default for PhysicalPlanner {
@@ -317,6 +321,7 @@ impl PhysicalPlanner {
             task_context: None,
             class_loader: None,
             shuffle_partition_pusher: None,
+            float_operands: FloatOperands::Normalize,
         }
     }
 
@@ -427,6 +432,11 @@ impl PhysicalPlanner {
     ) -> Self {
         self.shuffle_partition_pusher = shuffle_partition_pusher;
         self
+    }
+
+    /// How comparisons treat floating-point operands.
+    pub fn float_operands(&self) -> FloatOperands {
+        self.float_operands
     }
 
     /// Return session context of this planner.
@@ -995,6 +1005,23 @@ impl PhysicalPlanner {
             }
             expr => Err(GeneralError(format!("Not implemented: {expr:?}"))),
         }
+    }
+
+    /// Create a data filter that a scan pushes into the Parquet reader. The filter prunes row
+    /// groups and pages, and rows too when row-level pushdown is enabled. Pruning only recognizes
+    /// a column compared with a literal, so that shape leaves a float column as it is rather than
+    /// normalizing it, and every other comparison is normalized; see [`FloatOperands::Raw`].
+    /// Spark's Filter above the scan evaluates the filter again with Spark's semantics.
+    fn create_data_filter(
+        &self,
+        spark_expr: &Expr,
+        input_schema: SchemaRef,
+    ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
+        let planner = Self {
+            float_operands: FloatOperands::Raw,
+            ..self.clone()
+        };
+        planner.create_expr(spark_expr, input_schema)
     }
 
     /// Normalize floating-point comparison keys without changing output values: a `FLOAT` or
@@ -1733,7 +1760,7 @@ impl PhysicalPlanner {
                         common
                             .data_filters
                             .iter()
-                            .map(|expr| self.create_expr(expr, Arc::clone(&filter_schema)))
+                            .map(|expr| self.create_data_filter(expr, Arc::clone(&filter_schema)))
                             .collect()
                     };
 
@@ -5476,6 +5503,46 @@ mod tests {
         assert_eq!("FilterExec", filter_exec.native_plan.name());
         assert_eq!(1, filter_exec.children.len());
         assert_eq!(0, filter_exec.additional_native_plans.len());
+    }
+
+    /// Comparisons normalize float operands, except in the data filters that a scan pushes into
+    /// the Parquet reader, where pruning has to see the column itself.
+    #[test]
+    fn scan_data_filters_compare_float_columns_directly() {
+        use datafusion::physical_expr::expressions::BinaryExpr;
+        use datafusion_comet_spark_expr::NormalizeNaNAndZero;
+        let double = spark_expression::DataType {
+            type_id: 6,
+            type_info: None,
+        };
+        let operand = |expr_struct| Expr {
+            expr_struct: Some(expr_struct),
+            query_context: None,
+            expr_id: None,
+        };
+        let expr = operand(Gt(Box::new(spark_expression::BinaryExpr {
+            left: Some(Box::new(operand(Bound(spark_expression::BoundReference {
+                index: 0,
+                datatype: Some(double.clone()),
+            })))),
+            right: Some(Box::new(operand(Literal(spark_expression::Literal {
+                value: Some(literal::Value::DoubleVal(500.0)),
+                datatype: Some(double),
+                is_null: false,
+            })))),
+        })));
+        let schema = Arc::new(Schema::new(vec![Field::new("d", DataType::Float64, true)]));
+        let left_operand = |expr: Arc<dyn PhysicalExpr>| {
+            let comparison = expr.downcast_ref::<BinaryExpr>().expect("a comparison");
+            Arc::clone(comparison.left())
+        };
+        let planner = PhysicalPlanner::default();
+        let comparison = planner.create_expr(&expr, Arc::clone(&schema)).unwrap();
+        assert!(left_operand(comparison)
+            .downcast_ref::<NormalizeNaNAndZero>()
+            .is_some());
+        let data_filter = planner.create_data_filter(&expr, schema).unwrap();
+        assert!(left_operand(data_filter).downcast_ref::<Column>().is_some());
     }
 
     #[test]

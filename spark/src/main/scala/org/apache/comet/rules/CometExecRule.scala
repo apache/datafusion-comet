@@ -22,9 +22,8 @@ package org.apache.comet.rules
 import scala.collection.mutable.ListBuffer
 
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.expressions.{Divide, DoubleLiteral, EqualNullSafe, EqualTo, Expression, FloatLiteral, GreaterThan, GreaterThanOrEqual, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, NamedExpression, Remainder}
+import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, Final, Partial, PartialMerge}
-import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.trees.TreeNodeTag
 import org.apache.spark.sql.catalyst.util.sideBySide
@@ -724,58 +723,6 @@ case class CometExecRule(session: SparkSession)
     }
   }
 
-  private def normalizePlan(plan: SparkPlan): SparkPlan = {
-    plan.transformUp {
-      case p: ProjectExec =>
-        val newProjectList = p.projectList.map(normalize(_).asInstanceOf[NamedExpression])
-        ProjectExec(newProjectList, p.child)
-      case f: FilterExec =>
-        val newCondition = normalize(f.condition)
-        FilterExec(newCondition, f.child)
-    }
-  }
-
-  // Spark will normalize NaN and zero for floating point numbers for several cases.
-  // See `NormalizeFloatingNumbers` optimization rule in Spark.
-  // However, one exception is for comparison operators. Spark does not normalize NaN and zero
-  // because they are handled well in Spark (e.g., `SQLOrderingUtil.compareFloats`). But the
-  // comparison functions in arrow-rs do not normalize NaN and zero. So we need to normalize NaN
-  // and zero for comparison operators in Comet.
-  private def normalize(expr: Expression): Expression = {
-    expr.transformUp {
-      case EqualTo(left, right) =>
-        EqualTo(normalizeNaNAndZero(left), normalizeNaNAndZero(right))
-      case EqualNullSafe(left, right) =>
-        EqualNullSafe(normalizeNaNAndZero(left), normalizeNaNAndZero(right))
-      case GreaterThan(left, right) =>
-        GreaterThan(normalizeNaNAndZero(left), normalizeNaNAndZero(right))
-      case GreaterThanOrEqual(left, right) =>
-        GreaterThanOrEqual(normalizeNaNAndZero(left), normalizeNaNAndZero(right))
-      case LessThan(left, right) =>
-        LessThan(normalizeNaNAndZero(left), normalizeNaNAndZero(right))
-      case LessThanOrEqual(left, right) =>
-        LessThanOrEqual(normalizeNaNAndZero(left), normalizeNaNAndZero(right))
-      case Divide(left, right, evalMode) =>
-        Divide(left, normalizeNaNAndZero(right), evalMode)
-      case Remainder(left, right, evalMode) =>
-        Remainder(left, normalizeNaNAndZero(right), evalMode)
-    }
-  }
-
-  private def normalizeNaNAndZero(expr: Expression): Expression = {
-    expr match {
-      case _: KnownFloatingPointNormalized => expr
-      case FloatLiteral(f) if !f.isNaN && !f.equals(-0.0f) => expr
-      case DoubleLiteral(d) if !d.isNaN && !d.equals(-0.0d) => expr
-      case _ =>
-        expr.dataType match {
-          case _: FloatType | _: DoubleType =>
-            KnownFloatingPointNormalized(NormalizeNaNAndZero(expr))
-          case _ => expr
-        }
-    }
-  }
-
   /**
    * A relation keeps the cache format it was stored in, since `spark.sql.cache.serializer` is
    * static, so a plan that runs without Comet's native execution still reads relations cached in
@@ -826,14 +773,12 @@ case class CometExecRule(session: SparkSession)
         plan
       }
     } else {
-      val normalizedPlan = normalizePlan(plan)
-
       val planWithJoinRewritten = if (CometConf.COMET_FORCE_SHJ.get()) {
-        normalizedPlan.transformUp { case p =>
+        plan.transformUp { case p =>
           RewriteJoin.rewrite(p)
         }
       } else {
-        normalizedPlan
+        plan
       }
 
       // Tag Partial aggregates that must not be converted to Comet because a
