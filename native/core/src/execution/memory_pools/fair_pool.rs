@@ -365,33 +365,6 @@ mod tests {
     }
 
     #[test]
-    fn a_final_aggregate_reading_its_spill_files_back_carries_what_spark_refuses() {
-        let fake = FakeSpark::with(100);
-        let pool = Arc::new(CometFairMemoryPool::with_spark(fake.memory(), 1000));
-        let dyn_pool: Arc<dyn MemoryPool> = Arc::clone(&pool) as _;
-        // Like DataFusion 55's final hash aggregate, whose spill merge and replay table are
-        // sibling reservations of one consumer.
-        let merge = MemoryConsumer::new("FinalHashAggregateStream[0]").register(&dyn_pool);
-        let replay = merge.new_empty();
-        merge.try_grow(90).unwrap();
-
-        // Spark grants 10 of the replay's 30 bytes, and the other 20 are overcommit.
-        replay.try_grow(30).unwrap();
-        assert_eq!(pool.reserved(), 120);
-        assert_eq!(fake.held(), 100);
-        assert_eq!(pool.overcommit(), 20);
-
-        // The replay emits groups and shrinks, which repays the overcommit before Spark.
-        replay.shrink(25);
-        assert_eq!(pool.overcommit(), 0);
-        assert_eq!(fake.held(), 95);
-        drop(merge);
-        drop(replay);
-        assert_eq!(pool.reserved(), 0);
-        assert_eq!(fake.held(), 0);
-    }
-
-    #[test]
     fn a_final_aggregate_reading_its_spill_files_back_may_pass_its_fair_limit() {
         // Spark grants everything, so only the pool's own checks refuse.
         let fake = FakeSpark::with(usize::MAX);
@@ -405,35 +378,5 @@ mod tests {
         assert_eq!(pool.reserved(), 120);
         assert_eq!(fake.held(), 120);
         assert_eq!(pool.overcommit(), 0);
-    }
-
-    #[test]
-    fn other_refusals_are_unchanged() {
-        let fake = FakeSpark::with(100);
-        let pool: Arc<dyn MemoryPool> =
-            Arc::new(CometFairMemoryPool::with_spark(fake.memory(), 1000));
-
-        // While the aggregate reads its input, its table is the consumer's only reservation
-        // holding memory, so a refusal makes it spill.
-        let table = MemoryConsumer::new("FinalHashAggregateStream[0]").register(&pool);
-        let replay = table.new_empty();
-        table.try_grow(90).unwrap();
-        assert!(table.try_grow(30).is_err());
-        drop(table);
-
-        // The merge picks its spill files while nothing else is held, so a refusal still limits
-        // how many it opens.
-        let merge = replay.new_empty();
-        merge.try_grow(90).unwrap();
-        assert!(merge.try_grow(30).is_err());
-        drop(merge);
-
-        // Any other operator with a sibling holding memory is still refused.
-        let sort = MemoryConsumer::new("ExternalSorterMerge[0]").register(&pool);
-        let sibling = sort.new_empty();
-        sort.try_grow(90).unwrap();
-        assert!(sibling.try_grow(30).is_err());
-        assert_eq!(pool.reserved(), 90);
-        assert_eq!(fake.held(), 90);
     }
 }

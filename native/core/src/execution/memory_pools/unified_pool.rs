@@ -222,7 +222,6 @@ impl MemoryPool for CometUnifiedMemoryPool {
 mod tests {
     use super::super::spark_memory::fake::FakeSpark;
     use super::*;
-    use datafusion::execution::memory_pool::MemoryConsumer;
     use std::sync::Arc;
 
     #[test]
@@ -294,59 +293,21 @@ mod tests {
     }
 
     #[test]
-    fn a_final_aggregate_reading_its_spill_files_back_carries_what_spark_refuses() {
-        let fake = FakeSpark::with(100);
-        let pool = Arc::new(CometUnifiedMemoryPool::with_spark(fake.memory()));
+    fn a_final_aggregate_is_tracked_across_its_reservations_until_it_unregisters() {
+        let pool = Arc::new(CometUnifiedMemoryPool::with_spark(
+            FakeSpark::with(100).memory(),
+        ));
         let dyn_pool: Arc<dyn MemoryPool> = Arc::clone(&pool) as _;
-        // Like DataFusion 55's final hash aggregate, whose spill merge and replay table are
-        // sibling reservations of one consumer.
         let merge = MemoryConsumer::new("FinalHashAggregateStream[0]").register(&dyn_pool);
         let replay = merge.new_empty();
         merge.try_grow(90).unwrap();
+        replay.grow(20);
+        replay.shrink(5);
+        let id = merge.consumer().id();
+        assert_eq!(pool.final_aggregates.lock().get(&id), Some(&105));
 
-        // Spark grants 10 of the replay's 30 bytes, and the other 20 are overcommit.
-        replay.try_grow(30).unwrap();
-        assert_eq!(pool.reserved(), 120);
-        assert_eq!(fake.held(), 100);
-        assert_eq!(pool.overcommit(), 20);
-
-        // The replay emits groups and shrinks, which repays the overcommit before Spark.
-        replay.shrink(25);
-        assert_eq!(pool.overcommit(), 0);
-        assert_eq!(fake.held(), 95);
         drop(merge);
         drop(replay);
-        assert_eq!(pool.reserved(), 0);
-        assert_eq!(fake.held(), 0);
         assert!(pool.final_aggregates.lock().is_empty());
-    }
-
-    #[test]
-    fn other_refusals_are_unchanged() {
-        let fake = FakeSpark::with(100);
-        let pool: Arc<dyn MemoryPool> = Arc::new(CometUnifiedMemoryPool::with_spark(fake.memory()));
-
-        // While the aggregate reads its input, its table is the consumer's only reservation
-        // holding memory, so a refusal makes it spill.
-        let table = MemoryConsumer::new("FinalHashAggregateStream[0]").register(&pool);
-        let replay = table.new_empty();
-        table.try_grow(90).unwrap();
-        assert!(table.try_grow(30).is_err());
-        drop(table);
-
-        // The merge picks its spill files while nothing else is held, so a refusal still limits
-        // how many it opens.
-        let merge = replay.new_empty();
-        merge.try_grow(90).unwrap();
-        assert!(merge.try_grow(30).is_err());
-        drop(merge);
-
-        // Any other operator with a sibling holding memory is still refused.
-        let sort = MemoryConsumer::new("ExternalSorterMerge[0]").register(&pool);
-        let sibling = sort.new_empty();
-        sort.try_grow(90).unwrap();
-        assert!(sibling.try_grow(30).is_err());
-        assert_eq!(pool.reserved(), 90);
-        assert_eq!(fake.held(), 90);
     }
 }

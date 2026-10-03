@@ -55,7 +55,87 @@ pub(super) fn is_spill_replay(reservation: &MemoryReservation, consumer_used: us
 
 #[cfg(test)]
 mod tests {
+    use super::super::spark_memory::fake::FakeSpark;
+    use super::super::{create_pool, overcommit, MemoryPoolConfig, MemoryPoolType};
     use super::*;
+    use datafusion::execution::memory_pool::MemoryPool;
+    use std::sync::Arc;
+
+    /// A pool of each type, built the way `createPlan` builds it and connected to a fake Spark
+    /// that grants at most 100 bytes. The fair pool's own limits are far above that, so only
+    /// Spark refuses. Task-shared pools are keyed by task attempt process-wide, so each pool needs
+    /// its own id.
+    fn each_pool_type(
+        task_attempt_ids: [i64; 2],
+    ) -> Vec<(&'static str, Arc<dyn MemoryPool>, Arc<FakeSpark>)> {
+        [
+            ("greedy_unified", MemoryPoolType::GreedyUnified),
+            ("fair_unified", MemoryPoolType::FairUnified),
+        ]
+        .into_iter()
+        .zip(task_attempt_ids)
+        .map(|((name, pool_type), task_attempt_id)| {
+            let fake = FakeSpark::with(100);
+            let config = MemoryPoolConfig::new(pool_type, 1000);
+            let pool = create_pool(&config, task_attempt_id, || fake.memory());
+            (name, pool, fake)
+        })
+        .collect()
+    }
+
+    #[test]
+    fn a_final_aggregate_reading_its_spill_files_back_carries_what_spark_refuses() {
+        for (name, pool, fake) in each_pool_type([-3011, -3012]) {
+            // Like DataFusion 55's final hash aggregate, whose spill merge and replay table are
+            // sibling reservations of one consumer.
+            let merge = MemoryConsumer::new("FinalHashAggregateStream[0]").register(&pool);
+            let replay = merge.new_empty();
+            merge.try_grow(90).unwrap();
+
+            // Spark grants 10 of the replay's 30 bytes, and the other 20 are overcommit.
+            replay.try_grow(30).unwrap();
+            assert_eq!(pool.reserved(), 120, "{name}");
+            assert_eq!(fake.held(), 100, "{name}");
+            assert_eq!(overcommit(&pool), 20, "{name}");
+
+            // The replay emits groups and shrinks, which repays the overcommit before Spark.
+            replay.shrink(25);
+            assert_eq!(overcommit(&pool), 0, "{name}");
+            assert_eq!(fake.held(), 95, "{name}");
+            drop(merge);
+            drop(replay);
+            assert_eq!(pool.reserved(), 0, "{name}");
+            assert_eq!(fake.held(), 0, "{name}");
+        }
+    }
+
+    #[test]
+    fn other_refusals_are_unchanged() {
+        for (name, pool, fake) in each_pool_type([-3013, -3014]) {
+            // While the aggregate reads its input, its table is the consumer's only reservation
+            // holding memory, so a refusal makes it spill.
+            let table = MemoryConsumer::new("FinalHashAggregateStream[0]").register(&pool);
+            let replay = table.new_empty();
+            table.try_grow(90).unwrap();
+            assert!(table.try_grow(30).is_err(), "{name}");
+            drop(table);
+
+            // The merge picks its spill files while nothing else is held, so a refusal still
+            // limits how many it opens.
+            let merge = replay.new_empty();
+            merge.try_grow(90).unwrap();
+            assert!(merge.try_grow(30).is_err(), "{name}");
+            drop(merge);
+
+            // Any other operator with a sibling holding memory is still refused.
+            let sort = MemoryConsumer::new("ExternalSorterMerge[0]").register(&pool);
+            let sibling = sort.new_empty();
+            sort.try_grow(90).unwrap();
+            assert!(sibling.try_grow(30).is_err(), "{name}");
+            assert_eq!(pool.reserved(), 90, "{name}");
+            assert_eq!(fake.held(), 90, "{name}");
+        }
+    }
 
     #[test]
     fn only_final_aggregates_replay_their_spill_files() {

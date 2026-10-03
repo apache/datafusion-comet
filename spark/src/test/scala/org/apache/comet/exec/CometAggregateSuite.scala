@@ -154,6 +154,22 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  /**
+   * Returns the native final aggregates in the plan that `df` last ran, after checking that there
+   * is one and that each spilled.
+   */
+  private def spilledFinalAggregates(df: DataFrame): Seq[CometHashAggregateExec] = {
+    val plan = df.queryExecution.executedPlan
+    val finalAggregates = collect(plan) {
+      case aggregate: CometHashAggregateExec if aggregate.modes.contains(Final) => aggregate
+    }
+    assert(finalAggregates.nonEmpty, s"Expected a native final aggregate:\n$plan")
+    assert(
+      finalAggregates.forall(_.metrics("spill_count").value > 0),
+      "The final aggregate did not spill")
+    finalAggregates
+  }
+
   test("final aggregate that has spilled reads its spill files back (issue #6254)") {
     withTempPath { dir =>
       val path = dir.getCanonicalPath
@@ -174,18 +190,9 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           val key = i.toString
           Row("k" * (128 - key.length) + key, 2L, i + 62500L)
         }
-        // checkToRDD = false runs the query once, so the plan read below is the one that ran.
-        QueryTest.checkAnswer(df, expected, checkToRDD = false)
-
-        val finalAggregates = collect(df.queryExecution.executedPlan) {
-          case aggregate: CometHashAggregateExec if aggregate.modes.contains(Final) => aggregate
-        }
-        assert(
-          finalAggregates.nonEmpty,
-          s"Expected a native final aggregate:\n${df.queryExecution.executedPlan}")
-        assert(
-          finalAggregates.forall(_.metrics("spill_count").value > 0),
-          "The final aggregate did not spill")
+        // checkCometAnswer runs the query once, so the plan read below is the one that ran.
+        checkCometAnswer(df, expected)
+        spilledFinalAggregates(df)
       }
     }
   }
@@ -219,24 +226,18 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           val key = i.toString
           Row(0L, "k" * (128 - key.length) + key, 2L, i + 62500L)
         }
-        // checkAnswer would compare the rows in order, because the plan has a sort. Collecting runs
-        // the query once, so the plan read below is the one that ran.
+        // checkCometAnswer would compare the rows in order, because the plan has a sort.
+        // Collecting runs the query once, so the plan read below is the one that ran.
         QueryTest.sameRows(expected, df.collect().toSeq).foreach(fail(_))
 
-        val plan = df.queryExecution.executedPlan
-        val finalAggregates = collect(plan) {
-          case aggregate: CometHashAggregateExec if aggregate.modes.contains(Final) => aggregate
-        }
         // Only a sort in the same native plan keeps the final aggregate's input sorted.
         assert(
-          finalAggregates.exists(_.child match {
+          spilledFinalAggregates(df).exists(_.child match {
             case partial: CometHashAggregateExec => partial.child.isInstanceOf[CometSortExec]
             case _ => false
           }),
-          s"Expected a native final aggregate over a partial aggregate over a sort:\n$plan")
-        assert(
-          finalAggregates.forall(_.metrics("spill_count").value > 0),
-          "The final aggregate did not spill")
+          "Expected a native final aggregate over a partial aggregate over a sort:\n" +
+            df.queryExecution.executedPlan)
       }
     }
   }
