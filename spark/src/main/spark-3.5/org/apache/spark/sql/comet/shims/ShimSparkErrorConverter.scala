@@ -26,7 +26,7 @@ import scala.util.matching.Regex
 import org.apache.spark.{QueryContext, SparkDateTimeException, SparkException}
 import org.apache.spark.sql.catalyst.trees.SQLQueryContext
 import org.apache.spark.sql.errors.QueryExecutionErrors
-import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException
+import org.apache.spark.sql.execution.datasources.{DataSourceUtils, SchemaColumnConvertNotSupportedException}
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
 
@@ -368,6 +368,11 @@ trait ShimSparkErrorConverter {
         Some(
           QueryExecutionErrors.readCurrentFileNotFoundError(
             new FileNotFoundException(s"File $path does not exist")))
+
+      case "ReadAncientDatetime" =>
+        // Spark raises this unwrapped, not as FAILED_READ_FILE. The helper picks the rebase
+        // config for the format and throws on a format it does not know.
+        Some(DataSourceUtils.newRebaseExceptionInRead(params("format").toString))
 
       case "CannotReadFile" =>
         // A per-file read failure (corrupt/truncated/deleted parquet, object_store, IO) classified
