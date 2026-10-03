@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+mod benchmark;
+mod read_adaptations;
 mod schema_errors;
 mod timestamp_errors;
 

@@ -239,13 +239,29 @@ pub(crate) fn init_datasource_exec(
         _ => Arc::new(parquet_source),
     };
 
-    let expr_adapter_factory: Arc<dyn PhysicalExprAdapterFactory> = Arc::new(
-        SparkPhysicalExprAdapterFactory::new(spark_parquet_options, default_values),
-    );
+    let spark_adapter_factory = Arc::new(SparkPhysicalExprAdapterFactory::new(
+        spark_parquet_options,
+        default_values,
+    ));
+    let expr_adapter_factory: Arc<dyn PhysicalExprAdapterFactory> =
+        Arc::<SparkPhysicalExprAdapterFactory>::clone(&spark_adapter_factory);
 
     let file_groups = file_groups
-        .iter()
-        .map(|files| FileGroup::new(files.clone()))
+        .into_iter()
+        .map(|files| {
+            FileGroup::new(
+                files
+                    .into_iter()
+                    .map(|mut file| {
+                        // Retain the concrete adapter for runtime-filter read-safety checks.
+                        // Extensions are keyed by type; existing access plans stay intact.
+                        file.extensions
+                            .insert_arc(Arc::clone(&spark_adapter_factory));
+                        file
+                    })
+                    .collect(),
+            )
+        })
         .collect();
 
     let mut file_scan_config_builder = FileScanConfigBuilder::new(object_store_url, file_source)
