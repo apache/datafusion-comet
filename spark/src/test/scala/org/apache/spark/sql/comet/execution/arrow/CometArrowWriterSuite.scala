@@ -175,8 +175,8 @@ class CometArrowWriterSuite extends AnyFunSuite with Matchers {
     v.setDictionary(new Dictionary {
       // Spark decodes bytes and shorts through decodeToInt.
       override def decodeToInt(id: Int): Int = dataType match {
-        case ByteType => source.getByte(id)
-        case ShortType => source.getShort(id)
+        case ByteType => source.getByte(id).toInt
+        case ShortType => source.getShort(id).toInt
         case _ => source.getInt(id)
       }
       override def decodeToLong(id: Int): Long = source.getLong(id)

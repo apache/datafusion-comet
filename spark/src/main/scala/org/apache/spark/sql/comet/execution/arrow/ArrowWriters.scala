@@ -220,7 +220,7 @@ private[arrow] object ArrowFieldWriter {
     val end = start + numRows
     var i = start
     while (i < end && (i & 7) != 0) {
-      BitVectorHelper.setBit(validity, i)
+      BitVectorHelper.setBit(validity, i.toLong)
       i += 1
     }
     val alignedEnd = end & ~7
@@ -229,7 +229,7 @@ private[arrow] object ArrowFieldWriter {
       i = alignedEnd
     }
     while (i < end) {
-      BitVectorHelper.setBit(validity, i)
+      BitVectorHelper.setBit(validity, i.toLong)
       i += 1
     }
   }
@@ -275,7 +275,7 @@ private[arrow] object ArrowFieldWriter {
 
   def writeBit(buffer: ArrowBuf, index: Int, set: Boolean): Unit = {
     if (set) {
-      BitVectorHelper.setBit(buffer, index)
+      BitVectorHelper.setBit(buffer, index.toLong)
     } else {
       BitVectorHelper.unsetBit(buffer, index)
     }
@@ -438,7 +438,7 @@ private[arrow] object ArrowFieldWriter {
         startRow,
         numRows,
         (offset, length) => {
-          copyBytes(bytes, offset, target, length)
+          copyBytes(bytes, offset, target, length.toLong)
           target += length
         })
     }
@@ -498,17 +498,17 @@ private[arrow] object ArrowFieldWriter {
             data.memoryAddress + start,
             null,
             data.memoryAddress + end,
-            length)
+            length.toLong)
           end += length
         } else {
           val bytes = input.getBinary(row)
           data = reserveData(vector, end + bytes.length)
           Platform.copyMemory(
             bytes,
-            Platform.BYTE_ARRAY_OFFSET,
+            Platform.BYTE_ARRAY_OFFSET.toLong,
             null,
             data.memoryAddress + end,
-            bytes.length)
+            bytes.length.toLong)
           end += bytes.length
           if (cached) {
             firstRow(id) = outStart + i + 1
@@ -548,7 +548,7 @@ private[arrow] object ArrowFieldWriter {
         val buffer = bytes.getByteBuffer(offset, length.toInt)
         Platform.copyMemory(
           buffer.array(),
-          Platform.BYTE_ARRAY_OFFSET + buffer.arrayOffset() + buffer.position(),
+          Platform.BYTE_ARRAY_OFFSET.toLong + buffer.arrayOffset() + buffer.position(),
           null,
           target,
           length)
@@ -831,7 +831,7 @@ private[arrow] abstract class FixedWidthArrowFieldWriter extends ArrowFieldWrite
         case _: Array[Float] => Platform.FLOAT_ARRAY_OFFSET
         case _: Array[Double] => Platform.DOUBLE_ARRAY_OFFSET
       }
-      Platform.copyMemory(array, arrayOffset, null, target, numRows.toLong * width)
+      Platform.copyMemory(array, arrayOffset.toLong, null, target, numRows.toLong * width)
   }
 
   override def setNull(): Unit = {
@@ -1037,8 +1037,8 @@ private[arrow] class DecimalWriter(val valueVector: DecimalVector, precision: In
     if (precision > Decimal.MAX_LONG_DIGITS && LittleEndian &&
       (input.isInstanceOf[UnsafeRow] || input.isInstanceOf[UnsafeArrayData])) {
       val bytes = input.getBinary(ordinal)
-      if (putBigEndianIfFits(count, bytes, Platform.BYTE_ARRAY_OFFSET, bytes.length)) {
-        BitVectorHelper.setBit(valueVector.getValidityBuffer, count)
+      if (putBigEndianIfFits(count, bytes, Platform.BYTE_ARRAY_OFFSET.toLong, bytes.length)) {
+        BitVectorHelper.setBit(valueVector.getValidityBuffer, count.toLong)
         return
       }
     }
@@ -1061,8 +1061,8 @@ private[arrow] class DecimalWriter(val valueVector: DecimalVector, precision: In
       } else {
         val bytes = unscaled.toByteArray
         if (LittleEndian &&
-          putBigEndianIfFits(index, bytes, Platform.BYTE_ARRAY_OFFSET, bytes.length)) {
-          BitVectorHelper.setBit(valueVector.getValidityBuffer, index)
+          putBigEndianIfFits(index, bytes, Platform.BYTE_ARRAY_OFFSET.toLong, bytes.length)) {
+          BitVectorHelper.setBit(valueVector.getValidityBuffer, index.toLong)
         } else {
           valueVector.set(index, decimal.toJavaBigDecimal)
         }
@@ -1132,7 +1132,11 @@ private[arrow] class DecimalWriter(val valueVector: DecimalVector, precision: In
               val fits = bytes match {
                 case null =>
                   val value = vector.getBinary(row)
-                  putBigEndianIfFits(count + i, value, Platform.BYTE_ARRAY_OFFSET, value.length)
+                  putBigEndianIfFits(
+                    count + i,
+                    value,
+                    Platform.BYTE_ARRAY_OFFSET.toLong,
+                    value.length)
                 case offHeap: OffHeapColumnVector =>
                   putBigEndianIfFits(
                     count + i,
@@ -1145,7 +1149,7 @@ private[arrow] class DecimalWriter(val valueVector: DecimalVector, precision: In
                   putBigEndianIfFits(
                     count + i,
                     buffer.array(),
-                    Platform.BYTE_ARRAY_OFFSET + buffer.arrayOffset() + buffer.position(),
+                    Platform.BYTE_ARRAY_OFFSET.toLong + buffer.arrayOffset() + buffer.position(),
                     buffer.remaining())
               }
               if (!fits) {
