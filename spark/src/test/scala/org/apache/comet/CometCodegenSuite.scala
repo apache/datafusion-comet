@@ -43,6 +43,7 @@ import org.apache.spark.unsafe.types.{ByteArray, UTF8String}
 import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
 import org.apache.comet.codegen.CometBatchKernelCodegen
 import org.apache.comet.codegen.CometBatchKernelCodegen.ArrowColumnSpec
+import org.apache.comet.rules.CometExecRule
 import org.apache.comet.serde.{CometInvokeTargets, CometScalaUDF, QueryPlanSerde}
 import org.apache.comet.serde.ExprOuterClass.Expr.ExprStructCase
 import org.apache.comet.udf.codegen.CometScalaUDFCodegen
@@ -1018,6 +1019,27 @@ class CometCodegenSuite
         "SELECT plusOne((SELECT max(id) FROM range(0, 2, 1, 1))) FROM t",
         "SELECT map((SELECT max(id) FROM range(0, 2, 1, 1)), NULL) FROM t").foreach { q =>
         checkSparkAnswerAndFallbackReason(q, CometBatchKernelCodegen.subqueryReason)
+      }
+    }
+  }
+
+  test("a non-deterministic expression beside a NullType dispatcher result stays in Spark") {
+    // Spark skips the right operand of `+` on a row whose left operand is NULL, while native
+    // evaluation computes it over the whole batch, so the counter advances on a row Spark skips.
+    // The projection fell back to Spark when the dispatcher refused NullType results. Here
+    // serialization dispatches a tree it builds itself: the folded `map('k', NULL)` literal is
+    // expanded into a `CreateMap`, and the decimal addition is wrapped in `CheckOverflow`.
+    withTempPath { dir =>
+      spark.range(0, 4, 1, numPartitions = 1).write.parquet(dir.getCanonicalPath)
+      withTable("t") {
+        sql(s"CREATE TABLE t USING parquet LOCATION '${dir.getCanonicalPath}'")
+        val stateful = "IF(id = 0, CAST(NULL AS BIGINT), id) + monotonically_increasing_id()"
+        Seq(
+          s"SELECT id, map('k', NULL) AS m, $stateful AS v FROM t",
+          "SELECT id, map(CAST(id AS DECIMAL(10, 0)) + CAST(1 AS DECIMAL(10, 0)), NULL) AS m, " +
+            s"$stateful AS v FROM t").foreach { q =>
+          checkSparkAnswerAndFallbackReason(q, CometExecRule.nondeterministicBesideNullTypeReason)
+        }
       }
     }
   }

@@ -535,7 +535,11 @@ class CometNullTypeCompositionSuite extends CometTestBase with AdaptiveSparkPlan
     // A non-deterministic child makes every guarding serde decline its native kernel, so neither
     // batching nor the kernel choice reaches the producer; ANSI still decides which serdes guard.
     // This holds because each guard is checked before any opt-in (`Incompatible`) branch; the
-    // gate test below pins that order where a config selects such a branch (LAST_WIN).
+    // gate test below pins that order where a config selects such a branch (LAST_WIN). A case
+    // that evaluates its non-deterministic producer outside the dispatcher beside a NullType
+    // kernel, or beside a typed kernel that computes a NullType value inside it, falls back
+    // (`CometExecRule.nondeterministicBesideNullTypeKernel`); these producers are NullType, so the
+    // case ran in Spark on main.
     test(
       s"nullable non-deterministic NullType producers survive every consumer ${tag(defaultProfile)}") {
       sweep(
@@ -544,7 +548,7 @@ class CometNullTypeCompositionSuite extends CometTestBase with AdaptiveSparkPlan
           (producer, s"SELECT $expr FROM t")
         },
         comparedFloor = 140,
-        nativeFloor = 110,
+        nativeFloor = 60,
         ansi = ansi,
         profile = defaultProfile)
     }
