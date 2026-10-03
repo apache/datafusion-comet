@@ -176,7 +176,7 @@ The tables below list every Spark built-in expression with its current status.
 | `sequence` | ✅ | Hybrid | Integral types run natively; date/timestamp sequences use codegen dispatch |
 | `shuffle` | ✅ | Native | Binary/struct/map elements fall back |
 | `slice` | ✅ | Native | Native ([#4149](https://github.com/apache/datafusion-comet/pull/4149)) |
-| `sort_array` | ✅ | Hybrid | Struct, nested-array, and null elements run natively; other element types (for example intervals), and floating-point elements when `spark.comet.exec.strictFloatingPoint=true`, route through the JVM codegen dispatcher |
+| `sort_array` | ✅ | Hybrid | Struct, nested-array, floating-point, and null elements run natively; other element types (for example intervals) route through the JVM codegen dispatcher |
 
 ---
 
@@ -705,7 +705,7 @@ Comet also accelerates a number of Catalyst expressions that have no Spark SQL f
 - **Accessor expressions (subscript and field access, not functions):** struct field access (`col.field`), array element access (`arr[i]`), and map value access (`map[key]`).
 - **Internal decimal arithmetic:** `CheckOverflow`, `MakeDecimal`, and `UnscaledValue`, which the analyzer inserts around decimal operations.
 - **User-defined functions:** Scala UDFs registered through the DataFrame or SQL API.
-- **DataSource V2 catalog functions:** Iceberg's system functions `bucket`, `truncate`, `years`, `months`, `days`, and `hours` (for example `system.bucket(16, id)`) run natively; see [Iceberg system functions](iceberg.md#iceberg-system-functions).
+- **DataSource V2 catalog functions:** Iceberg's system functions `bucket`, `truncate`, `years`, `months`, `days`, and `hours` (for example `system.bucket(16, id)`) run natively; see [Iceberg system functions](iceberg.md#iceberg-system-functions). Other DataSource V2 catalog functions run in Spark.
 - **Lowered built-ins:** Spark lowers some built-in functions to `StaticInvoke` or `Invoke` calls. Those without a native mapping run through the JVM codegen dispatcher when their input and output types are supported.
 - **Structural expressions:** aliases, attribute references, literals, sort orders, and `CASE WHEN`.
 
