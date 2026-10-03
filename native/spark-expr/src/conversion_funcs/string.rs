@@ -3341,14 +3341,6 @@ mod tests {
                     expected,
                     "{value:?} in ANSI (spark4={is_spark4_plus})"
                 ),
-                // Pre-existing gap, not introduced by the shape classifier: Spark raises
-                // CAST_INVALID_INPUT under ANSI for an empty or all-whitespace string too, but
-                // Comet returns null for it in every mode. Tracked by
-                // <https://github.com/apache/datafusion-comet/issues/5149>; asserted here so
-                // it cannot widen.
-                None if value.trim().is_empty() => {
-                    assert_eq!(ansi.unwrap(), None, "{value:?} in ANSI")
-                }
                 None => assert!(
                     ansi.is_err(),
                     "{value:?} should raise in ANSI (spark4={is_spark4_plus})"
@@ -3550,20 +3542,14 @@ mod tests {
             )),
         );
 
-        // Whitespace and control-character permutations.
-        // Pre-existing gap, not introduced by the shape classifier: Spark trims leading and
-        // trailing whitespace *and ISO control* characters before parsing a timestamp
-        // (`SparkDateTimeUtils.getTrimmedStart`/`getTrimmedEnd`), but `timestamp_parser` uses
-        // Rust's `str::trim`, which only strips Unicode whitespace. So a value padded with a
-        // control character such as U+0003 returns null where Spark parses it. Comet's own
-        // `date_parser` already trims both, so this is also internally inconsistent.
-        //
-        // Asserted as-is so the divergence cannot silently widen. Tracked by
-        // <https://github.com/apache/datafusion-comet/issues/5165>.
+        // Whitespace and control-character permutations. Spark trims leading and trailing
+        // whitespace *and ISO control* characters before parsing a timestamp
+        // (`SparkDateTimeUtils.getTrimmedStart`/`getTrimmedEnd`), so a value padded with U+0003
+        // and spaces in any order still parses.
         let expected = Some(utc_micros(2015, 3, 18, 12, 3, 17, 0));
         for value in permute_with_whitespace_and_control(&["2015-03-18 12:03:17"]) {
             debug_assert!(value.contains('\u{0003}'));
-            check(&value, None);
+            check(&value, expected);
         }
         // Values Spark rejects are rejected here too, control characters or not.
         for value in permute_with_whitespace_and_control(&[
@@ -3576,7 +3562,7 @@ mod tests {
         ]) {
             check(&value, None);
         }
-        // Whitespace-only padding, which Rust's `trim` does handle, parses as Spark expects.
+        // Whitespace-only padding parses too.
         for value in [
             "2015-03-18 12:03:17",
             " 2015-03-18 12:03:17",
