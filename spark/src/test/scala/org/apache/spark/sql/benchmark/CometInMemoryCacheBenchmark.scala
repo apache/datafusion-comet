@@ -26,7 +26,7 @@ import org.apache.spark.benchmark.Benchmark
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.AttributeReference
 import org.apache.spark.sql.comet.CometInMemoryTableScanExec
-import org.apache.spark.sql.comet.execution.arrow.ArrowCachedBatchSerializer
+import org.apache.spark.sql.comet.execution.arrow.{ArrowCachedBatchSerializer, CometCachedBatchHelper}
 import org.apache.spark.sql.execution.columnar.{CometInMemoryRelationHelper, DefaultCachedBatchSerializer, InMemoryRelation, InMemoryTableScanExec}
 import org.apache.spark.sql.execution.vectorized.OnHeapColumnVector
 import org.apache.spark.sql.internal.{SQLConf, StaticSQLConf}
@@ -452,10 +452,12 @@ object CometInMemoryCacheBenchmark extends CometBenchmarkBase {
       .optimizedPlan
       .collectFirst { case r: InMemoryRelation => r }
       .getOrElse(sys.error(s"$view is not cached"))
-    // computeStats rather than the builder's size accumulator, which Spark 4.2 replaced. Before
-    // the buffers load it falls back to the plan's estimate, so insist they have.
+    // The stored payloads rather than computeStats, which reports the relation's decoded size and
+    // so is the same for every codec.
     assert(relation.cacheBuilder.isCachedColumnBuffersLoaded, s"$view is not materialized")
-    relation.computeStats().sizeInBytes.toLong
+    relation.cacheBuilder.cachedColumnBuffers
+      .map(CometCachedBatchHelper.payloadSize)
+      .fold(0L)(_ + _)
   }
 
   private def runStatsBenchmark(): Unit = {
