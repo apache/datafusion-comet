@@ -23,26 +23,52 @@ This documentation explains the release process for Apache DataFusion Comet. Som
 performed by any contributor, while certain release tasks can only be performed by a DataFusion Project Management
 Committee (PMC) member.
 
+## Release Cycle
+
+Comet targets a minor release every four to six weeks (see
+[Release Cadence](../about/versioning_policy.md#release-cadence)). Each release starts by cutting the release
+branch. The weeks after that are for finding and fixing regressions on the branch, and the release candidate comes
+last.
+
+![The release cycle: cut the release branch, audit it for regressions for about a week, review the fixes and backport them for one to two weeks, then create a release candidate and publish the release. Fixes merge to main first and are then backported to the release branch.](../_static/images/comet-release-cycle.svg)
+
+1. **Cut the release branch** from `main`. From then on, new work goes to `main` for the next release, and the
+   release branch only takes backported fixes and release mechanics such as the version bump.
+2. **Audit the release branch for regressions** for about a week, and open a pull request against `main` to fix
+   each one.
+3. **Review the fixes and backport them** to the release branch over the next one to two weeks.
+4. **Create a release candidate** and hold the vote. If the vote fails, fix the problems and create the next
+   release candidate.
+5. **Publish the release** once the vote passes.
+
+These steps take three to four weeks, so the next release starts as soon as the current one ships.
+
 ## Checklist
 
 The following is a quick-reference checklist for the full release process. See the detailed sections below for
 instructions on each step.
 
-- [ ] Release preparation: review expression support status and user guide
-- [ ] Release preparation: check the scheduled CI runs are healthy
-- [ ] Create release branch
-- [ ] Protect the release branch in `.asf.yaml`
-- [ ] Generate release documentation
-- [ ] Update Maven version in release branch
-- [ ] Update version in main for next development cycle
-- [ ] Generate the change log and PR it against the release branch
-- [ ] Run the full CI suite on the release branch
-- [ ] Build the jars
-- [ ] Tag the release candidate
-- [ ] Update documentation for the new release
-- [ ] Publish Maven artifacts to staging
-- [ ] Create the release candidate tarball
-- [ ] Start the email voting thread
+- [ ] Cut the release branch:
+  - [ ] Create the release branch and its backport label
+  - [ ] Protect the release branch in `.asf.yaml`
+  - [ ] Generate release documentation
+  - [ ] Update Maven version in release branch
+  - [ ] Update version in main for next development cycle
+- [ ] Find and fix regressions:
+  - [ ] Review expression support status and the user guide
+  - [ ] Benchmark against the previous release
+  - [ ] Check the scheduled CI runs are healthy
+  - [ ] Fix each regression on `main` and backport the fix
+- [ ] Create the release candidate:
+  - [ ] Check for fixes missing from the release branches
+  - [ ] Generate the change log and PR it against the release branch
+  - [ ] Run the full CI suite on the release branch
+  - [ ] Build the jars
+  - [ ] Tag the release candidate
+  - [ ] Update documentation for the new release
+  - [ ] Publish Maven artifacts to staging
+  - [ ] Create the release candidate tarball
+  - [ ] Start the email voting thread
 - [ ] Once the vote passes:
   - [ ] Publish source tarball
   - [ ] Create GitHub release
@@ -54,39 +80,9 @@ instructions on each step.
   - [ ] Register the release with Apache Reporter
   - [ ] Delete old RCs and releases from SVN
   - [ ] Write a blog post
+  - [ ] Start the next release
 
-## Release Preparation
-
-Before starting the release process, review the user guide to ensure it accurately reflects the current state of the
-project:
-
-- Review the [Spark Expression Support](../user-guide/latest/expressions.md) page and the supported operators list
-  in the user guide. The expression page is the source of truth for expression support status, so verify that any
-  expressions added or changed since the last release appear there with an accurate status (✅ / ⚠️ / 🔜 / 💤).
-- Spot-check the support status of individual expressions by running tests or queries to confirm they work as
-  documented.
-- Look for any expressions that may have regressed or changed behavior since the last release and update the
-  documentation accordingly.
-
-It is also recommended to run benchmarks (such as TPC-H and TPC-DS) comparing performance against the previous
-release to check for regressions. See the
-[Comet Benchmarking Guide](benchmarking.md) for instructions.
-
-Check that the scheduled CI runs have been healthy over the release window. Most of Comet's coverage of the
-non-default Spark and Iceberg versions runs nightly rather than on pull requests, so a nightly run that has been
-failing — or one that silently stopped firing — means the release is going out with less testing behind it than the
-tier table suggests. A scheduled run has no pull request to turn red, and `publish_snapshot.yml` does
-not report its own failures, so this has to be looked at deliberately. See
-[Checking that the scheduled runs are healthy](ci.md#checking-that-the-scheduled-runs-are-healthy) for the commands
-and for how to tell a genuinely quiet night from a broken one.
-
-These are tasks where agentic coding tools can be particularly helpful — for example, scanning the codebase for
-newly registered expressions and cross-referencing them against the documented list, or generating test queries to
-verify expression support status.
-
-Any issues found should be addressed before creating the release branch.
-
-## Creating the Release Candidate
+## Cutting the Release Branch
 
 This part of the process can be performed by any committer.
 
@@ -116,6 +112,14 @@ git push apache branch-0.13
 
 Creating the branch is the only direct push to it. After protecting the branch (next step), all later changes
 to the release branch (documentation, version bump, changelog) go through pull requests targeting it.
+
+Also create the branch's backport label. Committers add it to pull requests on `main` that should be backported to
+the branch; see [Backporting to Release Branches](backporting.md).
+
+```shell
+gh label create backport-0.13 --repo apache/datafusion-comet \
+  --description "Candidate for backporting to 0.13 release branch"
+```
 
 ### Protect the Release Branch
 
@@ -196,9 +200,64 @@ the Spark SQL and Iceberg suites. The Spark SQL suite for Spark 3.4 runs only wi
 
 Create a PR against the main branch to prepare for developing the next release:
 
-- Update the Rust crate version to `0.14.0`.
+- Update the Rust crate version to `0.14.0` in `native/Cargo.toml` and in each `contrib/*/native/Cargo.toml`.
+  The contrib crates sit outside the `native/` workspace, so they do not inherit its version. Then run
+  `cargo update --workspace` in `native/` and in each contrib crate that has its own `Cargo.lock`.
 - Update the Maven version to `0.14.0-SNAPSHOT` in the same set of files listed above (the `pom.xml` files,
   the Spark test diffs under `dev/diffs`, and the Iceberg test diffs under `dev/diffs/iceberg`).
+
+## Finding and Fixing Regressions
+
+Once the release branch is cut, spend about a week auditing it for regressions, then one to two weeks getting the
+fixes reviewed and backported. Anyone can help with both.
+
+### Audit the Release Branch
+
+Check that the user guide accurately reflects what is being released:
+
+- Review the [Spark Expression Support](../user-guide/latest/expressions.md) page and the supported operators list
+  in the user guide. The expression page is the source of truth for expression support status, so verify that any
+  expressions added or changed since the last release appear there with an accurate status (✅ / ⚠️ / 🔜 / 💤).
+- Spot-check the support status of individual expressions by running tests or queries to confirm they work as
+  documented.
+- Look for any expressions that may have regressed or changed behavior since the last release and update the
+  documentation accordingly.
+
+Run benchmarks (such as TPC-H and TPC-DS) on the release branch and compare them against the previous release to
+check for performance regressions. See the [Comet Benchmarking Guide](benchmarking.md) for instructions.
+
+Check that the scheduled CI runs have been healthy over the release window. Most of Comet's coverage of the
+non-default Spark and Iceberg versions runs nightly rather than on pull requests, so a nightly run that has been
+failing — or one that silently stopped firing — means the release is going out with less testing behind it than the
+tier table suggests. A scheduled run has no pull request to turn red, and `publish_snapshot.yml` does
+not report its own failures, so this has to be looked at deliberately. See
+[Checking that the scheduled runs are healthy](ci.md#checking-that-the-scheduled-runs-are-healthy) for the commands
+and for how to tell a genuinely quiet night from a broken one.
+
+These are tasks where agentic coding tools can be particularly helpful — for example, scanning the codebase for
+newly registered expressions and cross-referencing them against the documented list, or generating test queries to
+verify expression support status.
+
+### Fix and Backport Regressions
+
+File an issue for each regression and open a pull request against `main` that fixes it. Committers add the
+`backport-0.13` label to these pull requests, and once each one merges it is backported to the release branch as
+described in [Backporting to Release Branches](backporting.md). The label shows which fixes still need to reach the
+branch.
+
+Create the release candidate once the fixes have been backported.
+
+## Creating the Release Candidate
+
+This part of the process can be performed by any committer.
+
+### Check for Missing Backports
+
+Before generating the change log, check that the new branch has every fix from the older release branches that are
+still taking backports, and backport any that are missing. For a patch release, check the release branch against
+every newer release branch instead, so that a fix doesn't ship in the older release line first.
+[Checking Release Branches Before a Release](backporting.md#checking-release-branches-before-a-release) shows
+how.
 
 ### Generate the Change Log
 
@@ -582,3 +641,8 @@ Writing a blog post about the release is a great way to generate more interest i
 Google document where the community can collaborate on a blog post. Once the content is agreed then a PR can be
 created against the [datafusion-site](https://github.com/apache/datafusion-site) repository to add the blog post. Any
 contributor can drive this process.
+
+### Start the Next Release
+
+The release cycle takes three to four weeks, so start the next release right away by cutting its release branch.
+See [Release Cycle](#release-cycle).

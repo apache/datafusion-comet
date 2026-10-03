@@ -28,8 +28,8 @@ types, operators, and expressions that Comet supports, along with a compatibilit
 known differences from Apache Spark.
 
 Operational topics include reading and understanding Comet query plans, tuning, available metrics,
-and integration guides for Apache Iceberg and Kubernetes. Select a topic from the navigation menu
-to read more.
+and integration guides for Apache Iceberg, Apache Celeborn, and Kubernetes. Select a topic from
+the navigation menu to read more.
 
 .. _toc.user-guide-links-$COMET_VERSION:
 .. toctree::
@@ -96,6 +96,7 @@ to read more.
 
    Iceberg Guide <iceberg>
    Iceberg Writes <iceberg-writes>
+   Celeborn Guide <celeborn>
    S3 Credential Providers <s3-credential-providers>
    Kubernetes Guide <kubernetes>
 

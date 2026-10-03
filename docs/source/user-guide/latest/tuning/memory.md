@@ -19,18 +19,13 @@ under the License.
 
 # Memory Tuning
 
-It is necessary to specify how much memory Comet can use in addition to memory already allocated to Spark. In some
-cases, it may be possible to reduce the amount of memory allocated to Spark so that overall memory allocation is
-the same or lower than the original configuration. In other cases, enabling Comet may require allocating more memory
-than before. See the [Determining How Much Memory to Allocate] section for more details.
-
 Comet needs two things configured: an off-heap pool for it to draw its reservations from, and enough executor memory
 overhead to cover the part of its footprint that no pool tracks. See [Configuring Comet Memory] and
-[Configuring Executor Memory Overhead].
+[Configuring Executor Memory Overhead]. To find out how much memory Comet uses on a real workload, see
+[Sizing the Overhead from the Memory Usage Log].
 
 ![Spark and Comet both use the JVM heap and share the off-heap memory pool, and the rest of Comet's native memory has to fit in the executor's memory overhead](../../../_static/images/comet-executor-memory.svg)
 
-[Determining How Much Memory to Allocate]: #determining-how-much-memory-to-allocate
 [Configuring Comet Memory]: #configuring-comet-memory
 [Configuring Executor Memory Overhead]: #configuring-executor-memory-overhead
 
@@ -41,6 +36,10 @@ specified by `spark.memory.offHeap.size`. The pool is a shared _budget_ rather t
 allocator: Comet's native operators allocate from the Rust heap rather than from JVM off-heap
 memory, but every reservation they make is charged against this same pool, so Comet and Spark's own
 off-heap consumers draw down one number.
+
+A larger pool lets the operators that can spill, such as sorts, aggregations and the shuffle writer, keep more in
+memory before they spill to disk. An operator that cannot spill fails the task when it cannot reserve the memory it
+needs.
 
 Comet's memory pool only tracks memory that an operator explicitly reserves, which in practice means the batches
 an operator deliberately accumulates: the sort buffer, the build side of a hash join, hash aggregation state, and the
@@ -85,38 +84,27 @@ native plans). This pool works best when you know beforehand
 the query has multiple operators that will likely all need to spill. Sometimes it will cause spills even
 when there is sufficient memory in order to leave enough memory for other operators.
 
-Comet 0.15.0 through 1.0.0 capped the memory of all of a task's operators combined at one operator's share, because of a
-bug ([#5961](https://github.com/apache/datafusion-comet/issues/5961)). Tasks with several operators can now reserve more
-memory before they spill than they could in those releases. The difference is largest on executors that run few tasks
-at once, where Spark's own limit on each task is loosest. If you sized executor memory against one of those releases,
-check that executors still have enough headroom; see [Sizing the Overhead from the Memory Usage Log].
-
 The `greedy_unified` pool type implements a greedy first-come first-serve limit. This pool works well for queries that do not
 need to spill or have a single spillable operator.
 
 ## Configuring Executor Memory Overhead
 
-Enabling off-heap memory is not sufficient on its own. Comet also needs room in
-`spark.executor.memoryOverhead`.
-
-`spark.memory.offHeap.size` is a budget, and the cluster manager already sizes the executor
-container to include it, so the memory that Comet's operators explicitly reserve has room. What does
-not have room is everything Comet allocates without reserving it — the untracked categories listed
-under [Configuring Comet Memory]. Those allocations are made by the Rust global allocator and live
-in the native heap, outside the JVM heap and outside Spark's off-heap allocations, and nothing in
-the container sizing accounts for them. The same applies to Comet's JVM-side Arrow buffers.
-
-`spark.executor.memoryOverhead` is the only slack the container has for this, and the JVM's own
-non-heap usage — metaspace, code cache, thread stacks, GC structures — is already drawing on it.
+Enabling off-heap memory is not sufficient on its own. The cluster manager sizes the executor
+container to include `spark.memory.offHeap.size`, so the memory that Comet's operators reserve has
+room, but nothing in the container's size accounts for the memory that no pool tracks (see
+[Configuring Comet Memory]). That memory has to fit in `spark.executor.memoryOverhead`, which the
+JVM's own non-heap memory, such as metaspace, code cache, thread stacks and GC structures, is
+already drawing on.
 
 Work out what the executor already gets before choosing a value. When
 `spark.executor.memoryOverhead` is unset, Spark derives the overhead as
 `max(spark.executor.memoryOverheadFactor * spark.executor.memory, 384 MiB)`. The factor defaults to
-`0.1`, except for PySpark and SparkR applications submitted to Kubernetes in cluster mode, where it
-defaults to `0.4`. On Spark 4.0 and later the floor is configurable through
-`spark.executor.minMemoryOverhead`. Setting `spark.executor.memoryOverhead` **replaces** the derived
-value rather than adding to it, so a value below what is derived today shrinks the container instead
-of growing it.
+`0.1`. On Kubernetes, when `spark.executor.memoryOverheadFactor` is unset, Spark uses
+`spark.kubernetes.memoryOverheadFactor` instead, which also defaults to `0.1`, except for PySpark
+and SparkR applications submitted in cluster mode, where it defaults to `0.4`. On Spark 4.0 and
+later the floor is configurable through `spark.executor.minMemoryOverhead`. Setting
+`spark.executor.memoryOverhead` **replaces** the derived value rather than adding to it, so a value
+below what is derived today shrinks the container instead of growing it.
 
 For a small executor, `2g` is a reasonable starting point. A 4 GiB executor derives only 409 MiB, so
 this is a real increase:
@@ -139,7 +127,9 @@ Raise the value further if executors are killed by the cluster manager (on Kuber
 To measure how much Comet needs rather than guessing, see [Sizing the Overhead from the Memory Usage Log].
 
 Note that on Kubernetes and YARN the overhead is added to the container size, so raising it reduces
-how many executors fit on a node.
+how many executors fit on a node. A standalone cluster ignores the overhead: its workers start
+executors without a memory limit and count only `spark.executor.memory` against the memory they
+offer.
 
 [Sizing the Overhead from the Memory Usage Log]: #sizing-the-overhead-from-the-memory-usage-log
 
@@ -154,8 +144,11 @@ Comet native memory usage: allocated 5412.3 MiB, reserved 3890.0 MiB (16 native 
 
 - `allocated` is the memory that Comet's native code has allocated and not yet freed, whether or not
   a pool tracks it.
-- `reserved` is the part that Comet's memory pools track. It is charged against
-  `spark.memory.offHeap.size`, so the container already has room for it.
+- `reserved` is the part that Comet's memory pools have reserved from Spark's off-heap memory. It is
+  charged against `spark.memory.offHeap.size`, so the container already has room for it. A pool
+  sometimes has to track memory that Spark could not grant, such as a spilled batch read back from
+  disk while the off-heap memory is full. `reserved` leaves that memory out, since nothing charges it
+  against `spark.memory.offHeap.size`.
 - `JVM Arrow allocated` is the Arrow memory Comet holds on the JVM side, such as batches read from
   Comet's in-memory cache, broadcast data, and batches exchanged with native code or Python workers.
   The part imported from native was allocated by Comet's native code, so `allocated` already counts
@@ -164,15 +157,19 @@ Comet native memory usage: allocated 5412.3 MiB, reserved 3890.0 MiB (16 native 
   which allocator a buffer is charged to rather than where it was allocated, so treat the JVM's
   part as an estimate.
 
-Comet's untracked memory is what Comet holds outside the JVM heap that no pool reserves: `allocated`,
-plus the JVM Arrow figure less the part imported from native, minus `reserved`. It is the part of
-Comet's footprint that has to fit in `spark.executor.memoryOverhead`, alongside the JVM's own
-non-heap memory. To size the overhead from it:
+When the application writes an event log and runs the Comet plugin, the event log also records a
+summary of these samples; see [Reading the Memory Usage Log from the Event Log].
+
+Comet's untracked memory is what Comet holds outside the JVM heap that Spark's off-heap pool does
+not account for: `allocated`, plus the JVM Arrow figure less the part imported from native, minus
+`reserved`. It is the part of Comet's footprint that has to fit in `spark.executor.memoryOverhead`,
+alongside the JVM's own non-heap memory. To size the overhead from it:
 
 1. Run a representative workload and find the line with the most untracked memory in each
-   executor's log. Take all the figures from the same line: they are sampled together, and figures
-   from different lines describe different moments. Setting `spark.comet.memory.logInterval=1s` for
-   this run makes a short-lived peak less likely to fall between samples.
+   executor's log, or the event with the most for each executor in the event log. Take all the
+   figures from the same line or event: they are sampled together, and figures from different
+   samples describe different moments. Setting `spark.comet.memory.logInterval=1s` for this run
+   makes a short-lived peak less likely to fall between samples.
 2. Start from the overhead the executors had before Comet was enabled, which covers the JVM's own
    non-heap memory, and add the most untracked memory seen on any executor.
 3. Add a margin on top. The log can miss the true peak between samples, and none of the figures
@@ -192,10 +189,11 @@ occupy until Spark hands it out, so a quiet log is not a sign that the overhead 
 size it from the most untracked memory as described above. The overhead also has to hold the JVM's
 own non-heap memory, so by the time the warning appears the executor has likely outgrown its
 container. It warns the first time this happens, and again each time it happens after dropping back
-below. The overhead it uses is `spark.executor.memoryOverhead` if set, otherwise
-`spark.executor.memoryOverheadFactor` of `spark.executor.memory` with a minimum of
-`spark.executor.minMemoryOverhead`, as Spark sizes the default container. There is no warning in
-local mode.
+below. It derives the overhead the way YARN and Kubernetes size the executor's container, as
+described in [Configuring Executor Memory Overhead]. For a PySpark application it also counts
+`spark.executor.pyspark.memory` as part of the container when the cluster manager adds it, which
+YARN does, and Kubernetes does in cluster mode. There is no warning in local mode, on a standalone
+cluster, whose workers do not limit an executor's memory, or with any other cluster manager.
 
 Look more closely before raising the overhead if the untracked memory keeps growing through a run
 rather than levelling off: memory that is not being released will exhaust any overhead eventually.
@@ -205,31 +203,63 @@ The executor logs one more line after its last native plan finishes, and an `all
 `spark.comet.memory.logInterval` is read when an executor starts its first Comet native plan, so set
 it when the application is submitted. Set it to `0` to turn the log off.
 
-## Determining How Much Memory to Allocate
+[Reading the Memory Usage Log from the Event Log]: #reading-the-memory-usage-log-from-the-event-log
 
-Generally, increasing the amount of memory allocated to Comet will improve query performance by reducing the
-amount of time spent spilling to disk, especially for aggregate, join, and shuffle operations. Allocating insufficient
-memory can result in out-of-memory errors. This is no different from allocating memory in Spark and the amount of
-memory will vary for different workloads, so some experimentation will be required.
+### Reading the Memory Usage Log from the Event Log
 
-Here is a real-world example, based on running benchmarks derived from TPC-H, running on a single executor against
-local Parquet files using the 100 GB data set.
+When `spark.eventLog.enabled` is `true` and the application runs the Comet plugin
+(`spark.plugins=org.apache.spark.CometPlugin`), each executor also sends its samples to the driver,
+which writes a summary of them to the application's event log. The event log keeps every executor's
+samples in one place, next to the jobs and stages they ran alongside, while executor logs are spread
+over the cluster and often go away with their containers.
 
-Baseline Spark Performance
+The driver writes, and flushes, each event of its event log as it goes, so it does not write every
+sample. For each executor, it takes the samples a minute at a time and writes two of them: the one
+with the most untracked memory, and the last, which in the minute an executor goes idle is the one
+after its last native plan finishes. It writes them at the executor's first heartbeat a minute or
+more after the first of them arrived, which comes every `spark.executor.heartbeatInterval`, 10
+seconds by default, busy or not, and when the executor is removed, such as when the cluster manager
+kills it, or the application stops. So each executor adds about two events a minute while it runs
+native plans, however short the interval, and each minute's two reach the event log within about a
+minute of that minute's first sample arriving. The event with the most untracked memory for an
+executor is then its sample with the most, apart from samples it takes while the application stops,
+and samples from the last minute before a driver exits without stopping the application.
 
-- Spark completes the benchmark in 632 seconds with 8 cores and 8 GB RAM
-- With less than 8 GB RAM, performance degrades due to spilling
-- Spark can complete the benchmark with as little as 3 GB of RAM, but with worse performance (744 seconds)
+Each sample the driver writes is one event, on one line of the event log. It carries the figures of
+the line in bytes, the executor that took the sample, and when it did, in milliseconds since the
+epoch by the executor's clock. The line above looks like this as an event, spread over several lines
+here:
 
-Comet Performance
+```json
+{
+  "Event": "org.apache.comet.CometExecutorMemoryUsage",
+  "executorId": "3",
+  "time": 1727550000000,
+  "nativeAllocated": 5675212390,
+  "poolsReserved": 4078960640,
+  "pools": 8,
+  "plans": 16,
+  "jvmArrowAllocated": 325478809,
+  "jvmArrowImported": 100873420
+}
+```
 
-- Comet requires at least 5 GB of RAM, but performance at this level
-  is around 340 seconds, which is significantly faster than Spark with any amount of RAM
-- Comet running in off-heap with 8 cores completes the benchmark in 295 seconds, more than 2x faster than Spark
-- It is worth noting that running Comet with only 4 cores and 4 GB RAM completes the benchmark in 520 seconds,
-  providing better performance than Spark for half the resource
+`nativeAllocated` is `allocated`, `poolsReserved` is `reserved`, and `jvmArrowAllocated` and
+`jvmArrowImported` are the JVM Arrow figures. With `jq`, for example, this lists the sample with the
+most untracked memory for each executor, in MiB:
 
-It may be possible to reduce Comet's memory overhead by reducing batch sizes or increasing number of partitions.
+```shell
+jq -n -c '[inputs | select(.Event == "org.apache.comet.CometExecutorMemoryUsage")
+    | {executorId, time, untrackedMiB: (([.nativeAllocated - .poolsReserved
+        + ([.jvmArrowAllocated - .jvmArrowImported, 0] | max), 0] | max) / 1048576 | ceil)}]
+  | group_by(.executorId) | map(max_by(.untrackedMiB))[]' <event log files>
+```
+
+From Spark 4.0, event logs are compressed with zstd and split into several files by default, so
+decompress the files first, for example with `zstd -dc`. The Spark history server does not display
+these events, and one without Comet on its classpath logs once that it dropped them. From Spark 4.1,
+`spark.eventLog.excludedPatterns=org.apache.comet.CometExecutorMemoryUsage` leaves them out of the
+event log.
 
 ## Batch Size
 
@@ -240,7 +270,7 @@ if you see frequent spilling or out-of-memory errors on wide tables; increase it
 narrow tables when memory is plentiful.
 
 `spark.comet.shuffle.jvm.batchSize` controls the batch size used when the JVM columnar shuffle writer
-flushes sorted spill files. It must not exceed `spark.comet.batchSize`.
+flushes sorted spill files. A value larger than `spark.comet.batchSize` is capped at `spark.comet.batchSize`.
 
 ## Limiting Spill Disk Usage
 

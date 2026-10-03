@@ -25,20 +25,25 @@ import org.scalatest.exceptions.TestFailedException
 
 import org.apache.arrow.vector._
 import org.apache.spark.{SparkConf, SparkEnv, TaskContext}
-import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.{CometTestBase, Row}
 import org.apache.spark.sql.api.java.UDF1
-import org.apache.spark.sql.catalyst.expressions.{Add, Alias, AttributeReference, BoundReference, Cast, CreateArray, CreateMap, CreateNamedStruct, Expression, Hypot, Literal, MapConcat}
-import org.apache.spark.sql.catalyst.expressions.objects.Invoke
-import org.apache.spark.sql.comet.CometProjectExec
+import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.catalyst.expressions.{Add, Alias, ApplyFunctionExpression, AttributeReference, BoundReference, Cast, CreateArray, CreateMap, CreateNamedStruct, Expression, GenericInternalRow, Hypot, Literal, MapConcat, ScalaUDF}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial}
+import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
+import org.apache.spark.sql.catalyst.util.GenericArrayData
+import org.apache.spark.sql.comet.{CometFilterExec, CometHashAggregateExec, CometProjectExec}
+import org.apache.spark.sql.connector.catalog.{Identifier, InMemoryCatalog}
+import org.apache.spark.sql.connector.catalog.functions.{BoundFunction, ScalarFunction, UnboundFunction}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
-import org.apache.spark.unsafe.types.UTF8String
+import org.apache.spark.unsafe.types.{ByteArray, UTF8String}
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
 import org.apache.comet.codegen.CometBatchKernelCodegen
 import org.apache.comet.codegen.CometBatchKernelCodegen.ArrowColumnSpec
-import org.apache.comet.serde.{CometScalaUDF, QueryPlanSerde}
+import org.apache.comet.serde.{CometInvokeTargets, CometScalaUDF, QueryPlanSerde}
 import org.apache.comet.serde.ExprOuterClass.Expr.ExprStructCase
 import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 import org.apache.comet.vector.CometVector
@@ -963,6 +968,86 @@ class CometCodegenSuite
         checkSparkAnswerAndOperator(sql("SELECT javaLen(s) FROM t"))
       }
       assertKernelSignaturePresent(Seq(classOf[VarCharVector]), IntegerType)
+    }
+  }
+
+  // Arrow Java ignores ArrowArray.offset on import, so the bridge has to zero a sliced boolean's
+  // offset before handing it over, at the top level and inside a struct.
+  // https://github.com/apache/datafusion-comet/issues/6288
+  private def withSlicedGroups(f: => Unit): Unit = {
+    withTempPath { dir =>
+      spark
+        .range(0, 4000)
+        .selectExpr(
+          "id % 2000 AS k",
+          "id % 2000 % 3 = 0 AS b",
+          "CAST(id % 2000 AS STRING) AS s",
+          "named_struct('x', IF(id % 5 = 0, NULL, id % 2000 % 3 = 0)) AS st")
+        .write
+        .parquet(dir.getCanonicalPath)
+      // The hash aggregate slices its emitted groups into batch-size chunks, so with one
+      // partition every output batch after the first is a slice.
+      withSQLConf(
+        SQLConf.SHUFFLE_PARTITIONS.key -> "1",
+        CometConf.COMET_BATCH_SIZE.key -> "100") {
+        withParquetTable(dir.getCanonicalPath, "g")(f)
+      }
+    }
+  }
+
+  test("boolean ScalaUDF argument sliced by an aggregate keeps its values") {
+    spark.udf.register("flip", (x: Boolean) => !x)
+    withSlicedGroups {
+      assertCodegenRan {
+        checkSparkAnswerAndOperator(
+          sql("SELECT k, flip(b) FROM (SELECT k, b, count(*) FROM g GROUP BY k, b)"))
+      }
+    }
+  }
+
+  test("typed Dataset.filter reads sliced booleans from a native aggregate") {
+    // https://github.com/apache/datafusion-comet/issues/6424
+    import testImplicits._
+    withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      withSlicedGroups {
+        def filtered = spark
+          .table("g")
+          .groupBy("k", "b")
+          .count()
+          .as[(Long, Boolean, Long)]
+          .filter(_._2)
+          .toDF()
+
+        assertCodegenRan {
+          val (_, plan) = checkSparkAnswerAndOperator(filtered)
+          val aggregates = plan.collect { case a: CometHashAggregateExec => a }
+          assert(aggregates.exists(_.modes.contains(Partial)))
+          assert(aggregates.exists(_.modes.contains(Final)))
+          assert(plan.collect { case f: CometFilterExec => f }.nonEmpty)
+          // Check every retained row, since the offset bug both adds and drops rows.
+          checkAnswer(filtered, (0 until 2000 by 3).map(k => Row(k.toLong, true, 2L)))
+        }
+      }
+    }
+  }
+
+  test("dispatched regexp_replace reads a sliced boolean with its own values") {
+    withSlicedGroups {
+      assertCodegenRan {
+        checkSparkAnswerAndOperator(sql("""SELECT k, regexp_replace(IF(b, s, 'zz'), '1', 'y')
+            |FROM (SELECT k, b, s, count(*) FROM g GROUP BY k, b, s)""".stripMargin))
+      }
+    }
+  }
+
+  test("struct ScalaUDF input with a sliced boolean child keeps its values") {
+    spark.udf.register("flip", (x: Boolean) => !x)
+    withSlicedGroups {
+      // `st.x` is dispatched along with the UDF, so the kernel's input is the whole struct.
+      assertCodegenRan {
+        checkSparkAnswerAndOperator(
+          sql("SELECT k, flip(st.x) FROM (SELECT k, st, count(*) FROM g GROUP BY k, st)"))
+      }
     }
   }
 
@@ -2218,13 +2303,14 @@ class CometCodegenSuite
 
   test("dispatch falls back cleanly when the bound tree cannot be closure-serialized (#5573)") {
     val attr = AttributeReference("s", StringType)()
-    val expr = Invoke(
-      Literal(
-        new CometCodegenSuite.NotSerializableTarget,
-        ObjectType(classOf[CometCodegenSuite.NotSerializableTarget])),
-      "twice",
+    // A UDF whose closure holds an object the closure serializer refuses, such as an open
+    // resource.
+    val target = new CometCodegenSuite.NotSerializableTarget
+    val expr = ScalaUDF(
+      (s: String) => target.twice(UTF8String.fromString(s)).toString,
       StringType,
-      Seq(attr))
+      Seq(attr),
+      udfName = Some("twice"))
     // `canHandle` greenlights this tree -- string in, string out, nothing unevaluable -- so the
     // closure serializer is the step that refuses it. Every other failure mode in
     // `emitJvmCodegenDispatch` already degraded to a Spark fallback; without the guard this one
@@ -2259,39 +2345,208 @@ class CometCodegenSuite
   }
 
   test("Invoke routes through the codegen dispatcher (#5575)") {
-    val target = Literal(
-      new CometCodegenSuite.SerializableTarget,
-      ObjectType(classOf[CometCodegenSuite.SerializableTarget]))
     // `Invoke` has no serde of its own beyond the catch-all, so this also pins the registration:
-    // reaching a `JvmScalarUdf` proto means `QueryPlanSerde` resolved `CometInvoke`.
+    // reaching a `JvmScalarUdf` proto means `QueryPlanSerde` resolved `CometInvoke`. The target is
+    // a Catalyst value, as in Spark 4's `is_valid_utf8`, which lowers to
+    // `Invoke(input, "isValid", BooleanType)`.
     val attr = AttributeReference("s", StringType)()
-    val proto =
-      QueryPlanSerde.exprToProto(Invoke(target, "twice", StringType, Seq(attr)), Seq(attr))
+    val proto = QueryPlanSerde.exprToProto(Invoke(attr, "toUpperCase", StringType), Seq(attr))
     assert(proto.exists(_.hasJvmScalarUdf), s"expected a codegen-dispatch proto, got $proto")
     // ...and the emitted method call compiles and evaluates.
-    val folded =
-      Invoke(target, "twice", StringType, Seq(Literal(UTF8String.fromString("ab"), StringType)))
+    val folded = Invoke(
+      Literal(UTF8String.fromString("ab"), StringType),
+      "repeat",
+      StringType,
+      Seq(Literal(2)))
     assert(runKernel(folded, 1)(_.getUTF8String(0).toString) === "abab")
+  }
+
+  test("the dispatcher declines calls into code other than Spark's (#6425)") {
+    val s = AttributeReference("s", StringType)()
+    val i = AttributeReference("i", IntegerType)()
+    val b = AttributeReference("b", BinaryType)()
+    // `lpad` on binary lowers to the first, and Spark 4's `is_valid_utf8` has the shape of the
+    // second. The third is the predicate of a typed `Dataset.filter`: user code, but it returns a
+    // boolean.
+    val predicate: Int => Boolean = _ > 0
+    val function1 = ObjectType(classOf[Int => Boolean])
+    val allowed = Seq(
+      StaticInvoke(
+        classOf[ByteArray],
+        BinaryType,
+        "lpad",
+        Seq(b, Literal(8), Literal(Array[Byte](0)))),
+      Invoke(s, "toUpperCase", StringType),
+      Invoke(Literal(predicate, function1), "apply", BooleanType, Seq(i)))
+    allowed.foreach { call =>
+      val reason = CometInvokeTargets.declineReason(call)
+      assert(reason.isEmpty, s"$call: $reason")
+    }
+    val money = CometCodegenSuite.Money
+    val asMoney = new CometCodegenSuite.InvokeIntAsDecimalFunction(money)
+    val declined = Seq(
+      StaticInvoke(classOf[java.lang.Math], IntegerType, "abs", Seq(i)) ->
+        "java.lang.Math, which is not part of Spark",
+      Invoke(Literal(predicate, function1), "apply", IntegerType, Seq(i)) ->
+        "scala.Function1, which is not part of Spark",
+      // The three ways Spark lowers a call to a DataSource V2 function.
+      StaticInvoke(classOf[StaticAsMoneyFunction], money, "invoke", Seq(i)) ->
+        s"the DataSource V2 function ${classOf[StaticAsMoneyFunction].getName}",
+      Invoke(Literal(asMoney, ObjectType(asMoney.getClass)), "invoke", money, Seq(i)) ->
+        s"the DataSource V2 function ${asMoney.getClass.getName}",
+      ApplyFunctionExpression(new CometCodegenSuite.IntAsDecimalFunction(money), Seq(i)) ->
+        "the DataSource V2 function")
+    for ((call, expected) <- declined) {
+      // The kernel runs the whole tree it is given, so a call under its root counts too.
+      val nested = CreateMap(Seq(Literal("k"), call), useStringTypeWhenEmpty = false)
+      for (tree <- Seq(call, nested)) {
+        val reason = CometInvokeTargets.declineReason(tree)
+        assert(reason.exists(_.contains(expected)), s"$tree: $reason")
+      }
+    }
+  }
+
+  test("calls to a DataSource V2 function run in Spark (#6425)") {
+    import CometCodegenSuite.{IntAsDecimalFunction, InvokeIntAsDecimalFunction, Money}
+    // Each function returns `Decimal(i)` at scale 0 for a `DECIMAL(10, 2)`. Spark rescales that
+    // value, or writes null when it does not fit, only when it writes a row, and an expression
+    // around the call reads it as returned: `IS NULL` is false for 100000000, which needs nine
+    // integer digits where the type allows eight, `count` counts it, and a cast to string prints
+    // "3", not "3.00". The codegen dispatcher has to write a vector of the declared type, so a
+    // native consumer of its output would read something else. So every query here has to fall
+    // back, whichever way Spark lowers the call: `as_money` has an instance `invoke` method and
+    // lowers to `Invoke`, `static_as_money` has a static one and lowers to `StaticInvoke`, and
+    // `apply_as_money` has neither and lowers to `ApplyFunctionExpression`.
+    val reason = "calls the DataSource V2 function"
+    withSQLConf("spark.sql.catalog.decfn" -> classOf[InMemoryCatalog].getName) {
+      val catalog =
+        spark.sessionState.catalogManager.catalog("decfn").asInstanceOf[InMemoryCatalog]
+      Seq(
+        "as_money" -> new InvokeIntAsDecimalFunction(Money),
+        "static_as_money" -> new StaticAsMoneyFunction,
+        "apply_as_money" -> new IntAsDecimalFunction(Money),
+        "money_array" -> new InvokeIntAsDecimalFunction(ArrayType(Money)),
+        "money_struct" -> new InvokeIntAsDecimalFunction(new StructType().add("m", Money)))
+        .foreach { case (name, function) =>
+          catalog.createFunction(Identifier.of(Array("ns"), name), function)
+        }
+      withTypedCol("INT", "3", "NULL", "100000000", "-100000000") {
+        val lowerings = sql(
+          "SELECT decfn.ns.as_money(c), decfn.ns.static_as_money(c), " +
+            "decfn.ns.apply_as_money(c) FROM t").queryExecution.analyzed.expressions
+          .flatMap(_.collect {
+            case call @ (_: Invoke | _: StaticInvoke | _: ApplyFunctionExpression) =>
+              call.getClass
+          })
+        assert(
+          lowerings == Seq(
+            classOf[Invoke],
+            classOf[StaticInvoke],
+            classOf[ApplyFunctionExpression]))
+        val three = new java.math.BigDecimal("3.00")
+        val projected = sql(
+          "SELECT c, decfn.ns.as_money(c), decfn.ns.static_as_money(c), " +
+            "decfn.ns.as_money(c) IS NULL, CAST(decfn.ns.static_as_money(c) AS STRING), " +
+            "abs(decfn.ns.as_money(c)) IS NULL, decfn.ns.money_array(c)[0] IS NULL, " +
+            "decfn.ns.money_struct(c).m IS NULL FROM t")
+        checkSparkAnswerAndFallbackReason(projected, reason)
+        checkAnswer(
+          projected,
+          Seq(
+            Row(3, three, three, false, "3", false, false, false),
+            Row(null, null, null, true, null, true, true, true),
+            Row(100000000, null, null, false, "100000000", false, false, false),
+            Row(-100000000, null, null, false, "-100000000", false, false, false)))
+        val counted =
+          sql("SELECT count(decfn.ns.as_money(c)), count(decfn.ns.static_as_money(c)) FROM t")
+        checkSparkAnswerAndFallbackReason(counted, reason)
+        checkAnswer(counted, Row(3L, 3L))
+        for (query <- Seq(
+            "SELECT max(decfn.ns.as_money(c)), sum(decfn.ns.static_as_money(c)) FROM t",
+            // A projected alias, which Spark passes on without writing a row.
+            "SELECT d, d IS NULL FROM (SELECT decfn.ns.as_money(c) AS d FROM t)",
+            "SELECT count(x) FROM t LATERAL VIEW explode(decfn.ns.money_array(c)) e AS x",
+            // `map(...)` is itself dispatched, so the call would run in its kernel.
+            "SELECT map_values(map('k', decfn.ns.as_money(c)))[0] IS NULL FROM t",
+            "SELECT map('k', decfn.ns.apply_as_money(c)) FROM t")) {
+          checkSparkAnswerAndFallbackReason(query, reason)
+        }
+        // A bare `ApplyFunctionExpression` never reaches the dispatcher: only Iceberg's functions
+        // have a handler.
+        checkSparkAnswerAndFallbackReason(
+          "SELECT decfn.ns.apply_as_money(c) FROM t",
+          "has no native handler")
+        // Spark hashes the value the function returned. AQE would coalesce the partitions.
+        withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+          checkSparkAnswerAndFallbackReason(
+            "SELECT c, spark_partition_id() FROM " +
+              "(SELECT * FROM t DISTRIBUTE BY decfn.ns.as_money(c))",
+            reason)
+        }
+      }
+    }
   }
 }
 
 /**
- * Targets for the `Invoke` tests. Declared inside the companion object so they are static nested
- * classes with no reference to the enclosing suite -- otherwise closure-serializing a tree that
- * holds one would drag the whole suite in and the serialization outcome would say nothing about
- * the target itself.
+ * Fixtures for the closure-serialization and DataSource V2 function tests. Declared inside the
+ * companion object so they are static nested classes with no reference to the enclosing suite --
+ * otherwise closure-serializing a tree that holds one would drag the whole suite in and the
+ * serialization outcome would say nothing about the fixture itself.
  */
 object CometCodegenSuite {
-
-  /** Public and `Serializable`, so the dispatcher accepts a tree holding an instance. */
-  class SerializableTarget extends Serializable {
-    def twice(s: UTF8String): UTF8String = UTF8String.fromString(s.toString + s.toString)
-  }
 
   /** Deliberately not `Serializable`, to make the closure serializer refuse the bound tree. */
   class NotSerializableTarget {
     def twice(s: UTF8String): UTF8String = UTF8String.fromString(s.toString + s.toString)
   }
+
+  /** The type the #6425 functions declare. Their values are at scale 0 instead. */
+  val Money: DecimalType = DecimalType(10, 2)
+
+  /**
+   * Returns its `INT` argument as the unscaled value of a `Decimal` at scale 0, whatever scale
+   * `declared` has. For an array or struct type, every decimal in the result holds that value:
+   * the array has one element, and each field of the struct has it. It has no `invoke` method, so
+   * Spark lowers a call to `ApplyFunctionExpression`. The function binds to itself.
+   */
+  class IntAsDecimalFunction(declared: DataType)
+      extends UnboundFunction
+      with ScalarFunction[Any] {
+    override def name(): String = "int_as_decimal"
+    override def description(): String = s"int -> ${declared.sql}, at scale 0"
+    override def bind(inputType: StructType): BoundFunction = this
+    override def inputTypes(): Array[DataType] = Array(IntegerType)
+    override def resultType(): DataType = declared
+    override def produceResult(input: InternalRow): Any = valueOf(declared, input.getInt(0))
+
+    protected def valueOf(dataType: DataType, v: Int): Any = dataType match {
+      case _: DecimalType => Decimal(v)
+      case ArrayType(elementType, _) => new GenericArrayData(Array(valueOf(elementType, v)))
+      case struct: StructType =>
+        new GenericInternalRow(struct.fields.map(f => valueOf(f.dataType, v)))
+    }
+  }
+
+  /**
+   * [[IntAsDecimalFunction]] with an instance `invoke` method, so Spark lowers a call to
+   * `Invoke`.
+   */
+  class InvokeIntAsDecimalFunction(declared: DataType) extends IntAsDecimalFunction(declared) {
+    def invoke(v: Int): Any = valueOf(declared, v)
+  }
+}
+
+/**
+ * `as_money` for the #6425 tests, with `invoke` on the companion object. Scala also compiles a
+ * top-level companion's methods to static methods on the class, so Spark finds a static `invoke`
+ * and lowers a call to `StaticInvoke`.
+ */
+class StaticAsMoneyFunction
+    extends CometCodegenSuite.IntAsDecimalFunction(CometCodegenSuite.Money)
+
+object StaticAsMoneyFunction {
+  def invoke(v: Int): Decimal = Decimal(v)
 }
 
 /**

@@ -32,9 +32,11 @@ import org.apache.spark.shuffle.comet.CometShuffleMemoryAllocator
 import org.apache.spark.shuffle.sort.CometShuffleExternalSorter
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.catalyst.expressions.UnsafeRow
+import org.apache.spark.sql.comet.execution.shuffle.CometBypassMergeSortShuffleHandle
+import org.apache.spark.sql.comet.execution.shuffle.CometColumnarShuffle
 import org.apache.spark.sql.comet.execution.shuffle.CometNativeShuffle
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
-import org.apache.spark.sql.execution.SparkPlan
+import org.apache.spark.sql.execution.{SparkPlan, SQLExecution}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.execution.exchange.ShuffleExchangeLike
 import org.apache.spark.sql.execution.metric.SQLMetric
@@ -388,11 +390,11 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
       def insert(value: Int): Unit = {
         val bytes = new Array[Byte](4 + 16)
-        Platform.putInt(bytes, Platform.BYTE_ARRAY_OFFSET, value)
+        Platform.putInt(bytes, Platform.BYTE_ARRAY_OFFSET.toLong, value)
         val row = new UnsafeRow(1)
-        row.pointTo(bytes, Platform.BYTE_ARRAY_OFFSET + 4, 16)
+        row.pointTo(bytes, (Platform.BYTE_ARRAY_OFFSET + 4).toLong, 16)
         row.setInt(0, value)
-        sorter.insertRecord(bytes, Platform.BYTE_ARRAY_OFFSET, bytes.length, value % 2)
+        sorter.insertRecord(bytes, Platform.BYTE_ARRAY_OFFSET.toLong, bytes.length, value % 2)
       }
 
       try {
@@ -642,6 +644,61 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         assert(shuffleWriteStages.map(_.shuffleWriteTime).sum > 0L)
         assert(shuffleWriteStages.map(_.memoryBytesSpilled).sum == sqlMemorySpilled)
         assert(shuffleWriteStages.map(_.diskBytesSpilled).sum == sqlDiskSpilled)
+      }
+    }
+  }
+
+  test("JVM hash shuffle counts batch-size writes as shuffle bytes written, not spill") {
+    val expectedRecords = 20000L
+    withParquetTable((0 until expectedRecords.toInt).map(i => (i, s"row-$i")), "tbl") {
+      // A small batch size makes each partition writer flush several batches to its partition
+      // file before the final one.
+      withSQLConf(
+        CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
+        CometConf.COMET_SHUFFLE_JVM_BATCH_SIZE.key -> "100") {
+        val shuffled = sql("SELECT * FROM tbl").repartition(4, $"_1")
+        val store = spark.sparkContext.statusStore
+        spark.sparkContext.listenerBus.waitUntilEmpty()
+        val stagesBefore = store.stageList(null).map(_.stageId).toSet
+
+        assert(shuffled.collect().length == expectedRecords)
+        spark.sparkContext.listenerBus.waitUntilEmpty()
+
+        val exchange = collectFirst(shuffled.queryExecution.executedPlan) {
+          case jvm: CometShuffleExchangeExec if jvm.shuffleType == CometColumnarShuffle => jvm
+        }.getOrElse(fail("Expected a JVM columnar shuffle exchange"))
+        // Four partitions is under spark.shuffle.sort.bypassMergeThreshold, so the hash-based
+        // writer ran.
+        assert(
+          exchange.shuffleDependency.shuffleHandle
+            .isInstanceOf[CometBypassMergeSortShuffleHandle[_, _]])
+
+        // The map output is every batch written to the partition files, concatenated.
+        val shuffleId = exchange.shuffleDependency.shuffleId
+        val dataFiles = SparkEnv.get.blockManager.diskBlockManager
+          .getAllFiles()
+          .filter { file =>
+            file.getName.startsWith(s"shuffle_${shuffleId}_") && file.getName.endsWith(".data")
+          }
+        assert(dataFiles.nonEmpty, s"No map output files found for shuffle $shuffleId")
+        val mapOutputBytes = dataFiles.map(_.length()).sum
+
+        val metrics = exchange.metrics
+        assert(metrics("shuffleRecordsWritten").value == expectedRecords)
+        assert(metrics("shuffleBytesWritten").value == mapOutputBytes)
+        assert(metrics("shuffleWriteTime").value > 0L)
+
+        val shuffleWriteStages = store
+          .stageList(null)
+          .filterNot(stage => stagesBefore.contains(stage.stageId))
+          .filter(_.shuffleWriteRecords > 0L)
+
+        assert(shuffleWriteStages.nonEmpty, "No JVM shuffle write stage was recorded")
+        assert(shuffleWriteStages.map(_.shuffleWriteRecords).sum == expectedRecords)
+        assert(shuffleWriteStages.map(_.shuffleWriteBytes).sum == mapOutputBytes)
+        // Without memory pressure, no batch was spilled.
+        assert(shuffleWriteStages.map(_.memoryBytesSpilled).sum == 0L)
+        assert(shuffleWriteStages.map(_.diskBytesSpilled).sum == 0L)
       }
     }
   }
@@ -1093,6 +1150,55 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         assert(cometRecords > 0, s"Comet recordsRead should be > 0, got $cometRecords")
 
         assertCometBytesReadInRange(cometBytes, sparkBytes)
+      }
+    }
+  }
+
+  test("native block without a JVM input publishes SQL metrics on the update interval") {
+    withTempPath { dir =>
+      spark.range(0, 10000, 1, 1).write.parquet(dir.getAbsolutePath)
+      // Ten output batches from one task. Passes `check` the output_rows the task sees right after
+      // the first batch, and again after the last. The task creates the native plan, which starts
+      // the interval's clock, when it builds the iterator, so the sleep before the first batch runs
+      // after that.
+      def checkOutputRows(interval: String)(check: (Long, Long) => Unit): Unit =
+        withSQLConf(
+          CometConf.COMET_BATCH_SIZE.key -> "1000",
+          CometConf.COMET_METRICS_UPDATE_INTERVAL.key -> interval) {
+          val plan = spark.read.parquet(dir.getAbsolutePath).queryExecution.executedPlan
+          val scan = find(plan)(_.isInstanceOf[CometNativeScanExec])
+            .getOrElse(fail(s"Expected CometNativeScanExec in plan:\n${plan.treeString}"))
+            .asInstanceOf[CometNativeScanExec]
+          // The task deserializes this metric together with the scan's metric node, so both
+          // refer to the task-side copy that native execution publishes into.
+          val outputRows = scan.metrics("output_rows")
+          val (midStream, atEnd) = SQLExecution.withSQLConfPropagated(spark) {
+            scan
+              .executeColumnar()
+              .mapPartitions { batches =>
+                Thread.sleep(100)
+                batches.next()
+                val mid = outputRows.value
+                batches.foreach(_ => ())
+                Iterator((mid, outputRows.value))
+              }
+              .collect()
+              .head
+          }
+          check(midStream, atEnd)
+        }
+
+      // With the interval disabled, the only publish is the one in releasePlan, which a
+      // per-batch publish would break after the first batch.
+      checkOutputRows("-1") { (midStream, atEnd) =>
+        assert(midStream == 0, s"output_rows was published mid-stream: $midStream")
+        assert(atEnd == 10000, s"releasePlan should publish the final output_rows, got $atEnd")
+      }
+
+      // A 1 ms interval has passed by the time the first batch arrives, so that batch publishes.
+      checkOutputRows("1") { (midStream, atEnd) =>
+        assert(midStream > 0, "output_rows was not published mid-stream once the interval passed")
+        assert(atEnd == 10000, s"releasePlan should publish the final output_rows, got $atEnd")
       }
     }
   }

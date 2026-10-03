@@ -32,8 +32,8 @@
 #                 the default profile's.
 #   schedule      the nightly regression sweep of everything else: the Linux
 #                 test matrix against the other Spark profiles, Spark SQL on
-#                 Spark 3.5 and 4.0, and Iceberg 1.8/1.9/1.10, routed by the
-#                 same path filters over what landed on main since the last
+#                 Spark 3.5, 4.0 and 4.2, and Iceberg 1.8/1.9/1.10, routed by
+#                 the same path filters over what landed on main since the last
 #                 green nightly. A failure opens (or comments on) an issue
 #                 labelled `ci-nightly-failure`.
 #
@@ -101,6 +101,14 @@ on:
     # first people look. Miri runs at 04:00 and the snapshot publish at 03:00.
     - cron: '0 6 * * *'
   workflow_dispatch:
+
+# Least-privilege default for the whole pipeline: every job here builds and tests,
+# and nothing needs to write back to the repository. Jobs that call reusable
+# workflows inherit this, and a callee can only narrow it further -- so the one
+# job that does need to write (docs, which pushes the built site to asf-site)
+# raises it to `contents: write` on itself.
+permissions:
+  contents: read
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -245,6 +253,7 @@ jobs:
       build_linux_full: ${{ steps.compute.outputs.build_linux_full }}
       build_linux_all_profiles: ${{ steps.compute.outputs.build_linux_all_profiles }}
       build_macos:  ${{ steps.compute.outputs.build_macos }}
+      build_macos_full: ${{ steps.compute.outputs.build_macos_full }}
       benchmark:    ${{ steps.compute.outputs.benchmark }}
       delta_gate:   ${{ steps.compute.outputs.delta_gate }}
       pyarrow_udf:  ${{ steps.compute.outputs.pyarrow_udf }}
@@ -254,6 +263,7 @@ jobs:
       spark_4_0:    ${{ steps.compute.outputs.spark_4_0 }}
       spark_4_1:    ${{ steps.compute.outputs.spark_4_1 }}
       spark_4_1_hive: ${{ steps.compute.outputs.spark_4_1_hive }}
+      spark_4_2:    ${{ steps.compute.outputs.spark_4_2 }}
       iceberg_1_8:  ${{ steps.compute.outputs.iceberg_1_8 }}
       iceberg_1_9:  ${{ steps.compute.outputs.iceberg_1_9 }}
       iceberg_1_10: ${{ steps.compute.outputs.iceberg_1_10 }}
@@ -315,8 +325,11 @@ jobs:
           elif [[ "$EVENT_NAME" == "pull_request" ]]; then
             git diff --name-only "$PR_BASE_SHA"..."$PR_HEAD_SHA" > changed_files.txt
           elif [[ "$EVENT_NAME" == "merge_group" ]]; then
-            # The queue branch is built on top of base_sha, so this covers every
-            # entry batched into this merge group, not just the newest one.
+            # base_sha is the queue commit of the entry ahead of this one, and
+            # main only for the entry at the front, so this covers this entry's
+            # own changes. The entries ahead were diffed by their own
+            # merge_group runs; the queue's ALLGREEN strategy is what makes
+            # that enough (see the Merge Queue ruleset in .asf.yaml).
             git diff --name-only "$MQ_BASE_SHA"..."$MQ_HEAD_SHA" > changed_files.txt
           else
             # push to main; first push to a branch has all-zero before sha
@@ -376,9 +389,15 @@ jobs:
   pr_build_macos:
     name: PR Build (macOS)
     needs: changes
-    # Queue-only by default; PRs need the `run-macos-tests` label.
+    # Queue-only by default; PRs need the `run-macos-tests` label. Two POLICY
+    # outputs feed the call, the same shape as pr_build_linux above:
+    # `build_macos` runs the workflow at all, `build_macos_full` runs its test
+    # matrix as well. Only push to main sets the first without the second, and
+    # there the workflow just keeps main's macOS cargo cache warm.
     if: needs.changes.outputs.build_macos == 'true'
     uses: ./.github/workflows/pr_build_macos.yml
+    with:
+      cache-refresh-only: ${{ needs.changes.outputs.build_macos_full != 'true' }}
 
   pr_benchmark_check:
     name: PR Benchmark Check
@@ -415,6 +434,10 @@ jobs:
     # a dispatch on a release branch would otherwise publish that branch's docs
     # over the site.
     if: needs.changes.outputs.docs == 'true' && github.ref == 'refs/heads/main'
+    # docs.yaml commits and pushes the generated site to the asf-site branch, so
+    # this job needs write access on top of the read-only default above.
+    permissions:
+      contents: write
     uses: ./.github/workflows/docs.yaml
 
   spark_3_4:
@@ -482,6 +505,20 @@ jobs:
         ${{ needs.changes.outputs.spark_4_1 != 'true' && 'hive'
             || needs.changes.outputs.spark_4_1_hive != 'true' && 'core'
             || 'all' }}
+
+  spark_4_2:
+    name: Spark SQL Tests (Spark 4.2)
+    needs: changes
+    # Nightly by default; PRs need the `run-spark-4.2-tests` label. Spark 4.2
+    # support is still experimental, so it sits in the nightly tier rather
+    # than the queue: a regression there blocks no merge, but it is caught
+    # within a day instead of whenever someone next asks for the suite.
+    if: needs.changes.outputs.spark_4_2 == 'true'
+    uses: ./.github/workflows/spark_sql_test_reusable.yml
+    with:
+      spark-short: '4.2'
+      spark-full: '4.2.0'
+      java: 17
 
   iceberg_1_8:
     name: Iceberg Spark SQL Tests (Iceberg 1.8)
@@ -586,6 +623,7 @@ jobs:
       - spark_3_5
       - spark_4_0
       - spark_4_1
+      - spark_4_2
       - iceberg_1_8
       - iceberg_1_9
       - iceberg_1_10

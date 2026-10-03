@@ -30,7 +30,7 @@ under the License.
   </parent>
   <groupId>org.apache.datafusion</groupId>
   <artifactId>comet-parent-spark${spark.version.short}_${scala.binary.version}</artifactId>
-  <version>1.1.0-SNAPSHOT</version>
+  <version>1.2.0-SNAPSHOT</version>
   <packaging>pom</packaging>
   <name>Comet Project Parent POM</name>
 
@@ -89,7 +89,9 @@ under the License.
     <arrow.version>18.3.0</arrow.version>
     <codehaus.jackson.version>1.9.13</codehaus.jackson.version>
     <spotless.version>2.43.0</spotless.version>
-    <semanticdb.version>4.13.6</semanticdb.version>
+    <!-- semanticdb-scalac is published per Scala patch version, so the 2.13 profiles need a
+         release that exists for each of their Scala versions (2.13.16, 2.13.17 and 2.13.18). -->
+    <semanticdb.version>4.13.10</semanticdb.version>
     <slf4j.version>2.0.17</slf4j.version>
     <guava.version>33.2.1-jre</guava.version>
     <testcontainers.version>1.21.4</testcontainers.version>
@@ -744,7 +746,7 @@ under the License.
         <spark.version>4.0.4</spark.version>
         <spark.version.short>4.0</spark.version.short>
         <parquet.version>1.15.2</parquet.version>
-        <semanticdb.version>4.13.6</semanticdb.version>
+        <semanticdb.version>4.13.10</semanticdb.version>
         <slf4j.version>2.0.16</slf4j.version>
         <shims.majorVerSrc>spark-4.x</shims.majorVerSrc>
         <shims.minorVerSrc>spark-4.0</shims.minorVerSrc>
@@ -760,14 +762,13 @@ under the License.
       <properties>
         <!-- Spark 4.1 is compiled against Scala 2.13.17 and emits calls into stdlib methods
              added in that release (e.g. MurmurHash3$.caseClassHash$default$2()). Comet must
-             match to avoid runtime NoSuchMethodError. Note: semanticdb-scalac_2.13.17 is not
-             yet published, so the -Psemanticdb / scalafix lint job is skipped for spark-4.1. -->
+             match to avoid runtime NoSuchMethodError. -->
         <scala.version>2.13.17</scala.version>
         <scala.binary.version>2.13</scala.binary.version>
         <spark.version>4.1.3</spark.version>
         <spark.version.short>4.1</spark.version.short>
         <parquet.version>1.16.0</parquet.version>
-        <semanticdb.version>4.13.6</semanticdb.version>
+        <semanticdb.version>4.13.10</semanticdb.version>
         <slf4j.version>2.0.17</slf4j.version>
         <shims.majorVerSrc>spark-4.x</shims.majorVerSrc>
         <shims.minorPlusVerSrc>spark-4.1+</shims.minorPlusVerSrc>
@@ -787,7 +788,7 @@ under the License.
         <spark.version>4.2.0</spark.version>
         <spark.version.short>4.2</spark.version.short>
         <parquet.version>1.17.0</parquet.version>
-        <semanticdb.version>4.13.6</semanticdb.version>
+        <semanticdb.version>4.13.10</semanticdb.version>
         <slf4j.version>2.0.17</slf4j.version>
         <shims.majorVerSrc>spark-4.x</shims.majorVerSrc>
         <shims.minorPlusVerSrc>spark-4.1+</shims.minorPlusVerSrc>
@@ -813,7 +814,7 @@ under the License.
       <properties>
         <scala.version>2.13.16</scala.version>
         <scala.binary.version>2.13</scala.binary.version>
-        <semanticdb.version>4.13.6</semanticdb.version>
+        <semanticdb.version>4.13.10</semanticdb.version>
       </properties>
     </profile>
 
@@ -868,29 +869,84 @@ under the License.
         </pluginManagement>
       </build>
     </profile>
+    <!--
+      Compile Scala with warnings promoted to errors. Not active by default; run it
+      explicitly, e.g. `./mvnw test-compile -Pspark-3.5 -Pstrict-warnings`.
+
+      This passes on the Scala 2.12 profiles. The 2.13 profiles (spark-4.0 and later)
+      still report warnings that 2.12 does not raise at all, dominated by
+      `-Xlint:nonlocal-return` (a `return` inside a closure, which the compiler
+      implements by throwing) and non-exhaustive matches. Clearing those means
+      restructuring control flow rather than annotating it, so they are tracked in
+      https://github.com/apache/datafusion-comet/issues/5893 rather than silenced here.
+
+      `args` is configured per execution rather than on the plugin, because main and
+      test sources warrant different flags (see `-Ywarn-value-discard` below). An
+      execution's `args` replaces the plugin-level list instead of appending to it, so
+      each list below is self-contained.
+
+      Two lints are deliberately absent from both lists:
+
+      `-Ywarn-unused:params` reports parameters that are unused because a signature
+      requires them rather than because they are dead: the `@native` declarations in
+      `Native.scala`, which have no body to use them in; cross-version shims under
+      `src/main/spark-*` that match the signature of the Spark version they shim; and
+      overridable defaults and serde helpers whose parameter is part of their public
+      shape. Suppressing these one by one with `@nowarn` does not work across profiles:
+      some shared sources warn under Scala 2.12 but not 2.13 (`CometScanContrib.scala`,
+      for example), so an annotation that silences one profile is unused on the other,
+      which `-Xlint:_` reports through `-Ywarn-unused:nowarn` and `-Xfatal-warnings`
+      turns into a build failure.
+
+      `-Ywarn-value-discard` stays on for main sources, where a discarded result is
+      usually a dropped builder or a swallowed return, but is off for test sources,
+      where what it reports is the testing idiom itself: an `assert(...)` in trailing
+      position discards an `org.scalatest.Assertion`, and helpers such as
+      `checkSparkAnswerAndOperator` return plans that most callers ignore.
+    -->
     <profile>
-          <id>strict-warnings</id>
-          <build>
-              <plugins>
-                  <plugin>
-                      <groupId>net.alchim31.maven</groupId>
-                      <artifactId>scala-maven-plugin</artifactId>
-                      <configuration>
-                          <args>
-                              <arg>-deprecation</arg>
-                              <arg>-unchecked</arg>
-                              <arg>-feature</arg>
-                              <arg>-Xlint:_</arg>
-                              <arg>-Ywarn-dead-code</arg>
-                              <arg>-Ywarn-numeric-widen</arg>
-                              <arg>-Ywarn-value-discard</arg>
-                              <arg>-Ywarn-unused:imports,patvars,privates,locals,params,-implicits</arg>
-                              <arg>-Xfatal-warnings</arg>
-                          </args>
-                      </configuration>
-                  </plugin>
-              </plugins>
-          </build>
+      <id>strict-warnings</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>net.alchim31.maven</groupId>
+            <artifactId>scala-maven-plugin</artifactId>
+            <executions>
+              <execution>
+                <id>scala-compile-first</id>
+                <configuration>
+                  <args>
+                    <arg>-deprecation</arg>
+                    <arg>-unchecked</arg>
+                    <arg>-feature</arg>
+                    <arg>-Xlint:_</arg>
+                    <arg>-Ywarn-dead-code</arg>
+                    <arg>-Ywarn-numeric-widen</arg>
+                    <arg>-Ywarn-value-discard</arg>
+                    <arg>-Ywarn-unused:imports,patvars,privates,locals,-implicits</arg>
+                    <arg>-Xfatal-warnings</arg>
+                  </args>
+                </configuration>
+              </execution>
+              <execution>
+                <id>scala-test-compile-first</id>
+                <configuration>
+                  <args>
+                    <arg>-deprecation</arg>
+                    <arg>-unchecked</arg>
+                    <arg>-feature</arg>
+                    <arg>-Xlint:_</arg>
+                    <arg>-Ywarn-dead-code</arg>
+                    <arg>-Ywarn-numeric-widen</arg>
+                    <arg>-Ywarn-unused:imports,patvars,privates,locals,-implicits</arg>
+                    <arg>-Xfatal-warnings</arg>
+                  </args>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+        </plugins>
+      </build>
     </profile>
   </profiles>
 

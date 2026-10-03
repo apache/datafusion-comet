@@ -25,9 +25,12 @@ against your own workloads.
 ## Overview
 
 Spark writes an Iceberg table through a single physical operator that combines data-file
-writing with metadata writing, committing, and catalog validation. Because that operator sits
-outside Spark's Adaptive Query Execution (AQE), the sub-query feeding the write — the scans,
-projects, sorts, and exchanges producing the rows — cannot be re-planned at runtime.
+writing with metadata writing, committing, and catalog validation. Spark's Adaptive Query
+Execution (AQE) already re-plans the sub-query feeding that operator — the scans, projects,
+sorts, and exchanges producing the rows — but the operator itself sits outside AQE, so the
+data-file writing cannot be re-planned in response to how its input ran. And because data-file
+writing is bundled with the metadata and commit steps, there is no separate step for Comet to
+replace.
 
 When `spark.comet.write.iceberg.splitOperator.enabled=true`, Comet rewrites eligible Iceberg
 writes into two operators:
@@ -39,9 +42,9 @@ writes into two operators:
    Iceberg commit (including commit-time validation), outside AQE, exactly once.
 
 With only the split plan enabled, data files are still written by iceberg-java; only the plan
-shape changes. The split makes the write's input visible to AQE and to Comet's columnar rules,
+shape changes. The split moves data-file writing inside AQE and separates it from the commit,
 and it is the foundation for the second toggle: when
-`spark.comet.iceberg.write.enabled=true` and the write passes the eligibility check below, the
+`spark.comet.write.iceberg.enabled=true` and the write passes the eligibility check below, the
 `IcebergWrite` operator's per-task Parquet write is delegated to
 [iceberg-rust](https://github.com/apache/iceberg-rust) via Comet's native execution pipeline
 ([#5361](https://github.com/apache/datafusion-comet/pull/5361)).
@@ -80,7 +83,7 @@ spark.sql.catalog.<name>.warehouse=...
 spark.comet.write.iceberg.splitOperator.enabled=true
 
 # Native Parquet writer (experimental, off by default; requires the split plan)
-spark.comet.iceberg.write.enabled=true
+spark.comet.write.iceberg.enabled=true
 
 # Lets writes whose input is a local relation (INSERT ... VALUES, a local DataFrame) use the
 # native writer; see "Native Parquet write eligibility" below
@@ -132,7 +135,7 @@ trade-off, only no plan change.
 
 ## Native Parquet write eligibility
 
-When `spark.comet.iceberg.write.enabled=true`
+When `spark.comet.write.iceberg.enabled=true`
 ([#5361](https://github.com/apache/datafusion-comet/pull/5361)), the `IcebergWrite` operator's
 per-task Parquet write is delegated to [iceberg-rust](https://github.com/apache/iceberg-rust).
 The native writer must produce the same outcome as iceberg-java — the same Parquet features,
@@ -179,7 +182,7 @@ A write is eligible only when ALL of the following hold:
 | `write.target-file-size-bytes`                                                                                                              | any value (the two writers can choose different roll points; see accepted divergences)                                                                                                                                                                                                                                                                                                                                                                                          |
 | data location URI scheme                                                                                                                    | `file`, `memory`, `s3`, `s3a`, `gs` (`gs` only when the `FileIO` opening the data location is a `GCSFileIO`; see below)                                                                                                                                                                                                                                                                                                                                                         |
 | resolved `table.locationProvider()`                                                                                                         | Iceberg's built-in `DefaultLocationProvider`                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| partition spec                                                                                                                              | any                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| partition spec                                                                                                                              | any, except an identity partition on a `float` or `double` column (see below)                                                                                                                                                                                                                                                                                                                                                                                                   |
 | column types                                                                                                                                | any except `uuid` (Spark plans it as a string; no Arrow cast reaches `fixed(16)`)                                                                                                                                                                                                                                                                                                                                                                                               |
 
 Within the namespaces that shape data-file bytes — `write.parquet.*` and `parquet.*` —
@@ -207,6 +210,13 @@ Configuration, and only `fs.s3a.*` is translated into the native `FileIO`, so th
 could resolve a different storage identity or endpoint than the JVM writer would. That
 combination falls back; a `GCSFileIO` carries its `gcs.*` settings in `FileIO.properties()`,
 which are forwarded.
+
+An identity partition on a `float` or `double` column falls back. iceberg-rust compares float
+partition values with an equality that treats `-0.0` and `0.0` as one value, so the native writer
+would put rows with either value in the same partition, where iceberg-java writes two. A read
+that prunes on the other value's partition would then miss rows. The fall-back stays until
+iceberg-rust distinguishes the two values
+([apache/iceberg-rust#3325](https://github.com/apache/iceberg-rust/issues/3325)).
 
 Other `write.*` properties are intentionally not gated because they cannot make the native
 writer produce different data files: distribution and ordering settings shape the Spark plan
@@ -267,7 +277,7 @@ unchanged.
 
 Some differences between parquet-mr and the pinned parquet-rs / iceberg-rust are unconditional —
 they apply to every native write and cannot be configured away. Enabling
-`spark.comet.iceberg.write.enabled` accepts them. They fall into three classes with very
+`spark.comet.write.iceberg.enabled` accepts them. They fall into three classes with very
 different blast radius: differences confined to the physical bytes of a data file (cosmetic —
 no reader decision is based on them), differences visible in manifest metadata (these outlive
 the write and feed later readers' pruning decisions, so each one is analyzed individually
@@ -301,8 +311,9 @@ a data file but not what any reader computes from it:
   (iceberg-java names files `<partition>-<task>-<operation>-<count>`; iceberg-rust uses a
   process-local counter).
 - Partition directory names match iceberg-java 1.8+'s `PartitionSpec.partitionToPath` for every
-  partition type. `float` and `double` values are rendered with Java's `Float.toString` /
-  `Double.toString` rules (`f=1.0`, `f=1.0E10`), as iceberg-java renders them. On Iceberg 1.5.x,
+  partition type the native writer accepts. Identity partitions on `float` and `double` columns
+  fall back (see [Native Parquet write eligibility](#native-parquet-write-eligibility)), so
+  iceberg-java names those directories itself. On Iceberg 1.5.x,
   which the Spark 3.4 profile pins, iceberg-java itself spelled `timestamp` and `timestamptz`
   directories with `LocalDateTime.toString()` / `OffsetDateTime.toString()`
   (`ts=1969-12-31T23:59:58.500Z`) and left the partition field name unescaped; Comet uses the
