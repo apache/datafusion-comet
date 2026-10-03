@@ -19,11 +19,12 @@
 
 package org.apache.spark.sql.execution.python
 
-import java.io.{ByteArrayInputStream, ByteArrayOutputStream, DataOutputStream, IOException}
+import java.io.{ByteArrayInputStream, ByteArrayOutputStream, DataInputStream, DataOutputStream, IOException}
 import java.nio.ByteBuffer
 import java.nio.channels.{Channels, WritableByteChannel}
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Paths}
+import java.util.concurrent.atomic.AtomicBoolean
 
 import scala.collection.mutable.ArrayBuffer
 import scala.jdk.CollectionConverters._
@@ -38,13 +39,14 @@ import org.apache.arrow.vector.{BaseVariableWidthVector, BigIntVector, FieldVect
 import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
 import org.apache.arrow.vector.dictionary.{Dictionary, DictionaryProvider}
 import org.apache.arrow.vector.ipc.{ArrowStreamReader, ArrowStreamWriter, WriteChannel}
-import org.apache.arrow.vector.types.TimeUnit
+import org.apache.arrow.vector.types.{IntervalUnit, TimeUnit}
 import org.apache.arrow.vector.types.pojo.{ArrowType, DictionaryEncoding, Field, FieldType, Schema}
-import org.apache.spark.{SparkConf, SparkEnv, TaskContext, TaskContextImpl}
-import org.apache.spark.api.python.{BasePythonRunner, ChainedPythonFunctions, PythonEvalType, SimplePythonFunction}
+import org.apache.spark.{SparkConf, SparkEnv, SparkException, TaskContext, TaskContextImpl}
+import org.apache.spark.api.python.{BasePythonRunner, ChainedPythonFunctions, PythonEvalType, SimplePythonFunction, SpecialLengths}
+import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.metric.SQLMetric
-import org.apache.spark.sql.execution.python.CometArrowPythonRunnerBase.{hasCompatibleSchema, inputBatchRanges, serializeBatch, withInputBatchRange, withMaterializedInputVectors}
-import org.apache.spark.sql.types.{StringType, StructField, StructType}
+import org.apache.spark.sql.execution.python.CometArrowPythonRunnerBase.{hasCompatibleSchema, inputBatchRanges, outputSchemaMismatch, serializeBatch, withInputBatchRange, withMaterializedInputVectors}
+import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 import org.apache.spark.util.DirectByteBufferOutputStream
 
@@ -71,13 +73,27 @@ class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
       Map("pythonDataSent" -> new SQLMetric("size", 0L))
     override protected val schema: StructType = StructType(
       Seq(StructField("struct", StructType(Seq(StructField("text", StringType))))))
+    override protected val outputSchema: DataType =
+      StructType(Seq(StructField("id", IntegerType)))
     override protected val arrowMaxRecordsPerBatch: Int = 1
     override protected val arrowMaxBytesPerBatch: Long = Long.MaxValue
 
     override protected def writeUDF(dataOut: DataOutputStream): Unit = ()
 
+    override protected def outputSchemaMismatchError(
+        operation: String,
+        expected: String,
+        actual: String): Throwable =
+      new SparkException(s"Invalid schema from $operation: expected $expected, got $actual.")
+
     def inputWriter(input: Iterator[Iterator[ColumnarBatch]], context: TaskContext): Writer =
       newWriter(SparkEnv.get, null, input, 0, context)
+
+    def outputReader(
+        stream: DataInputStream,
+        writer: Writer,
+        context: TaskContext): Iterator[ColumnarBatch] =
+      newReaderIterator(stream, writer, 0L, SparkEnv.get, null, None, new AtomicBoolean, context)
 
     def bytesSent: Long = pythonMetrics("pythonDataSent").value
 
@@ -598,6 +614,173 @@ class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
       hasCompatibleSchema(
         fields("UTC", Map(key -> "before")),
         fields("Etc/UTC", Map(key -> "after"))) shouldBe false
+    }
+  }
+
+  private def arrowField(name: String, arrowType: ArrowType, children: Field*): Field =
+    new Field(name, FieldType.nullable(arrowType), children.asJava)
+
+  /** The Python worker returns the output columns in a single struct column. */
+  private def outputStream(columns: Field*): Seq[Field] =
+    Seq(arrowField("_0", ArrowType.Struct.INSTANCE, columns: _*))
+
+  private def declared(columns: (String, DataType)*): StructType =
+    StructType(columns.map { case (name, dataType) => StructField(name, dataType) })
+
+  private def arrowMap(key: Field, value: Field): Field =
+    arrowField(
+      "c",
+      new ArrowType.Map(false),
+      new Field(
+        "entries",
+        FieldType.notNullable(ArrowType.Struct.INSTANCE),
+        Seq(key, value).asJava))
+
+  private val int32 = new ArrowType.Int(32, true)
+  private val int64 = new ArrowType.Int(64, true)
+
+  test("output schema check rejects integer widths and decimal scales other than declared") {
+    outputSchemaMismatch(declared("id" -> IntegerType), outputStream(arrowField("id", int32)))
+      .shouldBe(None)
+    outputSchemaMismatch(declared("id" -> IntegerType), outputStream(arrowField("id", int64)))
+      .shouldBe(Some("StructType(StructField(id,LongType,true))"))
+    outputSchemaMismatch(declared("id" -> LongType), outputStream(arrowField("id", int32)))
+      .shouldBe(Some("StructType(StructField(id,IntegerType,true))"))
+
+    val amount = declared("amount" -> DecimalType(10, 2))
+    def decimal(precision: Int, scale: Int, bitWidth: Int): Seq[Field] =
+      outputStream(arrowField("amount", new ArrowType.Decimal(precision, scale, bitWidth)))
+    outputSchemaMismatch(amount, decimal(10, 2, 128)) shouldBe None
+    outputSchemaMismatch(amount, decimal(4, 3, 128)) shouldBe
+      Some("StructType(StructField(amount,DecimalType(4,3),true))")
+    // Both map to the declared Spark type, so the description shows the Arrow layout instead.
+    outputSchemaMismatch(amount, decimal(10, 2, 256)).get should include("Decimal(10, 2, 256)")
+  }
+
+  test("output schema check rejects layouts that Comet vectors would misread") {
+    val encoding = new DictionaryEncoding(7L, false, int32)
+    val dictionary = new Field("name", new FieldType(true, int32, encoding), Seq.empty.asJava)
+    outputSchemaMismatch(declared("name" -> StringType), outputStream(dictionary)).get should
+      include("name: Int(32, true)[dictionary: 7]")
+
+    val struct = StructType(Seq(StructField("a", IntegerType)))
+    Seq(
+      BinaryType -> arrowField("c", new ArrowType.FixedSizeBinary(4)),
+      DayTimeIntervalType() -> arrowField("c", new ArrowType.Interval(IntervalUnit.DAY_TIME)),
+      TimestampType -> arrowField("c", new ArrowType.Timestamp(TimeUnit.MILLISECOND, "UTC")),
+      TimestampType -> arrowField("c", new ArrowType.Timestamp(TimeUnit.MICROSECOND, null)),
+      TimestampNTZType -> arrowField("c", new ArrowType.Timestamp(TimeUnit.MICROSECOND, "UTC")),
+      IntegerType -> arrowField("c", new ArrowType.Int(32, false)),
+      ArrayType(IntegerType) -> arrowField(
+        "c",
+        ArrowType.LargeList.INSTANCE,
+        arrowField("e", int32)),
+      ArrayType(IntegerType) -> arrowField("c", ArrowType.List.INSTANCE, arrowField("e", int64)),
+      MapType(StringType, IntegerType) ->
+        arrowMap(arrowField("k", ArrowType.Utf8.INSTANCE), arrowField("v", int64)),
+      struct -> arrowField("c", ArrowType.Struct.INSTANCE, arrowField("a", int64)),
+      struct -> arrowField(
+        "c",
+        ArrowType.Struct.INSTANCE,
+        arrowField("a", int32),
+        arrowField("b", int32)),
+      // An all-null column is only readable where the declared type allows nulls.
+      MapType(IntegerType, StringType) ->
+        arrowMap(
+          arrowField("k", ArrowType.Null.INSTANCE),
+          arrowField("v", ArrowType.Utf8.INSTANCE)))
+      .foreach { case (dataType, field) =>
+        withClue(s"$dataType read from $field: ") {
+          outputSchemaMismatch(declared("c" -> dataType), outputStream(field)) shouldBe defined
+        }
+      }
+
+    val nonNullable = StructType(Seq(StructField("c", StringType, nullable = false)))
+    outputSchemaMismatch(nonNullable, outputStream(arrowField("c", ArrowType.Null.INSTANCE)))
+      .shouldBe(defined)
+    // Missing or extra columns, or a stream that is not a single struct column.
+    val column = arrowField("a", int32)
+    outputSchemaMismatch(declared("a" -> IntegerType, "b" -> IntegerType), outputStream(column))
+      .shouldBe(defined)
+    outputSchemaMismatch(declared("a" -> IntegerType), outputStream(column, column))
+      .shouldBe(defined)
+    outputSchemaMismatch(declared("a" -> IntegerType), Seq(column)) shouldBe defined
+    outputSchemaMismatch(
+      declared("a" -> IntegerType),
+      outputStream(column) ++ outputStream(column))
+      .shouldBe(defined)
+  }
+
+  test("output schema check accepts differences that do not change the values read") {
+    // Comet's own Arrow layout for each type is accepted, whatever the field names and
+    // nullability.
+    val schema = StructType(
+      Seq(
+        StructField("bool", BooleanType),
+        StructField("byte", ByteType),
+        StructField("short", ShortType),
+        StructField("int", IntegerType),
+        StructField("long", LongType),
+        StructField("float", FloatType),
+        StructField("double", DoubleType),
+        StructField("string", StringType),
+        StructField("binary", BinaryType),
+        StructField("date", DateType),
+        StructField("timestamp", TimestampType),
+        StructField("timestamp_ntz", TimestampNTZType),
+        StructField("decimal", DecimalType(38, 18)),
+        StructField("year_month", YearMonthIntervalType()),
+        StructField("day_time", DayTimeIntervalType()),
+        StructField("null", NullType),
+        StructField("array", ArrayType(StructType(Seq(StructField("x", IntegerType))))),
+        StructField("map", MapType(StringType, ArrayType(LongType)))))
+    val renamed =
+      StructType(schema.fields.map(f => f.copy(name = s"${f.name}_out", nullable = false)))
+    val stream = Utils.toArrowField("_0", renamed, nullable = true, "UTC")
+    outputSchemaMismatch(schema, Seq(stream)) shouldBe None
+
+    val longBacked = new UserDefinedType[java.lang.Long] {
+      override def sqlType: DataType = LongType
+      override def serialize(value: java.lang.Long): Any = value
+      override def deserialize(datum: Any): java.lang.Long = datum.asInstanceOf[java.lang.Long]
+      override def userClass: Class[java.lang.Long] = classOf[java.lang.Long]
+    }
+    Seq(
+      StringType -> arrowField("c", ArrowType.LargeUtf8.INSTANCE),
+      StringType("UTF8_LCASE") -> arrowField("c", ArrowType.Utf8.INSTANCE),
+      BinaryType -> arrowField("c", ArrowType.LargeBinary.INSTANCE),
+      TimestampType ->
+        arrowField("c", new ArrowType.Timestamp(TimeUnit.MICROSECOND, "America/Los_Angeles")),
+      DayTimeIntervalType(DayTimeIntervalType.HOUR, DayTimeIntervalType.MINUTE) ->
+        arrowField("c", new ArrowType.Duration(TimeUnit.MICROSECOND)),
+      YearMonthIntervalType(YearMonthIntervalType.YEAR) ->
+        arrowField("c", new ArrowType.Interval(IntervalUnit.YEAR_MONTH)),
+      longBacked -> arrowField("c", int64),
+      StringType -> arrowField("c", ArrowType.Null.INSTANCE),
+      ArrayType(StringType) ->
+        arrowField("c", ArrowType.List.INSTANCE, arrowField("e", ArrowType.Null.INSTANCE)))
+      .foreach { case (dataType, field) =>
+        withClue(s"$dataType read from $field: ") {
+          outputSchemaMismatch(declared("c" -> dataType), outputStream(field)) shouldBe None
+        }
+      }
+  }
+
+  test("output reader checks the stream schema before reading any batch") {
+    withInputWriterRunner { (runner, context) =>
+      val bytes = new ByteArrayOutputStream()
+      new DataOutputStream(bytes).writeInt(SpecialLengths.START_ARROW_STREAM)
+      Using.resource(new RootAllocator(Long.MaxValue)) { allocator =>
+        withWriter(Seq(arrowField("id", int64)), allocator, Channels.newChannel(bytes))(_ => ())
+      }
+      val output = runner.outputReader(
+        new DataInputStream(new ByteArrayInputStream(bytes.toByteArray)),
+        runner.inputWriter(Iterator.empty, context),
+        context)
+      intercept[SparkException](output.hasNext).getMessage shouldBe
+        "Invalid schema from SQL_MAP_ARROW_ITER_UDF: " +
+        "expected StructType(StructField(id,IntegerType,true)), " +
+        "got StructType(StructField(id,LongType,true))."
     }
   }
 
