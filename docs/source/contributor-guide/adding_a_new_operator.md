@@ -118,6 +118,44 @@ type, they are converted to `ScanExec` in the native plan. This allows them to s
 execution blocks. The original Spark operator is wrapped with `CometScanWrapper` or `CometSinkPlaceHolder` which
 manages the boundary between JVM and native execution.
 
+### Operators That Should Not Be Converted
+
+Before adding an operator, check that converting it would speed anything up. Comet deliberately
+leaves three kinds of Spark plan nodes in place.
+
+**Wrappers and scheduling nodes.** `AdaptiveSparkPlanExec`, the AQE query stages
+(`ShuffleQueryStageExec`, `BroadcastQueryStageExec`, `TableCacheQueryStageExec`, and, on Spark 4.0
+and later, `ResultQueryStageExec`), `AQEShuffleReadExec`, `InputAdapter`, `WholeStageCodegenExec`,
+`ReusedExchangeExec`, and `ReusedSubqueryExec` do no data processing of their own. They schedule
+stages, mark whole-stage code generation boundaries, choose which shuffle blocks each task reads,
+or point at a plan that runs elsewhere. AQE creates the query stages itself, after Comet's rules
+have run on the plan inside them, and depends on their exact class. For example, it casts the root
+of the final plan to `ResultQueryStageExec`. When a query stage wraps a Comet shuffle, broadcast,
+or cached relation, `CometExecRule` reads from it as a native input through `CometExchangeSink`
+and leaves the stage itself in place.
+
+**Operators that run user JVM code on JVM objects.** The typed `Dataset` API plans
+`DeserializeToObjectExec`, `SerializeFromObjectExec`, `MapElementsExec`, `MapPartitionsExec`,
+`AppendColumnsExec`, `AppendColumnsWithObjectExec`, `MapGroupsExec`, and `CoGroupExec`. They
+convert rows to JVM objects, run an arbitrary user function on those objects, or convert them back,
+and most of them pass the objects to the next operator as an `ObjectType` column, which has no
+Arrow representation. None of this can run natively. Per-row operators can still stay inside a
+Comet plan: `MapElementsExec`, the operator behind `Dataset.map`, generates its call to the user
+function as a Catalyst `Invoke` expression, so the deserializer, the call, and the serializer could
+run together as one projection in the JVM codegen dispatcher. `mapPartitions`, `mapGroups`, and
+`cogroup` pass the user function an iterator or a whole group, so there is no per-row expression to
+build. A typed `filter` is planned as an ordinary `FilterExec`, not as one of these operators.
+
+**Driver-side commands.** `ExecutedCommandExec` runs a `RunnableCommand`, such as DDL or `SET`, on
+the driver, so there is no data path for Comet to accelerate.
+
+If a new Spark version adds a wrapper node, do not write a serde for it. Add it to the nodes that
+`ExtendedExplainInfo.generateTreeString` skips when counting operators, and to the wrapper list in
+[Understanding Comet Plans](../user-guide/latest/understanding-comet-plans.md), so the coverage
+summary does not count it as a Spark operator. If `CometExecRule` visits the node, also add it to
+the operators it leaves in place without recording a fallback reason. `ExtendedExplainInfo`
+already skips every `QueryStageExec`, so a new query stage type needs no change there.
+
 ## Implementing a Native Operator
 
 This section focuses on adding a native operator, which is the most common and complex case.
