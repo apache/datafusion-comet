@@ -31,18 +31,20 @@ import org.apache.arrow.c.ArrowArrayStream
 import org.apache.arrow.memory.RootAllocator
 import org.apache.arrow.vector.ipc.ArrowReader
 import org.apache.arrow.vector.types.pojo.{ArrowType, Field, Schema}
+import org.apache.logging.log4j.Level
 import org.apache.spark.executor.TaskMetrics
 import org.apache.spark.memory.{TaskMemoryManager, TestMemoryManager}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.CometTestBase
-import org.apache.spark.sql.catalyst.expressions.PrettyAttribute
+import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.catalyst.expressions.{Ascending, PrettyAttribute, SortOrder}
 import org.apache.spark.sql.comet.{CometExec, CometExecUtils, CometMetricNode, CometNativeScanExec, CometProjectExec, CometSortExec}
-import org.apache.spark.sql.comet.execution.arrow.CometArrowStream
+import org.apache.spark.sql.comet.execution.arrow.{CometArrowConverters, CometArrowStream}
 import org.apache.spark.sql.functions.{col, udf}
 import org.apache.spark.sql.types.{LongType, StructField, StructType}
 import org.apache.spark.util.JsonProtocol
 
-import org.apache.comet.{CometConf, CometExecIterator, CometExecutorMemoryUsage, CometNativeException, CometShuffleBlockIterator, Native}
+import org.apache.comet.{CometArrowAllocator, CometConf, CometExecIterator, CometExecutorMemoryUsage, CometNativeException, CometShuffleBlockIterator, Native}
 import org.apache.comet.serde.Config.ConfigMap
 import org.apache.comet.serde.OperatorOuterClass
 
@@ -323,6 +325,120 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
         }
       }
     }
+  }
+
+  /**
+   * Runs two native plans in one task, so that they share one task-shared memory pool and the
+   * task's one `CometTaskMemoryManager`, and returns the "closed with non-zero memory usage"
+   * warnings logged while they close. The first plan sorts a batch, which reserves memory through
+   * the pool and makes the pool take its anchor byte from Spark. The second plan only holds the
+   * pool, so the pool and its anchor outlive the first plan's close and the anchor shows in the
+   * task's Spark balance until the second plan closes too. `leakBytes` bytes are acquired through
+   * the task's manager and never released, which is what a native reservation that outlives its
+   * plan looks like to the JVM.
+   */
+  private def closeWarningsOfTwoPlanTask(taskAttemptId: Long, leakBytes: Long): Seq[String] = {
+    // Any physical plan with a bigint output serves as the sort's child. Only its output is used.
+    val child = spark.range(1).queryExecution.sparkPlan
+    val numRows = 64
+    val rows = (0 until numRows).map(i => InternalRow((numRows - i).toLong))
+    val topK = CometExecUtils
+      .getTopKNativePlan(child.output, Seq(SortOrder(child.output.head, Ascending)), child, 10)
+      .get
+    val limitOp =
+      CometExecUtils.getLimitNativePlan(Seq(PrettyAttribute("test", LongType)), 100).get
+
+    withTaskContext(taskAttemptId) {
+      val taskMemoryManager = TaskContext.get().taskMemoryManager()
+      val allocator = CometArrowAllocator.newChildAllocator("anchor-test", 0, Long.MaxValue)
+      try {
+        val batches = CometArrowConverters.rowToArrowBatchIter(
+          rows.iterator,
+          child.schema,
+          numRows,
+          CometArrowStream.NATIVE_TIMEZONE,
+          allocator)
+        val stream = CometArrowStream.fromColumnarBatchIter(
+          batches,
+          child.schema,
+          CometArrowStream.NATIVE_TIMEZONE,
+          "anchor-test")
+        val sorting = new CometExecIterator(
+          id = taskAttemptId,
+          inputObjects = Array(stream.asInstanceOf[Object]),
+          numOutputCols = 1,
+          protobufQueryPlan = topK.toByteArray,
+          nativeMetrics = CometMetricNode(Map.empty),
+          numParts = 1,
+          partitionIndex = 0)
+        val holder = new CometExecIterator(
+          id = taskAttemptId + 1,
+          inputObjects = Array.empty[Object],
+          numOutputCols = 1,
+          protobufQueryPlan = limitOp.toByteArray,
+          nativeMetrics = CometMetricNode(Map.empty),
+          numParts = 1,
+          partitionIndex = 0)
+        val manager = taskMemoryManagerOf(sorting)
+        if (leakBytes > 0) {
+          assert(manager.acquireMemory(leakBytes) == leakBytes)
+        }
+
+        // Listen on the package logger, as CometPluginsSuite does. For a logger with no config of
+        // its own, withLogAppender creates one that outlives the test and does not pass events
+        // up, so listening on CometExecIterator directly would hide its warnings from later
+        // appenders on org.apache.comet.
+        val appender = new LogAppender("non-zero memory usage at close")
+        withLogAppender(appender, Seq("org.apache.comet"), Some(Level.WARN)) {
+          try {
+            var rows = 0
+            while (sorting.hasNext) {
+              rows += sorting.next().numRows()
+            }
+            assert(rows == 10)
+            // Exhausting the sorting plan closed it. The holder still has the pool, so the pool's
+            // anchor byte is all the task holds beyond the injected leak. This also guards against
+            // a vacuous pass: a plan that never reserved would never have taken the anchor.
+            assert(
+              taskMemoryManager.getMemoryConsumptionForThisTask == 1 + leakBytes,
+              "the pool should hold exactly its anchor byte while another plan keeps it alive")
+          } finally {
+            holder.close()
+            sorting.close()
+          }
+        }
+        assert(taskMemoryManager.getMemoryConsumptionForThisTask == leakBytes)
+        if (leakBytes > 0) {
+          manager.releaseMemory(leakBytes)
+        }
+        appender.loggingEvents
+          .map(_.getMessage.getFormattedMessage)
+          .filter(_.contains("closed with non-zero memory usage"))
+          .toSeq
+      } finally {
+        allocator.close()
+      }
+    }
+  }
+
+  private def taskMemoryManagerOf(iterator: CometExecIterator): CometTaskMemoryManager = {
+    val field = classOf[CometExecIterator].getDeclaredField("cometTaskMemoryManager")
+    field.setAccessible(true)
+    field.get(iterator).asInstanceOf[CometTaskMemoryManager]
+  }
+
+  test("the memory pool holds its anchor byte until the task's last plan releases the pool") {
+    val warnings = closeWarningsOfTwoPlanTask(4600000L, leakBytes = 0)
+    assert(warnings.isEmpty, warnings)
+  }
+
+  test("close() reports a leaked reservation once the last plan has returned the anchor byte") {
+    val warnings = closeWarningsOfTwoPlanTask(4700000L, leakBytes = 4096)
+    assert(
+      warnings == Seq(
+        "CometExecIterator closed with non-zero memory usage : 4096 bytes, held by task " +
+          "4700000 after its last native plan closed"),
+      warnings)
   }
 
   test("getMemoryUsage counts live plans and reports native allocation") {
