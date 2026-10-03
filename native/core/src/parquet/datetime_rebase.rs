@@ -69,7 +69,10 @@
 //! `TIMESTAMP_NTZ` (`DateToTimestampNTZWithRebaseUpdater`). A date or timestamp leaf read as a
 //! number (a `DATE` as `INT`, a `TIMESTAMP` of any unit as `BIGINT`, e.g. NANOS under
 //! `spark.sql.legacy.parquet.nanosAsLong`) never rebases: the numeric updaters come first in
-//! `getUpdater` and return the stored value.
+//! `getUpdater` and return the stored value. Conversely, an `INT32` leaf without a `DATE`
+//! annotation read as `DATE` takes the date policy: Spark's INT32 arm picks
+//! `IntegerWithRebaseUpdater` from the requested `DateType` alone, so the wrapper rebases the
+//! stored days beneath the schema adapter's `Int32 -> Date32` cast.
 //!
 //! Currently only enabled by the Delta scan arms via
 //! `SparkParquetOptions::rebase_from_file_metadata`, which also carries the session read modes
@@ -83,13 +86,13 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use arrow::array::{
-    Array, ArrayRef, AsArray, Date32Array, FixedSizeListArray, GenericListArray, MapArray,
-    OffsetSizeTrait, PrimitiveArray, RecordBatch, StructArray,
+    Array, ArrayRef, AsArray, FixedSizeListArray, GenericListArray, MapArray, OffsetSizeTrait,
+    PrimitiveArray, RecordBatch, StructArray,
 };
 use arrow::datatypes::{
-    ArrowPrimitiveType, ArrowTimestampType, DataType, Date32Type, FieldRef, Schema, SchemaRef,
-    TimeUnit, TimestampMicrosecondType, TimestampMillisecondType, TimestampNanosecondType,
-    TimestampSecondType,
+    ArrowPrimitiveType, ArrowTimestampType, DataType, Date32Type, FieldRef, Int32Type, Schema,
+    SchemaRef, TimeUnit, TimestampMicrosecondType, TimestampMillisecondType,
+    TimestampNanosecondType, TimestampSecondType,
 };
 use arrow::error::ArrowError;
 use datafusion::common::tree_node::{Transformed, TreeNode};
@@ -433,6 +436,11 @@ pub(crate) struct FileRebasePolicies {
     /// before any date or timestamp arm, and none of them rebase, so their policy is the
     /// identity whatever the file's calendar. Filled by [`Self::restrict_to_requested`].
     pub numeric_requested_leaves: Vec<usize>,
+    /// Sorted physical leaf ordinals of `Int32` leaves (INT32 without a `DATE` annotation) the
+    /// query reads as `DATE`. Spark's INT32 arm hands any `DateType` request to
+    /// `IntegerWithRebaseUpdater` under the datetime spec, whatever the annotation, so these
+    /// leaves take the date policy. Filled by [`Self::restrict_to_requested`].
+    pub date_requested_leaves: Vec<usize>,
 }
 
 /// The leaf ordinals [`push_unrequested_leaves`] records while pairing a physical type with
@@ -444,6 +452,7 @@ struct LeafPairing {
     ntz_requested: Vec<usize>,
     ltz_requested: Vec<usize>,
     numeric_requested: Vec<usize>,
+    date_requested: Vec<usize>,
 }
 
 impl FileRebasePolicies {
@@ -466,6 +475,16 @@ impl FileRebasePolicies {
     /// or the identity when the query does not read that leaf.
     fn date_policy(&self, leaf: usize) -> RebasePolicy {
         if self.is_requested(leaf) {
+            self.date
+        } else {
+            RebasePolicy::Corrected
+        }
+    }
+
+    /// The policy of the `Int32` leaf at depth-first ordinal `leaf`: the file's date policy
+    /// when the query reads it as `DATE`, otherwise the identity.
+    fn int32_policy(&self, leaf: usize) -> RebasePolicy {
+        if self.date_requested_leaves.binary_search(&leaf).is_ok() {
             self.date
         } else {
             RebasePolicy::Corrected
@@ -549,6 +568,7 @@ impl FileRebasePolicies {
         self.ntz_requested_leaves = pairing.ntz_requested;
         self.ltz_requested_leaves = pairing.ltz_requested;
         self.numeric_requested_leaves = pairing.numeric_requested;
+        self.date_requested_leaves = pairing.date_requested;
         self
     }
 }
@@ -571,7 +591,10 @@ struct FieldMatching {
 /// `SMALLINT`, `INT`, `BIGINT` or `DOUBLE`, and a timestamp leaf read as `BIGINT`, go to
 /// `out.numeric_requested`: Spark's INT32 and INT64 numeric updaters for those pairings never
 /// rebase. Spark accepts a date as `BIGINT` or `DOUBLE` only on 4.x (3.x refuses the read);
-/// the identity is still the right policy for it.
+/// the identity is still the right policy for it. An `Int32` leaf read as `DATE` goes to
+/// `out.date_requested`. The other arrow types of INT32 storage that Spark's INT32 arm also
+/// reads as `DATE` (`INT_8`, `INT_16`, unsigned, `DECIMAL`) fail the scan's cast to `Date32`,
+/// and `INT64` has no `DATE` updater, so none of them reaches a rebase.
 ///
 /// Recurses through exactly the pairings `parquet_convert_array` narrows, and no others: a
 /// struct child is dropped only when NO requested child selects it by either rule the struct
@@ -585,7 +608,8 @@ struct FieldMatching {
 /// narrowing reads would skip its rebase, so every doubt resolves to "requested". Timestamp
 /// leaves inside those pass-through shapes are never recorded either, so they keep the
 /// physical rule (a spurious check for an NTZ request, no rebase for a `TIMESTAMP` request of
-/// a timezone-free leaf); Spark's requested schemas never take those arrow shapes.
+/// a timezone-free leaf or a `DATE` request of an `Int32` leaf); Spark's requested schemas
+/// never take those arrow shapes.
 fn push_unrequested_leaves(
     physical: &DataType,
     requested: &DataType,
@@ -612,6 +636,10 @@ fn push_unrequested_leaves(
         )
         | (DataType::Timestamp(_, _), DataType::Int64) => {
             out.numeric_requested.push(*next_leaf);
+            *next_leaf += 1;
+        }
+        (DataType::Int32, DataType::Date32) => {
+            out.date_requested.push(*next_leaf);
             *next_leaf += 1;
         }
         (DataType::Struct(physical_fields), DataType::Struct(requested_fields)) => {
@@ -761,6 +789,7 @@ pub(crate) fn resolve_file_rebase_policies(
         ntz_requested_leaves: Vec::new(),
         ltz_requested_leaves: Vec::new(),
         numeric_requested_leaves: Vec::new(),
+        date_requested_leaves: Vec::new(),
     }
 }
 
@@ -784,9 +813,10 @@ fn leaf_count(dt: &DataType) -> usize {
 }
 
 /// Appends the policy of every leaf of `dt`, in depth-first order, to `out`, consuming leaf
-/// ordinals from `next_leaf` (exactly [`leaf_count`] of them). Only `Date32` and timestamps
-/// have a policy to apply, and only when the query reads the leaf; a timestamp leaf's policy
-/// follows the type the query reads it as (see [`FileRebasePolicies::timestamp_policy`] and
+/// ordinals from `next_leaf` (exactly [`leaf_count`] of them). Only `Date32`, timestamps and
+/// `Int32` leaves read as `DATE` have a policy to apply, and only when the query reads the
+/// leaf; a timestamp leaf's policy follows the type the query reads it as (see
+/// [`FileRebasePolicies::timestamp_policy`] and
 /// [`FileRebasePolicies::tz_free_timestamp_policy`]), and every other leaf is the identity
 /// ([`RebasePolicy::Corrected`]).
 fn leaf_policies(
@@ -798,6 +828,10 @@ fn leaf_policies(
     match dt {
         DataType::Date32 => {
             out.push(policies.date_policy(*next_leaf));
+            *next_leaf += 1;
+        }
+        DataType::Int32 => {
+            out.push(policies.int32_policy(*next_leaf));
             *next_leaf += 1;
         }
         DataType::Timestamp(_, Some(_)) => {
@@ -1015,23 +1049,24 @@ impl SparkDatetimeRebaseExpr {
         Ok(Arc::new(rebased.with_timezone_opt(tz)))
     }
 
-    fn rebase_date_array(
+    /// Rebases days since the epoch: a `Date32` leaf, or an `Int32` leaf read as `DATE` before
+    /// the schema adapter casts it.
+    fn rebase_date_array<T: ArrowPrimitiveType<Native = i32>>(
         &self,
-        dates: &Date32Array,
+        dates: &PrimitiveArray<T>,
         policy: RebasePolicy,
         original: &ArrayRef,
     ) -> DataFusionResult<ArrayRef> {
         if policy == RebasePolicy::Corrected || Self::all_modern(dates, LAST_SWITCH_JULIAN_DAY) {
             return Ok(Arc::clone(original));
         }
-        let rebased: Date32Array = match policy {
+        let rebased: PrimitiveArray<T> = match policy {
             RebasePolicy::Corrected => unreachable!("handled above"),
             // The day rebase is a pure calendar reinterpretation, independent of any timezone,
             // so every legacy writer zone rebases dates exactly.
-            RebasePolicy::Legacy(_) => arrow::compute::unary::<Date32Type, _, Date32Type>(
-                dates,
-                rebase_julian_to_gregorian_days,
-            ),
+            RebasePolicy::Legacy(_) => {
+                arrow::compute::unary::<T, _, T>(dates, rebase_julian_to_gregorian_days)
+            }
             RebasePolicy::CheckAncient => {
                 arrow::compute::try_unary(dates, |v| -> Result<i32, ArrowError> {
                     if v >= LAST_SWITCH_JULIAN_DAY {
@@ -1087,6 +1122,11 @@ impl SparkDatetimeRebaseExpr {
                 let policy = span[0];
                 *cursor += 1;
                 self.rebase_date_array(array.as_primitive::<Date32Type>(), policy, array)
+            }
+            DataType::Int32 => {
+                let policy = span[0];
+                *cursor += 1;
+                self.rebase_date_array(array.as_primitive::<Int32Type>(), policy, array)
             }
             DataType::Timestamp(unit, _) => {
                 let policy = span[0];
@@ -1240,7 +1280,7 @@ impl PhysicalExpr for SparkDatetimeRebaseExpr {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{Int64Array, ListArray, TimestampMicrosecondArray};
+    use arrow::array::{Date32Array, Int32Array, Int64Array, ListArray, TimestampMicrosecondArray};
     use arrow::buffer::OffsetBuffer;
     use arrow::datatypes::Field;
     use parquet::schema::parser::parse_message_type;
@@ -1372,6 +1412,7 @@ mod tests {
             ntz_requested_leaves: Vec::new(),
             ltz_requested_leaves: Vec::new(),
             numeric_requested_leaves: Vec::new(),
+            date_requested_leaves: Vec::new(),
         }
     }
 
@@ -2911,14 +2952,13 @@ mod tests {
         );
     }
 
-    /// The leaf policies the wrapper installs on the single column of `schema` when the query
-    /// reads it as `requested` (`None`: the column has no logical counterpart), or `None` when
-    /// the column passes through unwrapped.
-    fn wrapped_policies_reading(
+    /// The expression `wrap_datetime_rebase` makes of column 0 of `schema` when the query
+    /// reads it as `requested` (`None`: the column has no logical counterpart).
+    fn wrapper_reading(
         schema: &Schema,
         requested: Option<&DataType>,
         session_modes: SessionRebaseModes,
-    ) -> Option<Vec<RebasePolicy>> {
+    ) -> Arc<dyn PhysicalExpr> {
         let policies = resolve_file_rebase_policies(schema, session_modes).restrict_to_requested(
             schema,
             &[requested],
@@ -2931,8 +2971,18 @@ mod tests {
             &policies,
         )
         .unwrap()
-        .downcast_ref::<SparkDatetimeRebaseExpr>()
-        .map(|e| e.leaf_policies.clone())
+    }
+
+    /// The leaf policies the wrapper installs on the single column of `schema` when the query
+    /// reads it as `requested`, or `None` when the column passes through unwrapped.
+    fn wrapped_policies_reading(
+        schema: &Schema,
+        requested: Option<&DataType>,
+        session_modes: SessionRebaseModes,
+    ) -> Option<Vec<RebasePolicy>> {
+        wrapper_reading(schema, requested, session_modes)
+            .downcast_ref::<SparkDatetimeRebaseExpr>()
+            .map(|e| e.leaf_policies.clone())
     }
 
     #[test]
@@ -3403,5 +3453,200 @@ mod tests {
             wrapped_policies_reading(&schema, Some(&physical), default_modes()),
             Some(vec![check, check, check, pass, check])
         );
+    }
+
+    #[test]
+    fn int32_leaves_read_as_date_take_the_date_policy() {
+        // Spark's ParquetVectorUpdaterFactory picks the INT32 updater from the requested type
+        // alone: a DateType request gets IntegerWithRebaseUpdater under the datetime spec
+        // (IntegerUpdater under CORRECTED) whatever the column's annotation, so a plain INT32
+        // column read as DATE follows the file's date policy exactly like a DATE column.
+        let plain = Schema::new(vec![Field::new("v", DataType::Int32, true)]);
+        let legacy_footer = Schema::new_with_metadata(
+            vec![Field::new("v", DataType::Int32, true)],
+            spark_metadata(&[
+                (SPARK_VERSION_METADATA_KEY, "2.4.8"),
+                (SPARK_TIMEZONE_KEY, "UTC"),
+            ]),
+        );
+        let date = Some(&DataType::Date32);
+        let corrected = modes(RebaseReadMode::Corrected, RebaseReadMode::Corrected);
+        let legacy = modes(RebaseReadMode::Legacy, RebaseReadMode::Legacy);
+        let exception = modes(RebaseReadMode::Exception, RebaseReadMode::Exception);
+        assert_eq!(
+            wrapped_policies_reading(&plain, date, legacy),
+            Some(vec![RebasePolicy::Legacy(WriterTimeZone::OtherOrUnknown)])
+        );
+        assert_eq!(
+            wrapped_policies_reading(&plain, date, exception),
+            Some(vec![RebasePolicy::CheckAncient])
+        );
+        assert_eq!(wrapped_policies_reading(&plain, date, corrected), None);
+        for session in [corrected, legacy, exception] {
+            // A legacy Spark writer's footer decides over every session mode.
+            assert_eq!(
+                wrapped_policies_reading(&legacy_footer, date, session),
+                Some(vec![RebasePolicy::Legacy(WriterTimeZone::Utc)]),
+                "{session:?}"
+            );
+            // Control: read as INT (IntegerUpdater), as BIGINT (refused for DATE by Spark's
+            // INT64 arm, and never a date request), or with no logical counterpart, the stored
+            // value is never rebased.
+            for schema in [&plain, &legacy_footer] {
+                for requested in [Some(&DataType::Int32), Some(&DataType::Int64), None] {
+                    assert_eq!(
+                        wrapped_policies_reading(schema, requested, session),
+                        None,
+                        "{requested:?} under {session:?}"
+                    );
+                }
+            }
+        }
+        // INT64 storage has no DATE updater in Spark, so a date request keeps the identity.
+        let int64 = Schema::new(vec![Field::new("v", DataType::Int64, true)]);
+        assert_eq!(wrapped_policies_reading(&int64, date, exception), None);
+        // Nor is an INT_8 leaf, whose Int8 values the scan cannot cast to Date32.
+        let int8 = Schema::new(vec![Field::new("v", DataType::Int8, true)]);
+        assert!(resolve_file_rebase_policies(&int8, exception)
+            .restrict_to_requested(&int8, &[date], true, false)
+            .date_requested_leaves
+            .is_empty());
+    }
+
+    #[test]
+    fn int32_leaves_read_as_date_rebase_the_stored_days_before_the_cast() {
+        // The wrapper sits beneath the schema adapter's INT32 -> DATE cast, so it sees and
+        // returns the raw Int32 days.
+        let schema = Schema::new(vec![Field::new("v", DataType::Int32, true)]);
+        let stored = julian_civil_to_day(1500, 1, 1);
+        assert_eq!(stored, -171655);
+        let batch = RecordBatch::try_new(
+            Arc::new(schema.clone()),
+            vec![Arc::new(Int32Array::from(vec![Some(stored), None, Some(19876)])) as ArrayRef],
+        )
+        .unwrap();
+
+        let legacy = wrapper_reading(
+            &schema,
+            Some(&DataType::Date32),
+            modes(RebaseReadMode::Legacy, RebaseReadMode::Legacy),
+        );
+        let rebased = legacy.evaluate(&batch).unwrap().into_array(3).unwrap();
+        let rebased = rebased.as_primitive::<Int32Type>();
+        assert_eq!(rebased.value(0), days_from_civil(1500, 1, 1) as i32);
+        assert!(rebased.is_null(1));
+        assert_eq!(rebased.value(2), 19876);
+
+        let exception = wrapper_reading(
+            &schema,
+            Some(&DataType::Date32),
+            modes(RebaseReadMode::Exception, RebaseReadMode::Exception),
+        );
+        let err = exception.evaluate(&batch).unwrap_err().to_string();
+        assert!(
+            err.contains("Native scan cannot rebase") && err.contains("'v'"),
+            "unexpected error: {err}"
+        );
+        let modern = RecordBatch::try_new(
+            Arc::new(schema.clone()),
+            vec![Arc::new(Int32Array::from(vec![Some(19876), None])) as ArrayRef],
+        )
+        .unwrap();
+        assert!(exception.evaluate(&modern).is_ok());
+
+        let corrected = wrapper_reading(
+            &schema,
+            Some(&DataType::Date32),
+            modes(RebaseReadMode::Corrected, RebaseReadMode::Corrected),
+        );
+        assert!(corrected
+            .downcast_ref::<SparkDatetimeRebaseExpr>()
+            .is_none());
+    }
+
+    #[test]
+    fn int32_leaves_read_as_date_inside_nested_columns_take_the_date_policy() {
+        // The pairing recurses through structs and lists, so a nested INT32 leaf read as DATE
+        // takes the date policy while an INT32 sibling read as INT stays the identity.
+        let list = |dt: DataType| DataType::List(Arc::new(Field::new("item", dt, true)));
+        let physical = struct_of(vec![
+            Field::new("a", DataType::Int32, true),
+            Field::new("b", DataType::Int32, true),
+            Field::new("l", list(DataType::Int32), true),
+        ]);
+        let requested = struct_of(vec![
+            Field::new("a", DataType::Date32, true),
+            Field::new("b", DataType::Int32, true),
+            Field::new("l", list(DataType::Date32), true),
+        ]);
+        let schema = Schema::new(vec![Field::new("c", physical.clone(), true)]);
+        let legacy = modes(RebaseReadMode::Legacy, RebaseReadMode::Legacy);
+        let exception = modes(RebaseReadMode::Exception, RebaseReadMode::Exception);
+        let check = RebasePolicy::CheckAncient;
+        let rebase = RebasePolicy::Legacy(WriterTimeZone::OtherOrUnknown);
+        let pass = RebasePolicy::Corrected;
+        assert_eq!(
+            wrapped_policies_reading(&schema, Some(&requested), exception),
+            Some(vec![check, pass, check])
+        );
+        assert_eq!(
+            wrapped_policies_reading(&schema, Some(&requested), legacy),
+            Some(vec![rebase, pass, rebase])
+        );
+        assert_eq!(
+            wrapped_policies_reading(
+                &schema,
+                Some(&requested),
+                modes(RebaseReadMode::Corrected, RebaseReadMode::Corrected)
+            ),
+            None
+        );
+        // Control: read as stored, no leaf is a date.
+        assert_eq!(
+            wrapped_policies_reading(&schema, Some(&physical), exception),
+            None
+        );
+
+        let stored = julian_civil_to_day(1500, 1, 1);
+        let DataType::Struct(fields) = &physical else {
+            unreachable!()
+        };
+        let column = StructArray::try_new(
+            fields.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![Some(stored)])) as ArrayRef,
+                Arc::new(Int32Array::from(vec![Some(stored)])) as ArrayRef,
+                Arc::new(ListArray::from_iter_primitive::<Int32Type, _, _>(vec![
+                    Some(vec![Some(stored), None]),
+                ])) as ArrayRef,
+            ],
+            None,
+        )
+        .unwrap();
+        let batch =
+            RecordBatch::try_new(Arc::new(schema.clone()), vec![Arc::new(column) as ArrayRef])
+                .unwrap();
+        let rebased = wrapper_reading(&schema, Some(&requested), legacy)
+            .evaluate(&batch)
+            .unwrap()
+            .into_array(1)
+            .unwrap();
+        let rebased = rebased.as_struct();
+        let proleptic = days_from_civil(1500, 1, 1) as i32;
+        assert_eq!(
+            rebased.column(0).as_primitive::<Int32Type>().value(0),
+            proleptic
+        );
+        assert_eq!(
+            rebased.column(1).as_primitive::<Int32Type>().value(0),
+            stored
+        );
+        let items = rebased
+            .column(2)
+            .as_list::<i32>()
+            .values()
+            .as_primitive::<Int32Type>();
+        assert_eq!(items.value(0), proleptic);
+        assert!(items.is_null(1));
     }
 }

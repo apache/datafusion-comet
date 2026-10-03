@@ -3472,6 +3472,68 @@ class CometDeltaNativeScanSuite extends CometDeltaTestBase {
     }
   }
 
+  test("a plain INT32 column read as DATE follows the datetime read mode") {
+    // Spark's ParquetVectorUpdaterFactory picks the INT32 updater from the requested type, so
+    // an INT32 column without a DATE annotation, declared DATE by the table, goes through
+    // IntegerWithRebaseUpdater under datetimeRebaseModeInRead like a DATE column does.
+    withTempPath { dir =>
+      val path = dir.getAbsolutePath
+      writeRawParquetFile(
+        path,
+        """message m {
+          |  required int32 id;
+          |  optional int32 v;
+          |}""".stripMargin) { factory =>
+        Seq(
+          factory.newGroup().append("id", 1).append("v", -171655),
+          factory.newGroup().append("id", 2).append("v", 19875),
+          factory.newGroup().append("id", 3))
+      }
+      val table = "comet_int_as_date_" + java.util.UUID.randomUUID().toString.replace("-", "")
+      withTable(table) {
+        spark.sql(s"CREATE TABLE $table (id INT, v DATE) USING PARQUET LOCATION '$path'")
+        spark.sql(s"CONVERT TO DELTA $table NO STATISTICS")
+        Seq("LEGACY" -> "1500-01-01", "CORRECTED" -> "1500-01-10").foreach {
+          case (mode, expected) =>
+            withSQLConf(
+              SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC",
+              "spark.sql.parquet.datetimeRebaseModeInRead" -> mode) {
+              val df = spark.read.format("delta").load(path).selectExpr("id", "cast(v as string)")
+              checkDeltaNativeScanAnswer(df)
+              val rows = df.collect().sortBy(_.getInt(0)).toSeq
+              assert(
+                rows == Seq(Row(1, expected), Row(2, "2024-06-01"), Row(3, null)),
+                s"$mode: got $rows")
+            }
+        }
+        withSQLConf(
+          SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC",
+          "spark.sql.parquet.datetimeRebaseModeInRead" -> "EXCEPTION") {
+          val e = intercept[Exception] {
+            spark.read.format("delta").load(path).collect()
+          }
+          val causes = Iterator.iterate(e: Throwable)(_.getCause).takeWhile(_ != null).toSeq
+          assert(
+            causes.exists(c =>
+              c.getClass.getName == "org.apache.comet.CometNativeException" &&
+                c.getMessage.contains("Native scan cannot rebase") &&
+                c.getMessage.contains("'v'")),
+            s"expected the native calendar-rebase error on v, got:\n${causeMessages(e)}")
+          withSQLConf(DeltaScanConf.COMET_DELTA_NATIVE_ENABLED.key -> "false") {
+            val sparkError = intercept[Exception] {
+              spark.read.format("delta").load(path).collect()
+            }
+            val sparkCauses =
+              Iterator.iterate(sparkError: Throwable)(_.getCause).takeWhile(_ != null)
+            assert(
+              sparkCauses.exists(_.getClass.getName == "org.apache.spark.SparkUpgradeException"),
+              s"expected Spark's own rebase error, got:\n${causeMessages(sparkError)}")
+          }
+        }
+      }
+    }
+  }
+
   private val NestedRawSchema = """message m {
       |  required int32 id;
       |  optional group s {
