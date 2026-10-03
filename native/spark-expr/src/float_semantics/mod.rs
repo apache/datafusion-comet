@@ -29,6 +29,10 @@
 //!   [`normalize_floats`] and [`normalize_nested_floats`].
 //! - `java.lang.Double.equals`, which boxed keys such as those in `OpenHashSet` use: all NaNs are
 //!   equal, but `-0.0` and `0.0` are distinct. See [`canonicalize_nan`].
+//! - `java.lang.Double.compare`, which `java.util.Arrays.sort` on a primitive array uses: the SQL
+//!   ordering, except that `-0.0` sorts before `0.0`. Spark's generated code sorts an ascending
+//!   `sort_array` of `FLOAT` or `DOUBLE` elements that cannot be null this way. See
+//!   [`compare_floats_java`].
 //! - `Murmur3Hash` and `XxHash64`: `-0.0` hashes as `0.0`, and NaN as the canonical NaN. See
 //!   [`hash_input`].
 //!
@@ -91,6 +95,16 @@ pub fn compare_floats<T: Float>(left: T, right: T) -> Ordering {
     }
 }
 
+/// `java.lang.Double.compare`: Spark's SQL ordering, except that `-0.0` sorts before `0.0`.
+#[inline]
+pub fn compare_floats_java<T: Float>(left: T, right: T) -> Ordering {
+    match compare_floats(left, right) {
+        // Equal values that are not NaN differ in sign only when they are -0.0 and 0.0.
+        Ordering::Equal if !left.is_nan() => right.is_sign_negative().cmp(&left.is_sign_negative()),
+        ordering => ordering,
+    }
+}
+
 /// Whether `left` sorts before `right` in Spark's SQL ordering, the same as
 /// `compare_floats(left, right).is_lt()`. As a single test it compiles to a well-predicted branch
 /// in a scan for a minimum, where the three-way comparison is several times slower.
@@ -123,10 +137,10 @@ pub fn hash_input<T: Float>(v: T) -> T {
 
 /// A NaN with the sign bit set, which arithmetic produces on x86-64.
 #[cfg(test)]
-const NEGATIVE_NAN: f64 = f64::from_bits(0xfff8_0000_0000_0000);
+pub(crate) const NEGATIVE_NAN: f64 = f64::from_bits(0xfff8_0000_0000_0000);
 /// A signaling NaN with a payload.
 #[cfg(test)]
-const PAYLOAD_NAN: f64 = f64::from_bits(0x7ff0_0000_0000_0001);
+pub(crate) const PAYLOAD_NAN: f64 = f64::from_bits(0x7ff0_0000_0000_0001);
 
 #[cfg(test)]
 mod tests {
