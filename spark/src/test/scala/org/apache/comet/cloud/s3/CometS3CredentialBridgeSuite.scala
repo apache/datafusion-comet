@@ -63,6 +63,14 @@ class CometS3CredentialBridgeSuite
     conf.set("spark.sql.catalog.s3_catalog.warehouse", s"s3a://$testBucketName/warehouse")
     conf.set("spark.sql.catalog.s3_catalog.s3.comet.credential.provider.class", providerClassName)
     applyS3CatalogProps(conf, "s3_catalog")
+    // An Iceberg catalog over the scoped bucket whose provider is location-scoped.
+    conf.set("spark.sql.catalog.scoped_catalog", "org.apache.iceberg.spark.SparkCatalog")
+    conf.set("spark.sql.catalog.scoped_catalog.type", "hadoop")
+    conf.set("spark.sql.catalog.scoped_catalog.warehouse", s"s3a://$scopedBucket/warehouse")
+    conf.set(
+      "spark.sql.catalog.scoped_catalog.s3.comet.credential.provider.class",
+      classOf[MinioLocationScopedCredentialProvider].getName)
+    applyS3CatalogProps(conf, "scoped_catalog")
     conf.set(CometConf.COMET_ICEBERG_NATIVE_ENABLED.key, "true")
     conf
   }
@@ -314,6 +322,41 @@ class CometS3CredentialBridgeSuite
       MinioLocationScopedCredentialProvider.credentialPaths() == java.util.Collections.singleton(
         "/warehouse/finance"),
       s"Unexpected credential paths: ${MinioLocationScopedCredentialProvider.credentialPaths()}")
+  }
+
+  // Declared after the Parquet tests above: the Iceberg catalog registers its own provider
+  // instance, which would break their instance count.
+  test(
+    "location-scoped provider: an Iceberg scan requests each file's longest covering location") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    spark.sql("""
+      CREATE TABLE scoped_catalog.db.routed (
+        id INT,
+        region STRING
+      ) USING iceberg
+      PARTITIONED BY (region)
+    """)
+    spark.sql("INSERT INTO scoped_catalog.db.routed VALUES (1, 'eu'), (2, 'us'), (3, 'eu')")
+    // The table's location, and a narrower one for its eu partition.
+    MinioLocationScopedCredentialProvider.installLocations(
+      java.util.List.of("warehouse/db/routed", "warehouse/db/routed/data/region=eu"))
+
+    MinioLocationScopedCredentialProvider.resetCounters()
+    val df = spark.sql("SELECT id, region FROM scoped_catalog.db.routed ORDER BY id")
+    assertHasCometIcebergScan(df.queryExecution.executedPlan)
+    assert(
+      df.collect().map(r => (r.getInt(0), r.getString(1))).toSeq ==
+        Seq((1, "eu"), (2, "us"), (3, "eu")))
+
+    // Each data file was read with the credential of its own location. A provider that is not
+    // location-scoped is asked once, with the path of the table's metadata file.
+    assert(
+      MinioLocationScopedCredentialProvider.credentialPaths() ==
+        java.util.Set.of("/warehouse/db/routed", "/warehouse/db/routed/data/region=eu"),
+      s"Unexpected credential paths: ${MinioLocationScopedCredentialProvider.credentialPaths()}")
+
+    spark.sql("DROP TABLE scoped_catalog.db.routed")
   }
 
   // The expiry tests are declared last: a bridge keeps the credential they report an expiry for, so
