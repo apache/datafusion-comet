@@ -40,7 +40,6 @@ use datafusion::scalar::ScalarValue;
 use datafusion_comet_spark_expr::jvm_udf::JvmScalarUdfExpr;
 use datafusion_comet_spark_expr::EvalMode;
 use datafusion_datasource::TableSchema;
-use parquet::variant::VariantType;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -156,7 +155,7 @@ pub(crate) fn init_datasource_exec(
     let projects_variant = required_schema
         .fields()
         .iter()
-        .any(|field| field.has_valid_extension_type::<VariantType>());
+        .any(|field| super::cast_column::variant_projection_field(field).is_some());
     if projects_variant && encryption_enabled {
         return Err(ExecutionError::GeneralError(
             "Projected Variant with Parquet encryption requires Spark fallback".to_string(),

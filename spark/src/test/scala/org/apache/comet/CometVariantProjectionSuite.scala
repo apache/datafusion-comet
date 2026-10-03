@@ -67,9 +67,20 @@ class CometVariantProjectionSuite extends CometTestBase {
     rows
   }
 
-  private def checkNative(df: => DataFrame, expected: Option[Seq[Row]] = None): Unit = {
+  private def checkNative(
+      df: => DataFrame,
+      expected: Option[Seq[Row]] = None,
+      allowSparkProject: Boolean = false): Unit = {
     val plan = checkVariantAnswer(df, expected.getOrElse(sparkRows(df)))
-    checkCometOperators(plan, classOf[ColumnarToRowExec])
+    if (allowSparkProject) {
+      checkCometOperators(plan, classOf[ColumnarToRowExec], classOf[ProjectExec])
+      assert(
+        collect(plan) { case scan: CometNativeScanExec => scan }
+          .exists(_.output.exists(attr => Utils.isWholeVariantStruct(attr.dataType))),
+        plan.toString)
+    } else {
+      checkCometOperators(plan, classOf[ColumnarToRowExec])
+    }
     assert(collect(plan) { case scan: CometNativeScanExec => scan }.nonEmpty, plan.toString)
     assert(collect(plan) { case c: CometNativeColumnarToRowExec => c }.isEmpty, plan.toString)
   }
@@ -85,31 +96,43 @@ class CometVariantProjectionSuite extends CometTestBase {
     assert(collect(plan) { case scan: CometNativeScanExec => scan }.isEmpty, plan.toString)
   }
 
-  test("direct Variant projection preserves values and siblings") {
-    withVariantFile("""
-      SELECT id, parse_json(json) AS v, id + 10 AS tail FROM VALUES
-        (1, '{"a":1,"nested":{"b":[true,null,2.5]}}'),
-        (2, '[1,"text",false,{"x":2}]'),
-        (3, '42'), (4, '"text"'), (5, 'null'), (6, NULL),
-        (7, '{}'), (8, '[]') AS input(id, json)
-      """) { path =>
-      checkNative(spark.read.parquet(path).select("v"))
-      checkNative(spark.read.parquet(path).select("id", "v", "tail"))
+  test("whole Variant scans preserve native plans and Spark row conversion") {
+    // SQL result cases live in variant.sql; retain explicit native scan and row conversion checks.
+    for (push <- Seq("false", "true"); shredding <- Seq("false", "true")) {
+      withSQLConf(
+        "spark.sql.variant.pushVariantIntoScan" -> push,
+        "spark.sql.variant.writeShredding.enabled" -> shredding,
+        "spark.sql.variant.forceShreddingSchemaForTest" -> "a INT") {
+        withVariantFile("""
+          SELECT id, parse_json(json) AS v, id + 10 AS tail FROM VALUES
+            (1, '{"a":1,"":2,"nested":[true,null]}'),
+            (2, NULL) AS input(id, json)
+          """) { path =>
+          checkNative(
+            spark.read.parquet(path).select("id", "v", "tail"),
+            allowSparkProject = push.toBoolean)
+        }
+      }
     }
-    withVariantFile("SELECT 1 AS id, CAST(NULL AS VARIANT) AS v") { path =>
-      checkNative(spark.read.parquet(path))
+    withSQLConf("spark.sql.variant.pushVariantIntoScan" -> "true") {
+      withVariantFile("""
+        SELECT named_struct('metadata', X'010000', 'typed_value',
+          named_struct('a', named_struct('typed_value', 1))) AS v
+        """) { path =>
+        checkNative(spark.read.schema("v VARIANT").parquet(path), allowSparkProject = true)
+      }
     }
   }
 
-  test("Variant objects with empty keys match Spark") {
-    for (shredding <- Seq("false", "true")) {
-      withSQLConf("spark.sql.variant.writeShredding.enabled" -> shredding) {
-        withVariantFile("""
-          SELECT id, parse_json(json) AS v FROM VALUES
-            (1, '{"":1}'), (2, '{"z":1,"":2,"a":{"":3}}'),
-            (3, '[{"z":4,"":5},{"":6}]'), (4, NULL) AS input(id, json)
-          """) { path =>
-          checkNative(spark.read.parquet(path))
+  test("typed, path, multiple-field and placeholder Variant requests fall back") {
+    withVariantFile("SELECT parse_json('{\"a\":1}') AS v") { path =>
+      withSQLConf("spark.sql.variant.pushVariantIntoScan" -> "true") {
+        for (expressions <- Seq(
+            Seq("variant_get(v, '$.a', 'int')"),
+            Seq("variant_get(v, '$.a', 'variant')"),
+            Seq("v", "variant_get(v, '$.a', 'int')"),
+            Seq("v IS NULL"))) {
+          checkScanFallback(spark.read.parquet(path).selectExpr(expressions: _*), "VariantType")
         }
       }
     }
@@ -271,22 +294,21 @@ class CometVariantProjectionSuite extends CometTestBase {
   }
 
   test("Variant scans preserve strict reader and timestamp inference fallbacks") {
-    withSQLConf("spark.sql.variant.writeShredding.enabled" -> "false") {
-      withVariantFile("SELECT parse_json('{\"a\":1}') AS v") { path =>
-        withSQLConf("spark.sql.variant.allowReadingShredded" -> "false") {
-          checkScanFallback(spark.read.parquet(path), "allowReadingShredded=true")
-        }
-        for (setting <- Seq(
-            "spark.sql.legacy.parquet.nanosAsLong" -> "true",
-            "spark.sql.parquet.inferTimestampNTZ.enabled" -> "false")) {
-          withSQLConf(setting) {
-            checkScanFallback(spark.read.parquet(path), "default Parquet timestamp inference")
+    for (push <- Seq("false", "true")) {
+      withSQLConf(
+        "spark.sql.variant.writeShredding.enabled" -> "false",
+        "spark.sql.variant.pushVariantIntoScan" -> push) {
+        withVariantFile("SELECT parse_json('{\"a\":1}') AS v") { path =>
+          withSQLConf("spark.sql.variant.allowReadingShredded" -> "false") {
+            checkScanFallback(spark.read.parquet(path), "allowReadingShredded=true")
           }
-        }
-        withSQLConf("spark.sql.variant.pushVariantIntoScan" -> "true") {
-          checkScanFallback(
-            spark.read.parquet(path).selectExpr("variant_get(v, '$.a', 'int')"),
-            "VariantType")
+          for (setting <- Seq(
+              "spark.sql.legacy.parquet.nanosAsLong" -> "true",
+              "spark.sql.parquet.inferTimestampNTZ.enabled" -> "false")) {
+            withSQLConf(setting) {
+              checkScanFallback(spark.read.parquet(path), "default Parquet timestamp inference")
+            }
+          }
         }
       }
     }
@@ -346,7 +368,11 @@ class CometVariantProjectionSuite extends CometTestBase {
       "parquet.encryption.key.list" -> "variantKey: MDEyMzQ1Njc4OTAxMjM0NQ==",
       "parquet.encryption.uniform.key" -> "variantKey") {
       withVariantFile("SELECT parse_json('{\"a\":1}') AS v") { path =>
-        checkScanFallback(spark.read.parquet(path), "Variant scans do not support encryption")
+        for (push <- Seq("false", "true")) {
+          withSQLConf("spark.sql.variant.pushVariantIntoScan" -> push) {
+            checkScanFallback(spark.read.parquet(path), "Variant scans do not support encryption")
+          }
+        }
       }
     }
   }

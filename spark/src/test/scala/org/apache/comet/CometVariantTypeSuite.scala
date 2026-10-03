@@ -30,7 +30,7 @@ import org.apache.arrow.vector.types.pojo.{ArrowType, Field, FieldType}
 import org.apache.spark.sql.catalyst.expressions.AttributeReference
 import org.apache.spark.sql.comet.CometNativeColumnarToRowExec
 import org.apache.spark.sql.comet.util.Utils
-import org.apache.spark.sql.types.{ArrayType, BinaryType, StructField, StructType}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, Metadata, StructField, StructType}
 
 import org.apache.comet.rules.CometScanTypeChecker
 import org.apache.comet.serde.{CometAttributeReference, QueryPlanSerde, Unsupported}
@@ -91,6 +91,57 @@ class CometVariantTypeSuite extends AnyFunSuite {
             .isInstanceOf[Unsupported])
       case None =>
         assert(Utils.fromArrowField(marked) == storageType)
+    }
+  }
+
+  test("whole-value scan requests require Spark's complete fullVariant metadata") {
+    Utils.variantType.foreach { variantType =>
+      val request = """{"path":"$","failOnError":true,"timeZoneId":"UTC"}"""
+      val metadata = Metadata.fromJson(s"""{"__VARIANT_METADATA_KEY":$request}""")
+      val child = StructField("0", variantType, metadata = metadata)
+      val whole = StructType(Seq(child))
+      assert(Utils.isWholeVariantStruct(whole))
+      val arrowVariant = variantField(Some("arrow.parquet.variant"))
+      val arrowChild = new Field("0", arrowVariant.getFieldType, arrowVariant.getChildren)
+      val arrowWhole = new Field(
+        "v",
+        new FieldType(
+          true,
+          ArrowType.Struct.INSTANCE,
+          null,
+          Collections.singletonMap("comet.variant.full_value", "true")),
+        Seq(arrowChild).asJava)
+      assert(Utils.fromArrowField(arrowWhole) == whole)
+      val unmarkedWhole =
+        new Field("v", FieldType.nullable(ArrowType.Struct.INSTANCE), Seq(arrowChild).asJava)
+      assert(!Utils.isWholeVariantStruct(Utils.fromArrowField(unmarkedWhole)))
+      val serialized = QueryPlanSerde
+        .serializeDataType(whole)
+        .get
+        .getTypeInfo
+        .getStruct
+      assert(serialized.getFullVariantRequest)
+      assert(serialized.getFieldMetadataCount == 0)
+      assert(!Utils.isWholeVariantStruct(StructType(Seq(child.copy(metadata = Metadata.empty)))))
+      assert(!Utils.isWholeVariantStruct(StructType(Seq(child.copy(name = "1")))))
+      assert(!Utils.isWholeVariantStruct(StructType(Seq(child, child.copy(name = "1")))))
+      assert(!Utils.isWholeVariantStruct(StructType(Seq(child.copy(dataType = BinaryType)))))
+      for (changed <- Seq(
+          request.replace("$", "$.a"),
+          request.replace("true", "false"),
+          request.replace("UTC", "America/Los_Angeles"),
+          "{}")) {
+        val other = Metadata.fromJson(s"""{"__VARIANT_METADATA_KEY":$changed}""")
+        val unsupported = StructType(Seq(child.copy(metadata = other)))
+        assert(!Utils.isWholeVariantStruct(unsupported))
+        assert(
+          !QueryPlanSerde
+            .serializeDataType(unsupported)
+            .get
+            .getTypeInfo
+            .getStruct
+            .getFullVariantRequest)
+      }
     }
   }
 }

@@ -105,14 +105,13 @@ functions. Remaining work is tracked by
 
 | Type          | Status | Notes                                                                                                                           |
 | ------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------- |
-| `VariantType` | ⚠️     | Spark 4.0+. Native Parquet scans support direct projection of top-level Variant columns. Non-null existence defaults fall back. |
+| `VariantType` | ⚠️     | Spark 4.0+. Native Parquet scans support whole-value reads of top-level Variant columns. Non-null existence defaults fall back. |
 
-Direct projection requires explicit configuration on every supported Spark version:
-`spark.sql.variant.allowReadingShredded=true` (defaults to false in Spark 4.0) and
-`spark.sql.variant.pushVariantIntoScan=false` (defaults to true in Spark 4.1+), with the default
-Parquet timestamp inference settings. Support for Spark's whole-value pushdown rewrite is tracked
-by [#5519](https://github.com/apache/datafusion-comet/issues/5519). Nested Variant columns, pushed-down
-Variant field extraction, expressions, writes, shuffle and spill, Python operators, encrypted
+Whole-value reads require `spark.sql.variant.allowReadingShredded=true` (defaults to false in
+Spark 4.0) and the default Parquet timestamp inference settings. Spark's
+`spark.sql.variant.pushVariantIntoScan` rewrite is supported when it requests only the whole value
+of each Variant column. Nested Variant columns, pushed-down Variant field extraction,
+expressions, writes, shuffle and spill, Python operators, encrypted
 files, and Iceberg scans that read a Variant column fall back to Spark. Iceberg scans of tables
 whose Variant columns the query does not read run natively. Spark also handles columnar-to-row
 conversion of the native scan output and strict reads with `allowReadingShredded=false`. Broader

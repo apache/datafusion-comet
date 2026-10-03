@@ -50,6 +50,7 @@ import org.apache.comet.vector.CometVector
 
 object Utils extends CometTypeShim with Logging {
   private val VariantExtensionName = "arrow.parquet.variant"
+  private val WholeVariantRequestMetadataKey = "comet.variant.full_value"
 
   def majorMinorPatchVersion(version: String): Option[(Int, Int, Int)] =
     org.apache.spark.util.VersionUtils.majorMinorPatchVersion(version)
@@ -94,7 +95,14 @@ object Utils extends CometTypeShim with Logging {
               val dt = fromArrowField(child)
               StructField(child.getName, dt, child.isNullable)
             }
-            StructType(fields.toSeq)
+            val wholeVariantRequest = Option(field.getMetadata)
+              .exists(_.get(WholeVariantRequestMetadataKey) == "true")
+            if (wholeVariantRequest && fields.length == 1 && fields.head.name == "0" &&
+              isVariantType(fields.head.dataType)) {
+              StructType(Seq(fields.head.copy(metadata = wholeVariantRequestMetadata)))
+            } else {
+              StructType(fields.toSeq)
+            }
           }
       case arrowType => fromArrowType(arrowType)
     }
