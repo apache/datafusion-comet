@@ -163,6 +163,8 @@ Comet ships two reference SPI implementations under `org.apache.comet.cloud.s3`,
 - `HadoopS3ACredentialProviderAdapter` delegates to Hadoop S3A's own provider construction (`S3AUtils.createAWSCredentialProviderSet` on Hadoop 3.3.x, `CredentialProviderListFactory.createAWSCredentialProviderList` on 3.4+).
 - `AwsSdkCredentialProviderAdapter` wraps a raw AWS SDK provider named in `fs.s3a.comet.credential.adapter.class`.
 
+`lookup_provider_class` in `native/core/src/parquet/objectstore/s3.rs` picks `HadoopS3ACredentialProviderAdapter` for a bucket with no `comet.credential.provider.class` whose `aws.credentials.provider` list names Hadoop's `ProfileAWSCredentialsProvider`. That provider reads only the credentials file, finds the default one through the JVM's `user.home`, and leaves role profiles to the Java SDK, which sends each role's STS request to its own region. A Rust copy would have to track all of that, so the native side matches only the class name and Hadoop does the rest. A configured class, including a blank one, still decides.
+
 Each has a spark-3.x (SDK v1) and a spark-4.x (SDK v2) body under the same FQCN, selected by the `shims.majorVerSrc` source set, so each Comet build compiles against exactly the one AWS SDK its Hadoop line ships. The SDK and `hadoop-aws` are `provided` scope only (see the `hadoop-aws.version` property in the root `pom.xml`), so Comet does not bundle a second copy.
 
 ## Returns or throws, not a fall-through value

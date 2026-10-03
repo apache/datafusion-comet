@@ -40,9 +40,9 @@ You probably do, if any of these are true:
 
 If a native Parquet scan fails with `Unsupported credential provider: <class>` (for example `com.amazonaws.auth.DefaultAWSCredentialsProviderChain`), the class you named in `fs.s3a.aws.credentials.provider` is one that plain Spark/Hadoop accepts but Comet's native reader does not reimplement. Comet ships two built-in `CometS3CredentialProvider` adapters that fix this with a one-line config change; you leave your existing `fs.s3a.aws.credentials.provider` untouched.
 
-These adapters cover the Parquet native scan path only. Enabling one is opt-in: naming it is what activates it. Note the native side forwards the `fs.s3a.*` config to `initialize()` for _any_ provider class named on the Parquet path, not just these two adapters: a vendor `CometS3CredentialProvider` that received an empty map in Comet 1.0 now receives the `fs.s3a.*` subset (including static keys), and one cached instance per distinct `fs.s3a.*` config rather than one per bucket. This is additive, but a provider that logs the map or treats an empty map as "the Parquet path" should be aware of it.
+These adapters cover the Parquet native scan path only. Enabling one is opt-in, with one exception: Comet picks `HadoopS3ACredentialProviderAdapter` itself for Hadoop's profile provider (see [Used automatically for Hadoop's profile provider](#used-automatically-for-hadoops-profile-provider)). Note the native side forwards the `fs.s3a.*` config to `initialize()` for _any_ provider class named on the Parquet path, not just these two adapters: a vendor `CometS3CredentialProvider` that received an empty map in Comet 1.0 now receives the `fs.s3a.*` subset (including static keys), and one cached instance per distinct `fs.s3a.*` config rather than one per bucket. This is additive, but a provider that logs the map or treats an empty map as "the Parquet path" should be aware of it.
 
-The adapters and the AWS SDK are loaded through the class loader that loaded Comet, so `hadoop-aws` and the matching AWS SDK must be visible from there — put them on the same classpath as Comet (`spark.executor.extraClassPath` / `spark.driver.extraClassPath`, or `$SPARK_HOME/jars`), not only via `--packages`. If they are only on the user-jar loader, credential resolution fails at planning with `NoClassDefFoundError` before the adapter can report anything useful.
+The adapters and the AWS SDK are loaded through the class loader that loaded Comet, so `hadoop-aws` and the matching AWS SDK must be visible from there. Put them on the same classpath as Comet (`spark.executor.extraClassPath` / `spark.driver.extraClassPath`, or `$SPARK_HOME/jars`), not only via `--packages`. If they are only on the user-jar loader, the native scan fails on the executor with `NoClassDefFoundError` when it first opens the bucket and loads the adapter, before the adapter can report anything useful.
 
 ### `HadoopS3ACredentialProviderAdapter` (recommended)
 
@@ -61,6 +61,15 @@ Anonymous access is the one exception. A bucket whose chain resolves to `Anonymo
 ```
 spark.hadoop.fs.s3a.bucket.<public-bucket>.comet.credential.provider.class=
 ```
+
+#### Used automatically for Hadoop's profile provider
+
+Comet's native reader does not reimplement Hadoop's `org.apache.hadoop.fs.s3a.auth.ProfileAWSCredentialsProvider`. When a bucket's `fs.s3a.aws.credentials.provider` list (global or per-bucket) names that class and no `fs.s3a.comet.credential.provider.class` is set for the bucket, Comet uses this adapter without being asked. The adapter builds Hadoop's own provider list on the executor from the forwarded `fs.s3a.*` settings and the executor's Hadoop configuration, and tries the providers in order, so `fs.s3a.auth.profile.name`, `fs.s3a.auth.profile.file`, the default credentials file and role profiles resolve through Hadoop's own providers.
+
+- A configured provider class, global or per-bucket, still wins.
+- An empty class keeps the native reader, which does not support this provider: an empty per-bucket class opts out that bucket, and an empty global class opts out every bucket without its own class. A scan of an opted-out bucket fails with `Unsupported credential provider`.
+- Only the `fs.s3a.aws.credentials.provider` list that applies to the bucket (its per-bucket list, else the global one) is checked, not `fs.s3a.assumed.role.credentials.provider`. `AssumedRoleCredentialProvider` with `fs.s3a.assumed.role.credentials.provider` naming the profile provider is not routed automatically and still fails with `Unsupported credential provider`; set `fs.s3a.comet.credential.provider.class` to `org.apache.comet.cloud.s3.HadoopS3ACredentialProviderAdapter` for that setup.
+- The class first shipped in Hadoop 3.4.2 (Spark 4.1). The class loader requirement above applies: with Comet on `extraClassPath` and `hadoop-aws` only through `--packages`, the scan fails with `NoClassDefFoundError`.
 
 ### `AwsSdkCredentialProviderAdapter`
 
@@ -127,11 +136,17 @@ With the config set and the JAR on the classpath, executor logs show on first S3
 - Info level: `Instantiated CometS3CredentialProvider <fully.qualified.VendorClassName>`
 - Debug level: `Fetching credentials via <class> (dispatchKey=<key>) for bucket=... path=... mode=...`
 
-Without the config set, no credential-related log lines appear at startup; native readers use the default AWS credential chain.
+The Info line also names `org.apache.comet.cloud.s3.HadoopS3ACredentialProviderAdapter` when Comet picked the adapter for Hadoop's profile provider with no class configured.
+
+Without the config set, and with no bucket naming Hadoop's profile provider, no credential-related log lines appear at startup; native readers use the default AWS credential chain.
 
 ## Troubleshooting
 
 **`Generic S3 error: Unsupported credential provider: <class>`** (native Parquet scan). The class in `fs.s3a.aws.credentials.provider` is one Hadoop S3A accepts but Comet's native reader does not reimplement. Name `HadoopS3ACredentialProviderAdapter` as the Comet provider class (see [Built-in adapters](#built-in-adapters)) and leave your existing config alone.
+
+**`CometS3CredentialBridge init failed for <bucket>: ...` with a `NoClassDefFoundError` naming an `org/apache/hadoop/fs/s3a/`, `software/amazon/awssdk/` or `com/amazonaws/` class**, such as `software/amazon/awssdk/auth/credentials/AwsCredentialsProvider`. `hadoop-aws` or the AWS SDK is not visible from the class loader that loaded Comet, which the built-in adapters need, including the one Comet picks for Hadoop's profile provider. Put them on the same classpath as Comet (see [Built-in adapters](#built-in-adapters)).
+
+**A class-not-found error for `ProfileAWSCredentialsProvider` raised by Spark itself** (while listing files, before any Comet scan runs). The cluster's Hadoop is older than 3.4.2, the first release with that class, so Spark cannot use it either.
 
 **`CometS3CredentialProvider class not found: <name>`**. The class named in the config is not on the executor classpath. Re-check `--jars` / `spark.jars`. On YARN or Kubernetes, confirm the JAR actually reached the executor and not only the driver.
 
