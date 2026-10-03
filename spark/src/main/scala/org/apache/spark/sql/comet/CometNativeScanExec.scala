@@ -111,27 +111,15 @@ case class CometNativeScanExec(
   // exposed for testing
   lazy val bucketedScan: Boolean = originalPlan.bucketedScan && !disableBucketedScan
 
-  override lazy val outputPartitioning: Partitioning = {
-    if (bucketedScan) {
-      originalPlan.outputPartitioning
-    } else {
-      // Use perPartitionData.length instead of originalPlan.inputRDD.getNumPartitions.
-      //
-      // originalPlan.inputRDD triggers FileSourceScanExec's full scan pipeline including
-      // codegen on partition filter expressions. With DPP, this calls
-      // InSubqueryExec.doGenCode which requires the subquery to have finished - but
-      // outputPartitioning can be accessed before prepare() runs (e.g., by
-      // ValidateRequirements during plan validation).
-      //
-      // perPartitionData goes through serializedPartitionData, which explicitly resolves
-      // DPP subqueries (via updateResult()) before accessing file partitions. This is the
-      // same pattern CometIcebergNativeScanExec uses.
-      //
-      // This is also more correct: perPartitionData.length reflects the post-DPP partition
-      // count, matching what CometExecRDD actually uses in doExecuteColumnar().
-      UnknownPartitioning(perPartitionData.length)
-    }
-  }
+  // Like FileSourceScanExec, only a bucketed scan knows its partitioning while planning. The
+  // file-split count of any other scan depends on dynamic partition pruning, whose subqueries
+  // resolve at execution. AQE reads outputPartitioning while it optimizes a stage
+  // (ValidateRequirements after CoalesceShufflePartitions), which is before
+  // CometPlanAdaptiveDynamicPruningFilters converts the DPP placeholders, so computing the file
+  // partitions here would run a placeholder subquery. At execution, CometNativeExec sizes the
+  // native RDD from perPartitionData instead.
+  override lazy val outputPartitioning: Partitioning =
+    if (bucketedScan) originalPlan.outputPartitioning else UnknownPartitioning(0)
 
   override lazy val outputOrdering: Seq[SortOrder] = originalPlan.outputOrdering
 
