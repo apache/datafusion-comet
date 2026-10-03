@@ -50,8 +50,8 @@ query
 SELECT d1 - date'2024-01-01', date'2024-01-01' - d2 FROM test_subtract_dates
 
 -- all-literal operands (constant folding is disabled by the test suite). A NULL literal operand
--- is left out: NullPropagation folds it to a null interval literal, and the native literal
--- path rejects CalendarIntervalType (#5058). NULL operands are covered by the column rows above.
+-- is left out: NullPropagation folds it to a NULL literal before Comet sees the plan, so it
+-- would not reach the kernel. The column rows above cover NULL operands.
 query
 SELECT
   date'2024-03-15' - date'2024-01-01',

@@ -66,6 +66,35 @@ INSERT INTO test_subtract_timestamps VALUES
 query expect_dispatch(subtracttimestamps)
 SELECT ts1, ts2, ts1 - ts2, ts2 - ts1 FROM test_subtract_timestamps
 
+-- the interval feeds a native filter against a literal of the same type, so no cast is added.
+-- The DST rows equal exactly one day and drop out, though 25 hours elapse across fall-back.
+query expect_dispatch(subtracttimestamps)
+SELECT ts1, ts2 FROM test_subtract_timestamps
+WHERE ts1 - ts2 > INTERVAL '1 00:00:00' DAY TO SECOND
+
+-- native functions over a timestamp plus interval. On the DST rows 23 elapsed hours from noon
+-- land on 12:00 after spring-forward and 10:00 after fall-back, a day keeps noon, and 12 hours
+-- from noon reach local midnight.
+query expect_native(hour, cast)
+SELECT
+  hour(ts2 + INTERVAL '23' HOUR),
+  hour(ts2 + INTERVAL '1' DAY),
+  CAST(ts1 + INTERVAL '12' HOUR AS DATE)
+FROM test_subtract_timestamps
+
+-- grouping on the interval: the two DST rows share one key, and the NULL rows another. Native
+-- shuffle cannot hash-partition on an interval key, so the exchange and final aggregate run in
+-- Spark.
+query spark_answer_only
+SELECT ts1 - ts2 AS i, count(*) FROM test_subtract_timestamps GROUP BY ts1 - ts2
+
+-- grouping on a date difference. It lives here because subtract_dates.sql also runs in legacy
+-- mode, and Spark 3.x rejects grouping on CalendarIntervalType (allowed from 4.0). The
+-- exchange falls back as above.
+query spark_answer_only
+SELECT d - date'2024-01-01' AS i, count(*) FROM test_subtract_timestamps
+GROUP BY d - date'2024-01-01'
+
 -- TIMESTAMP_NTZ columns compile a separate kernel and never see the session time zone
 query
 SELECT ntz1 - ntz2, ntz2 - ntz1 FROM test_subtract_timestamps
@@ -83,8 +112,9 @@ SELECT
 FROM test_subtract_timestamps
 
 -- all-literal operands (constant folding is disabled by the test suite). A NULL literal operand
--- is left out: NullPropagation folds it to a null interval literal, and the native literal
--- path rejects CalendarIntervalType (#5058). NULL operands are covered by the column rows above.
+-- is left out: NullPropagation folds it to a NULL DayTimeIntervalType literal (legacy mode is
+-- pinned off) before Comet sees the plan, so it would not reach the kernel. The column rows
+-- above cover NULL operands.
 query
 SELECT
   timestamp'2024-03-15 10:30:45.123456' - timestamp'2024-01-01 00:00:00',
