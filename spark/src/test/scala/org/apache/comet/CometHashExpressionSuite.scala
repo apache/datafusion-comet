@@ -26,6 +26,7 @@ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.types.{IntegerType, StructField, StructType}
 
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, ParquetGenerator, SchemaGenOptions}
+import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 
 /**
  * Test suite for Spark `hash` (murmur3) and `xxhash64` compatibility between Spark and Comet.
@@ -34,6 +35,17 @@ import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, ParquetGener
  * all supported data types.
  */
 class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
+
+  private def checkNativeHashes(query: String): Unit = {
+    withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true") {
+      CometScalaUDFCodegen.resetStats()
+      checkSparkAnswerAndImpl(sql(query), native = Seq("hash", "xxhash64"))
+      val stats = CometScalaUDFCodegen.stats()
+      assert(
+        stats.compileCount + stats.cacheHitCount == 0,
+        s"unexpected dispatcher activity: $stats")
+    }
+  }
 
   test("hash - boolean") {
     withTable("t") {
@@ -134,49 +146,64 @@ class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
       withTable("t") {
         sql(s"CREATE TABLE t(c DECIMAL($precision, $scale)) USING parquet")
         sql("INSERT INTO t VALUES (1.23), (-1.23), (0.0), (null)")
-        checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t ORDER BY c")
+        checkNativeHashes("SELECT c, hash(c), xxhash64(c) FROM t ORDER BY c")
       }
     }
   }
 
   test("hash - decimal (precision > 18)") {
-    Seq((20, 2), (38, 10)).foreach { case (precision, scale) =>
+    Seq((19, 0), (20, 2), (38, 0), (38, 10), (38, 38)).foreach { case (precision, scale) =>
       withTable("t") {
         sql(s"CREATE TABLE t(c DECIMAL($precision, $scale)) USING parquet")
-        sql("INSERT INTO t VALUES (1.23), (-1.23), (0.0), (null)")
-        // Large decimals may fall back to Spark, so just check the answer
-        checkSparkAnswer("SELECT c, hash(c), xxhash64(c) FROM t ORDER BY c")
+        val max = BigInt(10).pow(precision) - 1
+        val unscaled = Seq(BigInt(0), max, -max) ++
+          Seq(1, 127, 128, 129, 255, 256, 32767, 32768).flatMap(v =>
+            Seq(BigInt(v), -BigInt(v))) ++
+          Seq(
+            BigInt(Long.MaxValue),
+            BigInt(Long.MaxValue) + 1,
+            BigInt(Long.MinValue),
+            BigInt(Long.MinValue) - 1)
+        val values = unscaled.map { v =>
+          val decimal = new java.math.BigDecimal(v.bigInteger, scale).toPlainString
+          s"(CAST('$decimal' AS DECIMAL($precision, $scale)))"
+        }
+        sql(s"INSERT INTO t VALUES ${(values :+ "(null)").mkString(",")}")
+        checkNativeHashes("SELECT c, hash(c), xxhash64(c) FROM t")
+        checkNativeHashes("SELECT hash(1, c, c), xxhash64(1, c, c) FROM t")
       }
     }
   }
 
-  test("hash - array of decimal (precision > 18) falls back to Spark") {
+  test("hash - array of decimal (precision > 18)") {
     withTable("t") {
-      sql("CREATE TABLE t(c ARRAY<DECIMAL(20, 2)>) USING parquet")
-      sql("INSERT INTO t VALUES (array(1.23, 2.34)), (null)")
-      // Should fall back to Spark due to nested high-precision decimal
-      checkSparkAnswerAndFallbackReason("SELECT c, hash(c), xxhash64(c) FROM t", "precision > 18")
+      sql("CREATE TABLE t(c ARRAY<DECIMAL(38, 0)>) USING parquet")
+      sql("""INSERT INTO t VALUES (array(127, 128, -128, -129)),
+          (array(99999999999999999999999999999999999999BD, null, -1)),
+          (array()), (array(null)), (null)""")
+      checkNativeHashes("SELECT hash(c), xxhash64(c), hash(1, c, c), xxhash64(1, c, c) FROM t")
     }
   }
 
-  test("hash - struct with decimal (precision > 18) falls back to Spark") {
+  test("hash - struct with decimal (precision > 18)") {
     withTable("t") {
-      sql("CREATE TABLE t(c STRUCT<a: INT, b: DECIMAL(20, 2)>) USING parquet")
-      sql("INSERT INTO t VALUES (named_struct('a', 1, 'b', 1.23)), (null)")
-      // Should fall back to Spark due to nested high-precision decimal
-      checkSparkAnswerAndFallbackReason("SELECT c, hash(c), xxhash64(c) FROM t", "precision > 18")
+      sql("CREATE TABLE t(c STRUCT<a: INT, b: DECIMAL(38, 2)>) USING parquet")
+      sql("""INSERT INTO t VALUES (named_struct('a', 1, 'b', 1.28)),
+          (named_struct('a', 2, 'b', -1.29)), (named_struct('a', null, 'b', null)),
+          (named_struct('a', 3, 'b', 999999999999999999999999999999999999.99BD)), (null)""")
+      checkNativeHashes("SELECT hash(c), xxhash64(c), hash(1, c, c), xxhash64(1, c, c) FROM t")
+      checkNativeHashes("SELECT hash(array(c, c)), xxhash64(array(c, c)) FROM t")
     }
   }
 
-  test("hash - map with decimal (precision > 18) value falls back to Spark") {
+  test("hash - map with decimal (precision > 18) keys and values") {
     withSQLConf("spark.sql.legacy.allowHashOnMapType" -> "true") {
       withTable("t") {
-        sql("CREATE TABLE t(c MAP<STRING, DECIMAL(20, 2)>) USING parquet")
-        sql("INSERT INTO t VALUES (map('a', 1.23)), (null)")
-        // Should fall back to Spark due to nested high-precision decimal
-        checkSparkAnswerAndFallbackReason(
-          "SELECT c, hash(c), xxhash64(c) FROM t",
-          "precision > 18")
+        sql("CREATE TABLE t(c MAP<DECIMAL(38, 0), DECIMAL(38, 0)>) USING parquet")
+        sql("""INSERT INTO t VALUES (map(128, -129, -128, 127)),
+            (map(99999999999999999999999999999999999999BD, null)),
+            (map()), (null)""")
+        checkNativeHashes("SELECT hash(c), xxhash64(c), hash(1, c, c), xxhash64(1, c, c) FROM t")
       }
     }
   }
