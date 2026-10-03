@@ -30,7 +30,8 @@
 //! first.
 //!
 //! Remove this once Comet's DataFusion has apache/datafusion#25383, which leaves the replay room
-//! when the merge picks its files.
+//! when the merge picks its files. The #6254 tests in `CometAggregateSuite` fail without this on
+//! DataFusion 55.1, so they show whether the replay still needs it.
 
 use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
 

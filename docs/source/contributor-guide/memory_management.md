@@ -325,7 +325,8 @@ uses when the input is sorted on some of the grouping keys. The merge reserves r
 many spill files as fit, in a sibling reservation of the same consumer, so the replay often finds
 the consumer's share already taken. The replay asks for memory only after it has aggregated a
 batch, so the memory already exists. The pools therefore record its request the way they record a
-`grow`, past the share and the pool's total, and carry what Spark does not grant as overcommit.
+`grow`. `CometFairMemoryPool` skips its two local checks for it, and both pools carry what Spark
+does not grant as overcommit.
 
 A pool treats a request as part of a replay when it comes from one of these consumers while
 another of the consumer's reservations holds memory. In DataFusion 55.1 that happens only while the

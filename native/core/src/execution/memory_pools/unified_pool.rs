@@ -37,7 +37,7 @@ pub struct CometUnifiedMemoryPool {
     used: AtomicUsize,
     /// Bytes held by each final aggregate's consumer across its reservations, keyed by
     /// [`MemoryConsumer::id`], which [`spill_replay`] needs. Other consumers aren't tracked, so
-    /// they never take the lock.
+    /// they take the lock only when Spark refuses them.
     final_aggregates: Mutex<HashMap<usize, usize>>,
 }
 
