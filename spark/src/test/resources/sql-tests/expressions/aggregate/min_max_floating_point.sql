@@ -29,8 +29,11 @@
 statement
 CREATE TABLE mm_float(id INT, g INT, d DOUBLE, f FLOAT) USING parquet
 
+-- Which zero max and min return depends on the order they read the rows in. COALESCE(1) writes
+-- the table as a single file, in id order, which both Spark and Comet read in one task, so of two
+-- equal values both see the one with the smaller id first.
 statement
-INSERT INTO mm_float VALUES
+INSERT INTO mm_float SELECT /*+ COALESCE(1) */ * FROM VALUES
   (1, 1, 1.0D, float('1.0')),
   (2, 1, double('NaN'), float('NaN')),
   (3, 1, -1.0D, float('-1.0')),
@@ -44,27 +47,26 @@ INSERT INTO mm_float VALUES
   (11, 7, NULL, NULL),
   (12, 8, double('Infinity'), float('Infinity')),
   (13, 8, double('NaN'), float('NaN'))
+  AS t(id, g, d, f)
 
--- Without grouping. The extrema are NaN and infinities, so scan/merge order cannot change them.
+-- Without grouping
 query
 SELECT max(d), min(d), max(-d), min(-d), max(f), min(f), max(-f), min(-f) FROM mm_float
 
--- Signed-zero ties need an explicit input order, not just an ORDER BY on the aggregate result.
--- Use windows for groups 2 and 3: neither file layout nor partial-aggregate merge order is fixed.
--- The native accumulator tests check first-value preservation by bits for ordinary and grouped
--- aggregates, including partial-state merges.
+-- Of equal values the first one seen wins. Group 2 holds -0.0 and then 0.0, and group 3 the same
+-- zeros the other way round. Each group is a query of its own, because over both groups the first
+-- and the last zero have the same sign.
 query
-SELECT id, g,
-  max(d) OVER w, min(d) OVER w, max(-d) OVER w, min(-d) OVER w,
-  max(f) OVER w, min(f) OVER w, max(-f) OVER w, min(-f) OVER w
-FROM mm_float WHERE g IN (2, 3)
-WINDOW w AS (PARTITION BY g ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)
+SELECT max(d), min(d), max(-d), min(-d), max(f), min(f), max(-f), min(-f) FROM mm_float WHERE g = 2
 
--- Grouped, excluding the order-sensitive signed-zero groups. Groups 4 and 5 hold only an
--- infinity, group 6 only NaN and group 7 only NULL.
+query
+SELECT max(d), min(d), max(-d), min(-d), max(f), min(f), max(-f), min(-f) FROM mm_float WHERE g = 3
+
+-- Grouped. Groups 2 and 3 hold both zeros, groups 4 and 5 only an infinity, group 6 only NaN and
+-- group 7 only NULL.
 query
 SELECT g, max(d), min(d), max(-d), min(-d), max(f), min(f), max(-f), min(-f)
-FROM mm_float WHERE g NOT IN (2, 3) GROUP BY g ORDER BY g
+FROM mm_float GROUP BY g ORDER BY g
 
 -- Window frames: growing, sliding and the whole partition. Each frame is ordered by id, so the
 -- first of two equal values is well defined. The sliding frames use FOLLOWING offsets because the

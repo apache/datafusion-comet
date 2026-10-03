@@ -286,8 +286,10 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       1000,
       DataGenOptions(generateNegativeZero = true))
     withTempDir { dir =>
+      // Spark returns the first of equal values, so both engines have to read the rows in the
+      // same order: write a single file, which each of them reads in one task.
       val path = new Path(dir.toString, "tbl").toString
-      df.write.parquet(path)
+      df.repartition(1).write.parquet(path)
       spark.read.parquet(path).createOrReplaceTempView("tbl")
 
       for (col <- Seq("float_col", "double_col")) {
@@ -297,12 +299,8 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         for (agg <- Seq("min", "max")) {
           // min and max follow Spark's float ordering natively, so strict mode keeps them native.
           withSQLConf(COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
-            // Test each sign separately: mixed signed-zero ties depend on scan/merge order.
-            // Ordered windows and native accumulator bit tests cover first-value preservation.
-            for (zero <- Seq("0.0", "-0.0")) {
-              checkSparkAnswerAndOperator(
-                s"select $agg($col) from tbl where cast($col as string) = '$zero'")
-            }
+            checkSparkAnswerAndOperator(
+              s"select $agg($col) from tbl where cast($col as string) in ('0.0', '-0.0')")
           }
           checkSparkAnswer(
             s"select $col, count(*) from tbl " +
