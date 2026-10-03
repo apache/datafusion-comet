@@ -38,7 +38,7 @@ import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.connector.catalog.InMemoryTableCatalog
 import org.apache.spark.sql.execution._
-import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, BroadcastQueryStageExec, LogicalQueryStage}
+import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, BroadcastQueryStageExec, LogicalQueryStage}
 import org.apache.spark.sql.execution.columnar.{CometInMemoryRelationHelper, InMemoryTableScanExec}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, BroadcastExchangeLike, ReusedExchangeExec, ShuffleExchangeExec}
@@ -3571,6 +3571,44 @@ class CometExecSuite extends CometTestBase {
 
       val unionDf3 = df1.union(df2).union(df3).select($"_1" + 1).sortWithinPartitions($"_1")
       checkSparkAnswerAndOperator(unionDf3)
+    }
+  }
+
+  // https://github.com/apache/datafusion-comet/issues/6454
+  test("AQE coalesces the shuffle partitions of a union whose other branch is a scan") {
+    // Spark coalesces each child of a union as its own group, but its rule did not recognize
+    // Comet's union, so the shuffled branch of a union with a scan kept every shuffle partition.
+    // Comet's rule defers to Spark's, so the query should come out partitioned as it is on Spark.
+    assume(isSpark35Plus, "Comet's query-stage optimizer rules need Spark 3.5+")
+    withTempPath { dir =>
+      spark.range(0, 100, 1, 1).toDF("c").write.parquet(dir.getCanonicalPath)
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+        SQLConf.COALESCE_PARTITIONS_MIN_PARTITION_NUM.key -> "1",
+        SQLConf.SHUFFLE_PARTITIONS.key -> "200") {
+        def query() = spark
+          .range(0, 10, 1, 2)
+          .toDF("c")
+          .repartition($"c")
+          .union(spark.read.parquet(dir.getCanonicalPath))
+        var sparkPartitions = 0
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          val df = query()
+          df.collect()
+          sparkPartitions = df.rdd.getNumPartitions
+        }
+        assert(sparkPartitions < 200, "Spark should have coalesced the shuffled branch")
+
+        val df = query()
+        checkSparkAnswer(df)
+        // checkSparkAnswer runs copies of the query, so run this one to finalize its own plan.
+        df.collect()
+        val plan = df.queryExecution.executedPlan
+        assert(plan.asInstanceOf[AdaptiveSparkPlanExec].isFinalPlan)
+        assert(collect(plan) { case u: CometUnionExec => u }.size == 1)
+        assert(collect(plan) { case r: AQEShuffleReadExec if r.isCoalescedRead => r }.size == 1)
+        assert(df.rdd.getNumPartitions == sparkPartitions)
+      }
     }
   }
 
