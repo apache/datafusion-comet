@@ -30,7 +30,8 @@ import org.scalatest.matchers.should.Matchers
 import org.apache.arrow.memory.RootAllocator
 import org.apache.arrow.vector.{DecimalVector, FieldVector, IntVector, ValueVector, VarCharVector, VectorSchemaRoot}
 import org.apache.arrow.vector.complex.{ListVector, StructVector}
-import org.apache.spark.sql.catalyst.expressions.GenericInternalRow
+import org.apache.spark.sql.catalyst.expressions.{GenericInternalRow, UnsafeProjection}
+import org.apache.spark.sql.catalyst.util.GenericArrayData
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.vectorized.{ConstantColumnVector, Dictionary, OffHeapColumnVector, OnHeapColumnVector, WritableColumnVector}
 import org.apache.spark.sql.types._
@@ -391,6 +392,100 @@ class CometArrowWriterSuite extends AnyFunSuite with Matchers {
     }
   }
 
+  test("wide decimals from unsafe rows and arrays keep their values") {
+    // Unsafe rows and arrays hold a decimal past 18 digits as its unscaled bytes, which the row
+    // path range-checks in place.
+    Seq(DecimalType(19, 0), DecimalType(20, 0), DecimalType(38, 0), DecimalType(38, 10)).foreach {
+      dt =>
+        val max = BigInteger.TEN.pow(dt.precision).subtract(BigInteger.ONE)
+        val decimals = Seq(
+          BigInteger.ZERO,
+          BigInteger.ONE.negate(),
+          BigInteger.valueOf(Long.MaxValue),
+          BigInteger.valueOf(Long.MaxValue).add(BigInteger.ONE),
+          BigInteger.valueOf(Long.MinValue),
+          BigInteger.valueOf(Long.MinValue).subtract(BigInteger.ONE),
+          max,
+          max.negate()).map(u => Decimal(new JavaBigDecimal(u, dt.scale), dt.precision, dt.scale))
+        val schema = new StructType().add("d", dt).add("a", ArrayType(dt))
+        val project = UnsafeProjection.create(schema)
+        val allocator = new RootAllocator(Long.MaxValue)
+        val root = VectorSchemaRoot.create(Utils.toArrowSchema(schema, "UTC"), allocator)
+        try {
+          val writer = ArrowWriter.create(root, decimals.size + 1)
+          decimals.foreach { d =>
+            val array = new GenericArrayData(Array[Any](d, null, d))
+            writer.write(project(new GenericInternalRow(Array[Any](d, array))))
+          }
+          writer.write(project(new GenericInternalRow(Array[Any](null, null))))
+          writer.finish()
+          val values = root.getVector(0).asInstanceOf[DecimalVector]
+          val arrays = root.getVector(1).asInstanceOf[ListVector]
+          decimals.zipWithIndex.foreach { case (d, i) =>
+            withClue(s"$dt $d: ") {
+              values.getObject(i) shouldBe d.toJavaBigDecimal
+              arrays.getObject(i).asScala.toSeq shouldBe
+                Seq(d.toJavaBigDecimal, null, d.toJavaBigDecimal)
+            }
+          }
+          values.isNull(decimals.size) shouldBe true
+          arrays.isNull(decimals.size) shouldBe true
+        } finally {
+          root.close()
+          allocator.close()
+        }
+    }
+  }
+
+  test("a wide decimal past its precision still fails the row path") {
+    // Written as decimal(38,0) and read as decimal(20,0), so the unsafe row holds 21 digits.
+    val wide = UnsafeProjection.create(new StructType().add("d", DecimalType(38, 0)))
+    val row = wide(
+      new GenericInternalRow(
+        Array[Any](Decimal(new JavaBigDecimal("123456789012345678901"), 38, 0))))
+    val allocator = new RootAllocator(Long.MaxValue)
+    val root =
+      VectorSchemaRoot.create(
+        Utils.toArrowSchema(new StructType().add("d", DecimalType(20, 0)), "UTC"),
+        allocator)
+    try {
+      val writer = ArrowWriter.create(root, 1)
+      intercept[ArithmeticException](writer.write(row))
+    } finally {
+      root.close()
+      allocator.close()
+    }
+  }
+
+  test("a narrow decimal with more digits than its precision passes through") {
+    // Spark's getDecimal does not check an int- or long-backed value against the precision, so
+    // neither path does. Arrow's BigDecimal setter, which the writer used before, threw instead.
+    val dt = DecimalType(5, 2)
+    val v = new OnHeapColumnVector(numRows, dt)
+    val allocator = new RootAllocator(Long.MaxValue)
+    val schema = Utils.toArrowSchema(new StructType().add("d", dt), "UTC")
+    val columnar = VectorSchemaRoot.create(schema, allocator)
+    val rows = VectorSchemaRoot.create(schema, allocator)
+    try {
+      (0 until numRows).foreach(i => v.putInt(i, 1234567))
+      val batch = new ColumnarBatch(Array[ColumnVector](v), numRows)
+      val columnarWriter = ArrowWriter.create(columnar, numRows)
+      columnarWriter.writeColumns(batch, 0, numRows)
+      columnarWriter.finish()
+      val rowWriter = ArrowWriter.create(rows, 1)
+      rowWriter.write(batch.getRow(0))
+      rowWriter.finish()
+      val expected = new JavaBigDecimal("12345.67")
+      columnar.getVector(0).asInstanceOf[DecimalVector].getObject(numRows - 1) shouldBe expected
+      rows.getVector(0).asInstanceOf[DecimalVector].getObject(0) shouldBe expected
+    } finally {
+      columnar.close()
+      rows.close()
+      allocator.close()
+      v.close()
+    }
+  }
+
   test("a wide decimal past its precision still fails the columnar path") {
     val dt = DecimalType(20, 0)
     val v = new OnHeapColumnVector(1, dt)
@@ -459,6 +554,59 @@ class CometArrowWriterSuite extends AnyFunSuite with Matchers {
         numRows)
     } finally {
       v.close()
+    }
+  }
+
+  test("a struct that switches between the columnar and row paths across appended batches") {
+    // A struct with an array or a map field takes the row path only in batches that hold null
+    // structs, so its fields' writers keep appending where the other path left off.
+    val st = new StructType()
+      .add("a", ArrayType(StringType))
+      .add("m", MapType(StringType, StringType))
+      .add("i", IntegerType)
+      .add("s", StringType)
+      .add("d", DecimalType(38, 10))
+    val schema = new StructType().add("st", st).add("top", ArrayType(StringType))
+    for (offHeap <- Seq(false, true); reversed <- Seq(false, true)) {
+      withClue(s"offHeap=$offHeap reversed=$reversed: ") {
+        val rnd = new Random(42)
+        val batches = Seq(0.0, 0.5, 0.0, 1.0, 0.0, 0.3, 0.9, 0.0).zipWithIndex.map {
+          case (nullFraction, k) =>
+            val n = 37 + k * 13
+            val vectors = schema.fields.map { f =>
+              val v = newVector(n, f.dataType, offHeap)
+              fill(v, f.dataType, n, rnd, nullFraction, reversed)
+              v: ColumnVector
+            }
+            new ColumnarBatch(vectors, n)
+        }
+        val allocator = new RootAllocator(Long.MaxValue)
+        val arrowSchema = Utils.toArrowSchema(schema, "UTC")
+        val columnar = VectorSchemaRoot.create(arrowSchema, allocator)
+        val rows = VectorSchemaRoot.create(arrowSchema, allocator)
+        try {
+          val columnarWriter = ArrowWriter.create(columnar, 1)
+          batches.foreach { batch =>
+            // Two appends per batch, so each batch also starts part way through the Arrow one.
+            val half = batch.numRows() / 2
+            columnarWriter.writeColumns(batch, 0, half)
+            columnarWriter.writeColumns(batch, half, batch.numRows() - half)
+          }
+          columnarWriter.finish()
+          val rowWriter = ArrowWriter.create(rows, batches.map(_.numRows()).sum)
+          batches.foreach(b => (0 until b.numRows()).foreach(i => rowWriter.write(b.getRow(i))))
+          rowWriter.finish()
+          columnar.getRowCount shouldBe rows.getRowCount
+          rows.getFieldVectors.asScala.zip(columnar.getFieldVectors.asScala).foreach {
+            case (e, a) => assertSameVectors(e, a, "")
+          }
+        } finally {
+          columnar.close()
+          rows.close()
+          allocator.close()
+          batches.foreach(_.close())
+        }
+      }
     }
   }
 }
