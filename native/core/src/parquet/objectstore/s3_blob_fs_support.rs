@@ -198,20 +198,25 @@ impl StorageFactory for BlobHostPromotingS3StorageFactory {
             customized_credential_load: self.customized_credential_load.clone(),
         }
         .build(config)?;
-        Ok(Arc::new(BlobHostPromotingS3Storage { inner }))
+        Ok(Arc::new(BlobHostPromotingS3Storage::new(inner)))
     }
 }
 
 /// [`Storage`] that promotes hostless s3-compliant-alias locations (see
-/// [`promote_hostless_alias_url`]) at the open boundary, then delegates to the opendal S3 storage
-/// [`OpenDalStorageFactory::S3`] built from the same [`StorageConfig`]. Serde exists only to
-/// satisfy the `Storage` typetag supertraits; Comet never serializes storage during a scan.
+/// [`promote_hostless_alias_url`]) at the open boundary, then delegates to `inner`: the opendal S3
+/// storage [`OpenDalStorageFactory::S3`] built from the same [`StorageConfig`], or the
+/// location-scoped storage when the provider is location-scoped. Serde exists only to satisfy the
+/// `Storage` typetag supertraits; Comet never serializes storage during a scan.
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct BlobHostPromotingS3Storage {
     inner: Arc<dyn Storage>,
 }
 
 impl BlobHostPromotingS3Storage {
+    pub(crate) fn new(inner: Arc<dyn Storage>) -> Self {
+        Self { inner }
+    }
+
     /// Promote a hostless path, surfacing failures as an iceberg [`Error`].
     fn promote<'a>(&self, path: &'a str) -> IcebergResult<Cow<'a, str>> {
         promote_hostless_alias_url(path)
