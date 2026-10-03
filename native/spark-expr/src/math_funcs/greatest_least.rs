@@ -185,20 +185,18 @@ impl ScalarUDFImpl for SparkGreatestLeast {
         // Spark gives every argument the same type up to nullability, but Arrow also compares
         // field names and nullability, which the row selection below needs to match.
         let data_type = args.return_field.data_type();
-        let mut result: Option<ArrayRef> = None;
-        for arg in &args.args {
-            let mut candidate = arg.to_array(rows)?;
-            if candidate.data_type() != data_type {
-                candidate = cast(&candidate, data_type)?;
-            }
-            result = Some(match result {
-                None => candidate,
-                Some(current) => self.pick(&current, &candidate)?,
-            });
-        }
-        let Some(result) = result else {
-            return exec_err!("{} requires at least two arguments", self.name());
+        let to_array = |arg: &ColumnarValue| -> Result<ArrayRef> {
+            let array = arg.to_array(rows)?;
+            Ok(if array.data_type() == data_type {
+                array
+            } else {
+                cast(&array, data_type)?
+            })
         };
+        let mut result = to_array(&args.args[0])?;
+        for arg in &args.args[1..] {
+            result = self.pick(&result, &to_array(arg)?)?;
+        }
         if all_scalars {
             Ok(ColumnarValue::Scalar(ScalarValue::try_from_array(
                 &result, 0,
