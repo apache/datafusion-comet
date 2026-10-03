@@ -186,9 +186,10 @@ private[comet] object CachedBatchIpc {
    * batch arrives at whatever size the plan above produced. Chunks are appended rather than grown
    * and recopied, so the write also never holds the payload twice.
    *
-   * Returns the message and the on-body compressed size of each top-level column, which the
-   * caller records in the statistics row. The sizes come from the message's own buffer layout, so
-   * they are the real stored sizes rather than an estimate.
+   * Returns the message and the decoded size of each top-level column. Each size is measured on
+   * the batch before compression, from the plain lengths of the column's own buffers, which is
+   * what `getBufferSize` reports for a vector. The caller records the sizes in the statistics
+   * row; `ArrowCachedBatchSerializer.statsRow` explains why they are decoded sizes.
    *
    * Dictionary-encoded columns are decoded to their plain form first. A payload with no Schema
    * message cannot describe a dictionary encoding, and the schema the reader rebuilds from Spark
@@ -215,16 +216,18 @@ private[comet] object CachedBatchIpc {
 
       // Unloaded plain and compressed afterwards rather than by handing the codec to the unloader;
       // see compressed for why.
+      val fields = vectors.map(_.getField)
       val unloader = new VectorUnloader(root, true, NoCompressionCodec.INSTANCE, true)
       val plainBatch = unloader.getRecordBatch
-      val recordBatch =
-        try compressed(plainBatch, codec, allocator)
-        finally plainBatch.close()
+      val (sizes, recordBatch) =
+        try {
+          (columnSizes(fields, plainBatch), compressed(plainBatch, codec, allocator))
+        } finally {
+          plainBatch.close()
+        }
       try {
-        val fields = vectors.map(_.getField)
         // Leaves the batch in the state serializeBatches leaves one. The record batch holds its
-        // own buffers by now, so this does not touch it, and getField still answers afterwards:
-        // clearing releases buffers, not the schema.
+        // own buffers by now, so this does not touch it.
         root.clear()
 
         val out = new ChunkedByteBufferOutputStream(chunkSize, ByteBuffer.allocate)
@@ -234,7 +237,7 @@ private[comet] object CachedBatchIpc {
         } finally {
           out.close()
         }
-        (out.toChunkedByteBuffer, columnSizes(fields, recordBatch))
+        (out.toChunkedByteBuffer, sizes)
       } finally {
         recordBatch.close()
       }
@@ -608,11 +611,10 @@ private[comet] object CachedBatchIpc {
   }
 
   /**
-   * The on-body compressed size of each top-level column.
+   * The size of each top-level column's buffers in `recordBatch`.
    *
-   * Each column owns the run of buffers its subtree occupies, so its stored size is the sum of
-   * those buffers' recorded lengths. With one payload per batch these are the only per-column
-   * sizes available -- there is no separate stream to measure -- and they are exact.
+   * Each column owns the run of buffers its subtree occupies, so its size is the sum of those
+   * buffers' recorded lengths.
    */
   private def columnSizes(fields: Seq[Field], recordBatch: ArrowRecordBatch): Array[Long] = {
     val buffers = recordBatch.getBuffersLayout

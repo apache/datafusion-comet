@@ -292,15 +292,16 @@ by role. Names match what is shown in the plan output.
 
 ### Scans
 
-| Node                     | Description                                                                                   |
-| ------------------------ | --------------------------------------------------------------------------------------------- |
-| `CometBatchScan`         | DataSource V2 scan, including Iceberg Parquet, that produces Arrow batches consumed by Comet. |
-| `CometNativeScan`        | Parquet scan that runs entirely in Rust via DataFusion.                                       |
-| `CometIcebergNativeScan` | Iceberg Parquet scan that runs entirely in Rust via DataFusion.                               |
-| `CometCsvNativeScan`     | CSV scan that runs entirely in Rust via DataFusion (experimental).                            |
-| `CometInMemoryTableScan` | JVM-side scan of a table cached in Comet's Arrow format (experimental, disabled by default).  |
-| `CometLocalTableScan`    | JVM-side scan of a `LocalTableScanExec` (disabled by default).                                |
-| `CometEmptyRelation`     | Empty native input that replaces `EmptyRelationExec` (Spark 4.0 and later).                   |
+| Node                     | Description                                                                                                        |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------ |
+| `CometBatchScan`         | DataSource V2 scan, including Iceberg Parquet, that produces Arrow batches consumed by Comet.                      |
+| `CometNativeScan`        | Parquet scan that runs entirely in Rust via DataFusion.                                                            |
+| `CometIcebergNativeScan` | Iceberg Parquet scan that runs entirely in Rust via DataFusion.                                                    |
+| `CometCsvNativeScan`     | CSV scan that runs entirely in Rust via DataFusion (experimental).                                                 |
+| `CometInMemoryTableScan` | JVM-side scan of a table cached in Comet's Arrow format (experimental, disabled by default).                       |
+| `CometLocalTableScan`    | JVM-side scan of a `LocalTableScanExec` (disabled by default).                                                     |
+| `CometEmptyRelation`     | Empty native input that replaces `EmptyRelationExec` (Spark 4.0 and later).                                        |
+| `CometRange`             | Generates the rows of `spark.range` and SQL `range()` in native code, replacing `RangeExec` (disabled by default). |
 
 ### Native Rust Operators
 
