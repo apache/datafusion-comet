@@ -170,7 +170,13 @@ fn arrays_overlap_list<OffsetSize: OffsetSizeTrait>(
     let left_values = left.values();
     let right_values = right.values();
 
-    if left_values.data_type() != right_values.data_type() {
+    // Nested element types can differ in field nullability, such as a struct built by
+    // `array_repeat` beside one built by `array(...)`. `make_comparator` compares those, so keep
+    // them on the shared comparator below; only flat types need identical types for the fast
+    // paths and otherwise take the generic fallback.
+    let both_nested =
+        needs_comparator(left_values.data_type()) && needs_comparator(right_values.data_type());
+    if left_values.data_type() != right_values.data_type() && !both_nested {
         return arrays_overlap_list_generic(left, right);
     }
 
@@ -223,6 +229,29 @@ fn arrays_overlap_list<OffsetSize: OffsetSizeTrait>(
             left_values.as_string::<i64>(),
             right_values.as_string::<i64>()
         ),
+        dt if needs_comparator(dt) => {
+            // Spark's nested path compares with ordering.equiv, where -0.0 == 0.0 and every NaN
+            // is equal, but Arrow's comparator uses total order. Normalize float leaves once per
+            // column so the comparator built over the full child arrays matches Spark.
+            let (left_values, right_values) = if has_float_leaf(dt) {
+                (
+                    normalize_nested_floats(left_values),
+                    normalize_nested_floats(right_values),
+                )
+            } else {
+                (Arc::clone(left_values), Arc::clone(right_values))
+            };
+            let comparator = make_comparator(
+                left_values.as_ref(),
+                right_values.as_ref(),
+                SortOptions::default(),
+            )?;
+            Ok(overlap_rows(
+                left,
+                right,
+                nested_row_overlap(&left_values, &right_values, comparator.as_ref()),
+            ))
+        }
         _ => arrays_overlap_list_generic(left, right),
     }
 }
@@ -389,6 +418,30 @@ where
     }
 }
 
+/// Row overlap for nested element types using one comparator for the full child arrays.
+fn nested_row_overlap<'a>(
+    left: &'a ArrayRef,
+    right: &'a ArrayRef,
+    comparator: &'a dyn Fn(usize, usize) -> Ordering,
+) -> impl FnMut(Range<usize>, Range<usize>) -> bool + 'a {
+    move |left_range, right_range| {
+        for li in left_range {
+            if left.is_null(li) {
+                continue;
+            }
+            for ri in right_range.clone() {
+                if right.is_null(ri) {
+                    continue;
+                }
+                if comparator(li, ri) == Ordering::Equal {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+}
+
 fn normalize_list_element_floats<OffsetSize: OffsetSizeTrait>(
     list: &GenericListArray<OffsetSize>,
 ) -> GenericListArray<OffsetSize> {
@@ -405,10 +458,11 @@ fn normalize_list_element_floats<OffsetSize: OffsetSizeTrait>(
     )
 }
 
-/// Fallback for nested and otherwise unhandled element types.
+/// Fallback for otherwise unhandled element types, including nested elements whose two sides
+/// have different data types.
 ///
 /// note: Spark's flat arrays_overlap (HashSet<Double>) treats -0.0 and 0.0 as different,
-/// only the nested path here treats them as equal. this normalization can't move into the
+/// only the nested path treats them as equal. this normalization can't move into the
 /// flat fast path in arrays_overlap_list without breaking that difference.
 fn arrays_overlap_list_generic<OffsetSize: OffsetSizeTrait>(
     left: &GenericListArray<OffsetSize>,
@@ -456,26 +510,12 @@ fn arrays_overlap_list_generic<OffsetSize: OffsetSizeTrait>(
             (&right_values, &left_values)
         };
 
-        let comparator = if needs_comparator(probe.data_type()) {
-            Some(make_comparator(
-                probe.as_ref(),
-                search.as_ref(),
-                SortOptions::default(),
-            )?)
-        } else {
-            None
-        };
-
         for pi in 0..probe.len() {
             if probe.is_null(pi) {
                 has_null = true;
                 continue;
             }
-            let (found, null_eq) = if let Some(comparator) = &comparator {
-                find_in_array_nested(pi, search, comparator.as_ref())
-            } else {
-                find_in_array_flat(probe, pi, search)?
-            };
+            let (found, null_eq) = find_in_array_flat(probe, pi, search)?;
             if null_eq {
                 has_null = true;
             }
@@ -503,25 +543,6 @@ fn find_in_array_flat(probe: &ArrayRef, pi: usize, search: &ArrayRef) -> Result<
     let eq_result = eq(search, &scalar)
         .map_err(|e| datafusion::error::DataFusionError::ArrowError(Box::new(e), None))?;
     Ok((eq_result.true_count() > 0, eq_result.null_count() > 0))
-}
-
-/// Element-by-element search using Arrow's nested comparator.
-fn find_in_array_nested(
-    pi: usize,
-    search: &ArrayRef,
-    comparator: &dyn Fn(usize, usize) -> Ordering,
-) -> (bool, bool) {
-    let mut has_null = false;
-    for si in 0..search.len() {
-        if search.is_null(si) {
-            has_null = true;
-            continue;
-        }
-        if comparator(pi, si) == Ordering::Equal {
-            return (true, has_null);
-        }
-    }
-    (false, has_null)
 }
 
 fn needs_comparator(dt: &DataType) -> bool {
@@ -888,6 +909,47 @@ mod tests {
     }
 
     #[test]
+    fn test_nested_array_sliced_offsets_and_nulls() -> Result<()> {
+        let make_rows = |rows: &[&[Option<&[i32]>]]| {
+            let mut builder = ListBuilder::new(ListBuilder::new(Int32Builder::new()));
+            for row in rows {
+                for element in *row {
+                    if let Some(values) = element {
+                        builder.values().values().append_slice(values);
+                        builder.values().append(true);
+                    } else {
+                        builder.values().append(false);
+                    }
+                }
+                builder.append(true);
+            }
+            builder.finish()
+        };
+        let left = make_rows(&[
+            &[Some(&[999])],
+            &[Some(&[10])],
+            &[Some(&[10]), None],
+            &[Some(&[50]), Some(&[60]), Some(&[70])],
+        ])
+        .slice(1, 3);
+        let right = make_rows(&[
+            &[Some(&[999])],
+            &[Some(&[20]), Some(&[30]), Some(&[40])],
+            &[Some(&[20])],
+            &[Some(&[60])],
+        ])
+        .slice(1, 3);
+
+        let result = arrays_overlap_list::<i32>(&left, &right)?;
+        let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
+        assert_eq!(
+            result,
+            &BooleanArray::from(vec![Some(false), None, Some(true)])
+        );
+        Ok(())
+    }
+
+    #[test]
     fn test_nested_array_basic_overlap() -> Result<()> {
         // [[1,2], [3,4]] vs [[3,4], [5,6]] => true
         let left = make_nested_list(vec![
@@ -1016,6 +1078,37 @@ mod tests {
         }
         list_builder.append(true);
         list_builder.finish()
+    }
+
+    #[test]
+    fn test_struct_overlap_with_different_field_nullability() -> Result<()> {
+        // The same struct values where one side declares `a` non-nullable, as `array_repeat`
+        // produces while `array(...)` widens it to nullable: [{1,2}] vs [{1,2}] => true
+        fn single_struct_list(a_nullable: bool) -> ListArray {
+            let fields = vec![
+                Arc::new(Field::new("a", DataType::Int32, a_nullable)),
+                Arc::new(Field::new("b", DataType::Int32, true)),
+            ];
+            let mut list_builder = ListBuilder::new(StructBuilder::new(
+                fields,
+                vec![Box::new(Int32Builder::new()), Box::new(Int32Builder::new())],
+            ));
+            let sb = list_builder.values();
+            sb.field_builder::<Int32Builder>(0).unwrap().append_value(1);
+            sb.field_builder::<Int32Builder>(1).unwrap().append_value(2);
+            sb.append(true);
+            list_builder.append(true);
+            list_builder.finish()
+        }
+        let left = single_struct_list(false);
+        let right = single_struct_list(true);
+        assert_ne!(left.values().data_type(), right.values().data_type());
+
+        let result = arrays_overlap_list::<i32>(&left, &right)?;
+        let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
+        assert!(result.is_valid(0));
+        assert!(result.value(0));
+        Ok(())
     }
 
     #[test]
