@@ -16,6 +16,15 @@
 // under the License.
 
 //! Define JNI APIs which can be called from Java/Scala.
+//!
+//! An entry point is a thin JNI wrapper: it converts its JNI arguments into plain Rust values,
+//! calls a core function whose signature has no JNI types (e.g. `decode_shuffle_block`), and
+//! converts the result back. Errors and panics are raised as JVM exceptions by
+//! `try_unwrap_or_throw`, through the boundary error protocol in `errors::NativeError`.
+//!
+//! `createPlan`, `setShufflePartitionPusher`, `executePlan` and `releasePlan` also depend on
+//! upcalls into the JVM (input iterators, the task memory manager, metrics, UDFs and scalar
+//! subqueries), so their core logic keeps holding JNI references.
 
 use super::{serde, utils::SparkArrowConvert};
 use crate::{
@@ -119,7 +128,8 @@ use crate::execution::tracing::{
 
 use crate::execution::memory_pools::logging_pool::LoggingMemoryPool;
 use crate::execution::spark_config::{
-    SparkConfig, COMET_DEBUG_ENABLED, COMET_DEBUG_MEMORY, COMET_EXPLAIN_NATIVE_ENABLED,
+    SparkConfig, COMET_DEBUG_ENABLED, COMET_DEBUG_MEMORY,
+    COMET_EXEC_AGGREGATE_SKIP_PARTIAL_ENABLED, COMET_EXPLAIN_NATIVE_ENABLED,
     COMET_MAX_TEMP_DIRECTORY_SIZE, COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED,
     COMET_TRACING_ENABLED, SPARK_EXECUTOR_CORES,
 };
@@ -476,6 +486,7 @@ fn op_name(op: &OpStruct) -> &'static str {
         OpStruct::ShuffleScan(_) => "ShuffleScan",
         OpStruct::BroadcastNestedLoopJoin(_) => "BroadcastNestedLoopJoin",
         OpStruct::Sample(_) => "Sample",
+        OpStruct::RangeScan(_) => "RangeScan",
         OpStruct::ContribScan(_) => "ContribScan",
         OpStruct::WindowGroupLimit(_) => "WindowGroupLimit",
     }
@@ -806,10 +817,15 @@ pub extern "system" fn Java_org_apache_comet_Native_setShufflePartitionPusher(
     })
 }
 
-/// Only admit the validated native-shuffle path. A session belongs to one fused Spark plan,
-/// so an unsafe partial aggregate disables skipping for the whole plan, including its children.
-/// This deliberately gives up some opportunities rather than changing execution contexts per op.
-fn configure_skip_partial_aggregation(config: &mut SessionConfig, plan: &Operator) {
+/// Skipping is opt-in (`spark.comet.exec.aggregate.skipPartial.enabled`): once DataFusion's probe
+/// decides to skip, it never aggregates again, so a task whose keys repeat after a mostly distinct
+/// start shuffles every later row (#6466).
+///
+/// When enabled, only admit the validated native-shuffle path. A session belongs to one fused
+/// Spark plan, so an unsafe partial aggregate disables skipping for the whole plan, including its
+/// children. This deliberately gives up some opportunities rather than changing execution
+/// contexts per op.
+fn configure_skip_partial_aggregation(config: &mut SessionConfig, plan: &Operator, enabled: bool) {
     fn supported(plan: &Operator) -> bool {
         let supported_aggregate = match &plan.op_struct {
             Some(OpStruct::HashAgg(agg)) => match AggregateMode::try_from(agg.mode) {
@@ -832,9 +848,12 @@ fn configure_skip_partial_aggregation(config: &mut SessionConfig, plan: &Operato
         supported_aggregate && plan.children.iter().all(supported)
     }
 
-    if !matches!(&plan.op_struct, Some(OpStruct::ShuffleWriter(_))) || !supported(plan) {
-        // Enforce safety after config pass-through: a testing override cannot make unsupported
-        // accumulators convertible. DF 55 removed supports_convert_to_state().
+    let eligible =
+        enabled && matches!(&plan.op_struct, Some(OpStruct::ShuffleWriter(_))) && supported(plan);
+    if !eligible {
+        // Enforce this after config pass-through: a testing override can neither turn skipping
+        // on nor make unsupported accumulators convertible. DF 55 removed
+        // supports_convert_to_state().
         config
             .options_mut()
             .execution
@@ -893,7 +912,11 @@ fn prepare_datafusion_session_context(
         }
     }
 
-    configure_skip_partial_aggregation(&mut session_config, spark_plan);
+    configure_skip_partial_aggregation(
+        &mut session_config,
+        spark_plan,
+        spark_config.get_bool(COMET_EXEC_AGGREGATE_SKIP_PARTIAL_ENABLED),
+    );
 
     let runtime = rt_config.build()?;
 
@@ -959,13 +982,25 @@ fn prepare_output(
     output_batch: RecordBatch,
     validate: bool,
 ) -> CometResult<jlong> {
-    let num_cols = array_addrs.len(env)?;
-
     let array_addrs = unsafe { array_addrs.get_elements(env, ReleaseMode::NoCopyBack)? };
-    let array_addrs = &*array_addrs;
-
     let schema_addrs = unsafe { schema_addrs.get_elements(env, ReleaseMode::NoCopyBack)? };
-    let schema_addrs = &*schema_addrs;
+    unsafe { export_batch(&array_addrs, &schema_addrs, output_batch, validate) }
+}
+
+/// Moves the columns of `output_batch` into the Arrow C Data Interface structs at `array_addrs`
+/// and `schema_addrs`, one pair per column, and returns the row count. With no addresses, which
+/// Spark passes when the results of a query are not used, only the row count is returned.
+///
+/// # Safety
+/// Each address must point to a writable `FFI_ArrowArray` / `FFI_ArrowSchema` the caller owns.
+/// Whatever the structs hold is overwritten without being released.
+unsafe fn export_batch(
+    array_addrs: &[i64],
+    schema_addrs: &[i64],
+    output_batch: RecordBatch,
+    validate: bool,
+) -> CometResult<i64> {
+    let num_cols = array_addrs.len();
 
     let output_schema = output_batch.schema();
     let results = output_batch.columns();
@@ -1003,7 +1038,7 @@ fn prepare_output(
         }
     }
 
-    Ok(num_rows as jlong)
+    Ok(num_rows as i64)
 }
 
 /// Pull the next input from JVM. Note that we cannot pull input batches in
@@ -1278,7 +1313,10 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
             if let Some(producer) = &mut exec_context.batch_producer {
                 match producer.next_batch()? {
                     Some(batch) => {
-                        update_metrics(env, exec_context)?;
+                        // Publish on the configured interval, as the ScanExec path below does,
+                        // since each publish walks the whole metric tree and calls into the JVM.
+                        // `releasePlan` publishes the final values.
+                        update_metrics_on_interval(env, exec_context)?;
                         return prepare_output(
                             env,
                             array_addrs,
@@ -1671,7 +1709,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlock(
 ) -> jlong {
     try_unwrap_or_throw(&e, |env| {
         with_trace("decodeShuffleBlock", tracing_enabled != JNI_FALSE, || {
-            decode_shuffle_block(env, byte_buffer, length, array_addrs, schema_addrs, None)
+            decode_shuffle_block_jni(env, byte_buffer, length, array_addrs, schema_addrs, None)
         })
     })
 }
@@ -1687,12 +1725,7 @@ pub extern "system" fn Java_org_apache_comet_Native_createRemoteShuffleDecoder(
 ) -> jlong {
     try_unwrap_or_throw(&e, |env| {
         let bytes = env.convert_byte_array(expected_schema)?;
-        let schema = ShuffleScan::decode(bytes.as_slice()).map_err(|error| {
-            CometError::Internal(format!("Invalid expected remote shuffle schema: {error}"))
-        })?;
-        let decoder = RemoteShuffleDecoder {
-            expected_types: schema.fields.iter().map(to_arrow_datatype).collect(),
-        };
+        let decoder = RemoteShuffleDecoder::try_new(&bytes)?;
         Ok(Box::into_raw(Box::new(decoder)) as jlong)
     })
 }
@@ -1700,6 +1733,19 @@ pub extern "system" fn Java_org_apache_comet_Native_createRemoteShuffleDecoder(
 /// Immutable decoding state owned by one JVM remote shuffle iterator, not shared across tasks.
 struct RemoteShuffleDecoder {
     expected_types: Vec<ArrowDataType>,
+}
+
+impl RemoteShuffleDecoder {
+    /// Parses the serialized `ShuffleScan` holding the expected schema. Core of
+    /// `Native.createRemoteShuffleDecoder`.
+    fn try_new(expected_schema: &[u8]) -> CometResult<Self> {
+        let schema = ShuffleScan::decode(expected_schema).map_err(|error| {
+            CometError::Internal(format!("Invalid expected remote shuffle schema: {error}"))
+        })?;
+        Ok(RemoteShuffleDecoder {
+            expected_types: schema.fields.iter().map(to_arrow_datatype).collect(),
+        })
+    }
 }
 
 #[no_mangle]
@@ -1742,7 +1788,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlockWit
                 .ok_or_else(|| {
                     CometError::Internal("Remote shuffle decoder is not initialized".to_owned())
                 })?;
-            decode_shuffle_block(
+            decode_shuffle_block_jni(
                 env,
                 byte_buffer,
                 length,
@@ -1754,7 +1800,9 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlockWit
     })
 }
 
-fn decode_shuffle_block(
+/// Converts the JNI arguments of the `decodeShuffleBlock` entry points for
+/// [`decode_shuffle_block`].
+fn decode_shuffle_block_jni(
     env: &mut Env,
     byte_buffer: JByteBuffer,
     length: jint,
@@ -1764,15 +1812,33 @@ fn decode_shuffle_block(
 ) -> CometResult<jlong> {
     let raw_pointer = env.get_direct_buffer_address(&byte_buffer)?;
     let length = length as usize;
-    let slice: &[u8] = unsafe { std::slice::from_raw_parts(raw_pointer, length) };
+    let block: &[u8] = unsafe { std::slice::from_raw_parts(raw_pointer, length) };
+    let array_addrs = unsafe { array_addrs.get_elements(env, ReleaseMode::NoCopyBack)? };
+    let schema_addrs = unsafe { schema_addrs.get_elements(env, ReleaseMode::NoCopyBack)? };
+    unsafe { decode_shuffle_block(block, &array_addrs, &schema_addrs, expected_types) }
+}
+
+/// Decodes one native shuffle block (codec header plus Arrow IPC stream) and exports its columns
+/// as in [`export_batch`], returning the row count. `expected_types` is set for a remote shuffle
+/// block, which is validated against it. Core of `Native.decodeShuffleBlock` and
+/// `Native.decodeShuffleBlockWithValidation`.
+///
+/// # Safety
+/// As for [`export_batch`].
+unsafe fn decode_shuffle_block(
+    block: &[u8],
+    array_addrs: &[i64],
+    schema_addrs: &[i64],
+    expected_types: Option<&[ArrowDataType]>,
+) -> CometResult<i64> {
     let batch = if let Some(expected_types) = expected_types {
         // Reject incompatible logical types, then decode dictionaries before JVM import. The
         // JVM importer supports fewer dictionary key/value layouts than the shuffle writer.
-        decode_remote_shuffle_batch(slice, expected_types)?
+        decode_remote_shuffle_batch(block, expected_types)?
     } else {
-        read_ipc_compressed(slice)?
+        read_ipc_compressed(block)?
     };
-    prepare_output(env, array_addrs, schema_addrs, batch, false)
+    export_batch(array_addrs, schema_addrs, batch, false)
 }
 
 #[no_mangle]
@@ -2041,7 +2107,7 @@ mod tests {
             }],
             ..Default::default()
         };
-        let ratio = |plan: &Operator, requested: f64| {
+        let ratio = |plan: &Operator, requested: f64, enabled: bool| {
             let mut config = SessionConfig::new();
             config
                 .options_mut()
@@ -2051,7 +2117,7 @@ mod tests {
                 .options_mut()
                 .execution
                 .skip_partial_aggregation_probe_ratio_threshold = requested;
-            configure_skip_partial_aggregation(&mut config, plan);
+            configure_skip_partial_aggregation(&mut config, plan, enabled);
             assert_eq!(
                 config
                     .options()
@@ -2077,11 +2143,13 @@ mod tests {
             },
         ] {
             let plan = writer(agg);
-            assert_eq!(ratio(&plan, 0.8), 0.8);
-            assert_eq!(ratio(&plan, 0.5), 0.5);
-            assert_eq!(ratio(&plan, 1.1), 1.1);
+            assert_eq!(ratio(&plan, 0.8, true), 0.8);
+            assert_eq!(ratio(&plan, 0.5, true), 0.5);
+            assert_eq!(ratio(&plan, 1.1, true), 1.1);
+            // Skipping is opt-in, and a DataFusion override cannot turn it on.
+            assert_eq!(ratio(&plan, 0.8, false), 1.1);
             // Non-native shuffle / standalone native blocks stay disabled.
-            assert_eq!(ratio(&plan.children[0], 0.8), 1.1);
+            assert_eq!(ratio(&plan.children[0], 0.8, true), 1.1);
         }
 
         for agg in [
@@ -2116,14 +2184,14 @@ mod tests {
             },
         ] {
             let plan = writer(agg);
-            assert_eq!(ratio(&plan, 0.8), 1.1);
+            assert_eq!(ratio(&plan, 0.8, true), 1.1);
             // An eligible sibling or a Final parent must not hide the unsafe child.
             let mut nested = writer(HashAggregate {
                 mode: AggregateMode::Final as i32,
                 ..partial.clone()
             });
             nested.children[0].children = plan.children;
-            assert_eq!(ratio(&nested, 0.8), 1.1);
+            assert_eq!(ratio(&nested, 0.8, true), 1.1);
         }
     }
 
@@ -2818,6 +2886,78 @@ mod tests {
             .expect("stopping the producer waited for a free worker")
             .unwrap();
         assert_eq!(pool.reserved(), 0, "the stream outlived its producer");
+    }
+
+    /// One uncompressed native shuffle block holding `batch`.
+    fn shuffle_block(batch: &RecordBatch) -> Vec<u8> {
+        let mut block = b"NONE".to_vec();
+        let mut writer =
+            arrow::ipc::writer::StreamWriter::try_new(&mut block, batch.schema_ref()).unwrap();
+        writer.write(batch).unwrap();
+        writer.finish().unwrap();
+        drop(writer);
+        block
+    }
+
+    fn int_batch() -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, true)]));
+        RecordBatch::try_new(
+            schema,
+            vec![Arc::new(Int32Array::from(vec![Some(1), None, Some(3)]))],
+        )
+        .unwrap()
+    }
+
+    /// Decodes `block` into freshly allocated C Data structs and imports the single column back.
+    fn decode_one_column(
+        block: &[u8],
+        expected_types: Option<&[ArrowDataType]>,
+    ) -> CometResult<(i64, ArrayRef)> {
+        let mut ffi_array = Box::new(FFI_ArrowArray::empty());
+        let mut ffi_schema = Box::new(FFI_ArrowSchema::empty());
+        let array_addrs = [ffi_array.as_mut() as *mut FFI_ArrowArray as i64];
+        let schema_addrs = [ffi_schema.as_mut() as *mut FFI_ArrowSchema as i64];
+        let rows =
+            unsafe { decode_shuffle_block(block, &array_addrs, &schema_addrs, expected_types)? };
+        let data = unsafe { from_ffi(*ffi_array, &ffi_schema) }?;
+        Ok((rows, arrow::array::make_array(data)))
+    }
+
+    #[test]
+    fn decode_shuffle_block_exports_columns() {
+        let batch = int_batch();
+        let block = shuffle_block(&batch);
+
+        let (rows, column) = decode_one_column(&block, None).unwrap();
+        assert_eq!(rows, 3);
+        assert_eq!(column.as_ref(), batch.column(0).as_ref());
+
+        let (rows, column) = decode_one_column(&block, Some(&[DataType::Int32])).unwrap();
+        assert_eq!(rows, 3);
+        assert_eq!(column.as_ref(), batch.column(0).as_ref());
+    }
+
+    #[test]
+    fn decode_shuffle_block_without_output_columns_counts_rows() {
+        let block = shuffle_block(&int_batch());
+        let rows = unsafe { decode_shuffle_block(&block, &[], &[], None) }.unwrap();
+        assert_eq!(rows, 3);
+    }
+
+    #[test]
+    fn decode_shuffle_block_rejects_bad_input() {
+        let block = shuffle_block(&int_batch());
+        // A remote block whose column type differs from the expected schema.
+        assert!(decode_one_column(&block, Some(&[DataType::Utf8])).is_err());
+        // A truncated block.
+        assert!(decode_one_column(&block[..block.len() / 2], None).is_err());
+        // An expected schema that is not a serialized `ShuffleScan`.
+        let error = RemoteShuffleDecoder::try_new(&[0xff, 0xff, 0xff])
+            .err()
+            .expect("garbage schema is rejected");
+        assert!(error
+            .to_string()
+            .starts_with("Comet Internal Error: Invalid expected remote shuffle schema"));
     }
 
     /// See issue #6294. A runtime cancels every task it has when it shuts down, which Comet's does

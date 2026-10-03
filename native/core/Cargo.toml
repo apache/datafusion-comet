@@ -37,6 +37,7 @@ publish = false
 [dependencies]
 arrow = { workspace = true }
 base64 = "0.23.0"
+chrono-tz = { workspace = true }
 bytes = { workspace = true }
 parquet = { workspace = true, default-features = false, features = ["experimental", "arrow", "arrow_canonical_extension_types", "snap", "lz4", "zstd", "flate2-zlib-rs"] }
 futures = { workspace = true }
@@ -64,6 +65,7 @@ datafusion-comet-spark-expr = { workspace = true }
 datafusion-comet-jni-bridge = { workspace = true }
 datafusion-comet-proto = { workspace = true }
 datafusion-comet-shuffle = { workspace = true }
+datafusion-comet-operators = { workspace = true }
 object_store = { workspace = true }
 url = { workspace = true }
 aws-config = { workspace = true }
@@ -80,7 +82,9 @@ comet-contrib-lance = { path = "../../contrib/lance/native", optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "http2"] }
 object_store_opendal = { version = "0.58.0", optional = true }
 hdfs-sys = {version = "0.3.1", optional = true, features = ["hdfs_3_3"]}
-opendal = { version = "0.58.1", optional = true, features = ["services-hdfs"] }
+# Not optional: the location-scoped Iceberg storage recognizes opendal's permission errors, and
+# iceberg-storage-opendal builds the crate anyway. `hdfs-opendal` adds its HDFS service.
+opendal = { version = "0.58.1" }
 iceberg = { workspace = true }
 iceberg-storage-opendal = { workspace = true }
 reqsign-core = { workspace = true }
@@ -116,7 +120,7 @@ reqsign-aws-v4 = "3"
 backtrace = ["datafusion/backtrace"]
 default = ["hdfs-opendal"]
 contrib-lance = ["dep:comet-contrib-lance"]
-hdfs-opendal = ["opendal", "object_store_opendal", "hdfs-sys"]
+hdfs-opendal = ["opendal/services-hdfs", "object_store_opendal", "hdfs-sys"]
 jemalloc = ["tikv-jemallocator", "tikv-jemalloc-ctl"]
 # Delta Lake integration. When enabled, links the `comet-contrib-delta` crate
 # into `libcomet` and activates the `OpStruct::DeltaScan` dispatcher arm.
@@ -138,10 +142,6 @@ harness = false
 
 [[bench]]
 name = "array_element_append"
-harness = false
-
-[[bench]]
-name = "explode"
 harness = false
 
 [[bench]]

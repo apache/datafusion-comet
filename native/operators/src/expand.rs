@@ -280,14 +280,14 @@ mod tests {
     //! <https://github.com/apache/datafusion-comet/issues/5137>.
 
     use super::*;
-    use crate::execution::operators::nested_nullability_fixture::{
-        list_of_struct, list_of_struct_type,
-    };
     use arrow::array::{Array, ListArray};
     use datafusion::datasource::memory::MemorySourceConfig;
     use datafusion::physical_expr::expressions::Column;
     use datafusion::physical_plan::collect;
     use datafusion::prelude::SessionContext;
+    use datafusion_comet_common::nested_nullability_fixture::{
+        list_of_struct, list_of_struct_type,
+    };
 
     /// Child with two columns of the same logical `array<struct<id,flag>>` type that disagree on
     /// the `flag` field's nullability, so that projecting one per Expand projection reproduces the

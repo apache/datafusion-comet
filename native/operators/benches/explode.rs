@@ -32,7 +32,6 @@ use arrow::array::{Array, ArrayRef, Int32Array, Int64Array, ListArray, StringArr
 use arrow::buffer::{NullBuffer, OffsetBuffer};
 use arrow::datatypes::{DataType, Field, Fields, Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
-use comet::execution::operators::ExplodeExec;
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use datafusion::common::{NullHandling, UnnestOptions};
 use datafusion::datasource::memory::MemorySourceConfig;
@@ -40,6 +39,7 @@ use datafusion::execution::TaskContext;
 use datafusion::physical_plan::unnest::ListUnnest;
 use datafusion::physical_plan::{common::collect, ExecutionPlan};
 use datafusion::prelude::SessionConfig;
+use datafusion_comet_operators::ExplodeExec;
 use tokio::runtime::Runtime;
 
 /// Input rows per batch, and batches per run. 8192 is DataFusion's default `batch_size`, so the
