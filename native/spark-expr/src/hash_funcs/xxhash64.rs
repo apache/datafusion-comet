@@ -351,6 +351,77 @@ mod tests {
         assert_eq!(from_hidden, from_null);
     }
 
+    /// Companion to the murmur3 case. `spark_xxhash64` keeps every struct on the Comet kernel,
+    /// so the tagged interval struct must reach its interval arm there too, bare, nested, and
+    /// with the children widened to nullable.
+    #[test]
+    fn test_calendar_interval_uses_spark_interval_hash() {
+        use super::{spark_compatible_xxhash64, spark_xxhash64};
+        use crate::hash_funcs::utils::test_utils::calendar_interval_array;
+        use arrow::array::{Array, ListArray, StructArray};
+        use arrow::buffer::OffsetBuffer;
+        use arrow::datatypes::{Field, Fields};
+        use datafusion::common::ScalarValue;
+        use datafusion::physical_plan::ColumnarValue;
+
+        let intervals = [
+            Some((12, 0, 0)),
+            Some((12, 5, 0)),
+            Some((14, -3, 7_008_009)),
+            None,
+        ];
+        let expected: Vec<u64> = intervals
+            .iter()
+            .map(|v| {
+                v.map_or(42, |(months, _, micros): (i32, i32, i64)| {
+                    spark_compatible_xxhash64(
+                        months.to_le_bytes(),
+                        spark_compatible_xxhash64(micros.to_le_bytes(), 42),
+                    )
+                })
+            })
+            .collect();
+        // Spark 4.1.3 returns 604378839101286624 for `xxhash64(make_interval(y))` with y = 1.
+        assert_eq!(expected[0] as i64, 604378839101286624);
+
+        for nullable_children in [false, true] {
+            let array = calendar_interval_array(&intervals, nullable_children);
+            let hash = |column: ArrayRef| {
+                let mut hashes = vec![42u64; intervals.len()];
+                create_xxhash64_hashes(&[column], &mut hashes).unwrap();
+                hashes
+            };
+            assert_eq!(hash(Arc::clone(&array)), expected);
+
+            let result = spark_xxhash64(&[
+                ColumnarValue::Array(Arc::clone(&array)),
+                ColumnarValue::Scalar(ScalarValue::Int64(Some(42))),
+            ])
+            .unwrap();
+            let ColumnarValue::Array(result) = result else {
+                panic!("expected an array result")
+            };
+            let result = result.as_any().downcast_ref::<Int64Array>().unwrap();
+            assert_eq!(result.value(0), 604378839101286624);
+
+            let list: ArrayRef = Arc::new(ListArray::new(
+                Arc::new(Field::new("item", array.data_type().clone(), true)),
+                OffsetBuffer::from_lengths(vec![1; intervals.len()]),
+                Arc::clone(&array),
+                None,
+            ));
+            assert_eq!(hash(list), expected);
+            let wrapper_fields: Fields =
+                vec![Arc::new(Field::new("c", array.data_type().clone(), true))].into();
+            let wrapped: ArrayRef = Arc::new(StructArray::new(
+                wrapper_fields,
+                vec![Arc::clone(&array)],
+                None,
+            ));
+            assert_eq!(hash(wrapped), expected);
+        }
+    }
+
     #[test]
     fn test_i8() {
         test_xxhash64_hash::<i8, Int8Array>(

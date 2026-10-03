@@ -30,5 +30,5 @@ SELECT abs(i) FROM routing_intervals
 query expect_dispatch(abs)
 SELECT abs(make_dt_interval(i)), abs(make_ym_interval(i)) FROM routing_intervals
 
-query expect_dispatch(make_interval)
+query expect_native(make_interval)
 SELECT make_interval(i, 0, 0, 0, 0, 0, 0) FROM routing_intervals
