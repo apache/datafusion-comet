@@ -1070,6 +1070,38 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(true)
 
+  val COMET_SCAN_PARQUET_CHECK_DATETIME_REBASE: ConfigEntry[Boolean] =
+    conf("spark.comet.scan.parquet.checkDatetimeRebase")
+      .category(CATEGORY_SCAN)
+      .doc(
+        "Whether to inspect Parquet footer metadata during planning to detect files whose " +
+          "dates/timestamps may require legacy (hybrid Julian/Gregorian) datetime rebasing, " +
+          "and fall back to Spark for those scans. The check reads each input file's footer " +
+          "on the driver the first time the file is planned; results are cached per file. " +
+          "Disable only when all input files are known to contain datetime values written " +
+          "with the proleptic Gregorian calendar (for example, written by Spark 3.x or later " +
+          "with corrected rebase modes). When disabled, Comet reads legacy files without " +
+          "rebasing, which produces results that differ from Spark for dates before " +
+          s"1582-10-15 or timestamps before 1900-01-01T00:00:00Z. $COMPAT_GUIDE.")
+      .booleanConf
+      .createWithDefault(true)
+
+  val COMET_SCAN_PARQUET_CHECK_DATETIME_REBASE_MAX_CACHED_FILES: ConfigEntry[Int] =
+    conf("spark.comet.scan.parquet.checkDatetimeRebase.maxCachedFiles")
+      .category(CATEGORY_SCAN)
+      .doc(
+        "The maximum number of Parquet files for which the datetime rebase check " +
+          s"(`${COMET_SCAN_PARQUET_CHECK_DATETIME_REBASE.key}`) caches footer metadata on " +
+          "the driver. The cache is shared by every scan in the driver JVM and evicts the " +
+          "least recently used files first. A scan over more files than this can never be " +
+          "fully cached, so each time it is planned the footers that did not fit are read " +
+          "again. Set this above the number of files in the largest scans; each cached file " +
+          "takes a few hundred bytes of driver memory. The value in effect is the one from " +
+          "the session that last ran the check.")
+      .intConf
+      .checkValue(v => v > 0, "The maximum number of cached files must be positive")
+      .createWithDefault(32768)
+
   val COMET_SCAN_ALLOW_DISABLED_PARQUET_VECTORIZED_READER: ConfigEntry[Boolean] =
     conf("spark.comet.scan.allowDisabledParquetVectorizedReader")
       .category(CATEGORY_SCAN)

@@ -53,7 +53,7 @@ use futures::TryStreamExt;
 use parquet::{
     arrow::ArrowWriter,
     basic::{Compression, GzipLevel, ZstdLevel},
-    file::properties::WriterProperties,
+    file::{metadata::KeyValue, properties::WriterProperties},
 };
 use url::Url;
 
@@ -240,6 +240,8 @@ pub struct ParquetWriterExec {
     column_names: Vec<String>,
     /// Catalyst's target schema, including nullability and Parquet field metadata.
     output_schema: Option<SchemaRef>,
+    /// Runtime Spark version to record in the Parquet metadata
+    spark_version: String,
     /// Object store configuration options
     object_store_options: HashMap<String, String>,
     /// Metrics
@@ -261,6 +263,7 @@ impl ParquetWriterExec {
         partition_id: i32,
         column_names: Vec<String>,
         output_schema: Option<SchemaRef>,
+        spark_version: String,
         object_store_options: HashMap<String, String>,
     ) -> Result<Self> {
         // Preserve the input's partitioning so each partition writes its own file
@@ -283,6 +286,7 @@ impl ParquetWriterExec {
             partition_id,
             column_names,
             output_schema,
+            spark_version,
             object_store_options,
             metrics: ExecutionPlanMetricsSet::new(),
             cache,
@@ -471,6 +475,7 @@ impl ExecutionPlan for ParquetWriterExec {
                 self.partition_id,
                 self.column_names.clone(),
                 self.output_schema.clone(),
+                self.spark_version.clone(),
                 self.object_store_options.clone(),
             )?)),
             _ => Err(DataFusionError::Internal(
@@ -529,9 +534,19 @@ impl ExecutionPlan for ParquetWriterExec {
         };
 
         // Configure writer properties
-        let props = WriterProperties::builder()
-            .set_compression(compression)
-            .build();
+        let mut props = WriterProperties::builder().set_compression(compression);
+        // Spark identifies corrected datetime files by its writer version and the absence of
+        // legacy markers. Comet always writes corrected values, so use the same metadata:
+        // https://github.com/apache/spark/blob/v4.2.0/sql/core/src/main/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetWriteSupport.scala#L126-L146
+        // Spark compares the version as a string, so an empty one would sort below "3.0.0" and
+        // mark the file as legacy. Leave the key out when the plan carries no version.
+        if !self.spark_version.is_empty() {
+            props = props.set_key_value_metadata(Some(vec![KeyValue::new(
+                "org.apache.spark.version".to_string(),
+                Some(self.spark_version.clone()),
+            )]));
+        }
+        let props = props.build();
 
         let object_store_options = self.object_store_options.clone();
         let mut writer = Self::create_arrow_writer(
@@ -683,6 +698,7 @@ mod tests {
             3,
             vec!["id".to_string()],
             None,
+            "4.2.0".to_string(),
             HashMap::new(),
         )?;
 
@@ -701,6 +717,56 @@ mod tests {
         let reader = SerializedFileReader::new(File::open(written)?)?;
         assert_eq!(reader.metadata().file_metadata().num_rows(), 3);
 
+        Ok(())
+    }
+
+    /// The Spark version stamp marks the file as written with corrected datetimes, so it must be
+    /// omitted rather than written empty, which Spark would read as older than 3.0.0.
+    #[tokio::test]
+    async fn test_parquet_writer_spark_version_metadata() -> Result<()> {
+        for (spark_version, expected) in [("4.2.0", Some("4.2.0")), ("", None)] {
+            let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, true)]));
+            let batch = RecordBatch::try_new(
+                Arc::clone(&schema),
+                vec![Arc::new(Int32Array::from(vec![1]))],
+            )?;
+            let memory_source =
+                MemorySourceConfig::try_new(&[vec![batch]], Arc::clone(&schema), None)?;
+            let input = Arc::new(DataSourceExec::new(Arc::new(memory_source)));
+            let temp_dir = tempfile::tempdir()?;
+            let written = temp_dir.path().join("part-00000.parquet");
+            let writer = ParquetWriterExec::try_new(
+                input,
+                format!("file://{}", written.display()),
+                None,
+                None,
+                None,
+                ParquetCompression::None,
+                0,
+                vec!["id".to_string()],
+                None,
+                spark_version.to_string(),
+                HashMap::new(),
+            )?;
+            let mut stream = writer.execute(0, SessionContext::new().task_ctx())?;
+            while stream.try_next().await?.is_some() {}
+
+            let reader = SerializedFileReader::new(File::open(&written)?)?;
+            let version = reader
+                .metadata()
+                .file_metadata()
+                .key_value_metadata()
+                .and_then(|kvs| {
+                    kvs.iter()
+                        .find(|kv| kv.key == "org.apache.spark.version")
+                        .map(|kv| kv.value.clone())
+                });
+            assert_eq!(
+                version,
+                expected.map(|v| Some(v.to_string())),
+                "spark_version={spark_version:?}"
+            );
+        }
         Ok(())
     }
 
@@ -753,6 +819,7 @@ mod tests {
             0,
             vec!["required_id".to_string(), "values".to_string()],
             Some(output_schema),
+            "4.2.0".to_string(),
             HashMap::new(),
         )?;
 
@@ -822,6 +889,7 @@ mod tests {
             0,
             vec!["values".to_string()],
             Some(output_schema),
+            "4.2.0".to_string(),
             HashMap::new(),
         )?;
 
@@ -1081,8 +1149,9 @@ mod tests {
             ParquetCompression::None,
             0, // partition_id
             column_names,
-            None,           // output_schema
-            HashMap::new(), // object_store_options
+            None,                // output_schema
+            "4.2.0".to_string(), // spark_version
+            HashMap::new(),      // object_store_options
         )?;
 
         // Create a session context and execute the plan
