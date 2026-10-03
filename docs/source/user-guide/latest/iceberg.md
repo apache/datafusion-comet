@@ -192,6 +192,10 @@ The following scenarios will fall back to the JVM Iceberg reader:
 - Scans with residual filters using `truncate`, `bucket`, `year`, `month`, `day`, or `hour`
   transform functions (partition pruning still works, but row-level filtering of these
   transforms falls back)
+- Scans that read a struct, array, or map column with a nested field that schema evolution added
+  or renamed. The native reader cannot yet match such a field to data files written before the
+  change. The check uses the table's schema history, so the fallback stays after those files are
+  rewritten
 
 Writes are not covered by this list. By default Iceberg writes use Spark's own writer; see
 [Iceberg Writes](iceberg-writes.md) for the experimental native writer and when it applies.
