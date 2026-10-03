@@ -120,6 +120,19 @@ impl AggregateUDFImpl for SumInteger {
 /// every partial sum Spark would visit. Monotonic queues retain just the extrema
 /// candidates; each entry is pushed/popped once, for amortized O(1) work per row.
 ///
+/// A partial sum is bounded above by the positive sum and below by the negative
+/// sum of retained values, including update-before-retract overlap.
+/// Only enqueue a prefix when that bound exceeds the corresponding i64 limit.
+/// A skipped prefix is safe for every later frame too: moving the left boundary
+/// forward only removes values from those bounds.
+/// Ordinary values therefore need no queue allocation.
+///
+/// Worst-case queue space is still linear in the largest non-null frame,
+/// including update-before-retract overlap. A suffix frame can span the entire
+/// partition. Each entry occupies 32 bytes on a 64-bit host, and VecDeque retains
+/// its grown capacity after retraction. size() reports this capacity, but
+/// DataFusion 55.1's window operators do not account for accumulator sizes.
+///
 /// i128 holds the exact sum of at most usize::MAX i64 values on a 64-bit host.
 /// Nulls need no entries because retraction receives the original input values.
 #[derive(Debug)]
@@ -127,6 +140,7 @@ struct SlidingSumIntegerAccumulator {
     eval_mode: EvalMode,
     end: i128,
     start: i128,
+    positive_sum: i128,
     added: usize,
     removed: usize,
     minima: VecDeque<(usize, i128)>,
@@ -139,6 +153,7 @@ impl SlidingSumIntegerAccumulator {
             eval_mode,
             end: 0,
             start: 0,
+            positive_sum: 0,
             added: 0,
             removed: 0,
             minima: VecDeque::new(),
@@ -148,6 +163,7 @@ impl SlidingSumIntegerAccumulator {
 
     fn add(&mut self, value: i64) {
         self.end += i128::from(value);
+        self.positive_sum += i128::from(value.max(0));
         self.added += 1;
         while self.minima.back().is_some_and(|&(_, v)| v >= self.end) {
             self.minima.pop_back();
@@ -155,12 +171,20 @@ impl SlidingSumIntegerAccumulator {
         while self.maxima.back().is_some_and(|&(_, v)| v <= self.end) {
             self.maxima.pop_back();
         }
-        self.minima.push_back((self.added, self.end));
-        self.maxima.push_back((self.added, self.end));
+        // Keep the dominance pops above even for a skipped prefix. It also
+        // bounds any older entries it dominates in every future frame.
+        let negative_sum = self.end - self.start - self.positive_sum;
+        if negative_sum < i128::from(i64::MIN) {
+            self.minima.push_back((self.added, self.end));
+        }
+        if self.positive_sum > i128::from(i64::MAX) {
+            self.maxima.push_back((self.added, self.end));
+        }
     }
 
     fn remove(&mut self, value: i64) {
         self.start += i128::from(value);
+        self.positive_sum -= i128::from(value.max(0));
         self.removed += 1;
     }
 
@@ -1112,6 +1136,98 @@ mod tests {
                     assert_eq!(acc.evaluate().unwrap(), ScalarValue::Int64(Some(7)));
                 }
             }
+        }
+    }
+
+    #[test]
+    fn sliding_sum_matches_advancing_frames() {
+        // Cross the bounds by accumulating ordinary values as well as MIN/MAX.
+        let half = 1_i64 << 62;
+        let choices = [
+            None,
+            Some(half),
+            Some(-half),
+            Some(i64::MAX),
+            Some(i64::MIN),
+        ];
+        for mut seed in 0..choices.len().pow(5) {
+            let values: Vec<_> = (0..5)
+                .map(|_| {
+                    let value = choices[seed % choices.len()];
+                    seed /= choices.len();
+                    value
+                })
+                .collect();
+            let array: ArrayRef = Arc::new(Int64Array::from(values.clone()));
+            // Growing prefixes, shrinking suffixes, batch updates/retractions,
+            // and disjoint frames.
+            for frames in [
+                vec![0..1, 0..2, 0..3, 0..4, 0..5],
+                vec![0..5, 1..5, 2..5, 3..5, 4..5, 5..5],
+                vec![0..2, 1..4, 2..5, 4..5, 5..5],
+                vec![0..1, 3..4, 4..5, 5..5],
+            ] {
+                for mode in [EvalMode::Ansi, EvalMode::Try] {
+                    let mut acc = SlidingSumIntegerAccumulator::new(mode);
+                    let mut previous = 0..0;
+                    for frame in &frames {
+                        acc.update_batch(&[array.slice(previous.end, frame.end - previous.end)])
+                            .unwrap();
+                        acc.retract_batch(&[
+                            array.slice(previous.start, frame.start - previous.start)
+                        ])
+                        .unwrap();
+                        let expected = values[frame.clone()]
+                            .iter()
+                            .flatten()
+                            .try_fold(None, |sum, &value| {
+                                sum.unwrap_or(0_i64).checked_add(value).map(Some)
+                            });
+                        match (expected, mode) {
+                            (None, EvalMode::Ansi) => assert!(acc.evaluate().is_err()),
+                            _ => assert_eq!(
+                                acc.evaluate().unwrap(),
+                                ScalarValue::Int64(expected.flatten()),
+                                "{values:?}, {frame:?}, {mode:?}"
+                            ),
+                        }
+                        previous = frame.clone();
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sliding_sum_ordinary_suffixes_need_no_queue_allocation() {
+        for value in [Some(8), Some(-8), Some(0), None] {
+            let array: ArrayRef = Arc::new(Int64Array::from(vec![value; 65536]));
+            let mut acc = SlidingSumIntegerAccumulator::new(EvalMode::Try);
+            acc.update_batch(&[Arc::clone(&array)]).unwrap();
+            for start in (0..65536).step_by(1024) {
+                assert_eq!(
+                    acc.evaluate().unwrap(),
+                    ScalarValue::Int64(value.map(|v| v * (65536 - start) as i64))
+                );
+                assert_eq!(acc.size(), std::mem::size_of_val(&acc));
+                acc.retract_batch(&[array.slice(start, 1024)]).unwrap();
+            }
+            assert_eq!(acc.evaluate().unwrap(), ScalarValue::Int64(None));
+            assert_eq!(acc.size(), std::mem::size_of_val(&acc));
+        }
+    }
+
+    #[test]
+    fn sliding_sum_exact_bounds_need_no_queue_allocation() {
+        for value in [i64::MIN, i64::MAX] {
+            let array: ArrayRef = Arc::new(Int64Array::from(vec![Some(value), None, Some(0)]));
+            let mut acc = SlidingSumIntegerAccumulator::new(EvalMode::Ansi);
+            acc.update_batch(&[Arc::clone(&array)]).unwrap();
+            assert_eq!(acc.evaluate().unwrap(), ScalarValue::Int64(Some(value)));
+            assert_eq!(acc.size(), std::mem::size_of_val(&acc));
+            acc.retract_batch(&[array.slice(0, 1)]).unwrap();
+            assert_eq!(acc.evaluate().unwrap(), ScalarValue::Int64(Some(0)));
+            assert_eq!(acc.size(), std::mem::size_of_val(&acc));
         }
     }
 
