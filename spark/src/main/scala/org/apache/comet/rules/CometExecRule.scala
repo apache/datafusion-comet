@@ -62,6 +62,15 @@ import org.apache.comet.shims.{CometTypeShim, ShimCometStreaming, ShimCometWindo
 
 object CometExecRule {
 
+  /**
+   * Whether `scan` reads a relation stored in Comet's cache format. Comet's serializer stores
+   * that format only for schemas it supports and delegates everything else to Spark's default
+   * cache format, which the native scan cannot read.
+   */
+  private[rules] def readsCometCacheFormat(scan: InMemoryTableScanExec): Boolean =
+    scan.relation.cacheBuilder.serializer.isInstanceOf[ArrowCachedBatchSerializer] &&
+      ArrowCachedBatchSerializer.supportsSchema(scan.relation.output)
+
   private[rules] def removePlaceholders(plan: SparkPlan): SparkPlan = plan.transformUp {
     // revertUnsafePartialAggregates re-runs transform over already wrapped query stages, which
     // can produce CometSinkPlaceHolder(CometSinkPlaceHolder(stage)). Remove sinks bottom-up.
@@ -98,6 +107,7 @@ object CometExecRule {
       classOf[SortMergeJoinExec] -> CometSortMergeJoinExec,
       classOf[SortExec] -> CometSortExec,
       classOf[LocalTableScanExec] -> CometLocalTableScanExec,
+      classOf[RangeExec] -> CometRangeExec,
       classOf[InMemoryTableScanExec] -> CometInMemoryTableScanExec,
       classOf[SampleExec] -> CometSampleExec,
       classOf[WindowExec] -> CometWindowExec) ++
@@ -381,10 +391,7 @@ case class CometExecRule(session: SparkSession)
       case scan: InMemoryTableScanExec =>
         val serializer = scan.relation.cacheBuilder.serializer
         val usesCometCacheSerializer = serializer.isInstanceOf[ArrowCachedBatchSerializer]
-        // The serializer only stores Comet's Arrow format for schemas it supports and delegates
-        // everything else to Spark's default cache format, which the native scan cannot read.
-        val cometCacheFormat = usesCometCacheSerializer &&
-          ArrowCachedBatchSerializer.supportsSchema(scan.relation.output)
+        val cometCacheFormat = CometExecRule.readsCometCacheFormat(scan)
         val nativeCacheEnabled = CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.get(conf)
         // Walks the cached plan, so it is lazy: only consulted once the native scan is otherwise
         // possible. See CometInMemoryTableScanExec.recordsObservedMetrics.
@@ -440,6 +447,19 @@ case class CometExecRule(session: SparkSession)
       // because it carries its scan's logical link. Wrap it again so re-planned parents convert.
       case c: CometSparkToColumnarExec =>
         convertToComet(c, CometScanWrapper).getOrElse(c)
+
+      // A leaf with its own enabled Comet operator, such as RangeExec, uses that operator. The
+      // Spark-to-Arrow conversion is the fallback for a leaf the operator declines.
+      case op: LeafExecNode if hasEnabledHandler(op) =>
+        convertToComet(op, allExecs(op.getClass))
+          .orElse {
+            if (shouldApplySparkToColumnar(conf, op)) {
+              convertToComet(op, CometSparkToColumnarExec)
+            } else {
+              None
+            }
+          }
+          .getOrElse(op)
 
       case op if shouldApplySparkToColumnar(conf, op) =>
         convertToComet(op, CometSparkToColumnarExec).getOrElse(op)
@@ -756,6 +776,25 @@ case class CometExecRule(session: SparkSession)
     }
   }
 
+  /**
+   * A relation keeps the cache format it was stored in, since `spark.sql.cache.serializer` is
+   * static, so a plan that runs without Comet's native execution still reads relations cached in
+   * Comet's format. Spark's `InMemoryTableScanExec` reads that format more slowly than Spark's
+   * own (https://github.com/apache/datafusion-comet/issues/5485), and nothing else records a
+   * fallback reason in such a plan, so record one on each scan that does.
+   */
+  private def explainSparkReadsOfCometCache(plan: SparkPlan, cause: String): Unit =
+    plan.foreach {
+      case scan: InMemoryTableScanExec if CometExecRule.readsCometCacheFormat(scan) =>
+        val _ = withFallbackReason(
+          scan,
+          s"$cause, so Spark reads this relation from Comet's cache format, which is slower " +
+            "than reading Spark's own. Set " +
+            s"${CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key}=false when the application " +
+            "starts to cache in Spark's format instead.")
+      case _ =>
+    }
+
   override def apply(plan: SparkPlan): SparkPlan = {
     val newPlan = _apply(plan)
     if (showTransformations && !newPlan.fastEquals(plan)) {
@@ -769,13 +808,17 @@ case class CometExecRule(session: SparkSession)
 
   private def _apply(plan: SparkPlan): SparkPlan = {
     // We shouldn't transform Spark query plan if Comet is not loaded.
-    if (!isCometLoaded(conf)) return plan
+    if (!isCometLoaded(conf)) {
+      explainSparkReadsOfCometCache(plan, "Comet is disabled")
+      return plan
+    }
 
     // Comet does not support structured streaming. Fall back to Spark for any plan that
     // belongs to a streaming query (detected via StreamSourceAwareSparkPlan.getStream).
     if (ShimCometStreaming.isStreamingPlan(plan)) return plan
 
     if (!CometConf.COMET_EXEC_ENABLED.get(conf)) {
+      explainSparkReadsOfCometCache(plan, s"${CometConf.COMET_EXEC_ENABLED.key} is false")
       // Comet exec is disabled, but for Spark shuffle, we still can use Comet columnar shuffle
       if (isCometShuffleEnabled(conf)) {
         applyCometShuffle(plan)
@@ -1119,6 +1162,9 @@ case class CometExecRule(session: SparkSession)
       false
     }
   }
+
+  private def hasEnabledHandler(op: SparkPlan): Boolean =
+    allExecs.get(op.getClass).exists(_.enabledConfig.forall(_.get(op.conf)))
 
   private def shouldApplySparkToColumnar(conf: SQLConf, op: SparkPlan): Boolean = {
     // Only consider converting leaf nodes to columnar currently, so that all the following

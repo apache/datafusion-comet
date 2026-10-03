@@ -68,6 +68,7 @@ message Operator {
     Sample sample = 118;
     WindowGroupLimit window_group_limit = 119;
     IcebergWrite iceberg_write = 120;
+    RangeScan range_scan = 121;
     // Extension point for optional, out-of-tree contrib scans (Delta, Lance, ...). The concrete
     // scan message (e.g. `DeltaScan`) is packed into this envelope on the JVM side and dispatched
     // by `type_url` on the native side. Using a single permanent field -- rather than a new oneof
@@ -841,6 +842,17 @@ message Sample {
   double upper_bound = 2;
   // Seed before the partition index is added, which happens on the native side.
   int64 seed = 3;
+}
+
+// Spark's `RangeExec`, which produces the rows of `spark.range` and SQL `range()`. The native side
+// computes its partition's values from these fields and the partition index, the way Spark's
+// `RangeExec` does.
+message RangeScan {
+  int64 start = 1;
+  int64 step = 2;
+  // Spark's element count. Comet sends only ranges whose count fits in a long.
+  int64 num_elements = 3;
+  int32 num_slices = 4;
 }
 
 enum CompressionCodec {

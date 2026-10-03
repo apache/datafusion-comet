@@ -29,6 +29,10 @@
 //!   [`normalize_floats`] and [`normalize_nested_floats`].
 //! - `java.lang.Double.equals`, which boxed keys such as those in `OpenHashSet` use: all NaNs are
 //!   equal, but `-0.0` and `0.0` are distinct. See [`canonicalize_nan`].
+//! - `java.lang.Double.compare`, which `java.util.Arrays.sort` on a primitive array uses: the SQL
+//!   ordering, except that `-0.0` sorts before `0.0`. Spark's generated code sorts an ascending
+//!   `sort_array` of `FLOAT` or `DOUBLE` elements that cannot be null this way. See
+//!   [`compare_floats_java`].
 //! - `Murmur3Hash` and `XxHash64`: `-0.0` hashes as `0.0`, and NaN as the canonical NaN. See
 //!   [`hash_input`].
 //!
@@ -88,6 +92,16 @@ pub fn compare_floats<T: Float>(left: T, right: T) -> Ordering {
         Ordering::Greater
     } else {
         Ordering::Less
+    }
+}
+
+/// `java.lang.Double.compare`: Spark's SQL ordering, except that `-0.0` sorts before `0.0`.
+#[inline]
+pub fn compare_floats_java<T: Float>(left: T, right: T) -> Ordering {
+    match compare_floats(left, right) {
+        // Equal values that are not NaN differ in sign only when they are -0.0 and 0.0.
+        Ordering::Equal if !left.is_nan() => right.is_sign_negative().cmp(&left.is_sign_negative()),
+        ordering => ordering,
     }
 }
 

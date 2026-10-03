@@ -367,19 +367,11 @@ object CometFloatSemanticsSuite {
           (c.context.startsWith("array operands") || c.context.startsWith("struct operands")) &&
           !Set("=", "!=").contains(c.variant)),
     KnownGap(
-      issue(5507),
-      "Sort keys that nest floats in an array are compared raw.",
-      in("key", "nested ORDER BY")),
-    KnownGap(
       issue(6385),
       "hash, xxhash64 and the native shuffle's hash partitioner hash a NaN's raw bits.",
       c =>
         in("expression", "hash", "xxhash64", "hash of array", "hash of struct")(c) ||
           in("key", "hash repartition")(c)),
-    KnownGap(
-      issue(6385),
-      "array_remove and sort_array compare floats by IEEE 754 total order.",
-      in("expression", "array_remove", "sort_array", "sort_array descending")),
     KnownGap(
       issue(5701),
       "array_distinct and array_union fold -0.0 into 0.0 and keep NaNs with different bits " +

@@ -74,6 +74,9 @@ Location: `spark/src/main/scala/org/apache/comet/serde/`
 - [ ] `getSupportLevel` reflects true compatibility rather than the happy path
 - [ ] Serde lives in the appropriate file (`datetime.scala`, `strings.scala`, `arithmetic.scala`, and so on)
 - [ ] ANSI and `fail_on_error` handling matches the constraints in `adding_a_new_expression.md`
+- [ ] A change that routes a whole class of expressions to the JVM codegen dispatcher lists the new
+      shapes it admits and tests one of each, including decimal results whose scale differs from the
+      declared type and boolean inputs from sliced batches (#6424, #6425)
 
 ### Registration in `QueryPlanSerde.scala`
 
@@ -103,6 +106,12 @@ Location: `native/spark-expr/src/`, registered in `comet_scalar_funcs.rs`.
 - [ ] No panics. Use `Result`.
 - [ ] Batch operations rather than row-by-row where a kernel exists
 - [ ] Invalid UTF-8 going into a native `StringType` goes through `decode_utf8_spark_lossy`
+- [ ] An aggregate merges partial states in Spark's order of operations, not just with Spark's
+      buffer layout. A different floating-point order fails Spark's exact checks, such as `m2 == 0`,
+      when a constant is merged from several partitions (#6423).
+- [ ] Comparisons, grouping and set operations treat `-0.0` and `0.0`, and NaN payloads, as Spark
+      does, including inside arrays and structs. Where a DataFusion kernel treats them differently,
+      the serde falls back (#5507, #5701).
 
 Before accepting a hand-written kernel, ask whether the function already exists upstream in
 DataFusion or the `datafusion-spark` crate. Comet prefers wiring an upstream function over carrying
@@ -163,6 +172,11 @@ single file by appending a substring of its name to the suite argument.
 - [ ] Timezone handling tested for timestamp and datetime expressions, including a non-UTC session
       timezone and timestamps with and without timezone
 - [ ] SQL syntax gated with `MinSparkVersion` when it only parses on newer Spark
+- [ ] For a function from another project, such as an Iceberg transform, the expected values come
+      from that project's Java implementation, which is what Spark runs, not from iceberg-rust
+      (#6426)
+- [ ] A `query ignore(...)` for a result that differs from Spark comes with a fallback for that
+      case, so the divergence doesn't ship natively by default (#5701)
 - [ ] `expect_error` patterns substring-match what both Spark and Comet actually throw
 - [ ] One expression per SQL file
 - [ ] Comet Scala literal tests disable constant folding:
