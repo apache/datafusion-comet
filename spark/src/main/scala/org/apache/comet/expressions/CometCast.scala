@@ -43,6 +43,10 @@ object CometCast
   private[comet] val negativeScaleDecimalToStringReason: String =
     "Negative-scale decimal requires spark.sql.legacy.allowNegativeScaleOfDecimal=true"
 
+  private[comet] val literalCastConditionalEvalReason: String =
+    "Cast of a literal threw during planning; Spark leaves it for conditional evaluation " +
+      "so it may never be reached at runtime."
+
   // When `spark.sql.legacy.castComplexTypesToString.enabled` is true, Spark wraps maps and
   // structs with `[]` (instead of `{}`) when casting to string, and omits NULL elements of
   // structs/maps/arrays (instead of rendering them as the literal "null"). Comet's native
@@ -128,7 +132,11 @@ object CometCast
             cast.eval()
           } catch {
             case NonFatal(_) =>
-              withFallbackReason(cast, "Literal cast requires Spark's conditional evaluation")
+              // ConstantFolding.tryFold leaves failed conditional expressions unfolded. Its
+              // FAILED_TO_EVALUATE tag is private[sql], so evaluate defensively here instead.
+              // Deliberately keep this in convert: a codegen-dispatched projection evaluates
+              // a whole batch and can reach a throwing row that Spark skips under LIMIT.
+              withFallbackReason(cast, literalCastConditionalEvalReason)
               return None
           }
         exprToProtoInternal(Literal.create(value, cast.dataType), inputs, binding)
