@@ -57,12 +57,12 @@ runs:
       env:
         RUSTFLAGS: ${{ steps.key.outputs.rustflags }}
       run: |
-        cd native
         # A library miss always builds, even on an exact incremental hit.
         # Main also builds to populate a missing incremental entry; two exact
         # hits already supply the library and leave neither cache to publish.
-        cargo build --locked --profile ci
-        python3 ../dev/ci/native-cache-key.py --check-depinfo target/ci/libcomet.d
+        (cd native && cargo build --locked --profile ci)
+        # Git trusts the checkout root, not its native/ subdirectory.
+        python3 dev/ci/native-cache-key.py --check-depinfo native/target/ci/libcomet.d
 
     - name: Save native library cache
       if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.library-cache.outputs.cache-hit != 'true'

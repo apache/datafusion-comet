@@ -463,7 +463,7 @@ release/path, and Cargo/Rust, C/C++ compiler/flag and HDFS environment overrides
 Caller workflows are excluded because their selected tools and environment are
 observed directly. Spark edits, documentation, generated files and disabled
 contrib sources preserve the key; contrib manifests remain inputs for `--locked`.
-Benchmarks enter only the debug key. The input lists and glob matcher are shared
+Benchmarks do not enter the library key. The input lists and glob matcher are shared
 with routing in `compute-changes.py` and fingerprinted independently of its
 unrelated routing policy. Native manifests select validation on pull requests and
 the merge queue as well as main's cache warmer. Code generation uses `x86-64-v3`.
@@ -482,11 +482,11 @@ runner, Rust container, toolchain/JDK selection and declared producer environmen
 including changes before the native action. New environment overrides must be
 reviewed against the fingerprint before they are admitted by this check.
 
-The CI and debug incremental caches hold only `native/target`, including compiled
+The CI incremental cache holds only `native/target`, including compiled
 dependencies. Cargo fetches registry and Git dependency sources as needed; those
 downloads are not duplicated in the repository's limited cache storage. Fallback
 restores permit source changes within the same dependency/build environment.
-Rust checks and tests always run with their separate debug cache. Preflight checks
+Rust checks and tests remain uncached, preserving main's cache budget. Preflight checks
 fingerprint invalidation, main's routing, and the action's cache-hit/miss behavior.
 
 ## Retrying flaky network operations

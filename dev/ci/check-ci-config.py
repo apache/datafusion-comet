@@ -149,20 +149,20 @@ ROUTING_CASES = [
     ([".github/actions/maven-bootstrap/action.yaml"], MVN_JOBS),
     # Linux's compact native cache is shared by every Spark/Iceberg producer.
     # Helper edits also match macOS's broad dev/ci filter, as before.
-    ([".github/actions/build-native-ci/action.yaml"], BUILD_JOBS - {"build_macos"}),
+    ([".github/actions/build-native-ci/action.yaml"], BUILD_JOBS - {"build_macos", "build_macos_full"}),
     (["dev/ci/native-cache-key.py"], BUILD_JOBS),
     # Cargo validates disabled contrib manifests with native/Cargo.lock too.
     (["contrib/lance/native/Cargo.toml"], LINUX_JOBS),
     (["contrib/delta/native/Cargo.toml"], LINUX_JOBS | {"delta_gate"}),
     ([".cargo/config.toml"], LINUX_JOBS),
     (["rust-toolchain"], LINUX_JOBS),
-    (["dev/ci/test-native-cache-key.py"], LINUX_JOBS | {"build_macos"}),
-    (["dev/ci/compute-changes.py"], LINUX_JOBS | {"build_macos"}),
+    (["dev/ci/test-native-cache-key.py"], LINUX_JOBS | {"build_macos", "build_macos_full"}),
+    (["dev/ci/compute-changes.py"], LINUX_JOBS | {"build_macos", "build_macos_full"}),
     # Spot checks that the additions above did not widen unrelated routes.
     (["docs/source/user-guide/overview.md"], {"docs"}),
     (["native/core/benches/parquet_read.rs"], {"benchmark"}),
     (["native/operators/benches/explode.rs"], {"benchmark"}),
-    (["native/shuffle/benches/shuffle.rs"], LINUX_JOBS | {"build_macos", "delta_gate"}),
+    (["native/shuffle/benches/shuffle.rs"], LINUX_JOBS | {"build_macos", "build_macos_full", "delta_gate"}),
     # The mermaid guard is run by preflight, which is unconditional, and again
     # by the docs deploy, which is not, so the deploy has to be routed. The
     # build jobs come along because `dev/ci/**` already feeds them.

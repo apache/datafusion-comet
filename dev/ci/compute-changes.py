@@ -456,7 +456,7 @@ FILTERS = {
 # Spark and Iceberg producers share these recipes. Linux routes the action
 # above and already covers the Python helpers through dev/ci/**.
 for _native_consumer in (
-    "spark_3_4", "spark_3_5", "spark_4_0", "spark_4_1",
+    "spark_3_4", "spark_3_5", "spark_4_0", "spark_4_1", "spark_4_2",
     "iceberg_1_8", "iceberg_1_9", "iceberg_1_10", "iceberg_1_11",
 ):
     FILTERS[_native_consumer].extend(NATIVE_CACHE_RECIPES)

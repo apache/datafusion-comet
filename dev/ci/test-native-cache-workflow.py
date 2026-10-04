@@ -109,7 +109,10 @@ class NativeCacheWorkflowTests(unittest.TestCase):
             subprocess.run(["git", "init", "--quiet"], cwd=root, check=True)
             subprocess.run(["git", "add", "native"], cwd=root, check=True)
             env = {**os.environ, "PATH": f"{root / 'bin'}:{os.environ['PATH']}",
-                   "JAVA_HOME": str(root / "jdk")}
+                   "JAVA_HOME": str(root / "jdk"),
+                   "GIT_TEST_ASSUME_DIFFERENT_OWNER": "1",
+                   "GIT_CONFIG_GLOBAL": str(root / "isolated.gitconfig"),
+                   "GIT_CONFIG_NOSYSTEM": "1"}
             for dependency, success in (("native/src/lib.rs", True), ("native/README.md", False)):
                 with self.subTest(dependency=dependency):
                     result = subprocess.run(
