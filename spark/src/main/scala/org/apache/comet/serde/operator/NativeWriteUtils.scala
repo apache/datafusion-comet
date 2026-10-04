@@ -202,14 +202,16 @@ object NativeWriteUtils {
     val hasDate = output.exists(a => SupportLevel.containsType(a.dataType, classOf[DateType]))
     val hasTimestamp =
       output.exists(a => SupportLevel.containsType(a.dataType, classOf[TimestampType]))
-    // Both write rebase mode configs default to EXCEPTION in all supported Spark versions.
-    def isLegacyWriteMode(key: String): Boolean =
-      SQLConf.get.getConfString(key, "EXCEPTION").toUpperCase(Locale.ROOT) == "LEGACY"
+    // getConf also reads the 3.x legacy alias keys. Both modes default to EXCEPTION on 3.x and
+    // to CORRECTED on 4.0+.
+    def isLegacy(mode: Any): Boolean = mode.toString == "LEGACY"
+    val datetimeLegacy = (hasDate || hasTimestamp) &&
+      isLegacy(SQLConf.get.getConf(SQLConf.PARQUET_REBASE_MODE_IN_WRITE))
+    val int96Legacy =
+      hasTimestamp && isLegacy(SQLConf.get.getConf(SQLConf.PARQUET_INT96_REBASE_MODE_IN_WRITE))
     val legacyModeKeys =
-      ((if (hasDate || hasTimestamp) Seq(SQLConf.PARQUET_REBASE_MODE_IN_WRITE.key)
-        else Seq.empty) ++
-        (if (hasTimestamp) Seq(SQLConf.PARQUET_INT96_REBASE_MODE_IN_WRITE.key)
-         else Seq.empty)).filter(isLegacyWriteMode)
+      (if (datetimeLegacy) Seq(SQLConf.PARQUET_REBASE_MODE_IN_WRITE.key) else Nil) ++
+        (if (int96Legacy) Seq(SQLConf.PARQUET_INT96_REBASE_MODE_IN_WRITE.key) else Nil)
     if (legacyModeKeys.isEmpty) {
       None
     } else {

@@ -706,6 +706,27 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
     }
   }
 
+  test("parquet write falls back when only a legacy alias key sets the LEGACY rebase mode") {
+    // Spark 3.x also reads the write modes from these alias keys. Spark 4.0 removed them.
+    assume(!isSpark40Plus)
+    withTempPath { dir =>
+      val df = spark.sql(
+        "SELECT id, date'2000-01-01' AS d, timestamp'2000-01-01 00:00:00' AS ts FROM range(10)")
+      Seq(
+        "spark.sql.legacy.parquet.datetimeRebaseModeInWrite",
+        "spark.sql.legacy.parquet.int96RebaseModeInWrite").foreach { key =>
+        val outputPath = new File(dir, key).getAbsolutePath
+        withNativeWriter {
+          withSQLConf(key -> "LEGACY") {
+            val plan = captureWritePlan(path => df.write.parquet(path), outputPath)
+            assertNoCometNativeWriteExec(plan)
+          }
+        }
+        checkAnswer(spark.read.parquet(outputPath), df.collect())
+      }
+    }
+  }
+
   test("parquet write with temporal types within complex types") {
     withTempPath { dir =>
       val outputPath = new File(dir, "output.parquet").getAbsolutePath
