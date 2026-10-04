@@ -53,6 +53,7 @@ pub enum OperatorType {
     Limit,
     Sort,
     ShuffleWriter,
+    ShuffleScan,
     ParquetWriter,
     Expand,
     SortMergeJoin,
@@ -119,6 +120,7 @@ impl OperatorRegistry {
     /// Register all operator builders
     fn register_all_operators(&mut self) {
         self.register_projection_operators();
+        self.register_shuffle_operators();
         self.register_write_operators();
     }
 
@@ -128,6 +130,16 @@ impl OperatorRegistry {
 
         self.builders
             .insert(OperatorType::Projection, Box::new(ProjectionBuilder));
+    }
+
+    /// Register shuffle operators
+    fn register_shuffle_operators(&mut self) {
+        use super::shuffle::{ShuffleScanBuilder, ShuffleWriterBuilder};
+
+        self.builders
+            .insert(OperatorType::ShuffleWriter, Box::new(ShuffleWriterBuilder));
+        self.builders
+            .insert(OperatorType::ShuffleScan, Box::new(ShuffleScanBuilder));
     }
 
     /// Register write operators
@@ -163,8 +175,9 @@ fn get_operator_type(spark_operator: &Operator) -> Option<OperatorType> {
         OpStruct::Window(_) => Some(OperatorType::Window),
         OpStruct::Explode(_) => None, // Not yet in OperatorType enum
         OpStruct::CsvScan(_) => Some(OperatorType::CsvScan),
-        OpStruct::ShuffleScan(_) => None, // Not yet in OperatorType enum
+        OpStruct::ShuffleScan(_) => Some(OperatorType::ShuffleScan),
         OpStruct::BroadcastNestedLoopJoin(_) => None,
+        OpStruct::RangeScan(_) => None,
         OpStruct::Sample(_) => None, // Not yet in OperatorType enum
         // Generic extension point for out-of-tree contrib scans (Delta, Lance, ...); not in
         // OperatorType enum. The arm stays unconditional even in non-contrib builds because the
