@@ -728,6 +728,25 @@ object CometExec {
     bytes
   }
 
+  /**
+   * The childless operators of a native plan, depth first. Its `Scan` and `ShuffleScan` leaves
+   * read the block's inputs in this order.
+   */
+  def nativeLeaves(op: Operator): Seq[Operator] =
+    if (op.getChildrenCount == 0) Seq(op)
+    else op.getChildrenList.asScala.toSeq.flatMap(nativeLeaves)
+
+  /**
+   * The input indices of a native plan that its `ShuffleScan` leaves read. Each `Scan` or
+   * `ShuffleScan` leaf reads one input, in [[nativeLeaves]] order.
+   */
+  def findShuffleScanIndices(plan: Operator): Set[Int] =
+    nativeLeaves(plan)
+      .filter(leaf => leaf.hasScan || leaf.hasShuffleScan)
+      .zipWithIndex
+      .collect { case (leaf, index) if leaf.hasShuffleScan => index }
+      .toSet
+
   def getCometIterator(
       inputObjects: Array[Object],
       numOutputCols: Int,
@@ -995,7 +1014,7 @@ abstract class CometNativeExec extends CometExec {
     // (`ShuffleQueryStageExec`), so a bare non-AQE `CometShuffleExchangeExec` always serializes
     // as a regular Scan regardless of `COMET_SHUFFLE_DIRECT_READ_ENABLED`. Driving the JVM
     // dispatch from `shuffleScanIndices` instead of the conf keeps the two aligned.
-    val shuffleScanIndices = findShuffleScanIndices(nativeOp)
+    val shuffleScanIndices = CometExec.findShuffleScanIndices(nativeOp)
 
     def isBroadcastInput(plan: SparkPlan): Boolean = plan match {
       case _: CometBroadcastExchangeExec => true
@@ -1178,27 +1197,6 @@ abstract class CometNativeExec extends CometExec {
   }
 
   /**
-   * Walk the protobuf operator tree depth-first to find which input indices correspond to
-   * ShuffleScan vs Scan leaf nodes. Each Scan or ShuffleScan leaf consumes one input in order.
-   */
-  private def findShuffleScanIndices(plan: OperatorOuterClass.Operator): Set[Int] = {
-    var scanIndex = 0
-    val indices = mutable.Set.empty[Int]
-    def walk(op: OperatorOuterClass.Operator): Unit = {
-      if (op.hasShuffleScan) {
-        indices += scanIndex
-        scanIndex += 1
-      } else if (op.hasScan) {
-        scanIndex += 1
-      } else {
-        op.getChildrenList.asScala.foreach(walk)
-      }
-    }
-    walk(plan)
-    indices.toSet
-  }
-
-  /**
    * Converts this native Comet operator and its children into a native block which can be
    * executed as a whole (i.e., in a single JNI call) from the native side.
    */
@@ -1209,6 +1207,22 @@ abstract class CometNativeExec extends CometExec {
         // point where the whole native block is in hand, which is what the pool indices are
         // scoped to.
         SerializedPlan(Some(CometExec.serializeNativePlan(QueryContextInterner.intern(nativeOp))))
+      case other: AnyRef => other
+      case null => null
+    }
+
+    val newArgs = mapProductIterator(transform)
+    makeCopy(newArgs).asInstanceOf[CometNativeExec]
+  }
+
+  /**
+   * Copies this operator with `newOp` as its native plan and no serialized plan, so that
+   * `convertBlock` serializes the block again.
+   */
+  def withRefreshedNativeOp(newOp: Operator): CometNativeExec = {
+    def transform(arg: Any): AnyRef = arg match {
+      case op: Operator if op eq nativeOp => newOp
+      case _: SerializedPlan => SerializedPlan(None)
       case other: AnyRef => other
       case null => null
     }

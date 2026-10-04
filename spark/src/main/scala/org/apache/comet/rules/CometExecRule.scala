@@ -20,6 +20,7 @@
 package org.apache.comet.rules
 
 import scala.collection.mutable.ListBuffer
+import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Divide, DoubleLiteral, EqualNullSafe, EqualTo, Expression, FloatLiteral, GreaterThan, GreaterThanOrEqual, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, NamedExpression, Remainder}
@@ -57,6 +58,7 @@ import org.apache.comet.CometConf.{COMET_SPARK_TO_ARROW_ENABLED, COMET_SPARK_TO_
 import org.apache.comet.CometSparkSessionExtensions._
 import org.apache.comet.rules.CometExecRule.allExecs
 import org.apache.comet.serde._
+import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.operator._
 import org.apache.comet.shims.{CometTypeShim, ShimCometStreaming, ShimCometWindowGroupLimit, ShimSubqueryBroadcast}
 
@@ -87,6 +89,13 @@ object CometExecRule {
    */
   val COMET_UNSAFE_PARTIAL: TreeNodeTag[String] =
     TreeNodeTag[String]("comet.unsafePartialAgg")
+
+  /**
+   * Info message for a native operator that keeps a `Scan` over an input that now reads its
+   * shuffle directly, because its native plan's leaves do not line up with its inputs.
+   */
+  val STALE_SCAN_KEPT: String =
+    "Shuffle direct read not applied: the native plan's leaves do not match its inputs"
 
   /**
    * Fully native operators.
@@ -619,13 +628,95 @@ case class CometExecRule(session: SparkSession)
     }
 
     plan.transformUp { case op =>
-      val converted = convertNode(op)
+      val converted = convertNode(refreshStaleShuffleScans(op))
       // Replace SubqueryBroadcastExec with CometSubqueryBroadcastExec in DPP expressions
       // when the broadcast child has a Comet plan underneath. This enables exchange reuse
       // between the DPP subquery and the join's CometBroadcastExchangeExec because both
       // will have the same CometBroadcastExchangeExec type and canonical form.
       convertSubqueryBroadcasts(converted)
     }
+  }
+
+  /**
+   * AQE re-plans around a materialized stage by reusing the physical node linked to it, so a
+   * native operator that shares its logical node with a shuffle stage (the final aggregate of a
+   * two-phase aggregate) keeps the native plan it got while that input was a bare exchange, read
+   * through a plain `Scan`. Once the input is a sink that reads the shuffle directly, its
+   * `ShuffleScan` takes the place of the stale leaf. The leaf is patched in place because
+   * converting the node again from `originalPlan` would drop the stage's logical link that AQE
+   * relies on and re-run serde on a node that is already planned.
+   */
+  private def refreshStaleShuffleScans(op: SparkPlan): SparkPlan = op match {
+    case _ if scansChildAsSeparateBlock(op) => op
+    case native: CometNativeExec if native.children.nonEmpty =>
+      refreshedNativeOp(native) match {
+        case Some(newOp) =>
+          val refreshed = native.withRefreshedNativeOp(newOp)
+          // An operator that does not hold its native plan as a field cannot take a new one.
+          if (refreshed.nativeOp eq newOp) refreshed else op
+        case None => op
+      }
+    case _ => op
+  }
+
+  /**
+   * The native plan of `native` with each `Scan` leaf whose input is now a `ShuffleScan` of the
+   * same field types replaced by that `ShuffleScan`, or None if there is no such leaf or the plan
+   * children cannot be matched to the leaves. In the second case `native` gets an info message
+   * for extended explain, since the block still reads its shuffle through the JVM.
+   */
+  private def refreshedNativeOp(native: CometNativeExec): Option[Operator] = {
+    val children = native.children.collect { case child: CometNativeExec => child }
+    // Only a sink that reads a shuffle directly, or a native child that may hold one, can feed
+    // a `ShuffleScan`.
+    val mayFeedShuffleScan = children.exists {
+      case sink: CometSinkPlaceHolder => sink.nativeOp.hasShuffleScan
+      case _ => true
+    }
+    if (children.length != native.children.length || !mayFeedShuffleScan) return None
+    val leaves = CometExec.nativeLeaves(native.nativeOp)
+    if (!leaves.exists(_.hasScan)) return None
+
+    // Each plan child feeds a run of leaves, in order: a sink feeds one, and a native child
+    // feeds the leaves of its own native plan.
+    val current = children.flatMap {
+      case sink: CometSinkPlaceHolder => Seq(sink.nativeOp)
+      case child => CometExec.nativeLeaves(child.nativeOp)
+    }
+    def isStale(leaf: Operator, input: Operator): Boolean = leaf.hasScan && input.hasShuffleScan
+    val stale = leaves.zip(current).filter { case (leaf, input) => isStale(leaf, input) }
+    if (stale.isEmpty) return None
+    val isRefreshable = current.length == leaves.length &&
+      stale.forall { case (leaf, input) =>
+        leaf.getScan.getFieldsList == input.getShuffleScan.getFieldsList
+      }
+    if (!isRefreshable) {
+      withInfo(native, CometExecRule.STALE_SCAN_KEPT)
+      return None
+    }
+    val inputs = current.iterator
+    Some(mapLeaves(native.nativeOp) { leaf =>
+      val input = inputs.next()
+      if (isStale(leaf, input)) input else leaf
+    })
+  }
+
+  /** `op` with `f` applied to each childless operator, in `CometExec.nativeLeaves` order. */
+  private def mapLeaves(op: Operator)(f: Operator => Operator): Operator =
+    if (op.getChildrenCount == 0) {
+      f(op)
+    } else {
+      val children = op.getChildrenList.asScala.map(mapLeaves(_)(f))
+      op.toBuilder.clearChildren().addAllChildren(children.asJava).build()
+    }
+
+  /**
+   * Whether `op` is a writer whose native plan builds its own `Scan` over its child, so that the
+   * child runs as a separate native block instead of inside that plan.
+   */
+  private def scansChildAsSeparateBlock(op: SparkPlan): Boolean = op match {
+    case _: CometNativeWriteExec | _: CometIcebergWriteExec | _: CometWriteFilesExec => true
+    case _ => false
   }
 
   /**
@@ -943,8 +1034,7 @@ case class CometExecRule(session: SparkSession)
           // its child (e.g., CometNativeScanExec, or a CometProject over an AQEShuffleRead)
           // needs its own serialization. Reset the flag so children can start their own native
           // execution blocks.
-          if (op.isInstanceOf[CometNativeWriteExec] || op.isInstanceOf[CometIcebergWriteExec] ||
-            op.isInstanceOf[CometWriteFilesExec]) {
+          if (scansChildAsSeparateBlock(op)) {
             firstNativeOp = true
           }
 
