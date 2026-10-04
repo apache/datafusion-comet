@@ -4073,6 +4073,91 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("SparkToColumnar converts Spark's Parquet vectors across row groups") {
+    withTempPath { dir =>
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        spark
+          .range(6000)
+          .selectExpr(
+            "id",
+            "if(id % 11 = 0, null, cast(id * 7 as decimal(9,2))) as d9",
+            "if(id % 13 = 0, null, cast((id - 3000) * 9007199254 as decimal(18,2))) as d18",
+            // Both values that fit in a long and values that need all 16 bytes.
+            "if(id % 7 = 0, null, cast(concat(if(id % 2 = 0, '-', ''), cast(id as string), " +
+              "if(id % 3 = 0, '', '123456789012345678'), '.0123456789') as decimal(38,10))) " +
+              "as d38",
+            "if(id % 9 = 0, null, id % 3 = 0) as flag",
+            // Each row group draws from different values, so its dictionary differs.
+            "if(id % 5 = 0, null, concat('group', cast(id div 1000 as string), '-', " +
+              "cast(id % 17 as string))) as dict_string",
+            "if(id % 8 = 0, null, if(id % 4 = 1, array(), transform(sequence(0, " +
+              "cast(id % 4 as int)), x -> concat('e', cast(x + id % 50 as string))))) " +
+              "as strings",
+            "if(id % 6 = 0, null, if(id % 5 = 1, map(), map('k', cast(id % 30 as string), " +
+              "'j', concat('v', cast(id as string))))) as m",
+            "if(id % 10 = 0, null, named_struct('i', cast(id as int), 's', concat('s', " +
+              "cast(id % 40 as string)), 'd', cast(id as decimal(20,4)))) as st")
+          .repartition(1)
+          .write
+          // Several row groups in the one file, each with its own dictionaries.
+          .option("parquet.block.size", 16 * 1024)
+          .parquet(dir.toString)
+      }
+      withSQLConf(
+        CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
+        CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true",
+        SQLConf.PARQUET_VECTORIZED_READER_NESTED_COLUMN_ENABLED.key -> "true",
+        // Spark batches smaller than Comet's, so each Arrow batch spans several of them and, with
+        // them, several row groups.
+        SQLConf.PARQUET_VECTORIZED_READER_BATCH_SIZE.key -> "700",
+        CometConf.COMET_BATCH_SIZE.key -> "4096") {
+        // The filter keeps the conversion, which would otherwise feed a row consumer directly.
+        val df = spark.read.parquet(dir.toString).where("id >= 0")
+        checkSparkAnswer(df)
+        val conversions = collect(df.queryExecution.executedPlan) {
+          case c: CometSparkToColumnarExec => c
+        }
+        assert(
+          conversions.map(_.nodeName) == Seq("CometSparkColumnarToColumnar"),
+          df.queryExecution.executedPlan)
+        checkSparkAnswer(
+          df.groupBy("dict_string")
+            .agg(sum("d9"), sum("d18"), count("d38"), count("strings"), count("m"), count("st")))
+      }
+    }
+  }
+
+  test("SparkToColumnar reads structs the Parquet file does not have as null") {
+    withTempPath { dir =>
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        spark
+          .range(5000)
+          .selectExpr("id", "if(id % 7 = 0, null, named_struct('a', cast(id as int))) as st")
+          .repartition(1)
+          .write
+          .parquet(dir.toString)
+      }
+      // Spark's reader marks a missing struct all null and never writes its fields, whether the
+      // struct is a column of its own or a field of one the file has.
+      val fields = "s: string, d: decimal(38,10)"
+      val schema = s"id long, st struct<a: int, inner: struct<$fields>>, missing struct<$fields>"
+      Seq("false", "true").foreach { offHeap =>
+        withSQLConf(
+          CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
+          CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true",
+          SQLConf.PARQUET_VECTORIZED_READER_NESTED_COLUMN_ENABLED.key -> "true",
+          SQLConf.COLUMN_VECTOR_OFFHEAP_ENABLED.key -> offHeap) {
+          val df = spark.read.schema(schema).parquet(dir.toString).where("id >= 0")
+          checkSparkAnswer(df)
+          val conversions = collect(df.queryExecution.executedPlan) {
+            case c: CometSparkToColumnarExec => c
+          }
+          assert(conversions.nonEmpty, df.queryExecution.executedPlan)
+        }
+      }
+    }
+  }
+
   test("SparkToColumnar over InMemoryTableScanExec") {
     Seq("true", "false").foreach(cacheVectorized => {
       withSQLConf(

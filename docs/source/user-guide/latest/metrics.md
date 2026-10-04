@@ -82,7 +82,7 @@ Native aggregates with grouping keys report these additional metrics:
 | `number of spills`                   | Number of times the aggregate spilled to disk.                                                                                               |
 | `total spilled bytes`                | Bytes written to aggregate spill files.                                                                                                      |
 | `number of spilled rows`             | Rows written to aggregate spill files.                                                                                                       |
-| `peak native aggregate memory`       | Peak memory used by the native aggregate.                                                                                                    |
+| `peak native aggregate memory`       | Peak memory used by the native aggregate. Not currently reported ([#5703](https://github.com/apache/datafusion-comet/issues/5703)).          |
 
 Spill bytes from native sorts, aggregates, and sort-merge joins are also added to Spark's task-level
 `diskBytesSpilled` metric in every stage, not only in shuffle stages.
