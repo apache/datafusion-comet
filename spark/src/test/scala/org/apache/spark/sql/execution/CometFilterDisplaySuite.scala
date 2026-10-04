@@ -29,7 +29,6 @@ import org.apache.spark.sql.comet.{CometFilterExec, SerializedPlan}
 import org.apache.spark.sql.execution.{ScalarSubquery => ExecScalarSubquery}
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.execution.ui.SparkPlanGraph
-import org.apache.spark.sql.functions.{col, lit}
 import org.apache.spark.sql.types.{BinaryType, LongType}
 import org.apache.spark.util.sketch.BloomFilter
 
@@ -37,8 +36,6 @@ import org.apache.comet.CometSparkSessionExtensions.isSpark42Plus
 import org.apache.comet.serde.OperatorOuterClass.Operator
 
 class CometFilterDisplaySuite extends CometTestBase {
-  import testImplicits._
-
   private case class Input(override val output: Seq[Attribute]) extends LeafExecNode {
     override protected def doExecute(): RDD[InternalRow] =
       throw new AssertionError("Rendering must not execute the plan")
@@ -81,7 +78,8 @@ class CometFilterDisplaySuite extends CometTestBase {
     withSQLConf("spark.sql.optimizer.runtime.bloomFilter.enabled" -> "true") {
       withParquetDataFrame(Seq(Tuple1(7L), Tuple1(8L))) { input =>
         def query = input.filter(
-          getColumnFromExpression(BloomFilterMightContain(lit(bytes).expr, col("_1").expr)))
+          getColumnFromExpression(
+            BloomFilterMightContain(Literal(bytes), input.queryExecution.analyzed.output.head)))
         val (_, plan) = checkSparkAnswerAndOperator(query, Seq(classOf[CometFilterExec]))
         checkAnswer(query, Seq(Row(7L)))
         val filters = plan.collect { case filter: CometFilterExec => filter }
