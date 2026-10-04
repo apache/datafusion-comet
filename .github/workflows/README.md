@@ -486,8 +486,8 @@ or JNI/JVM contents invalidate both caches. Build tools outside the official pac
 require extending it before reuse.
 
 Every consumer must match main's native producer environment to reuse its library
-or incremental cache. A different JDK or container needs its own publisher;
-otherwise it will repeatedly build cold. Preflight checks the shared Linux
+or incremental cache. Different toolchain packages or JNI/JVM contents need a
+compatible publisher; otherwise consumers repeatedly build cold. Preflight checks the shared Linux
 runner, Rust container, toolchain/JDK selection and declared producer environment,
 including changes before the native action. New environment overrides must be
 reviewed against the fingerprint before they are admitted by this check.

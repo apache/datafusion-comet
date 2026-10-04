@@ -259,7 +259,7 @@ class NativeCacheKeyTests(unittest.TestCase):
         self.assertIn("native/core/README.md", result.stderr)
 
     def test_tools_jdk_flags_and_tracked_build_configuration_invalidate(self):
-        """Capture build overrides only; tools, Java metadata and tracked configs invalidate keys."""
+        """Tools, build overrides and tracked configs invalidate keys; JDK release labels do not."""
         before = self.keys()
         for tool in ("rustc", "cargo", "rustfmt", "uname"):
             with self.subTest(tool=tool):
