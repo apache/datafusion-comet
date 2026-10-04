@@ -200,7 +200,9 @@ class CometExecRuleSuite extends CometTestBase {
       withTempView("test_data") {
         createTestDataFrame.createOrReplaceTempView("test_data")
         val original =
-          createSparkPlan(spark, "SELECT AVG(id) FROM test_data GROUP BY (id % 3)")
+          createSparkPlan(
+            spark,
+            "SELECT AVG(CAST(id AS DECIMAL(20, 2))) FROM test_data GROUP BY (id % 3)")
         val partial = original.collectFirst {
           case agg: HashAggregateExec if agg.aggregateExpressions.forall(_.mode == Partial) => agg
         }.get
@@ -215,7 +217,7 @@ class CometExecRuleSuite extends CometTestBase {
         }
 
         // The Partial initially converts, but its upper hash shuffle cannot. Repair restores
-        // Spark's AVG buffer producer and revisits the already wrapped round-robin input stage.
+        // Spark's decimal AVG buffer producer and revisits the wrapped round-robin input stage.
         val result = applyCometExecRule(staged)
         assert(result.collect { case agg: HashAggregateExec => agg }.size == 2)
         assert(!result.exists(_.isInstanceOf[CometHashAggregateExec]))
@@ -245,11 +247,13 @@ class CometExecRuleSuite extends CometTestBase {
       val data = Seq((1, Some(10)), (1, Some(20)), (2, None), (2, Some(40)), (3, None))
       withParquetTable(data, "test_data") {
         val df = sql("""
-            |SELECT k, AVG(v) FROM
+            |SELECT k, AVG(CAST(v AS DECIMAL(20, 2))) FROM
             |  (SELECT /*+ REPARTITION(4) */ _1 AS k, _2 AS v FROM test_data)
             |GROUP BY k
             |""".stripMargin)
-        QueryTest.checkAnswer(df, Seq(Row(1, 15.0), Row(2, 40.0), Row(3, null)))
+        QueryTest.checkAnswer(
+          df,
+          Seq(Row(1, BigDecimal("15.000000")), Row(2, BigDecimal("40.000000")), Row(3, null)))
         val plan = df.queryExecution.executedPlan
         assert(plan.asInstanceOf[AdaptiveSparkPlanExec].isFinalPlan)
         val nativeShuffles = collect(plan) { case s: CometShuffleExchangeExec => s }
