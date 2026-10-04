@@ -302,6 +302,38 @@ class CometCodegenSuite
     }
   }
 
+  test("a closed allocateOutput vector releases all of its memory") {
+    // Struct outputs leaked the children that StructVector's writer allocates in its
+    // constructor. The List and Map cases make sure that these outputs do not start to leak.
+    val pair = StructType(
+      Seq(StructField("name", StringType), StructField("age", IntegerType, nullable = false)))
+    val outputTypes = Seq(
+      pair,
+      StructType(
+        Seq(StructField("_1", LongType, nullable = false), StructField("_2", StringType))),
+      StructType(
+        Seq(
+          StructField("inner", pair),
+          StructField("tags", ArrayType(StringType)),
+          StructField("attrs", MapType(StringType, IntegerType)))),
+      ArrayType(pair),
+      MapType(StringType, pair),
+      StringType)
+    outputTypes.foreach { dataType =>
+      val field = CometBatchKernelCodegen.toFfiArrowField("out", dataType, nullable = true)
+      val allocator =
+        CometArrowAllocator.newChildAllocator(s"allocateOutput($dataType)", 0, Long.MaxValue)
+      try {
+        CometBatchKernelCodegen.allocateOutput(field, 4, 0, allocator).close()
+        assert(
+          allocator.getAllocatedMemory == 0,
+          s"the $dataType output did not release all of its memory")
+      } finally {
+        allocator.close()
+      }
+    }
+  }
+
   test("ScalaUDF over concat(c1, c2) suppresses the null short-circuit") {
     // Concat is not NullIntolerant. The dispatcher's short-circuit guard inspects every node in
     // the bound tree and must skip the whole-tree null short-circuit because one child is
