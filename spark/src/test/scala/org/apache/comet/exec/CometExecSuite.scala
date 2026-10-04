@@ -3755,7 +3755,7 @@ class CometExecSuite extends CometTestBase {
       .sum("a")
     assert(
       collect(df.queryExecution.executedPlan) { case c: CometSparkToColumnarExec => c }.nonEmpty,
-      s"expected the rows to reach native through CometSparkToColumnarExec:\n" +
+      "expected the rows to reach native through CometSparkToColumnarExec:\n" +
         df.queryExecution.executedPlan)
 
     val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
