@@ -1117,11 +1117,19 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       case _ => node
     }
 
+    def evaluatedExpressions(node: SparkPlan): Seq[Expression] = node match {
+      // V1 dataFilters include predicates Spark cannot push into Parquet. Without native row
+      // filtering they only inform metadata pruning; the Spark Filter above evaluates rows.
+      case _: FileSourceScanExec if !CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.get() =>
+        Seq.empty
+      case _ => node.expressions
+    }
+
     // Most plans contain no opted-in expression. Include native originals and sticky tags
     // so repeated AQE passes still restore an already-protected subtree when necessary.
     if (!plan.exists(node =>
         node.getTagValue(CometExecRule.UNSAFE_EXPRESSION_EVALUATION).isDefined ||
-          originalPlan(node).expressions.exists(findEvaluationMaskName(_).isDefined))) {
+          evaluatedExpressions(originalPlan(node)).exists(findEvaluationMaskName(_).isDefined))) {
       return plan
     }
 
@@ -1184,7 +1192,8 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       }
       val limitName = if (belowLimit) {
         // Final merges buffers; it does not reevaluate the aggregate's original inputs.
-        val expressions = finalAggregate.map(_.resultExpressions).getOrElse(original.expressions)
+        val expressions =
+          finalAggregate.map(_.resultExpressions).getOrElse(evaluatedExpressions(original))
         expressions.iterator.flatMap(findEvaluationMaskName).take(1).toSeq.headOption
       } else {
         None

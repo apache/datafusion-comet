@@ -192,7 +192,14 @@ class CometEvaluationMaskSuite extends CometTestBase {
               "SELECT bad FROM masked WHERE unbase64(bad) <=> X'616263' LIMIT 1",
               "SELECT hex(unbase64(concat(bad, ''))) FROM masked LIMIT 1",
               "SELECT hex(to_binary(bad, 'base64')) FROM masked LIMIT 1").foreach { query =>
-              checkSparkAnswerAndFallbackReason(query, limitReason)
+              val (_, plan) = checkSparkAnswerAndFallbackReason(query, limitReason)
+              assert(nativeScans(plan) == 1, plan.toString)
+            }
+            withSQLConf(CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.key -> "true") {
+              val (_, plan) = checkSparkAnswerAndFallbackReason(
+                "SELECT bad FROM masked WHERE unbase64(bad) <=> X'616263' LIMIT 1",
+                limitReason)
+              assert(nativeScans(plan) == 0, plan.toString)
             }
             decodeErrors("SELECT hex(unbase64(bad)) FROM masked")
             decodeErrors("SELECT hex(unbase64(bad)) FROM masked WHERE bad = 'A' LIMIT 1")
@@ -389,15 +396,20 @@ class CometEvaluationMaskSuite extends CometTestBase {
                 if (aqe && agg == "collect_list(k)") {
                   assert(initialBuffers == (0, 2), initial.toString)
                 }
+                if (aqe && agg == "max(k)") {
+                  assert(initialBuffers == (2, 0), initial.toString)
+                }
                 val plan = df.queryExecution.executedPlan
                 if (aqe) {
                   assert(plan.asInstanceOf[AdaptiveSparkPlanExec].isFinalPlan)
-                  assert(
-                    collect(plan) {
-                      case j: BroadcastHashJoinExec => j.buildSide
-                      case j: CometBroadcastHashJoinExec => j.buildSide
-                    } == Seq(BuildRight),
-                    plan.toString)
+                  val broadcastBuildSides = collect(plan) {
+                    case j: BroadcastHashJoinExec => j.buildSide
+                    case j: CometBroadcastHashJoinExec => j.buildSide
+                  }
+                  assert(broadcastBuildSides.size == 1, plan.toString)
+                  if (join == "LEFT SEMI") {
+                    assert(broadcastBuildSides == Seq(BuildRight), plan.toString)
+                  }
                 }
                 plan
               }
