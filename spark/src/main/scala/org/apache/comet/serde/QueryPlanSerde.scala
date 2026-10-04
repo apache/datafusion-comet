@@ -1241,8 +1241,10 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
 
       val wholeExpressionDispatch = exprSerdeMap.get(current.getClass).exists { handler =>
         (handler.isInstanceOf[CodegenDispatchFallback] &&
-          handler.asInstanceOf[CometExpressionSerde[Expression]]
-            .getSupportLevel(current).isInstanceOf[Unsupported]) ||
+          handler
+            .asInstanceOf[CometExpressionSerde[Expression]]
+            .getSupportLevel(current)
+            .isInstanceOf[Unsupported]) ||
         (handler.isInstanceOf[CometCodegenDispatch[_]] &&
           !handler.isInstanceOf[NativeOptInAvailable])
       }

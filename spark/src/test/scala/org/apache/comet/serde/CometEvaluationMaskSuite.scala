@@ -161,7 +161,7 @@ class CometEvaluationMaskSuite extends CometTestBase {
   test("LIMIT masks follow the decoder policy with ANSI, strict and compound inputs") {
     assert(QueryPlanSerde.exprSerdeMap.collect { case (cls, _: RequiresSparkEvaluationMask[_]) =>
       cls
-    }.toSet == Set(classOf[UnBase64]))
+    }.toSet == Set(classOf[UnBase64], classOf[NextDay]))
     val input = AttributeReference("encoded", StringType)()
     withInputs(
       "masked" -> "SELECT * FROM VALUES (1, 'YWJj'), (2, 'A') AS t(k, bad)",

@@ -29,7 +29,7 @@ INSERT INTO test_levenshtein_arguments VALUES ('', '', NULL), ('a', 'b', NULL), 
 
 -- ArrayFilter interprets its argument even when codegen is enabled. NULL thresholds become
 -- zero, so array_compact must retain [0] and [-1]. Ordinary inputs still use the native fast path.
-query
+query expect_fallback(levenshtein with a nullable threshold requires Spark evaluation)
 SELECT array_compact(array(levenshtein(s1 COLLATE UTF8_LCASE, s2, threshold))),
  array_compact(array(threshold, CAST(NULL AS INT))) FROM test_levenshtein_arguments
 
@@ -42,8 +42,11 @@ SELECT sort_array(collect_list(levenshtein(s1 COLLATE UTF8_LCASE, s2, threshold)
 query expect_fallback(interpreted evaluation in aggregate arguments)
 SELECT approx_count_distinct(levenshtein(s1 COLLATE UTF8_LCASE, s2, threshold)) FROM test_levenshtein_arguments
 
--- A nonnullable threshold is safe for collect_list. SUM uses generated arguments in this mode,
--- so its nullable-threshold argument also stays accelerated.
+-- A nonnullable threshold stays accelerated, including an imperative aggregate argument.
 query
-SELECT sort_array(collect_list(levenshtein(s1 COLLATE UTF8_LCASE, s2, coalesce(threshold, 0)))),
- sum(levenshtein(s1 COLLATE UTF8_LCASE, s2, threshold)) FROM test_levenshtein_arguments
+SELECT sort_array(collect_list(levenshtein(s1 COLLATE UTF8_LCASE, s2, coalesce(threshold, 0))))
+FROM test_levenshtein_arguments
+
+-- A declarative aggregate can also fall back from generated to interpreted evaluation.
+query expect_fallback(levenshtein with a nullable threshold requires Spark evaluation)
+SELECT sum(levenshtein(s1 COLLATE UTF8_LCASE, s2, threshold)) FROM test_levenshtein_arguments

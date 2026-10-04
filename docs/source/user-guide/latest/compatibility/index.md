@@ -153,3 +153,19 @@ so users hunting an unexpected value have a single place to check:
   `spark.sql.codegen.fallback` or when the generated code exceeds
   `spark.sql.codegen.hugeMethodLimit`, where an intermediate overflow that later cancels out
   returns `NULL` (or raises under ANSI) in Spark but the recovered value in Comet.
+
+### `next_day` and nullable `levenshtein` thresholds
+
+ANSI `next_day` participates in the evaluation-mask policy above. A valid literal weekday
+stays native, including below a limit. Dynamic weekdays stay in Spark when a limit, first-match
+join, or deferred projection can skip an invalid weekday; eager operands and ordinary sort keys
+remain eligible for native execution. The same `spark.comet.exec.preserveEvaluationMasks.enabled`
+setting controls the operator-level policy. Per-expression guards still preserve conditional
+and filtered/state-dependent aggregate evaluation. The broader family is tracked in
+[#6006](https://github.com/apache/datafusion-comet/issues/6006), and the shared policy is introduced
+by [#5533](https://github.com/apache/datafusion-comet/pull/5533).
+
+Three-argument `levenshtein` with a nullable threshold stays in Spark because Spark's interpreted
+and generated evaluators disagree for NULL thresholds. This applies to every code-generation
+mode, including `FALLBACK`, whose evaluator can change after a compilation failure. Two-argument
+calls and non-nullable thresholds remain eligible for native execution.

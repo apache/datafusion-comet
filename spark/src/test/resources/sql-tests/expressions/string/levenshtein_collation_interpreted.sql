@@ -21,18 +21,18 @@
 -- Config: spark.sql.codegen.wholeStage=false
 
 -- Spark's interpreted Levenshtein unboxes a NULL threshold as zero, while its generated
--- code returns NULL. Keep nullable thresholds on Spark when interpreted execution is requested.
+-- code returns NULL. Keep nullable thresholds on Spark in every factory mode.
 statement
 CREATE TABLE test_levenshtein_collated_interpreted(s1 string, s2 string, threshold int) USING parquet
 
 statement
 INSERT INTO test_levenshtein_collated_interpreted VALUES ('', '', NULL), ('a', 'b', NULL), ('kitten', 'sitting', 3)
 
-query expect_fallback(NO_CODEGEN)
+query expect_fallback(levenshtein with a nullable threshold requires Spark evaluation)
 SELECT levenshtein(s1 COLLATE UTF8_LCASE, s2, threshold) FROM test_levenshtein_collated_interpreted
 
 -- Hypot dispatches its whole subtree, so a check only on the Levenshtein serde is insufficient.
-query expect_fallback(NO_CODEGEN)
+query expect_fallback(levenshtein with a nullable threshold requires Spark evaluation)
 SELECT hypot(levenshtein(s1 COLLATE UTF8_LCASE, s2, threshold), 1.0) FROM test_levenshtein_collated_interpreted
 
 -- Both safe forms still use the dispatcher in this mode.

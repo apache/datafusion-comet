@@ -28,12 +28,11 @@ import org.scalatest.PrivateMethodTester._
 
 import org.apache.logging.log4j.Level
 import org.apache.spark.sql._
-import org.apache.spark.sql.execution.joins.{ShuffledHashJoinExec, SortMergeJoinExec}
+import org.apache.spark.sql.catalyst.FunctionIdentifier
+import org.apache.spark.sql.catalyst.expressions.{Alias, Ascending, Attribute, AttributeReference, DateAdd, Expression, ExpressionInfo, GreaterThan, In, InSet, KnownFloatingPointNormalized, LessThan, Literal, NextDay, Not, SortOrder}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, BloomFilterAggregate, Final, Min, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.optimizer.{BuildRight, NormalizeNaNAndZero}
 import org.apache.spark.sql.catalyst.plans.{Inner, LeftSemi}
-import org.apache.spark.sql.catalyst.expressions.{Alias, Ascending, Attribute, AttributeReference, DateAdd, Expression, ExpressionInfo, GreaterThan, In, InSet, KnownFloatingPointNormalized, LessThan, Literal, NextDay, Not, SortOrder}
-import org.apache.spark.sql.catalyst.FunctionIdentifier
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, BloomFilterAggregate, Final, Min, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.plans.logical.{LocalRelation, LogicalPlan}
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, RoundRobinPartitioning}
 import org.apache.spark.sql.catalyst.rules.Rule
@@ -45,6 +44,7 @@ import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffl
 import org.apache.spark.sql.execution.aggregate.{HashAggregateExec, ObjectHashAggregateExec}
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ShuffleExchangeExec}
+import org.apache.spark.sql.execution.joins.{ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, DoubleType, FloatType, StructField, StructType}
 

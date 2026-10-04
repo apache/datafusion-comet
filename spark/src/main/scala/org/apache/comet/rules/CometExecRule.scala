@@ -26,8 +26,8 @@ import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{AttributeReference, AttributeSet, Divide, DoubleLiteral, EqualNullSafe, EqualTo, Expression, FloatLiteral, GreaterThan, GreaterThanOrEqual, KnownFloatingPointNormalized, LeafExpression, LessThan, LessThanOrEqual, NamedExpression, Remainder, SortOrder}
-import org.apache.spark.sql.catalyst.expressions.codegen.CodegenFallback
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, Final, Partial, PartialMerge}
+import org.apache.spark.sql.catalyst.expressions.codegen.CodegenFallback
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 import org.apache.spark.sql.catalyst.plans.{JoinType, LeftAnti, LeftSemi}
 import org.apache.spark.sql.catalyst.rules.Rule
@@ -1161,7 +1161,8 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
 
     def eagerReferences(expr: Expression): AttributeSet = expr match {
       case attribute: AttributeReference => AttributeSet(Seq(attribute))
-      case _ => AttributeSet(QueryPlanSerde.eagerlyEvaluatedChildren(expr).flatMap(eagerReferences))
+      case _ =>
+        AttributeSet(QueryPlanSerde.eagerlyEvaluatedChildren(expr).flatMap(eagerReferences))
     }
 
     def protect(

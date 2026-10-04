@@ -424,7 +424,6 @@ object CometNextDay
     }
   }
 
-
   private val collationReason = DatetimeCollation.reason("next_day")
 
   override def getIncompatibleReasons(): Seq[String] =

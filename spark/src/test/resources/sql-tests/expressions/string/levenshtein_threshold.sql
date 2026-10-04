@@ -46,7 +46,7 @@ CREATE TABLE test_levenshtein_col(s1 string, s2 string, threshold int) USING par
 statement
 INSERT INTO test_levenshtein_col VALUES ('kitten', 'sitting', 2), ('frog', 'fog', 5), ('abc', 'abc', 0), ('hello', 'world', 3)
 
-query
+query expect_fallback(levenshtein with a nullable threshold requires Spark evaluation)
 SELECT levenshtein(s1, s2, threshold) FROM test_levenshtein_col
 
 -- threshold as column with NULLs
@@ -56,5 +56,5 @@ CREATE TABLE test_levenshtein_col_nulls(s1 string, s2 string, threshold int) USI
 statement
 INSERT INTO test_levenshtein_col_nulls VALUES ('abc', 'adc', 2), ('hello', 'world', NULL), (NULL, 'test', 3), ('frog', 'fog', -1)
 
-query
+query expect_fallback(levenshtein with a nullable threshold requires Spark evaluation)
 SELECT levenshtein(s1, s2, threshold) FROM test_levenshtein_col_nulls
