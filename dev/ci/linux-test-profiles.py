@@ -23,7 +23,7 @@
 # them is the default build profile, so a pull request and the merge queue run
 # the Comet test suites against that one and the nightly run covers the other
 # four. A job-level `if:` cannot see `matrix`, so the selection has to happen
-# before the matrix is expanded: the `lint` job runs this script and publishes
+# before the matrix is expanded: the `prepare-matrix` job in `pr_build_linux.yml` runs this script and publishes
 # the result as a job output that `linux-test` reads with `fromJSON`, the same
 # way spark-sql-modules.py picks the Spark SQL shards.
 #

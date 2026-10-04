@@ -113,7 +113,7 @@ logic and to skip tests. Add the matching helper for the new version
 
 ### Add a Compile-Only CI Job
 
-Edit `.github/workflows/pr_build_linux.yml` to add the new Spark version to
+Edit `.github/workflows/pr_build_linux_checks.yml` to add the new Spark version to
 the `lint-java` matrix, which compiles each listed profile and runs scalafix
 on every pull request. If `semanticdb-scalac` is not yet published for the new
 Scala version, add a separate compile-only job instead until it is. Do not add
