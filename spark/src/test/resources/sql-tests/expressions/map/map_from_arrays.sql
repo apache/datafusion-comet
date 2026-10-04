@@ -59,3 +59,16 @@ SELECT map_from_arrays(array('a'), NULL)
 
 query
 SELECT map_from_arrays(NULL, NULL)
+
+-- empty arrays produce MapType(NullType, NullType)
+query
+SELECT map_from_arrays(array(), array())
+
+-- The serde's null guard serializes both inputs twice, and a non-deterministic input would
+-- advance differently in each copy, so it falls back.
+query expect_fallback(non-deterministic child under a null guard is evaluated on different rows than Spark's)
+SELECT map_from_arrays(IF(monotonically_increasing_id() % 2 = 0, k, NULL), v) FROM test_map_from_arrays
+
+-- A literal array beside a per-row one: the map kernel expands the scalar list to every row.
+query expect_native(map_from_arrays)
+SELECT map_from_arrays(array(coalesce(k[0], 'x')), array(1)), map_from_arrays(array(coalesce(k[0], 'x')), array(NULL)) FROM test_map_from_arrays

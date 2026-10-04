@@ -19,11 +19,15 @@
 
 package org.apache.comet.rules
 
+import java.nio.ByteBuffer
+
 import scala.collection.mutable.ListBuffer
 import scala.jdk.CollectionConverters._
+import scala.util.control.NonFatal
 
+import org.apache.spark.SparkEnv
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.expressions.{Divide, DoubleLiteral, EqualNullSafe, EqualTo, Expression, FloatLiteral, GreaterThan, GreaterThanOrEqual, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, NamedExpression, Remainder}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, Divide, DoubleLiteral, EqualNullSafe, EqualTo, Expression, FloatLiteral, GreaterThan, GreaterThanOrEqual, InputFileBlockLength, InputFileBlockStart, InputFileName, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, NamedExpression, Nondeterministic, Remainder, SparkPartitionID}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, Final, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 import org.apache.spark.sql.catalyst.rules.Rule
@@ -53,14 +57,19 @@ import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
+import com.google.protobuf.Descriptors.FieldDescriptor
+import com.google.protobuf.Message
+
 import org.apache.comet.{CometConf, CometExplainInfo, ExtendedExplainInfo}
 import org.apache.comet.CometConf.{COMET_SPARK_TO_ARROW_ENABLED, COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST}
 import org.apache.comet.CometSparkSessionExtensions._
+import org.apache.comet.codegen.DispatchOccurrence
 import org.apache.comet.rules.CometExecRule.allExecs
 import org.apache.comet.serde._
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.operator._
 import org.apache.comet.shims.{CometTypeShim, ShimCometStreaming, ShimCometWindowGroupLimit, ShimSubqueryBroadcast}
+import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 
 object CometExecRule {
 
@@ -72,6 +81,167 @@ object CometExecRule {
   private[rules] def readsCometCacheFormat(scan: InMemoryTableScanExec): Boolean =
     scan.relation.cacheBuilder.serializer.isInstanceOf[ArrowCachedBatchSerializer] &&
       ArrowCachedBatchSerializer.supportsSchema(scan.relation.output)
+
+  val nondeterministicBesideNullTypeReason: String =
+    "a non-deterministic expression that does not run entirely in the codegen dispatcher, in " +
+      "an operator whose native plan also runs a dispatcher kernel with a NullType result: " +
+      "native evaluation computes every argument over the whole batch and can evaluate an " +
+      "argument twice, while Spark skips arguments that other arguments decide, so a stateful " +
+      "expression advances on rows Spark does not evaluate"
+
+  /**
+   * True when `op` evaluates a non-deterministic expression outside the codegen dispatcher, and
+   * `op`'s native plan runs a dispatcher kernel whose result type contains NullType.
+   *
+   * Spark's generated code skips an argument when another one decides the result (a NULL operand,
+   * a NULL divisor), while native evaluation computes every argument over the whole batch, and
+   * some serdes serialize an argument twice (`ln`'s domain check), so a stateful expression
+   * (`monotonically_increasing_id`, `rand`) advances on rows Spark does not evaluate. That
+   * happens on main for any native operator. But the dispatcher used to refuse NullType results,
+   * and an operator with one fell back to Spark together with the native operators above it up to
+   * a shuffle. Every operator this check refuses therefore ran in Spark on main, so refusing all
+   * of them costs nothing against main and does not depend on modelling each expression's
+   * evaluation order. A top-level expression the dispatcher runs as a whole is exempt: its kernel
+   * evaluates Spark's own generated code, with its own state per occurrence. The exemption reads
+   * the dispatcher's tag on `op`'s expressions, which a rebuilt tree (a decimal expression
+   * wrapped in `CheckOverflow`) does not carry; that only makes the operator fall back.
+   *
+   * The kernels are read from the serialized plans rather than from `op`'s expressions, since
+   * serialization can dispatch a tree it built itself (a folded map literal expanded into
+   * `CreateMap`, a decimal addition wrapped in `CheckOverflow`).
+   */
+  private[rules] def nondeterministicBesideNullTypeKernel(
+      op: SparkPlan,
+      nativeOp: OperatorOuterClass.Operator): Boolean =
+    op.expressions.exists(evaluatesNondeterministicNatively) &&
+      (runsNullTypeKernel(nativeOp) || projectionRunsNullTypeKernel(op) ||
+        op.children.exists(nullTypeKernelBelow))
+
+  private def evaluatesNondeterministicNatively(expr: Expression): Boolean = expr match {
+    case e if !e.exists(isStateful) => false
+    case e if e.getTagValue(CometExplainInfo.DISPATCHED_SELF).isDefined => false
+    case alias: Alias => evaluatesNondeterministicNatively(alias.child)
+    case _ => true
+  }
+
+  /**
+   * A node whose value depends on how many rows were evaluated before it: a Catalyst
+   * `Nondeterministic` node or a user function that keeps state, whatever its arguments. The
+   * partition id and the input file only depend on the partition, however many rows Spark skips.
+   */
+  private def isStateful(e: Expression): Boolean = e match {
+    case _: SparkPartitionID | _: InputFileName | _: InputFileBlockStart |
+        _: InputFileBlockLength =>
+      false
+    case _: Nondeterministic => true
+    case other => DispatchOccurrence.holdsSharedState(other)
+  }
+
+  /**
+   * `TakeOrderedAndProjectExec` serializes as a sink, a leaf scan, and builds its native sort and
+   * projection only when it executes, so those expressions are serialized again here.
+   */
+  private def projectionRunsNullTypeKernel(op: SparkPlan): Boolean = op match {
+    case top: TakeOrderedAndProjectExec =>
+      deferredRunsNullTypeKernel(top.sortOrder ++ top.projectList, top.child.output)
+    case _ => false
+  }
+
+  private def deferredRunsNullTypeKernel(
+      exprs: Seq[Expression],
+      inputs: Seq[Attribute]): Boolean =
+    exprs.exists(e => QueryPlanSerde.exprToProto(e, inputs).exists(runsNullTypeKernel))
+
+  /**
+   * The native plans below `op` up to a shuffle. A sink is a leaf scan of the serialized plan
+   * above it, and a broadcast, union or coalesce sink exists only when the plan below it is
+   * native, so on main a NullType kernel there kept the operators above it in Spark as well; a
+   * shuffle took a Spark child, so only its own partitioning expressions count.
+   */
+  private def nullTypeKernelBelow(plan: SparkPlan): Boolean = plan match {
+    // A Comet shuffle's partitioning expressions are serialized when it runs. Main refused a
+    // shuffle keyed on a NullType kernel, and then the operators above it ran in Spark too.
+    case shuffle: CometShuffleExchangeExec =>
+      shuffle.outputPartitioning match {
+        case partitioning: Expression =>
+          deferredRunsNullTypeKernel(partitioning.children, shuffle.child.output)
+        case _ => false
+      }
+    case stage: ShuffleQueryStageExec => nullTypeKernelBelow(stage.plan)
+    case read: AQEShuffleReadExec => nullTypeKernelBelow(read.child)
+    case _: ShuffleExchangeLike => false
+    case native: CometNativeExec =>
+      runsNullTypeKernel(native.nativeOp) || native.children.exists(nullTypeKernelBelow)
+    case stage: BroadcastQueryStageExec => nullTypeKernelBelow(stage.plan)
+    case reused: ReusedExchangeExec => nullTypeKernelBelow(reused.child)
+    case top: CometTakeOrderedAndProjectExec =>
+      deferredRunsNullTypeKernel(top.sortOrder ++ top.projectList, top.child.output) ||
+      nullTypeKernelBelow(top.child)
+    case comet: CometPlan => comet.children.exists(nullTypeKernelBelow)
+    case _ => false
+  }
+
+  private val dispatcherClassName = classOf[CometScalaUDFCodegen].getName
+
+  /**
+   * Walks a serialized plan or expression for a dispatcher kernel that computes a NullType value:
+   * as its result, or anywhere in the tree it runs (a whole `coalesce` dispatched with an INT
+   * result can hold a `transform` with an `array<void>` result, which main refused).
+   */
+  private def runsNullTypeKernel(message: Message): Boolean = message match {
+    case udf: ExprOuterClass.JvmScalarUdf
+        if udf.getClassName == dispatcherClassName &&
+          (protoContainsNullType(udf.getReturnType) || kernelComputesNullType(udf)) =>
+      true
+    case _ =>
+      message.getAllFields.asScala.exists {
+        case (field, value) if field.getJavaType == FieldDescriptor.JavaType.MESSAGE =>
+          value match {
+            case values: java.util.List[_] =>
+              values.asScala.exists(v => runsNullTypeKernel(v.asInstanceOf[Message]))
+            case child: Message => runsNullTypeKernel(child)
+            case _ => false
+          }
+        case _ => false
+      }
+  }
+
+  /**
+   * The kernel's first argument is its closure-serialized expression (see
+   * `CometScalaUDF.emitJvmCodegenDispatch`). One that cannot be read counts as computing
+   * NullType.
+   */
+  private def kernelComputesNullType(udf: ExprOuterClass.JvmScalarUdf): Boolean =
+    udf.getArgsCount == 0 || !udf.getArgs(0).hasLiteral || {
+      val bytes = udf.getArgs(0).getLiteral.getBytesVal.toByteArray
+      try {
+        val loader = Option(Thread.currentThread().getContextClassLoader)
+          .getOrElse(classOf[Expression].getClassLoader)
+        SparkEnv.get.closureSerializer
+          .newInstance()
+          .deserialize[Expression](ByteBuffer.wrap(bytes), loader)
+          .exists(e => containsNullType(e.dataType))
+      } catch {
+        case NonFatal(_) => true
+      }
+    }
+
+  private def containsNullType(dt: DataType): Boolean = dt match {
+    case NullType => true
+    case ArrayType(element, _) => containsNullType(element)
+    case MapType(key, value, _) => containsNullType(key) || containsNullType(value)
+    case StructType(fields) => fields.exists(f => containsNullType(f.dataType))
+    case _ => false
+  }
+
+  private def protoContainsNullType(dt: Types.DataType): Boolean = {
+    val info = dt.getTypeInfo
+    dt.getTypeId == Types.DataType.DataTypeId.NULL ||
+    (info.hasList && protoContainsNullType(info.getList.getElementType)) ||
+    (info.hasMap && (protoContainsNullType(info.getMap.getKeyType) ||
+      protoContainsNullType(info.getMap.getValueType))) ||
+    (info.hasStruct && info.getStruct.getFieldDatatypesList.asScala.exists(protoContainsNullType))
+  }
 
   private[rules] def removePlaceholders(plan: SparkPlan): SparkPlan = plan.transformUp {
     // revertUnsafePartialAggregates re-runs transform over already wrapped query stages, which
@@ -769,7 +939,10 @@ case class CometExecRule(session: SparkSession)
                 }
               case other => other
             }
-            if (cometChild.isInstanceOf[CometNativeExec]) {
+            // The join's own exchange stays on Spark when the broadcast gate refuses the build
+            // side, so this one must too: a Comet broadcast here would not be reused by it.
+            val gated = CometBroadcastExchangeExec.getSupportLevel(b).isInstanceOf[Unsupported]
+            if (cometChild.isInstanceOf[CometNativeExec] && !gated) {
               logInfo(
                 "Converting SubqueryBroadcastExec to " +
                   "CometSubqueryBroadcastExec for DPP exchange reuse")
@@ -1099,22 +1272,35 @@ case class CometExecRule(session: SparkSession)
         childOp.foreach(builder.addChildren)
         return serde
           .convert(op, builder, childOp: _*)
-          .map { nativeOp =>
-            val exec = serde.createExec(nativeOp, op)
-            rollUpInfoMessages(op, exec)
-            exec
-          }
+          .flatMap(nativeOp => createExec(serde, nativeOp, op))
       } else {
         return serde
           .convert(op, builder)
-          .map { nativeOp =>
-            val exec = serde.createExec(nativeOp, op)
-            rollUpInfoMessages(op, exec)
-            exec
-          }
+          .flatMap(nativeOp => createExec(serde, nativeOp, op))
       }
     }
     None
+  }
+
+  /**
+   * Builds the exec for a converted operator, unless the conversion put a non-deterministic
+   * expression next to a NullType dispatcher result
+   * ([[CometExecRule.nondeterministicBesideNullTypeKernel]]). The check runs after conversion, so
+   * it sees which kernels the plan runs, and an operator its serde refused keeps the serde's own
+   * reason.
+   */
+  private def createExec(
+      serde: CometOperatorSerde[SparkPlan],
+      nativeOp: OperatorOuterClass.Operator,
+      op: SparkPlan): Option[SparkPlan] = {
+    if (CometExecRule.nondeterministicBesideNullTypeKernel(op, nativeOp)) {
+      withFallbackReason(op, CometExecRule.nondeterministicBesideNullTypeReason)
+      None
+    } else {
+      val exec = serde.createExec(nativeOp, op)
+      rollUpInfoMessages(op, exec)
+      Some(exec)
+    }
   }
 
   /**

@@ -37,7 +37,10 @@ for how Comet chooses.
 
 Most expressions can also be disabled with `spark.comet.expression.EXPRNAME.enabled=false`, where
 `EXPRNAME` is the Spark expression class name (for example `Length` or `StartsWith`). See the
-[Comet Configuration Guide](configs.md) for the full list.
+[Comet Configuration Guide](configs.md) for the full list. Comet adds `Cast` expressions of its
+own to give nested values one type (the arguments of `array_union`, `array_intersect` and
+`array_except` over nested elements, and the branches of a `CASE WHEN` or `coalesce` whose type
+contains a struct), so disabling `Cast` makes those fall back to Spark too.
 
 ## Status legend
 
@@ -94,7 +97,7 @@ The tables below list every Spark built-in expression with its current status.
 | `bit_xor` | ✅ | Native |  |
 | `bool_and` | ✅ | — |  |
 | `bool_or` | ✅ | — |  |
-| `collect_list` | ✅ | Native |  |
+| `collect_list` | ✅ | Native | `NullType` input, including one nested in a complex type, falls back to Spark |
 | `collect_set` | ✅ | Native |  |
 | `corr` | ✅ | Native |  |
 | `count` | ✅ | Native |  |
@@ -152,24 +155,24 @@ The tables below list every Spark built-in expression with its current status.
 
 | Function | Status | Implementation | Notes |
 | --- | --- | --- | --- |
-| `array` | ✅ | Native |  |
-| `array_append` | ✅ | Native |  |
+| `array` | ✅ | Hybrid | A non-literal NullType element routes through the JVM codegen dispatcher |
+| `array_append` | ✅ | Native | On Spark 3.x, a non-deterministic array, or a non-deterministic item beside an array that can be NULL, falls back to Spark (Spark 4.0+ rewrites it to `array_insert`) |
 | `array_compact` | ✅ | — |  |
 | `array_contains` | ✅ | Native | Float/double element arrays route through the JVM codegen dispatcher by default; the native path is opt-in via allowIncompatible |
 | `array_distinct` | ✅ | Native | Floating-point elements fall back on Spark versions other than 4.2.0; signed-zero and NaN results may differ with native opt-in ([details](compatibility/floating-point.md)) |
-| `array_except` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default; the incompatible native path is opt-in via allowIncompatible ([details](compatibility/expressions/array.md)) |
+| `array_except` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default; the incompatible native path is opt-in via allowIncompatible, except for element types it does not support (for example structs), which never take the native path ([details](compatibility/expressions/array.md)) |
 | `array_insert` | ✅ | Native |  |
-| `array_intersect` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default; the incompatible native path is opt-in via allowIncompatible ([details](compatibility/expressions/array.md)) |
+| `array_intersect` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default; the incompatible native path is opt-in via allowIncompatible, except for a `NullType`-element side, which never takes the native path ([details](compatibility/expressions/array.md)) |
 | `array_join` | ✅ | Hybrid | Native for literal or column delimiter and null replacement; other cases and non-UTF8_BINARY collations use the JVM codegen dispatcher ([details](compatibility/expressions/array.md)) |
 | `array_max` | ✅ | Hybrid | Native Spark-compatible floating-point and nested ordering; non-default string collations use the JVM codegen dispatcher ([details](compatibility/expressions/array.md)) |
 | `array_min` | ✅ | Hybrid | Native Spark-compatible floating-point and nested ordering; non-default string collations use the JVM codegen dispatcher ([details](compatibility/expressions/array.md)) |
 | `array_position` | ✅ | Native | Binary/struct/map/null elements fall back |
 | `array_prepend` | ✅ | — |  |
 | `array_remove` | ✅ | Native |  |
-| `array_repeat` | ✅ | Native |  |
-| `array_union` | ✅ | Native | Floating-point elements fall back on Spark versions other than 4.2.0; signed-zero and NaN results may differ with native opt-in ([details](compatibility/floating-point.md)) |
+| `array_repeat` | ✅ | Hybrid | Repeating an array whose elements Spark declares non-nullable routes through the JVM codegen dispatcher, unless the array is built by `array(...)` or its elements are NULL-typed. So does a nullable count where Spark would evaluate the expression without generated code (see `arrays_zip`), since Spark's interpreted path skips the element when the count is NULL |
+| `array_union` | ✅ | Hybrid | A NullType-element side routes through the JVM codegen dispatcher; floating-point elements fall back on Spark versions other than 4.2.0; signed-zero and NaN results may differ with native opt-in ([details](compatibility/floating-point.md)) |
 | `arrays_overlap` | ✅ | Native |  |
-| `arrays_zip` | ✅ | Native |  |
+| `arrays_zip` | ✅ | Native | A non-deterministic argument, or no argument at all, falls back to Spark. So do several arguments where Spark would evaluate them without generated code (`spark.sql.codegen.factoryMode=NO_CODEGEN`, on Spark 3.4 only with whole-stage codegen off, under an expression with no generated code such as a higher-order function, as the input of an imperative aggregate such as `collect_list`, or under an `explode` that Spark leaves out of whole-stage codegen), since Spark's interpreted path evaluates every argument and its generated code stops at the first NULL one |
 | `element_at` | ✅ | Native |  |
 | `flatten` | ✅ | Native | Binary/struct/map elements fall back |
 | `get` | ✅ | — |  |
@@ -204,10 +207,10 @@ The tables below list every Spark built-in expression with its current status.
 | Function | Status | Implementation | Notes |
 | --- | --- | --- | --- |
 | `array_size` | ✅ | — |  |
-| `cardinality` | ✅ | Native |  |
+| `cardinality` | ✅ | Native | When NULL input returns NULL (`spark.sql.legacy.sizeOfNull=false` or ANSI mode), a nullable non-deterministic argument falls back to Spark |
 | `concat` | ✅ | Hybrid | Binary/array children and non-UTF8_BINARY collations route through the JVM codegen dispatcher |
 | `reverse` | ✅ | Hybrid | Binary input (Spark 4.2), arrays with binary, struct, or map elements, and collated strings, route through the JVM codegen dispatcher ([details](compatibility/expressions/array.md)) |
-| `size` | ✅ | Native |  |
+| `size` | ✅ | Native | When NULL input returns NULL (`spark.sql.legacy.sizeOfNull=false` or ANSI mode), a nullable non-deterministic argument falls back to Spark |
 
 ---
 
@@ -215,7 +218,7 @@ The tables below list every Spark built-in expression with its current status.
 
 | Function | Status | Implementation | Notes |
 | --- | --- | --- | --- |
-| `coalesce` | ✅ | Native |  |
+| `coalesce` | ✅ | Hybrid | A non-deterministic argument other than the last routes through the JVM codegen dispatcher (or falls back when it calls a non-deterministic user-defined function) |
 | `if` | ✅ | Native |  |
 | `ifnull` | ✅ | — |  |
 | `nanvl` | ✅ | Codegen dispatch |  |
@@ -265,7 +268,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `date_from_unix_date` | ✅ | Native |  |
 | `date_part` | ✅ | — |  |
 | `date_sub` | ✅ | Native |  |
-| `date_trunc` | ✅ | Hybrid |  |
+| `date_trunc` | ✅ | Hybrid | A non-literal format runs through the JVM codegen dispatcher where Spark would evaluate the expression without generated code (see `arrays_zip`), since Spark's interpreted path returns NULL for an invalid format without evaluating the value |
 | `dateadd` | ✅ | Native | The 2-argument form is native; the `dateadd(UNIT, n, ts)` form parses to `timestampadd` and runs through codegen dispatch |
 | `datediff` | ✅ | Native | The 2-argument form is native; the `datediff(UNIT, start, end)` form parses to `timestampdiff` and runs through codegen dispatch |
 | `datepart` | ✅ | — |  |
@@ -312,7 +315,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `to_timestamp_ntz` | ✅ | — | Rewrites to `to_timestamp` (`TimestampNTZType`) |
 | `to_unix_timestamp` | ✅ | Hybrid |  |
 | `to_utc_timestamp` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default (handles all timezone forms); the native path is opt-in via allowIncompatible ([details](compatibility/expressions/datetime.md)) |
-| `trunc` | ✅ | Hybrid |  |
+| `trunc` | ✅ | Hybrid | A non-literal format runs through the JVM codegen dispatcher where Spark would evaluate the expression without generated code (see `arrays_zip`), since Spark's interpreted path returns NULL for an invalid format without evaluating the value |
 | `try_make_interval` | ✅ | — | Rewrites to `MakeInterval`; same support as `make_interval` (Spark 4.0+) |
 | `try_make_timestamp` | ✅ | — |  |
 | `try_make_timestamp_ltz` | ✅ | — | Same support as `try_make_timestamp` (Spark 4.0+) |
@@ -357,12 +360,12 @@ to Spark ([#2837](https://github.com/apache/datafusion-comet/issues/2837)). Enab
 | Function | Status | Implementation | Notes |
 | --- | --- | --- | --- |
 | `crc32` | ✅ | Native |  |
-| `hash` | ✅ | Native |  |
+| `hash` | ✅ | Native | `NullType` input, including one nested in a complex type, falls back to Spark |
 | `md5` | ✅ | Native |  |
 | `sha` | ✅ | Native |  |
 | `sha1` | ✅ | Native |  |
 | `sha2` | ✅ | Native |  |
-| `xxhash64` | ✅ | Native |  |
+| `xxhash64` | ✅ | Native | `NullType` input, including one nested in a complex type, falls back to Spark |
 
 ---
 
@@ -408,7 +411,7 @@ to Spark ([#2837](https://github.com/apache/datafusion-comet/issues/2837)). Enab
 | `map_concat` | ✅ | Codegen dispatch |  |
 | `map_contains_key` | ✅ | — |  |
 | `map_entries` | ✅ | Native |  |
-| `map_from_arrays` | ✅ | Native |  |
+| `map_from_arrays` | ✅ | Native | A non-deterministic argument falls back to Spark |
 | `map_from_entries` | ✅ | Hybrid | BinaryType keys/values and `spark.sql.mapKeyDedupPolicy=LAST_WIN` route through the JVM codegen dispatcher ([details](compatibility/expressions/map.md)) |
 | `map_keys` | ✅ | Native |  |
 | `map_values` | ✅ | Native |  |

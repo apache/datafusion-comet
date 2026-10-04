@@ -124,3 +124,9 @@ SELECT id,
        element_at(IF(monotonically_increasing_id() % 2 = 0, CAST(NULL AS ARRAY<INT>), array(1)), 1) AS v1,
        element_at(IF(rand(7L) < 2, CAST(NULL AS ARRAY<INT>), array(1)), 1 + (id % (id - 2))) AS v2
 FROM ansi_element_at_null
+
+-- A non-deterministic collection built by a lambda, which the JVM codegen dispatcher would
+-- evaluate, is declined the same way.
+
+query expect_fallback(nullable nondeterministic array or map operand)
+SELECT element_at(transform(IF(monotonically_increasing_id() % 2 = 0, arr, CAST(NULL AS array<int>)), x -> x + 1), 1) FROM ansi_element_at_oob

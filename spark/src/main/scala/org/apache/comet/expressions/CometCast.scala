@@ -28,7 +28,7 @@ import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, withFallback
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.serde.{CodegenDispatchFallback, CometExpressionSerde, CometTimeZone, Compatible, ExprOuterClass, Incompatible, SupportLevel, Unsupported}
 import org.apache.comet.serde.ExprOuterClass.Expr
-import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProtoInternal, serializeDataType}
+import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProtoInternal, liftFallbackReasons, serializeDataType}
 import org.apache.comet.shims.{CometExprShim, CometTypeShim}
 
 object CometCast
@@ -110,7 +110,16 @@ object CometCast
     } else if (CometTimeZone.nativeId(cast.timeZoneId).isEmpty) {
       CometTimeZone.supportLevel(cast.timeZoneId)
     } else {
-      isSupported(cast.child.dataType, cast.dataType, cast.timeZoneId, evalMode(cast))
+      // A relabel-only cast runs natively, but main dispatched some of them (`array<date>` with
+      // different nested nullability). The dispatcher evaluates the child the way Spark's
+      // generated code does, skipping an argument an earlier one decides, and a native child
+      // evaluates every argument, so a non-deterministic child keeps main's route.
+      isSupported(
+        cast.child.dataType,
+        cast.dataType,
+        cast.timeZoneId,
+        evalMode(cast),
+        relabel = cast.child.deterministic)
     }
   }
 
@@ -121,7 +130,12 @@ object CometCast
     val cometEvalMode = evalMode(cast)
     cast.child match {
       case _: Literal =>
-        exprToProtoInternal(Literal.create(cast.eval(), cast.dataType), inputs, binding)
+        // The folded literal is not in the plan, so a reason it records is lifted onto `cast`.
+        val folded = Literal.create(cast.eval(), cast.dataType)
+        exprToProtoInternal(folded, inputs, binding).orElse {
+          liftFallbackReasons(folded, cast)
+          None
+        }
       case _ =>
         if (isAlwaysCastToNull(cast.child.dataType, cast.dataType, cometEvalMode)) {
           exprToProtoInternal(Literal.create(null, cast.dataType), inputs, binding)
@@ -135,6 +149,23 @@ object CometCast
         }
     }
   }
+
+  /**
+   * True when `fromType` and `toType` differ only in nested field names and nullability. Spark
+   * and the native cast both match struct fields by position, so such a cast changes no value and
+   * only relabels the type; a set op adds one to give its two sides the same type.
+   */
+  private def isRelabel(fromType: DataType, toType: DataType): Boolean =
+    (fromType, toType) match {
+      case (ArrayType(fromElement, _), ArrayType(toElement, _)) =>
+        isRelabel(fromElement, toElement)
+      case (MapType(fromKey, fromValue, _), MapType(toKey, toValue, _)) =>
+        isRelabel(fromKey, toKey) && isRelabel(fromValue, toValue)
+      case (StructType(fromFields), StructType(toFields)) =>
+        fromFields.length == toFields.length &&
+        fromFields.zip(toFields).forall { case (f, t) => isRelabel(f.dataType, t.dataType) }
+      case _ => fromType == toType
+    }
 
 //  Some casts like date -> int/byte / long are always null. Terminate early in planning
   private def isAlwaysCastToNull(
@@ -191,7 +222,8 @@ object CometCast
       fromType: DataType,
       toType: DataType,
       timeZoneId: Option[String],
-      evalMode: CometEvalMode.Value): SupportLevel = {
+      evalMode: CometEvalMode.Value,
+      relabel: Boolean = true): SupportLevel = {
 
     // Spark 4's `VariantType` (SPARK-45827) has no native counterpart in Comet, and the codegen
     // dispatcher also cannot serialize `VariantType` in the data args or return type. The
@@ -219,7 +251,7 @@ object CometCast
       return Unsupported(Some(nonDefaultCollationReason))
     }
 
-    if (fromType == toType) {
+    if (fromType == toType || (relabel && isRelabel(fromType, toType))) {
       return Compatible()
     }
 
@@ -235,9 +267,9 @@ object CometCast
           if toElementType != DataTypes.IntegerType && toElementType != DataTypes.StringType =>
         unsupported(fromType, toType)
       case (dt: ArrayType, DataTypes.StringType) =>
-        isSupported(dt.elementType, DataTypes.StringType, timeZoneId, evalMode)
+        isSupported(dt.elementType, DataTypes.StringType, timeZoneId, evalMode, relabel)
       case (dt: ArrayType, dt1: ArrayType) =>
-        isSupported(dt.elementType, dt1.elementType, timeZoneId, evalMode)
+        isSupported(dt.elementType, dt1.elementType, timeZoneId, evalMode, relabel)
       case (dt: DataType, _) if dt.typeName == "timestamp_ntz" =>
         toType match {
           case DataTypes.StringType => Compatible()
@@ -279,7 +311,7 @@ object CometCast
           if (isAlwaysCastToNull(a.dataType, b.dataType, evalMode)) {
             return unsupported(fromType, toType)
           }
-          isSupported(a.dataType, b.dataType, timeZoneId, evalMode) match {
+          isSupported(a.dataType, b.dataType, timeZoneId, evalMode, relabel) match {
             case Compatible(_, _) =>
             // all good
             case other =>
@@ -295,9 +327,9 @@ object CometCast
           isAlwaysCastToNull(from_map.valueType, to_map.valueType, evalMode)) {
           unsupported(fromType, toType)
         } else {
-          isSupported(from_map.keyType, to_map.keyType, timeZoneId, evalMode) match {
+          isSupported(from_map.keyType, to_map.keyType, timeZoneId, evalMode, relabel) match {
             case Compatible(_, _) =>
-              isSupported(from_map.valueType, to_map.valueType, timeZoneId, evalMode)
+              isSupported(from_map.valueType, to_map.valueType, timeZoneId, evalMode, relabel)
             case other => other
           }
         }

@@ -569,6 +569,40 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
+  test("array_union: a folded struct literal side falls back with its reason") {
+    // With constant folding on, `array(named_struct('i', 1L, 'n', NULL))` becomes a struct-element
+    // Literal, which Comet cannot serialize. It sits under the cast `SetOpArguments` adds, which is
+    // not in the operator's tree, so its reason used to reach no node the roll-up could see
+    // (the strict fallback check in these suites failed the query instead of falling back).
+    withTable("union_struct_lit") {
+      spark.range(0, 4, 1, 1).toDF("id").write.mode("overwrite").saveAsTable("union_struct_lit")
+      checkSparkAnswerAndFallbackReason(
+        "SELECT array_union(array(named_struct('i', id, 'n', NULL)), " +
+          "array(named_struct('i', 1L, 'n', NULL))) FROM union_struct_lit",
+        "Unsupported data type")
+    }
+  }
+
+  test("nested array literal whose inner arrays are all empty") {
+    // Constant folding turns `array(cast(array() AS array<bigint>))` into a nested list literal
+    // with no values, which native built one list level deeper than its declared type. Consumers
+    // that compare their inputs' types then failed. A deeper literal that mixes an empty child
+    // with a populated one failed to build at all.
+    withTable("empty_nested_lit") {
+      spark.range(0, 4, 1, 1).toDF("id").write.saveAsTable("empty_nested_lit")
+      Seq(
+        "arrays_overlap(transform(array(id), x -> array()), array(array()))",
+        "arrays_overlap(array(array(id)), array(cast(array() AS array<bigint>)))",
+        "array_union(array(array(id)), array(cast(array() AS array<bigint>)))",
+        "IF(id > 1, array(array(id)), array(cast(array() AS array<bigint>)))",
+        "coalesce(IF(id > 1, array(array(id)), NULL), array(cast(array() AS array<bigint>)))",
+        "array(array(id)) = array(cast(array() AS array<bigint>))",
+        "array(array(array()), array(array(array(1))))").foreach { e =>
+        checkSparkAnswerAndOperator(s"SELECT id, $e FROM empty_nested_lit")
+      }
+    }
+  }
+
   test("array_max") {
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
@@ -1289,6 +1323,33 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
         SQLConf.LEGACY_SIZE_OF_NULL.key -> "true",
         SQLConf.ANSI_ENABLED.key -> "false") {
         checkSparkAnswerAndOperator(sql(s"select size(col) from $table"))
+      }
+    }
+  }
+
+  test("size - non-deterministic child under the null guard") {
+    withParquetTable((0 until 16).map(i => Tuple1(i.toLong)), "t", withDictionary = false) {
+      // Non-legacy size wraps a nullable child in `CASE WHEN child IS NOT NULL`, which would
+      // evaluate a stateful child twice, so that shape stays in Spark; legacy mode builds no
+      // guard and keeps it native.
+      val nullableStateful =
+        "SELECT _1, size(IF(monotonically_increasing_id() % 2 = 0, array(_1), NULL)) FROM t"
+      withSQLConf(SQLConf.LEGACY_SIZE_OF_NULL.key -> "false") {
+        checkSparkAnswerAndFallbackReason(
+          nullableStateful,
+          "non-deterministic child under a null guard is evaluated on different rows than Spark's")
+      }
+      withSQLConf(
+        SQLConf.LEGACY_SIZE_OF_NULL.key -> "true",
+        SQLConf.ANSI_ENABLED.key -> "false") {
+        checkSparkAnswerAndOperator(nullableStateful)
+      }
+      // A non-nullable child gets no guard, so a stateful one whose length depends on the
+      // counter is evaluated once and matches Spark. The lambda runs through the JVM codegen
+      // dispatcher, where a guard's THEN copy would count over fewer rows than Spark's.
+      withSQLConf(SQLConf.LEGACY_SIZE_OF_NULL.key -> "false") {
+        checkSparkAnswerAndOperator(
+          "SELECT _1, size(filter(array(_1, 1, 2), x -> x < monotonically_increasing_id())) FROM t")
       }
     }
   }

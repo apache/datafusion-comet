@@ -77,7 +77,13 @@ object GenerateDocs {
 
   /** Build the documentation notes for a single expression serde. */
   private def exprNotes(cls: Class[_], serde: CometExpressionSerde[_]): ExprNotes = {
-    val optIn = serde.isInstanceOf[NativeOptInAvailable]
+    // A `CodegenDispatchFallback` serde that enrolls only its `Unsupported` cases leaves its
+    // `Incompatible` cases falling back to Spark, so they are documented as such.
+    val optIn = serde match {
+      case d: CodegenDispatchFallback => d.dispatchesIncompatible
+      case _: NativeOptInAvailable => true
+      case _ => false
+    }
     val key = serde match {
       case n: NativeOptInAvailable =>
         n.nativeOptInConfigKeyOverride.getOrElse(CometConf.getExprAllowIncompatConfigKey(cls))
@@ -439,8 +445,10 @@ object GenerateDocs {
       }
       if (n.unsupportedReasons.nonEmpty) {
         val header = if (n.codegenDispatchFallback) {
-          "\nThe following cases have no native implementation and always run in the JVM using" +
-            " Spark's code-generated implementation (inside the Comet pipeline):\n\n"
+          "\nThe following cases have no native implementation. They run in the JVM using" +
+            " Spark's own implementation (inside the Comet pipeline) when the codegen" +
+            " dispatcher is enabled and accepts the expression, and fall back to Spark" +
+            " otherwise:\n\n"
         } else {
           "\nThe following cases are not supported by Comet and always fall back to Spark," +
             " regardless of any `allowIncompatible` setting:\n\n"

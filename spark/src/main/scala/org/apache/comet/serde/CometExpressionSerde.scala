@@ -122,7 +122,15 @@ trait CometExpressionSerde[T <: Expression] {
  * dispatcher. Every other `Incompatible` expression falls back to Spark, and every other
  * `Unsupported` expression falls back to Spark.
  */
-trait CodegenDispatchFallback extends NativeOptInAvailable { self: CometExpressionSerde[_] => }
+trait CodegenDispatchFallback extends NativeOptInAvailable { self: CometExpressionSerde[_] =>
+
+  /**
+   * Whether `Incompatible` cases also route through the dispatcher. A serde that enrolls only for
+   * its `Unsupported` cases sets this to false, so its `Incompatible` cases fall back to Spark
+   * unless the user opts into the native path, as for a serde without this mixin.
+   */
+  def dispatchesIncompatible: Boolean = true
+}
 
 /**
  * Marker for serdes that have a native implementation the user can opt into. Normally these

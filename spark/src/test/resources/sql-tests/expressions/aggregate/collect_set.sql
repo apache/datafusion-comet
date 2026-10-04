@@ -261,3 +261,11 @@ SELECT grp, sort_array(collect_set(DISTINCT i)) FROM cs_src_int GROUP BY grp ORD
 query
 SELECT grp, sort_array(collect_set(i))
 FROM cs_src_int GROUP BY grp HAVING size(collect_set(i)) > 1 ORDER BY grp
+
+-- A NullType-bearing element runs natively, grouped or not. The order of collect_set is not
+-- defined, so the result is sorted.
+query
+SELECT grp, sort_array(collect_set(named_struct('i', i, 'n', NULL))) FROM cs_src_int GROUP BY grp
+
+query
+SELECT sort_array(collect_set(named_struct('i', i, 'n', NULL))) FROM cs_src_int

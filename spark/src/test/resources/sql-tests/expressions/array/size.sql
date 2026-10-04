@@ -41,3 +41,12 @@ SELECT size(cast(NULL as map<string,int>))
 -- cardinality is a SQL alias for size
 query
 SELECT cardinality(arr), cardinality(m) FROM test_size
+
+-- Without the legacy behavior, the serde guards a nullable argument with CASE WHEN arg IS NOT
+-- NULL and serializes it twice, so a non-deterministic one stays in Spark. The legacy path builds
+-- no guard (native size already returns -1 for NULL). This SET applies to both matrix runs.
+statement
+SET spark.sql.legacy.sizeOfNull=false
+
+query expect_fallback(non-deterministic child under a null guard is evaluated on different rows than Spark's)
+SELECT size(IF(monotonically_increasing_id() % 2 = 0, arr, NULL)) FROM test_size

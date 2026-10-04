@@ -56,7 +56,9 @@ SELECT sort_array(array(make_dt_interval(x), make_dt_interval(y))) FROM routing_
 query expect_native(array_except)
 SELECT sort_array(array_except(a, array(1))) FROM routing_arrays
 
-query expect_fallback(data type not supported)
+-- A binary element has no native kernel; the serde reports it Unsupported, and with the
+-- dispatcher disabled the expression falls back.
+query expect_fallback(native array_except supports only)
 SELECT array_except(array(unhex('41')), array(unhex('42')))
 
 query expect_fallback(child data type not supported)

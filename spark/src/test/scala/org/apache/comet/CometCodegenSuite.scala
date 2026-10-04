@@ -28,7 +28,7 @@ import org.apache.spark.{SparkConf, SparkEnv, TaskContext}
 import org.apache.spark.sql.{CometTestBase, Row}
 import org.apache.spark.sql.api.java.UDF1
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Add, Alias, ApplyFunctionExpression, AttributeReference, BoundReference, Cast, CreateArray, CreateMap, CreateNamedStruct, Expression, GenericInternalRow, Hypot, Literal, MapConcat, ScalaUDF}
+import org.apache.spark.sql.catalyst.expressions.{Add, Alias, ApplyFunctionExpression, AttributeReference, BoundReference, Cast, CreateArray, CreateMap, CreateNamedStruct, ElementAt, Expression, GenericInternalRow, Hypot, Literal, MapConcat, ScalaUDF}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial}
 import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
 import org.apache.spark.sql.catalyst.util.GenericArrayData
@@ -43,6 +43,7 @@ import org.apache.spark.unsafe.types.{ByteArray, UTF8String}
 import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
 import org.apache.comet.codegen.CometBatchKernelCodegen
 import org.apache.comet.codegen.CometBatchKernelCodegen.ArrowColumnSpec
+import org.apache.comet.rules.CometExecRule
 import org.apache.comet.serde.{CometInvokeTargets, CometScalaUDF, QueryPlanSerde}
 import org.apache.comet.serde.ExprOuterClass.Expr.ExprStructCase
 import org.apache.comet.udf.codegen.CometScalaUDFCodegen
@@ -264,6 +265,37 @@ class CometCodegenSuite
     } finally {
       output.close()
       input.close()
+    }
+  }
+
+  test("a kernel whose generated code does not compile evaluates the expression instead") {
+    // `element_at` over an in-bounds literal index is non-nullable, yet with ANSI off the code
+    // Spark generates for it assigns an undeclared null flag, so it does not compile. The kernel
+    // retries over the expression's `eval`, as Spark's whole-stage codegen falls back.
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
+      val expr =
+        ElementAt(CreateArray(Seq(BoundReference(0, LongType, nullable = false))), Literal(1))
+      assert(!expr.nullable)
+      val input = new BigIntVector("in", CometArrowAllocator)
+      val field = CometBatchKernelCodegen.toFfiArrowField("out", LongType, nullable = false)
+      val output = CometBatchKernelCodegen.allocateOutput(field, 2, 0)
+      try {
+        input.allocateNew()
+        input.setSafe(0, 7L)
+        input.setSafe(1, -3L)
+        input.setValueCount(2)
+        val spec = ArrowColumnSpec(classOf[BigIntVector], nullable = false)
+        val kernel = CometBatchKernelCodegen.compile(expr, IndexedSeq(spec)).newInstance()
+        kernel.init(0)
+        kernel.process(Array(input), output, 2)
+        output.setValueCount(2)
+        val result = output.asInstanceOf[BigIntVector]
+        assert(result.get(0) == 7L)
+        assert(result.get(1) == -3L)
+      } finally {
+        output.close()
+        input.close()
+      }
     }
   }
 
@@ -912,6 +944,106 @@ class CometCodegenSuite
     }
   }
 
+  test("identical non-deterministic dispatched expressions keep their own state") {
+    // Two identical occurrences serialize to the same bytes. Spark gives each its own counter,
+    // so both columns are 0..n-1; sharing one cached kernel made the second continue the first
+    // (n..2n-1). The coalesce goes to the dispatcher because its guarded argument is
+    // non-deterministic (`NullGuard`), and a map with a NullType value always does. Neither
+    // carries an expression ID, which would make the two occurrences' bytes differ anyway, as a
+    // ScalaUDF's encoders or a lambda variable do. Batches of 8 make each occurrence carry its
+    // counter across batches, which per-batch state would not.
+    withTempPath { dir =>
+      spark.range(0, 64, 1, numPartitions = 1).write.parquet(dir.getCanonicalPath)
+      withTable("t") {
+        sql(s"CREATE TABLE t USING parquet LOCATION '${dir.getCanonicalPath}'")
+        val guarded = "coalesce(IF(id >= 0, monotonically_increasing_id(), " +
+          "CAST(NULL AS BIGINT)), -1L)"
+        Seq(
+          s"SELECT id, $guarded AS a, $guarded AS b FROM t",
+          "SELECT id, map(monotonically_increasing_id(), NULL) AS a, " +
+            "map(monotonically_increasing_id(), NULL) AS b FROM t").foreach { q =>
+          withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "8") {
+            assertCodegenRan {
+              checkSparkAnswerAndOperator(sql(q))
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("a non-deterministic user function stays in Spark") {
+    // Spark keeps such a function's state in one object every call references and advances it
+    // row by row. Kernels per expression either copy the object (two calls count from zero
+    // each) or share it across columns batch by batch, so the expression falls back. The Java
+    // UDF has no encoders, so identical calls serialize to identical bytes; the queries cover
+    // identical calls, different calls, a call inside a NullType map, and calls beside
+    // monotonically_increasing_id.
+    spark.udf.register(
+      "nextCount",
+      org.apache.spark.sql.functions
+        .udf(new CountingJavaUdf, org.apache.spark.sql.types.LongType)
+        .asNondeterministic())
+    withTempPath { dir =>
+      spark.range(0, 8, 1, numPartitions = 1).write.parquet(dir.getCanonicalPath)
+      withTable("t") {
+        sql(s"CREATE TABLE t USING parquet LOCATION '${dir.getCanonicalPath}'")
+        val guarded = "coalesce(IF(id >= 0, monotonically_increasing_id(), " +
+          "CAST(NULL AS BIGINT)), nextCount('x'))"
+        val keyed = "map(monotonically_increasing_id() + nextCount(CAST(id AS STRING)), NULL)"
+        val counted = "nextCount(CAST(monotonically_increasing_id() AS STRING))"
+        Seq(
+          "SELECT id, nextCount('x') AS a, nextCount('x') AS b FROM t",
+          "SELECT id, nextCount('x') AS a, nextCount('y') AS b FROM t",
+          "SELECT id, map(nextCount('x'), NULL) AS a, map(nextCount('y'), NULL) AS b FROM t",
+          s"SELECT id, $guarded AS a, $guarded AS b FROM t",
+          s"SELECT id, $keyed AS a, $keyed AS b FROM t",
+          s"SELECT id, $counted AS a, $counted AS b FROM t",
+          // A reflected method can keep state in static fields Spark shares the same way; this
+          // one does not, so the answers can be compared, but it is refused all the same.
+          "SELECT id, map(reflect('java.lang.String', 'valueOf', id), NULL) AS a FROM t")
+          .foreach { q =>
+            checkSparkAnswerAndFallbackReason(q, CometBatchKernelCodegen.userStateReason)
+          }
+      }
+    }
+  }
+
+  test("a subquery inside a dispatched expression stays in Spark") {
+    // The plan is serialized before the operator starts its subqueries, so a dispatched copy
+    // would never see the result. A subquery beside the dispatched expression is unaffected
+    // (see "ScalaUDF composed with reused scalar subquery across projection and filter").
+    spark.udf.register("plusOne", (x: Long) => x + 1)
+    withSubjects("only") {
+      Seq(
+        "SELECT plusOne((SELECT max(id) FROM range(0, 2, 1, 1))) FROM t",
+        "SELECT map((SELECT max(id) FROM range(0, 2, 1, 1)), NULL) FROM t").foreach { q =>
+        checkSparkAnswerAndFallbackReason(q, CometBatchKernelCodegen.subqueryReason)
+      }
+    }
+  }
+
+  test("a non-deterministic expression beside a NullType dispatcher result stays in Spark") {
+    // Spark skips the right operand of `+` on a row whose left operand is NULL, while native
+    // evaluation computes it over the whole batch, so the counter advances on a row Spark skips.
+    // The projection fell back to Spark when the dispatcher refused NullType results. Here
+    // serialization dispatches a tree it builds itself: the folded `map('k', NULL)` literal is
+    // expanded into a `CreateMap`, and the decimal addition is wrapped in `CheckOverflow`.
+    withTempPath { dir =>
+      spark.range(0, 4, 1, numPartitions = 1).write.parquet(dir.getCanonicalPath)
+      withTable("t") {
+        sql(s"CREATE TABLE t USING parquet LOCATION '${dir.getCanonicalPath}'")
+        val stateful = "IF(id = 0, CAST(NULL AS BIGINT), id) + monotonically_increasing_id()"
+        Seq(
+          s"SELECT id, map('k', NULL) AS m, $stateful AS v FROM t",
+          "SELECT id, map(CAST(id AS DECIMAL(10, 0)) + CAST(1 AS DECIMAL(10, 0)), NULL) AS m, " +
+            s"$stateful AS v FROM t").foreach { q =>
+          checkSparkAnswerAndFallbackReason(q, CometExecRule.nondeterministicBesideNullTypeReason)
+        }
+      }
+    }
+  }
+
   test("per-task cache isolates UDF state across sequential task runs in one session") {
     // Regression guard for the cache-scoping invariant on CometUdfBridge: instances live for
     // exactly one Spark task and are dropped on task completion, so a stateful kernel sees a
@@ -1340,13 +1472,12 @@ class CometCodegenSuite
   }
 
   test("zero-column ScalaUDF produces one row per input row") {
-    // Non-deterministic (so Spark doesn't constant-fold) with a deterministic body (so
-    // Spark-vs-Comet comparison stays honest). The expression has no `AttributeReference`,
-    // so the serde produces an empty data-arg list and the dispatcher has no data column to
-    // read the batch size from. Guards the `numRows` path through the JNI bridge.
+    // A ScalaUDF is never constant-folded, so the call reaches Comet. The expression has no
+    // `AttributeReference`, so the serde produces an empty data-arg list and the dispatcher has
+    // no data column to read the batch size from. Guards the `numRows` path through the JNI
+    // bridge.
     import org.apache.spark.sql.functions.udf
-    val alwaysHello = udf(() => "hello").asNondeterministic()
-    spark.udf.register("helloU", alwaysHello)
+    spark.udf.register("helloU", udf(() => "hello"))
     withSubjects("a", "b", null, "c") {
       assertCodegenRan {
         checkSparkAnswerAndOperator(sql("SELECT helloU() FROM t"))
@@ -1472,13 +1603,10 @@ class CometCodegenSuite
 
   test("ScalaUDF composed with reused scalar subquery across projection and filter") {
     // The same scalar subquery appears in two sites: the projection (which the dispatcher
-    // compiles into a fused kernel) and the filter (a separate operator). Each site holds its
-    // own `ScalarSubquery` expression instance with its own `@volatile result` field. Each
-    // surrounding operator's inherited `SparkPlan.waitForSubqueries` populates its instance's
-    // `result` before the dispatcher's bridge serializes the expression. The populated value
-    // travels through closure serialization into the cache key's bytes, so different subquery
-    // values compile distinct kernels. Exercises the full subquery-correctness invariant
-    // documented on `CometBatchKernelCodegen.canHandle`.
+    // compiles into a fused kernel) and the filter (a separate operator). In both sites the
+    // subquery is a sibling of the dispatched `addOne(x)`, evaluated natively, so neither
+    // dispatched tree carries it; a subquery inside a dispatched tree is refused (see "a
+    // subquery inside a dispatched expression stays in Spark").
     spark.udf.register("addOne", (i: Int) => i + 1)
     withTable("t", "t2") {
       sql("CREATE TABLE t (x INT) USING parquet")
@@ -2562,3 +2690,13 @@ private case class XyPair(x: Int, y: String)
 
 /** Element type for the `Array<Struct<Int, String>>` dynamically-sized output case. */
 private case class IntStr(a: Int, b: String)
+
+/** Returns how many times it has been called before, ignoring its argument. */
+class CountingJavaUdf extends org.apache.spark.sql.api.java.UDF1[String, java.lang.Long] {
+  private var calls = 0L
+  override def call(ignored: String): java.lang.Long = {
+    val result = calls
+    calls += 1
+    java.lang.Long.valueOf(result)
+  }
+}

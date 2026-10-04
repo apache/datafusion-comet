@@ -130,11 +130,10 @@ fn spark_size_list_like(array: &ArrayRef) -> Result<ArrayRef, DataFusionError> {
         }
     };
 
-    // Fast path for the production shape: `CometSize.convert` wraps size() in a
-    // `CASE WHEN isnotnull(child)` that filters null rows out before the THEN
-    // branch runs, so this function only ever sees a null-free array in a real
-    // Comet plan. Return the length kernel output as-is; skip the downcast and
-    // `Int32Array::clone` that `rewrite_nulls_to_minus_one` would otherwise pay.
+    // Fast path for a null-free array: return the length kernel output as-is and
+    // skip the downcast and `Int32Array::clone` that `rewrite_nulls_to_minus_one`
+    // would otherwise pay. `CometSize.convert` sends nullable input here only in
+    // legacy mode, where -1 is the answer for a null collection.
     if array.null_count() == 0 {
         return Ok(lengths);
     }

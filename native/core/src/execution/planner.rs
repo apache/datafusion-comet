@@ -6570,6 +6570,70 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn test_literal_to_list_with_only_empty_children() -> Result<(), DataFusionError> {
+        // [[], null]: no child contributes values, so the values array is built empty. It must
+        // still have the child list's element type, as it does when some child is non-empty.
+        let data = ListLiteral {
+            list_values: vec![ListLiteral::default(), ListLiteral::default()],
+            null_mask: vec![true, false],
+            ..Default::default()
+        };
+        let inner = DataType::List(Arc::new(Field::new("item", DataType::Int64, true)));
+        let nested_type = DataType::List(Arc::new(Field::new("item", inner.clone(), true)));
+
+        let array = literal_to_array_ref(nested_type, data)?;
+        assert_eq!(array.data_type(), &inner);
+        let list = array.as_any().downcast_ref::<ListArray>().unwrap();
+        assert_eq!(list.len(), 2);
+        assert!(list.value(0).is_empty());
+        assert!(list.is_null(1));
+
+        // [[[]], [[[1]]]] with every declared field non-nullable: the first child has no values
+        // below its own level, the second has. Both must come out as the same type, or
+        // concatenating them fails.
+        let list_of = |dt: DataType| DataType::List(Arc::new(Field::new("item", dt, false)));
+        let one = ListLiteral {
+            int_values: vec![1],
+            null_mask: vec![true],
+            ..Default::default()
+        };
+        let data = ListLiteral {
+            list_values: vec![
+                ListLiteral {
+                    list_values: vec![ListLiteral::default()],
+                    null_mask: vec![true],
+                    ..Default::default()
+                },
+                ListLiteral {
+                    list_values: vec![ListLiteral {
+                        list_values: vec![one],
+                        null_mask: vec![true],
+                        ..Default::default()
+                    }],
+                    null_mask: vec![true],
+                    ..Default::default()
+                },
+            ],
+            null_mask: vec![true, true],
+            ..Default::default()
+        };
+        let nested_type = list_of(list_of(list_of(list_of(DataType::Int32))));
+
+        let array = literal_to_array_ref(nested_type, data)?;
+        let list = array.as_any().downcast_ref::<ListArray>().unwrap();
+        assert_eq!(list.len(), 2);
+        assert!(list
+            .value(0)
+            .as_any()
+            .downcast_ref::<ListArray>()
+            .unwrap()
+            .value(0)
+            .is_empty());
+        assert_eq!(list.value(1).len(), 1);
+        Ok(())
+    }
+
     /// Test that reproduces the "Cast error: Casting from Int8 to Date32 not supported" error
     /// that occurs when performing date subtraction with Int8 (TINYINT) values.
     /// This corresponds to the Scala test "date_sub with int arrays" in CometExpressionSuite.

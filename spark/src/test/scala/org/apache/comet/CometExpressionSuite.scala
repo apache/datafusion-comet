@@ -24,8 +24,8 @@ import scala.util.Random
 import org.apache.hadoop.fs.Path
 import org.apache.spark.SparkThrowable
 import org.apache.spark.sql.{Column, CometTestBase, DataFrame, Row}
-import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, FromUnixTime, In, InSet, Literal, StructsToJson, TruncDate, TruncTimestamp}
-import org.apache.spark.sql.catalyst.optimizer.{ConvertToLocalRelation, OptimizeIn, SimplifyExtractValueOps}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, Coalesce, FromUnixTime, In, InSet, Literal, StructsToJson, TruncDate, TruncTimestamp}
+import org.apache.spark.sql.catalyst.optimizer.{ConstantFolding, ConvertToLocalRelation, NullPropagation, OptimizeIn, SimplifyConditionals, SimplifyExtractValueOps}
 import org.apache.spark.sql.comet.{CometFilterExec, CometProjectExec, CometSortExec, CometTakeOrderedAndProjectExec}
 import org.apache.spark.sql.execution.{LocalTableScanExec, ProjectExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
@@ -1792,6 +1792,36 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           checkSparkSchema(df)
           checkSparkAnswerAndOperator(df)
         }
+      }
+    }
+  }
+
+  test("one-argument coalesce kept by the optimizer") {
+    // `NullPropagation` and `SimplifyConditionals` normally reduce a one-argument coalesce to its
+    // argument. With them excluded it reaches the serde, which must emit the argument itself: a
+    // CASE over no guarded children has no WHEN clause, which native CASE rejects. (A SQL file
+    // test cannot set this: its harness overwrites `excludedRules` with `ConstantFolding`.)
+    val excluded = Seq(NullPropagation, SimplifyConditionals, ConstantFolding).map(_.ruleName)
+    withSQLConf(SQLConf.OPTIMIZER_EXCLUDED_RULES.key -> excluded.mkString(",")) {
+      withTable("t") {
+        sql("CREATE TABLE t(id bigint) USING parquet")
+        // One file, so the rows share a batch and the counter runs over all of them.
+        sql("INSERT INTO t SELECT IF(id = 1, NULL, id) FROM range(0, 4, 1, 1)")
+        Seq(
+          "SELECT coalesce(id) FROM t",
+          // The single argument is evaluated once, so a non-deterministic one stays native.
+          "SELECT coalesce(IF(monotonically_increasing_id() % 2 = 0, id, NULL)) FROM t")
+          .foreach { query =>
+            val df = sql(query)
+            assert(
+              df.queryExecution.optimizedPlan.expressions.exists(_.exists {
+                case c: Coalesce => c.children.size == 1
+                case _ => false
+              }),
+              s"Expected a one-argument coalesce to survive the optimizer:\n" +
+                df.queryExecution.optimizedPlan.treeString)
+            checkSparkAnswerAndOperator(df)
+          }
       }
     }
   }

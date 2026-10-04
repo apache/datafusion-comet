@@ -44,6 +44,26 @@ than Comet operators can be slower than Spark's cache.
 With Kryo and `spark.kryo.registrationRequired=true`, Comet needs its Kryo registrator whether or
 not the cache is enabled; see [Kryo serialization](../installation.md#kryo-serialization).
 
+## Broadcast Exchange
+
+A broadcast build side that has a `NullType` column directly under a struct field or a map entry
+(for example `map(k, NULL)` or `named_struct('a', k, 'b', NULL)`) stays on Spark's broadcast
+exchange, and the join above it falls back to Spark. Comet coalesces the build side's batches into
+one Arrow buffer before broadcasting, and Arrow Java's appender cannot grow a `NullVector` in that
+position. A `NullType` element of a list (`array<null>`) is not affected.
+
+## Non-Deterministic Expressions Beside NullType Values
+
+Spark's generated code skips an argument on rows where another argument decides the result (for
+example a `NULL` operand of `+`, or a `NULL` divisor), while a native expression evaluates every
+argument over the whole batch, and some expressions evaluate an argument twice. A stateful
+non-deterministic expression such as `monotonically_increasing_id()` or `rand()` then advances on
+rows Spark does not evaluate. An operator that evaluates a non-deterministic expression, and that
+runs a JVM codegen dispatcher kernel computing a `NullType` value (as its result or inside it)
+itself or in the native plan below it up to a shuffle (for example `map(k, NULL)`, including below a broadcast or a union), falls back to
+Spark. A non-deterministic column that the dispatcher runs as a whole, such as
+`map(monotonically_increasing_id(), NULL)`, is not affected.
+
 ## Sampling
 
 Comet runs `SampleExec` natively when sampling is performed without replacement, which covers
@@ -136,3 +156,9 @@ achieves the same semantic goals:
 
 The only difference is that Comet's partition assignments will differ from Spark's. When results are sorted,
 they will be identical to Spark. Unsorted results may have different row ordering.
+
+A hashed column whose type contains `NullType` (a `NULL` column, or a struct, array or map with a `NULL`-typed
+part) cannot be hashed natively, so such a shuffle falls back to the JVM columnar shuffle when
+`spark.comet.shuffle.mode` and the shuffle manager allow it, and to Spark's shuffle otherwise. This does not apply when rows are placed
+by position (`spark.comet.shuffle.native.partitioning.roundrobin.positional.enabled`) or when the column is past
+the first `spark.comet.shuffle.native.partitioning.roundrobin.maxHashColumns` columns.
