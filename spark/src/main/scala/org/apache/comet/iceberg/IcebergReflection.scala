@@ -57,6 +57,10 @@ object IcebergReflection extends Logging {
     val SPARK_STAGED_SCAN = "org.apache.iceberg.spark.source.SparkStagedScan"
     val SPARK_SCHEMA_UTIL = "org.apache.iceberg.spark.SparkSchemaUtil"
     val TABLE = "org.apache.iceberg.Table"
+    val DEFAULT_LOCATION_PROVIDER =
+      "org.apache.iceberg.LocationProviders$DefaultLocationProvider"
+    val RESOLVING_FILE_IO = "org.apache.iceberg.io.ResolvingFileIO"
+    val GCS_FILE_IO = "org.apache.iceberg.gcp.gcs.GCSFileIO"
     val PARTITIONING = "org.apache.iceberg.Partitioning"
     val SPARK_WRITE = "org.apache.iceberg.spark.source.SparkWrite"
     val TABLE_PROPERTIES = "org.apache.iceberg.TableProperties"
@@ -129,6 +133,7 @@ object IcebergReflection extends Logging {
    */
   object FileFormats {
     val PARQUET = "PARQUET"
+    val PUFFIN = "PUFFIN"
   }
 
   /**
@@ -136,6 +141,44 @@ object IcebergReflection extends Logging {
    */
   object Transforms {
     val IDENTITY = "identity"
+
+    /**
+     * iceberg-rust's placeholder for a transform it does not recognize. Conservative by
+     * construction: it contributes no partition constants and no pruning.
+     */
+    val UNKNOWN = "unknown"
+
+    /** Transforms whose `toString` iceberg-rust's `Transform::from_str` matches exactly. */
+    private val ExactNativeTransforms =
+      Set(IDENTITY, UNKNOWN, "void", "year", "month", "day", "hour")
+
+    /** `bucket[N]` / `truncate[W]`, the two parameterized spellings that parser also accepts. */
+    private val ParameterizedNativeTransform = """^(?:bucket|truncate)\[\d+\]$""".r
+
+    /**
+     * Maps an Iceberg Java transform name onto one iceberg-rust can deserialize.
+     *
+     * Iceberg Java parses a transform it doesn't know (one written by a newer Iceberg) into an
+     * `UnknownTransform` whose `toString` is the original name, e.g. `zero`. Serializing that
+     * name verbatim makes `PartitionSpec` deserialization fail native-side, which leaves the scan
+     * task holding partition values with no spec -- rejected by `FileScanTask`'s validation, so
+     * the whole scan dies instead of reading a table Iceberg considers forward-compatible.
+     * `Transform::Unknown` is iceberg-rust's model of the same thing, and its result type
+     * (string) is what Iceberg Java's `UnknownTransform.getResultType` reports, so the partition
+     * type serialized alongside the spec still agrees with it.
+     *
+     * Rewriting is only safe because the transform name reaches nothing in the native read but
+     * the identity test that builds the partition constants map (`_spec_id` uses the spec id,
+     * `_partition` matches partition values by field id). `IDENTITY` is matched exactly and so is
+     * never rewritten; every other transform yields no constants either way.
+     */
+    def forNative(transform: String): String =
+      if (ExactNativeTransforms.contains(transform) ||
+        ParameterizedNativeTransform.pattern.matcher(transform).matches()) {
+        transform
+      } else {
+        UNKNOWN
+      }
   }
 
   /**
@@ -271,8 +314,11 @@ object IcebergReflection extends Logging {
     method
   }
 
-  private def declaredMethod(clazz: Class[_], methodName: String): Option[Method] =
-    try Some(makeAccessible(clazz.getDeclaredMethod(methodName)))
+  private def declaredMethod(
+      clazz: Class[_],
+      methodName: String,
+      paramTypes: Class[_]*): Option[Method] =
+    try Some(makeAccessible(clazz.getDeclaredMethod(methodName, paramTypes: _*)))
     catch { case _: NoSuchMethodException => None }
 
   /**
@@ -304,12 +350,15 @@ object IcebergReflection extends Logging {
   /**
    * Searches through class hierarchy to find a method (including protected methods).
    */
-  def findMethodInHierarchy(clazz: Class[_], methodName: String): Option[Method] =
-    cachedLookup(clazz, "hierarchy:" + methodName) {
+  def findMethodInHierarchy(
+      clazz: Class[_],
+      methodName: String,
+      paramTypes: Class[_]*): Option[Method] =
+    cachedLookup(clazz, "hierarchy:" + lookupKey(methodName, paramTypes)) {
       var current: Class[_] = clazz
       var found: Option[Method] = None
       while (found.isEmpty && current != null) {
-        found = declaredMethod(current, methodName)
+        found = declaredMethod(current, methodName, paramTypes: _*)
         if (found.isEmpty) current = current.getSuperclass
       }
       found
@@ -397,13 +446,13 @@ object IcebergReflection extends Logging {
    * `taskGroups()`, so for staged scans we flatten the groups instead. Both methods are protected
    * and require reflection.
    */
-  def getTasks(scan: Any): Option[java.util.List[_]] =
+  def getTasks(scan: Any): Option[java.util.List[AnyRef]] =
     if (isStagedScan(scan)) tasksFromTaskGroups(scan) else tasksFromTasksAccessor(scan)
 
-  private def tasksFromTasksAccessor(scan: Any): Option[java.util.List[_]] =
+  private def tasksFromTasksAccessor(scan: Any): Option[java.util.List[AnyRef]] =
     findMethodInHierarchy(scan.getClass, "tasks") match {
       case Some(method) =>
-        Some(method.invoke(scan).asInstanceOf[java.util.List[_]])
+        Some(method.invoke(scan).asInstanceOf[java.util.List[AnyRef]])
       case None =>
         logError(
           "Iceberg reflection failure: Failed to get tasks from SparkScan: " +
@@ -411,7 +460,7 @@ object IcebergReflection extends Logging {
         None
     }
 
-  private def tasksFromTaskGroups(scan: Any): Option[java.util.List[_]] =
+  private def tasksFromTaskGroups(scan: Any): Option[java.util.List[AnyRef]] =
     findMethodInHierarchy(scan.getClass, "taskGroups") match {
       case Some(method) =>
         try {
@@ -426,7 +475,7 @@ object IcebergReflection extends Logging {
             groups.forEach { group =>
               val groupTasks =
                 groupTasksMethod.invoke(group).asInstanceOf[java.util.Collection[_ <: AnyRef]]
-              flat.addAll(groupTasks)
+              val _ = flat.addAll(groupTasks)
             }
             Some(flat)
           }
@@ -442,31 +491,6 @@ object IcebergReflection extends Logging {
           "Iceberg reflection failure: Failed to flatten tasks from SparkStagedScan: " +
             s"taskGroups() not found on ${scan.getClass.getName}")
         None
-    }
-
-  /**
-   * Gets the filter expressions from a SparkScan.
-   *
-   * `filterExpressions()` is declared on SparkPartitioningAwareScan but absent from plain
-   * SparkScan. SparkStagedScan (used by RewriteDataFiles) extends SparkScan directly and never
-   * pushes filters, so we short-circuit with an empty list rather than reflectively probing for a
-   * method we know isn't there.
-   */
-  def getFilterExpressions(scan: Any): Option[java.util.List[_]] =
-    if (isStagedScan(scan)) {
-      Some(java.util.Collections.emptyList[AnyRef]())
-    } else {
-      // Iceberg 1.11 renamed SparkScan.filterExpressions() to filters(); 1.8-1.10 use the old name.
-      findMethodInHierarchy(scan.getClass, "filters")
-        .orElse(findMethodInHierarchy(scan.getClass, "filterExpressions")) match {
-        case Some(method) =>
-          Some(method.invoke(scan).asInstanceOf[java.util.List[_]])
-        case None =>
-          logError(
-            "Iceberg reflection failure: Failed to get filter expressions from SparkScan: " +
-              s"filters()/filterExpressions() not found on ${scan.getClass.getName}")
-          None
-      }
     }
 
   /**
@@ -520,6 +544,40 @@ object IcebergReflection extends Logging {
         None
     }
   }
+
+  /**
+   * The FileIO class that actually opens `location`: for a `ResolvingFileIO`, the delegate it
+   * instantiates for the location (`io(location)`, which falls back to HadoopFileIO when the
+   * scheme's FileIO cannot be loaded or initialized -- `ioClass(location)` only maps the scheme
+   * to a class and misses that fallback), or the FileIO's own class otherwise. The delegate is
+   * cached by the ResolvingFileIO, so this is the instance the JVM writer would use. `None` on
+   * reflection failure; callers must fail closed.
+   */
+  def resolveFileIOClass(fileIO: Any, location: String): Option[Class[_]] =
+    if (!classNameInHierarchy(fileIO.getClass, Set(ClassNames.RESOLVING_FILE_IO))) {
+      Some(fileIO.getClass)
+    } else {
+      try {
+        findMethodInHierarchy(fileIO.getClass, "io", classOf[String]) match {
+          case Some(ioMethod) => Option(ioMethod.invoke(fileIO, location)).map(_.getClass)
+          case None =>
+            logError(
+              s"Iceberg reflection failure: ${fileIO.getClass.getName} has no io(String) method")
+            None
+        }
+      } catch {
+        case e: Exception =>
+          // Method.invoke wraps whatever io(location) throws; report that, not the wrapper.
+          val cause = e match {
+            case ite: java.lang.reflect.InvocationTargetException => ite.getCause
+            case other => other
+          }
+          logError(
+            "Iceberg reflection failure: Failed to resolve the FileIO delegate for " +
+              s"$location: $cause")
+          None
+      }
+    }
 
   /**
    * The table's `EncryptionManager` (`table.encryption()`). Unlike the `encryption.*` property
@@ -702,6 +760,46 @@ object IcebergReflection extends Logging {
         val sourceId =
           getMethod(partitionField.getClass, "sourceId").invoke(partitionField).asInstanceOf[Int]
         if (fieldType == TypeNames.UNKNOWN) None else Some(sourceId)
+      }
+      .toSeq
+  }
+
+  /**
+   * The partition fields of `spec` whose source column is a `float` or `double`, as (partition
+   * field name, Iceberg type name). Only the identity transform applies to those types, so such a
+   * field holds the column's own values. A `void` field is skipped: it only ever holds null, and
+   * its source column may no longer exist. Each field is resolved through its own `sourceId`
+   * rather than by position in `partitionType()`. Throws on reflection failure, or when a field
+   * that is not `void` has no source column, so the caller can fail closed.
+   */
+  def floatingPointPartitionFields(spec: Any): Seq[(String, String)] = {
+    import scala.jdk.CollectionConverters._
+    val schema = getMethod(spec.getClass, "schema").invoke(spec)
+    val findField = getMethod(schema.getClass, "findField", classOf[Int])
+    getMethod(spec.getClass, "fields")
+      .invoke(spec)
+      .asInstanceOf[java.util.List[_]]
+      .asScala
+      .flatMap { partitionField =>
+        val transform =
+          getMethod(partitionField.getClass, "transform").invoke(partitionField).toString
+        if (transform == "void") {
+          None
+        } else {
+          val name =
+            getMethod(partitionField.getClass, "name").invoke(partitionField).asInstanceOf[String]
+          val sourceId =
+            getMethod(partitionField.getClass, "sourceId")
+              .invoke(partitionField)
+              .asInstanceOf[Int]
+          val source = findField.invoke(schema, sourceId.asInstanceOf[Object])
+          if (source == null) {
+            throw new IllegalStateException(
+              s"partition field $name has no source column with id $sourceId")
+          }
+          val sourceType = getMethod(source.getClass, "type").invoke(source).toString
+          if (sourceType == "float" || sourceType == "double") Some(name -> sourceType) else None
+        }
       }
       .toSeq
   }
@@ -1092,6 +1190,74 @@ object IcebergReflection extends Logging {
   }
 
   /**
+   * Returns the nested fields of the `fieldIds` columns of `schema` that some schema in the
+   * table's history (`table.schemas()`) lacks or names differently. Each is a dotted path with
+   * the change, for example `items.element.z (renamed from a)`. A data file written under that
+   * older schema lacks the field, or has it under the old name. Fields are matched by id at every
+   * level (struct fields, list elements, map keys and values), so a reorder or a type promotion
+   * is not a change, and an older schema that lacks the column itself is skipped. Throws on
+   * reflection failure so the caller can fall back.
+   */
+  def nestedFieldsAddedOrRenamed(table: Any, schema: Any, fieldIds: Set[Int]): Seq[String] = {
+    import scala.jdk.CollectionConverters._
+    val findField = getMethod(schema.getClass, "findField", classOf[Int])
+    def fieldById(s: Any, id: Int): Option[Any] =
+      Option(findField.invoke(s, id.asInstanceOf[AnyRef]))
+    lazy val history = getMethod(table.getClass, "schemas")
+      .invoke(table)
+      .asInstanceOf[java.util.Map[_, _]]
+      .values()
+      .asScala
+      .toSeq
+    fieldIds.toSeq.flatMap { id =>
+      fieldById(schema, id).filter(childFields(_).nonEmpty).toSeq.flatMap { field =>
+        history.flatMap(fieldById(_, id)).flatMap { older =>
+          childFieldsChangedFrom(field, older, fieldName(field))
+        }
+      }
+    }.distinct
+  }
+
+  /** The nested fields under `field`, at any depth, that `older` lacks or names differently. */
+  private def childFieldsChangedFrom(field: Any, older: Any, path: String): Seq[String] = {
+    val olderChildren = childFields(older).map(child => fieldIdOf(child) -> child).toMap
+    childFields(field).flatMap { child =>
+      val name = fieldName(child)
+      val childPath = s"$path.$name"
+      olderChildren.get(fieldIdOf(child)) match {
+        case Some(olderChild) =>
+          val olderName = fieldName(olderChild)
+          val renamed =
+            if (olderName != name) Seq(s"$childPath (renamed from $olderName)") else Nil
+          renamed ++ childFieldsChangedFrom(child, olderChild, childPath)
+        case None => Seq(s"$childPath (added)")
+      }
+    }
+  }
+
+  /** A struct's fields, a list's element, or a map's key and value. Empty for other types. */
+  private def childFields(field: Any): Seq[Any] = {
+    import scala.jdk.CollectionConverters._
+    val fieldType = getMethod(field.getClass, "type").invoke(field)
+    if (getMethod(fieldType.getClass, "isNestedType").invoke(fieldType).asInstanceOf[Boolean]) {
+      val nestedType = getMethod(fieldType.getClass, "asNestedType").invoke(fieldType)
+      getMethod(nestedType.getClass, "fields")
+        .invoke(nestedType)
+        .asInstanceOf[java.util.List[_]]
+        .asScala
+        .toSeq
+    } else {
+      Nil
+    }
+  }
+
+  private def fieldName(field: Any): String =
+    getMethod(field.getClass, "name").invoke(field).asInstanceOf[String]
+
+  private def fieldIdOf(field: Any): Int =
+    getMethod(field.getClass, "fieldId").invoke(field).asInstanceOf[Int]
+
+  /**
    * Converts an Iceberg `Schema` to the Spark `StructType` it reads as, via
    * `SparkSchemaUtil.convert`. Comet serializes the whole table/scan schema to native (not just
    * projected columns), so callers use this to run the schema through Comet's existing type
@@ -1315,21 +1481,39 @@ object IcebergReflection extends Logging {
     }
   }
 
-  def getDataLocation(table: Any): Option[String] =
+  /**
+   * The table's resolved `LocationProvider` (`table.locationProvider()`). Inspecting the
+   * instantiated provider catches custom `TableOperations` that supply one without setting
+   * `write.location-provider.impl`. Returns `None` on reflection failure so callers fail closed.
+   */
+  def getLocationProvider(table: Any): Option[AnyRef] =
     try {
       val locationProviderMethod =
         findMethodInHierarchy(table.getClass, "locationProvider").getOrElse(
           throw new NoSuchMethodException(
             s"locationProvider() not found on ${table.getClass.getName}"))
-      val provider = locationProviderMethod.invoke(table)
-      val newDataLocMethod = provider.getClass.getMethod("newDataLocation", classOf[String])
-      newDataLocMethod.setAccessible(true)
-      val location = newDataLocMethod.invoke(provider, "").asInstanceOf[String]
-      Some(location.stripSuffix("/"))
+      Option(locationProviderMethod.invoke(table).asInstanceOf[AnyRef])
     } catch {
       case e: Exception =>
-        logError(s"Iceberg reflection failure: Failed to get data location: ${e.getMessage}", e)
+        logError(
+          "Iceberg reflection failure: Failed to get LocationProvider from table: " +
+            s"${e.getMessage}",
+          e)
         None
+    }
+
+  def getDataLocation(table: Any): Option[String] =
+    getLocationProvider(table).flatMap { provider =>
+      try {
+        val newDataLocMethod = provider.getClass.getMethod("newDataLocation", classOf[String])
+        newDataLocMethod.setAccessible(true)
+        val location = newDataLocMethod.invoke(provider, "").asInstanceOf[String]
+        Some(location.stripSuffix("/"))
+      } catch {
+        case e: Exception =>
+          logError(s"Iceberg reflection failure: Failed to get data location: ${e.getMessage}", e)
+          None
+      }
     }
 
   /**
@@ -1649,13 +1833,19 @@ object IcebergReflection extends Logging {
   private def newDataManifestFile(inputFile: AnyRef, specId: Int): AnyRef = {
     val inputFileClass = loadClass(ClassNames.INPUT_FILE)
     val cls = loadClass(ClassNames.GENERIC_MANIFEST_FILE)
-    val (ctor, args): (java.lang.reflect.Constructor[_], Array[Object]) =
+    // `Constructor[AnyRef]` rather than `Constructor[_]`: the two `try`/`catch` branches
+    // would otherwise infer a top-level existential, which `-Xlint:existential` rejects.
+    val (ctor, args): (java.lang.reflect.Constructor[AnyRef], Array[Object]) =
       try {
-        val c = cls.getDeclaredConstructor(inputFileClass, classOf[Int], classOf[Long])
+        val c = cls
+          .getDeclaredConstructor(inputFileClass, classOf[Int], classOf[Long])
+          .asInstanceOf[java.lang.reflect.Constructor[AnyRef]]
         (c, Array[Object](inputFile, Integer.valueOf(specId), java.lang.Long.valueOf(0L)))
       } catch {
         case _: NoSuchMethodException =>
-          val c = cls.getDeclaredConstructor(inputFileClass, classOf[Int])
+          val c = cls
+            .getDeclaredConstructor(inputFileClass, classOf[Int])
+            .asInstanceOf[java.lang.reflect.Constructor[AnyRef]]
           (c, Array[Object](inputFile, Integer.valueOf(specId)))
       }
     ctor.setAccessible(true)
@@ -1691,12 +1881,73 @@ object IcebergReflection extends Logging {
       }
       result
     } finally {
-      try reader.getClass.getMethod("close").invoke(reader)
-      catch {
-        case e: Exception => logWarning(s"Failed to close ManifestReader: ${e.getMessage}")
-      }
+      val _ =
+        try reader.getClass.getMethod("close").invoke(reader)
+        catch {
+          case e: Exception => logWarning(s"Failed to close ManifestReader: ${e.getMessage}")
+        }
     }
   }
+
+  /**
+   * Best-effort deletion of `locations` through the table's `FileIO`, for a task that failed
+   * after iceberg-rust had already written them (the JVM-side counterpart of iceberg-java's
+   * `SparkCleanupUtil.deleteTaskFiles`). Uses `SupportsBulkOperations.deleteFiles` when the
+   * `FileIO` offers it and `FileIO.deleteFile(String)` per path otherwise. Never throws: the
+   * original task failure must stay the one Spark reports. Returns the number of locations
+   * deleted, or handed to the bulk delete. `context` identifies the task in the log lines.
+   */
+  def deleteFilesQuietly(io: AnyRef, locations: Seq[String], context: String): Int = {
+    import scala.jdk.CollectionConverters._
+    if (locations.isEmpty) return 0
+    val deleted = findMethod(io.getClass, "deleteFiles", classOf[java.lang.Iterable[_]]) match {
+      case Some(bulkDelete) =>
+        try {
+          bulkDelete.invoke(io, locations.asJava)
+          locations.size
+        } catch {
+          case NonFatal(e) =>
+            logWarning(s"Bulk delete of ${locations.size} data file(s) failed ($context)", e)
+            0
+        }
+      case None =>
+        findMethod(io.getClass, "deleteFile", classOf[String]) match {
+          case None =>
+            logWarning(
+              s"FileIO ${io.getClass.getName} has no deleteFile(String); leaving " +
+                s"${locations.size} data file(s) for remove_orphan_files ($context)")
+            0
+          case Some(deleteFile) =>
+            locations.count { location =>
+              try {
+                deleteFile.invoke(io, location)
+                true
+              } catch {
+                case NonFatal(e) =>
+                  logWarning(s"Failed to delete data file $location ($context)", e)
+                  false
+              }
+            }
+        }
+    }
+    logInfo(s"Deleted $deleted of ${locations.size} data file(s) ($context)")
+    deleted
+  }
+
+  /**
+   * The locations of the data files carried by a `SparkWrite$TaskCommit` message (its
+   * package-private `files()`), or empty when `message` is not one. Used to clean up after a
+   * write job that failed before any commit was attempted.
+   */
+  def taskCommitFileLocations(message: AnyRef): Seq[String] =
+    findMethodInHierarchy(message.getClass, "files") match {
+      case Some(files) =>
+        files.invoke(message) match {
+          case array: Array[_] => array.toSeq.flatMap(f => extractFileLocation(f))
+          case _ => Seq.empty
+        }
+      case None => Seq.empty
+    }
 
   /** The table's `FileIO` (`table.io()`). Iceberg requires `FileIO` to be `Serializable`. */
   def getTableIO(table: Any): Option[AnyRef] =

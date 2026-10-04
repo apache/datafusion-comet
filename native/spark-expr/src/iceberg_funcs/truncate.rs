@@ -20,10 +20,11 @@
 //! points of a string, and the first `W` bytes of a binary value.
 
 use super::{apply_unary, positive_int_param, unpacked_type, unsupported_type};
-use crate::utils::is_valid_decimal_precision;
 use arrow::array::{Array, ArrayRef, AsArray, Decimal128Array, OffsetSizeTrait};
 use arrow::compute::kernels::substring::{substring, substring_by_char};
-use arrow::datatypes::{DataType, Decimal128Type, Int16Type, Int32Type, Int64Type, Int8Type};
+use arrow::datatypes::{
+    DataType, Decimal128Type, DecimalType, Int16Type, Int32Type, Int64Type, Int8Type,
+};
 use datafusion::common::{utils::take_function_args, Result};
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
@@ -108,7 +109,8 @@ fn truncate_array(fn_name: &str, array: &ArrayRef, width: i32) -> Result<ArrayRe
             let truncated: Decimal128Array =
                 array.as_primitive::<Decimal128Type>().unary_opt(|v| {
                     let truncated = truncate_i128(v, width as i128);
-                    is_valid_decimal_precision(truncated, *precision).then_some(truncated)
+                    Decimal128Type::is_valid_decimal_precision(truncated, *precision)
+                        .then_some(truncated)
                 });
             Arc::new(truncated.with_precision_and_scale(*precision, *scale)?)
         }

@@ -23,9 +23,13 @@ import scala.collection.JavaConverters._
 
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.expressions.Attribute
-import org.apache.spark.sql.columnar.CachedBatchSerializer
-import org.apache.spark.sql.execution.{LeafExecNode, SparkPlan}
-import org.apache.spark.sql.execution.columnar.{CachedRDDBuilder, InMemoryTableScanExec}
+import org.apache.spark.sql.catalyst.plans.QueryPlan
+import org.apache.spark.sql.catalyst.plans.logical.Statistics
+import org.apache.spark.sql.columnar.{CachedBatch, CachedBatchSerializer}
+import org.apache.spark.sql.comet.shims.ShimCometInMemoryTableScanExec
+import org.apache.spark.sql.execution.{CollectMetricsExec, SparkPlan}
+import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.execution.columnar.{CachedRDDBuilder, InMemoryRelation, InMemoryTableScanExec}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
@@ -52,7 +56,14 @@ case class CometInMemoryTableScanExec(
     relationOutput: Seq[Attribute],
     scanOutput: Seq[Attribute])
     extends CometExec
-    with LeafExecNode {
+    with ShimCometInMemoryTableScanExec {
+
+  // Implements InMemoryTableScanLike on Spark 3.5+; Spark 3.4 has no such interface.
+  def isMaterialized: Boolean = cacheBuilder.isCachedColumnBuffersLoaded
+
+  def baseCacheRDD(): RDD[CachedBatch] = cacheBuilder.cachedColumnBuffers
+
+  def runtimeStatistics: Statistics = originalPlan.relation.computeStats()
 
   override lazy val metrics: Map[String, SQLMetric] = Map(
     "numOutputRows" -> SQLMetrics.createMetric(sparkContext, "number of output rows"))
@@ -63,6 +74,17 @@ case class CometInMemoryTableScanExec(
   // the declared output, and a consumer that reads by ordinal rather than by row count -- a join,
   // for instance -- then reads the wrong column.
   override def output: Seq[Attribute] = originalPlan.output
+
+  // Described by the Spark scan it replaces: the table's name when it has one, the attributes it
+  // reads and any pruning predicates. The default would print every constructor field, among them
+  // the CachedRDDBuilder with the whole cached plan, physical and logical, inline and with its raw
+  // newlines, which breaks the tree of every plan that reads the cache.
+  override def stringArgs: Iterator[Any] = Iterator(originalPlan)
+
+  // Spark's own scan lists its InMemoryRelation as an inner child, and the relation lists the
+  // cached plan, so EXPLAIN draws the plan that built the cache below the scan. Do the same.
+  // ExtendedExplainInfo.executionInnerChildren leaves them out of Comet's own reporting.
+  override def innerChildren: Seq[QueryPlan[_]] = Seq(originalPlan.relation)
 
   // `originalPlan` is a plan-typed field rather than a child, so QueryPlan's canonicalization
   // walks straight past it: its attributes and predicates keep the expression IDs of whichever
@@ -114,7 +136,7 @@ case class CometInMemoryTableScanExec(
     serializer
       .convertCachedBatchToColumnarBatch(filteredBuffers, relationOutput, scanOutput, conf)
       .map { cb =>
-        numOutputRows += cb.numRows()
+        numOutputRows += cb.numRows().toLong
         cb
       }
   }
@@ -153,6 +175,26 @@ object CometInMemoryTableScanExec extends CometOperatorSerde[InMemoryTableScanEx
         relation.cacheBuilder,
         relation.output,
         op.output))
+  }
+
+  /**
+   * Whether `relation`'s cached plan records observed metrics, from `Dataset.observe`.
+   *
+   * Spark collects those metrics once a query finishes, with `CollectMetricsExec.collect`, and
+   * that reaches the ones recorded inside a cached plan only through an `InMemoryTableScanExec`
+   * over it. It does not know this node, so replacing the scan of such a relation leaves its
+   * metrics empty, and on Spark 3.4 leaves `Observation.get` waiting for good. The walk mirrors
+   * `CollectMetricsExec.collect`, through subqueries, adaptive plans and nested caches.
+   */
+  def recordsObservedMetrics(relation: InMemoryRelation): Boolean =
+    ObservedMetrics.recordedIn(relation.cachedPlan)
+
+  private object ObservedMetrics extends AdaptiveSparkPlanHelper {
+    def recordedIn(plan: SparkPlan): Boolean =
+      collectWithSubqueries(plan) {
+        case _: CollectMetricsExec => true
+        case scan: InMemoryTableScanExec => recordedIn(scan.relation.cachedPlan)
+      }.contains(true)
   }
 
 }

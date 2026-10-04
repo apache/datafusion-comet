@@ -36,9 +36,15 @@ regex = { workspace = true }
 # preserve_order: needed for get_json_object to match Spark's JSON key ordering
 serde_json = { version = "1.0", features = ["preserve_order"] }
 serde = { version = "1.0", features = ["derive"] }
+# get_json_object: pre-parse scan for Jackson's numeric length constraint, using
+# the same memchr2-based string skipping as serde_json's own `ignore_str`
+memchr = "2.8"
+smallvec = "1.16"
 datafusion-comet-common = { workspace = true }
 datafusion-comet-jni-bridge = { workspace = true }
 jni = "0.22.4"
+# jni-bridge's `jni_static_call!` expands to `paste::paste!`, so callers need `paste` directly
+paste = "1.0.14"
 futures = { workspace = true }
 twox-hash = "2.1.2"
 rand = { workspace = true }
@@ -47,6 +53,7 @@ base64 = "0.23.0"
 # float/double to decimal conversion
 ryu = "1.0"
 uuid = "1.23.3"
+datasketches = { workspace = true }
 
 [dev-dependencies]
 arrow = {workspace = true}
@@ -55,9 +62,21 @@ rand = { workspace = true}
 tokio = { version = "1", features = ["rt-multi-thread"] }
 datafusion = { workspace = true, features = ["sql"] }
 
+# `paste` is only used through macro expansion, which cargo machete cannot see
+[package.metadata.cargo-machete]
+ignored = ["paste"]
+
 [lib]
 name = "datafusion_comet_spark_expr"
 path = "src/lib.rs"
+
+[[bench]]
+name = "hash"
+harness = false
+
+[[bench]]
+name = "hash_alloc"
+harness = false
 
 [[bench]]
 name = "cast_from_string"
@@ -85,6 +104,50 @@ harness = false
 
 [[bench]]
 name = "aggregate"
+harness = false
+
+[[bench]]
+name = "approx_percentile"
+harness = false
+
+[[bench]]
+name = "date_diff"
+harness = false
+
+[[bench]]
+name = "date_from_unix_date"
+harness = false
+
+[[bench]]
+name = "day_month_name"
+harness = false
+
+[[bench]]
+name = "extract_date_part"
+harness = false
+
+[[bench]]
+name = "hours"
+harness = false
+
+[[bench]]
+name = "make_date"
+harness = false
+
+[[bench]]
+name = "make_time"
+harness = false
+
+[[bench]]
+name = "make_interval"
+harness = false
+
+[[bench]]
+name = "next_day"
+harness = false
+
+[[bench]]
+name = "seconds_to_timestamp"
 harness = false
 
 [[bench]]
@@ -117,6 +180,10 @@ harness = false
 
 [[bench]]
 name = "bloom_filter_agg"
+harness = false
+
+[[bench]]
+name = "collect"
 harness = false
 
 [[bench]]
@@ -172,6 +239,10 @@ name = "map_sort"
 harness = false
 
 [[bench]]
+name = "map_extract"
+harness = false
+
+[[bench]]
 name = "to_time"
 harness = false
 
@@ -201,6 +272,10 @@ harness = false
 
 [[bench]]
 name = "arrays_overlap"
+harness = false
+
+[[bench]]
+name = "array_extrema"
 harness = false
 
 [[bench]]
@@ -269,6 +344,22 @@ harness = false
 
 [[bench]]
 name = "abs"
+harness = false
+
+[[bench]]
+name = "sqrt"
+harness = false
+
+[[bench]]
+name = "concat_ws"
+harness = false
+
+[[bench]]
+name = "list_positions"
+harness = false
+
+[[bench]]
+name = "map_from_arrays"
 harness = false
 
 [[bench]]
@@ -345,4 +436,40 @@ harness = false
 
 [[bench]]
 name = "iceberg_transforms"
+harness = false
+
+[[bench]]
+name = "spark_pow"
+harness = false
+
+[[bench]]
+name = "cast_decimal_to_boolean"
+harness = false
+
+[[bench]]
+name = "dayofweek_weekday"
+harness = false
+
+[[bench]]
+name = "aggregate_stats"
+harness = false
+
+[[bench]]
+name = "nondeterministic"
+harness = false
+
+[[bench]]
+name = "json_array_length"
+harness = false
+
+[[bench]]
+name = "utf8_decode"
+harness = false
+
+[[bench]]
+name = "nested_comparison"
+harness = false
+
+[[bench]]
+name = "float_arrays"
 harness = false

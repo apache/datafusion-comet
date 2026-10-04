@@ -25,11 +25,11 @@ CREATE TABLE test_upper(s string) USING parquet
 statement
 INSERT INTO test_upper VALUES ('hello'), ('HELLO'), ('Hello World'), (''), (NULL), ('123abc')
 
-query
+query expect_dispatch(upper)
 SELECT upper(s) FROM test_upper
 
 -- literal arguments
-query
+query expect_dispatch(upper)
 SELECT upper('hello'), upper(''), upper(NULL)
 
 -- locale-sensitive characters: German sharp s and Turkish dotted/dotless I
@@ -39,5 +39,5 @@ CREATE TABLE test_upper_unicode(s string) USING parquet
 statement
 INSERT INTO test_upper_unicode VALUES ('straße'), ('istanbul'), ('İstanbul'), ('ﬁnish')
 
-query
+query expect_dispatch(upper)
 SELECT upper(s) FROM test_upper_unicode

@@ -58,6 +58,7 @@ private[codegen] object CometBatchKernelCodegenInput extends CometTypeShim {
     classOf[TinyIntVector],
     classOf[SmallIntVector],
     classOf[IntVector],
+    classOf[IntervalYearVector],
     classOf[BigIntVector],
     classOf[Float4Vector],
     classOf[Float8Vector],
@@ -142,9 +143,7 @@ private[codegen] object CometBatchKernelCodegenInput extends CometTypeShim {
             cls == classOf[DurationVector] ||
             cls == classOf[TimeNanoVector] ||
             cls == classOf[TimeStampMicroVector] ||
-            cls == classOf[TimeStampMicroTZVector] ||
-            cls == classOf[TimeNanoVector] ||
-            cls == classOf[DurationVector] =>
+            cls == classOf[TimeStampMicroTZVector] =>
         s"      case $ord: return this.col$ord.getLong(this.rowIdx);"
     }
     val intervalCases = withOrd.collect {
