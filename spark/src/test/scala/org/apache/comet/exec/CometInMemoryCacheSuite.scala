@@ -456,10 +456,18 @@ class CometInMemoryCacheSuite extends CometTestBase {
             val plan = df.queryExecution.executedPlan
             val scans = collect(plan) { case s: CometInMemoryTableScanExec => s }
             assert(scans.size == 1, plan)
+            val sparkScan = scans.head.originalPlan
             val cachedPlanInfo =
-              CometSparkPlanInfoHelper.fromSparkPlan(scans.head.originalPlan.relation.cachedPlan)
+              CometSparkPlanInfoHelper.fromSparkPlan(sparkScan.relation.cachedPlan)
+            // Spark's own scan of the cache sits below, and the cached plan below that.
             val infos = scanInfos(CometSparkPlanInfoHelper.fromSparkPlan(plan))
-            assert(infos.map(_.children) == Seq(Seq(cachedPlanInfo)), plan)
+            assert(
+              infos.map(_.children.map(info => (info.nodeName, info.children))) ==
+                Seq(Seq((sparkScan.nodeName, Seq(cachedPlanInfo)))),
+              plan)
+            // Other walkers of subqueries stop at Spark's scan, as in Spark's own plans, so they
+            // do not find the cached plan's shuffle in this query, which has none of its own.
+            assert(collectWithSubqueries(plan) { case e: ShuffleExchangeLike => e }.isEmpty, plan)
           }
         }
       }
