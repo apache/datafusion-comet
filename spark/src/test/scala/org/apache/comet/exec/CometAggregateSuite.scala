@@ -285,23 +285,27 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       schema,
       1000,
       DataGenOptions(generateNegativeZero = true))
-    df.createOrReplaceTempView("tbl")
+    withTempDir { dir =>
+      // Spark returns the first of equal values, so both engines have to read the rows in the
+      // same order: write a single file, which each of them reads in one task.
+      val path = new Path(dir.toString, "tbl").toString
+      df.repartition(1).write.parquet(path)
+      spark.read.parquet(path).createOrReplaceTempView("tbl")
 
-    for (col <- Seq("float_col", "double_col")) {
-      // assert that data contains positive and negative zero
-      assert(spark.sql(s"select * from tbl where cast($col as string) = '0.0'").count() > 0)
-      assert(spark.sql(s"select * from tbl where cast($col as string) = '-0.0'").count() > 0)
-      for (agg <- Seq("min", "max")) {
-        withSQLConf(COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
-          checkSparkAnswerAndFallbackReasons(
-            s"select $agg($col) from tbl where cast($col as string) in ('0.0', '-0.0')",
-            Set(
-              "Unsupported aggregate expression(s)",
-              s"floating-point not supported when ${COMET_EXEC_STRICT_FLOATING_POINT.key}=true"))
+      for (col <- Seq("float_col", "double_col")) {
+        // assert that data contains positive and negative zero
+        assert(spark.sql(s"select * from tbl where cast($col as string) = '0.0'").count() > 0)
+        assert(spark.sql(s"select * from tbl where cast($col as string) = '-0.0'").count() > 0)
+        for (agg <- Seq("min", "max")) {
+          // min and max follow Spark's float ordering natively, so strict mode keeps them native.
+          withSQLConf(COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
+            checkSparkAnswerAndOperator(
+              s"select $agg($col) from tbl where cast($col as string) in ('0.0', '-0.0')")
+          }
+          checkSparkAnswer(
+            s"select $col, count(*) from tbl " +
+              s"where cast($col as string) in ('0.0', '-0.0') group by $col")
         }
-        checkSparkAnswer(
-          s"select $col, count(*) from tbl " +
-            s"where cast($col as string) in ('0.0', '-0.0') group by $col")
       }
     }
   }
