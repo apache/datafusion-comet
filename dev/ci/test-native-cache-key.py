@@ -21,6 +21,7 @@
 import importlib.util
 import io
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -66,11 +67,21 @@ class NativeCacheKeyTests(unittest.TestCase):
             self.write(name, content)
         subprocess.run(["git", "add", "."], cwd=self.root, check=True)
         self.write("jdk/release", 'JAVA_VERSION="17.0.1"\n')
+        self.write("jdk/include/jni.h", "JNI header\n")
+        self.write("jdk/include/linux/jni_md.h", "platform JNI header\n")
+        self.write("jdk/lib/server/libjvm.so", "JVM link input\n")
         self.env = {"JAVA_HOME": str(self.root / "jdk"), "CARGO_HOME": str(self.root / "cargo"),
                     "RUSTFLAGS": "-Ctarget-cpu=x86-64-v3 -Clink-arg=-fuse-ld=bfd"}
         self.versions = {"rustc": "rustc 1.90\nhost: x86_64-unknown-linux-gnu\n",
                          "cargo": "cargo 1.90\n", "rustfmt": "rustfmt 1.8\n",
-                         "dpkg-query": "libc6\t2.40\tamd64\n", "uname": "x86_64\n"}
+                         "dpkg-query": "installed\tgcc\t13\tamd64\tlibcompiler (>= 1)\tlibc6\tc-compiler\n"
+                                       "installed\tlibcompiler\t1\tamd64\tlibmpfr6 | alternative-math\t\t\n"
+                                       "installed\tlibmpfr6\t4\tamd64\tlibc6\t\t\n"
+                                       "installed\tlibc6\t2.40\tamd64\t\t\t\n"
+                                       "installed\tca-certificates\t1\tall\t\t\t\n"
+                                       "installed\timagemagick\t1\tamd64\t\t\t\n"
+                                       "installed\ttzdata\t1\tall\t\t\t\n",
+                         "uname": "x86_64\n"}
 
     def write(self, name, content):
         """Write fixture text under the temporary repository, creating its parents."""
@@ -79,7 +90,8 @@ class NativeCacheKeyTests(unittest.TestCase):
         path.write_text(content)
 
     def keys(self, profile="ci"):
-        """Return keys from real tracked files and deterministic tool version responses."""
+        """Stage fixture edits, then snapshot a clean index with deterministic tools."""
+        subprocess.run(["git", "add", "-u"], cwd=self.root, check=True)
         dependencies, sources = CACHE.source_inputs(self.root, profile)
         with patch.object(CACHE, "command", side_effect=lambda args, cwd: self.versions[args[0]]):
             environment = CACHE.environment_inputs(self.root, self.env)
@@ -162,7 +174,7 @@ class NativeCacheKeyTests(unittest.TestCase):
         """A completed native build may consume only fingerprinted or explicit derived inputs."""
         for name in CACHE.GENERATED_PROTO_FILES:
             self.write(name, "generated protobuf Rust\n")
-        (self.root / "jdk/lib/server").mkdir(parents=True)
+        (self.root / "jdk/lib/server").mkdir(parents=True, exist_ok=True)
         path = self.depinfo("native/lib.rs", "native/proto/src/proto",
                             *sorted(CACHE.GENERATED_PROTO_FILES), "jdk/lib/server")
         CACHE.check_depinfo(self.root, path, self.env)
@@ -215,7 +227,7 @@ class NativeCacheKeyTests(unittest.TestCase):
         directory_link.symlink_to(Path(external.name), target_is_directory=True)
         for name in (str(outside), str(generated), str(linked), "native/../uncovered.rs",
                      "native/proto/src/proto"):
-            with self.subTest(name=name), self.assertRaisesRegex(ValueError, "missing from"):
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, "missing from|unsupported tracked"):
                 CACHE.check_depinfo(self.root, self.depinfo(name), self.env)
 
     def test_depinfo_rejects_missing_relative_and_malformed_inputs(self):
@@ -249,14 +261,14 @@ class NativeCacheKeyTests(unittest.TestCase):
     def test_tools_jdk_flags_and_tracked_build_configuration_invalidate(self):
         """Capture build overrides only; tools, Java metadata and tracked configs invalidate keys."""
         before = self.keys()
-        for tool in self.versions:
+        for tool in ("rustc", "cargo", "rustfmt", "uname"):
             with self.subTest(tool=tool):
                 old = self.versions[tool]
                 self.versions[tool] += "changed\n"
                 self.assertNotEqual(before["library-key"], self.keys()["library-key"])
                 self.versions[tool] = old
         self.write("jdk/release", 'JAVA_VERSION="17.0.2"\n')
-        self.assertNotEqual(before["library-key"], self.keys()["library-key"])
+        self.assertEqual(before, self.keys())
         self.write("jdk/release", 'JAVA_VERSION="17.0.1"\n')
         self.env["RUSTFLAGS"] += " -Copt-level=1"
         self.assertNotEqual(before["library-key"], self.keys()["library-key"])
@@ -269,7 +281,7 @@ class NativeCacheKeyTests(unittest.TestCase):
         with patch.object(CACHE, "command", side_effect=lambda args, cwd: self.versions[args[0]]):
             environment = CACHE.environment_inputs(
                 self.root, {**build_env, "GITHUB_RUN_ID": "12345", "UNRELATED": "ignored"})
-        self.assertEqual(environment["env"], build_env)
+        self.assertEqual(environment["env"], {k: v for k, v in build_env.items() if k != "JAVA_HOME"})
         self.env["TARGET_CFLAGS"] = "build override"
         after = self.keys()
         for key in ("library-key", "cargo-key"):
@@ -278,6 +290,72 @@ class NativeCacheKeyTests(unittest.TestCase):
         self.write(".cargo/config.toml", "[build]\nincremental = false\n")
         subprocess.run(["git", "add", ".cargo/config.toml"], cwd=self.root, check=True)
         self.assertNotEqual(before["library-key"], self.keys()["library-key"])
+
+    def test_index_oids_require_clean_supported_build_inputs(self):
+        """Dirty/deleted content and hidden index flags cannot reuse a clean library key."""
+        _, sources = CACHE.source_inputs(self.root)
+        oid = subprocess.check_output(["git", "rev-parse", ":native/lib.rs"], cwd=self.root, text=True).strip()
+        self.assertEqual(sources["native/lib.rs"], ["100644", oid])
+        before = self.keys()
+        (self.root / "native/lib.rs").chmod(0o755)
+        with self.assertRaisesRegex(ValueError, "clean tracked"):
+            CACHE.source_inputs(self.root)
+        after = self.keys()
+        self.assertNotEqual(before["library-key"], after["library-key"])
+        self.assertEqual(before["cargo-key"], after["cargo-key"])
+        self.assertEqual(CACHE.source_inputs(self.root)[1]["native/lib.rs"], ["100755", oid])
+        (self.root / "native/lib.rs").chmod(0o644)
+        subprocess.run(["git", "add", "native/lib.rs"], cwd=self.root, check=True)
+        self.write("native/lib.rs", "dirty bytes\n")
+        with self.assertRaisesRegex(ValueError, "clean tracked"):
+            CACHE.source_inputs(self.root)
+        for flag in ("--assume-unchanged", "--skip-worktree"):
+            subprocess.run(["git", "update-index", flag, "native/lib.rs"], cwd=self.root, check=True)
+            with self.assertRaisesRegex(ValueError, "unsupported tracked"):
+                CACHE.source_inputs(self.root)
+            subprocess.run(["git", "update-index", flag.replace("--", "--no-", 1), "native/lib.rs"],
+                           cwd=self.root, check=True)
+        (self.root / "native/lib.rs").unlink()
+        with self.assertRaisesRegex(ValueError, "clean tracked"):
+            CACHE.source_inputs(self.root)
+
+    def test_package_closure_ignores_unrelated_updates_but_tracks_transitive_libraries(self):
+        before = self.keys()
+        original = self.versions["dpkg-query"]
+        for name in ("ca-certificates", "imagemagick", "tzdata"):
+            self.versions["dpkg-query"] = original.replace(f"\t{name}\t1\t", f"\t{name}\t2\t")
+            self.assertEqual(before, self.keys())
+        for name, version in (("gcc", "13"), ("libcompiler", "1"), ("libmpfr6", "4"), ("libc6", "2.40")):
+            self.versions["dpkg-query"] = original.replace(f"\t{name}\t{version}\t", f"\t{name}\tchanged\t")
+            after = self.keys()
+            for key in ("cargo-key", "library-key"):
+                self.assertNotEqual(before[key], after[key], name)
+        virtual = original.replace("libmpfr6 | alternative-math", "math-provider:any")
+        virtual = virtual.replace("installed\tlibmpfr6\t4\tamd64\tlibc6\t\t",
+                                  "installed\tlibmpfr6\t4\tamd64\tlibc6\t\tmath-provider (= 4)")
+        self.assertIn("libmpfr6", CACHE.toolchain_packages(virtual))
+        with self.assertRaisesRegex(ValueError, "unresolved installed dependency"):
+            CACHE.toolchain_packages(original.replace("libmpfr6 | alternative-math", "missing-library"))
+
+    def test_jni_identity_ignores_release_and_location_but_tracks_headers_and_jvm(self):
+        self.env["PATH"] = f"{self.root / 'jdk/bin'}:/usr/bin"
+        before = self.keys()
+        self.write("jdk/release", 'JAVA_VERSION="new label"\n')
+        self.write("jdk/lib/unrelated-runtime-data", "not a native build input")
+        self.assertEqual(before, self.keys())
+        shutil.copytree(self.root / "jdk", self.root / "relocated-jdk")
+        self.env["JAVA_HOME"] = str(self.root / "relocated-jdk")
+        self.env["PATH"] = f"{self.root / 'relocated-jdk/bin'}:/usr/bin"
+        self.assertEqual(before, self.keys())
+        for name in ("include/jni.h", "include/linux/jni_md.h", "lib/server/libjvm.so"):
+            path = self.root / "relocated-jdk" / name
+            original = path.read_text()
+            path.write_text("changed bytes")
+            for key in ("cargo-key", "library-key"):
+                self.assertNotEqual(before[key], self.keys()[key], name)
+            path.write_text(original)
+        with self.assertRaisesRegex(ValueError, "missing from"):
+            CACHE.check_depinfo(self.root, self.depinfo("relocated-jdk/lib/unrelated-runtime-data"), self.env)
 
     def test_profiles_have_separate_cargo_caches(self):
         """CI/debug keys stay separate and only CI produces a reusable library key."""

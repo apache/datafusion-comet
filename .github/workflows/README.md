@@ -460,8 +460,12 @@ files. Adding a new file input requires extending that contract.
 
 `dev/ci/native-cache-key.py` snapshots native sources, protobufs, dependencies,
 Cargo configuration and shared build/setup actions before source generation.
-It includes Rust versions, installed package versions, architecture, JDK
-release/path, and Cargo/Rust, C/C++ compiler/flag and HDFS environment overrides.
+It uses index modes/object IDs after rejecting modified, missing, unmerged,
+symlinked, skip-worktree or assume-unchanged native inputs. It includes Rust
+versions, architecture, the installed compiler/protobuf toolchain dependency
+closure, JNI header and `libjvm.so` contents, and Cargo/Rust, C/C++ compiler/flag
+and HDFS environment overrides. JDK release labels and the JDK component of PATH
+do not distinguish otherwise identical native inputs.
 Caller workflows are excluded because their selected tools and environment are
 observed directly. Spark edits, documentation, generated files and disabled
 contrib sources preserve the key; contrib manifests remain inputs for `--locked`.
@@ -473,9 +477,13 @@ the merge queue as well as main's cache warmer. Code generation uses `x86-64-v3`
 The helper supports the official Rust container and `setup-builder`. Introducing
 external tools or files requires updating that contract: an override's path does
 not identify arbitrary contents stored there. Both binary and incremental keys
-retain package and JDK identity because native dependencies compile against JNI
-headers and link `libjvm`, and Cargo does not fully track external tool/header
-changes. Unrelated package updates can therefore cause conservative misses.
+retain compiler/linker package versions and their recursive installed Depends/
+Pre-Depends closure, including providers and indirect libraries such as GCC's
+`libisl`, `libmpfr` and `libgmp`. JNI headers and the actual `libjvm.so` link input
+are hashed instead of a JDK release label. Changes to unrelated applications or
+JDK installation paths preserve reuse; changes to the selected package versions
+or JNI/JVM contents invalidate both caches. Build tools outside the official package/tool contract
+require extending it before reuse.
 
 Every consumer must match main's native producer environment to reuse its library
 or incremental cache. A different JDK or container needs its own publisher;
