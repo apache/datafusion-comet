@@ -1161,7 +1161,7 @@ class CometJoinSuite extends CometTestBase {
     val build =
       Seq[(java.lang.Long, Long)]((1L, 11L), (1L, 12L), (2L, 21L), (4L, 41L), (null, 99L))
     val probe = (0 until 240).map { i =>
-      (if (i % 7 == 0) null else java.lang.Long.valueOf(i % 6), i.toLong)
+      (if (i % 7 == 0) null else java.lang.Long.valueOf((i % 6).toLong), i.toLong)
     }
     withParquetTable(build, "reuse_build") {
       withParquetTable(probe, "reuse_probe") {

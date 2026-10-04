@@ -32,7 +32,7 @@ private[comet] class CometBroadcastInputRDD(
     batches: CometBatchRDD,
     schema: StructType,
     maxBytes: Long,
-    name: String)
+    sourceName: String)
     extends RDD[CometBroadcastInput](batches.context, Seq(new OneToOneDependency(batches))) {
 
   override protected def getPartitions: Array[Partition] =
@@ -44,7 +44,7 @@ private[comet] class CometBroadcastInputRDD(
       new CometBroadcastInput(
         partition.value,
         schema,
-        name,
+        sourceName,
         context,
         CometBroadcastMemoryManager.getOrCreate(maxBytes)))
   }
