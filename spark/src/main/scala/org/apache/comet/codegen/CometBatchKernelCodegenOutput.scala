@@ -141,9 +141,21 @@ private[codegen] object CometBatchKernelCodegenOutput extends CometTypeShim {
     override def getField: Field = exportField
   }
 
+  /**
+   * StructVector gets a field without children, so its writer creates no children that
+   * initializeChildrenFromFields then drops. `getField` returns `exportField` after that call.
+   */
   private final class RenamedStructVector(exportField: Field, allocator: BufferAllocator)
-      extends StructVector(exportField, allocator, null) {
-    override def getField: Field = exportField
+      extends StructVector(exportField.getName, allocator, exportField.getFieldType, null) {
+    // False while the StructVector constructor runs.
+    private var childrenInitialized = false
+
+    override def initializeChildrenFromFields(children: java.util.List[Field]): Unit = {
+      super.initializeChildrenFromFields(children)
+      childrenInitialized = true
+    }
+
+    override def getField: Field = if (childrenInitialized) exportField else super.getField
   }
 
   /**
