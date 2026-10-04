@@ -99,17 +99,20 @@ class CometNativeCastSuite
           val (_, plan) =
             checkSparkAnswerAndFallbackReason(masked, CometCast.literalCastConditionalEvalReason)
           assert(collect(plan) { case scan: CometNativeScanExec => scan }.nonEmpty)
-          checkSparkError(sql(s"SELECT $cast FROM cast_branch_rows"), "CAST_INVALID_INPUT")
+          checkSparkError(
+            sql(s"SELECT $cast FROM cast_branch_rows"),
+            "CAST_INVALID_INPUT",
+            checkNative = false)
         }
       }
     }
   }
 
   test("successful literal casts and non-ANSI invalid casts retain native projection") {
-    withParquetTable(Seq(0, 1), "cast_branch_controls") {
+    withParquetTable(Seq(Tuple1(0), Tuple1(1)), "cast_branch_controls") {
       for (ansi <- Seq("true", "false")) {
         withSQLConf(SQLConf.ANSI_ENABLED.key -> ansi) {
-          val query = "SELECT CAST(IF(value = 1, '1', CAST(value AS STRING)) AS INT) " +
+          val query = "SELECT CAST(IF(_1 = 1, '1', CAST(_1 AS STRING)) AS INT) " +
             "FROM cast_branch_controls"
           val (_, plan) = checkSparkAnswerAndOperator(sql(query))
           assert(collect(plan) { case project: CometProjectExec => project }.nonEmpty)
@@ -119,7 +122,7 @@ class CometNativeCastSuite
         }
       }
       withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
-        val query = "SELECT CAST(IF(value = 1, 'bad', CAST(value AS STRING)) AS INT) " +
+        val query = "SELECT CAST(IF(_1 = 1, 'bad', CAST(_1 AS STRING)) AS INT) " +
           "FROM cast_branch_controls"
         val (_, plan) = checkSparkAnswerAndOperator(sql(query))
         assert(collect(plan) { case project: CometProjectExec => project }.nonEmpty)
