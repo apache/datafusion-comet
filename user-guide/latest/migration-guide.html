@@ -897,6 +897,19 @@ session’s <code class="docutils literal notranslate"><span class="pre">spark.s
 had started with a different shuffle manager used to plan Comet shuffles that failed with a
 <code class="docutils literal notranslate"><span class="pre">ClassCastException</span></code>. Such a session now runs without Comet, with a warning.</p>
 </section>
+<section id="native-iceberg-reads-on-eks-with-irsa">
+<h3>Native Iceberg Reads on EKS with IRSA<a class="headerlink" href="#native-iceberg-reads-on-eks-with-irsa" title="Link to this heading">#</a></h3>
+<p>On EKS with IAM Roles for Service Accounts (IRSA), when <code class="docutils literal notranslate"><span class="pre">AWS_WEB_IDENTITY_TOKEN_FILE</span></code>,
+<code class="docutils literal notranslate"><span class="pre">AWS_ROLE_ARN</span></code> and a region are set and the catalog configures no credentials, Comet <code class="docutils literal notranslate"><span class="pre">1.1.0</span></code>’s
+native Iceberg scan takes its S3 credentials only from the web-identity role. If that fails, it no
+longer falls back to the node role or Pod Identity, as Comet <code class="docutils literal notranslate"><span class="pre">1.0.0</span></code> did. So a cluster whose IRSA
+setup is broken, and that was reading S3 as the node role without anyone noticing, now fails native
+Iceberg reads with <code class="docutils literal notranslate"><span class="pre">failed</span> <span class="pre">to</span> <span class="pre">load</span> <span class="pre">signing</span> <span class="pre">credential</span></code>. The “EKS / IRSA” section of
+<a class="reference internal" href="s3-credential-providers.html"><span class="std std-doc">S3 Credential Providers</span></a> explains the change. To go back to the old
+credential chain for a catalog, set
+<code class="docutils literal notranslate"><span class="pre">spark.sql.catalog.&lt;catalog&gt;.s3.comet.credential.webIdentity.enabled=false</span></code>. A table loaded by path
+has no catalog to set that on, so for it set <code class="docutils literal notranslate"><span class="pre">spark.comet.scan.icebergNative.enabled=false</span></code>.</p>
+</section>
 <section id="deprecated-and-removed-settings">
 <h3>Deprecated and Removed Settings<a class="headerlink" href="#deprecated-and-removed-settings" title="Link to this heading">#</a></h3>
 <p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.memoryPool.fraction</span></code> is deprecated and will be removed in a future major release.
@@ -976,6 +989,7 @@ release, review the release notes for the versions in between.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#settings-that-now-take-effect-as-documented">Settings That Now Take Effect as Documented</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#memory-pool-limits">Memory Pool Limits</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#conditions-for-enabling-comet">Conditions for Enabling Comet</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#native-iceberg-reads-on-eks-with-irsa">Native Iceberg Reads on EKS with IRSA</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#deprecated-and-removed-settings">Deprecated and Removed Settings</a></li>
 </ul>
 </li>
