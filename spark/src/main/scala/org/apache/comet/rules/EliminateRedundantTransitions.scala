@@ -322,24 +322,21 @@ case class EliminateRedundantTransitions(session: SparkSession)
    * Creates an appropriate columnar to row transition operator.
    *
    * If native columnar to row conversion is enabled and the schema is supported, uses
-   * CometNativeColumnarToRowExec. Variant uses Spark's conversion; other unsupported schemas use
-   * CometColumnarToRowExec.
+   * CometNativeColumnarToRowExec. Unsupported Variant schemas use Spark's conversion; other
+   * unsupported schemas use CometColumnarToRowExec.
    */
   private def createColumnarToRowExec(child: SparkPlan): SparkPlan = {
     val schema = child.schema
-    // TODO: Remove this fallback once Comet columnar-to-row conversion supports Variant getters
-    // and Spark's Variant UnsafeRow encoding.
-    // https://github.com/apache/datafusion-comet/issues/5436
-    if (containsVariantType(schema)) {
-      return withFallbackReason(
-        ColumnarToRowExec(child),
-        "Native columnar-to-row conversion does not support type VariantType")
-    }
     val useNative = CometConf.COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED.get() &&
       CometNativeColumnarToRowExec.supportsSchema(schema)
 
     if (useNative) {
       CometNativeColumnarToRowExec(child)
+    } else if (containsVariantType(schema)) {
+      withFallbackReason(
+        ColumnarToRowExec(child),
+        "Variant conversion requires native columnar-to-row to be enabled " +
+          "and a supported top-level schema")
     } else {
       CometColumnarToRowExec(child)
     }

@@ -1497,20 +1497,19 @@ fn log_plan_metrics(exec_context: &ExecutionContext, stage_id: jint, partition: 
     }
 }
 
-fn convert_datatype_arrays(
+fn convert_field_arrays(
     env: &mut Env,
     serialized_datatypes: JObjectArray,
-) -> JNIResult<Vec<ArrowDataType>> {
+) -> JNIResult<Vec<arrow::datatypes::Field>> {
     let array_len = serialized_datatypes.len(env)?;
-    let mut res: Vec<ArrowDataType> = Vec::new();
+    let mut res = Vec::with_capacity(array_len);
 
     for i in 0..array_len {
         let inner_array = serialized_datatypes.get_element(env, i)?;
         let inner_array = unsafe { JByteArray::from_raw(&*env, inner_array.into_raw()) };
         let bytes = env.convert_byte_array(inner_array)?;
         let data_type = serde::deserialize_data_type(bytes.as_slice()).unwrap();
-        let arrow_dt = to_arrow_datatype(&data_type);
-        res.push(arrow_dt);
+        res.push(serde::to_arrow_field("", &data_type, true));
     }
 
     Ok(res)
@@ -1603,7 +1602,10 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
             "writeSortedFileNative",
             tracing_enabled != JNI_FALSE,
             || {
-                let data_types = convert_datatype_arrays(env, serialized_datatypes)?;
+                let data_types = convert_field_arrays(env, serialized_datatypes)?
+                    .into_iter()
+                    .map(|field| field.data_type().clone())
+                    .collect::<Vec<_>>();
 
                 let row_num = row_addresses.len(env)?;
                 let row_addresses = row_addresses.get_elements(env, ReleaseMode::NoCopyBack)?;
@@ -1941,7 +1943,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_columnarToRowInit(
 ) -> jlong {
     try_unwrap_or_throw(&e, |env| {
         // Deserialize the schema
-        let schema = convert_datatype_arrays(env, serialized_schema)?;
+        let schema = convert_field_arrays(env, serialized_schema)?;
 
         // Create the context
         let ctx = Box::new(ColumnarToRowContext::new(schema, batch_size as usize));
