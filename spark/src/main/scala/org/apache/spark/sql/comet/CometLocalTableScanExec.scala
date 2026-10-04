@@ -93,8 +93,9 @@ case class CometLocalTableScanExec(
         new RowArrowReader(
           _,
           arrowSchema,
-          CometArrowStream.countingIterator(rowIter, (_: InternalRow) => numOutputRows.add(1)),
-          maxRecordsPerBatch))
+          rowIter,
+          maxRecordsPerBatch,
+          onRows = rows => numOutputRows.add(rows.toLong)))
     }
   }
 
