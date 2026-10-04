@@ -111,28 +111,7 @@ object CometArrayAppend extends CometExpressionSerde[ArrayAppend] with ArraysBas
   }
 }
 
-object CometArrayContains
-    extends CometExpressionSerde[ArrayContains]
-    with CodegenDispatchFallback {
-
-  private val floatingPointReason: String =
-    "Spark compares array elements with ordering.equiv, so -0.0 matches +0.0 and all NaNs match " +
-      "each other; Comet's native array_contains compares the raw Arrow values bitwise"
-
-  override def getIncompatibleReasons(): Seq[String] = Seq(floatingPointReason)
-
-  override def getSupportLevel(expr: ArrayContains): SupportLevel = expr.left.dataType match {
-    // Native array_contains compares floating-point elements bitwise, disagreeing with Spark for
-    // -0.0/+0.0 and NaN. Report Incompatible (not Unsupported) for float/double element types (at
-    // any nesting level) so the expression routes through the JVM codegen dispatcher (Spark's own
-    // doGenCode) and stays native + Spark-exact under the default config, while non-float arrays
-    // keep the fast native kernel. Under allowIncompatible=true the native kernel is used
-    // as before.
-    case ArrayType(elementType, _)
-        if SupportLevel.containsType(elementType, classOf[FloatType], classOf[DoubleType]) =>
-      Incompatible(Some(floatingPointReason))
-    case _ => Compatible()
-  }
+object CometArrayContains extends CometExpressionSerde[ArrayContains] {
 
   override def convert(
       expr: ArrayContains,
@@ -140,8 +119,16 @@ object CometArrayContains
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val arrayExprProto = exprToProtoInternal(expr.children.head, inputs, binding)
     val keyExprProto = exprToProtoInternal(expr.children(1), inputs, binding)
-
-    scalarFunctionExprToProto("array_contains", arrayExprProto, keyExprProto)
+    // datafusion-spark's array_contains compares floats by their bits. spark_array_contains
+    // compares them as Spark does, with -0.0 equal to 0.0 and all NaNs equal, at any depth.
+    val elementType = expr.left.dataType.asInstanceOf[ArrayType].elementType
+    val function =
+      if (SupportLevel.containsType(elementType, classOf[FloatType], classOf[DoubleType])) {
+        "spark_array_contains"
+      } else {
+        "array_contains"
+      }
+    scalarFunctionExprToProto(function, arrayExprProto, keyExprProto)
   }
 }
 

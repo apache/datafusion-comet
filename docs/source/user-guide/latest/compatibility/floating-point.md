@@ -70,7 +70,11 @@ greater than non-NaN values. The original first equal element is retained: for e
 The same ordering applies recursively to floating-point fields in arrays and structs. These
 expressions do not require Spark's codegen dispatcher for floating-point compatibility.
 
-## `array_remove` and `sort_array`
+## `array_contains`, `array_remove` and `sort_array`
+
+`array_contains` compares `FLOAT` and `DOUBLE` elements as Spark does: `-0.0` equals `0.0`, and all
+NaN representations are equal, inside nested arrays and structs too. The result keeps Spark's
+three-valued form: null when nothing matches and the array holds a null element.
 
 `array_remove` compares `FLOAT` and `DOUBLE` elements as Spark does: `-0.0` equals `0.0`, and all
 NaN representations are equal, inside nested arrays too. The elements it keeps retain their
