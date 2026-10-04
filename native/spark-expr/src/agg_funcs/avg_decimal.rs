@@ -21,7 +21,7 @@ use arrow::array::{
     types::{Decimal128Type, DecimalType, Int64Type},
     Array, ArrayRef, Decimal128Array, Int64Array, PrimitiveArray,
 };
-use arrow::datatypes::{DataType, Field, FieldRef};
+use arrow::datatypes::{format_decimal_str, i256, DataType, Field, FieldRef};
 use arrow::{array::BooleanBufferBuilder, buffer::NullBuffer, compute::sum};
 use datafusion::common::{not_impl_err, Result, ScalarValue};
 use datafusion::logical_expr::{
@@ -323,9 +323,20 @@ impl Accumulator for AvgDecimalAccumulator {
         let scaler = 10_i128.pow(self.target_scale.saturating_sub(self.sum_scale) as u32);
         let target_min = MIN_DECIMAL128_FOR_EACH_PRECISION[self.target_precision as usize];
         let target_max = MAX_DECIMAL128_FOR_EACH_PRECISION[self.target_precision as usize];
-        let result = self
-            .sum
-            .and_then(|sum| avg(sum, self.count as i128, target_min, target_max, scaler));
+        let result = match self.sum {
+            Some(sum) => match avg(sum, self.count as i128, target_min, target_max, scaler) {
+                Ok(value) => Some(value),
+                Err(value) if self.eval_mode == EvalMode::Ansi => {
+                    return Err(self.wrap_error_with_context(avg_result_overflow_error(
+                        value,
+                        self.target_precision,
+                        self.target_scale,
+                    )));
+                }
+                Err(_) => None,
+            },
+            None => None,
+        };
         Ok(ScalarValue::Decimal128(
             result,
             self.target_precision,
@@ -549,12 +560,15 @@ impl GroupsAccumulator for AvgDecimalGroupsAccumulator {
             }
 
             match avg(sum, count as i128, target_min, target_max, scaler) {
-                Some(value) => {
-                    builder.append_value(value);
+                Ok(value) => builder.append_value(value),
+                Err(value) if self.eval_mode == EvalMode::Ansi => {
+                    return Err(self.wrap_error_with_context(avg_result_overflow_error(
+                        value,
+                        self.target_precision,
+                        self.target_scale,
+                    )));
                 }
-                _ => {
-                    builder.append_null();
-                }
+                Err(_) => builder.append_null(),
             }
         }
         let array: PrimitiveArray<Decimal128Type> = builder.finish();
@@ -595,7 +609,7 @@ impl GroupsAccumulator for AvgDecimalGroupsAccumulator {
 }
 
 /// Returns the `sum`/`count` as a i128 Decimal128 with
-/// target_scale and target_precision and return None if overflows.
+/// target_scale and target_precision, returning the rounded wide value on overflow.
 ///
 /// * sum: The total sum value stored as Decimal128 with sum_scale
 /// * count: total count, stored as a i128 (*NOT* a Decimal128 value)
@@ -603,24 +617,52 @@ impl GroupsAccumulator for AvgDecimalGroupsAccumulator {
 /// * target_max: The maximum output value possible to represent with the target precision
 /// * scaler: scale factor for avg
 #[inline(always)]
-fn avg(sum: i128, count: i128, target_min: i128, target_max: i128, scaler: i128) -> Option<i128> {
-    if let Some(value) = sum.checked_mul(scaler) {
-        // `sum / count` with ROUND_HALF_UP
+fn avg(
+    sum: i128,
+    count: i128,
+    target_min: i128,
+    target_max: i128,
+    scaler: i128,
+) -> std::result::Result<i128, i256> {
+    // The scaled numerator can exceed i128 while both the sum and final average fit.
+    // Use the inexpensive path when it fits, and widen only that intermediate otherwise.
+    let rounded = if let Some(value) = sum.checked_mul(scaler) {
         let (div, rem) = value.div_rem(&count);
         let half = div_ceil(count, 2);
-        let half_neg = half.neg_wrapping();
-        let new_value = match value >= 0 {
+        let rounded = match value >= 0 {
             true if rem >= half => div.add_wrapping(1),
-            false if rem <= half_neg => div.sub_wrapping(1),
+            false if rem <= half.neg_wrapping() => div.sub_wrapping(1),
             _ => div,
         };
-        if new_value >= target_min && new_value <= target_max {
-            Some(new_value)
-        } else {
-            None
-        }
+        i256::from_i128(rounded)
     } else {
-        None
+        // A Decimal128 numerator times the Decimal128 scale factor fits within i256.
+        let value = i256::from_i128(sum) * i256::from_i128(scaler);
+        let divisor = i256::from_i128(count);
+        let (div, rem) = (value / divisor, value % divisor);
+        let half = i256::from_i128(div_ceil(count, 2));
+        if rem >= half {
+            div + i256::ONE
+        } else if rem <= -half {
+            div - i256::ONE
+        } else {
+            div
+        }
+    };
+    if rounded >= i256::from_i128(target_min) && rounded <= i256::from_i128(target_max) {
+        Ok(rounded.to_i128().expect("bounded Decimal128 average"))
+    } else {
+        Err(rounded)
+    }
+}
+
+fn avg_result_overflow_error(value: i256, precision: u8, scale: i8) -> crate::SparkError {
+    let unscaled = value.to_string();
+    let digits = unscaled.trim_start_matches('-').len();
+    crate::SparkError::NumericValueOutOfRange {
+        value: format_decimal_str(&unscaled, digits, scale),
+        precision,
+        scale,
     }
 }
 
@@ -638,6 +680,72 @@ mod tests {
             None,
             crate::create_query_context_map(),
         )
+    }
+
+    #[test]
+    fn decimal_average_scales_widely_and_reports_result_overflow() -> Result<()> {
+        for mode in [EvalMode::Legacy, EvalMode::Try, EvalMode::Ansi] {
+            for sign in [-1_i128, 1] {
+                for (value, count, expected) in [
+                    (9 * 10_i128.pow(33), 2, Some(sign * 9 * 10_i128.pow(37))),
+                    (10_i128.pow(35), 1, None),
+                ] {
+                    let values: ArrayRef = Arc::new(
+                        Decimal128Array::from(vec![sign * value; count])
+                            .with_precision_and_scale(38, 18)?,
+                    );
+                    let mut scalar = AvgDecimalAccumulator::new(
+                        18,
+                        38,
+                        38,
+                        22,
+                        mode,
+                        None,
+                        crate::create_query_context_map(),
+                    );
+                    scalar.update_batch(&[Arc::clone(&values)])?;
+                    let mut grouped = AvgDecimalGroupsAccumulator::new(
+                        &DataType::Decimal128(38, 22),
+                        &DataType::Decimal128(38, 18),
+                        38,
+                        22,
+                        38,
+                        18,
+                        mode,
+                        None,
+                        crate::create_query_context_map(),
+                    );
+                    grouped.update_batch(&[values], &vec![0; count], None, 1)?;
+                    let scalar_result = scalar.evaluate();
+                    let grouped_result = grouped.evaluate(EmitTo::All);
+                    if expected.is_none() && mode == EvalMode::Ansi {
+                        for error in [scalar_result.unwrap_err(), grouped_result.unwrap_err()] {
+                            assert!(
+                                error.to_string().contains("NUMERIC_VALUE_OUT_OF_RANGE"),
+                                "{error}"
+                            );
+                        }
+                    } else {
+                        assert_eq!(scalar_result?, ScalarValue::Decimal128(expected, 38, 22));
+                        assert_eq!(
+                            grouped_result?
+                                .as_primitive::<Decimal128Type>()
+                                .iter()
+                                .collect::<Vec<_>>(),
+                            vec![expected]
+                        );
+                    }
+                }
+            }
+        }
+        // HALF_UP rounding must agree for positive and negative values on the widened path.
+        let sum = 2 * 10_i128.pow(34) + 2;
+        let min = MIN_DECIMAL128_FOR_EACH_PRECISION[38];
+        let max = MAX_DECIMAL128_FOR_EACH_PRECISION[38];
+        let expected = 5 * 10_i128.pow(33) + 1;
+        assert_eq!(avg(sum, 40_000, min, max, 10_000), Ok(expected));
+        assert_eq!(avg(-sum, 40_000, min, max, 10_000), Ok(-expected));
+        Ok(())
     }
 
     #[test]
