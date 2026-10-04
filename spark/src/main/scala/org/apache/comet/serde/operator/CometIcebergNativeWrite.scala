@@ -173,8 +173,10 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     requirePropertyAbsent(
       PropertyKeys.WriteLocationProviderImpl,
       "custom location provider unsupported"),
+    requireDefaultLocationProvider,
     requireFormatVersionAtMostTwo,
     requireNoUuidColumns,
+    requireNoFloatingPointPartitionField,
     requireNoEncryptionPrefix,
     requireNoBloomFilterColumnsEnabled,
     requireRowGroupCheckMinRecordCountAtDefault,
@@ -217,6 +219,29 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
       if (ctx.properties.contains(key)) Some(s"$key is set ($reason)") else None
     }
 
+  // The property rule above only sees providers configured through table/write properties. A
+  // custom TableOperations can return a LocationProvider directly, while the native writer always
+  // generates `<data location>/<partition path>/<file>`. Admit only Iceberg's default provider;
+  // object-storage layout is already declined by the preceding property rule.
+  //
+  // Before Iceberg 1.11, iceberg-java does not preserve that TableOperations-supplied provider on
+  // executors: it reconstructs the provider from the table location and properties, so those
+  // writes use the default layout anyway. From 1.11 on, iceberg-java keeps and uses the custom
+  // provider. This gate stays unconditional and fail-closed on every Iceberg version Comet pins,
+  // so a non-default provider always falls back.
+  private val requireDefaultLocationProvider: TriggerRule = ctx =>
+    IcebergReflection.getLocationProvider(ctx.table) match {
+      case None =>
+        Some("could not resolve table.locationProvider() for native write compatibility checking")
+      case Some(provider)
+          if provider.getClass.getName == IcebergReflection.ClassNames.DEFAULT_LOCATION_PROVIDER =>
+        None
+      case Some(provider) =>
+        Some(
+          s"table.locationProvider() is ${provider.getClass.getName}, " +
+            "which the native write path would bypass")
+    }
+
   private val requireFormatVersionAtMostTwo: TriggerRule = ctx =>
     IcebergReflection.getFormatVersion(ctx.table) match {
       case Some(v) if v >= MinUnsupportedFormatVersion => Some(s"format-version=$v unsupported")
@@ -242,6 +267,29 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
             s"column $name has Iceberg type ${typeId.toLowerCase(Locale.ROOT)}, " +
               "which the native writer cannot reproduce"
           }
+    }
+
+  // iceberg-rust holds a float partition value as an `OrderedFloat`, whose equality treats -0.0
+  // and 0.0 as one value, and its fanout and clustered writers group rows by that equality.
+  // iceberg-java keeps the two apart, so the native writer would file both under whichever
+  // arrived first, and a read that prunes on the other value would lose rows (#6138). Remove this
+  // rule once the iceberg-rust pin carries a fix for apache/iceberg-rust#3325; #5643 tracks it.
+  private val requireNoFloatingPointPartitionField: TriggerRule = ctx =>
+    IcebergReflection
+      .getOutputSpecIdFromSparkWrite(ctx.sparkWrite)
+      .flatMap(IcebergReflection.getPartitionSpecById(ctx.table, _)) match {
+      case None => Some("could not resolve the output partition spec for type checking")
+      case Some(spec) =>
+        try {
+          IcebergReflection.floatingPointPartitionFields(spec).headOption.map {
+            case (name, typeName) =>
+              s"partition field $name has Iceberg type $typeName, and the native writer does " +
+                "not keep -0.0 and 0.0 partitions apart"
+          }
+        } catch {
+          case e: Exception =>
+            Some(s"could not inspect the output partition spec: ${e.getMessage}")
+        }
     }
 
   private val requireNoEncryptionPrefix: TriggerRule = ctx =>
