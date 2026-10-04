@@ -512,9 +512,12 @@ jobs:
               org.apache.comet.exec.CometExecSuite
               org.apache.comet.exec.CometTopKSuite
               org.apache.comet.exec.CometEmptyRelationExecSuite
+              org.apache.comet.exec.CometRangeExecSuite
               org.apache.comet.exec.CometInMemoryCacheSuite
               org.apache.comet.exec.CometInMemoryCachePruningSuite
               org.apache.comet.exec.CometInMemoryCacheKryoSuite
+              org.apache.comet.exec.CometInMemoryCacheKryoUnregisteredSuite
+              org.apache.comet.exec.CometInMemoryCacheKryoClassesToRegisterSuite
               org.apache.comet.exec.CometGenerateExecSuite
               org.apache.comet.exec.CometWindowExecSuite
               org.apache.comet.exec.CometJoinSuite
@@ -571,6 +574,7 @@ jobs:
               org.apache.spark.sql.CometSortCollationSuite
               org.apache.comet.CometFuzzAggregateSuite
               org.apache.spark.sql.comet.execution.arrow.CometArrowStreamSuite
+              org.apache.spark.sql.comet.execution.arrow.CometArrowWriterSuite
               org.apache.spark.sql.comet.execution.arrow.CometStringWriterSuite
               org.apache.spark.sql.CometSparkInternalFunctionsSuite
           - name: "expressions"
