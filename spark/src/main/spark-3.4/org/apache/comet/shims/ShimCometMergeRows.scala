@@ -19,6 +19,7 @@
 
 package org.apache.comet.shims
 
+import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 import org.apache.spark.sql.execution.SparkPlan
 
 import org.apache.comet.serde.CometOperatorSerde
@@ -30,5 +31,5 @@ import org.apache.comet.serde.CometOperatorSerde
 object ShimCometMergeRows {
   val nativeExecs: Map[Class[_ <: SparkPlan], CometOperatorSerde[_]] = Map.empty
 
-  def preserveV2WriteMergeSummary(plan: SparkPlan): SparkPlan = plan
+  def withNativeMergeSummary(query: LogicalPlan): LogicalPlan = query
 }

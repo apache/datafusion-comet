@@ -33,6 +33,7 @@ import org.apache.comet.ConfigEntry
 import org.apache.comet.serde.{CometOperatorSerde, Compatible, OperatorOuterClass, SupportLevel, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.{MergeActionContext, MergeInstruction, MergeOutputRow, Operator}
 import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
+import org.apache.comet.shims.ShimCometMergeRows
 
 /**
  * Serde for Spark's `MergeRowsExec` (Spark 3.5+). An instruction is encoded as a condition plus
@@ -44,7 +45,10 @@ object CometMergeRows extends CometOperatorSerde[MergeRowsExec] {
     Some(CometConf.COMET_EXEC_MERGE_ROWS_ENABLED)
 
   override def getSupportLevel(op: MergeRowsExec): SupportLevel = {
-    if (!cardinalityCheckSatisfied(op)) {
+    if (!ShimCometMergeRows.hasNativeMergeSummary(op)) {
+      Unsupported(
+        Some("Spark 4.1+ stock V2 writer requires Spark MergeRowsExec for MergeSummary"))
+    } else if (!cardinalityCheckSatisfied(op)) {
       Unsupported(Some(cardinalityCheckFallbackReason))
     } else if (!instructionShapesSatisfied(op)) {
       Unsupported(Some(instructionShapeFallbackReason))
@@ -57,6 +61,12 @@ object CometMergeRows extends CometOperatorSerde[MergeRowsExec] {
       op: MergeRowsExec,
       builder: Operator.Builder,
       childOp: OperatorOuterClass.Operator*): Option[Operator] = {
+    if (!ShimCometMergeRows.hasNativeMergeSummary(op)) {
+      withFallbackReason(
+        op,
+        "Spark 4.1+ stock V2 writer requires Spark MergeRowsExec for MergeSummary")
+      return None
+    }
     val input = op.child.output
     val expectedOutputTypes = op.output.map(_.dataType)
 
