@@ -47,7 +47,8 @@ SELECT reverse(a) FROM routing_arrays
 query expect_dispatch(array_contains)
 SELECT array_contains(f, 1.0D) FROM routing_arrays
 
-query expect_dispatch(sort_array)
+-- sort_array on floats follows Spark natively, even in strict floating-point mode.
+query expect_native(sort_array)
 SELECT sort_array(f) FROM routing_arrays
 
 query expect_dispatch(sort_array)
