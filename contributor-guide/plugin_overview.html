@@ -576,7 +576,9 @@ and skips the remaining steps. Otherwise it:</p>
 <ul class="simple">
 <li><p>Appends <code class="docutils literal notranslate"><span class="pre">CometSparkSessionExtensions</span></code> to <code class="docutils literal notranslate"><span class="pre">spark.sql.extensions</span></code>, unless it is already listed.</p></li>
 <li><p>Sets <code class="docutils literal notranslate"><span class="pre">spark.sql.cache.serializer</span></code> to Comet’s <code class="docutils literal notranslate"><span class="pre">ArrowCachedBatchSerializer</span></code> when
-<code class="docutils literal notranslate"><span class="pre">spark.comet.exec.inMemoryCache.enabled=true</span></code>, unless the application has chosen a different serializer.</p></li>
+<code class="docutils literal notranslate"><span class="pre">spark.comet.exec.inMemoryCache.enabled=true</span></code>, unless the application has chosen a different serializer.
+It leaves Spark’s serializer in place where Comet could not scan its format natively or Kryo would
+reject it; see <a class="reference internal" href="../user-guide/latest/in-memory-cache.html"><span class="std std-doc">In-Memory Cache</span></a>.</p></li>
 <li><p>Registers <code class="docutils literal notranslate"><span class="pre">CometSource</span></code> with Spark’s metrics system and adds <code class="docutils literal notranslate"><span class="pre">CometMetricsListener</span></code> to
 <code class="docutils literal notranslate"><span class="pre">spark.sql.queryExecutionListeners</span></code> when <code class="docutils literal notranslate"><span class="pre">spark.comet.metrics.enabled=true</span></code>.</p></li>
 <li><p>Logs a warning for settings that are likely to cause problems, such as an unset <code class="docutils literal notranslate"><span class="pre">spark.executor.memoryOverhead</span></code>.</p></li>

@@ -1041,11 +1041,12 @@ allocation for native execution. See <a class="reference internal" href="tuning/
 </div>
 <p>Without it, any query that uses Comet’s native broadcast exchange, which is enabled by default,
 fails with Kryo’s “Class is not registered” error, for example on the first broadcast hash join.
-The <a class="reference internal" href="in-memory-cache.html#kryo"><span class="std std-ref">in-memory cache</span></a> needs the same registrator. Set it before the
-<code class="docutils literal notranslate"><span class="pre">SparkContext</span></code> is created: <code class="docutils literal notranslate"><span class="pre">KryoSerializer</span></code> reads it before Comet’s plugin runs, so Comet cannot
-add it for you. <code class="docutils literal notranslate"><span class="pre">spark.kryo.registrator</span></code> accepts a comma-separated list, so an application with
-its own registrator can list both. Comet logs a warning at startup when Kryo requires registration
-and this registrator is missing.</p>
+Comet’s <a class="reference internal" href="in-memory-cache.html#kryo"><span class="std std-ref">in-memory cache</span></a> format needs the same registrations, and while
+Kryo has not registered Comet’s cached batch, Comet’s plugin keeps caches in Spark’s format. Set it
+before the <code class="docutils literal notranslate"><span class="pre">SparkContext</span></code> is created: <code class="docutils literal notranslate"><span class="pre">KryoSerializer</span></code> reads it before Comet’s plugin runs, so
+Comet cannot add it for you. <code class="docutils literal notranslate"><span class="pre">spark.kryo.registrator</span></code> accepts a comma-separated list, so an
+application with its own registrator can list both. Comet logs a warning at startup when Kryo
+requires registration and has not registered the classes this registrator covers.</p>
 </section>
 </section>
 </section>

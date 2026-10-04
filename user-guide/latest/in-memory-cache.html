@@ -812,11 +812,13 @@ of Comet’s configuration:</p>
 </pre></div>
 </div>
 <p>It has to be set before the <code class="docutils literal notranslate"><span class="pre">SparkContext</span></code> starts. Comet’s driver plugin chooses
-<code class="docutils literal notranslate"><span class="pre">spark.sql.cache.serializer</span></code> once, while the context is initializing, so a session that started
-with the default goes on using Spark’s cache format however the config is set afterwards. The
-plugin installs Comet’s serializer only if <code class="docutils literal notranslate"><span class="pre">spark.comet.enabled</span></code> and <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.enabled</span></code>
-are enabled at that point too, because an application that starts without native execution could
-not scan Comet’s format natively.</p>
+<code class="docutils literal notranslate"><span class="pre">spark.sql.cache.serializer</span></code> once, while the context is initializing, so an application keeps the
+cache format it started with however the config is set afterwards. The plugin installs Comet’s
+serializer only if <code class="docutils literal notranslate"><span class="pre">spark.comet.enabled</span></code> and <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.enabled</span></code> are enabled at that point
+too, because an application that starts without native execution could not scan Comet’s format
+natively. It also keeps Spark’s format when Comet shuffle is enabled but <code class="docutils literal notranslate"><span class="pre">spark.shuffle.manager</span></code> is
+not one of Comet’s shuffle managers, since Comet then disables itself, and when Kryo would reject
+Comet’s format; see <a class="reference internal" href="#kryo">Kryo</a>.</p>
 <section id="what-changes-when-it-is-enabled">
 <h2>What changes when it is enabled<a class="headerlink" href="#what-changes-when-it-is-enabled" title="Link to this heading">#</a></h2>
 <p>With Comet’s serializer installed as <code class="docutils literal notranslate"><span class="pre">spark.sql.cache.serializer</span></code>:</p>
@@ -1027,10 +1029,18 @@ comparison with Spark’s own cache format. That comparison is under <a class="r
 </div>
 <p>Comet cannot set <code class="docutils literal notranslate"><span class="pre">spark.kryo.registrator</span></code> for you the way it sets <code class="docutils literal notranslate"><span class="pre">spark.sql.cache.serializer</span></code>:
 <code class="docutils literal notranslate"><span class="pre">KryoSerializer</span></code> reads it when <code class="docutils literal notranslate"><span class="pre">SparkEnv</span></code> builds the serializer, which happens before any plugin
-runs. Without it, caching fails with a “Class is not registered” error that does not name this
-feature. Comet’s driver plugin warns at startup when it sees Kryo, <code class="docutils literal notranslate"><span class="pre">registrationRequired</span></code>, and no
-registrator. Native broadcast needs the same registrator even when the cache is disabled; see
+runs. Without it, Kryo would reject Comet’s cached batch with a “Class is not registered” error
+that does not name this feature. So when Kryo requires registration and has not registered
+Comet’s cached batch, Comet’s driver plugin does not install Comet’s serializer, and caches stay in
+Spark’s format. Registrations made another way, through a registrator of the application’s own or
+<code class="docutils literal notranslate"><span class="pre">spark.kryo.classesToRegister</span></code>, count as well. The plugin warns at startup when Kryo requires
+registration and has not registered every class <code class="docutils literal notranslate"><span class="pre">CometKryoRegistrator</span></code> registers. An application
+that sets <code class="docutils literal notranslate"><span class="pre">spark.sql.cache.serializer</span></code> to Comet’s serializer itself gets the error instead. Native
+broadcast needs the same registrator even when the cache is disabled; see
 <a class="reference internal" href="installation.html#kryo-serialization"><span class="std std-ref">Kryo serialization</span></a>.</p>
+<p>Spark registers its own cached batch with Kryo only from Spark 4.1, so on earlier versions caching
+in either format under <code class="docutils literal notranslate"><span class="pre">registrationRequired</span></code> needs a registrator. <code class="docutils literal notranslate"><span class="pre">CometKryoRegistrator</span></code> registers
+Spark’s cached batch too.</p>
 </section>
 <section id="limitations">
 <h2>Limitations<a class="headerlink" href="#limitations" title="Link to this heading">#</a></h2>
