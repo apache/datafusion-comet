@@ -32,3 +32,7 @@ SELECT abs(make_dt_interval(i)), abs(make_ym_interval(i)) FROM routing_intervals
 
 query expect_native(make_interval)
 SELECT make_interval(i, 0, 0, 0, 0, 0, 0) FROM routing_intervals
+
+-- hash has no native path above decimal precision 18, so the dispatcher runs make_interval.
+query expect_dispatch(make_interval)
+SELECT make_interval(0, 0, 0, hash(CAST(i AS DECIMAL(38, 10))), i) FROM routing_intervals

@@ -26,7 +26,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{CalendarIntervalType, DataType, DateType, DoubleType, FloatType, IntegerType, LongType, StringType, TimestampNTZType, TimestampType}
 import org.apache.spark.unsafe.types.UTF8String
 
-import org.apache.comet.CometConf
+import org.apache.comet.{CometConf, CometExplainInfo}
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.serde.CometGetDateField.CometGetDateField
 import org.apache.comet.serde.ExprOuterClass.Expr
@@ -942,13 +942,19 @@ object CometMakeInterval extends CometExpressionSerde[MakeInterval] with Codegen
       expr: MakeInterval,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
+    val restoreArgumentTags = CometExplainInfo.saveTags(expr.children)
     val childExprs = expr.children.map(exprToProtoInternal(_, inputs, binding))
-    val optExpr = scalarFunctionExprToProtoWithReturnType(
+    scalarFunctionExprToProtoWithReturnType(
       "make_interval",
       CalendarIntervalType,
       expr.failOnError,
-      childExprs: _*)
-    optExpr
+      childExprs: _*).orElse {
+      // An argument has no native path, so the dispatcher runs the whole expression instead.
+      val dispatched = CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
+      // The arguments now run in the dispatcher, so the tags of the failed conversion are stale.
+      if (dispatched.isDefined) restoreArgumentTags()
+      dispatched
+    }
   }
 }
 

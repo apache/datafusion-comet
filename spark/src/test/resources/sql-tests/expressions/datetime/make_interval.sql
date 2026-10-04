@@ -129,3 +129,23 @@ SELECT make_interval(0, 0, 0, 0, 2562048)
 
 query
 SELECT make_interval(0, 0, 0, 0, 0, 0, 1234567890123456789)
+
+statement
+CREATE TABLE test_make_interval_hash(d decimal(38, 10), y int) USING parquet
+
+statement
+INSERT INTO test_make_interval_hash VALUES
+  (1.5, 1),
+  (-123456789.0123456789, NULL),
+  (NULL, 2),
+  (9999999999999999999999999999.9999999999, 3)
+
+-- hash has no native path above decimal precision 18. make_interval then runs as a whole through
+-- the JVM codegen dispatcher, so the projection stays in Comet.
+query expect_dispatch(make_interval)
+SELECT make_interval(0, 0, 0, hash(d), y) FROM test_make_interval_hash
+
+-- abs converts natively before hash fails. It then runs in the dispatcher kernel, so the explain
+-- output reports it as dispatched only.
+query expect_dispatch(make_interval, hash, abs)
+SELECT make_interval(0, 0, 0, hash(d), abs(y)) FROM test_make_interval_hash

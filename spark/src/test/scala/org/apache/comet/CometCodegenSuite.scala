@@ -28,7 +28,7 @@ import org.apache.spark.{SparkConf, SparkEnv, TaskContext}
 import org.apache.spark.sql.{CometTestBase, Row}
 import org.apache.spark.sql.api.java.UDF1
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Add, Alias, ApplyFunctionExpression, AttributeReference, BoundReference, Cast, CreateArray, CreateMap, CreateNamedStruct, Expression, GenericInternalRow, Hypot, Literal, MapConcat, ScalaUDF}
+import org.apache.spark.sql.catalyst.expressions.{Add, Alias, ApplyFunctionExpression, AttributeReference, BoundReference, Cast, CreateArray, CreateMap, CreateNamedStruct, Expression, GenericInternalRow, Hypot, Literal, MapConcat, Murmur3Hash, ScalaUDF}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial}
 import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
 import org.apache.spark.sql.catalyst.util.GenericArrayData
@@ -272,6 +272,33 @@ class CometCodegenSuite
     } finally {
       output.close()
       input.close()
+    }
+  }
+
+  test("make_interval drops the fallback reason of an argument that the dispatcher runs") {
+    // `hash` has no native path above decimal precision 18, so the dispatcher runs all of
+    // make_interval. The reason that the failed conversion put on `hash` no longer applies.
+    withTable("t") {
+      sql("CREATE TABLE t (d DECIMAL(38, 10), y INT, s STRING) USING parquet")
+      sql("INSERT INTO t VALUES (1.5, 1, 'a'), (NULL, NULL, NULL)")
+      val (_, plan) = checkSparkAnswerAndImpl(
+        sql("SELECT make_interval(0, 0, 0, hash(d), y) FROM t"),
+        dispatched = Seq("make_interval", "hash"))
+      val hashes = collect(plan) { case p: CometProjectExec => p }
+        .flatMap(_.projectList)
+        .flatMap(_.collect { case h: Murmur3Hash => h })
+      assert(hashes.nonEmpty, s"expected hash in a native projection:\n$plan")
+      assert(hashes.forall(_.getTagValue(CometExplainInfo.FALLBACK_REASONS).isEmpty))
+
+      // A projection that falls back for another reason reports that reason alone.
+      val lengthKey = CometConf.getExprEnabledConfigKey("Length")
+      withSQLConf(lengthKey -> "false") {
+        val (_, fallbackPlan) =
+          checkSparkAnswer(sql("SELECT make_interval(0, 0, 0, hash(d), y), length(s) FROM t"))
+        val reasons = new ExtendedExplainInfo().getFallbackReasons(fallbackPlan)
+        assert(reasons.exists(_.contains(lengthKey)), s"reasons: $reasons")
+        assert(!reasons.exists(_.contains("precision > 18")), s"reasons: $reasons")
+      }
     }
   }
 
