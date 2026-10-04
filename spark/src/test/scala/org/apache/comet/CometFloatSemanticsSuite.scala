@@ -22,6 +22,7 @@ package org.apache.comet
 import org.scalatest.exceptions.TestFailedException
 
 import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.internal.SQLConf
 
 /**
  * Sweeps Spark's `-0.0` and NaN semantics across operator contexts and the expressions that
@@ -70,20 +71,22 @@ class CometFloatSemanticsSuite extends CometTestBase {
 
   for (c <- cases) {
     test(c.name) {
-      knownGaps.find(_.covers(c)) match {
-        case None => checkSparkAnswer(c.sql)
-        case Some(gap) =>
-          val matched =
-            try {
-              checkSparkAnswer(c.sql)
-              true
-            } catch {
-              case e: TestFailedException if e.getMessage.startsWith("Results do not match") =>
-                false
-            }
-          assert(
-            !matched,
-            s"This case now matches Spark. Remove it from the known gaps for ${gap.issue}.")
+      withSQLConf(c.conf: _*) {
+        knownGaps.find(_.covers(c)) match {
+          case None => checkSparkAnswer(c.sql)
+          case Some(gap) =>
+            val matched =
+              try {
+                checkSparkAnswer(c.sql)
+                true
+              } catch {
+                case e: TestFailedException if e.getMessage.startsWith("Results do not match") =>
+                  false
+              }
+            assert(
+              !matched,
+              s"This case now matches Spark. Remove it from the known gaps for ${gap.issue}.")
+        }
       }
     }
   }
@@ -118,7 +121,13 @@ object CometFloatSemanticsSuite {
     FloatType("double", "DOUBLE", c = "d", l = "d", r = "e"),
     FloatType("float", "FLOAT", c = "f", l = "f", r = "h"))
 
-  case class Case(group: String, context: String, variant: String, tpe: FloatType, sql: String) {
+  case class Case(
+      group: String,
+      context: String,
+      variant: String,
+      tpe: FloatType,
+      sql: String,
+      conf: Seq[(String, String)] = Seq.empty) {
     def name: String =
       s"$group: $context${if (variant.isEmpty) "" else s", $variant"} [${tpe.name}]"
   }
@@ -320,8 +329,47 @@ object CometFloatSemanticsSuite {
       (name, template) <- aggregates
     } yield Case("aggregate", name, "", t, render(template, t))
 
+  /**
+   * `LAST_WIN` turns each key that Spark merges into one entry. A collected Scala `Map` merges
+   * `-0.0` and `0.0`, so the queries return `map_keys` and `map_values`.
+   */
+  private def mapBuilderCases: Seq[Case] = {
+    val builders: Seq[(String, (String, String) => String)] = Seq(
+      "map_from_arrays" -> ((k1, k2) => s"map_from_arrays(array($k1, $k2), array(1, 2))"),
+      "map_from_entries" -> ((k1, k2) =>
+        s"map_from_entries(array(named_struct('k', $k1, 'v', 1), " +
+          s"named_struct('k', $k2, 'v', 2)))"))
+    // The builders decline struct keys, so that variant pins the decline.
+    val keyPairs = Seq(
+      ("signed zeros", "{l}", "{r}", "WHERE {l} = 0 AND {r} = 0"),
+      ("NaNs", "{l}", "{r}", "WHERE isnan({l}) AND isnan({r})"),
+      ("struct keys", "named_struct('x', {l})", "named_struct('x', {r})", ""))
+    val lastWin = Seq(SQLConf.MAP_KEY_DEDUP_POLICY.key -> "LAST_WIN")
+    val pairCases = for {
+      t <- types
+      (name, build) <- builders
+      (variant, k1, k2, where) <- keyPairs
+    } yield {
+      val sql = "SELECT id, map_keys(m), map_values(m) " +
+        s"FROM (SELECT id, ${build(k1, k2)} AS m FROM fs_p $where)"
+      Case("map builder", s"$name, LAST_WIN", variant, t, render(sql, t), lastWin)
+    }
+    // With one key per map no key repeats, so these cases test only the stored key.
+    val oneKeyCases = for {
+      t <- types
+      (name, call) <- Seq(
+        "map_from_arrays" -> "map_from_arrays(array({c}), array(1))",
+        "map_from_entries" -> "map_from_entries(array(named_struct('k', {c}, 'v', 1)))")
+    } yield {
+      val sql = s"SELECT id, map_keys($call) FROM fs_e WHERE {c} IS NOT NULL"
+      Case("map builder", s"$name, one key", "", t, render(sql, t))
+    }
+    pairCases ++ oneKeyCases
+  }
+
   val cases: Seq[Case] =
-    comparisonCases ++ literalCases ++ keyCases ++ expressionCases ++ aggregateCases
+    comparisonCases ++ literalCases ++ keyCases ++ expressionCases ++ aggregateCases ++
+      mapBuilderCases
 
   /**
    * SPARK-54918, in 4.0.5, 4.1.4 and 4.2.0, changed float equality in the array set functions.
@@ -390,5 +438,18 @@ object CometFloatSemanticsSuite {
     KnownGap(
       issue(6522),
       "signum(-0.0) returns 0.0, where Spark returns -0.0.",
-      in("expression", "signum")))
+      in("expression", "signum")),
+    KnownGap(
+      issue(6549),
+      "Spark 4.0+ normalizes a map key, so -0.0 and 0.0 are one key and map_from_entries " +
+        "stores 0.0. The native map builders compare and keep the raw bits.",
+      c =>
+        CometSparkSessionExtensions.isSpark40Plus && c.group == "map builder" &&
+          (c.variant == "signed zeros" || c.context == "map_from_entries, one key")),
+    KnownGap(
+      issue(6549),
+      "Spark treats NaNs with different bits as one map key on every version, with " +
+        "Double.equals before 4.0 and by normalization from 4.0. The native map builders keep " +
+        "them apart.",
+      c => c.group == "map builder" && c.variant == "NaNs"))
 }
