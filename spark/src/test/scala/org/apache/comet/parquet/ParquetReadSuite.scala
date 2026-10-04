@@ -3089,7 +3089,7 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("timestamp_ntz falls back for legacy datetime metadata on Spark 4+") {
+  test("timestamp_ntz columns stored as INT64 stay native for legacy datetime metadata") {
     withTempPath { path =>
       withSQLConf(SQLConf.PARQUET_REBASE_MODE_IN_WRITE.key -> "LEGACY") {
         sql("""
@@ -3098,17 +3098,22 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
             |""".stripMargin).coalesce(1).write.parquet(path.toString)
       }
 
-      // NTZ values themselves are never rebased by Spark; the check only matters where a
-      // Parquet TIMESTAMP (LTZ/INT96) column may be read as NTZ, which Comet permits only
-      // when COMET_ALLOW_TIMESTAMP_LTZ_AS_NTZ is true (Spark 4.x).
+      // Spark never rebases an INT64 or INT96 value read as TIMESTAMP_NTZ.
       val (_, cometPlan) = checkSparkAnswer(spark.read.parquet(path.toString).select("ts_ntz"))
-      val nativeScans = collect(cometPlan) { case _: CometNativeScanExec => true }
-      if (CometConf.COMET_ALLOW_TIMESTAMP_LTZ_AS_NTZ) {
-        assert(nativeScans.isEmpty)
-      } else {
-        assert(nativeScans.nonEmpty)
-      }
+      assert(collect(cometPlan) { case _: CometNativeScanExec => true }.nonEmpty)
     }
   }
 
+  test("datetime rebase check covers a DATE column read as timestamp_ntz") {
+    // Spark 4.0+ widens DATE to TIMESTAMP_NTZ and rebases the days of a legacy file.
+    assume(isSpark40Plus)
+    withTempPath { path =>
+      withSQLConf(SQLConf.PARQUET_REBASE_MODE_IN_WRITE.key -> "LEGACY") {
+        sql("SELECT date'1000-01-01' AS d").coalesce(1).write.parquet(path.toString)
+      }
+      checkSparkAnswerAndFallbackReason(
+        spark.read.schema("d timestamp_ntz").parquet(path.toString),
+        "do not rule out dates before 1582-10-15 in column `d`")
+    }
+  }
 }

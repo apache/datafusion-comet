@@ -43,6 +43,7 @@ import org.apache.spark.sql.types.{DataType, DateType, StructType, TimestampNTZT
 import org.apache.spark.util.ThreadUtils
 
 import org.apache.comet.CometConf
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.serde.SupportLevel
 
 object CometScanUtils {
@@ -130,7 +131,8 @@ object CometScanUtils {
   private case class RebaseCheck(spec: RebaseSpec, values: String)
 
   /**
-   * A requested field with datetime values. Only a top-level DATE or TIMESTAMP uses statistics.
+   * A requested field with datetime values. Only a top-level DATE, TIMESTAMP or TIMESTAMP_NTZ
+   * uses statistics.
    */
   private case class RequestedColumn(
       name: String,
@@ -143,21 +145,18 @@ object CometScanUtils {
   private case object NeedsStatistics extends Verdict
   private case class Fallback(reason: String) extends Verdict
 
-  // TIMESTAMP_NTZ values are never rebased by Spark, on write or on read (Spark's
-  // ParquetVectorUpdaterFactory: "TIMESTAMP_NTZ is a new data type and has no legacy files
-  // that need to do rebase"). The rebase question arises for a requested NTZ column only
-  // when the underlying Parquet column is a TIMESTAMP (LTZ or INT96) that may carry
-  // legacy-calendar values, and Comet permits that read only when
-  // COMET_ALLOW_TIMESTAMP_LTZ_AS_NTZ is true (Spark 4.x, SPARK-47447).
+  // Spark 4.0+ reads a DATE column as TIMESTAMP_NTZ and rebases the days. It rebases no other
+  // NTZ read.
+  private def readsDates(dataType: DataType): Boolean =
+    SupportLevel.containsType(dataType, classOf[DateType]) ||
+      (isSpark40Plus && SupportLevel.containsType(dataType, classOf[TimestampNTZType]))
+
   private def readsTimestamps(dataType: DataType): Boolean =
-    SupportLevel.containsType(dataType, classOf[TimestampType]) ||
-      (CometConf.COMET_ALLOW_TIMESTAMP_LTZ_AS_NTZ &&
-        SupportLevel.containsType(dataType, classOf[TimestampNTZType]))
+    SupportLevel.containsType(dataType, classOf[TimestampType])
 
   /** Whether a scan with this required schema reads values that Spark can rebase. */
   def readsRebasableDatetimes(requiredSchema: StructType): Boolean =
-    requiredSchema.fields.exists(f =>
-      SupportLevel.containsType(f.dataType, classOf[DateType]) || readsTimestamps(f.dataType))
+    requiredSchema.fields.exists(f => readsDates(f.dataType) || readsTimestamps(f.dataType))
 
   /**
    * The fallback reason when Spark rebases `check` values of `column` in a file, or None when
@@ -312,12 +311,11 @@ object CometScanUtils {
     val int96Check = RebaseCheck(int96Spec, "timestamps before 1900-01-01T00:00:00Z")
 
     val requested = requiredSchema.fields.toSeq.flatMap { field =>
-      val dates =
-        if (SupportLevel.containsType(field.dataType, classOf[DateType])) Seq(dateCheck) else Nil
+      val dates = if (readsDates(field.dataType)) Seq(dateCheck) else Nil
       val timestamps =
         if (readsTimestamps(field.dataType)) Seq(timestampCheck, int96Check) else Nil
-      val usesStatistics =
-        useStatistics && (field.dataType == DateType || field.dataType == TimestampType)
+      val usesStatistics = useStatistics && (field.dataType == DateType ||
+        field.dataType == TimestampType || field.dataType == TimestampNTZType)
       Some(RequestedColumn(field.name, field.dataType, usesStatistics, dates ++ timestamps))
         .filter(_.checks.nonEmpty)
     }
@@ -337,6 +335,9 @@ object CometScanUtils {
         case (TimestampType, Some(DatetimeColumn(TimestampMillis, min))) =>
           unlessFrom(min, TimestampCutoffMillis, timestampCheck)
         case (TimestampType, Some(DatetimeColumn(TimestampInt96, _))) => Seq(int96Check)
+        case (TimestampNTZType, Some(DatetimeColumn(DateDays, min))) =>
+          unlessFrom(min, DateCutoffDays, dateCheck)
+        case (TimestampNTZType, Some(_)) => Nil
         case _ => column.checks
       }
     }
