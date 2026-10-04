@@ -25,7 +25,7 @@ import scala.collection.mutable.ListBuffer
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.expressions.{AttributeReference, AttributeSet, Divide, DoubleLiteral, EqualNullSafe, EqualTo, Expression, FloatLiteral, GreaterThan, GreaterThanOrEqual, KnownFloatingPointNormalized, LeafExpression, LessThan, LessThanOrEqual, NamedExpression, Remainder, SortOrder}
+import org.apache.spark.sql.catalyst.expressions.{AttributeReference, AttributeSet, Divide, DoubleLiteral, EqualNullSafe, EqualTo, Expression, FloatLiteral, GreaterThan, GreaterThanOrEqual, IsNotNull, KnownFloatingPointNormalized, LeafExpression, LessThan, LessThanOrEqual, NamedExpression, PredicateHelper, Remainder, SortOrder}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, Final, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.expressions.codegen.CodegenFallback
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
@@ -196,6 +196,7 @@ object CometExecRule {
 case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
     extends Rule[SparkPlan]
     with CometTypeShim
+    with PredicateHelper
     with ShimSubqueryBroadcast {
 
   private lazy val showTransformations = CometConf.COMET_EXPLAIN_TRANSFORMATIONS.get()
@@ -1165,6 +1166,29 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
         AttributeSet(QueryPlanSerde.eagerlyEvaluatedChildren(expr).flatMap(eagerReferences))
     }
 
+    def eagerFilterInputs(filter: FilterExec): AttributeSet = {
+      // GeneratePredicateHelper loads every referenced projected value before evaluating each
+      // predicate, but can skip later conjuncts. It moves null-intolerant IsNotNull checks ahead
+      // of predicates that reference those inputs, including inferred checks for attributes
+      // inside compound null checks. Match the first check Spark actually emits.
+      val (notNullPredicates, otherPredicates) =
+        splitConjunctivePredicates(filter.condition).partition {
+          case IsNotNull(child) =>
+            isNullIntolerant(child) && child.references.subsetOf(filter.child.outputSet)
+          case _ => false
+        }
+      val nullCheckedInputs = AttributeSet(notNullPredicates.flatMap(_.references))
+      otherPredicates.headOption match {
+        case Some(predicate) =>
+          predicate.references.find(nullCheckedInputs.contains) match {
+            case Some(firstNullCheckedInput) => AttributeSet(Seq(firstNullCheckedInput))
+            case None => predicate.references
+          }
+        case None =>
+          notNullPredicates.headOption.map(_.references).getOrElse(AttributeSet.empty)
+      }
+    }
+
     def protect(
         node: SparkPlan,
         belowLimit: Boolean,
@@ -1216,6 +1240,8 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
             expr.deterministic && deferredInputs.contains(expr.toAttribute))
           project.inputSet -- project.usedInputs --
             AttributeSet(eagerOutputs.flatMap(eagerReferences))
+        case filter: FilterExec if supportsWholeStage(filter) =>
+          filter.inputSet -- filter.usedInputs -- eagerFilterInputs(filter)
         case codegen: CodegenSupport if !materializesInput && supportsWholeStage(original) =>
           original.inputSet -- codegen.usedInputs
         case _ => AttributeSet.empty

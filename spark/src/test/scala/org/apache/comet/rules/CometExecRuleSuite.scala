@@ -29,7 +29,7 @@ import org.scalatest.PrivateMethodTester._
 import org.apache.logging.log4j.Level
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.FunctionIdentifier
-import org.apache.spark.sql.catalyst.expressions.{Alias, Ascending, Attribute, AttributeReference, DateAdd, Expression, ExpressionInfo, GreaterThan, In, InSet, KnownFloatingPointNormalized, LessThan, Literal, NextDay, Not, SortOrder}
+import org.apache.spark.sql.catalyst.expressions.{Alias, And, Ascending, Attribute, AttributeReference, DateAdd, DateDiff, Expression, ExpressionInfo, GreaterThan, In, InSet, IsNotNull, KnownFloatingPointNormalized, LessThan, Literal, NextDay, Not, Or, SortOrder}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, BloomFilterAggregate, Final, Min, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.optimizer.{BuildRight, NormalizeNaNAndZero}
 import org.apache.spark.sql.catalyst.plans.{Inner, LeftSemi}
@@ -2471,6 +2471,85 @@ class CometExecRuleSuite extends CometTestBase {
               .getFallbackReasons(transformed)
               .exists(_.contains("deferred projection")))
         }
+      }
+    }
+  }
+
+  test("ANSI next_day filter inputs follow generated predicate order") {
+    withAnsiNextDayProject { original =>
+      def project: ProjectExec = ProjectExec(
+        original.projectList :+
+          Alias(Literal.create(null, DataTypes.DateType), "nullable_date")(),
+        original.child)
+      val date = Literal.create(java.sql.Date.valueOf("2020-01-01"), DataTypes.DateType)
+      val predicates: Seq[(ProjectExec => Expression, Boolean)] = Seq(
+        (p => GreaterThan(p.output(1), date), true),
+        (p => GreaterThan(p.output(2), p.output(1)), true),
+        (p => And(GreaterThan(p.output(1), date), LessThan(p.output.head, Literal(2))), true),
+        (p => And(LessThan(p.output.head, Literal(2)), GreaterThan(p.output(1), date)), false),
+        // A single predicate loads all referenced projected values before its expression code.
+        (p => Or(LessThan(p.output.head, Literal(2)), GreaterThan(p.output(1), date)), true),
+        (p => And(IsNotNull(p.output(1)), GreaterThan(p.output(1), date)), true),
+        (p => And(IsNotNull(p.output(1)), IsNotNull(p.output(2))), true),
+        (p => And(IsNotNull(p.output(2)), IsNotNull(p.output(1))), false),
+        // Spark moves this null check ahead of the comparison, even though it appears last.
+        (p => And(GreaterThan(p.output(1), p.output(2)), IsNotNull(p.output(2))), false),
+        // A compound null check also causes Spark to inject checks for its input attributes.
+        (
+          p =>
+            And(
+              GreaterThan(p.output(1), p.output(2)),
+              IsNotNull(DateAdd(p.output(2), p.output.head))),
+          false),
+        (p => IsNotNull(DateDiff(p.output(2), p.output(1))), true))
+      for ((predicate, native) <- predicates) {
+        val child = project
+        val condition = predicate(child)
+        val transformed = applyCometExecRule(FilterExec(condition, child))
+        withClue(condition.sql) {
+          assert(countOperators(transformed, classOf[CometProjectExec]) == (if (native) 1 else 0))
+          assert(countOperators(transformed, classOf[ProjectExec]) == (if (native) 0 else 1))
+        }
+      }
+    }
+  }
+
+  test("ANSI next_day required by a filter stays native and preserves errors") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "true",
+      SQLConf.ANSI_ENABLED.key -> "true",
+      CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true") {
+      val date = java.sql.Date.valueOf("2024-01-01")
+      val preserve = CometConf.COMET_EXEC_PRESERVE_EVALUATION_MASKS_ENABLED.key
+      def query(predicate: String): String =
+        s"""SELECT x, r FROM
+           |(SELECT next_day(_1, _2) AS x, rand(1L) AS r FROM filter_next_day)
+           |WHERE $predicate""".stripMargin
+
+      withParquetTable(Seq((date, "Monday")), "filter_next_day") {
+        for (enabled <- Seq(false, true)) {
+          withSQLConf(preserve -> enabled.toString) {
+            val (_, plan) = checkSparkAnswerAndImpl(
+              sql(query("x >= DATE '2020-01-01'")),
+              native = Seq("next_day"))
+            assert(collect(plan) { case p: CometProjectExec => p }.size == 1, plan.toString)
+            assert(collect(plan) { case f: CometFilterExec => f }.size == 1, plan.toString)
+          }
+        }
+      }
+      withParquetTable(Seq((date, "NOT_A_DAY")), "filter_next_day") {
+        // The required projected value fails even when the date comparison would reject it.
+        val required = sql(query("x < DATE '2020-01-01'"))
+        assertExpressionImpl(required.queryExecution.executedPlan, Seq("next_day"), Seq.empty)
+        val errorClass = if (isSpark40Plus) "ILLEGAL_DAY_OF_WEEK" else "_LEGACY_ERROR_TEMP_2000"
+        val error = checkSparkError(required, errorClass)
+        assert(error.getMessage.contains("Illegal input for day of week"))
+        // An earlier conjunct can still reject the row before evaluating next_day.
+        checkSparkAnswerAndFallbackReason(
+          query("r < 0 AND x < DATE '2020-01-01'"),
+          "next_day requires Spark evaluation in a deferred projection")
+        ()
       }
     }
   }
