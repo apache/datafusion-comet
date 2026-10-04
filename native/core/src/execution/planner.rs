@@ -1328,12 +1328,12 @@ impl PhysicalPlanner {
     }
 
     /// DataFusion's nested comparison kernel (`apply_cmp_for_nested`) requires both operands to
-    /// have identical data types, including nested field nullability, whereas Spark comparisons
-    /// ignore nullability. When a comparison's operands are nested types that differ only in
-    /// nullability (e.g. a higher-order `transform` produces `List(non-null Struct)` while the
-    /// other side is `List(nullable Struct)`), cast both to their nullability-union type so the
-    /// kernel accepts them. Non-comparison ops and non-nested or already-matching types are left
-    /// untouched.
+    /// have identical data types, including nested field names and nullability, whereas Spark
+    /// compares compatible struct fields by ordinal. When operands differ in nested metadata,
+    /// cast both to the left field names and their nullability-union type so the kernel accepts
+    /// them without changing field positions. Exact equality is required here: Arrow's
+    /// `equals_datatype` ignores nested field names, even when nullability already matches.
+    /// Non-comparison ops and non-nested or already-matching types are left untouched.
     pub fn reconcile_nested_comparison_types(
         left: Arc<dyn PhysicalExpr>,
         right: Arc<dyn PhysicalExpr>,
@@ -1361,7 +1361,7 @@ impl PhysicalPlanner {
                 | DataType::Struct(_)
                 | DataType::Map(_, _)
         );
-        if !nested || lt.equals_datatype(&rt) {
+        if !nested || lt == rt {
             return (left, right);
         }
         // Catalyst compares struct values by ordinal, even when their field names differ.

@@ -17,6 +17,7 @@
 
 -- MinSparkVersion: 4.0
 
+-- Config: spark.comet.exec.range.enabled=true
 -- Config: spark.comet.sparkToColumnar.enabled=true
 -- Config: spark.comet.sparkToColumnar.supportedOperatorList=Range
 -- Config: spark.sql.caseSensitive=false
@@ -26,3 +27,12 @@ query
 SELECT named_struct('x', CAST(id AS DOUBLE), 'y', CAST(NULL AS DOUBLE)) =
        named_struct('y', CAST(NULL AS DOUBLE), 'x', CAST(id AS DOUBLE))
 FROM range(8)
+
+-- Equal nullability must not bypass field-name alignment. Native Range makes every field
+-- non-nullable; id=1 compares equal, while id=2 detects an accidental name-based reorder.
+query expect_native(equalto)
+SELECT named_struct('x', CAST(id AS DOUBLE), 'y', 1D) =
+       named_struct('y', 1D, 'x', CAST(id AS DOUBLE)),
+       array(named_struct('x', CAST(id AS DOUBLE), 'y', 1D)) =
+       array(named_struct('y', 1D, 'x', CAST(id AS DOUBLE)))
+FROM range(1, 3)
