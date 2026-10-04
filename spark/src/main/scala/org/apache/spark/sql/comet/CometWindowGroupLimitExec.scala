@@ -24,13 +24,12 @@ import scala.jdk.CollectionConverters._
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, SortOrder}
 import org.apache.spark.sql.catalyst.plans.physical.Partitioning
 import org.apache.spark.sql.execution.SparkPlan
-import org.apache.spark.sql.types.{DoubleType, FloatType}
 
 import com.google.common.base.Objects
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
-import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass, SupportLevel}
+import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass}
 import org.apache.comet.serde.OperatorOuterClass.{Operator, RankLikeFunction}
 import org.apache.comet.serde.QueryPlanSerde.{exprToProto, hasNonDefaultStringCollation}
 import org.apache.comet.shims.ShimCometWindowGroupLimit
@@ -100,32 +99,11 @@ object CometWindowGroupLimitExec extends CometOperatorSerde[SparkPlan] {
       return None
     }
 
-    // The same byte equality decides RANK and DENSE_RANK ties. Scalar FLOAT and DOUBLE order keys
-    // are normalized natively first, but a float nested in an array or struct keeps its raw bits,
-    // so -0.0 and 0.0, or two NaN encodings, would split a tie that Spark keeps and the cutoff
-    // would drop rows. ROW_NUMBER never compares peers, and Spark normalizes floating-point
-    // partition keys before the limit is planned.
-    // https://github.com/apache/datafusion-comet/issues/5507
-    if (fields.rankLikeFunction != RankLikeFunction.RowNumber) {
-      val nestedFloat = fields.orderSpec.map(_.child).filter { e =>
-        e.dataType match {
-          case _: FloatType | _: DoubleType => false
-          case dt => SupportLevel.containsType(dt, classOf[FloatType], classOf[DoubleType])
-        }
-      }
-      if (nestedFloat.nonEmpty) {
-        withFallbackReason(
-          op,
-          nestedFloat
-            .map(_.sql)
-            .mkString(
-              "WindowGroupLimit: RANK and DENSE_RANK compare nested floating-point values " +
-                "exactly, so they fall back for order key(s): ",
-              ", ",
-              ""))
-        return None
-      }
-    }
+    // The same byte equality decides RANK and DENSE_RANK ties, but it runs on keys that the native
+    // planner has normalized: a `FLOAT` or `DOUBLE` order key, scalar or nested in an array or
+    // struct, has its NaNs folded together and its signed zeros tied first, as Spark does, so no
+    // float key needs a guard here. Strict floating-point mode declines the nested keys that can
+    // hold a null element or field, through `CometSortOrder`.
 
     val childOutput = op.children.head.output
     val partitionProtos = fields.partitionSpec.map(e => e -> exprToProto(e, childOutput))

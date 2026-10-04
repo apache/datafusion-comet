@@ -24,7 +24,7 @@ import java.util.IdentityHashMap
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.sideBySide
-import org.apache.spark.sql.comet.{CometCollectLimitExec, CometColumnarToRowExec, CometIcebergWriteExec, CometMapInBatchExec, CometNativeColumnarToRowExec, CometNativeWriteExec, CometPlan, CometSparkToColumnarExec}
+import org.apache.spark.sql.comet.{CometCollectLimitExec, CometColumnarToRowExec, CometIcebergWriteExec, CometMapInBatchExec, CometNativeColumnarToRowExec, CometNativeWriteExec, CometPlan, CometRangeExec, CometSparkToColumnarExec}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.comet.shims.{MapInBatchInfo, ShimCometMapInBatch}
 import org.apache.spark.sql.comet.util.Utils.containsVariantType
@@ -107,6 +107,10 @@ case class EliminateRedundantTransitions(session: SparkSession)
       // Write should be final operation in the plan
       case ColumnarToRowExec(nativeWrite: CometNativeWriteExec) =>
         nativeWrite
+      // A range that no native operator consumes would be generated natively only to be turned
+      // back into rows, so keep Spark's RangeExec, which whole-stage codegen fuses with its parent.
+      case ColumnarToRowExec(range: CometRangeExec) =>
+        range.originalPlan
       case c @ ColumnarToRowExec(child) if hasCometNativeChild(child, containsCometPlanMemo) =>
         val op = createColumnarToRowExec(child)
         if (c.logicalLink.isEmpty) {
@@ -120,6 +124,10 @@ case class EliminateRedundantTransitions(session: SparkSession)
         sparkToColumnar.child
       case CometNativeColumnarToRowExec(sparkToColumnar: CometSparkToColumnarExec) =>
         sparkToColumnar.child
+      case CometColumnarToRowExec(range: CometRangeExec) =>
+        range.originalPlan
+      case CometNativeColumnarToRowExec(range: CometRangeExec) =>
+        range.originalPlan
       case CometSparkToColumnarExec(child: CometSparkToColumnarExec) => child
       // Replace MapInBatchExec (PythonMapInArrowExec / MapInArrowExec / MapInPandasExec) that has
       // a ColumnarToRow child with CometMapInBatchExec, eliminating the input and output
