@@ -132,3 +132,41 @@ INSERT INTO test_nested_complex_capture VALUES (array(array(1, 2), array(3)));
 
 query
 SELECT filter(arr, x -> size(filter(x, y -> size(x) > 1)) > 0) FROM test_nested_complex_capture;
+
+-- =========================================================================
+-- Ordinary equality with stateful monotonically_increasing_id() on [NULL, 0]
+-- =========================================================================
+-- In Spark, binary EqualTo does not evaluate RHS when LHS is NULL.
+-- For [NULL, 0], monotonically_increasing_id() is not evaluated on NULL,
+-- so for 0 it produces 0 (0 = 0 -> kept).
+-- Must degrade to JVM codegen dispatch to avoid state advancement in DataFusion.
+statement
+CREATE TABLE test_null_ordinary_equality(a ARRAY<BIGINT>) USING parquet;
+
+statement
+INSERT INTO test_null_ordinary_equality VALUES (array(cast(null as bigint), 0L));
+
+query
+SELECT filter(a, x -> x = monotonically_increasing_id()) FROM test_null_ordinary_equality;
+
+-- In partition 0, `spark_partition_id()` evaluates to 0, producing a scalar
+-- division by zero (1 DIV 0) at runtime.
+-- For empty arrays [] and NULL rows, Spark guarantees the predicate is never invoked.
+statement
+CREATE TABLE test_empty_arrays(a ARRAY<INT>) USING parquet;
+
+statement
+INSERT INTO test_empty_arrays VALUES (array()), (NULL);
+
+query
+SELECT filter(a, x -> (1 DIV spark_partition_id()) > 0) FROM test_empty_arrays;
+
+-- rand() must not advance its PRNG sequence when short-circuited.
+statement
+CREATE TABLE test_guarded_rand(a ARRAY<INT>) USING parquet;
+
+statement
+INSERT INTO test_guarded_rand VALUES (array(0, 1));
+
+query
+SELECT filter(a, x -> x = 0 OR rand(42L) > 0.5) FROM test_guarded_rand;

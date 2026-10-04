@@ -22,7 +22,7 @@ package org.apache.comet.serde
 import scala.jdk.CollectionConverters._
 import scala.util.control.NonFatal
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, CaseWhen, Coalesce, EqualNullSafe, Expression, HigherOrderFunction, If, LambdaFunction => SparkLambdaFunction, NamedLambdaVariable => SparkNamedLambdaVariable}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, CaseWhen, Coalesce, EqualNullSafe, Expression, HigherOrderFunction, If, LambdaFunction => SparkLambdaFunction, MonotonicallyIncreasingID, NamedLambdaVariable => SparkNamedLambdaVariable, Rand, Randn}
 import org.apache.spark.sql.types.{ArrayType, DataType, MapType, StructType}
 
 import org.apache.comet.CometConf
@@ -164,12 +164,8 @@ object CometHighOrderFunction {
   }
 
   /**
-   * Checks whether the lambda body captures any outer attributes or outer lambda variables of
-   * complex types (Array, Map, Struct).
-   *
-   * Replicating captured complex columns via DataFusion's `take_arrays` causes quadratic memory
-   * amplification. Both outer table attributes (AttributeReference) and enclosing lambda
-   * variables (SparkNamedLambdaVariable) must degrade to JVM codegen dispatch.
+   * Memory Safety: Prevents quadratic memory replication in DataFusion's `take_arrays` when a
+   * lambda captures complex outer variables (Array, Map, Struct).
    */
   private def capturesComplexOuterVariable(lambda: SparkLambdaFunction): Boolean = {
     val definedParamIds = lambda
@@ -180,8 +176,7 @@ object CometHighOrderFunction {
       .toSet
 
     lambda.function.exists {
-      case attr: AttributeReference =>
-        isComplexType(attr.dataType)
+      case attr: AttributeReference => isComplexType(attr.dataType)
       case v: SparkNamedLambdaVariable if !definedParamIds.contains(v.exprId) =>
         isComplexType(v.dataType)
       case _ => false
@@ -189,15 +184,24 @@ object CometHighOrderFunction {
   }
 
   /**
-   * Checks whether the lambda body contains expressions that produce incorrect results in native
-   * DataFusion execution and must be routed to JVM codegen dispatch:
-   *   - Conditional expressions (CaseWhen, If, Coalesce), regardless of return type.
-   *   - Null-safe equality comparisons (EqualNullSafe).
+   * Semantic Safety: Checks whether the lambda body contains expressions that cannot be evaluated
+   * natively due to DataFusion limitations:
+   *
+   * a) Stateful expressions with mutable internal counters (e.g. monotonically_increasing_id,
+   * rand). Spark skips evaluating operands when the opposite operand is NULL, whereas DataFusion
+   * evaluates columns unconditionally, advancing mutable state on NULL elements.
+   *
+   * b) Conditionals (CaseWhen, If, Coalesce), which currently have evaluation discrepancies
+   * inside DataFusion's nested lambda runtime.
    */
   private def hasUnsupportedNativeExpressions(expr: Expression): Boolean = {
     expr.exists {
+      // Stateful mutable expressions that advance per-element counters/PRNG
+      case _: MonotonicallyIncreasingID | _: Rand | _: Randn => true
+
+      // Conditionals with known DataFusion lambda runtime discrepancies
       case _: CaseWhen | _: If | _: Coalesce => true
-      case _: EqualNullSafe => true
+
       case _ => false
     }
   }
