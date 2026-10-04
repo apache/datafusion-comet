@@ -112,8 +112,12 @@ object CometUnionInput {
   /** Lazy branch resources outlive the outer native plan and its exported output batches. */
   def addCleanup(context: TaskContext)(close: => Unit): Unit = {
     val input = current.get()
-    if (input != null) input.children += (() => close)
-    else context.addTaskCompletionListener[Unit](_ => close)
+    if (input != null) {
+      input.children += (() => close)
+    } else {
+      context.addTaskCompletionListener[Unit](_ => close)
+    }
+    ()
   }
 
   def registerExecution(plan: Long): Unit = {
@@ -130,7 +134,7 @@ object CometUnionInput {
 private[comet] class CometUnionInputRDD(
     batches: RDD[ColumnarBatch],
     schema: StructType,
-    name: String,
+    sourceName: String,
     nativeRootPlanIds: Array[Long])
     extends RDD[CometUnionInput](batches.context, Seq(new OneToOneDependency(batches))) {
 
@@ -145,7 +149,7 @@ private[comet] class CometUnionInputRDD(
       new CometUnionInput(
         () => parent.iterator(split, context),
         schema,
-        name,
+        sourceName,
         context,
         nativeRootPlanIds))
   }

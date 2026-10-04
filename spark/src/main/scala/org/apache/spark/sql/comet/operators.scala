@@ -1053,7 +1053,7 @@ abstract class CometNativeExec extends CometExec {
             if CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_ENABLED.get(conf) &&
               CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_UNION_ENABLED.get(conf) =>
           def branchRoots(branch: SparkPlan): Seq[Long] = branch match {
-            case native: CometNativeExec => Seq(native.nativeOp.getPlanId)
+            case native: CometNativeExec => Seq(native.nativeOp.getPlanId.toLong)
             case nested: CometUnionExec => nested.children.flatMap(branchRoots)
             case _ => Seq.empty
           }

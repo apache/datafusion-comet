@@ -619,7 +619,7 @@ class CometJoinSuite extends CometTestBase {
         "SELECT /*+ BROADCAST(b) */ p.k, p.v FROM (" +
           "SELECT id % 2 AS k, union_cancel_gate(id) AS v FROM range(0,100,1,1) " +
           "UNION ALL SELECT id % 2 AS k, union_cancel_gate(id) AS v " +
-          s"FROM range(0,100,1,1)) p JOIN " +
+          "FROM range(0,100,1,1)) p JOIN " +
           s"(SELECT id AS k FROM range($key,${key + 1},1,1)) b ON p.k = b.k")
       val cancelled = query(0L)
       val plan = cancelled.queryExecution.executedPlan
