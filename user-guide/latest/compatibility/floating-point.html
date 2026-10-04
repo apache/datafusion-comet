@@ -849,6 +849,18 @@ greater than non-NaN values. The original first equal element is retained: for e
 The same ordering applies recursively to floating-point fields in arrays and structs. These
 expressions do not require Spark’s codegen dispatcher for floating-point compatibility.</p>
 </section>
+<section id="min-max-greatest-and-least">
+<h2><code class="docutils literal notranslate"><span class="pre">min</span></code>, <code class="docutils literal notranslate"><span class="pre">max</span></code>, <code class="docutils literal notranslate"><span class="pre">greatest</span></code>, and <code class="docutils literal notranslate"><span class="pre">least</span></code><a class="headerlink" href="#min-max-greatest-and-least" title="Link to this heading">#</a></h2>
+<p>The <code class="docutils literal notranslate"><span class="pre">min</span></code> and <code class="docutils literal notranslate"><span class="pre">max</span></code> aggregates, including over window frames, and <code class="docutils literal notranslate"><span class="pre">greatest</span></code> and <code class="docutils literal notranslate"><span class="pre">least</span></code> compare
+<code class="docutils literal notranslate"><span class="pre">FLOAT</span></code> and <code class="docutils literal notranslate"><span class="pre">DOUBLE</span></code> values in the same order: NaN is larger than every other value and <code class="docutils literal notranslate"><span class="pre">-0.0</span></code>
+equals <code class="docutils literal notranslate"><span class="pre">0.0</span></code>. Of equal values the first one wins, as in Spark: <code class="docutils literal notranslate"><span class="pre">greatest(-0.0D,</span> <span class="pre">0.0D)</span></code> returns
+<code class="docutils literal notranslate"><span class="pre">-0.0</span></code>, and <code class="docutils literal notranslate"><span class="pre">max</span></code> returns whichever zero it reads first. <code class="docutils literal notranslate"><span class="pre">greatest</span></code> and <code class="docutils literal notranslate"><span class="pre">least</span></code> follow the same
+order inside arrays and structs. These run natively in strict floating-point mode too.</p>
+<p>Spark treats <code class="docutils literal notranslate"><span class="pre">greatest</span></code> and <code class="docutils literal notranslate"><span class="pre">least</span></code> as commutative when it matches expressions, so a projection
+that holds both <code class="docutils literal notranslate"><span class="pre">greatest(a,</span> <span class="pre">b)</span></code> and <code class="docutils literal notranslate"><span class="pre">greatest(b,</span> <span class="pre">a)</span></code> evaluates only one of them and returns the
+same value for both. Comet evaluates each one, so when <code class="docutils literal notranslate"><span class="pre">a</span></code> and <code class="docutils literal notranslate"><span class="pre">b</span></code> are zeros of different signs
+the two can differ.</p>
+</section>
 <section id="array-distinct-and-union">
 <h2>Array distinct and union<a class="headerlink" href="#array-distinct-and-union" title="Link to this heading">#</a></h2>
 <p><code class="docutils literal notranslate"><span class="pre">array_distinct</span></code> and <code class="docutils literal notranslate"><span class="pre">array_union</span></code> fall back to Spark when their element type contains
@@ -942,6 +954,7 @@ array whose elements cannot be null in ascending order, Spark’s generated code
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#nested-equality-and-membership">Nested equality and membership</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#ordering-nan-and-signed-zero-0-0-vs-0-0">Ordering: NaN and signed zero (<code class="docutils literal notranslate"><span class="pre">-0.0</span></code> vs <code class="docutils literal notranslate"><span class="pre">+0.0</span></code>)</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#min-max-greatest-and-least"><code class="docutils literal notranslate"><span class="pre">min</span></code>, <code class="docutils literal notranslate"><span class="pre">max</span></code>, <code class="docutils literal notranslate"><span class="pre">greatest</span></code>, and <code class="docutils literal notranslate"><span class="pre">least</span></code></a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#array-distinct-and-union">Array distinct and union</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#array-remove-and-sort-array"><code class="docutils literal notranslate"><span class="pre">array_remove</span></code> and <code class="docutils literal notranslate"><span class="pre">sort_array</span></code></a></li>
 </ul>
