@@ -21,6 +21,7 @@ package org.apache.spark.sql.comet.execution.shuffle
 
 import java.util.function.Supplier
 
+import scala.collection.mutable.ListBuffer
 import scala.concurrent.Future
 import scala.jdk.CollectionConverters._
 
@@ -34,7 +35,7 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, BoundReference, Exp
 import org.apache.spark.sql.catalyst.expressions.codegen.LazilyGeneratedOrdering
 import org.apache.spark.sql.catalyst.plans.logical.Statistics
 import org.apache.spark.sql.catalyst.plans.physical._
-import org.apache.spark.sql.comet.{CometFilterExec, CometMetricNode, CometNativeExec, CometNativeScanExec, CometPlan, CometProjectExec, CometSinkPlaceHolder, NativeExecContext}
+import org.apache.spark.sql.comet.{CometFilterExec, CometMetricNode, CometNativeExec, CometNativeScanExec, CometPlan, CometProjectExec, CometSinkPlaceHolder, CometSparkToColumnarExec, NativeExecContext}
 import org.apache.spark.sql.comet.execution.arrow.CometArrowStream
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.ShuffleQueryStageExec
@@ -522,6 +523,45 @@ object CometShuffleExchangeExec
     val combined = (nativeReasons ++ columnarReasons).toSet
     if (combined.nonEmpty) withFallbackReasons(s, combined)
     None
+  }
+
+  /**
+   * Whether a shuffle whose child is a Spark row-based plan can convert the child's rows to Arrow
+   * with `CometSparkToColumnarExec` and use native shuffle, instead of the JVM columnar shuffle.
+   * See [[CometConf.COMET_CONVERT_FROM_SHUFFLE_INPUT_ENABLED]]. The checks are those that
+   * [[shuffleSupported]] would make for the converted plan, so `CometExecRule` only converts a
+   * shuffle that will become native. Pure: does not tag the node.
+   */
+  def convertsInputForNativeShuffle(s: ShuffleExchangeExec): Boolean = {
+    val conf = s.conf
+    CometConf.COMET_CONVERT_FROM_SHUFFLE_INPUT_ENABLED.get(conf) &&
+    // A decision an earlier pass recorded stands, as in shuffleSupported.
+    !hasFallbackReason(s) &&
+    isCometShuffleEnabledReason(s).isEmpty &&
+    CometConf.COMET_SHUFFLE_CONVERT_FROM_SPARK_PLAN_ENABLED.get(conf) &&
+    // Not exercised with Celeborn, which has no JVM columnar shuffle to replace.
+    !isCometCelebornShuffleManagerEnabled(conf) &&
+    !isCometPlan(s.child) &&
+    !s.child.supportsColumnar &&
+    !isShuffleOperator(s.child) &&
+    !stageContainsDPPScan(s) &&
+    CometSparkToColumnarExec.isSchemaSupported(s.child.schema, ListBuffer.empty) &&
+    nativeShuffleFailureReasons(s).isEmpty &&
+    !hashesWideDecimal(s)
+  }
+
+  /**
+   * Whether the shuffle hashes a decimal wider than 18 digits into more than one partition.
+   * Native shuffle hashes those differently from Spark's partitioner, so it must not take over
+   * such a shuffle from the JVM columnar shuffle: a join with an input that is still partitioned
+   * by Spark would put matching keys in different partitions. TODO: remove once native hashing
+   * matches Spark for wide decimals (#5994).
+   */
+  private def hashesWideDecimal(s: ShuffleExchangeExec): Boolean = s.outputPartitioning match {
+    case HashPartitioning(expressions, numPartitions) =>
+      numPartitions > 1 &&
+      expressions.exists(_.dataType.existsRecursively(DecimalType.isByteArrayDecimalType))
+    case _ => false
   }
 
   /**
