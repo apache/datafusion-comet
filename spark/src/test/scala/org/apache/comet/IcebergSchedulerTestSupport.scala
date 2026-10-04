@@ -23,7 +23,7 @@ import java.lang.management.ManagementFactory
 import java.net.URI
 import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.{Files, Path, Paths, StandardCopyOption}
-import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.{ConcurrentHashMap, ConcurrentLinkedQueue}
 
 import scala.jdk.CollectionConverters._
 
@@ -220,7 +220,8 @@ private[comet] class IcebergSchedulerEvents(group: String) extends SparkListener
   val started = new ConcurrentLinkedQueue[SchedulerTaskEvent]()
   val ended = new ConcurrentLinkedQueue[SchedulerTaskEvent]()
   val removed = new ConcurrentLinkedQueue[String]()
-  val stages = java.util.concurrent.ConcurrentHashMap.newKeySet[Integer]()
+  val stages: ConcurrentHashMap.KeySetView[Integer, java.lang.Boolean] =
+    ConcurrentHashMap.newKeySet[Integer]()
   val stageEnds = new ConcurrentLinkedQueue[String]()
 
   override def onJobStart(e: SparkListenerJobStart): Unit = {

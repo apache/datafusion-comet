@@ -20,7 +20,7 @@
 package org.apache.comet
 
 import java.io.File
-import java.nio.file.{FileAlreadyExistsException, Files, Path}
+import java.nio.file.{FileAlreadyExistsException, Files}
 import java.sql.Timestamp
 import java.util.concurrent.{CountDownLatch, TimeUnit}
 import java.util.concurrent.atomic.AtomicReference
