@@ -38,6 +38,7 @@
 //! | Struct NULL with hidden children | **no** — `SparkXxhash64` hashes hidden children |
 //! | List&lt;Dictionary&gt; | **no** — upstream restarts from seed 42 |
 //! | Time64(ns) | **no** — upstream does not dispatch |
+//! | Float32/64 NaN with non-canonical bits | **no** — upstream hashes the raw bits |
 //! | custom seed | **no** — `SparkXxhash64` hardcodes 42 |
 
 use super::{create_xxhash64_hashes, spark_xxhash64};
@@ -427,6 +428,26 @@ fn float64() {
             Some(f64::NEG_INFINITY),
             None,
         ])),
+    );
+}
+
+/// Spark hashes NaN through `doubleToLongBits`, which canonicalizes it. `SparkXxhash64` hashes the
+/// raw bits, so it differs from Spark for a NaN with the sign bit set.
+#[test]
+fn non_canonical_nan_diverges_from_spark_xxhash64() {
+    let values: ArrayRef = Arc::new(Float64Array::from(vec![
+        f64::NAN,
+        f64::from_bits(0xfff8_0000_0000_0000),
+    ]));
+    let comet = comet_kernel(&[Arc::clone(&values)], SPARK_DEFAULT_SEED).unwrap();
+    let expr = comet_expr(&[Arc::clone(&values)], SPARK_DEFAULT_SEED as i64).unwrap();
+    let upstream = spark_xxhash64_upstream(&[values]).unwrap();
+    assert_eq!(expr, comet, "floats must not be delegated to SparkXxhash64");
+    assert_eq!(comet[0], upstream[0], "the canonical NaN still matches");
+    assert_eq!(comet[1], comet[0], "every NaN hashes as the canonical NaN");
+    assert_ne!(
+        comet[1], upstream[1],
+        "SparkXxhash64 hashes the raw bits of a NaN"
     );
 }
 

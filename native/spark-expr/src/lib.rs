@@ -57,14 +57,20 @@ mod bloom_filter;
 pub use bloom_filter::{BloomFilterAgg, BloomFilterMightContain, SparkBloomFilterVersion};
 
 pub mod jvm_udf;
+mod subquery;
+pub use subquery::Subquery;
 
 mod conditional_funcs;
 mod conversion_funcs;
+mod float_semantics;
+pub use float_semantics::{
+    canonicalize_nan, normalize_floats, NormalizeNaNAndZero, NormalizeNestedFloats,
+};
 mod hll_scalar;
 pub use hll_scalar::spark_hll_sketch_estimate;
 pub use hll_scalar::spark_hll_union;
 mod map_funcs;
-pub use map_funcs::{spark_map_sort, SparkMapExtract};
+pub use map_funcs::{spark_map_sort, SparkMapExtract, SparkMapFromArrays};
 mod math_funcs;
 mod nondetermenistic_funcs;
 pub mod url_funcs;
@@ -91,9 +97,9 @@ pub use json_funcs::{FromJson, JsonArrayLength, ToJson};
 pub use math_funcs::{
     abs, checked_add, checked_div, checked_mul, checked_sub, create_modulo_expr,
     create_negate_expr, spark_ceil, spark_decimal_div, spark_decimal_integral_div, spark_floor,
-    spark_log, spark_make_decimal, spark_modulo, spark_pow, spark_round, spark_sqrt, spark_unhex,
-    spark_unscaled_value, CheckOverflow, DecimalRescaleCheckOverflow, NegativeExpr,
-    NormalizeNaNAndZero, WideDecimalBinaryExpr, WideDecimalOp,
+    spark_log, spark_make_decimal, spark_modulo, spark_pow, spark_round, spark_signum, spark_sqrt,
+    spark_unhex, spark_unscaled_value, CheckOverflow, CheckedBinaryExpr,
+    DecimalRescaleCheckOverflow, NegativeExpr, WideDecimalBinaryExpr, WideDecimalOp,
 };
 pub use query_context::{create_query_context_map, QueryContext, QueryContextMap};
 pub use string_funcs::*;

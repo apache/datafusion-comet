@@ -673,6 +673,62 @@ SELECT player, game, score,
                    RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS range_sum
 FROM scores
 
+-- ============================================================
+-- 5.6: RANGE frame over array and struct ORDER BY keys
+-- DataFusion finds a CURRENT ROW bound of a RANGE frame by comparing ORDER BY
+-- values. It compares an array's elements and a struct's fields, flattening
+-- nested structs, but its comparison rejects anything nested below that, so
+-- over an array of arrays or structs, or a struct holding an array, the query
+-- fails with "Uncomparable values"
+-- (https://github.com/apache/datafusion/issues/24937). Comet falls back for
+-- those keys. Ranking functions, ROWS frames and an unbounded RANGE frame
+-- never compare values that way and stay native over the same keys.
+-- ============================================================
+
+query
+SELECT player, game, score,
+  SUM(score) OVER (PARTITION BY player ORDER BY array(score)) AS by_array,
+  SUM(score) OVER (PARTITION BY player
+                   ORDER BY named_struct('a', named_struct('b', score)) DESC) AS by_struct
+FROM scores
+
+query expect_fallback(RANGE frame on array<struct<x:int>> ORDER BY is not supported)
+SELECT player, game, score,
+  SUM(score) OVER (PARTITION BY player ORDER BY array(named_struct('x', score))) AS run_sum
+FROM scores
+
+query expect_fallback(RANGE frame on struct<a:array<int>> ORDER BY is not supported)
+SELECT player, game, score,
+  COUNT(score) OVER (PARTITION BY player ORDER BY named_struct('a', array(score)) DESC
+                     RANGE BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING) AS run_count
+FROM scores
+
+query expect_fallback(RANGE frame on array<array<int>> ORDER BY is not supported)
+SELECT player, game, score,
+  LAST_VALUE(game) OVER (PARTITION BY player ORDER BY array(array(score)), game) AS lv
+FROM scores
+
+query
+SELECT player, game, score,
+  RANK() OVER (PARTITION BY player ORDER BY array(named_struct('x', score))) AS rk,
+  SUM(score) OVER (PARTITION BY player ORDER BY array(named_struct('x', score))
+                   RANGE BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS total
+FROM scores
+
+-- Spark gives CUME_DIST a RANGE frame, but DataFusion computes it from peer
+-- groups without reading the frame.
+query tolerance=1e-6
+SELECT player, game, score,
+  PERCENT_RANK() OVER (PARTITION BY player ORDER BY named_struct('a', array(score))) AS pr,
+  CUME_DIST()    OVER (PARTITION BY player ORDER BY named_struct('a', array(score))) AS cd
+FROM scores
+
+query
+SELECT player, game, score,
+  SUM(score) OVER (PARTITION BY player ORDER BY named_struct('a', array(score)), game
+                   ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS rows_sum
+FROM scores
+
 -- ############################################################
 -- Section 6: Other window / aggregate functions
 -- ############################################################

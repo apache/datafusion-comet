@@ -63,7 +63,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     // through CometArrayFilter -> CometArrayCompact -> DataFusion's array_compact. On Spark
     // 4.0+ the rewrite is wrapped in KnownNotContainsNull, stripped by Spark4xCometExprShim.
     classOf[ArrayContains] -> CometArrayContains,
-    classOf[ArrayDistinct] -> CometScalarFunction("array_distinct"),
+    classOf[ArrayDistinct] -> CometArrayDistinct,
     classOf[ArrayExcept] -> CometArrayExcept,
     classOf[ArrayFilter] -> CometArrayFilter,
     classOf[ArrayInsert] -> CometArrayInsert,
@@ -133,11 +133,11 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[Expm1] -> CometScalarFunction("expm1"),
       classOf[Factorial] -> CometScalarFunction("factorial"),
       classOf[Floor] -> CometFloor,
-      classOf[Greatest] -> CometScalarFunction("greatest"),
+      classOf[Greatest] -> CometGreatest,
       classOf[Hex] -> CometHex,
       classOf[IntegralDivide] -> CometIntegralDivide,
       classOf[IsNaN] -> CometIsNaN,
-      classOf[Least] -> CometScalarFunction("least"),
+      classOf[Least] -> CometLeast,
       classOf[Log] -> CometLog,
       classOf[Log2] -> CometLog2,
       classOf[Log10] -> CometLog10,
@@ -151,7 +151,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[Rint] -> CometScalarFunction("rint"),
       classOf[Round] -> CometRound,
       classOf[Sec] -> CometScalarFunction("sec"),
-      classOf[Signum] -> CometScalarFunction("signum"),
+      classOf[Signum] -> CometSignum,
       classOf[Sin] -> CometScalarFunction("sin"),
       classOf[Sinh] -> CometScalarFunction("sinh"),
       classOf[Sqrt] -> CometSqrt,
@@ -234,7 +234,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[Reverse] -> CometReverse,
       classOf[RLike] -> CometRLike,
       classOf[StartsWith] -> CometStartsWith,
-      classOf[StringInstr] -> CometScalarFunction("instr"),
+      classOf[StringInstr] -> CometStringInstr,
       classOf[StringRepeat] -> CometStringRepeat,
       classOf[StringReplace] -> CometStringReplace,
       classOf[StringRPad] -> CometStringRPad,
@@ -242,9 +242,9 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[StringSpace] -> CometScalarFunction("space"),
       classOf[StringSplit] -> CometStringSplit,
       classOf[StringTranslate] -> CometStringTranslate,
-      classOf[StringTrim] -> CometScalarFunction("trim"),
-      classOf[StringTrimLeft] -> CometScalarFunction("ltrim"),
-      classOf[StringTrimRight] -> CometScalarFunction("rtrim"),
+      classOf[StringTrim] -> CometStringTrim,
+      classOf[StringTrimLeft] -> CometStringTrimLeft,
+      classOf[StringTrimRight] -> CometStringTrimRight,
       classOf[Left] -> CometLeft,
       classOf[Right] -> CometRight,
       classOf[Substring] -> CometSubstring,
@@ -303,6 +303,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[MakeDTInterval] -> CometMakeDTInterval,
       classOf[MakeInterval] -> CometMakeInterval,
       classOf[MultiplyDTInterval] -> CometMultiplyDTInterval,
+      classOf[MultiplyYMInterval] -> CometMultiplyYMInterval,
       classOf[TimestampAdd] -> CometTimestampAdd,
       classOf[TimestampDiff] -> CometTimestampDiff,
       classOf[MicrosToTimestamp] -> CometMicrosToTimestamp,
@@ -1356,7 +1357,12 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   }
 
   def supportedSortType(op: SparkPlan, sortOrder: Seq[SortOrder]): Boolean = {
-    if (sortOrder.length == 1) {
+    // Both single- and multi-column sorts compare strings by raw bytes. Check nested types
+    // before the single-column kernel restrictions, since multi-column keys bypass those.
+    if (sortOrder.exists(order => hasNonDefaultStringCollation(order.dataType))) {
+      withFallbackReason(op, "Sort does not support non-default string collation")
+      false
+    } else if (sortOrder.length == 1) {
       val canSort = sortOrder.head.dataType match {
         case ArrayType(elementType, _) => supportedScalarSortElementType(elementType)
         case MapType(_, valueType, _) => supportedScalarSortElementType(valueType)

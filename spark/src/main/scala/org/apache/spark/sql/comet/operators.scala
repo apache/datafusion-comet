@@ -30,7 +30,7 @@ import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSeq, AttributeSet, CodegenObjectFactoryMode, Expression, ExpressionSet, Generator, LeafExpression, NamedExpression, SortOrder, XXH64}
+import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSeq, AttributeSet, CodegenObjectFactoryMode, Expression, ExpressionSet, Generator, LeafExpression, Literal, NamedExpression, SortOrder, XXH64}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, CollectList, CollectSet, Final, ImperativeAggregate, Mode, Partial, PartialMerge, Percentile, Sum}
 import org.apache.spark.sql.catalyst.expressions.codegen.CodegenFallback
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
@@ -81,7 +81,12 @@ private[comet] trait PlanDataInjector {
   /** Check if this injector can handle the given operator. */
   def canInject(op: Operator): Boolean
 
-  /** Extract the key used to look up planning data for this operator. */
+  /**
+   * Extract the key used to look up planning data for this operator. The key must be unique per
+   * scan node within a native plan, so include the scan op's plan_id via
+   * `PlanDataInjector.withPlanId(..., op.getPlanId)`. findAllPlanData throws when two scans share
+   * a key with different data.
+   */
   def getKey(op: Operator): Option[String]
 
   /**
@@ -325,6 +330,21 @@ private[comet] object PlanDataInjector extends Logging {
   private[comet] def preparedKey(injector: PlanDataInjector, key: String): String =
     s"${injector.getClass.getName}:$key"
 
+  /**
+   * A scan's planning data key: its content key plus the scan op's `plan_id`. Two scans of one
+   * table can match on the content key yet read different files, such as the two sides of a
+   * bucketed or storage-partitioned self-join.
+   *
+   * The key is stable: it comes from the scan's own nativeOp `plan_id`, which parent blocks embed
+   * unchanged. The driver and executors therefore compute the same key, and so do copies of the
+   * exec, since a copy keeps its nativeOp.
+   *
+   * The key is unique: every scan in a native block was converted from its own CometScanExec or
+   * BatchScanExec. Spark assigns `SparkPlan.id` per plan-node instance from a JVM-wide counter,
+   * so two scans in one block never share it.
+   */
+  private[comet] def withPlanId(key: String, planId: Int): String = s"$key#$planId"
+
   private def injectPlanData(
       op: Operator,
       commonByKey: Map[String, Array[Byte]],
@@ -418,9 +438,10 @@ private[comet] object PlanDataInjector extends Logging {
    * by a unique identifier: one for common data (shared across partitions) and one for
    * per-partition data.
    *
-   * Recognises Iceberg scans (keyed by metadata_location) plus any leaf scan that surfaces its
-   * data via the [[CometScanWithPlanData]] trait (`CometNativeScanExec` and out-of-tree contrib
-   * scans such as the Delta contrib's `CometDeltaNativeScanExec`).
+   * Recognises Iceberg scans (keyed by metadata_location, scan_hash_code and the op's plan_id,
+   * see IcebergPlanDataInjector.getKey) plus any leaf scan that surfaces its data via the
+   * [[CometScanWithPlanData]] trait (`CometNativeScanExec` and out-of-tree contrib scans such as
+   * the Delta contrib's `CometDeltaNativeScanExec`).
    *
    * Stops at stage boundaries (shuffle exchanges, etc.) because partition indices are only valid
    * within the same stage.
@@ -446,10 +467,10 @@ private[comet] object PlanDataInjector extends Logging {
         iceberg.sendDriverMetrics()
         if (iceberg.commonData.nonEmpty && iceberg.perPartitionData.nonEmpty) {
           // A self-join/self-merge can put two scans of the same table (same metadata_location)
-          // in one native plan. Computing the key via IcebergPlanDataInjector.getKey, the same
-          // function injectPlanData uses to look it up, keeps the two sides from drifting apart
-          // (see the scan_hash_code field comment in operator.proto for why metadata_location
-          // alone cannot distinguish them).
+          // in one native plan, and they can match on scan_hash_code too while reading
+          // different files, so the key also carries the op's plan_id (see withPlanId).
+          // Computing it via IcebergPlanDataInjector.getKey, the same function injectPlanData
+          // uses to look it up, keeps the two sides from drifting apart.
           IcebergPlanDataInjector.getKey(iceberg.nativeOp) match {
             case Some(key) =>
               (Map(key -> iceberg.commonData), Map(key -> iceberg.perPartitionData))
@@ -491,9 +512,33 @@ private[comet] object PlanDataInjector extends Logging {
       // Continue searching through other operators, combining results from all children
       case _ =>
         val results = plan.children.map(findAllPlanData)
-        (results.flatMap(_._1).toMap, results.flatMap(_._2).toMap)
+        (
+          mergeByKey(results.map(_._1))(java.util.Arrays.equals(_, _)),
+          mergeByKey(results.map(_._2))(samePartitionData))
     }
   }
+
+  private def samePartitionData(a: Array[Array[Byte]], b: Array[Array[Byte]]): Boolean =
+    a.length == b.length && a.indices.forall(i => java.util.Arrays.equals(a(i), b(i)))
+
+  /**
+   * Merges the planning data found under sibling subtrees. The injector looks data up by key, so
+   * two scans sharing a key would both read whichever entry survived. The same data reached twice
+   * is kept once; different data under one key is a planning bug and fails the query rather than
+   * returning another scan's rows.
+   */
+  private def mergeByKey[V](maps: Seq[Map[String, V]])(same: (V, V) => Boolean): Map[String, V] =
+    maps.foldLeft(Map.empty[String, V]) { (merged, next) =>
+      next.foldLeft(merged) { case (acc, (key, value)) =>
+        acc.get(key) match {
+          case None => acc + (key -> value)
+          case Some(existing) if same(existing, value) => acc
+          case Some(_) =>
+            throw new CometRuntimeException(
+              s"Two scans in one native plan have different planning data under key $key")
+        }
+      }
+    }
 }
 
 /**
@@ -512,7 +557,9 @@ private[comet] object IcebergPlanDataInjector extends PlanDataInjector {
 
   override def getKey(op: Operator): Option[String] = {
     val common = op.getIcebergScan.getCommon
-    Some(s"${common.getMetadataLocation}_${common.getScanHashCode}")
+    Some(
+      PlanDataInjector
+        .withPlanId(s"${common.getMetadataLocation}_${common.getScanHashCode}", op.getPlanId))
   }
 
   // Parsed once per stage or shuffle by injectPlanData's memo, never per partition.
@@ -550,17 +597,20 @@ private[comet] object NativeScanPlanDataInjector extends PlanDataInjector {
     val scan = op.getNativeScan
     // The driver hashes the common once and ships the hash inside the plan
     // (CometNativeScanExec.apply), so no per-task hashing happens here; deriving from the
-    // common is only a fallback for plans built without one.
-    Some(
+    // common is only a fallback for plans built without one. The plan_id matches the one
+    // CometNativeScanExec.apply folds into sourceKey.
+    val key =
       if (scan.hasSourceKeyHash) sourceKey(scan.getCommon.getSource, scan.getSourceKeyHash)
-      else sourceKey(scan.getCommon))
+      else sourceKey(scan.getCommon)
+    Some(PlanDataInjector.withPlanId(key, op.getPlanId))
   }
 
   /**
-   * The key under which a native scan's planning data is stored and looked up: the scan's source
-   * plus [[sourceKeyHash]]. `CometNativeScanExec.apply` computes the hash once on the driver and
-   * embeds it in the NativeScan proto, so [[getKey]] rebuilds the identical string from the
-   * source already carried by the common.
+   * A native scan's content key: the scan's source plus [[sourceKeyHash]]. The planning data is
+   * stored and looked up under this key plus the op's plan_id (PlanDataInjector.withPlanId).
+   * `CometNativeScanExec.apply` computes the hash once on the driver and embeds it in the
+   * NativeScan proto, so [[getKey]] rebuilds the identical string from the source already carried
+   * by the common.
    */
   private[comet] def sourceKey(common: OperatorOuterClass.NativeScanCommon): String =
     sourceKey(common.getSource, sourceKeyHash(common))
@@ -677,6 +727,25 @@ object CometExec {
     codedOutput.checkNoSpaceLeft()
     bytes
   }
+
+  /**
+   * The childless operators of a native plan, depth first. Its `Scan` and `ShuffleScan` leaves
+   * read the block's inputs in this order.
+   */
+  def nativeLeaves(op: Operator): Seq[Operator] =
+    if (op.getChildrenCount == 0) Seq(op)
+    else op.getChildrenList.asScala.toSeq.flatMap(nativeLeaves)
+
+  /**
+   * The input indices of a native plan that its `ShuffleScan` leaves read. Each `Scan` or
+   * `ShuffleScan` leaf reads one input, in [[nativeLeaves]] order.
+   */
+  def findShuffleScanIndices(plan: Operator): Set[Int] =
+    nativeLeaves(plan)
+      .filter(leaf => leaf.hasScan || leaf.hasShuffleScan)
+      .zipWithIndex
+      .collect { case (leaf, index) if leaf.hasShuffleScan => index }
+      .toSet
 
   def getCometIterator(
       inputObjects: Array[Object],
@@ -945,7 +1014,7 @@ abstract class CometNativeExec extends CometExec {
     // (`ShuffleQueryStageExec`), so a bare non-AQE `CometShuffleExchangeExec` always serializes
     // as a regular Scan regardless of `COMET_SHUFFLE_DIRECT_READ_ENABLED`. Driving the JVM
     // dispatch from `shuffleScanIndices` instead of the conf keeps the two aligned.
-    val shuffleScanIndices = findShuffleScanIndices(nativeOp)
+    val shuffleScanIndices = CometExec.findShuffleScanIndices(nativeOp)
 
     def isBroadcastInput(plan: SparkPlan): Boolean = plan match {
       case _: CometBroadcastExchangeExec => true
@@ -1127,27 +1196,6 @@ abstract class CometNativeExec extends CometExec {
   }
 
   /**
-   * Walk the protobuf operator tree depth-first to find which input indices correspond to
-   * ShuffleScan vs Scan leaf nodes. Each Scan or ShuffleScan leaf consumes one input in order.
-   */
-  private def findShuffleScanIndices(plan: OperatorOuterClass.Operator): Set[Int] = {
-    var scanIndex = 0
-    val indices = mutable.Set.empty[Int]
-    def walk(op: OperatorOuterClass.Operator): Unit = {
-      if (op.hasShuffleScan) {
-        indices += scanIndex
-        scanIndex += 1
-      } else if (op.hasScan) {
-        scanIndex += 1
-      } else {
-        op.getChildrenList.asScala.foreach(walk)
-      }
-    }
-    walk(plan)
-    indices.toSet
-  }
-
-  /**
    * Converts this native Comet operator and its children into a native block which can be
    * executed as a whole (i.e., in a single JNI call) from the native side.
    */
@@ -1158,6 +1206,22 @@ abstract class CometNativeExec extends CometExec {
         // point where the whole native block is in hand, which is what the pool indices are
         // scoped to.
         SerializedPlan(Some(CometExec.serializeNativePlan(QueryContextInterner.intern(nativeOp))))
+      case other: AnyRef => other
+      case null => null
+    }
+
+    val newArgs = mapProductIterator(transform)
+    makeCopy(newArgs).asInstanceOf[CometNativeExec]
+  }
+
+  /**
+   * Copies this operator with `newOp` as its native plan and no serialized plan, so that
+   * `convertBlock` serializes the block again.
+   */
+  def withRefreshedNativeOp(newOp: Operator): CometNativeExec = {
+    def transform(arg: Any): AnyRef = arg match {
+      case op: Operator if op eq nativeOp => newOp
+      case _: SerializedPlan => SerializedPlan(None)
       case other: AnyRef => other
       case null => null
     }
@@ -1263,6 +1327,12 @@ abstract class CometLeafExec extends CometNativeExec with LeafExecNode {
  * runtime "not a leaf" fallback.
  */
 trait CometScanWithPlanData { self: CometLeafExec =>
+
+  /**
+   * The key for this scan's planning data. It must be unique per scan node within a native plan,
+   * so include the scan op's plan_id via `PlanDataInjector.withPlanId(..., op.getPlanId)`.
+   * findAllPlanData throws when two scans share a key with different data.
+   */
   def sourceKey: String
   def commonData: Array[Byte]
   def perPartitionData: Array[Array[Byte]]
@@ -2518,6 +2588,32 @@ trait CometHashJoin {
         case FullOuter => JoinType.FullOuter
         case LeftSemi => JoinType.LeftSemi
         case LeftAnti => JoinType.LeftAnti
+        case ExistenceJoin(_) if CometConf.COMET_EXEC_EXISTENCE_JOIN_ENABLED.get(join.conf) =>
+          // Native only for equi-key joins with bare column/literal keys and no residual.
+          if (join.condition.isDefined) {
+            withFallbackReason(
+              join,
+              "ExistenceJoin with a residual (non-equi) condition is not supported natively")
+            return None
+          } else if (!(join.leftKeys ++ join.rightKeys).forall {
+              case _: Attribute | _: Literal => true
+              case _ => false
+            }) {
+            withFallbackReason(
+              join,
+              "ExistenceJoin with a computed (non-column) join key is not supported natively")
+            return None
+          } else {
+            JoinType.Existence
+          }
+        case ExistenceJoin(_) =>
+          // The guard above matched only when the flag is enabled; reaching here means it is off.
+          // Report a toggle-specific reason so the plan does not read like a permanent limitation.
+          withFallbackReason(
+            join,
+            "Native ExistenceJoin is disabled; set " +
+              s"${CometConf.COMET_EXEC_EXISTENCE_JOIN_ENABLED.key}=true to enable it")
+          return None
         case _ =>
           // Spark doesn't support other join types
           withFallbackReason(join, s"Unsupported join type ${join.joinType}")
@@ -2788,6 +2884,11 @@ case class CometHashJoinExec(
   override def withNewChildrenInternal(newLeft: SparkPlan, newRight: SparkPlan): SparkPlan =
     this.copy(left = newLeft, right = newRight)
 
+  override def producedAttributes: AttributeSet = joinType match {
+    case ExistenceJoin(exists) => AttributeSet(exists)
+    case _ => AttributeSet.empty
+  }
+
   override def stringArgs: Iterator[Any] =
     Iterator(leftKeys, rightKeys, joinType, buildSide, condition, left, right)
 
@@ -2937,6 +3038,11 @@ case class CometBroadcastHashJoinExec(
   override def withNewChildrenInternal(newLeft: SparkPlan, newRight: SparkPlan): SparkPlan =
     this.copy(left = newLeft, right = newRight)
 
+  override def producedAttributes: AttributeSet = joinType match {
+    case ExistenceJoin(exists) => AttributeSet(exists)
+    case _ => AttributeSet.empty
+  }
+
   override def stringArgs: Iterator[Any] =
     Iterator(leftKeys, rightKeys, joinType, condition, buildSide, left, right)
 
@@ -3033,6 +3139,9 @@ object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {
         case FullOuter => JoinType.FullOuter
         case LeftSemi => JoinType.LeftSemi
         case LeftAnti => JoinType.LeftAnti
+        // Existence SMJ falls back to Spark: DF 55.1.0's BitwiseSortMergeJoin buffers output
+        // before emitting, risking OOM on large equal-key groups. Tracked in
+        // https://github.com/apache/datafusion-comet/issues/6514.
         case _ =>
           // Spark doesn't support other join types
           withFallbackReason(join, s"Unsupported join type ${join.joinType}")

@@ -63,8 +63,8 @@ Native shuffle (`CometExchange`) is selected when all of the following condition
      compares raw bytes. Scalar float and double are supported, including when
      `spark.comet.exec.strictFloatingPoint` is enabled, because the native range partitioner
      normalizes its comparison keys and its sampled boundary rows the same way the native sort
-     does. Strict floating point only affects floating-point values nested in arrays, structs, or
-     maps, which are rejected as range keys for being nested anyway.
+     does. The native sort normalizes floating-point values nested in arrays and structs as well,
+     but those keys are rejected as range keys for being nested.
    - `HashPartitioning` keys must be primitive **by default**. Setting
      `spark.comet.shuffle.native.partitioning.hash.nested.enabled` to `true` admits structs and
      arrays as keys, checked recursively to their leaves, and maps on Spark 4.0 and later, where
@@ -221,6 +221,11 @@ JVM columnar shuffle, because both write the same Arrow IPC block format.
 decides during plan serialization. When direct read is enabled and the sink's input is a Comet shuffle
 exchange, `convertToShuffleScan` emits a `ShuffleScan` operator. When either is false the sink falls
 through to the base `CometSink.convert`, which emits the usual `Scan`.
+
+Under AQE, an operator that shares its logical node with a shuffle stage, such as the final aggregate
+of a two-phase aggregate, comes back from re-planning as the node already planned, whose input was
+serialized as a `Scan` before the stage existed. `CometExecRule` refreshes such a node: once its input
+is a sink that emits a `ShuffleScan`, that `ShuffleScan` replaces the stale `Scan` leaf.
 
 The two are not alternatives on failure. If any output type fails `supportedSinkDataType`,
 `convertToShuffleScan` records the fallback reason `Unsupported data type for shuffle direct read`
