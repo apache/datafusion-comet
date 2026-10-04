@@ -3013,7 +3013,8 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
         SQLConf.PARQUET_REBASE_MODE_IN_WRITE.key -> "CORRECTED",
         SQLConf.PARQUET_INT96_REBASE_MODE_IN_WRITE.key -> "LEGACY",
         SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> "INT96") {
-        sql("SELECT date'2000-01-01' AS d, timestamp'2000-01-01 00:00:00' AS ts")
+        // The ancient date makes the DATE-only scan depend on the metadata, not the statistics.
+        sql("SELECT date'1000-01-01' AS d, timestamp'2000-01-01 00:00:00' AS ts")
           .coalesce(1)
           .write
           .parquet(path.toString)
