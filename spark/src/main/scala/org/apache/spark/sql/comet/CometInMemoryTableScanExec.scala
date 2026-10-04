@@ -23,6 +23,7 @@ import scala.collection.JavaConverters._
 
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.expressions.Attribute
+import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.plans.logical.Statistics
 import org.apache.spark.sql.columnar.{CachedBatch, CachedBatchSerializer}
 import org.apache.spark.sql.comet.shims.ShimCometInMemoryTableScanExec
@@ -79,6 +80,11 @@ case class CometInMemoryTableScanExec(
   // the CachedRDDBuilder with the whole cached plan, physical and logical, inline and with its raw
   // newlines, which breaks the tree of every plan that reads the cache.
   override def stringArgs: Iterator[Any] = Iterator(originalPlan)
+
+  // Spark's own scan lists its InMemoryRelation as an inner child, and the relation lists the
+  // cached plan, so EXPLAIN draws the plan that built the cache below the scan. Do the same.
+  // ExtendedExplainInfo.executionInnerChildren leaves them out of Comet's own reporting.
+  override def innerChildren: Seq[QueryPlan[_]] = Seq(originalPlan.relation)
 
   // `originalPlan` is a plan-typed field rather than a child, so QueryPlan's canonicalization
   // walks straight past it: its attributes and predicates keep the expression IDs of whichever
