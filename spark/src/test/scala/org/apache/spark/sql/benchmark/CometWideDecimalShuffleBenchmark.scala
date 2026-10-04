@@ -63,7 +63,7 @@ object CometWideDecimalShuffleBenchmark extends CometBenchmarkBase {
             assert(spark.table("parquetV1Table").rdd.getNumPartitions == partitions)
             expected = spark.sql(query).collect().toSeq.sortBy(_.getDecimal(0))
           }
-          val benchmark = new Benchmark("wide_decimal_hash_shuffle", rows, output = output)
+          val benchmark = new Benchmark("wide_decimal_hash_shuffle", rows.toLong, output = output)
           val modes = Seq("Spark", "native", "auto", "jvm")
           for (mode <- (if (mainArgs.contains("--reverse")) modes.reverse else modes)) {
             val configs = Seq(
