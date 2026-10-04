@@ -477,3 +477,11 @@ harness = false
 [[bench]]
 name = "float_arrays"
 harness = false
+
+[[bench]]
+name = "min_max"
+harness = false
+
+[[bench]]
+name = "greatest_least"
+harness = false

@@ -64,24 +64,9 @@ fn with_values(
 
 #[cfg(test)]
 mod test_util {
-    use crate::float_semantics::{NEGATIVE_NAN, PAYLOAD_NAN};
     use arrow::array::{ArrayRef, AsArray, ListArray};
     use arrow::datatypes::Float64Type;
     use std::sync::Arc;
-
-    /// The floats that Spark's rules treat specially, and a null.
-    pub(super) const EDGE_VALUES: [Option<f64>; 10] = [
-        Some(f64::NEG_INFINITY),
-        Some(-1.0),
-        Some(-0.0),
-        Some(0.0),
-        Some(1.0),
-        Some(f64::INFINITY),
-        Some(f64::NAN),
-        Some(NEGATIVE_NAN),
-        Some(PAYLOAD_NAN),
-        None,
-    ];
 
     /// A list of `DOUBLE` rows.
     pub(super) fn list(rows: &[Option<Vec<Option<f64>>>]) -> ArrayRef {

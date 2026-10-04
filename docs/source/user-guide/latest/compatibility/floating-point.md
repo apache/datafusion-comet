@@ -89,6 +89,19 @@ greater than non-NaN values. The original first equal element is retained: for e
 The same ordering applies recursively to floating-point fields in arrays and structs. These
 expressions do not require Spark's codegen dispatcher for floating-point compatibility.
 
+## `min`, `max`, `greatest`, and `least`
+
+The `min` and `max` aggregates, including over window frames, and `greatest` and `least` compare
+`FLOAT` and `DOUBLE` values in the same order: NaN is larger than every other value and `-0.0`
+equals `0.0`. Of equal values the first one wins, as in Spark: `greatest(-0.0D, 0.0D)` returns
+`-0.0`, and `max` returns whichever zero it reads first. `greatest` and `least` follow the same
+order inside arrays and structs. These run natively in strict floating-point mode too.
+
+Spark treats `greatest` and `least` as commutative when it matches expressions, so a projection
+that holds both `greatest(a, b)` and `greatest(b, a)` evaluates only one of them and returns the
+same value for both. Comet evaluates each one, so when `a` and `b` are zeros of different signs
+the two can differ.
+
 ## Array distinct and union
 
 `array_distinct` and `array_union` fall back to Spark when their element type contains
