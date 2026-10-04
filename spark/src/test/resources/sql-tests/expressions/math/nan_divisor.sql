@@ -16,8 +16,8 @@
 -- under the License.
 
 -- Division and remainder pass a NaN divisor through, so `1.0D / (-d)` of a NaN is a NaN with the
--- sign bit set, the NaN that arithmetic produces on x86-64. Spark hashes every NaN alike. ANSI
--- mode divides through a different native path.
+-- sign bit set, the NaN that arithmetic produces on x86-64. Spark hashes every NaN alike, and
+-- orders every NaN above every other value. ANSI mode divides through a different native path.
 -- ConfigMatrix: spark.sql.ansi.enabled=false,true
 
 statement
@@ -32,3 +32,13 @@ FROM nan_divisor
 
 query
 SELECT hash(1.0F % (-f)), xxhash64(1.0F % (-f)) FROM nan_divisor
+
+query
+SELECT least(1.0D / (-d), 0.0D), greatest(1.0D / (-d), 0.0D), least(1.0D % (-d), 0.0D),
+  greatest(1.0F % (-f), 0.0F)
+FROM nan_divisor
+
+-- The union keeps the quotient in a projection below the aggregate.
+query
+SELECT max(q), min(q)
+FROM (SELECT 1.0D / (-d) AS q FROM nan_divisor UNION ALL SELECT 0.0D AS q FROM nan_divisor)
