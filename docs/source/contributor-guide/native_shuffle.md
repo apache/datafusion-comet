@@ -228,6 +228,11 @@ decides during plan serialization. When direct read is enabled and the sink's in
 exchange, `convertToShuffleScan` emits a `ShuffleScan` operator. When either is false the sink falls
 through to the base `CometSink.convert`, which emits the usual `Scan`.
 
+Under AQE, an operator that shares its logical node with a shuffle stage, such as the final aggregate
+of a two-phase aggregate, comes back from re-planning as the node already planned, whose input was
+serialized as a `Scan` before the stage existed. `CometExecRule` refreshes such a node: once its input
+is a sink that emits a `ShuffleScan`, that `ShuffleScan` replaces the stale `Scan` leaf.
+
 The two are not alternatives on failure. If any output type fails `supportedSinkDataType`,
 `convertToShuffleScan` records the fallback reason `Unsupported data type for shuffle direct read`
 and returns `None`. It does not retry as a regular `Scan`, and retrying would not help, because
