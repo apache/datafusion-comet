@@ -216,6 +216,7 @@ jobs:
               org.apache.comet.exec.CometExecSuite
               org.apache.comet.exec.CometTopKSuite
               org.apache.comet.exec.CometEmptyRelationExecSuite
+              org.apache.comet.exec.CometRangeExecSuite
               org.apache.comet.exec.CometInMemoryCacheSuite
               org.apache.comet.exec.CometInMemoryCachePruningSuite
               org.apache.comet.exec.CometInMemoryCacheKryoSuite
@@ -286,6 +287,7 @@ jobs:
               org.apache.comet.CometExpressionCoverageSuite
               org.apache.comet.CometVariantTypeSuite
               org.apache.comet.CometHashExpressionSuite
+              org.apache.comet.CometFloatSemanticsSuite
               org.apache.comet.CometTemporalExpressionSuite
               org.apache.comet.CometArrayExpressionSuite
               org.apache.comet.CometNativeCastSuite

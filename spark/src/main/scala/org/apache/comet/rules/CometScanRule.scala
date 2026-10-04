@@ -727,16 +727,27 @@ case class CometScanRule(session: SparkSession)
             }
           }
 
+        // Projected roots are matched by field ID so historical snapshots still identify renamed
+        // columns. Both schema checks below use them.
+        val projectedDataColumns = scanExec.output.filterNot(_.isMetadataCol)
+        val resolver = session.sessionState.conf.resolver
+        val projectedFieldIds = projectedDataColumns.map { attr =>
+          metadata.globalFieldIdMapping.collectFirst {
+            case (fieldName, fieldId) if resolver(fieldName, attr.name) => fieldId
+          }
+        }
+        val resolvedProjectedFieldIds = projectedFieldIds.flatten.toSet
+        val hasUnresolvedProjectedFieldIds = projectedFieldIds.exists(_.isEmpty)
+
         // The whole Iceberg table schema is serialized to native, but iceberg-rust can represent
-        // Variant in that schema as long as no projected field contains one. Match projected
-        // roots by field ID so historical snapshots still identify renamed columns, check them
-        // strictly, and allow Variant only under entirely unprojected roots. Other unsupported
-        // types still fail closed everywhere. An empty data projection is also strict because
-        // iceberg-rust currently interprets an empty field-id list as a request for every column.
+        // Variant in that schema as long as no projected field contains one. Check projected
+        // roots strictly, and allow Variant only under entirely unprojected roots. Other
+        // unsupported types still fail closed everywhere. An empty data projection is also strict
+        // because iceberg-rust currently interprets an empty field-id list as a request for every
+        // column.
         val schemaTypesSupported =
           try {
             val fullSchema = IcebergReflection.toSparkSchema(metadata.tableSchema)
-            val projectedDataColumns = scanExec.output.filterNot(_.isMetadataCol)
             // DataTypeSupport recursively dispatches back to this override for struct fields,
             // array elements, and map entries, so Variant is allowed at any nesting depth only
             // when its entire top-level Iceberg field is unprojected.
@@ -747,15 +758,7 @@ case class CometScanRule(session: SparkSession)
                   reasons: ListBuffer[String]): Boolean =
                 isVariantType(dt) || super.isTypeSupported(dt, name, reasons)
             }
-            val resolver = session.sessionState.conf.resolver
             val tableFieldIds = IcebergReflection.buildFieldIdMapping(metadata.tableSchema)
-            val projectedFieldIds = projectedDataColumns.map { attr =>
-              metadata.globalFieldIdMapping.collectFirst {
-                case (fieldName, fieldId) if resolver(fieldName, attr.name) => fieldId
-              }
-            }
-            val resolvedProjectedFieldIds = projectedFieldIds.flatten.toSet
-            val hasUnresolvedProjectedFieldIds = projectedFieldIds.exists(_.isEmpty)
 
             fullSchema.fields.forall { field =>
               val isProjected = projectedDataColumns.isEmpty ||
@@ -768,6 +771,44 @@ case class CometScanRule(session: SparkSession)
             case e: Exception =>
               fallbackReasons += "Iceberg reflection failure: could not verify column " +
                 s"types: ${e.getMessage}"
+              false
+          }
+
+        // Neither iceberg-rust nor the batch adaptation after it matches a data file's nested
+        // fields to the table's by field id (apache/iceberg-rust#2617). A file written before a
+        // nested field was added (to a struct, or to a struct inside a list or map) fails the
+        // native scan with "Incorrect number of arrays for StructArray fields", and a nested field
+        // renamed since the file was written can read back as NULL. The native read asks for a
+        // projected column's full nested type even when Spark prunes it, taken from the current
+        // table schema, or from the scan schema when VERSION AS OF reads a dropped column (see
+        // CometIcebergNativeScan). A FileScanTask does not record which schema wrote its file, so
+        // fall back when any schema in the table's history lacks a nested field of a projected
+        // column or names it differently.
+        val nestedFieldsSupported =
+          try {
+            val schemas = Seq(metadata.tableSchema, metadata.scanSchema)
+            val fieldIds =
+              if (hasUnresolvedProjectedFieldIds) {
+                schemas.flatMap(IcebergReflection.buildFieldIdMapping(_).values).toSet
+              } else {
+                resolvedProjectedFieldIds
+              }
+            val changed = schemas
+              .flatMap { schema =>
+                IcebergReflection.nestedFieldsAddedOrRenamed(metadata.table, schema, fieldIds)
+              }
+              .distinct
+              .sorted
+            if (changed.nonEmpty) {
+              fallbackReasons += "Nested fields added or renamed by Iceberg schema evolution are " +
+                "not yet supported by Comet's native reader, which cannot match them to data " +
+                s"files written before the change: ${changed.mkString(", ")}"
+            }
+            changed.isEmpty
+          } catch {
+            case e: Exception =>
+              fallbackReasons += "Iceberg reflection failure: could not compare nested fields " +
+                s"with the table's schema history: ${e.getMessage}"
               false
           }
 
@@ -1006,7 +1047,8 @@ case class CometScanRule(session: SparkSession)
           defaultValuesSupported && schemaTypesSupported && encryptionKeyLengthSupported &&
           taskValidation.allParquet && allSupportedFilesystems && allLocationsOpenable &&
           metadataSchemeSupported && partitionTypesSupported && unifiedPartitionTypeSupported &&
-          transformFunctionsSupported && deleteFileTypesSupported && dppSubqueriesSupported) {
+          transformFunctionsSupported && deleteFileTypesSupported && dppSubqueriesSupported &&
+          nestedFieldsSupported) {
           CometBatchScanExec(
             scanExec.clone().asInstanceOf[BatchScanExec],
             runtimeFilters = scanExec.runtimeFilters,

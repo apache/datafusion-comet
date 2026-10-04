@@ -17,14 +17,12 @@
 
 //! Spark-compatible `approx_count_distinct`, a faithful port of Spark's
 //! `HyperLogLogPlusPlus` / `HyperLogLogPlusPlusHelper`. Values are hashed with Spark's
-//! `XxHash64` (seed 42, floats normalized first) and the registers are stored using the exact
-//! same packed-`Long` buffer layout Spark uses (10 six-bit registers per 64-bit word). Keeping
-//! the wire format identical means the partial-aggregation state matches Spark's
-//! `aggBufferSchema`, and the cardinality estimate uses the same bias-correction tables, so
-//! results are bit-identical to Spark.
+//! `XxHash64` (seed 42) and the registers are stored using the exact same packed-`Long` buffer
+//! layout Spark uses (10 six-bit registers per 64-bit word). Keeping the wire format identical
+//! means the partial-aggregation state matches Spark's `aggBufferSchema`, and the cardinality
+//! estimate uses the same bias-correction tables, so results are bit-identical to Spark.
 
 use crate::agg_funcs::hll_plus_plus_const::{BIAS_DATA, RAW_ESTIMATE_DATA, THRESHOLDS};
-use crate::float_semantics::normalize_floats;
 use crate::hash_funcs::create_xxhash64_hashes;
 use arrow::array::{Array, ArrayRef, AsArray, BooleanArray, Int64Array};
 use arrow::datatypes::{DataType, Field, FieldRef};
@@ -118,14 +116,17 @@ impl AggregateUDFImpl for HllPlusPlus {
     }
 }
 
-/// Hash a value column with Spark's `XxHash64` (seed 42), normalizing floats first, reusing
-/// `buf` as scratch to avoid a per-batch allocation. The buffer is re-seeded (not just cleared)
-/// because `create_xxhash64_hashes` folds each value into the existing seed.
+/// Hash a value column with Spark's `XxHash64` (seed 42), reusing `buf` as scratch to avoid a
+/// per-batch allocation. The buffer is re-seeded (not just cleared) because
+/// `create_xxhash64_hashes` folds each value into the existing seed.
+///
+/// Spark runs float inputs through `NormalizeFloatingNumbers` before hashing, but
+/// `create_xxhash64_hashes` already hashes `-0.0` as `0.0` and every NaN as the canonical NaN, so
+/// the result is the same without a separate pass.
 fn hash_values_into(array: &ArrayRef, buf: &mut Vec<u64>) -> Result<()> {
-    let normalized = normalize_floats(array);
     buf.clear();
-    buf.resize(normalized.len(), HASH_SEED);
-    create_xxhash64_hashes(&[normalized], buf)?;
+    buf.resize(array.len(), HASH_SEED);
+    create_xxhash64_hashes(&[Arc::clone(array)], buf)?;
     Ok(())
 }
 
@@ -463,7 +464,7 @@ impl GroupsAccumulator for HllPlusPlusGroupsAccumulator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{Int32Array, StringArray};
+    use arrow::array::{Float32Array, Float64Array, Int32Array, StringArray};
 
     fn acc(p: usize) -> HllPlusPlusAccumulator {
         HllPlusPlusAccumulator::new(p)
@@ -501,6 +502,66 @@ mod tests {
         let values: ArrayRef = Arc::new(Int32Array::from(vec![Some(1), None, Some(2), None]));
         a.update_batch(&[values]).unwrap();
         assert_eq!(eval(&mut a), 2);
+    }
+
+    /// Spark counts the two zeros as one value and every NaN as one value.
+    #[test]
+    fn floats_fold_negative_zero_and_nan() {
+        let values: ArrayRef = Arc::new(Float64Array::from(vec![
+            0.0,
+            -0.0,
+            f64::NAN,
+            f64::from_bits(0xfff8_0000_0000_0000),
+            f64::from_bits(0x7ff0_0000_0000_0001),
+        ]));
+        let mut a = acc(9);
+        a.update_batch(&[values]).unwrap();
+        assert_eq!(eval(&mut a), 2);
+        let values: ArrayRef = Arc::new(Float32Array::from(vec![
+            0.0,
+            -0.0,
+            f32::NAN,
+            f32::from_bits(0xffc0_0000),
+        ]));
+        let mut a = acc(9);
+        a.update_batch(&[values]).unwrap();
+        assert_eq!(eval(&mut a), 2);
+    }
+
+    /// The hash kernel canonicalizes floats inside nested types, so a struct or list holding a
+    /// negative zero or a non-canonical NaN counts the same as one holding the plain value.
+    #[test]
+    fn nested_floats_fold_negative_zero_and_nan() {
+        use arrow::array::{ListArray, StructArray};
+        use arrow::buffer::OffsetBuffer;
+        use arrow::datatypes::Field;
+
+        let floats: ArrayRef = Arc::new(Float64Array::from(vec![
+            0.0,
+            -0.0,
+            f64::NAN,
+            f64::from_bits(0xfff8_0000_0000_0000),
+            f64::from_bits(0x7ff0_0000_0000_0001),
+        ]));
+        let field = Arc::new(Field::new("item", DataType::Float64, true));
+        let nested: Vec<ArrayRef> = vec![
+            Arc::new(StructArray::new(
+                vec![Arc::clone(&field)].into(),
+                vec![Arc::clone(&floats)],
+                None,
+            )),
+            Arc::new(ListArray::new(
+                field,
+                OffsetBuffer::from_lengths([1; 5]),
+                floats,
+                None,
+            )),
+        ];
+        for values in nested {
+            let mut a = acc(9);
+            a.update_batch(&[Arc::clone(&values)]).unwrap();
+            assert_eq!(eval(&mut a), 2, "{}", values.data_type());
+        }
     }
 
     #[test]

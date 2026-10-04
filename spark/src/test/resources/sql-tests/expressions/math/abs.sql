@@ -56,8 +56,8 @@ INSERT INTO test_abs_iv_overflow VALUES (1, 2, 3, 4.5), (-106751991, -4, 0, -54.
 query expect_error(overflow)
 SELECT abs(make_dt_interval(d, h, m, s)) FROM test_abs_iv_overflow
 
--- NullPropagation folds the ym null into a bare typed literal, which CometLiteral now serializes
--- as a year-month interval, so the projection stays in Comet.
+-- NullPropagation folds the ym null into a bare typed literal. CometLiteral admits
+-- YearMonthIntervalType literals (one of the gaps tracked in #5061), so it stays native.
 query
 SELECT abs(CAST(NULL AS INTERVAL YEAR TO MONTH))
 

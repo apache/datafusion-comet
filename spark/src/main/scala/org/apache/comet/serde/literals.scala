@@ -58,7 +58,11 @@ object CometLiteral extends CometExpressionSerde[Literal] with CometTypeShim wit
       Unsupported(Some(s"Unsupported literal value for data type ${expr.dataType}"))
     } else {
       expr.dataType match {
-        case _: YearMonthIntervalType | _: DayTimeIntervalType => Compatible(None)
+        // ANSI interval types are deliberately kept out of QueryPlanSerde.supportedDataType so
+        // they are not claimed as flowing through arbitrary native operators; literals are
+        // supported here.
+        case _: DayTimeIntervalType | _: YearMonthIntervalType =>
+          Compatible(None)
         case dt => Unsupported(Some(s"Unsupported data type $dt"))
       }
     }
@@ -166,7 +170,7 @@ object CometLiteral extends CometExpressionSerde[Literal] with CometTypeShim wit
             else null.asInstanceOf[Integer])
           listLiteralBuilder.addNullMask(casted != null)
         })
-      case IntegerType | DateType =>
+      case IntegerType | DateType | _: YearMonthIntervalType =>
         array.foreach(v => {
           val casted = v.asInstanceOf[Integer]
           listLiteralBuilder.addIntValues(casted)
@@ -241,6 +245,9 @@ object CometLiteral extends CometExpressionSerde[Literal] with CometTypeShim wit
         TimestampType | TimestampNTZType | FloatType | DoubleType | StringType | BinaryType =>
       true
     case _: DecimalType => true
+    // Matched as a type rather than a stable identifier: the start/end fields participate in
+    // `equals`, and every (start, end) pair is carried as the same month count.
+    case _: YearMonthIntervalType => true
     case ArrayType(elementType, _) => listLiteralElementSupported(elementType)
     case _ => false
   }
