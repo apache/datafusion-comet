@@ -277,6 +277,14 @@ object CometConf extends ShimCometConf {
     createExecEnabledConfig("emptyRelation", defaultValue = true)
   val COMET_EXEC_SAMPLE_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("sample", defaultValue = true)
+  val COMET_EXEC_MERGE_ROWS_ENABLED: ConfigEntry[Boolean] =
+    createExecEnabledConfig(
+      "mergeRows",
+      defaultValue = false,
+      notes = Some(
+        "Only takes effect on Spark 3.5 and 4.0. Spark 3.4 has no MergeRowsExec, and Spark " +
+          "4.1 and later keep MergeRowsExec on Spark so V2 writers can consume its row-level " +
+          "metrics (https://github.com/apache/datafusion-comet/issues/6606)"))
 
   val COMET_EXEC_IN_MEMORY_CACHE_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.inMemoryCache.enabled")

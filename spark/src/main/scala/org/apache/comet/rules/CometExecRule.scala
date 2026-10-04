@@ -60,7 +60,7 @@ import org.apache.comet.rules.CometExecRule.allExecs
 import org.apache.comet.serde._
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.operator._
-import org.apache.comet.shims.{CometTypeShim, ShimCometStreaming, ShimCometWindowGroupLimit, ShimSubqueryBroadcast}
+import org.apache.comet.shims.{CometTypeShim, ShimCometMergeRows, ShimCometStreaming, ShimCometWindowGroupLimit, ShimSubqueryBroadcast}
 
 object CometExecRule {
 
@@ -124,7 +124,11 @@ object CometExecRule {
       // EmptyRelationExec was introduced in Spark 4.0.
       ShimCometEmptyRelation.emptyRelationClass.map(_ -> CometEmptyRelationExec) ++
       // WindowGroupLimitExec exists only on Spark 3.5+; the shim returns None on 3.4.
-      ShimCometWindowGroupLimit.windowGroupLimitClass.map(_ -> CometWindowGroupLimitExec)
+      ShimCometWindowGroupLimit.windowGroupLimitClass.map(_ -> CometWindowGroupLimitExec) ++
+      // MergeRowsExec is registered for native execution on Spark 3.5 and 4.0 only. The shim is
+      // empty on 3.4, which has no MergeRowsExec, and on 4.1+, where Spark's V2 writer needs the
+      // concrete MergeRowsExec to build a MergeSummary.
+      ShimCometMergeRows.nativeExecs
 
   /**
    * Sinks that have a native plan of ScanExec.
