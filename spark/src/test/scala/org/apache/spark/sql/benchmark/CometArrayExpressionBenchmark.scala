@@ -182,7 +182,8 @@ object CometArrayExpressionBenchmark extends CometBenchmarkBase {
               CometConf.COMET_EXEC_ENABLED.key -> "true") {
               val plan = stripAQEPlan(spark.sql(query).queryExecution.executedPlan)
               val explain = new ExtendedExplainInfo()
-              if (expectNative || collation == "UTF8_BINARY") {
+              if ((expectNative && collation != "UTF8_BINARY_RTRIM") ||
+                collation == "UTF8_BINARY") {
                 require(
                   explain.getNativeExpressions(plan).contains(function) &&
                     !explain.getCodegenDispatchExpressions(plan).contains(function),
@@ -193,7 +194,7 @@ object CometArrayExpressionBenchmark extends CometBenchmarkBase {
                   s"$function did not use the dispatcher: $plan")
               }
             }
-            runExpressionBenchmark(s"$function $collation - $shape", values, query)
+            runExpressionBenchmark(s"$function $collation - $shape", values.toLong, query)
           }
         }
       }

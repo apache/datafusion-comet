@@ -66,10 +66,15 @@ SELECT id, array_min(array(
 FROM test_array_extrema_collation
 
 -- RTRIM ignores only trailing ASCII spaces and keeps the original winning value.
-query expect_native(array_min,array_max)
+-- Binary RTRIM retains dispatch until the native performance regression is resolved.
+query expect_dispatch(array_min,array_max)
 SELECT id,
        array_min(array(CAST(a AS STRING COLLATE UTF8_BINARY_RTRIM), CAST(b AS STRING COLLATE UTF8_BINARY_RTRIM))),
-       array_max(array(CAST(a AS STRING COLLATE UTF8_BINARY_RTRIM), CAST(b AS STRING COLLATE UTF8_BINARY_RTRIM))),
+       array_max(array(CAST(a AS STRING COLLATE UTF8_BINARY_RTRIM), CAST(b AS STRING COLLATE UTF8_BINARY_RTRIM)))
+FROM test_array_extrema_collation
+
+query expect_native(array_min,array_max)
+SELECT id,
        array_min(array(CAST(a AS STRING COLLATE UTF8_LCASE_RTRIM), CAST(b AS STRING COLLATE UTF8_LCASE_RTRIM))),
        array_max(array(CAST(a AS STRING COLLATE UTF8_LCASE_RTRIM), CAST(b AS STRING COLLATE UTF8_LCASE_RTRIM)))
 FROM test_array_extrema_collation

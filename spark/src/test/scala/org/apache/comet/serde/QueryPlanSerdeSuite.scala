@@ -39,9 +39,9 @@ class QueryPlanSerdeSuite extends AnyFunSuite {
             Seq(
               StructField(
                 "trimmed",
-                ArrayType(DataType.fromDDL("STRING COLLATE UTF8_BINARY_RTRIM"))),
+                ArrayType(DataType.fromDDL("STRING COLLATE UTF8_LCASE_RTRIM"))),
               StructField("binary", StringType))),
-          Seq("UTF8_BINARY_RTRIM", "UTF8_BINARY")))
+          Seq("UTF8_LCASE_RTRIM", "UTF8_BINARY")))
     } else {
       Seq.empty
     }

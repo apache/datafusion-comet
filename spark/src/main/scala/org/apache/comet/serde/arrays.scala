@@ -256,9 +256,12 @@ object CometArrayIntersect
 
 private object ArrayExtremaSupport extends CometTypeShim {
   val incompatReason: String =
-    "Array extrema support UTF8_BINARY and UTF8_LCASE collations, including RTRIM, natively; " +
+    "Array extrema support UTF8_BINARY, UTF8_LCASE, and UTF8_LCASE_RTRIM natively; " +
       "UTF8_LCASE requires Unicode 16 or 17. Other collations use binary ordering when opted in " +
       "(https://github.com/apache/datafusion-comet/issues/4496)."
+
+  val binaryRtrimReason: String =
+    "UTF8_BINARY_RTRIM array extrema use Spark's comparator."
 
   private def stringCollations(dt: DataType): Seq[String] = dt match {
     case stringType: StringType => Seq(stringCollationName(stringType))
@@ -275,7 +278,11 @@ private object ArrayExtremaSupport extends CometTypeShim {
   }
 
   def getSupportLevel(elementType: DataType): SupportLevel =
-    if (supportsCollations(stringCollations(elementType))) {
+    // Keep this path on the dispatcher until its native performance regression is resolved.
+    // Use Unsupported so allowIncompatible cannot silently change its comparison semantics.
+    if (stringCollations(elementType).contains("UTF8_BINARY_RTRIM")) {
+      Unsupported(Some(binaryRtrimReason))
+    } else if (supportsCollations(stringCollations(elementType))) {
       Compatible()
     } else {
       Incompatible(Some(incompatReason))
@@ -309,6 +316,8 @@ object CometArrayMax extends CometExpressionSerde[ArrayMax] with CodegenDispatch
 
   override def getIncompatibleReasons(): Seq[String] = Seq(ArrayExtremaSupport.incompatReason)
 
+  override def getUnsupportedReasons(): Seq[String] = Seq(ArrayExtremaSupport.binaryRtrimReason)
+
   override def getSupportLevel(expr: ArrayMax): SupportLevel =
     ArrayExtremaSupport.getSupportLevel(expr.dataType)
 
@@ -323,6 +332,8 @@ object CometArrayMin extends CometExpressionSerde[ArrayMin] with CodegenDispatch
   override def hasConditionalNativeDefault: Boolean = true
 
   override def getIncompatibleReasons(): Seq[String] = Seq(ArrayExtremaSupport.incompatReason)
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(ArrayExtremaSupport.binaryRtrimReason)
 
   override def getSupportLevel(expr: ArrayMin): SupportLevel =
     ArrayExtremaSupport.getSupportLevel(expr.dataType)
