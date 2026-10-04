@@ -39,9 +39,10 @@ import org.apache.hadoop.fs.{FileUtil, Path}
 import org.apache.parquet.bytes.BytesInput
 import org.apache.parquet.column.Encoding
 import org.apache.parquet.example.data.simple.{NanoTime, SimpleGroup}
-import org.apache.parquet.hadoop.ParquetFileWriter
+import org.apache.parquet.hadoop.{ParquetFileReader, ParquetFileWriter}
 import org.apache.parquet.hadoop.example.ExampleParquetWriter
 import org.apache.parquet.hadoop.metadata.CompressionCodecName
+import org.apache.parquet.hadoop.util.HadoopInputFile
 import org.apache.parquet.io.api.Binary
 import org.apache.parquet.schema.MessageTypeParser
 import org.apache.spark.SparkException
@@ -2999,6 +3000,54 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
             }
           }
         }
+      }
+    }
+  }
+
+  test("datetime rebase check applies the legacyINT96 marker to INT96 timestamps only") {
+    withTempPath { path =>
+      withSQLConf(
+        SQLConf.PARQUET_REBASE_MODE_IN_WRITE.key -> "CORRECTED",
+        SQLConf.PARQUET_INT96_REBASE_MODE_IN_WRITE.key -> "LEGACY",
+        SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> "INT96") {
+        sql("SELECT date'2000-01-01' AS d, timestamp'2000-01-01 00:00:00' AS ts")
+          .coalesce(1)
+          .write
+          .parquet(path.toString)
+      }
+      val file = path.listFiles().find(_.getName.endsWith(".parquet")).get
+      val inputFile =
+        HadoopInputFile.fromPath(new Path(file.toURI), spark.sessionState.newHadoopConf())
+      val reader = ParquetFileReader.open(inputFile)
+      val metadata =
+        try reader.getFooter.getFileMetaData.getKeyValueMetaData
+        finally reader.close()
+      assert(metadata.containsKey("org.apache.spark.legacyINT96"))
+      assert(!metadata.containsKey("org.apache.spark.legacyDateTime"))
+
+      val df = spark.read.parquet(path.toString)
+      val (_, datePlan) = checkSparkAnswer(df.select("d"))
+      assert(collect(datePlan) { case _: CometNativeScanExec => true }.nonEmpty)
+      checkSparkAnswerAndFallbackReason(
+        df.select("ts"),
+        "with org.apache.spark.legacyINT96 metadata")
+    }
+  }
+
+  test("datetime rebase check honors the datetimeRebaseMode read option") {
+    // ParquetOptions gives the read option precedence over the session read mode.
+    withTempDir { dir =>
+      val ancient = new Path(dir.toURI.toString, "ancient.parquet")
+      writeUnversioned(ancient, "int32 d(DATE)", Seq(-354285)) // 1000-01-01
+      withSQLConf(
+        SQLConf.PARQUET_REBASE_MODE_IN_READ.key -> "EXCEPTION",
+        SQLConf.PARQUET_INT96_REBASE_MODE_IN_READ.key -> "EXCEPTION") {
+        val (_, cometPlan) = checkSparkAnswer(
+          spark.read.option("datetimeRebaseMode", "CORRECTED").parquet(ancient.toString))
+        assert(collect(cometPlan) { case _: CometNativeScanExec => true }.nonEmpty)
+        // Without the option, the session mode applies and the ancient date needs Spark.
+        val plan = spark.read.parquet(ancient.toString).queryExecution.executedPlan
+        assert(collect(plan) { case _: CometNativeScanExec => true }.isEmpty)
       }
     }
   }
