@@ -20,6 +20,7 @@
 package org.apache.comet.rules
 
 import scala.collection.mutable.ListBuffer
+import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Divide, DoubleLiteral, EqualNullSafe, EqualTo, Expression, FloatLiteral, GreaterThan, GreaterThanOrEqual, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, NamedExpression, Remainder}
@@ -57,10 +58,20 @@ import org.apache.comet.CometConf.{COMET_SPARK_TO_ARROW_ENABLED, COMET_SPARK_TO_
 import org.apache.comet.CometSparkSessionExtensions._
 import org.apache.comet.rules.CometExecRule.allExecs
 import org.apache.comet.serde._
+import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.operator._
 import org.apache.comet.shims.{CometTypeShim, ShimCometStreaming, ShimCometWindowGroupLimit, ShimSubqueryBroadcast}
 
 object CometExecRule {
+
+  /**
+   * Whether `scan` reads a relation stored in Comet's cache format. Comet's serializer stores
+   * that format only for schemas it supports and delegates everything else to Spark's default
+   * cache format, which the native scan cannot read.
+   */
+  private[rules] def readsCometCacheFormat(scan: InMemoryTableScanExec): Boolean =
+    scan.relation.cacheBuilder.serializer.isInstanceOf[ArrowCachedBatchSerializer] &&
+      ArrowCachedBatchSerializer.supportsSchema(scan.relation.output)
 
   private[rules] def removePlaceholders(plan: SparkPlan): SparkPlan = plan.transformUp {
     // revertUnsafePartialAggregates re-runs transform over already wrapped query stages, which
@@ -78,6 +89,13 @@ object CometExecRule {
    */
   val COMET_UNSAFE_PARTIAL: TreeNodeTag[String] =
     TreeNodeTag[String]("comet.unsafePartialAgg")
+
+  /**
+   * Info message for a native operator that keeps a `Scan` over an input that now reads its
+   * shuffle directly, because its native plan's leaves do not line up with its inputs.
+   */
+  val STALE_SCAN_KEPT: String =
+    "Shuffle direct read not applied: the native plan's leaves do not match its inputs"
 
   /**
    * Fully native operators.
@@ -98,6 +116,7 @@ object CometExecRule {
       classOf[SortMergeJoinExec] -> CometSortMergeJoinExec,
       classOf[SortExec] -> CometSortExec,
       classOf[LocalTableScanExec] -> CometLocalTableScanExec,
+      classOf[RangeExec] -> CometRangeExec,
       classOf[InMemoryTableScanExec] -> CometInMemoryTableScanExec,
       classOf[SampleExec] -> CometSampleExec,
       classOf[WindowExec] -> CometWindowExec) ++
@@ -381,13 +400,15 @@ case class CometExecRule(session: SparkSession)
       case scan: InMemoryTableScanExec =>
         val serializer = scan.relation.cacheBuilder.serializer
         val usesCometCacheSerializer = serializer.isInstanceOf[ArrowCachedBatchSerializer]
-        // The serializer only stores Comet's Arrow format for schemas it supports and delegates
-        // everything else to Spark's default cache format, which the native scan cannot read.
-        val cometCacheFormat = usesCometCacheSerializer &&
-          ArrowCachedBatchSerializer.supportsSchema(scan.relation.output)
+        val cometCacheFormat = CometExecRule.readsCometCacheFormat(scan)
         val nativeCacheEnabled = CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.get(conf)
+        // Walks the cached plan, so it is lazy: only consulted once the native scan is otherwise
+        // possible. See CometInMemoryTableScanExec.recordsObservedMetrics.
+        lazy val recordsObservedMetrics =
+          CometInMemoryTableScanExec.recordsObservedMetrics(scan.relation)
+        val nativeScan = nativeCacheEnabled && cometCacheFormat && !recordsObservedMetrics
 
-        if (nativeCacheEnabled && cometCacheFormat) {
+        if (nativeScan) {
           convertToComet(scan, CometInMemoryTableScanExec).getOrElse(scan)
         } else {
           // The native cache scan is not available for this relation. Record why, then take the
@@ -398,7 +419,7 @@ case class CometExecRule(session: SparkSession)
               scan,
               s"Comet in-memory cache requires ${classOf[ArrowCachedBatchSerializer].getName} " +
                 s"but this relation was cached with ${serializer.getClass.getName}")
-          } else if (nativeCacheEnabled) {
+          } else if (nativeCacheEnabled && !cometCacheFormat) {
             val unsupported = scan.relation.output
               .filterNot(a => ArrowCachedBatchSerializer.supportsType(a.dataType))
               .map(a => s"${a.name}: ${a.dataType.simpleString}")
@@ -406,6 +427,12 @@ case class CometExecRule(session: SparkSession)
               scan,
               "Comet in-memory cache does not support the type of these cached columns, so the " +
                 s"relation was cached in Spark's default format: ${unsupported.mkString(", ")}")
+          } else if (nativeCacheEnabled && recordsObservedMetrics) {
+            withFallbackReason(
+              scan,
+              "Comet in-memory cache does not scan a relation whose cached plan records " +
+                "Dataset.observe metrics, because Spark collects those metrics only through " +
+                "InMemoryTableScanExec")
           } else if (usesCometCacheSerializer) {
             withFallbackReason(
               scan,
@@ -429,6 +456,19 @@ case class CometExecRule(session: SparkSession)
       // because it carries its scan's logical link. Wrap it again so re-planned parents convert.
       case c: CometSparkToColumnarExec =>
         convertToComet(c, CometScanWrapper).getOrElse(c)
+
+      // A leaf with its own enabled Comet operator, such as RangeExec, uses that operator. The
+      // Spark-to-Arrow conversion is the fallback for a leaf the operator declines.
+      case op: LeafExecNode if hasEnabledHandler(op) =>
+        convertToComet(op, allExecs(op.getClass))
+          .orElse {
+            if (shouldApplySparkToColumnar(conf, op)) {
+              convertToComet(op, CometSparkToColumnarExec)
+            } else {
+              None
+            }
+          }
+          .getOrElse(op)
 
       case op if shouldApplySparkToColumnar(conf, op) =>
         convertToComet(op, CometSparkToColumnarExec).getOrElse(op)
@@ -588,13 +628,95 @@ case class CometExecRule(session: SparkSession)
     }
 
     plan.transformUp { case op =>
-      val converted = convertNode(op)
+      val converted = convertNode(refreshStaleShuffleScans(op))
       // Replace SubqueryBroadcastExec with CometSubqueryBroadcastExec in DPP expressions
       // when the broadcast child has a Comet plan underneath. This enables exchange reuse
       // between the DPP subquery and the join's CometBroadcastExchangeExec because both
       // will have the same CometBroadcastExchangeExec type and canonical form.
       convertSubqueryBroadcasts(converted)
     }
+  }
+
+  /**
+   * AQE re-plans around a materialized stage by reusing the physical node linked to it, so a
+   * native operator that shares its logical node with a shuffle stage (the final aggregate of a
+   * two-phase aggregate) keeps the native plan it got while that input was a bare exchange, read
+   * through a plain `Scan`. Once the input is a sink that reads the shuffle directly, its
+   * `ShuffleScan` takes the place of the stale leaf. The leaf is patched in place because
+   * converting the node again from `originalPlan` would drop the stage's logical link that AQE
+   * relies on and re-run serde on a node that is already planned.
+   */
+  private def refreshStaleShuffleScans(op: SparkPlan): SparkPlan = op match {
+    case _ if scansChildAsSeparateBlock(op) => op
+    case native: CometNativeExec if native.children.nonEmpty =>
+      refreshedNativeOp(native) match {
+        case Some(newOp) =>
+          val refreshed = native.withRefreshedNativeOp(newOp)
+          // An operator that does not hold its native plan as a field cannot take a new one.
+          if (refreshed.nativeOp eq newOp) refreshed else op
+        case None => op
+      }
+    case _ => op
+  }
+
+  /**
+   * The native plan of `native` with each `Scan` leaf whose input is now a `ShuffleScan` of the
+   * same field types replaced by that `ShuffleScan`, or None if there is no such leaf or the plan
+   * children cannot be matched to the leaves. In the second case `native` gets an info message
+   * for extended explain, since the block still reads its shuffle through the JVM.
+   */
+  private def refreshedNativeOp(native: CometNativeExec): Option[Operator] = {
+    val children = native.children.collect { case child: CometNativeExec => child }
+    // Only a sink that reads a shuffle directly, or a native child that may hold one, can feed
+    // a `ShuffleScan`.
+    val mayFeedShuffleScan = children.exists {
+      case sink: CometSinkPlaceHolder => sink.nativeOp.hasShuffleScan
+      case _ => true
+    }
+    if (children.length != native.children.length || !mayFeedShuffleScan) return None
+    val leaves = CometExec.nativeLeaves(native.nativeOp)
+    if (!leaves.exists(_.hasScan)) return None
+
+    // Each plan child feeds a run of leaves, in order: a sink feeds one, and a native child
+    // feeds the leaves of its own native plan.
+    val current = children.flatMap {
+      case sink: CometSinkPlaceHolder => Seq(sink.nativeOp)
+      case child => CometExec.nativeLeaves(child.nativeOp)
+    }
+    def isStale(leaf: Operator, input: Operator): Boolean = leaf.hasScan && input.hasShuffleScan
+    val stale = leaves.zip(current).filter { case (leaf, input) => isStale(leaf, input) }
+    if (stale.isEmpty) return None
+    val isRefreshable = current.length == leaves.length &&
+      stale.forall { case (leaf, input) =>
+        leaf.getScan.getFieldsList == input.getShuffleScan.getFieldsList
+      }
+    if (!isRefreshable) {
+      withInfo(native, CometExecRule.STALE_SCAN_KEPT)
+      return None
+    }
+    val inputs = current.iterator
+    Some(mapLeaves(native.nativeOp) { leaf =>
+      val input = inputs.next()
+      if (isStale(leaf, input)) input else leaf
+    })
+  }
+
+  /** `op` with `f` applied to each childless operator, in `CometExec.nativeLeaves` order. */
+  private def mapLeaves(op: Operator)(f: Operator => Operator): Operator =
+    if (op.getChildrenCount == 0) {
+      f(op)
+    } else {
+      val children = op.getChildrenList.asScala.map(mapLeaves(_)(f))
+      op.toBuilder.clearChildren().addAllChildren(children.asJava).build()
+    }
+
+  /**
+   * Whether `op` is a writer whose native plan builds its own `Scan` over its child, so that the
+   * child runs as a separate native block instead of inside that plan.
+   */
+  private def scansChildAsSeparateBlock(op: SparkPlan): Boolean = op match {
+    case _: CometNativeWriteExec | _: CometIcebergWriteExec | _: CometWriteFilesExec => true
+    case _ => false
   }
 
   /**
@@ -745,6 +867,25 @@ case class CometExecRule(session: SparkSession)
     }
   }
 
+  /**
+   * A relation keeps the cache format it was stored in, since `spark.sql.cache.serializer` is
+   * static, so a plan that runs without Comet's native execution still reads relations cached in
+   * Comet's format. Spark's `InMemoryTableScanExec` reads that format more slowly than Spark's
+   * own (https://github.com/apache/datafusion-comet/issues/5485), and nothing else records a
+   * fallback reason in such a plan, so record one on each scan that does.
+   */
+  private def explainSparkReadsOfCometCache(plan: SparkPlan, cause: String): Unit =
+    plan.foreach {
+      case scan: InMemoryTableScanExec if CometExecRule.readsCometCacheFormat(scan) =>
+        val _ = withFallbackReason(
+          scan,
+          s"$cause, so Spark reads this relation from Comet's cache format, which is slower " +
+            "than reading Spark's own. Set " +
+            s"${CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key}=false when the application " +
+            "starts to cache in Spark's format instead.")
+      case _ =>
+    }
+
   override def apply(plan: SparkPlan): SparkPlan = {
     val newPlan = _apply(plan)
     if (showTransformations && !newPlan.fastEquals(plan)) {
@@ -758,13 +899,17 @@ case class CometExecRule(session: SparkSession)
 
   private def _apply(plan: SparkPlan): SparkPlan = {
     // We shouldn't transform Spark query plan if Comet is not loaded.
-    if (!isCometLoaded(conf)) return plan
+    if (!isCometLoaded(conf)) {
+      explainSparkReadsOfCometCache(plan, "Comet is disabled")
+      return plan
+    }
 
     // Comet does not support structured streaming. Fall back to Spark for any plan that
     // belongs to a streaming query (detected via StreamSourceAwareSparkPlan.getStream).
     if (ShimCometStreaming.isStreamingPlan(plan)) return plan
 
     if (!CometConf.COMET_EXEC_ENABLED.get(conf)) {
+      explainSparkReadsOfCometCache(plan, s"${CometConf.COMET_EXEC_ENABLED.key} is false")
       // Comet exec is disabled, but for Spark shuffle, we still can use Comet columnar shuffle
       if (isCometShuffleEnabled(conf)) {
         applyCometShuffle(plan)
@@ -889,8 +1034,7 @@ case class CometExecRule(session: SparkSession)
           // its child (e.g., CometNativeScanExec, or a CometProject over an AQEShuffleRead)
           // needs its own serialization. Reset the flag so children can start their own native
           // execution blocks.
-          if (op.isInstanceOf[CometNativeWriteExec] || op.isInstanceOf[CometIcebergWriteExec] ||
-            op.isInstanceOf[CometWriteFilesExec]) {
+          if (scansChildAsSeparateBlock(op)) {
             firstNativeOp = true
           }
 
@@ -1108,6 +1252,9 @@ case class CometExecRule(session: SparkSession)
       false
     }
   }
+
+  private def hasEnabledHandler(op: SparkPlan): Boolean =
+    allExecs.get(op.getClass).exists(_.enabledConfig.forall(_.get(op.conf)))
 
   private def shouldApplySparkToColumnar(conf: SQLConf, op: SparkPlan): Boolean = {
     // Only consider converting leaf nodes to columnar currently, so that all the following
