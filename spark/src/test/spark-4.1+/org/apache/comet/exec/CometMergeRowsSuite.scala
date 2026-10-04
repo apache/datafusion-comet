@@ -23,19 +23,18 @@ import scala.collection.mutable.ArrayBuffer
 
 import org.apache.spark.{CometListenerBusUtils, SparkConf}
 import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.comet.CometMergeRowsExec
 import org.apache.spark.sql.connector.catalog.InMemoryRowLevelOperationTableCatalog
 import org.apache.spark.sql.execution.QueryExecution
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.execution.datasources.v2.MergeRowsExec
 import org.apache.spark.sql.util.QueryExecutionListener
 
 import org.apache.comet.CometConf
 
 /**
- * Spark 4.1+ compatibility coverage for MergeRowsExec.
- *
- * Spark 4.1 introduced writer-side MergeSummary discovery that specifically looks for Spark's
- * concrete MergeRowsExec. Comet must therefore retain that JVM node until it can preserve the
- * summary-aware BatchWrite.commit contract end-to-end.
+ * Spark 4.1+ stock V2 writers build MergeSummary by locating the concrete Spark MergeRowsExec.
+ * Native MergeRows is therefore restored when the enclosing writer remains on Spark.
  */
 class CometMergeRowsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
@@ -49,7 +48,7 @@ class CometMergeRowsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       .set("spark.sql.shuffle.partitions", "4")
   }
 
-  test("Spark 4.1+ MERGE retains Spark MergeRowsExec for write-summary compatibility") {
+  test("Spark 4.1+ stock V2 writer retains Spark MergeRowsExec for MergeSummary") {
     val target = s"$catalog.default.rowlevel_target"
     val source = s"$catalog.default.rowlevel_source"
 
@@ -72,32 +71,30 @@ class CometMergeRowsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     try {
       withSQLConf(CometConf.COMET_EXEC_MERGE_ROWS_ENABLED.key -> "true") {
         sql(s"""MERGE INTO $target t USING $source s ON t.id = s.id
-             |WHEN MATCHED THEN UPDATE SET t.amount = s.amount
-             |WHEN NOT MATCHED THEN INSERT (id, amount) VALUES (s.id, s.amount)
-             |""".stripMargin)
+               |WHEN MATCHED THEN UPDATE SET t.amount = s.amount
+               |WHEN NOT MATCHED THEN INSERT (id, amount) VALUES (s.id, s.amount)
+               |""".stripMargin)
       }
       CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
 
       val executedPlans = captured.map(_.executedPlan)
       val sparkMergeRows = executedPlans.exists(plan =>
         find(plan) {
-          case node if node.getClass.getSimpleName == "MergeRowsExec" => true
+          case _: MergeRowsExec => true
           case _ => false
         }.nonEmpty)
       val cometMergeRows = executedPlans.exists(plan =>
         find(plan) {
-          case node if node.getClass.getSimpleName == "CometMergeRowsExec" => true
+          case _: CometMergeRowsExec => true
           case _ => false
         }.nonEmpty)
 
       assert(
         sparkMergeRows,
-        "Spark 4.1+ MERGE must retain the concrete Spark MergeRowsExec so the V2 writer can " +
-          "derive MergeSummary")
+        "Spark 4.1+ stock V2 writer must retain MergeRowsExec so it can derive MergeSummary")
       assert(
         !cometMergeRows,
-        "Spark 4.1+ must not replace MergeRowsExec until Comet preserves MergeSummary commit " +
-          "semantics")
+        "CometMergeRowsExec must not reach a stock Spark V2 writer that requires MergeRowsExec")
 
       val rows =
         sql(s"SELECT id, amount FROM $target ORDER BY id").collect().map(_.toString).toSeq

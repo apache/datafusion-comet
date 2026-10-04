@@ -32,4 +32,6 @@ import org.apache.comet.serde.operator.CometMergeRows
 object ShimCometMergeRows {
   val nativeExecs: Map[Class[_ <: SparkPlan], CometOperatorSerde[_]] =
     Map(classOf[MergeRowsExec] -> CometMergeRows)
+
+  def preserveV2WriteMergeSummary(plan: SparkPlan): SparkPlan = plan
 }
