@@ -71,12 +71,12 @@ the tables below and may be reconsidered based on demand:
 
 ## Datetime
 
-| Type               | Status | Notes                                                                                                                                                                    |
-| ------------------ | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `DateType`         | ✅     |                                                                                                                                                                          |
-| `TimestampType`    | ✅     |                                                                                                                                                                          |
-| `TimestampNTZType` | ✅     |                                                                                                                                                                          |
-| `TimeType`         | ⚠️     | Spark 4.1+. Native serialization is in place; some operators (sort, min/max) are still being wired up ([#4288](https://github.com/apache/datafusion-comet/issues/4288)). |
+| Type               | Status | Notes                                                                                                                                                                                                                   |
+| ------------------ | ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DateType`         | ✅     |                                                                                                                                                                                                                         |
+| `TimestampType`    | ✅     |                                                                                                                                                                                                                         |
+| `TimestampNTZType` | ✅     |                                                                                                                                                                                                                         |
+| `TimeType`         | ⚠️     | Spark 4.1+. Native serialization is in place. Parquet scans of `TIME` columns fall back, and some operators (sort, min/max) are still being wired up ([#4288](https://github.com/apache/datafusion-comet/issues/4288)). |
 
 ## Interval
 
