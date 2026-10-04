@@ -39,6 +39,7 @@ import org.apache.spark.sql.catalyst.expressions.{And, Attribute, AttributeRefer
 import org.apache.spark.sql.columnar.{CachedBatch, SimpleMetricsCachedBatch}
 import org.apache.spark.sql.comet.{CometBroadcastHashJoinExec, CometInMemoryTableScanExec, CometSortExec, CometSortMergeJoinExec}
 import org.apache.spark.sql.comet.execution.arrow.{ArrowCachedBatchSerializer, CometCachedBatchHelper}
+import org.apache.spark.sql.comet.execution.shuffle.CometCelebornShuffleManager
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.{FormattedMode, SortExec}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, QueryStageExec, ShuffleQueryStageExec}
@@ -51,7 +52,7 @@ import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 import org.apache.spark.storage.StorageLevel
 
-import org.apache.comet.{CometArrowAllocator, CometConf, ExtendedExplainInfo}
+import org.apache.comet.{CometArrowAllocator, CometConf, CometKryoRegistrator, ExtendedExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
 import org.apache.comet.vector.{CometPlainVector, CometVector}
 
@@ -1133,6 +1134,7 @@ class CometInMemoryCacheSuite extends CometTestBase {
 
     val defaultConf = new SparkConf()
       .set(CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key, "true")
+      .set("spark.shuffle.manager", shuffleManager)
     val defaultExtraConfs = new ju.HashMap[String, String]()
 
     // With no user serializer configured, the plugin should install Comet's
@@ -1144,6 +1146,7 @@ class CometInMemoryCacheSuite extends CometTestBase {
 
     val userConf = new SparkConf()
       .set(CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key, "true")
+      .set("spark.shuffle.manager", shuffleManager)
       .set(serializerKey, userSerializer)
     val userExtraConfs = new ju.HashMap[String, String]()
 
@@ -1155,20 +1158,25 @@ class CometInMemoryCacheSuite extends CometTestBase {
     assert(!userExtraConfs.containsKey(serializerKey))
   }
 
-  test("Comet plugin installs its cache serializer only if Comet can scan the cache natively") {
+  /** Whether the Comet plugin installs its cache serializer for an application's `settings`. */
+  private def installsCacheSerializer(settings: (String, String)*): Boolean = {
     val serializerKey = StaticSQLConf.SPARK_CACHE_SERIALIZER.key
+    val conf = new SparkConf().setAll(settings)
+    val extraConfs = new ju.HashMap[String, String]()
+    CometDriverPlugin.maybeSetCacheSerializer(conf, extraConfs)
+    assert(conf.contains(serializerKey) == extraConfs.containsKey(serializerKey))
+    extraConfs.containsKey(serializerKey)
+  }
 
-    def installed(settings: (String, String)*): Boolean = {
-      val conf = new SparkConf().setAll(settings)
-      val extraConfs = new ju.HashMap[String, String]()
-      CometDriverPlugin.maybeSetCacheSerializer(conf, extraConfs)
-      assert(conf.contains(serializerKey) == extraConfs.containsKey(serializerKey))
-      extraConfs.containsKey(serializerKey)
-    }
-
+  test("Comet plugin installs its cache serializer only if Comet can scan the cache natively") {
     val cometOn = CometConf.COMET_ENABLED.key -> "true"
     val execOn = CometConf.COMET_EXEC_ENABLED.key -> "true"
     val cacheOn = CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true"
+    // Without Comet's shuffle manager Comet disables itself, which the next test covers.
+    val cometShuffle = "spark.shuffle.manager" -> shuffleManager
+
+    def installed(settings: (String, String)*): Boolean =
+      installsCacheSerializer(cometShuffle +: settings: _*)
 
     assert(installed(cometOn, execOn, cacheOn))
     // An application that starts with Comet or its native execution off can never plan
@@ -1184,6 +1192,85 @@ class CometInMemoryCacheSuite extends CometTestBase {
       installed(cacheOn) ==
         (CometConf.COMET_ENABLED.defaultValue.get &&
           CometConf.COMET_EXEC_ENABLED.defaultValue.get))
+  }
+
+  test("Comet plugin keeps Spark's cache format where Comet disables itself or Kryo rejects it") {
+    val cometShuffle = "spark.shuffle.manager" -> shuffleManager
+
+    def installed(settings: (String, String)*): Boolean =
+      installsCacheSerializer(
+        Seq(
+          CometConf.COMET_ENABLED.key -> "true",
+          CometConf.COMET_EXEC_ENABLED.key -> "true",
+          CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true") ++ settings: _*)
+
+    assert(installed(cometShuffle))
+    // Comet shuffle is enabled by default, and Comet disables itself while it is unless the
+    // application runs one of Comet's shuffle managers.
+    assert(!installed())
+    assert(!installed("spark.shuffle.manager" -> "sort"))
+    assert(installed("spark.shuffle.manager" -> classOf[CometCelebornShuffleManager].getName))
+    // Without Comet shuffle, under the key or its deprecated name, the shuffle manager does not
+    // matter.
+    assert(installed(CometConf.COMET_SHUFFLE_ENABLED.key -> "false"))
+    assert(installed("spark.comet.exec.shuffle.enabled" -> "false"))
+
+    // Kryo with registration required rejects Comet's cached batch unless something registered
+    // it: CometKryoRegistrator, on its own or beside a registrator of the application's, or the
+    // application's own registrations.
+    val kryo = "spark.serializer" -> "org.apache.spark.serializer.KryoSerializer"
+    val registrationRequired = "spark.kryo.registrationRequired" -> "true"
+    val registrator = "spark.kryo.registrator"
+    val sparkOnly = classOf[SparkCachedBatchKryoRegistrator].getName
+    assert(!installed(cometShuffle, kryo, registrationRequired))
+    assert(!installed(cometShuffle, kryo, registrationRequired, registrator -> sparkOnly))
+    assert(
+      installed(
+        cometShuffle,
+        kryo,
+        registrationRequired,
+        registrator -> s"$sparkOnly, ${CometKryoRegistrator.CLASS_NAME}"))
+    assert(
+      installed(
+        cometShuffle,
+        kryo,
+        registrationRequired,
+        "spark.kryo.classesToRegister" -> ArrowCachedBatchSerializer.cachedBatchClass.getName))
+    // A registrator that cannot be loaded leaves only spark.kryo.registrator to go by.
+    assert(!installed(cometShuffle, kryo, registrationRequired, registrator -> "com.example.R"))
+    assert(
+      installed(
+        cometShuffle,
+        kryo,
+        registrationRequired,
+        registrator -> s"com.example.R, ${CometKryoRegistrator.CLASS_NAME}"))
+    // Without registrationRequired, Kryo writes the class name of anything unregistered instead.
+    assert(installed(cometShuffle, kryo))
+  }
+
+  test("Comet plugin finds the Kryo registrations Comet needs however they were made") {
+    def unregistered(settings: (String, String)*): Seq[Class[_]] =
+      CometDriverPlugin.unregisteredKryoClasses(new SparkConf().setAll(settings))
+
+    val kryo = "spark.serializer" -> "org.apache.spark.serializer.KryoSerializer"
+    val registrationRequired = "spark.kryo.registrationRequired" -> "true"
+    assert(unregistered().isEmpty)
+    assert(unregistered(kryo).isEmpty)
+    assert(
+      unregistered(kryo, registrationRequired).contains(
+        ArrowCachedBatchSerializer.cachedBatchClass))
+    assert(
+      unregistered(
+        kryo,
+        registrationRequired,
+        "spark.kryo.registrator" -> CometKryoRegistrator.CLASS_NAME).isEmpty)
+    assert(
+      unregistered(
+        kryo,
+        registrationRequired,
+        "spark.kryo.classesToRegister" -> CometKryoRegistrator.classes
+          .map(_.getName)
+          .mkString(",")).isEmpty)
   }
 
   test("Comet in-memory cache supports empty projection scan") {

@@ -740,6 +740,11 @@ object ArrowCachedBatchSerializer {
     schema.forall(a => supportsType(a.dataType))
 
   /**
+   * The class of Comet's cached batch, which Kryo has to have registered to store this format.
+   */
+  private[apache] val cachedBatchClass: Class[_] = classOf[CometCachedBatch]
+
+  /**
    * The classes a `CometCachedBatch` adds on top of [[org.apache.comet.CometKryoRegistrator]]'s
    * shared Arrow-bytes classes.
    *
