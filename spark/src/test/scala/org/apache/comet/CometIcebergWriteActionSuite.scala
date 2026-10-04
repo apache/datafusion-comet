@@ -2115,6 +2115,70 @@ class CometIcebergWriteActionSuite
     }
   }
 
+  test("native acceleration: a post-native handoff failure retries once") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { warehouseDir =>
+      val table = "handoff_retry_target"
+      createTable(warehouseDir, table, partitionSpec = "")
+      val session = spark
+      import session.implicits._
+      (1 to 1000)
+        .map(i => (i, s"r$i", i.toDouble))
+        .toDF("id", "region", "amount")
+        .coalesce(1)
+        .createOrReplaceTempView("handoff_retry_src")
+
+      val handoffs = new AtomicReference[Vector[(Int, Vector[String])]](Vector.empty)
+      val snapshot = withNativeEnabled {
+        CometIcebergWriteExec.withPostNativeHandoffFailpoint { locations =>
+          val attempt = TaskContext.get().attemptNumber()
+          handoffs.getAndUpdate(_ :+ ((attempt, locations.toVector)))
+          if (attempt == 0) throw new RuntimeException("first handoff fails")
+        } {
+          captureWrite(table) {
+            spark.sql(s"INSERT INTO $catalog.$ns.$table " +
+              "SELECT id, region, amount FROM handoff_retry_src")
+          }
+        }
+      }
+      assert(snapshot.snapshotDelta == 1L, s"expected one snapshot, got $snapshot")
+      assert(
+        snapshot.plans.exists(p =>
+          collectWithSubqueries(p) { case w: CometIcebergWriteExec => w }.nonEmpty),
+        s"retry did not run the native writer: ${snapshot.plans.mkString("\n--\n")}")
+      val attempts = handoffs.get()
+      assert(
+        attempts.map(_._1) == Vector(0, 1),
+        s"expected one failed attempt and retry: $attempts")
+      assert(attempts.forall(_._2.nonEmpty), s"native handoff reported no files: $attempts")
+      val root = dataDir(table).toPath.toAbsolutePath
+      def relativePath(location: String): String = {
+        val uri = new java.net.URI(location)
+        val file = if (uri.getScheme == null) new File(location) else new File(uri)
+        root.relativize(file.toPath.toAbsolutePath).toString
+      }
+      val failedPaths = attempts.head._2.map(relativePath).toSet
+      val winnerPaths = attempts.last._2.map(relativePath).toSet
+      assert(
+        (failedPaths intersect winnerPaths).isEmpty,
+        "retry reused failed attempt file names")
+      val referenced = spark
+        .sql(s"SELECT file_path FROM $catalog.$ns.$table.files")
+        .collect()
+        .map(row => relativePath(row.getString(0)))
+        .toSet
+      val physical = parquetFiles(root.toFile)
+      assert(referenced == winnerPaths, s"manifest differs from retry files: $referenced")
+      assert(
+        physical == referenced,
+        s"orphan or missing files: ${physical -- referenced}, ${referenced -- physical}")
+      assert(
+        (failedPaths intersect physical).isEmpty,
+        s"failed attempt files survived: $failedPaths")
+      assertRows(table, expectedIds = 1 to 1000)
+    }
+  }
+
   test("native acceleration: a mid-write failure retries without orphan files") {
     assumeNativeAcceleration()
     withIcebergCatalog { warehouseDir =>
