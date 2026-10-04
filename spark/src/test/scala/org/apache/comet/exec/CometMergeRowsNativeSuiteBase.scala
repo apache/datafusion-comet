@@ -104,9 +104,7 @@ abstract class CometMergeRowsNativeSuiteBase extends CometTestBase with Adaptive
     try {
       resetTables()
       captured.clear()
-      withSQLConf(
-        CometConf.COMET_ENABLED.key -> "true",
-        CometConf.COMET_EXEC_MERGE_ROWS_ENABLED.key -> "true") {
+      withSQLConf(CometConf.COMET_EXEC_MERGE_ROWS_ENABLED.key -> "true") {
         sql(mergeSql)
       }
       CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
@@ -167,9 +165,7 @@ abstract class CometMergeRowsNativeSuiteBase extends CometTestBase with Adaptive
     spark.listenerManager.register(listener)
     var cometEx: Throwable = null
     try {
-      withSQLConf(
-        CometConf.COMET_ENABLED.key -> "true",
-        CometConf.COMET_EXEC_MERGE_ROWS_ENABLED.key -> "true") {
+      withSQLConf(CometConf.COMET_EXEC_MERGE_ROWS_ENABLED.key -> "true") {
         cometEx = intercept[Exception](sql(mergeSql).collect())
       }
       CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
@@ -244,9 +240,7 @@ abstract class CometMergeRowsNativeSuiteBase extends CometTestBase with Adaptive
     }
     spark.listenerManager.register(listener)
     try {
-      withSQLConf(
-        CometConf.COMET_ENABLED.key -> "true",
-        CometConf.COMET_EXEC_MERGE_ROWS_ENABLED.key -> nativeMerge.toString) {
+      withSQLConf(CometConf.COMET_EXEC_MERGE_ROWS_ENABLED.key -> nativeMerge.toString) {
         sql(mergeSql)
       }
       CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)

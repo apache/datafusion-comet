@@ -125,6 +125,13 @@ Spark 4.1+ intentionally falls back to Spark even when that flag is enabled. Sta
 `BatchWrite.commit` overload. Replacing the node with `CometMergeRowsExec` would make summary
 discovery fail and silently switch the data source to the legacy summary-less commit overload.
 Comet will keep Spark 4.1+ `MERGE` on the JVM until it can preserve that writer contract end-to-end.
+See [#6606](https://github.com/apache/datafusion-comet/issues/6606).
+
+**Cardinality validation memory use can exceed Spark's:** native MERGE cardinality validation
+currently stores matched target row IDs in an unspillable hash set. For MERGEs with many matched
+rows per task, this can use more memory than Spark's compressed bitmap and may reach the native
+memory limit earlier than Spark. See
+[#6608](https://github.com/apache/datafusion-comet/issues/6608).
 
 **Undeclared physical output order can differ from Spark:** native execution is set-at-a-time. Within
 an input batch it emits rows grouped by the MERGE instruction that produced them, and it processes

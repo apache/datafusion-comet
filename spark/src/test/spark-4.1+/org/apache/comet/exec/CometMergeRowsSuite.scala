@@ -70,9 +70,7 @@ class CometMergeRowsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
     spark.listenerManager.register(listener)
     try {
-      withSQLConf(
-        CometConf.COMET_ENABLED.key -> "true",
-        CometConf.COMET_EXEC_MERGE_ROWS_ENABLED.key -> "true") {
+      withSQLConf(CometConf.COMET_EXEC_MERGE_ROWS_ENABLED.key -> "true") {
         sql(s"""MERGE INTO $target t USING $source s ON t.id = s.id
              |WHEN MATCHED THEN UPDATE SET t.amount = s.amount
              |WHEN NOT MATCHED THEN INSERT (id, amount) VALUES (s.id, s.amount)

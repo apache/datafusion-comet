@@ -282,8 +282,9 @@ object CometConf extends ShimCometConf {
       "mergeRows",
       defaultValue = false,
       notes = Some(
-        "Ignored on Spark 4.1 and later, where MergeRowsExec remains on Spark so V2 writers " +
-          "can consume its row-level metrics"))
+        "Only takes effect on Spark 3.5 and 4.0. Spark 3.4 has no MergeRowsExec, and Spark " +
+          "4.1 and later keep MergeRowsExec on Spark so V2 writers can consume its row-level " +
+          "metrics (https://github.com/apache/datafusion-comet/issues/6606)"))
 
   val COMET_EXEC_IN_MEMORY_CACHE_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.inMemoryCache.enabled")

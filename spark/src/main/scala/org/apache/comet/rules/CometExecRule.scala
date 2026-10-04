@@ -115,7 +115,9 @@ object CometExecRule {
       ShimCometEmptyRelation.emptyRelationClass.map(_ -> CometEmptyRelationExec) ++
       // WindowGroupLimitExec exists only on Spark 3.5+; the shim returns None on 3.4.
       ShimCometWindowGroupLimit.windowGroupLimitClass.map(_ -> CometWindowGroupLimitExec) ++
-      // MergeRowsExec exists only on Spark 3.5+; the shim is empty on 3.4.
+      // MergeRowsExec is registered for native execution on Spark 3.5 and 4.0 only. The shim is
+      // empty on 3.4, which has no MergeRowsExec, and on 4.1+, where Spark's V2 writer needs the
+      // concrete MergeRowsExec to build a MergeSummary.
       ShimCometMergeRows.nativeExecs
 
   /**
