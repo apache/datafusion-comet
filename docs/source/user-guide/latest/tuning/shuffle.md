@@ -70,9 +70,9 @@ Setting `spark.comet.convert.shuffleInput.enabled=true` makes such a shuffle use
 the child's rows to Arrow, as the `spark.comet.convert.*` settings do for Spark scans, and shuffles the batches
 natively, which is usually faster than columnar shuffle. This applies only where native shuffle supports the
 partitioning and Comet can convert all of the child's columns, which rules out arrays and maps other than
-`array<string>` and `map<string,string>`. A shuffle that hashes a decimal wider than 18 digits stays on columnar shuffle,
-so that it partitions rows as Spark does. The converted batches are allocated on the JVM outside Comet's memory pools.
-The setting is disabled by default.
+`array<string>` and `map<string,string>`. A shuffle that hashes a string or a decimal wider than 18 digits stays on
+columnar shuffle, so that it partitions rows as Spark does. The converted batches are allocated on the JVM outside
+Comet's memory pools. The setting is disabled by default.
 
 ### Automatic Revert to Spark Shuffle
 

@@ -547,22 +547,30 @@ object CometShuffleExchangeExec
     !stageContainsDPPScan(s) &&
     CometSparkToColumnarExec.isSchemaSupported(s.child.schema, ListBuffer.empty) &&
     nativeShuffleFailureReasons(s).isEmpty &&
-    !hashesWideDecimal(s)
+    !hashesDifferentlyFromSpark(s)
   }
 
   /**
-   * Whether the shuffle hashes a decimal wider than 18 digits into more than one partition.
-   * Native shuffle hashes those differently from Spark's partitioner, so it must not take over
-   * such a shuffle from the JVM columnar shuffle: a join with an input that is still partitioned
-   * by Spark would put matching keys in different partitions. TODO: remove once native hashing
-   * matches Spark for wide decimals (#5994).
+   * Whether the shuffle hashes into more than one partition a key that native shuffle, reading
+   * converted rows, may put in a different partition from Spark's partitioner. Native shuffle
+   * must not take over such a shuffle from the JVM columnar shuffle: a join with an input that is
+   * still partitioned by Spark would put matching keys in different partitions. The keys are:
+   *
+   *   - A decimal wider than 18 digits, which native shuffle hashes differently (#5994).
+   *   - A string. Spark hashes the string's bytes as they are, but the import of the converted
+   *     batch into native replaces invalid UTF-8 before native shuffle hashes it.
+   *
+   * TODO: allow wide decimals once native hashing matches Spark for them.
    */
-  private def hashesWideDecimal(s: ShuffleExchangeExec): Boolean = s.outputPartitioning match {
-    case HashPartitioning(expressions, numPartitions) =>
-      numPartitions > 1 &&
-      expressions.exists(_.dataType.existsRecursively(DecimalType.isByteArrayDecimalType))
-    case _ => false
-  }
+  private def hashesDifferentlyFromSpark(s: ShuffleExchangeExec): Boolean =
+    s.outputPartitioning match {
+      case HashPartitioning(expressions, numPartitions) =>
+        numPartitions > 1 && expressions.exists(_.dataType.existsRecursively {
+          case _: StringType => true
+          case dt => DecimalType.isByteArrayDecimalType(dt)
+        })
+      case _ => false
+    }
 
   /**
    * Reasons the native shuffle path cannot handle this shuffle. Empty means native is supported.

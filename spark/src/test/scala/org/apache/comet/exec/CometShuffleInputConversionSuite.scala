@@ -23,9 +23,9 @@ import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.comet.CometSparkToColumnarExec
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, ColumnarToRowTransition, SparkPlan}
-import org.apache.spark.sql.functions.{avg, col, count, length, max, min, size, sum}
+import org.apache.spark.sql.functions.{array, avg, col, count, length, max, min, size, sum}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, DataTypes, DecimalType, IntegerType, LongType, StructType}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, DataTypes, DecimalType, IntegerType, LongType, StringType, StructType}
 
 import org.apache.comet.{CometConf, ExtendedExplainInfo}
 
@@ -145,17 +145,17 @@ class CometShuffleInputConversionSuite extends CometTestBase {
           val ds = spark.sql("SELECT _1 AS a, _2 AS b FROM tbl").as[ShuffleInputRec]
           // The shuffle reads the typed operation's SerializeFromObject.
           val (_, repartitioned) = checkSparkAnswer(
-            ds.map(r => ShuffleInputRec(r.a + 1, r.b))
-              .repartition(7, col("b"))
-              .groupBy("b")
-              .agg(sum("a")))
+            ds.map(r => ShuffleInputRec(r.a % 13, r.b))
+              .repartition(7, col("a"))
+              .groupBy("a")
+              .agg(count("b")))
           assert(convertedShuffles(repartitioned).length == 1, s"AQE $aqe:\n$repartitioned")
           assertRowOperatorsReadThroughTransitions(repartitioned)
           // The shuffle reads a Spark partial aggregate over the typed operation. The final
           // aggregate stays on Spark too, so the shuffle would go back to Spark's own.
           withSQLConf(CometConf.COMET_SHUFFLE_REVERT_REDUNDANT_COLUMNAR_ENABLED.key -> "false") {
             val (_, aggregated) =
-              checkSparkAnswer(ds.map(r => ShuffleInputRec(r.a * 2, r.b)).groupBy("b").count())
+              checkSparkAnswer(ds.map(r => ShuffleInputRec(r.a % 7, r.b)).groupBy("a").count())
             assert(convertedShuffles(aggregated).length == 1, s"AQE $aqe:\n$aggregated")
             assertRowOperatorsReadThroughTransitions(aggregated)
           }
@@ -208,6 +208,31 @@ class CometShuffleInputConversionSuite extends CometTestBase {
       SQLConf.SHUFFLE_PARTITIONS.key -> "10") {
       val left = rowsDf(100).select(col("k").cast(DecimalType(38, 0)).as("lk"), col("l"))
       val right = arraysDf().select(col("k").cast(DecimalType(38, 0)).as("rk"), col("xs"))
+      val df = left.join(right, col("lk") === col("rk"))
+      val (_, plan) = checkSparkAnswer(df)
+      assert(conversions(plan).isEmpty, plan)
+      checkCometExchange(df, 2, native = false)
+    }
+  }
+
+  convertTest("a shuffle that hashes a string stays on the JVM columnar shuffle") {
+    // Spark's partitioner hashes a string's bytes as they are, but native shuffle hashes them
+    // after the import into native has replaced invalid UTF-8. The right input, with its
+    // array<int> column, stays on the JVM columnar shuffle, so the left one has to as well, or
+    // matching keys with invalid UTF-8 land in different partitions. Both shuffles write the rows
+    // with invalid UTF-8 replaced, so the four keys stay apart only because they hash to four
+    // different partitions.
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "10") {
+      val schema = new StructType().add("b", BinaryType).add("v", LongType)
+      val data = (0 until 40).map(i => Row(Array((0x80 + i % 4).toByte), i.toLong))
+      val keys = spark.createDataFrame(spark.sparkContext.parallelize(data, 4), schema)
+      val left = keys.select(col("b").cast(StringType).as("lk"), col("v"))
+      val right = keys.select(
+        col("b").cast(StringType).as("rk"),
+        array(col("v").cast(IntegerType)).as("xs"))
       val df = left.join(right, col("lk") === col("rk"))
       val (_, plan) = checkSparkAnswer(df)
       assert(conversions(plan).isEmpty, plan)

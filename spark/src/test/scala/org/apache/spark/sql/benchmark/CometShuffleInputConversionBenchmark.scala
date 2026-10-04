@@ -42,9 +42,10 @@ case class ShuffleInputBenchRec(a: Long, b: String)
  *   - Comet, converted: `spark.comet.convert.shuffleInput.enabled`, which converts the rows with
  *     `CometSparkToColumnarExec` and uses native shuffle.
  *
- * Each case hash-partitions its rows into 200 partitions and aggregates them. Every arm's result
- * and plan are checked before it is timed, and the Comet arm runs again at the end of each case
- * to show the noise. To run this benchmark:
+ * Each case hash-partitions its rows into 200 partitions and aggregates them. The keys are
+ * numbers, because the conversion leaves a shuffle that hashes a string on the JVM columnar
+ * shuffle. Every arm's result and plan are checked before it is timed, and the Comet arm runs
+ * again at the end of each case to show the noise. To run this benchmark:
  * {{{
  *   SPARK_GENERATE_BENCHMARK_FILES=1 make benchmark-org.apache.spark.sql.benchmark.CometShuffleInputConversionBenchmark
  * }}}
@@ -136,10 +137,10 @@ object CometShuffleInputConversionBenchmark extends CometBenchmarkBase {
           .table("parquetV1Table")
           .select(col("id").as("a"), col("key").as("b"))
           .as[ShuffleInputBenchRec]
-          .map(r => ShuffleInputBenchRec(r.a + 1, r.b))
-          .repartition(numPartitions, col("b"))
-          .groupBy("b")
-          .agg(sum("a").as("s")))))
+          .map(r => ShuffleInputBenchRec(r.a % 1000, r.b))
+          .repartition(numPartitions, col("a"))
+          .groupBy("a")
+          .agg(sum(length(col("b"))).as("s")))))
 
   private def runArm(arm: Arm, query: () => DataFrame): (Seq[Row], SparkPlan) = {
     var result: (Seq[Row], SparkPlan) = null

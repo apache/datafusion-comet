@@ -210,9 +210,9 @@ object CometConf extends ShimCometConf {
         "When enabled, a shuffle that would use Comet's JVM columnar shuffle because its input " +
           "comes from a Spark operator converts that input to Arrow format and uses Comet " +
           "native shuffle instead. This applies only where native shuffle supports the " +
-          "partitioning and the input's columns. A shuffle that hashes a decimal wider than 18 " +
-          "digits stays on the JVM columnar shuffle, because native shuffle does not hash " +
-          "those as Spark does.")
+          "partitioning and the input's columns. A shuffle that hashes a string or a decimal " +
+          "wider than 18 digits stays on the JVM columnar shuffle, so that it partitions rows " +
+          "as Spark does.")
       .booleanConf
       .createWithDefault(false)
 
