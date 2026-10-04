@@ -205,8 +205,7 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
 
   /**
    * Allocate an Arrow output vector from a pre-built `Field`. Forwards to
-   * [[CometBatchKernelCodegenOutput.allocateOutput]]. The default value of `allocator` is the
-   * process-wide [[org.apache.comet.CometArrowAllocator]].
+   * [[CometBatchKernelCodegenOutput.allocateOutput]].
    */
   def allocateOutput(
       field: Field,

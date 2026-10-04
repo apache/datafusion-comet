@@ -142,17 +142,12 @@ private[codegen] object CometBatchKernelCodegenOutput extends CometTypeShim {
   }
 
   /**
-   * StructVector creates its writer in a field initializer. The writer creates and allocates a
-   * child vector for each child of `getField`. initializeChildrenFromFields replaces these
-   * children, but it does not close them. Thus, this class gives the StructVector constructor a
-   * field without children. `getField` returns `exportField` only after
-   * initializeChildrenFromFields. The writer creates no child vectors, and the vector owns all of
-   * the memory that it allocates.
+   * StructVector gets a field without children, so its writer creates no children that
+   * initializeChildrenFromFields then drops. `getField` returns `exportField` after that call.
    */
   private final class RenamedStructVector(exportField: Field, allocator: BufferAllocator)
       extends StructVector(exportField.getName, allocator, exportField.getFieldType, null) {
-    // The StructVector constructor runs before this class initializes its fields. Thus, this
-    // field is false when the writer reads getField.
+    // False while the StructVector constructor runs.
     private var childrenInitialized = false
 
     override def initializeChildrenFromFields(children: java.util.List[Field]): Unit = {
