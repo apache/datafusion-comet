@@ -289,6 +289,7 @@ jobs:
               org.apache.comet.GenerateDocsSuite
               org.apache.comet.CometSqlFileTestSuite
               org.apache.comet.SqlFileTestParserSuite
+              org.apache.comet.CometAnswerToleranceSuite
               org.apache.comet.CometExpressionCoverageSuite
               org.apache.comet.CometVariantTypeSuite
               org.apache.comet.CometHashExpressionSuite

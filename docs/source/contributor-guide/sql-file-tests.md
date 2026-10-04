@@ -176,20 +176,26 @@ SELECT some_expression(v) FROM test_table
 
 #### `query tolerance=<value>`
 
-Checks results with a numeric tolerance. Useful for floating-point functions where small
-differences are acceptable.
+Checks results like the default mode, except that top-level `float` and `double` values match
+when they are within the given absolute tolerance. Useful for floating-point functions where small
+differences are acceptable. The tolerance must be greater than zero and at most `1e-6`.
 
-The comparison ignores the sign of zero (`+0.0` matches `-0.0`) and the sign of infinity
-(`+Infinity` matches `-Infinity`). Keep tolerance for ordinary values and add a plain
-`query` for cases whose expected result is signed zero or signed infinity.
+NaN matches only NaN, and an infinity matches only the infinity of the same sign. The comparison
+ignores the sign of zero (`+0.0` matches `-0.0`), so keep tolerance for ordinary values and add a
+plain `query` for cases whose expected result is signed zero. Values nested inside arrays, structs
+and maps are compared exactly.
+
+As in the default mode, both results are sorted before they are compared unless the query has an
+`ORDER BY`. Floating-point values sort by value, so two results that match within the tolerance
+end up in the same position.
 
 ```sql
-query tolerance=0.0001
+query tolerance=1e-6
 SELECT cos(v) FROM test_trig
 
--- csc(-0.0) == -Infinity; a tolerance check would also accept +Infinity
+-- tan(-0.0) == -0.0; a tolerance check would also accept +0.0
 query
-SELECT csc(double('-0.0'))
+SELECT tan(double('-0.0'))
 ```
 
 #### `query expect_fallback(<reason>)`
@@ -365,8 +371,8 @@ common ones include:
   equal, so `sort_array(...)` is not a unique projection when both signs are present
   (the SQL test comparator distinguishes the bits). Prefer a sign-aware form such as
   `sort_array(transform(arr, x -> cast(x AS string)))`. A `query tolerance=...` check
-  likewise treats the two zero signs as equal, and `+Infinity` / `-Infinity` as equal,
-  so signed-zero and signed-infinity results need a separate plain `query`.
+  likewise treats the two zero signs as equal, so signed-zero results need a separate plain
+  `query`.
 - **Special characters and multibyte UTF-8** -- for string functions (e.g. `'é'`, `'中文'`,
   `'\t'`)
 - **Empty arrays/maps** -- for collection functions

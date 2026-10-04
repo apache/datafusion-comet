@@ -25,7 +25,7 @@ query tolerance=1e-6
 SELECT csc(d) FROM test_csc
 
 -- signed-zero: exact comparison so csc(-0.0) == -Infinity is distinguished
--- from +Infinity (tolerance only checks isInfinity).
+-- from +Infinity.
 query
 SELECT csc(d) FROM test_csc WHERE d = 0.0
 
