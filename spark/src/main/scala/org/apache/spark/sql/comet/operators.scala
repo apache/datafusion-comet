@@ -30,7 +30,7 @@ import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSeq, AttributeSet, BloomFilterMightContain, CodegenObjectFactoryMode, Expression, ExpressionSet, Generator, LeafExpression, Literal, NamedExpression, PrettyAttribute, SortOrder, XXH64}
+import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSeq, AttributeSet, CodegenObjectFactoryMode, Expression, ExpressionSet, Generator, LeafExpression, Literal, NamedExpression, SortOrder, XXH64}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, CollectList, CollectSet, Final, ImperativeAggregate, Mode, Partial, PartialMerge, Percentile, Sum}
 import org.apache.spark.sql.catalyst.expressions.codegen.CodegenFallback
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
@@ -1476,16 +1476,8 @@ case class CometFilterExec(
   override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
     this.copy(child = newChild)
 
-  // Spark's binary Literal.toString hex-encodes the entire value. Replace Bloom bytes before
-  // rendering UI/explain strings, without evaluating subqueries or changing the executable
-  // condition. PrettyAttribute is only a display placeholder and must never reach native serde.
-  private def conditionForDisplay: Expression = condition.transform {
-    case bloom: BloomFilterMightContain =>
-      bloom.copy(bloomFilterExpression = bloom.bloomFilterExpression.transform {
-        case Literal(bytes: Array[Byte], BinaryType) =>
-          PrettyAttribute(s"<bloom: ${bytes.length} bytes>", BinaryType)
-      })
-  }
+  private def conditionForDisplay: Expression =
+    CometExpressionDisplay.summarizeBloomLiterals(condition)
 
   override def stringArgs: Iterator[Any] =
     Iterator(output, conditionForDisplay, child)
