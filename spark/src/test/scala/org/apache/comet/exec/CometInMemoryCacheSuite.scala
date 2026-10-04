@@ -41,7 +41,7 @@ import org.apache.spark.sql.comet.{CometBroadcastHashJoinExec, CometInMemoryTabl
 import org.apache.spark.sql.comet.execution.arrow.{ArrowCachedBatchSerializer, CometCachedBatchHelper}
 import org.apache.spark.sql.comet.execution.shuffle.CometCelebornShuffleManager
 import org.apache.spark.sql.comet.util.Utils
-import org.apache.spark.sql.execution.{FormattedMode, SortExec}
+import org.apache.spark.sql.execution.{CometSparkPlanInfoHelper, FormattedMode, SortExec, SparkPlanInfo}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, QueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.columnar.{CometInMemoryRelationHelper, InMemoryRelation, InMemoryTableScanExec}
 import org.apache.spark.sql.execution.exchange.{Exchange, ReusedExchangeExec, ShuffleExchangeLike}
@@ -424,6 +424,50 @@ class CometInMemoryCacheSuite extends CometTestBase {
             assert(cachedReasons.intersect(reasons).isEmpty, reasons)
             val verbose = info.generateVerboseInfo(plan)
             assert(!verbose.contains("InMemoryRelation"), verbose)
+          }
+        }
+      }
+    }
+  }
+
+  test("the SQL tab and event log draw the cached plan below CometInMemoryTableScan") {
+    // Spark builds both from SparkPlanInfo, which gives its own cache scan the cached plan as a
+    // child. See https://github.com/apache/datafusion-comet/issues/6463.
+    def scanInfos(info: SparkPlanInfo): Seq[SparkPlanInfo] =
+      (if (info.nodeName == "CometInMemoryTableScan") Seq(info) else Nil) ++
+        info.children.flatMap(scanInfos)
+
+    Seq("false", "true").foreach { aqe =>
+      withClue(s"AQE $aqe: ") {
+        withSQLConf(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe,
+          CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true") {
+          withTempView("plan_info_cache") {
+            // The shuffle gives the cached plan an adaptive plan of its own when AQE is on.
+            spark
+              .range(1000)
+              .selectExpr("id % 10 AS k")
+              .groupBy("k")
+              .count()
+              .createOrReplaceTempView("plan_info_cache")
+            spark.catalog.cacheTable("plan_info_cache")
+            val df = spark.sql("SELECT * FROM plan_info_cache WHERE k > 1")
+            df.collect()
+            val plan = df.queryExecution.executedPlan
+            val scans = collect(plan) { case s: CometInMemoryTableScanExec => s }
+            assert(scans.size == 1, plan)
+            val sparkScan = scans.head.originalPlan
+            val cachedPlanInfo =
+              CometSparkPlanInfoHelper.fromSparkPlan(sparkScan.relation.cachedPlan)
+            // Spark's own scan of the cache sits below, and the cached plan below that.
+            val infos = scanInfos(CometSparkPlanInfoHelper.fromSparkPlan(plan))
+            assert(
+              infos.map(_.children.map(info => (info.nodeName, info.children))) ==
+                Seq(Seq((sparkScan.nodeName, Seq(cachedPlanInfo)))),
+              plan)
+            // Other walkers of subqueries stop at Spark's scan, as in Spark's own plans, so they
+            // do not find the cached plan's shuffle in this query, which has none of its own.
+            assert(collectWithSubqueries(plan) { case e: ShuffleExchangeLike => e }.isEmpty, plan)
           }
         }
       }
