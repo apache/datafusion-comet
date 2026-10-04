@@ -28,9 +28,8 @@ import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
 import org.apache.spark.sql.types._
 
 import org.apache.comet.DataTypeSupport.{hasDuplicateFieldNames, ARRAY_ELEMENT, MAP_KEY, MAP_VALUE}
-import org.apache.comet.shims.CometTypeShim
 
-trait DataTypeSupport extends CometTypeShim {
+trait DataTypeSupport {
 
   /**
    * Checks if this schema is supported by checking if each field in the schema is supported.
@@ -57,8 +56,6 @@ trait DataTypeSupport extends CometTypeShim {
       case BooleanType | ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType |
           BinaryType | StringType | _: DecimalType | DateType | TimestampType | TimestampNTZType |
           CalendarIntervalType =>
-        true
-      case dt if isTimeType(dt) =>
         true
       case StructType(fields) if hasDuplicateFieldNames(fields) =>
         // Java Arrow keys struct children by name, so a struct with duplicate field names
