@@ -264,6 +264,7 @@ impl Iterator for RowIterator<'_> {
 
 /// Gather scattered Boolean state without rebuilding Arrow's MutableArrayData
 /// descriptors for every reducer. Clustered selections retain Arrow's range copies.
+/// Upstream tracking: https://github.com/apache/arrow-rs/issues/11379
 /// The producer supplies matching immutable batches and valid row indices, just as
 /// for the ordinary Arrow interleave path.
 fn interleave_shuffle_batches(
@@ -271,12 +272,9 @@ fn interleave_shuffle_batches(
     indices: &[(usize, usize)],
 ) -> Result<RecordBatch, ArrowError> {
     let schema = batches[0].schema_ref();
-    // Arrow already copies clustered bitmap ranges efficiently. A false positive only
-    // selects that existing path; the probe is not used to copy or validate indices.
-    // A four-row stride detects eight-row runs regardless of their starting alignment.
-    let clustered = (0..indices.len().saturating_sub(4)).step_by(4).any(|i| {
-        indices[i].0 == indices[i + 4].0 && indices[i].1.checked_add(4) == Some(indices[i + 4].1)
-    });
+    // Keep Arrow's efficient range copying for long clusters. Short hash runs still
+    // benefit from direct Boolean gathering, especially with few output partitions.
+    let clustered = has_long_contiguous_run(indices);
     if clustered {
         return interleave_record_batch(batches, indices);
     }
@@ -305,6 +303,14 @@ fn interleave_shuffle_batches(
         })
         .collect::<Result<Vec<_>, _>>()?;
     RecordBatch::try_new(Arc::clone(schema), columns)
+}
+
+/// Sample at a 32-row stride and distance: every 64-row contiguous run is
+/// detected regardless of alignment. False positives only choose Arrow's path.
+fn has_long_contiguous_run(indices: &[(usize, usize)]) -> bool {
+    (0..indices.len().saturating_sub(32)).step_by(32).any(|i| {
+        indices[i].0 == indices[i + 32].0 && indices[i].1.checked_add(32) == Some(indices[i + 32].1)
+    })
 }
 
 /// Produces a partition's output by copying contiguous runs of rows.
@@ -427,6 +433,27 @@ mod tests {
                 .unwrap()
             })
             .collect()
+    }
+
+    #[test]
+    fn boolean_gather_probe_preserves_short_hash_runs() {
+        for run in [1, 2, 4, 8, 16] {
+            let indices: Vec<_> = (0..8192)
+                .map(|row| ((row / run) % 4, (row / (4 * run)) * run + row % run))
+                .collect();
+            assert!(!has_long_contiguous_run(&indices), "run={run}");
+        }
+        assert!(!has_long_contiguous_run(&[]));
+        assert!(!has_long_contiguous_run(&[(0, 0); 32]));
+        for offset in 0..32 {
+            let mut indices = vec![(1, 0); offset];
+            indices.extend((0..64).map(|row| (0, row)));
+            assert!(has_long_contiguous_run(&indices), "offset={offset}");
+        }
+        let mut overflow = vec![(0, 0); 33];
+        overflow[0] = (0, usize::MAX);
+        overflow[32] = (0, 31);
+        assert!(!has_long_contiguous_run(&overflow));
     }
 
     /// Compare mixed aggregate states against Arrow across non-byte-aligned slices, null
