@@ -144,7 +144,7 @@ class CometEvaluationMaskSuite extends CometTestBase {
               val aggregate = sparkPlan(
                 "SELECT unbase64(bad) AS decoded, collect_list(k) FROM " +
                   "VALUES (1, 'YWJj'), (1, 'YWFh') AS t(k, bad) GROUP BY bad")
-              assert(aggregateCounts(aggregate) == (0, 2))
+              assert(aggregateCounts(aggregate) == Tuple2(0, 2))
               val sorted = SortExec(
                 Seq(SortOrder(aggregate.output.head, Ascending)),
                 global = false,
@@ -394,10 +394,10 @@ class CometEvaluationMaskSuite extends CometTestBase {
                   initial.toString)
                 checkAnswer(df, expected)
                 if (aqe && agg == "collect_list(k)") {
-                  assert(initialBuffers == (0, 2), initial.toString)
+                  assert(initialBuffers == Tuple2(0, 2), initial.toString)
                 }
                 if (aqe && agg == "max(k)") {
-                  assert(initialBuffers == (2, 0), initial.toString)
+                  assert(initialBuffers == Tuple2(2, 0), initial.toString)
                 }
                 val plan = df.queryExecution.executedPlan
                 if (aqe) {
