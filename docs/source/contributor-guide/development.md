@@ -102,6 +102,10 @@ release memory, so `SparkMemory` makes the call inside `tokio::task::block_in_pl
 blocked there hands its other tasks to another thread, and they keep running, including any that
 would release the memory.
 
+**JVM UDF calls also wait on Spark memory.** `JvmScalarUdfExpr::evaluate` calls
+`CometUdfBridge.evaluate` via JNI. The UDF charges its Arrow allocations to Spark through
+`acquireMemory()`, so the call also runs inside `tokio::task::block_in_place`.
+
 **Scalar subqueries call into the JVM.** `Subquery::evaluate()` calls static methods on
 `CometScalarSubquery` via JNI. These use a static `HashMap`, not thread-locals, so they are
 safe from any thread.

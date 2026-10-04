@@ -32,6 +32,7 @@ use datafusion_comet_common::{decode_string_arrays, zero_offsets};
 use datafusion_comet_jni_bridge::errors::{CometError, ExecutionError};
 use datafusion_comet_jni_bridge::JVMClasses;
 use jni::objects::{Global, JObject, JValue};
+use jni::Env;
 
 /// A scalar expression that delegates evaluation to a JVM-side `CometUDF` via JNI.
 /// The JVM class named by `class_name` must implement `org.apache.comet.udf.CometUDF`.
@@ -183,7 +184,7 @@ impl PhysicalExpr for JvmScalarUdfExpr {
         let class_name = self.class_name.clone();
         let n_args = arrays.len();
 
-        JVMClasses::with_env(|env| {
+        let invoke_bridge = |env: &mut Env| -> Result<(), CometError> {
             let bridge = JVMClasses::get().comet_udf_bridge.as_ref().ok_or_else(|| {
                 CometError::from(ExecutionError::GeneralError(
                     "JVM UDF bridge unavailable: org.apache.comet.udf.CometUdfBridge \
@@ -246,7 +247,8 @@ impl PhysicalExpr for JvmScalarUdfExpr {
 
             ret.map_err(|e| CometError::JNI { source: e })?;
             Ok(())
-        })?;
+        };
+        blocking_jvm_call(|| JVMClasses::with_env(invoke_bridge))?;
 
         // SAFETY: `*out_array` moves the FFI_ArrowArray out of the Box (the heap
         // allocation is freed by the move), and `from_ffi` wraps it in an Arc that
@@ -277,5 +279,43 @@ impl PhysicalExpr for JvmScalarUdfExpr {
             self.task_context.clone(),
             self.class_loader.clone(),
         )))
+    }
+}
+
+/// Spark's `acquireMemory` sometimes blocks a UDF allocation until other tasks free memory.
+/// `block_in_place` moves the other tasks of this Tokio worker to another thread, where they run.
+fn blocking_jvm_call<T>(call: impl FnOnce() -> T) -> T {
+    tokio::task::block_in_place(call)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    /// The UDF call waits for a task on its own worker. That task is the native work that frees
+    /// memory.
+    #[test]
+    fn a_blocked_udf_call_leaves_its_worker_running_other_tasks() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .build()
+            .unwrap();
+        let (blocked_tx, blocked_rx) = mpsc::channel();
+        let (released_tx, released_rx) = mpsc::channel::<()>();
+        let call = runtime.spawn(async move {
+            blocking_jvm_call(|| {
+                blocked_tx.send(()).unwrap();
+                released_rx.recv_timeout(Duration::from_secs(10))
+            })
+        });
+        blocked_rx.recv().unwrap();
+        runtime.spawn(async move { released_tx.send(()).unwrap() });
+
+        runtime
+            .block_on(call)
+            .unwrap()
+            .expect("the worker ran nothing else while the UDF call blocked");
     }
 }
