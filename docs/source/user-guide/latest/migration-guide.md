@@ -57,6 +57,29 @@ Treat setting one of these keys as a temporary measure. If you find you cannot s
 legacy behavior, please open an issue describing your use case so it can be considered before the
 key is removed.
 
+## Upgrading to Comet 1.2.0
+
+### Deprecated and Removed Settings
+
+Using `spark.comet.sparkToColumnar.enabled` and `spark.comet.sparkToColumnar.supportedOperatorList`
+to convert ranges, in-memory cached tables, RDDs and queries without a `FROM` clause to Arrow is
+deprecated, and will stop working in a future major release. Each of these now has a config of its
+own:
+
+| Operator in the list | Config                                       |
+| -------------------- | -------------------------------------------- |
+| `Range`              | `spark.comet.convert.range.enabled`          |
+| `InMemoryTableScan`  | `spark.comet.convert.inMemoryCache.enabled`  |
+| `RDDScan`            | `spark.comet.convert.rdd.enabled`            |
+| `OneRowRelation`     | `spark.comet.convert.oneRowRelation.enabled` |
+
+`spark.comet.sparkToColumnar.supportedOperatorList` now defaults to an empty list. When it is not
+set, `spark.comet.sparkToColumnar.enabled=true` still converts these four, and a list that names one
+of them still converts it, as before. In both cases the driver logs a warning that names the config
+to use instead. Before Spark 4.1, Spark plans a query without a `FROM` clause as an `RDDScan`, so on
+those versions `RDDScan` in the list also converted it. The list remains the way to convert other
+leaf operators, such as the scan of a Data Source V2 connector.
+
 ## Upgrading to Comet 1.1.0
 
 Comet `1.1.0` makes no behavior changes that need a `spark.comet.legacy.*` key. The changes below

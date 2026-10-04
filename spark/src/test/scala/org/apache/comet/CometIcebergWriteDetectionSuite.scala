@@ -1189,10 +1189,10 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
    * hand-built `CometIcebergWriteExec -> CometSparkToColumnarExec -> source` plan and returns the
    * write's final child.
    *
-   * Hand-built rather than driven through SQL because the shape depends on
-   * `spark.comet.sparkToColumnar.enabled` admitting the write's source operator, and the set of
-   * admitted operators is itself configurable. What matters is the rule's behaviour at that
-   * boundary, which this pins directly.
+   * Hand-built rather than driven through SQL because the shape depends on a Spark-to-Arrow
+   * conversion config admitting the write's source operator, and the set of admitted operators is
+   * itself configurable. What matters is the rule's behaviour at that boundary, which this pins
+   * directly.
    */
   private def writeChildAfterTransitionRules(source: SparkPlan): SparkPlan = {
     val write = CometIcebergWriteExec(

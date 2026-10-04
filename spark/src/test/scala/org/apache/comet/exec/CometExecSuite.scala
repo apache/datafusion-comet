@@ -2140,7 +2140,7 @@ class CometExecSuite extends CometTestBase {
       SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "10485760",
       SQLConf.SHUFFLE_PARTITIONS.key -> "4",
       CometConf.COMET_SHUFFLE_MODE.key -> "native",
-      CometConf.COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST.key -> "Range") {
+      CometConf.COMET_CONVERT_FROM_RANGE_ENABLED.key -> "true") {
       val df = sql("""
           |WITH s AS (
           |  SELECT id % 64 AS k, SUM(id) AS v FROM range(0, 4096, 1, 4) GROUP BY id % 64
@@ -2384,7 +2384,6 @@ class CometExecSuite extends CometTestBase {
     withSQLConf(
       CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
       CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true",
-      CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
       CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "native") {
       withParquetTable((0 until 10).map(i => (i, i)), "t") {
@@ -3974,8 +3973,7 @@ class CometExecSuite extends CometTestBase {
         CometConf.COMET_BATCH_SIZE.key -> "2",
         CometConf.COMET_SHUFFLE_MODE.key -> "native",
         CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true",
-        CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
-        CometConf.COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST.key -> "RDDScan") {
+        CometConf.COMET_CONVERT_FROM_RDD_ENABLED.key -> "true") {
         withTempPath { dir =>
           def rdd = spark.createDataFrame(spark.sparkContext.parallelize(rows, 1), schema)
           if (sourceType != "rdd") {
@@ -4011,7 +4009,7 @@ class CometExecSuite extends CometTestBase {
           assert(exchanges.nonEmpty && exchanges.forall(_.shuffleType == CometNativeShuffle))
           checkSparkAnswer(query.limit(1))
           withSQLConf(
-            CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "false",
+            CometConf.COMET_CONVERT_FROM_RDD_ENABLED.key -> "false",
             CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "false") {
             val (_, disabled) = checkSparkAnswer(query)
             assert(collect(disabled) { case c: CometSparkToColumnarExec => c }.isEmpty)
@@ -4200,7 +4198,6 @@ class CometExecSuite extends CometTestBase {
       }
       withSQLConf(
         CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
-        CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
         CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true") {
         val table = spark.read.parquet(filename)
         table.createOrReplaceTempView("t1")
@@ -4218,7 +4215,6 @@ class CometExecSuite extends CometTestBase {
     withSQLConf(
       SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
       CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
-      CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
       CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true") {
       withTempPath { dir =>
         val expected = 10000L
@@ -4431,7 +4427,6 @@ class CometExecSuite extends CometTestBase {
         .parquet(path)
       withSQLConf(
         CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
-        CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
         CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true",
         SESSION_LOCAL_TIMEZONE.key -> "America/Los_Angeles") {
         val df = spark.read.parquet(path).orderBy("ts")

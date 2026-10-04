@@ -103,8 +103,7 @@ class CometInMemoryCacheKryoSuite extends CometTestBase {
         withSQLConf(
           SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
           CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
-          CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
-          "spark.comet.sparkToColumnar.enabled" -> "true") {
+          CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true") {
 
           spark.catalog.clearCache()
           try {

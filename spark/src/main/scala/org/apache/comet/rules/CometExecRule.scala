@@ -19,6 +19,8 @@
 
 package org.apache.comet.rules
 
+import java.util.concurrent.ConcurrentHashMap
+
 import scala.collection.mutable.ListBuffer
 import scala.jdk.CollectionConverters._
 
@@ -32,7 +34,7 @@ import org.apache.spark.sql.catalyst.util.sideBySide
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.arrow.ArrowCachedBatchSerializer
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
-import org.apache.spark.sql.comet.shims.ShimCometEmptyRelation
+import org.apache.spark.sql.comet.shims.{ShimCometEmptyRelation, ShimCometOneRowRelation}
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, BroadcastQueryStageExec, LogicalQueryStage, QueryStageExec, ShuffleQueryStageExec}
@@ -53,7 +55,7 @@ import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
-import org.apache.comet.{CometConf, CometExplainInfo, ExtendedExplainInfo}
+import org.apache.comet.{CometConf, CometExplainInfo, ConfigEntry, ExtendedExplainInfo}
 import org.apache.comet.CometConf.{COMET_SPARK_TO_ARROW_ENABLED, COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST}
 import org.apache.comet.CometSparkSessionExtensions._
 import org.apache.comet.rules.CometExecRule.allExecs
@@ -162,6 +164,17 @@ object CometExecRule {
    */
   val SKIP_COMET_BROADCAST_TAG: org.apache.spark.sql.catalyst.trees.TreeNodeTag[Unit] =
     org.apache.spark.sql.catalyst.trees.TreeNodeTag[Unit]("comet.skipCometBroadcast")
+
+  /**
+   * The operators `spark.comet.sparkToColumnar.supportedOperatorList` named by default, before
+   * each had a `spark.comet.convert` config of its own. `spark.comet.sparkToColumnar.enabled`
+   * still converts them when the list is not set, which is deprecated.
+   */
+  private val deprecatedSparkToArrowOperators =
+    Seq("Range", "InMemoryTableScan", "RDDScan", "OneRowRelation")
+
+  /** Keys of the `spark.comet.convert` configs whose deprecated alternative has been warned. */
+  private[rules] val warnedDeprecatedConversions = ConcurrentHashMap.newKeySet[String]()
 }
 
 /**
@@ -1280,6 +1293,14 @@ case class CometExecRule(session: SparkSession)
             case _: ParquetScan => CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.get(conf)
             case _ => isSparkToArrowEnabled(conf, op)
           }
+        case _: RangeExec =>
+          isConversionEnabled(conf, op, CometConf.COMET_CONVERT_FROM_RANGE_ENABLED)
+        case _: InMemoryTableScanExec =>
+          isConversionEnabled(conf, op, CometConf.COMET_CONVERT_FROM_IN_MEMORY_CACHE_ENABLED)
+        case _ if ShimCometOneRowRelation.isOneRowRelation(op) =>
+          isConversionEnabled(conf, op, CometConf.COMET_CONVERT_FROM_ONE_ROW_RELATION_ENABLED)
+        case _: RDDScanExec =>
+          isConversionEnabled(conf, op, CometConf.COMET_CONVERT_FROM_RDD_ENABLED)
         // other leaf nodes
         case _: LeafExecNode =>
           isSparkToArrowEnabled(conf, op)
@@ -1292,11 +1313,38 @@ case class CometExecRule(session: SparkSession)
     }
   }
 
+  /**
+   * Whether to convert a leaf operator that has a `spark.comet.convert` config of its own. The
+   * `spark.comet.sparkToColumnar` settings still convert it too, which is deprecated.
+   */
+  private def isConversionEnabled(
+      conf: SQLConf,
+      op: SparkPlan,
+      entry: ConfigEntry[Boolean]): Boolean = {
+    entry.get(conf) || {
+      val deprecated = isSparkToArrowEnabled(conf, op)
+      if (deprecated && CometExecRule.warnedDeprecatedConversions.add(entry.key)) {
+        logWarning(
+          s"Using ${COMET_SPARK_TO_ARROW_ENABLED.key} to convert " +
+            s"${Utils.getSimpleName(op.getClass)} to Arrow is deprecated and will stop " +
+            s"working in a future major release. Set ${entry.key}=true instead.")
+      }
+      deprecated
+    }
+  }
+
   private def isSparkToArrowEnabled(conf: SQLConf, op: SparkPlan) = {
     COMET_SPARK_TO_ARROW_ENABLED.get(conf) && {
       val simpleClassName = Utils.getSimpleName(op.getClass)
       val nodeName = simpleClassName.replaceAll("Exec$", "")
-      COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST.get(conf).contains(nodeName)
+      // Without the list, the switch still converts the operators the list named by default.
+      val operators =
+        if (conf.getConfString(COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST.key, null) == null) {
+          CometExecRule.deprecatedSparkToArrowOperators
+        } else {
+          COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST.get(conf)
+        }
+      operators.contains(nodeName)
     }
   }
 
