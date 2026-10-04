@@ -59,7 +59,7 @@ import org.apache.comet.{CometConf, CometExecIterator, CometRuntimeException, Co
 import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleEnabled, isSpark35Plus, withFallbackReason}
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.rules.CometExecRule
-import org.apache.comet.serde.{CometOperatorSerde, Compatible, OperatorOuterClass, QueryContextInterner, SupportLevel, Unsupported}
+import org.apache.comet.serde.{CometCollectBuffer, CometOperatorSerde, Compatible, OperatorOuterClass, QueryContextInterner, SupportLevel, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, Operator}
 import org.apache.comet.serde.QueryPlanSerde
 import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, isStringCollationType, supportedSortType}
@@ -1987,17 +1987,18 @@ trait CometBaseAggregate {
     val modes = aggregate.aggregateExpressions.map(_.mode).distinct
     val modeSet = modes.toSet
     val hasPartialMerge = modeSet.contains(PartialMerge)
+    val cometPartialAgg = findCometPartialAgg(aggregate.child)
     // In distinct aggregates there can be a combination of modes.
     // We support {Partial, PartialMerge} mix; other combinations are rejected.
     val multiMode = modes.size > 1 && modeSet != Set(Partial, PartialMerge)
-    // An aggregate that consumes intermediate buffers (Final, or the PartialMerge stages of a
-    // distinct-aggregate rewrite) must have a Comet aggregate producing those buffers below it.
-    // Otherwise Comet would try to read a Spark partial's buffer, which is only safe when every
-    // aggregate has a buffer format compatible between Spark and Comet. This guards the
-    // Spark-Partial to Comet-Merge direction; the Comet-Partial to Spark-Final direction is
-    // guarded by the COMET_UNSAFE_PARTIAL tagging pass in CometExecRule. See issues #1389, #4813.
-    val consumesBuffers = modes.contains(Final) || modes.contains(PartialMerge)
-    val missingCometProducer = consumesBuffers && findCometPartialAgg(aggregate.child).isEmpty
+    // For a final mode HashAggregate, we only need to transform the HashAggregate
+    // if there is Comet partial aggregation, unless all aggregates have compatible
+    // intermediate buffer formats (safe for mixed Spark/Comet execution).
+    val sparkFinalMode = modes.contains(Final) && cometPartialAgg.isEmpty
+    // For PartialMerge, the child aggregate may still be Spark/JVM even when this node's direct
+    // child is a Comet shuffle. In that case Spark's intermediate buffers must be compatible with
+    // the native merge accumulator state expected by Comet.
+    val sparkPartialMergeMode = hasPartialMerge && cometPartialAgg.isEmpty
 
     if (multiMode) {
       withFallbackReason(
@@ -2006,7 +2007,7 @@ trait CometBaseAggregate {
       return None
     }
 
-    if (missingCometProducer) {
+    if (sparkFinalMode) {
       val incompatibleAggs =
         QueryPlanSerde.aggsNotSupportingSparkPartialToNativeFinal(aggregate.aggregateExpressions)
       if (incompatibleAggs.nonEmpty) {
@@ -2016,6 +2017,21 @@ trait CometBaseAggregate {
           "Comet aggregate that merges intermediate buffers requires a Comet child aggregate " +
             "when the intermediate buffer formats are incompatible with Spark. " +
             s"Incompatible aggregate function(s): $names")
+        return None
+      }
+    }
+
+    if (sparkPartialMergeMode) {
+      val hasUnsupportedAgg = aggregate.aggregateExpressions.exists { aggExpr =>
+        aggExpr.mode == PartialMerge &&
+        QueryPlanSerde.aggsNotSupportingSparkPartialToNativeFinal(Seq(aggExpr)).nonEmpty &&
+        !CometCollectBuffer.nativePartialMergeCanDecode(aggExpr.aggregateFunction)
+      }
+      if (hasUnsupportedAgg) {
+        withFallbackReason(
+          aggregate,
+          "Spark PartialMerge aggregate without Comet Partial requires compatible " +
+            "intermediate buffer formats")
         return None
       }
     }
