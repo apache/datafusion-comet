@@ -1305,29 +1305,6 @@ index cf76f6ca32c..f454128af06 100644
        })
    }
  
-diff --git a/sql/core/src/test/scala/org/apache/spark/sql/errors/QueryExecutionErrorsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/errors/QueryExecutionErrorsSuite.scala
-index c0ec8a58bd5..4e8bc6ed3c5 100644
---- a/sql/core/src/test/scala/org/apache/spark/sql/errors/QueryExecutionErrorsSuite.scala
-+++ b/sql/core/src/test/scala/org/apache/spark/sql/errors/QueryExecutionErrorsSuite.scala
-@@ -27,7 +27,7 @@ import org.apache.hadoop.fs.permission.FsPermission
- import org.mockito.Mockito.{mock, spy, when}
- 
- import org.apache.spark._
--import org.apache.spark.sql.{AnalysisException, DataFrame, Dataset, QueryTest, Row, SaveMode}
-+import org.apache.spark.sql.{AnalysisException, DataFrame, Dataset, IgnoreComet, QueryTest, Row, SaveMode}
- import org.apache.spark.sql.catalyst.expressions.CodegenObjectFactoryMode._
- import org.apache.spark.sql.catalyst.util.BadRecordException
- import org.apache.spark.sql.execution.datasources.jdbc.{DriverRegistry, JDBCOptions}
-@@ -248,7 +248,8 @@ class QueryExecutionErrorsSuite
-   }
- 
-   test("INCONSISTENT_BEHAVIOR_CROSS_VERSION: " +
--    "compatibility with Spark 2.4/3.2 in reading/writing dates") {
-+    "compatibility with Spark 2.4/3.2 in reading/writing dates",
-+    IgnoreComet("Comet doesn't completely support datetime rebase mode yet")) {
- 
-     // Fail to read ancient datetime values.
-     withSQLConf(SQLConf.PARQUET_REBASE_MODE_IN_READ.key -> EXCEPTION.toString) {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/DataSourceScanExecRedactionSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/DataSourceScanExecRedactionSuite.scala
 index 418ca3430bb..eb8267192f8 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/DataSourceScanExecRedactionSuite.scala
@@ -2307,31 +2284,6 @@ index 29cb224c878..62e3ab96004 100644
        }
      }
    }
-diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRebaseDatetimeSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRebaseDatetimeSuite.scala
-index 240bb4e6dcb..8287ffa03ca 100644
---- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRebaseDatetimeSuite.scala
-+++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRebaseDatetimeSuite.scala
-@@ -21,7 +21,7 @@ import java.nio.file.{Files, Paths, StandardCopyOption}
- import java.sql.{Date, Timestamp}
- 
- import org.apache.spark.{SPARK_VERSION_SHORT, SparkConf, SparkException, SparkUpgradeException}
--import org.apache.spark.sql.{QueryTest, Row, SPARK_LEGACY_DATETIME_METADATA_KEY, SPARK_LEGACY_INT96_METADATA_KEY, SPARK_TIMEZONE_METADATA_KEY}
-+import org.apache.spark.sql.{IgnoreCometSuite, QueryTest, Row, SPARK_LEGACY_DATETIME_METADATA_KEY, SPARK_LEGACY_INT96_METADATA_KEY, SPARK_TIMEZONE_METADATA_KEY}
- import org.apache.spark.sql.catalyst.util.DateTimeTestUtils
- import org.apache.spark.sql.internal.SQLConf
- import org.apache.spark.sql.internal.SQLConf.{LegacyBehaviorPolicy, ParquetOutputTimestampType}
-@@ -30,9 +30,11 @@ import org.apache.spark.sql.internal.SQLConf.ParquetOutputTimestampType.{INT96,
- import org.apache.spark.sql.test.SharedSparkSession
- import org.apache.spark.tags.SlowSQLTest
- 
-+// Comet is disabled for this suite because it doesn't support datetime rebase mode
- abstract class ParquetRebaseDatetimeSuite
-   extends QueryTest
-   with ParquetTest
-+  with IgnoreCometSuite
-   with SharedSparkSession {
- 
-   import testImplicits._
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRowIndexSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRowIndexSuite.scala
 index 351c6d698fc..3983401184a 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRowIndexSuite.scala
