@@ -93,7 +93,7 @@ class NativeCacheKeyTests(unittest.TestCase):
         return path
 
     def test_source_and_dependency_changes_invalidate_the_right_keys(self):
-        """Native/protobuf edits retain the dependency prefix; dependency edits replace it."""
+        """Native/protobuf edits retain the Cargo key; dependency edits replace it."""
         before = self.keys()
         for name in ("native/lib.rs", "native/proto/expr.proto", "native/Cargo.toml", "native/Cargo.lock",
                      "contrib/delta/native/Cargo.toml",
@@ -101,18 +101,18 @@ class NativeCacheKeyTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.write(name, self.inputs[name] + "changed\n")
                 after = self.keys()
-                self.assertNotEqual(before["cargo-key"], after["cargo-key"])
                 self.assertNotEqual(before["library-key"], after["library-key"])
                 if name.endswith(("Cargo.toml", "Cargo.lock")):
-                    self.assertNotEqual(before["restore-prefix"], after["restore-prefix"])
+                    self.assertNotEqual(before["cargo-key"], after["cargo-key"])
                 else:
-                    self.assertEqual(before["restore-prefix"], after["restore-prefix"])
+                    self.assertEqual(before["cargo-key"], after["cargo-key"])
                 self.write(name, self.inputs[name])
 
     def test_generated_files_and_unrelated_jvm_edits_preserve_keys(self):
         """Generated files and non-build edits preserve reuse; debug still tracks benchmarks."""
         before = self.keys()
         debug = self.keys("debug")
+        _, debug_sources = CACHE.source_inputs(self.root, "debug")
         for name in self.inputs:
             if name.startswith(".github/workflows/"):
                 self.write(name, "unrelated test configuration\n")
@@ -128,7 +128,8 @@ class NativeCacheKeyTests(unittest.TestCase):
         self.write("contrib/a/b/native/Cargo.toml", '[package]\nname = "changed_nested"\n')
         self.write("native/core/benches/perf.rs", "fn changed_benchmark() {}")
         self.assertEqual(before, self.keys())
-        self.assertNotEqual(debug["cargo-key"], self.keys("debug")["cargo-key"])
+        self.assertEqual(debug["cargo-key"], self.keys("debug")["cargo-key"])
+        self.assertNotEqual(debug_sources, CACHE.source_inputs(self.root, "debug")[1])
 
     def test_input_rules_change_keys_but_unrelated_routing_does_not(self):
         """Fingerprint the imported pattern/matcher contract, not the entire routing file."""
@@ -141,8 +142,7 @@ class NativeCacheKeyTests(unittest.TestCase):
                           (*CACHE.CHANGES.NATIVE_LIBRARY_INPUTS, "extra-native/**")):
             changed_patterns = self.keys()
         self.assertNotEqual(before["library-key"], changed_patterns["library-key"])
-        self.assertNotEqual(before["cargo-key"], changed_patterns["cargo-key"])
-        self.assertEqual(before["restore-prefix"], changed_patterns["restore-prefix"])
+        self.assertEqual(before["cargo-key"], changed_patterns["cargo-key"])
         original = CACHE.CHANGES.compile_matcher
 
         def changed_matcher(patterns):
@@ -272,7 +272,7 @@ class NativeCacheKeyTests(unittest.TestCase):
         self.assertEqual(environment["env"], build_env)
         self.env["TARGET_CFLAGS"] = "build override"
         after = self.keys()
-        for key in ("library-key", "cargo-key", "restore-prefix"):
+        for key in ("library-key", "cargo-key"):
             self.assertNotEqual(before[key], after[key])
         del self.env["TARGET_CFLAGS"]
         self.write(".cargo/config.toml", "[build]\nincremental = false\n")
@@ -283,10 +283,9 @@ class NativeCacheKeyTests(unittest.TestCase):
         """CI/debug keys stay separate and only CI produces a reusable library key."""
         ci, debug = self.keys("ci"), self.keys("debug")
         self.assertNotEqual(ci["cargo-key"], debug["cargo-key"])
-        self.assertNotEqual(ci["restore-prefix"], debug["restore-prefix"])
         self.assertNotIn("library-key", debug)
         self.assertTrue(ci["library-key"].startswith("Linux-native-ci-"))
-        self.assertTrue(ci["cargo-key"].startswith(ci["restore-prefix"]))
+        self.assertTrue(ci["cargo-key"].startswith("Linux-cargo-ci-v4-"))
 
     def test_container_ownership_works_without_global_git_config_changes(self):
         """A differently owned checkout permits helper root/inventory reads without global trust."""

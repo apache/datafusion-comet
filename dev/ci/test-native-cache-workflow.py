@@ -122,7 +122,7 @@ class NativeCacheWorkflowTests(unittest.TestCase):
                     self.assertEqual(result.returncode == 0, success, result.stdout + result.stderr)
 
     def test_cache_hit_decisions(self):
-        """Protect compilation, lookup-only restores, and main-only publication."""
+        """Protect compilation, exact-library restores, and main-only publication."""
         project = Path(__file__).resolve().parents[2]
         action = (project / ".github/actions/build-native-ci/action.yaml").read_text()
         conditions = {}
@@ -132,31 +132,95 @@ class NativeCacheWorkflowTests(unittest.TestCase):
                 if line.startswith("      if: "):
                     conditions[name] = line.removeprefix("      if: ")
                 elif line.startswith("        lookup-only: "):
-                    conditions["lookup-only"] = line.removeprefix("        lookup-only: ")
-        names = ("lookup-only", "Restore incremental Cargo cache", "Build native library (CI profile)",
-                 "Save native library cache", "Save incremental Cargo cache")
+                    self.assertEqual(line.removeprefix("        lookup-only: "), "true")
+        names = ("Restore incremental Cargo cache", "Restore exact native library",
+                 "Build native library (CI profile)", "Save native library cache",
+                 "Save incremental Cargo cache")
         self.assertEqual(set(conditions), set(names))
-        # Expected: lookup only, restore Cargo, build, save library, save Cargo.
+        # Expected: restore Cargo, restore exact library, build, save library, save Cargo.
         cases = [
-            ("pull_request", "refs/pull/1/merge", "true", "", (False, False, False, False, False)),
-            ("pull_request", "refs/pull/1/merge", "", "true", (False, True, True, False, False)),
-            ("merge_group", "refs/heads/gh-readonly-queue/main/test", "true", "", (False, False, False, False, False)),
-            ("merge_group", "refs/heads/gh-readonly-queue/main/test", "", "false", (False, True, True, False, False)),
-            ("push", "refs/heads/main", "true", "true", (True, True, False, False, False)),
-            ("push", "refs/heads/main", "true", "false", (True, True, True, False, True)),
-            ("push", "refs/heads/main", "true", "", (True, True, True, False, True)),
-            ("push", "refs/heads/main", "", "true", (True, True, True, True, False)),
-            ("push", "refs/heads/main", "", "", (True, True, True, True, True)),
-            ("push", "refs/heads/branch", "", "", (False, True, True, False, False)),
-            ("schedule", "refs/heads/main", "", "", (False, True, True, False, False)),
-            ("workflow_dispatch", "refs/heads/main", "", "", (False, True, True, False, False)),
+            ("pull_request", "refs/pull/1/merge", "true", "", "true", (False, True, False, False, False)),
+            ("pull_request", "refs/pull/1/merge", "", "true", "", (True, False, True, False, False)),
+            ("merge_group", "refs/heads/gh-readonly-queue/main/test", "true", "", "true", (False, True, False, False, False)),
+            ("merge_group", "refs/heads/gh-readonly-queue/main/test", "", "false", "", (True, False, True, False, False)),
+            ("push", "refs/heads/main", "true", "true", "true", (True, True, False, False, False)),
+            ("push", "refs/heads/main", "true", "false", "true", (True, True, True, False, True)),
+            ("push", "refs/heads/main", "true", "", "true", (True, True, True, False, True)),
+            ("push", "refs/heads/main", "", "true", "", (True, False, True, True, False)),
+            ("push", "refs/heads/main", "", "", "", (True, False, True, True, True)),
+            ("push", "refs/heads/branch", "", "", "", (True, False, True, False, False)),
+            ("schedule", "refs/heads/main", "", "", "", (True, False, True, False, False)),
+            ("workflow_dispatch", "refs/heads/main", "", "", "", (True, False, True, False, False)),
+            # The compact entry can disappear between lookup and the actual download.
+            ("push", "refs/heads/main", "true", "true", "", (True, True, True, True, False)),
+            ("pull_request", "refs/pull/1/merge", "true", "", "", (False, True, True, False, False)),
         ]
-        for event, ref, library_hit, cargo_hit, expected in cases:
-            with self.subTest(event=event, ref=ref, library_hit=library_hit, cargo_hit=cargo_hit):
+        for event, ref, library_hit, cargo_hit, restore_hit, expected in cases:
+            with self.subTest(event=event, ref=ref, library_hit=library_hit,
+                              cargo_hit=cargo_hit, restore_hit=restore_hit):
                 context = {"github.event_name": event, "github.ref": ref,
                            "steps.library-cache.outputs.cache-hit": library_hit,
-                           "steps.cargo-cache.outputs.cache-hit": cargo_hit}
+                           "steps.cargo-cache.outputs.cache-hit": cargo_hit,
+                           "steps.library-restore.outputs.cache-hit": restore_hit}
                 self.assertEqual(tuple(condition_matches(conditions[name], context) for name in names), expected)
+
+    def test_exact_library_survives_dependency_cache_restore(self):
+        """Follow the YAML order with an old target library and a current compact library."""
+        project = Path(__file__).resolve().parents[2]
+        action = (project / ".github/actions/build-native-ci/action.yaml").read_text()
+        blocks = [block.partition("\n") for block in
+                  re.split(r"^    - name: ", action, flags=re.MULTILINE)[1:]]
+        # Lookup hit, dependency hit, download hit, expected compilation/publication.
+        for lookup, cargo_hit, download, expected in [
+            (True, True, True, (False, False, False)),
+            (True, False, True, (True, False, True)),
+            (False, True, False, (True, True, False)),
+            (False, False, False, (True, True, True)),
+            (True, True, False, (True, True, False)),
+        ]:
+            with self.subTest(lookup=lookup, cargo_hit=cargo_hit, download=download), \
+                    tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                library = root / "native/target/ci/libcomet.so"
+                dependency = root / "native/target/ci/deps/compiled"
+                context = {"github.event_name": "push", "github.ref": "refs/heads/main",
+                           "steps.library-cache.outputs.cache-hit": "",
+                           "steps.cargo-cache.outputs.cache-hit": "",
+                           "steps.library-restore.outputs.cache-hit": ""}
+                ran = []
+                for name, _, body in blocks:
+                    condition = re.search(r"^      if: (.+)$", body, re.MULTILINE)
+                    if condition and not condition_matches(condition.group(1), context):
+                        continue
+                    ran.append(name)
+                    if name == "Look up native library cache":
+                        context["steps.library-cache.outputs.cache-hit"] = "true" if lookup else ""
+                        self.assertFalse(library.exists())
+                    elif name == "Restore incremental Cargo cache":
+                        context["steps.cargo-cache.outputs.cache-hit"] = "true" if cargo_hit else ""
+                        if cargo_hit:
+                            library.parent.mkdir(parents=True, exist_ok=True)
+                            library.write_text("older source library")
+                            dependency.parent.mkdir(parents=True, exist_ok=True)
+                            dependency.write_text("compiled dependencies")
+                    elif name == "Restore exact native library":
+                        context["steps.library-restore.outputs.cache-hit"] = "true" if download else ""
+                        if download:
+                            library.parent.mkdir(parents=True, exist_ok=True)
+                            library.write_text("exact source library")
+                    elif name == "Build native library (CI profile)":
+                        library.parent.mkdir(parents=True, exist_ok=True)
+                        library.write_text("exact source library")
+                        dependency.parent.mkdir(parents=True, exist_ok=True)
+                        dependency.write_text("compiled dependencies")
+                    elif name == "Save native library cache":
+                        self.assertEqual(library.read_text(), "exact source library")
+                    elif name == "Save incremental Cargo cache":
+                        self.assertTrue(dependency.exists(), "a compact library alone is not a Cargo cache")
+                self.assertEqual(library.read_text(), "exact source library")
+                self.assertEqual(tuple(name in ran for name in (
+                    "Build native library (CI profile)", "Save native library cache",
+                    "Save incremental Cargo cache")), expected)
 
 
 if __name__ == "__main__":

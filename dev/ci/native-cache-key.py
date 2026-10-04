@@ -202,16 +202,13 @@ def environment_inputs(root, env):
 def cache_keys(profile, dependencies, sources, environment):
     """Return output keys for one pre-build snapshot.
 
-    Only the incremental Cargo cache has a source-independent restore prefix.
-    The library key includes all tracked build inputs and never uses fallback.
-    Both retain the environment: native build scripts can reuse C objects
-    without detecting changes to external compiler binaries or JNI headers.
+    The incremental Cargo key depends only on dependencies and the environment,
+    preserving one large entry across source edits. Only the compact library key
+    includes all tracked build inputs, and it never uses fallback. Both retain
+    the environment: native build scripts can reuse C objects without detecting
+    changes to external compiler binaries or JNI headers.
     """
-    prefix = f"Linux-cargo-{profile}-v3-{digest([environment, dependencies])}-"
-    keys = {
-        "cargo-key": prefix + digest(sources),
-        "restore-prefix": prefix,
-    }
+    keys = {"cargo-key": f"Linux-cargo-{profile}-v4-{digest([environment, dependencies])}"}
     if profile == "ci":
         keys["library-key"] = f"Linux-native-ci-v2-{digest([environment, sources])}"
     return keys

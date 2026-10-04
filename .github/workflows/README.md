@@ -446,8 +446,10 @@ The Linux, Spark SQL, Iceberg and manual writer workflows call
 `.github/actions/build-native-ci` after checkout and `setup-builder`. PR, queue,
 scheduled and manual runs restore `native/target/ci/libcomet.so` and skip Cargo
 on an exact library match. Only pushes to `main` save caches. Main skips Cargo
-when both the library and incremental cache match exactly, and builds when either
-lacks an exact match to replenish it.
+when both the library and dependency-scoped incremental cache match, and builds
+when either lacks a match to replenish it. The exact library is downloaded after
+restoring Cargo, since an incremental entry can contain an older library. If the
+library is evicted between lookup and download, the action builds it again.
 An incremental cache hit alone never replaces compilation. Builds use
 `cargo build --locked --profile ci`; manifest changes requiring a lockfile update
 must include that update to `native/Cargo.lock`. Artifact paths remain unchanged.
@@ -484,8 +486,10 @@ reviewed against the fingerprint before they are admitted by this check.
 
 The CI incremental cache holds only `native/target`, including compiled
 dependencies. Cargo fetches registry and Git dependency sources as needed; those
-downloads are not duplicated in the repository's limited cache storage. Fallback
-restores permit source changes within the same dependency/build environment.
+downloads are not duplicated in the repository's limited cache storage. Its key
+contains only dependencies and the build environment: source-only main pushes
+reuse the existing entry without uploading another full target. Their source
+fingerprint changes only the compact library key.
 Rust checks and tests remain uncached, preserving main's cache budget. Preflight checks
 fingerprint invalidation, main's routing, and the action's cache-hit/miss behavior.
 

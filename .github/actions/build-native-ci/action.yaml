@@ -32,15 +32,13 @@ runs:
         # Keep one flag definition without changing later steps in the caller.
         echo "rustflags=$RUSTFLAGS" >> "$GITHUB_OUTPUT"
 
-    - name: Restore native library cache
+    - name: Look up native library cache
       id: library-cache
       uses: actions/cache/restore@v6
       with:
         path: native/target/ci/libcomet.so
         key: ${{ steps.key.outputs.library-key }}
-        # Main restores the incremental cache below, including libcomet.so.
-        # A lookup avoids downloading the same library separately.
-        lookup-only: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        lookup-only: true
 
     - name: Restore incremental Cargo cache
       id: cargo-cache
@@ -49,23 +47,32 @@ runs:
       with:
         path: native/target
         key: ${{ steps.key.outputs.cargo-key }}
-        restore-keys: ${{ steps.key.outputs.restore-prefix }}
+
+    # A dependency-scoped target can contain an older libcomet.so. Restore the
+    # exact library after Cargo so the target cannot overwrite it on two hits.
+    - name: Restore exact native library
+      id: library-restore
+      if: steps.library-cache.outputs.cache-hit == 'true'
+      uses: actions/cache/restore@v6
+      with:
+        path: native/target/ci/libcomet.so
+        key: ${{ steps.key.outputs.library-key }}
 
     - name: Build native library (CI profile)
-      if: steps.library-cache.outputs.cache-hit != 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true')
+      if: steps.library-restore.outputs.cache-hit != 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true')
       shell: bash
       env:
         RUSTFLAGS: ${{ steps.key.outputs.rustflags }}
       run: |
-        # A library miss always builds, even on an exact incremental hit.
-        # Main also builds to populate a missing incremental entry; two exact
-        # hits already supply the library and leave neither cache to publish.
+        # A library miss (including eviction after lookup) always builds. Main
+        # also builds to populate a missing dependency cache, even on a library
+        # hit. Two hits use the separately restored exact library above.
         (cd native && cargo build --locked --profile ci)
         # Git trusts the checkout root, not its native/ subdirectory.
         python3 dev/ci/native-cache-key.py --check-depinfo native/target/ci/libcomet.d
 
     - name: Save native library cache
-      if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.library-cache.outputs.cache-hit != 'true'
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.library-restore.outputs.cache-hit != 'true'
       uses: actions/cache/save@v6
       with:
         path: native/target/ci/libcomet.so
