@@ -142,18 +142,19 @@ private object MapBuilderSupport {
 
   /** Top-level floating-point keys: see the map_funcs expression audit. */
   val floatingPointKeyNote: String =
-    "On Spark 4.0 and later, `ArrayBasedMapBuilder` normalizes a `FLOAT` or `DOUBLE` map key " +
-      "before comparing it, so `-0.0` counts as the same key as `+0.0` and all `NaN`s count as " +
-      "one key. Comet's native map construction compares the raw Arrow values, so a map built " +
-      "from both `-0.0` and `+0.0` keeps two entries where Spark reports a duplicate key. " +
-      "`map_from_entries` also stores the normalized key, so Spark returns `+0.0` for a `-0.0` " +
-      "key where Comet returns `-0.0`; `map_from_arrays` keeps the original keys in both " +
-      "engines when nothing repeated. Spark 3.4 and 3.5 do not normalize such a key, so `-0.0` " +
-      "and `+0.0` are two keys in both engines there, but Spark still treats `NaN`s with " +
-      "different bit patterns as one key. This applies to a top-level key only: a struct or " +
-      "array key that contains a floating-point field does not run natively on any Spark " +
-      s"version. Set `${COMET_EXEC_STRICT_FLOATING_POINT.key}=true` to keep a floating-point " +
-      "map key off the native path."
+    "Comet's native map construction compares a `FLOAT` or `DOUBLE` map key by its raw bits. " +
+      "On every Spark version, Spark treats `NaN`s with different bit patterns as one key, " +
+      "where Comet keeps them apart. On Spark 4.0 and later, `ArrayBasedMapBuilder` also " +
+      "normalizes the key before it compares it, so `-0.0` and `+0.0` are one key. Where Spark " +
+      "reports a duplicate key, or keeps one entry under `LAST_WIN`, Comet keeps both entries. " +
+      "`map_from_entries` on Spark 4.0 and later also stores the normalized key, so Spark " +
+      "returns `+0.0` for a `-0.0` key where Comet returns `-0.0`. `map_from_arrays` keeps the " +
+      "original keys in both engines when no key repeats. Spark 3.4 and 3.5 do not normalize " +
+      "the key, so `-0.0` and `+0.0` are two keys in both engines there. This applies to a " +
+      "top-level key only: a struct or array key that contains a floating-point field does not " +
+      "run natively by default on any Spark version. Set " +
+      s"`${COMET_EXEC_STRICT_FLOATING_POINT.key}=true` to keep a floating-point map key off " +
+      "the native path."
 
   val strictFloatingPointKeyReason: String =
     s"When `${COMET_EXEC_STRICT_FLOATING_POINT.key}=true`, map construction on a floating-point " +
