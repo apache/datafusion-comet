@@ -2886,7 +2886,10 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
     withTempPath { path =>
       sql("SELECT date'2000-01-01' AS d").coalesce(1).write.parquet(path.toString)
       // Spark plans no split for a zero-length file, so the check must not read its footer.
-      assert(new File(path, "part-zz-empty.parquet").createNewFile())
+      val empty = new File(path, "part-zz-empty.parquet")
+      assert(empty.createNewFile())
+      assert(datetimeRebaseReason(new Path(empty.toURI), "EXCEPTION", "d date").isEmpty)
+      // Spark's file index also drops the file before the check, so the scan stays native.
       val df = spark.read.schema("d date").parquet(path.toString)
       val (_, cometPlan) = checkSparkAnswer(df)
       assert(
