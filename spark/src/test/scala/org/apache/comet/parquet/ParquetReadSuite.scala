@@ -2746,8 +2746,9 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
         FileUtil.copy(fs, legacyFile, fs, copy, false, hadoopConf)
         fileInfo(copy)
       }
+      // Use a nonzero length, because the check skips zero-length files.
       val missingFile =
-        CometScanUtils.ParquetFileInfo(new Path(path.toString, "must-not-be-read.parquet"), 0, 0)
+        CometScanUtils.ParquetFileInfo(new Path(path.toString, "must-not-be-read.parquet"), 1, 0)
       assert(requiresRebase(legacyCopies :+ missingFile))
 
       val df = spark.read.parquet(correctedPath.toString, legacyPath.toString)
@@ -2864,6 +2865,19 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
         val e = intercept[ExecutionException](requiresRebase())
         assert(e.getCause.isInstanceOf[FileNotFoundException], e)
       }
+    }
+  }
+
+  test("datetime rebase check skips zero-length files") {
+    withTempPath { path =>
+      sql("SELECT date'2000-01-01' AS d").coalesce(1).write.parquet(path.toString)
+      // Spark plans no split for a zero-length file, so the check must not read its footer.
+      assert(new File(path, "part-zz-empty.parquet").createNewFile())
+      val df = spark.read.schema("d date").parquet(path.toString)
+      val (_, cometPlan) = checkSparkAnswer(df)
+      assert(
+        collect(cometPlan) { case _: CometNativeScanExec => true }.nonEmpty,
+        cometPlan.treeString)
     }
   }
 

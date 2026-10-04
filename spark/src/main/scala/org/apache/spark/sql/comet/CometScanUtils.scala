@@ -138,7 +138,8 @@ object CometScanUtils {
     // Answer from the cache where possible; only cache misses pay a footer read.
     var cachedNeedsRebase = false
     val misses = new ListBuffer[(FooterCacheKey, ParquetFileInfo)]
-    files.foreach { file =>
+    // Spark never opens a zero-length file, and a footer read fails on one.
+    files.iterator.filter(_.length > 0).foreach { file =>
       val key = (file.path.toString, file.length, file.modificationTime)
       val cached = footerFactsCache.get(key)
       if (cached != null) {
