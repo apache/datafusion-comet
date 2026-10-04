@@ -25,6 +25,7 @@ import org.apache.parquet.io.api.Binary
 import org.apache.parquet.schema.MessageTypeParser
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
+import org.apache.spark.sql.comet.{CometFilterExec, CometProjectExec}
 import org.apache.spark.sql.comet.CometNativeColumnarToRowExec
 import org.apache.spark.sql.comet.CometNativeScanExec
 import org.apache.spark.sql.comet.util.Utils
@@ -83,6 +84,131 @@ class CometVariantProjectionSuite extends CometTestBase {
   private def checkScanFallback(df: => DataFrame, reason: String): Unit = {
     val (_, plan) = checkSparkAnswerAndFallbackReason(df, reason)
     assert(collect(plan) { case scan: CometNativeScanExec => scan }.isEmpty, plan.toString)
+  }
+
+  test("Variant scalar extraction runs above native canonical and shredded scans") {
+    for {
+      shredding <- Seq("false", "true")
+      rowFilterPushdown <- Seq("false", "true")
+    } {
+      withSQLConf(
+        "spark.sql.variant.writeShredding.enabled" -> shredding,
+        CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.key -> rowFilterPushdown) {
+        withVariantFile("""
+          SELECT id, parse_json(json) AS v FROM VALUES
+            (1, '{"a":1,"b":[{"c":2}]}'), (2, '{"a":2}'),
+            (3, 'null'), (4, NULL) AS source(id,json)
+        """) { path =>
+          val projected = spark.read
+            .parquet(path)
+            .selectExpr("variant_get(v, '$.a', 'int')", "try_variant_get(v, '$.b[0].c', 'int')")
+          checkSparkAnswerAndOperator(projected)
+          val projectPlan = projected.queryExecution.executedPlan
+          assert(
+            collect(projectPlan) { case p: CometProjectExec => p }.nonEmpty,
+            projectPlan.toString)
+          assert(
+            collect(projectPlan) { case s: CometNativeScanExec => s }.nonEmpty,
+            projectPlan.toString)
+          val filtered = spark.read
+            .parquet(path)
+            .where("variant_get(v, '$.a', 'int') = 1")
+            .select("id")
+          checkSparkAnswerAndOperator(filtered)
+          val filterPlan = filtered.queryExecution.executedPlan
+          assert(
+            collect(filterPlan) { case f: CometFilterExec => f }.nonEmpty,
+            filterPlan.toString)
+          assert(
+            collect(filterPlan) { case s: CometNativeScanExec => s }.nonEmpty,
+            filterPlan.toString)
+        }
+      }
+    }
+  }
+
+  test("Variant scalar extraction handles large UTF-16 ordered objects and empty keys") {
+    val fields = (0 until 40).map(i => s"\"key$i\":$i") ++
+      Seq("\"\":70", "\"a.b\":71", "\"\\uE000\":72", "\"\\uD800\\uDC00\":73")
+    val json = fields.mkString("{", ",", "}")
+    withVariantFile(s"SELECT parse_json('$json') AS v") { path =>
+      val df = spark.read
+        .parquet(path)
+        .selectExpr(
+          "variant_get(v, '$[\"\"]', 'int')",
+          "variant_get(v, '$[\"a.b\"]', 'int')",
+          "variant_get(v, '$[\"\uE000\"]', 'int')",
+          "variant_get(v, '$[\"\uD800\uDC00\"]', 'int')")
+      checkSparkAnswerAndOperator(df)
+      assert(collect(df.queryExecution.executedPlan) { case p: CometProjectExec => p }.nonEmpty)
+    }
+  }
+
+  test("Variant strict extraction preserves Spark error parameters") {
+    val sources = Seq(
+      "SELECT CAST(double('2e23') AS VARIANT) AS v",
+      "SELECT parse_json('{\"a\":[1,2]}') AS v")
+    sources.foreach { query =>
+      withVariantFile(query) { path =>
+        val df = spark.read.parquet(path).selectExpr("variant_get(v, '$', 'binary')")
+        assert(collect(df.queryExecution.executedPlan) { case p: CometProjectExec => p }.nonEmpty)
+        val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+        def variantError(error: Throwable): org.apache.spark.SparkThrowable = {
+          Iterator
+            .iterate(error)(_.getCause)
+            .takeWhile(_ != null)
+            .collectFirst {
+              case e: org.apache.spark.SparkThrowable
+                  if e.getErrorClass == "INVALID_VARIANT_CAST" =>
+                e
+            }
+            .getOrElse(fail(error.toString))
+        }
+        val expected = variantError(sparkError.get)
+        val actual = variantError(cometError.get)
+        assert(actual.getMessageParameters == expected.getMessageParameters)
+      }
+    }
+  }
+
+  test("Variant invalid paths preserve all-null interpreted evaluation") {
+    withSQLConf(
+      "spark.sql.codegen.wholeStage" -> "false",
+      "spark.sql.codegen.factoryMode" -> "NO_CODEGEN") {
+      withVariantFile("SELECT CAST(NULL AS VARIANT) AS v") { path =>
+        checkSparkAnswerAndFallbackReason(
+          spark.read.parquet(path).selectExpr("try_variant_get(v, '$[-1]', 'int')"),
+          "Invalid Variant paths require Spark's null and evaluation semantics")
+      }
+    }
+  }
+
+  // JDK 17 renders 2e23 as 1.9999999999999998E23; native decimal conversion uses 2.0E23.
+  // https://github.com/apache/datafusion-comet/issues/5424
+  ignore("Variant decimal extraction matches JDK 17 double conversion") {
+    assume(Utils.variantType.isDefined, "VariantType requires Spark 4.0+")
+    assume(System.getProperty("java.specification.version").toInt < 19)
+    withSQLConf("spark.comet.expression.VariantGet.allowIncompatible" -> "true") {
+      withVariantFile("SELECT CAST(double('2e23') AS VARIANT) AS v") { path =>
+        checkSparkAnswerAndOperator(
+          spark.read
+            .parquet(path)
+            .selectExpr("variant_get(v, '$', 'decimal(38,0)')"))
+      }
+    }
+  }
+
+  // Native parsing returns NULL for this valid Spark date outside chrono's year range.
+  // https://github.com/apache/datafusion-comet/issues/5424
+  ignore("Variant date extraction supports the full Spark year range") {
+    withSQLConf("spark.comet.expression.VariantGet.allowIncompatible" -> "true") {
+      withVariantFile("SELECT parse_json('\"300000-01-01\"') AS v") { path =>
+        checkSparkAnswerAndOperator(
+          spark.read
+            .parquet(path)
+            .selectExpr("try_variant_get(v, '$', 'date')"))
+      }
+    }
   }
 
   test("direct Variant projection preserves values and siblings") {
@@ -296,7 +422,7 @@ class CometVariantProjectionSuite extends CometTestBase {
     withVariantFile("SELECT 1 AS id, parse_json('{\"a\":1}') AS v") { path =>
       withSQLConf("spark.sql.variant.pushVariantIntoScan" -> "false") {
         val (_, plan) = checkSparkAnswerAndFallbackReason(
-          spark.read.parquet(path).selectExpr("variant_get(v, '$.a', 'int')"),
+          spark.read.parquet(path).selectExpr("variant_get(v, '$.a', 'variant')"),
           "Native operators do not support schemas containing type VariantType")
         assert(collect(plan) { case p: ProjectExec => p }.nonEmpty)
         assert(collect(plan) { case s: CometNativeScanExec => s }.nonEmpty)

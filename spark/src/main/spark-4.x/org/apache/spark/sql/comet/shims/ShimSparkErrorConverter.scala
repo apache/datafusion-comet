@@ -291,6 +291,38 @@ trait ShimSparkErrorConverter {
       case "MalformedVariant" =>
         Some(QueryExecutionErrors.malformedVariant())
 
+      case "UnknownPrimitiveTypeInVariant" =>
+        Some(
+          new org.apache.spark.SparkRuntimeException(
+            "UNKNOWN_PRIMITIVE_TYPE_IN_VARIANT",
+            Map("id" -> params("id").toString)))
+
+      case "VariantConstructorSizeLimit" =>
+        Some(
+          new org.apache.spark.SparkRuntimeException("VARIANT_CONSTRUCTOR_SIZE_LIMIT", Map.empty))
+
+      case "InvalidVariantCast" =>
+        // Variant JSON/error rendering depends on Spark and the JDK (e.g. Double.toString).
+        // Re-evaluate only the failed row so the exception has Spark's exact parameters.
+        val variant = new org.apache.spark.unsafe.types.VariantVal(
+          java.util.Base64.getDecoder.decode(params("value").toString),
+          java.util.Base64.getDecoder.decode(params("metadata").toString))
+        val zone = params("timezone").toString
+        val path = org.apache.spark.sql.catalyst.expressions.variant.VariantGet
+          .getParsedPath(params("path").toString, "variant_get")
+        try {
+          org.apache.spark.sql.catalyst.expressions.variant.VariantGet.variantGet(
+            variant,
+            path,
+            DataType.fromDDL(params("dataType").toString),
+            org.apache.spark.sql.catalyst.expressions.variant
+              .VariantCastArgs(true, Some(zone), java.time.ZoneId.of(zone)))
+          Some(
+            new IllegalStateException("Native Variant cast failed but Spark accepted the value"))
+        } catch {
+          case e: org.apache.spark.SparkRuntimeException => Some(e)
+        }
+
       case "InvalidUtf8String" =>
         val hexStr = UTF8String.fromString(params("hexString").toString)
         Some(QueryExecutionErrors.invalidUTF8StringError(hexStr))
