@@ -1979,16 +1979,18 @@ trait CometBaseAggregate {
       case _ => false
     })
 
+  protected def hasMaxPrecisionDecimalAvg(op: BaseAggregateExec): Boolean =
+    op.aggregateExpressions.exists(_.aggregateFunction match {
+      case avg: Average =>
+        avg.sumDataType match {
+          case decimal: DecimalType => decimal.precision == DecimalType.MAX_PRECISION
+          case _ => false
+        }
+      case _ => false
+    })
+
   protected def aggregateSupportLevel(op: BaseAggregateExec): SupportLevel = {
-    val unsupportedAverage = op.groupingExpressions.isEmpty &&
-      op.aggregateExpressions.exists(_.aggregateFunction match {
-        case avg: Average =>
-          avg.sumDataType match {
-            case decimal: DecimalType => decimal.precision == DecimalType.MAX_PRECISION
-            case _ => false
-          }
-        case _ => false
-      })
+    val unsupportedAverage = op.groupingExpressions.isEmpty && hasMaxPrecisionDecimalAvg(op)
 
     if (unsupportedAverage) {
       // Spark's global buffer can retain a wider sum until division; native overflow is sticky.
@@ -2450,11 +2452,17 @@ object CometObjectHashAggregateExec
     }
     // Spark's object aggregation buffers the intermediate decimal sum unbounded, while Comet's
     // grouped accumulator latches to null once a running sum leaves the precision, so the
-    // grouped case declines. Decimal AVG has the same gap and is tracked separately.
+    // grouped case declines. Decimal AVG has the same intermediate-buffer gap.
     if (op.groupingExpressions.nonEmpty && hasMaxPrecisionDecimalSum(op)) {
       return Unsupported(
         Some(
           "Grouped decimal SUM at maximum precision cannot match Spark's unbounded object " +
+            "aggregation buffer"))
+    }
+    if (op.groupingExpressions.nonEmpty && hasMaxPrecisionDecimalAvg(op)) {
+      return Unsupported(
+        Some(
+          "Grouped decimal AVG at maximum precision cannot match Spark's unbounded object " +
             "aggregation buffer"))
     }
     aggregateSupportLevel(op)

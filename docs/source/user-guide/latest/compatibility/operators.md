@@ -72,11 +72,12 @@ also moves sibling aggregates such as `MIN`, `MAX`, `COUNT`, and `SUM` to Spark.
 final aggregate operators stay in Spark, including when a shuffle separates them. Narrower
 ungrouped decimal averages remain eligible for native execution.
 
-Grouped decimal `AVG` remains eligible for native execution. Native finalization can raise an
+Grouped decimal `AVG` remains eligible for native execution with hash aggregation. With Spark's
+object aggregation, decimal `AVG` and `TRY_AVG` fall back when their intermediate sum has precision
+38, because Spark's object buffer can recover after an intermediate overflow. As with the ungrouped
+case, the whole aggregate operator falls back. Native finalization can raise an
 ANSI overflow for a group that Spark would never consume after `LIMIT`; this error-timing difference
 is documented under [known divergences](index.md#known-result-value-divergences).
-High-precision decimal `AVG` with object aggregation has a separate overflow difference tracked in
-[#5509](https://github.com/apache/datafusion-comet/issues/5509).
 
 ## Window Functions
 

@@ -2485,13 +2485,101 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("grouped decimal AVG widens division and reports final result overflow") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+      withTempPath { dir =>
+        Seq((1, "9000000000000000"), (1, "9000000000000000"), (2, "100000000000000000"))
+          .toDF("k", "raw_v")
+          .selectExpr("k", "CAST(raw_v AS DECIMAL(38,18)) AS v")
+          .coalesce(1)
+          .write
+          .parquet(dir.toString)
+        withParquetTable(dir.toString, "avg_wide_division") {
+          for (ansi <- Seq(false, true)) {
+            withSQLConf(SQLConf.ANSI_ENABLED.key -> ansi.toString) {
+              val valid = sql("SELECT k, AVG(v) FROM avg_wide_division WHERE k = 1 GROUP BY k")
+              checkSparkAnswer(valid)
+              assert(collect(valid.queryExecution.executedPlan) {
+                case agg: CometHashAggregateExec => agg
+              }.size == 2)
+              checkAnswer(
+                valid,
+                Seq(Row(1, new java.math.BigDecimal("9000000000000000").setScale(22))))
+              val overflow = sql("SELECT k, AVG(v) FROM avg_wide_division WHERE k = 2 GROUP BY k")
+              if (ansi) {
+                val (sparkError, cometError) = checkSparkAnswerMaybeThrows(overflow)
+                assert(sparkError.exists(_.getMessage.contains("NUMERIC_VALUE_OUT_OF_RANGE")))
+                assert(cometError.exists(_.getMessage.contains("NUMERIC_VALUE_OUT_OF_RANGE")))
+              } else {
+                checkSparkAnswer(overflow)
+                assert(collect(overflow.queryExecution.executedPlan) {
+                  case agg: CometHashAggregateExec => agg
+                }.size == 2)
+                checkAnswer(overflow, Seq(Row(2, null)))
+              }
+              val attempted = sql("SELECT k, TRY_AVG(v) FROM avg_wide_division GROUP BY k")
+              checkSparkAnswer(attempted)
+              assert(collect(attempted.queryExecution.executedPlan) {
+                case agg: CometHashAggregateExec => agg
+              }.size == 2)
+              checkAnswer(
+                attempted,
+                Seq(
+                  Row(1, new java.math.BigDecimal("9000000000000000").setScale(22)),
+                  Row(2, null)))
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("decimal AVG with object hash aggregate falls back at maximum precision") {
+    for (ansi <- Seq(false, true)) {
+      withSQLConf(
+        SQLConf.ANSI_ENABLED.key -> ansi.toString,
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.USE_OBJECT_HASH_AGG.key -> "true",
+        CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+        CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+        withMaxPrecisionDecimalTable(Seq((1, "0.6"), (1, "0.6"), (1, "-0.4")), "avg_object") {
+          val df = sql("SELECT k, AVG(v), sort_array(collect_list(k)) FROM avg_object GROUP BY k")
+          assert(df.queryExecution.sparkPlan.exists(_.isInstanceOf[ObjectHashAggregateExec]))
+          checkSparkAnswerAndFallbackReason(
+            df,
+            "Grouped decimal AVG at maximum precision cannot match Spark's unbounded object " +
+              "aggregation buffer")
+          checkAnswer(
+            df,
+            Seq(
+              Row(
+                1,
+                new java.math.BigDecimal("0.26666666666666666666666666666666666667"),
+                Seq(1, 1, 1))))
+          assert(collect(df.queryExecution.executedPlan) { case agg: CometHashAggregateExec =>
+            agg
+          }.isEmpty)
+        }
+      }
+    }
+  }
+
   test("grouped decimal AVG preserves overflow across JVM and native shuffle") {
     withSQLConf(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       SQLConf.SHUFFLE_PARTITIONS.key -> "2",
       CometConf.COMET_SHUFFLE_ENABLED.key -> "true") {
       withTempDir { dir =>
-        Seq((1, 0, "0.6"), (1, 0, "0.6"), (2, 2, "0.1"), (2, 2, "0.2"), (3, 4, null))
+        Seq(
+          (1, 0, "0.6"),
+          (1, 0, "0.6"),
+          (1, 0, "-0.6"),
+          (2, 2, "0.1"),
+          (2, 2, "0.2"),
+          (3, 4, null))
           .toDF("k", "part", "raw_v")
           .selectExpr("k", "part", "CAST(raw_v AS DECIMAL(38,38)) AS v")
           .coalesce(1)
