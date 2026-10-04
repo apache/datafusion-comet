@@ -886,6 +886,46 @@ comparing Arrow row-encoded keys for byte equality, which splits peers that Spar
 and match Spark’s ranks; see <a class="reference internal" href="floating-point.html"><span class="std std-doc">floating-point ordering</span></a>, which also covers
 strict floating-point mode.</p>
 </section>
+<section id="merge-into-mergerowsexec">
+<h2>MERGE INTO (MergeRowsExec)<a class="headerlink" href="#merge-into-mergerowsexec" title="Link to this heading">#</a></h2>
+<p>Spark <code class="docutils literal notranslate"><span class="pre">MergeRowsExec</span></code> appears as <code class="docutils literal notranslate"><span class="pre">CometMergeRows</span></code> when native execution is enabled.</p>
+<p>Comet can run <code class="docutils literal notranslate"><span class="pre">MergeRowsExec</span></code> (Spark’s row-level <code class="docutils literal notranslate"><span class="pre">MERGE</span> <span class="pre">INTO</span></code> dispatch operator) natively on
+Spark 3.5.x and Spark 4.0.x, but it is disabled by default. Enable it with
+<code class="docutils literal notranslate"><span class="pre">spark.comet.exec.mergeRows.enabled=true</span></code>.</p>
+<p>Spark 4.1+ intentionally falls back to Spark even when that flag is enabled. Starting in Spark
+4.1, the V2 existing-table writer locates the concrete Spark <code class="docutils literal notranslate"><span class="pre">MergeRowsExec</span></code>, builds a
+<code class="docutils literal notranslate"><span class="pre">MergeSummary</span></code> from its row-level metrics, and passes that summary to the summary-aware
+<code class="docutils literal notranslate"><span class="pre">BatchWrite.commit</span></code> overload. Replacing the node with <code class="docutils literal notranslate"><span class="pre">CometMergeRowsExec</span></code> would make summary
+discovery fail and silently switch the data source to the legacy summary-less commit overload.
+Comet will keep Spark 4.1+ <code class="docutils literal notranslate"><span class="pre">MERGE</span></code> on the JVM until it can preserve that writer contract end-to-end.
+See <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6606">#6606</a>.</p>
+<p><strong>Cardinality validation memory use can exceed Spark’s:</strong> native MERGE cardinality validation
+currently stores matched target row IDs in an unspillable hash set. For MERGEs with many matched
+rows per task, this can use more memory than Spark’s compressed bitmap and may reach the native
+memory limit earlier than Spark. See
+<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6608">#6608</a>.</p>
+<p><strong>Undeclared physical output order can differ from Spark:</strong> native execution is set-at-a-time. Within
+an input batch it emits rows grouped by the MERGE instruction that produced them, and it processes
+the MATCHED, NOT MATCHED, then NOT MATCHED BY SOURCE groups. Spark’s row-at-a-time implementation
+emits rows in input order. This is not a MERGE row-value semantic difference: an unordered table
+scan has no row-order guarantee. Downstream V2 write planning still enforces every distribution or
+ordering requirement declared by the writer; only a writer that declares no ordering requirement
+can persist the same rows in a different physical sequence.</p>
+<p><strong>Failure precedence can differ from Spark on rare inputs:</strong> Spark consumes joined rows one at a
+time. For each row it determines the MERGE group, validates cardinality when required, and walks
+that row’s instruction list until the first clause fires. Comet intentionally vectorizes this work:
+it validates cardinality for the input batch, then evaluates each instruction over the remaining
+rows of the MATCHED, NOT MATCHED, and NOT MATCHED BY SOURCE groups. Successful deterministic row
+results preserve Spark semantics, including first-match-wins within a row, but the two evaluation
+orders are not identical when more than one row in the same Arrow batch would fail.</p>
+<p>For example, Spark may encounter an ANSI cast failure on an earlier input row before reaching a
+later row whose earlier MERGE clause divides by zero, while Comet can evaluate that earlier clause
+across the whole group and report <code class="docutils literal notranslate"><span class="pre">DIVIDE_BY_ZERO</span></code> first. The same ordering difference can occur
+between different MERGE groups, between the two projections of a <code class="docutils literal notranslate"><span class="pre">Split</span></code>, or between a cardinality
+violation and an unrelated clause-evaluation error. In these cases both engines reject the query,
+but the surfaced Spark error condition can differ. This limitation only applies to Spark versions
+where native <code class="docutils literal notranslate"><span class="pre">MergeRowsExec</span></code> is enabled.</p>
+</section>
 <section id="round-robin-partitioning">
 <h2>Round-Robin Partitioning<a class="headerlink" href="#round-robin-partitioning" title="Link to this heading">#</a></h2>
 <p>Comet’s native shuffle implementation of round-robin partitioning (<code class="docutils literal notranslate"><span class="pre">df.repartition(n)</span></code>) is not compatible with
@@ -961,6 +1001,7 @@ they will be identical to Spark. Unsorted results may have different row orderin
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#in-memory-cache">In-Memory Cache</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#sampling">Sampling</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#window-functions">Window Functions</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#merge-into-mergerowsexec">MERGE INTO (MergeRowsExec)</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#round-robin-partitioning">Round-Robin Partitioning</a></li>
 </ul>
   </nav></div>

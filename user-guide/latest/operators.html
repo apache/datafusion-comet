@@ -1103,6 +1103,10 @@ natively on <code class="docutils literal notranslate"><span class="pre">Broadca
 <td><p>⚠️</p></td>
 <td><p>Experimental, disabled by default. <code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.splitOperator.enabled=true</span></code> plans the write as <code class="docutils literal notranslate"><span class="pre">IcebergWrite</span></code> and <code class="docutils literal notranslate"><span class="pre">IcebergCommit</span></code>, and Iceberg’s Java writer still writes the data files. <code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.enabled=true</span></code> then writes eligible data files natively (<code class="docutils literal notranslate"><span class="pre">CometIcebergWrite</span></code>). Covers <code class="docutils literal notranslate"><span class="pre">INSERT</span> <span class="pre">INTO</span></code>, <code class="docutils literal notranslate"><span class="pre">INSERT</span> <span class="pre">OVERWRITE</span></code>, and copy-on-write <code class="docutils literal notranslate"><span class="pre">DELETE</span></code> / <code class="docutils literal notranslate"><span class="pre">UPDATE</span></code> / <code class="docutils literal notranslate"><span class="pre">MERGE</span></code>. Merge-on-read writes (<code class="docutils literal notranslate"><span class="pre">WriteDeltaExec</span></code>) fall back. See <a class="reference internal" href="iceberg-writes.html"><span class="std std-doc">Iceberg Writes</span></a>.</p></td>
 </tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">MergeRowsExec</span></code></p></td>
+<td><p>⚠️</p></td>
+<td><p>Spark 3.5 and 4.0 only. Experimental, disabled by default (<code class="docutils literal notranslate"><span class="pre">spark.comet.exec.mergeRows.enabled</span></code>). See <a class="reference internal" href="compatibility/operators.html#merge-into-mergerowsexec"><span class="std std-ref">MERGE INTO</span></a>.</p></td>
+</tr>
 </tbody>
 </table>
 </div>

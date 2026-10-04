@@ -204,6 +204,7 @@ them like any other production setting.
 | `spark.comet.exec.hashJoin.enabled` | Whether to enable hashJoin by default. | true |
 | `spark.comet.exec.localLimit.enabled` | Whether to enable localLimit by default. | true |
 | `spark.comet.exec.localTableScan.enabled` | Whether to enable localTableScan by default. | false |
+| `spark.comet.exec.mergeRows.enabled` | Whether to enable mergeRows by default. Only takes effect on Spark 3.5 and 4.0. Spark 3.4 has no MergeRowsExec, and Spark 4.1 and later keep MergeRowsExec on Spark so V2 writers can consume its row-level metrics (https://github.com/apache/datafusion-comet/issues/6606). | false |
 | `spark.comet.exec.project.enabled` | Whether to enable project by default. | true |
 | `spark.comet.exec.range.enabled` | Whether to enable range by default. When enabled, Comet generates the rows of `spark.range` and SQL `range()` in native code, so the operators above them can run natively. It is off by default because it can be slower than Spark when those operators are only cheap expressions, such as a filter, which Spark compiles together with the range into one loop. | false |
 | `spark.comet.exec.sample.enabled` | Whether to enable sample by default. | true |

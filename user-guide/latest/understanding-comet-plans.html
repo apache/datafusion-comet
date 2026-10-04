@@ -1162,25 +1162,28 @@ consecutively in a plan, they execute as a single fused block.</p>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CometSortMergeJoin</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">SortMergeJoinExec</span></code></p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CometWindowExec</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CometMergeRows</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">MergeRowsExec</span></code> (Spark 3.5.x / 4.0.x; opt-in)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CometWindowExec</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">WindowExec</span></code></p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CometWindowGroupLimitExec</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CometWindowGroupLimitExec</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">WindowGroupLimitExec</span></code> (Spark 3.5 and later)</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CometSample</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CometSample</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">SampleExec</span></code> (sampling without replacement)</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CometTakeOrderedAndProject</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CometTakeOrderedAndProject</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">TakeOrderedAndProjectExec</span></code></p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CometWriteFiles</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CometWriteFiles</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">WriteFilesExec</span></code> (Spark 4.0 and later, experimental native Parquet writes)</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CometNativeWrite</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CometNativeWrite</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">DataWritingCommandExec</span></code> (Spark 3.x, experimental native Parquet writes)</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CometIcebergWrite</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CometIcebergWrite</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">IcebergWrite</span></code> (experimental native Iceberg data-file writes)</p></td>
 </tr>
 </tbody>
