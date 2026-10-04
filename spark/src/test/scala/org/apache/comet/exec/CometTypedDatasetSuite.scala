@@ -277,23 +277,56 @@ class CometTypedDatasetSuite extends CometTestBase {
     }
   }
 
+  /**
+   * One partition whose user function throws on row 30. Spark computes typed rows as they are
+   * read, so a reader that stops before row 30 never reaches it, but an Arrow batch would.
+   */
+  private def failsOnRow30: Dataset[Long] =
+    spark
+      .range(0, 100, 1, 1)
+      .map { i =>
+        if (i == 30L) {
+          throw new IllegalArgumentException("unexpected evaluation of row 30")
+        }
+        i + 1L
+      }
+
   convertTest("a limit does not evaluate typed Dataset rows beyond the result") {
     Seq("true", "false").foreach { aqe =>
       withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe) {
-        val df = spark
-          .range(0, 100, 1, 1)
-          .map { i =>
-            if (i == 30L) {
-              throw new IllegalArgumentException("unexpected evaluation of row 30")
-            }
-            i + 1L
-          }
-          .toDF()
-          .limit(1)
         val (_, plan) = checkSparkAnswerAndFallbackReason(
-          df,
-          "Comet does not convert the output of a typed Dataset operation below a limit")
+          failsOnRow30.toDF().limit(1),
+          "Comet does not convert the output of a typed Dataset operation when a limit can " +
+            "stop reading it early")
         assert(conversions(plan).isEmpty, s"AQE $aqe:\n$plan")
+      }
+    }
+  }
+
+  convertTest("a mapPartitions function does not evaluate typed Dataset rows it never reads") {
+    Seq("true", "false").foreach { aqe =>
+      withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe) {
+        // The filter between the two typed operations is what the conversion would run natively.
+        val (_, plan) = checkSparkAnswerAndFallbackReason(
+          failsOnRow30.filter(col("value") > 0L).mapPartitions(_.take(1)).toDF(),
+          "Comet does not convert the output of a typed Dataset operation when a mapPartitions " +
+            "function can stop reading it early")
+        assert(conversions(plan).isEmpty, s"AQE $aqe:\n$plan")
+      }
+    }
+  }
+
+  convertTest("code reading Dataset.rdd does not evaluate typed Dataset rows it never reads") {
+    assert(failsOnRow30.filter(col("value") > 0L).rdd.take(1).toSeq == Seq(1L))
+  }
+
+  convertTest("a limit above an aggregate keeps the conversion the aggregate reads all of") {
+    withRecs() { ds =>
+      Seq("true", "false").foreach { aqe =>
+        withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe) {
+          // There are 13 groups, so the limit keeps all of them in whatever order they come.
+          checkConverted(ds.map(r => TypedDsRec(r.a + 1, r.b)).groupBy("b").count().limit(20))
+        }
       }
     }
   }

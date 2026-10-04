@@ -144,12 +144,16 @@ operation ends in `SerializeFromObjectExec`, though, whose output is ordinary ro
 `spark.comet.convert.typedDataset.enabled`, `CometExecRule` puts a `CometSparkToColumnarExec` above
 it, so the operators above the typed operation can run natively. Spark inserts no columnar
 transitions below a `RowToColumnarTransition`, so the rule inserts them for the typed operation's
-own operators itself. Fusing the deserializer, the `Invoke` that calls the user function, and the
+own operators itself. Spark computes a typed operation's rows one at a time, as they are read, while
+the conversion fills a whole Arrow batch first. So the rule leaves the output unconverted where a
+limit, a `mapPartitions` function, or code reading `Dataset.rdd` could stop reading it early, unless
+an operator that reads all of its input first, such as an exchange, a sort, or a hash aggregate,
+sits in between. Fusing the deserializer, the `Invoke` that calls the user function, and the
 serializer of `Dataset.map` into one projection in the JVM codegen dispatcher was tried in
-[#5714](https://github.com/apache/datafusion-comet/pull/5714) and dropped. The dispatcher only
-calls into Spark's own classes, and the conversion gets nearly the same speedup for `map` while
-also covering the operations that pass the user function an iterator or a whole group. A typed
-`filter` is planned as an ordinary `FilterExec`, not as one of these operators.
+[#5714](https://github.com/apache/datafusion-comet/pull/5714) and dropped. The dispatcher only calls
+into Spark's own classes, and the conversion gets nearly the same speedup for `map` while also
+covering the operations that pass the user function an iterator or a whole group. A typed `filter`
+is planned as an ordinary `FilterExec`, not as one of these operators.
 
 **Driver-side commands.** `ExecutedCommandExec` runs a `RunnableCommand`, such as DDL or `SET`, on
 the driver, so there is no data path for Comet to accelerate.

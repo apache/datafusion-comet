@@ -23,7 +23,7 @@ import scala.collection.mutable.ListBuffer
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.expressions.{Divide, DoubleLiteral, EqualNullSafe, EqualTo, Expression, FloatLiteral, GreaterThan, GreaterThanOrEqual, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, NamedExpression, Remainder}
+import org.apache.spark.sql.catalyst.expressions.{Divide, DoubleLiteral, EqualNullSafe, EqualTo, Expression, FloatLiteral, GreaterThan, GreaterThanOrEqual, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, NamedExpression, Remainder, SortOrder}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, Final, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 import org.apache.spark.sql.catalyst.rules.Rule
@@ -47,7 +47,7 @@ import org.apache.spark.sql.execution.datasources.v2.{BatchScanExec, V2CommandEx
 import org.apache.spark.sql.execution.datasources.v2.csv.CSVScan
 import org.apache.spark.sql.execution.datasources.v2.json.JsonScan
 import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
-import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, BroadcastExchangeLike, ReusedExchangeExec, ShuffleExchangeExec, ShuffleExchangeLike}
+import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, BroadcastExchangeLike, Exchange, ReusedExchangeExec, ShuffleExchangeExec, ShuffleExchangeLike}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.internal.SQLConf
@@ -164,12 +164,11 @@ object CometExecRule {
     org.apache.spark.sql.catalyst.trees.TreeNodeTag[Unit]("comet.skipCometBroadcast")
 
   /**
-   * Tag set on a `SerializeFromObjectExec` below a physical limit. Converting its output to Arrow
-   * fills batches before the limit consumes them, which can evaluate typed Dataset user code for
-   * rows that Spark's row-based limit would never request.
+   * Tag set on a `SerializeFromObjectExec` whose output an operator above it can stop reading
+   * early, naming that operator. See `tagPartiallyReadTypedDatasetOutputs`.
    */
-  private val SKIP_TYPED_DATASET_CONVERSION_UNDER_LIMIT: TreeNodeTag[Unit] =
-    TreeNodeTag[Unit]("comet.skipTypedDatasetConversionUnderLimit")
+  private val TYPED_DATASET_PARTIAL_READER: TreeNodeTag[String] =
+    TreeNodeTag[String]("comet.typedDatasetPartialReader")
 }
 
 /**
@@ -377,21 +376,8 @@ case class CometExecRule(session: SparkSession)
    */
   // spotless:on
   private def transform(plan: SparkPlan): SparkPlan = {
-    def tagTypedDatasetOutputsUnderLimit(limitChild: SparkPlan): Unit =
-      limitChild.foreach {
-        case op: SerializeFromObjectExec =>
-          op.setTagValue(CometExecRule.SKIP_TYPED_DATASET_CONVERSION_UNDER_LIMIT, ())
-        case _ =>
-      }
-
-    // Conversion is bottom-up, so mark typed serializers whose limit ancestors have not been
-    // visited yet. TreeNode tags survive the child copies made during transformUp, while an
-    // identity set would not.
-    plan.foreach {
-      case limit: CollectLimitExec => tagTypedDatasetOutputsUnderLimit(limit.child)
-      case limit: LocalLimitExec => tagTypedDatasetOutputsUnderLimit(limit.child)
-      case limit: GlobalLimitExec => tagTypedDatasetOutputsUnderLimit(limit.child)
-      case _ =>
+    if (CometConf.COMET_CONVERT_FROM_TYPED_DATASET_ENABLED.get(conf)) {
+      tagPartiallyReadTypedDatasetOutputs(plan)
     }
 
     def convertNode(op: SparkPlan): SparkPlan = op match {
@@ -504,15 +490,15 @@ case class CometExecRule(session: SparkSession)
       // Arrow lets the operators above the typed operation run natively.
       case op: SerializeFromObjectExec
           if CometConf.COMET_CONVERT_FROM_TYPED_DATASET_ENABLED.get(conf) =>
-        if (op
-            .getTagValue(CometExecRule.SKIP_TYPED_DATASET_CONVERSION_UNDER_LIMIT)
-            .isDefined) {
-          withFallbackReason(
-            op,
-            "Comet does not convert the output of a typed Dataset operation below a limit " +
-              "because Arrow batching could evaluate rows beyond Spark's row-level limit")
-        } else {
-          convertTypedDatasetOutput(op)
+        op.getTagValue(CometExecRule.TYPED_DATASET_PARTIAL_READER) match {
+          case Some(reader) =>
+            withFallbackReason(
+              op,
+              "Comet does not convert the output of a typed Dataset operation when " +
+                s"$reader can stop reading it early, because filling an Arrow batch would " +
+                "run the user function on rows that Spark never reaches")
+          case None =>
+            convertTypedDatasetOutput(op)
         }
 
       // Spark 4.0+: replace only the per-task write, leaving DataWritingCommandExec - and
@@ -1301,6 +1287,49 @@ case class CometExecRule(session: SparkSession)
 
   private def hasEnabledHandler(op: SparkPlan): Boolean =
     allExecs.get(op.getClass).exists(_.enabledConfig.forall(_.get(op.conf)))
+
+  /**
+   * Tags each `SerializeFromObjectExec` whose output an operator above it can stop reading early
+   * with that operator, so `transform` does not convert it. Spark computes the rows of a typed
+   * Dataset operation one at a time, as the operator above reads them, while the conversion fills
+   * a whole Arrow batch first. Below a limit, a `mapPartitions` function such as `_.take(1)`, or
+   * code reading `Dataset.rdd`, the conversion would run the user function on rows Spark never
+   * reaches, and a function that throws on one of them would fail a query that succeeds in Spark.
+   * An operator that reads all of its input before it returns a row ends the search, since Spark
+   * computes every row below it anyway: an exchange, a sort, a hash aggregate, or a top-k over
+   * input that is not already sorted.
+   *
+   * Conversion is bottom-up, so this runs first. TreeNode tags survive the child copies made
+   * during transformUp, while an identity set would not.
+   */
+  private def tagPartiallyReadTypedDatasetOutputs(plan: SparkPlan): Unit = {
+    def visit(op: SparkPlan, partialReader: Option[String]): Unit = {
+      val childReader = op match {
+        case serialize: SerializeFromObjectExec =>
+          partialReader.foreach(
+            serialize.setTagValue(CometExecRule.TYPED_DATASET_PARTIAL_READER, _))
+          partialReader
+        case _: CollectLimitExec | _: LocalLimitExec | _: GlobalLimitExec => Some("a limit")
+        // A top-k reads only its first rows when its input is already sorted.
+        case topK: TakeOrderedAndProjectExec
+            if SortOrder.orderingSatisfies(topK.child.outputOrdering, topK.sortOrder) =>
+          Some("a limit")
+        case _: MapPartitionsExec => Some("a mapPartitions function")
+        case _: Exchange | _: SortExec | _: HashAggregateExec | _: ObjectHashAggregateExec |
+            _: TakeOrderedAndProjectExec =>
+          None
+        case _ => partialReader
+      }
+      op.children.foreach(visit(_, childReader))
+    }
+    // `Dataset.rdd` plans a `DeserializeToObjectExec` at the root, and the RDD's own code
+    // decides how much of it to read, as `take(1)` does.
+    val rootReader = plan match {
+      case _: DeserializeToObjectExec => Some("code reading Dataset.rdd")
+      case _ => None
+    }
+    visit(plan, rootReader)
+  }
 
   /**
    * Converts the rows a typed Dataset operation produces to Arrow, so the operators above it can
