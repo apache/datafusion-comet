@@ -744,6 +744,43 @@ public class CometUdfBridgeTest {
   }
 
   /**
+   * Output from a child of the task allocator carries a Spark charge through the inherited
+   * listener. Export releases it.
+   */
+  @Test
+  public void childAllocatorChargeIsReleasedAtExport() {
+    LongAccumulator charged = jsc.sc().longAccumulator("child-allocator-charged");
+    LongAccumulator afterExports = jsc.sc().longAccumulator("child-allocator-after-exports");
+    ChildAllocatorUdf.TASK_CHARGE.set(-1L);
+    ChildAllocatorUdf.CLOSED.set(0);
+
+    jsc.parallelize(Collections.singletonList(0), 1)
+        .foreachPartition(
+            (VoidFunction<Iterator<Integer>>)
+                ignored -> {
+                  TaskContext context = TaskContext.get();
+                  CometUdfBridge.registerTask(context);
+                  TaskMemoryManager taskMemoryManager =
+                      CometTaskContextShim.taskMemoryManager(context);
+                  long before = taskMemoryManager.getMemoryConsumptionForThisTask();
+                  for (int batch = 0; batch < 3; batch++) {
+                    evaluateThroughBridge(ChildAllocatorUdf.class.getName(), context);
+                  }
+                  charged.add(ChildAllocatorUdf.TASK_CHARGE.get() - before);
+                  afterExports.add(taskMemoryManager.getMemoryConsumptionForThisTask() - before);
+                });
+
+    assertTrue(
+        "the child allocator's output should be charged to the Spark task", charged.value() > 0L);
+    assertEquals(
+        "each export should release the charge of the child allocator's chunks",
+        0L,
+        afterExports.value().longValue());
+    assertEquals("close() should run once", 1, ChildAllocatorUdf.CLOSED.get());
+    assertEquals("no task state should outlive its task", 0, CometUdfBridge.taskStateCount());
+  }
+
+  /**
    * A UDF that keeps a scratch buffer from the task allocator across calls releases it in {@code
    * close()}, which the bridge calls once the task has completed. Over three sequential tasks
    * nothing is left behind: no task state, and no task allocator, which Arrow would otherwise keep
@@ -928,6 +965,33 @@ public class CometUdfBridgeTest {
       while ((buffer = LEAKED.poll()) != null) {
         buffer.close();
       }
+    }
+  }
+
+  /** Allocates its result from a child of the task allocator, and closes the child in close(). */
+  public static final class ChildAllocatorUdf implements CometUDF {
+    static final AtomicLong TASK_CHARGE = new AtomicLong(-1L);
+    static final AtomicInteger CLOSED = new AtomicInteger();
+    private BufferAllocator child;
+
+    @Override
+    public ValueVector evaluate(BufferAllocator allocator, ValueVector[] inputs, int numRows) {
+      if (child == null) {
+        child = allocator.newChildAllocator("udf-child", 0L, Long.MAX_VALUE);
+      }
+      IntVector out = nullResult(child, numRows);
+      TASK_CHARGE.set(
+          CometTaskContextShim.taskMemoryManager(TaskContext.get())
+              .getMemoryConsumptionForThisTask());
+      return out;
+    }
+
+    @Override
+    public void close() {
+      if (child != null) {
+        child.close();
+      }
+      CLOSED.incrementAndGet();
     }
   }
 

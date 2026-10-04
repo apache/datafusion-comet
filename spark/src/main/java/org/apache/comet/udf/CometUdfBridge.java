@@ -380,10 +380,11 @@ public class CometUdfBridge {
   }
 
   /**
-   * Bytes of the result's buffers currently accounted against the task allocator, i.e. the recorded
-   * bytes that move to native ownership on export. {@code getAccountedSize()} is non-zero only on
-   * the ledger that owns a chunk, so pass-through input buffers (owned by the root allocator) and
-   * chunks whose ownership already moved on a previous export contribute nothing.
+   * Bytes of the result's buffers currently accounted against the task allocator or a child
+   * allocator that shares its listener, i.e. the recorded bytes that move to native ownership on
+   * export. {@code getAccountedSize()} is non-zero only on the ledger that owns a chunk, so
+   * pass-through input buffers (owned by the root allocator) and chunks whose ownership already
+   * moved on a previous export contribute nothing.
    *
    * <p>Buffers are enumerated recursively from each vector's physical field buffers rather than
    * through {@code getBuffers(false)}: that method omits the allocated buffers of zero-length
@@ -405,10 +406,13 @@ public class CometUdfBridge {
     Set<ArrowBuf> seenBuffers = Collections.newSetFromMap(new IdentityHashMap<>());
     IdentityHashMap<ReferenceManager, Integer> resultRefs = new IdentityHashMap<>();
     collectPhysicalBuffers(result, seenBuffers, resultRefs);
+    AllocationListener taskListener = outputAllocator.getListener();
     long charged = 0L;
     for (Map.Entry<ReferenceManager, Integer> entry : resultRefs.entrySet()) {
       ReferenceManager referenceManager = entry.getKey();
-      if (referenceManager.getAllocator() == outputAllocator
+      // Child allocators inherit the task listener, so their chunks carry a charge too. A child
+      // with another listener does not charge this task, so the test is the listener, not ancestry.
+      if (referenceManager.getAllocator().getListener() == taskListener
           && referenceManager.getRefCount() == entry.getValue()) {
         charged += referenceManager.getAccountedSize();
       }
