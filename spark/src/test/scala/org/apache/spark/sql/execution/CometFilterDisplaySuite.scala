@@ -21,21 +21,24 @@ package org.apache.spark.sql.execution
 
 import java.io.ByteArrayOutputStream
 
-import org.scalatest.funsuite.AnyFunSuite
-
 import org.apache.spark.rdd.RDD
+import org.apache.spark.sql.{CometTestBase, Row}
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.comet.{CometFilterExec, SerializedPlan}
 import org.apache.spark.sql.execution.{ScalarSubquery => ExecScalarSubquery}
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.execution.ui.SparkPlanGraph
+import org.apache.spark.sql.functions.{col, lit}
 import org.apache.spark.sql.types.{BinaryType, LongType}
 import org.apache.spark.util.sketch.BloomFilter
 
+import org.apache.comet.CometSparkSessionExtensions.isSpark42Plus
 import org.apache.comet.serde.OperatorOuterClass.Operator
 
-class CometFilterDisplaySuite extends AnyFunSuite {
+class CometFilterDisplaySuite extends CometTestBase {
+  import testImplicits._
+
   private case class Input(override val output: Seq[Attribute]) extends LeafExecNode {
     override protected def doExecute(): RDD[InternalRow] =
       throw new AssertionError("Rendering must not execute the plan")
@@ -62,6 +65,50 @@ class CometFilterDisplaySuite extends AnyFunSuite {
       plan.verboseStringWithOperatorId(),
       info.simpleString,
       SparkPlanGraph(info).nodes.head.makeDotNode(Map.empty))
+  }
+
+  test("application-built Bloom filters have bounded explain and SQL UI displays") {
+    assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4968")
+    val bloom = BloomFilter.create(10L, 8L * 1024 * 1024)
+    bloom.putLong(7L)
+    val buffer = new ByteArrayOutputStream()
+    bloom.writeTo(buffer)
+    val bytes = buffer.toByteArray
+    val summary = s"<bloom: ${bytes.length} bytes>"
+
+    // This is an application-supplied literal. Spark's automatically injected runtime Bloom
+    // filters retain scalar subqueries; enabling that optimization does not create this case.
+    withSQLConf("spark.sql.optimizer.runtime.bloomFilter.enabled" -> "true") {
+      withParquetDataFrame(Seq(Tuple1(7L), Tuple1(8L))) { input =>
+        def query = input.filter(
+          getColumnFromExpression(BloomFilterMightContain(lit(bytes).expr, col("_1").expr)))
+        val (_, plan) = checkSparkAnswerAndOperator(query, Seq(classOf[CometFilterExec]))
+        checkAnswer(query, Seq(Row(7L)))
+        val filters = plan.collect { case filter: CometFilterExec => filter }
+        assert(filters.nonEmpty)
+        filters.foreach { filter =>
+          Seq(
+            filter.simpleString(100),
+            filter.verboseStringWithOperatorId(),
+            SparkPlanInfo.fromSparkPlan(filter).simpleString).foreach { text =>
+            assert(text.contains(summary))
+            assert(text.length < 2048)
+          }
+          assert(filter.condition.find {
+            case predicate: BloomFilterMightContain =>
+              predicate.bloomFilterExpression.find {
+                case literal: org.apache.spark.sql.catalyst.expressions.Literal =>
+                  literal.value match {
+                    case payload: Array[Byte] => payload.sameElements(bytes)
+                    case _ => false
+                  }
+                case _ => false
+              }.nonEmpty
+            case _ => false
+          }.nonEmpty)
+        }
+      }
+    }
   }
 
   test("UI and explain summarize large Bloom literals before formatting or evaluating them") {
