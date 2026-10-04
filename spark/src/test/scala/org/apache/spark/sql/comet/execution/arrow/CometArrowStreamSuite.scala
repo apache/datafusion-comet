@@ -79,14 +79,30 @@ class CometArrowStreamSuite extends AnyFunSuite with Matchers {
       writer.finish()
 
       val arrow = root.getVector(0).asInstanceOf[StructVector]
-      arrow.getChild("months").asInstanceOf[IntVector].get(0) shouldBe expected.months
-      arrow.getChild("days").asInstanceOf[IntVector].get(0) shouldBe expected.days
-      arrow.getChild("microseconds").asInstanceOf[BigIntVector].get(0) shouldBe
-        expected.microseconds
+      val months = arrow.getChild("months").asInstanceOf[IntVector]
+      val days = arrow.getChild("days").asInstanceOf[IntVector]
+      val micros = arrow.getChild("microseconds").asInstanceOf[BigIntVector]
+      months.get(0) shouldBe expected.months
+      days.get(0) shouldBe expected.days
+      micros.get(0) shouldBe expected.microseconds
+      // A null interval is null in the struct and in each child.
+      Seq(arrow, months, days, micros).foreach { vector =>
+        vector.getValueCount shouldBe 2
+        vector.isNull(1) shouldBe true
+      }
 
       val comet = CometVector.getVector(arrow, null)
       comet.getInterval(0) shouldBe expected
       comet.getInterval(1) shouldBe null
+
+      // After a reset, the writer fills the same vectors again, with the null first this time.
+      writer.reset()
+      writer.write(new GenericInternalRow(Array[Any](null)))
+      writer.write(new GenericInternalRow(Array[Any](expected)))
+      writer.finish()
+      val reused = CometVector.getVector(arrow, null)
+      reused.getInterval(0) shouldBe null
+      reused.getInterval(1) shouldBe expected
     } finally {
       root.close()
       allocator.close()

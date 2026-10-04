@@ -27,7 +27,6 @@ import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector._
 import org.apache.arrow.vector.complex._
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.GenericInternalRow
 import org.apache.spark.sql.catalyst.expressions.SpecializedGetters
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.errors.QueryExecutionErrors
@@ -96,10 +95,7 @@ private[arrow] object ArrowWriter {
       case (CalendarIntervalType, vector: IntervalMonthDayNanoVector) =>
         new IntervalMonthDayNanoWriter(vector)
       case (CalendarIntervalType, vector: StructVector) =>
-        val children = (0 until vector.size()).map { ordinal =>
-          createFieldWriter(vector.getChildByOrdinal(ordinal))
-        }
-        new CalendarIntervalStructWriter(vector, children.toArray)
+        new CalendarIntervalStructWriter(vector)
       case (dt, _) =>
         throw QueryExecutionErrors.notSupportTypeError(dt)
     }
@@ -649,20 +645,30 @@ private[arrow] class StructWriter(
   }
 }
 
-private[arrow] class CalendarIntervalStructWriter(
-    valueVector: StructVector,
-    children: Array[ArrowFieldWriter])
-    extends StructWriter(valueVector, children) {
+/**
+ * Writes the three child vectors directly, as the codegen output does, so it boxes no value. A
+ * null sets the struct and each child null, as [[StructWriter]] does.
+ */
+private[arrow] class CalendarIntervalStructWriter(val valueVector: StructVector)
+    extends ArrowFieldWriter {
 
-  private val row = new GenericInternalRow(3)
+  private val months = valueVector.getChildByOrdinal(0).asInstanceOf[IntVector]
+  private val days = valueVector.getChildByOrdinal(1).asInstanceOf[IntVector]
+  private val microseconds = valueVector.getChildByOrdinal(2).asInstanceOf[BigIntVector]
+
+  override def setNull(): Unit = {
+    months.setNull(count)
+    days.setNull(count)
+    microseconds.setNull(count)
+    valueVector.setNull(count)
+  }
 
   override def setValue(input: SpecializedGetters, ordinal: Int): Unit = {
-    valueVector.setIndexDefined(count)
     val interval = input.getInterval(ordinal)
-    row.update(0, interval.months)
-    row.update(1, interval.days)
-    row.update(2, interval.microseconds)
-    children.indices.foreach(i => children(i).write(row, i))
+    valueVector.setIndexDefined(count)
+    months.setSafe(count, interval.months)
+    days.setSafe(count, interval.days)
+    microseconds.setSafe(count, interval.microseconds)
   }
 }
 
