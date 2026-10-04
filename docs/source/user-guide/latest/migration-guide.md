@@ -124,6 +124,19 @@ session's `spark.shuffle.manager`. A session that named `CometShuffleManager` af
 had started with a different shuffle manager used to plan Comet shuffles that failed with a
 `ClassCastException`. Such a session now runs without Comet, with a warning.
 
+### Native Iceberg Reads on EKS with IRSA
+
+On EKS with IAM Roles for Service Accounts (IRSA), when `AWS_WEB_IDENTITY_TOKEN_FILE`,
+`AWS_ROLE_ARN` and a region are set and the catalog configures no credentials, Comet `1.1.0`'s
+native Iceberg scan takes its S3 credentials only from the web-identity role. If that fails, it no
+longer falls back to the node role or Pod Identity, as Comet `1.0.0` did. So a cluster whose IRSA
+setup is broken, and that was reading S3 as the node role without anyone noticing, now fails native
+Iceberg reads with `failed to load signing credential`. The "EKS / IRSA" section of
+[S3 Credential Providers](s3-credential-providers.md) explains the change. To go back to the old
+credential chain for a catalog, set
+`spark.sql.catalog.<catalog>.s3.comet.credential.webIdentity.enabled=false`. A table loaded by path
+has no catalog to set that on, so for it set `spark.comet.scan.icebergNative.enabled=false`.
+
 ### Deprecated and Removed Settings
 
 `spark.comet.exec.memoryPool.fraction` is deprecated and will be removed in a future major release.

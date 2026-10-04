@@ -264,10 +264,27 @@ object CometConf extends ShimCometConf {
     createExecEnabledConfig("takeOrderedAndProject", defaultValue = true)
   val COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("localTableScan", defaultValue = false)
+  val COMET_EXEC_RANGE_ENABLED: ConfigEntry[Boolean] =
+    createExecEnabledConfig(
+      "range",
+      defaultValue = false,
+      notes = Some(
+        "When enabled, Comet generates the rows of `spark.range` and SQL `range()` in native " +
+          "code, so the operators above them can run natively. It is off by default because " +
+          "it can be slower than Spark when those operators are only cheap expressions, such " +
+          "as a filter, which Spark compiles together with the range into one loop"))
   val COMET_EXEC_EMPTY_RELATION_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("emptyRelation", defaultValue = true)
   val COMET_EXEC_SAMPLE_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("sample", defaultValue = true)
+  val COMET_EXEC_MERGE_ROWS_ENABLED: ConfigEntry[Boolean] =
+    createExecEnabledConfig(
+      "mergeRows",
+      defaultValue = false,
+      notes = Some(
+        "Only takes effect on Spark 3.5 and 4.0. Spark 3.4 has no MergeRowsExec, and Spark " +
+          "4.1 and later keep MergeRowsExec on Spark so V2 writers can consume its row-level " +
+          "metrics (https://github.com/apache/datafusion-comet/issues/6606)"))
 
   val COMET_EXEC_IN_MEMORY_CACHE_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.inMemoryCache.enabled")
@@ -275,7 +292,8 @@ object CometConf extends ShimCometConf {
       .doc("Whether to enable Comet native execution for in-memory cached tables. Its value at " +
         "startup also decides whether CometDriverPlugin installs Comet's cache serializer, " +
         "which stores cached data in Arrow format. The plugin installs it only if " +
-        "spark.comet.enabled and spark.comet.exec.enabled are also enabled at startup. " +
+        "spark.comet.enabled and spark.comet.exec.enabled are also enabled at startup, and " +
+        "only with one of Comet's shuffle managers while Comet shuffle is enabled. " +
         "Because spark.sql.cache.serializer is a " +
         "static config, the cached format is fixed for the application, and disabling this " +
         "at runtime only sends cached scans back to Spark's execution path. Relations whose " +
@@ -284,10 +302,12 @@ object CometConf extends ShimCometConf {
         "zstd compression, and a scan copies out only the buffers of the columns it projected, " +
         "so the unselected ones are never decompressed. Reads that feed Spark operators rather " +
         "than Comet ones still pay a row conversion the default format avoids, and can be " +
-        "slower than Spark's cache. With spark.kryo.registrationRequired=true, also set " +
-        "spark.kryo.registrator=org.apache.comet.CometKryoRegistrator before creating the " +
-        "SparkContext, otherwise caching fails as soon as a block is serialized, including " +
-        "the disk half of the default MEMORY_AND_DISK storage level.")
+        "slower than Spark's cache. With spark.kryo.registrationRequired=true, the plugin " +
+        "installs it only if Kryo has registered Comet's cached batch, as " +
+        "spark.kryo.registrator=org.apache.comet.CometKryoRegistrator does when set before " +
+        "creating the SparkContext, because Kryo would otherwise reject a cached block as soon " +
+        "as it is serialized, including the disk half of the default MEMORY_AND_DISK storage " +
+        "level.")
       .booleanConf
       .createWithDefault(false)
 
@@ -1088,10 +1108,12 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_EXEC)
       .doc(
         "When enabled, fall back to Spark for floating-point operations that may differ from " +
-          "Spark, such as comparing -0.0 and 0.0, or sorting floating-point values nested in " +
-          "arrays, structs, or maps. Scalar `ORDER BY`, window ordering and range partitioning " +
-          "keys are unaffected, because Comet normalizes those comparison keys to match Spark, " +
-          "and so is `sort_array`, which follows Spark's ordering. " +
+          "Spark, such as comparing -0.0 and 0.0. `ORDER BY`, window ordering and range " +
+          "partitioning keys are unaffected, including floating-point values nested in arrays " +
+          "and structs, because Comet normalizes those comparison keys to match Spark. The " +
+          "exception is a nested key whose type can hold a null element or field, which falls " +
+          "back until the native sort and window frames order those nulls as Spark does. " +
+          "`sort_array` is unaffected too, because it follows Spark's ordering. " +
           s"$COMPAT_GUIDE.")
       .booleanConf
       .createWithDefault(false)

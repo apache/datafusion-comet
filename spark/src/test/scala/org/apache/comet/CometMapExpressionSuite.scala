@@ -496,6 +496,19 @@ class CometMapExpressionSuite extends CometTestBase {
     }
   }
 
+  // A TRY cast over a foldable map folds to a literal whose failing key is null. With a single
+  // entry it has to stay on Spark too, rather than being rebuilt as a `CreateMap` that rejects the
+  // null key. Spark returns NULL for both rows.
+  // https://github.com/apache/datafusion-comet/issues/6584
+  test("folded single-entry map literal with a null key falls back (multirow)") {
+    withParquetTable((1 until 3).map(i => (i, i.toLong)), "tbl") {
+      checkSparkAnswerAndFallbackReason(
+        "SELECT _1 AS id, element_at(try_cast(map(9999999999L, 20) AS map<int, int>), _1) AS v " +
+          "FROM tbl",
+        "Unsupported data type MapType")
+    }
+  }
+
   // Direct single-level folded map with collated string keys. Native lookup is bytewise, so a
   // case-insensitive `a1` lookup against a stored `A1` cannot match; `MapKeySupport` declines it.
   test("folded map literal with collated string keys in element_at falls back (multirow)") {

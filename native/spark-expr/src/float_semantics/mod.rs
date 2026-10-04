@@ -120,19 +120,12 @@ pub fn float_gt<T: Float>(left: T, right: T) -> bool {
     left > right || (left.is_nan() && !right.is_nan())
 }
 
-/// The value that Spark's `Murmur3Hash` and `XxHash64` hash in place of a float. `-0.0` hashes as
-/// `0.0`, so the two zeros hash alike.
-///
-/// Spark reads the other bits through `doubleToLongBits`, which also canonicalizes NaN. This does
-/// not yet, so a NaN whose bits are not canonical hashes differently from Spark (#6385).
+/// The value that Spark's `Murmur3Hash` and `XxHash64` hash in place of a float. Spark hashes
+/// `-0.0` as `0.0` and reads the other bits through `doubleToLongBits` or `floatToIntBits`, which
+/// canonicalize NaN, so this is the same value [`normalize_float`] returns.
 #[inline]
 pub fn hash_input<T: Float>(v: T) -> T {
-    if v == T::zero() {
-        // `-0.0 == 0.0` in IEEE 754, so this catches negative zero as well.
-        T::zero()
-    } else {
-        v
-    }
+    normalize_float(v)
 }
 
 /// A NaN with the sign bit set, which arithmetic produces on x86-64.
@@ -142,6 +135,43 @@ pub(crate) const NEGATIVE_NAN: f64 = f64::from_bits(0xfff8_0000_0000_0000);
 #[cfg(test)]
 pub(crate) const PAYLOAD_NAN: f64 = f64::from_bits(0x7ff0_0000_0000_0001);
 
+/// Values on which Spark's ordering and IEEE 754 total order disagree, with neighbors and a null.
+#[cfg(test)]
+pub(crate) const EDGE_VALUES: [Option<f64>; 10] = [
+    Some(f64::NEG_INFINITY),
+    Some(-1.0),
+    Some(-0.0),
+    Some(0.0),
+    Some(1.0),
+    Some(f64::INFINITY),
+    Some(f64::NAN),
+    Some(NEGATIVE_NAN),
+    Some(PAYLOAD_NAN),
+    None,
+];
+
+/// Spark's `greatest` of `values` in order, or `least` if `greatest` is false, which is also how
+/// `Max` and `Min` update their buffer: nulls are skipped, and a value replaces the result only when
+/// [`compare_floats`] ranks it strictly before, so the first of equal values is kept.
+#[cfg(test)]
+pub(crate) fn spark_extreme(values: &[Option<f64>], greatest: bool) -> Option<f64> {
+    values
+        .iter()
+        .flatten()
+        .fold(None, |best, &value| match best {
+            None => Some(value),
+            Some(best) => {
+                let ordering = compare_floats(value, best);
+                let replace = if greatest {
+                    ordering.is_gt()
+                } else {
+                    ordering.is_lt()
+                };
+                Some(if replace { value } else { best })
+            }
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -150,35 +180,26 @@ mod tests {
 
     #[test]
     fn per_value_rules() {
-        // Each row: the input, then what `normalize_float`, `canonicalize_nan` and `hash_input`
-        // return for it.
+        // Each row: the input, then what `normalize_float` and `canonicalize_nan` return for it.
+        // Spark hashes the value `normalize_float` returns.
         let rows = [
-            (-0.0, 0.0, -0.0, 0.0),
-            (0.0, 0.0, 0.0, 0.0),
-            (-1.5, -1.5, -1.5, -1.5),
-            (
-                f64::NEG_INFINITY,
-                f64::NEG_INFINITY,
-                f64::NEG_INFINITY,
-                f64::NEG_INFINITY,
-            ),
-            // `hash_input` does not canonicalize NaN yet (#6385).
-            (NEGATIVE_NAN, f64::NAN, f64::NAN, NEGATIVE_NAN),
-            (PAYLOAD_NAN, f64::NAN, f64::NAN, PAYLOAD_NAN),
+            (-0.0, 0.0, -0.0),
+            (0.0, 0.0, 0.0),
+            (-1.5, -1.5, -1.5),
+            (f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY),
+            (NEGATIVE_NAN, f64::NAN, f64::NAN),
+            (PAYLOAD_NAN, f64::NAN, f64::NAN),
         ];
-        for (value, normalized, canonical, hashed) in rows {
+        for (value, normalized, canonical) in rows {
             assert_eq!(normalize_float(value).to_bits(), normalized.to_bits());
             assert_eq!(canonicalize_nan(value).to_bits(), canonical.to_bits());
-            assert_eq!(hash_input(value).to_bits(), hashed.to_bits());
+            assert_eq!(hash_input(value).to_bits(), normalized.to_bits());
         }
-        let rows = [
-            (-0.0, 0.0, -0.0, 0.0),
-            (NEGATIVE_NAN_F32, f32::NAN, f32::NAN, NEGATIVE_NAN_F32),
-        ];
-        for (value, normalized, canonical, hashed) in rows {
+        let rows = [(-0.0, 0.0, -0.0), (NEGATIVE_NAN_F32, f32::NAN, f32::NAN)];
+        for (value, normalized, canonical) in rows {
             assert_eq!(normalize_float(value).to_bits(), normalized.to_bits());
             assert_eq!(canonicalize_nan(value).to_bits(), canonical.to_bits());
-            assert_eq!(hash_input(value).to_bits(), hashed.to_bits());
+            assert_eq!(hash_input(value).to_bits(), normalized.to_bits());
         }
     }
 
