@@ -295,6 +295,27 @@ class CometArrowWriterSuite extends AnyFunSuite with Matchers {
     }
   }
 
+  test("missing fixed-width vectors do not read their unallocated value storage") {
+    val rows = 5000
+    Seq(false, true).foreach { offHeap =>
+      val v = newVector(4096, IntegerType, offHeap)
+      try {
+        // Spark's Parquet reader marks an evolved field missing instead of growing its backing
+        // storage with a surrounding collection. Every getter is null-aware, but a bulk read of
+        // all 5000 values would overrun this vector's 4096 allocated slots.
+        // Spark 4 calls this setMissing; in Spark 3 the equivalent API is setAllNull.
+        val setter = v.getClass.getMethods.find(_.getName == "setMissing").getOrElse {
+          v.getClass.getMethod("setAllNull")
+        }
+        setter.invoke(v)
+        val batch = new ColumnarBatch(Array[ColumnVector](v), rows)
+        assertColumnarMatchesRows(batch, new StructType().add("missing", IntegerType), 0, rows)
+      } finally {
+        v.close()
+      }
+    }
+  }
+
   test("dictionary strings decode against each input batch's dictionary") {
     // Spark's readers reuse one vector across row groups whose dictionaries differ, and the
     // reader joins their batches into one Arrow batch.

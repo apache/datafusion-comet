@@ -22,6 +22,7 @@ package org.apache.spark.sql.comet.execution.arrow
 import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector.ipc.ArrowReader
 import org.apache.arrow.vector.types.pojo.Schema
+import org.apache.spark.rdd.InputFileBlockHolder
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 /**
@@ -31,8 +32,9 @@ import org.apache.spark.sql.vectorized.ColumnarBatch
  * so the output batches are full whatever size the source produces: Spark's vectorized Parquet
  * reader emits 4096 rows a batch and its in-memory cache 10000. Spark's `ColumnVector`
  * implementations aren't Arrow buffers, so this reader necessarily copies element values into
- * Arrow format, and each Spark batch is copied in full before the next is requested, since
- * producers reuse them.
+ * Arrow format. Each Spark batch is copied before the next is requested, since producers reuse
+ * them, and batches are not combined across input-file boundaries, since Spark evaluates
+ * `input_file_*` expressions from the current [[InputFileBlockHolder]].
  */
 private[comet] class SparkColumnarArrowReader(
     allocator: BufferAllocator,
@@ -44,6 +46,9 @@ private[comet] class SparkColumnarArrowReader(
 
   private var current: ColumnarBatch = _
   private var rowsConsumedInCurrent: Int = 0
+  private var currentInputFilePath: String = _
+  private var currentInputFileStart: Long = -1L
+  private var currentInputFileLength: Long = -1L
 
   override protected def readSchema(): Schema = arrowSchema
 
@@ -63,8 +68,21 @@ private[comet] class SparkColumnarArrowReader(
       }
       current = source.next()
       rowsConsumedInCurrent = 0
+      currentInputFilePath = InputFileBlockHolder.getInputFilePath.toString
+      currentInputFileStart = InputFileBlockHolder.getStartOffset
+      currentInputFileLength = InputFileBlockHolder.getLength
     }
     true
+  }
+
+  private def restoreInputFile(path: String, start: Long, length: Long): Unit = {
+    if (start < 0) {
+      if (InputFileBlockHolder.getStartOffset >= 0) {
+        InputFileBlockHolder.unset()
+      }
+    } else {
+      InputFileBlockHolder.set(path, start, length)
+    }
   }
 
   override def loadNextBatch(): Boolean = {
@@ -73,6 +91,12 @@ private[comet] class SparkColumnarArrowReader(
     if (!advanceToNonEmptyBatch()) {
       return false
     }
+    // `current` may have been pulled while finishing the previous Arrow batch, then buffered
+    // because its file context differed. Install its context only after that batch was consumed.
+    restoreInputFile(currentInputFilePath, currentInputFileStart, currentInputFileLength)
+    val outputInputFilePath = currentInputFilePath
+    val outputInputFileStart = currentInputFileStart
+    val outputInputFileLength = currentInputFileLength
 
     // Without a limit, each Spark batch becomes one Arrow batch.
     val batchSize =
@@ -93,7 +117,17 @@ private[comet] class SparkColumnarArrowReader(
         conversionNs += System.nanoTime() - startNs
         val advanced = advanceToNonEmptyBatch()
         startNs = System.nanoTime()
-        advanced
+        val sameInputFile = advanced &&
+          currentInputFilePath == outputInputFilePath &&
+          currentInputFileStart == outputInputFileStart &&
+          currentInputFileLength == outputInputFileLength
+        if (!sameInputFile) {
+          // `source.next()` updates InputFileBlockHolder before the current Arrow batch reaches
+          // downstream Spark expressions. Keep the new Spark batch buffered and restore the
+          // context that describes every row in the Arrow batch being returned.
+          restoreInputFile(outputInputFilePath, outputInputFileStart, outputInputFileLength)
+        }
+        sameInputFile
       }
     }
     writer.finish()

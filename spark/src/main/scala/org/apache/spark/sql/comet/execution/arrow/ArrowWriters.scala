@@ -716,9 +716,14 @@ private[arrow] abstract class FixedWidthArrowFieldWriter extends ArrowFieldWrite
   protected def copyValues(input: ColumnVector, startRow: Int, numRows: Int): Boolean = {
     val target = valueVector.getDataBufferAddress + count.toLong * valueVector.getTypeWidth
     val bulk = input match {
-      case vector: OffHeapColumnVector => LittleEndian && !vector.hasDictionary
+      // Spark marks fields missing from a Parquet file all null without growing their value
+      // storage to the surrounding collection's size. Reading that storage is unnecessary and,
+      // for on-heap vectors, can run past the short backing array.
+      case vector: OffHeapColumnVector =>
+        LittleEndian && !vector.hasDictionary && !vector.isAllNull
       case vector: OnHeapColumnVector =>
-        LittleEndian && !vector.hasDictionary && numRows >= MinOnHeapBulkCopyRows
+        LittleEndian && !vector.hasDictionary && !vector.isAllNull &&
+        numRows >= MinOnHeapBulkCopyRows
       case _ => false
     }
     val hasNull = input.hasNull

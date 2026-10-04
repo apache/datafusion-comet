@@ -35,6 +35,7 @@ import org.apache.arrow.vector.dictionary.{Dictionary => ArrowDictionary}
 import org.apache.arrow.vector.dictionary.DictionaryProvider.MapDictionaryProvider
 import org.apache.arrow.vector.ipc.ArrowReader
 import org.apache.arrow.vector.types.pojo.{ArrowType, DictionaryEncoding, Field, FieldType, Schema}
+import org.apache.spark.rdd.InputFileBlockHolder
 import org.apache.spark.sql.catalyst.expressions.{GenericInternalRow, SpecializedGetters}
 import org.apache.spark.sql.catalyst.util.{ArrayBasedMapData, GenericArrayData}
 import org.apache.spark.sql.comet.util.Utils
@@ -868,6 +869,54 @@ class CometArrowStreamSuite extends AnyFunSuite with Matchers {
       longs.close()
       strings.close()
       allocator.close()
+    }
+  }
+
+  test("Spark columnar reader does not fill batches across input files") {
+    val allocator = new RootAllocator(Long.MaxValue)
+    val schema = StructType(Seq(StructField("long", LongType, nullable = false)))
+    // Refill one vector for every batch, as Spark's vectorized file readers do. The first two
+    // batches come from the same file and can be combined. Pulling the third must leave it
+    // buffered and restore the first file's context until the partial Arrow batch is consumed.
+    val longs = new OnHeapColumnVector(3, LongType)
+    val inputs = Seq(
+      ("file:///first.parquet", 0L, 100L, 2),
+      ("file:///first.parquet", 0L, 100L, 2),
+      ("file:///second.parquet", 0L, 200L, 3))
+    var next = 0L
+    val source = inputs.iterator.map { case (path, start, length, size) =>
+      InputFileBlockHolder.set(path, start, length)
+      longs.reset()
+      (0 until size).foreach { i =>
+        longs.putLong(i, next)
+        next += 1
+      }
+      new ColumnarBatch(Array[ColumnVector](longs), size)
+    }
+    val reader = new SparkColumnarArrowReader(
+      allocator,
+      Utils.toArrowSchema(schema, "UTC"),
+      source,
+      maxRecordsPerBatch = 3)
+
+    try {
+      Seq(
+        (3, "file:///first.parquet", 0L, 100L),
+        (1, "file:///first.parquet", 0L, 100L),
+        (3, "file:///second.parquet", 0L, 200L)).foreach {
+        case (batchSize, path, start, length) =>
+          reader.loadNextBatch() shouldBe true
+          reader.getVectorSchemaRoot.getRowCount shouldBe batchSize
+          InputFileBlockHolder.getInputFilePath.toString shouldBe path
+          InputFileBlockHolder.getStartOffset shouldBe start
+          InputFileBlockHolder.getLength shouldBe length
+      }
+      reader.loadNextBatch() shouldBe false
+    } finally {
+      reader.close()
+      longs.close()
+      allocator.close()
+      InputFileBlockHolder.unset()
     }
   }
 
