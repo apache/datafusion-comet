@@ -184,6 +184,22 @@ class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
     }
   }
 
+  for (adaptive <- Seq(false, true)) {
+    test(s"transition reversion of a stage that is only a scan: AQE=$adaptive") {
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS.key -> "0") {
+        withParquetTable((0 until 100).map(i => (i, i % 10)), "tbl") {
+          // The reverted stage is a bare vectorized scan, which needs a transition to yield rows.
+          val (_, cometPlan) = checkSparkAnswer("SELECT * FROM tbl")
+          val plan = stripAQEPlan(cometPlan)
+          assert(countCometExecs(plan) == 0, s"Expected stage reversion:\n$plan")
+        }
+      }
+    }
+  }
+
   test("revertToSpark removes all Comet operators from a plan with transitions") {
     withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
 
