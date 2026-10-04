@@ -30,7 +30,7 @@ import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSeq, AttributeSet, CodegenObjectFactoryMode, Expression, ExpressionSet, Generator, LeafExpression, NamedExpression, SortOrder, XXH64}
+import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSeq, AttributeSet, CodegenObjectFactoryMode, Expression, ExpressionSet, Generator, LeafExpression, Literal, NamedExpression, SortOrder, XXH64}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, CollectList, CollectSet, Final, ImperativeAggregate, Mode, Partial, PartialMerge, Percentile, Sum}
 import org.apache.spark.sql.catalyst.expressions.codegen.CodegenFallback
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
@@ -728,6 +728,25 @@ object CometExec {
     bytes
   }
 
+  /**
+   * The childless operators of a native plan, depth first. Its `Scan` and `ShuffleScan` leaves
+   * read the block's inputs in this order.
+   */
+  def nativeLeaves(op: Operator): Seq[Operator] =
+    if (op.getChildrenCount == 0) Seq(op)
+    else op.getChildrenList.asScala.toSeq.flatMap(nativeLeaves)
+
+  /**
+   * The input indices of a native plan that its `ShuffleScan` leaves read. Each `Scan` or
+   * `ShuffleScan` leaf reads one input, in [[nativeLeaves]] order.
+   */
+  def findShuffleScanIndices(plan: Operator): Set[Int] =
+    nativeLeaves(plan)
+      .filter(leaf => leaf.hasScan || leaf.hasShuffleScan)
+      .zipWithIndex
+      .collect { case (leaf, index) if leaf.hasShuffleScan => index }
+      .toSet
+
   def getCometIterator(
       inputObjects: Array[Object],
       numOutputCols: Int,
@@ -995,7 +1014,7 @@ abstract class CometNativeExec extends CometExec {
     // (`ShuffleQueryStageExec`), so a bare non-AQE `CometShuffleExchangeExec` always serializes
     // as a regular Scan regardless of `COMET_SHUFFLE_DIRECT_READ_ENABLED`. Driving the JVM
     // dispatch from `shuffleScanIndices` instead of the conf keeps the two aligned.
-    val shuffleScanIndices = findShuffleScanIndices(nativeOp)
+    val shuffleScanIndices = CometExec.findShuffleScanIndices(nativeOp)
 
     def isBroadcastInput(plan: SparkPlan): Boolean = plan match {
       case _: CometBroadcastExchangeExec => true
@@ -1177,27 +1196,6 @@ abstract class CometNativeExec extends CometExec {
   }
 
   /**
-   * Walk the protobuf operator tree depth-first to find which input indices correspond to
-   * ShuffleScan vs Scan leaf nodes. Each Scan or ShuffleScan leaf consumes one input in order.
-   */
-  private def findShuffleScanIndices(plan: OperatorOuterClass.Operator): Set[Int] = {
-    var scanIndex = 0
-    val indices = mutable.Set.empty[Int]
-    def walk(op: OperatorOuterClass.Operator): Unit = {
-      if (op.hasShuffleScan) {
-        indices += scanIndex
-        scanIndex += 1
-      } else if (op.hasScan) {
-        scanIndex += 1
-      } else {
-        op.getChildrenList.asScala.foreach(walk)
-      }
-    }
-    walk(plan)
-    indices.toSet
-  }
-
-  /**
    * Converts this native Comet operator and its children into a native block which can be
    * executed as a whole (i.e., in a single JNI call) from the native side.
    */
@@ -1208,6 +1206,22 @@ abstract class CometNativeExec extends CometExec {
         // point where the whole native block is in hand, which is what the pool indices are
         // scoped to.
         SerializedPlan(Some(CometExec.serializeNativePlan(QueryContextInterner.intern(nativeOp))))
+      case other: AnyRef => other
+      case null => null
+    }
+
+    val newArgs = mapProductIterator(transform)
+    makeCopy(newArgs).asInstanceOf[CometNativeExec]
+  }
+
+  /**
+   * Copies this operator with `newOp` as its native plan and no serialized plan, so that
+   * `convertBlock` serializes the block again.
+   */
+  def withRefreshedNativeOp(newOp: Operator): CometNativeExec = {
+    def transform(arg: Any): AnyRef = arg match {
+      case op: Operator if op eq nativeOp => newOp
+      case _: SerializedPlan => SerializedPlan(None)
       case other: AnyRef => other
       case null => null
     }
@@ -2574,6 +2588,32 @@ trait CometHashJoin {
         case FullOuter => JoinType.FullOuter
         case LeftSemi => JoinType.LeftSemi
         case LeftAnti => JoinType.LeftAnti
+        case ExistenceJoin(_) if CometConf.COMET_EXEC_EXISTENCE_JOIN_ENABLED.get(join.conf) =>
+          // Native only for equi-key joins with bare column/literal keys and no residual.
+          if (join.condition.isDefined) {
+            withFallbackReason(
+              join,
+              "ExistenceJoin with a residual (non-equi) condition is not supported natively")
+            return None
+          } else if (!(join.leftKeys ++ join.rightKeys).forall {
+              case _: Attribute | _: Literal => true
+              case _ => false
+            }) {
+            withFallbackReason(
+              join,
+              "ExistenceJoin with a computed (non-column) join key is not supported natively")
+            return None
+          } else {
+            JoinType.Existence
+          }
+        case ExistenceJoin(_) =>
+          // The guard above matched only when the flag is enabled; reaching here means it is off.
+          // Report a toggle-specific reason so the plan does not read like a permanent limitation.
+          withFallbackReason(
+            join,
+            "Native ExistenceJoin is disabled; set " +
+              s"${CometConf.COMET_EXEC_EXISTENCE_JOIN_ENABLED.key}=true to enable it")
+          return None
         case _ =>
           // Spark doesn't support other join types
           withFallbackReason(join, s"Unsupported join type ${join.joinType}")
@@ -2844,6 +2884,11 @@ case class CometHashJoinExec(
   override def withNewChildrenInternal(newLeft: SparkPlan, newRight: SparkPlan): SparkPlan =
     this.copy(left = newLeft, right = newRight)
 
+  override def producedAttributes: AttributeSet = joinType match {
+    case ExistenceJoin(exists) => AttributeSet(exists)
+    case _ => AttributeSet.empty
+  }
+
   override def stringArgs: Iterator[Any] =
     Iterator(leftKeys, rightKeys, joinType, buildSide, condition, left, right)
 
@@ -2993,6 +3038,11 @@ case class CometBroadcastHashJoinExec(
   override def withNewChildrenInternal(newLeft: SparkPlan, newRight: SparkPlan): SparkPlan =
     this.copy(left = newLeft, right = newRight)
 
+  override def producedAttributes: AttributeSet = joinType match {
+    case ExistenceJoin(exists) => AttributeSet(exists)
+    case _ => AttributeSet.empty
+  }
+
   override def stringArgs: Iterator[Any] =
     Iterator(leftKeys, rightKeys, joinType, condition, buildSide, left, right)
 
@@ -3089,6 +3139,9 @@ object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {
         case FullOuter => JoinType.FullOuter
         case LeftSemi => JoinType.LeftSemi
         case LeftAnti => JoinType.LeftAnti
+        // Existence SMJ falls back to Spark: DF 55.1.0's BitwiseSortMergeJoin buffers output
+        // before emitting, risking OOM on large equal-key groups. Tracked in
+        // https://github.com/apache/datafusion-comet/issues/6514.
         case _ =>
           // Spark doesn't support other join types
           withFallbackReason(join, s"Unsupported join type ${join.joinType}")
