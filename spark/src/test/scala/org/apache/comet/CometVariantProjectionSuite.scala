@@ -25,6 +25,8 @@ import org.apache.parquet.io.api.Binary
 import org.apache.parquet.schema.MessageTypeParser
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
+import org.apache.spark.sql.catalyst.expressions.Literal
+import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.comet.CometNativeColumnarToRowExec
 import org.apache.spark.sql.comet.CometNativeScanExec
 import org.apache.spark.sql.comet.util.Utils
@@ -32,7 +34,7 @@ import org.apache.spark.sql.execution.{ColumnarToRowExec, CommandResultExec, Pro
 import org.apache.spark.sql.execution.command.DataWritingCommandExec
 import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{IntegerType, StructField, StructType}
+import org.apache.spark.sql.types.{BooleanType, IntegerType, StructField, StructType}
 
 import org.apache.comet.serde.operator.CometNativeScan
 
@@ -297,7 +299,7 @@ class CometVariantProjectionSuite extends CometTestBase {
       withSQLConf("spark.sql.variant.pushVariantIntoScan" -> "false") {
         val (_, plan) = checkSparkAnswerAndFallbackReason(
           spark.read.parquet(path).selectExpr("variant_get(v, '$.a', 'int')"),
-          "Native operators do not support schemas containing type VariantType")
+          "variant_get is not supported")
         assert(collect(plan) { case p: ProjectExec => p }.nonEmpty)
         assert(collect(plan) { case s: CometNativeScanExec => s }.nonEmpty)
       }
@@ -333,6 +335,85 @@ class CometVariantProjectionSuite extends CometTestBase {
             }
           }
         }
+      }
+    }
+  }
+
+  test("Variant predicates preserve literal and malformed input semantics") {
+    assume(Utils.variantType.isDefined, "VariantType requires Spark 4.0+")
+    val variantType = Utils.variantType.get
+    val constructor = Class
+      .forName("org.apache.spark.unsafe.types.VariantVal")
+      .getConstructor(classOf[Array[Byte]], classOf[Array[Byte]])
+    val evaluator = Class.forName(
+      "org.apache.spark.sql.catalyst.expressions.variant.VariantExpressionEvalUtils$")
+    def predicate(method: String, value: Any): DataFrame = {
+      // Plan rendering calls VariantVal.toJson, which would reject the malformed bytes
+      // before the predicate being tested can inspect them.
+      val literal = new Literal(value, variantType) {
+        override def toString: String = "variant_test_input"
+        override def sql: String = toString
+      }
+      val expression = StaticInvoke(
+        evaluator,
+        BooleanType,
+        method,
+        Seq(literal),
+        propagateNull = method == "isValidVariant",
+        returnNullable = false)
+      spark.range(1).select(getColumnFromExpression(expression).as("result"))
+    }
+    withSQLConf(
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+        "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+      // A null header and a truncated integer both bypass metadata validation for
+      // is_variant_null. is_valid_variant checks the version and accessed payload instead.
+      val cases = Seq(
+        (Array[Byte](0), Array[Byte](1), true, true),
+        (Array[Byte](0), Array.emptyByteArray, true, false),
+        (Array[Byte](24), Array[Byte](1, 0, 0), false, false),
+        (Array[Byte](5, -1), Array[Byte](1), false, true),
+        (Array[Byte](3, 0), Array[Byte](1), false, true),
+        (
+          Array[Byte](2, 1, 0, 0, 1, 0),
+          Array[Byte](-63, -2, -1, -1, 63, 0, 0, 0, 0, 0, 0, 0, 0),
+          false,
+          true),
+        (Array[Byte](2, 1, 0, 0, 1, 0), Array[Byte](1, 1, 0), false, false))
+      for ((value, metadata, isNull, isValid) <- cases) {
+        val variant = constructor.newInstance(value, metadata)
+        checkAnswer(predicate("isVariantNull", variant), Seq(Row(isNull)))
+        checkSparkAnswerAndOperator(predicate("isVariantNull", variant))
+        if (CometSparkSessionExtensions.isSpark42Plus) {
+          checkAnswer(predicate("isValidVariant", variant), Seq(Row(isValid)))
+          checkSparkAnswerAndOperator(predicate("isValidVariant", variant))
+        }
+      }
+      checkAnswer(predicate("isVariantNull", null), Seq(Row(false)))
+      checkSparkAnswerAndOperator(predicate("isVariantNull", null))
+      if (CometSparkSessionExtensions.isSpark42Plus) {
+        checkAnswer(predicate("isValidVariant", null), Seq(Row(null)))
+        checkSparkAnswerAndOperator(predicate("isValidVariant", null))
+      }
+      val empty = constructor.newInstance(Array.emptyByteArray, Array[Byte](1, 0, 0))
+      for (enabled <- Seq("false", "true")) {
+        withSQLConf(CometConf.COMET_ENABLED.key -> enabled) {
+          val error = intercept[Exception](predicate("isVariantNull", empty).collect())
+          assert(error.getMessage.contains("MALFORMED_VARIANT"))
+        }
+      }
+    }
+  }
+
+  ignore(
+    "Variant predicates inspect malformed scan bytes - https://github.com/apache/datafusion-comet/issues/5429") {
+    // Spark can pass these residual-only bytes to the predicate. Comet's scan currently
+    // validates the truncated integer before the predicate can inspect it.
+    withVariantFile("SELECT named_struct('value', X'18', 'metadata', X'010000') AS v") { path =>
+      val input = spark.read.schema("v VARIANT").parquet(path)
+      checkSparkAnswerAndOperator(input.selectExpr("is_variant_null(v)"))
+      if (CometSparkSessionExtensions.isSpark42Plus) {
+        checkSparkAnswerAndOperator(input.selectExpr("is_valid_variant(v)"))
       }
     }
   }

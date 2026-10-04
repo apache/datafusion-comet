@@ -1072,7 +1072,14 @@ case class CometExecRule(session: SparkSession)
         case writeFiles: WriteFilesExec => Seq(writeFiles.child)
         case other => Seq(other)
       }
-      if (!op.isInstanceOf[CometScanExec] &&
+      // Scalar projections consume Variant through expression-specific serializers. Filters
+      // preserve input fields; the generic attribute serializer still rejects Variant.
+      val scalarProjection = op.isInstanceOf[ProjectExec] &&
+        !op.output.exists(attr => containsVariantType(attr.dataType))
+      val variantFilter = op.isInstanceOf[FilterExec] &&
+        !op.output.exists(attr =>
+          containsVariantType(attr.dataType) && !isVariantType(attr.dataType))
+      if (!op.isInstanceOf[CometScanExec] && !scalarProjection && !variantFilter &&
         (op.output ++ dataProducingChildren.flatMap(_.output)).exists(attr =>
           containsVariantType(attr.dataType))) {
         withFallbackReason(

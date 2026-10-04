@@ -37,6 +37,7 @@ mod unbound;
 pub use unbound::UnboundColumn;
 mod predicate_funcs;
 pub mod utils;
+mod variant_funcs;
 pub use predicate_funcs::{spark_isnan, RLike};
 
 mod agg_funcs;
