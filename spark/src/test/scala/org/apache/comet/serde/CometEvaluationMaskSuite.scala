@@ -503,8 +503,8 @@ class CometEvaluationMaskSuite extends CometTestBase {
     withInputs(
       "fused_mask" ->
         "SELECT * FROM VALUES (1, 'YWJj'), (2, 'YWJj'), (3, 'YWJj'), (4, 'YWJj') AS t(k, bad)") {
-      val query = "SELECT k, hex(unbase64(bad)) AS decoded FROM " +
-        "(SELECT * FROM fused_mask ORDER BY k LIMIT 2 OFFSET 1) t"
+      val query = "SELECT k, hex(unbase64(bad)) AS decoded " +
+        "FROM (SELECT * FROM fused_mask ORDER BY k) t LIMIT 2 OFFSET 1"
       val expected = Seq(Row(2, "616263"), Row(3, "616263"))
       for (aqe <- Seq(true, false); fusion <- Seq(false, true)) {
         withSQLConf(
