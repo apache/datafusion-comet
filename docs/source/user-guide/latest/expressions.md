@@ -422,7 +422,7 @@ to Spark ([#2837](https://github.com/apache/datafusion-comet/issues/2837)). Enab
 | Function | Status | Implementation | Notes |
 | --- | --- | --- | --- |
 | `%` | ✅ | Native |  |
-| `*` | ✅ | Native | DayTime interval multiplication routes through the JVM codegen dispatcher; YearMonth and Calendar interval multiplication fall back |
+| `*` | ✅ | Native | YearMonth and DayTime interval multiplication routes through the JVM codegen dispatcher; Calendar interval multiplication falls back |
 | `+` | ✅ | Native | Adding a calendar, year-month or day-time interval to a date or timestamp routes through the JVM codegen dispatcher. `date + INTERVAL '<n>' DAY` is rewritten by Spark to `date_add` and stays native; a DAY-precision interval column added to a date is rewritten to `DateAdd` over `ExtractANSIIntervalDays`, which has no serde, so that projection falls back to Spark |
 | `-` | ✅ | Native | `date - date`, `timestamp - timestamp` and subtracting an interval from a date or timestamp route through the JVM codegen dispatcher; `timestamp - timestamp` falls back to Spark in legacy interval mode (`spark.sql.legacy.interval.enabled=true`) because its calendar-interval result can exceed what the dispatcher output can carry. `date - INTERVAL '<n>' DAY` is rewritten by Spark to `date_add` and stays native; a DAY-precision interval column subtracted from a date is rewritten to `DateAdd` over `ExtractANSIIntervalDays`, which has no serde, so that projection falls back to Spark |
 | `/` | ✅ | Native | DayTime interval division routes through the JVM codegen dispatcher; YearMonth and Calendar interval division fall back |
