@@ -84,12 +84,3 @@ jobs:
             ~/.cargo/git
             native/target
           key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}
-
-  # Run Rust tests (runs in parallel with build-native, uses debug builds).
-  #
-  # Deliberately uncached. A debug native/target is 4-5 GB, the largest entry
-  # the repository ever held, and it kept main's `cargo-ci` entry, which the
-  # native builds on the critical path need, from staying resident. This job is
-  # never the long pole of a run, so compiling the dependencies from scratch
-  # costs about 7 runner-minutes and no wall-clock time. With no cache to write
-  # it has nothing to do on push either. See issue #6387.
