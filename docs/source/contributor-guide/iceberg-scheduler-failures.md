@@ -17,157 +17,162 @@ specific language governing permissions and limitations
 under the License.
 -->
 
-# PR4 implementation plan: native Iceberg scheduler failures
+# Native Iceberg writes: Spark scheduler failure tests
 
-Issue: [#5646](https://github.com/apache/datafusion-comet/issues/5646).
-This plan covers speculative execution and executor process loss during concurrent native writes.
-It complements the ordinary mid-write retry, post-native handoff failure and job/commit abort tests
-in `CometIcebergWriteActionSuite`. It does not change Iceberg commit or cleanup semantics.
+`CometIcebergSchedulerFailureSuite` tests speculative execution and executor loss during
+multi-task native Iceberg writes. It covers the scheduler scenarios in
+[#5646](https://github.com/apache/datafusion-comet/issues/5646), complementing the mid-write,
+post-native handoff and job/commit failure tests in `CometIcebergWriteActionSuite`.
+The suite adds test instrumentation without changing Iceberg commit or cleanup semantics.
 
-## Six required coverage improvements
+## Test scenarios
 
-1. **Task retry versus stage re-execution.** Run separate executor-loss cases. The ordinary case
-   proves an affected writer partition succeeds on another executor. The shuffle-output-loss case
-   additionally requires `FetchFailed` and an increased writer `stageAttemptId`. An ordinary task
-   replacement is never reported as stage retry. If the configured cluster cannot provoke stage
-   re-execution, that case fails with evidence rather than silently relaxing its assertions.
-2. **Prove mid-write progress.** A native-only gate runs immediately after a successful
-   `writer.write()` and before input EOF and `writer.close()`. It reports rows and locations from
-   `TrackingLocationGenerator`. The target must have physical bytes, no handoff or terminal task
-   event, and another executor must have progressed on another writer partition before SIGKILL.
-   A task-start event or post-native handoff gate cannot substitute for this evidence.
-3. **Compare complete winner file sets.** On a new empty table, the manifest's referenced set must
-   equal the union of complete file sets in driver-accepted messages. Each message maps to exactly
-   one native handoff attempt. Known losing/failed files must not intersect referenced files.
-4. **Inspect accepted messages.** Record the actual `runJob` result-handler messages, keyed by
-   logical partition, before driver commit. Duplicate accepted messages fail the probe. Require one
-   message per writer partition and one commit invocation. `numCommittedMessages` is only an
-   additional count check; its current implementation counts the partition-sized message array.
-5. **Compare exact data.** Require 48,000 rows and 48,000 distinct IDs, and compare the complete
-   expected ID multiset using `EXCEPT ALL` in both directions. Counts alone cannot pass the test.
-6. **Wait for termination and audit storage separately.** Wait for all monitored task attempts to
-   be terminal and completion markers from surviving executor processes, then drain the listener
-   bus. Inspect all regular data-location files, including unfinished files; exclude only Hadoop
-   CRC metadata sidecars. Persist `physical`, `referenced`, `missing`, `orphan`, winner and rejected
-   sets before storage assertions. For executor loss, the #5646 acceptance policy requires no
-   missing referenced files, manifest equality with accepted winner files, and no references to
-   failed attempts. Every orphan must belong to the native-reported file set of a known
-   rejected attempt (`orphan` must be a subset of `rejectedFiles`); unknown orphan files fail.
-   Record hard-kill orphans separately; immediate `physical == referenced` is not an
-   executor-loss requirement. Speculation retains its losing-attempt cleanup checks.
-   Never remove files before the audit to make a scenario pass.
+| Scenario                               | Required scheduler evidence                                                                                        | Storage expectation                                                                                           |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------- |
+| Original attempt wins speculation      | Two attempts on distinct hosts finish native handoff; the original succeeds and its message is accepted            | Only accepted winner files are referenced; no orphan or missing files                                         |
+| Speculative attempt wins               | Two attempts on distinct hosts finish native handoff; the speculative attempt succeeds and its message is accepted | Only accepted winner files are referenced; no orphan or missing files                                         |
+| Executor-loss task replacement         | Executor removal, `ExecutorLostFailure`, and successful replacement of the affected partition on another executor  | Only accepted winner files are referenced; every orphan belongs to a known rejected attempt; no missing files |
+| Executor loss with shuffle-output loss | The task-replacement evidence, plus `FetchFailed` and a higher writer `stageAttemptId`                             | The same storage assertions as executor-loss task replacement                                                 |
 
-## Infrastructure and topology
+An increased task attempt number alone does not prove stage re-execution. The shuffle-output-loss
+case fails if the cluster only replaces the task without the required stage and fetch-failure events.
 
-`CometIcebergSchedulerFailureSuite` is a manual integration suite excluded from single-host CI via
-`dev/ci/check-suites.py` and excluded from automatic discovery with `@DoNotDiscover`. It requires an external Spark cluster whose executors run on at least two
-hosts as seen by the scheduler. `local[...]` and `local-cluster[...]` are rejected.
+## Common assertions
 
-Use a dedicated Spark Standalone cluster with at least two Linux worker hosts, at least two cores
-per worker, and executor replacement enabled. The suite requests one core per executor and up to
-four cores in total, keeping the two active reducers in the stage-loss case on distinct processes. Driver and executors must use the same Spark/Scala profile, JDK, operating
-system and native architecture. In particular, a macOS native build cannot serve Linux executors.
-The driver must be reachable from workers; configure networking through the usual Spark settings.
+Every scenario writes to a new empty table and asserts:
 
-Mount a genuinely shared POSIX filesystem at the same absolute path on driver and workers. This
-stores the warehouse, source Parquet files, run-specific gates and a snapshot of the driver's
-unshaded Maven test classpath. Atomic rename must work on this filesystem. The native gate uses
-POSIX directly; S3/HDFS warehouses are outside this harness's scope.
+- Exactly 48,000 rows and 48,000 distinct IDs. Bidirectional `EXCEPT ALL` comparisons check the
+  complete expected ID multiset, rather than relying on counts alone.
+- Exactly one new snapshot, one commit operator, and one successful commit marker.
+- One driver-accepted message per logical writer partition. Each message's complete file set
+  identifies exactly one native handoff attempt with a scheduler `Success` event.
+- Manifest references equal the complete union of accepted winner files. Files reported by
+  rejected attempts must not be referenced.
+- Every referenced file exists under the data location.
 
-Preflight runs a gated Spark RDD job. Workers read a driver challenge and publish executor/host/PID
-markers; the driver requires at least two distinct hosts and executors before releasing them.
-This checks cross-process filesystem visibility and available concurrency. The subsequent native
-scenarios provide the actual scheduler-event and remote-probe evidence. Compilation alone does
-not verify this topology or prove speculation/executor loss occurred.
+The storage audit inventories all regular files under the data location, including unfinished
+files, excluding only Hadoop CRC metadata sidecars. It computes:
 
-Speculation settings are fixed before SparkContext creation. AQE and coalescing are disabled.
-Dynamic allocation, decommissioning, push shuffle and the external shuffle service are disabled;
-the stage-loss case depends on losing executor-local shuffle output.
+```text
+orphan  = physical files - manifest-referenced files
+missing = manifest-referenced files - physical files
+```
+
+For speculation, both sets must be empty after the losing attempt terminates and cleanup finishes.
+For executor loss, `missing` must be empty and `orphan` must be a subset of `rejectedFiles`, the
+native-reported paths belonging to attempts whose messages were not accepted. Unknown orphan
+files fail the test. This checks the storage state even when readers see the correct table rows.
+
+`SIGKILL` bypasses executor-side cleanup, so known rejected-attempt orphans do not by themselves
+fail executor-loss recovery. These scenarios do not require immediate `physical == referenced`
+and do not introduce a surviving process's cleanup mechanism. Files are never removed before
+storage verification to make the audit pass.
+
+## Cluster requirements
+
+This is a manual integration suite, excluded from automatic discovery by `@DoNotDiscover` and
+from ordinary single-host CI through `dev/ci/check-suites.py`. Missing infrastructure fails the
+suite; it does not produce a skipped pass.
+
+Use a dedicated Spark Standalone cluster with:
+
+- At least two Linux worker hosts, as seen by the Spark scheduler, with at least two cores per
+  worker and executor replacement enabled. `local[...]` and `local-cluster[...]` are rejected.
+- Matching Spark/Scala profiles, JDK, operating system and native architecture on the driver and
+  executors. A macOS native build cannot serve Linux executors.
+- A driver address reachable from both workers, configured through the usual Spark settings.
+- A shared POSIX filesystem mounted at the same absolute path on the driver and all workers.
+  It holds the warehouse, source files, attempt markers and executor classpath snapshot.
+  Atomic rename must work. S3/HDFS warehouses are outside this harness's scope.
+
+The suite requests one core per executor and up to four cores in total. A gated preflight job
+checks shared-filesystem visibility and concurrent executor processes on at least two distinct
+hosts before running the write scenarios.
+
+AQE, partition coalescing, dynamic allocation, decommissioning, push shuffle and the external
+shuffle service are disabled. The stage-loss case depends on executor-local shuffle output being
+lost when its owning process terminates. Comet shuffle is disabled; the stage-loss fixture exposes
+ordinary Spark shuffle lineage through an RDDScan so Spark-to-Arrow can feed the native writer.
+
+### Speculation settings
 
 `COMET_SCHEDULER_SPECULATION_ENABLED` controls `spark.speculation` before SparkContext creation
-and defaults to `true`. Run the speculation filter with `true`, and each executor-loss filter in
-an independent Maven invocation with `false`. Initial loss-mode gates prevent speculation before
-any writer succeeds, but speculation can still occur during recovery if left enabled. Disabling it
-keeps the loss cases focused on ordinary task replacement. Do not run all four cases together with
-one speculation setting when collecting the separate scenario verdicts.
+and defaults to `true`. Run speculation with `true` and executor-loss cases in separate Maven
+invocations with `false`.
 
-## Shared test instrumentation
+The initial loss-mode gates prevent speculation before any writer succeeds, but speculation can
+still occur during recovery if enabled. Disabling it ensures the loss tests prove ordinary task
+replacement. Run the filters below separately rather than running all scenarios with one setting.
 
-- `IcebergTestFiles` supplies common recursive regular-file and Parquet-file inventories.
-- `IcebergSchedulerTestProbe` is an explicitly scoped driver hook. Its serializable instance is
-  captured in task closures; executors do not consult a driver-installed JVM singleton.
-- `CometIcebergWriteExec` invokes the captured probe at task setup and after `cleanup.own(locations)`.
-- An optional `IcebergWriteCommon.test_probe` supplies a per-attempt native progress gate. The
-  normal planner never populates this field, and there is no production SQLConf to enable it.
-- `IcebergCommitExec` records files from messages accepted by Spark and the successful commit.
-- Shared markers are published atomically under unique run/task-attempt directories. Gate waits
-  have bounded timeouts and diagnostics. `finally` releases gates, waits/cancels the job, removes
-  the listener and exports evidence. Successful fixtures are deleted; failing warehouses remain
-  for inspection and do not affect later runs with new IDs.
+## Failure injection and probes
 
-## Scenario A: two completed native speculative attempts
+`IcebergSchedulerTestProbe` is an explicitly scoped driver hook. Its serializable instance is
+captured in task closures, so executors do not depend on a driver-installed JVM singleton.
+`IcebergCommitExec` records messages actually accepted by Spark's `runJob` result handler and
+records the successful commit. Duplicate accepted messages or commit markers fail the probe.
 
-A new unpartitioned table consumes four Parquet source files with disjoint ID ranges. Native
-handoff for writer partition 0 is gated; other partitions finish, making the original a straggler.
-Spark must launch a speculative attempt on another host. Both attempts must report nonempty,
-disjoint native file sets for the same stage, stage attempt and partition.
+`CometIcebergWriteExec` installs per-attempt gates before parent input iteration and after native
+payload handoff. An optional `IcebergWriteCommon.test_probe` also gates the native writer after a
+successful `writer.write()`, before input EOF and `writer.close()`. The normal planner never
+populates this field, and no production SQLConf enables it. JSON markers are published atomically
+under unique run/task-attempt directories; all gate waits have bounded timeouts and diagnostics.
 
-Run both winner directions: release the original first, then in another test release the
-speculative attempt first. Require the selected winner's scheduler `Success`, one accepted message
-for that partition, winner-only manifest references, one snapshot, exact IDs and zero orphan/missing
-files. Native completion is not equivalent to two scheduler `Success` events: Spark cancels the
-loser once it accepts the winner. Missing speculation or either handoff is a failure.
+### Speculative attempts
 
-## Scenario B: executor process loss during concurrent native writes
+Four source Parquet files contain disjoint ID ranges. The original attempt for writer partition 0
+is held after native handoff while other partitions finish, allowing Spark to launch a speculative
+attempt on another host. Both attempts must report nonempty, disjoint file sets for the same
+stage, stage attempt and partition.
 
-Gate initial attempts after 2,000 rows have passed through native `writer.write()`. With 1,000-row
-batches and a one-byte target file size, the second unit rolls the first data file to disk; the
-first unit alone may remain buffered. Independently require a native-owned path with physical
-bytes, and no native handoff or terminal task event before termination. Require
-at least two executor processes writing different partitions. Select a live writer executor (partition 0 in the ordinary loss case),
-record its exact ID/host/PID and native-owned files, and terminate only that process.
+The tests control each winner direction by releasing only the selected attempt and requiring its
+scheduler `Success` and accepted message. Both attempts completing native handoff does not mean
+both succeed in the scheduler: Spark cancels the loser after accepting the winner.
 
-`dev/iceberg-scheduler-kill-executor.py` is a Linux/SSH implementation. It verifies the remote
-`/proc/PID/cmdline` names `CoarseGrainedExecutorBackend` and the expected executor ID immediately
-before SIGKILL, and waits for the process to exit. It does not kill workers or the driver. A custom
-executable harness may replace it for container/Kubernetes deployments; its argument contract is
-`HOST PID EXECUTOR_ID RUN_DIRECTORY`, and it must provide equivalent process-identity/exit evidence.
+### Executor process loss
 
-Require matching executor removal and `ExecutorLostFailure`, then release surviving gates. Require
-the affected partition's replacement on a different executor and successful completion. Audit one
-snapshot, exact IDs, complete accepted-message references and storage. SIGKILL can bypass native/JVM
-cleanup. Preserve and report any resulting orphan as storage evidence; implementing a surviving
-process's cleanup mechanism is outside this test PR. Under the intended policy, an unreferenced
-hard-kill file alone does not fail executor-loss recovery.
+Initial writer attempts pause after 2,000 rows, using 1,000-row batches and a one-byte target file
+size. The second unit rolls the first file to disk; the first unit alone may remain buffered.
+Before termination, the test independently requires physical bytes at a native-owned path, no
+native handoff or terminal task event for the target, and progress on another writer partition
+in a different executor process.
 
-The stage-reexecution variant repartitions the input through Spark shuffle and gates two reducers
-before constructing their parent iterators, preventing eager shuffle fetches before the gate. The killed writer executor must also own upstream shuffle output.
-Releasing delayed reducers after its loss must cause `FetchFailed` and a higher writer stage attempt.
-A topology that merely replaces the task fails this additional case; inspect the event evidence.
+The ordinary loss case targets partition 0. The shuffle-output-loss case selects an active writer
+executor that also owns completed upstream shuffle output. Two other reducers are gated before
+constructing their parent iterators, preventing eager shuffle fetches. After executor removal,
+releasing those reducers must cause `FetchFailed` and writer-stage re-execution.
 
-## Build and test commands
+The suite records the target's exact host, PID, executor ID and native-owned paths before invoking
+the termination helper. `dev/iceberg-scheduler-kill-executor.py` is a Linux/SSH implementation that
+checks `/proc/PID/cmdline` for `CoarseGrainedExecutorBackend` and the expected executor ID before
+sending `SIGKILL`, then waits for process exit. It terminates the executor, not the worker or driver.
 
-Run from the repository root. The examples use the default Spark 4.1 profile; use a consistent
-explicit profile for all build/test steps and matching cluster binaries if changing versions.
+A custom executable may replace the SSH helper for containers or Kubernetes. Its argument contract
+is `HOST PID EXECUTOR_ID RUN_DIRECTORY`; it must provide equivalent process-identity and exit
+evidence. The SSH helper requires noninteractive SSH access as the executor owner and Python 3
+on each worker.
+
+## Build and run
+
+Run commands from the repository root. These examples use Spark 4.1 explicitly; if selecting
+another profile, use it consistently and provision matching cluster binaries.
 
 ```bash
 make core
-./mvnw test-compile -DskipTests
+./mvnw test-compile -Pspark-4.1 -DskipTests
 ```
 
-Local smoke verifies serializable probe handoff, driver-accepted message files, completion markers,
-rows and physical files. It makes no multi-host scheduler claims:
+The local smoke test checks probe serialization, handoff, accepted files, completion markers,
+rows and physical files. It does not prove multi-host scheduler behavior:
 
 ```bash
-./mvnw test -Dtest=none \
+./mvnw test -Pspark-4.1 -Dtest=none \
   -Dsuites="org.apache.comet.CometIcebergWriteActionSuite scheduler probe"
 
-./mvnw test -Dtest=none \
+./mvnw test -Pspark-4.1 -Dtest=none \
   -Dsuites="org.apache.comet.CometIcebergWriteActionSuite"
 ```
 
-For the external cluster, replace these values with actual infrastructure. The SSH harness requires
-noninteractive SSH access to the worker as the executor owner and Python 3 on each worker.
+Replace the cluster settings below with your infrastructure:
 
 ```bash
 export COMET_SCHEDULER_MASTER='spark://spark-master:7077'
@@ -175,48 +180,41 @@ export COMET_SCHEDULER_SHARED_ROOT='/shared/comet-scheduler'
 export COMET_SCHEDULER_KILL_COMMAND="$PWD/dev/iceberg-scheduler-kill-executor.py"
 export COMET_SCHEDULER_TIMEOUT_SECONDS=180
 
-COMET_SCHEDULER_SPECULATION_ENABLED=true ./mvnw test -Dtest=none \
+COMET_SCHEDULER_SPECULATION_ENABLED=true ./mvnw test -Pspark-4.1 -Dtest=none \
   -Dsuites="org.apache.comet.CometIcebergSchedulerFailureSuite speculative"
 
-COMET_SCHEDULER_SPECULATION_ENABLED=false ./mvnw test -Dtest=none \
+COMET_SCHEDULER_SPECULATION_ENABLED=false ./mvnw test -Pspark-4.1 -Dtest=none \
   -Dsuites="org.apache.comet.CometIcebergSchedulerFailureSuite task replacement"
 
-COMET_SCHEDULER_SPECULATION_ENABLED=false ./mvnw test -Dtest=none \
+COMET_SCHEDULER_SPECULATION_ENABLED=false ./mvnw test -Pspark-4.1 -Dtest=none \
   -Dsuites="org.apache.comet.CometIcebergSchedulerFailureSuite stage re-execution"
 ```
 
-By default the suite snapshots the actual Maven test JVM classpath to the shared root before
-creating SparkContext. It includes current reactor classes, test helpers, runtime dependencies and
-native resources, avoiding incompatible mixtures of shaded jars and unshaded task closures. The
-snapshot is removed after SparkContext stops. For a pre-provisioned, matching unshaded classpath,
-set `COMET_SCHEDULER_EXECUTOR_CLASSPATH` explicitly to paths visible on every worker.
+By default the suite snapshots the actual Maven test JVM's unshaded classpath to the shared root
+before creating SparkContext. It includes current reactor classes, test helpers, dependencies and
+native resources. A shaded Comet jar alone is insufficient for the unshaded task closures.
+The snapshot is removed after SparkContext stops. To use a pre-provisioned matching unshaded
+classpath instead, set `COMET_SCHEDULER_EXECUTOR_CLASSPATH` to paths visible on every worker.
 
-Evidence is exported to `spark/target/iceberg-scheduler-artifacts/<runId>/`: scheduler events,
-attempt markers, process termination log and storage audit. Failed shared run directories also
-retain the warehouse. Do not claim storage cleanup passed if the audit reports orphans; do not
-claim stage retry if only task attempts increased. Repeat the speculative filter several times
-when evaluating race stability. No test is marked passed merely because infrastructure is absent.
+## Diagnostics and teardown
 
-## Regression and execution status
+Evidence is exported to `spark/target/iceberg-scheduler-artifacts/<runId>/`, including scheduler
+events, plans, attempt markers, the process-termination log, file inventories and
+`gates/storage-audit.json`. The audit records physical, referenced, winner, rejected, orphan and
+missing file sets before storage assertions.
 
-An Iceberg write-path change also needs the matching upstream Iceberg verdict before merging,
-using the `run-iceberg-tests` label or an appropriate local `dev/local-ci.sh iceberg` shard per
-`ci.md`. That ordinary regression run does not replace this multi-host scheduler suite.
+The suite releases gates, waits for or cancels the job, drains the listener bus and exports evidence
+before deleting successful fixtures. Failed runs retain the shared warehouse for inspection.
+Unique run IDs isolate subsequent invocations from earlier files.
 
-The implementation can be compiled without a cluster; compilation alone is not a scheduler
-verdict. Linux ARM64 Docker runs with Spark 4.1.3, Java 17 and Iceberg 1.11.0 on 2026-10-04 passed
-both speculative winner directions. With speculation disabled, both executor-loss cases passed
-scheduler recovery, exact-row, snapshot and accepted-file/manifest assertions. The stage-loss case
-also recorded `FetchFailed` and an increased writer stage attempt. Each loss case reported one
-orphan and zero missing referenced files, and failed the current unconditional zero-orphan
-assertion used in that earlier run. After scoping the assertion to retain hard-kill orphans as
-audit evidence, both loss cases passed in a subsequent run (2 tests passed, 0 failed). Each audit
-still reported one orphan and zero missing referenced files, with no rejected attempt file
-referenced. The stage-loss case again recorded `FetchFailed` and a higher writer stage attempt.
-No files were removed before the audit. Successful fixtures were removed only after verification
-and evidence export, using the suite's normal teardown.
-A further rerun with `orphan.subsetOf(rejectedFiles)` also passed both loss cases (2 passed,
-0 failed). Each audit reported one known rejected-attempt orphan, zero unknown orphans and zero
-missing referenced files. The Docker runs used a container-specific kill harness; they do not
-validate the Linux/SSH helper.
-Record each scenario's event and storage outcomes separately for any subsequent run.
+Report scheduler recovery and storage results separately. A passing executor-loss test with known
+orphans proves recovery and file attribution, not immediate cleanup. Do not claim stage
+re-execution when only task attempts increased. Repeat the speculation filter when assessing race
+stability, and retain each invocation's evidence.
+
+## Regression checks
+
+Compilation and formatting checks do not replace execution on the required cluster. An Iceberg
+write-path change also needs an upstream Iceberg regression verdict before merging, using the
+`run-iceberg-tests` label or an appropriate `dev/local-ci.sh iceberg` shard as described in
+[Continuous Integration](ci.md). That regression run does not replace this scheduler suite.
