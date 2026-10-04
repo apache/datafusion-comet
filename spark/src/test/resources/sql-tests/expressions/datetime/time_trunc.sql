@@ -18,8 +18,8 @@
 -- MinSparkVersion: 4.1
 -- Config: spark.sql.timeType.enabled=true
 
--- time_trunc(unit, time) rewrites to TimeTrunc -> StaticInvoke(DateTimeUtils.timeTrunc).
--- Routes through the JVM codegen dispatcher.
+-- time_trunc(unit, time) rewrites to TimeTrunc -> StaticInvoke(DateTimeUtils.timeTrunc). Comet
+-- has no native handler for it, so CometStaticInvoke routes it through the JVM codegen dispatcher.
 
 statement
 CREATE TABLE test_time_trunc(h int, m int, s decimal(16,6)) USING parquet
@@ -32,31 +32,31 @@ INSERT INTO test_time_trunc VALUES
   (12, 34, 56.123456),
   (NULL, 0, 0.000000)
 
-query
+query expect_dispatch(staticinvoke)
 SELECT time_trunc('HOUR', make_time(h, m, s)) FROM test_time_trunc
 
-query
+query expect_dispatch(staticinvoke)
 SELECT time_trunc('MINUTE', make_time(h, m, s)) FROM test_time_trunc
 
-query
+query expect_dispatch(staticinvoke)
 SELECT time_trunc('SECOND', make_time(h, m, s)) FROM test_time_trunc
 
-query
+query expect_dispatch(staticinvoke)
 SELECT time_trunc('MILLISECOND', make_time(h, m, s)) FROM test_time_trunc
 
-query
+query expect_dispatch(staticinvoke)
 SELECT time_trunc('MICROSECOND', make_time(h, m, s)) FROM test_time_trunc
 
 -- literal TIME arguments
-query
+query expect_dispatch(staticinvoke)
 SELECT time_trunc('HOUR', TIME '09:32:05.359')
 
-query
+query expect_dispatch(staticinvoke)
 SELECT time_trunc('MILLISECOND', TIME '09:32:05.123456')
 
-query
+query expect_dispatch(staticinvoke)
 SELECT time_trunc('SECOND', TIME '23:59:59.999999')
 
 -- lowercase unit
-query
+query expect_dispatch(staticinvoke)
 SELECT time_trunc('hour', TIME '13:45:07.999999')

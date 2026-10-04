@@ -18,11 +18,9 @@
 -- MinSparkVersion: 4.1
 -- Config: spark.sql.timeType.enabled=true
 
--- time - time rewrites to SubtractTimes -> StaticInvoke(DateTimeUtils.subtractTimes).
--- The shim routes it through the JVM codegen dispatcher; the result is
--- DayTimeIntervalType(HOUR, SECOND), which Comet's projection layer does not accept as an
--- output type yet, so these queries currently fall back to Spark. spark_answer_only pins
--- the semantics until DayTimeIntervalType is broadly supported.
+-- time - time rewrites to SubtractTimes -> StaticInvoke(DateTimeUtils.subtractTimes), which
+-- returns DayTimeIntervalType(HOUR, SECOND). Comet has no native handler for it, so
+-- CometStaticInvoke routes it through the JVM codegen dispatcher.
 
 statement
 CREATE TABLE test_time_sub(h1 int, m1 int, s1 decimal(16,6), h2 int, m2 int, s2 decimal(16,6)) USING parquet
@@ -34,11 +32,11 @@ INSERT INTO test_time_sub VALUES
   (0, 0, 0.000000, 23, 59, 59.999999),
   (NULL, 0, 0.000000, 0, 0, 0.000000)
 
-query spark_answer_only
+query expect_dispatch(staticinvoke)
 SELECT make_time(h2, m2, s2) - make_time(h1, m1, s1) FROM test_time_sub
 
-query spark_answer_only
+query expect_dispatch(staticinvoke)
 SELECT TIME '02:15:30' - TIME '01:00:00'
 
-query spark_answer_only
+query expect_dispatch(staticinvoke)
 SELECT TIME '09:59:59.5' - TIME '10:00:00'

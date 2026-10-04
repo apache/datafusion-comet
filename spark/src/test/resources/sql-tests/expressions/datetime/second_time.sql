@@ -18,10 +18,9 @@
 -- MinSparkVersion: 4.1
 -- Config: spark.sql.timeType.enabled=true
 
--- second(TIME) rewrites to SecondsOfTime -> StaticInvoke(DateTimeUtils.getSecondsOfTime).
--- EXTRACT(SECOND FROM TIME) rewrites to SecondsOfTimeWithFraction ->
--- StaticInvoke(DateTimeUtils.getSecondsOfTimeWithFraction) which returns Decimal(8,6).
--- Both StaticInvoke forms route through the JVM codegen dispatcher.
+-- second(TIME) rewrites to SecondsOfTime -> StaticInvoke(DateTimeUtils.getSecondsOfTime). Comet
+-- has no native handler for it, so CometStaticInvoke routes it through the JVM codegen dispatcher.
+-- EXTRACT(SECOND FROM TIME) is a different expression that runs natively (extract_time.sql).
 
 statement
 CREATE TABLE test_second_time(h int, m int, s decimal(16,6)) USING parquet
@@ -34,30 +33,17 @@ INSERT INTO test_second_time VALUES
   (23, 59, 59.999999),
   (0, 0, NULL)
 
-query
+query expect_dispatch(staticinvoke)
 SELECT second(make_time(h, m, s)) FROM test_second_time
 
-query
+query expect_dispatch(staticinvoke)
 SELECT second(TIME '00:00:00')
 
-query
+query expect_dispatch(staticinvoke)
 SELECT second(TIME '13:45:07')
 
-query
+query expect_dispatch(staticinvoke)
 SELECT second(TIME '23:59:59.999999')
 
 query
 SELECT second(CAST(NULL AS TIME))
-
--- EXTRACT(SECOND FROM TIME) preserves fractional part as Decimal(8,6)
-query
-SELECT EXTRACT(SECOND FROM make_time(h, m, s)) FROM test_second_time
-
-query
-SELECT EXTRACT(SECOND FROM TIME '00:00:00')
-
-query
-SELECT EXTRACT(SECOND FROM TIME '13:45:07.123456')
-
-query
-SELECT EXTRACT(SECOND FROM TIME '23:59:59.999999')

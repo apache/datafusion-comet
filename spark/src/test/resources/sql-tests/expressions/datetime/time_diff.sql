@@ -18,9 +18,9 @@
 -- MinSparkVersion: 4.1
 -- Config: spark.sql.timeType.enabled=true
 
--- time_diff(unit, start, end) rewrites to TimeDiff ->
--- StaticInvoke(DateTimeUtils.timeDiff). Result is LongType. Routes through the JVM codegen
--- dispatcher.
+-- time_diff(unit, start, end) rewrites to TimeDiff -> StaticInvoke(DateTimeUtils.timeDiff), which
+-- returns LongType. Comet has no native handler for it, so CometStaticInvoke routes it through the
+-- JVM codegen dispatcher.
 
 statement
 CREATE TABLE test_time_diff(h1 int, m1 int, s1 decimal(16,6), h2 int, m2 int, s2 decimal(16,6)) USING parquet
@@ -34,32 +34,32 @@ INSERT INTO test_time_diff VALUES
   (NULL, 0, 0.000000, 0, 0, 0.000000)
 
 -- column arguments across all supported units
-query
+query expect_dispatch(staticinvoke)
 SELECT time_diff('HOUR', make_time(h1, m1, s1), make_time(h2, m2, s2)) FROM test_time_diff
 
-query
+query expect_dispatch(staticinvoke)
 SELECT time_diff('MINUTE', make_time(h1, m1, s1), make_time(h2, m2, s2)) FROM test_time_diff
 
-query
+query expect_dispatch(staticinvoke)
 SELECT time_diff('SECOND', make_time(h1, m1, s1), make_time(h2, m2, s2)) FROM test_time_diff
 
-query
+query expect_dispatch(staticinvoke)
 SELECT time_diff('MILLISECOND', make_time(h1, m1, s1), make_time(h2, m2, s2)) FROM test_time_diff
 
-query
+query expect_dispatch(staticinvoke)
 SELECT time_diff('MICROSECOND', make_time(h1, m1, s1), make_time(h2, m2, s2)) FROM test_time_diff
 
 -- literal TIME arguments
-query
+query expect_dispatch(staticinvoke)
 SELECT time_diff('HOUR', TIME '20:30:29', TIME '21:30:29')
 
-query
+query expect_dispatch(staticinvoke)
 SELECT time_diff('SECOND', TIME '00:00:00', TIME '23:59:59.999999')
 
 -- negative difference (start > end)
-query
+query expect_dispatch(staticinvoke)
 SELECT time_diff('HOUR', TIME '20:30:29', TIME '12:00:00')
 
 -- lowercase unit
-query
+query expect_dispatch(staticinvoke)
 SELECT time_diff('second', TIME '00:00:00', TIME '00:00:01')

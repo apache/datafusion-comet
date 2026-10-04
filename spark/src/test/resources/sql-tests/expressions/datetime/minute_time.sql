@@ -18,8 +18,8 @@
 -- MinSparkVersion: 4.1
 -- Config: spark.sql.timeType.enabled=true
 
--- minute(TIME) rewrites to MinutesOfTime -> StaticInvoke(DateTimeUtils.getMinutesOfTime).
--- The shim routes that StaticInvoke through the JVM codegen dispatcher.
+-- minute(TIME) rewrites to MinutesOfTime -> StaticInvoke(DateTimeUtils.getMinutesOfTime). Comet
+-- has no native handler for it, so CometStaticInvoke routes it through the JVM codegen dispatcher.
 
 statement
 CREATE TABLE test_minute_time(h int, m int, s decimal(16,6)) USING parquet
@@ -32,16 +32,16 @@ INSERT INTO test_minute_time VALUES
   (23, 59, 59.999999),
   (0, NULL, 0.000000)
 
-query
+query expect_dispatch(staticinvoke)
 SELECT minute(make_time(h, m, s)) FROM test_minute_time
 
-query
+query expect_dispatch(staticinvoke)
 SELECT minute(TIME '00:00:00')
 
-query
+query expect_dispatch(staticinvoke)
 SELECT minute(TIME '13:45:00')
 
-query
+query expect_dispatch(staticinvoke)
 SELECT minute(TIME '23:59:59.999999')
 
 query

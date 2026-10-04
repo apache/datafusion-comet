@@ -18,8 +18,8 @@
 -- MinSparkVersion: 4.1
 -- Config: spark.sql.timeType.enabled=true
 
--- hour(TIME) rewrites to HoursOfTime -> StaticInvoke(DateTimeUtils.getHoursOfTime).
--- The shim routes that StaticInvoke through the JVM codegen dispatcher.
+-- hour(TIME) rewrites to HoursOfTime -> StaticInvoke(DateTimeUtils.getHoursOfTime). Comet has
+-- no native handler for it, so CometStaticInvoke routes it through the JVM codegen dispatcher.
 
 statement
 CREATE TABLE test_hour_time(h int, m int, s decimal(16,6)) USING parquet
@@ -33,17 +33,17 @@ INSERT INTO test_hour_time VALUES
   (NULL, 0, 0.000000)
 
 -- column argument built via make_time
-query
+query expect_dispatch(staticinvoke)
 SELECT hour(make_time(h, m, s)) FROM test_hour_time
 
 -- literal TIME arguments
-query
+query expect_dispatch(staticinvoke)
 SELECT hour(TIME '00:00:00')
 
-query
+query expect_dispatch(staticinvoke)
 SELECT hour(TIME '13:45:00')
 
-query
+query expect_dispatch(staticinvoke)
 SELECT hour(TIME '23:59:59.999999')
 
 -- null TIME

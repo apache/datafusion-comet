@@ -18,9 +18,9 @@
 -- MinSparkVersion: 4.1
 -- Config: spark.sql.timeType.enabled=true
 
--- Casts to/from TIME have full Spark codegen but no native lowering in Comet. CometCast
--- routes them through the JVM codegen dispatcher so the enclosing projection stays
--- native and results match Spark exactly.
+-- Casts to and from TIME have no native lowering in Comet. CometCast reports them Unsupported,
+-- and CodegenDispatchFallback routes them through the JVM codegen dispatcher, so the enclosing
+-- projection stays native. A cast of a literal is folded at planning time instead.
 
 statement
 CREATE TABLE test_cast_time(s string, h int, m int, sec decimal(16,6)) USING parquet
@@ -34,7 +34,7 @@ INSERT INTO test_cast_time VALUES
   (NULL, NULL, NULL, NULL)
 
 -- string -> TIME (column)
-query
+query expect_dispatch(cast)
 SELECT CAST(s AS TIME) FROM test_cast_time
 
 -- string -> TIME (literals)
@@ -45,7 +45,7 @@ query
 SELECT CAST('23:59:59.999999' AS TIME)
 
 -- TIME -> string (column)
-query
+query expect_dispatch(cast)
 SELECT CAST(make_time(h, m, sec) AS STRING) FROM test_cast_time
 
 -- TIME -> string (literals)
@@ -56,7 +56,7 @@ query
 SELECT CAST(TIME '13:45:07.123456' AS STRING)
 
 -- TIME -> BIGINT (whole seconds since midnight, via floor(nanos / 1e9))
-query
+query expect_dispatch(cast)
 SELECT CAST(make_time(h, m, sec) AS BIGINT) FROM test_cast_time
 
 query
