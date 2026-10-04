@@ -1069,7 +1069,8 @@ object CometConf extends ShimCometConf {
           "dates/timestamps may require legacy (hybrid Julian/Gregorian) datetime rebasing, " +
           "and fall back to Spark for those scans unless row-group statistics show that no " +
           "value needs a rebase. The check reads each input file's footer on the driver the " +
-          "first time the file is planned; results are cached per file. " +
+          "first time the file is planned, and caches the result for up to " +
+          "`spark.comet.scan.parquet.checkDatetimeRebase.maxCachedFiles` files. " +
           "Disable only when all input files are known to contain datetime values written " +
           "with the proleptic Gregorian calendar (for example, written by Spark 3.x or later " +
           "with corrected rebase modes). When disabled, Comet reads legacy files without " +
