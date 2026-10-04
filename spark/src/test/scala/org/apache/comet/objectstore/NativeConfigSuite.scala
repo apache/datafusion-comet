@@ -20,6 +20,9 @@
 package org.apache.comet.objectstore
 
 import java.net.URI
+import java.util.Properties
+
+import scala.util.Try
 
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
@@ -354,4 +357,66 @@ class NativeConfigSuite extends AnyFunSuite with Matchers {
       NativeConfig.resolveS3CompliantSchemes(conf) == Set("blob", "minio", "r2"),
       "schemes must be split on commas, trimmed, lowercased, with blanks dropped")
   }
+
+  test("extractObjectStoreOptions - abfs carries whether hadoop-azure reads container SAS keys") {
+    val key = NativeConfig.containerScopedSasTokenKey
+    val probe = NativeConfig.hadoopReadsContainerScopedSasToken.toString
+    val hadoopConf = new Configuration()
+    hadoopConf.set("fs.azure.sas.fixed.token", "sv=2020-08-04&sig=fixed")
+    // A value set in the Hadoop conf is never forwarded; the probe result replaces it.
+    hadoopConf.set(key, "user-value")
+
+    Seq("abfs", "abfss").foreach { scheme =>
+      val opts = NativeConfig.extractObjectStoreOptions(
+        hadoopConf,
+        new URI(s"$scheme://data@myacct.dfs.core.windows.net/path/file.parquet"))
+      assert(opts.get(key).contains(probe), s"$scheme: $opts")
+    }
+    Seq(
+      "s3a://bucket/key",
+      "gs://bucket/key",
+      "wasb://data@myacct.blob.core.windows.net/key",
+      "wasbs://data@myacct.blob.core.windows.net/key").foreach { path =>
+      val opts = NativeConfig.extractObjectStoreOptions(hadoopConf, new URI(path))
+      assert(!opts.contains(key), s"$path: $opts")
+    }
+  }
+
+  test("hasContainerConf - true only for a loadable class declaring containerConf(String)") {
+    val loader = getClass.getClassLoader
+    assert(!NativeConfig.hasContainerConf("org.apache.comet.objectstore.NoSuchClass", loader))
+    assert(!NativeConfig.hasContainerConf(classOf[String].getName, loader))
+    assert(NativeConfig.hasContainerConf(classOf[ContainerConfProbeTarget].getName, loader))
+  }
+
+  test("hadoopReadsContainerScopedSasToken - matches the hadoop-azure version on the classpath") {
+    val version = Option(
+      getClass.getClassLoader.getResourceAsStream(
+        "META-INF/maven/org.apache.hadoop/hadoop-azure/pom.properties")).flatMap { in =>
+      try {
+        val props = new Properties()
+        props.load(in)
+        Option(props.getProperty("version"))
+      } finally {
+        in.close()
+      }
+    }
+    val parsed = version
+      .flatMap(v => Try(v.split("[.-]").take(3).map(_.toInt).toSeq).toOption)
+      .filter(_.length == 3)
+    assume(parsed.isDefined, s"no parseable hadoop-azure version on the classpath: $version")
+    val probe = NativeConfig.hadoopReadsContainerScopedSasToken
+    info(s"hadoop-azure ${version.get}: hadoopReadsContainerScopedSasToken=$probe")
+    // The first differing component decides; an equal version is 3.4.2 itself.
+    val atLeast342 = parsed.get
+      .zip(Seq(3, 4, 2))
+      .collectFirst { case (have, want) if have != want => have > want }
+      .getOrElse(true)
+    assert(probe == atLeast342)
+  }
+}
+
+/** Declares the `containerConf(String)` method `NativeConfig.hasContainerConf` looks for. */
+class ContainerConfProbeTarget {
+  def containerConf(key: String): String = key
 }

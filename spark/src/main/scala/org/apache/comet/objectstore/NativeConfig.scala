@@ -27,6 +27,7 @@ import org.apache.hadoop.conf.Configuration
 import org.apache.spark.sql.comet.util.Utils
 
 import org.apache.comet.CometConf.{COMET_LIBHDFS_SCHEMES_KEY, COMET_S3_COMPLIANT_SCHEMES_KEY}
+import org.apache.comet.util.ClassLoaders
 
 object NativeConfig {
 
@@ -185,6 +186,40 @@ object NativeConfig {
   }
 
   /**
+   * Options key telling the native Azure store whether the hadoop-azure on the classpath reads
+   * the container-scoped SAS fixed token `fs.azure.sas.fixed.token.<container>.<host>`, as Hadoop
+   * 3.4.2 and later do. It is outside `fs.`, so no forwarded Hadoop key can set it.
+   */
+  private[comet] val containerScopedSasTokenKey = "comet.azure.containerScopedSasToken"
+
+  // Hadoop 3.4.2 added `AbfsConfiguration.containerConf` together with the container-scoped
+  // lookup.
+  private val abfsConfigurationClass = "org.apache.hadoop.fs.azurebfs.AbfsConfiguration"
+
+  /** Whether `className` loads from `loader` and has a public `containerConf(String)`. */
+  private[comet] def hasContainerConf(className: String, loader: ClassLoader): Boolean = {
+    try {
+      // scalastyle:off classforname
+      Class.forName(className, false, loader).getMethod("containerConf", classOf[String])
+      // scalastyle:on classforname
+      true
+    } catch {
+      case _: ClassNotFoundException | _: NoSuchMethodException | _: LinkageError |
+          _: SecurityException =>
+        false
+    }
+  }
+
+  /**
+   * Whether the hadoop-azure visible to the current thread's context loader (or Comet's own
+   * loader when there is none) reads the container-scoped SAS token. Probed on every call.
+   */
+  private[comet] def hadoopReadsContainerScopedSasToken: Boolean =
+    hasContainerConf(
+      abfsConfigurationClass,
+      ClassLoaders.contextOrDefault(getClass.getClassLoader))
+
+  /**
    * Extract object store configs (S3, GCS, Azure, ...) from the Hadoop configuration for native
    * DataFusion. Captures global and per-bucket keys; native code prefers per-bucket.
    *
@@ -245,6 +280,10 @@ object NativeConfig {
     if (vendorEntries.nonEmpty) {
       translateVendorKeys(vendorEntries.toSeq, options, bucketForUri(uri, s3CompliantSchemes))
         .foreach { case (k, v) => options(k) = v }
+    }
+
+    if (scheme == "abfs" || scheme == "abfss") {
+      options(containerScopedSasTokenKey) = hadoopReadsContainerScopedSasToken.toString
     }
 
     options.toMap

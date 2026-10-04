@@ -105,23 +105,28 @@
 //! (`fs.azure.account.X.<account>.dfs.core.windows.net`) wins over the global one
 //! (`fs.azure.account.X`), mirroring Hadoop ABFS's own `AbfsConfiguration` precedence.
 //! Hadoop 3.4.2 and later check a container-scoped form of the SAS fixed token and the OAuth
-//! keys first; this module reads that form only for the SAS fixed token.
+//! keys first. This module reads that form only for the SAS fixed token, and only when the
+//! JVM sets `comet.azure.containerScopedSasToken=true` because its hadoop-azure reads it.
+//! Otherwise the SAS lookup is Hadoop 3.4.1's order (account-scoped fixed token, then global
+//! fixed token), then the WASB container key as the native scan's own fallback. In case the
+//! JVM's report is wrong, the unread key still keeps the environment out, and it is an error
+//! when no other credential is set.
 //!
 //! The translated keys cover the auth schemes that ABFS users actually configure:
 //!
-//! | Hadoop key (account-scoped suffix omitted)    | `AzureConfigKey`            |
-//! | --------------------------------------------- | --------------------------- |
-//! | `fs.azure.account.key`                        | `AccessKey`                 |
-//! | `fs.azure.account.oauth2.client.id`           | `ClientId`                  |
-//! | `fs.azure.account.oauth2.client.secret`       | `ClientSecret`              |
-//! | `fs.azure.account.oauth2.client.endpoint`     | `AuthorityId` (from URL)    |
-//! | `fs.azure.account.oauth2.msi.tenant`          | `AuthorityId`               |
-//! | `fs.azure.account.oauth2.msi.endpoint`        | `MsiEndpoint`               |
-//! | `fs.azure.account.oauth2.msi.authority`       | `AuthorityHost`             |
-//! | `fs.azure.account.oauth2.token.file`          | `FederatedTokenFile`        |
-//! | `fs.azure.sas.fixed.token.<container>.<host>` | `SasKey` (highest priority) |
-//! | `fs.azure.sas.fixed.token`                    | `SasKey`                    |
-//! | `fs.azure.sas.<container>.<account>`          | `SasKey` (lower priority)   |
+//! | Hadoop key (account-scoped suffix omitted)    | `AzureConfigKey`                     |
+//! | --------------------------------------------- | ------------------------------------ |
+//! | `fs.azure.account.key`                        | `AccessKey`                          |
+//! | `fs.azure.account.oauth2.client.id`           | `ClientId`                           |
+//! | `fs.azure.account.oauth2.client.secret`       | `ClientSecret`                       |
+//! | `fs.azure.account.oauth2.client.endpoint`     | `AuthorityId` (from URL)             |
+//! | `fs.azure.account.oauth2.msi.tenant`          | `AuthorityId`                        |
+//! | `fs.azure.account.oauth2.msi.endpoint`        | `MsiEndpoint`                        |
+//! | `fs.azure.account.oauth2.msi.authority`       | `AuthorityHost`                      |
+//! | `fs.azure.account.oauth2.token.file`          | `FederatedTokenFile`                 |
+//! | `fs.azure.sas.fixed.token.<container>.<host>` | `SasKey` (first, Hadoop 3.4.2+ only) |
+//! | `fs.azure.sas.fixed.token`                    | `SasKey`                             |
+//! | `fs.azure.sas.<container>.<account>`          | `SasKey` (lower priority)            |
 //!
 //! Hadoop keys outside this table are not translated; the URL supplies the account and
 //! container.
@@ -146,6 +151,10 @@ const HADOOP_MSI_AUTHORITY: &str = "fs.azure.account.oauth2.msi.authority";
 const HADOOP_WI_TOKEN_FILE: &str = "fs.azure.account.oauth2.token.file";
 const HADOOP_SAS_PREFIX: &str = "fs.azure.sas.";
 const HADOOP_SAS_FIXED_TOKEN: &str = "fs.azure.sas.fixed.token";
+/// Options key the JVM sets to `true` when the hadoop-azure on its classpath reads the
+/// container-scoped SAS fixed token (Hadoop 3.4.2 and later). It is not a Hadoop key.
+/// It must match `NativeConfig.containerScopedSasTokenKey`.
+const COMET_CONTAINER_SCOPED_SAS_KEY: &str = "comet.azure.containerScopedSasToken";
 const HADOOP_SAS_TOKEN_PROVIDER_TYPE: &str = "fs.azure.sas.token.provider.type";
 const HADOOP_OAUTH_PROVIDER_TYPE: &str = "fs.azure.account.oauth.provider.type";
 /// Simple class names of the `org.apache.hadoop.fs.azurebfs.oauth2` token providers the
@@ -392,10 +401,24 @@ const ENV_FEDERATED_TOKEN_FILE: &str = "AZURE_FEDERATED_TOKEN_FILE";
 
 /// The container a URL names and the host it names it on, with any explicit port, which
 /// is the account name Hadoop takes from the raw authority to scope container-level keys.
+/// `container_fixed_token` says whether the container-scoped SAS fixed token is read
+/// (`reads_container_fixed_token`).
 #[derive(Debug, Clone, Copy)]
 struct UrlContainer<'a> {
     name: &'a str,
     host: &'a str,
+    container_fixed_token: bool,
+}
+
+/// Whether the JVM reports, through `COMET_CONTAINER_SCOPED_SAS_KEY`, that its hadoop-azure
+/// reads the container-scoped SAS fixed token. Only the exact value `true` counts; anything
+/// else, or no value from an older JVM or another caller, gives Hadoop 3.4.1's order
+/// (account-scoped fixed token, then global fixed token), then the WASB container key as the
+/// native scan's own fallback.
+fn reads_container_fixed_token(configs: &HashMap<String, String>) -> bool {
+    configs
+        .get(COMET_CONTAINER_SCOPED_SAS_KEY)
+        .is_some_and(|value| value == "true")
 }
 
 /// Build a `MicrosoftAzure` `ObjectStore` for `url` using `configs`.
@@ -430,7 +453,11 @@ fn create_store_with_env(
     let account = extract_account(url);
     let container = extract_container(url);
     let host = &url[url::Position::BeforeHost..url::Position::AfterPort];
-    let url_container = container.as_deref().map(|name| UrlContainer { name, host });
+    let url_container = container.as_deref().map(|name| UrlContainer {
+        name,
+        host,
+        container_fixed_token: reads_container_fixed_token(configs),
+    });
 
     let oauth_keys = OAuthKeys::resolve(configs, account.as_deref());
     let translated =
@@ -539,7 +566,8 @@ fn validate_translated(
 /// Why the Hadoop keys cannot be built natively as configured, or `None` when they can:
 /// a blank value first, then an explicit auth type the translated keys do not satisfy,
 /// then a provider class they do not satisfy, then a key that selects a mechanism with no
-/// native counterpart.
+/// native counterpart, then an unread container-scoped SAS fixed token with no other
+/// credential.
 fn hadoop_problem(
     configs: &HashMap<String, String>,
     account: Option<&str>,
@@ -548,10 +576,52 @@ fn hadoop_problem(
     translated: &[(AzureConfigKey, String)],
 ) -> Option<String> {
     blank_value_problem(configs, account, container, oauth_keys)
-        .or_else(|| auth_type_problem(configs, account, translated))
+        .or_else(|| auth_type_problem(configs, account, container, translated))
         .or_else(|| provider_class_problem(configs, account, translated))
         .or_else(|| key_provider_problem(configs, account, translated))
         .or_else(|| unsupported_key_problem(configs, account, oauth_keys))
+        .or_else(|| unread_container_token_problem(configs, account, container, translated))
+}
+
+/// A container-scoped SAS fixed token left unread (`has_unread_container_fixed_token`) when
+/// nothing else supplies a credential. With the flag set the native scan would select this
+/// token, while Hadoop, defaulting to SharedKey here, fails without an account key, so the
+/// scan errors rather than build a store with no credential, which `object_store` completes
+/// with the managed identity. The MSI provider class stands alone, so it counts as a
+/// credential.
+fn unread_container_token_problem(
+    configs: &HashMap<String, String>,
+    account: Option<&str>,
+    container: Option<UrlContainer<'_>>,
+    translated: &[(AzureConfigKey, String)],
+) -> Option<String> {
+    let msi_provider = active_provider_class(configs, account)
+        .is_some_and(|(_, class)| is_provider_class(&class, HADOOP_MSI_PROVIDER_CLASS));
+    if has_mechanism_key(translated)
+        || msi_provider
+        || !has_unread_container_fixed_token(configs, account, container)
+    {
+        return None;
+    }
+    let (key, _) = container_fixed_entry(configs, container?)?;
+    Some(format!(
+        "`{key}` is read only by Hadoop 3.4.2 and later; set `{HADOOP_SAS_FIXED_TOKEN}` or its \
+         account-scoped form, or remove it"
+    ))
+}
+
+/// Whether the translated keys hold a credential that selects a mechanism on its own.
+fn has_mechanism_key(translated: &[(AzureConfigKey, String)]) -> bool {
+    translated.iter().any(|(key, _)| {
+        matches!(
+            key,
+            AzureConfigKey::AccessKey
+                | AzureConfigKey::SasKey
+                | AzureConfigKey::FederatedTokenFile
+                | AzureConfigKey::ClientSecret
+                | AzureConfigKey::MsiEndpoint
+        )
+    })
 }
 
 /// Whether an explicit `SimpleKeyProvider` has the account key it reads. Hadoop fails
@@ -628,6 +698,7 @@ fn optional_provider_keys(
 fn auth_type_problem(
     configs: &HashMap<String, String>,
     account: Option<&str>,
+    container: Option<UrlContainer<'_>>,
     translated: &[(AzureConfigKey, String)],
 ) -> Option<String> {
     let (key, value) = account_scoped_entry(configs, HADOOP_AUTH_TYPE, account)?;
@@ -645,11 +716,16 @@ fn auth_type_problem(
         return oauth_problem(configs, account, translated, &setting);
     }
     if auth_type.eq_ignore_ascii_case("SAS") {
+        let container_form = if container.is_some_and(|c| c.container_fixed_token) {
+            ", its container-scoped form"
+        } else {
+            ""
+        };
         return (!has(AzureConfigKey::SasKey)).then(|| {
             format!(
-                "{setting} needs a SAS token from `{HADOOP_SAS_FIXED_TOKEN}`, its \
-                 container-scoped form or the WASB container key; a SAS token provider class is \
-                 not supported by the native scan"
+                "{setting} needs a SAS token from `{HADOOP_SAS_FIXED_TOKEN}`{container_form} or \
+                 the WASB container key; a SAS token provider class is not supported by the \
+                 native scan"
             )
         });
     }
@@ -832,7 +908,8 @@ enum EnvPolicy {
 /// client id, tenant or authority host, or the Workload Identity provider with the client
 /// id and tenant (with or without `auth.type=OAuth`), names a principal and leaves only the
 /// token file open. A partial mechanism, such as a token file alone, is never completed
-/// from the environment.
+/// from the environment, nor is a container-scoped SAS fixed token left unread
+/// (`has_unread_container_fixed_token`).
 fn env_policy(
     configs: &HashMap<String, String>,
     account: Option<&str>,
@@ -840,16 +917,7 @@ fn env_policy(
     oauth_keys: OAuthKeys,
     translated: &[(AzureConfigKey, String)],
 ) -> EnvPolicy {
-    let has_mechanism_key = translated.iter().any(|(key, _)| {
-        matches!(
-            key,
-            AzureConfigKey::AccessKey
-                | AzureConfigKey::SasKey
-                | AzureConfigKey::FederatedTokenFile
-                | AzureConfigKey::ClientSecret
-                | AzureConfigKey::MsiEndpoint
-        )
-    });
+    let has_mechanism_key = has_mechanism_key(translated);
     // A provider class or an explicit auth type is Hadoop choosing a mechanism; only the
     // Workload Identity provider with the client id and tenant leaves the token file open.
     let has_provider_class =
@@ -861,6 +929,7 @@ fn env_policy(
     // `build_builder` never borrows the environment even when called without validation.
     if has_mechanism_key
         || chooses_mechanism
+        || has_unread_container_fixed_token(configs, account, container)
         || hadoop_problem(configs, account, container, oauth_keys, translated).is_some()
     {
         return EnvPolicy::Nothing;
@@ -938,7 +1007,8 @@ fn apply_env(
 ///
 /// `account` and `container` are extracted from the URL and used to resolve account-scoped
 /// keys (`fs.azure.X.<account>.<endpoint-suffix>`) and the container-scoped SAS keys
-/// (`fs.azure.sas.fixed.token.<container>.<host>` and `fs.azure.sas.<container>.<account>`).
+/// (`fs.azure.sas.fixed.token.<container>.<host>`, when `container_fixed_token` is set, and
+/// `fs.azure.sas.<container>.<account>`).
 /// Account-scoped keys win over global ones.
 fn translate_hadoop_configs(
     configs: &HashMap<String, String>,
@@ -1089,20 +1159,21 @@ fn active_sas_token(
 
 /// Resolve the SAS token and the key it came from. Hadoop's
 /// `AbfsConfiguration.getSASTokenProvider` reads `fs.azure.sas.fixed.token` through
-/// `getPasswordString`, which in Hadoop 3.4.2 and later probes
-/// `fs.azure.sas.fixed.token.<container>.<host>` first, with the URL's host and port as
-/// `containerConf` builds it, then the account-scoped and global keys, as
-/// `account_scoped_entry` probes them. The WASB driver's
-/// `fs.azure.sas.<container>.<account>[.<endpoint-suffix>]` variants come last as a fallback.
+/// `getPasswordString`, which probes the account-scoped and global keys, as
+/// `account_scoped_entry` probes them. In Hadoop 3.4.2 and later it probes
+/// `fs.azure.sas.fixed.token.<container>.<host>` before them, with the URL's host and port
+/// as `containerConf` builds it; that key is read only when `container_fixed_token` is set.
+/// The WASB driver's `fs.azure.sas.<container>.<account>[.<endpoint-suffix>]` variants come
+/// last as a fallback.
 fn sas_token(
     configs: &HashMap<String, String>,
     account: Option<&str>,
     container: Option<UrlContainer<'_>>,
 ) -> Option<(String, String)> {
     let container_fixed = || {
-        let UrlContainer { name, host } = container?;
-        let key = format!("{HADOOP_SAS_FIXED_TOKEN}.{name}.{host}");
-        configs.get(&key).map(|value| (key, value.clone()))
+        container
+            .filter(|c| c.container_fixed_token)
+            .and_then(|c| container_fixed_entry(configs, c))
     };
     let container_scoped = || match (container, account) {
         (Some(UrlContainer { name, .. }), Some(account)) => {
@@ -1118,6 +1189,33 @@ fn sas_token(
     container_fixed()
         .or_else(|| account_scoped_entry(configs, HADOOP_SAS_FIXED_TOKEN, account))
         .or_else(container_scoped)
+}
+
+/// The container-scoped SAS fixed token entry for the URL's container and host, whether or
+/// not `container_fixed_token` lets `sas_token` read it.
+fn container_fixed_entry(
+    configs: &HashMap<String, String>,
+    container: UrlContainer<'_>,
+) -> Option<(String, String)> {
+    let key = format!(
+        "{HADOOP_SAS_FIXED_TOKEN}.{}.{}",
+        container.name, container.host
+    );
+    configs.get(&key).map(|value| (key, value.clone()))
+}
+
+/// Whether SAS is read and the URL has a container-scoped SAS fixed token that is not read
+/// because the JVM reported an older hadoop-azure. Hadoop 3.4.2 and later would use it, so
+/// the environment is closed in case that report is wrong.
+fn has_unread_container_fixed_token(
+    configs: &HashMap<String, String>,
+    account: Option<&str>,
+    container: Option<UrlContainer<'_>>,
+) -> bool {
+    mechanism_is_read(configs, account, AuthMechanism::Sas)
+        && container.is_some_and(|c| {
+            !c.container_fixed_token && container_fixed_entry(configs, c).is_some()
+        })
 }
 
 /// Extract the storage account name from an `abfs[s]://` URL.
@@ -1173,7 +1271,11 @@ mod tests {
         let host = account.map(|account| format!("{account}.dfs.core.windows.net"));
         let container = container
             .zip(host.as_deref())
-            .map(|(name, host)| UrlContainer { name, host });
+            .map(|(name, host)| UrlContainer {
+                name,
+                host,
+                container_fixed_token: reads_container_fixed_token(configs),
+            });
         translate_hadoop_configs(
             configs,
             account,
@@ -1380,6 +1482,18 @@ mod tests {
             .collect()
     }
 
+    /// The flag a JVM with Hadoop 3.4.2 or later sends.
+    const READS_CONTAINER_TOKEN: (&str, &str) = (COMET_CONTAINER_SCOPED_SAS_KEY, "true");
+
+    /// `pairs` with the container-scoped SAS flag set to `flag`, or left out for `None`.
+    fn with_container_flag(pairs: &[(&str, &str)], flag: Option<&str>) -> HashMap<String, String> {
+        let mut configs = hadoop(pairs);
+        if let Some(flag) = flag {
+            configs.insert(COMET_CONTAINER_SCOPED_SAS_KEY.to_string(), flag.to_string());
+        }
+        configs
+    }
+
     fn builder_for(
         hadoop: &HashMap<String, String>,
         env: &[(&str, &str)],
@@ -1389,6 +1503,7 @@ mod tests {
         let container = Some(UrlContainer {
             name: "data",
             host: "myacct.dfs.core.windows.net",
+            container_fixed_token: reads_container_fixed_token(hadoop),
         });
         let translated = translate_hadoop_configs(hadoop, Some("myacct"), container, oauth_keys);
         build_builder(
@@ -2146,6 +2261,7 @@ mod tests {
         ] {
             let container_key = format!("fs.azure.sas.fixed.token.data.{host}");
             let configs = hadoop(&[
+                READS_CONTAINER_TOKEN,
                 ("fs.azure.sas.fixed.token", "sv=2020-08-04&sig=global"),
                 (
                     "fs.azure.sas.fixed.token.myacct.dfs.core.windows.net",
@@ -2157,7 +2273,11 @@ mod tests {
                     "sv=2020-08-04&sig=wasb",
                 ),
             ]);
-            let container = Some(UrlContainer { name: "data", host });
+            let container = Some(UrlContainer {
+                name: "data",
+                host,
+                container_fixed_token: true,
+            });
             assert_eq!(
                 sas_token(&configs, Some("myacct"), container),
                 Some((container_key, "sv=2020-08-04&sig=container".to_string())),
@@ -2175,6 +2295,7 @@ mod tests {
             "fs.azure.sas.fixed.token.data.myacct.blob.core.windows.net",
         ] {
             let configs = hadoop(&[
+                READS_CONTAINER_TOKEN,
                 (other_form, "sv=2020-08-04&sig=container"),
                 (
                     "fs.azure.sas.fixed.token.myacct.dfs.core.windows.net",
@@ -2192,6 +2313,7 @@ mod tests {
         let sas = ("fs.azure.account.auth.type", "SAS");
         let configs = hadoop(&[
             sas,
+            READS_CONTAINER_TOKEN,
             (
                 "fs.azure.sas.fixed.token.data.myacct.blob.core.windows.net",
                 "sv=2020-08-04&sig=container",
@@ -2200,6 +2322,7 @@ mod tests {
         create_store_with_env(&blob, &configs, env_of(&[])).expect("store builds");
         let configs = hadoop(&[
             sas,
+            READS_CONTAINER_TOKEN,
             (
                 "fs.azure.sas.fixed.token.data.myacct.dfs.core.windows.net",
                 "sv=2020-08-04&sig=container",
@@ -2241,7 +2364,11 @@ mod tests {
             ),
             (wasb, None),
         ] {
-            let mut pairs = vec![("fs.azure.account.auth.type", "SAS"), (key, padded)];
+            let mut pairs = vec![
+                ("fs.azure.account.auth.type", "SAS"),
+                READS_CONTAINER_TOKEN,
+                (key, padded),
+            ];
             pairs.extend(extra);
             let configs = hadoop(&pairs);
             assert_eq!(built_sas_token(&configs).as_deref(), Some(trimmed), "{key}");
@@ -2264,6 +2391,7 @@ mod tests {
         // The port-less key is not read, so its blank value is no error.
         let configs = hadoop(&[
             sas,
+            READS_CONTAINER_TOKEN,
             account,
             (
                 "fs.azure.sas.fixed.token.data.myacct.dfs.core.windows.net",
@@ -2272,18 +2400,26 @@ mod tests {
         ]);
         create_store_with_env(&u, &configs, env_of(&[])).expect("store builds");
         // The port form is read before the account token.
-        let err = err_for(&u, &hadoop(&[sas, account, (port_key, "  ")]));
+        let err = err_for(
+            &u,
+            &hadoop(&[sas, READS_CONTAINER_TOKEN, account, (port_key, "  ")]),
+        );
         assert!(
             err.contains(&format!("`{port_key}` is blank")),
             "unexpected error: {err}"
         );
-        let configs = hadoop(&[sas, (port_key, "sv=2020-08-04&sig=container")]);
+        let configs = hadoop(&[
+            sas,
+            READS_CONTAINER_TOKEN,
+            (port_key, "sv=2020-08-04&sig=container"),
+        ]);
         create_store_with_env(&u, &configs, env_of(&[])).expect("store builds");
     }
 
     #[test]
     fn container_fixed_sas_token_alone_satisfies_sas_auth_type() {
         let configs = hadoop(&[
+            READS_CONTAINER_TOKEN,
             (
                 "fs.azure.account.auth.type.myacct.dfs.core.windows.net",
                 "SAS",
@@ -2298,10 +2434,13 @@ mod tests {
             Some("sv=2020-08-04&sig=container")
         );
         let builder = builder_for(
-            &hadoop(&[(
-                "fs.azure.sas.fixed.token.data.myacct.dfs.core.windows.net",
-                "sv=2020-08-04&sig=container",
-            )]),
+            &hadoop(&[
+                READS_CONTAINER_TOKEN,
+                (
+                    "fs.azure.sas.fixed.token.data.myacct.dfs.core.windows.net",
+                    "sv=2020-08-04&sig=container",
+                ),
+            ]),
             &[("AZURE_STORAGE_TOKEN", "ambient")],
         );
         assert_eq!(value(&builder, AzureConfigKey::Token), None);
@@ -2318,6 +2457,7 @@ mod tests {
             "sv=2020-08-04&sig=other",
         );
         let configs = hadoop(&[
+            READS_CONTAINER_TOKEN,
             other,
             ("fs.azure.sas.fixed.token", "sv=2020-08-04&sig=global"),
         ]);
@@ -2330,7 +2470,11 @@ mod tests {
                 .collect();
             assert_eq!(sas, vec!["sv=2020-08-04&sig=global"], "{container:?}");
         }
-        let err = err_of(&hadoop(&[other, ("fs.azure.account.auth.type", "SAS")]));
+        let err = err_of(&hadoop(&[
+            READS_CONTAINER_TOKEN,
+            other,
+            ("fs.azure.account.auth.type", "SAS"),
+        ]));
         assert!(
             err.contains("needs a SAS token from `fs.azure.sas.fixed.token`"),
             "unexpected error: {err}"
@@ -2339,8 +2483,9 @@ mod tests {
 
     #[test]
     fn blank_container_fixed_sas_token_is_rejected_even_with_other_fixed_tokens() {
-        // Hadoop stops at the container-scoped key and trims it to an empty token.
+        // Hadoop 3.4.2 stops at the container-scoped key and trims it to an empty token.
         let configs = hadoop(&[
+            READS_CONTAINER_TOKEN,
             (
                 "fs.azure.sas.fixed.token.data.myacct.dfs.core.windows.net",
                 "  ",
@@ -2364,6 +2509,215 @@ mod tests {
         assert_hides(
             &err,
             &["sv=2020-08-04&sig=account", "sv=2020-08-04&sig=global"],
+        );
+    }
+
+    const CONTAINER_FIXED_KEY: &str = "fs.azure.sas.fixed.token.data.myacct.dfs.core.windows.net";
+
+    #[test]
+    fn blank_container_fixed_sas_token_is_ignored_unless_hadoop_reads_it() {
+        // Hadoop 3.4.1 uses the global token here and never reads the container-scoped key.
+        let global = "sv=2020-08-04&sig=synthetic-global";
+        let pairs = [
+            ("fs.azure.account.auth.type", "SAS"),
+            ("fs.azure.sas.fixed.token", global),
+            ("fs.azure.sas.data.myacct.dfs.core.windows.net", global),
+            (CONTAINER_FIXED_KEY, "  "),
+        ];
+        for flag in [None, Some("false")] {
+            let configs = with_container_flag(&pairs, flag);
+            assert_eq!(
+                built_sas_token(&configs).as_deref(),
+                Some(global),
+                "{flag:?}"
+            );
+        }
+        let err = err_of(&with_container_flag(&pairs, Some("true")));
+        assert!(
+            err.contains(&format!("`{CONTAINER_FIXED_KEY}` is blank")),
+            "unexpected error: {err}"
+        );
+        assert_hides(&err, &[global]);
+    }
+
+    #[test]
+    fn container_fixed_sas_token_is_selected_only_when_hadoop_reads_it() {
+        let global = "sv=2020-08-04&sig=global";
+        let container = "sv=2020-08-04&sig=container";
+        let pairs = [
+            ("fs.azure.account.auth.type", "SAS"),
+            ("fs.azure.sas.fixed.token", global),
+            (CONTAINER_FIXED_KEY, container),
+        ];
+        for (flag, expected) in [
+            (None, global),
+            (Some("false"), global),
+            (Some("true"), container),
+        ] {
+            let configs = with_container_flag(&pairs, flag);
+            assert_eq!(
+                built_sas_token(&configs).as_deref(),
+                Some(expected),
+                "{flag:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn container_fixed_sas_token_alone_satisfies_sas_only_when_hadoop_reads_it() {
+        let container = "sv=2020-08-04&sig=container";
+        let pairs = [
+            ("fs.azure.account.auth.type", "SAS"),
+            (CONTAINER_FIXED_KEY, container),
+        ];
+        for flag in [None, Some("false")] {
+            let err = err_of(&with_container_flag(&pairs, flag));
+            assert!(
+                err.contains(
+                    "needs a SAS token from `fs.azure.sas.fixed.token` or the WASB container key"
+                ),
+                "{flag:?}: unexpected error: {err}"
+            );
+            assert_hides(&err, &[container]);
+        }
+        let configs = with_container_flag(&pairs, Some("true"));
+        assert_eq!(built_sas_token(&configs).as_deref(), Some(container));
+        // The error names the container-scoped form only when it would be read.
+        let err = err_of(&with_container_flag(
+            &[("fs.azure.account.auth.type", "SAS")],
+            Some("true"),
+        ));
+        assert!(
+            err.contains("`fs.azure.sas.fixed.token`, its container-scoped form or the WASB"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn unread_container_fixed_sas_token_alone_is_rejected() {
+        // With the flag set the scan would select this token, while Hadoop, defaulting to
+        // SharedKey with no auth type, fails without an account key. So a container-scoped key
+        // that is the only credential is an error rather than a store with none.
+        let u = url("abfss://data@myacct.dfs.core.windows.net/path/file.parquet");
+        let ambient = [("AZURE_STORAGE_TOKEN", "ambient")];
+        for token in ["sv=2020-08-04&sig=container", "  "] {
+            for flag in [None, Some("false")] {
+                for env in [&ambient[..], &[]] {
+                    let configs = with_container_flag(&[(CONTAINER_FIXED_KEY, token)], flag);
+                    let err = match create_store_with_env(&u, &configs, env_of(env)) {
+                        Ok(_) => panic!("{flag:?} {env:?}: store built with no credential"),
+                        Err(err) => format!("{err}"),
+                    };
+                    assert!(
+                        err.contains(ERROR_PREFIX)
+                            && err.contains(&format!(
+                                "`{CONTAINER_FIXED_KEY}` is read only by Hadoop 3.4.2 and later; \
+                                 set `fs.azure.sas.fixed.token` or its account-scoped form, or \
+                                 remove it"
+                            )),
+                        "{flag:?} {env:?}: unexpected error: {err}"
+                    );
+                    assert_hides(&err, &["sv=2020-08-04&sig=container", "ambient"]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn unread_container_fixed_sas_token_beside_another_token_keeps_the_environment_out() {
+        let container = (CONTAINER_FIXED_KEY, "sv=2020-08-04&sig=container");
+        let env = [("AZURE_STORAGE_TOKEN", "ambient")];
+        for other in [
+            ("fs.azure.sas.fixed.token", "sv=2020-08-04&sig=global"),
+            (
+                "fs.azure.sas.fixed.token.myacct.dfs.core.windows.net",
+                "sv=2020-08-04&sig=account",
+            ),
+            (
+                "fs.azure.sas.data.myacct.dfs.core.windows.net",
+                "sv=2020-08-04&sig=wasb",
+            ),
+        ] {
+            for flag in [None, Some("false")] {
+                let configs = with_container_flag(&[container, other], flag);
+                assert_eq!(
+                    built_sas_token(&configs).as_deref(),
+                    Some(other.1),
+                    "{flag:?}"
+                );
+                let builder = builder_for(&configs, &env);
+                assert_eq!(value(&builder, AzureConfigKey::Token), None, "{flag:?}");
+            }
+        }
+        // The MSI provider stands alone, so the unread key is ignored beside it.
+        let configs = hadoop(&[
+            (
+                "fs.azure.account.oauth.provider.type",
+                "org.apache.hadoop.fs.azurebfs.oauth2.MsiTokenProvider",
+            ),
+            container,
+        ]);
+        let u = url("abfss://data@myacct.dfs.core.windows.net/path/file.parquet");
+        create_store_with_env(&u, &configs, env_of(&env)).expect("store builds");
+        assert_eq!(
+            value(&builder_for(&configs, &env), AzureConfigKey::Token),
+            None
+        );
+        // Hadoop 3.4.2 and later read it, so it is selected and the environment stays out.
+        let configs = with_container_flag(&[container], Some("true"));
+        let builder = builder_for(&configs, &env);
+        assert_eq!(value(&builder, AzureConfigKey::Token), None);
+        assert_eq!(
+            value(&builder, AzureConfigKey::SasKey).as_deref(),
+            Some(container.1)
+        );
+    }
+
+    #[test]
+    fn unread_container_fixed_sas_token_does_not_affect_other_mechanisms() {
+        // Under OAuth the SAS keys are not read, so a named Workload Identity principal
+        // still borrows the token file from the environment.
+        let configs = hadoop(&[
+            ("fs.azure.account.auth.type", "OAuth"),
+            (
+                "fs.azure.account.oauth.provider.type",
+                "org.apache.hadoop.fs.azurebfs.oauth2.WorkloadIdentityTokenProvider",
+            ),
+            ("fs.azure.account.oauth2.client.id", "hadoop-client"),
+            ("fs.azure.account.oauth2.msi.tenant", "hadoop-tenant"),
+            (CONTAINER_FIXED_KEY, "sv=2020-08-04&sig=container"),
+        ]);
+        let builder = builder_for(&configs, &[("AZURE_FEDERATED_TOKEN_FILE", "/env/token")]);
+        assert_eq!(
+            value(&builder, AzureConfigKey::FederatedTokenFile).as_deref(),
+            Some("/env/token")
+        );
+        assert_eq!(value(&builder, AzureConfigKey::SasKey), None);
+    }
+
+    #[test]
+    fn container_flag_is_read_only_as_exactly_true_and_never_translated() {
+        let global = "sv=2020-08-04&sig=global";
+        let pairs = [
+            ("fs.azure.sas.fixed.token", global),
+            (CONTAINER_FIXED_KEY, "sv=2020-08-04&sig=container"),
+        ];
+        for flag in ["TRUE", " true", "true ", "yes", "1", ""] {
+            let configs = with_container_flag(&pairs, Some(flag));
+            assert_eq!(
+                built_sas_token(&configs).as_deref(),
+                Some(global),
+                "{flag:?}"
+            );
+        }
+        // The flag alone is no Hadoop key: nothing is translated and the environment applies.
+        let configs = with_container_flag(&[], Some("true"));
+        let translated = translate(&configs, Some("myacct"), Some("data"));
+        assert!(translated.is_empty(), "{translated:?}");
+        let builder = builder_for(&configs, &[("AZURE_STORAGE_TOKEN", "ambient")]);
+        assert_eq!(
+            value(&builder, AzureConfigKey::Token).as_deref(),
+            Some("ambient")
         );
     }
 
@@ -2603,6 +2957,7 @@ mod tests {
             Some(UrlContainer {
                 name: "data",
                 host: "MyAcct.dfs.core.windows.net",
+                container_fixed_token: false,
             }),
             OAuthKeys::resolve(&configs, account.as_deref()),
             &translated,
