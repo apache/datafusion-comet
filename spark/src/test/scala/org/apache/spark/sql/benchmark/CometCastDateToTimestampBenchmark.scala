@@ -45,7 +45,7 @@ object CometCastDateToTimestampBenchmark extends CometBenchmarkBase {
           // Ordinary dates from 1960 through 2029, with 1% nulls. Materialize the DATE column
           // so neither engine can fold the cast or include date construction in the measurement.
           spark
-            .range(rows)
+            .range(rows.toLong)
             .selectExpr("CASE WHEN id % 100 = 0 THEN NULL " +
               "ELSE date_add(DATE '1960-01-01', CAST(id % 25567 AS INT)) END AS d")
             .coalesce(1)
@@ -58,7 +58,7 @@ object CometCastDateToTimestampBenchmark extends CometBenchmarkBase {
         for (timezone <- Seq("UTC", "America/Los_Angeles")) {
           val benchmark = new Benchmark(
             s"DATE to TIMESTAMP in $timezone",
-            rows,
+            rows.toLong,
             minNumIters = 10,
             output = output)
           for (dispatch <- Seq("true", "false")) {
@@ -69,7 +69,8 @@ object CometCastDateToTimestampBenchmark extends CometBenchmarkBase {
               CometConf.COMET_EXEC_ENABLED.key -> "true",
               CometConf.COMET_BATCH_SIZE.key -> "8192",
               CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> dispatch)
-            val route = withSQLConf(configs: _*) {
+            var route = ""
+            withSQLConf(configs: _*) {
               CometScalaUDFCodegen.resetStats()
               val df = spark.sql(query)
               df.noop()
@@ -77,7 +78,7 @@ object CometCastDateToTimestampBenchmark extends CometBenchmarkBase {
               val nativeProject = plan.exists(_.isInstanceOf[CometProjectExec])
               val stats = CometScalaUDFCodegen.stats()
               val dispatched = stats.compileCount + stats.cacheHitCount > 0
-              val route = if (dispatched) {
+              route = if (dispatched) {
                 require(nativeProject, s"Dispatcher must remain in a Comet projection: $plan")
                 "JVM dispatcher"
               } else if (nativeProject) {
@@ -91,7 +92,6 @@ object CometCastDateToTimestampBenchmark extends CometBenchmarkBase {
               }
               benchmark.out.println(s"timezone=$timezone dispatcher=$dispatch route=$route")
               benchmark.out.println(plan.treeString)
-              route
             }
             benchmark.addCase(s"$route, dispatcher=$dispatch") { _ =>
               withSQLConf(configs: _*) {
