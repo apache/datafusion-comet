@@ -25,7 +25,8 @@ import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, Comet
 import org.apache.spark.sql.execution.{ColumnarToRowExec, ColumnarToRowTransition, SparkPlan}
 import org.apache.spark.sql.functions.{array, avg, col, count, length, max, min, size, sum}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, BinaryType, DataTypes, DecimalType, IntegerType, LongType, StringType, StructType}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, CalendarIntervalType, DataTypes, DecimalType, IntegerType, LongType, StringType, StructType}
+import org.apache.spark.unsafe.types.CalendarInterval
 
 import org.apache.comet.{CometConf, ExtendedExplainInfo}
 
@@ -258,6 +259,18 @@ class CometShuffleInputConversionSuite extends CometTestBase {
         }
       }
     }
+  }
+
+  convertTest("calendar intervals keep Spark's shuffle") {
+    // Arrow holds an interval's time part in nanoseconds, which can't hold every number of
+    // microseconds Spark can. The JVM columnar shuffle doesn't take calendar intervals either.
+    val schema = new StructType().add("k", IntegerType).add("i", CalendarIntervalType)
+    val data = Seq(Row(1, new CalendarInterval(0, 0, 10800000000000000L)))
+    val df = spark
+      .createDataFrame(spark.sparkContext.parallelize(data, 1), schema)
+      .repartition(2, col("k"))
+    val (_, plan) = checkSparkAnswer(df)
+    assert(cometShuffles(plan).isEmpty, plan)
   }
 
   convertTest("columns the conversion does not support keep the JVM columnar shuffle") {

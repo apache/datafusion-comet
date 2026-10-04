@@ -43,7 +43,7 @@ import org.apache.spark.sql.execution.adaptive.ShuffleQueryStageExec
 import org.apache.spark.sql.execution.exchange.{ENSURE_REQUIREMENTS, ShuffleExchangeExec, ShuffleExchangeLike, ShuffleOrigin}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics, SQLShuffleReadMetricsReporter, SQLShuffleWriteMetricsReporter}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, StructField, StructType, TimestampNTZType, TimestampType}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, CalendarIntervalType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, StructField, StructType, TimestampNTZType, TimestampType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.MutablePair
 import org.apache.spark.util.collection.unsafe.sort.{PrefixComparators, RecordComparator}
@@ -569,6 +569,10 @@ object CometShuffleExchangeExec
     !isShuffleOperator(s.child) &&
     !stageContainsDPPScan(s) &&
     CometSparkToColumnarExec.isSchemaSupported(s.child.schema, ListBuffer.empty) &&
+    // Arrow holds the time part of an interval in nanoseconds, so the conversion overflows on a
+    // calendar interval with more microseconds than that can hold. The JVM columnar shuffle
+    // leaves calendar intervals to Spark's shuffle as well.
+    !s.child.schema.existsRecursively(_.isInstanceOf[CalendarIntervalType]) &&
     nativeShuffleFailureReasons(s).isEmpty &&
     !hashesDifferentlyFromSpark(s)
   }
