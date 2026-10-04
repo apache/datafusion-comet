@@ -833,6 +833,44 @@ which point the newer behavior becomes unconditional.</p>
 legacy behavior, please open an issue describing your use case so it can be considered before the
 key is removed.</p>
 </section>
+<section id="upgrading-to-comet-1-2-0">
+<h2>Upgrading to Comet 1.2.0<a class="headerlink" href="#upgrading-to-comet-1-2-0" title="Link to this heading">#</a></h2>
+<section id="deprecated-and-removed-settings">
+<h3>Deprecated and Removed Settings<a class="headerlink" href="#deprecated-and-removed-settings" title="Link to this heading">#</a></h3>
+<p>Using <code class="docutils literal notranslate"><span class="pre">spark.comet.sparkToColumnar.enabled</span></code> and <code class="docutils literal notranslate"><span class="pre">spark.comet.sparkToColumnar.supportedOperatorList</span></code>
+to convert ranges, in-memory cached tables, RDDs and queries without a <code class="docutils literal notranslate"><span class="pre">FROM</span></code> clause to Arrow is
+deprecated, and will stop working in a future major release. Each of these now has a config of its
+own:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Operator in the list</p></th>
+<th class="head"><p>Config</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">Range</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.convert.range.enabled</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">InMemoryTableScan</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.convert.inMemoryCache.enabled</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">RDDScan</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.convert.rdd.enabled</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">OneRowRelation</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.convert.oneRowRelation.enabled</span></code></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">spark.comet.sparkToColumnar.supportedOperatorList</span></code> now defaults to an empty list. When it is not
+set, <code class="docutils literal notranslate"><span class="pre">spark.comet.sparkToColumnar.enabled=true</span></code> still converts these four, and a list that names one
+of them still converts it, as before. In both cases the driver logs a warning that names the config
+to use instead. Before Spark 4.1, Spark plans a query without a <code class="docutils literal notranslate"><span class="pre">FROM</span></code> clause as an <code class="docutils literal notranslate"><span class="pre">RDDScan</span></code>, so on
+those versions <code class="docutils literal notranslate"><span class="pre">RDDScan</span></code> in the list also converted it. The list remains the way to convert other
+leaf operators, such as the scan of a Data Source V2 connector.</p>
+</section>
+</section>
 <section id="upgrading-to-comet-1-1-0">
 <h2>Upgrading to Comet 1.1.0<a class="headerlink" href="#upgrading-to-comet-1-1-0" title="Link to this heading">#</a></h2>
 <p>Comet <code class="docutils literal notranslate"><span class="pre">1.1.0</span></code> makes no behavior changes that need a <code class="docutils literal notranslate"><span class="pre">spark.comet.legacy.*</span></code> key. The changes below
@@ -910,8 +948,8 @@ credential chain for a catalog, set
 <code class="docutils literal notranslate"><span class="pre">spark.sql.catalog.&lt;catalog&gt;.s3.comet.credential.webIdentity.enabled=false</span></code>. A table loaded by path
 has no catalog to set that on, so for it set <code class="docutils literal notranslate"><span class="pre">spark.comet.scan.icebergNative.enabled=false</span></code>.</p>
 </section>
-<section id="deprecated-and-removed-settings">
-<h3>Deprecated and Removed Settings<a class="headerlink" href="#deprecated-and-removed-settings" title="Link to this heading">#</a></h3>
+<section id="id1">
+<h3>Deprecated and Removed Settings<a class="headerlink" href="#id1" title="Link to this heading">#</a></h3>
 <p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.memoryPool.fraction</span></code> is deprecated and will be removed in a future major release.
 It was documented as leaving room in <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code> for the native memory that Comet’s
 memory pools do not track, but it cannot: Spark hands out the whole off-heap pool whatever it is set
@@ -985,12 +1023,16 @@ release, review the release notes for the versions in between.</p>
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#legacy-configuration-keys">Legacy Configuration Keys</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#upgrading-to-comet-1-2-0">Upgrading to Comet 1.2.0</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#deprecated-and-removed-settings">Deprecated and Removed Settings</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#upgrading-to-comet-1-1-0">Upgrading to Comet 1.1.0</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#settings-that-now-take-effect-as-documented">Settings That Now Take Effect as Documented</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#memory-pool-limits">Memory Pool Limits</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#conditions-for-enabling-comet">Conditions for Enabling Comet</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#native-iceberg-reads-on-eks-with-irsa">Native Iceberg Reads on EKS with IRSA</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#deprecated-and-removed-settings">Deprecated and Removed Settings</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#id1">Deprecated and Removed Settings</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#upgrading-to-comet-1-0-0">Upgrading to Comet 1.0.0</a></li>

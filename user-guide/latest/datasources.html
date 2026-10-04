@@ -827,6 +827,25 @@ converted into Arrow format, allowing the Comet pipeline to take over after that
 <p>Comet does not provide a Rust-based JSON scan, but when <code class="docutils literal notranslate"><span class="pre">spark.comet.convert.json.enabled</span></code> is enabled, data is immediately
 converted into Arrow format, allowing the Comet pipeline to take over after that.</p>
 </section>
+<section id="other-spark-inputs">
+<h3>Other Spark inputs<a class="headerlink" href="#other-spark-inputs" title="Link to this heading">#</a></h3>
+<p>Comet can also convert the output of these Spark inputs to Arrow format, so that the operators
+above them can run in Comet. Each conversion is off by default.</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">spark.comet.convert.range.enabled</span></code>: <code class="docutils literal notranslate"><span class="pre">spark.range</span></code> and SQL <code class="docutils literal notranslate"><span class="pre">range()</span></code>, for ranges that Comet does
+not generate natively with <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.range.enabled</span></code>.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">spark.comet.convert.inMemoryCache.enabled</span></code>: in-memory cached tables that Comet’s native cache
+scan does not read, such as tables cached in Spark’s default format.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">spark.comet.convert.rdd.enabled</span></code>: a DataFrame created from an RDD of rows, for example with
+<code class="docutils literal notranslate"><span class="pre">spark.createDataFrame(rdd,</span> <span class="pre">schema)</span></code>.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">spark.comet.convert.oneRowRelation.enabled</span></code>: the single row that a query without a <code class="docutils literal notranslate"><span class="pre">FROM</span></code>
+clause, such as <code class="docutils literal notranslate"><span class="pre">SELECT</span> <span class="pre">1</span></code>, reads.</p></li>
+</ul>
+<p>To convert any other leaf operator, such as the scan of a Data Source V2 connector or of a file
+format other than Parquet, JSON and CSV, set <code class="docutils literal notranslate"><span class="pre">spark.comet.sparkToColumnar.enabled=true</span></code> and name the
+operator in <code class="docutils literal notranslate"><span class="pre">spark.comet.sparkToColumnar.supportedOperatorList</span></code> by its Spark class name without the
+<code class="docutils literal notranslate"><span class="pre">Exec</span></code> suffix, such as <code class="docutils literal notranslate"><span class="pre">BatchScan</span></code> or <code class="docutils literal notranslate"><span class="pre">FileSourceScan</span></code>.</p>
+</section>
 <section id="spark-to-comet-conversion-types">
 <h3>Spark-to-Comet conversion types<a class="headerlink" href="#spark-to-comet-conversion-types" title="Link to this heading">#</a></h3>
 <p>Spark-to-Comet conversion supports <code class="docutils literal notranslate"><span class="pre">ARRAY&lt;STRING&gt;</span></code> and <code class="docutils literal notranslate"><span class="pre">MAP&lt;STRING,STRING&gt;</span></code> with binary
@@ -835,10 +854,8 @@ be null; array elements and map values may also be null. Map keys must be non-nu
 This applies to Spark row and columnar inputs when conversion is enabled for the source.
 Other array element types, other map key/value types, nested collections, and non-binary
 string collations remain unsupported at this conversion boundary. Source defaults are unchanged.</p>
-<p>This includes row-backed <code class="docutils literal notranslate"><span class="pre">ExistingRDD</span></code> inputs when
-<code class="docutils literal notranslate"><span class="pre">spark.comet.sparkToColumnar.enabled=true</span></code> and
-<code class="docutils literal notranslate"><span class="pre">spark.comet.sparkToColumnar.supportedOperatorList</span></code> includes <code class="docutils literal notranslate"><span class="pre">RDDScan</span></code>. Spark still produces
-the RDD rows; conversion lets eligible downstream operators execute in Comet.</p>
+<p>This includes row-backed <code class="docutils literal notranslate"><span class="pre">ExistingRDD</span></code> inputs when <code class="docutils literal notranslate"><span class="pre">spark.comet.convert.rdd.enabled=true</span></code>. Spark
+still produces the RDD rows; conversion lets eligible downstream operators execute in Comet.</p>
 </section>
 </section>
 <section id="data-catalogs">
@@ -1378,6 +1395,7 @@ As with S3, standard Hadoop ABFS configurations (the <code class="docutils liter
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#apache-iceberg">Apache Iceberg</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#csv">CSV</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#json">JSON</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#other-spark-inputs">Other Spark inputs</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#spark-to-comet-conversion-types">Spark-to-Comet conversion types</a></li>
 </ul>
 </li>
