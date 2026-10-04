@@ -398,14 +398,15 @@ case class CometScanRule(session: SparkSession)
           CometScanUtils.ParquetFileInfo(f.getPath, f.getLen, f.getModificationTime)))
         .toSeq
       try {
-        if (CometScanUtils.requiresDatetimeRebase(
-            files,
-            hadoopConf,
-            options.datetimeRebaseModeInRead,
-            options.int96RebaseModeInRead,
-            hasDate,
-            hasTimestamp)) {
-          withFallbackReason(scanExec, "Native Parquet scan does not support datetime rebasing")
+        val reason = CometScanUtils.datetimeRebaseFallbackReason(
+          files,
+          hadoopConf,
+          options.datetimeRebaseModeInRead,
+          options.int96RebaseModeInRead,
+          hasDate,
+          hasTimestamp)
+        if (reason.isDefined) {
+          withFallbackReason(scanExec, reason.get)
           return None
         }
       } catch {

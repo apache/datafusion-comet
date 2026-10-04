@@ -2725,8 +2725,8 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
         val status = p.getFileSystem(hadoopConf).getFileStatus(p)
         CometScanUtils.ParquetFileInfo(p, status.getLen, status.getModificationTime)
       }
-      def requiresRebase(files: Seq[CometScanUtils.ParquetFileInfo]): Boolean =
-        CometScanUtils.requiresDatetimeRebase(
+      def rebaseReason(files: Seq[CometScanUtils.ParquetFileInfo]): Option[String] =
+        CometScanUtils.datetimeRebaseFallbackReason(
           files,
           hadoopConf,
           "CORRECTED",
@@ -2736,7 +2736,8 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
 
       val correctedFile = parquetFile(correctedPath)
       val legacyFile = parquetFile(legacyPath)
-      assert(requiresRebase(Seq(fileInfo(correctedFile), fileInfo(legacyFile))))
+      val reason = rebaseReason(Seq(fileInfo(correctedFile), fileInfo(legacyFile)))
+      assert(reason.exists(_.contains("with org.apache.spark.legacyDateTime metadata")), reason)
 
       // Early exit: eight not-yet-cached legacy footers fill every read slot, so the
       // nonexistent ninth file must never be opened.
@@ -2749,11 +2750,12 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
       // Use a nonzero length, because the check skips zero-length files.
       val missingFile =
         CometScanUtils.ParquetFileInfo(new Path(path.toString, "must-not-be-read.parquet"), 1, 0)
-      assert(requiresRebase(legacyCopies :+ missingFile))
+      assert(rebaseReason(legacyCopies :+ missingFile).isDefined)
 
       val df = spark.read.parquet(correctedPath.toString, legacyPath.toString)
       val plan = df.queryExecution.executedPlan
       assert(collect(plan) { case _: CometNativeScanExec => true }.isEmpty)
+      checkSparkAnswerAndFallbackReason(df, "with org.apache.spark.legacyDateTime metadata")
       checkAnswer(
         df.selectExpr("count(*)", "min(d)", "max(d)"),
         Row(3L, java.sql.Date.valueOf("1000-01-01"), java.sql.Date.valueOf("2000-01-01")))
@@ -2775,9 +2777,9 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
       // Footer facts are cached per (path, length, modificationTime): the corrected file can
       // be answered again without any I/O even after the underlying file is deleted.
       val correctedInfo = fileInfo(correctedFile)
-      assert(!requiresRebase(Seq(correctedInfo)))
+      assert(rebaseReason(Seq(correctedInfo)).isEmpty)
       fs.delete(correctedFile, false)
-      assert(!requiresRebase(Seq(correctedInfo)))
+      assert(rebaseReason(Seq(correctedInfo)).isEmpty)
     }
   }
 
@@ -2811,13 +2813,15 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
       StatusCountingFileSystem.resetGetFileStatusCalls()
       // None of the files is cached or legacy, so every footer is read.
       assert(
-        !CometScanUtils.requiresDatetimeRebase(
-          files,
-          hadoopConf,
-          "CORRECTED",
-          "CORRECTED",
-          hasDate = true,
-          hasTimestamp = false))
+        CometScanUtils
+          .datetimeRebaseFallbackReason(
+            files,
+            hadoopConf,
+            "CORRECTED",
+            "CORRECTED",
+            hasDate = true,
+            hasTimestamp = false)
+          .isEmpty)
       assert(StatusCountingFileSystem.getFileStatusCalls() == 0)
     }
   }
@@ -2843,13 +2847,15 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
         .toSeq
       assert(files.size == 3)
       def requiresRebase(): Boolean =
-        CometScanUtils.requiresDatetimeRebase(
-          files,
-          hadoopConf,
-          "CORRECTED",
-          "CORRECTED",
-          hasDate = true,
-          hasTimestamp = false)
+        CometScanUtils
+          .datetimeRebaseFallbackReason(
+            files,
+            hadoopConf,
+            "CORRECTED",
+            "CORRECTED",
+            hasDate = true,
+            hasTimestamp = false)
+          .isDefined
 
       val maxCachedFiles =
         CometConf.COMET_SCAN_PARQUET_CHECK_DATETIME_REBASE_MAX_CACHED_FILES.key
@@ -2909,6 +2915,15 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
             }
             assert(scans.nonEmpty == native, s"$mode: ${df.queryExecution.executedPlan}")
             checkAnswer(df, Row(java.sql.Date.valueOf("2000-01-01")))
+            if (!native) {
+              checkSparkAnswerAndFallbackReasons(
+                df,
+                Set(
+                  "does not support the EXCEPTION datetime read mode for a Parquet file " +
+                    "without org.apache.spark.version",
+                  s"${SQLConf.PARQUET_REBASE_MODE_IN_READ.key} and " +
+                    s"${SQLConf.PARQUET_INT96_REBASE_MODE_IN_READ.key} to CORRECTED"))
+            }
           }
         }
       }

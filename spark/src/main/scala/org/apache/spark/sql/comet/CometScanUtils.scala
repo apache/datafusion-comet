@@ -31,6 +31,7 @@ import org.apache.parquet.hadoop.ParquetFileReader
 import org.apache.parquet.hadoop.util.HadoopInputFile
 import org.apache.spark.sql.catalyst.expressions.{DynamicPruningExpression, Expression, Literal}
 import org.apache.spark.sql.execution.{InSubqueryExec, SubqueryAdaptiveBroadcastExec}
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.util.ThreadUtils
 
 import org.apache.comet.CometConf
@@ -87,13 +88,27 @@ object CometScanUtils {
     }
   }
 
-  def requiresDatetimeRebase(
+  private def legacyMetadataReason(detail: String): String =
+    s"Native Parquet scan does not rebase datetime values in a Parquet file $detail"
+
+  private def readModeReason(modeName: String, mode: String): String =
+    s"Native Parquet scan does not support the $mode $modeName read mode for a Parquet file " +
+      "without org.apache.spark.version. Set " +
+      s"${SQLConf.PARQUET_REBASE_MODE_IN_READ.key} and " +
+      s"${SQLConf.PARQUET_INT96_REBASE_MODE_IN_READ.key} to CORRECTED if the files use the " +
+      "proleptic Gregorian calendar"
+
+  /**
+   * The reason to read `files` with Spark, or None when Spark reads their datetime values as
+   * stored.
+   */
+  def datetimeRebaseFallbackReason(
       files: Seq[ParquetFileInfo],
       conf: Configuration,
       datetimeMode: String,
       int96Mode: String,
       hasDate: Boolean,
-      hasTimestamp: Boolean): Boolean = {
+      hasTimestamp: Boolean): Option[String] = {
     applyFooterFactsCacheMaxSize(
       CometConf.COMET_SCAN_PARQUET_CHECK_DATETIME_REBASE_MAX_CACHED_FILES.get())
 
@@ -102,15 +117,43 @@ object CometScanUtils {
     // Spark would raise on ancient values while Comet would not); when a version is present the
     // mode is ignored and only the version and the legacy markers matter. The `v < minVersion`
     // comparison is deliberately the same lexicographic string comparison Spark uses.
-    def needsRebase(facts: DatetimeFooterFacts): Boolean = {
-      def modeNeedsRebase(mode: String, minVersion: String, hasLegacyKey: Boolean): Boolean =
-        facts.sparkVersion.fold(mode != "CORRECTED")(v => v < minVersion || hasLegacyKey)
+    def rebaseReason(facts: DatetimeFooterFacts): Option[String] = {
+      def modeReason(
+          modeName: String,
+          mode: String,
+          minVersion: String,
+          legacyKey: String,
+          hasLegacyKey: Boolean): Option[String] =
+        facts.sparkVersion match {
+          case None if mode != "CORRECTED" => Some(readModeReason(modeName, mode))
+          case Some(v) if v < minVersion => Some(legacyMetadataReason(s"written by Spark $v"))
+          case Some(_) if hasLegacyKey => Some(legacyMetadataReason(s"with $legacyKey metadata"))
+          case _ => None
+        }
 
-      (hasDate &&
-        modeNeedsRebase(datetimeMode, "3.0.0", facts.hasLegacyDateTime)) ||
-      (hasTimestamp &&
-        (modeNeedsRebase(datetimeMode, "3.0.0", facts.hasLegacyDateTime) ||
-          modeNeedsRebase(int96Mode, "3.1.0", facts.hasLegacyInt96)))
+      val datetimeReason =
+        if (hasDate || hasTimestamp) {
+          modeReason(
+            "datetime",
+            datetimeMode,
+            "3.0.0",
+            "org.apache.spark.legacyDateTime",
+            facts.hasLegacyDateTime)
+        } else {
+          None
+        }
+      datetimeReason.orElse {
+        if (hasTimestamp) {
+          modeReason(
+            "INT96",
+            int96Mode,
+            "3.1.0",
+            "org.apache.spark.legacyINT96",
+            facts.hasLegacyInt96)
+        } else {
+          None
+        }
+      }
     }
 
     def readFacts(file: ParquetFileInfo): DatetimeFooterFacts = {
@@ -136,23 +179,20 @@ object CometScanUtils {
     }
 
     // Answer from the cache where possible; only cache misses pay a footer read.
-    var cachedNeedsRebase = false
+    var cachedReason: Option[String] = None
     val misses = new ListBuffer[(FooterCacheKey, ParquetFileInfo)]
     // Spark never opens a zero-length file, and a footer read fails on one.
     files.iterator.filter(_.length > 0).foreach { file =>
       val key = (file.path.toString, file.length, file.modificationTime)
       val cached = footerFactsCache.get(key)
       if (cached != null) {
-        cachedNeedsRebase = cachedNeedsRebase || needsRebase(cached)
+        cachedReason = cachedReason.orElse(rebaseReason(cached))
       } else {
         misses += ((key, file))
       }
     }
-    if (cachedNeedsRebase) {
-      return true
-    }
-    if (misses.isEmpty) {
-      return false
+    if (cachedReason.isDefined || misses.isEmpty) {
+      return cachedReason
     }
 
     val parallelism = 8
@@ -176,17 +216,17 @@ object CometScanUtils {
       while (inFlight < parallelism && remaining.hasNext) {
         submitNext()
       }
-      var requiresRebase = false
-      while (!requiresRebase && inFlight > 0) {
+      var reason: Option[String] = None
+      while (reason.isEmpty && inFlight > 0) {
         val (key, facts) = completion.take().get()
         footerFactsCache.put(key, facts)
-        requiresRebase = needsRebase(facts)
+        reason = rebaseReason(facts)
         inFlight -= 1
-        if (!requiresRebase && remaining.hasNext) {
+        if (reason.isEmpty && remaining.hasNext) {
           submitNext()
         }
       }
-      requiresRebase
+      reason
     } finally {
       val _ = pool.shutdownNow()
     }
