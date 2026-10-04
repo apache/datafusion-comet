@@ -52,6 +52,9 @@ object Utils extends CometTypeShim with Logging {
   private val calendarIntervalStructKey = "SPARK::calendarInterval::struct"
   private val VariantExtensionName = "arrow.parquet.variant"
 
+  def majorMinorPatchVersion(version: String): Option[(Int, Int, Int)] =
+    org.apache.spark.util.VersionUtils.majorMinorPatchVersion(version)
+
   def getConfPath(confFileName: String): String = {
     sys.env
       .get(COMET_CONF_DIR_ENV)

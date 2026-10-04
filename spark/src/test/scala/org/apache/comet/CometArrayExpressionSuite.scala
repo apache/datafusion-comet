@@ -23,20 +23,140 @@ import scala.util.Random
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.CometTestBase
-import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayExcept, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayRepeat}
+import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayDistinct, ArrayExcept, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayRepeat, ArrayUnion}
 import org.apache.spark.sql.catalyst.expressions.{ArrayContains, ArrayRemove}
 import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Cast, CreateArray, ElementAt, Literal, MonotonicallyIncreasingID}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, StringType}
+import org.apache.spark.sql.types.{ArrayType, DoubleType, FloatType, IntegerType, StringType, StructType}
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
 import org.apache.comet.DataTypeSupport.isComplexType
-import org.apache.comet.serde.{CometArrayExcept, CometArrayJoin, CometArrayRemove, CometArrayReverse, CometFlatten, Compatible, ExprOuterClass, Incompatible}
+import org.apache.comet.serde.{ArraySetSupport, CometArrayDistinct, CometArrayExcept, CometArrayJoin, CometArrayRemove, CometArrayReverse, CometArrayUnion, CometFlatten, Compatible, ExprOuterClass, Incompatible}
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
 
 class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
+
+  test("array set signed-zero Spark patch versions") {
+    // Only 4.2.0 normalizes the arguments in the plan. Earlier releases do not normalize them, and
+    // 4.0.5+, 4.1.4+ and 4.2.1+ normalize during evaluation instead (SPARK-59602).
+    Seq(
+      "3.4.3",
+      "3.5.9",
+      "4.0.4",
+      "4.0.5",
+      "4.0.10",
+      "4.1.3",
+      "4.1.4",
+      "4.1.10",
+      "4.2.1",
+      "4.2.1-SNAPSHOT",
+      "4.2.10",
+      "4.3.0",
+      "5.0.0").foreach { version =>
+      assert(!ArraySetSupport.normalizesArgumentsInPlan(version), version)
+    }
+    Seq("4.2.0", "4.2.0-SNAPSHOT").foreach { version =>
+      assert(ArraySetSupport.normalizesArgumentsInPlan(version), version)
+    }
+  }
+
+  test("array set signed-zero support levels") {
+    // This test covers element-type detection; the preceding test pins the version boundaries.
+    val fixed = ArraySetSupport.normalizesArgumentsInPlan(org.apache.spark.SPARK_VERSION)
+    Seq(FloatType, DoubleType, ArrayType(FloatType), new StructType().add("x", DoubleType))
+      .foreach { elementType =>
+        val child = AttributeReference("a", ArrayType(elementType))()
+        val expected =
+          if (fixed) Compatible() else Incompatible(Some(ArraySetSupport.floatingPointReason))
+        assert(CometArrayDistinct.getSupportLevel(ArrayDistinct(child)) == expected)
+        assert(CometArrayUnion.getSupportLevel(ArrayUnion(child, child)) == expected)
+      }
+    Seq(IntegerType, StringType, ArrayType(IntegerType)).foreach { elementType =>
+      val child = AttributeReference("a", ArrayType(elementType))()
+      assert(CometArrayDistinct.getSupportLevel(ArrayDistinct(child)) == Compatible())
+      assert(CometArrayUnion.getSupportLevel(ArrayUnion(child, child)) == Compatible())
+    }
+  }
+
+  test("array set signed-zero fallback and native opt-in") {
+    withSQLConf(
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+        "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+      Seq("float", "double").foreach { dataType =>
+        Seq(
+          "array_distinct" -> s"array($dataType('0.0'), $dataType('-0.0'))",
+          "array_union" -> s"array($dataType('0.0')), array($dataType('-0.0'))")
+          .foreach { case (function, arguments) =>
+            val query = s"SELECT $function($arguments)"
+            if (ArraySetSupport.normalizesArgumentsInPlan(org.apache.spark.SPARK_VERSION)) {
+              checkSparkAnswerAndOperator(query)
+            } else {
+              checkSparkAnswerAndFallbackReason(query, "SPARK-54918")
+            }
+          }
+      }
+      Seq(classOf[ArrayDistinct], classOf[ArrayUnion]).foreach { exprClass =>
+        withSQLConf(CometConf.getExprAllowIncompatConfigKey(exprClass) -> "true") {
+          val query = if (exprClass == classOf[ArrayDistinct]) {
+            "SELECT array_distinct(array(double('1.0'), double('1.0')))"
+          } else {
+            "SELECT array_union(array(double('1.0')), array(double('1.0')))"
+          }
+          checkSparkAnswerAndOperator(query)
+        }
+      }
+    }
+  }
+
+  test("array set noncanonical NaN normalization") {
+    withTempDir { dir =>
+      withTempView("array_set_nan") {
+        sql("SELECT float('NaN') AS f, double('NaN') AS d").write.parquet(dir + "/data")
+        spark.read.parquet(dir + "/data").createOrReplaceTempView("array_set_nan")
+        // Negate scanned values because Parquet canonicalizes NaNs on write.
+        Seq("f", "d").foreach { column =>
+          Seq(
+            s"array_distinct(array($column, -$column))",
+            s"array_union(array($column), array(-$column))").foreach { expression =>
+            val query = s"SELECT size($expression) FROM array_set_nan"
+            if (ArraySetSupport.normalizesArgumentsInPlan(org.apache.spark.SPARK_VERSION)) {
+              checkSparkAnswerAndOperator(query)
+            } else {
+              checkSparkAnswerAndFallbackReason(query, "SPARK-54918")
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("array set nested signed-zero normalization") {
+    withTempDir { dir =>
+      withTempView("array_set_zero") {
+        sql("SELECT float('0.0') AS f, double('0.0') AS d").write.parquet(dir + "/data")
+        spark.read.parquet(dir + "/data").createOrReplaceTempView("array_set_zero")
+        // Spark deduplicates nested -0.0 and 0.0 on every version, while the native kernels only
+        // normalize flat zeros.
+        Seq("f", "d").foreach { column =>
+          Seq(
+            s"array_distinct(array(array($column), array(-$column)))",
+            s"array_distinct(array(named_struct('x', $column), named_struct('x', -$column)))",
+            s"array_union(array(array($column)), array(array(-$column)))",
+            s"array_union(array(named_struct('x', $column)), array(named_struct('x', -$column)))")
+            .foreach { expression =>
+              val query = s"SELECT $expression FROM array_set_zero"
+              if (ArraySetSupport.normalizesArgumentsInPlan(org.apache.spark.SPARK_VERSION)) {
+                checkSparkAnswerAndOperator(query)
+              } else {
+                checkSparkAnswerAndFallbackReason(query, "SPARK-54918")
+              }
+            }
+        }
+      }
+    }
+  }
 
   test("array_remove - integer") {
     withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[ArrayRemove]) -> "true") {
