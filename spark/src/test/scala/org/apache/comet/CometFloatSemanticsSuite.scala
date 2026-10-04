@@ -327,19 +327,6 @@ object CometFloatSemanticsSuite {
   val cases: Seq[Case] =
     comparisonCases ++ literalCases ++ keyCases ++ expressionCases ++ aggregateCases
 
-  /**
-   * SPARK-54918, in 4.0.5, 4.1.4 and 4.2.0, changed float equality in the array set functions.
-   */
-  private def hasSpark54918: Boolean = {
-    val Array(major, minor, patch) =
-      org.apache.spark.SPARK_VERSION.split("[.-]").take(3).map(_.toInt)
-    (major, minor) match {
-      case (4, 0) => patch >= 5
-      case (4, 1) => patch >= 4
-      case _ => major > 4 || (major == 4 && minor >= 2)
-    }
-  }
-
   private def issue(n: Int): String = s"https://github.com/apache/datafusion-comet/issues/$n"
 
   private def in(group: String, contexts: String*)(c: Case): Boolean =
@@ -367,22 +354,7 @@ object CometFloatSemanticsSuite {
           (c.context.startsWith("array operands") || c.context.startsWith("struct operands")) &&
           !Set("=", "!=").contains(c.variant)),
     KnownGap(
-      issue(6385),
-      "hash, xxhash64 and the native shuffle's hash partitioner hash a NaN's raw bits.",
-      c =>
-        in("expression", "hash", "xxhash64", "hash of array", "hash of struct")(c) ||
-          in("key", "hash repartition")(c)),
-    KnownGap(
-      issue(5701),
-      "array_distinct and array_union fold -0.0 into 0.0 and keep NaNs with different bits " +
-        "apart, where Spark before SPARK-54918 keeps the zeros apart and merges the NaNs.",
-      c => in("expression", "array_distinct", "array_union")(c) && !hasSpark54918),
-    KnownGap(
       issue(5312),
       "collect_set before Spark 4.2 treats -0.0 and 0.0 as one value and NaNs as distinct.",
-      c => in("aggregate", "collect_set")(c) && !CometSparkSessionExtensions.isSpark42Plus),
-    KnownGap(
-      issue(6522),
-      "signum(-0.0) returns 0.0, where Spark returns -0.0.",
-      in("expression", "signum")))
+      c => in("aggregate", "collect_set")(c) && !CometSparkSessionExtensions.isSpark42Plus))
 }

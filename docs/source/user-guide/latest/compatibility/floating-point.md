@@ -88,6 +88,41 @@ that holds both `greatest(a, b)` and `greatest(b, a)` evaluates only one of them
 same value for both. Comet evaluates each one, so when `a` and `b` are zeros of different signs
 the two can differ.
 
+## Array distinct and union
+
+`array_distinct` and `array_union` fall back to Spark when their element type contains
+`FLOAT` or `DOUBLE`, on every Spark version except 4.2.0. Spark 4.2.0 normalizes signed zeros
+and NaNs in the arguments of these functions before they run (SPARK-54918), so native execution
+returns the same results. Spark 3.4, 3.5, 4.0.0 to 4.0.4, and 4.1.0 to 4.1.3 keep positive and
+negative zero distinct in flat arrays. Spark 4.0.5+, 4.1.4+, and 4.2.1+ normalize while these
+functions evaluate instead (SPARK-59602), which native execution does not match for NaNs or for
+zeros nested in arrays or structs. Other element types remain native.
+
+The check is based on the element type, not the values. It also applies to NULL or empty
+floating-point arrays and columns that never contain negative zero. The entire projection
+falls back to Spark, introducing a `CometColumnarToRow` transition and moving unrelated
+expressions in the same projection out of Comet. For example,
+`SELECT id + 1, array_distinct(a), i[0] + 5` evaluates all three expressions in a Spark `Project`.
+
+This can have a substantial cost. A local Spark 4.1.3 benchmark of
+`sum(cardinality(array_distinct(d)))` over two million `array<double>` rows found the default
+projection fallback about 15 times slower than native opt-in (best of five runs).
+The slowdown depends on the workload.
+
+Setting `spark.comet.expression.ArrayDistinct.allowIncompatible=true` or
+`spark.comet.expression.ArrayUnion.allowIncompatible=true` restores native execution on other
+versions, but signed-zero and NaN results may differ from Spark. Native execution can keep
+NaNs with different signs or payloads distinct. Signed-zero differences also depend on the
+element type: native execution merges positive and negative zero in flat floating-point arrays,
+but can keep them distinct inside nested arrays or structs. Only opt in if these differences
+are acceptable for your data.
+
+The check uses the Spark version number, not the changes a build contains. A build that reports
+any version other than 4.2.0 falls back even if it includes SPARK-54918. A vendor build that
+reports 4.2.0 but includes SPARK-59602 still runs natively; set
+`spark.comet.expression.ArrayDistinct.enabled=false` and
+`spark.comet.expression.ArrayUnion.enabled=false` on such a build.
+
 ## `array_remove` and `sort_array`
 
 `array_remove` compares `FLOAT` and `DOUBLE` elements as Spark does: `-0.0` equals `0.0`, and all
