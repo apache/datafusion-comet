@@ -240,6 +240,26 @@ class CometShuffleInputConversionSuite extends CometTestBase {
     }
   }
 
+  convertTest("struct columns over several batches") {
+    // The rows of each input partition fill several batches. With the conversion of leaf
+    // operators on, native shuffle reads the converted scan the same way.
+    Seq("false", "true").foreach { leafConversion =>
+      withSQLConf(
+        CometConf.COMET_BATCH_SIZE.key -> "7",
+        CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> leafConversion) {
+        val schema = new StructType()
+          .add("k", IntegerType)
+          .add("payload", new StructType().add("v", LongType).add("s", StringType))
+        val data = (0 until 24).map(i => Row(i, Row(i.toLong, s"s$i")))
+        val df = spark.createDataFrame(spark.sparkContext.parallelize(data, 1), schema)
+        Seq(df.repartition(3, col("k")), df.repartitionByRange(3, col("k"))).foreach { shuffled =>
+          val (_, plan) = checkSparkAnswer(shuffled)
+          assert(convertedShuffles(plan).length == 1, s"leaf conversion $leafConversion:\n$plan")
+        }
+      }
+    }
+  }
+
   convertTest("columns the conversion does not support keep the JVM columnar shuffle") {
     val df = arraysDf().repartition(5, col("k")).groupBy("k").agg(sum(size(col("xs"))))
     val (_, plan) = checkSparkAnswer(df)
