@@ -499,6 +499,56 @@ class CometEvaluationMaskSuite extends CometTestBase {
     }
   }
 
+  test("fused top-K evaluates its final decoder and offset once across AQE passes") {
+    withInputs(
+      "fused_mask" ->
+        "SELECT * FROM VALUES (1, 'YWJj'), (2, 'YWJj'), (3, 'YWJj'), (4, 'YWJj') AS t(k, bad)") {
+      val query = "SELECT k, hex(unbase64(bad)) AS decoded FROM " +
+        "(SELECT * FROM fused_mask ORDER BY k LIMIT 2 OFFSET 1) t"
+      val expected = Seq(Row(2, "616263"), Row(3, "616263"))
+      for (aqe <- Seq(true, false); fusion <- Seq(false, true)) {
+        withSQLConf(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe.toString,
+          SQLConf.SHUFFLE_PARTITIONS.key -> "1",
+          CometConf.COMET_EXEC_TOPK_FUSION_ENABLED.key -> fusion.toString) {
+          val joined = sql(s"""SELECT /*+ BROADCAST(t) */ t.k, t.decoded
+                             |FROM ($query) t JOIN range(1, 5) r ON t.k = r.id""".stripMargin)
+          checkAnswer(joined, expected)
+          val executed = joined.queryExecution.executedPlan
+          assert(count[CometLocalTopKExec](executed) == (if (fusion) 1 else 0), executed.toString)
+          assert(count[CometTakeOrderedAndProjectExec](executed) == 1, executed.toString)
+          assert(count[TakeOrderedAndProjectExec](executed) == 0, executed.toString)
+          assert(count[BroadcastExchangeLike](executed) == 1, executed.toString)
+          if (aqe) {
+            assert(executed.asInstanceOf[AdaptiveSparkPlanExec].isFinalPlan)
+          }
+
+          // Reapplying the rule must not restore the local candidate selector as another
+          // full TakeOrderedAndProject: its saved original also contains the outer projection.
+          val once = collect(executed) { case topK: CometTakeOrderedAndProjectExec => topK }.head
+          val twice = applyRule(once)
+          assert(count[CometLocalTopKExec](twice) == (if (fusion) 1 else 0), twice.toString)
+          assert(count[CometTakeOrderedAndProjectExec](twice) == 1, twice.toString)
+          assert(count[TakeOrderedAndProjectExec](twice) == 0, twice.toString)
+          val replannedRows = twice.executeCollect().toSeq.map { row =>
+            Row(row.getInt(0), row.getUTF8String(1).toString)
+          }
+          assert(replannedRows == expected)
+
+          // An outer row limit really does require the final decoder to fall back. The
+          // candidate selector may stay native, but must never duplicate the final projection.
+          val limited = applyRule(LocalLimitExec(1, twice))
+          assert(count[TakeOrderedAndProjectExec](limited) == 1, limited.toString)
+          assert(count[CometTakeOrderedAndProjectExec](limited) == 0, limited.toString)
+          val limitedRows = limited.executeCollect().toSeq.map { row =>
+            Row(row.getInt(0), row.getUTF8String(1).toString)
+          }
+          assert(limitedRows == expected.take(1))
+        }
+      }
+    }
+  }
+
   test("first-match joins preserve candidate order and leave decoder-free joins native") {
     val strategies = Seq(
       ("BROADCAST", "=", classOf[BroadcastHashJoinExec], classOf[CometBroadcastHashJoinExec]),

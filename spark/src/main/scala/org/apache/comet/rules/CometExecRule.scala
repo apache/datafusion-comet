@@ -1071,6 +1071,9 @@ case class CometExecRule(session: SparkSession)
       case scan: CometScanExec =>
         scan.wrapped
           .copy(partitionFilters = scan.partitionFilters, dataFilters = scan.dataFilters)
+      // The local selector saves its parent's original plan, but does not evaluate that
+      // parent's projection or offset. Only the enclosing top-K owns those operations.
+      case local: CometLocalTopKExec => local
       case comet: CometExec => comet.originalPlan
       case shuffle: CometShuffleExchangeExec => shuffle.originalPlan
       case broadcast: CometBroadcastExchangeExec => broadcast.originalPlan
@@ -1078,6 +1081,7 @@ case class CometExecRule(session: SparkSession)
     }
 
     def evaluatedExpressions(node: SparkPlan): Seq[Expression] = node match {
+      case local: CometLocalTopKExec => local.sortOrder
       // V1 dataFilters include predicates Spark cannot push into Parquet. Without native row
       // filtering they only inform metadata pruning; the Spark Filter above evaluates rows.
       case _: FileSourceScanExec if !CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.get() =>
@@ -1123,9 +1127,9 @@ case class CometExecRule(session: SparkSession)
       // These operators consume their input before yielding rows. Still visit their children:
       // an inner LocalLimit below an exchange must establish its own evaluation boundary.
       val materializesInput = original match {
-        case _: SortExec | _: HashAggregateExec | _: ObjectHashAggregateExec |
-            _: ShuffleExchangeLike | _: BroadcastExchangeLike | _: QueryStageExec |
-            _: ReusedExchangeExec =>
+        case _: SortExec | _: CometLocalTopKExec | _: HashAggregateExec |
+            _: ObjectHashAggregateExec | _: ShuffleExchangeLike | _: BroadcastExchangeLike |
+            _: QueryStageExec | _: ReusedExchangeExec =>
           true
         case _ => false
       }
@@ -1191,6 +1195,10 @@ case class CometExecRule(session: SparkSession)
           children.head
         case _: ColumnarToRowExec | _: CometColumnarToRowExec | _: CometNativeColumnarToRowExec
             if childReason.isDefined && !children.head.supportsColumnar =>
+          children.head
+        // This inserted selector has no standalone Spark original. Its parent restores
+        // the full top-K when a child changes, applying the projection and offset once.
+        case _: CometLocalTopKExec if reason.isDefined || children != node.children =>
           children.head
         case _ if (original ne node) && (reason.isDefined || children != node.children) =>
           // AQE can reuse an existing native subtree. Rebuild affected ancestors as well so
