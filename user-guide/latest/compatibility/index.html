@@ -891,8 +891,6 @@ divergence:</p>
 example <code class="docutils literal notranslate"><span class="pre">byte</span> <span class="pre">overflow</span></code>) where Spark raises <code class="docutils literal notranslate"><span class="pre">BINARY_ARITHMETIC_OVERFLOW</span></code>, and integral
 <code class="docutils literal notranslate"><span class="pre">ARITHMETIC_OVERFLOW</span></code> messages omit Spark’s <code class="docutils literal notranslate"><span class="pre">try_</span></code> suggestion
 (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6217">#6217</a>).</p></li>
-<li><p>Wide-decimal arithmetic overflow reports a different value in the error message than Spark
-(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5211">#5211</a>).</p></li>
 <li><p>Spark 4.2 introduced additional ANSI arithmetic overflow behavior differences that Comet does
 not yet track (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4967">#4967</a>).</p></li>
 </ul>
