@@ -31,10 +31,11 @@ import org.apache.spark.sql.comet.util.Utils.containsVariantType
 import org.apache.spark.sql.execution.{ColumnarToRowExec, RowToColumnarExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.QueryStageExec
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
+import org.apache.spark.sql.types.CalendarIntervalType
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.{withFallbackReason, withInfo}
-import org.apache.comet.serde.NativeOptIn
+import org.apache.comet.serde.{NativeOptIn, SupportLevel}
 import org.apache.comet.shims.ShimSQLConf
 
 // This rule is responsible for eliminating redundant transitions between row-based and
@@ -303,12 +304,20 @@ case class EliminateRedundantTransitions(session: SparkSession)
         matchMapInArrow(plan)
           .orElse(matchMapInPandas(plan))
           .flatMap { info =>
+            val types = (info.output ++ info.child.output).map(_.dataType)
             // TODO: Remove this guard once Comet Python operators preserve Variant identity
             // and Spark's Arrow layout for both input and output.
             // https://github.com/apache/datafusion-comet/issues/5437
-            if ((info.output ++ info.child.output).exists(attr =>
-                containsVariantType(attr.dataType))) {
+            if (types.exists(containsVariantType)) {
               withFallbackReason(plan, "Comet Python operators do not support type VariantType")
+              None
+            } else if (types.exists(
+                SupportLevel.containsType(_, classOf[CalendarIntervalType]))) {
+              // Comet carries an interval as a tagged struct, but Spark gives Python an Arrow
+              // MONTH_DAY_NANO interval.
+              withFallbackReason(
+                plan,
+                "Comet Python operators do not support type CalendarIntervalType")
               None
             } else {
               extractColumnarChild(info.child).map(child => (info, child))
