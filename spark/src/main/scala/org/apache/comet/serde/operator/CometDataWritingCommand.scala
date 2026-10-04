@@ -112,6 +112,8 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
 
       val outputPath = cmd.outputPath.toString
 
+      // Planning-time value only. CometNativeWriteExec replaces it per task with the codec that
+      // names the file.
       val plannedCodec = NativeWriteUtils.parseCompressionCodec(cmd.options)
       val codec = NativeWriteUtils.protoCompressionCodec(plannedCodec) match {
         case Some(codec) => codec

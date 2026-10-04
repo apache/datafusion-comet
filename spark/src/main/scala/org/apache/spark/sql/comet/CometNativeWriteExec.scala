@@ -25,6 +25,7 @@ import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.Path
 import org.apache.hadoop.mapreduce.{Job, TaskAttemptContext, TaskAttemptID, TaskID, TaskType}
 import org.apache.hadoop.mapreduce.task.TaskAttemptContextImpl
+import org.apache.parquet.hadoop.codec.CodecConfig
 import org.apache.spark.TaskContext
 import org.apache.spark.internal.io.{FileCommitProtocol, FileNameSpec, SparkHadoopWriterUtils}
 import org.apache.spark.internal.io.FileCommitProtocol.TaskCommitMessage
@@ -158,8 +159,16 @@ case class CometNativeWriteExec(
               None,
               FileNameSpec("", "-c000" + extension))
             NativeWriteUtils.checkNativeWriteDestination(filePath)
+            // `extension` names the codec in the job configuration. The writer uses that codec
+            // too, so the file name and the footer agree.
+            val codec = CodecConfig.from(taskContext).getCodec
+            val protoCodec = NativeWriteUtils
+              .protoCompressionCodec(codec.name())
+              .getOrElse(throw new UnsupportedOperationException(
+                s"Comet's native Parquet writer cannot write $codec"))
             val writer = capturedNativeOp.getParquetWriter.toBuilder
               .setOutputPath(filePath)
+              .setCompression(protoCodec)
               .build()
             val taskOp = capturedNativeOp.toBuilder.setParquetWriter(writer).build()
 

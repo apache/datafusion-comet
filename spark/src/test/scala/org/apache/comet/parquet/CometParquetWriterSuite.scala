@@ -456,13 +456,10 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
 
       checkAnswer(spark.read.parquet(outputPath), df.collect())
       assertParquetCodec(outputPath, CompressionCodecName.GZIP)
-      if (isSpark40Plus) {
-        // Spark names the file; Comet fills it. The extension is the only externally visible
-        // statement of the codec, so it has to agree with the footer. (On 3.x the native writer
-        // invents a name with no codec suffix, so there is nothing to compare.)
-        listPartFileNames(outputPath).foreach { name =>
-          assert(name.endsWith(".gz.parquet"), s"Expected a gzip file name, got '$name'")
-        }
+      // Spark names the file; Comet fills it. The extension is the only externally visible
+      // statement of the codec, so it has to agree with the footer.
+      listPartFileNames(outputPath).foreach { name =>
+        assert(name.endsWith(".gz.parquet"), s"Expected a gzip file name, got '$name'")
       }
     }
   }

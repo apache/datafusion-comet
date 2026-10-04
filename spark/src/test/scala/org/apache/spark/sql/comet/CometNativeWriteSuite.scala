@@ -23,11 +23,15 @@ import java.io.{File, IOException}
 import java.util.concurrent.ConcurrentLinkedQueue
 
 import scala.jdk.CollectionConverters._
+import scala.util.Using
 
+import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.Path
 import org.apache.hadoop.mapreduce.{JobContext, TaskAttemptContext}
 import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat
-import org.apache.parquet.hadoop.ParquetOutputFormat
+import org.apache.parquet.hadoop.{ParquetFileReader, ParquetOutputFormat}
+import org.apache.parquet.hadoop.metadata.CompressionCodecName
+import org.apache.parquet.hadoop.util.HadoopInputFile
 import org.apache.spark.TaskContext
 import org.apache.spark.internal.io.FileCommitProtocol.TaskCommitMessage
 import org.apache.spark.internal.io.FileNameSpec
@@ -38,6 +42,7 @@ import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{StringType, StructField}
+import org.apache.spark.util.SerializableConfiguration
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
@@ -141,6 +146,31 @@ class CometNativeWriteSuite extends CometTestBase {
         assert(!new File(output, "_temporary").exists())
         checkAnswer(spark.read.parquet(output.getAbsolutePath), data)
       }
+    }
+  }
+
+  test("the footer codec matches the codec in the file name") {
+    withWriter() { (writer, data, output) =>
+      // The planner chose gzip, but the job configuration says zstd. The job configuration also
+      // names the file.
+      val conf = new Configuration(writer.serializableHadoopConf.value)
+      conf.set(ParquetOutputFormat.COMPRESSION, CompressionCodecName.ZSTD.name())
+      writer.copy(serializableHadoopConf = new SerializableConfiguration(conf)).execute().count()
+
+      val files = output.listFiles().filter(_.getName.endsWith(".parquet"))
+      assert(files.nonEmpty)
+      files.foreach { file =>
+        assert(file.getName.endsWith(".zstd.parquet"), s"Expected a zstd file: ${file.getName}")
+        val input = HadoopInputFile.fromPath(new Path(file.toURI), conf)
+        Using.resource(ParquetFileReader.open(input)) { reader =>
+          val codecs = reader.getFooter.getBlocks.asScala
+            .flatMap(_.getColumns.asScala)
+            .map(_.getCodec)
+            .toSet
+          assert(codecs == Set(CompressionCodecName.ZSTD), s"${file.getName} uses $codecs")
+        }
+      }
+      checkAnswer(spark.read.parquet(output.getAbsolutePath), data)
     }
   }
 
