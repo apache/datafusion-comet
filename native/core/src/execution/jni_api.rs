@@ -3179,13 +3179,13 @@ mod tests {
         blocks
     }
 
-    /// Writes `rows` (16-byte `long` rows) with `write_sorted_file` in batches of 2 rows and
-    /// returns the results and the file contents.
+    /// Writes `rows` (16-byte `long` rows) with `write_sorted_file` in batches of 2 rows,
+    /// checksummed with `checksum_algo` if set, and returns the results and the file contents.
     fn write_long_rows(
         rows: &[[u8; 16]],
         sizes: &[i32],
         path: &std::path::Path,
-        checksum_enabled: bool,
+        checksum_algo: Option<i32>,
         current_checksum: i64,
         codec: &str,
     ) -> CometResult<([i64; 3], Vec<u8>)> {
@@ -3198,8 +3198,8 @@ mod tests {
                 path.to_str().unwrap().to_string(),
                 1.0,
                 2,
-                checksum_enabled,
-                0,
+                checksum_algo.is_some(),
+                checksum_algo.unwrap_or(0),
                 current_checksum,
                 codec,
                 1,
@@ -3224,7 +3224,7 @@ mod tests {
         ] {
             let path = dir.path().join(codec);
             let ([written, checksum, _], data) =
-                write_long_rows(&rows, &sizes, &path, false, i64::MIN, codec).unwrap();
+                write_long_rows(&rows, &sizes, &path, None, i64::MIN, codec).unwrap();
             assert_eq!(written, data.len() as i64, "{codec}");
             assert_eq!(checksum, i64::MIN, "no checksum without checksum_enabled");
 
@@ -3243,31 +3243,47 @@ mod tests {
         }
     }
 
+    /// Adler-32 of `data`, computed independently of the implementation under test.
+    fn adler32(data: &[u8]) -> u32 {
+        let (mut a, mut b) = (1_u32, 0_u32);
+        for &byte in data {
+            a = (a + byte as u32) % 65521;
+            b = (b + a) % 65521;
+        }
+        b << 16 | a
+    }
+
     #[test]
     fn write_sorted_file_checksums_the_written_bytes() {
         let rows = long_rows(&[1, 2, 3, 4, 5]);
         let sizes = vec![16_i32; rows.len()];
         let dir = tempfile::tempdir().unwrap();
 
-        // Without a current checksum the CRC32 starts afresh and covers the file.
-        let ([_, first, _], first_data) =
-            write_long_rows(&rows, &sizes, &dir.path().join("a"), true, i64::MIN, "lz4").unwrap();
-        assert_eq!(first, crc32fast::hash(&first_data) as i64);
+        // CRC32 (0) starts from 0 but Adler-32 (1) from 1, so a missing current checksum
+        // (`i64::MIN`) must start a fresh checksum rather than continue one from 0. Spark seeds
+        // every partition with `Long.MIN_VALUE` and defaults to Adler-32.
+        let algorithms = [(0, crc32fast::hash as fn(&[u8]) -> u32), (1, adler32)];
+        for (algo, checksum_of) in algorithms {
+            // Without a current checksum the checksum starts afresh and covers the file.
+            let first_path = dir.path().join(format!("{algo}-first"));
+            let ([_, first, _], first_data) =
+                write_long_rows(&rows, &sizes, &first_path, Some(algo), i64::MIN, "lz4").unwrap();
+            assert_eq!(first, checksum_of(&first_data) as i64, "algorithm {algo}");
 
-        // A current checksum continues it, as across the spill files of one partition.
-        let ([_, second, _], second_data) =
-            write_long_rows(&rows, &sizes, &dir.path().join("b"), true, first, "lz4").unwrap();
-        let mut hasher = crc32fast::Hasher::new();
-        hasher.update(&first_data);
-        hasher.update(&second_data);
-        assert_eq!(second, hasher.finalize() as i64);
+            // A current checksum continues it, as across the spill files of one partition.
+            let second_path = dir.path().join(format!("{algo}-second"));
+            let ([_, second, _], second_data) =
+                write_long_rows(&rows, &sizes, &second_path, Some(algo), first, "lz4").unwrap();
+            let both = [first_data, second_data].concat();
+            assert_eq!(second, checksum_of(&both) as i64, "algorithm {algo}");
+        }
     }
 
     #[test]
     fn write_sorted_file_rejects_missing_row_sizes() {
         let rows = long_rows(&[1, 2]);
         let dir = tempfile::tempdir().unwrap();
-        let error = write_long_rows(&rows, &[16], &dir.path().join("a"), false, i64::MIN, "lz4")
+        let error = write_long_rows(&rows, &[16], &dir.path().join("a"), None, i64::MIN, "lz4")
             .unwrap_err();
         assert!(
             error
