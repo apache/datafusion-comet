@@ -277,6 +277,27 @@ class CometTypedDatasetSuite extends CometTestBase {
     }
   }
 
+  convertTest("a limit does not evaluate typed Dataset rows beyond the result") {
+    Seq("true", "false").foreach { aqe =>
+      withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe) {
+        val df = spark
+          .range(0, 100, 1, 1)
+          .map { i =>
+            if (i == 30L) {
+              throw new IllegalArgumentException("unexpected evaluation of row 30")
+            }
+            i + 1L
+          }
+          .toDF()
+          .limit(1)
+        val (_, plan) = checkSparkAnswerAndFallbackReason(
+          df,
+          "Comet does not convert the output of a typed Dataset operation below a limit")
+        assert(conversions(plan).isEmpty, s"AQE $aqe:\n$plan")
+      }
+    }
+  }
+
   test("off by default") {
     withRecs() { ds =>
       val (_, plan) = checkSparkAnswer(ds.map(r => TypedDsRec(r.a + 1, r.b)).groupBy("b").count())

@@ -162,6 +162,14 @@ object CometExecRule {
    */
   val SKIP_COMET_BROADCAST_TAG: org.apache.spark.sql.catalyst.trees.TreeNodeTag[Unit] =
     org.apache.spark.sql.catalyst.trees.TreeNodeTag[Unit]("comet.skipCometBroadcast")
+
+  /**
+   * Tag set on a `SerializeFromObjectExec` below a physical limit. Converting its output to Arrow
+   * fills batches before the limit consumes them, which can evaluate typed Dataset user code for
+   * rows that Spark's row-based limit would never request.
+   */
+  private val SKIP_TYPED_DATASET_CONVERSION_UNDER_LIMIT: TreeNodeTag[Unit] =
+    TreeNodeTag[Unit]("comet.skipTypedDatasetConversionUnderLimit")
 }
 
 /**
@@ -369,6 +377,23 @@ case class CometExecRule(session: SparkSession)
    */
   // spotless:on
   private def transform(plan: SparkPlan): SparkPlan = {
+    def tagTypedDatasetOutputsUnderLimit(limitChild: SparkPlan): Unit =
+      limitChild.foreach {
+        case op: SerializeFromObjectExec =>
+          op.setTagValue(CometExecRule.SKIP_TYPED_DATASET_CONVERSION_UNDER_LIMIT, ())
+        case _ =>
+      }
+
+    // Conversion is bottom-up, so mark typed serializers whose limit ancestors have not been
+    // visited yet. TreeNode tags survive the child copies made during transformUp, while an
+    // identity set would not.
+    plan.foreach {
+      case limit: CollectLimitExec => tagTypedDatasetOutputsUnderLimit(limit.child)
+      case limit: LocalLimitExec => tagTypedDatasetOutputsUnderLimit(limit.child)
+      case limit: GlobalLimitExec => tagTypedDatasetOutputsUnderLimit(limit.child)
+      case _ =>
+    }
+
     def convertNode(op: SparkPlan): SparkPlan = op match {
       // Scan marker produced by an optional, out-of-tree scan contrib (e.g. contrib/delta).
       // Matched by trait (no compile-time dependency on the contrib) and present only when that
@@ -479,7 +504,16 @@ case class CometExecRule(session: SparkSession)
       // Arrow lets the operators above the typed operation run natively.
       case op: SerializeFromObjectExec
           if CometConf.COMET_CONVERT_FROM_TYPED_DATASET_ENABLED.get(conf) =>
-        convertTypedDatasetOutput(op)
+        if (op
+            .getTagValue(CometExecRule.SKIP_TYPED_DATASET_CONVERSION_UNDER_LIMIT)
+            .isDefined) {
+          withFallbackReason(
+            op,
+            "Comet does not convert the output of a typed Dataset operation below a limit " +
+              "because Arrow batching could evaluate rows beyond Spark's row-level limit")
+        } else {
+          convertTypedDatasetOutput(op)
+        }
 
       // Spark 4.0+: replace only the per-task write, leaving DataWritingCommandExec - and
       // therefore Spark's commit protocol, stats trackers and SaveMode handling - in place.
