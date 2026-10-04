@@ -63,8 +63,8 @@ instructions on each step.
   - [ ] Check for fixes missing from the release branches
   - [ ] Generate the change log and PR it against the release branch
   - [ ] Run the full CI suite on the release branch
-  - [ ] Build the jars
   - [ ] Tag the release candidate
+  - [ ] Build the jars from the release candidate tag
   - [ ] Update documentation for the new release
   - [ ] Publish Maven artifacts to staging
   - [ ] Create the release candidate tarball
@@ -327,6 +327,21 @@ done
 Both runs must be green at the commit you are about to tag. If anything merges to the release branch after the
 runs start, run them again. Repeat this for every release candidate.
 
+### Tag the Release Candidate
+
+Ensure that the Maven version update and change log have been merged to the release branch, and that the
+[full CI run](#run-the-full-ci-suite) is green at the commit you are tagging, before tagging.
+
+Tag the release branch with `0.13.0-rc1` and push to the `apache` repo:
+
+```shell
+git fetch apache
+git checkout branch-0.13
+git reset --hard apache/branch-0.13
+git tag 0.13.0-rc1
+git push apache 0.13.0-rc1
+```
+
 ### Build the jars
 
 #### A note on workspace cleanliness
@@ -363,8 +378,10 @@ $ docker context use desktop-linux
 
 The `build-release-comet.sh` script will create a docker image for each architecture and use the image
 to build the platform specific binaries. These builder images are created every time this script is run.
-The script optionally allows overriding of the repository and branch to build the binaries from (Note that
-the local git repo is not used in the building of the binaries, but it is used to build the final uber jar).
+The branch or tag to build is required, and the script optionally allows overriding the repository. For a release,
+always build from the release candidate tag created in the previous step. The remote tag is used to build the native
+binaries, while the local checkout is used to build the final uber jar, so check out the same tag locally before
+running the script.
 
 ```shell
 Usage: build-release-comet.sh [options]
@@ -375,36 +392,22 @@ This script builds comet native binaries inside a docker image. The image is nam
 Options are:
 
 -r [repo]   : git repo (default: https://github.com/apache/datafusion-comet.git)
--b [branch] : git branch (default: release)
+-b [ref]    : git branch or tag to build (required)
 -t [tag]    : tag for the spark-rm docker image to use for building (default: "latest").
 ```
 
 Example:
 
 ```shell
-cd dev/release && ./build-release-comet.sh && cd ../..
+git checkout 0.13.0-rc1
+cd dev/release && ./build-release-comet.sh -b 0.13.0-rc1 && cd ../..
 ```
 
 #### Build output
 
 The build output is installed to a temporary local maven repository. The build script will print the name of the
 repository location at the end. This location will be required at the time of deploying the artifacts to a staging
-repository
-
-### Tag the Release Candidate
-
-Ensure that the Maven version update and change log have been merged to the release branch, and that the
-[full CI run](#run-the-full-ci-suite) is green at the commit you are tagging, before tagging.
-
-Tag the release branch with `0.13.0-rc1` and push to the `apache` repo
-
-```shell
-git fetch apache
-git checkout branch-0.13
-git reset --hard apache/branch-0.13
-git tag 0.13.0-rc1
-git push apache 0.13.0-rc1
-```
+repository.
 
 ### Publishing Documentation
 

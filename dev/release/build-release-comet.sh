@@ -34,7 +34,7 @@ This script builds comet native binaries inside a docker image. The image is nam
 Options are:
 
   -r [repo]   : git repo (default: ${REPO})
-  -b [branch] : git branch (default: ${BRANCH})
+  -b [ref]    : git branch or tag to build (required)
   -t [tag]    : tag for the spark-rm docker image to use for building (default: "latest").
 EOF
 exit 1
@@ -59,10 +59,10 @@ function cleanup()
 
 trap cleanup SIGINT SIGTERM EXIT
 
-CLEANUP=1
+CLEANUP=0
 
 REPO="https://github.com/apache/datafusion-comet.git"
-BRANCH="release"
+BRANCH=
 MACOS_SDK=
 HAS_MACOS_SDK="false"
 IMGTAG=latest
@@ -76,6 +76,26 @@ while getopts "b:hr:t:" opt; do
     \?) error "Invalid option. Run with -h for help." ;;
   esac
 done
+
+if [ -z "$BRANCH" ]
+then
+  echo "Error: -b must specify the branch or tag to build"
+  usage
+fi
+
+if git ls-remote --exit-code "$REPO" "refs/heads/$BRANCH" "refs/tags/$BRANCH" >/dev/null
+then
+  echo "Found branch or tag $BRANCH in $REPO"
+else
+  STATUS=$?
+  if [ "$STATUS" -eq 2 ]
+  then
+    echo "Error: branch or tag '$BRANCH' does not exist in $REPO"
+  else
+    echo "Error: unable to check branch or tag '$BRANCH' in $REPO"
+  fi
+  exit 1
+fi
 
 echo "Building binaries from $REPO/$BRANCH"
 
@@ -135,6 +155,7 @@ pushd $COMET_HOME_DIR/native && cargo clean && popd
 # Run the builder container for each architecture. The entrypoint script will build the binaries
 
 # AMD64
+CLEANUP=1
 echo "Building amd64 binary"
 docker run \
    --name comet-amd64-builder-container \
