@@ -682,6 +682,61 @@ object CometConf extends ShimCometConf {
       .checkValue(_ >= 0, "Must be >= 0.")
       .createWithDefault(2)
 
+  val COMET_EXEC_COST_MODEL_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.costModel.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Experimental: when enabled, Comet estimates the cost of running each query stage " +
+          "with Comet and with Spark, and reverts the stage to Spark when the estimated " +
+          "speedup from Comet is below spark.comet.exec.costModel.minSpeedup. This targets " +
+          "stages where the cost of converting Comet's columnar batches to Spark rows " +
+          "outweighs the native work in the stage. The default cost weights are initial " +
+          "estimates and have not been calibrated against benchmarks.")
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_EXEC_COST_MODEL_CLASS: ConfigEntry[String] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.costModel.class")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Experimental: the fully qualified name of the cost model that " +
+          "spark.comet.exec.costModel.enabled uses. The class must implement " +
+          "org.apache.comet.cost.CometCostModel and have a no-argument constructor.")
+      .stringConf
+      .createWithDefault("org.apache.comet.cost.DefaultCometCostModel")
+
+  val COMET_EXEC_COST_MODEL_MIN_SPEEDUP: ConfigEntry[Double] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.costModel.minSpeedup")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Experimental: the minimum estimated speedup (estimated Spark cost divided by " +
+          "estimated Comet cost) a query stage needs in order to keep running with Comet. " +
+          "Stages below it are reverted to Spark. " +
+          "Only effective when spark.comet.exec.costModel.enabled is true.")
+      .doubleConf
+      .checkValue(_ >= 0, "Must be >= 0.")
+      .createWithDefault(1.0)
+
+  val COMET_EXEC_COST_MODEL_NATIVE_SPEEDUP: ConfigEntry[Double] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.costModel.nativeSpeedup")
+      .category(CATEGORY_EXEC)
+      .doc("Experimental: how many times faster the default cost model assumes a Comet native " +
+        "operator is than the Spark operator it replaces.")
+      .doubleConf
+      .checkValue(_ > 0, "Must be > 0.")
+      .createWithDefault(2.0)
+
+  val COMET_EXEC_COST_MODEL_TRANSITION_COST_FACTOR: ConfigEntry[Double] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.costModel.transitionCostFactor")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Experimental: how many times more expensive the default cost model assumes a " +
+          "conversion between Comet's columnar batches and Spark rows is than Spark's " +
+          "conversion of its own vectorized scan output to rows.")
+      .doubleConf
+      .checkValue(_ > 0, "Must be > 0.")
+      .createWithDefault(3.0)
+
   val COMET_SHUFFLE_COMPRESSION_CODEC: ConfigEntry[String] =
     conf("spark.comet.shuffle.compression.codec")
       .withAlternative(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.compression.codec")

@@ -19,23 +19,31 @@
 
 package org.apache.comet.rules
 
+import scala.collection.mutable.ListBuffer
+import scala.util.control.NonFatal
+
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.rules.Rule
-import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometExec, CometHashAggregateExec, CometLocalTopKExec, CometNativeColumnarToRowExec, CometSparkToColumnarExec}
+import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometExec, CometHashAggregateExec, CometLocalTopKExec, CometNativeColumnarToRowExec, CometPlan, CometSparkToColumnarExec}
+import org.apache.spark.sql.comet.execution.shuffle.{CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, ColumnarToRowTransition, RowToColumnarExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.QueryStageExec
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeLike, ShuffleExchangeLike}
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
+import org.apache.comet.cost.CometCostModel
 import org.apache.comet.serde.QueryPlanSerde
 
 /**
  * Reverts a query stage to Spark row-based execution when it has too many columnar-to-row (C2R)
  * transitions. Each C2R indicates Comet could not keep execution columnar and had to fall back.
  * With columnar shuffle enabled, each C2R implies a corresponding R2C round-trip.
+ *
+ * With `spark.comet.exec.costModel.enabled`, a stage is also reverted when a [[CometCostModel]]
+ * estimates that Comet speeds it up by less than `spark.comet.exec.costModel.minSpeedup`.
  *
  * @param wholePlan
  *   visit every stage even under AQE, where Spark normally hands this rule one stage at a time.
@@ -45,11 +53,12 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession, wholePlan
     extends Rule[SparkPlan]
     with Logging {
 
-  private def enabled = CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.get()
+  private def transitionRevertEnabled = CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.get()
   private def maxTransitions = CometConf.COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS.get()
+  private def costModelEnabled = CometConf.COMET_EXEC_COST_MODEL_ENABLED.get()
 
   override def apply(plan: SparkPlan): SparkPlan = {
-    if (!enabled) return plan
+    if (!transitionRevertEnabled && !costModelEnabled) return plan
 
     if (session.sessionState.conf.adaptiveExecutionEnabled && !wholePlan) {
       applyForAQE(plan)
@@ -62,34 +71,39 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession, wholePlan
     plan match {
       case _: BroadcastExchangeLike => plan
       case exchange: ShuffleExchangeLike =>
-        revertStageIfNeeded(exchange.child, exchange.supportsColumnar)
+        revertStageIfNeeded(exchange.child, Some(exchange))
           .map(reverted => exchange.withNewChildren(Seq(reverted)))
           .getOrElse(plan)
       case _ =>
         // Result stage: its output is collected as rows, so no consumer requires columnar input
         // and the reverted stage needs no trailing R2C.
-        revertStageIfNeeded(plan, outputColumnar = false).getOrElse(plan)
+        revertStageIfNeeded(plan, consumer = None).getOrElse(plan)
     }
   }
 
   private def applyForNonAQE(plan: SparkPlan): SparkPlan = {
     val withRevertedStages = plan.transformUp { case exchange: ShuffleExchangeLike =>
-      revertStageIfNeeded(exchange.child, exchange.supportsColumnar)
+      revertStageIfNeeded(exchange.child, Some(exchange))
         .map(reverted => exchange.withNewChildren(Seq(reverted)))
         .getOrElse(exchange)
     }
-    revertStageIfNeeded(withRevertedStages, outputColumnar = false)
+    revertStageIfNeeded(withRevertedStages, consumer = None)
       .getOrElse(withRevertedStages)
   }
 
   /**
-   * Reverts the stage if C2R count exceeds threshold. Wraps in R2C if exchange needs columnar.
+   * Reverts the stage if its C2R count exceeds the threshold or the cost model estimates too
+   * small a speedup.
+   *
+   * @param consumer
+   *   the exchange that reads the stage, or None for a result stage
    */
   private def revertStageIfNeeded(
       stagePlan: SparkPlan,
-      outputColumnar: Boolean): Option[SparkPlan] = {
-    val transitionCount = countTransitions(stagePlan)
-    if (transitionCount <= maxTransitions) return None
+      consumer: Option[ShuffleExchangeLike]): Option[SparkPlan] = {
+    val transitionCount = if (transitionRevertEnabled) countTransitions(stagePlan) else 0
+    val tooManyTransitions = transitionRevertEnabled && transitionCount > maxTransitions
+    if (!tooManyTransitions && !(costModelEnabled && hasCometOperator(stagePlan))) return None
 
     // Reverting either side of a native aggregate boundary can make one engine consume the
     // other's intermediate state. Typed imperative aggregates such as percentile expose a native
@@ -98,16 +112,79 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession, wholePlan
     // producer and consumer stages native when mixed execution is unsafe across a stage boundary.
     if (hasUnsafeMixedAggregateAtStageBoundary(stagePlan)) return None
 
-    val reason =
-      s"Stage reverted: $transitionCount C2R transitions exceed threshold $maxTransitions"
-
     val reverted = revertToSpark(stagePlan)
-    val result = if (outputColumnar && !reverted.supportsColumnar) {
-      RowToColumnarExec(withFallbackReason(reverted, reason))
-    } else {
-      withFallbackReason(reverted, reason)
+    bridgeToConsumer(reverted, consumer).flatMap { result =>
+      val reason = if (tooManyTransitions) {
+        Some(s"Stage reverted: $transitionCount C2R transitions exceed threshold $maxTransitions")
+      } else {
+        costModelRevertReason(stagePlan, result)
+      }
+      reason.map { r =>
+        withFallbackReason(reverted, r)
+        result
+      }
     }
-    Some(result)
+  }
+
+  /**
+   * Gives a reverted stage the output format its consumer reads, or None if the stage cannot be
+   * bridged to it.
+   */
+  private def bridgeToConsumer(
+      reverted: SparkPlan,
+      consumer: Option[ShuffleExchangeLike]): Option[SparkPlan] = {
+    // A stage that reverts to a bare vectorized scan is columnar, and only yields rows through a
+    // transition.
+    def rows = if (reverted.supportsColumnar) ColumnarToRowExec(reverted) else reverted
+    consumer match {
+      case Some(comet: CometShuffleExchangeExec) if comet.shuffleType == CometNativeShuffle =>
+        // The native shuffle writer reads Arrow batches, which neither Spark's vectorized scans
+        // nor RowToColumnarExec produce.
+        if (CometSparkToColumnarExec.isSchemaSupported(reverted.schema, ListBuffer.empty)) {
+          Some(CometSparkToColumnarExec(reverted))
+        } else {
+          None
+        }
+      case Some(exchange) if exchange.supportsColumnar => Some(RowToColumnarExec(rows))
+      case _ => Some(rows)
+    }
+  }
+
+  /**
+   * The reason to revert the stage if the cost model estimates too small a speedup from Comet.
+   * Never fails the query: a cost model that throws leaves the stage with Comet.
+   */
+  private def costModelRevertReason(
+      cometStage: SparkPlan,
+      sparkStage: SparkPlan): Option[String] = {
+    val modelClass = CometConf.COMET_EXEC_COST_MODEL_CLASS.get()
+    val minSpeedup = CometConf.COMET_EXEC_COST_MODEL_MIN_SPEEDUP.get()
+    try {
+      val estimate = CometCostModel.load(modelClass).estimate(cometStage, sparkStage)
+      logDebug(
+        f"Cost model estimated a speedup of ${estimate.speedup}%.2f (Comet cost " +
+          f"${estimate.cometCost}%.3e, Spark cost ${estimate.sparkCost}%.3e) for stage:\n" +
+          cometStage.treeString)
+      if (estimate.speedup < minSpeedup) {
+        Some(
+          f"Stage reverted: estimated speedup from Comet of ${estimate.speedup}%.2f is below " +
+            s"${CometConf.COMET_EXEC_COST_MODEL_MIN_SPEEDUP.key}=$minSpeedup (set " +
+            s"${CometConf.COMET_EXEC_COST_MODEL_ENABLED.key}=false to disable)")
+      } else {
+        None
+      }
+    } catch {
+      case NonFatal(e) =>
+        logWarning(s"Cost model $modelClass failed; keeping the Comet plan for this stage", e)
+        None
+    }
+  }
+
+  /** Whether this stage has any Comet operator to revert. */
+  private def hasCometOperator(plan: SparkPlan): Boolean = plan match {
+    case _ if isStageBoundary(plan) => false
+    case _: CometPlan => true
+    case _ => plan.children.exists(hasCometOperator)
   }
 
   /**
