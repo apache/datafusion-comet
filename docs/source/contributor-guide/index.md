@@ -73,6 +73,7 @@ Adding a New Spark Version <adding_a_new_spark_version>
 Comet SQL Tests <sql-file-tests.md>
 Spark SQL Tests <spark-sql-tests.md>
 Iceberg Spark Tests <iceberg-spark-tests.md>
+Iceberg Scheduler Failure Tests <iceberg-scheduler-failures.md>
 Continuous Integration <ci>
 ```
 
