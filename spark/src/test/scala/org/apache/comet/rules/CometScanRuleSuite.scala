@@ -100,6 +100,64 @@ class CometScanRuleSuite extends CometTestBase {
     }
   }
 
+  test("Parquet DATE to NTZ keeps native scans and checks visible overflow") {
+    assume(org.apache.comet.CometSparkSessionExtensions.isSpark40Plus)
+    val schema = StructType(Seq(StructField("id", LongType), StructField("d", TimestampNTZType)))
+    withSQLConf(
+      "spark.sql.parquet.datetimeRebaseModeInWrite" -> "CORRECTED",
+      "spark.sql.parquet.datetimeRebaseModeInRead" -> "CORRECTED") {
+      withTempPath { path =>
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          spark
+            .range(3)
+            .selectExpr("id", "date_from_unix_date(CAST(id AS INT)) AS d")
+            .coalesce(1)
+            .write
+            .parquet(path.toString)
+        }
+        val (_, plan) =
+          checkSparkAnswerAndOperator(spark.read.schema(schema).parquet(path.toString))
+        assert(collect(plan) { case scan: CometNativeScanExec => scan }.nonEmpty)
+      }
+      withTempPath { path =>
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          spark
+            .range(3)
+            .selectExpr("id", "TIMESTAMP_NTZ'2000-01-01 00:00:00' AS d")
+            .coalesce(1)
+            .write
+            .parquet(path.toString)
+        }
+        val (_, plan) =
+          checkSparkAnswerAndOperator(spark.read.schema(schema).parquet(path.toString))
+        assert(collect(plan) { case scan: CometNativeScanExec => scan }.nonEmpty)
+      }
+      withTempPath { path =>
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          spark
+            .range(6000)
+            .selectExpr("id", "date_from_unix_date(IF(id = 5000, 106751992, 0)) AS d")
+            .coalesce(1)
+            .write
+            .parquet(path.toString)
+        }
+        val read = () => spark.read.schema(schema).parquet(path.toString)
+        val (sparkError, cometError) = checkSparkAnswerMaybeThrows(read())
+        for (error <- Seq(sparkError, cometError)) {
+          assert(error.nonEmpty)
+          assert(causeChain(error.get).exists {
+            case e: ArithmeticException => e.getMessage == "long overflow"
+            case _ => false
+          })
+        }
+        // Retain the existing filtered-scan policy: a later physical DATE overflow must not
+        // prevent returning the first valid row when Spark prunes or stops before that batch.
+        val (_, plan) = checkSparkAnswerAndOperator(read().filter("id = 0").limit(1))
+        assert(collect(plan) { case scan: CometNativeScanExec => scan }.nonEmpty)
+      }
+    }
+  }
+
   test("CometScanRule should fallback to Spark for ShortType when safety check enabled") {
     withTempPath { path =>
       // Create test data with ShortType which may be from unsigned UINT_8

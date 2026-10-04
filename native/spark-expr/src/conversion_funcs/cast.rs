@@ -1029,7 +1029,8 @@ fn cast_binary_to_string<O: OffsetSizeTrait>(
 mod tests {
     use super::*;
     use arrow::array::{
-        BinaryArray, Date32Array, Decimal128Array, ListArray, NullArray, PrimitiveArray, StringArray,
+        BinaryArray, Date32Array, Decimal128Array, ListArray, NullArray, PrimitiveArray,
+        StringArray,
     };
     use arrow::buffer::{NullBuffer, OffsetBuffer};
     use arrow::datatypes::{

@@ -38,6 +38,8 @@ pub(crate) fn cast_date_to_timestamp(
     cast_options: &SparkCastOptions,
     target_tz: &Option<Arc<str>>,
 ) -> SparkResult<ArrayRef> {
+    // Retain checked arithmetic instead of Arrow's generic NTZ cast so failures preserve
+    // Spark's plain ArithmeticException("long overflow") in both ANSI and legacy modes.
     let date_array = array_ref.as_primitive::<Date32Type>();
     let mut builder = TimestampMicrosecondBuilder::with_capacity(date_array.len());
 
@@ -87,6 +89,7 @@ pub(crate) fn cast_date_to_timestamp(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arrow::datatypes::TimeUnit;
     use std::sync::Arc;
 
     #[test]

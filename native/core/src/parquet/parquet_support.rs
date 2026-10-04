@@ -112,9 +112,9 @@ pub struct SparkParquetOptions {
     /// (Spark 3.x, SPARK-36182). Mirrors Comet's per-Spark-version constant
     /// in ShimCometConf.
     pub allow_timestamp_ltz_to_ntz: bool,
-    /// When true (the default), a TIMESTAMP_MILLIS field that overflows during
-    /// the millis->micros upscale raises an error, matching Spark's checked
-    /// `millisToMicros`. Filtered scans set this to false and retain the safe cast
+    /// When true (the default), TIMESTAMP_MILLIS or DATE fields that overflow during
+    /// conversion to microsecond timestamps raise an error, matching Spark's checked
+    /// `millisToMicros` / `daysToMicros`. Filtered scans retain the safe cast
     /// (overflow -> NULL), because Spark may discard values through pruning paths that
     /// DataFusion cannot fully mirror before conversion.
     pub checked_timestamp_overflow: bool,
@@ -198,11 +198,17 @@ fn parquet_convert_array_impl(
 ) -> DataFusionResult<ArrayRef> {
     use DataType::*;
     let from_type = array.data_type();
-    // Only checked millis-to-micros casts consume ancestor visibility. In particular,
+    // Only checked timestamp conversions consume ancestor visibility. In particular,
     // unchanged array/map siblings must not expand a mask over their backing values.
     let checked_timestamp_overflow = parquet_options.checked_timestamp_overflow
-        && has_timestamp_unit(from_type, TimeUnit::Millisecond)
-        && has_timestamp_unit(to_type, TimeUnit::Microsecond);
+        && ((has_type(from_type, |dt| {
+            matches!(dt, Timestamp(TimeUnit::Millisecond, _))
+        }) && has_type(to_type, |dt| {
+            matches!(dt, Timestamp(TimeUnit::Microsecond, _))
+        })) || (has_type(from_type, |dt| matches!(dt, Date32))
+            && has_type(to_type, |dt| {
+                matches!(dt, Timestamp(TimeUnit::Microsecond, None))
+            })));
     let visible = if checked_timestamp_overflow {
         NullBuffer::union(array.nulls(), parent_nulls)
     } else {
@@ -279,6 +285,19 @@ fn parquet_convert_array_impl(
                 .with_timezone_opt(target_tz.clone());
             Ok(Arc::new(micros))
         }
+        (Date32, Timestamp(TimeUnit::Microsecond, None)) if checked_timestamp_overflow => {
+            // Spark's Parquet DATE -> NTZ updater calls checked daysToMicros. Reuse the
+            // same visibility and filtered-scan policy as the checked millisecond updater.
+            let dates = array.as_primitive::<arrow::datatypes::Date32Type>();
+            let micros = arrow::array::Date32Array::new(dates.values().clone(), visible)
+                .try_unary::<_, TimestampMicrosecondType, _>(|value| {
+                    i64::from(value).mul_checked(86_400_000_000)
+                })
+                .map_err(|_| SparkError::LongOverflow)?;
+            // Required nested children retain their original validity, even below null parents.
+            Ok(Arc::new(arrow::array::TimestampMicrosecondArray::new(
+                micros.values().clone(), dates.nulls().cloned())))
+        }
         (Timestamp(TimeUnit::Microsecond, None), Timestamp(TimeUnit::Microsecond, Some(tz))) => {
             Ok(Arc::new(
                 array
@@ -328,18 +347,20 @@ fn parquet_convert_array_impl(
 
 // Struct fields are matched by name/field ID later. This type-only check is conservative
 // until that matching occurs; each selected child is checked again before conversion.
-fn has_timestamp_unit(data_type: &DataType, unit: TimeUnit) -> bool {
+fn has_type(data_type: &DataType, predicate: fn(&DataType) -> bool) -> bool {
+    if predicate(data_type) {
+        return true;
+    }
     match data_type {
-        DataType::Timestamp(timestamp_unit, _) => *timestamp_unit == unit,
         DataType::Struct(fields) => fields
             .iter()
-            .any(|field| has_timestamp_unit(field.data_type(), unit)),
+            .any(|field| has_type(field.data_type(), predicate)),
         DataType::List(field)
         | DataType::LargeList(field)
         | DataType::FixedSizeList(field, _)
         | DataType::ListView(field)
         | DataType::LargeListView(field)
-        | DataType::Map(field, _) => has_timestamp_unit(field.data_type(), unit),
+        | DataType::Map(field, _) => has_type(field.data_type(), predicate),
         _ => false,
     }
 }
@@ -1503,6 +1524,73 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_date_to_ntz_checked_overflow_and_hidden_values() {
+        use super::{parquet_convert_array, SparkParquetOptions};
+        use arrow::array::{Array, ArrayRef, AsArray, Date32Array, ListArray, StructArray};
+        use arrow::buffer::{NullBuffer, OffsetBuffer};
+        use arrow::datatypes::{DataType, Field, TimeUnit, TimestampMicrosecondType};
+        use datafusion_comet_spark_expr::EvalMode;
+        use std::sync::Arc;
+
+        let target = DataType::Timestamp(TimeUnit::Microsecond, None);
+        let options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        for day in [106_751_992, -106_751_992, i32::MIN, i32::MAX] {
+            let values: ArrayRef = Arc::new(Date32Array::from(vec![Some(day), None, Some(1)]));
+            let error = parquet_convert_array(Arc::clone(&values), &target, &options).unwrap_err();
+            assert!(error.to_string().contains("long overflow"), "{error}");
+            let mut filtered = options.clone();
+            filtered.checked_timestamp_overflow = false;
+            let result = parquet_convert_array(values, &target, &filtered).unwrap();
+            assert!(result.is_null(0));
+            assert!(result.is_null(1));
+            assert_eq!(
+                result.as_primitive::<TimestampMicrosecondType>().value(2),
+                86_400_000_000
+            );
+        }
+        let values: ArrayRef = Arc::new(Date32Array::from(vec![i32::MAX, 1, i32::MIN]));
+        let input = StructArray::new(
+            vec![Arc::new(Field::new("d", DataType::Date32, false))].into(),
+            vec![Arc::clone(&values)],
+            Some(NullBuffer::from(vec![false, true, false])),
+        );
+        let struct_type =
+            DataType::Struct(vec![Arc::new(Field::new("d", target.clone(), false))].into());
+        let output = parquet_convert_array(Arc::new(input), &struct_type, &options).unwrap();
+        assert!(output.is_null(0));
+        assert!(output.is_null(2));
+        assert_eq!(output.as_struct().column(0).null_count(), 0);
+        assert_eq!(
+            output
+                .as_struct()
+                .column(0)
+                .as_primitive::<TimestampMicrosecondType>()
+                .value(1),
+            86_400_000_000
+        );
+
+        // A sliced list retains overflowing backing values outside its visible offsets.
+        let list = ListArray::new(
+            Arc::new(Field::new("item", DataType::Date32, false)),
+            OffsetBuffer::new(vec![0, 1, 2, 3].into()),
+            values,
+            None,
+        );
+        let target_list = DataType::List(Arc::new(Field::new("item", target, false)));
+        assert!(parquet_convert_array(Arc::new(list.clone()), &target_list, &options).is_err());
+        let result =
+            parquet_convert_array(Arc::new(list.slice(1, 1)), &target_list, &options).unwrap();
+        assert_eq!(
+            result
+                .as_list::<i32>()
+                .value(0)
+                .as_primitive::<TimestampMicrosecondType>()
+                .value(0),
+            86_400_000_000
+        );
     }
 
     #[test]
