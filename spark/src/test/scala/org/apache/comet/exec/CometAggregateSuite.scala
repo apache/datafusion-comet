@@ -3442,6 +3442,43 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       "SELECT _1, sort_array(collect_list(_2)), count(DISTINCT _2) FROM tbl GROUP BY _1")
   }
 
+  test("SortAggregate keeps a decimal AVG with a maximum-precision sum in Spark") {
+    // A string FIRST cannot use a hash aggregation buffer, so Spark plans sort aggregates and
+    // keeps the AVG sum in a generic row, where it is unbounded: 0.6 + 0.6 leaves DECIMAL(38,38)
+    // and -0.4 brings it back. The native AVG records that overflow and would return NULL, or
+    // raise under ANSI. Sorting on ord fixes the order in which the partial adds the values.
+    withTempPath { dir =>
+      Seq((1, 1, "0.6"), (1, 2, "0.6"), (1, 3, "-0.4"))
+        .toDF("g", "ord", "raw")
+        .selectExpr("g", "ord", "CAST(raw AS DECIMAL(38,38)) AS v", "'x' AS label")
+        .coalesce(1)
+        .write
+        .parquet(dir.toString)
+      withParquetTable(dir.toString, "dec_avg") {
+        Seq("false", "true").foreach { ansi =>
+          withSQLConf(
+            SQLConf.ANSI_ENABLED.key -> ansi,
+            CometConf.COMET_SHUFFLE_ENABLED.key -> "true") {
+            val df = sql(
+              "SELECT g, avg(v), first(label) FROM (SELECT * FROM dec_avg SORT BY g, ord) " +
+                "GROUP BY g")
+            val (sparkPlan, cometPlan) = checkSparkAnswerAndFallbackReason(
+              df,
+              "Decimal AVG with a maximum-precision sum cannot match Spark's " +
+                "sort aggregation buffer")
+            assert(collect(sparkPlan) { case agg: SortAggregateExec => agg }.nonEmpty, sparkPlan)
+            assert(
+              collect(cometPlan) { case agg: CometSortAggregateExec => agg }.isEmpty,
+              cometPlan)
+            checkAnswer(
+              df,
+              Row(1, new java.math.BigDecimal("0.26666666666666666666666666666666666667"), "x"))
+          }
+        }
+      }
+    }
+  }
+
   // Regression: Catalyst prunes `HashAggregateExec.resultExpressions` to
   // empty for EXISTS / row-existence-only subqueries. The native HashAggregate's natural
   // output (the grouping keys) then disagrees with the pruned JVM `output`, leaking through

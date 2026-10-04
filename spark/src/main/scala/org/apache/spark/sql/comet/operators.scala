@@ -31,7 +31,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSeq, AttributeSet, CodegenObjectFactoryMode, Expression, ExpressionSet, Generator, LeafExpression, Literal, NamedExpression, SortOrder, XXH64}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, CollectList, CollectSet, Final, ImperativeAggregate, Mode, Partial, PartialMerge, Percentile, Sum}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, Average, CollectList, CollectSet, Final, ImperativeAggregate, Mode, Partial, PartialMerge, Percentile, Sum}
 import org.apache.spark.sql.catalyst.expressions.codegen.CodegenFallback
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans._
@@ -2025,6 +2025,21 @@ trait CometBaseAggregate[T <: BaseAggregateExec] extends CometOperatorSerde[T] {
       case _ => false
     })
 
+  /**
+   * Whether a decimal AVG accumulates its sum at DecimalType.MAX_PRECISION, which Spark does for
+   * input precision 28 and up. As with SUM, that is where an intermediate overflow can change the
+   * answer.
+   */
+  protected def hasMaxPrecisionDecimalAvg(op: BaseAggregateExec): Boolean =
+    op.aggregateExpressions.exists(_.aggregateFunction match {
+      case avg: Average =>
+        avg.sumDataType match {
+          case decimal: DecimalType => decimal.precision == DecimalType.MAX_PRECISION
+          case _ => false
+        }
+      case _ => false
+    })
+
   def doConvert(
       aggregate: BaseAggregateExec,
       builder: Operator.Builder,
@@ -2448,6 +2463,16 @@ object CometSortAggregateExec extends CometBaseAggregate[SortAggregateExec] {
     if (hasMaxPrecisionDecimalSum(op)) {
       return Unsupported(
         Some("Decimal SUM at maximum precision cannot match Spark's sort aggregation buffer"))
+    }
+    // Decimal AVG keeps the same kind of running sum, and the native AVG records an overflow as
+    // soon as that sum leaves the precision, grouped or not. Where Spark's sum stays unbounded,
+    // as it does beside a string FIRST, Comet would return NULL, or raise under ANSI, for an
+    // average that Spark computes.
+    if (hasMaxPrecisionDecimalAvg(op)) {
+      return Unsupported(
+        Some(
+          "Decimal AVG with a maximum-precision sum cannot match Spark's " +
+            "sort aggregation buffer"))
     }
     Compatible()
   }
