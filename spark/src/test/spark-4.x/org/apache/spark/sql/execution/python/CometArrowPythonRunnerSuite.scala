@@ -45,7 +45,7 @@ import org.apache.spark.{SparkConf, SparkEnv, SparkException, TaskContext, TaskC
 import org.apache.spark.api.python.{BasePythonRunner, ChainedPythonFunctions, PythonEvalType, SimplePythonFunction, SpecialLengths}
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.metric.SQLMetric
-import org.apache.spark.sql.execution.python.CometArrowPythonRunnerBase.{hasCompatibleSchema, inputBatchRanges, outputSchemaMismatch, serializeBatch, withInputBatchRange, withMaterializedInputVectors, withLargeVarTypes}
+import org.apache.spark.sql.execution.python.CometArrowPythonRunnerBase.{hasCompatibleSchema, inputBatchRanges, outputSchemaMismatch, serializeBatch, withInputBatchRange, withLargeVarTypes, withMaterializedInputVectors}
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 import org.apache.spark.util.DirectByteBufferOutputStream
@@ -60,7 +60,9 @@ class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
    * input batches; the task context owns the writer allocator and must be completed after use.
    * The BasePythonRunner constructor is common to all supported Spark 4.x versions.
    */
-  private class InputWriterRunner(functions: Seq[ChainedPythonFunctions])
+  private class InputWriterRunner(
+      functions: Seq[ChainedPythonFunctions],
+      override protected val workerConf: Map[String, String])
       extends BasePythonRunner[Iterator[ColumnarBatch], ColumnarBatch](
         functions,
         PythonEvalType.SQL_MAP_ARROW_ITER_UDF,
@@ -68,7 +70,6 @@ class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
         None,
         Map.empty)
       with CometArrowPythonRunnerBase {
-    override protected val workerConf: Map[String, String] = Map.empty
     override protected val pythonMetrics: Map[String, SQLMetric] =
       Map("pythonDataSent" -> new SQLMetric("size", 0L))
     override protected val schema: StructType = StructType(
@@ -105,7 +106,11 @@ class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
    * on failure. No Spark services or worker processes are created. Restore the caller's
    * environment after allocator cleanup; source batches remain owned by the caller throughout.
    */
-  private def withInputWriterRunner(body: (InputWriterRunner, TaskContextImpl) => Unit): Unit = {
+  private def withInputWriterRunner(body: (InputWriterRunner, TaskContextImpl) => Unit): Unit =
+    withInputWriterRunner(Map.empty[String, String])(body)
+
+  private def withInputWriterRunner(workerConf: Map[String, String])(
+      body: (InputWriterRunner, TaskContextImpl) => Unit): Unit = {
     val previousEnv = SparkEnv.get
     val env = new SparkEnv(
       "python-writer-test",
@@ -131,7 +136,7 @@ class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
         "3",
         java.util.Collections.emptyList(),
         null)
-      body(new InputWriterRunner(Seq(ChainedPythonFunctions(Seq(function)))), context)
+      body(new InputWriterRunner(Seq(ChainedPythonFunctions(Seq(function))), workerConf), context)
     } finally {
       try {
         context.markTaskCompleted(None)
@@ -310,7 +315,13 @@ class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
         case ((offset, length), batch) =>
           withInputBatchRange(columns, rows, offset, length, allocator) { (vectors, count) =>
             failWrites = batch + 1 == failAt
-            try serializeBatch(new WriteChannel(channel), vectors, count, allocator, useLargeVarTypes = false)
+            try
+              serializeBatch(
+                new WriteChannel(channel),
+                vectors,
+                count,
+                allocator,
+                useLargeVarTypes = false)
             finally failWrites = false
           }
       }
@@ -367,9 +378,11 @@ class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
     ranges.toSeq
   }
 
-  Seq((64 * 1024, 256), (16, 600)).foreach { case (valueBytes, firstRows) =>
+  for ((valueBytes, firstRows) <- Seq((64 * 1024, 256), (16, 600));
+    useLargeVarTypes <- Seq(false, true)) {
     test(
-      s"input writer bounds Spark transport buffering for $valueBytes-byte dictionary values") {
+      s"input writer bounds Spark transport buffering for $valueBytes-byte dictionary values, " +
+        s"large=$useLargeVarTypes") {
       val firstValue = "a" * valueBytes
       val secondValue = "b" * valueBytes
       val secondRows = 3
@@ -378,58 +391,62 @@ class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
       val transport = new DirectByteBufferOutputStream()
       val wireBytes = new ByteArrayOutputStream()
       try {
-        withInputWriterRunner { (runner, context) =>
-          var emittedBatches = 0
+        withInputWriterRunner(
+          Map("spark.sql.execution.arrow.useLargeVarTypes" -> useLargeVarTypes.toString)) {
+          (runner, context) =>
+            var emittedBatches = 0
 
-          val input = Iterator(
-            Iterator.empty,
-            guardedSource(first) { emittedBatches shouldBe firstRows },
-            Iterator.empty,
-            guardedSource(second) { emittedBatches shouldBe firstRows + secondRows },
-            Iterator.empty)
-          val writer = runner.inputWriter(input, context)
-          val checkSource =
-            unchanged(Seq(first.allocator, second.allocator), first.buffers ++ second.buffers)
-          val writerBytes = CometArrowAllocator.getAllocatedMemory
-          var hasInput = true
-          var peakPending = 0
-          var maxCallsPerDrain = 0
-          var countedBytes = 0L
-          while (hasInput) {
-            // Spark fills this direct buffer until its byte threshold, then drains to the socket.
-            // Reset only after capturing every pending byte; small slices may share one drain.
-            transport.reset()
-            val dataOut = new DataOutputStream(transport)
-            val callsBeforeDrain = emittedBatches
-            while (transport.size() < runner.transportBufferSize && hasInput) {
-              val bytesBeforeCall = transport.size()
-              hasInput = writer.writeNextInputToStream(dataOut)
-              if (hasInput) {
-                emittedBatches += 1
-                countedBytes += transport.size() - bytesBeforeCall
+            val input = Iterator(
+              Iterator.empty,
+              guardedSource(first) { emittedBatches shouldBe firstRows },
+              Iterator.empty,
+              guardedSource(second) { emittedBatches shouldBe firstRows + secondRows },
+              Iterator.empty)
+            val writer = runner.inputWriter(input, context)
+            val checkSource =
+              unchanged(Seq(first.allocator, second.allocator), first.buffers ++ second.buffers)
+            val writerBytes = CometArrowAllocator.getAllocatedMemory
+            var hasInput = true
+            var peakPending = 0
+            var maxCallsPerDrain = 0
+            var countedBytes = 0L
+            while (hasInput) {
+              // Spark fills this direct buffer until its byte threshold, then drains to the socket.
+              // Reset only after capturing every pending byte; small slices may share one drain.
+              transport.reset()
+              val dataOut = new DataOutputStream(transport)
+              val callsBeforeDrain = emittedBatches
+              while (transport.size() < runner.transportBufferSize && hasInput) {
+                val bytesBeforeCall = transport.size()
+                hasInput = writer.writeNextInputToStream(dataOut)
+                if (hasInput) {
+                  emittedBatches += 1
+                  countedBytes += transport.size() - bytesBeforeCall
+                }
+                CometArrowAllocator.getAllocatedMemory shouldBe writerBytes
+                checkSource()
               }
-              CometArrowAllocator.getAllocatedMemory shouldBe writerBytes
-              checkSource()
+              peakPending = math.max(peakPending, transport.size())
+              maxCallsPerDrain = math.max(maxCallsPerDrain, emittedBatches - callsBeforeDrain)
+              // One call may cross Spark's soft threshold by one row plus Arrow IPC metadata.
+              transport.size() should be <= (runner.transportBufferSize + valueBytes + 1024)
+              val pending = transport.toByteBuffer
+              val bytes = new Array[Byte](pending.remaining())
+              pending.get(bytes)
+              wireBytes.write(bytes)
             }
-            peakPending = math.max(peakPending, transport.size())
-            maxCallsPerDrain = math.max(maxCallsPerDrain, emittedBatches - callsBeforeDrain)
-            // One call may cross Spark's soft threshold by one row plus Arrow IPC metadata.
-            transport.size() should be <= (runner.transportBufferSize + valueBytes + 1024)
-            val pending = transport.toByteBuffer
-            val bytes = new Array[Byte](pending.remaining())
-            pending.get(bytes)
-            wireBytes.write(bytes)
-          }
-          emittedBatches shouldBe firstRows + secondRows
-          runner.bytesSent shouldBe countedBytes
-          peakPending.toLong should be < (firstRows.toLong * (valueBytes + 128L))
-          if (valueBytes < runner.transportBufferSize) {
-            maxCallsPerDrain should be > 1
-          }
-          readInput(wireBytes.toByteArray) { (result, offset) =>
-            result.getChild("text").getObject(0).toString shouldBe
-              (if (offset < firstRows) firstValue else secondValue)
-          } shouldBe Seq.fill(firstRows + secondRows)(1)
+            emittedBatches shouldBe firstRows + secondRows
+            runner.bytesSent shouldBe countedBytes
+            peakPending.toLong should be < (firstRows.toLong * (valueBytes + 128L))
+            if (valueBytes < runner.transportBufferSize) {
+              maxCallsPerDrain should be > 1
+            }
+            readInput(wireBytes.toByteArray) { (result, offset) =>
+              result.getChild("text").getField.getType shouldBe
+                (if (useLargeVarTypes) ArrowType.LargeUtf8.INSTANCE else ArrowType.Utf8.INSTANCE)
+              result.getChild("text").getObject(0).toString shouldBe
+                (if (offset < firstRows) firstValue else secondValue)
+            } shouldBe Seq.fill(firstRows + secondRows)(1)
         }
       } finally {
         transport.close()
