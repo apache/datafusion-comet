@@ -128,13 +128,8 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      # Preflight gates every other job, so a single failed download of the
-      # Maven distribution here would fail the whole run.
-      - name: Bootstrap Maven
-        uses: ./.github/actions/maven-bootstrap
-
       - name: Apache RAT license check
-        run: ./mvnw -B -N apache-rat:check
+        run: ./dev/release/check-rat.sh HEAD
 
       - name: Setup Node.js
         uses: actions/setup-node@v7
