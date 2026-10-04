@@ -188,7 +188,9 @@ Two Spark settings are not handled natively:
 - Comet disables itself for a session with `spark.sql.parquet.int96TimestampConversion=true`,
   which shifts `INT96` values written by Impala.
 - Comet does not rebase dates and timestamps that were written with the legacy hybrid calendar.
-  See [#5010](https://github.com/apache/datafusion-comet/issues/5010). Spark's rebase of legacy
+  It falls back to Spark for these scans, unless row-group statistics show that no value needs a
+  rebase. Native rebasing is tracked in
+  [#5047](https://github.com/apache/datafusion-comet/pull/5047). Spark's rebase of legacy
   timestamps is itself timezone-dependent.
 
 For Iceberg, iceberg-rust labels `timestamptz` columns `Timestamp(Microsecond, "+00:00")`. The
