@@ -19,8 +19,9 @@
 -- `CASE WHEN keys IS NOT NULL THEN map_from_arrays(keys, values) END` guard, which serializes the
 -- keys a second time. A stateful keys expression advances each copy independently: the guard's
 -- copy sees every row while the constructor's copy sees only the rows the guard selected, so the
--- result would silently drift from Spark (#5781). The serde declines a nondeterministic keys
--- expression and the projection falls back to Spark, which evaluates it once.
+-- result would silently drift from Spark (#5781). The serde declines a nondeterministic nullable
+-- keys expression and the projection falls back to Spark, which evaluates it once. Keys that are
+-- never NULL get no guard, so they are serialized once and stay native.
 
 statement
 CREATE TABLE test_map_from_arrays_nondet(_1 int) USING parquet
@@ -33,10 +34,14 @@ query expect_fallback(nondeterministic operand)
 SELECT _1, map_from_arrays(IF(monotonically_increasing_id() % 2 = 0, array(1), CAST(NULL AS ARRAY<INT>)), array(2)) AS m
 FROM test_map_from_arrays_nondet
 
--- A non-nullable stateful keys expression is declined too, rather than relying on the guard
--- matching every row.
-query expect_fallback(nondeterministic operand)
+-- A non-nullable stateful keys expression gets no guard, so Comet evaluates it once, on every row.
+query expect_native(map_from_arrays)
 SELECT _1, map_from_arrays(array(monotonically_increasing_id()), array(2)) AS m
+FROM test_map_from_arrays_nondet
+
+-- A NULL values array does not change the rows that those keys see.
+query expect_native(map_from_arrays)
+SELECT _1, map_from_arrays(array(monotonically_increasing_id()), IF(_1 % 2 = 0, array(2), CAST(NULL AS ARRAY<INT>))) AS m
 FROM test_map_from_arrays_nondet
 
 -- The values are serialized once, inside the call, and evaluated only on the rows whose keys

@@ -23,12 +23,13 @@ import scala.util.{Random, Try}
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
-import org.apache.spark.sql.catalyst.expressions.ArrayContains
+import org.apache.spark.sql.catalyst.expressions.{ArrayContains, AttributeReference, CreateArray, Literal, MapFromArrays, MonotonicallyIncreasingID}
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.BinaryType
+import org.apache.spark.sql.types.{ArrayType, BinaryType, IntegerType}
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
+import org.apache.comet.serde.QueryPlanSerde
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
 
 class CometMapExpressionSuite extends CometTestBase {
@@ -214,6 +215,19 @@ class CometMapExpressionSuite extends CometTestBase {
         }
       }
     }
+  }
+
+  // The NULL guard serializes the keys a second time, so non-nullable keys skip it.
+  // https://github.com/apache/datafusion-comet/issues/5781
+  test("map_from_arrays guards only nullable keys") {
+    val keys = AttributeReference("k", ArrayType(IntegerType), nullable = true)()
+    val values = CreateArray(Seq(Literal(2)))
+    def serialize(expr: MapFromArrays) = QueryPlanSerde.exprToProto(expr, Seq(keys)).get
+    assert(serialize(MapFromArrays(keys, values)).hasCaseWhen)
+    val nonNullableKeys = CreateArray(Seq(MonotonicallyIncreasingID()))
+    assert(!nonNullableKeys.nullable)
+    val proto = serialize(MapFromArrays(nonNullableKeys, values))
+    assert(proto.hasScalarFunc && proto.getScalarFunc.getFunc == "map_from_arrays", proto)
   }
 
   // Spark builds both `map_from_arrays` and `map_from_entries` through `ArrayBasedMapBuilder`,

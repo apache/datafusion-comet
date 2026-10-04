@@ -200,8 +200,8 @@ private object MapBuilderSupport {
 object CometMapFromArrays extends CometExpressionSerde[MapFromArrays] {
 
   private val nondeterministicKeysReason: String =
-    "a nondeterministic operand as the keys array: the native NULL guard serializes the keys " +
-      "twice, and the two copies of a stateful expression drift apart"
+    "a nondeterministic operand as a nullable keys array: the native NULL guard serializes the " +
+      "keys twice, and the two copies of a stateful expression drift apart"
 
   override def getIncompatibleReasons(): Seq[String] =
     Seq(
@@ -215,7 +215,7 @@ object CometMapFromArrays extends CometExpressionSerde[MapFromArrays] {
     Seq(MapBuilderSupport.floatingPointKeyNote)
 
   override def getSupportLevel(expr: MapFromArrays): SupportLevel =
-    if (!expr.left.deterministic) {
+    if (expr.left.nullable && !expr.left.deterministic) {
       Unsupported(Some(nondeterministicKeysReason))
     } else {
       MapBuilderSupport.keySupport(expr.dataType.keyType)
@@ -226,7 +226,7 @@ object CometMapFromArrays extends CometExpressionSerde[MapFromArrays] {
    * already returns a NULL map for a NULL input array; the guard is about evaluation order, since
    * Spark never evaluates `values` for a row whose `keys` is NULL (see the map_funcs expression
    * audit). It serializes `keys` a second time, which is why `getSupportLevel` declines a
-   * nondeterministic `keys`: https://github.com/apache/datafusion-comet/issues/5781.
+   * nondeterministic nullable `keys`: https://github.com/apache/datafusion-comet/issues/5781.
    */
   override def convert(
       expr: MapFromArrays,
@@ -234,19 +234,27 @@ object CometMapFromArrays extends CometExpressionSerde[MapFromArrays] {
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val keysExpr = exprToProtoInternal(expr.left, inputs, binding)
     val valuesExpr = exprToProtoInternal(expr.right, inputs, binding)
-    for {
-      keysNotNullExprProto <- exprToProtoInternal(IsNotNull(expr.left), inputs, binding)
-      mapFromArraysExprProto <- scalarFunctionExprToProto("map_from_arrays", keysExpr, valuesExpr)
-    } yield {
-      val keysGuardProto = ExprOuterClass.CaseWhen
-        .newBuilder()
-        .addWhen(keysNotNullExprProto)
-        .addThen(mapFromArraysExprProto)
-        .build()
-      ExprOuterClass.Expr
-        .newBuilder()
-        .setCaseWhen(keysGuardProto)
-        .build()
+    val mapFromArraysExprProto =
+      scalarFunctionExprToProto("map_from_arrays", keysExpr, valuesExpr)
+    // Non-nullable keys pass the guard on every row, so emit the call alone and serialize the
+    // keys once.
+    if (!expr.left.nullable) {
+      mapFromArraysExprProto
+    } else {
+      for {
+        keysNotNullExprProto <- exprToProtoInternal(IsNotNull(expr.left), inputs, binding)
+        mapFromArraysExpr <- mapFromArraysExprProto
+      } yield {
+        val keysGuardProto = ExprOuterClass.CaseWhen
+          .newBuilder()
+          .addWhen(keysNotNullExprProto)
+          .addThen(mapFromArraysExpr)
+          .build()
+        ExprOuterClass.Expr
+          .newBuilder()
+          .setCaseWhen(keysGuardProto)
+          .build()
+      }
     }
   }
 }
