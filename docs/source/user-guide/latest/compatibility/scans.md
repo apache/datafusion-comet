@@ -44,12 +44,17 @@ The following features are not supported and cause Comet to fall back to Spark:
 - No support for `input_file_name()`, `input_file_block_start()`, or `input_file_block_length()` SQL functions.
   Comet's Parquet scan does not use Spark's `FileScanRDD`, so these functions cannot populate their values.
 - No support for `ignoreMissingFiles` or `ignoreCorruptFiles` being set to `true`
-- Files that require datetime rebasing. Comet falls back to Spark when Parquet metadata or
+- Files that require datetime rebasing. When Parquet metadata or
   `spark.sql.parquet.datetimeRebaseModeInRead` /
-  `spark.sql.parquet.int96RebaseModeInRead` requires legacy-calendar handling. This includes
-  files written by any Spark version with a corresponding legacy rebase mode, not only files
-  written before Spark 3.0. Detecting this requires reading each input file's footer on the
-  driver during planning. The results are cached for up to
+  `spark.sql.parquet.int96RebaseModeInRead` requires legacy-calendar handling, Spark rebases
+  dates before 1582-10-15 and timestamps before 1900-01-01T00:00:00Z, or raises an error on them
+  under `EXCEPTION`. This includes files written by any Spark version with a corresponding legacy
+  rebase mode, not only files written before Spark 3.0. Comet keeps such a scan native when the
+  row-group statistics show that no requested top-level `DATE` or `TIMESTAMP` column has a value
+  before these cutoffs. Otherwise Comet falls back to Spark. `INT96` timestamps, nested columns
+  and columns without statistics always fall back. The check reads the footer of each input file
+  on the driver during planning, and a file that needs statistics takes a second footer read.
+  The results are cached for up to
   `spark.comet.scan.parquet.checkDatetimeRebase.maxCachedFiles` files (32768 by default), so
   raise it for scans over more files than that. Users whose data is known to be free of
   legacy-calendar values can skip the check by setting
@@ -58,8 +63,8 @@ The following features are not supported and cause Comet to fall back to Spark:
   Files written by engines other than Spark, such as Trino, Hive, Flink, pyarrow or DuckDB, carry
   no `org.apache.spark.version`, so the read modes decide. On Spark 3.4 and 3.5 both default to
   `EXCEPTION`, under which Spark raises on ancient values that Comet would return unrebased, so
-  Comet falls back whenever such a scan reads a date or timestamp. When those files use the
-  proleptic Gregorian calendar, as current writers do, set both
+  Comet falls back for such a scan unless the statistics rule out ancient values. When those
+  files use the proleptic Gregorian calendar, as current writers do, set both
   `spark.sql.parquet.datetimeRebaseModeInRead` and `spark.sql.parquet.int96RebaseModeInRead` to
   `CORRECTED` (the Spark 4.0 default) to keep these scans native, rather than disabling the check.
 - `spark.sql.parquet.enableVectorizedReader=false`. Disabling the vectorized reader opts into

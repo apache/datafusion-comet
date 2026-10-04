@@ -40,7 +40,7 @@ import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefa
 import org.apache.spark.sql.comet.{CometBatchScanExec, CometScanExec, CometScanUtils}
 import org.apache.spark.sql.execution.{FileSourceScanExec, InSubqueryExec, SparkPlan, SubqueryAdaptiveBroadcastExec}
 import org.apache.spark.sql.execution.datasources.HadoopFsRelation
-import org.apache.spark.sql.execution.datasources.parquet.ParquetOptions
+import org.apache.spark.sql.execution.datasources.parquet.{ParquetOptions, ParquetUtils}
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.datasources.v2.csv.CSVScan
 import org.apache.spark.sql.internal.SQLConf
@@ -52,7 +52,6 @@ import org.apache.comet.CometSparkSessionExtensions.{isCometLoaded, isSpark35Plu
 import org.apache.comet.iceberg.{CometIcebergNativeScanMetadata, IcebergReflection}
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.parquet.CometParquetUtils.{encryptionEnabled, isEncryptionConfigSupported, readFieldId}
-import org.apache.comet.serde.SupportLevel
 import org.apache.comet.serde.operator.{CometIcebergNativeScan, CometNativeScan}
 import org.apache.comet.shims.{CometTypeShim, ShimCometStreaming, ShimFileFormat, ShimSubqueryBroadcast}
 
@@ -380,31 +379,24 @@ case class CometScanRule(session: SparkSession)
       return None
     }
     val cometScan = CometScanExec(scanExec, session)
-    val hasDate = SupportLevel.containsType(scanExec.requiredSchema, classOf[DateType])
-    // TIMESTAMP_NTZ values are never rebased by Spark, on write or on read (Spark's
-    // ParquetVectorUpdaterFactory: "TIMESTAMP_NTZ is a new data type and has no legacy files
-    // that need to do rebase"). The rebase question arises for a requested NTZ column only
-    // when the underlying Parquet column is a TIMESTAMP (LTZ or INT96) that may carry
-    // legacy-calendar values, and Comet permits that read only when
-    // COMET_ALLOW_TIMESTAMP_LTZ_AS_NTZ is true (Spark 4.x, SPARK-47447).
-    val hasTimestamp =
-      SupportLevel.containsType(scanExec.requiredSchema, classOf[TimestampType]) ||
-        (COMET_ALLOW_TIMESTAMP_LTZ_AS_NTZ &&
-          SupportLevel.containsType(scanExec.requiredSchema, classOf[TimestampNTZType]))
-    if ((hasDate || hasTimestamp) && COMET_SCAN_PARQUET_CHECK_DATETIME_REBASE.get()) {
+    if (COMET_SCAN_PARQUET_CHECK_DATETIME_REBASE.get() &&
+      CometScanUtils.readsRebasableDatetimes(scanExec.requiredSchema)) {
       val options = new ParquetOptions(r.options, conf)
       val files = cometScan.selectedPartitions.iterator
         .flatMap(_.files.iterator.map(f =>
           CometScanUtils.ParquetFileInfo(f.getPath, f.getLen, f.getModificationTime)))
         .toSeq
+      // The check finds statistics by column name, so a read by field ID cannot use them.
+      val readsByFieldId = conf.getConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED) &&
+        ParquetUtils.hasFieldIds(scanExec.requiredSchema)
       try {
         val reason = CometScanUtils.datetimeRebaseFallbackReason(
           files,
           hadoopConf,
           options.datetimeRebaseModeInRead,
           options.int96RebaseModeInRead,
-          hasDate,
-          hasTimestamp)
+          scanExec.requiredSchema,
+          useStatistics = !readsByFieldId)
         if (reason.isDefined) {
           withFallbackReason(scanExec, reason.get)
           return None
