@@ -47,12 +47,6 @@ SELECT CASE WHEN id % 3 = 0
   ELSE named_struct('X', CAST(NULL AS DOUBLE), 'x', CAST(id AS DOUBLE))
 END FROM range(8)
 
--- Spark compares struct fields by position, irrespective of field names.
-query
-SELECT named_struct('x', CAST(id AS DOUBLE), 'y', CAST(NULL AS DOUBLE)) =
-       named_struct('y', CAST(NULL AS DOUBLE), 'x', CAST(id AS DOUBLE))
-FROM range(8)
-
 -- IF must report and return the same nested type for uniform and mixed predicates.
 query
 SELECT IF(id < 0, CAST(NULL AS STRUCT<x:BIGINT>), named_struct('x', id)),

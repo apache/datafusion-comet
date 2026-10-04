@@ -4582,7 +4582,10 @@ fn create_case_expr(
         .into_iter()
         .zip(&then_types)
         .map(|((when, then), from)| {
-            (when, PhysicalPlanner::cast_to_positional_nested_type(then, from, &target))
+            (
+                when,
+                PhysicalPlanner::cast_to_positional_nested_type(then, from, &target),
+            )
         })
         .collect();
     let else_expr = else_expr.map(|expr| {
