@@ -63,9 +63,6 @@ SELECT filter(arr, x -> x + threshold > 10) FROM test_array_filter
 query
 SELECT filter(arr, x -> abs(x) > 2) FROM test_array_filter
 
-query
-SELECT filter(arr, x -> coalesce(x, 0) > 0) FROM test_array_filter
-
 statement
 CREATE TABLE test_array_filter_struct(arr array<struct<id:int,name:string>>) USING parquet
 

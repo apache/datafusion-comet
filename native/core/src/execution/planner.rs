@@ -85,10 +85,11 @@ use datafusion_comet_operators::{
     WindowFnKind,
 };
 use datafusion_comet_spark_expr::{
-    create_comet_hof_func, create_comet_physical_fun, create_comet_physical_fun_with_eval_mode, BinaryOutputStyle,
-    BloomFilterAgg, BloomFilterMightContain, CheckedBinaryExpr, CometCollectList, CometCollectSet,
-    CsvWriteOptions, EvalMode, ListPositionsExpr, SparkArraysZipFunc, SparkBloomFilterVersion,
-    SparkListAgg, SparkPercentile, Subquery, SumInteger, ToCsv,
+    create_comet_hof_func, create_comet_physical_fun, create_comet_physical_fun_with_eval_mode,
+    BinaryOutputStyle, BloomFilterAgg, BloomFilterMightContain, CheckedBinaryExpr,
+    CometCollectList, CometCollectSet, CsvWriteOptions, EvalMode, ListPositionsExpr,
+    SparkArraysZipFunc, SparkBloomFilterVersion, SparkListAgg, SparkPercentile, Subquery,
+    SumInteger, ToCsv,
 };
 use datafusion_datasource::TableSchema;
 use iceberg::expr::Bind;
@@ -3528,7 +3529,7 @@ impl PhysicalPlanner {
             })
     }
 
-fn create_high_order_function_expr(
+    fn create_high_order_function_expr(
         &self,
         expr: &HigherOrderFunc,
         input_schema: SchemaRef,

@@ -87,3 +87,48 @@ INSERT INTO test_if_lambda VALUES (array(1, 2, 3));
 
 query
 SELECT filter(a, x -> if(x = 2, false, true)) FROM test_if_lambda;
+
+-- In DataFusion native execution, scalar CASE WHEN inside a lambda returned []
+-- instead of [1]. This must safely route to JVM codegen dispatch.
+statement
+CREATE TABLE test_scalar_case(a ARRAY<INT>) USING parquet;
+
+statement
+INSERT INTO test_scalar_case VALUES (array(1, 2, 3));
+
+query
+SELECT filter(a, x -> (CASE WHEN x = 1 THEN 10 ELSE 20 END) = 10) FROM test_scalar_case;
+
+-- In DataFusion native execution, scalar COALESCE inside a lambda returned [4]
+-- instead of [2, 4]. This must safely route to JVM codegen dispatch.
+statement
+CREATE TABLE test_scalar_coalesce(a ARRAY<INT>) USING parquet;
+
+statement
+INSERT INTO test_scalar_coalesce VALUES (array(2, 3, 4));
+
+query
+SELECT filter(a, x -> coalesce(x % 2, 1) = 0) FROM test_scalar_coalesce;
+
+-- In DataFusion native execution, null-safe equality returned [] instead of [0].
+-- This must safely route to JVM codegen dispatch.
+statement
+CREATE TABLE test_null_safe_equal(a ARRAY<INT>) USING parquet;
+
+statement
+INSERT INTO test_null_safe_equal VALUES (array(0, 1, cast(null as int)));
+
+query
+SELECT filter(a, x -> x <=> 0) FROM test_null_safe_equal;
+
+-- The inner lambda captures the outer lambda's array variable 'x'.
+-- To avoid quadratic memory replication in DataFusion's `take_arrays`,
+-- this must degrade to JVM codegen dispatch.
+statement
+CREATE TABLE test_nested_complex_capture(arr ARRAY<ARRAY<INT>>) USING parquet;
+
+statement
+INSERT INTO test_nested_complex_capture VALUES (array(array(1, 2), array(3)));
+
+query
+SELECT filter(arr, x -> size(filter(x, y -> size(x) > 1)) > 0) FROM test_nested_complex_capture;

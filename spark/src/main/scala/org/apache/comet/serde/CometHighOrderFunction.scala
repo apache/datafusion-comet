@@ -22,11 +22,11 @@ package org.apache.comet.serde
 import scala.jdk.CollectionConverters._
 import scala.util.control.NonFatal
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, CaseWhen, Coalesce, Expression, HigherOrderFunction, If, LambdaFunction => SparkLambdaFunction, NamedLambdaVariable => SparkNamedLambdaVariable}
-import org.apache.spark.sql.types.{ArrayType, BooleanType, MapType, StructType}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, CaseWhen, Coalesce, EqualNullSafe, Expression, HigherOrderFunction, If, LambdaFunction => SparkLambdaFunction, NamedLambdaVariable => SparkNamedLambdaVariable}
+import org.apache.spark.sql.types.{ArrayType, DataType, MapType, StructType}
 
 import org.apache.comet.CometConf
-import org.apache.comet.serde.CometHighOrderFunction.{capturesComplexOuterAttribute, containsJvmDispatch, hasUnsupportedConditionals, namedLambdaVariable2Proto}
+import org.apache.comet.serde.CometHighOrderFunction.{capturesComplexOuterVariable, containsJvmDispatch, hasUnsupportedNativeExpressions, namedLambdaVariable2Proto}
 import org.apache.comet.serde.ExprOuterClass.{HigherOrderFunc, LambdaFunction, NamedLambdaVariable}
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, serializeDataType}
 
@@ -96,7 +96,8 @@ case class CometHighOrderFunction[T <: HigherOrderFunction](name: String)
     val functionsProto = expr.functions
       .map {
         case slf: SparkLambdaFunction =>
-          if (hasUnsupportedConditionals(slf.function) || capturesComplexOuterAttribute(slf)) {
+          if (hasUnsupportedNativeExpressions(slf.function) || capturesComplexOuterVariable(
+              slf)) {
             return None
           }
           exprToProtoInternal(slf.function, inputs, binding)
@@ -157,38 +158,46 @@ object CometHighOrderFunction {
         }
     }
 
+  private def isComplexType(dt: DataType): Boolean = dt match {
+    case _: ArrayType | _: MapType | _: StructType => true
+    case _ => false
+  }
+
   /**
-   * Checks whether the lambda captures any outer attributes of complex types (Array, Map,
-   * Struct).
+   * Checks whether the lambda body captures any outer attributes or outer lambda variables of
+   * complex types (Array, Map, Struct).
    *
-   * DataFusion's `evaluate_single_list_lambda` replicates captured columns for each list element
-   * via `take_arrays`, causing quadratic memory amplification (e.g. copying an entire outer array
-   * for every element of the filtered array). Complex captures degrade to JVM codegen dispatch.
+   * Replicating captured complex columns via DataFusion's `take_arrays` causes quadratic memory
+   * amplification. Both outer table attributes (AttributeReference) and enclosing lambda
+   * variables (SparkNamedLambdaVariable) must degrade to JVM codegen dispatch.
    */
-  def capturesComplexOuterAttribute(lambda: SparkLambdaFunction): Boolean = {
-    val lambdaParamIds = lambda.arguments.map(_.exprId).toSet
+  private def capturesComplexOuterVariable(lambda: SparkLambdaFunction): Boolean = {
+    val definedParamIds = lambda
+      .collect { case l: SparkLambdaFunction =>
+        l.arguments.map(_.exprId)
+      }
+      .flatten
+      .toSet
 
     lambda.function.exists {
-      case attr: AttributeReference if !lambdaParamIds.contains(attr.exprId) =>
-        attr.dataType match {
-          case _: ArrayType | _: MapType | _: StructType => true
-          case _ => false
-        }
+      case attr: AttributeReference =>
+        isComplexType(attr.dataType)
+      case v: SparkNamedLambdaVariable if !definedParamIds.contains(v.exprId) =>
+        isComplexType(v.dataType)
       case _ => false
     }
   }
 
   /**
-   * Checks whether the lambda body contains conditional expressions (CASE WHEN, IF, COALESCE)
-   * used as boolean predicates, which currently produce incorrect results in native DataFusion.
-   *
-   * Scalar conditionals (e.g. `coalesce(x, 0) > 0`) remain fully native.
+   * Checks whether the lambda body contains expressions that produce incorrect results in native
+   * DataFusion execution and must be routed to JVM codegen dispatch:
+   *   - Conditional expressions (CaseWhen, If, Coalesce), regardless of return type.
+   *   - Null-safe equality comparisons (EqualNullSafe).
    */
-  def hasUnsupportedConditionals(expr: Expression): Boolean = {
+  private def hasUnsupportedNativeExpressions(expr: Expression): Boolean = {
     expr.exists {
-      case c: CaseWhen if c.dataType == BooleanType => true
-      case i: If if i.dataType == BooleanType => true
-      case c: Coalesce if c.dataType == BooleanType => true
+      case _: CaseWhen | _: If | _: Coalesce => true
+      case _: EqualNullSafe => true
       case _ => false
     }
   }
