@@ -985,12 +985,13 @@ fn translate_hadoop_configs(
         }
     }
 
-    // The fixed token wins over the WASB container key. A blank token is left out so it
-    // never reaches the builder; validation reports it as an error before the store is
-    // built.
+    // The fixed token wins over the WASB container key. The selected token is trimmed, as
+    // Hadoop's `getTrimmedPasswordString` reads the fixed token. A blank token is left out so
+    // it never reaches the builder; validation reports it as an error before the store is built.
     if let Some((_, sas)) = active_sas_token(configs, account, container) {
-        if !sas.trim().is_empty() {
-            out.push((AzureConfigKey::SasKey, sas));
+        let sas = sas.trim();
+        if !sas.is_empty() {
+            out.push((AzureConfigKey::SasKey, sas.to_string()));
         }
     }
 
@@ -1157,7 +1158,7 @@ fn tenant_from_oauth_endpoint(endpoint: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use object_store::ClientConfigKey;
+    use object_store::{azure::AzureCredential, ClientConfigKey};
 
     fn url(s: &str) -> Url {
         Url::parse(s).unwrap()
@@ -2209,6 +2210,45 @@ mod tests {
             err.contains("needs a SAS token from `fs.azure.sas.fixed.token`"),
             "unexpected error: {err}"
         );
+    }
+
+    /// The SAS query pairs `object_store` parses from the token the builder was given.
+    async fn sas_pairs(configs: &HashMap<String, String>) -> Vec<(String, String)> {
+        let store = builder_for(configs, &[]).build().expect("store builds");
+        let credential = store
+            .credentials()
+            .get_credential()
+            .await
+            .expect("static credential");
+        match credential.as_ref() {
+            AzureCredential::SASToken(pairs) => pairs.clone(),
+            _ => panic!("not a SAS credential"),
+        }
+    }
+
+    #[tokio::test]
+    async fn padded_sas_token_reaches_object_store_trimmed() {
+        // Hadoop trims the token and drops a leading `?`; `object_store` strips `?` only
+        // at the very start, so a padded value would yield a `?sig` key.
+        let padded = "  ?sig=synthetic&sv=2020-08-04&sp=r  ";
+        let trimmed = "?sig=synthetic&sv=2020-08-04&sp=r";
+        let wasb = "fs.azure.sas.data.myacct.dfs.core.windows.net";
+        for (key, extra) in [
+            ("fs.azure.sas.fixed.token", Some((wasb, trimmed))),
+            (
+                "fs.azure.sas.fixed.token.data.myacct.dfs.core.windows.net",
+                Some((wasb, trimmed)),
+            ),
+            (wasb, None),
+        ] {
+            let mut pairs = vec![("fs.azure.account.auth.type", "SAS"), (key, padded)];
+            pairs.extend(extra);
+            let configs = hadoop(&pairs);
+            assert_eq!(built_sas_token(&configs).as_deref(), Some(trimmed), "{key}");
+            let parsed = sas_pairs(&configs).await;
+            let names: Vec<&str> = parsed.iter().map(|(name, _)| name.as_str()).collect();
+            assert_eq!(names, vec!["sig", "sv", "sp"], "{key}");
+        }
     }
 
     #[test]
