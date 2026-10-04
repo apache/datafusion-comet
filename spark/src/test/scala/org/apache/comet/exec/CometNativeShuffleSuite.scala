@@ -25,6 +25,7 @@ import java.nio.{ByteBuffer, ByteOrder}
 import scala.collection.mutable
 import scala.collection.mutable.ListBuffer
 import scala.concurrent.duration.DurationInt
+import scala.jdk.CollectionConverters._
 import scala.util.Random
 
 import org.scalactic.source.Position
@@ -37,20 +38,22 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.{SparkEnv, TaskContext}
 import org.apache.spark.sql.{CometTestBase, DataFrame, Dataset, Row}
 import org.apache.spark.sql.catalyst.expressions.AttributeReference
+import org.apache.spark.sql.catalyst.expressions.aggregate.Final
 import org.apache.spark.sql.catalyst.plans.logical.LocalRelation
 import org.apache.spark.sql.catalyst.plans.physical.HashPartitioning
-import org.apache.spark.sql.comet.{CometExec, CometLocalTableScanExec, CometMetricNode, CometScanWrapper, CometSparkToColumnarExec, CometTakeOrderedAndProjectExec}
+import org.apache.spark.sql.comet.{CometExec, CometHashAggregateExec, CometLocalTableScanExec, CometMetricNode, CometNativeExec, CometScanWrapper, CometSparkToColumnarExec, CometTakeOrderedAndProjectExec}
 import org.apache.spark.sql.comet.execution.arrow.CometArrowStream
 import org.apache.spark.sql.comet.execution.shuffle.{CometNativeShuffle, CometShuffleExchangeExec}
-import org.apache.spark.sql.execution.LocalTableScanExec
-import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
-import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
-import org.apache.spark.sql.functions.{col, count, sum}
+import org.apache.spark.sql.execution.{LocalTableScanExec, SparkPlan}
+import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AdaptiveSparkPlanHelper, AQEShuffleReadExec, ShuffleQueryStageExec}
+import org.apache.spark.sql.execution.exchange.{ReusedExchangeExec, ShuffleExchangeExec}
+import org.apache.spark.sql.functions.{broadcast, col, count, countDistinct, sum}
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, DataType, LongType, MapType, StructField, StructType}
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 
 import org.apache.comet.{CometConf, CometExecIterator, CometExplainInfo, CometShuffleBlockIterator, CometShuffleSizeLimitException, Native}
-import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
+import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
 import org.apache.comet.serde.{OperatorOuterClass, PartitioningOuterClass}
 import org.apache.comet.shuffle.ShufflePartitionPusher
 
@@ -1411,6 +1414,195 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
           .agg(count("l_id").as("cnt"))
           .orderBy("key")
         checkSparkAnswer(df)
+      }
+    }
+  }
+
+  test("findShuffleScanIndices numbers the Scan and ShuffleScan leaves of a native plan") {
+    import OperatorOuterClass.{Filter, NativeScan, Operator, Projection, Scan, ShuffleScan}
+    val scan = Operator.newBuilder().setScan(Scan.getDefaultInstance).build()
+    val shuffleScan = Operator.newBuilder().setShuffleScan(ShuffleScan.getDefaultInstance).build()
+    val nativeScan = Operator.newBuilder().setNativeScan(NativeScan.getDefaultInstance).build()
+    val filterLeaf = Operator.newBuilder().setFilter(Filter.getDefaultInstance).build()
+    val emptyLeaf = Operator.getDefaultInstance
+    def node(children: Operator*): Operator =
+      Operator
+        .newBuilder()
+        .setProjection(Projection.getDefaultInstance)
+        .addAllChildren(children.asJava)
+        .build()
+
+    // Other leaves read no input, so they take no index.
+    val cases = Seq(
+      scan -> Set.empty[Int],
+      shuffleScan -> Set(0),
+      nativeScan -> Set.empty[Int],
+      node(scan, shuffleScan) -> Set(1),
+      node(shuffleScan, nativeScan, scan, shuffleScan) -> Set(0, 2),
+      node(nativeScan, filterLeaf, emptyLeaf) -> Set.empty[Int],
+      node(node(scan, nativeScan), node(filterLeaf, node(shuffleScan)), shuffleScan) -> Set(1, 2),
+      node(node(node(shuffleScan)), node(emptyLeaf, node(scan), shuffleScan), scan) -> Set(0, 2))
+    cases.foreach { case (plan, expected) =>
+      assert(CometExec.findShuffleScanIndices(plan) == expected, plan)
+    }
+  }
+
+  /**
+   * For each native block in `plan`, query stages included, that reads a shuffle: each input of
+   * the block, in the order execution collects them, paired with the kind of the `Scan` or
+   * `ShuffleScan` leaf that reads it.
+   */
+  private def shuffleReadingBlocks(plan: SparkPlan): Seq[Seq[(String, String)]] = {
+    def inputs(root: CometNativeExec): Seq[SparkPlan] = {
+      val plans = mutable.ArrayBuffer.empty[SparkPlan]
+      root.foreachUntilCometInput(root)(plans += _)
+      plans.filterNot(_.isInstanceOf[CometNativeExec]).toSeq
+    }
+    def readsShuffle(input: SparkPlan): Boolean = input match {
+      case _: ShuffleQueryStageExec | _: AQEShuffleReadExec | _: CometShuffleExchangeExec => true
+      case _ => false
+    }
+    // A node AQE reuses can keep the serialized plan of a block it used to be the root of.
+    val natives = collect(plan) { case native: CometNativeExec => native }
+    val nested = natives.flatMap(_.children.collect { case child: CometNativeExec => child })
+    natives
+      .filter(root => root.serializedPlanOpt.isDefined && !nested.exists(_ eq root))
+      .filter(inputs(_).exists(readsShuffle))
+      .map { root =>
+        val nativePlan = OperatorOuterClass.Operator.parseFrom(root.serializedPlanOpt.plan.get)
+        val blockInputs = inputs(root).map(_.getClass.getSimpleName)
+        val leafKinds = CometExec
+          .nativeLeaves(nativePlan)
+          .filter(leaf => leaf.hasScan || leaf.hasShuffleScan)
+          .map(_.getOpStructCase.name)
+        assert(blockInputs.length == leafKinds.length, s"$blockInputs vs $leafKinds")
+        blockInputs.zip(leafKinds)
+      }
+  }
+
+  private val shuffleStageRead = Seq("ShuffleQueryStageExec" -> "SHUFFLE_SCAN")
+
+  private val aqeWithoutCoalescing = Seq(
+    SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+    SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "false")
+
+  /** A two-phase aggregate over many map partitions. */
+  private def groupedSum: DataFrame =
+    spark
+      .range(0, 10000, 1, 50)
+      .groupBy((col("id") % 997).as("k"))
+      .agg(sum("id"), count("id"))
+
+  test("final aggregate reads its shuffle through ShuffleScan only under AQE") {
+    // The coalesced case takes the stage's ShuffleScan before AQE puts the coalesced read
+    // between them, and the ShuffleScan then reads the partitions that the read specifies.
+    // (confs, whether the plan is adaptive, the block that reads the shuffle)
+    val cases = Seq(
+      (aqeWithoutCoalescing, true, shuffleStageRead),
+      (
+        Seq(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+          SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "true"),
+        true,
+        Seq("AQEShuffleReadExec" -> "SHUFFLE_SCAN")),
+      (
+        Seq(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false"),
+        false,
+        Seq("CometShuffleExchangeExec" -> "SCAN")))
+    cases.foreach { case (confs, isAdaptive, expected) =>
+      withClue(s"$confs: ") {
+        withSQLConf(confs: _*) {
+          val (_, plan) = checkSparkAnswerAndOperator(groupedSum)
+          assert(plan.isInstanceOf[AdaptiveSparkPlanExec] == isAdaptive, plan)
+          if (isAdaptive) checkCometOperatorsInFinalPlan(plan)
+          assert(shuffleReadingBlocks(plan) == Seq(expected), plan)
+        }
+      }
+    }
+  }
+
+  test("AQE native aggregate chain over a shuffle stage reads it through ShuffleScan") {
+    withSQLConf(aqeWithoutCoalescing: _*) {
+      // A distinct aggregate plans two shuffles, with two native aggregates between them.
+      val df = spark
+        .range(0, 10000, 1, 20)
+        .groupBy((col("id") % 97).as("k"))
+        .agg(countDistinct(col("id") % 13), sum("id"))
+      val (_, plan) = checkSparkAnswerAndOperator(df)
+      checkCometOperatorsInFinalPlan(plan)
+      assert(shuffleReadingBlocks(plan) == Seq(shuffleStageRead, shuffleStageRead), plan)
+    }
+  }
+
+  test("AQE join of final aggregates reads only its shuffle stages through ShuffleScan") {
+    val agg = spark
+      .range(0, 10000, 1, 20)
+      .groupBy((col("id") % 97).as("k"))
+      .agg(sum("id").as("s"))
+    withSQLConf(
+      aqeWithoutCoalescing ++ Seq(
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+        SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1"): _*) {
+      // The second side reuses the first side's shuffle.
+      val df = agg.join(agg.select(col("k"), (col("s") + 1).as("s2")), "k")
+      val (_, plan) = checkSparkAnswerAndOperator(df)
+      checkCometOperatorsInFinalPlan(plan, classOf[ReusedExchangeExec])
+      assert(collect(plan) { case r: ReusedExchangeExec => r }.nonEmpty, plan)
+      assert(shuffleReadingBlocks(plan) == Seq(shuffleStageRead ++ shuffleStageRead), plan)
+    }
+    withSQLConf(aqeWithoutCoalescing: _*) {
+      // The broadcast side stays a plain Scan.
+      val dim = spark.range(0, 50).select(col("id").as("k"), (col("id") * 2).as("w"))
+      val df = agg.join(broadcast(dim), "k")
+      val (_, plan) = checkSparkAnswerAndOperator(df)
+      checkCometOperatorsInFinalPlan(plan)
+      val joinBlock = shuffleStageRead :+ ("BroadcastQueryStageExec" -> "SCAN")
+      assert(shuffleReadingBlocks(plan) == Seq(joinBlock), plan)
+    }
+  }
+
+  test("AQE keeps exchange reuse above equivalent aggregates that read through ShuffleScan") {
+    withSQLConf(aqeWithoutCoalescing: _*) {
+      // Each side's aggregate reads its own shuffle stage, so their ShuffleScan sources differ.
+      val agg = spark
+        .range(0, 10000, 1, 20)
+        .groupBy((col("id") % 97).as("k"))
+        .agg(sum("id").as("s"))
+        .repartition(7, col("s"))
+      val (_, plan) = checkSparkAnswerAndOperator(agg.union(agg))
+      checkCometOperatorsInFinalPlan(plan, classOf[ReusedExchangeExec])
+      assertExchangeReuseOver(plan, "Expected the exchange above the aggregate to be reused") {
+        case a: CometHashAggregateExec if a.modes.contains(Final) => a
+      }
+      val blocks = shuffleReadingBlocks(plan)
+      val readsShuffleScan = blocks.forall(_.forall { case (_, leaf) => leaf == "SHUFFLE_SCAN" })
+      assert(blocks.nonEmpty && readsShuffleScan, plan)
+    }
+  }
+
+  test("AQE DPP query with a broadcast side reads its shuffle stage through ShuffleScan") {
+    assume(isSpark35Plus, "Native AQE DPP requires Spark 3.5+")
+    withTempDir { dir =>
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        spark
+          .range(0, 1000, 1, 10)
+          .selectExpr("id", "id % 10 AS p")
+          .write
+          .partitionBy("p")
+          .parquet(s"$dir/fact")
+        spark.range(0, 10).selectExpr("id AS p", "id % 3 AS x").write.parquet(s"$dir/dim")
+      }
+      withTempView("fact", "dim") {
+        spark.read.parquet(s"$dir/fact").createOrReplaceTempView("fact")
+        spark.read.parquet(s"$dir/dim").createOrReplaceTempView("dim")
+        withSQLConf(
+          aqeWithoutCoalescing :+
+            (SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true"): _*) {
+          val df = sql("""SELECT f.p, sum(f.id), count(*) FROM fact f JOIN dim d ON f.p = d.p
+              |WHERE d.x = 1 GROUP BY f.p""".stripMargin)
+          val (_, plan) = checkSparkAnswer(df)
+          assert(shuffleReadingBlocks(plan) == Seq(shuffleStageRead), plan)
+        }
       }
     }
   }
