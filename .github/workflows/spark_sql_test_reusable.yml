@@ -210,9 +210,6 @@ jobs:
           # Restore mtimes so Zinc skips compilation on the test JVM.
           tar -xzpf apache-spark.tar.gz
           rm -f apache-spark.tar.gz
-      - name: Bootstrap Maven
-        uses: ./.github/actions/maven-bootstrap
-
       - name: Setup Spark
         uses: ./.github/actions/setup-spark-builder
         with:

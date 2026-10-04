@@ -504,9 +504,9 @@ POLICY = {
     # On push that is the *only* thing it is for. The queue already tested the
     # exact tree that landed, so re-running the lints and the linux-test
     # matrix there tests nothing, and they are 514 of the 587 runner-minutes a
-    # push run costs. The cache writers now span build_linux_native.yml,
-    # pr_build_linux_checks.yml (independent checks), and pr_build_linux.yml (Maven
-    # and TPC-H/TPC-DS), so push must select all three workflows. The split
+    # push run costs. The Linux cache writers span build_linux_native.yml
+    # and pr_build_linux.yml (Maven and TPC-H/TPC-DS). The independent checks
+    # workflow shares this route but skips every job on push. The split
     # below keeps those writers on push and moves everything else behind
     # `build_linux_full`.
     "build_linux": ["pr", "queue", "push"],

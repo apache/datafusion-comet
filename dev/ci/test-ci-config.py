@@ -123,6 +123,11 @@ class SharedNativeArtifactTest(unittest.TestCase):
                 self.assertTrue(any(f"job `{job_id}` has no" in item for item in failures), failures)
             path.write_text(original, encoding="utf-8")
 
+    def test_macos_caller_keeps_cache_refresh_mode(self):
+        self.replace("ci.yml", "      cache-refresh-only: ${{ needs.changes.outputs.build_macos_full != 'true' }}\n", "")
+        failures = CHECK.cache_refresh_failures(self.workflows)
+        self.assertTrue(any("pr_build_macos must pass" in item for item in failures), failures)
+
     def test_linux_callers_each_require_the_correct_mode_inputs(self):
         """One intact caller must not hide missing or miswired inputs on its sibling."""
         path = self.workflows / "ci.yml"

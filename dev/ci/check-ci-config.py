@@ -1599,20 +1599,6 @@ def permission_blocks(lines):
     return blocks
 
 
-def caller_passes_cache_refresh(ci_lines, workflow_name):
-    """Does the ci.yml job that `uses:` this workflow set `cache-refresh-only:`?"""
-    job_start = None
-    for index, line in enumerate(ci_lines):
-        if JOB_KEY.match(line):
-            job_start = index
-        if job_start is not None and f"uses: ./.github/workflows/{workflow_name}" in line:
-            end = index + 1
-            while end < len(ci_lines) and not JOB_KEY.match(ci_lines[end]):
-                end += 1
-            return any(CACHE_REFRESH_INPUT.match(entry) for entry in ci_lines[job_start:end])
-    return False
-
-
 def linux_scope_failures(workflows, allowed, guard, mode):
     """Require each workflow's retained jobs and guard every other job in that mode."""
     failures = []
@@ -1644,6 +1630,13 @@ def cache_refresh_failures(workflows):
         workflows, CACHE_REFRESH_JOBS, CACHE_REFRESH_GUARD, "cache-refresh-only")
     failures.extend(linux_mode_input_failures(
         workflows, "cache-refresh-only", CACHE_REFRESH_EXPRESSION))
+    ci = (workflows / "ci.yml").read_text(encoding="utf-8")
+    jobs = block_mapping(block_mapping(ci, 0).get("jobs", ("", ""))[1], 2)
+    macos = block_mapping(jobs.get("pr_build_macos", ("", ""))[1], 4)
+    inputs = block_mapping(macos.get("with", ("", ""))[1], 6)
+    if scalar(inputs.get("cache-refresh-only", ("", ""))[0]) != (
+            "${{ needs.changes.outputs.build_macos_full != 'true' }}"):
+        failures.append("ci.yml: pr_build_macos must pass its cache-refresh-only mode")
     return failures
 
 

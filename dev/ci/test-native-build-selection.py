@@ -52,7 +52,7 @@ NIGHTLY = {"spark_4_2", "pr_build_linux", "spark_3_5", "spark_4_0",
            "iceberg_1_8", "iceberg_1_9", "iceberg_1_10"}
 OPT_IN = (
     "run-spark-3.4-tests", "run-spark-3.5-tests", "run-spark-4.0-tests",
-    "run-spark-4.1-tests", "run-spark-4.1-hive-tests", "run-iceberg-tests",
+    "run-spark-4.1-tests", "run-spark-4.1-hive-tests", "run-spark-4.2-tests", "run-iceberg-tests",
     "run-all-spark-profiles",
 )
 
@@ -203,6 +203,7 @@ class NativeBuildSelectionTest(unittest.TestCase):
             ("3.4.3", "spark_3_4", "run-spark-3.4-tests"),
             ("3.5.9", "spark_3_5", "run-spark-3.5-tests"),
             ("4.0.4", "spark_4_0", "run-spark-4.0-tests"),
+            ("4.2.0", "spark_4_2", "run-spark-4.2-tests"),
         ):
             with self.subTest(version=version):
                 files = [f"dev/diffs/{version}.diff"]
@@ -227,6 +228,7 @@ class NativeBuildSelectionTest(unittest.TestCase):
             ("spark_3_5", "run-spark-3.5-tests"),
             ("spark_4_0", "run-spark-4.0-tests"),
             ("spark_4_1", "run-spark-4.1-tests"),
+            ("spark_4_2", "run-spark-4.2-tests"),
             ("spark_4_1", "run-spark-4.1-hive-tests"),
         ):
             with self.subTest(label=label):
@@ -319,9 +321,24 @@ class NativeBuildSelectionTest(unittest.TestCase):
         consumers stay off. The native source path and event are read-only;
         cli_outputs() owns and cleans up its temporary changed-files input.
         """
-        files = ["native/core/src/lib.rs"]
-        self.assert_selection(files, {"pr_build_linux"}, event="push")
-        self.assert_selected(self.cli_outputs(files, {"name": "push"}), {"pr_build_linux"})
+        for path in ["native/core/src/lib.rs", "native/Cargo.toml", "native/Cargo.lock",
+                     "native/proto/src/proto/expr.proto", "native/.cargo/config.toml",
+                     ".github/workflows/build_linux_native.yml"]:
+            with self.subTest(path=path):
+                self.assert_selection([path], {"pr_build_linux"}, event="push")
+                self.assert_selected(self.cli_outputs([path], {"name": "push"}), {"pr_build_linux"})
+
+    def test_added_native_input_routes_select_shared_producer(self):
+        """A new build-linux input is included before deriving the producer union.
+
+        Model the contrib manifest filter extension proposed in #5976. Keeping
+        this in FILTERS instead of a post-compute override preserves the union.
+        """
+        for path in ["contrib/lance/native/Cargo.toml", "contrib/delta/native/Cargo.toml"]:
+            with self.subTest(path=path), mock.patch.dict(
+                    self.filters.FILTERS,
+                    {"build_linux": [*self.filters.FILTERS["build_linux"], path]}):
+                self.assert_selection([path], {"pr_build_linux"}, event="push")
 
     def test_manual_runs_include_legacy_consumers_without_changed_files(self):
         """Assert empty-input dispatch selects all ten callers in both APIs.
