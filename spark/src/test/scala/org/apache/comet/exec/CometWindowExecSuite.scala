@@ -212,10 +212,12 @@ class CometWindowExecSuite extends CometTestBase {
 
   test("window group limit: floating-point values nested in the order key") {
     assume(isSpark35Plus, "WindowGroupLimit was added in Spark 3.5")
-    // The native RANK and DENSE_RANK find ties by byte equality, and nested floats aren't
-    // normalized, so [-0.0] and [0.0] would get different ranks and the cutoff would drop a row
-    // that Spark keeps (#5507). The limit falls back to Spark for them instead. ROW_NUMBER never
-    // compares peers, and Spark normalizes nested floating-point partition keys itself.
+    // The native RANK and DENSE_RANK find ties by byte equality, on order keys that the native
+    // planner has normalized, nested floats included. So [-0.0] and [0.0] are peers, and the
+    // cutoff keeps both rows, as Spark does (#5507). Strict floating-point mode declines a nested
+    // key whose type can hold a null element or field (#6476, #6477), and these columns, read
+    // back from Parquet, can. ROW_NUMBER never compares peers, and Spark normalizes nested
+    // floating-point partition keys itself.
     withTempDir { dir =>
       val path = new Path(dir.toString, "nested_float_order").toString
       Seq((1, -0.0f, -0.0d), (2, 0.0f, 0.0d), (3, 1.0f, 1.0d))
@@ -235,14 +237,20 @@ class CometWindowExecSuite extends CometTestBase {
           // A struct needs a second key, because a lone struct sort key falls back on its own.
           orderBy <- Seq("array(f)", "array(d)", "named_struct('x', d), id > 0")
         } {
-          val query = sql(s"""
+          def rankLimit(): DataFrame = sql(s"""
                |SELECT id FROM (
                |  SELECT id, $rankFunction() OVER (ORDER BY $orderBy) AS rnk
                |  FROM nested_float_order
                |) WHERE rnk <= 1
                |""".stripMargin)
-          checkSparkAnswerAndFallbackReason(query, "compare nested floating-point values exactly")
-          assert(query.collect().map(_.getInt(0)).sorted.toSeq == Seq(1, 2))
+
+          checkSparkAnswerAndOperator(rankLimit(), Seq(classOf[CometWindowGroupLimitExec]))
+          assert(rankLimit().collect().map(_.getInt(0)).sorted.toSeq == Seq(1, 2))
+
+          withSQLConf(CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
+            checkSparkAnswerAndFallbackReason(rankLimit(), "can hold a null element or field")
+            assert(rankLimit().collect().map(_.getInt(0)).sorted.toSeq == Seq(1, 2))
+          }
         }
 
         checkSparkAnswerAndOperator(
