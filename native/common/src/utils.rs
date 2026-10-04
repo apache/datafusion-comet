@@ -52,7 +52,22 @@ pub fn bytes_to_i128(slice: &[u8]) -> i128 {
 /// per-class malformed lengths below (E0/ED overlong & surrogate handling, F0/F4 range checks)
 /// match the observable replacement behavior of the JDK UTF-8 decoder; they were determined from
 /// observed `new String(bytes, UTF_8)` output, not by reviewing the OpenJDK source.
+// Inlined so that callers in other crates, such as the JVM columnar shuffle converting one value at
+// a time, get the ASCII check without a call.
+#[inline]
 pub fn decode_utf8_spark_lossy(bytes: &[u8]) -> Cow<'_, str> {
+    // ASCII is valid UTF-8. `is_ascii` checks a word at a time, and on short strings it is several
+    // times cheaper than `str::from_utf8`, whose cost dominated the JVM columnar shuffle's string
+    // conversion.
+    if bytes.is_ascii() {
+        // SAFETY: every ASCII byte sequence is valid UTF-8.
+        return Cow::Borrowed(unsafe { std::str::from_utf8_unchecked(bytes) });
+    }
+    decode_non_ascii_utf8_spark_lossy(bytes)
+}
+
+/// [`decode_utf8_spark_lossy`] for bytes that are not all ASCII.
+fn decode_non_ascii_utf8_spark_lossy(bytes: &[u8]) -> Cow<'_, str> {
     // Fast path: well-formed UTF-8 borrows with zero copy (the overwhelmingly common case).
     if let Ok(s) = std::str::from_utf8(bytes) {
         return Cow::Borrowed(s);
@@ -196,6 +211,27 @@ mod tests {
             Cow::Borrowed(b) => assert_eq!(b, s),
             Cow::Owned(_) => panic!("valid UTF-8 must borrow, not allocate"),
         }
+    }
+
+    #[test]
+    fn decode_utf8_spark_lossy_ascii_is_borrowed_zero_copy() {
+        // Lengths below, at and above a machine word, so the word-at-a-time check sees partial words.
+        for s in [
+            "",
+            "a",
+            "value-1",
+            "value-12345",
+            "abcdefghijklmnopqrstuvwxyz0123456789",
+        ] {
+            match decode_utf8_spark_lossy(s.as_bytes()) {
+                Cow::Borrowed(b) => assert_eq!(b, s),
+                Cow::Owned(_) => panic!("ASCII must borrow, not allocate"),
+            }
+        }
+        // A single byte past ASCII anywhere still takes the validating paths.
+        let mut bytes = b"abcdefghijklmnop".to_vec();
+        bytes[11] = 0xFF;
+        assert_eq!(decode_utf8_spark_lossy(&bytes), "abcdefghijk\u{FFFD}mnop");
     }
 
     #[test]
