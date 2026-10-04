@@ -125,6 +125,20 @@ trait CometExpressionSerde[T <: Expression] {
 trait CodegenDispatchFallback extends NativeOptInAvailable { self: CometExpressionSerde[_] => }
 
 /**
+ * Opts an expression instance into the planner's existing operator-level evaluation protection.
+ * This is not an exhaustive classification of expressions that can throw, nor a guarantee that
+ * all evaluation contexts are protected. The policy is independent of native or JVM-dispatch
+ * support and must inspect the expression without evaluating it or serializing it.
+ *
+ * Return a stable function name for fallback explanations, or None when the instance is not
+ * enrolled. None does not prove safety. Future enrollment requires separate compatibility and
+ * performance tests, including evaluation mode, input types, and enclosing expressions.
+ */
+trait RequiresSparkEvaluationMask[T <: Expression] { self: CometExpressionSerde[T] =>
+  def evaluationMaskName(expr: T): Option[String]
+}
+
+/**
  * Marker for serdes that have a native implementation the user can opt into. Normally these
  * serdes run a Spark-compatible path by default. A serde can set `hasConditionalNativeDefault`
  * when some compatible instances instead run natively by default. `GenerateDocs` uses this

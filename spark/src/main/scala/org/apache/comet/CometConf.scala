@@ -215,6 +215,17 @@ object CometConf extends ShimCometConf {
     .booleanConf
     .createWithDefault(true)
 
+  val COMET_EXEC_PRESERVE_EVALUATION_MASKS_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.preserveEvaluationMasks.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Preserve Spark's row evaluation when operators such as LIMIT or semi/anti joins " +
+          "can skip inputs to throwing expressions. Currently this applies to unbase64. " +
+          "Set to false to retain native execution when the input is known to be valid. " +
+          "When disabled, Comet may fail on malformed Base64 in rows Spark would skip.")
+      .booleanConf
+      .createWithDefault(true)
+
   val COMET_EXEC_PROJECT_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("project", defaultValue = true)
   val COMET_EXEC_FILTER_ENABLED: ConfigEntry[Boolean] =

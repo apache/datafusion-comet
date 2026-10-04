@@ -625,7 +625,7 @@ to Spark ([#2837](https://github.com/apache/datafusion-comet/issues/2837)). Enab
 | `try_to_binary` | ✅ | — | Rewrites to `try_eval(to_binary(...))`, which routes through the JVM codegen dispatcher |
 | `try_to_number` | ✅ | Codegen dispatch | Routed through the JVM codegen dispatcher |
 | `ucase` | ✅ | Hybrid |  |
-| `unbase64` | ✅ | Codegen dispatch | Column or literal input runs natively; other child expressions, and the strict form used by `to_binary(str, 'base64')`, route through the JVM codegen dispatcher |
+| `unbase64` | ✅ | Codegen dispatch | Column or literal input runs natively; other child expressions, and the strict form used by `to_binary(str, 'base64')`, route through the JVM codegen dispatcher. Where limits, preordered top-K or unpartitioned window limits, or first-match semi/anti join conditions can skip malformed input, the affected pipeline stays in Spark's row execution. For known-valid input, set `spark.comet.exec.preserveEvaluationMasks.enabled=false` to retain native execution. Disabling this protection can raise errors on malformed values in rows Spark would skip. |
 | `upper` | ✅ | Hybrid |  |
 
 ---
