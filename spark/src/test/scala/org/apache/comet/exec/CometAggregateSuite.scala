@@ -3576,11 +3576,30 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> "false")
   }
 
-  test("SortAggregate runs a distinct collect_list chain in Spark") {
-    // The PartialMerge stages of the distinct rewrite cannot carry the collect_list buffer
-    // natively (issue #4724), so the whole chain falls back.
+  test("SortAggregate runs a distinct collect_list chain natively") {
+    // Each stage of the distinct rewrite runs as a native sort aggregate, including the
+    // collect_list PartialMerge that carries the native list state between the shuffles.
+    val query = "SELECT _1, sort_array(collect_list(_2)), count(DISTINCT _2) FROM tbl GROUP BY _1"
+    Seq("false", "true").foreach { aqe =>
+      withSQLConf(
+        SQLConf.USE_OBJECT_HASH_AGG.key -> "false",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe,
+        CometConf.COMET_SHUFFLE_ENABLED.key -> "true") {
+        withParquetTable((0 until 8).map(i => (i % 2, i)), "tbl") {
+          val (_, cometPlan) = checkSparkAnswerAndOperator(sql(query))
+          assert(collect(cometPlan) { case a: CometSortAggregateExec => a }.nonEmpty, cometPlan)
+          assert(cometPlan.toString.contains("merge_collect_list"), cometPlan)
+        }
+      }
+    }
+  }
+
+  test("SortAggregate keeps a distinct collect_list chain in Spark under a Spark final") {
+    // Every buffer producer between the final and the bottom Partial, the PartialMerge stages of
+    // the distinct rewrite included, must stay in Spark, through the sort below each of them.
     assertSortAggregateStaysInSpark(
-      "SELECT _1, sort_array(collect_list(_2)), count(DISTINCT _2) FROM tbl GROUP BY _1")
+      "SELECT _1, sort_array(collect_list(_2)), count(DISTINCT _2) FROM tbl GROUP BY _1",
+      CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> "false")
   }
 
   test("SortAggregate keeps a decimal AVG with a maximum-precision sum in Spark") {
