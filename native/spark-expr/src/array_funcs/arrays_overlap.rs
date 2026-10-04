@@ -433,21 +433,41 @@ fn nested_row_overlap<'a>(
     comparator: &'a dyn Fn(usize, usize) -> Ordering,
 ) -> impl FnMut(Range<usize>, Range<usize>) -> bool + 'a {
     move |left_range, right_range| {
-        for li in left_range {
-            if left.is_null(li) {
+        // Probe from the shorter side, as the per-row comparator did, so its early exits stay.
+        // The comparator takes the left index first, also when the right side is the outer loop.
+        if left_range.len() <= right_range.len() {
+            any_equal(left, left_range, right, right_range, comparator)
+        } else {
+            any_equal(right, right_range, left, left_range, |ri, li| {
+                comparator(li, ri)
+            })
+        }
+    }
+}
+
+/// True when a non-null `outer` element equals a non-null `inner` element. `compare` takes an
+/// `outer` index, then an `inner` index.
+fn any_equal(
+    outer: &ArrayRef,
+    outer_range: Range<usize>,
+    inner: &ArrayRef,
+    inner_range: Range<usize>,
+    compare: impl Fn(usize, usize) -> Ordering,
+) -> bool {
+    for o in outer_range {
+        if outer.is_null(o) {
+            continue;
+        }
+        for i in inner_range.clone() {
+            if inner.is_null(i) {
                 continue;
             }
-            for ri in right_range.clone() {
-                if right.is_null(ri) {
-                    continue;
-                }
-                if comparator(li, ri) == Ordering::Equal {
-                    return true;
-                }
+            if compare(o, i) == Ordering::Equal {
+                return true;
             }
         }
-        false
     }
+    false
 }
 
 fn normalize_list_element_floats<OffsetSize: OffsetSizeTrait>(
@@ -914,6 +934,28 @@ mod tests {
         let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
         assert!(result.value(0));
         Ok(())
+    }
+
+    #[test]
+    fn test_nested_scan_probes_from_the_shorter_side() {
+        // The match is the last element of the longer side and the first of the shorter side.
+        // A reversed argument order reads past the shorter side and panics.
+        let long: ArrayRef = Arc::new(Int32Array::from_iter_values(0..128));
+        let short: ArrayRef = Arc::new(Int32Array::from_iter_values(127..191));
+        for (left, right) in [(&long, &short), (&short, &long)] {
+            let calls = std::cell::Cell::new(0);
+            let (left_values, right_values) = (
+                left.as_primitive::<Int32Type>(),
+                right.as_primitive::<Int32Type>(),
+            );
+            let comparator = |li: usize, ri: usize| {
+                calls.set(calls.get() + 1);
+                left_values.value(li).cmp(&right_values.value(ri))
+            };
+            let mut row_overlap = nested_row_overlap(left, right, &comparator);
+            assert!(row_overlap(0..left.len(), 0..right.len()));
+            assert_eq!(calls.get(), 128);
+        }
     }
 
     #[test]
