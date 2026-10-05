@@ -584,18 +584,19 @@ object CometShuffleExchangeExec
    * still partitioned by Spark would put matching keys in different partitions. The keys are:
    *
    *   - A decimal wider than 18 digits, which native shuffle hashes differently (#5994).
-   *   - A string. Spark hashes the string's bytes as they are, but the import of the converted
-   *     batch into native replaces invalid UTF-8 before native shuffle hashes it.
+   *   - A string, or any value computed from one, such as `hash(s)`. Spark reads the string's
+   *     bytes as they are, but the import of the converted batch into native replaces invalid
+   *     UTF-8 before native shuffle evaluates the key.
    *
    * TODO: allow wide decimals once native hashing matches Spark for them.
    */
   private def hashesDifferentlyFromSpark(s: ShuffleExchangeExec): Boolean =
     s.outputPartitioning match {
       case HashPartitioning(expressions, numPartitions) =>
-        numPartitions > 1 && expressions.exists(_.dataType.existsRecursively {
-          case _: StringType => true
-          case dt => DecimalType.isByteArrayDecimalType(dt)
-        })
+        numPartitions > 1 && expressions.exists { key =>
+          key.dataType.existsRecursively(DecimalType.isByteArrayDecimalType) ||
+          key.exists(_.dataType.existsRecursively(_.isInstanceOf[StringType]))
+        }
       case _ => false
     }
 

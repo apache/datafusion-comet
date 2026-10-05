@@ -23,7 +23,7 @@ import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.comet.CometSparkToColumnarExec
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, ColumnarToRowTransition, SparkPlan}
-import org.apache.spark.sql.functions.{array, avg, col, count, length, max, min, size, sum}
+import org.apache.spark.sql.functions.{array, avg, col, count, hash, length, max, min, size, sum}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, BinaryType, CalendarIntervalType, DataTypes, DecimalType, IntegerType, LongType, StringType, StructType}
 import org.apache.spark.unsafe.types.CalendarInterval
@@ -221,24 +221,30 @@ class CometShuffleInputConversionSuite extends CometTestBase {
     // Spark's partitioner hashes a string's bytes as they are, but native shuffle hashes them
     // after the import into native has replaced invalid UTF-8. The right input, with its
     // array<int> column, stays on the JVM columnar shuffle, so the left one has to as well, or
-    // matching keys with invalid UTF-8 land in different partitions. Both shuffles write the rows
-    // with invalid UTF-8 replaced, so the four keys stay apart only because they hash to four
-    // different partitions.
+    // matching keys with invalid UTF-8 land in different partitions. A key computed from a
+    // string, such as its hash, is no different: native shuffle would compute it from the
+    // replaced string. Both shuffles write the rows with invalid UTF-8 replaced, and the join
+    // compares what they wrote, so the two keys stay apart only because each key expression puts
+    // them in different partitions.
     withSQLConf(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
       SQLConf.SHUFFLE_PARTITIONS.key -> "10") {
       val schema = new StructType().add("b", BinaryType).add("v", LongType)
-      val data = (0 until 40).map(i => Row(Array((0x80 + i % 4).toByte), i.toLong))
+      val data = (0 until 40).map { i =>
+        Row(Array((if (i % 2 == 0) 0x80 else 0x83).toByte), i.toLong)
+      }
       val keys = spark.createDataFrame(spark.sparkContext.parallelize(data, 4), schema)
       val left = keys.select(col("b").cast(StringType).as("lk"), col("v"))
       val right = keys.select(
         col("b").cast(StringType).as("rk"),
         array(col("v").cast(IntegerType)).as("xs"))
-      val df = left.join(right, col("lk") === col("rk"))
-      val (_, plan) = checkSparkAnswer(df)
-      assert(conversions(plan).isEmpty, plan)
-      checkCometExchange(df, 2, native = false)
+      Seq(col("lk") === col("rk"), hash(col("lk")) === hash(col("rk"))).foreach { condition =>
+        val df = left.join(right, condition)
+        val (_, plan) = checkSparkAnswer(df)
+        assert(conversions(plan).isEmpty, s"$condition:\n$plan")
+        checkCometExchange(df, 2, native = false)
+      }
     }
   }
 
