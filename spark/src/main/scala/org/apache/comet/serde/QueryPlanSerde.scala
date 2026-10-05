@@ -63,7 +63,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     // through CometArrayFilter -> CometArrayCompact -> DataFusion's array_compact. On Spark
     // 4.0+ the rewrite is wrapped in KnownNotContainsNull, stripped by Spark4xCometExprShim.
     classOf[ArrayContains] -> CometArrayContains,
-    classOf[ArrayDistinct] -> CometScalarFunction("array_distinct"),
+    classOf[ArrayDistinct] -> CometArrayDistinct,
     classOf[ArrayExcept] -> CometArrayExcept,
     classOf[ArrayFilter] -> CometArrayFilter,
     classOf[ArrayInsert] -> CometArrayInsert,
@@ -151,7 +151,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[Rint] -> CometScalarFunction("rint"),
       classOf[Round] -> CometRound,
       classOf[Sec] -> CometScalarFunction("sec"),
-      classOf[Signum] -> CometScalarFunction("signum"),
+      classOf[Signum] -> CometSignum,
       classOf[Sin] -> CometScalarFunction("sin"),
       classOf[Sinh] -> CometScalarFunction("sinh"),
       classOf[Sqrt] -> CometSqrt,
@@ -303,6 +303,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[MakeDTInterval] -> CometMakeDTInterval,
       classOf[MakeInterval] -> CometMakeInterval,
       classOf[MultiplyDTInterval] -> CometMultiplyDTInterval,
+      classOf[MultiplyYMInterval] -> CometMultiplyYMInterval,
       classOf[TimestampAdd] -> CometTimestampAdd,
       classOf[TimestampDiff] -> CometTimestampDiff,
       classOf[MicrosToTimestamp] -> CometMicrosToTimestamp,
@@ -481,25 +482,6 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     }
   }
 
-  /**
-   * Returns true if any aggregate is CollectList/CollectSet. These produce a native ArrayType
-   * intermediate buffer while Spark declares BinaryType for its serialized
-   * TypedImperativeAggregate buffer, so Comet cannot interpret Spark's Binary buffer, and Comet
-   * cannot yet represent this buffer consistently across the intermediate PartialMerge stages of
-   * a multi-stage aggregate (issue #4724). These aggregates are therefore only safe to run
-   * natively when every stage runs in Comet and there are at most two stages (Partial + Final).
-   *
-   * Percentile has a similar Array-shaped intermediate buffer (see `adjustOutputForNativeState`)
-   * but is not matched here: it already passes through the general mixed-execution guard, so this
-   * check is scoped narrowly to the collect functions.
-   */
-  def hasNativeArrayBufferAgg(aggExprs: Seq[AggregateExpression]): Boolean = {
-    aggExprs.exists(_.aggregateFunction match {
-      case _: CollectList | _: CollectSet => true
-      case _ => false
-    })
-  }
-
   //  A unique id for each expression. ~used to look up QueryContext during error creation.
   private val exprIdCounter = new AtomicLong(0)
 
@@ -584,9 +566,9 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
    * The defaults preserve expression-serde behavior: primitive types, `CalendarIntervalType`,
    * `TimeType`, and all `StringType` variants are accepted, while complex and ANSI interval types
    * are rejected. Sinks and native shuffle enable complex and ANSI interval types because their
-   * Arrow IPC paths support them. Local scans additionally reject `TimeType` and non-default
-   * strings, while JVM columnar shuffle rejects ANSI intervals, calendar intervals, and duplicate
-   * struct field names because its unsafe-row-to-Arrow path cannot handle them.
+   * Arrow IPC paths support them. Local scans additionally reject non-default strings, while JVM
+   * columnar shuffle rejects ANSI intervals, calendar intervals, and duplicate struct field names
+   * because its unsafe-row-to-Arrow path cannot handle them.
    *
    * Note that the option polarity is mixed: `allowComplex` and `allowIntervals` are restrictive
    * by default; the other four options are permissive by default.

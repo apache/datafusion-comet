@@ -28,6 +28,7 @@ import org.apache.spark.sql.execution.datasources.v2.DataSourceV2Relation
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.isCometLoaded
+import org.apache.comet.shims.ShimCometMergeRows
 
 /**
  * Spark Strategy that intercepts Iceberg V2 copy-on-write logical writes and emits Comet's
@@ -120,11 +121,15 @@ case class IcebergWriteStrategy(session: SparkSession) extends SparkStrategy {
     // `originalTable`.
     val refresh: () => Unit = () => IcebergRefreshCacheShim.refreshCache(session, rel)
     Some(
-      IcebergCommitExec(
+      IcebergCommitPlanShim.wrap(IcebergCommitExec(
         batchWrite,
         write,
         refresh,
         // `replaceDataDispatch` may project the data into the format the writer expects.
-        planLater(IcebergWriteLogical(query, batchWrite, replaceDataDispatch))))
+        planLater(
+          IcebergWriteLogical(
+            ShimCometMergeRows.withNativeMergeSummary(query),
+            batchWrite,
+            replaceDataDispatch)))))
   }
 }

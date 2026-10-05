@@ -39,7 +39,10 @@ use crate::execution::operators::DynamicFilterJoinExec;
 use crate::execution::operators::IcebergScanExec;
 use crate::execution::operators::TopKReaderFilterExec;
 use crate::execution::{
-    operators::{ExecutionError, ScanExec, ShuffleScanExec},
+    operators::{
+        ExecutionError, MergeActionContext, MergeInstructionExec, MergeRowsExec, ScanExec,
+        ShuffleScanExec,
+    },
     planner::expression_registry::ExpressionRegistry,
     planner::operator_registry::OperatorRegistry,
     serde::{to_arrow_datatype, to_arrow_field},
@@ -47,7 +50,7 @@ use crate::execution::{
 use crate::jvm_bridge::{jni_call, JVMClasses, ShufflePartitionPusher};
 use arrow::compute::CastOptions;
 use arrow::datatypes::{
-    DataType, Field, FieldRef, Fields, Schema, TimeUnit, DECIMAL128_MAX_PRECISION,
+    DataType, Field, FieldRef, Fields, IntervalUnit, Schema, TimeUnit, DECIMAL128_MAX_PRECISION,
 };
 use arrow::ffi_stream::{ArrowArrayStreamReader, FFI_ArrowArrayStream};
 use datafusion::functions_aggregate::bit_and_or_xor::{bit_and_udaf, bit_or_udaf, bit_xor_udaf};
@@ -81,7 +84,8 @@ use datafusion::{
     prelude::SessionContext,
 };
 use datafusion_comet_operators::{
-    CometFilterExec, ExpandExec, ExplodeExec, PartitionedRankLimitExec, SampleExec, WindowFnKind,
+    range_exec, CometFilterExec, ExpandExec, ExplodeExec, PartitionedRankLimitExec, SampleExec,
+    WindowFnKind,
 };
 use datafusion_comet_spark_expr::{
     create_comet_physical_fun, create_comet_physical_fun_with_eval_mode, BinaryOutputStyle,
@@ -113,8 +117,8 @@ use datafusion::physical_expr::LexOrdering;
 
 use crate::parquet::parquet_exec::init_datasource_exec;
 use arrow::array::{
-    new_empty_array, Array, ArrayRef, BinaryBuilder, BooleanArray, Date32Array, Decimal128Array,
-    Float32Array, Float64Array, Int16Array, Int32Array, Int64Array, Int8Array, ListArray,
+    Array, ArrayRef, BinaryBuilder, BooleanArray, Date32Array, Decimal128Array, Float32Array,
+    Float64Array, Int16Array, Int32Array, Int64Array, Int8Array, IntervalYearMonthArray, ListArray,
     NullArray, StringBuilder, TimestampMicrosecondArray,
 };
 use arrow::buffer::{BooleanBuffer, NullBuffer, OffsetBuffer};
@@ -141,9 +145,9 @@ use datafusion_comet_spark_expr::{
     create_case_when, create_if_expr, jvm_udf::JvmScalarUdfExpr, spark_in_list, ApproxPercentile,
     ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Correlation, Covariance, CreateNamedStruct,
     DecimalRescaleCheckOverflow, GetArrayStructFields, GetStructField, HllPlusPlus, HllSketchAgg,
-    HllUnionAgg, IfExpr, ListExtract, MaxMinBy, Mode, NormalizeNaNAndZero, Regr, RegrType,
-    SparkCastOptions, Stddev, SumDecimal, ToJson, UnboundColumn, Variance, WideDecimalBinaryExpr,
-    WideDecimalOp,
+    HllUnionAgg, IfExpr, ListExtract, MaxMinBy, Mode, NormalizeNaNAndZero, NormalizeNestedFloats,
+    Regr, RegrType, SparkCastOptions, SparkMinMax, Stddev, SumDecimal, ToJson, UnboundColumn,
+    Variance, WideDecimalBinaryExpr, WideDecimalOp,
 };
 use itertools::Itertools;
 use jni::objects::{Global, JObject};
@@ -211,6 +215,51 @@ fn make_all_fields_nullable(data_type: &DataType) -> DataType {
             }
         }
         other => other.clone(),
+    }
+}
+
+/// Returns true when `actual` and `expected` have the same nested shape and leaf types.
+/// Nested field nullability is intentionally ignored: MergeRows normalizes runtime batches to
+/// Spark's declared output schema, validating any nullability narrowing against the actual data.
+fn merge_output_type_compatible(actual: &DataType, expected: &DataType) -> bool {
+    match (actual, expected) {
+        (DataType::Struct(actual_fields), DataType::Struct(expected_fields)) => {
+            actual_fields.len() == expected_fields.len()
+                && actual_fields.iter().zip(expected_fields.iter()).all(
+                    |(actual_field, expected_field)| {
+                        actual_field.name() == expected_field.name()
+                            && merge_output_type_compatible(
+                                actual_field.data_type(),
+                                expected_field.data_type(),
+                            )
+                    },
+                )
+        }
+        (DataType::List(actual_field), DataType::List(expected_field))
+        | (DataType::LargeList(actual_field), DataType::LargeList(expected_field)) => {
+            merge_output_type_compatible(actual_field.data_type(), expected_field.data_type())
+        }
+        (
+            DataType::FixedSizeList(actual_field, actual_size),
+            DataType::FixedSizeList(expected_field, expected_size),
+        ) => {
+            actual_size == expected_size
+                && merge_output_type_compatible(
+                    actual_field.data_type(),
+                    expected_field.data_type(),
+                )
+        }
+        (
+            DataType::Map(actual_entries, actual_sorted),
+            DataType::Map(expected_entries, expected_sorted),
+        ) => {
+            actual_sorted == expected_sorted
+                && merge_output_type_compatible(
+                    actual_entries.data_type(),
+                    expected_entries.data_type(),
+                )
+        }
+        _ => actual == expected,
     }
 }
 
@@ -548,6 +597,9 @@ impl PhysicalPlanner {
                         DataType::Time64(TimeUnit::Nanosecond) => {
                             ScalarValue::Time64Nanosecond(None)
                         }
+                        DataType::Interval(IntervalUnit::YearMonth) => {
+                            ScalarValue::IntervalYearMonth(None)
+                        }
                         DataType::Duration(TimeUnit::Microsecond) => {
                             ScalarValue::DurationMicrosecond(None)
                         }
@@ -566,9 +618,12 @@ impl PhysicalPlanner {
                         Value::IntVal(value) => match data_type {
                             DataType::Int32 => ScalarValue::Int32(Some(*value)),
                             DataType::Date32 => ScalarValue::Date32(Some(*value)),
+                            DataType::Interval(IntervalUnit::YearMonth) => {
+                                ScalarValue::IntervalYearMonth(Some(*value))
+                            }
                             dt => {
                                 return Err(GeneralError(format!(
-                                    "Expected either 'Int32' or 'Date32' for IntVal, but found {dt:?}"
+                                    "Expected either 'Int32', 'Date32', or 'Interval(YearMonth)' for IntVal, but found {dt:?}"
                                 )))
                             }
                         },
@@ -996,16 +1051,18 @@ impl PhysicalPlanner {
         }
     }
 
-    /// Normalize scalar floating-point comparison keys without changing output values.
-    /// Sort, Window, and WindowGroupLimit must use identical expressions so DataFusion
-    /// can recognize the ordering of window partition keys.
+    /// Normalize floating-point comparison keys without changing output values: a `FLOAT` or
+    /// `DOUBLE` key, and an array or struct key with a float at any depth, whose order Arrow
+    /// otherwise takes from the raw bits. Sort, Window, and WindowGroupLimit must use identical
+    /// expressions so DataFusion can recognize the ordering of window partition keys.
     fn create_normalized_key_expr(
         &self,
         spark_expr: &Expr,
         input_schema: SchemaRef,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
         let child = self.create_expr(spark_expr, Arc::clone(&input_schema))?;
-        Ok(NormalizeNaNAndZero::wrap_if_needed(
+        let child = NormalizeNaNAndZero::wrap_if_needed(child, input_schema.as_ref())?;
+        Ok(NormalizeNestedFloats::wrap_if_needed(
             child,
             input_schema.as_ref(),
         )?)
@@ -1581,6 +1638,22 @@ impl PhysicalPlanner {
                     Arc::new(SparkPlan::new(spark_plan.plan_id, limit, vec![child])),
                 ))
             }
+            OpStruct::RangeScan(range) => {
+                // A leaf with no JVM input: each task produces its own partition of the range.
+                let range: Arc<dyn ExecutionPlan> = Arc::new(range_exec(
+                    range.start,
+                    range.step,
+                    range.num_elements,
+                    range.num_slices,
+                    self.partition,
+                    self.session_ctx.copied_config().batch_size(),
+                )?);
+                Ok((
+                    vec![],
+                    vec![],
+                    Arc::new(SparkPlan::new(spark_plan.plan_id, range, vec![])),
+                ))
+            }
             OpStruct::Sample(sample) => {
                 assert_eq!(children.len(), 1);
                 let (scans, shuffle_scans, child) =
@@ -1983,6 +2056,147 @@ impl PhysicalPlanner {
                     scans,
                     shuffle_scans,
                     Arc::new(SparkPlan::new(spark_plan.plan_id, expand, vec![child])),
+                ))
+            }
+            OpStruct::MergeRows(merge) => {
+                let [child] = children.as_slice() else {
+                    return Err(ExecutionError::GeneralError(format!(
+                        "MergeRows expects exactly one child, got {}",
+                        children.len()
+                    )));
+                };
+                let (scans, shuffle_scans, child) =
+                    self.create_plan(child, inputs, partition_count)?;
+
+                let missing_field = |name: &str| {
+                    ExecutionError::GeneralError(format!("MergeRows proto missing `{name}`"))
+                };
+                let is_source_row_present = self.create_expr(
+                    merge
+                        .is_source_row_present
+                        .as_ref()
+                        .ok_or_else(|| missing_field("is_source_row_present"))?,
+                    child.schema(),
+                )?;
+                let is_target_row_present = self.create_expr(
+                    merge
+                        .is_target_row_present
+                        .as_ref()
+                        .ok_or_else(|| missing_field("is_target_row_present"))?,
+                    child.schema(),
+                )?;
+
+                let compile_instructions = |instrs: &[spark_operator::MergeInstruction]| -> Result<
+                    Vec<MergeInstructionExec>,
+                    ExecutionError,
+                > {
+                    instrs
+                        .iter()
+                        .map(|instr| {
+                            let condition = self.create_expr(
+                                instr
+                                    .condition
+                                    .as_ref()
+                                    .ok_or_else(|| missing_field("instruction condition"))?,
+                                child.schema(),
+                            )?;
+                            let outputs = instr
+                                .outputs
+                                .iter()
+                                .map(|row| {
+                                    row.exprs
+                                        .iter()
+                                        .map(|e| self.create_expr(e, child.schema()))
+                                        .collect::<Result<Vec<_>, _>>()
+                                })
+                                .collect::<Result<Vec<_>, _>>()?;
+                            let context = match instr.context {
+                                None | Some(0) => None,
+                                Some(1) => Some(MergeActionContext::Copy),
+                                Some(2) => Some(MergeActionContext::Delete),
+                                Some(3) => Some(MergeActionContext::Insert),
+                                Some(4) => Some(MergeActionContext::Update),
+                                Some(value) => {
+                                    return Err(ExecutionError::GeneralError(format!(
+                                        "MergeRows instruction has unknown action context {value}"
+                                    )))
+                                }
+                            };
+                            Ok(MergeInstructionExec {
+                                condition,
+                                outputs,
+                                context,
+                            })
+                        })
+                        .collect()
+                };
+
+                let matched_instructions = compile_instructions(&merge.matched_instructions)?;
+                let not_matched_instructions =
+                    compile_instructions(&merge.not_matched_instructions)?;
+                let not_matched_by_source_instructions =
+                    compile_instructions(&merge.not_matched_by_source_instructions)?;
+
+                // Spark's declared MergeRows output is the contract presented to the downstream
+                // V2 write. Derive the expression schema as an independent check, then stamp native
+                // batches with Spark's declared types so compatible nested-nullability widening does
+                // not leak a narrower physical schema across the JVM/native boundary.
+                let output_rows: Vec<Vec<Arc<dyn PhysicalExpr>>> = matched_instructions
+                    .iter()
+                    .chain(&not_matched_instructions)
+                    .chain(&not_matched_by_source_instructions)
+                    .flat_map(|instr| instr.outputs.iter().cloned())
+                    .collect();
+                let expected_fields: Vec<Field> = merge
+                    .output_types
+                    .iter()
+                    .map(to_arrow_datatype)
+                    .enumerate()
+                    .map(|(idx, dt)| Field::new(format!("col_{idx}"), dt, true))
+                    .collect();
+                let schema = Arc::new(Schema::new(expected_fields));
+
+                if !output_rows.is_empty() {
+                    let derived_schema = ExpandExec::build_schema(&output_rows, &child.schema())?;
+                    if derived_schema.fields().len() != schema.fields().len() {
+                        return Err(ExecutionError::GeneralError(format!(
+                            "MergeRows projected {} columns but Spark declared {}",
+                            derived_schema.fields().len(),
+                            schema.fields().len()
+                        )));
+                    }
+                    for (idx, (actual, expected)) in derived_schema
+                        .fields()
+                        .iter()
+                        .zip(schema.fields().iter())
+                        .enumerate()
+                    {
+                        if !merge_output_type_compatible(actual.data_type(), expected.data_type()) {
+                            return Err(ExecutionError::GeneralError(format!(
+                                "MergeRows output column {idx} has projected type {:?}, incompatible with Spark output type {:?}",
+                                actual.data_type(),
+                                expected.data_type()
+                            )));
+                        }
+                    }
+                }
+
+                let exec = Arc::new(MergeRowsExec::try_new_with_semantic_metrics(
+                    is_source_row_present,
+                    is_target_row_present,
+                    matched_instructions,
+                    not_matched_instructions,
+                    not_matched_by_source_instructions,
+                    merge.row_id_ordinal.map(|ord| ord as usize),
+                    merge.semantic_metrics_required,
+                    Arc::clone(&child.native_plan),
+                    schema,
+                )?);
+
+                Ok((
+                    scans,
+                    shuffle_scans,
+                    Arc::new(SparkPlan::new(spark_plan.plan_id, exec, vec![child])),
                 ))
             }
             OpStruct::Explode(explode) => {
@@ -2732,9 +2946,10 @@ impl PhysicalPlanner {
             AggExprStruct::Min(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
                 let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
+                let func = min_max_udaf(&datatype, false);
                 let child = Arc::new(CastExpr::new(child, datatype.clone(), None));
 
-                AggregateExprBuilder::new(min_udaf(), vec![child])
+                AggregateExprBuilder::new(func, vec![child])
                     .schema(schema)
                     .alias("min")
                     .with_ignore_nulls(false)
@@ -2745,9 +2960,10 @@ impl PhysicalPlanner {
             AggExprStruct::Max(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
                 let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
+                let func = min_max_udaf(&datatype, true);
                 let child = Arc::new(CastExpr::new(child, datatype.clone(), None));
 
-                AggregateExprBuilder::new(max_udaf(), vec![child])
+                AggregateExprBuilder::new(func, vec![child])
                     .schema(schema)
                     .alias("max")
                     .with_ignore_nulls(false)
@@ -3375,11 +3591,13 @@ impl PhysicalPlanner {
             }
             Some(AggExprStruct::Min(expr)) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
-                Ok((by_name("min")?, vec![child]))
+                let func = min_max_udaf(&child.data_type(&schema)?, false);
+                Ok((WindowFunctionDefinition::AggregateUDF(func), vec![child]))
             }
             Some(AggExprStruct::Max(expr)) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
-                Ok((by_name("max")?, vec![child]))
+                let func = min_max_udaf(&child.data_type(&schema)?, true);
+                Ok((WindowFunctionDefinition::AggregateUDF(func), vec![child]))
             }
             Some(AggExprStruct::Sum(expr)) => {
                 // For ever-expanding frames, use Comet's Spark-compatible Sum UDAFs
@@ -3711,6 +3929,20 @@ impl PhysicalPlanner {
             .with_distinct(false)
             .build()
             .map_err(|e| e.into())
+    }
+}
+
+/// `min` or `max` over `data_type`: Spark's version for floats, which DataFusion orders
+/// differently, and DataFusion's for every other type.
+fn min_max_udaf(data_type: &DataType, is_max: bool) -> Arc<AggregateUDF> {
+    // Spark has only 32- and 64-bit floating-point types. Keep Float16 on DataFusion's path so
+    // an internal plan using it does not reach SparkMinMax, whose accumulators reject that type.
+    if matches!(data_type, DataType::Float32 | DataType::Float64) {
+        Arc::new(AggregateUDF::new_from_impl(SparkMinMax::new(is_max)))
+    } else if is_max {
+        max_udaf()
+    } else {
+        min_udaf()
     }
 }
 
@@ -4484,6 +4716,10 @@ fn literal_to_array_ref(
             list_literal.int_values.into(),
             Some(nulls.clone().into()),
         ))),
+        DataType::Interval(IntervalUnit::YearMonth) => Ok(Arc::new(IntervalYearMonthArray::new(
+            list_literal.int_values.into(),
+            Some(nulls.clone().into()),
+        ))),
         DataType::Timestamp(TimeUnit::Microsecond, None) => {
             Ok(Arc::new(TimestampMicrosecondArray::new(
                 list_literal.long_values.into(),
@@ -4593,8 +4829,13 @@ fn literal_to_array_ref(
                 let child_refs: Vec<&dyn Array> = child_arrays.iter().map(|a| a.as_ref()).collect();
                 arrow::compute::concat(&child_refs)?
             } else {
-                // All entries are null or the list is empty
-                new_empty_array(&dt)
+                // All entries are null or empty. Build the empty values through the recursion a
+                // populated entry takes, so they match a populated sibling's values: one list
+                // level below `dt` rather than `dt` itself, e.g. [[[]], [[1]]], and with the
+                // nullable fields every rebuilt level gets rather than the ones `dt` declares,
+                // e.g. a folded [[[]], [[[1]]]] whose arrays Spark declares non-nullable. Either
+                // difference keeps this level from being concatenated with the sibling.
+                literal_to_array_ref(dt, ListLiteral::default())?
             };
 
             // Create and return the parent ListArray
@@ -4773,7 +5014,7 @@ mod tests {
         Array, ArrayRef, DictionaryArray, Float32Array, Float64Array, Int32Array, Int8Array,
         ListArray, RecordBatch, StringArray,
     };
-    use arrow::datatypes::{DataType, Field, FieldRef, Fields, Schema, SchemaRef};
+    use arrow::datatypes::{DataType, Field, FieldRef, Fields, IntervalUnit, Schema, SchemaRef};
     use datafusion::catalog::memory::DataSourceExec;
     use datafusion::common::ScalarValue;
     use datafusion::config::TableParquetOptions;
@@ -4950,6 +5191,38 @@ mod tests {
             .collect()
     }
 
+    /// `floating_sort_batches` with each key wrapped in a one-element list and in a one-field
+    /// struct, which have to order and tie exactly as the bare key does. A null key becomes a
+    /// null list or struct.
+    fn nested_floating_sort_batches() -> Vec<(i32, RecordBatch)> {
+        use arrow::array::StructArray;
+        use arrow::buffer::OffsetBuffer;
+        floating_sort_batches()
+            .into_iter()
+            .flat_map(|(type_id, batch)| {
+                let values = Arc::clone(batch.column(0));
+                let nulls = values.nulls().cloned();
+                let element = Field::new("item", values.data_type().clone(), true);
+                let list: ArrayRef = Arc::new(ListArray::new(
+                    Arc::new(element),
+                    OffsetBuffer::from_lengths(vec![1; values.len()]),
+                    Arc::clone(&values),
+                    nulls.clone(),
+                ));
+                let fields = Fields::from(vec![Field::new("v", values.data_type().clone(), true)]);
+                let record: ArrayRef = Arc::new(StructArray::new(fields, vec![values], nulls));
+                [list, record].into_iter().map(move |key| {
+                    let mut fields: Vec<FieldRef> = batch.schema().fields().to_vec();
+                    fields[0] = Arc::new(Field::new("ord", key.data_type().clone(), true));
+                    let mut columns = batch.columns().to_vec();
+                    columns[0] = key;
+                    let batch = RecordBatch::try_new(Arc::new(Schema::new(fields)), columns);
+                    (type_id, batch.unwrap())
+                })
+            })
+            .collect()
+    }
+
     #[test]
     fn floating_window_partition_keys_preserve_ordering() {
         let planner = PhysicalPlanner::default();
@@ -5017,7 +5290,11 @@ mod tests {
     async fn floating_sort_keys_preserve_window_group_limit_peers() {
         let planner = PhysicalPlanner::default();
         let context = SessionContext::new_with_config(SessionConfig::new().with_batch_size(3));
-        for (type_id, batch) in floating_sort_batches() {
+        // Floats nested in a list or a struct must rank exactly as the bare floats do.
+        let batches = floating_sort_batches()
+            .into_iter()
+            .chain(nested_floating_sort_batches());
+        for (type_id, batch) in batches {
             for (descending, kind, fetch, expected) in [
                 (true, WindowFnKind::Rank, 3, vec![0, 1, 2, 8, 9]),
                 (true, WindowFnKind::DenseRank, 2, vec![0, 1, 2, 8, 9]),
@@ -5069,8 +5346,10 @@ mod tests {
                 }
                 ids.sort_unstable();
                 assert_eq!(
-                    ids, expected,
-                    "type={type_id}, descending={descending}, {kind:?}"
+                    ids,
+                    expected,
+                    "type={type_id}, key={}, descending={descending}, {kind:?}",
+                    batch.schema().field(0).data_type()
                 );
                 // The zero peer group and the second NaN peer group straddle size-3
                 // sort output batches. Tie state must survive those boundaries.
@@ -5574,6 +5853,118 @@ mod tests {
         );
         assert_eq!(1, projection_exec.children.len());
         assert_eq!("ScanExec", projection_exec.children[0].native_plan.name());
+    }
+
+    #[tokio::test]
+    async fn projection_prunes_filter_output_and_preserves_metrics() {
+        use crate::execution::metrics::utils::to_native_metric_node;
+        use datafusion::physical_plan::filter::FilterExec;
+
+        // Duplicate outputs must reuse a filtered column, even when they outnumber the inputs.
+        for (indices, output) in [
+            (vec![], Some(vec![])),
+            (vec![2], Some(vec![2])),
+            (vec![2, 1, 2], Some(vec![1, 2])),
+            (vec![2, 1, 2, 1, 2], Some(vec![1, 2])),
+            (vec![0, 1, 2, 3], None),
+            (vec![3, 2, 1, 0], None),
+        ] {
+            for project_id in [2, 3] {
+                let scan = Operator {
+                    plan_id: 1,
+                    op_struct: Some(OpStruct::Scan(spark_operator::Scan {
+                        fields: vec![create_proto_datatype(); 4],
+                        source: String::new(),
+                    })),
+                    ..Default::default()
+                };
+                let filter = Operator {
+                    plan_id: 2,
+                    ..create_filter(scan, 1)
+                };
+                let project = Operator {
+                    plan_id: project_id,
+                    children: vec![filter],
+                    op_struct: Some(OpStruct::Projection(spark_operator::Projection {
+                        project_list: indices.iter().map(|&i| create_bound_reference(i)).collect(),
+                    })),
+                    ..Default::default()
+                };
+                let planner = PhysicalPlanner::default();
+                let (mut scans, _, planned) =
+                    planner.create_plan(&project, &mut vec![], 1).unwrap();
+                let filter_plan = &planned.native_plan.children()[0];
+                let filter = filter_plan.downcast_ref::<FilterExec>().unwrap();
+                assert_eq!(filter.projection().as_deref(), output.as_deref());
+                assert_eq!(filter.input().schema().fields().len(), 4);
+                for (index, field) in planned.schema().fields().iter().enumerate() {
+                    assert_eq!(field.name(), &format!("col_{index}"));
+                }
+                let columns = vec![
+                    Arc::new(Int32Array::from(vec![1, 0, 1])) as ArrayRef,
+                    Arc::new(Int32Array::from(vec![10, 11, 12])) as ArrayRef,
+                    Arc::new(Int32Array::from(vec![20, 21, 22])) as ArrayRef,
+                    Arc::new(Int32Array::from(vec![30, 31, 32])) as ArrayRef,
+                ];
+                let mut input = vec![
+                    InputBatch::Batch(columns.clone(), 3),
+                    InputBatch::Batch(columns, 3),
+                    InputBatch::EOF,
+                ]
+                .into_iter();
+                let mut stream = planned
+                    .native_plan
+                    .execute(0, SessionContext::new().task_ctx())
+                    .unwrap();
+                let mut rows = 0;
+                while let Some(batch) = futures::future::poll_fn(|cx| {
+                    let result = stream.poll_next_unpin(cx);
+                    if result.is_pending() && scans[0].batch.try_lock().unwrap().is_none() {
+                        if let Some(batch) = input.next() {
+                            scans[0].set_input_batch(batch);
+                            cx.waker().wake_by_ref();
+                        }
+                    }
+                    result
+                })
+                .await
+                {
+                    let batch = batch.unwrap();
+                    assert_eq!(batch.num_columns(), indices.len());
+                    for row in 0..batch.num_rows() {
+                        for (column, &source) in indices.iter().enumerate() {
+                            let values = batch
+                                .column(column)
+                                .as_any()
+                                .downcast_ref::<Int32Array>()
+                                .unwrap();
+                            let expected = if source == 0 {
+                                1
+                            } else {
+                                source * 10 + ((rows + row) % 2) as i32 * 2
+                            };
+                            assert_eq!(values.value(row), expected);
+                        }
+                    }
+                    rows += batch.num_rows();
+                }
+                assert_eq!(rows, 4);
+                let metrics = to_native_metric_node(&planned).unwrap();
+                if project_id == 2 {
+                    assert_eq!(planned.additional_native_plans.len(), 1);
+                    assert!(Arc::ptr_eq(
+                        filter_plan,
+                        &planned.additional_native_plans[0]
+                    ));
+                    // A single Spark node must not count the filter and project rows twice.
+                    assert_eq!(metrics.metrics["output_rows"], 4);
+                } else {
+                    assert_eq!(metrics.metrics["output_rows"], 4);
+                    assert_eq!(metrics.children[0].metrics["output_rows"], 4);
+                    assert!(metrics.children[0].metrics["elapsed_compute"] > 0);
+                }
+            }
+        }
     }
 
     fn create_bound_reference(index: i32) -> Expr {
@@ -6253,6 +6644,128 @@ mod tests {
         Ok(())
     }
 
+    /// A nested list whose children are all empty must decode to the same element type as a
+    /// populated sibling, so the two can be concatenated: `[[[]], [[1]]]`.
+    #[test]
+    fn test_literal_to_list_with_empty_nested_children() -> Result<(), DataFusionError> {
+        for leaf_type in [DataType::Interval(IntervalUnit::YearMonth), DataType::Int32] {
+            let data = ListLiteral {
+                list_values: vec![
+                    // [[]]
+                    ListLiteral {
+                        list_values: vec![ListLiteral::default()],
+                        null_mask: vec![true],
+                        ..Default::default()
+                    },
+                    // [[1]]
+                    ListLiteral {
+                        list_values: vec![ListLiteral {
+                            int_values: vec![1],
+                            null_mask: vec![true],
+                            ..Default::default()
+                        }],
+                        null_mask: vec![true],
+                        ..Default::default()
+                    },
+                ],
+                null_mask: vec![true, true],
+                ..Default::default()
+            };
+            let inner = DataType::List(Arc::new(Field::new("item", leaf_type.clone(), true)));
+            let middle = DataType::List(Arc::new(Field::new("item", inner.clone(), true)));
+            let outer = DataType::List(Arc::new(Field::new("item", middle.clone(), true)));
+
+            let array = literal_to_array_ref(outer, data)?;
+
+            // The outer list's values: two lists whose elements are `inner` lists.
+            assert_eq!(array.data_type(), &middle, "{leaf_type}");
+            let lists = array.as_any().downcast_ref::<ListArray>().unwrap();
+            assert_eq!(lists.len(), 2);
+
+            let first = lists.value(0);
+            let first = first.as_any().downcast_ref::<ListArray>().unwrap();
+            assert_eq!(first.len(), 1);
+            assert!(first.is_valid(0));
+            assert_eq!(first.value(0).len(), 0);
+
+            let second = lists.value(1);
+            let second = second.as_any().downcast_ref::<ListArray>().unwrap();
+            assert_eq!(second.len(), 1);
+            assert_eq!(second.value(0).len(), 1);
+            assert_eq!(second.value(0).data_type(), &leaf_type);
+        }
+        Ok(())
+    }
+
+    /// The empty and populated children must also agree on nested field nullability. Spark folds
+    /// `array(array(array()), array(array(array(INTERVAL '1' MONTH))))` into a literal whose
+    /// arrays all declare non-nullable elements, while a populated level is rebuilt with nullable
+    /// fields: `[[[]], [[[1]]]]`.
+    #[test]
+    fn test_literal_to_list_with_empty_nested_children_non_nullable() -> Result<(), DataFusionError>
+    {
+        let list_of = |element: DataType, nullable: bool| {
+            DataType::List(Arc::new(Field::new("item", element, nullable)))
+        };
+        for leaf_type in [DataType::Interval(IntervalUnit::YearMonth), DataType::Int32] {
+            let data = ListLiteral {
+                list_values: vec![
+                    // [[]]
+                    ListLiteral {
+                        list_values: vec![ListLiteral::default()],
+                        null_mask: vec![true],
+                        ..Default::default()
+                    },
+                    // [[[1]]]
+                    ListLiteral {
+                        list_values: vec![ListLiteral {
+                            list_values: vec![ListLiteral {
+                                int_values: vec![1],
+                                null_mask: vec![true],
+                                ..Default::default()
+                            }],
+                            null_mask: vec![true],
+                            ..Default::default()
+                        }],
+                        null_mask: vec![true],
+                        ..Default::default()
+                    },
+                ],
+                null_mask: vec![true, true],
+                ..Default::default()
+            };
+            let mut declared = leaf_type.clone();
+            for _ in 0..4 {
+                declared = list_of(declared, false);
+            }
+
+            let array = literal_to_array_ref(declared, data)?;
+
+            // The outer list's values: two lists of lists of `leaf_type` lists, nullable at every
+            // level whichever child decoded them.
+            let expected = list_of(list_of(list_of(leaf_type.clone(), true), true), true);
+            assert_eq!(array.data_type(), &expected, "{leaf_type}");
+            let lists = array.as_any().downcast_ref::<ListArray>().unwrap();
+            assert_eq!(lists.len(), 2);
+
+            let first = lists.value(0);
+            let first = first.as_any().downcast_ref::<ListArray>().unwrap();
+            assert_eq!(first.len(), 1);
+            assert!(first.is_valid(0));
+            assert_eq!(first.value(0).len(), 0);
+
+            let second = lists.value(1);
+            let second = second.as_any().downcast_ref::<ListArray>().unwrap();
+            assert_eq!(second.len(), 1);
+            let innermost = second.value(0);
+            let innermost = innermost.as_any().downcast_ref::<ListArray>().unwrap();
+            assert_eq!(innermost.len(), 1);
+            assert_eq!(innermost.value(0).len(), 1);
+            assert_eq!(innermost.value(0).data_type(), &leaf_type);
+        }
+        Ok(())
+    }
+
     #[tokio::test]
     async fn test_literal_to_list() -> Result<(), DataFusionError> {
         /*
@@ -6805,15 +7318,20 @@ mod tests {
             .expect("schema");
         let schema_arc = Arc::new(iceberg_schema);
 
+        let identity_field = |source_id: i32, field_id: i32, name: &str| {
+            iceberg::spec::UnboundPartitionField::builder()
+                .source_ids(vec![source_id])
+                .field_id(field_id)
+                .name(name)
+                .transform(iceberg::spec::Transform::Identity)
+                .build()
+                .expect("unbound field")
+        };
+
         // Spec 0 (older): field 1000 named "region_old".
         let spec0 = PartitionSpec::builder(Arc::clone(&schema_arc))
             .with_spec_id(0)
-            .add_unbound_field(iceberg::spec::UnboundPartitionField {
-                source_id: 2,
-                field_id: Some(1000),
-                name: "region_old".to_string(),
-                transform: iceberg::spec::Transform::Identity,
-            })
+            .add_unbound_field(identity_field(2, 1000, "region_old"))
             .expect("add field")
             .build()
             .expect("build spec0");
@@ -6821,19 +7339,9 @@ mod tests {
         // Spec 1 (newer): same field id 1000 renamed to "region_new", plus a new field 2000.
         let spec1 = PartitionSpec::builder(Arc::clone(&schema_arc))
             .with_spec_id(1)
-            .add_unbound_field(iceberg::spec::UnboundPartitionField {
-                source_id: 2,
-                field_id: Some(1000),
-                name: "region_new".to_string(),
-                transform: iceberg::spec::Transform::Identity,
-            })
+            .add_unbound_field(identity_field(2, 1000, "region_new"))
             .expect("add field")
-            .add_unbound_field(iceberg::spec::UnboundPartitionField {
-                source_id: 3,
-                field_id: Some(2000),
-                name: "category".to_string(),
-                transform: iceberg::spec::Transform::Identity,
-            })
+            .add_unbound_field(identity_field(3, 2000, "category"))
             .expect("add field")
             .build()
             .expect("build spec1");

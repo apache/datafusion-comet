@@ -95,6 +95,15 @@ Things to know before changing this layer:
 - **What is not intercepted:** merge-on-read (`WriteDelta`), streaming writes, and CTAS/RTAS on
   Spark 3.4. Those keep Spark's plan.
 
+On Spark 4.1+, `IcebergWriteSummaryShim` finds either Spark's `MergeRowsExec` or
+`CometMergeRowsExec` in the executed query and forwards its eight action counters to
+`BatchWrite.commit(messages, summary)`. Native instructions carry the context of each `Keep`;
+`Discard` counts a deletion and `Split` counts one update. Spark 4.2 uses last-attempt
+accumulators, read through `MergeRowsMetricsShim`, so summary values come from the tasks that
+produced the committed output. Stock V2 writers still require the concrete Spark node, so
+`IcebergWriteStrategy` tags a copy of its logical MERGE query before planning and AQE. The
+serializer requires that tag on Spark 4.1+, leaving stock writers on Spark throughout replanning.
+
 ## From `IcebergWrite` to `CometIcebergWrite`
 
 `CometExecRule` converts an `IcebergWriteExec` with the `CometIcebergNativeWrite` operator serde
@@ -302,19 +311,25 @@ discards them. The price is one footer read per written file.
 ## Failure Handling and Cleanup Ownership
 
 A failed attempt must leave no data files behind, as iceberg-java's `DataWriter.abort()` does, and a
-failed job must not commit anything. The files are always owned by exactly one side:
+failed job must not commit anything. Cleanup must never have an ownership gap. During the handoff,
+the native guard intentionally stays armed after the JVM takes the locations and is disarmed only
+when the JVM polls the output stream to EOF:
 
-| Phase                                                               | Owner                        | Mechanism                                                                                                                                                                        |
-| ------------------------------------------------------------------- | ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Writing, closing writers, encoding the manifest, building the batch | Native                       | `TrackingLocationGenerator` records every location. `AbortOnDrop` deletes them on an error, and also when the plan is dropped mid-write, from inside or outside a Tokio runtime. |
-| After the batch reaches the JVM, until the task succeeds            | JVM task                     | `WrittenFileCleanup`, a task failure listener registered before the payload is read, takes the locations before the manifest is decoded.                                         |
-| Job failure after some tasks completed                              | Driver (`IcebergCommitExec`) | Calls `BatchWrite.abort` with the completed messages, then deletes their files through the table's `FileIO`.                                                                     |
-| Commit failure                                                      | Iceberg                      | `SparkWrite.abort` on the genuine `TaskCommit` messages, the same as the stock path.                                                                                             |
+| Phase                                                               | Owner                        | Mechanism                                                                                                                                       |
+| ------------------------------------------------------------------- | ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| Writing, closing writers, encoding the manifest, building the batch | Native                       | `TrackingLocationGenerator` records every location. `AbortOnDrop` deletes on error or plan drop and stays armed after yielding the batch.       |
+| JVM has recorded locations, before its final EOF poll               | Native + JVM task            | `WrittenFileCleanup` owns the decoded locations while `AbortOnDrop` is still armed. A failure may make both sides attempt best-effort deletion. |
+| After the JVM's EOF poll, until the task succeeds                   | JVM task                     | The EOF poll disarms `AbortOnDrop`; `WrittenFileCleanup` remains registered for the rest of the task.                                           |
+| Job failure after some tasks completed                              | Driver (`IcebergCommitExec`) | Calls `BatchWrite.abort` with the completed messages, then deletes their files through the table's `FileIO`.                                    |
+| Commit failure                                                      | Iceberg                      | `SparkWrite.abort` on the genuine `TaskCommit` messages, the same as the stock path.                                                            |
 
-The handoff between the first two rows is why the payload carries the locations separately from the
-manifest: a failure decoding the manifest would otherwise lose the list of files to delete. All
-deletion is best effort and logged. It must never replace the original exception, and anything it
-misses is unreferenced and reclaimed by Iceberg's `remove_orphan_files`.
+The handoff between the first two rows intentionally overlaps: `WrittenFileCleanup` takes the
+locations before the final EOF poll, and that poll is the acknowledgement that lets `AbortOnDrop`
+disarm. Deleting the same file from both sides during a failure in that narrow window is harmless
+because cleanup is best effort. The payload carries the locations separately from the manifest so a
+failure decoding the manifest cannot lose the list of files to delete. Cleanup is logged and must
+never replace the original exception; anything it misses is unreferenced and reclaimed by Iceberg's
+`remove_orphan_files`.
 
 The same planning-time rule applies to failures: a failure that happens because the native side
 rejected something the gate admitted is a bug in the gate, even if cleanup works.
