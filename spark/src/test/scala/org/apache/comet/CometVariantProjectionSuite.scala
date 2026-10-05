@@ -435,17 +435,21 @@ class CometVariantProjectionSuite extends CometTestBase {
         ("CAST(NULL AS BINARY)", "X'01'", "MALFORMED_VARIANT"),
         ("X'00'", "CAST(NULL AS BINARY)", "MALFORMED_VARIANT"),
         (s"unhex(repeat('00', ${limit + 1}))", "X'01'", "VARIANT_CONSTRUCTOR_SIZE_LIMIT"),
-        ("X'00'", s"unhex(concat('01', repeat('00', $limit)))", "VARIANT_CONSTRUCTOR_SIZE_LIMIT"))) {
-      withVariantFile(s"SELECT named_struct('value', $value, 'metadata', $metadata) AS v") { path =>
-        val df = spark.read.schema("v VARIANT").parquet(path).selectExpr("is_variant_null(v)")
-        val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
-        for (error <- Seq(sparkError, cometError)) {
-          assert(error.isDefined)
-          assert(causeChain(error.get).exists {
-            case e: org.apache.spark.SparkThrowable => e.getErrorClass == errorClass
-            case _ => false
-          })
-        }
+        (
+          "X'00'",
+          s"unhex(concat('01', repeat('00', $limit)))",
+          "VARIANT_CONSTRUCTOR_SIZE_LIMIT"))) {
+      withVariantFile(s"SELECT named_struct('value', $value, 'metadata', $metadata) AS v") {
+        path =>
+          val df = spark.read.schema("v VARIANT").parquet(path).selectExpr("is_variant_null(v)")
+          val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+          for (error <- Seq(sparkError, cometError)) {
+            assert(error.isDefined)
+            assert(causeChain(error.get).exists {
+              case e: org.apache.spark.SparkThrowable => e.getErrorClass == errorClass
+              case _ => false
+            })
+          }
       }
     }
   }

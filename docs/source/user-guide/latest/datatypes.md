@@ -121,9 +121,9 @@ support is tracked by [#4295](https://github.com/apache/datafusion-comet/issues/
 
 Projections and filters support `is_variant_null` (Spark 4.0+) and `is_valid_variant` (Spark 4.2+)
 on top-level Variant columns and literals. Other Variant expressions fall back. The predicates
-preserve Spark's distinct handling of SQL NULL, Variant null, and malformed bytes, but a native
-Parquet scan can reject malformed input before a predicate receives it
-([#5429](https://github.com/apache/datafusion-comet/issues/5429)).
+preserve Spark's distinct handling of SQL NULL, Variant null, and malformed bytes. Unshredded
+scans pass payloads to the predicates after checking required children, metadata version and
+Spark's size limit. Shredded inputs still require reconstruction before evaluation.
 
 Shredded reconstruction can be slower than Spark's reader; see the
 [focused scan and allocation measurements in PR #5868](https://github.com/apache/datafusion-comet/pull/5868).

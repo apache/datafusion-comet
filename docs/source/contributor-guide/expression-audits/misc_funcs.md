@@ -44,7 +44,7 @@
 - Spark 4.0.1 (audited 2026-10-04): unavailable.
 - Spark 4.1.1 (audited 2026-10-04): unavailable.
 - Spark 4.2.0 (audited 2026-10-04): SQL NULL propagates. Validates the metadata version and every reachable value and object key. It accepts unused malformed metadata, invalid UTF-8, trailing bytes, and unordered object fields. Native validation follows Spark's accessors rather than Arrow's stricter format validation.
-- Comet accepts top-level Variant columns and literals in projections and filters. Native Parquet reconstruction rejects truncated residual bytes before expression evaluation. The ignored scan regression in `CometVariantProjectionSuite` captures this remaining part of [#5429](https://github.com/apache/datafusion-comet/issues/5429).
+- Comet accepts top-level Variant columns and literals in projections and filters. Unshredded scans preserve raw payloads for predicate validation, matching Spark's constructor checks for missing children, metadata version and size. `CometVariantProjectionSuite` covers malformed scan bytes and constructor errors (verified 2026-10-05).
 
 ## is_variant_null
 
