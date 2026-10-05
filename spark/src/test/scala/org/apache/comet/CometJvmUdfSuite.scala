@@ -95,11 +95,17 @@ class CometJvmUdfSuite extends CometTestBase {
     registerSubtract()
     val rows = spark
       .range(0, 3)
-      .selectExpr("jvm_add_one(41L)", "jvm_subtract(id, 10L)", "jvm_subtract(10L, id)")
+      .selectExpr(
+        "jvm_add_one(41L)",
+        "jvm_subtract(id, 10L)",
+        "jvm_subtract(10L, id)",
+        // Spark's analyzer types a bare NULL as the registered argument type.
+        "jvm_add_one(NULL)")
       .collect()
     assert(rows.map(_.getLong(0)).toSeq == Seq(42L, 42L, 42L))
     assert(rows.map(_.getLong(1)).toSeq == Seq(-10L, -9L, -8L))
     assert(rows.map(_.getLong(2)).toSeq == Seq(10L, 9L, 8L))
+    assert(rows.forall(_.isNullAt(3)))
   }
 
   test("arguments are evaluated natively rather than by the codegen dispatcher") {
@@ -299,6 +305,14 @@ class CometJvmUdfSuite extends CometTestBase {
     assert(column(fixed) == Seq(1L, 2L, 3L))
   }
 
+  test("a call whose argument types differ only in nullability is accepted") {
+    val arrays = ArrayType(LongType, containsNull = true)
+    CometJvmUDF.register(spark, "jvm_echo", classOf[EchoUdf], Seq(arrays), arrays)
+    // `array(id)` cannot contain a null, unlike the registered type.
+    val df = spark.range(0, 2).selectExpr("jvm_echo(array(id))")
+    assert(column(df) == Seq(Seq(0L), Seq(1L)))
+  }
+
   test("a call with the wrong number of arguments fails analysis") {
     registerAddOne()
     val e = intercept[AnalysisException] {
@@ -307,6 +321,38 @@ class CometJvmUdfSuite extends CometTestBase {
     assert(
       e.getMessage.contains("requires 1 parameters but the actual number is 2"),
       e.getMessage)
+  }
+
+  test("a UDF runs over many batches") {
+    registerAddOne()
+    withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "100") {
+      val df = spark.range(0, 10000, 1, 2).selectExpr("sum(jvm_add_one(id))")
+      assert(column(df) == Seq(50005000L))
+    }
+  }
+
+  test("a dictionary-encoded Parquet column reaches the UDF") {
+    // Parquet dictionary-encodes a string column with repeated values.
+    CometJvmUDF.register(spark, "jvm_echo", classOf[EchoUdf], Seq(StringType), StringType)
+    withTable("t") {
+      sql("CREATE TABLE t (s STRING) USING parquet")
+      sql("INSERT INTO t VALUES ('a'), ('b'), ('a'), (NULL), ('b')")
+      val out = column(sql("SELECT jvm_echo(s) FROM t ORDER BY s"))
+      assert(out == Seq(null, "a", "a", "b", "b"))
+    }
+  }
+
+  test("a type Comet cannot carry natively is refused at registration") {
+    val e = intercept[IllegalArgumentException] {
+      CometJvmUDF.register(
+        spark,
+        "jvm_object",
+        classOf[EchoUdf],
+        Seq(ObjectType(classOf[String])),
+        LongType)
+    }
+    assert(e.getMessage.contains("Comet has no native representation"), e.getMessage)
+    assert(!spark.catalog.functionExists("jvm_object"))
   }
 
   test("a UDF can take more than four arguments") {

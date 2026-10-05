@@ -141,8 +141,9 @@ CometJvmUDF.register(
 ```
 
 `register` checks on the driver that the class is concrete and public and has a public
-no-argument constructor. Executors load the class by name, so it has to be on their classpath
-too, for example through `--jars`.
+no-argument constructor, and that Comet can carry the argument and return types natively.
+Executors load the class by name, so it has to be on their classpath too, for example through
+`--jars`.
 
 The name becomes a temporary function of the session, just as with `spark.udf.register`: other
 sessions do not see it, and registering another function under the same name replaces it.

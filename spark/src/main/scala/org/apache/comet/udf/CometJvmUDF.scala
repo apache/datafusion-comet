@@ -27,6 +27,7 @@ import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.comet.CometUdfErrors
 import org.apache.spark.sql.types.DataType
 
+import org.apache.comet.serde.QueryPlanSerde
 import org.apache.comet.shims.ShimSessionFunctionRegistry
 
 /**
@@ -75,6 +76,12 @@ object CometJvmUDF {
       returnType: DataType,
       deterministic: Boolean = true): Unit = {
     validateUdfClass(udfClass)
+    // Spark cannot evaluate the call, so a type Comet cannot carry natively could only ever fail.
+    (inputTypes :+ returnType).find(QueryPlanSerde.serializeDataType(_).isEmpty).foreach { t =>
+      throw new IllegalArgumentException(
+        s"UDF '$name' cannot be registered with type ${t.catalogString}: Comet has no native " +
+          "representation for it.")
+    }
     val className = udfClass.getName
     ShimSessionFunctionRegistry
       .functionRegistry(spark)
