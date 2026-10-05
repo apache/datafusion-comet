@@ -31,6 +31,8 @@
 //!   accepts
 //! - `make_map_c`: `(Int64) -> Map`, built with arrow-rs's default
 //!   `MapBuilder` field names, which differ from the ones Comet emits
+//! - `make_struct_c`: `(Int64) -> Struct`, whose field is declared
+//!   non-nullable where Spark's `StructField` is nullable by default
 //! - `panics_on_invoke` / `panics_on_return_field`: panic containment
 //!
 //! Note that this crate depends only on `arrow` and `comet-udf-sdk`, with no
@@ -41,10 +43,10 @@
 use std::sync::Arc;
 
 use arrow::array::{
-    Array, ArrayRef, Int32Builder, Int64Array, MapBuilder, StringArray, StringBuilder,
-    TimestampMicrosecondArray,
+    Array, ArrayRef, Int32Array, Int32Builder, Int64Array, MapBuilder, StringArray, StringBuilder,
+    StructArray, TimestampMicrosecondArray,
 };
-use arrow::datatypes::{DataType, Field, TimeUnit};
+use arrow::datatypes::{DataType, Field, Fields, TimeUnit};
 use arrow::util::display::{ArrayFormatter, FormatOptions};
 
 use comet_udf_sdk::c_abi::CometCScalarUdf;
@@ -307,6 +309,51 @@ impl CometCScalarUdf for MakeMapC {
     }
 }
 
+/// `(Int64) -> Struct<a: Int32>` whose field `a` is declared non-nullable.
+///
+/// A registration that declares `a` nullable, as Spark's `StructField` does
+/// by default, is accepted, since nested nullability is disregarded when the
+/// declared and reported types are compared. The plan has to carry the
+/// nullable form anyway: an `if` that combines this with a struct whose `a`
+/// can be NULL cannot narrow that one to match.
+#[derive(Default)]
+pub struct MakeStructC;
+
+impl MakeStructC {
+    fn fields() -> Fields {
+        Fields::from(vec![Field::new("a", DataType::Int32, false)])
+    }
+}
+
+impl CometCScalarUdf for MakeStructC {
+    fn name(&self) -> &str {
+        "make_struct_c"
+    }
+
+    fn return_field(&self, args: &[Field]) -> Result<Field, String> {
+        if args.len() != 1 || args[0].data_type() != &DataType::Int64 {
+            return Err("make_struct_c expects (Int64)".to_string());
+        }
+        Ok(Field::new(
+            "make_struct_c",
+            DataType::Struct(Self::fields()),
+            true,
+        ))
+    }
+
+    fn invoke(&self, args: &[ArrayRef], _n_rows: usize) -> Result<ArrayRef, String> {
+        let arr = args[0]
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .ok_or_else(|| "expected Int64Array".to_string())?;
+        // A NULL input is a NULL struct, so `a` itself never holds a NULL.
+        let a = Int32Array::from_iter_values(arr.values().iter().map(|v| *v as i32));
+        let out = StructArray::try_new(Self::fields(), vec![Arc::new(a)], arr.nulls().cloned())
+            .map_err(|e| e.to_string())?;
+        Ok(Arc::new(out))
+    }
+}
+
 /// Panics unconditionally when invoked, so host tests can verify that a
 /// panic inside user code is caught at the FFI boundary and surfaced as a
 /// query error rather than unwinding into the host.
@@ -354,6 +401,7 @@ comet_c_udf_export!(
     MakeTsUtcC,
     MakeTsNaiveC,
     MakeMapC,
+    MakeStructC,
     PanicsOnInvoke,
     PanicsOnReturnField
 );

@@ -45,6 +45,8 @@ use arrow::datatypes::{DataType, Field};
 use arrow::ffi::{from_ffi_and_data_type, FFI_ArrowArray, FFI_ArrowSchema};
 use comet_udf_sdk::c_abi::{CometCScalarKernel, CometCScalarKernelImpl};
 use datafusion::common::DataFusionError;
+
+use super::promised_return_type;
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, TypeSignature, Volatility,
 };
@@ -334,18 +336,18 @@ impl ScalarUDFImpl for ImportedCScalarUdf {
 /// Give `array` the type the planner promised DataFusion for this call.
 ///
 /// The planner promises the kernel's own return type with list and map
-/// child fields renamed to Comet's canonical names (see
-/// `canonicalize_child_names`), because every other Comet expression uses
-/// those names and operators that combine arrays, such as `if`, reject a
-/// column whose type differs from their schema by a field name. The kernel
-/// may use any names it likes, since they are positional in the Arrow
-/// format, so the result is renamed here. The cast only relabels the
-/// fields; the buffers are reused.
+/// child fields renamed to Comet's canonical names and every nested field
+/// nullable (see `promised_return_type`), because operators that combine
+/// arrays, such as `if`, need this column's type to agree with what other
+/// expressions produce. The kernel may use any child names it likes, since
+/// they are positional in the Arrow format, and may declare fields
+/// non-nullable, so the result is relabelled here. The cast only renames
+/// fields and widens their nullability; the buffers are reused.
 ///
-/// Anything beyond a naming difference is an error rather than a cast: the
-/// planner checked the kernel's type, and the SDK checks every result
-/// against it, so a real type difference here means the kernel's
-/// `return_field` changed between planning and execution.
+/// Anything else is an error rather than a cast: the planner checked the
+/// kernel's type, and the SDK checks every result against it, so a real
+/// type difference here means the kernel's `return_field` changed between
+/// planning and execution.
 fn conform_to_promised_type(
     name: &str,
     array: ArrayRef,
@@ -354,7 +356,7 @@ fn conform_to_promised_type(
     if array.data_type() == promised {
         return Ok(array);
     }
-    if !array.data_type().equals_datatype(promised) {
+    if &promised_return_type(array.data_type()) != promised {
         return Err(DataFusionError::Execution(format!(
             "{name}: returned {} but was planned as {promised}",
             array.data_type()
@@ -392,7 +394,7 @@ mod tests {
     use crate::execution::c_udf::cache::get_or_load;
     use crate::execution::c_udf::test_support::{test_udfs_path, BUILD_HINT};
     use arrow::array::{Array, AsArray, Int64Array};
-    use arrow::datatypes::{FieldRef, Int64Type};
+    use arrow::datatypes::{FieldRef, Int32Type, Int64Type};
     use datafusion::common::ScalarValue;
     use datafusion::logical_expr::ScalarUDFImpl;
     use std::sync::Arc;
@@ -559,7 +561,7 @@ mod tests {
         let kernel_type = make_map
             .return_type(&[DataType::Int64])
             .expect("return_type");
-        let promised = crate::execution::c_udf::canonicalize_child_names(&kernel_type);
+        let promised = promised_return_type(&kernel_type);
         assert_ne!(
             kernel_type, promised,
             "make_map_c should use non-canonical names"
@@ -579,8 +581,43 @@ mod tests {
         assert!(out.is_valid(0) && out.is_null(1));
     }
 
-    /// A result that differs from the promised type by more than child names is an error, not a
-    /// cast.
+    /// `make_struct_c` reports its struct's field as non-nullable. The adapter hands the result back
+    /// with the field nullable, as the planner promised.
+    #[test]
+    fn result_is_widened_to_the_promised_nullability() {
+        let make_struct = cached_udf("make_struct_c");
+        let kernel_type = make_struct
+            .return_type(&[DataType::Int64])
+            .expect("return_type");
+        let promised = promised_return_type(&kernel_type);
+        assert_ne!(
+            kernel_type, promised,
+            "make_struct_c should report a non-nullable field"
+        );
+
+        let out = call(
+            &make_struct,
+            vec![ColumnarValue::Array(Arc::new(Int64Array::from(vec![
+                Some(7),
+                None,
+            ])))],
+            2,
+            promised.clone(),
+        )
+        .expect("invoke");
+        assert_eq!(out.data_type(), &promised);
+        assert_eq!(
+            out.as_struct()
+                .column(0)
+                .as_primitive::<Int32Type>()
+                .value(0),
+            7
+        );
+        assert!(out.is_valid(0) && out.is_null(1));
+    }
+
+    /// A result that differs from the promised type by more than child names and nullability is an
+    /// error, not a cast.
     #[test]
     fn result_of_a_different_type_is_not_cast() {
         let err = call(

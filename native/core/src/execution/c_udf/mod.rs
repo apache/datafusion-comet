@@ -66,7 +66,7 @@ const MAP_VALUE_NAME: &str = "value";
 /// names them `entries` / `keys` / `values` where Comet's Spark conversion emits `entries` /
 /// `key` / `value`. Rejecting a UDF over that would be rejecting it for a spelling. They are
 /// rewritten to Comet's names so the comparison ignores the difference, and the result is renamed
-/// the same way before it enters the plan (see [`canonicalize_child_names`]).
+/// the same way before it enters the plan (see [`promised_return_type`]).
 ///
 /// Struct field names are *not* normalized: those are part of the Spark type and a caller reading
 /// `row.getAs[Row]("x").getAs[Int]("a")` depends on them.
@@ -117,59 +117,60 @@ fn normalize_for_comparison(dt: &DataType) -> DataType {
     }
 }
 
-/// Rename every list element and map entries / key / value field in `dt` to the names Comet's
-/// Spark-to-Arrow conversion uses, keeping each field's type, nullability and metadata.
+/// The type the planner promises DataFusion for a call whose kernel reports `kernel_type`, and that
+/// the adapter conforms each result to. It differs from `kernel_type` in two ways, neither of which
+/// changes the data:
 ///
-/// The planner promises DataFusion this form of the kernel's return type, and the adapter relabels
-/// each result to match. Promising the kernel's own names is not enough: a UDF that builds a map
-/// with `MapBuilder::new(None, ..)` would carry `keys` / `values` into the plan, and an operator
-/// that combines it with a map from any other expression, such as `if` or `CASE`, then fails with
-/// `column types must match schema types`.
-pub fn canonicalize_child_names(dt: &DataType) -> DataType {
-    fn with(f: &FieldRef, name: &str, data_type: DataType) -> FieldRef {
-        Arc::new(f.as_ref().clone().with_name(name).with_data_type(data_type))
+/// - List element and map entries / key / value fields get the names Comet's Spark-to-Arrow
+///   conversion uses. A UDF that builds a map with `MapBuilder::new(None, ..)` would otherwise
+///   carry `keys` / `values` into the plan, and an operator that combines it with a map from any
+///   other expression, such as `if` or `CASE`, then fails with `column types must match schema
+///   types`.
+/// - Every nested field is nullable, except a map's entries and keys, which Arrow requires to be
+///   non-null. A kernel can report `Struct<a: Int32>` with a non-nullable `a` for a registration
+///   whose `a` is nullable, since [`return_types_compatible`] disregards nested nullability. An
+///   operator that took the UDF's type for its result would then have to narrow a nullable `a`
+///   from another expression, and that cast fails.
+///
+/// Struct field names, types and metadata are kept as the kernel reports them.
+pub fn promised_return_type(kernel_type: &DataType) -> DataType {
+    fn with(f: &FieldRef, name: &str, nullable: bool) -> FieldRef {
+        Arc::new(
+            f.as_ref()
+                .clone()
+                .with_name(name)
+                .with_data_type(promised_return_type(f.data_type()))
+                .with_nullable(nullable),
+        )
     }
     fn element(f: &FieldRef) -> FieldRef {
-        with(
-            f,
-            LIST_ELEMENT_NAME,
-            canonicalize_child_names(f.data_type()),
-        )
+        with(f, LIST_ELEMENT_NAME, true)
     }
     fn entries(f: &FieldRef) -> FieldRef {
         match f.data_type() {
             DataType::Struct(fields) if fields.len() == 2 => {
-                let key = with(
-                    &fields[0],
-                    MAP_KEY_NAME,
-                    canonicalize_child_names(fields[0].data_type()),
-                );
-                let value = with(
-                    &fields[1],
-                    MAP_VALUE_NAME,
-                    canonicalize_child_names(fields[1].data_type()),
-                );
-                with(
-                    f,
-                    MAP_ENTRIES_NAME,
-                    DataType::Struct([key, value].into_iter().collect()),
+                let key = with(&fields[0], MAP_KEY_NAME, false);
+                let value = with(&fields[1], MAP_VALUE_NAME, true);
+                Arc::new(
+                    f.as_ref()
+                        .clone()
+                        .with_name(MAP_ENTRIES_NAME)
+                        .with_data_type(DataType::Struct([key, value].into_iter().collect()))
+                        .with_nullable(false),
                 )
             }
-            other => with(f, f.name(), canonicalize_child_names(other)),
+            _ => with(f, f.name(), f.is_nullable()),
         }
     }
-    match dt {
+    match kernel_type {
         DataType::List(f) => DataType::List(element(f)),
         DataType::LargeList(f) => DataType::LargeList(element(f)),
         DataType::ListView(f) => DataType::ListView(element(f)),
         DataType::LargeListView(f) => DataType::LargeListView(element(f)),
         DataType::FixedSizeList(f, n) => DataType::FixedSizeList(element(f), *n),
-        DataType::Struct(fields) => DataType::Struct(
-            fields
-                .iter()
-                .map(|f| with(f, f.name(), canonicalize_child_names(f.data_type())))
-                .collect(),
-        ),
+        DataType::Struct(fields) => {
+            DataType::Struct(fields.iter().map(|f| with(f, f.name(), true)).collect())
+        }
         DataType::Map(f, sorted) => DataType::Map(entries(f), *sorted),
         other => other.clone(),
     }
@@ -309,21 +310,22 @@ mod tests {
         ));
     }
 
-    /// Canonicalizing renames positional child fields at every depth but keeps nullability, which
-    /// Arrow enforces for map keys, and leaves struct field names alone.
+    /// The promised type renames positional child fields at every depth and makes every nested
+    /// field nullable, except a map's entries and keys, which Arrow requires to be non-null. Struct
+    /// field names are left alone.
     #[test]
-    fn canonicalize_renames_positional_children_only() {
+    fn promised_type_renames_positional_children_and_widens_nested_fields() {
         let inner = DataType::Struct(Fields::from(vec![Field::new(
             "s",
             DataType::List(Arc::new(Field::new("element", DataType::Int32, false))),
-            true,
+            false,
         )]));
         let actual = DataType::Map(
             Arc::new(Field::new(
                 "kv",
                 DataType::Struct(Fields::from(vec![
                     Field::new("keys", DataType::Utf8, false),
-                    Field::new("values", inner, true),
+                    Field::new("values", inner, false),
                 ])),
                 false,
             )),
@@ -331,7 +333,7 @@ mod tests {
         );
         let expected_inner = DataType::Struct(Fields::from(vec![Field::new(
             "s",
-            DataType::List(Arc::new(Field::new("item", DataType::Int32, false))),
+            DataType::List(Arc::new(Field::new("item", DataType::Int32, true))),
             true,
         )]));
         let expected = DataType::Map(
@@ -345,7 +347,7 @@ mod tests {
             )),
             false,
         );
-        assert_eq!(canonicalize_child_names(&actual), expected);
+        assert_eq!(promised_return_type(&actual), expected);
     }
 
     #[test]

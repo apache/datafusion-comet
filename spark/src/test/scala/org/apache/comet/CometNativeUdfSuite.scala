@@ -508,6 +508,30 @@ class CometNativeUdfSuite extends CometTestBase {
     }
   }
 
+  test("a struct whose field the UDF declares non-nullable combines with Comet's own structs") {
+    // make_struct_c reports its field `a` as non-nullable, where this registration, like any
+    // StructField by default, declares it nullable. The native plan has to carry the nullable form,
+    // since `if` gives both branches one type and cannot narrow the other branch's `a`, which is
+    // NULL in the last row. Both branch orders, as in the map test above.
+    val structType = StructType(Seq(StructField("a", IntegerType)))
+    CometNativeUDF.register(spark, "make_struct_c", libPath, Seq(LongType), structType)
+    val other = "named_struct('a', if(id = 3, null, cast(id + 100 as int)))"
+    for (sql <- Seq(
+        s"if(id % 2 = 0, make_struct_c(id), $other)",
+        s"if(id % 2 = 1, $other, make_struct_c(id))")) {
+      val values = spark
+        .range(0, 4)
+        .selectExpr(s"$sql AS s")
+        .collect()
+        .map { row =>
+          val s = row.getStruct(0)
+          if (s.isNullAt(0)) None else Some(s.getInt(0))
+        }
+        .toSeq
+      assert(values == Seq(Some(0), Some(101), Some(2), None), sql)
+    }
+  }
+
   test("registering a nondeterministic UDF is refused") {
     // Comet plans every native UDF as immutable, so accepting this would let the optimizer
     // constant-fold or CSE a call the caller told us was not safe to reuse. Refuse at
