@@ -232,7 +232,6 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
         }
         withSQLConf(
           CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
-          CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
           CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true") {
           val table = spark.read.parquet(filename)
           table.createOrReplaceTempView("t1")
@@ -511,7 +510,6 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       }
       withSQLConf(
         CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
-        CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
         CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true") {
         withTempView("t1", "t2") {
           val table = spark.read.parquet(filename)
@@ -1024,7 +1022,6 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       }
       withSQLConf(
         CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
-        CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
         CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true") {
         withTempView("t1", "t2") {
           val table = spark.read.parquet(filename)
@@ -1120,7 +1117,6 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       }
       withSQLConf(
         CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
-        CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
         CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true") {
         withTempView("t1", "t2") {
           val table = spark.read.parquet(filename)
@@ -1171,7 +1167,6 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       }
       withSQLConf(
         CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
-        CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
         CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true") {
         withTempView("t1", "t2") {
           val table = spark.read.parquet(filename)

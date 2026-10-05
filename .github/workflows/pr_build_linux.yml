@@ -510,6 +510,7 @@ jobs:
               org.apache.comet.exec.CometAggregateSuite
               org.apache.comet.exec.CometExec3_4PlusSuite
               org.apache.comet.exec.CometExecSuite
+              org.apache.comet.exec.CometMergeRowsSuite
               org.apache.comet.exec.CometTopKSuite
               org.apache.comet.exec.CometEmptyRelationExecSuite
               org.apache.comet.exec.CometRangeExecSuite
@@ -518,6 +519,7 @@ jobs:
               org.apache.comet.exec.CometInMemoryCacheKryoSuite
               org.apache.comet.exec.CometInMemoryCacheKryoUnregisteredSuite
               org.apache.comet.exec.CometInMemoryCacheKryoClassesToRegisterSuite
+              org.apache.comet.exec.CometInMemoryCacheLastAttemptMetricSuite
               org.apache.comet.exec.CometGenerateExecSuite
               org.apache.comet.exec.CometWindowExecSuite
               org.apache.comet.exec.CometJoinSuite
