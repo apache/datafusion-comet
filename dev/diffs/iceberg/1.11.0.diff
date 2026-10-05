@@ -75,7 +75,7 @@ index b5d6415763..0763a723d3 100644
  
    protected void createTableWithDeleteGranularity(
 diff --git a/spark/v4.1/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/TestPartitionedWritesToWapBranch.java b/spark/v4.1/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/TestPartitionedWritesToWapBranch.java
-index af065451ab..ec7cdc2edb 100644
+index af065451ab..68e6dcadaf 100644
 --- a/spark/v4.1/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/TestPartitionedWritesToWapBranch.java
 +++ b/spark/v4.1/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/TestPartitionedWritesToWapBranch.java
 @@ -69,6 +69,17 @@ public class TestPartitionedWritesToWapBranch extends PartitionedWritesTestBase
@@ -89,7 +89,7 @@ index af065451ab..ec7cdc2edb 100644
 +            .config("spark.comet.explainFallback.enabled", "true")
 +            .config("spark.comet.scan.icebergNative.enabled", "true")
 +            .config("spark.comet.write.iceberg.splitOperator.enabled", "true")
-+            .config("spark.comet.iceberg.write.enabled", "true")
++            .config("spark.comet.write.iceberg.enabled", "true")
 +            .config("spark.comet.exec.localTableScan.enabled", "true")
 +            .config("spark.memory.offHeap.enabled", "true")
 +            .config("spark.memory.offHeap.size", "10g")
