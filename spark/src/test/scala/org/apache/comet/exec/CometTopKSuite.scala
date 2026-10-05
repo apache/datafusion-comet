@@ -27,10 +27,11 @@ import scala.jdk.CollectionConverters._
 
 import org.apache.spark.SparkThrowable
 import org.apache.spark.sql.{CometTestBase, Row}
+import org.apache.spark.sql.catalyst.expressions.{GetStructField, ScalarSubquery => LogicalScalarSubquery}
 import org.apache.spark.sql.comet.{CometLocalTopKExec, CometNativeScanExec, CometTakeOrderedAndProjectExec}
-import org.apache.spark.sql.execution.{LocalTableScanExec, SparkPlan, TakeOrderedAndProjectExec}
+import org.apache.spark.sql.execution.{LocalTableScanExec, ScalarSubquery, SparkPlan, TakeOrderedAndProjectExec}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ByteType, IntegerType, LongType, ShortType}
+import org.apache.spark.sql.types.{ByteType, IntegerType, LongType, ShortType, StructType}
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
@@ -125,6 +126,68 @@ class CometTopKSuite extends CometTestBase {
           assert(collect(plan) { case local: CometLocalTopKExec => local }.isEmpty)
           val global = collect(plan) { case topK: CometTakeOrderedAndProjectExec => topK }.head
           assert(global.finalNativePlan(1).get.getChildren(0).hasSort)
+        }
+      }
+    }
+  }
+
+  for (subqueryType <- Seq("scalar", "merged struct", "explicit struct");
+    adaptive <- Seq(false, true)) {
+    test(s"scalar subqueries in multi-partition TopK: $subqueryType, AQE=$adaptive") {
+      withSQLConf(
+        CometConf.COMET_EXEC_TOPK_FUSION_ENABLED.key -> "false",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        SQLConf.SUBQUERY_REUSE_ENABLED.key -> "true",
+        SQLConf.LEAF_NODE_DEFAULT_PARALLELISM.key -> "3",
+        SQLConf.FILES_MAX_PARTITION_BYTES.key -> "4194304") {
+        withTempPath { path =>
+          spark
+            .range(0, 120, 1, 3)
+            .selectExpr("CAST(id % 10 AS INT) AS a", "CAST(119 - id AS INT) AS b")
+            .write
+            .parquet(path.getCanonicalPath)
+          withParquetTable(path.getCanonicalPath, "topk_input") {
+            val orderBy = subqueryType match {
+              case "scalar" => "a + (SELECT max(a) FROM topk_input), b"
+              case "merged struct" =>
+                "a + (SELECT max(a) FROM topk_input), b + (SELECT min(b) FROM topk_input)"
+              case "explicit struct" =>
+                val subquery =
+                  "(SELECT named_struct('max_a', max(a), 'min_b', min(b)) FROM topk_input)"
+                s"a + $subquery.max_a, b + $subquery.min_b"
+            }
+            val query = sql(s"SELECT a, b FROM topk_input ORDER BY $orderBy LIMIT 7")
+            if (subqueryType == "merged struct") {
+              val mergedFields = query.queryExecution.optimizedPlan.collect { case node =>
+                node.expressions.flatMap(_.collect {
+                  case field @ GetStructField(subquery: LogicalScalarSubquery, _, _)
+                      if subquery.dataType.isInstanceOf[StructType] =>
+                    field
+                })
+              }.flatten
+              assert(
+                mergedFields.map(_.ordinal).toSet == Set(0, 1),
+                s"Expected both merged scalar fields:\n${query.queryExecution.optimizedPlan}")
+              assert(mergedFields.forall(_.child.dataType.asInstanceOf[StructType].length == 2))
+            }
+
+            val (_, plan) = checkSparkAnswerAndOperator(
+              query,
+              Seq(classOf[CometTakeOrderedAndProjectExec], classOf[CometNativeScanExec]))
+            val topKs = collect(plan) { case topK: CometTakeOrderedAndProjectExec => topK }
+            assert(topKs.size == 1, s"Expected one native TopK:\n$plan")
+            val topK = topKs.head
+            // These conditions force the separate per-partition native TopK iterator, which
+            // must register its own scalar subqueries before the final TopK runs after shuffle.
+            assert(!topK.child.isInstanceOf[CometLocalTopKExec])
+            assert(!topK.orderingSatisfies)
+            assert(topK.child.executeColumnar().getNumPartitions == 3)
+            val sortSubqueries = topK.sortOrder.flatMap(_.collect { case s: ScalarSubquery => s })
+            assert(sortSubqueries.nonEmpty, s"Expected scalar subqueries in native TopK:\n$plan")
+            assert(
+              sortSubqueries.forall(_.dataType.isInstanceOf[StructType]) ==
+                (subqueryType != "scalar"))
+          }
         }
       }
     }

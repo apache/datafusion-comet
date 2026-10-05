@@ -20,7 +20,6 @@
 package org.apache.spark.sql.comet.execution.arrow
 
 import java.io.ByteArrayInputStream
-import java.nio.ByteOrder
 import java.nio.charset.StandardCharsets
 
 import scala.collection.mutable.ArrayBuffer

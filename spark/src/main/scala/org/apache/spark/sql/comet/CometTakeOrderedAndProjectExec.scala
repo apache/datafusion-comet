@@ -165,12 +165,21 @@ case class CometTakeOrderedAndProjectExec(
           val numOutputCols = child.output.length
           val inputSchema = CometUtils.fromAttributes(child.output)
           childRDD.mapPartitionsWithIndexInternal { case (idx, iter) =>
-            CometExec.getCometIterator(
+            val it = CometExec.getCometIterator(
               CometArrowStream.inputObjects(iter, inputSchema, "CometTakeOrderedAndProject-topK"),
               numOutputCols,
               serializedTopK,
               numParts,
               idx)
+            setSubqueries(it.id, this)
+
+            Option(TaskContext.get()).foreach { context =>
+              context.addTaskCompletionListener[Unit] { _ =>
+                cleanSubqueries(it.id, this)
+              }
+            }
+
+            it
           }
         }
 

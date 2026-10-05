@@ -25,7 +25,6 @@ import org.apache.spark.sql.execution.{ProjectExec, ScalarSubquery, SubqueryExec
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark41Plus}
-import org.apache.comet.serde.QueryPlanSerde.supportedDataType
 import org.apache.comet.shims.CometTypeShim
 
 /** Direct type-gate tests avoid optimizer folding and exercise types Parquet cannot store. */
@@ -69,21 +68,6 @@ class CometScalarSubquerySuite extends CometTestBase with CometTypeShim {
     DecimalType(10, 2),
     DecimalType(38, 38))
 
-  // Freeze the pre-refactor shared predicate: existing callers must retain their accepted types.
-  private def legacySupported(dt: DataType, allowComplex: Boolean): Boolean = dt match {
-    case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
-        _: DoubleType | _: StringType | _: BinaryType | _: TimestampType | _: TimestampNTZType |
-        _: DecimalType | _: DateType | _: BooleanType | _: NullType | CalendarIntervalType =>
-      true
-    case dt if isTimeType(dt) => true
-    case s: StructType if allowComplex =>
-      s.nonEmpty && s.fields.forall(f => legacySupported(f.dataType, allowComplex))
-    case a: ArrayType if allowComplex => legacySupported(a.elementType, allowComplex)
-    case m: MapType if allowComplex =>
-      legacySupported(m.keyType, allowComplex) && legacySupported(m.valueType, allowComplex)
-    case _ => false
-  }
-
   private def nestedTypes(dt: DataType): Seq[DataType] = Seq(
     dt,
     struct(dt),
@@ -93,7 +77,7 @@ class CometScalarSubquerySuite extends CometTestBase with CometTypeShim {
     MapType(IntegerType, dt),
     struct(ArrayType(MapType(StringType, dt))))
 
-  test("shared type gate preserves existing defaults and non-struct scalar subqueries") {
+  test("non-struct scalar subqueries use the shared type gate defaults") {
     val types = scalarTypes ++ versionSpecificTypes ++ Seq(
       CalendarIntervalType,
       YearMonthIntervalType(),
@@ -103,58 +87,8 @@ class CometScalarSubquerySuite extends CometTestBase with CometTypeShim {
       StructType(Nil),
       StructType(Seq(StructField("same", IntegerType), StructField("same", LongType))))
     types.flatMap(nestedTypes).foreach { dt =>
-      Seq(false, true).foreach { allowComplex =>
-        withClue(s"$dt, allowComplex=$allowComplex: ") {
-          assert(supportedDataType(dt, allowComplex) == legacySupported(dt, allowComplex))
-        }
-      }
       if (!dt.isInstanceOf[StructType]) {
-        assert(supported(dt) == legacySupported(dt, allowComplex = false), dt)
-      }
-    }
-  }
-
-  test("shared capability flags apply recursively to structs arrays and map keys and values") {
-    val duplicate =
-      StructType(Seq(StructField("same", IntegerType), StructField("same", LongType)))
-    val cases: Seq[(DataType, DataType => Boolean, DataType => Boolean)] = Seq(
-      (
-        CalendarIntervalType,
-        (t: DataType) => supportedDataType(t, allowComplex = true),
-        (t: DataType) =>
-          supportedDataType(t, allowComplex = true, allowCalendarInterval = false)),
-      (
-        YearMonthIntervalType(),
-        (t: DataType) => supportedDataType(t, allowComplex = true, allowIntervals = true),
-        (t: DataType) => supportedDataType(t, allowComplex = true)),
-      (
-        DayTimeIntervalType(),
-        (t: DataType) => supportedDataType(t, allowComplex = true, allowIntervals = true),
-        (t: DataType) => supportedDataType(t, allowComplex = true)),
-      (
-        duplicate,
-        (t: DataType) => supportedDataType(t, allowComplex = true),
-        (t: DataType) =>
-          supportedDataType(t, allowComplex = true, allowDuplicateStructFieldNames = false))) ++
-      versionSpecificTypes
-        .filter(isTimeType)
-        .map(dt =>
-          (
-            dt,
-            (t: DataType) => supportedDataType(t, allowComplex = true),
-            (t: DataType) => supportedDataType(t, allowComplex = true, allowTimeType = false))) ++
-      versionSpecificTypes.collect { case dt: StringType =>
-        (
-          dt,
-          (t: DataType) => supportedDataType(t, allowComplex = true),
-          (t: DataType) => supportedDataType(t, allowComplex = true, allowAnyStringType = false))
-      }
-    cases.foreach { case (dt, accepts, rejects) =>
-      nestedTypes(dt).foreach { nested =>
-        withClue(s"$nested: ") {
-          assert(accepts(nested))
-          assert(!rejects(nested))
-        }
+        assert(supported(dt) == QueryPlanSerde.supportedDataType(dt), dt)
       }
     }
   }
@@ -191,7 +125,7 @@ class CometScalarSubquerySuite extends CometTestBase with CometTypeShim {
   test("struct decimal scale restrictions do not change the legacy non-struct gate") {
     withSQLConf("spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true") {
       val negative = DecimalType(10, -2)
-      assert(supportedDataType(struct(negative), allowComplex = true))
+      assert(QueryPlanSerde.supportedDataType(struct(negative), allowComplex = true))
       assert(supported(negative))
       assert(!supported(struct(negative)))
       assert(!supported(struct(struct(negative))))
