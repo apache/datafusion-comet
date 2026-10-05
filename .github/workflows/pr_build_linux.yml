@@ -17,49 +17,25 @@
 
 name: PR Build (Linux)
 
-# Reusable: invoked by ci.yml. Triggering, path filters, and concurrency
-# live in the umbrella workflow.
+# Reusable Linux JVM/TPC consumers of the shared native library. Triggering,
+# path filters, and concurrency live in ci.yml. Independent checks live in
+# pr_build_linux_checks.yml and the cargo-ci cache writer in build_linux_native.yml.
 #
-# Two modes, selected by `cache-refresh-only`:
+# `cache-refresh-only` keeps only the two TPC jobs, stopping after data generation
+# and Maven cache population. The queue already tested the tree on a main push.
 #
-#   false  the full pipeline: the lints, the linux-test matrix, the Rust
-#          tests and the TPC-H/TPC-DS correctness runs. Pull requests and the
-#          merge queue.
-#   true   only the jobs that write an actions/cache entry, and each only far
-#          enough to populate it. This is the push-to-main tier, where the
-#          queue has already tested the exact tree that landed and the sole
-#          remaining purpose of the run is to leave main's caches warm for the
-#          next pull request. See the `build_linux` / `build_linux_full`
-#          comments in dev/ci/compute-changes.py for why that tier exists.
-#
-# Within the full pipeline, `profiles` picks which Spark profiles the
-# linux-test matrix runs the Comet test suites against: `pr` is the default
-# build profile alone, `all` is every profile, and `nightly` is the rest.
-# The rows live in dev/ci/linux-test-profiles.py, which the `lint` job runs so
-# that the matrix can be built from its output. A pull request and the merge
-# queue run `pr`, the nightly run `nightly`, and a pull request carrying
-# `run-all-spark-profiles` runs `all`. See the `build_linux_all_profiles`
-# comment in dev/ci/compute-changes.py.
-#
-# `nightly` is also a third mode. Whenever ci.yml passes it, the default
-# profile's pipeline has already run at this commit (in the queue and the push
-# run for the scheduled event, in the PR tier for a label run), so only `lint`,
-# `build-native` and the `linux-test` matrix run; every other job carries
-# `if: ${{ inputs.profiles != 'nightly' }}`.
-#
-# Keeping all three modes in this file is deliberate. The cache keys are the
-# whole point of the push tier, and a separate cache-warming workflow would
-# have to repeat every one of them; here they cannot drift apart.
-# dev/ci/check-ci-config.py pins which jobs survive `cache-refresh-only` and
-# which run under `profiles: nightly`, so a job added without either guard
-# cannot quietly put the full pipeline back on those tiers.
+# `profiles` selects the linux-test rows from dev/ci/linux-test-profiles.py:
+# `pr` runs the default profile, `nightly` the other four, and `all` every profile.
+# The prepare-matrix job publishes those rows independently of the moved lint job.
+# In nightly mode the TPC jobs are skipped because they already ran at this commit.
+# dev/ci/check-ci-config.py checks both modes across all three Linux workflows.
 on:
   workflow_call:
     inputs:
       cache-refresh-only:
         description: >-
-          Populate main's actions/cache entries without running any lint or
-          test. Set by ci.yml on push to main.
+          Populate main's TPC dataset and Maven caches without running query
+          passes or the JVM test matrix. Set by ci.yml on push to main.
         type: boolean
         default: false
       profiles:
@@ -71,6 +47,10 @@ on:
         description: 'Which Spark profiles linux-test runs: all, pr (the default build profile) or nightly (the rest)'
         type: string
         default: 'all'
+      native-library-artifact:
+        description: 'Default Linux CI library produced by the calling workflow'
+        required: true
+        type: string
 
 env:
   RUST_VERSION: stable
@@ -82,362 +62,22 @@ env:
 
 jobs:
 
-  # Fast lint check - gates all other jobs. Runs in cache-refresh-only mode too:
-  # it is 40 seconds, and `build-native` `needs:` it, so skipping it would skip
-  # the job the push tier exists to run.
-  lint:
-    name: Lint
-    runs-on: ubuntu-24.04
-    container:
-      image: amd64/rust
+  # Select profiles independently of the checks workflow and shared native build.
+  prepare-matrix:
+    name: Select Linux test profiles
+    if: ${{ !inputs.cache-refresh-only }}
+    runs-on: ubuntu-slim
     outputs:
-      # The `profile` dimension of the linux-test matrix, selected by the
-      # `profiles` input. Computed here because this job already gates
-      # linux-test and a job-level `if:` cannot see `matrix`.
       profile-matrix: ${{ steps.profiles.outputs.matrix }}
     steps:
       - uses: actions/checkout@v7
-
       - name: Select linux-test profiles
         id: profiles
         run: python3 dev/ci/linux-test-profiles.py --profiles "${{ inputs.profiles }}" --github-output "$GITHUB_OUTPUT"
 
-      - name: Check Rust formatting
-        run: |
-          rustup component add rustfmt
-          cd native && cargo fmt --all -- --check
-
-  # Fast syntactic-only scalafix check. Parses sources without compiling, so it
-  # surfaces version-independent style issues (e.g. RedundantSyntax) in seconds,
-  # long before the lint-java matrix finishes its ~3.5 min build. The full rule
-  # set, including the semantic rules, runs in lint-java.
-  scalafix-syntactic:
-    name: Lint Scala (syntactic)
-    if: ${{ !inputs.cache-refresh-only && inputs.profiles != 'nightly' }}
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Setup coursier
-        uses: coursier/setup-action@v3
-        with:
-          jvm: temurin:21
-
-      # Split the network from the lint. `cs launch` resolves and downloads the
-      # scalafix artifacts from Maven Central, which resets connections now and
-      # then, so the warm-up retries a no-op `--version` run. The real check then
-      # runs `--mode offline` against the populated cache: no network, and a
-      # nonzero exit can only mean a lint violation, never a download failure.
-      - name: Fetch scalafix
-        run: |
-          for attempt in 1 2 3; do
-            if cs launch scalafix:0.14.6 -- --version; then
-              break
-            fi
-            if [ "$attempt" = 3 ]; then
-              echo "::error::scalafix download failed after 3 attempts."
-              exit 1
-            fi
-            echo "::warning::scalafix download failed (attempt $attempt of 3); retrying in $((attempt * 15))s."
-            sleep $((attempt * 15))
-          done
-
-      - name: Run syntactic scalafix check (no compile)
-        run: |
-          cs launch --mode offline scalafix:0.14.6 -- \
-            --check \
-            --syntactic \
-            --config .scalafix-syntactic.conf \
-            --exclude '**/target/**' \
-            spark
-
-  lint-java:
-    needs: lint
-    name: Lint Java (${{ matrix.profile.name }})
-    if: ${{ !inputs.cache-refresh-only && inputs.profiles != 'nightly' }}
-    runs-on: ubuntu-24.04
-    container:
-      image: amd64/rust
-      env:
-        JAVA_TOOL_OPTIONS: '--add-exports=java.base/sun.nio.ch=ALL-UNNAMED --add-exports=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED'
-    strategy:
-      matrix:
-        profile:
-          - name: "Spark 3.4, JDK 17, Scala 2.12"
-            java_version: "17"
-            maven_opts: "-Pspark-3.4 -Pscala-2.12"
-          - name: "Spark 3.5, JDK 17, Scala 2.12"
-            java_version: "17"
-            maven_opts: "-Pspark-3.5 -Pscala-2.12"
-          - name: "Spark 4.0, JDK 17"
-            java_version: "17"
-            maven_opts: "-Pspark-4.0"
-          - name: "Spark 4.0, JDK 21"
-            java_version: "21"
-            maven_opts: "-Pspark-4.0"
-          - name: "Spark 4.1, JDK 17"
-            java_version: "17"
-            maven_opts: "-Pspark-4.1"
-          - name: "Spark 4.2, JDK 17"
-            java_version: "17"
-            maven_opts: "-Pspark-4.2"
-      fail-fast: false
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Setup Rust & Java toolchain
-        uses: ./.github/actions/setup-builder
-        with:
-          rust-version: ${{ env.RUST_VERSION }}
-          jdk-version: ${{ matrix.profile.java_version }}
-
-      - name: Restore Maven dependencies
-        id: maven-cache
-        uses: actions/cache/restore@v6
-        with:
-          path: |
-            ~/.m2/repository
-            /root/.m2/repository
-          key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-lint
-          restore-keys: |
-            ${{ runner.os }}-java-maven-
-
-      - name: Run scalafix check
-        run: |
-          ./mvnw -B package -DskipTests scalafix:scalafix -Dscalafix.mode=CHECK -Psemanticdb ${{ matrix.profile.maven_opts }}
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v7
-        with:
-          node-version: '24'
-
-      - name: Install prettier
-        run: |
-          npm install -g prettier
-
-      - name: Run prettier
-        run: |
-          npx prettier "**/*.md" --write
-
-      - name: Mark workspace as safe for git
-        run: |
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
-
-      - name: Check for any local git changes (such as generated docs)
-        run: |
-          ./dev/ci/check-working-tree-clean.sh
-
-      # Saved only on main: an entry written from a pull request or a
-      # `gh-readonly-queue/*` branch cannot be restored by any later run, and
-      # it evicts main's from the shared budget. See "Large caches are written
-      # on main only" in README.md.
-      - name: Save Maven dependencies
-        if: ${{ github.ref == 'refs/heads/main' && steps.maven-cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v6
-        with:
-          path: |
-            ~/.m2/repository
-            /root/.m2/repository
-          key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-lint
-
-  # Compiles main and test sources with -Pstrict-warnings, which promotes scalac warnings to
-  # errors, so a change that reintroduces a cleared warning (an Int widened into a Long metric,
-  # a discarded builder result) fails here rather than accumulating. Spark 3.5 only: the profile
-  # passes on the Scala 2.12 profiles, and the Scala 2.13 remainder is tracked in
-  # https://github.com/apache/datafusion-comet/issues/5893.
-  strict-scala-warnings:
-    needs: lint
-    name: Strict Scala warnings (Spark 3.5, JDK 17)
-    if: ${{ !inputs.cache-refresh-only && inputs.profiles != 'nightly' }}
-    runs-on: ubuntu-24.04
-    container:
-      image: amd64/rust
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Setup Rust & Java toolchain
-        uses: ./.github/actions/setup-builder
-        with:
-          rust-version: ${{ env.RUST_VERSION }}
-          jdk-version: 17
-
-      - name: Restore Maven dependencies
-        id: maven-cache
-        uses: actions/cache/restore@v6
-        with:
-          path: |
-            ~/.m2/repository
-            /root/.m2/repository
-          key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-strict-warnings
-          restore-keys: |
-            ${{ runner.os }}-java-maven-
-
-      - name: Compile with strict warnings
-        run: ./mvnw -B test-compile -Pspark-3.5 -Pstrict-warnings -DskipTests
-
-      # Saved only on main: an entry written from a pull request or a
-      # `gh-readonly-queue/*` branch cannot be restored by any later run, and
-      # it evicts main's from the shared budget. See "Large caches are written
-      # on main only" in README.md.
-      - name: Save Maven dependencies
-        if: ${{ github.ref == 'refs/heads/main' && steps.maven-cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v6
-        with:
-          path: |
-            ~/.m2/repository
-            /root/.m2/repository
-          key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-strict-warnings
-
-  celeborn-reflection-compatibility:
-    needs: lint
-    name: Celeborn ${{ matrix.celeborn_version }} reflection compatibility
-    if: ${{ !inputs.cache-refresh-only && inputs.profiles != 'nightly' }}
-    runs-on: ubuntu-24.04
-    container:
-      image: amd64/rust
-      env:
-        JAVA_TOOL_OPTIONS: --add-exports=java.base/sun.nio.ch=ALL-UNNAMED --add-exports=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED
-    strategy:
-      fail-fast: false
-      matrix:
-        celeborn_version: ["0.6.0", "0.7.0"]
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Setup Rust & Java toolchain
-        uses: ./.github/actions/setup-builder
-        with:
-          rust-version: ${{ env.RUST_VERSION }}
-          jdk-version: 17
-
-      - name: Restore Maven dependencies
-        id: maven-cache
-        uses: actions/cache/restore@v6
-        with:
-          path: |
-            ~/.m2/repository
-            /root/.m2/repository
-          key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-celeborn-${{ matrix.celeborn_version }}
-          restore-keys: |
-            ${{ runner.os }}-java-maven-
-
-      - name: Verify reflected Celeborn internals
-        env:
-          SPARK_LOCAL_HOSTNAME: localhost
-          SPARK_LOCAL_IP: 127.0.0.1
-        run: |
-          SPARK_HOME="$GITHUB_WORKSPACE" ./mvnw -B clean test \
-            -Pspark-3.5,scala-2.12,celeborn-reflection-compatibility \
-            -Dceleborn.version="${{ matrix.celeborn_version }}" \
-            -Dtest=none \
-            -Dsuites=org.apache.comet.shuffle.CelebornReflectionCompatibilitySuite \
-            -DfailIfNoTests=false
-
-      # Saved only on main: an entry written from a pull request or a
-      # `gh-readonly-queue/*` branch cannot be restored by any later run, and
-      # it evicts main's from the shared budget. See "Large caches are written
-      # on main only" in README.md.
-      - name: Save Maven dependencies
-        if: ${{ github.ref == 'refs/heads/main' && steps.maven-cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v6
-        with:
-          path: |
-            ~/.m2/repository
-            /root/.m2/repository
-          key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-celeborn-${{ matrix.celeborn_version }}
-
-  # Build native library once and share with all test jobs. Also the owner of
-  # main's `cargo-ci` cache entry, which is why it runs in cache-refresh-only
-  # mode: rebuilding native/target from cold costs every pull request ~20 min.
-  #
-  # The key covers the dependency set only. Keying on the Rust sources as well
-  # wrote a fresh ~1.4 GB entry on every push that touched Rust, which helped
-  # nobody (the workspace crates recompile either way) and pushed main's other
-  # entries out of the repository's 10 GB budget. See issue #6387.
-  build-native:
-    needs: lint
-    name: Build Native Library
-    runs-on: ubuntu-24.04
-    container:
-      image: amd64/rust
-    steps:
-      - uses: actions/checkout@v7
-      - name: Setup Rust toolchain
-        uses: ./.github/actions/setup-builder
-        with:
-          rust-version: ${{ env.RUST_VERSION }}
-          jdk-version: 17  # JDK only needed for JVM module proto generation
-
-      - name: Restore Cargo cache
-        id: cargo-cache
-        uses: actions/cache/restore@v6
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            native/target
-          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}
-
-      - name: Build native library (CI profile)
-        run: |
-          cd native
-          # CI profile: same overflow behavior as release, but faster compilation
-          # (no LTO, parallel codegen)
-          cargo build --profile ci
-        env:
-          RUSTFLAGS: "-Ctarget-cpu=x86-64-v3 -Clink-arg=-fuse-ld=bfd"
-
-      - name: Upload native library
-        uses: ./.github/actions/upload-artifact-retry
-        with:
-          name: native-lib-linux
-          path: native/target/ci/libcomet.so
-          retention-days: 1
-
-      - name: Save Cargo cache
-        uses: actions/cache/save@v6
-        # The push run is the cache warmer (see the header), and it writes only
-        # when this dependency set has no entry yet. A scheduled run at the
-        # same sha would only re-archive an entry that already exists.
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            native/target
-          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}
-
-  # Run Rust tests (runs in parallel with build-native, uses debug builds).
-  #
-  # Deliberately uncached. A debug native/target is 4-5 GB, the largest entry
-  # the repository ever held, and it kept main's `cargo-ci` entry, which the
-  # native builds on the critical path need, from staying resident. This job is
-  # never the long pole of a run, so compiling the dependencies from scratch
-  # costs about 7 runner-minutes and no wall-clock time. With no cache to write
-  # it has nothing to do on push either. See issue #6387.
-  linux-test-rust:
-    needs: lint
-    name: ubuntu-latest/rust-test
-    if: ${{ !inputs.cache-refresh-only && inputs.profiles != 'nightly' }}
-    runs-on: ubuntu-24.04
-    container:
-      image: amd64/rust
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Setup Rust & Java toolchain
-        uses: ./.github/actions/setup-builder
-        with:
-          rust-version: ${{ env.RUST_VERSION }}
-          jdk-version: 17
-
-      - name: Rust test steps
-        uses: ./.github/actions/rust-test
-
+  # Native artifact readiness and Rust formatting are checked by the shared producer.
   linux-test:
-    # `lint` is already upstream via build-native; it is listed here so this
-    # job can read its `profile-matrix` output.
-    needs: [lint, build-native]
+    needs: prepare-matrix
     if: ${{ !inputs.cache-refresh-only }}
     strategy:
       matrix:
@@ -446,7 +86,7 @@ jobs:
         # pull request and in the merge queue, the other four in the nightly
         # run. The goal of the full list is coverage of every Java, Scala and
         # Spark version without testing every combination.
-        profile: ${{ fromJSON(needs.lint.outputs.profile-matrix) }}
+        profile: ${{ fromJSON(needs.prepare-matrix.outputs.profile-matrix) }}
         # Suites are grouped by functional area into balanced buckets so that no test
         # job runs much longer than ~23 min. See
         # docs/superpowers/specs/2026-05-22-pr-build-consolidation-design.md for the
@@ -645,7 +285,7 @@ jobs:
       - name: Download native library
         uses: ./.github/actions/download-artifact-retry
         with:
-          name: native-lib-linux
+          name: ${{ inputs.native-library-artifact }}
           # Download to release/ since Maven's -Prelease expects libcomet.so there
           path: native/target/release/
 
@@ -675,7 +315,6 @@ jobs:
   # the query run is skipped there; everything up to and including data
   # generation still has to happen for the dataset cache to exist.
   verify-benchmark-results-tpch:
-    needs: build-native
     name: Verify TPC-H Results
     if: ${{ inputs.profiles != 'nightly' }}
     runs-on: ubuntu-24.04
@@ -695,7 +334,7 @@ jobs:
       - name: Download native library
         uses: ./.github/actions/download-artifact-retry
         with:
-          name: native-lib-linux
+          name: ${{ inputs.native-library-artifact }}
           path: native/target/release/
 
       - name: Restore Maven dependencies
@@ -749,7 +388,6 @@ jobs:
   # there the three query passes are skipped and only the dataset generation and
   # the Maven cache remain.
   verify-benchmark-results-tpcds:
-    needs: build-native
     name: Verify TPC-DS Results
     if: ${{ inputs.profiles != 'nightly' }}
     runs-on: ubuntu-24.04
@@ -769,7 +407,7 @@ jobs:
       - name: Download native library
         uses: ./.github/actions/download-artifact-retry
         with:
-          name: native-lib-linux
+          name: ${{ inputs.native-library-artifact }}
           path: native/target/release/
 
       - name: Restore Maven dependencies

@@ -1,0 +1,318 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+name: PR Checks (Linux)
+
+# Independent lint, compilation, compatibility, and Rust debug checks.
+# Run alongside the shared native producer; these jobs do not consume its artifact.
+# Triggering and path filters live in the umbrella workflow.
+on:
+  workflow_call:
+    inputs:
+      cache-refresh-only:
+        description: 'Skip independent checks on cache-only pushes'
+        type: boolean
+        default: false
+      profiles:
+        description: 'Linux profile selection; nightly skips checks already run at this commit'
+        type: string
+        default: 'all'
+
+permissions:
+  contents: read
+
+env:
+  RUST_VERSION: stable
+  RUST_BACKTRACE: 1
+  # Force GNU ld on Linux: recent Rust stable defaults to rust-lld on
+  # x86_64-unknown-linux-gnu, and rust-lld cannot resolve -ljvm against the
+  # Zulu JDK layout installed by setup-java. Keep bfd for all cargo invocations.
+  RUSTFLAGS: "-Clink-arg=-fuse-ld=bfd"
+
+jobs:
+  lint:
+    if: ${{ !inputs.cache-refresh-only }}
+    name: Lint
+    runs-on: ubuntu-24.04
+    container:
+      image: amd64/rust
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check Rust formatting
+        run: |
+          rustup component add rustfmt
+          cd native && cargo fmt --all -- --check
+
+  # Fast syntactic-only scalafix check. Parses sources without compiling, so it
+  # surfaces version-independent style issues (e.g. RedundantSyntax) in seconds,
+  # long before the lint-java matrix finishes its ~3.5 min build. The full rule
+  # set, including the semantic rules, runs in lint-java.
+  scalafix-syntactic:
+    name: Lint Scala (syntactic)
+    if: ${{ !inputs.cache-refresh-only && inputs.profiles != 'nightly' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup coursier
+        uses: coursier/setup-action@v3
+        with:
+          jvm: temurin:21
+
+      # Split the network from the lint. `cs launch` resolves and downloads the
+      # scalafix artifacts from Maven Central, which resets connections now and
+      # then, so the warm-up retries a no-op `--version` run. The real check then
+      # runs `--mode offline` against the populated cache: no network, and a
+      # nonzero exit can only mean a lint violation, never a download failure.
+      - name: Fetch scalafix
+        run: |
+          for attempt in 1 2 3; do
+            if cs launch scalafix:0.14.6 -- --version; then
+              break
+            fi
+            if [ "$attempt" = 3 ]; then
+              echo "::error::scalafix download failed after 3 attempts."
+              exit 1
+            fi
+            echo "::warning::scalafix download failed (attempt $attempt of 3); retrying in $((attempt * 15))s."
+            sleep $((attempt * 15))
+          done
+
+      - name: Run syntactic scalafix check (no compile)
+        run: |
+          cs launch --mode offline scalafix:0.14.6 -- \
+            --check \
+            --syntactic \
+            --config .scalafix-syntactic.conf \
+            --exclude '**/target/**' \
+            spark
+
+  lint-java:
+    needs: lint
+    name: Lint Java (${{ matrix.profile.name }})
+    if: ${{ !inputs.cache-refresh-only && inputs.profiles != 'nightly' }}
+    runs-on: ubuntu-24.04
+    container:
+      image: amd64/rust
+      env:
+        JAVA_TOOL_OPTIONS: '--add-exports=java.base/sun.nio.ch=ALL-UNNAMED --add-exports=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED'
+    strategy:
+      matrix:
+        profile:
+          - name: "Spark 3.4, JDK 17, Scala 2.12"
+            java_version: "17"
+            maven_opts: "-Pspark-3.4 -Pscala-2.12"
+          - name: "Spark 3.5, JDK 17, Scala 2.12"
+            java_version: "17"
+            maven_opts: "-Pspark-3.5 -Pscala-2.12"
+          - name: "Spark 4.0, JDK 17"
+            java_version: "17"
+            maven_opts: "-Pspark-4.0"
+          - name: "Spark 4.0, JDK 21"
+            java_version: "21"
+            maven_opts: "-Pspark-4.0"
+          - name: "Spark 4.1, JDK 17"
+            java_version: "17"
+            maven_opts: "-Pspark-4.1"
+          - name: "Spark 4.2, JDK 17"
+            java_version: "17"
+            maven_opts: "-Pspark-4.2"
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Rust & Java toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: ${{ env.RUST_VERSION }}
+          jdk-version: ${{ matrix.profile.java_version }}
+
+      - name: Restore Maven dependencies
+        id: maven-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ~/.m2/repository
+            /root/.m2/repository
+          key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-lint
+          restore-keys: |
+            ${{ runner.os }}-java-maven-
+
+      - name: Run scalafix check
+        run: |
+          ./mvnw -B package -DskipTests scalafix:scalafix -Dscalafix.mode=CHECK -Psemanticdb ${{ matrix.profile.maven_opts }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+
+      - name: Install prettier
+        run: |
+          npm install -g prettier
+
+      - name: Run prettier
+        run: |
+          npx prettier "**/*.md" --write
+
+      - name: Mark workspace as safe for git
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Check for any local git changes (such as generated docs)
+        run: |
+          ./dev/ci/check-working-tree-clean.sh
+
+      # Saved only on main: an entry written from a pull request or a
+      # `gh-readonly-queue/*` branch cannot be restored by any later run, and
+      # it evicts main's from the shared budget. See "Large caches are written
+      # on main only" in README.md.
+      - name: Save Maven dependencies
+        if: ${{ github.ref == 'refs/heads/main' && steps.maven-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ~/.m2/repository
+            /root/.m2/repository
+          key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-lint
+
+  # Compiles main and test sources with -Pstrict-warnings, which promotes scalac warnings to
+  # errors, so a change that reintroduces a cleared warning (an Int widened into a Long metric,
+  # a discarded builder result) fails here rather than accumulating. Spark 3.5 only: the profile
+  # passes on the Scala 2.12 profiles, and the Scala 2.13 remainder is tracked in
+  # https://github.com/apache/datafusion-comet/issues/5893.
+  strict-scala-warnings:
+    needs: lint
+    name: Strict Scala warnings (Spark 3.5, JDK 17)
+    if: ${{ !inputs.cache-refresh-only && inputs.profiles != 'nightly' }}
+    runs-on: ubuntu-24.04
+    container:
+      image: amd64/rust
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Rust & Java toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: ${{ env.RUST_VERSION }}
+          jdk-version: 17
+
+      - name: Restore Maven dependencies
+        id: maven-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ~/.m2/repository
+            /root/.m2/repository
+          key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-strict-warnings
+          restore-keys: |
+            ${{ runner.os }}-java-maven-
+
+      - name: Compile with strict warnings
+        run: ./mvnw -B test-compile -Pspark-3.5 -Pstrict-warnings -DskipTests
+
+      # Saved only on main: an entry written from a pull request or a
+      # `gh-readonly-queue/*` branch cannot be restored by any later run, and
+      # it evicts main's from the shared budget. See "Large caches are written
+      # on main only" in README.md.
+      - name: Save Maven dependencies
+        if: ${{ github.ref == 'refs/heads/main' && steps.maven-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ~/.m2/repository
+            /root/.m2/repository
+          key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-strict-warnings
+
+  celeborn-reflection-compatibility:
+    needs: lint
+    name: Celeborn ${{ matrix.celeborn_version }} reflection compatibility
+    if: ${{ !inputs.cache-refresh-only && inputs.profiles != 'nightly' }}
+    runs-on: ubuntu-24.04
+    container:
+      image: amd64/rust
+      env:
+        JAVA_TOOL_OPTIONS: --add-exports=java.base/sun.nio.ch=ALL-UNNAMED --add-exports=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED
+    strategy:
+      fail-fast: false
+      matrix:
+        celeborn_version: ["0.6.0", "0.7.0"]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Rust & Java toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: ${{ env.RUST_VERSION }}
+          jdk-version: 17
+
+      - name: Restore Maven dependencies
+        id: maven-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ~/.m2/repository
+            /root/.m2/repository
+          key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-celeborn-${{ matrix.celeborn_version }}
+          restore-keys: |
+            ${{ runner.os }}-java-maven-
+
+      - name: Verify reflected Celeborn internals
+        env:
+          SPARK_LOCAL_HOSTNAME: localhost
+          SPARK_LOCAL_IP: 127.0.0.1
+        run: |
+          SPARK_HOME="$GITHUB_WORKSPACE" ./mvnw -B clean test \
+            -Pspark-3.5,scala-2.12,celeborn-reflection-compatibility \
+            -Dceleborn.version="${{ matrix.celeborn_version }}" \
+            -Dtest=none \
+            -Dsuites=org.apache.comet.shuffle.CelebornReflectionCompatibilitySuite \
+            -DfailIfNoTests=false
+
+      # Saved only on main: an entry written from a pull request or a
+      # `gh-readonly-queue/*` branch cannot be restored by any later run, and
+      # it evicts main's from the shared budget. See "Large caches are written
+      # on main only" in README.md.
+      - name: Save Maven dependencies
+        if: ${{ github.ref == 'refs/heads/main' && steps.maven-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ~/.m2/repository
+            /root/.m2/repository
+          key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-celeborn-${{ matrix.celeborn_version }}
+
+  # Rust debug tests stay uncached and skip cache-only pushes.
+  linux-test-rust:
+    needs: lint
+    name: ubuntu-latest/rust-test
+    if: ${{ !inputs.cache-refresh-only && inputs.profiles != 'nightly' }}
+    runs-on: ubuntu-24.04
+    container:
+      image: amd64/rust
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Rust & Java toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: ${{ env.RUST_VERSION }}
+          jdk-version: 17
+
+      - name: Rust test steps
+        uses: ./.github/actions/rust-test
