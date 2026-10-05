@@ -20,6 +20,7 @@
 pub mod expression_registry;
 pub mod macros;
 pub mod operator_registry;
+mod partial_aggregation;
 mod shuffle;
 mod write;
 
@@ -38,6 +39,9 @@ use crate::execution::operators::init_csv_datasource_exec;
 use crate::execution::operators::DynamicFilterJoinExec;
 use crate::execution::operators::IcebergScanExec;
 use crate::execution::operators::TopKReaderFilterExec;
+use crate::execution::partial_aggregation::{
+    wrap_aggregate_expr, PartialAggregationConfig, PartialAggregationExec,
+};
 use crate::execution::{
     operators::{
         ExecutionError, MergeActionContext, MergeInstructionExec, MergeRowsExec, ScanExec,
@@ -1452,6 +1456,11 @@ impl PhysicalPlanner {
                 let partial_merge_value = ProtoAggregateMode::PartialMerge as i32;
                 let has_partial_merge = proto_mode == ProtoAggregateMode::PartialMerge
                     || agg.expr_modes.contains(&partial_merge_value);
+                if !agg.expr_modes.is_empty() && agg.expr_modes.len() != agg.agg_exprs.len() {
+                    return Err(GeneralError(
+                        "Aggregate expression modes must match aggregate expressions".to_string(),
+                    ));
+                }
 
                 let agg_exprs: PhyAggResult = agg
                     .agg_exprs
@@ -1522,6 +1531,23 @@ impl PhysicalPlanner {
                     agg_exprs?.into_iter().map(Arc::new).collect()
                 };
 
+                let (bypass_eligible, bypass_reason) = partial_aggregation::eligibility(
+                    agg,
+                    self.session_ctx
+                        .state()
+                        .config()
+                        .get_extension::<PartialAggregationConfig>()
+                        .as_deref(),
+                );
+                let aggr_expr = if mode == DFAggregateMode::Partial && bypass_eligible {
+                    aggr_expr
+                        .into_iter()
+                        .map(|expr| wrap_aggregate_expr(expr, Arc::clone(&schema)))
+                        .collect::<datafusion::common::Result<Vec<_>>>()?
+                } else {
+                    aggr_expr
+                };
+
                 // Build per-aggregate filter expressions from the FILTER (WHERE ...) clause.
                 // Filters are only present in Partial mode; Final/PartialMerge always get None.
                 let filter_exprs: Result<Vec<Option<Arc<dyn PhysicalExpr>>>, ExecutionError> = agg
@@ -1546,6 +1572,15 @@ impl PhysicalPlanner {
                         Arc::clone(&schema),
                     )?,
                 );
+                let aggregate: Arc<dyn ExecutionPlan> = if mode == DFAggregateMode::Partial {
+                    Arc::new(PartialAggregationExec::try_new(
+                        aggregate,
+                        bypass_eligible,
+                        bypass_reason,
+                    )?)
+                } else {
+                    aggregate
+                };
 
                 Ok((
                     scans,
@@ -5830,6 +5865,7 @@ mod tests {
                 mode: spark_operator::AggregateMode::Partial as i32,
                 expr_modes: vec![],
                 initial_input_buffer_offset: 0,
+                allow_partial_bypass: false,
             })),
         };
         let projection = Operator {
@@ -5848,7 +5884,7 @@ mod tests {
         assert_eq!("ProjectionExec", projection_exec.native_plan.name());
         assert_eq!(1, projection_exec.additional_native_plans.len());
         assert_eq!(
-            "AggregateExec",
+            "CometPartialAggregationExec",
             projection_exec.additional_native_plans[0].name()
         );
         assert_eq!(1, projection_exec.children.len());

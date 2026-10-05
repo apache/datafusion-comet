@@ -17,12 +17,14 @@
 
 use crate::{decimal_sum_overflow_error, EvalMode, SparkError, SparkErrorWithContext};
 use arrow::array::{
+    builder::{BooleanBuilder, PrimitiveBuilder},
     cast::AsArray,
     types::{Decimal128Type, Decimal256Type, DecimalType},
     Array, ArrayRef, BooleanArray, Decimal128Array,
 };
+use arrow::buffer::BooleanBuffer;
 use arrow::datatypes::{i256, DataType, Field, FieldRef, DECIMAL256_MAX_PRECISION};
-use datafusion::common::{not_impl_err, DataFusionError, Result as DFResult, ScalarValue};
+use datafusion::common::{DataFusionError, Result as DFResult, ScalarValue};
 use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion::logical_expr::Volatility::Immutable;
 use datafusion::logical_expr::{
@@ -609,10 +611,40 @@ impl GroupsAccumulator for SumDecimalGroupsAccumulator {
 
     fn convert_to_state(
         &self,
-        _values: &[ArrayRef],
-        _opt_filter: Option<&BooleanArray>,
+        values: &[ArrayRef],
+        opt_filter: Option<&BooleanArray>,
     ) -> DFResult<Vec<ArrayRef>> {
-        not_impl_err!("Input batch conversion to state not implemented")
+        assert_eq!(values.len(), 1, "single argument to convert_to_state");
+        let values = values[0].as_primitive::<Decimal128Type>();
+        if opt_filter.is_none() && values.null_count() == 0 {
+            return Ok(vec![
+                Arc::new(values.clone().with_data_type(self.result_type.clone())),
+                Arc::new(BooleanArray::new(
+                    BooleanBuffer::new_unset(values.len()),
+                    None,
+                )),
+            ]);
+        }
+
+        let mut sums = PrimitiveBuilder::<Decimal128Type>::with_capacity(values.len())
+            .with_data_type(self.result_type.clone());
+        let mut is_empty = BooleanBuilder::with_capacity(values.len());
+        for (index, value) in values.iter().enumerate() {
+            let accepted =
+                opt_filter.is_none_or(|filter| filter.is_valid(index) && filter.value(index));
+            match value.filter(|_| accepted) {
+                Some(value) => {
+                    sums.append_value(value);
+                    is_empty.append_value(false);
+                }
+                None => {
+                    // Null sum with is_empty=false marks overflow, not an ignored row.
+                    sums.append_value(0);
+                    is_empty.append_value(true);
+                }
+            }
+        }
+        Ok(vec![Arc::new(sums.finish()), Arc::new(is_empty.finish())])
     }
 
     fn size(&self) -> usize {
@@ -638,6 +670,128 @@ mod tests {
     use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode, PhysicalGroupBy};
     use datafusion::physical_plan::ExecutionPlan;
     use futures::StreamExt;
+
+    fn grouped_accumulator(
+        precision: u8,
+        scale: i8,
+        mode: EvalMode,
+    ) -> SumDecimalGroupsAccumulator {
+        let precision = (precision + 10).min(38);
+        SumDecimalGroupsAccumulator::new(
+            DataType::Decimal128(precision, scale),
+            precision,
+            mode,
+            None,
+            crate::create_query_context_map(),
+        )
+    }
+
+    #[test]
+    fn convert_to_state_matches_single_row_groups() -> Result<()> {
+        for (precision, scale) in [(1, 0), (18, 9), (28, -2), (38, 38)] {
+            let maximum = 10_i128.pow(precision as u32) - 1;
+            let input = Decimal128Array::new(
+                vec![0, maximum, i128::MAX, -maximum, 0, 1, i128::MIN, 0].into(),
+                Some(arrow::buffer::NullBuffer::from(vec![
+                    true, true, false, true, true, true, false, true,
+                ])),
+            )
+            .with_precision_and_scale(precision, scale)?
+            .slice(1, 6);
+            let filter = BooleanArray::from(vec![
+                Some(false),
+                Some(true),
+                Some(true),
+                Some(false),
+                None,
+                Some(true),
+                Some(false),
+                Some(true),
+            ])
+            .slice(1, 6);
+            let values = [Arc::new(input) as ArrayRef];
+            for filter in [None, Some(&filter)] {
+                let mut reference = grouped_accumulator(precision, scale, EvalMode::Legacy);
+                let converted = reference.convert_to_state(&values, filter)?;
+                reference.update_batch(&values, &[0, 1, 2, 3, 4, 5], filter, 6)?;
+                let expected = reference.state(EmitTo::All)?;
+                for (actual, expected) in converted.iter().zip(&expected) {
+                    assert_eq!(actual.to_data(), expected.to_data());
+                    assert_eq!(actual.null_count(), 0);
+                }
+                assert_eq!(
+                    converted[0].data_type(),
+                    &DataType::Decimal128((precision + 10).min(38), scale)
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn convert_to_state_shares_non_null_values_and_preserves_empty_input() -> Result<()> {
+        let acc = grouped_accumulator(18, 2, EvalMode::Ansi);
+        let input = Decimal128Array::from(vec![7, 100, -100])
+            .with_precision_and_scale(18, 2)?
+            .slice(1, 2);
+        let state = acc.convert_to_state(&[Arc::new(input.clone())], None)?;
+        assert_eq!(
+            state[0].as_primitive::<Decimal128Type>().values().as_ptr(),
+            input.values().as_ptr()
+        );
+        assert_eq!(
+            state[1].as_boolean(),
+            &BooleanArray::from(vec![false, false])
+        );
+
+        for length in [0, 3] {
+            let input =
+                Decimal128Array::from(vec![None; length]).with_precision_and_scale(18, 2)?;
+            let state = acc.convert_to_state(&[Arc::new(input)], None)?;
+            assert_eq!(state[0].len(), length);
+            assert_eq!(state[0].null_count(), 0);
+            assert_eq!(state[1].null_count(), 0);
+            assert!(state[0]
+                .as_primitive::<Decimal128Type>()
+                .values()
+                .iter()
+                .all(|value| *value == 0));
+            assert!(state[1].as_boolean().values().iter().all(|value| value));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn singleton_states_can_change_intermediate_overflow() -> Result<()> {
+        let unit = 10_i128.pow(37);
+        for mode in [EvalMode::Legacy, EvalMode::Ansi, EvalMode::Try] {
+            let mut ordinary = grouped_accumulator(38, 38, mode);
+            let mut bypassed = grouped_accumulator(38, 38, mode);
+            let mut bypass_error = false;
+            for values in [vec![8 * unit], vec![4 * unit, -4 * unit]] {
+                let input: ArrayRef =
+                    Arc::new(Decimal128Array::from(values).with_precision_and_scale(38, 38)?);
+                let groups = vec![0; input.len()];
+                let mut partial = grouped_accumulator(38, 38, mode);
+                partial.update_batch(&[Arc::clone(&input)], &groups, None, 1)?;
+                ordinary.merge_batch(&partial.state(EmitTo::All)?, &[0], 1)?;
+
+                let states = partial.convert_to_state(&[input], None)?;
+                bypass_error |= bypassed.merge_batch(&states, &groups, 1).is_err();
+            }
+
+            let result = ordinary.evaluate(EmitTo::All)?;
+            assert_eq!(result.as_primitive::<Decimal128Type>().value(0), 8 * unit);
+            assert_eq!(result.null_count(), 0);
+            if mode == EvalMode::Ansi {
+                assert!(bypass_error);
+            } else {
+                assert!(!bypass_error);
+                assert!(bypassed.evaluate(EmitTo::All)?.is_null(0));
+            }
+        }
+        Ok(())
+    }
 
     #[test]
     fn invalid_data_type() {

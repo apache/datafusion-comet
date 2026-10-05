@@ -2049,6 +2049,16 @@ case class CometUnionExec(
 
 trait CometBaseAggregate {
 
+  private def allowsPartialBypass(aggregate: BaseAggregateExec): Boolean = {
+    // Only producers before a shuffle may emit repeated states. In particular, Spark's
+    // post-shuffle DISTINCT deduplication stages must emit each key once, even when their
+    // expressions use PartialMerge. Recompute from the physical plan on every conversion.
+    CometConf.COMET_EXEC_AGGREGATE_SKIP_PARTIAL_ENABLED.get(aggregate.conf) &&
+    aggregate.groupingExpressions.nonEmpty &&
+    aggregate.requiredChildDistributionExpressions.isEmpty &&
+    aggregate.aggregateExpressions.forall(a => a.mode == Partial || a.mode == PartialMerge)
+  }
+
   /**
    * Whether a decimal SUM's result precision is DecimalType.MAX_PRECISION, the only case with no
    * headroom above the input where an intermediate overflow can change the answer.
@@ -2186,6 +2196,7 @@ trait CometBaseAggregate {
     if (aggregateExpressions.isEmpty) {
       val hashAggBuilder = OperatorOuterClass.HashAggregate.newBuilder()
       hashAggBuilder.addAllGroupingExprs(groupingExprs.map(_.get).asJava)
+      hashAggBuilder.setAllowPartialBypass(allowsPartialBypass(aggregate))
       // Spark has no expression mode to serialize here. An empty aggregate with a required child
       // distribution must fully deduplicate its keys (Final, or a pre-distinct PartialMerge), so
       // use native Final to keep skip-partial disabled.
@@ -2250,6 +2261,7 @@ trait CometBaseAggregate {
         hashAggBuilder.addAllGroupingExprs(groupingExprs.map(_.get).asJava)
         hashAggBuilder.addAllAggExprs(aggExprs.map(_.get).asJava)
         hashAggBuilder.setModeValue(mode.getNumber)
+        hashAggBuilder.setAllowPartialBypass(allowsPartialBypass(aggregate))
 
         // Send per-expression modes and buffer offset for PartialMerge handling
         if (hasPartialMerge) {

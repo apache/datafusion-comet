@@ -527,7 +527,7 @@ object CometConf extends ShimCometConf {
         "Experimental opt-in: let a native partial aggregate stop aggregating once its input " +
           "looks mostly distinct, and send the rest of the task's rows to the shuffle " +
           "unaggregated. Only applies to partial aggregates that feed Comet native shuffle " +
-          "and whose aggregate functions, if any, are all single-argument COUNT. The check " +
+          "and whose aggregate functions support conversion to partial states. The check " +
           "starts after the first 100,000 input rows of a task, and once aggregation stops " +
           "it does not resume, so a task whose keys repeat after a mostly distinct start can " +
           s"shuffle many times more rows than it would with this disabled. $TUNING_GUIDE.")
@@ -1070,6 +1070,18 @@ object CometConf extends ShimCometConf {
         "Otherwise, an error will be thrown and the Spark job will be aborted.")
     .booleanConf
     .createWithDefault(false)
+
+  val COMET_EXEC_PARTIAL_AGGREGATION_BYPASS_ALLOW_NUMERICAL_DIFFERENCES: ConfigEntry[Boolean] =
+    conf("spark.comet.exec.aggregate.partialBypass.allowNumericalDifferences")
+      .category(CATEGORY_TUNING)
+      .doc(
+        "Allow partial aggregation bypass when regrouping inputs may change numerical " +
+          "results or overflow behavior. Applies to floating-point SUM, all AVG (including " +
+          "integer inputs), statistical aggregates, decimal SUM, and ANSI/TRY integer SUM. " +
+          "Differences can include rounding, finite/NaN/infinite values, null results, and " +
+          "errors relative to ordinary Spark aggregation. Disabled by default.")
+      .booleanConf
+      .createWithDefault(false)
 
   val COMET_ENABLE_PARTIAL_HASH_AGGREGATE: ConfigEntry[Boolean] =
     conf("spark.comet.testing.aggregate.partialMode.enabled")
