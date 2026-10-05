@@ -73,17 +73,12 @@ pub(super) fn conform_to_declared_type(
 }
 
 /// Whether an array of type `actual` can be relabelled as `declared` without changing a value,
-/// under the rules on [`conform_to_declared_type`].
+/// under the rules on [`conform_to_declared_type`]. `declared` comes from a Spark type, so the
+/// only nested types it can be are `List`, `Struct` and `Map`.
 fn relabels_to(actual: &DataType, declared: &DataType) -> bool {
     match (actual, declared) {
         (DataType::Null, _) => true,
-        (DataType::List(a), DataType::List(d))
-        | (DataType::LargeList(a), DataType::LargeList(d)) => {
-            relabels_to(a.data_type(), d.data_type())
-        }
-        (DataType::FixedSizeList(a, a_len), DataType::FixedSizeList(d, d_len)) => {
-            a_len == d_len && relabels_to(a.data_type(), d.data_type())
-        }
+        (DataType::List(a), DataType::List(d)) => relabels_to(a.data_type(), d.data_type()),
         (DataType::Struct(a), DataType::Struct(d)) => {
             a.len() == d.len()
                 && a.iter()
@@ -125,16 +120,16 @@ mod tests {
         )))
     }
 
-    /// `[[1, 2], [3]]`, or `[[1, null], [3]]` with `with_null`, with the element field named and
-    /// marked as given.
-    fn list_array(element_name: &str, element_nullable: bool, with_null: bool) -> ArrayRef {
+    /// `[[1, 2], [3]]`, or `[[1, null], [3]]` with `with_null`, built the way Arrow Java's
+    /// `ListVector` exports a list: its element named `$data$` and nullable.
+    fn arrow_java_list(with_null: bool) -> ArrayRef {
         let values = if with_null {
             Int64Array::from(vec![Some(1), None, Some(3)])
         } else {
             Int64Array::from(vec![1, 2, 3])
         };
         Arc::new(ListArray::new(
-            Arc::new(Field::new(element_name, DataType::Int64, element_nullable)),
+            Arc::new(Field::new("$data$", DataType::Int64, true)),
             OffsetBuffer::from_lengths([2, 1]),
             Arc::new(values),
             None,
@@ -166,8 +161,7 @@ mod tests {
     #[test]
     fn an_arrow_java_list_is_relabelled_to_the_declared_type() {
         let declared = list_type("item", false);
-        let out =
-            conform_to_declared_type(CLASS, list_array("$data$", true, false), &declared).unwrap();
+        let out = conform_to_declared_type(CLASS, arrow_java_list(false), &declared).unwrap();
         assert_eq!(out.data_type(), &declared);
         let values = out.as_list::<i32>().values().as_primitive::<Int64Type>();
         assert_eq!(values.values(), &[1, 2, 3]);
@@ -176,7 +170,7 @@ mod tests {
     #[test]
     fn a_null_in_a_child_declared_non_nullable_is_an_error() {
         let declared = list_type("item", false);
-        let err = conform_to_declared_type(CLASS, list_array("$data$", true, true), &declared)
+        let err = conform_to_declared_type(CLASS, arrow_java_list(true), &declared)
             .unwrap_err()
             .to_string();
         assert!(
@@ -200,7 +194,7 @@ mod tests {
     fn a_list_nested_in_a_struct_is_relabelled() {
         let array: ArrayRef = Arc::new(StructArray::new(
             Fields::from(vec![Field::new("xs", list_type("$data$", true), true)]),
-            vec![list_array("$data$", true, false)],
+            vec![arrow_java_list(false)],
             None,
         ));
         let declared = DataType::Struct(Fields::from(vec![Field::new(

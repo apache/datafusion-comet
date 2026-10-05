@@ -23,7 +23,7 @@ import org.apache.comet.CometRuntimeException
 
 /**
  * Thrown at planning time when a UDF registered with Comet is called with argument types other
- * than the ones it was registered with. Comet does not convert arguments to the registered types.
+ * than the ones it was registered with.
  */
 class CometUdfArgumentTypeException(msg: String) extends CometRuntimeException(msg)
 

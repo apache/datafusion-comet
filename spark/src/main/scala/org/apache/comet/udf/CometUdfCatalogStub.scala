@@ -31,8 +31,7 @@ import org.apache.spark.sql.types.DataType
  * holding the call, and failing there makes that fallback visible rather than silent.
  *
  * It is built from Spark's Java UDF interfaces, which declare no argument types, so Spark inserts
- * no casts for its arguments. A call therefore reaches `CometScalaUDF` with whatever types its
- * arguments have, and that refuses one whose types differ from the registered signature.
+ * no casts for its arguments; `CometScalaUDF` checks them against the registered signature.
  */
 private[udf] object CometUdfCatalogStub {
 
@@ -45,11 +44,11 @@ private[udf] object CometUdfCatalogStub {
   /** The stub for a UDF named `name`. Fails for more than [[MaxArity]] arguments. */
   def apply(
       name: String,
-      inputTypes: Seq[DataType],
+      arity: Int,
       returnType: DataType,
       deterministic: Boolean): UserDefinedFunction = {
     def fail(): Any = throw new CometUdfNotEvaluatedException(name)
-    val stub = inputTypes.size match {
+    val stub = arity match {
       case 0 => udf((() => fail()): UDF0[Any], returnType)
       case 1 => udf(((_: Any) => fail()): UDF1[Any, Any], returnType)
       case 2 => udf(((_: Any, _: Any) => fail()): UDF2[Any, Any, Any], returnType)

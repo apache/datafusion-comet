@@ -29,13 +29,11 @@ import org.apache.spark.sql.types.DataType
  */
 sealed trait UdfMetadata {
 
-  /** The argument types every call must have. Comet does not convert arguments to them. */
+  /** The argument types every call must have. */
   def inputTypes: Seq[DataType]
 
   /** The return type Spark plans the call against. */
   def returnType: DataType
-
-  def deterministic: Boolean
 }
 
 /**
@@ -45,8 +43,7 @@ sealed trait UdfMetadata {
 final case class JvmUdfMetadata(
     className: String,
     inputTypes: Seq[DataType],
-    returnType: DataType,
-    deterministic: Boolean)
+    returnType: DataType)
     extends UdfMetadata
 
 /**

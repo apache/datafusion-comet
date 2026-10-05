@@ -59,7 +59,7 @@ object CometJvmUdfBenchmark extends CometBenchmarkBase {
 
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
     spark.udf.register("spark_add_one", (x: Long) => x + 1)
-    spark.udf.register("spark_mix", (x: Long) => mix(x))
+    spark.udf.register("spark_mix", (x: Long) => CometBenchmarkBase.mix64(x))
     CometJvmUDF.register(spark, "jvm_add_one", classOf[AddOneUdf], Seq(LongType), LongType)
     CometJvmUDF.register(spark, "jvm_mix", classOf[MixUdf], Seq(LongType), LongType)
 
@@ -81,48 +81,46 @@ object CometJvmUdfBenchmark extends CometBenchmarkBase {
   // handling rather than their UDFs.
   private def query(udf: String): String = s"SELECT max($udf(c)) FROM parquetV1Table"
 
-  private val sparkConfigs = Seq(CometConf.COMET_ENABLED.key -> "false")
-
   private def cometConfigs(dispatch: Boolean): Seq[(String, String)] = Seq(
     CometConf.COMET_ENABLED.key -> "true",
     CometConf.COMET_EXEC_ENABLED.key -> "true",
     CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> dispatch.toString)
 
+  /** One form of a function: the UDF name prefix to call it by, and the confs to run it under. */
+  private case class Form(label: String, udfPrefix: String, configs: Seq[(String, String)])
+
+  private val forms = Seq(
+    Form("Spark", "spark_", Seq(CometConf.COMET_ENABLED.key -> "false")),
+    Form("Comet, codegen dispatch", "spark_", cometConfigs(dispatch = true)),
+    // The dispatcher is off, so a plan that needed it would fall back to Spark and the vectorized
+    // UDF's catalog stub would fail the case rather than time the wrong thing.
+    Form("Comet, vectorized UDF", "jvm_", cometConfigs(dispatch = false)))
+
   /** A timing means nothing if one form computed something else. */
   private def verifyFormsAgree(fn: String): Unit = {
-    val expected = collect(sparkConfigs, query(s"spark_$fn"))
-    val dispatched = collect(cometConfigs(dispatch = true), query(s"spark_$fn"))
-    val vectorized = collect(cometConfigs(dispatch = false), query(s"jvm_$fn"))
-    assert(dispatched == expected, s"$fn: codegen dispatch returned $dispatched, not $expected")
-    assert(vectorized == expected, s"$fn: vectorized UDF returned $vectorized, not $expected")
+    val results = forms.map(f => f.label -> collect(f, fn))
+    val (_, expected) = results.head
+    results.tail.foreach { case (label, rows) =>
+      assert(rows == expected, s"$fn: $label returned $rows, not $expected")
+    }
   }
 
   /** `withSQLConf` returns `Unit` on Spark 3.x, so the rows leave through a local. */
-  private def collect(configs: Seq[(String, String)], sql: String): Seq[Row] = {
+  private def collect(form: Form, fn: String): Seq[Row] = {
     var rows: Seq[Row] = Nil
-    withSQLConf(configs: _*) {
-      rows = spark.sql(sql).collect().toSeq
+    withSQLConf(form.configs: _*) {
+      rows = spark.sql(query(form.udfPrefix + fn)).collect().toSeq
     }
     rows
   }
 
   private def runCase(name: String, fn: String): Unit = {
     val benchmark = new Benchmark(name, Rows, output = output)
-    benchmark.addCase("Spark") { _ =>
-      withSQLConf(sparkConfigs: _*) {
-        spark.sql(query(s"spark_$fn")).noop()
-      }
-    }
-    benchmark.addCase("Comet, codegen dispatch") { _ =>
-      withSQLConf(cometConfigs(dispatch = true): _*) {
-        spark.sql(query(s"spark_$fn")).noop()
-      }
-    }
-    benchmark.addCase("Comet, vectorized UDF") { _ =>
-      // The dispatcher is off, so a plan that needed it would fall back to Spark and the
-      // vectorized UDF's catalog stub would fail the case rather than time the wrong thing.
-      withSQLConf(cometConfigs(dispatch = false): _*) {
-        spark.sql(query(s"jvm_$fn")).noop()
+    forms.foreach { form =>
+      benchmark.addCase(form.label) { _ =>
+        withSQLConf(form.configs: _*) {
+          spark.sql(query(form.udfPrefix + fn)).noop()
+        }
       }
     }
     benchmark.addCase("Comet, no UDF (scan and max only)") { _ =>
@@ -136,14 +134,6 @@ object CometJvmUdfBenchmark extends CometBenchmarkBase {
 
 /** The vectorized forms, top-level so that the UDF bridge can instantiate them by name. */
 object CometJvmUdfBenchmarkUdfs {
-
-  /** A stand-in for a function with some arithmetic in it: SplitMix64's finalizer. */
-  def mix(x: Long): Long = {
-    var z = x + 0x9e3779b97f4a7c15L
-    z = (z ^ (z >>> 30)) * 0xbf58476d1ce4e5b9L
-    z = (z ^ (z >>> 27)) * 0x94d049bb133111ebL
-    z ^ (z >>> 31)
-  }
 
   /**
    * Apply `f` to every value of a `BigIntVector` column, reading and writing the value buffers
@@ -175,6 +165,6 @@ object CometJvmUdfBenchmarkUdfs {
 
   class MixUdf extends CometUDF {
     override def evaluate(inputs: Array[ValueVector], numRows: Int): ValueVector =
-      mapLongs(inputs, numRows, mix)
+      mapLongs(inputs, numRows, CometBenchmarkBase.mix64)
   }
 }

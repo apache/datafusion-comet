@@ -19,11 +19,8 @@
 
 package org.apache.comet
 
-import java.io.File
 import java.net.URLClassLoader
-import java.nio.charset.StandardCharsets.UTF_8
-import java.nio.file.{Files, Path, Paths}
-import javax.tools.ToolProvider
+import java.nio.file.Path
 
 import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector.{BigIntVector, IntVector, ValueVector}
@@ -68,12 +65,17 @@ class CometJvmUdfSuite extends CometTestBase {
   /** The first column of every row. */
   private def column(df: DataFrame): Seq[Any] = df.collect().map(_.get(0)).toSeq
 
-  /** True if `needle` appears anywhere in the exception's cause chain. */
+  private def registerRangeList(containsNull: Boolean): Unit =
+    CometJvmUDF.register(
+      spark,
+      "jvm_range_list",
+      classOf[RangeListUdf],
+      Seq(LongType),
+      ArrayType(LongType, containsNull))
+
+  /** True if `needle` appears in the message of `e` or of any of its causes. */
   private def causeChainContains(e: Throwable, needle: String): Boolean =
-    Iterator
-      .iterate(e)(_.getCause)
-      .takeWhile(_ != null)
-      .exists(t => Option(t.getMessage).exists(_.contains(needle)))
+    causeChain(e).exists(t => Option(t.getMessage).exists(_.contains(needle)))
 
   test("a vectorized UDF runs in the Comet pipeline") {
     registerAddOne()
@@ -224,9 +226,9 @@ class CometJvmUdfSuite extends CometTestBase {
         df.schema.head.dataType == dataType,
         s"test expression produced ${df.schema.head.dataType}, not $dataType")
       CometJvmUDF.register(spark, "jvm_echo", classOf[EchoUdf], Seq(dataType), dataType)
-      val expected = column(df).map(comparable)
-      assert(expected.last == null)
-      assert(column(df.selectExpr("jvm_echo(c)")).map(comparable) == expected)
+      val rows = df.selectExpr("c", "jvm_echo(c)").collect()
+      assert(rows.last.isNullAt(0))
+      rows.foreach(row => assert(comparable(row.get(1)) == comparable(row.get(0)), row))
     }
   }
 
@@ -236,12 +238,7 @@ class CometJvmUdfSuite extends CometTestBase {
       // ListVector names its element `$data$` and marks it nullable, where Comet names it `item`
       // and Spark's type says whether it is nullable. Neither changes the data, so the result is
       // relabelled rather than refused.
-      CometJvmUDF.register(
-        spark,
-        "jvm_range_list",
-        classOf[RangeListUdf],
-        Seq(LongType),
-        ArrayType(LongType, containsNull))
+      registerRangeList(containsNull)
       val lists = column(spark.range(1, 4).selectExpr("jvm_range_list(id)"))
       assert(lists == Seq(Seq(0L), Seq(0L, 1L), Seq(0L, 1L, 2L)))
     }
@@ -251,12 +248,7 @@ class CometJvmUdfSuite extends CometTestBase {
     // A ListVector's writer creates the element vector on the first element it writes, so a batch
     // of only empty lists arrives with an element of type Null. It holds no values, so it is
     // relabelled to the declared element type like a name.
-    CometJvmUDF.register(
-      spark,
-      "jvm_range_list",
-      classOf[RangeListUdf],
-      Seq(LongType),
-      ArrayType(LongType, containsNull = false))
+    registerRangeList(containsNull = false)
     val lists = column(spark.range(0, 3).selectExpr("jvm_range_list(id * 0)"))
     assert(lists == Seq(Seq(), Seq(), Seq()))
   }
@@ -265,12 +257,7 @@ class CometJvmUdfSuite extends CometTestBase {
     // The plan has to carry the result under Comet's names, not Arrow Java's: `if` puts both
     // branches into one column, which fails if their types differ by a field name. Both branch
     // orders, since the native `if` reports the type of its first branch.
-    CometJvmUDF.register(
-      spark,
-      "jvm_range_list",
-      classOf[RangeListUdf],
-      Seq(LongType),
-      ArrayType(LongType, containsNull = false))
+    registerRangeList(containsNull = false)
     for (sql <- Seq(
         "if(id > 0, jvm_range_list(id), array(-1L))",
         "if(id = 0, array(-1L), jvm_range_list(id))")) {
@@ -314,10 +301,7 @@ class CometJvmUdfSuite extends CometTestBase {
       causeChainContains(e, "registered with argument types (bigint) but is called with (int)"),
       s"unhelpful error: $e")
     assert(
-      Iterator.iterate(e: Throwable)(_.getCause).takeWhile(_ != null).exists {
-        case _: CometUdfArgumentTypeException => true
-        case _ => false
-      },
+      causeChain(e).exists(_.isInstanceOf[CometUdfArgumentTypeException]),
       s"unexpected exception type: $e")
 
     // Casting to the registered type is the fix the message asks for.
@@ -527,7 +511,33 @@ object CometJvmUdfSuite {
    * executor's ClassLoader but not into the one that loaded Comet. Compiled once per JVM, before
    * the session starts, because that setting is read at session creation.
    */
-  lazy val hiddenClassesDir: Path = compileHiddenUdf()
+  lazy val hiddenClassesDir: Path = TestJavaCompiler.compile(
+    "TimesTwoUdf.java",
+    """package hidden;
+      |
+      |import org.apache.arrow.vector.BigIntVector;
+      |import org.apache.arrow.vector.ValueVector;
+      |import org.apache.comet.udf.CometUDF;
+      |
+      |public class TimesTwoUdf implements CometUDF {
+      |  @Override
+      |  public ValueVector evaluate(ValueVector[] inputs, int numRows) {
+      |    BigIntVector in = (BigIntVector) inputs[0];
+      |    BigIntVector out = new BigIntVector("jvm_times_two", in.getAllocator());
+      |    out.allocateNew(numRows);
+      |    for (int i = 0; i < numRows; i++) {
+      |      if (in.isNull(i)) {
+      |        out.setNull(i);
+      |      } else {
+      |        out.set(i, in.get(i) * 2);
+      |      }
+      |    }
+      |    out.setValueCount(numRows);
+      |    return out;
+      |  }
+      |}
+      |""".stripMargin,
+    Seq(classOf[CometUDF], classOf[ValueVector], classOf[BufferAllocator]))
 
   /**
    * The UDF's class on the driver, as an application would hold it. Loaded through a ClassLoader
@@ -537,60 +547,4 @@ object CometJvmUdfSuite {
     new URLClassLoader(Array(hiddenClassesDir.toUri.toURL), getClass.getClassLoader)
       .loadClass(HiddenUdfClassName)
       .asSubclass(classOf[CometUDF])
-
-  private def compileHiddenUdf(): Path = {
-    // createTempDirectory does not create its parent (java.io.tmpdir, pinned to target/tmp by the
-    // pom), which does not exist yet on a fresh checkout.
-    val tmpRoot = Files.createDirectories(Paths.get(System.getProperty("java.io.tmpdir")))
-    val workDir = Files.createTempDirectory(tmpRoot, "comet-jvm-udf")
-    val src = workDir.resolve("TimesTwoUdf.java")
-    Files.write(
-      src,
-      """package hidden;
-        |
-        |import org.apache.arrow.vector.BigIntVector;
-        |import org.apache.arrow.vector.ValueVector;
-        |import org.apache.comet.udf.CometUDF;
-        |
-        |public class TimesTwoUdf implements CometUDF {
-        |  @Override
-        |  public ValueVector evaluate(ValueVector[] inputs, int numRows) {
-        |    BigIntVector in = (BigIntVector) inputs[0];
-        |    BigIntVector out = new BigIntVector("jvm_times_two", in.getAllocator());
-        |    out.allocateNew(numRows);
-        |    for (int i = 0; i < numRows; i++) {
-        |      if (in.isNull(i)) {
-        |        out.setNull(i);
-        |      } else {
-        |        out.set(i, in.get(i) * 2);
-        |      }
-        |    }
-        |    out.setValueCount(numRows);
-        |    return out;
-        |  }
-        |}
-        |""".stripMargin.getBytes(UTF_8))
-
-    val classesDir = Files.createDirectories(workDir.resolve("classes"))
-    val compiler = ToolProvider.getSystemJavaCompiler
-    assert(compiler != null, "test must run on a JDK (needs the javax.tools compiler)")
-    // Only what the source refers to. Handing javac the whole test classpath makes it open and
-    // index every jar on it, which costs more than the compile itself.
-    val classpath = Seq(classOf[CometUDF], classOf[ValueVector], classOf[BufferAllocator])
-      .map(_.getProtectionDomain.getCodeSource.getLocation.getPath)
-      .distinct
-      .mkString(File.pathSeparator)
-    val rc =
-      compiler.run(null, null, null, "-cp", classpath, "-d", classesDir.toString, src.toString)
-    assert(rc == 0, s"javac failed with exit code $rc")
-
-    deleteOnExitRecursively(workDir.toFile)
-    classesDir
-  }
-
-  /** Parents are registered before children, and deletion runs in reverse registration order. */
-  private def deleteOnExitRecursively(file: File): Unit = {
-    file.deleteOnExit()
-    Option(file.listFiles()).foreach(_.foreach(deleteOnExitRecursively))
-  }
 }

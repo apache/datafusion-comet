@@ -19,11 +19,8 @@
 
 package org.apache.comet
 
-import java.io.File
 import java.net.URLClassLoader
-import java.nio.charset.StandardCharsets.UTF_8
-import java.nio.file.{Files, Path, Paths}
-import javax.tools.ToolProvider
+import java.nio.file.Path
 
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.{CometTestBase, Encoders}
@@ -114,10 +111,26 @@ object CometScalaUDFClassLoaderSuite {
 
   /**
    * Directory holding the compiled capturing class. Compiled once per JVM, before the
-   * SparkSession starts, because `spark.executor.extraClassPath` is read at session creation. A
-   * directory works as a classpath entry, so there is no need to package a jar.
+   * SparkSession starts, because `spark.executor.extraClassPath` is read at session creation.
+   *
+   * The intersection cast is what makes the lambda serializable, and therefore what makes
+   * `hidden.HiddenUdf` the capturing class recorded in the SerializedLambda.
    */
-  lazy val hiddenClassesDir: Path = compileHiddenClass()
+  lazy val hiddenClassesDir: Path = TestJavaCompiler.compile(
+    "HiddenUdf.java",
+    """package hidden;
+      |
+      |import java.io.Serializable;
+      |import scala.Function1;
+      |
+      |public class HiddenUdf {
+      |  public static Function1<Object, Object> make() {
+      |    return (Function1<Object, Object> & Serializable)
+      |        (Object o) -> (o == null ? null : "hidden:" + o);
+      |  }
+      |}
+      |""".stripMargin,
+    Seq(classOf[Function1[_, _]]))
 
   /**
    * The UDF, obtained through a ClassLoader over `hiddenClassesDir` alone. Deliberately not
@@ -146,50 +159,5 @@ object CometScalaUDFClassLoaderSuite {
   def loaderReport(): String = {
     val status = if (canLoadHiddenClass) "loaded" else "MISSING"
     s"$status|${Thread.currentThread().getName}"
-  }
-
-  private def compileHiddenClass(): Path = {
-    // createTempDirectory does not create its parent (java.io.tmpdir, pinned to target/tmp by the
-    // pom), which does not exist yet on a fresh checkout, so make it up front.
-    val tmpRoot = Files.createDirectories(Paths.get(System.getProperty("java.io.tmpdir")))
-    val workDir = Files.createTempDirectory(tmpRoot, "comet-hidden-udf")
-    val src = workDir.resolve("HiddenUdf.java")
-    // The intersection cast is what makes the lambda serializable, and therefore what makes
-    // `hidden.HiddenUdf` the capturing class recorded in the SerializedLambda.
-    Files.write(
-      src,
-      """package hidden;
-        |
-        |import java.io.Serializable;
-        |import scala.Function1;
-        |
-        |public class HiddenUdf {
-        |  public static Function1<Object, Object> make() {
-        |    return (Function1<Object, Object> & Serializable)
-        |        (Object o) -> (o == null ? null : "hidden:" + o);
-        |  }
-        |}
-        |""".stripMargin.getBytes(UTF_8))
-
-    val classesDir = Files.createDirectories(workDir.resolve("classes"))
-    val compiler = ToolProvider.getSystemJavaCompiler
-    assert(compiler != null, "test must run on a JDK (needs the javax.tools compiler)")
-    // Only scala-library is needed. Handing javac the whole test classpath makes it open and index
-    // every jar on it, which costs more than the compile itself.
-    val classpath = Option(classOf[Function1[_, _]].getProtectionDomain.getCodeSource)
-      .map(_.getLocation.getPath)
-      .getOrElse(System.getProperty("java.class.path"))
-    val rc =
-      compiler.run(null, null, null, "-cp", classpath, "-d", classesDir.toString, src.toString)
-    assert(rc == 0, s"javac failed with exit code $rc")
-
-    deleteOnExitRecursively(workDir.toFile)
-    classesDir
-  }
-
-  /** Parents are registered before children, and deletion runs in reverse registration order. */
-  private def deleteOnExitRecursively(file: File): Unit = {
-    file.deleteOnExit()
-    Option(file.listFiles()).foreach(_.foreach(deleteOnExitRecursively))
   }
 }

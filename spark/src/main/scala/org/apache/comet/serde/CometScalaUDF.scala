@@ -114,9 +114,7 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
    */
   private def checkArgumentTypes(name: String, expr: ScalaUDF, meta: UdfMetadata): Unit = {
     val actual = expr.children.map(_.dataType)
-    val matches = actual.length == meta.inputTypes.length &&
-      actual.zip(meta.inputTypes).forall { case (a, d) => deepNullable(a) == deepNullable(d) }
-    if (!matches) {
+    if (actual.map(deepNullable) != meta.inputTypes.map(deepNullable)) {
       def render(types: Seq[DataType]): String =
         types.map(_.catalogString).mkString("(", ", ", ")")
       throw new CometUdfArgumentTypeException(

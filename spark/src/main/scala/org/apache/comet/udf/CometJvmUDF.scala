@@ -50,10 +50,9 @@ object CometJvmUDF {
    * Register `udfClass` as a scalar UDF named `name`, callable from SQL and the DataFrame API.
    *
    * Checks on the driver that the class can be instantiated the way executors will instantiate
-   * it, then records it in Comet's registry and installs a Spark catalog function under `name`,
-   * in that order, so a query can only resolve the name once Comet can plan the call. Executors
-   * load the class by name through the task's context ClassLoader, so it has to be available to
-   * them as well, for example through `--jars`.
+   * it, then records it in Comet's registry and installs a Spark catalog function under `name`.
+   * Executors load the class by name through the task's context ClassLoader, so it has to be
+   * available to them as well, for example through `--jars`.
    *
    * `inputTypes` is the signature every call must match. Comet does not convert arguments to
    * these types: a call whose argument types differ, other than in nullability, is refused at
@@ -72,10 +71,8 @@ object CometJvmUDF {
       returnType: DataType,
       deterministic: Boolean = true): Unit = {
     validateUdfClass(udfClass)
-    val stub = CometUdfCatalogStub(name, inputTypes, returnType, deterministic)
-    CometUdfRegistry.register(
-      name,
-      JvmUdfMetadata(udfClass.getName, inputTypes, returnType, deterministic))
+    val stub = CometUdfCatalogStub(name, inputTypes.size, returnType, deterministic)
+    CometUdfRegistry.register(name, JvmUdfMetadata(udfClass.getName, inputTypes, returnType))
     // Last, because this is the step that makes the name resolvable to Spark's analyzer. A call
     // planned against a resolvable name with no registry entry would go to the codegen
     // dispatcher, which would run the stub and fail.
@@ -105,7 +102,8 @@ object CometJvmUDF {
       refuse(s"it does not implement ${classOf[CometUDF].getName}")
     }
     val modifiers = udfClass.getModifiers
-    if (udfClass.isInterface || Modifier.isAbstract(modifiers)) {
+    // An interface's modifiers include abstract too.
+    if (Modifier.isAbstract(modifiers)) {
       refuse("it is abstract")
     }
     if (!Modifier.isPublic(modifiers)) {
