@@ -824,6 +824,11 @@ object CometHours extends CometExpressionSerde[Hours] {
  * For TimestampType: uses Cast(Timestamp to Date) in UTC followed by Cast(Date to Int). Spark
  * cannot evaluate `days` itself, so this counts days in UTC like [[CometHours]] and Iceberg's
  * `days` transform, rather than in the session timezone.
+ *
+ * The cast is a true floor, as [[CometHours]] is. Iceberg's `DateTimeUtil.microsToDays` differs
+ * in one case: it puts a pre-1970 timestamp exactly 999999 microseconds past midnight, such as
+ * `1969-01-01 00:00:00.999999`, in the previous day. Comet's native kernel for Iceberg's own
+ * `days` function matches Iceberg there, and this cast does not.
  */
 object CometDays extends CometExpressionSerde[Days] {
 
