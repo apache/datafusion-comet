@@ -1212,9 +1212,9 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     case _: TryEval => Seq.empty
     case order: SortOrder => Seq(order.child)
     case unary: UnaryExpression => Seq(unary.child)
-    case _: DateAdd | _: DateDiff | _: BinaryComparison =>
+    case _: DateAdd | _: DateSub | _: DateDiff | _: NextDay | _: BinaryComparison =>
       expr.children.take(if (expr.children.head.nullable) 1 else 2)
-    case _: Concat | _: Greatest | _: Least => expr.children
+    case _: Concat | _: Greatest | _: Least | _: CreateArray => expr.children
     case _ => Seq.empty
   }
 

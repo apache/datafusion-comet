@@ -29,7 +29,7 @@ import org.scalatest.PrivateMethodTester._
 import org.apache.logging.log4j.Level
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.FunctionIdentifier
-import org.apache.spark.sql.catalyst.expressions.{Alias, And, Ascending, Attribute, AttributeReference, DateAdd, DateDiff, Expression, ExpressionInfo, GreaterThan, In, InSet, IsNotNull, KnownFloatingPointNormalized, LessThan, Literal, NextDay, Not, Or, SortOrder}
+import org.apache.spark.sql.catalyst.expressions.{Alias, And, Ascending, Attribute, AttributeReference, CreateArray, DateAdd, DateDiff, DateSub, Expression, ExpressionInfo, GreaterThan, In, InSet, IsNotNull, KnownFloatingPointNormalized, LessThan, Literal, NextDay, Not, Or, SortOrder}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, BloomFilterAggregate, Final, Min, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.optimizer.{BuildRight, NormalizeNaNAndZero}
 import org.apache.spark.sql.catalyst.plans.{Inner, LeftSemi}
@@ -46,7 +46,7 @@ import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.{ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{DataTypes, DoubleType, FloatType, StructField, StructType}
+import org.apache.spark.sql.types.{DataTypes, DateType, DoubleType, FloatType, StructField, StructType}
 
 import org.apache.comet.{CometConf, CometCoverageStats, CometExplainInfo, CometSparkSessionExtensions, ConfigEntry, ExtendedExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark42Plus, withFallbackReason}
@@ -2556,20 +2556,27 @@ class CometExecRuleSuite extends CometTestBase {
 
   test("strict Project inputs stay native unless their output is deferred") {
     withAnsiNextDayProject { project =>
-      def strictProject: ProjectExec = ProjectExec(
-        Seq(project.output.head, Alias(DateAdd(project.output(1), Literal(1)), "next")()),
-        ProjectExec(project.projectList, project.child))
+      val eagerParents = Seq[Expression => Expression](
+        child => DateAdd(child, Literal(1)),
+        child => DateSub(child, Literal(1)),
+        child => NextDay(child, Literal("Friday"), failOnError = true),
+        child => CreateArray(Seq(Literal.create(null, DateType), child)))
+      eagerParents.foreach { parent =>
+        def strictProject: ProjectExec = ProjectExec(
+          Seq(project.output.head, Alias(parent(project.output(1)), "next")()),
+          ProjectExec(project.projectList, project.child))
 
-      val eager = applyCometExecRule(strictProject)
-      assert(countOperators(eager, classOf[CometProjectExec]) == 2)
-      assert(countOperators(eager, classOf[ProjectExec]) == 0)
+        val eager = applyCometExecRule(strictProject)
+        assert(countOperators(eager, classOf[CometProjectExec]) == 2, eager.toString)
+        assert(countOperators(eager, classOf[ProjectExec]) == 0, eager.toString)
 
-      // A filter can defer the strict parent's result, and therefore its input as well.
-      val deferred = strictProject
-      val filtered =
-        applyCometExecRule(FilterExec(LessThan(deferred.output.head, Literal(2)), deferred))
-      assert(countOperators(filtered, classOf[CometProjectExec]) == 0)
-      assert(countOperators(filtered, classOf[ProjectExec]) == 2)
+        // A filter can defer the strict parent's result, and therefore its input as well.
+        val deferred = strictProject
+        val filtered =
+          applyCometExecRule(FilterExec(LessThan(deferred.output.head, Literal(2)), deferred))
+        assert(countOperators(filtered, classOf[CometProjectExec]) == 0, filtered.toString)
+        assert(countOperators(filtered, classOf[ProjectExec]) == 2, filtered.toString)
+      }
     }
   }
 

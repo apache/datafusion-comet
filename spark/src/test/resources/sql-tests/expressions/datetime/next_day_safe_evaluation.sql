@@ -16,6 +16,7 @@
 -- under the License.
 
 -- Config: spark.sql.ansi.enabled=true
+-- ConfigMatrix: spark.sql.codegen.wholeStage=false,true
 
 statement
 CREATE TABLE next_day_safe(d DATE, dow STRING) USING parquet
@@ -38,3 +39,31 @@ SELECT d FROM next_day_safe ORDER BY next_day(d, dow)
 
 query expect_native(next_day)
 SELECT max(next_day(d, dow)) FROM next_day_safe
+
+-- Each parent consumes next_day even when another array element or the date is null.
+query expect_native(next_day)
+SELECT date_sub(next_day(d, dow), 1), next_day(next_day(d, dow), 'Friday'),
+       array(CAST(NULL AS DATE), next_day(d, dow))
+FROM next_day_safe
+
+statement
+CREATE TABLE next_day_eager_invalid(d DATE, dow STRING, null_date DATE) USING parquet
+
+statement
+INSERT INTO next_day_eager_invalid VALUES (DATE '2024-01-01', 'NOT_A_DAY', NULL)
+
+query expect_error(Illegal input for day of week)
+SELECT date_sub(next_day(d, dow), 1) FROM next_day_eager_invalid
+
+query expect_error(Illegal input for day of week)
+SELECT next_day(next_day(d, dow), 'Friday') FROM next_day_eager_invalid
+
+query expect_error(Illegal input for day of week)
+SELECT array(CAST(NULL AS DATE), next_day(d, dow)) FROM next_day_eager_invalid
+
+-- Binary parents still skip their right input when the left date is null.
+query expect_fallback(next_day requires Spark evaluation)
+SELECT date_sub(null_date, datediff(next_day(d, dow), d)) FROM next_day_eager_invalid
+
+query expect_fallback(next_day requires Spark evaluation)
+SELECT next_day(null_date, CAST(next_day(d, dow) AS STRING)) FROM next_day_eager_invalid
