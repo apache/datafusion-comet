@@ -376,6 +376,36 @@ class CometExecRuleSuite extends CometTestBase {
     }
   }
 
+  test("CometExecRule keeps an AQE-reused aggregate's Scan while AQE replans") {
+    withAdaptiveAggregateConf {
+      // AQE adopts a replan that differs from its current plan, so the stale Scan is left for
+      // the preparation of the stage or final plan that the aggregate ends up in.
+      val reused = createAdaptiveAggregate()
+      val result = CometExecRule(spark, queryStagePrep = true)
+        .apply(reused)
+        .asInstanceOf[CometHashAggregateExec]
+      assert(result == reused)
+      assert(result.nativeOp eq reused.nativeOp)
+      assert(serializedLeafKinds(result) == Seq("SCAN"))
+    }
+  }
+
+  test("CometExecRule points a stale Scan at the ShuffleScan stage behind an AQE shuffle read") {
+    withAdaptiveAggregateConf {
+      // AQE can put a read between the stage and the aggregate before preparing the stage that
+      // the aggregate is in. The ShuffleScan then reads the partitions that the read specifies.
+      val reused = createAdaptiveAggregate()
+      val read = AQEShuffleReadExec(reused.child, Seq(CoalescedPartitionSpec(0, 2, Some(16L))))
+      val refreshed = applyCometExecRule(reused.withNewChildren(Seq(read)))
+        .asInstanceOf[CometHashAggregateExec]
+      assert(nativeLeaves(refreshed.nativeOp).map(_.getOpStructCase.name) == Seq("SHUFFLE_SCAN"))
+      assert(serializedLeafKinds(refreshed) == Seq("SHUFFLE_SCAN"))
+      val refreshedRead = refreshed.child.asInstanceOf[AQEShuffleReadExec]
+      assert(refreshedRead.child eq reused.child)
+      assert(refreshed.getTagValue(CometExplainInfo.EXTENSION_INFO).isEmpty)
+    }
+  }
+
   test("CometExecRule keeps an AQE-reused aggregate's Scan and says so when its leaves differ") {
     withAdaptiveAggregateConf {
       val stringType = QueryPlanSerde.serializeDataType(DataTypes.StringType).get
@@ -520,71 +550,103 @@ class CometExecRuleSuite extends CometTestBase {
 
   test("AQE DPP broadcast roots retain temporary logical links after an unchanged replan") {
     assume(isSpark35Plus, "Native AQE DPP requires Spark 3.5+")
-    // With direct read, the replan that first sees the dim side's shuffle stage moves the
-    // aggregate under the broadcast onto a ShuffleScan, so that replan is not unchanged.
-    withDppLinkViews(directRead = false) {
-      val observed = new ConcurrentLinkedQueue[(CometBroadcastExchangeExec, LogicalPlan)]()
-      val tempTag = AdaptiveSparkPlanExec.TEMP_LOGICAL_PLAN_TAG
-      val costEvaluator = SimpleCostEvaluator(forceOptimizeSkewedJoin = false)
-      withReplanObserver { (broadcast, stage) =>
-        assert(stage.physicalPlan eq broadcast)
-        assert(broadcast.getTagValue(tempTag).exists(_ eq stage.logicalPlan))
-        broadcast.clone()
-      } { (previous, broadcast, logicalPlan) =>
-        assert(broadcast.logicalLink.exists(_ eq logicalPlan))
-        assert(broadcast.getTagValue(tempTag).exists(_ eq logicalPlan))
-        // Spark rejects an equal-cost candidate when its physical tree is unchanged.
-        // Pin both inputs to that decision, including Comet's retained temporary link.
-        assert(previous == broadcast)
-        assert(costEvaluator.evaluateCost(previous) == SimpleCost(0))
-        assert(costEvaluator.evaluateCost(broadcast) == SimpleCost(0))
-        observed.add((broadcast.clone().asInstanceOf[CometBroadcastExchangeExec], logicalPlan))
-      } {
-        val plan = checkDppLinkQuery()
-        assert(!observed.isEmpty, "Expected a DPP broadcast root with a direct logical stage")
-        observed.iterator().asScala.foreach { case (broadcast, logicalPlan) =>
-          // Give the isolated snapshot conflicting links to pin Spark's TEMP-over-direct
-          // precedence, which would otherwise be invisible after Comet repairs both.
-          broadcast.setLogicalLink(LogicalQueryStage(logicalPlan, broadcast))
-          val stage = BroadcastQueryStageExec(0, broadcast, broadcast.canonicalized)
-          val setStageLink = PrivateMethod[Unit](Symbol("setLogicalLinkForNewQueryStage"))
-          plan
-            .asInstanceOf[AdaptiveSparkPlanExec]
-            .invokePrivate(setStageLink(stage, broadcast))
-          assert(stage.logicalLink.exists(_ eq logicalPlan))
-        }
+    // With direct read, the aggregate under the broadcast reads the dim side's shuffle stage
+    // through a ShuffleScan only once its stage is prepared, so each replan stays unchanged.
+    Seq(false, true).foreach { directRead =>
+      withDppLinkViews(directRead)(checkUnchangedDppReplans())
+    }
+  }
+
+  private def checkUnchangedDppReplans(): Unit = {
+    val observed = new ConcurrentLinkedQueue[(CometBroadcastExchangeExec, LogicalPlan)]()
+    val tempTag = AdaptiveSparkPlanExec.TEMP_LOGICAL_PLAN_TAG
+    val costEvaluator = SimpleCostEvaluator(forceOptimizeSkewedJoin = false)
+    withReplanObserver { (broadcast, stage) =>
+      assert(stage.physicalPlan eq broadcast)
+      assert(broadcast.getTagValue(tempTag).exists(_ eq stage.logicalPlan))
+      broadcast.clone()
+    } { (previous, broadcast, logicalPlan) =>
+      assert(broadcast.logicalLink.exists(_ eq logicalPlan))
+      assert(broadcast.getTagValue(tempTag).exists(_ eq logicalPlan))
+      // Spark rejects an equal-cost candidate when its physical tree is unchanged.
+      // Pin both inputs to that decision, including Comet's retained temporary link.
+      assert(previous == broadcast)
+      assert(costEvaluator.evaluateCost(previous) == SimpleCost(0))
+      assert(costEvaluator.evaluateCost(broadcast) == SimpleCost(0))
+      observed.add((broadcast.clone().asInstanceOf[CometBroadcastExchangeExec], logicalPlan))
+    } {
+      val plan = checkDppLinkQuery()
+      assert(!observed.isEmpty, "Expected a DPP broadcast root with a direct logical stage")
+      observed.iterator().asScala.foreach { case (broadcast, logicalPlan) =>
+        // Give the isolated snapshot conflicting links to pin Spark's TEMP-over-direct
+        // precedence, which would otherwise be invisible after Comet repairs both.
+        broadcast.setLogicalLink(LogicalQueryStage(logicalPlan, broadcast))
+        val stage = BroadcastQueryStageExec(0, broadcast, broadcast.canonicalized)
+        val setStageLink = PrivateMethod[Unit](Symbol("setLogicalLinkForNewQueryStage"))
+        plan
+          .asInstanceOf[AdaptiveSparkPlanExec]
+          .invokePrivate(setStageLink(stage, broadcast))
+        assert(stage.logicalLink.exists(_ eq logicalPlan))
       }
     }
   }
 
-  test("AQE DPP broadcast roots keep their logical links through a ShuffleScan replan") {
-    assume(isSpark35Plus, "Native AQE DPP requires Spark 3.5+")
-    withDppLinkViews(directRead = true) {
-      // For each replanned broadcast root: whether Comet changed it, whether it kept the
-      // stage's direct and temporary links, and the leaf kinds of the native plan under it.
-      val observed = new ConcurrentLinkedQueue[(Boolean, Boolean, Boolean, Seq[String])]()
-      val tempTag = AdaptiveSparkPlanExec.TEMP_LOGICAL_PLAN_TAG
-      withReplanObserver((broadcast, _) => broadcast.clone()) {
-        (previous, broadcast, logicalPlan) =>
-          val leafKinds = broadcast.child match {
-            case native: CometNativeExec =>
-              nativeLeaves(native.nativeOp).map(_.getOpStructCase.name)
-            case other => Seq(other.nodeName)
+  /**
+   * Runs `f` while comparing each plan that Comet prepares as a query stage preparation rule with
+   * the plan it returns: `capture` takes what to compare from the plan Comet receives, and
+   * `check` gets that and the plan Comet returns.
+   */
+  private def withPreparationObserver[T](capture: SparkPlan => T)(check: (T, SparkPlan) => Unit)(
+      f: => Unit): Unit = {
+    val pending = new ThreadLocal[List[T]] {
+      override def initialValue(): List[T] = Nil
+    }
+    beforeCometPreparation = plan => pending.set(capture(plan) :: pending.get())
+    afterCometPreparation = plan => {
+      val captured = pending.get().head
+      val remaining = pending.get().tail
+      if (remaining.isEmpty) pending.remove() else pending.set(remaining)
+      check(captured, plan)
+    }
+    try {
+      f
+    } finally {
+      beforeCometPreparation = _ => ()
+      afterCometPreparation = _ => ()
+    }
+  }
+
+  test("AQE replans keep a broadcast side's native aggregate over its shuffle stage as it was") {
+    // AQE adopts a replan that differs from its current plan, after which it cannot link a stage
+    // built over a reused operator back into its logical plan. A broadcast stage it cannot link
+    // no longer fixes the join's build side, which broke the exchange reuse that Spark's
+    // SPARK-34637 DPP test checks on Spark 3.4. The aggregate under the broadcast is the root of
+    // its native block, so a refreshed native plan there changes the plan that AQE compares.
+    def reusedOverStage(plan: SparkPlan): Seq[SparkPlan] = plan.collect {
+      case native: CometNativeExec
+          if native.children.exists(_.isInstanceOf[ShuffleQueryStageExec]) =>
+        native
+    }
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_DIRECT_READ_ENABLED.key -> "true") {
+      withParquetTable((0 until 1000).map(i => (i % 7, i.toLong)), "reuse_fact") {
+        withParquetTable((0 until 7).map(i => (i, i * 2)), "reuse_dim") {
+          val replans = new ConcurrentLinkedQueue[(Seq[SparkPlan], Seq[SparkPlan])]()
+          withPreparationObserver(reusedOverStage) { (reused, plan) =>
+            if (reused.nonEmpty) replans.add((reused, reusedOverStage(plan)))
+          } {
+            val df = sql("""
+                |SELECT /*+ BROADCAST(f) */ f.k, f.s, d._2
+                |FROM (SELECT _1 AS k, SUM(_2) AS s FROM reuse_fact GROUP BY _1) f
+                |JOIN reuse_dim d ON f.k = d._1
+                |""".stripMargin)
+            checkSparkAnswerAndOperator(df)
           }
-          observed.add(
-            (
-              previous != broadcast,
-              broadcast.logicalLink.exists(_ eq logicalPlan),
-              broadcast.getTagValue(tempTag).exists(_ eq logicalPlan),
-              leafKinds))
-      } {
-        checkDppLinkQuery()
-        val replans = observed.iterator().asScala.toSeq
-        assert(replans.exists(_._1), s"Expected a replan that changes the broadcast: $replans")
-        replans.foreach { case (_, hasLink, hasTempLink, leafKinds) =>
-          assert(hasLink, s"Lost the stage's logical link: $replans")
-          assert(hasTempLink, s"Lost the stage's temporary logical link: $replans")
-          assert(leafKinds == Seq("SHUFFLE_SCAN"), s"Expected a ShuffleScan read: $replans")
+          assert(!replans.isEmpty, "Expected a replan over a native operator AQE reuses")
+          replans.asScala.foreach { case (reused, prepared) =>
+            assert(prepared == reused)
+          }
         }
       }
     }
