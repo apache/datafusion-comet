@@ -401,7 +401,8 @@ Each of these has caused a bug on this path:
   ([#6145](https://github.com/apache/datafusion-comet/issues/6145)).
 - **Partition evolution leaves `void` fields behind.** A v1 spec keeps a dropped partition field as
   a `void` transform, whose source column may later be dropped from the schema. Resolving the spec
-  against the schema then fails
+  against the schema then fails. An all-`void` spec is written unpartitioned, and a spec that mixes
+  such a field with a live one is declined by the gate, since iceberg-java cannot write it either
   ([#5691](https://github.com/apache/datafusion-comet/issues/5691),
   [#5693](https://github.com/apache/datafusion-comet/issues/5693),
   [#6141](https://github.com/apache/datafusion-comet/issues/6141)).
