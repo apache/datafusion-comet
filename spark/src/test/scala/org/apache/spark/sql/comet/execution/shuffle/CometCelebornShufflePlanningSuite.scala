@@ -265,6 +265,21 @@ class CometCelebornShufflePlanningSuite extends CometTestBase {
     }
   }
 
+  test("the shuffle input conversion leaves a Spark child to Spark's shuffle") {
+    // The conversion only takes over from the JVM columnar shuffle, which Celeborn does not
+    // have, and Celeborn's native shuffle needs a native child.
+    withSQLConf(
+      CometConf.COMET_SHUFFLE_MODE.key -> "native",
+      CometConf.COMET_CONVERT_FROM_SHUFFLE_INPUT_ENABLED.key -> "true") {
+      val leaf = sparkLeaf()
+      val exchange = ShuffleExchangeExec(HashPartitioning(leaf.output, 2), leaf)
+      assert(!CometShuffleExchangeExec.convertsInputForNativeShuffle(exchange))
+      val planned = CometExecRule(spark)(exchange)
+      assert(planned.isInstanceOf[ShuffleExchangeExec], planned)
+      assert(collect(planned) { case c: CometSparkToColumnarExec => c }.isEmpty, planned)
+    }
+  }
+
   test("fallback is sticky after AQE reshapes the child or native mode becomes available") {
     val child = nativeChild()
     val exchange = ShuffleExchangeExec(SinglePartition, child)

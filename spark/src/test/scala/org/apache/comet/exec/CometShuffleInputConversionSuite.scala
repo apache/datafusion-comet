@@ -317,11 +317,19 @@ class CometShuffleInputConversionSuite extends CometTestBase {
     assert(convertedShuffles(plan).length == 1, plan)
   }
 
-  convertTest("the JVM shuffle mode keeps the JVM columnar shuffle") {
-    withSQLConf(CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
-      val (_, plan) = checkSparkAnswer(rowsDf().repartition(10, col("k")).groupBy("k").count())
-      assert(conversions(plan).isEmpty, plan)
-      assert(cometShuffles(plan).forall(_.shuffleType == CometColumnarShuffle), plan)
+  convertTest("the conversion only takes over from the JVM columnar shuffle") {
+    // In `jvm` mode the shuffle keeps the JVM columnar shuffle. In `native` mode, where Comet has
+    // no shuffle for a Spark operator's rows, it keeps Spark's shuffle.
+    Seq("jvm" -> Seq(CometColumnarShuffle), "native" -> Seq.empty).foreach {
+      case (mode, shuffleTypes) =>
+        withSQLConf(CometConf.COMET_SHUFFLE_MODE.key -> mode) {
+          val (_, plan) =
+            checkSparkAnswer(rowsDf().repartition(10, col("k")).groupBy("k").count())
+          assert(conversions(plan).isEmpty, s"$mode:\n$plan")
+          assert(
+            cometShuffles(plan).map(_.shuffleType).distinct == shuffleTypes,
+            s"$mode:\n$plan")
+        }
     }
   }
 

@@ -43,7 +43,7 @@ import org.apache.spark.sql.execution.adaptive.ShuffleQueryStageExec
 import org.apache.spark.sql.execution.exchange.{ENSURE_REQUIREMENTS, ShuffleExchangeExec, ShuffleExchangeLike, ShuffleOrigin}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics, SQLShuffleReadMetricsReporter, SQLShuffleWriteMetricsReporter}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, CalendarIntervalType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, StructField, StructType, TimestampNTZType, TimestampType}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, StructField, StructType, TimestampNTZType, TimestampType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.MutablePair
 import org.apache.spark.util.collection.unsafe.sort.{PrefixComparators, RecordComparator}
@@ -549,33 +549,23 @@ object CometShuffleExchangeExec
   }
 
   /**
-   * Whether a shuffle whose child is a Spark row-based plan can convert the child's rows to Arrow
-   * with `CometSparkToColumnarExec` and use native shuffle, instead of the JVM columnar shuffle.
-   * See [[CometConf.COMET_CONVERT_FROM_SHUFFLE_INPUT_ENABLED]]. The checks are those that
-   * [[shuffleSupported]] would make for the converted plan, so `CometExecRule` only converts a
-   * shuffle that will become native. Pure: does not tag the node.
+   * Whether a shuffle that would use the JVM columnar shuffle, because its child is a Spark
+   * row-based plan, can convert the child's rows to Arrow with `CometSparkToColumnarExec` and use
+   * native shuffle instead. See [[CometConf.COMET_CONVERT_FROM_SHUFFLE_INPUT_ENABLED]]. The
+   * native checks are those that [[shuffleSupported]] would make for the converted plan, so
+   * `CometExecRule` only converts a shuffle that will become native. Like [[shuffleSupported]],
+   * tags the node when no Comet shuffle can take it.
    */
-  def convertsInputForNativeShuffle(s: ShuffleExchangeExec): Boolean = {
-    val conf = s.conf
-    CometConf.COMET_CONVERT_FROM_SHUFFLE_INPUT_ENABLED.get(conf) &&
-    // A decision an earlier pass recorded stands, as in shuffleSupported.
-    !hasFallbackReason(s) &&
-    isCometShuffleEnabledReason(s).isEmpty &&
-    CometConf.COMET_SHUFFLE_CONVERT_FROM_SPARK_PLAN_ENABLED.get(conf) &&
-    // Not exercised with Celeborn, which has no JVM columnar shuffle to replace.
-    !isCometCelebornShuffleManagerEnabled(conf) &&
-    !isCometPlan(s.child) &&
-    !s.child.supportsColumnar &&
-    !isShuffleOperator(s.child) &&
-    !stageContainsDPPScan(s) &&
-    CometSparkToColumnarExec.isSchemaSupported(s.child.schema, ListBuffer.empty) &&
-    // Arrow holds the time part of an interval in nanoseconds, so the conversion overflows on a
-    // calendar interval with more microseconds than that can hold. The JVM columnar shuffle
-    // leaves calendar intervals to Spark's shuffle as well.
-    !s.child.schema.existsRecursively(_.isInstanceOf[CalendarIntervalType]) &&
-    nativeShuffleFailureReasons(s).isEmpty &&
-    !hashesDifferentlyFromSpark(s)
-  }
+  def convertsInputForNativeShuffle(s: ShuffleExchangeExec): Boolean =
+    CometConf.COMET_CONVERT_FROM_SHUFFLE_INPUT_ENABLED.get(s.conf) &&
+      !isCometPlan(s.child) &&
+      // This also rules out Celeborn, which has no JVM columnar shuffle, and calendar intervals.
+      // Arrow holds the time part of an interval in nanoseconds, so the conversion would
+      // overflow on one with more microseconds than that can hold.
+      shuffleSupported(s).contains(CometColumnarShuffle) &&
+      CometSparkToColumnarExec.isSchemaSupported(s.child.schema, ListBuffer.empty) &&
+      nativeShuffleFailureReasons(s).isEmpty &&
+      !hashesDifferentlyFromSpark(s)
 
   /**
    * Whether the shuffle hashes into more than one partition a key that native shuffle, reading
