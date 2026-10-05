@@ -25,7 +25,9 @@ use crate::math_funcs::checked_arithmetic::{checked_add, checked_div, checked_mu
 use crate::math_funcs::log::spark_log;
 use crate::math_funcs::modulo_expr::spark_modulo;
 use crate::math_funcs::pow::spark_pow;
+use crate::math_funcs::signum::spark_signum;
 use crate::math_funcs::sqrt::spark_sqrt;
+use crate::math_funcs::SparkGreatestLeast;
 use crate::{
     spark_ceil, spark_day_name, spark_decimal_div, spark_decimal_integral_div, spark_floor,
     spark_isnan, spark_lpad, spark_make_decimal, spark_month_name, spark_read_side_padding,
@@ -224,6 +226,10 @@ pub fn create_comet_physical_fun_with_eval_mode(
             let func = Arc::new(spark_pow);
             make_comet_scalar_udf!("pow", func, without data_type)
         }
+        "spark_signum" => {
+            let func = Arc::new(spark_signum);
+            make_comet_scalar_udf!("spark_signum", func, without data_type)
+        }
         "spark_sqrt" => {
             let func = Arc::new(spark_sqrt);
             make_comet_scalar_udf!("spark_sqrt", func, without data_type)
@@ -310,6 +316,11 @@ pub fn create_comet_physical_fun_with_eval_mode(
         // SparkMakeTime already throws on invalid input, so accept the flag here rather
         // than falling through to the registry fail-closed path.
         "make_time" => Ok(Arc::new(ScalarUDF::new_from_impl(SparkMakeTime::new()))),
+        // Floats, and arrays and structs holding them, need Spark's float ordering. Other types
+        // keep DataFusion's `greatest` and `least` from the registry.
+        "greatest" | "least" if SparkGreatestLeast::handles(&data_type) => Ok(Arc::new(
+            ScalarUDF::new_from_impl(SparkGreatestLeast::new(fun_name == "greatest")),
+        )),
         // Registry UDFs (including datafusion-spark) cannot receive fail_on_error.
         _ if fail_on_error => Err(DataFusionError::Execution(format!(
             "Function '{fun_name}' is resolved from the UDF registry and cannot \
