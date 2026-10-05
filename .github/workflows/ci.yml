@@ -252,6 +252,7 @@ jobs:
       build_linux:  ${{ steps.compute.outputs.build_linux }}
       build_linux_full: ${{ steps.compute.outputs.build_linux_full }}
       build_linux_all_profiles: ${{ steps.compute.outputs.build_linux_all_profiles }}
+      rust_test:    ${{ steps.compute.outputs.rust_test }}
       build_macos:  ${{ steps.compute.outputs.build_macos }}
       build_macos_full: ${{ steps.compute.outputs.build_macos_full }}
       benchmark:    ${{ steps.compute.outputs.benchmark }}
@@ -377,6 +378,11 @@ jobs:
     # the whole point: the queue has already tested that tree, so the push run
     # is there for the caches alone. A `labeled` run and the nightly set only
     # the third, and then run just the profiles the PR and queue tiers skip.
+    #
+    # A fourth output, `rust_test`, feeds the same call but narrows the full
+    # pipeline rather than choosing a mode. It has its own path filter,
+    # native/, common/ and the build inputs, so a change confined to spark/
+    # gets the full pipeline without the Rust job.
     if: needs.changes.outputs.build_linux == 'true' || needs.changes.outputs.build_linux_all_profiles == 'true'
     uses: ./.github/workflows/pr_build_linux.yml
     with:
@@ -385,6 +391,7 @@ jobs:
         ${{ needs.changes.outputs.build_linux_all_profiles != 'true' && 'pr'
             || needs.changes.outputs.build_linux_full != 'true' && 'nightly'
             || 'all' }}
+      rust-tests: ${{ needs.changes.outputs.rust_test == 'true' }}
 
   pr_build_macos:
     name: PR Build (macOS)

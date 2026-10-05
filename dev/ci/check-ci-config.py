@@ -20,7 +20,10 @@
 #   1. Change-filter routing. dev/ci/compute-changes.py decides which heavy
 #      jobs run. A file that a job depends on but that no filter lists makes
 #      that job skip, so the edit merges with only preflight having looked at
-#      it. The table below pins the routing for the shared build inputs.
+#      it. The table below pins the routing for the shared build inputs. A
+#      decision also has to leave ci.yml's `Detect changes` job through its
+#      `outputs:` map: one missing there reads as false in every gate, so the
+#      map is checked against FILTERS too.
 #
 #   2. Event policy. The same script decides which events may run each job.
 #      That used to be a `${{ }}` expression on every job in ci.yml, where it
@@ -123,8 +126,9 @@ BUILD_JOBS = {
     "iceberg_1_11",
 }
 
-# The two contrib/UDF gates also run ./mvnw, but consume no shared artifact.
-MVN_JOBS = BUILD_JOBS | {"delta_gate", "pyarrow_udf"}
+# The two contrib/UDF gates also run ./mvnw, but consume no shared artifact,
+# and so does the Rust job, which compiles the common module for its JNI tests.
+MVN_JOBS = BUILD_JOBS | {"delta_gate", "pyarrow_udf", "rust_test"}
 
 ROUTING_CASES = [
     # The Maven wrapper and its config feed every job that runs ./mvnw: the
@@ -156,6 +160,7 @@ ROUTING_CASES = [
             "build_linux",
             "build_linux_full",
             "build_linux_all_profiles",
+            "rust_test",
             "build_macos",
             "build_macos_full",
         },
@@ -177,6 +182,35 @@ ROUTING_CASES = [
             "pyarrow_udf",
         },
     ),
+    # The Rust job reads native/, the common module its JNI tests load, and
+    # the build inputs. The root pom is the common module's parent. A change
+    # confined to the Spark module, main or test, still runs the Linux and
+    # macOS builds but skips the Rust job, which is what `rust_test` is for.
+    (["native/core/src/lib.rs"], BUILD_JOBS | {"delta_gate", "rust_test"}),
+    (
+        ["common/src/main/java/org/apache/comet/CometNativeException.java"],
+        BUILD_JOBS | {"delta_gate", "rust_test"},
+    ),
+    (["rust-toolchain.toml"], BUILD_JOBS | {"delta_gate", "rust_test"}),
+    (["pom.xml"], MVN_JOBS),
+    (
+        [".github/actions/rust-test/action.yaml"],
+        {"build_linux", "build_linux_full", "build_linux_all_profiles", "rust_test"},
+    ),
+    (
+        ["spark/src/main/scala/org/apache/comet/rules/CometExecRule.scala"],
+        BUILD_JOBS | {"delta_gate"},
+    ),
+    (
+        ["spark/src/test/resources/sql-tests/expressions/bitwise/bitwise.sql"],
+        {
+            "build_linux",
+            "build_linux_full",
+            "build_linux_all_profiles",
+            "build_macos",
+            "build_macos_full",
+        },
+    ),
 ]
 
 # Event policy. Each case is (event, expected set of jobs allowed to run),
@@ -185,7 +219,7 @@ ROUTING_CASES = [
 # and cannot be made by accident.
 # The PR tier is the Linux build and nothing else. Every Spark SQL and Iceberg
 # suite waits for the queue or the nightly run, or for its label.
-PR_TIER = {"build_linux", "build_linux_full"}
+PR_TIER = {"build_linux", "build_linux_full", "rust_test"}
 # The queue adds one Spark version (4.1, the default profile) and one Iceberg
 # version (1.11, the only Spark 4.1 coverage), plus the build-level gates.
 QUEUE_TIER = PR_TIER | {
@@ -851,6 +885,72 @@ def check_event_env():
             )
     for failure in failures:
         print(f"event env: {failure}")
+    return not failures
+
+
+# One entry of the `changes` job's `outputs:` map in ci.yml, and any read of one.
+CHANGES_OUTPUT = re.compile(
+    r"^      ([a-z0-9_]+):\s*\$\{\{\s*steps\.compute\.outputs\.([a-z0-9_]+)\s*\}\}\s*$"
+)
+CHANGES_OUTPUT_READ = re.compile(r"needs\.changes\.outputs\.([A-Za-z0-9_-]+)")
+
+
+def changes_job_outputs():
+    """{output: step output it forwards} from the `outputs:` of ci.yml's `changes` job."""
+    outputs, in_job, in_outputs = {}, False, False
+    for line in CI_WORKFLOW.read_text(encoding="utf-8").splitlines():
+        job = JOB_KEY.match(line)
+        if job:
+            in_job, in_outputs = job.group(1) == "changes", False
+        elif in_job and re.match(r"^    outputs:\s*$", line):
+            in_outputs = True
+        elif in_outputs and line.strip() and not line.lstrip().startswith("#"):
+            match = CHANGES_OUTPUT.match(line)
+            if not match:
+                in_outputs = False
+                continue
+            outputs[match.group(1)] = match.group(2)
+    return outputs
+
+
+def check_changes_outputs():
+    """Every routing decision leaves `Detect changes` under its own name.
+
+    compute-changes.py writes one line per FILTERS key, but the jobs after it
+    see only what the `changes` job lists under `outputs:`. A decision missing
+    there, or a read of a name that is not, arrives as an empty string, which
+    every gate in ci.yml takes for false: the job it controls stops running on
+    every event, and nothing fails. Each exported decision must also be read.
+    """
+    failures = []
+    outputs = changes_job_outputs()
+    for name, forwarded in sorted(outputs.items()):
+        if name != forwarded:
+            failures.append(
+                f"{CI_WORKFLOW}: the `changes` output {name} forwards "
+                f"steps.compute.outputs.{forwarded}, not steps.compute.outputs.{name}"
+            )
+    for name in sorted(set(load_filters().FILTERS) - set(outputs)):
+        failures.append(
+            f"{CI_WORKFLOW}: the `changes` job does not export {name}, so "
+            f"whatever reads it sees false on every event"
+        )
+    reads = set(CHANGES_OUTPUT_READ.findall(CI_WORKFLOW.read_text(encoding="utf-8")))
+    for name in sorted(reads - set(outputs)):
+        failures.append(
+            f"{CI_WORKFLOW}: reads needs.changes.outputs.{name}, which the "
+            f"`changes` job does not export"
+        )
+    # The other direction: a decision nothing reads routes nothing. Dropping
+    # the `rust-tests:` line from the Linux call, say, would put the Rust job
+    # back on every pull request, since the input defaults to true.
+    for name in sorted(set(outputs) - reads):
+        failures.append(
+            f"{CI_WORKFLOW}: the `changes` job exports {name}, but no job "
+            f"reads it, so that decision changes nothing"
+        )
+    for failure in failures:
+        print(f"changes outputs: {failure}")
     return not failures
 
 
@@ -1529,6 +1629,7 @@ if __name__ == "__main__":
     ok = check_change_filters()
     ok = check_event_policy() and ok
     ok = check_event_env() and ok
+    ok = check_changes_outputs() and ok
     ok = check_docs_deploy_guard() and ok
     ok = check_spark_sql_modules() and ok
     ok = check_linux_test_profiles() and ok

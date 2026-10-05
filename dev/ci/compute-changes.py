@@ -76,6 +76,32 @@ FILTERS = {
     # runs every Spark profile or only the PR-tier one. ci.yml folds it into
     # the reusable workflow's `profiles` input. Populated below as well.
     "build_linux_all_profiles": [],
+    # A fourth decision for the same call, on narrower inputs: whether the full
+    # pipeline includes `linux-test-rust`. That job runs clippy, cargo-machete
+    # and nextest over native/, after compiling the common module, whose
+    # classes the JNI tests load. Nothing under spark/ reaches it, so a change
+    # confined to the Spark module, such as a new Comet SQL test, no longer
+    # pays about 20 runner-minutes for a job it cannot affect. ci.yml folds it
+    # into the reusable workflow's `rust-tests` input. Keep it a subset of
+    # build_linux: the job only ever runs inside that call.
+    "rust_test": [
+        "native/**",
+        "common/**",
+        "pom.xml",
+        ".mvn/**",
+        "mvnw",
+        "rust-toolchain.toml",
+        "dev/ci/**",
+        ".github/workflows/ci.yml",
+        ".github/workflows/pr_build_linux.yml",
+        ".github/actions/setup-builder/**",
+        ".github/actions/maven-bootstrap/**",
+        ".github/actions/rust-test/**",
+        "!**.md",
+        "!native/core/benches/**",
+        "!native/spark-expr/benches/**",
+        "!native/operators/benches/**",
+    ],
     "build_macos": [
         "native/**",
         "common/**",
@@ -511,6 +537,10 @@ POLICY = {
     # not a shim that fails to build. ci.yml turns this output into the
     # workflow's `profiles` input.
     "build_linux_all_profiles": ["nightly", "label:run-all-spark-profiles"],
+    # Wherever the full Linux pipeline runs. The job is guarded off on push and
+    # under `profiles: nightly` in any case; its path filter is what lets a
+    # pull request or queue entry that touches nothing it reads skip it.
+    "rust_test": ["pr", "queue"],
     # macOS runners are the scarcest capacity we have, and the Linux build
     # already covers rustfmt and the Rust/JVM compile on every PR. The label
     # is for a change that touches platform-specific code.

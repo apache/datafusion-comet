@@ -106,6 +106,11 @@ Which tier a job belongs to is the `POLICY` table in `dev/ci/compute-changes.py`
 filters are the `FILTERS` table in the same file, and `dev/ci/check-ci-config.py` holds the test
 cases that pin both down.
 
+The Rust tests have a path filter of their own inside the Linux build. They run only when a change
+touches `native/`, `common/`, the root `pom.xml`, the Maven wrapper, the Rust toolchain or the CI
+configuration, so a change confined to the `spark` module, such as a new Comet SQL test, skips
+them.
+
 A pull request against a release branch runs all three tiers at once; see
 [Release branches](#release-branches).
 

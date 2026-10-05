@@ -41,6 +41,11 @@ name: PR Build (Linux)
 # `run-all-spark-profiles` runs `all`. See the `build_linux_all_profiles`
 # comment in dev/ci/compute-changes.py.
 #
+# `rust-tests` drops linux-test-rust from the full pipeline when the change
+# touched nothing it reads: native/, common/ and the build inputs. A change
+# confined to spark/ cannot change what clippy, cargo-machete or nextest
+# report. See the `rust_test` comment in dev/ci/compute-changes.py.
+#
 # `nightly` is also a third mode. Whenever ci.yml passes it, the default
 # profile's pipeline has already run at this commit (in the queue and the push
 # run for the scheduled event, in the PR tier for a label run), so only `lint`,
@@ -71,6 +76,14 @@ on:
         description: 'Which Spark profiles linux-test runs: all, pr (the default build profile) or nightly (the rest)'
         type: string
         default: 'all'
+      rust-tests:
+        # Whether the full pipeline includes linux-test-rust. ci.yml clears it
+        # when the change touched nothing that job reads; see `rust_test` in
+        # dev/ci/compute-changes.py. The default runs the job, so a caller
+        # that omits the input over-tests rather than silently dropping it.
+        description: 'Run linux-test-rust (clippy, cargo-machete and nextest over native/)'
+        type: boolean
+        default: true
 
 env:
   RUST_VERSION: stable
@@ -418,7 +431,7 @@ jobs:
   linux-test-rust:
     needs: lint
     name: ubuntu-latest/rust-test
-    if: ${{ !inputs.cache-refresh-only && inputs.profiles != 'nightly' }}
+    if: ${{ !inputs.cache-refresh-only && inputs.profiles != 'nightly' && inputs.rust-tests }}
     runs-on: ubuntu-24.04
     container:
       image: amd64/rust

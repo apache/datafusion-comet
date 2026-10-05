@@ -64,7 +64,10 @@ says whether the workflow runs at all, `build_linux_full` whether it runs the
 lints and tests too, and `build_linux_all_profiles` whether the `linux-test`
 matrix covers every Spark profile or only the default one. `ci.yml` folds the
 second into the workflow's `cache-refresh-only` input and the third into its
-`profiles` input. `dev/ci/check-ci-config.py` fails if a job is added to
+`profiles` input. A fourth output, `rust_test`, has a path filter of its own,
+`native/`, `common/` and the build inputs, and becomes the `rust-tests` input,
+so a change confined to `spark/` runs the full pipeline without
+`linux-test-rust`. `dev/ci/check-ci-config.py` fails if a job is added to
 `pr_build_linux.yml` without either the guard or an entry in
 `CACHE_REFRESH_JOBS` naming the cache it writes. See issue #5929.
 
@@ -340,7 +343,9 @@ build runs, and `build_linux` / `build_linux_full` / `build_linux_all_profiles`
 select whether the Linux build runs everything, only the jobs that populate
 `main`'s caches, or the test matrix against every Spark profile rather than
 the default one. Each group shares its `FILTERS` list by assignment so the
-entries cannot drift.
+entries cannot drift. `rust_test` is the exception: it feeds the Linux call
+with a narrower list of its own, because the Rust job reads only `native/`,
+`common/` and the build inputs.
 
 So adding a suite, moving sources, or changing when something runs is an edit
 to one of those two tables, not to ten `${{ }}` expressions. Keeping the policy
