@@ -66,13 +66,14 @@ write side. To restrict columnar shuffle to cases where the child is already a C
 as native Spark shuffles, which avoids the row to columnar conversion but means the downstream stage will also start
 on Spark.
 
-Setting `spark.comet.convert.shuffleInput.enabled=true` makes such a shuffle use native shuffle instead. Comet converts
-the child's rows to Arrow, as the `spark.comet.convert.*` settings do for Spark scans, and shuffles the batches
-natively, which is usually faster than columnar shuffle. This applies only where native shuffle supports the
-partitioning and Comet can convert all of the child's columns, which rules out calendar intervals, and arrays and maps
-other than `array<string>` and `map<string,string>`. A shuffle that hashes a decimal wider than 18 digits, or a string
-or a value computed from a string, stays on columnar shuffle, so that it partitions rows as Spark does. The converted
-batches are allocated on the JVM outside Comet's memory pools. The setting is disabled by default.
+Setting `spark.comet.convert.shuffleInput.enabled=true` makes such a shuffle use native shuffle instead. Comet
+converts the child's rows to Arrow, as the `spark.comet.convert.*` settings do for Spark scans, and shuffles the
+batches natively. With hash partitioning that is usually faster than columnar shuffle, while with range partitioning
+the two come out about even. This applies only where native shuffle supports the partitioning and Comet can convert
+all of the child's columns, which rules out calendar intervals, and arrays and maps other than `array<string>` and
+`map<string,string>`. A shuffle that hashes a decimal wider than 18 digits, or a string or a value computed from a
+string, stays on columnar shuffle, so that it partitions rows as Spark does. The converted batches are allocated on
+the JVM outside Comet's memory pools. The setting is disabled by default.
 
 ### Automatic Revert to Spark Shuffle
 

@@ -46,14 +46,13 @@ Native shuffle (`CometExchange`) is selected when all of the following condition
 1. **Shuffle mode allows native**: `spark.comet.shuffle.mode` is `native` or `auto`.
 
 2. **Child plan is a Comet native operator**: The child must be a `CometPlan` that produces
-   columnar output. Row-based Spark operators require JVM shuffle, except with
-   `spark.comet.convert.shuffleInput.enabled`. Then `CometExecRule` puts a
-   `CometSparkToColumnarExec` over the child of a shuffle that JVM shuffle would take, which
-   converts the child's rows to Arrow, and uses native shuffle, provided native shuffle supports
-   the partitioning and the columns. A shuffle that hashes a string, a value computed from a
-   string, or a decimal wider than 18 digits stays on JVM shuffle, because native shuffle would
-   not put every row in the partition Spark's partitioner does
-   (`CometShuffleExchangeExec.convertsInputForNativeShuffle`).
+   columnar output. Row-based Spark operators require JVM shuffle, unless
+   `spark.comet.convert.shuffleInput.enabled` is set. Then a shuffle that JVM shuffle would take
+   uses native shuffle instead, provided native shuffle supports the partitioning and the
+   columns, and a `CometSparkToColumnarExec` converts the child's rows to Arrow for it. A shuffle
+   that hashes a string, a value computed from a string, or a decimal wider than 18 digits stays
+   on JVM shuffle, because native shuffle would not put every row in the partition Spark's
+   partitioner does (`CometShuffleExchangeExec.convertsInputForNativeShuffle`).
 
 3. **Supported partitioning type**: Native shuffle supports:
    - `HashPartitioning`
