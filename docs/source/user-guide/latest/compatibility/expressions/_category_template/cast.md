@@ -33,6 +33,18 @@ Cast operations in Comet fall into three levels of support:
 Incompatible and unsupported casts fall back to Spark only when Comet's codegen dispatcher cannot handle them (for
 example, casts involving `VariantType`) or when `spark.comet.exec.scalaUDF.codegen.enabled=false`.
 
+## Date-to-timestamp casts
+
+`DATE` to `TIMESTAMP_NTZ` uses checked day arithmetic. `DATE` to `TIMESTAMP` runs natively for
+fixed whole-minute timezone offsets, including aliases such as `Etc/UTC` and `GMT+05:30`.
+Region zones and offsets containing seconds use Spark's codegen dispatcher, or Spark operators
+when dispatch is disabled, to preserve Spark's calendar and timezone rules across the full date range.
+
+Overflow raises `ArithmeticException("long overflow")` in both ANSI and legacy modes. A nullable
+scalar `TRY_CAST` returns null instead. Hidden children beneath null containers and values outside
+sliced list/map ranges are not evaluated. These casts retain Comet's existing batch evaluation;
+this does not add row-by-row short-circuit guarantees beneath limits or joins.
+
 ## ANSI Mode Support
 
 Enabling ANSI mode does not by itself make a cast fall back to Spark or require
@@ -98,6 +110,13 @@ Comet's native `CAST(date AS TIMESTAMP_NTZ)` is compatible with Spark. The cast 
 timezone-independent: each date is converted to midnight as pure arithmetic
 (`days * 86,400,000,000` microseconds) with no session timezone offset applied. The result
 is the same regardless of the session timezone setting.
+
+Parquet scans with data filters and requested `TIMESTAMP_NTZ` fields use Spark's reader,
+including nested fields. A physical `DATE` column can overflow while adapting to the
+requested type, and Spark may skip its conversion through pruning or an early limit.
+The physical column type is unavailable during planning, so this fallback also applies
+to filtered scans of genuine NTZ columns. Unfiltered scans and projections that do not
+read NTZ fields remain eligible for native execution.
 
 ## Date to Numeric Types
 

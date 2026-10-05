@@ -19,7 +19,10 @@
 
 package org.apache.comet.expressions
 
+import java.time.ZoneOffset
+
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Expression, Literal}
+import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, MapType, NullType, StructType, TimestampNTZType, TimestampType}
 
@@ -97,7 +100,9 @@ object CometCast
   // would only duplicate the matrix and risk drifting from it.
 
   override def getSupportLevel(cast: Cast): SupportLevel = {
-    if (cast.child.isInstanceOf[Literal]) {
+    if (requiresSparkDateTimestampTryCast(cast)) {
+      Unsupported(Some("TRY_CAST date-to-timestamp nullability requires Spark row execution"))
+    } else if (cast.child.isInstanceOf[Literal]) {
       // A cast whose child is a literal is folded by Spark at planning time via `cast.eval()`
       // (see `convert`), so the cast never executes natively and the result matches Spark by
       // definition. `CometLiteral` then validates the resulting literal's data type, except
@@ -114,6 +119,31 @@ object CometCast
     }
   }
 
+  /**
+   * Spark's cast nullability inference can miss date-to-timestamp overflow. A TRY cast can
+   * therefore produce a null with non-nullable metadata, including map keys and struct fields.
+   * Keep those casts out of both native Arrow arrays and the Arrow-based codegen dispatcher.
+   */
+  private[comet] def requiresSparkDateTimestampTryCast(expr: Expression): Boolean = expr match {
+    case cast: Cast if evalMode(cast) == CometEvalMode.TRY =>
+      (!cast.nullable || isComplexType(cast.dataType)) &&
+      containsDateTimestampCast(cast.child.dataType, cast.dataType)
+    case _ => false
+  }
+
+  private def containsDateTimestampCast(fromType: DataType, toType: DataType): Boolean =
+    (fromType, toType) match {
+      case (DataTypes.DateType, TimestampType | TimestampNTZType) => true
+      case (ArrayType(from, _), ArrayType(to, _)) => containsDateTimestampCast(from, to)
+      case (MapType(fromKey, fromValue, _), MapType(toKey, toValue, _)) =>
+        containsDateTimestampCast(fromKey, toKey) || containsDateTimestampCast(fromValue, toValue)
+      case (from: StructType, to: StructType) =>
+        from.fields.zip(to.fields).exists { case (a, b) =>
+          containsDateTimestampCast(a.dataType, b.dataType)
+        }
+      case _ => false
+    }
+
   override def convert(
       cast: Cast,
       inputs: Seq[Attribute],
@@ -128,7 +158,14 @@ object CometCast
         } else {
           val childExpr = exprToProtoInternal(cast.child, inputs, binding)
           if (childExpr.isDefined) {
-            castToProto(cast, cast.timeZoneId, cast.dataType, childExpr.get, cometEvalMode)
+            val timeZoneId = cast.timeZoneId.map { timezone =>
+              if (containsDateTimestampCast(cast.child.dataType, cast.dataType)) {
+                nativeDateTimestampTimezone(timezone).getOrElse(timezone)
+              } else {
+                timezone
+              }
+            }
+            castToProto(cast, timeZoneId, cast.dataType, childExpr.get, cometEvalMode)
           } else {
             None
           }
@@ -301,7 +338,7 @@ object CometCast
             case other => other
           }
         }
-      case (DataTypes.DateType, toType) => canCastFromDate(toType, evalMode)
+      case (DataTypes.DateType, toType) => canCastFromDate(toType, timeZoneId, evalMode)
       case _ => unsupported(fromType, toType)
     }
   }
@@ -507,10 +544,21 @@ object CometCast
     case _ => Unsupported(Some(s"Cast from DecimalType to $toType is not supported"))
   }
 
-  private def canCastFromDate(toType: DataType, evalMode: CometEvalMode.Value): SupportLevel =
+  private def canCastFromDate(
+      toType: DataType,
+      timeZoneId: Option[String],
+      evalMode: CometEvalMode.Value): SupportLevel =
     toType match {
       case DataTypes.TimestampType =>
-        Compatible()
+        val timezone = timeZoneId.getOrElse("UTC")
+        if (nativeDateTimestampTimezone(timezone).isDefined) {
+          Compatible()
+        } else {
+          // DateType extends beyond chrono's calendar. Let Spark handle region-zone rules
+          // across the entire date range, including future DST and historical offsets.
+          Unsupported(
+            Some("Native date-to-timestamp casts require a fixed whole-minute timezone offset"))
+        }
       case _: TimestampNTZType =>
         Compatible()
       case DataTypes.BooleanType | DataTypes.ByteType | DataTypes.ShortType |
@@ -518,6 +566,18 @@ object CometCast
           DataTypes.DoubleType | _: DecimalType if evalMode == CometEvalMode.LEGACY =>
         Compatible()
       case _ => Unsupported(Some(s"Cast from DateType to $toType is not supported"))
+    }
+
+  /**
+   * Resolve fixed-zone aliases with Spark's rules, then serialize only the subset understood by
+   * the native fixed-offset parser. Checking `isFixedOffset` alone would admit UTC aliases that
+   * chrono rejects and offsets with seconds that chrono can silently truncate to whole minutes.
+   */
+  private[comet] def nativeDateTimestampTimezone(timezone: String): Option[String] =
+    DateTimeUtils.getZoneId(timezone).normalized() match {
+      case offset: ZoneOffset if offset.getTotalSeconds % 60 == 0 =>
+        Some(if (offset.getTotalSeconds == 0) "UTC" else offset.getId)
+      case _ => None
     }
 
   private def unsupported(fromType: DataType, toType: DataType): Unsupported = {

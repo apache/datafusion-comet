@@ -23,7 +23,7 @@ use crate::parquet::parquet_support::{
 };
 use arrow::array::new_empty_array;
 use arrow::compute::can_cast_types;
-use arrow::datatypes::{DataType, Field, FieldRef, Schema, SchemaRef};
+use arrow::datatypes::{DataType, Field, FieldRef, Schema, SchemaRef, TimeUnit};
 use arrow::record_batch::RecordBatch;
 use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode};
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
@@ -1435,8 +1435,8 @@ impl SparkPhysicalExprAdapter {
 
             // Complex casts (including changes in list representation), timestamp tz relabel
             // (e.g. Timestamp(us, None) -> Timestamp(us, Some("UTC")) for INT96 reads), and
-            // Timestamp -> Int64
-            // (Spark's `nanosAsLong`) need spark_parquet_convert: it handles nested
+            // Timestamp -> Int64 (Spark's `nanosAsLong`), and DATE -> NTZ need
+            // spark_parquet_convert: it handles checked reader conversions, nested
             // field selection, metadata-only tz changes, and raw-value reinterpretation
             // that Spark's Cast would otherwise convert incorrectly.
             if matches!(
@@ -1457,6 +1457,10 @@ impl SparkPhysicalExprAdapter {
                     | (DataType::Map(_, _), DataType::Map(_, _))
                     | (DataType::Timestamp(_, _), DataType::Timestamp(_, _))
                     | (DataType::Timestamp(_, _), DataType::Int64)
+                    | (
+                        DataType::Date32,
+                        DataType::Timestamp(TimeUnit::Microsecond, None)
+                    )
             ) {
                 let comet_cast: Arc<dyn PhysicalExpr> = Arc::new(
                     CometCastColumnExpr::try_new(
