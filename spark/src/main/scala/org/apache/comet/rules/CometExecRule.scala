@@ -19,6 +19,8 @@
 
 package org.apache.comet.rules
 
+import java.util.concurrent.ConcurrentHashMap
+
 import scala.collection.mutable.ListBuffer
 import scala.jdk.CollectionConverters._
 
@@ -32,7 +34,7 @@ import org.apache.spark.sql.catalyst.util.sideBySide
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.arrow.ArrowCachedBatchSerializer
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
-import org.apache.spark.sql.comet.shims.ShimCometEmptyRelation
+import org.apache.spark.sql.comet.shims.{ShimCometEmptyRelation, ShimCometOneRowRelation}
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, BroadcastQueryStageExec, LogicalQueryStage, QueryStageExec, ShuffleQueryStageExec}
@@ -53,7 +55,7 @@ import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
-import org.apache.comet.{CometConf, CometExplainInfo, ExtendedExplainInfo}
+import org.apache.comet.{CometConf, CometExplainInfo, ConfigEntry, ExtendedExplainInfo}
 import org.apache.comet.CometConf.{COMET_SPARK_TO_ARROW_ENABLED, COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST}
 import org.apache.comet.CometSparkSessionExtensions._
 import org.apache.comet.rules.CometExecRule.allExecs
@@ -126,9 +128,7 @@ object CometExecRule {
       ShimCometEmptyRelation.emptyRelationClass.map(_ -> CometEmptyRelationExec) ++
       // WindowGroupLimitExec exists only on Spark 3.5+; the shim returns None on 3.4.
       ShimCometWindowGroupLimit.windowGroupLimitClass.map(_ -> CometWindowGroupLimitExec) ++
-      // MergeRowsExec is registered for native execution on Spark 3.5 and 4.0 only. The shim is
-      // empty on 3.4, which has no MergeRowsExec, and on 4.1+, where Spark's V2 writer needs the
-      // concrete MergeRowsExec to build a MergeSummary.
+      // MergeRowsExec exists only on Spark 3.5+; the shim is empty on 3.4.
       ShimCometMergeRows.nativeExecs
 
   /**
@@ -168,12 +168,28 @@ object CometExecRule {
    */
   val SKIP_COMET_BROADCAST_TAG: org.apache.spark.sql.catalyst.trees.TreeNodeTag[Unit] =
     org.apache.spark.sql.catalyst.trees.TreeNodeTag[Unit]("comet.skipCometBroadcast")
+
+  /**
+   * The operators `spark.comet.sparkToColumnar.supportedOperatorList` named by default, before
+   * each had a `spark.comet.convert` config of its own. `spark.comet.sparkToColumnar.enabled`
+   * still converts them when the list is not set, which is deprecated.
+   */
+  private val deprecatedSparkToArrowOperators =
+    Seq("Range", "InMemoryTableScan", "RDDScan", "OneRowRelation")
+
+  /** Keys of the `spark.comet.convert` configs whose deprecated alternative has been warned. */
+  private[rules] val warnedDeprecatedConversions = ConcurrentHashMap.newKeySet[String]()
 }
 
 /**
  * Spark physical optimizer rule for replacing Spark operators with Comet operators.
+ *
+ * @param queryStagePrep
+ *   true when the rule runs as an AQE query stage preparation rule, on the initial plan and on
+ *   each re-plan, rather than as the columnar rule that prepares each query stage and the final
+ *   plan.
  */
-case class CometExecRule(session: SparkSession)
+case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
     extends Rule[SparkPlan]
     with CometTypeShim
     with ShimSubqueryBroadcast {
@@ -650,9 +666,15 @@ case class CometExecRule(session: SparkSession)
    * `ShuffleScan` takes the place of the stale leaf. The leaf is patched in place because
    * converting the node again from `originalPlan` would drop the stage's logical link that AQE
    * relies on and re-run serde on a node that is already planned.
+   *
+   * The leaf is patched when a query stage or the final plan is prepared, not when AQE re-plans.
+   * AQE adopts a re-planned plan that differs from its current one, after which it cannot link a
+   * stage built over the reused node back into its logical plan. A broadcast stage it cannot link
+   * no longer fixes the join's build side, so the next re-plan can move the broadcast to the
+   * other side and lose the exchange that dynamic partition pruning reuses.
    */
   private def refreshStaleShuffleScans(op: SparkPlan): SparkPlan = op match {
-    case _ if scansChildAsSeparateBlock(op) => op
+    case _ if queryStagePrep || scansChildAsSeparateBlock(op) => op
     case native: CometNativeExec if native.children.nonEmpty =>
       refreshedNativeOp(native) match {
         case Some(newOp) =>
@@ -671,14 +693,27 @@ case class CometExecRule(session: SparkSession)
    * for extended explain, since the block still reads its shuffle through the JVM.
    */
   private def refreshedNativeOp(native: CometNativeExec): Option[Operator] = {
-    val children = native.children.collect { case child: CometNativeExec => child }
+    // The native node that feeds each plan child's leaves. A read that AQE put between a stage
+    // and the operator planned over it is fed by the stage's sink, whose `ShuffleScan` then reads
+    // the partitions that the read specifies.
+    val feeders = native.children.map {
+      case read: AQEShuffleReadExec =>
+        read.child match {
+          case sink: CometSinkPlaceHolder if sink.nativeOp.hasShuffleScan => Some(sink)
+          case _ => None
+        }
+      case child: CometNativeExec => Some(child)
+      case _ => None
+    }
+    if (feeders.exists(_.isEmpty)) return None
+    val children = feeders.flatten
     // Only a sink that reads a shuffle directly, or a native child that may hold one, can feed
     // a `ShuffleScan`.
     val mayFeedShuffleScan = children.exists {
       case sink: CometSinkPlaceHolder => sink.nativeOp.hasShuffleScan
       case _ => true
     }
-    if (children.length != native.children.length || !mayFeedShuffleScan) return None
+    if (!mayFeedShuffleScan) return None
     val leaves = CometExec.nativeLeaves(native.nativeOp)
     if (!leaves.exists(_.hasScan)) return None
 
@@ -1285,6 +1320,14 @@ case class CometExecRule(session: SparkSession)
             case _: ParquetScan => CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.get(conf)
             case _ => isSparkToArrowEnabled(conf, op)
           }
+        case _: RangeExec =>
+          isConversionEnabled(conf, op, CometConf.COMET_CONVERT_FROM_RANGE_ENABLED)
+        case _: InMemoryTableScanExec =>
+          isConversionEnabled(conf, op, CometConf.COMET_CONVERT_FROM_IN_MEMORY_CACHE_ENABLED)
+        case _ if ShimCometOneRowRelation.isOneRowRelation(op) =>
+          isConversionEnabled(conf, op, CometConf.COMET_CONVERT_FROM_ONE_ROW_RELATION_ENABLED)
+        case _: RDDScanExec =>
+          isConversionEnabled(conf, op, CometConf.COMET_CONVERT_FROM_RDD_ENABLED)
         // other leaf nodes
         case _: LeafExecNode =>
           isSparkToArrowEnabled(conf, op)
@@ -1297,11 +1340,38 @@ case class CometExecRule(session: SparkSession)
     }
   }
 
+  /**
+   * Whether to convert a leaf operator that has a `spark.comet.convert` config of its own. The
+   * `spark.comet.sparkToColumnar` settings still convert it too, which is deprecated.
+   */
+  private def isConversionEnabled(
+      conf: SQLConf,
+      op: SparkPlan,
+      entry: ConfigEntry[Boolean]): Boolean = {
+    entry.get(conf) || {
+      val deprecated = isSparkToArrowEnabled(conf, op)
+      if (deprecated && CometExecRule.warnedDeprecatedConversions.add(entry.key)) {
+        logWarning(
+          s"Using ${COMET_SPARK_TO_ARROW_ENABLED.key} to convert " +
+            s"${Utils.getSimpleName(op.getClass)} to Arrow is deprecated and will stop " +
+            s"working in a future major release. Set ${entry.key}=true instead.")
+      }
+      deprecated
+    }
+  }
+
   private def isSparkToArrowEnabled(conf: SQLConf, op: SparkPlan) = {
     COMET_SPARK_TO_ARROW_ENABLED.get(conf) && {
       val simpleClassName = Utils.getSimpleName(op.getClass)
       val nodeName = simpleClassName.replaceAll("Exec$", "")
-      COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST.get(conf).contains(nodeName)
+      // Without the list, the switch still converts the operators the list named by default.
+      val operators =
+        if (conf.getConfString(COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST.key, null) == null) {
+          CometExecRule.deprecatedSparkToArrowOperators
+        } else {
+          COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST.get(conf)
+        }
+      operators.contains(nodeName)
     }
   }
 
