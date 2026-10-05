@@ -1325,8 +1325,16 @@ abstract class CometLeafExec extends CometNativeExec with LeafExecNode {
  * parent's native execution receives an empty input. (`CometIcebergNativeScanExec` does NOT use
  * this trait; it has a dedicated `findAllPlanData` case.)
  *
- * `perPartitionData.length` is the partition count the native block runs with, and the count in
- * `outputPartitioning` is not used for that.
+ * `perPartitionData.length` is the partition count the native block runs with:
+ * `CometNativeExec.buildNativeContext` sizes the native RDD from it at execution, and the count
+ * in `outputPartitioning` is not used for that.
+ *
+ * `outputPartitioning` must not read `perPartitionData`, or anything else that evaluates the
+ * scan's DPP subqueries. AQE calls it while optimizing a stage, before
+ * `CometPlanAdaptiveDynamicPruningFilters` has converted the adaptive DPP placeholders, so
+ * computing it from those runs a placeholder subquery. A scan that cannot report a real
+ * partitioning without them should report `UnknownPartitioning(0)`, as `CometNativeScanExec` does
+ * for a non-bucketed scan.
  *
  * Each implementation also resolves its own DPP subqueries via `ensureSubqueriesResolved` before
  * `commonData`/`perPartitionData` are read. That method lives on [[CometLeafExec]], so the `self:
