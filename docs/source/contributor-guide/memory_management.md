@@ -253,14 +253,17 @@ ignored and the pool is always `UnboundedMemoryPool`.
 the inside out, a Comet plan in the default configuration sees:
 
 ```text
-[LoggingMemoryPool]        <- only when spark.comet.debug.memory=true
-  [TaskSharedMemoryPool]   <- RAII handle for the per-task registry
-    [TrackConsumersPool]   <- DataFusion; names the top 10 consumers in error messages
-      [CometFairMemoryPool]  <- delegates acquire/release to Spark over JNI
+[LoggingMemoryPool]          <- only when spark.comet.debug.memory=true
+  [TaskSharedMemoryPool]     <- RAII handle for the per-task registry
+    [SpillReplayPool]        <- lets a spilled final aggregate read its spill files back
+      [TrackConsumersPool]   <- DataFusion; names the top 10 consumers in error messages
+        [CometFairMemoryPool]  <- delegates acquire/release to Spark over JNI
 ```
 
 Each decorator forwards every `MemoryPool` method to its inner pool, so `reserved()` at any level
-reports the base pool's number.
+reports the base pool's number. `SpillReplayPool` also turns one kind of refused `try_grow` into a
+`grow`; see
+[Final aggregates reading their spill files back](#final-aggregates-reading-their-spill-files-back).
 
 ### The unified pools
 
@@ -286,8 +289,7 @@ JNI, which goes through Spark's ordinary `TaskMemoryManager`. That means:
   `Display` output and their `try_grow` errors report the current overcommit.
 
 `CometFairMemoryPool` additionally applies two local checks before it asks Spark, and refuses the
-request without calling Spark if either fails, except for the request described in
-[Final aggregates reading their spill files back](#final-aggregates-reading-their-spill-files-back):
+request without calling Spark if either fails:
 
 - **The requesting consumer against its share.** The share is `pool_size` divided by the number of
   consumers currently registered with the pool. What the consumer already holds plus the request
@@ -314,30 +316,6 @@ Two details matter for tuning:
 This is why `fair_unified` can spill earlier than `greedy_unified`: a consumer at its share is
 refused even when the rest of the pool is free, which keeps that memory for the task's other
 consumers.
-
-### Final aggregates reading their spill files back
-
-Both pools make one exception to refusing a `try_grow` (`spill_replay.rs`). Once one of
-DataFusion 55's final aggregates has spilled, it merges its spill files and replays them through
-an aggregate that cannot spill, so a refused request during the replay fails the task.
-`FinalHashAggregateStream` does this, and so does `OrderedFinalAggregateStream`, which DataFusion
-uses when the input is sorted on some of the grouping keys. The merge reserves read buffers for as
-many spill files as fit, in a sibling reservation of the same consumer, so the replay often finds
-the consumer's share already taken. The replay asks for memory only after it has aggregated a
-batch, so the memory already exists. The pools therefore record its request the way they record a
-`grow`. `CometFairMemoryPool` skips its two local checks for it, and both pools carry what Spark
-does not grant as overcommit.
-
-A pool treats a request as part of a replay when it comes from one of these consumers while
-another of the consumer's reservations holds memory. In DataFusion 55.1 that happens only while the
-replay grows and the merge holds its read buffers. Before the replay, the aggregate's table is its
-only reservation holding memory, so a refusal still makes it spill. The merge picks its files while
-nothing else is held, so a refusal still limits how many it opens.
-
-This works around [issue #6254](https://github.com/apache/datafusion-comet/issues/6254) until
-Comet's DataFusion includes
-[apache/datafusion#25383](https://github.com/apache/datafusion/pull/25383), which leaves the replay
-room when the merge picks its files.
 
 ### Task-shared pools and their lifetime
 
@@ -370,6 +348,18 @@ created it, so the JVM side shares one manager per task as well: `CometExecItera
 hands every native plan in a task the same one and drops it when the task completes. Its `getUsed`
 covers the whole task, so `CometExecIterator.close()` warns about memory still in use only when
 the task's last open native plan closes.
+
+### Final aggregates reading their spill files back
+
+`SpillReplayPool` (`spill_replay.rs`) wraps both Comet pools to work around
+[issue #6254](https://github.com/apache/datafusion-comet/issues/6254). Once one of DataFusion 55's
+final aggregates has spilled, it reads its spill files back through an aggregate that cannot spill,
+so a refused `try_grow` there fails the task. When the pool refuses such a request,
+`SpillReplayPool` records it with the pool's `grow` instead, which skips `CometFairMemoryPool`'s
+local checks and carries what Spark does not grant as overcommit. Every other refusal is passed on
+unchanged. `spill_replay.rs` describes how the wrapper recognizes these requests and what that relies
+on in DataFusion. [Issue #6583](https://github.com/apache/datafusion-comet/issues/6583) tracks
+removing it.
 
 ## How DataFusion consumes the pool
 

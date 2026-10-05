@@ -20,14 +20,13 @@ use std::{
     fmt::{Debug, Display, Formatter, Result as FmtResult},
 };
 
-use super::{spark_memory::SparkMemory, spill_replay};
-use datafusion::common::resources_datafusion_err;
+use super::spark_memory::SparkMemory;
+use datafusion::common::resources_err;
 use datafusion::execution::memory_pool::MemoryConsumer;
 use datafusion::{
     common::DataFusionError,
     execution::memory_pool::{MemoryPool, MemoryReservation},
 };
-use log::debug;
 use parking_lot::Mutex;
 
 /// A DataFusion fair `MemoryPool` implementation for Comet. Internally this is
@@ -85,41 +84,6 @@ impl CometFairMemoryPool {
     pub(super) fn overcommit(&self) -> usize {
         self.spark.overcommit()
     }
-
-    /// Records `additional` bytes for `reservation` whatever the fair and pool limits, and carries
-    /// what Spark doesn't grant as overcommit. See [`SparkMemory`].
-    fn record(
-        &self,
-        state: &mut CometFairPoolState,
-        reservation: &MemoryReservation,
-        additional: usize,
-    ) {
-        self.spark.acquire(additional);
-        state.used = state.used.saturating_add(additional);
-        let consumer_used = state.consumer_used(reservation);
-        *consumer_used = consumer_used.saturating_add(additional);
-    }
-
-    /// Refuses a `try_grow` with `err`, unless it comes from a final aggregate reading its spill
-    /// files back, which can't spill. That request is recorded instead; see [`spill_replay`].
-    fn refuse(
-        &self,
-        state: &mut CometFairPoolState,
-        reservation: &MemoryReservation,
-        additional: usize,
-        err: DataFusionError,
-    ) -> Result<(), DataFusionError> {
-        if !spill_replay::is_spill_replay(reservation, *state.consumer_used(reservation)) {
-            return Err(err);
-        }
-        debug!(
-            "Task {} records {additional} bytes for {} while it reads its spill files back: {err}",
-            self.spark.task_attempt_id(),
-            reservation.consumer().name()
-        );
-        self.record(state, reservation, additional);
-        Ok(())
-    }
 }
 
 impl Display for CometFairMemoryPool {
@@ -158,7 +122,11 @@ impl MemoryPool for CometFairMemoryPool {
         if additional == 0 {
             return;
         }
-        self.record(&mut self.state.lock(), reservation, additional);
+        let mut state = self.state.lock();
+        self.spark.acquire(additional);
+        state.used = state.used.saturating_add(additional);
+        let consumer_used = state.consumer_used(reservation);
+        *consumer_used = consumer_used.saturating_add(additional);
     }
 
     fn shrink(&self, reservation: &MemoryReservation, subtractive: usize) {
@@ -192,34 +160,31 @@ impl MemoryPool for CometFairMemoryPool {
                 .expect("overflow in checked_div");
             let consumer_used = *state.consumer_used(reservation);
             if limit < consumer_used.saturating_add(additional) {
-                let err = resources_datafusion_err!(
+                return resources_err!(
                     "Failed to acquire {additional} bytes where this consumer already holds {consumer_used} bytes and the fair limit is {limit} bytes, {num} registered ({} bytes overcommitted)",
                     self.spark.overcommit()
                 );
-                return self.refuse(&mut state, reservation, additional, err);
             }
             // The shares alone do not bound the pool's total, because a consumer keeps what it
             // reserved before another consumer registered.
             let used = state.used;
             if self.pool_size < used.saturating_add(additional) {
-                let err = resources_datafusion_err!(
+                return resources_err!(
                     "Failed to acquire {additional} bytes where {used} bytes already reserved ({} bytes overcommitted) and the pool limit is {} bytes",
                     self.spark.overcommit(),
                     self.pool_size
                 );
-                return self.refuse(&mut state, reservation, additional, err);
             }
 
             // A partial grant is handed back and refused, which triggers spilling in the caller.
             if let Err(refusal) = self.spark.try_acquire(additional)? {
-                let err = resources_datafusion_err!(
+                return resources_err!(
                     "Failed to acquire {} bytes plus {} bytes overcommitted, only got {} bytes. Reserved: {} bytes",
                     additional,
                     refusal.overcommit,
                     refusal.granted,
                     state.used
                 );
-                return self.refuse(&mut state, reservation, additional, err);
             }
             state.used = state
                 .used
@@ -362,21 +327,5 @@ mod tests {
         assert!(taken.try_grow(1).is_err());
         assert_eq!(pool.reserved(), 50);
         assert_eq!(fake.held(), 50);
-    }
-
-    #[test]
-    fn a_final_aggregate_reading_its_spill_files_back_may_pass_its_fair_limit() {
-        // Spark grants everything, so only the pool's own checks refuse.
-        let fake = FakeSpark::with(usize::MAX);
-        let pool = Arc::new(CometFairMemoryPool::with_spark(fake.memory(), 100));
-        let dyn_pool: Arc<dyn MemoryPool> = Arc::clone(&pool) as _;
-        let merge = MemoryConsumer::new("FinalHashAggregateStream[0]").register(&dyn_pool);
-        let replay = merge.new_empty();
-        merge.try_grow(90).unwrap();
-
-        replay.try_grow(30).unwrap();
-        assert_eq!(pool.reserved(), 120);
-        assert_eq!(fake.held(), 120);
-        assert_eq!(pool.overcommit(), 0);
     }
 }
