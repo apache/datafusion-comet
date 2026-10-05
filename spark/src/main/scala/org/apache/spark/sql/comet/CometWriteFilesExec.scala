@@ -43,6 +43,7 @@ import org.apache.spark.sql.types.{DataType, StructType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.Utils
 
+import org.apache.comet.CometConf
 import org.apache.comet.serde.OperatorOuterClass
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.operator.{schema2Proto, NativeWriteUtils}
@@ -396,7 +397,8 @@ object CometWriteFilesExec extends Logging {
         if (!matchingTypes) {
           throw new UnsupportedOperationException(
             "Comet's native Parquet writer cannot report row statistics for a batch whose " +
-              "types differ from the write schema. Set spark.comet.write.parquet.enabled=false " +
+              "types differ from the write schema. Set " +
+              s"${CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key}=false " +
               "to use Spark's writer.")
         }
         val rows = batch.rowIterator()
