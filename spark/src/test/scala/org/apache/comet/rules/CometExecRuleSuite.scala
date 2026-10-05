@@ -29,9 +29,10 @@ import org.scalatest.PrivateMethodTester._
 import org.apache.logging.log4j.Level
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.FunctionIdentifier
-import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, Expression, ExpressionInfo, In, InSet, KnownFloatingPointNormalized, Literal, Not}
+import org.apache.spark.sql.catalyst.expressions.{Alias, And, Ascending, Attribute, AttributeReference, CreateArray, DateAdd, DateDiff, DateSub, Expression, ExpressionInfo, GreaterThan, In, InSet, IsNotNull, KnownFloatingPointNormalized, LessThan, Literal, NextDay, Not, Or, SortOrder}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, BloomFilterAggregate, Final, Min, Partial, PartialMerge}
-import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
+import org.apache.spark.sql.catalyst.optimizer.{BuildRight, NormalizeNaNAndZero}
+import org.apache.spark.sql.catalyst.plans.{Inner, LeftSemi}
 import org.apache.spark.sql.catalyst.plans.logical.{LocalRelation, LogicalPlan}
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, RoundRobinPartitioning}
 import org.apache.spark.sql.catalyst.rules.Rule
@@ -43,8 +44,9 @@ import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffl
 import org.apache.spark.sql.execution.aggregate.{HashAggregateExec, ObjectHashAggregateExec}
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ShuffleExchangeExec}
+import org.apache.spark.sql.execution.joins.{ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{DataTypes, DoubleType, FloatType, StructField, StructType}
+import org.apache.spark.sql.types.{DataTypes, DateType, DoubleType, FloatType, StructField, StructType}
 
 import org.apache.comet.{CometConf, CometCoverageStats, CometExplainInfo, CometSparkSessionExtensions, ConfigEntry, ExtendedExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark42Plus, withFallbackReason}
@@ -2344,4 +2346,305 @@ class CometExecRuleSuite extends CometTestBase {
     assert(warnings.head.contains(s"${CometConf.COMET_CONVERT_FROM_RANGE_ENABLED.key}=true"))
   }
 
+  test("ANSI next_day stays in Spark below LIMIT with or without dispatch") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      val input =
+        createSparkPlan(spark, "SELECT * FROM VALUES ('Monday'), ('NOT_A_DAY') AS inputs(dow)")
+      val date = Literal.create(java.sql.Date.valueOf("2024-01-01"), DataTypes.DateType)
+      for ((dispatch, ansi) <- Seq(("true", true), ("false", true), ("true", false))) {
+        withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> dispatch) {
+          val project = ProjectExec(
+            Seq(Alias(NextDay(date, input.output.head, failOnError = ansi), "next")()),
+            input)
+          val transformed = applyCometExecRule(CollectLimitExec(1, project))
+          withClue(s"dispatch=$dispatch, ANSI=$ansi") {
+            if (ansi) {
+              assert(transformed.isInstanceOf[CollectLimitExec])
+              assert(countOperators(transformed, classOf[ProjectExec]) == 1)
+              assert(countOperators(transformed, classOf[CometProjectExec]) == 0)
+              assert(
+                new ExtendedExplainInfo()
+                  .getFallbackReasons(transformed)
+                  .exists(_.contains("next_day requires Spark evaluation below LIMIT")))
+            } else {
+              assert(countOperators(transformed, classOf[CometProjectExec]) == 1)
+              assert(countOperators(transformed, classOf[ProjectExec]) == 0)
+            }
+            assert(countOperators(transformed, classOf[CometLocalTableScanExec]) == 1)
+          }
+        }
+      }
+    }
+  }
+
+  test("ANSI next_day first-match join conditions stay in Spark without dispatch") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
+      val left = createSparkPlan(spark, "SELECT * FROM VALUES (1) AS inputs(id)")
+      val right = createSparkPlan(
+        spark,
+        "SELECT * FROM VALUES (1, 'Monday'), (1, 'NOT_A_DAY') AS inputs(id, dow)")
+      val date = Literal.create(java.sql.Date.valueOf("2024-01-01"), DataTypes.DateType)
+      val condition = Some(GreaterThan(NextDay(date, right.output(1), failOnError = true), date))
+      val join = ShuffledHashJoinExec(
+        Seq(left.output.head),
+        Seq(right.output.head),
+        LeftSemi,
+        BuildRight,
+        condition,
+        left,
+        right)
+      val transformed = applyCometExecRule(join)
+      assert(transformed.isInstanceOf[ShuffledHashJoinExec])
+      assert(new ExtendedExplainInfo()
+        .getFallbackReasons(transformed)
+        .exists(_.contains("next_day requires Spark evaluation in first-match join conditions")))
+      assert(countOperators(transformed, classOf[CometLocalTableScanExec]) == 2)
+
+      // A protected Spark join must also survive the optional SMJ-to-SHJ rewrite.
+      withSQLConf(CometConf.COMET_FORCE_SHJ.key -> "true") {
+        val sortMergeJoin = SortMergeJoinExec(
+          Seq(left.output.head),
+          Seq(right.output.head),
+          LeftSemi,
+          condition,
+          left,
+          right)
+        val preserved = applyCometExecRule(sortMergeJoin)
+        assert(preserved.isInstanceOf[SortMergeJoinExec])
+        assert(
+          new ExtendedExplainInfo()
+            .getFallbackReasons(preserved)
+            .exists(
+              _.contains("next_day requires Spark evaluation in first-match join conditions")))
+      }
+    }
+  }
+
+  private def withAnsiNextDayProject(f: ProjectExec => Unit): Unit = {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      val input = createSparkPlan(
+        spark,
+        "SELECT * FROM VALUES (1, 'Monday'), (2, 'NOT_A_DAY') AS inputs(id, dow)")
+      val date = Literal.create(java.sql.Date.valueOf("2024-01-01"), DataTypes.DateType)
+      f(
+        ProjectExec(
+          Seq(
+            input.output.head,
+            Alias(NextDay(date, input.output(1), failOnError = true), "next")()),
+          input))
+    }
+  }
+
+  test("ANSI next_day stays native across eager codegen input boundaries") {
+    withAnsiNextDayProject { project =>
+      val sorted =
+        SortExec(Seq(SortOrder(project.output.head, Ascending)), global = false, project)
+      val filtered = FilterExec(LessThan(project.output.head, Literal(2)), sorted)
+      val right = createSparkPlan(spark, "SELECT * FROM VALUES (1) AS inputs(id)")
+      // Spark generates a separate stage for each shuffled-hash-join input, even without an
+      // explicit exchange in this physical plan. Its projected values are already materialized.
+      val joined = ShuffledHashJoinExec(
+        Seq(project.output.head),
+        Seq(right.output.head),
+        Inner,
+        BuildRight,
+        None,
+        ProjectExec(project.projectList, project.child),
+        right)
+      for (plan <- Seq(filtered, joined)) {
+        val transformed = applyCometExecRule(plan)
+        withClue(plan.nodeName) {
+          assert(countOperators(transformed, classOf[CometProjectExec]) == 1)
+          assert(countOperators(transformed, classOf[ProjectExec]) == 0)
+          assert(
+            !new ExtendedExplainInfo()
+              .getFallbackReasons(transformed)
+              .exists(_.contains("deferred projection")))
+        }
+      }
+    }
+  }
+
+  test("ANSI next_day filter inputs follow generated predicate order") {
+    withAnsiNextDayProject { original =>
+      def project: ProjectExec = ProjectExec(
+        original.projectList :+
+          Alias(Literal.create(null, DataTypes.DateType), "nullable_date")(),
+        original.child)
+      val date = Literal.create(java.sql.Date.valueOf("2020-01-01"), DataTypes.DateType)
+      val predicates: Seq[(ProjectExec => Expression, Boolean)] = Seq(
+        (p => GreaterThan(p.output(1), date), true),
+        (p => GreaterThan(p.output(2), p.output(1)), true),
+        (p => And(GreaterThan(p.output(1), date), LessThan(p.output.head, Literal(2))), true),
+        (p => And(LessThan(p.output.head, Literal(2)), GreaterThan(p.output(1), date)), false),
+        // A single predicate loads all referenced projected values before its expression code.
+        (p => Or(LessThan(p.output.head, Literal(2)), GreaterThan(p.output(1), date)), true),
+        (p => And(IsNotNull(p.output(1)), GreaterThan(p.output(1), date)), true),
+        (p => And(IsNotNull(p.output(1)), IsNotNull(p.output(2))), true),
+        (p => And(IsNotNull(p.output(2)), IsNotNull(p.output(1))), false),
+        // Spark moves this null check ahead of the comparison, even though it appears last.
+        (p => And(GreaterThan(p.output(1), p.output(2)), IsNotNull(p.output(2))), false),
+        // A compound null check also causes Spark to inject checks for its input attributes.
+        (
+          p =>
+            And(
+              GreaterThan(p.output(1), p.output(2)),
+              IsNotNull(DateAdd(p.output(2), p.output.head))),
+          false),
+        (p => IsNotNull(DateDiff(p.output(2), p.output(1))), true))
+      for ((predicate, native) <- predicates) {
+        val child = project
+        val condition = predicate(child)
+        val transformed = applyCometExecRule(FilterExec(condition, child))
+        withClue(condition.sql) {
+          assert(countOperators(transformed, classOf[CometProjectExec]) == (if (native) 1 else 0))
+          assert(countOperators(transformed, classOf[ProjectExec]) == (if (native) 0 else 1))
+        }
+      }
+    }
+  }
+
+  test("ANSI next_day required by a filter stays native and preserves errors") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "true",
+      SQLConf.ANSI_ENABLED.key -> "true",
+      CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true") {
+      val date = java.sql.Date.valueOf("2024-01-01")
+      val preserve = CometConf.COMET_EXEC_PRESERVE_EVALUATION_MASKS_ENABLED.key
+      def query(predicate: String): String =
+        s"""SELECT x, r FROM
+           |(SELECT next_day(_1, _2) AS x, rand(1L) AS r FROM filter_next_day)
+           |WHERE $predicate""".stripMargin
+
+      withParquetTable(Seq((date, "Monday")), "filter_next_day") {
+        for (enabled <- Seq(false, true)) {
+          withSQLConf(preserve -> enabled.toString) {
+            val (_, plan) = checkSparkAnswerAndImpl(
+              sql(query("x >= DATE '2020-01-01'")),
+              native = Seq("next_day"))
+            assert(collect(plan) { case p: CometProjectExec => p }.size == 1, plan.toString)
+            assert(collect(plan) { case f: CometFilterExec => f }.size == 1, plan.toString)
+          }
+        }
+      }
+      withParquetTable(Seq((date, "NOT_A_DAY")), "filter_next_day") {
+        // The required projected value fails even when the date comparison would reject it.
+        val required = sql(query("x < DATE '2020-01-01'"))
+        assertExpressionImpl(required.queryExecution.executedPlan, Seq("next_day"), Seq.empty)
+        val errorClass = if (isSpark40Plus) "ILLEGAL_DAY_OF_WEEK" else "_LEGACY_ERROR_TEMP_2000"
+        val error = checkSparkError(required, errorClass)
+        assert(error.getMessage.contains("Illegal input for day of week"))
+        // An earlier conjunct can still reject the row before evaluating next_day.
+        checkSparkAnswerAndFallbackReason(
+          query("r < 0 AND x < DATE '2020-01-01'"),
+          "next_day requires Spark evaluation in a deferred projection")
+        ()
+      }
+    }
+  }
+
+  test("strict Project inputs stay native unless their output is deferred") {
+    withAnsiNextDayProject { project =>
+      val eagerParents = Seq[Expression => Expression](
+        child => DateAdd(child, Literal(1)),
+        child => DateSub(child, Literal(1)),
+        child => NextDay(child, Literal("Friday"), failOnError = true),
+        child => CreateArray(Seq(Literal.create(null, DateType), child)))
+      eagerParents.foreach { parent =>
+        def strictProject: ProjectExec = ProjectExec(
+          Seq(project.output.head, Alias(parent(project.output(1)), "next")()),
+          ProjectExec(project.projectList, project.child))
+
+        val eager = applyCometExecRule(strictProject)
+        assert(countOperators(eager, classOf[CometProjectExec]) == 2, eager.toString)
+        assert(countOperators(eager, classOf[ProjectExec]) == 0, eager.toString)
+
+        // A filter can defer the strict parent's result, and therefore its input as well.
+        val deferred = strictProject
+        val filtered =
+          applyCometExecRule(FilterExec(LessThan(deferred.output.head, Literal(2)), deferred))
+        assert(countOperators(filtered, classOf[CometProjectExec]) == 0, filtered.toString)
+        assert(countOperators(filtered, classOf[ProjectExec]) == 2, filtered.toString)
+      }
+    }
+  }
+
+  test("deferred next_day fallback restores a reused native projection through batch bridges") {
+    withAnsiNextDayProject { project =>
+      val bridges: Seq[SparkPlan => SparkPlan] = Seq(
+        child => RowToColumnarExec(ColumnarToRowExec(child)),
+        child => CometSparkToColumnarExec(CometNativeColumnarToRowExec(child)))
+      bridges.foreach { bridge =>
+        val native = applyCometExecRule(ProjectExec(project.projectList, project.child))
+        assert(countOperators(native, classOf[CometProjectExec]) == 1)
+        val logicalStage = LogicalQueryStage(LocalRelation(native.output), native)
+        native.setLogicalLink(logicalStage)
+        val filtered = FilterExec(LessThan(native.output.head, Literal(2)), bridge(native))
+        val transformed = applyCometExecRule(filtered)
+        for (replanned <- Seq(transformed, applyCometExecRule(transformed))) {
+          assert(replanned.isInstanceOf[FilterExec])
+          assert(countOperators(replanned, classOf[ProjectExec]) == 1)
+          assert(countOperators(replanned, classOf[CometProjectExec]) == 0)
+          assert(countOperators(replanned, classOf[CometLocalTableScanExec]) == 1)
+          assert(replanned.collect { case r: RowToColumnarTransition => r }.isEmpty)
+          assert(
+            new ExtendedExplainInfo()
+              .getFallbackReasons(replanned)
+              .exists(_.contains("next_day requires Spark evaluation in a deferred projection")))
+          assert(
+            replanned.children.head
+              .getTagValue(SparkPlan.LOGICAL_PLAN_TAG)
+              .exists(_ eq logicalStage))
+        }
+      }
+    }
+  }
+
+  test("ANSI next_day preserves incompatible aggregate buffers before AQE removes a sort") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
+      SQLConf.ANSI_ENABLED.key -> "true",
+      SQLConf.USE_OBJECT_HASH_AGG.key -> "true",
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      val aggregate = createSparkPlan(
+        spark,
+        "SELECT next_day(DATE '2024-01-01', dow) AS next, collect_list(k) AS collected " +
+          "FROM VALUES (1, 'Monday'), (2, 'Monday') AS t(k, dow) GROUP BY dow")
+      assert(countOperators(aggregate, classOf[ObjectHashAggregateExec]) == 2)
+      val native = applyCometExecRule(aggregate)
+      assert(countOperators(native, classOf[CometHashAggregateExec]) == 2)
+      withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true") {
+        // The sort currently consumes every result, but AQE can remove it after the Partial
+        // materializes. Both a fresh plan and a reused native chain need Spark's binary buffers.
+        for (child <- Seq(aggregate, native)) {
+          val sorted =
+            SortExec(Seq(SortOrder(child.output.head, Ascending)), global = false, child)
+          val offset = applyCometExecRule(CollectLimitExec(-1, sorted, offset = 1))
+          assert(countOperators(offset, classOf[CometHashAggregateExec]) == 2)
+          val transformed = applyCometExecRule(CollectLimitExec(1, sorted))
+          for (replanned <- Seq(transformed, applyCometExecRule(transformed))) {
+            assert(countOperators(replanned, classOf[CometHashAggregateExec]) == 0)
+            assert(countOperators(replanned, classOf[ObjectHashAggregateExec]) == 2)
+            assert(
+              new ExtendedExplainInfo()
+                .getFallbackReasons(replanned)
+                .exists(
+                  _.contains("next_day requires Spark aggregate buffers below LIMIT with AQE")))
+          }
+        }
+      }
+    }
+  }
 }
