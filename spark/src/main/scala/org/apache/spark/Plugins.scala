@@ -30,6 +30,9 @@ import org.apache.spark.api.plugin.{DriverPlugin, ExecutorPlugin, PluginContext,
 import org.apache.spark.internal.Logging
 import org.apache.spark.internal.config.{EVENT_LOG_ENABLED, EXECUTOR_MEMORY_OVERHEAD, EXECUTOR_MEMORY_OVERHEAD_FACTOR}
 import org.apache.spark.scheduler.{SparkListener, SparkListenerApplicationEnd, SparkListenerExecutorMetricsUpdate, SparkListenerExecutorRemoved}
+import org.apache.spark.serializer.KryoSerializer
+import org.apache.spark.sql.comet.execution.arrow.ArrowCachedBatchSerializer
+import org.apache.spark.sql.comet.execution.shuffle.{CometCelebornShuffleManager, CometShuffleManager}
 import org.apache.spark.sql.internal.StaticSQLConf
 import org.apache.spark.util.{Clock, SystemClock}
 
@@ -110,7 +113,7 @@ class CometDriverPlugin private[spark] (clock: Clock) extends DriverPlugin with 
     val extraConfs = new ju.HashMap[String, String]()
 
     CometDriverPlugin.maybeSetCacheSerializer(sc.conf, extraConfs)
-    CometDriverPlugin.warnIfKryoRegistratorMissing(sc.conf)
+    CometDriverPlugin.warnIfKryoRegistrationsMissing(sc.conf)
 
     // register CometSparkSessionExtensions if it isn't already registered
     CometDriverPlugin.registerCometSessionExtension(sc.conf)
@@ -174,7 +177,13 @@ object CometDriverPlugin extends Logging {
   // Use Comet's cache serializer only when the native in-memory cache scan can run, which needs
   // Comet and its native execution as well as the cache config. spark.sql.cache.serializer is
   // static, so an application that starts with Comet or native execution off would otherwise
-  // store every cache in Comet's format, with only Spark operators to read it.
+  // store every cache in Comet's format, with only Spark operators to read it. So would one that
+  // leaves Comet shuffle enabled without Comet's shuffle manager, since Comet then disables
+  // itself.
+  // Nor is it used where Kryo requires registration and has not registered Comet's cached batch:
+  // caching would then fail the first time Spark serialized a cached block. Where Kryo has
+  // registered it, by whatever means, Comet's format is used, since Spark registers its own
+  // cached batch only from 4.1.
   // If the application already set spark.sql.cache.serializer, leave that value
   // unchanged so Comet does not replace a user-selected cache format.
   private[apache] def maybeSetCacheSerializer(
@@ -182,7 +191,9 @@ object CometDriverPlugin extends Logging {
       extraConfs: ju.HashMap[String, String]): Unit = {
     if (getBooleanConf(conf, CometConf.COMET_ENABLED) &&
       getBooleanConf(conf, CometConf.COMET_EXEC_ENABLED) &&
-      getBooleanConf(conf, CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED)) {
+      getBooleanConf(conf, CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED) &&
+      (!getBooleanConf(conf, CometConf.COMET_SHUFFLE_ENABLED) || isCometShuffleManager(conf)) &&
+      !unregisteredKryoClasses(conf).contains(ArrowCachedBatchSerializer.cachedBatchClass)) {
       val serializerKey = StaticSQLConf.SPARK_CACHE_SERIALIZER.key
       val serializerValue =
         "org.apache.spark.sql.comet.execution.arrow.ArrowCachedBatchSerializer"
@@ -207,26 +218,53 @@ object CometDriverPlugin extends Logging {
   // CometKryoRegistrator covers both, but spark.kryo.registrator is read when SparkEnv builds the
   // serializer, before any plugin runs, so it cannot be set from here. Say so while the
   // application is still starting up rather than leaving the user to attribute the failure later.
-  private[apache] def warnIfKryoRegistratorMissing(conf: SparkConf): Unit = {
-    val usingKryo =
-      conf.get("spark.serializer", "") == "org.apache.spark.serializer.KryoSerializer"
-    val registrationRequired = conf.getBoolean("spark.kryo.registrationRequired", false)
-    val registered = conf
-      .get("spark.kryo.registrator", "")
-      .split(',')
-      .map(_.trim)
-      .contains(CometKryoRegistrator.CLASS_NAME)
-
-    if (usingKryo && registrationRequired && !registered) {
-      logWarning(
-        "spark.kryo.registrationRequired=true but spark.kryo.registrator does not include " +
-          s"${CometKryoRegistrator.CLASS_NAME}. Comet's native broadcast and its in-memory " +
-          "cache format will fail with Kryo's \"Class is not registered\" as soon as their " +
-          "payloads are serialized. Add " +
-          s"spark.kryo.registrator=${CometKryoRegistrator.CLASS_NAME} before creating the " +
-          "SparkContext; it cannot be set later.")
+  private[apache] def warnIfKryoRegistrationsMissing(conf: SparkConf): Unit = {
+    val unregistered = unregisteredKryoClasses(conf)
+    if (unregistered.nonEmpty) {
+      logWarning("spark.kryo.registrationRequired=true but Kryo has not registered " +
+        s"${unregistered.map(_.getName).mkString(", ")}, which " +
+        s"${CometKryoRegistrator.CLASS_NAME} registers. Comet's native broadcast and in-memory " +
+        "cache fail with Kryo's \"Class is not registered\" when they serialize one of them, " +
+        "and Comet keeps Spark's cache format while its own cached batch is unregistered. " +
+        s"Add spark.kryo.registrator=${CometKryoRegistrator.CLASS_NAME} before creating the " +
+        "SparkContext; it cannot be set later.")
     }
   }
+
+  // The classes CometKryoRegistrator registers that Kryo, configured as the application
+  // configured it, would reject: none unless it requires registration. They can be registered
+  // through CometKryoRegistrator, a registrator of the application's own or
+  // spark.kryo.classesToRegister, so ask a Kryo instance built from the conf rather than read the
+  // confs. If one cannot be built, take them as registered only if spark.kryo.registrator lists
+  // CometKryoRegistrator.
+  private[apache] def unregisteredKryoClasses(conf: SparkConf): Seq[Class[_]] = {
+    val usingKryo =
+      conf.get("spark.serializer", "") == "org.apache.spark.serializer.KryoSerializer"
+    if (!usingKryo || !conf.getBoolean("spark.kryo.registrationRequired", false)) {
+      Nil
+    } else {
+      // Qualified, because in this package org.apache.spark.Success, a TaskEndReason, hides an
+      // imported scala.util.Success on Scala 2.12.
+      Try(new KryoSerializer(conf).newKryo()) match {
+        case scala.util.Success(kryo) =>
+          CometKryoRegistrator.classes.filter(kryo.getClassResolver.getRegistration(_) == null)
+        case scala.util.Failure(e) =>
+          logDebug("Could not build Kryo to check Comet's registrations", e)
+          val listed = conf
+            .get("spark.kryo.registrator", "")
+            .split(',')
+            .map(_.trim)
+            .contains(CometKryoRegistrator.CLASS_NAME)
+          if (listed) Nil else CometKryoRegistrator.classes
+      }
+    }
+  }
+
+  // Comet's shuffle managers have no short name, so spark.shuffle.manager names one only by its
+  // class name.
+  private def isCometShuffleManager(conf: SparkConf): Boolean =
+    Set(classOf[CometShuffleManager].getName, classOf[CometCelebornShuffleManager].getName)
+      .contains(conf.get("spark.shuffle.manager", ""))
 
   // Comet's native allocations are made by the Rust global allocator and live in the native heap.
   // In off-heap mode the share that operators reserve is charged against a memory pool, but
@@ -298,8 +336,13 @@ object CometDriverPlugin extends Logging {
     }
   }
 
+  // Reads a deprecated alternative too, such as spark.comet.exec.shuffle.enabled, as a session
+  // would.
   private def getBooleanConf(conf: SparkConf, entry: ConfigEntry[Boolean]): Boolean =
-    conf.getBoolean(entry.key, entry.defaultValue.get)
+    (entry.key +: entry.alternatives)
+      .find(conf.contains)
+      .map(conf.getBoolean(_, entry.defaultValue.get))
+      .getOrElse(entry.defaultValue.get)
 
   def registerCometMetrics(sc: SparkContext): Unit = {
     if (sc.getConf.getBoolean(

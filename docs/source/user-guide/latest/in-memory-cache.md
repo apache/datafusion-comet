@@ -34,11 +34,13 @@ $SPARK_HOME/bin/spark-shell \
 ```
 
 It has to be set before the `SparkContext` starts. Comet's driver plugin chooses
-`spark.sql.cache.serializer` once, while the context is initializing, so a session that started
-with the default goes on using Spark's cache format however the config is set afterwards. The
-plugin installs Comet's serializer only if `spark.comet.enabled` and `spark.comet.exec.enabled`
-are enabled at that point too, because an application that starts without native execution could
-not scan Comet's format natively.
+`spark.sql.cache.serializer` once, while the context is initializing, so an application keeps the
+cache format it started with however the config is set afterwards. The plugin installs Comet's
+serializer only if `spark.comet.enabled` and `spark.comet.exec.enabled` are enabled at that point
+too, because an application that starts without native execution could not scan Comet's format
+natively. It also keeps Spark's format when Comet shuffle is enabled but `spark.shuffle.manager` is
+not one of Comet's shuffle managers, since Comet then disables itself, and when Kryo would reject
+Comet's format; see [Kryo](#kryo).
 
 ## What changes when it is enabled
 
@@ -180,10 +182,19 @@ spark.kryo.registrator=org.apache.comet.CometKryoRegistrator
 
 Comet cannot set `spark.kryo.registrator` for you the way it sets `spark.sql.cache.serializer`:
 `KryoSerializer` reads it when `SparkEnv` builds the serializer, which happens before any plugin
-runs. Without it, caching fails with a "Class is not registered" error that does not name this
-feature. Comet's driver plugin warns at startup when it sees Kryo, `registrationRequired`, and no
-registrator. Native broadcast needs the same registrator even when the cache is disabled; see
+runs. Without it, Kryo would reject Comet's cached batch with a "Class is not registered" error
+that does not name this feature. So when Kryo requires registration and has not registered
+Comet's cached batch, Comet's driver plugin does not install Comet's serializer, and caches stay in
+Spark's format. Registrations made another way, through a registrator of the application's own or
+`spark.kryo.classesToRegister`, count as well. The plugin warns at startup when Kryo requires
+registration and has not registered every class `CometKryoRegistrator` registers. An application
+that sets `spark.sql.cache.serializer` to Comet's serializer itself gets the error instead. Native
+broadcast needs the same registrator even when the cache is disabled; see
 [Kryo serialization](installation.md#kryo-serialization).
+
+Spark registers its own cached batch with Kryo only from Spark 4.1, so on earlier versions caching
+in either format under `registrationRequired` needs a registrator. `CometKryoRegistrator` registers
+Spark's cached batch too.
 
 ## Limitations
 
