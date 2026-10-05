@@ -152,6 +152,15 @@ object CometConf extends ShimCometConf {
       .checkValue(v => v > 0, "Data file concurrency limit must be positive")
       .createWithDefault(1)
 
+  val COMET_ICEBERG_IO_TIMEOUT: ConfigEntry[Long] =
+    conf("spark.comet.iceberg.ioTimeout")
+      .category(CATEGORY_SCAN)
+      .doc("Timeout for each storage I/O call, such as one read or write, that Comet's native " +
+        "Iceberg scan and write make. Passed to iceberg-rust as `opendal.io-timeout-ms`.")
+      .timeConf(TimeUnit.MILLISECONDS)
+      .checkValue(_ > 0, "The Iceberg I/O timeout must be positive")
+      .createWithDefault(TimeUnit.SECONDS.toMillis(30))
+
   val COMET_CSV_V2_NATIVE_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.scan.csv.v2.enabled")
       .category(CATEGORY_TESTING)
@@ -200,6 +209,42 @@ object CometConf extends ShimCometConf {
       .doc(
         "When enabled, data from Spark (non-native) CSV v1 and v2 scans will be converted to " +
           "Arrow format.")
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_CONVERT_FROM_RANGE_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.convert.range.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "When enabled, the rows of `spark.range` and SQL `range()` that Comet does not generate " +
+          "natively (see `spark.comet.exec.range.enabled`) will be converted to Arrow format.")
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_CONVERT_FROM_IN_MEMORY_CACHE_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.convert.inMemoryCache.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "When enabled, data from in-memory cached tables that Comet's native cache scan does " +
+          "not read (see `spark.comet.exec.inMemoryCache.enabled`), such as tables cached in " +
+          "Spark's default format, will be converted to Arrow format.")
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_CONVERT_FROM_RDD_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.convert.rdd.enabled")
+      .category(CATEGORY_EXEC)
+      .doc("When enabled, data from a DataFrame created from an RDD of rows, for example with " +
+        "`spark.createDataFrame(rdd, schema)`, will be converted to Arrow format.")
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_CONVERT_FROM_ONE_ROW_RELATION_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.convert.oneRowRelation.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "When enabled, the single row that a query without a FROM clause, such as `SELECT 1`, " +
+          "reads will be converted to Arrow format.")
       .booleanConf
       .createWithDefault(false)
 
@@ -277,6 +322,14 @@ object CometConf extends ShimCometConf {
     createExecEnabledConfig("emptyRelation", defaultValue = true)
   val COMET_EXEC_SAMPLE_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("sample", defaultValue = true)
+  val COMET_EXEC_MERGE_ROWS_ENABLED: ConfigEntry[Boolean] =
+    createExecEnabledConfig(
+      "mergeRows",
+      defaultValue = false,
+      notes = Some(
+        "Only takes effect on Spark 3.5 and later. Spark 3.4 has no MergeRowsExec. On Spark " +
+          "4.1 and later, stock V2 writers retain Spark MergeRowsExec for MergeSummary; native " +
+          "MergeRows is used only where the enclosing Comet write path preserves that contract."))
 
   val COMET_EXEC_IN_MEMORY_CACHE_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.inMemoryCache.enabled")
@@ -1045,21 +1098,28 @@ object CometConf extends ShimCometConf {
   val COMET_SPARK_TO_ARROW_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.sparkToColumnar.enabled")
       .category(CATEGORY_EXEC)
-      .doc("Whether to enable Spark to Arrow columnar conversion. When this is turned on, " +
-        "Comet will convert operators in " +
-        "`spark.comet.sparkToColumnar.supportedOperatorList` into Arrow columnar format before " +
-        "processing.")
+      .doc("Whether to convert the output of the leaf operators named in " +
+        "`spark.comet.sparkToColumnar.supportedOperatorList` to Arrow format. Ranges, " +
+        "in-memory cached tables, RDDs and queries without a FROM clause have " +
+        "`spark.comet.convert` configs of their own. When the list is not set, this converts " +
+        "those four instead, which is deprecated and will be removed in a future major release.")
       .booleanConf
       .createWithDefault(false)
 
   val COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST: ConfigEntry[Seq[String]] =
     conf("spark.comet.sparkToColumnar.supportedOperatorList")
       .category(CATEGORY_EXEC)
-      .doc("A comma-separated list of operators that will be converted to Arrow columnar " +
-        s"format when `${COMET_SPARK_TO_ARROW_ENABLED.key}` is true.")
+      .doc(
+        "A comma-separated list of leaf operators to convert to Arrow format when " +
+          s"`${COMET_SPARK_TO_ARROW_ENABLED.key}` is true, each named by its Spark class name " +
+          "without the `Exec` suffix. It is for operators that have no `spark.comet.convert` " +
+          "config of their own, such as `BatchScan` for a Data Source V2 connector, or " +
+          "`FileSourceScan` for file formats other than Parquet, JSON and CSV. Naming `Range`, " +
+          "`InMemoryTableScan`, `RDDScan` or `OneRowRelation` is deprecated and will stop " +
+          "working in a future major release. Use their `spark.comet.convert` configs instead.")
       .stringConf
       .toSequence
-      .createWithDefault(Seq("Range,InMemoryTableScan,RDDScan,OneRowRelation"))
+      .createWithDefault(Nil)
 
   val COMET_CASE_CONVERSION_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.caseConversion.enabled")

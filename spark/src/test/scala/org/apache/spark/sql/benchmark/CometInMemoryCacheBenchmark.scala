@@ -716,7 +716,8 @@ object CometInMemoryCacheBenchmark extends CometBenchmarkBase {
       CometConf.COMET_ENABLED.key -> "true",
       CometConf.COMET_EXEC_ENABLED.key -> "true",
       CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> nativeCacheEnabled.toString,
-      "spark.comet.sparkToColumnar.enabled" -> "true",
+      CometConf.COMET_CONVERT_FROM_RANGE_ENABLED.key -> "true",
+      CometConf.COMET_CONVERT_FROM_IN_MEMORY_CACHE_ENABLED.key -> "true",
       "spark.comet.exec.onHeap.enabled" -> "true",
       "spark.sql.inMemoryColumnarStorage.batchSize" -> "10000")
   }

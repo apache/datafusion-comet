@@ -123,9 +123,11 @@ only the latest.
 
 ## 4. Failure Handling and Cleanup
 
-Files must have exactly one owner at every moment. Read the ownership table in the contributor
-guide before reviewing any change near `AbortOnDrop`, `TrackingLocationGenerator`,
-`WrittenFileCleanup`, `drainNativePayload` or `IcebergCommitExec.collectAndCommit`.
+Cleanup must never have an ownership gap. During the handoff, native remains armed until the JVM
+has taken the locations and acknowledged that by polling EOF, so a brief overlap is intentional.
+Read the ownership table in the contributor guide before reviewing any change near `AbortOnDrop`,
+`TrackingLocationGenerator`, `WrittenFileCleanup`, `drainNativePayload` or
+`IcebergCommitExec.collectAndCommit`.
 
 - [ ] A new failure point between writing a file and the JVM taking the locations is covered by the
       native guard, including the path where the plan is dropped mid-write rather than returning an
