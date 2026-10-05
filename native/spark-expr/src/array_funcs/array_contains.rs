@@ -234,8 +234,9 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::super::test_util::{list, EDGE_VALUES};
+    use super::super::test_util::list;
     use super::*;
+    use crate::float_semantics::EDGE_VALUES;
     use arrow::array::{Float64Array, Int32Array, StructArray};
     use arrow::buffer::OffsetBuffer;
     use arrow::datatypes::{Field, Fields};
