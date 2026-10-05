@@ -38,17 +38,19 @@ Run a single test file by adding the file name (without `.sql` extension) after 
 ```
 
 This uses ScalaTest's substring matching, so the argument must match part of the test name.
-Test names follow the pattern `sql-file: expressions/<category>/<file>.sql [<config>]`.
+Test names use paths relative to `sql-tests/`, for example
+`sql-file: expressions/<category>/<file>.sql [<config>]` or
+`sql-file: framework/<file>.sql [<config>]`.
 
 ## Test file location
 
 SQL test files live under:
 
 ```
-spark/src/test/resources/sql-tests/expressions/
+spark/src/test/resources/sql-tests/
 ```
 
-Files are organized into category subdirectories:
+Expression fixtures are organized into category subdirectories:
 
 ```
 expressions/
@@ -67,8 +69,11 @@ expressions/
   struct/        -- create_named_struct, get_struct_field, ...
 ```
 
-The test suite recursively discovers all `.sql` files in these directories. Each file becomes
-one or more ScalaTest test cases.
+SQL test framework regression fixtures live in `framework/`, such as
+`framework/expect_error_class.sql`.
+
+The test suite recursively discovers all `.sql` files under `sql-tests/`. Each file becomes one
+or more ScalaTest test cases.
 
 ## File format
 
@@ -303,9 +308,10 @@ operators and needs no additional successful query.
 
 ## Adding a new test
 
-1. Create a `.sql` file under the appropriate subdirectory in
+1. Create an expression fixture under the appropriate subdirectory in
    `spark/src/test/resources/sql-tests/expressions/`. Create a new subdirectory if no
-   existing category fits.
+   existing category fits. Put SQL test framework regression fixtures in
+   `spark/src/test/resources/sql-tests/framework/`.
 
 2. Add the Apache license header as a SQL comment.
 
