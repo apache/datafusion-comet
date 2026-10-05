@@ -282,3 +282,20 @@ use more than `N` times this value on shared local disks. If the limit is reache
 fail and the query errors out. Raise this on workloads with large sort/aggregate/shuffle spills, or
 lower it to protect executors on shared disks, remembering that the total across an executor is a
 multiple of this value.
+
+## Compressing Spill Files
+
+Native sorts, aggregations, and sort-merge joins spill through DataFusion, which writes spill files
+uncompressed by default, while Spark compresses its own with `lz4` by default. To compress them,
+which reduces spill I/O and how much of `spark.comet.maxTempDirectorySize` they use, set:
+
+```
+spark.comet.datafusion.execution.spill_compression=zstd
+```
+
+The accepted values are `uncompressed` (the default), `lz4_frame`, and `zstd`. `lz4_frame`
+compresses and decompresses faster than `zstd` but writes larger files. `lz4` is not a valid value,
+and an invalid value fails every query that runs a Comet native plan. This setting does not need
+`spark.comet.exec.respectDataFusionConfigs`, because `spark.comet.exec.allowedDataFusionConfigs`
+lists it by default. Comet's shuffle writers do not use it. See
+[Shuffle Compression](shuffle.md#shuffle-compression).

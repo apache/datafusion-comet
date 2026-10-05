@@ -110,6 +110,21 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("SQLConf serde passes allowed DataFusion configs without respectDataFusionConfigs") {
+    def entries = ConfigMap.parseFrom(CometExecIterator.serializeCometSQLConfs()).getEntriesMap
+    val spillCompression = "spark.comet.datafusion.execution.spill_compression"
+    val spillReservation = "spark.comet.datafusion.execution.sort_spill_reservation_bytes"
+
+    withSQLConf(spillCompression -> "zstd", spillReservation -> "65536") {
+      assert(entries.get(spillCompression) == "zstd")
+      assert(!entries.containsKey(spillReservation))
+
+      withSQLConf(CometConf.COMET_ALLOWED_DATAFUSION_CONFIGS.key -> spillReservation) {
+        assert(entries.get(spillReservation) == "65536")
+      }
+    }
+  }
+
   test("sample without replacement") {
     withParquetTable((0 until 1000).map(i => (i, i + 1)), "tbl") {
       val df = sql("SELECT * FROM tbl").sample(withReplacement = false, fraction = 0.3, seed = 42)

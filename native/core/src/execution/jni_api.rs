@@ -892,9 +892,8 @@ fn prepare_datafusion_session_context(
     // DataFusion session options. `pushdown_filters` enables the parquet reader's
     // RowFilter evaluation during decode (late materialization); `reorder_filters`
     // is only meaningful when pushdown_filters is on, so they move together. Set
-    // before the `spark.comet.datafusion.*` testing escape hatch pass-through below,
-    // so an explicit override of either key wins instead of being silently forced
-    // back to `true`.
+    // before the `spark.comet.datafusion.*` pass-through below, so an explicit
+    // override of either key wins instead of being silently forced back to `true`.
     if spark_config.get_bool(COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED) {
         session_config =
             session_config.set_str("datafusion.execution.parquet.pushdown_filters", "true");

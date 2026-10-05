@@ -830,9 +830,11 @@ object CometExecIterator extends Logging {
 
   def serializeCometSQLConfs(): Array[Byte] = {
     val builder = ConfigMap.newBuilder()
+    val respectDataFusionConfigs = CometConf.COMET_RESPECT_DATAFUSION_CONFIGS.get(SQLConf.get)
+    val allowedDataFusionConfigs = CometConf.COMET_ALLOWED_DATAFUSION_CONFIGS.get(SQLConf.get)
     cometSqlConfs.foreach { case (k, v) =>
       if (k.startsWith(s"${CometConf.COMET_PREFIX}.datafusion.")) {
-        if (CometConf.COMET_RESPECT_DATAFUSION_CONFIGS.get(SQLConf.get)) {
+        if (respectDataFusionConfigs || allowedDataFusionConfigs.contains(k)) {
           builder.putEntries(k, v)
         }
       } else {
