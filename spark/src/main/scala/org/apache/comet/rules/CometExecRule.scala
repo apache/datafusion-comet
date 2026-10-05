@@ -1340,13 +1340,18 @@ case class CometExecRule(session: SparkSession)
       }
       op.children.foreach(visit(_, childReader))
     }
-    // `Dataset.rdd` plans a `DeserializeToObjectExec` at the root, and the RDD's own code
-    // decides how much of it to read, as `take(1)` does.
-    val rootReader = plan match {
-      case _: DeserializeToObjectExec => Some("code reading Dataset.rdd")
-      case _ => None
+    // `Dataset.rdd` reads the objects the plan produces, and the RDD's own code decides how many
+    // of them to read, as `take(1)` does. The plan's root is the `DeserializeToObjectExec` that
+    // `Dataset.rdd` adds. When the Dataset ends in a typed operation such as `map`, Spark's
+    // `EliminateSerialization` drops that deserializer together with the operation's serializer,
+    // so the root is the operation itself, which produces objects too, or a typed filter or a
+    // project over it. A Dataset's own plan ends in rows, so no other plan has such a root.
+    def producesObjects(op: SparkPlan): Boolean = op match {
+      case _: ObjectProducerExec => true
+      case _: FilterExec | _: ProjectExec => producesObjects(op.children.head)
+      case _ => false
     }
-    visit(plan, rootReader)
+    visit(plan, if (producesObjects(plan)) Some("code reading Dataset.rdd") else None)
   }
 
   /**

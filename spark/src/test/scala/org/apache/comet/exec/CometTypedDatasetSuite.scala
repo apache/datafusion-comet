@@ -317,7 +317,16 @@ class CometTypedDatasetSuite extends CometTestBase {
   }
 
   convertTest("code reading Dataset.rdd does not evaluate typed Dataset rows it never reads") {
-    assert(failsOnRow30.filter(col("value") > 0L).rdd.take(1).toSeq == Seq(1L))
+    Seq("true", "false").foreach { aqe =>
+      withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe) {
+        val filtered = failsOnRow30.filter(col("value") > 0L)
+        assert(filtered.rdd.take(1).toSeq == Seq(1L))
+        // When the Dataset ends in a typed operation, Spark drops the deserializer that `rdd`
+        // adds, so the root of the plan is that operation, or a typed filter over it.
+        assert(filtered.map(_ + 1L).rdd.take(1).toSeq == Seq(2L))
+        assert(filtered.map(_ + 1L).filter((v: Long) => v > 0L).rdd.take(1).toSeq == Seq(2L))
+      }
+    }
   }
 
   convertTest("a limit above an aggregate keeps the conversion the aggregate reads all of") {
