@@ -40,10 +40,11 @@ all native execution can be turned off with `spark.comet.exec.enabled=false`. Se
 ## Wrapper nodes
 
 Some nodes in a Spark plan do no work of their own: `AdaptiveSparkPlan`, the AQE query stages
-(including `ResultQueryStage` on Spark 4.0 and later), `AQEShuffleRead`, `InputAdapter`,
-`WholeStageCodegen`, and the reuse markers `ReusedExchange` and `ReusedSubquery`. Comet leaves
-them in place around the operators it converts, so this page does not list them, and seeing one in
-a plan does not mean that part of the query fell back to Spark. The coverage summary described in
+(`ShuffleQueryStage`, `BroadcastQueryStage`, `TableCacheQueryStage` on Spark 3.5 and later, and
+`ResultQueryStage` on Spark 4.0 and later), `AQEShuffleRead`, `InputAdapter`, `WholeStageCodegen`,
+and the reuse markers `ReusedExchange` and `ReusedSubquery`. Comet leaves them in place around the
+operators it converts, so this page does not list them, and seeing one in a plan does not mean
+that part of the query fell back to Spark. The coverage summary described in
 [Understanding Comet Plans](understanding-comet-plans.md) does not count them.
 
 ## Not currently planned
