@@ -27,6 +27,13 @@
 #      could not be tested; POLICY_CASES below is the test it never had. The
 #      expected sets are transcribed from the `if:` expressions ci.yml carried
 #      before the policy moved, so a regression here is a behaviour change.
+#      The event reaches the script as environment variables set by the
+#      `Compute outputs` step of ci.yml's `Detect changes` job, and a variable
+#      dropped there reads as an empty string, which is a valid value (no
+#      label, no base branch), so that wiring is pinned as well. So is the
+#      `refs/heads/main` guard on the `docs` job: a dispatch routes every job,
+#      docs included, and that guard is all that keeps a dispatch on a release
+#      branch from publishing that branch's docs over the site.
 #
 #   3. Required-check coverage. `Required Checks` in ci.yml is the job that
 #      `.asf.yaml` can name in `required_status_checks` for main. A heavy job
@@ -103,11 +110,13 @@ BUILD_JOBS = {
     "build_linux_full",
     "build_linux_all_profiles",
     "build_macos",
+    "build_macos_full",
     "spark_3_4",
     "spark_3_5",
     "spark_4_0",
     "spark_4_1",
     "spark_4_1_hive",
+    "spark_4_2",
     "iceberg_1_8",
     "iceberg_1_9",
     "iceberg_1_10",
@@ -136,6 +145,7 @@ ROUTING_CASES = [
     # Spot checks that the additions above did not widen unrelated routes.
     (["docs/source/user-guide/overview.md"], {"docs"}),
     (["native/core/benches/parquet_read.rs"], {"benchmark"}),
+    (["native/operators/benches/explode.rs"], {"benchmark"}),
     # The mermaid guard is run by preflight, which is unconditional, and again
     # by the docs deploy, which is not, so the deploy has to be routed. The
     # build jobs come along because `dev/ci/**` already feeds them.
@@ -147,6 +157,7 @@ ROUTING_CASES = [
             "build_linux_full",
             "build_linux_all_profiles",
             "build_macos",
+            "build_macos_full",
         },
     ),
     # The Delta gate script is read by nothing else; the contrib crate feeds
@@ -162,6 +173,7 @@ ROUTING_CASES = [
             "build_linux_full",
             "build_linux_all_profiles",
             "build_macos",
+            "build_macos_full",
             "pyarrow_udf",
         },
     ),
@@ -181,6 +193,7 @@ QUEUE_TIER = PR_TIER | {
     "spark_4_1_hive",
     "iceberg_1_11",
     "build_macos",
+    "build_macos_full",
     "benchmark",
     "delta_gate",
     "pyarrow_udf",
@@ -191,6 +204,7 @@ QUEUE_TIER = PR_TIER | {
 NIGHTLY_TIER = {
     "spark_3_5",
     "spark_4_0",
+    "spark_4_2",
     "iceberg_1_8",
     "iceberg_1_9",
     "iceberg_1_10",
@@ -220,12 +234,13 @@ POLICY_CASES = [
     # ran everything in QUEUE_TIER against the tree that is now main, so a
     # queue job showing up here is a suite being paid for twice a day.
     ({"name": "schedule"}, NIGHTLY_TIER),
-    # Push to main is the site deploy plus the Linux build, which is there to
-    # refresh main's actions/cache entries (see POLICY). `build_linux_full`
-    # must stay out: it is what turns the lints and the test matrix back on,
-    # and the queue has already run those against the tree that landed. Any
-    # other test job showing up here means every merge is paying for it twice.
-    ({"name": "push"}, {"docs", "build_linux"}),
+    # Push to main is the site deploy plus the Linux and macOS builds, which
+    # are there to refresh main's actions/cache entries (see POLICY).
+    # `build_linux_full` and `build_macos_full` must stay out: they are what
+    # turn the lints and the test matrices back on, and the queue has already
+    # run those against the tree that landed. Any other test job showing up
+    # here means every merge is paying for it twice.
+    ({"name": "push"}, {"docs", "build_linux", "build_macos"}),
     # A plain pull request: the PR tier only. docs must never run here, and the
     # opt-in suites stay off without their label.
     ({"name": "pull_request", "action": "opened", "labels": []}, PR_TIER),
@@ -239,7 +254,7 @@ POLICY_CASES = [
     # with its own label. Neither label pulls in the other.
     (
         {"name": "pull_request", "action": "synchronize", "labels": ["run-macos-tests"]},
-        PR_TIER | {"build_macos"},
+        PR_TIER | {"build_macos", "build_macos_full"},
     ),
     (
         {"name": "pull_request", "action": "synchronize", "labels": ["run-benchmark-check"]},
@@ -272,7 +287,7 @@ POLICY_CASES = [
             "label": "run-macos-tests",
             "labels": ["run-macos-tests"],
         },
-        {"build_macos"},
+        {"build_macos", "build_macos_full"},
     ),
     # The linux-test matrix's non-default Spark profiles run nightly, with
     # their own label. On a pushed commit the label adds them to the PR tier's
@@ -350,6 +365,21 @@ POLICY_CASES = [
         },
         {"spark_3_4"},
     ),
+    # Spark 4.2 runs nightly, and its label brings that run forward onto a pull
+    # request, the same shape as 3.5 and 4.0. It pulls in no other Spark version.
+    (
+        {"name": "pull_request", "action": "synchronize", "labels": ["run-spark-4.2-tests"]},
+        PR_TIER | {"spark_4_2"},
+    ),
+    (
+        {
+            "name": "pull_request",
+            "action": "labeled",
+            "label": "run-spark-4.2-tests",
+            "labels": ["run-spark-4.2-tests"],
+        },
+        {"spark_4_2"},
+    ),
     (
         {"name": "pull_request", "action": "synchronize", "labels": ["run-iceberg-tests"]},
         PR_TIER | ICEBERG_OPT_IN,
@@ -390,6 +420,62 @@ POLICY_CASES = [
         },
         set(),
     ),
+    # A pull request against a release branch runs the queue and nightly tiers
+    # as well, because a release branch has no queue and no nightly to run them
+    # later. The site deploy still never runs from a pull request, and the
+    # deprecated Spark 3.4 suite still waits for its label.
+    (
+        {"name": "pull_request", "action": "opened", "labels": [], "base": "branch-1.1"},
+        QUEUE_TIER | NIGHTLY_TIER,
+    ),
+    (
+        {"name": "pull_request", "action": "synchronize", "labels": [], "base": "branch-2.0"},
+        QUEUE_TIER | NIGHTLY_TIER,
+    ),
+    (
+        {
+            "name": "pull_request",
+            "action": "synchronize",
+            "labels": ["run-spark-3.4-tests"],
+            "base": "branch-1.1",
+        },
+        QUEUE_TIER | NIGHTLY_TIER | SPARK_DEPRECATED,
+    ),
+    # There the commit run already covered everything a label gates except
+    # Spark 3.4, so a `labeled` run adds Spark 3.4 or nothing.
+    (
+        {
+            "name": "pull_request",
+            "action": "labeled",
+            "label": "run-spark-3.4-tests",
+            "labels": ["run-spark-3.4-tests"],
+            "base": "branch-1.1",
+        },
+        SPARK_DEPRECATED,
+    ),
+    (
+        {
+            "name": "pull_request",
+            "action": "labeled",
+            "label": "run-iceberg-tests",
+            "labels": ["run-iceberg-tests"],
+            "base": "branch-1.1",
+        },
+        set(),
+    ),
+    # Only `branch-N.M` is a release branch. A pull request against main, or
+    # one stacked on another branch in the repository, keeps the PR tier.
+    ({"name": "pull_request", "action": "synchronize", "labels": [], "base": "main"}, PR_TIER),
+    ({"name": "pull_request", "action": "synchronize", "labels": [], "base": "pr-5654"}, PR_TIER),
+    (
+        {
+            "name": "pull_request",
+            "action": "synchronize",
+            "labels": [],
+            "base": "branch-1.1-backports",
+        },
+        PR_TIER,
+    ),
 ]
 
 
@@ -415,9 +501,8 @@ CHECKOUT_USES = re.compile(r"uses:\s*actions/checkout@")
 # file has to carry the guard.
 CACHE_REFRESH_WORKFLOW = WORKFLOWS / "pr_build_linux.yml"
 CACHE_REFRESH_JOBS = {
-    "lint": "gates build-native and linux-test-rust, and costs 40 seconds",
+    "lint": "gates build-native, and costs 40 seconds",
     "build-native": "writes the cargo-ci cache (native/target, CI profile)",
-    "linux-test-rust": "writes the cargo-debug cache (native/target, debug)",
     "verify-benchmark-results-tpch": "writes the TPC-H SF=1 dataset and java-maven caches",
     "verify-benchmark-results-tpcds": "writes the TPC-DS SF=1 dataset and java-maven caches",
 }
@@ -425,6 +510,17 @@ CACHE_REFRESH_JOBS = {
 # indented further, and those are expected rather than a reason to exempt the
 # whole job.
 CACHE_REFRESH_GUARD = re.compile(r"^    if:.*!\s*inputs\.cache-refresh-only")
+# pr_build_macos.yml has the same two modes. Its push run exists only to keep
+# main's macOS cargo cache warm, so the test matrix carries the guard.
+MACOS_CACHE_REFRESH_WORKFLOW = WORKFLOWS / "pr_build_macos.yml"
+MACOS_CACHE_REFRESH_JOBS = {
+    "lint": "gates build-native, and costs 40 seconds on Linux",
+    "build-native": "writes the macOS cargo-ci-v2 cache (native/target, CI profile)",
+}
+CACHE_REFRESH_SCOPES = (
+    (CACHE_REFRESH_WORKFLOW, CACHE_REFRESH_JOBS),
+    (MACOS_CACHE_REFRESH_WORKFLOW, MACOS_CACHE_REFRESH_JOBS),
+)
 # The same file's third mode: with `profiles: nightly` only the jobs the
 # linux-test matrix needs run. See check_nightly_scope.
 NIGHTLY_JOBS = {
@@ -654,6 +750,8 @@ def check_event_policy():
                 label += f"/{event['action']}"
             if event.get("label"):
                 label += f" +{event['label']}"
+            if event.get("base"):
+                label += f" base={event['base']}"
             failures.append(
                 f"{label} labels={event.get('labels', [])}: "
                 f"unexpectedly allowed {sorted(actual - expected) or 'nothing'}, "
@@ -686,6 +784,98 @@ def check_event_policy():
     for failure in failures:
         print(f"event policy: {failure}")
     return not failures
+
+
+# The environment variables `event_from_env` in compute-changes.py reads, and
+# the `github` context expression ci.yml's `Compute outputs` step must set each
+# one from. A typo in an expression is as silent as a missing variable: both
+# arrive as an empty string.
+EVENT_ENV_SOURCES = {
+    "EVENT_NAME": "github.event_name",
+    "EVENT_ACTION": "github.event.action",
+    "LABEL_NAME": "github.event.label.name",
+    "PR_LABELS": "toJSON(github.event.pull_request.labels.*.name)",
+    "PR_BASE_REF": "github.event.pull_request.base.ref",
+}
+ENV_READ = re.compile(r'os\.environ\.get\("([A-Z_]+)"')
+ENV_SET = re.compile(r"^\s+([A-Z_]+):\s+\$\{\{\s*(.+?)\s*\}\}\s*$")
+
+
+def compute_step_env():
+    """{variable: expression} from the `env:` of ci.yml's `Compute outputs` step."""
+    env, in_step, in_env = {}, False, False
+    for line in CI_WORKFLOW.read_text(encoding="utf-8").splitlines():
+        if re.match(r"^\s+- name: Compute outputs\s*$", line):
+            in_step = True
+        elif in_step and not in_env:
+            if re.match(r"^\s+- ", line):
+                break  # the next step; this one has no `env:`
+            in_env = bool(re.match(r"^\s+env:\s*$", line))
+        elif in_env:
+            match = ENV_SET.match(line)
+            if not match:
+                break
+            env[match.group(1)] = match.group(2)
+    return env
+
+
+def check_event_env():
+    """Every variable POLICY reads is set by `Detect changes`, from the right context.
+
+    Without PR_BASE_REF, for instance, every pull request against a release
+    branch would quietly fall back to the PR tier and every check would pass.
+    """
+    failures = []
+    source = Path("dev/ci/compute-changes.py").read_text(encoding="utf-8")
+    body = source.split("\ndef event_from_env", 1)[1].split("\ndef ", 1)[0]
+    read = set(ENV_READ.findall(body))
+    env = compute_step_env()
+    for name in sorted(read - set(EVENT_ENV_SOURCES)):
+        failures.append(
+            f"event_from_env reads {name}, which EVENT_ENV_SOURCES does not "
+            f"list; add the `github` context expression it comes from"
+        )
+    for name in sorted(set(EVENT_ENV_SOURCES) - read):
+        failures.append(f"EVENT_ENV_SOURCES lists {name}, which event_from_env no longer reads")
+    for name in sorted(read & set(EVENT_ENV_SOURCES)):
+        expected = EVENT_ENV_SOURCES[name]
+        if name not in env:
+            failures.append(
+                f"{CI_WORKFLOW}: the `Compute outputs` step does not set {name}, "
+                f"so compute-changes.py reads it as empty"
+            )
+        elif env[name] != expected:
+            failures.append(
+                f"{CI_WORKFLOW}: the `Compute outputs` step sets {name} from "
+                f"`{env[name]}`, not `{expected}`"
+            )
+    for failure in failures:
+        print(f"event env: {failure}")
+    return not failures
+
+
+# The site deploy's job-level `if:` in ci.yml. It has to be on the job rather
+# than in POLICY, because a dispatch routes every job (see POLICY_CASES).
+DOCS_JOB = "docs"
+DOCS_MAIN_GUARD = re.compile(r"^    if:.*github\.ref\s*==\s*'refs/heads/main'")
+
+
+def check_docs_deploy_guard():
+    """The site deploy runs from main only, whatever the event.
+
+    docs.yaml rsyncs the built site over asf-site with --delete and falls back
+    to `git push --force`, and the release process dispatches ci.yml on the
+    release branch before every release candidate.
+    """
+    _, guarded = guarded_jobs(CI_WORKFLOW, DOCS_MAIN_GUARD)
+    if DOCS_JOB in guarded:
+        return True
+    print(
+        f"docs deploy: the `{DOCS_JOB}` job in {CI_WORKFLOW} must require "
+        f"github.ref == 'refs/heads/main' in its `if:`, or a dispatch on a "
+        f"release branch publishes that branch's docs over the site"
+    )
+    return False
 
 
 def artifact_names(path):
@@ -1012,9 +1202,69 @@ def check_label_runs_separate():
                 f"and nothing else; any other type would run ci.yml twice per push"
             )
 
+    # ci_label.yml calls ci.yml with an explicit `permissions:` ceiling, and
+    # GitHub refuses to start the run at all if any job in ci.yml asks for more,
+    # even a job the `labeled` event would skip. That is how the `docs` job's
+    # `contents: write` stopped every label run on 2026-09-29.
+    if label_workflow.exists():
+        granted = permission_blocks(label_workflow.read_text(encoding="utf-8").splitlines())
+        ceiling = {}
+        for block in granted:
+            for scope, level in block.items():
+                ceiling[scope] = max(ceiling.get(scope, 0), PERMISSION_RANK[level])
+        ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8").splitlines()
+        for block in permission_blocks(ci):
+            for scope, level in block.items():
+                if PERMISSION_RANK[level] > ceiling.get(scope, 0):
+                    failures.append(
+                        f"ci.yml requests `{scope}: {level}`, but ci_label.yml grants "
+                        f"the call at most `{scope}: "
+                        f"{PERMISSION_NAME[ceiling.get(scope, 0)]}`, so every label "
+                        f"run fails at startup. Raise the grant in ci_label.yml"
+                    )
+
     for failure in failures:
         print(f"label runs: {failure}")
     return not failures
+
+
+PERMISSION_RANK = {"none": 0, "read": 1, "write": 2}
+PERMISSION_NAME = {rank: name for name, rank in PERMISSION_RANK.items()}
+PERMISSIONS_KEY = re.compile(r"^(\s*)permissions:\s*(\{\s*\})?\s*$")
+PERMISSION_ENTRY = re.compile(r"^(\s*)([a-z-]+):\s*(read|write|none)\s*$")
+
+
+def permission_blocks(lines):
+    """Every `permissions:` mapping in a workflow, as a list of {scope: level}."""
+    blocks = []
+    for index, line in enumerate(lines):
+        match = PERMISSIONS_KEY.match(line)
+        if not match:
+            continue
+        indent, block = len(match.group(1)), {}
+        for entry in lines[index + 1:]:
+            if not entry.strip() or entry.lstrip().startswith("#"):
+                continue
+            found = PERMISSION_ENTRY.match(entry)
+            if not found or len(found.group(1)) <= indent:
+                break
+            block[found.group(2)] = found.group(3)
+        blocks.append(block)
+    return blocks
+
+
+def caller_passes_cache_refresh(ci_lines, workflow_name):
+    """Does the ci.yml job that `uses:` this workflow set `cache-refresh-only:`?"""
+    job_start = None
+    for index, line in enumerate(ci_lines):
+        if JOB_KEY.match(line):
+            job_start = index
+        if job_start is not None and f"uses: ./.github/workflows/{workflow_name}" in line:
+            end = index + 1
+            while end < len(ci_lines) and not JOB_KEY.match(ci_lines[end]):
+                end += 1
+            return any(CACHE_REFRESH_INPUT.match(entry) for entry in ci_lines[job_start:end])
+    return False
 
 
 def check_cache_refresh_scope():
@@ -1033,40 +1283,41 @@ def check_cache_refresh_scope():
     minutes a push, which is what this check exists to notice.
     """
     failures = []
-    jobs, guarded = guarded_jobs(CACHE_REFRESH_WORKFLOW, CACHE_REFRESH_GUARD)
-
-    for stale in sorted(set(CACHE_REFRESH_JOBS) - set(jobs)):
-        failures.append(
-            f"CACHE_REFRESH_JOBS names `{stale}`, which no longer exists in "
-            f"{CACHE_REFRESH_WORKFLOW}; drop it here, or restore the job"
-        )
-    for name in jobs:
-        if name in CACHE_REFRESH_JOBS and name in guarded:
-            failures.append(
-                f"{CACHE_REFRESH_WORKFLOW}: job `{name}` is listed in "
-                f"CACHE_REFRESH_JOBS ({CACHE_REFRESH_JOBS[name]}) but carries "
-                f"the cache-refresh-only guard, so it is skipped on push and "
-                f"the cache it owns goes stale on main"
-            )
-        if name not in CACHE_REFRESH_JOBS and name not in guarded:
-            failures.append(
-                f"{CACHE_REFRESH_WORKFLOW}: job `{name}` has no "
-                f"`if: ${{{{ !inputs.cache-refresh-only }}}}`, so it runs on "
-                f"every push to main where the merge queue has already tested "
-                f"the same tree. Add the guard, or add the job to "
-                f"CACHE_REFRESH_JOBS with the cache entry it writes"
-            )
-
-    # The guards above do nothing unless the caller actually sets the input;
-    # its default is false, so a dropped `with:` block silently restores the
-    # full pipeline on push.
     ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8").splitlines()
-    if not any(CACHE_REFRESH_INPUT.match(line) for line in ci):
-        failures.append(
-            "ci.yml never passes `cache-refresh-only:` to pr_build_linux.yml. "
-            "The input defaults to false, so without it every push to main runs "
-            "the full pipeline again"
-        )
+    for workflow, writers in CACHE_REFRESH_SCOPES:
+        jobs, guarded = guarded_jobs(workflow, CACHE_REFRESH_GUARD)
+
+        for stale in sorted(set(writers) - set(jobs)):
+            failures.append(
+                f"the cache writers listed for {workflow} name `{stale}`, which "
+                f"no longer exists there; drop it, or restore the job"
+            )
+        for name in jobs:
+            if name in writers and name in guarded:
+                failures.append(
+                    f"{workflow}: job `{name}` is listed as a cache writer "
+                    f"({writers[name]}) but carries the cache-refresh-only "
+                    f"guard, so it is skipped on push and the cache it owns "
+                    f"goes stale on main"
+                )
+            if name not in writers and name not in guarded:
+                failures.append(
+                    f"{workflow}: job `{name}` has no "
+                    f"`if: ${{{{ !inputs.cache-refresh-only }}}}`, so it runs on "
+                    f"every push to main where the merge queue has already "
+                    f"tested the same tree. Add the guard, or list the job as a "
+                    f"cache writer with the cache entry it writes"
+                )
+
+        # The guards above do nothing unless the caller actually sets the
+        # input; its default is false, so a dropped `with:` block silently
+        # restores the full pipeline on push.
+        if not caller_passes_cache_refresh(ci, workflow.name):
+            failures.append(
+                f"ci.yml never passes `cache-refresh-only:` to {workflow.name}. "
+                f"The input defaults to false, so without it every push to main "
+                f"runs the full pipeline again"
+            )
 
     for failure in failures:
         print(f"cache refresh scope: {failure}")
@@ -1277,6 +1528,8 @@ def check_cache_save_scope():
 if __name__ == "__main__":
     ok = check_change_filters()
     ok = check_event_policy() and ok
+    ok = check_event_env() and ok
+    ok = check_docs_deploy_guard() and ok
     ok = check_spark_sql_modules() and ok
     ok = check_linux_test_profiles() and ok
     ok = check_artifact_names() and ok
