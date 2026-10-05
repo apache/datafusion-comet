@@ -215,6 +215,7 @@ jobs:
               org.apache.comet.exec.CometExec3_4PlusSuite
               org.apache.comet.exec.CometExecSuite
               org.apache.comet.exec.CometMergeRowsSuite
+              org.apache.comet.exec.CometInsertOnlyMergeSuite
               org.apache.comet.exec.CometTopKSuite
               org.apache.comet.exec.CometEmptyRelationExecSuite
               org.apache.comet.exec.CometRangeExecSuite

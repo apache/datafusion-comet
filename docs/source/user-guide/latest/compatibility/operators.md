@@ -126,8 +126,15 @@ its `IcebergCommit` collects the same eight semantic action counters and forward
 summary-aware `BatchWrite.commit` contract. Spark 4.2 uses last-attempt metrics for these counters,
 matching Spark's retry-aware summary semantics.
 
+On Spark 4.2, an insert-only MERGE with multiple `NOT MATCHED` clauses can be rewritten as
+`InsertOnlyMergeExec` with a `MergeRowsExec` query child. `InsertOnlyMergeExec` owns the
+`MergeSummary` itself, so Comet may execute that child natively even when the write stays on
+Spark's V2 writer. The shape check rejects matched actions, `NOT MATCHED BY SOURCE`, cardinality
+checking, and any other general `MergeRowsExec` plan.
+
 **Cardinality validation memory use can exceed Spark's:** native MERGE cardinality validation
-currently stores matched target row IDs in an unspillable hash set. For MERGEs with many matched
+currently stores matched target row IDs in an unspillable hash set. This does not apply to the
+Spark 4.2 insert-only exception, which has cardinality checking disabled. For MERGEs with many matched
 rows per task, this can use more memory than Spark's compressed bitmap and may reach the native
 memory limit earlier than Spark. See
 [#6608](https://github.com/apache/datafusion-comet/issues/6608).

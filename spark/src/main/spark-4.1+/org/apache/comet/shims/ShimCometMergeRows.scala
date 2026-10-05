@@ -27,7 +27,10 @@ import org.apache.spark.sql.execution.datasources.v2.MergeRowsExec
 import org.apache.comet.serde.CometOperatorSerde
 import org.apache.comet.serde.operator.CometMergeRows
 
-/** Spark 4.1+ native MERGE requires a writer that consumes its semantic counters. */
+/**
+ * Spark 4.1+ native MERGE requires a writer that consumes its semantic counters. Spark 4.2 also
+ * allows the MergeRows child of an insert-only MERGE, whose write owns the summary itself.
+ */
 object ShimCometMergeRows {
   val nativeExecs: Map[Class[_ <: SparkPlan], CometOperatorSerde[_]] =
     Map(classOf[MergeRowsExec] -> CometMergeRows)
@@ -47,4 +50,7 @@ object ShimCometMergeRows {
 
   def hasNativeMergeSummary(op: MergeRowsExec): Boolean =
     op.logicalLink.exists(_.getTagValue(summaryAware).contains(true))
+
+  def canRunWithoutMergeSummary(op: MergeRowsExec): Boolean =
+    ShimCometInsertOnlyMerge.canRunWithoutMergeSummary(op)
 }

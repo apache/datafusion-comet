@@ -45,9 +45,8 @@ object CometMergeRows extends CometOperatorSerde[MergeRowsExec] {
     Some(CometConf.COMET_EXEC_MERGE_ROWS_ENABLED)
 
   override def getSupportLevel(op: MergeRowsExec): SupportLevel = {
-    if (!ShimCometMergeRows.hasNativeMergeSummary(op)) {
-      Unsupported(
-        Some("Spark 4.1+ stock V2 writer requires Spark MergeRowsExec for MergeSummary"))
+    if (!mergeSummarySatisfied(op)) {
+      Unsupported(Some(mergeSummaryFallbackReason))
     } else if (!cardinalityCheckSatisfied(op)) {
       Unsupported(Some(cardinalityCheckFallbackReason))
     } else if (!instructionShapesSatisfied(op)) {
@@ -61,10 +60,8 @@ object CometMergeRows extends CometOperatorSerde[MergeRowsExec] {
       op: MergeRowsExec,
       builder: Operator.Builder,
       childOp: OperatorOuterClass.Operator*): Option[Operator] = {
-    if (!ShimCometMergeRows.hasNativeMergeSummary(op)) {
-      withFallbackReason(
-        op,
-        "Spark 4.1+ stock V2 writer requires Spark MergeRowsExec for MergeSummary")
+    if (!mergeSummarySatisfied(op)) {
+      withFallbackReason(op, mergeSummaryFallbackReason)
       return None
     }
     val input = op.child.output
@@ -134,7 +131,7 @@ object CometMergeRows extends CometOperatorSerde[MergeRowsExec] {
         .addAllNotMatchedInstructions(notMatched.map(_.get).asJava)
         .addAllNotMatchedBySourceInstructions(notMatchedBySource.map(_.get).asJava)
         .addAllOutputTypes(outputTypes.map(_.get).asJava)
-        .setSemanticMetricsRequired(true)
+        .setSemanticMetricsRequired(ShimCometMergeRows.hasNativeMergeSummary(op))
       rowIdOrd.foreach(mergeBuilder.setRowIdOrdinal)
       Some(builder.setMergeRows(mergeBuilder).build())
     } else if (childOp.isEmpty) {
@@ -175,6 +172,13 @@ object CometMergeRows extends CometOperatorSerde[MergeRowsExec] {
   private val compatibilityNote: String =
     "Native MERGE preserves row values but may differ from Spark in physical output ordering " +
       "and in which error is reported first when multiple rows fail in one input batch"
+
+  private val mergeSummaryFallbackReason: String =
+    "Spark 4.1+ stock V2 writer requires Spark MergeRowsExec for MergeSummary"
+
+  private def mergeSummarySatisfied(op: MergeRowsExec): Boolean =
+    ShimCometMergeRows.hasNativeMergeSummary(op) ||
+      ShimCometMergeRows.canRunWithoutMergeSummary(op)
 
   private val cardinalityCheckFallbackReason: String =
     s"MERGE cardinality check requires a resolvable, Long-typed '${MergeRows.ROW_ID}' column"
