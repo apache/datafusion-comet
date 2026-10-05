@@ -111,6 +111,13 @@ timezone-independent: each date is converted to midnight as pure arithmetic
 (`days * 86,400,000,000` microseconds) with no session timezone offset applied. The result
 is the same regardless of the session timezone setting.
 
+Parquet scans with data filters and requested `TIMESTAMP_NTZ` fields use Spark's reader,
+including nested fields. A physical `DATE` column can overflow while adapting to the
+requested type, and Spark may skip its conversion through pruning or an early limit.
+The physical column type is unavailable during planning, so this fallback also applies
+to filtered scans of genuine NTZ columns. Unfiltered scans and projections that do not
+read NTZ fields remain eligible for native execution.
+
 ## Date to Numeric Types
 
 In Legacy mode, `CAST(date AS INT)`, `CAST(date AS LONG)`, and casts to all other numeric

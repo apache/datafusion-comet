@@ -30,7 +30,7 @@ import org.apache.spark.sql.comet.{CometNativeExec, CometNativeScanExec, CometSc
 import org.apache.spark.sql.execution.{FileSourceScanExec, InSubqueryExec, SubqueryAdaptiveBroadcastExec}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{StructField, StructType}
+import org.apache.spark.sql.types.{ArrayType, DataType, MapType, StructField, StructType, TimestampNTZType}
 
 import org.apache.comet.{CometConf, ConfigEntry, DataTypeSupport}
 import org.apache.comet.CometConf.COMET_EXEC_ENABLED
@@ -121,6 +121,18 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
       }
     })
 
+  private def containsTimestampNTZ(dataType: DataType): Boolean = dataType match {
+    case TimestampNTZType => true
+    case struct: StructType => struct.fields.exists(field => containsTimestampNTZ(field.dataType))
+    case ArrayType(elementType, _) => containsTimestampNTZ(elementType)
+    case MapType(keyType, valueType, _) =>
+      containsTimestampNTZ(keyType) || containsTimestampNTZ(valueType)
+    case _ => false
+  }
+
+  private[comet] val filteredTimestampNTZReason =
+    "Native Parquet scan cannot preserve DATE to TIMESTAMP_NTZ overflow semantics with data filters"
+
   /** Determine whether the scan is supported and tag the Spark plan with any fallback reasons */
   def isSupported(scanExec: FileSourceScanExec): Boolean = {
 
@@ -161,6 +173,15 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
         .contains("true")) {
 
       withFallbackReason(scanExec, "Full native scan disabled because ignoreMissingFiles enabled")
+    }
+
+    // A requested NTZ field can be backed by a physical DATE column. Filtered native scans
+    // currently use a safe cast that turns DATE overflow into NULL. Checking eagerly instead
+    // would fail on rows Spark can skip through pruning or an early LIMIT. The physical schema
+    // is only available when each file opens, so conservatively retain Spark's reader for this
+    // projected type, including genuine NTZ files, until conversion follows Spark's row demand.
+    if (scanExec.dataFilters.nonEmpty && containsTimestampNTZ(scanExec.requiredSchema)) {
+      withFallbackReason(scanExec, filteredTimestampNTZReason)
     }
 
     if (serializeExistenceDefaultValues(scanExec.requiredSchema, scanExec.output).isEmpty) {
