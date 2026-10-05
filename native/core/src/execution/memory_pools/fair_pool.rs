@@ -1720,6 +1720,99 @@ mod tests {
         assert_eq!(stub.outstanding(), 0);
     }
 
+    /// The first grow takes the anchor byte just before its own request. When the request needs
+    /// exactly the bytes Spark has left, the anchor leaves it one byte short, and a task below
+    /// its minimum share is parked like any other, where without the anchor Spark would grant
+    /// it at once. The next release that frees a byte ends the wait with the full grant.
+    #[test]
+    fn unanchored_first_grow_of_exactly_the_free_bytes_parks_until_a_release() {
+        let stub = Arc::new(StubTaskMemory::new(100));
+        let pool = pool_with(&stub, 1_000);
+        let res = MemoryConsumer::new("consumer").register(&pool);
+        // Another task holds all but the 10 bytes asked for. Two active tasks put this one's
+        // minimum share at 25 bytes, and 1 + 9 is below it.
+        stub.other_task_holds(stub.memory_free() - 10);
+
+        let grow_thread = thread::spawn(move || {
+            let result = res.try_grow(10);
+            (res, result)
+        });
+        stub.wait_parked("first grow");
+        assert_eq!(
+            stub.outstanding(),
+            1,
+            "the anchor is granted first and the request is what parks"
+        );
+
+        stub.other_task_releases(1);
+        let (res, result) = grow_thread.join().expect("parked grow crashed");
+        result.expect("the woken grow must get its full grant");
+        assert_eq!(pool.reserved(), 10);
+        assert_eq!(stub.outstanding(), 11, "anchor plus the full grant");
+        assert_eq!(stub.acquires.load(SeqCst), 2, "the anchor and one request");
+        assert!(
+            stub.parked.1.lock().try_recv().is_err(),
+            "the request parked only once"
+        );
+
+        res.free();
+        assert_eq!(stub.outstanding(), 1, "the anchor stays until drop");
+        drop(res);
+        drop(pool);
+        assert_eq!(stub.outstanding(), 0);
+    }
+
+    /// The same exact fit for a task that reaches its minimum share with the bytes Spark has
+    /// left: Spark grants one byte short instead of parking, and the grow is refused as a short
+    /// grant, where without the anchor it would have been granted in full.
+    #[test]
+    fn unanchored_first_try_grow_of_exactly_the_free_bytes_at_share_is_refused() {
+        let stub = Arc::new(StubTaskMemory::new(100));
+        let pool = pool_with(&stub, 1_000);
+        let res = MemoryConsumer::new("consumer").register(&pool);
+        // Another task holds all but the 30 bytes asked for, and 1 + 29 reaches the 25 byte
+        // minimum share of two active tasks.
+        stub.other_task_holds(stub.memory_free() - 30);
+
+        let err = res.try_grow(30).unwrap_err();
+        assert!(err.to_string().contains("only got 29 bytes"), "{err}");
+        assert_eq!(pool.reserved(), 0);
+        assert_eq!(stub.outstanding(), 1, "only the anchor remains");
+        assert!(stub.parked.1.lock().try_recv().is_err(), "nothing parked");
+
+        drop(res);
+        drop(pool);
+        assert_eq!(stub.outstanding(), 0);
+    }
+
+    /// The `grow` side of the same case: Spark grants one byte short and the pool carries that
+    /// byte as overcommit, repaid first when the reservation is freed.
+    #[test]
+    fn unanchored_first_grow_of_exactly_the_free_bytes_at_share_carries_a_byte_of_overcommit() {
+        let stub = Arc::new(StubTaskMemory::new(100));
+        let fair = Arc::new(CometFairMemoryPool::with_spark(
+            SparkMemory::with_manager(Box::new(Arc::clone(&stub)), THIS_TASK),
+            1_000,
+        ));
+        let pool: Arc<dyn MemoryPool> = Arc::clone(&fair) as _;
+        let res = MemoryConsumer::new("consumer").register(&pool);
+        stub.other_task_holds(stub.memory_free() - 30);
+
+        res.grow(30);
+        assert_eq!(pool.reserved(), 30);
+        assert_eq!(stub.outstanding(), 30, "the anchor plus 29 granted");
+        assert_eq!(fair.overcommit(), 1, "the byte Spark did not grant");
+        assert!(stub.parked.1.lock().try_recv().is_err(), "nothing parked");
+
+        res.free();
+        assert_eq!(fair.overcommit(), 0);
+        assert_eq!(stub.outstanding(), 1, "only the anchor remains");
+        drop(res);
+        drop(pool);
+        drop(fair);
+        assert_eq!(stub.outstanding(), 0);
+    }
+
     /// The anchor acquire itself can park, and a sibling consumer can zero the task's balance
     /// under it; Spark then fails that acquire (the stub panics like the JVM exception) and the
     /// pool must not exist, with nothing held or released.

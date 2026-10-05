@@ -353,6 +353,19 @@ anchor, as described under task-shared pools below. This holds when the pool is 
 last plan's release. A spawned task that still holds the pool for a moment after an early stop can
 make `close` log the anchor as a one byte leak.
 
+**The anchor can make the grow that takes it wait.** The anchor byte is taken just before that
+grow's own request, on the first grow or on a retry after Spark declined it. When that request
+needs exactly the bytes Spark has left for the task, the anchor leaves it one byte short. If the
+task is then below its 1/(2N) minimum share, N being the executor's active tasks, Spark parks the
+request like any other under-share acquire until memory is released, where without the anchor it
+would have been granted at once. A release by any task of the executor wakes it, and once the byte
+is free the request gets its full grant. At or above the minimum share Spark grants one byte short
+instead of waiting, which a `try_grow` reports as a short grant for the caller to spill and a
+`grow` carries as one byte of overcommit. This is accepted because the anchor is what keeps a
+release from removing the task's entry under a parked acquire, and Spark fails an acquire whose
+entry is gone. The extra wait only happens when the request would take exactly the memory Spark has
+free, and it ends at the next release.
+
 **The pool mutex is never held across a JNI call.** Both checks run, and the bytes are charged to
 the pool's total and to the consumer's running total, under the lock. The lock is dropped before
 `acquireMemory` or `releaseMemory` runs, and the bookkeeping is settled after the call returns. This
