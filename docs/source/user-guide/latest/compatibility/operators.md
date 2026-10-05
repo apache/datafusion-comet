@@ -60,6 +60,25 @@ Sampling with replacement (`df.sample(withReplacement = true, ...)`) falls back 
 it draws from a Poisson distribution that Comet does not implement natively
 ([#5109](https://github.com/apache/datafusion-comet/issues/5109)).
 
+## Aggregation
+
+Ungrouped `AVG` and `TRY_AVG` on `DECIMAL(p, s)` fall back to Spark when the intermediate sum
+has reached precision 38 (`p >= 28`). Spark's generated aggregation code can retain a wider
+intermediate sum and check precision after dividing by the count. Comet instead records an
+overflow while accumulating that sum, which can discard a valid average.
+
+This fallback applies to the whole aggregate operator: a single wide-decimal `AVG` or `TRY_AVG`
+also moves sibling aggregates such as `MIN`, `MAX`, `COUNT`, and `SUM` to Spark. Both partial and
+final aggregate operators stay in Spark, including when a shuffle separates them. Narrower
+ungrouped decimal averages remain eligible for native execution.
+
+Grouped decimal `AVG` remains eligible for native execution with hash aggregation. With Spark's
+object aggregation, decimal `AVG` and `TRY_AVG` fall back when their intermediate sum has precision
+38, because Spark's object buffer can recover after an intermediate overflow. As with the ungrouped
+case, the whole aggregate operator falls back. Native finalization can raise an
+ANSI overflow for a group that Spark would never consume after `LIMIT`; this error-timing difference
+is documented under [known divergences](index.md#known-result-value-divergences).
+
 ## Window Functions
 
 Comet runs `WindowExec` natively and it is enabled by default (`spark.comet.exec.window.enabled`). A broad set of
@@ -86,6 +105,8 @@ incorrect result. When any single window expression in a `WindowExec` falls back
   support as the batch aggregates, so these fall back in both contexts.
 - `sum` or `avg` on `DECIMAL` with a sliding (non ever-expanding) frame, because the sliding path would wrap on
   overflow instead of returning Spark's `NULL`.
+- `avg` or `try_avg` on `DECIMAL(p, s)` with an expanding frame when `p >= 28`, because Spark can preserve
+  a wider intermediate sum until division, as described under aggregation above.
 - `RANGE` frame with an explicit offset when the `ORDER BY` column is `DATE` or `DECIMAL`
   ([#4834](https://github.com/apache/datafusion-comet/issues/4834)).
 - `RANGE` frame bounded by `CURRENT ROW` when an `ORDER BY` key is an array of arrays or structs, or a struct
