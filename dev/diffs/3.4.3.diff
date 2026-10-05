@@ -2900,10 +2900,10 @@ index 3a0bd35cb70..b28f06a757f 100644
        val workDirPath = workDir.getAbsolutePath
        val input = spark.range(5).toDF("id")
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/joins/BroadcastJoinSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/joins/BroadcastJoinSuite.scala
-index 6333808b420..81b2704300c 100644
+index 6333808b420..5d99f1f5b22 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/joins/BroadcastJoinSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/joins/BroadcastJoinSuite.scala
-@@ -21,7 +21,7 @@ import scala.reflect.ClassTag
+@@ -21,12 +21,13 @@ import scala.reflect.ClassTag
  
  import org.apache.spark.AccumulatorSuite
  import org.apache.spark.internal.config.EXECUTOR_MEMORY
@@ -2912,7 +2912,28 @@ index 6333808b420..81b2704300c 100644
  import org.apache.spark.sql.catalyst.expressions.{AttributeReference, BitwiseAnd, BitwiseOr, Cast, Expression, Literal, ShiftLeft}
  import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
  import org.apache.spark.sql.catalyst.plans.Inner
-@@ -486,7 +486,8 @@ abstract class BroadcastJoinSuiteBase extends QueryTest with SQLTestUtils
+ import org.apache.spark.sql.catalyst.plans.logical.BROADCAST
+ import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, PartitioningCollection}
++import org.apache.spark.sql.comet.{CometBroadcastHashJoinExec, CometInMemoryTableScanExec}
+ import org.apache.spark.sql.execution.{DummySparkPlan, SparkPlan, WholeStageCodegenExec}
+ import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanHelper, DisableAdaptiveExecutionSuite, EnableAdaptiveExecutionSuite}
+ import org.apache.spark.sql.execution.columnar.InMemoryTableScanExec
+@@ -156,12 +157,14 @@ abstract class BroadcastJoinSuiteBase extends QueryTest with SQLTestUtils
+         val df3 = df1.join(df2, Seq("key"), "inner")
+         val numCachedPlan = collect(df3.queryExecution.executedPlan) {
+           case i: InMemoryTableScanExec => i
++          case i: CometInMemoryTableScanExec => i
+         }.size
+         // df2 should be cached.
+         assert(numCachedPlan === 1)
+ 
+         val numBroadCastHashJoin = collect(df3.queryExecution.executedPlan) {
+           case b: BroadcastHashJoinExec => b
++          case b: CometBroadcastHashJoinExec => b
+         }.size
+         // df2 should not be broadcasted.
+         assert(numBroadCastHashJoin === 0)
+@@ -486,7 +489,8 @@ abstract class BroadcastJoinSuiteBase extends QueryTest with SQLTestUtils
      }
    }
  
@@ -2922,6 +2943,21 @@ index 6333808b420..81b2704300c 100644
      withSQLConf(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "500") {
        val t1 = (0 until 100).map(i => (i % 5, i % 13)).toDF("i1", "j1")
        val t2 = (0 until 100).map(i => (i % 5, i % 14)).toDF("i2", "j2")
+@@ -654,12 +658,14 @@ abstract class BroadcastJoinSuiteBase extends QueryTest with SQLTestUtils
+         val df3 = df1.join(df2, Seq("key"), "inner")
+         val numCachedPlan = collect(df3.queryExecution.executedPlan) {
+           case i: InMemoryTableScanExec => i
++          case i: CometInMemoryTableScanExec => i
+         }.size
+         // df2 should be cached.
+         assert(numCachedPlan === 1)
+ 
+         val numBroadCastHashJoin = collect(df3.queryExecution.executedPlan) {
+           case b: BroadcastHashJoinExec => b
++          case b: CometBroadcastHashJoinExec => b
+         }.size
+         // df2 should not be broadcasted.
+         assert(numBroadCastHashJoin === 0)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/metric/SQLMetricsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/metric/SQLMetricsSuite.scala
 index 26e61c6b58d..cb09d7e116a 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/metric/SQLMetricsSuite.scala
