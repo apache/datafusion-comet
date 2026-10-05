@@ -28,7 +28,11 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
-use arrow::array::{Array, ArrayRef, AsArray, BinaryArray, RecordBatch, UInt32Array};
+use arrow::array::{
+    make_array, Array, ArrayRef, AsArray, BinaryArray, ListArray, MapArray, RecordBatch,
+    StructArray, UInt32Array,
+};
+use arrow::buffer::{NullBuffer, OffsetBuffer};
 use arrow::datatypes::{DataType, Field, Schema as ArrowSchema, SchemaRef};
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::error::{DataFusionError, Result as DFResult};
@@ -522,6 +526,10 @@ async fn run_write_task(
     let target_schema =
         Arc::new(iceberg::arrow::schema_to_arrow_schema(&iceberg_schema).map_err(iceberg_err)?);
     let slicer = RowSlicer::for_schema(&target_schema);
+    let nests_floats = target_schema
+        .fields()
+        .iter()
+        .any(|field| float_in_container(field.data_type()));
 
     let unpartitioned = partition_spec.is_unpartitioned();
     let splitter = || {
@@ -554,7 +562,10 @@ async fn run_write_task(
 
     let outcome = async move {
         while let Some(batch) = input.try_next().await? {
-            let decorated = decorate_batch_with_field_ids(batch, &target_schema)?;
+            let mut decorated = decorate_batch_with_field_ids(batch, &target_schema)?;
+            if nests_floats {
+                decorated = drop_unwritten_values(decorated)?;
+            }
             let _timer = write_time.timer();
             writer.write(decorated).await?;
         }
@@ -913,7 +924,7 @@ impl PartitionSplitter {
     /// would have produced.
     fn split_runs(&self, batch: &RecordBatch) -> DFResult<Vec<(PartitionKey, RecordBatch)>> {
         // A single-run batch (the common case: one partition per task batch) is the whole batch,
-        // which `RowSlicer::slice` hands back as-is unless it arrived sliced.
+        // which `RowSlicer::slice` hands back as-is.
         self.runs(batch)?
             .into_iter()
             .map(|(value, start, len)| {
@@ -988,8 +999,8 @@ impl PartitionSplitter {
 ///
 /// A range that covers its whole batch is handed on as-is, which is exact only if the batch itself
 /// spans its children. A batch can arrive already sliced, for example from a `GlobalLimitExec`
-/// whose `OFFSET` hands on `batch.slice(skip, n)`, so a whole-batch range goes through
-/// [`RowSlicer::compact`], which gathers such a batch instead.
+/// whose `OFFSET` hands on `batch.slice(skip, n)`, but [`drop_unwritten_values`] has gathered its
+/// columns that nest a float before it gets here.
 #[derive(Clone, Copy)]
 struct RowSlicer {
     gather: bool,
@@ -1007,24 +1018,9 @@ impl RowSlicer {
         }
     }
 
-    /// Returns `batch` unchanged unless it is a window onto a larger batch that leaves a float
-    /// under a list or map outside it, in which case the window is gathered into fresh arrays.
-    fn compact(&self, batch: RecordBatch) -> DFResult<RecordBatch> {
-        if self.gather
-            && batch
-                .columns()
-                .iter()
-                .any(|column| floats_outside_window(column.as_ref()))
-        {
-            gather_rows(&batch, 0, batch.num_rows())
-        } else {
-            Ok(batch)
-        }
-    }
-
     fn slice(&self, batch: &RecordBatch, offset: usize, len: usize) -> DFResult<RecordBatch> {
         if offset == 0 && len == batch.num_rows() {
-            return self.compact(batch.clone());
+            return Ok(batch.clone());
         }
         if self.gather {
             gather_rows(batch, offset, len)
@@ -1040,7 +1036,7 @@ impl RowSlicer {
     fn detach(&self, batch: &RecordBatch, offset: usize, len: usize) -> DFResult<RecordBatch> {
         if offset == 0 && len == batch.num_rows() {
             // The range is the whole batch, so it pins nothing beyond the rows it holds.
-            return self.compact(batch.clone());
+            return Ok(batch.clone());
         }
         gather_rows(batch, offset, len)
     }
@@ -1166,40 +1162,151 @@ fn contains_float(data_type: &DataType) -> bool {
     }
 }
 
-/// `true` when `array` holds a float or double under a list or map whose child array reaches
-/// past the rows `array` covers. Slicing a list or map narrows only its offsets and leaves the
-/// child whole, and the NaN-count visitor walks the whole child. A struct's children are sliced
-/// with it, so a struct only matters for the lists and maps inside it. Every batch is cast to the
-/// schema `iceberg::arrow::schema_to_arrow_schema` builds, which nests nothing but lists, maps and
-/// structs. Any other container would be treated as reaching past whenever it holds a float, which
-/// errs toward gathering.
-fn floats_outside_window(array: &dyn Array) -> bool {
-    match array.data_type() {
-        DataType::List(field) => {
-            let list = array.as_list::<i32>();
-            contains_float(field.data_type())
-                && reaches_past(list.value_offsets(), list.values().as_ref())
-        }
-        DataType::Map(entries, _) => {
-            let map = array.as_map();
-            contains_float(entries.data_type()) && reaches_past(map.value_offsets(), map.entries())
-        }
-        DataType::Struct(_) => array
-            .as_struct()
-            .columns()
-            .iter()
-            .any(|column| floats_outside_window(column.as_ref())),
-        other => float_under_list_or_map(other),
-    }
+/// `true` when `data_type` nests a float or double inside a struct, list or map.
+fn float_in_container(data_type: &DataType) -> bool {
+    !matches!(
+        data_type,
+        DataType::Float16 | DataType::Float32 | DataType::Float64
+    ) && contains_float(data_type)
 }
 
-/// `true` when `offsets` leave part of `child` outside them, or when `child` itself holds a float
-/// outside its own rows. A list or map has one more offset than it has rows, so `offsets` is never
-/// empty, even for a batch of zero rows.
-fn reaches_past(offsets: &[i32], child: &dyn Array) -> bool {
-    offsets[0] != 0
-        || offsets[offsets.len() - 1] as usize != child.len()
-        || floats_outside_window(child)
+/// Rebuilds the columns of `batch` that nest a float or double so they hold nothing Parquet does
+/// not write. iceberg-rust's NaN-count visitor reads each child array whole and with only the
+/// child's own validity, so it also counts a NaN under a NULL struct, under a NULL list or map
+/// entry that still points at elements, or outside a sliced list's or map's offset window. Parquet
+/// writes none of them, and the JVM carries the native NaN counts into the manifest. `nullif`
+/// leaves both kinds of NULL parent in place, and Comet runs `IF(cond, col, NULL)` over a nested
+/// column through it.
+/// See https://github.com/apache/datafusion-comet/issues/6562.
+fn drop_unwritten_values(batch: RecordBatch) -> DFResult<RecordBatch> {
+    let columns = batch
+        .columns()
+        .iter()
+        .map(drop_unwritten)
+        .collect::<DFResult<Vec<_>>>()?;
+    if columns
+        .iter()
+        .zip(batch.columns())
+        .all(|(column, original)| Arc::ptr_eq(column, original))
+    {
+        return Ok(batch);
+    }
+    RecordBatch::try_new(batch.schema(), columns).map_err(DataFusionError::from)
+}
+
+/// `array` without the values Parquet does not write: a struct's fields are NULL wherever the
+/// struct is, and a list or map keeps only the elements its non-NULL entries point at, at every
+/// depth. Only containers that nest a float are rebuilt, and an array with nothing to drop is
+/// handed back as-is. `iceberg::arrow::schema_to_arrow_schema` nests nothing but structs, lists
+/// and maps, so any other container is handed back as-is too.
+fn drop_unwritten(array: &ArrayRef) -> DFResult<ArrayRef> {
+    if !contains_float(array.data_type()) {
+        return Ok(Arc::clone(array));
+    }
+    let rebuilt: ArrayRef = match array.data_type() {
+        DataType::Struct(fields) => {
+            let parent = array.as_struct();
+            let mut changed = false;
+            let mut children = Vec::with_capacity(fields.len());
+            for child in parent.columns() {
+                let written = drop_unwritten(&null_under(child, parent.nulls())?)?;
+                changed |= !Arc::ptr_eq(&written, child);
+                children.push(written);
+            }
+            if !changed {
+                return Ok(Arc::clone(array));
+            }
+            Arc::new(StructArray::try_new(
+                fields.clone(),
+                children,
+                parent.nulls().cloned(),
+            )?)
+        }
+        DataType::List(field) => {
+            let list = array.as_list::<i32>();
+            let Some((offsets, values)) =
+                written_elements(list.offsets(), list.nulls(), list.values())?
+            else {
+                return Ok(Arc::clone(array));
+            };
+            Arc::new(ListArray::try_new(
+                Arc::clone(field),
+                offsets,
+                values,
+                list.nulls().cloned(),
+            )?)
+        }
+        DataType::Map(field, ordered) => {
+            let map = array.as_map();
+            let entries: ArrayRef = Arc::new(map.entries().clone());
+            let Some((offsets, entries)) = written_elements(map.offsets(), map.nulls(), &entries)?
+            else {
+                return Ok(Arc::clone(array));
+            };
+            Arc::new(MapArray::try_new(
+                Arc::clone(field),
+                offsets,
+                entries.as_struct().clone(),
+                map.nulls().cloned(),
+                *ordered,
+            )?)
+        }
+        _ => return Ok(Arc::clone(array)),
+    };
+    Ok(rebuilt)
+}
+
+/// `child` with a NULL wherever its struct is NULL. A child that is NULL there already, or that
+/// nests no float, is handed back as-is.
+fn null_under(child: &ArrayRef, parent: Option<&NullBuffer>) -> DFResult<ArrayRef> {
+    let Some(parent) = parent.filter(|parent| parent.null_count() > 0) else {
+        return Ok(Arc::clone(child));
+    };
+    if !contains_float(child.data_type()) || child.nulls().is_some_and(|own| own.contains(parent)) {
+        return Ok(Arc::clone(child));
+    }
+    let nulls = NullBuffer::union(child.nulls(), Some(parent));
+    let data = child.to_data().into_builder().nulls(nulls).build()?;
+    Ok(make_array(data))
+}
+
+/// A list's or map's elements with nothing Parquet does not write, as fresh offsets and a fresh
+/// child, or `None` when the child holds nothing else already. Each entry keeps its elements, with
+/// what is unwritten under them dropped too, unless it is NULL, which then points at none. So a
+/// sliced list or map no longer reaches past its offset window either.
+fn written_elements(
+    offsets: &OffsetBuffer<i32>,
+    nulls: Option<&NullBuffer>,
+    values: &ArrayRef,
+) -> DFResult<Option<(OffsetBuffer<i32>, ArrayRef)>> {
+    let entries = offsets.len() - 1;
+    let is_null = |entry: usize| nulls.is_some_and(|nulls| nulls.is_null(entry));
+    let compact = offsets[0] == 0
+        && offsets[entries] as usize == values.len()
+        && !(0..entries).any(|entry| is_null(entry) && offsets[entry] != offsets[entry + 1]);
+    if compact {
+        let written = drop_unwritten(values)?;
+        if Arc::ptr_eq(&written, values) {
+            return Ok(None);
+        }
+        return Ok(Some((offsets.clone(), written)));
+    }
+    let mut indices = Vec::with_capacity(values.len());
+    let lengths: Vec<usize> = (0..entries)
+        .map(|entry| {
+            if is_null(entry) {
+                return 0;
+            }
+            let (start, end) = (offsets[entry] as u32, offsets[entry + 1] as u32);
+            indices.extend(start..end);
+            (end - start) as usize
+        })
+        .collect();
+    let gathered = arrow::compute::take(values.as_ref(), &UInt32Array::from(indices), None)?;
+    Ok(Some((
+        OffsetBuffer::from_lengths(lengths),
+        drop_unwritten(&gathered)?,
+    )))
 }
 
 /// Serialise the produced data files as an in-memory Iceberg V2 data manifest, then read the
@@ -1720,91 +1827,89 @@ mod tests {
         }
     }
 
-    fn doubles(rows: usize) -> arrow::array::ListArray {
-        use arrow::datatypes::Float64Type;
-        arrow::array::ListArray::from_iter_primitive::<Float64Type, _, _>(
-            (0..rows).map(|row| Some(vec![Some(row as f64), Some(f64::NAN)])),
-        )
-    }
-
     #[test]
-    fn floats_outside_window_finds_a_slice_at_any_depth() {
+    fn drop_unwritten_hands_back_a_column_with_nothing_to_drop() {
         use arrow::array::{Float64Array, ListArray, StructArray};
-        use arrow::buffer::OffsetBuffer;
-        use arrow::datatypes::{Float32Type, Int32Type};
+        use arrow::datatypes::{Float64Type, Int32Type};
 
-        // A list spans its child until it is sliced, from either end.
-        assert!(!floats_outside_window(&doubles(4)));
-        assert!(floats_outside_window(&doubles(4).slice(0, 2)));
-        assert!(floats_outside_window(&doubles(4).slice(2, 2)));
-        // A list of no rows still has its one offset.
-        assert!(!floats_outside_window(&doubles(0)));
-        // A sliced list with no float under it leaves nothing to miscount.
-        let ints = ListArray::from_iter_primitive::<Int32Type, _, _>(
-            (0..4).map(|row| Some(vec![Some(row)])),
-        );
-        assert!(!floats_outside_window(&ints.slice(0, 2)));
-        // A float counts as much as a double does.
-        let floats = ListArray::from_iter_primitive::<Float32Type, _, _>(
-            (0..4).map(|row| Some(vec![Some(row as f32)])),
-        );
-        assert!(floats_outside_window(&floats.slice(2, 2)));
-        // Slicing a struct slices its list child, which then reaches past its rows.
-        let wrapped = StructArray::try_from(vec![("l", Arc::new(doubles(4)) as ArrayRef)]).unwrap();
-        assert!(!floats_outside_window(&wrapped));
-        assert!(floats_outside_window(&wrapped.slice(1, 2)));
-        // A sliced list of structs keeps its whole struct child, as a list of doubles does.
-        let points = StructArray::try_from(vec![(
-            "x",
-            Arc::new(Float64Array::from(vec![0.0, 1.0, 2.0, f64::NAN])) as ArrayRef,
-        )])
-        .unwrap();
-        let points = ListArray::new(
-            Arc::new(Field::new("element", points.data_type().clone(), true)),
-            OffsetBuffer::from_lengths([1; 4]),
-            Arc::new(points),
+        let doubles: ArrayRef = Arc::new(Float64Array::from(vec![Some(f64::NAN), None]));
+        // An arrow builder leaves a NULL entry pointing at no elements.
+        let built: ArrayRef = Arc::new(ListArray::from_iter_primitive::<Float64Type, _, _>([
+            Some(vec![Some(f64::NAN)]),
             None,
+            Some(vec![]),
+        ]));
+        // The parquet reader NULLs a field wherever its struct is NULL.
+        let read: ArrayRef = Arc::new(StructArray::new(
+            vec![Field::new("x", DataType::Float64, true)].into(),
+            vec![Arc::new(Float64Array::from(vec![Some(f64::NAN), None])) as ArrayRef],
+            Some(NullBuffer::from(vec![true, false])),
+        ));
+        // A slice reaches past its window, but no float sits under it.
+        let ints: ArrayRef = Arc::new(
+            ListArray::from_iter_primitive::<Int32Type, _, _>(
+                (0..4).map(|row| Some(vec![Some(row)])),
+            )
+            .slice(1, 2),
         );
-        assert!(!floats_outside_window(&points));
-        assert!(floats_outside_window(&points.slice(1, 2)));
-        // An outer list can span its child while an inner list does not span its own.
-        let inner = doubles(4).slice(1, 2);
-        let outer = ListArray::new(
-            Arc::new(Field::new("element", inner.data_type().clone(), true)),
-            OffsetBuffer::from_lengths([2]),
-            Arc::new(inner),
-            None,
-        );
-        assert!(floats_outside_window(&outer));
+        for column in [doubles, built, read, ints] {
+            let written = drop_unwritten(&column).unwrap();
+            assert!(
+                Arc::ptr_eq(&written, &column),
+                "{} was rebuilt",
+                column.data_type()
+            );
+        }
     }
 
     #[test]
-    fn compact_gathers_only_a_batch_that_reaches_past_its_rows() {
+    fn drop_unwritten_keeps_the_written_values_and_nulls() {
+        use arrow::array::{BooleanArray, Float64Array, ListArray, StructArray};
+        use arrow::compute::nullif;
         use arrow::datatypes::Float64Type;
 
-        // Row 1 is NULL, and gathering has to keep it NULL.
-        let lists = arrow::array::ListArray::from_iter_primitive::<Float64Type, _, _>(
-            (0..4).map(|row| (row != 1).then(|| vec![Some(row as f64), Some(f64::NAN)])),
-        );
-        let batch = RecordBatch::try_from_iter([("l", Arc::new(lists) as ArrayRef)]).unwrap();
-        let slicer = RowSlicer::for_schema(&batch.schema());
+        // NULLs `rows` the way `nullif` does, leaving what is under them in place.
+        let null_at = |array: ArrayRef, rows: &[usize]| -> ArrayRef {
+            let mask =
+                BooleanArray::from_iter((0..array.len()).map(|row| Some(rows.contains(&row))));
+            nullif(&array, &mask).unwrap()
+        };
 
-        let whole = slicer.compact(batch.clone()).unwrap();
-        assert!(
-            Arc::ptr_eq(whole.column(0), batch.column(0)),
-            "a batch that spans its children is handed on as-is"
+        // Row 1 is NULL but still points at its two elements.
+        let lists: ArrayRef = Arc::new(ListArray::from_iter_primitive::<Float64Type, _, _>(
+            (0..4).map(|row| Some(vec![Some(row as f64), Some(f64::NAN)])),
+        ));
+        let list = null_at(lists, &[1]);
+        let written = drop_unwritten(&list).unwrap();
+        assert_eq!(&written, &list, "the list's rows, values and NULLs stay");
+        assert_eq!(
+            written.as_list::<i32>().values().len(),
+            6,
+            "the NULL row's elements are gone"
         );
 
-        let window = batch.slice(1, 2);
-        let compacted = slicer.compact(window.clone()).unwrap();
+        // A slice keeps only the elements of its own rows.
+        let window = list.slice(2, 2);
+        let written = drop_unwritten(&window).unwrap();
         assert_eq!(
-            compacted, window,
-            "gathering keeps the rows, their values and their NULLs"
+            &written, &window,
+            "the window's rows, values and NULLs stay"
         );
+        assert_eq!(written.as_list::<i32>().values().len(), 4);
+
+        // Row 0 is NULL but still holds its NaN.
+        let points: ArrayRef = Arc::new(StructArray::new(
+            vec![Field::new("x", DataType::Float64, true)].into(),
+            vec![Arc::new(Float64Array::from(vec![f64::NAN, 1.0])) as ArrayRef],
+            None,
+        ));
+        let point = null_at(points, &[0]);
+        let written = drop_unwritten(&point).unwrap();
+        assert_eq!(&written, &point, "the struct's rows, values and NULLs stay");
         assert_eq!(
-            compacted.column(0).as_list::<i32>().values().len(),
-            2,
-            "the child holds only the window's elements"
+            written.as_struct().column(0).null_count(),
+            1,
+            "the NULL row's field is NULL too"
         );
     }
 
@@ -2809,9 +2914,8 @@ mod tests {
                     row as f64
                 }
             };
-            // A NULL entry holds no elements, as arrow's builders lay one out. NaNs under a NULL
-            // entry that does hold some are still counted, which is
-            // https://github.com/apache/datafusion-comet/issues/6562.
+            // A NULL entry holds no elements, as arrow's builders lay one out.
+            // `nan_counts_skip_values_under_null_parents` covers one that still holds some.
             let present = |row: usize| row % 10 != 7;
             let list_type = |id: i32, ty: Type| {
                 Type::List(ListType {
@@ -2959,6 +3063,208 @@ mod tests {
                     assert_eq!(nan_counts.get(&7), Some(&expected), "{what}: map NaNs");
                     assert_eq!(nan_counts.get(&9), Some(&expected), "{what}: float NaNs");
                     assert_eq!(nan_counts.get(&12), Some(&expected), "{what}: struct NaNs");
+                }
+            }
+        }
+
+        /// A NULL struct keeps its fields' values, and a NULL list or map entry can still point at
+        /// elements. `nullif` lays out both, since it replaces only the top-level validity, and
+        /// Comet runs `IF(cond, col, NULL)` over a nested column through it. Parquet writes nothing
+        /// under a NULL parent, so iceberg-java counts no NaN there, and the native writer must not
+        /// either: through each of the three writers, over a whole batch and over a slice of one.
+        /// Every float in the batch is NaN, so each count is the number of values written.
+        /// See https://github.com/apache/datafusion-comet/issues/6562.
+        #[tokio::test]
+        async fn nan_counts_skip_values_under_null_parents() {
+            use arrow::array::{
+                BooleanArray, Float64Array, Float64Builder, ListArray, MapBuilder, StringBuilder,
+                StructArray,
+            };
+            use arrow::buffer::OffsetBuffer;
+            use arrow::compute::nullif;
+            use iceberg::spec::{ListType, MapType, StructType};
+            use std::collections::BTreeMap;
+
+            const ROWS: usize = 12;
+            // NULLs the slots where `null` holds and leaves everything under them in place.
+            let null_where = |array: ArrayRef, null: fn(usize) -> bool| -> ArrayRef {
+                let mask = BooleanArray::from_iter((0..array.len()).map(|i| Some(null(i))));
+                nullif(&array, &mask).unwrap()
+            };
+            let nans =
+                |len: usize| -> ArrayRef { Arc::new(Float64Array::from(vec![f64::NAN; len])) };
+            let struct_of = |name: &str, child: ArrayRef| -> ArrayRef {
+                let field = Field::new(name, child.data_type().clone(), true);
+                Arc::new(StructArray::new(vec![field].into(), vec![child], None))
+            };
+            let list_of = |values: ArrayRef, entry_len: usize| -> ArrayRef {
+                let entries = values.len() / entry_len;
+                Arc::new(ListArray::new(
+                    Arc::new(Field::new("element", values.data_type().clone(), true)),
+                    OffsetBuffer::from_lengths(vec![entry_len; entries]),
+                    values,
+                    None,
+                ))
+            };
+            let mut map = MapBuilder::new(None, StringBuilder::new(), Float64Builder::new());
+            for _ in 0..ROWS {
+                map.keys().append_value("k");
+                map.values().append_value(f64::NAN);
+                map.append(true).unwrap();
+            }
+
+            // Each column NULLs a different set of rows, so a count taken from the wrong set
+            // shows up as a wrong number.
+            let columns: Vec<(&str, ArrayRef)> = vec![
+                ("id", Arc::new(Int32Array::from_iter_values(0..ROWS as i32))),
+                ("region", Arc::new(StringArray::from(vec!["us"; ROWS]))),
+                // NULL on odd rows.
+                ("s", null_where(struct_of("x", nans(ROWS)), |r| r % 2 == 1)),
+                // NULL on rows 0, 3, 6 and 9, each still pointing at its one element.
+                ("xs", null_where(list_of(nans(ROWS), 1), |r| r % 3 == 0)),
+                // NULL on rows 0, 4 and 8, each still pointing at its one entry.
+                ("m", null_where(Arc::new(map.finish()), |r| r % 4 == 0)),
+                // The inner struct is NULL on rows 0, 3, 6 and 9, the outer one on odd rows.
+                (
+                    "t",
+                    null_where(
+                        struct_of(
+                            "inner",
+                            null_where(struct_of("y", nans(ROWS)), |r| r % 3 == 0),
+                        ),
+                        |r| r % 2 == 1,
+                    ),
+                ),
+                // Two elements per row, under a struct that is NULL on rows 3, 7 and 11.
+                (
+                    "sl",
+                    null_where(struct_of("l", list_of(nans(2 * ROWS), 2)), |r| r % 4 == 3),
+                ),
+                // Two structs per row, the second one NULL, and the list NULL on rows 5 and 11.
+                (
+                    "ls",
+                    null_where(
+                        list_of(
+                            null_where(struct_of("z", nans(2 * ROWS)), |e| e % 2 == 1),
+                            2,
+                        ),
+                        |r| r % 6 == 5,
+                    ),
+                ),
+                // Two inner lists per row, the second one NULL but still holding its element.
+                (
+                    "ll",
+                    list_of(null_where(list_of(nans(2 * ROWS), 1), |e| e % 2 == 1), 2),
+                ),
+            ];
+            let full = RecordBatch::try_new(
+                Arc::new(ArrowSchema::new(
+                    columns
+                        .iter()
+                        .map(|(name, array)| {
+                            Field::new(*name, array.data_type().clone(), array.is_nullable())
+                        })
+                        .collect::<Vec<_>>(),
+                )),
+                columns.into_iter().map(|(_, array)| array).collect(),
+            )
+            .unwrap();
+
+            let double = || Type::Primitive(PrimitiveType::Double);
+            let struct_type = |id: i32, name: &str, ty: Type| {
+                Type::Struct(StructType::new(vec![
+                    NestedField::optional(id, name, ty).into()
+                ]))
+            };
+            let list_type = |id: i32, ty: Type| {
+                Type::List(ListType {
+                    element_field: NestedField::list_element(id, ty, false).into(),
+                })
+            };
+            let schema = Schema::builder()
+                .with_schema_id(1)
+                .with_fields(vec![
+                    NestedField::required(1, "id", Type::Primitive(PrimitiveType::Int)).into(),
+                    NestedField::required(2, "region", Type::Primitive(PrimitiveType::String))
+                        .into(),
+                    NestedField::optional(3, "s", struct_type(4, "x", double())).into(),
+                    NestedField::optional(5, "xs", list_type(6, double())).into(),
+                    NestedField::optional(
+                        7,
+                        "m",
+                        Type::Map(MapType {
+                            key_field: NestedField::map_key_element(
+                                8,
+                                Type::Primitive(PrimitiveType::String),
+                            )
+                            .into(),
+                            value_field: NestedField::map_value_element(9, double(), false).into(),
+                        }),
+                    )
+                    .into(),
+                    NestedField::optional(
+                        10,
+                        "t",
+                        struct_type(11, "inner", struct_type(12, "y", double())),
+                    )
+                    .into(),
+                    NestedField::optional(13, "sl", struct_type(14, "l", list_type(15, double())))
+                        .into(),
+                    NestedField::optional(16, "ls", list_type(17, struct_type(18, "z", double())))
+                        .into(),
+                    NestedField::optional(19, "ll", list_type(20, list_type(21, double()))).into(),
+                ])
+                .build()
+                .unwrap();
+
+            let unpartitioned = PartitionSpec::builder(Arc::new(schema.clone()))
+                .build()
+                .unwrap();
+            let by_region = identity_region_spec(&schema);
+            let writers = [
+                (
+                    ProtoIcebergWriterMode::IcebergWriterUnpartitioned,
+                    &unpartitioned,
+                ),
+                (ProtoIcebergWriterMode::IcebergWriterFanout, &by_region),
+                (ProtoIcebergWriterMode::IcebergWriterClustered, &by_region),
+            ];
+            // NaN counts by field id: s.x, xs.element, m.value, t.inner.y, sl.l.element,
+            // ls.element.z and ll.element.element.
+            let ids = [4, 6, 9, 12, 15, 18, 21];
+            let whole = (0, ROWS, [6, 8, 9, 4, 18, 10, 12]);
+            // Rows 3 to 9.
+            let window = (3, 7, [3, 4, 5, 2, 10, 6, 7]);
+            for (offset, len, counts) in [whole, window] {
+                let expected: BTreeMap<i32, u64> = ids.into_iter().zip(counts).collect();
+                for (mode, spec) in writers {
+                    let temp_dir = TempDir::new().unwrap();
+                    let common = common(
+                        format!("file://{}", temp_dir.path().display()),
+                        serde_json::to_string(spec).unwrap(),
+                        serde_json::to_string(&schema).unwrap(),
+                        mode,
+                    );
+                    let data_files = run(
+                        common,
+                        schema.clone(),
+                        spec.clone(),
+                        mode,
+                        vec![full.slice(offset, len)],
+                    )
+                    .await
+                    .unwrap();
+
+                    let what = format!("{mode:?} over rows {offset}..{}", offset + len);
+                    assert_eq!(record_counts(&data_files), vec![len as u64], "{what}");
+                    let actual: BTreeMap<i32, u64> = ids
+                        .iter()
+                        .map(|id| {
+                            let count = data_files[0].nan_value_counts().get(id).copied();
+                            (*id, count.unwrap_or_default())
+                        })
+                        .collect();
+                    assert_eq!(actual, expected, "{what}");
                 }
             }
         }
