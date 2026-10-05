@@ -198,9 +198,12 @@ adding fields.
 
 On Spark 4.x, copy-on-write `DELETE`/`UPDATE`/`MERGE` rows arrive with an operation code and file
 metadata columns around the data columns. `dropNonDataColumns` inserts a native `Projection` that
-keeps only the write schema's columns. This is only equivalent to the JVM writer while format
-version 3 is declined, because on v3 iceberg-java reads row-lineage fields from those metadata
-columns.
+keeps only the write schema's columns. This is only equivalent to the JVM writer while the write
+schema has no row lineage columns. On a format-version 3 table, iceberg-java 1.10+ adds `_row_id`
+and `_last_updated_sequence_number` to the write schema of copy-on-write DML and
+`rewrite_data_files`, and fills them from those metadata columns. The gate's
+`requireNoMetadataColumns` declines any write schema with a field id in the range the spec
+reserves for metadata columns, so those writes stay on iceberg-java.
 
 ### Native execution
 
@@ -264,7 +267,9 @@ Each task emits exactly one batch with one row and two `BINARY` columns (`build_
 `CometIcebergWriteExec.doExecute` then, per task:
 
 1. takes cleanup ownership of the locations from column 2 (see below)
-2. decodes the manifest with Iceberg's own `ManifestFiles.read` (`decodeManifestToDataFiles`)
+2. decodes the manifest with Iceberg's own `ManifestFiles.read` (`decodeManifestToDataFiles`).
+   The transport manifest has no `first_row_id`, so the decoded files carry none, and on a
+   format-version 3 table the commit assigns their row ids as it does for iceberg-java's files.
 3. rebuilds each `DataFile`'s metrics with iceberg-java's `ParquetUtil.footerMetrics` and
    `MetricsConfig.forTable`, reading each written file's footer (`rebuildDataFilesWithJavaMetrics`).
    Only float/double NaN counts and bounds are carried over from the native writer, because the
