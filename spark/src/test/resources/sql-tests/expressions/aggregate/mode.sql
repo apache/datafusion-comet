@@ -68,6 +68,14 @@ query
 SELECT grp, mode(v), count(*), sum(v) FROM mode_int GROUP BY grp ORDER BY grp
 
 -- ============================================================
+-- Combined with a distinct aggregate: the mode buffer also passes through the PartialMerge
+-- stages of Spark's distinct rewrite, which must advertise the same native state type
+-- ============================================================
+
+query
+SELECT grp, count(DISTINCT v), mode(v) FROM mode_int GROUP BY grp ORDER BY grp
+
+-- ============================================================
 -- HAVING clause
 -- ============================================================
 

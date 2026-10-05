@@ -28,7 +28,7 @@ import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{DataType, DateType, Decimal, DecimalType, DoubleType, LongType, NumericType}
+import org.apache.spark.sql.types.{ArrayType, DataType, DateType, Decimal, DecimalType, DoubleType, LongType, MapType, NumericType, StructType}
 
 import com.google.common.base.Objects
 
@@ -433,6 +433,27 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
       case _ =>
     }
 
+    // DataFusion finds a RANGE frame bound other than UNBOUNDED by comparing ORDER BY values,
+    // and its comparison cannot order an array of arrays or structs, or a struct holding an
+    // array, so execution fails with "Uncomparable values". Ranking functions and ROWS frames
+    // never compare values that way and stay native over the same keys. That includes CUME_DIST,
+    // whose RANGE frame DataFusion never reads.
+    // https://github.com/apache/datafusion/issues/24937
+    f match {
+      case SpecifiedWindowFrame(RangeFrame, lb, ub)
+          if (lb != UnboundedPreceding || ub != UnboundedFollowing) &&
+            !windowExpr.windowFunction.isInstanceOf[CumeDist] =>
+        windowExpr.windowSpec.orderSpec.map(_.dataType).find(!isRangeComparable(_)) match {
+          case Some(dt) =>
+            withFallbackReason(
+              windowExpr,
+              s"RANGE frame on ${dt.catalogString} ORDER BY is not supported")
+            return None
+          case None =>
+        }
+      case _ =>
+    }
+
     val (frameType, lowerBound, upperBound) = f match {
       case SpecifiedWindowFrame(frameType, lBound, uBound) =>
         val frameProto = frameType match {
@@ -599,6 +620,21 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
       op.orderSpec,
       op.child,
       SerializedPlan(None))
+  }
+
+  // Whether DataFusion can compare two ORDER BY values of `dataType` to find a RANGE frame
+  // bound. `ScalarValue::partial_cmp` compares an array's elements, and a struct's fields with
+  // nested structs flattened, using Arrow comparison kernels that reject nested values.
+  private def isRangeComparable(dataType: DataType): Boolean = dataType match {
+    case ArrayType(_: ArrayType | _: StructType | _: MapType, _) => false
+    case StructType(fields) =>
+      fields.forall { field =>
+        field.dataType match {
+          case _: ArrayType | _: MapType => false
+          case dt => isRangeComparable(dt)
+        }
+      }
+    case _ => true
   }
 
   // Folds a RANGE frame bound expression to a constant and serializes its

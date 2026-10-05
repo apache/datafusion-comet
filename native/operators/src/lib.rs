@@ -28,11 +28,13 @@
 mod expand;
 mod explode;
 mod filter;
+mod range;
 mod rank_limit;
 mod sample;
 
 pub use expand::ExpandExec;
 pub use explode::ExplodeExec;
 pub use filter::CometFilterExec;
+pub use range::range_exec;
 pub use rank_limit::{PartitionedRankLimitExec, WindowFnKind};
 pub use sample::SampleExec;
