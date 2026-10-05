@@ -55,8 +55,8 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.streaming.Trigger
 import org.apache.spark.sql.types.{DoubleType, IntegerType, StringType, StructField, StructType}
 
-import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark41Plus}
-import org.apache.comet.iceberg.{IcebergReflection, IcebergWriteReportListener}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark41Plus, isSpark42Plus}
+import org.apache.comet.iceberg.{IcebergReflection, IcebergWriteReportListener, PositionDeltaWrite}
 import org.apache.comet.serde.Unsupported
 import org.apache.comet.serde.operator.CometIcebergNativeWrite
 
@@ -743,6 +743,134 @@ class CometIcebergWriteActionSuite
     }
   }
 
+  Seq("DELETE", "UPDATE", "MERGE").foreach { command =>
+    test(s"WriteDelta $command is recognized and stays on Iceberg JVM DeltaWriter") {
+      assume(icebergAvailable, "Iceberg not available in classpath")
+      assume(isSpark35Plus, "WriteDelta interception starts with Spark 3.5")
+      withIcebergCatalog { warehouseDir =>
+        val suffix = command.toLowerCase(java.util.Locale.ROOT)
+        val cometTable = s"write_delta_${suffix}_comet"
+        val jvmTable = s"write_delta_${suffix}_jvm"
+        val properties =
+          "'format-version'='2', 'write.delete.mode'='merge-on-read', " +
+            "'write.update.mode'='merge-on-read', 'write.merge.mode'='merge-on-read'"
+
+        Seq(cometTable, jvmTable).foreach { table =>
+          createTable(
+            warehouseDir,
+            table,
+            partitionSpec = "PARTITIONED BY (region)",
+            properties = Some(properties))
+          withSQLConf(CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key -> "false") {
+            // Keep ids 1 and 2 in the same Iceberg data file so DELETE id = 1 cannot be
+            // satisfied as a metadata/file delete and must exercise the WriteDelta path.
+            coalesceInsert(table, Seq((1, "a", 10.0), (2, "a", 20.0), (3, "c", 30.0)))
+          }
+        }
+
+        def run(table: String): Unit = command match {
+          case "DELETE" =>
+            spark.sql(s"DELETE FROM $catalog.$ns.$table WHERE id = 1")
+          case "UPDATE" =>
+            spark.sql(
+              s"UPDATE $catalog.$ns.$table SET region = 'updated', amount = amount + 5 " +
+                "WHERE id = 2")
+          case "MERGE" =>
+            spark.sql(s"""
+              |MERGE INTO $catalog.$ns.$table t
+              |USING (
+              |  SELECT 2 AS id, 'updated' AS region, 200.0 AS amount
+              |  UNION ALL
+              |  SELECT 4 AS id, 'new' AS region, 40.0 AS amount
+              |) s
+              |ON t.id = s.id
+              |WHEN MATCHED THEN UPDATE SET t.region = s.region, t.amount = s.amount
+              |WHEN NOT MATCHED THEN
+              |  INSERT (id, region, amount) VALUES (s.id, s.region, s.amount)
+              |""".stripMargin)
+        }
+
+        val jvmBefore = countSnapshots(jvmTable)
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          run(jvmTable)
+        }
+        assert(countSnapshots(jvmTable) - jvmBefore == 1L)
+
+        val snapshot = withNativeEnabled {
+          captureWrite(cometTable) {
+            run(cometTable)
+          }
+        }
+        assert(snapshot.snapshotDelta == 1L, s"unexpected snapshot count: $snapshot")
+
+        val deltaWrites = snapshot.plans.flatMap { plan =>
+          collectWithSubqueries(plan) {
+            case writer: IcebergWriteExec if writer.dispatch.isInstanceOf[PositionDeltaWrite] =>
+              writer
+          }
+        }
+        assert(
+          deltaWrites.nonEmpty,
+          s"expected PositionDeltaWrite dispatch. Plans:\n${snapshot.plans.mkString("\n--\n")}")
+        assert(
+          deltaWrites.forall { writer =>
+            IcebergReflection
+              .getOuterSparkWrite(writer.batchWrite)
+              .flatMap(IcebergReflection.getTableFromIcebergWrite)
+              .isDefined
+          },
+          "expected PositionDelta batch writes to expose their Iceberg table")
+
+        val nativeWrites = snapshot.plans.flatMap { plan =>
+          collectWithSubqueries(plan) { case writer: CometIcebergWriteExec => writer }
+        }
+        assert(
+          nativeWrites.isEmpty,
+          "WriteDelta must stay on Iceberg's JVM DeltaWriter. Plans:\n" +
+            snapshot.plans.mkString("\n--\n"))
+
+        def rows(table: String): Seq[Row] =
+          spark
+            .sql(s"SELECT id, region, amount FROM $catalog.$ns.$table ORDER BY id")
+            .collect()
+            .toSeq
+
+        assert(
+          rows(cometTable) == rows(jvmTable),
+          s"$command result differs from the stock Iceberg JVM path")
+
+        val summaryPrefix = command match {
+          case "DELETE" => "spark.delete."
+          case "UPDATE" => "spark.update."
+          case "MERGE" => "spark.merge-into."
+        }
+        def rowLevelSummary(table: String): Map[String, String] =
+          spark
+            .sql(s"SELECT summary FROM $catalog.$ns.$table.snapshots " +
+              "ORDER BY committed_at DESC LIMIT 1")
+            .collect()(0)
+            .getMap[String, String](0)
+            .filter { case (key, _) => key.startsWith(summaryPrefix) }
+            .toMap
+
+        val cometSummary = rowLevelSummary(cometTable)
+        val jvmSummary = rowLevelSummary(jvmTable)
+        assert(
+          cometSummary == jvmSummary,
+          s"$command snapshot summary differs from the stock Iceberg JVM path: " +
+            s"Comet=$cometSummary JVM=$jvmSummary")
+        val summaryExpected =
+          (command == "MERGE" && isSpark41Plus) ||
+            ((command == "DELETE" || command == "UPDATE") && isSpark42Plus)
+        if (summaryExpected) {
+          assert(
+            cometSummary.nonEmpty,
+            s"expected Spark row-level summary metrics for $command, got $cometSummary")
+        }
+      }
+    }
+  }
+
   test("sanity check: Spark's default DELETE path works against a Hadoop catalog") {
     assume(icebergAvailable, "Iceberg not available in classpath")
     withIcebergCatalog { warehouseDir =>
@@ -1381,39 +1509,30 @@ class CometIcebergWriteActionSuite
           val commits = writeSnapshot.plans.flatMap { plan =>
             collectWithSubqueries(plan) { case c: IcebergCommitExec => c }
           }
-          if (mode == "copy-on-write") {
+          assert(
+            commits.nonEmpty,
+            s"expected >= 1 IcebergCommitExec for $mode, got 0. Plans:\n" +
+              writeSnapshot.plans.mkString("\n--\n"))
+          if (mode == "merge-on-read") {
+            val deltaWrites = writeSnapshot.plans.flatMap { plan =>
+              collectWithSubqueries(plan) {
+                case writer: IcebergWriteExec
+                    if writer.dispatch.isInstanceOf[PositionDeltaWrite] =>
+                  writer
+              }
+            }
             assert(
-              commits.nonEmpty,
-              s"expected >= 1 IcebergCommitExec for $mode, got 0. Plans:\n" +
-                writeSnapshot.plans.mkString("\n--\n"))
-          } else {
-            assert(
-              commits.isEmpty,
-              s"merge-on-read should stay on Iceberg WriteDelta, got ${commits.size} IcebergCommitExec. Plans:\n" +
+              deltaWrites.nonEmpty,
+              s"expected PositionDeltaWrite dispatch for $mode. Plans:\n" +
                 writeSnapshot.plans.mkString("\n--\n"))
           }
           val mergeExecs = writeSnapshot.plans.flatMap { plan =>
             collectWithSubqueries(plan) { case e: CometMergeRowsExec => e }
           }
-          if (mode == "merge-on-read" && isSpark41Plus) {
-            val sparkMergeRows = writeSnapshot.plans.flatMap { plan =>
-              collectWithSubqueries(plan) {
-                case e if e.getClass.getSimpleName == "MergeRowsExec" => e
-              }
-            }
-            assert(
-              mergeExecs.isEmpty,
-              "Spark 4.1+ merge-on-read uses the stock V2 writer and must retain MergeRowsExec")
-            assert(
-              sparkMergeRows.nonEmpty,
-              s"expected Spark MergeRowsExec for Spark 4.1+ $mode. Plans:\n" +
-                writeSnapshot.plans.mkString("\n--\n"))
-          } else {
-            assert(
-              mergeExecs.nonEmpty,
-              s"expected CometMergeRowsExec for $mode. Plans:\n" +
-                writeSnapshot.plans.mkString("\n--\n"))
-          }
+          assert(
+            mergeExecs.nonEmpty,
+            s"expected CometMergeRowsExec for $mode. Plans:\n" +
+              writeSnapshot.plans.mkString("\n--\n"))
 
           val nativeWrites = writeSnapshot.plans.flatMap { plan =>
             collectWithSubqueries(plan) { case e: CometIcebergWriteExec => e }
@@ -3978,6 +4097,16 @@ class CometIcebergWriteActionSuite
         "report_orc",
         partitionSpec = "",
         properties = Some("'write.format.default'='orc'"))
+      if (isSpark35Plus) {
+        createTable(
+          warehouseDir,
+          "report_delta",
+          partitionSpec = "PARTITIONED BY (region)",
+          properties = Some("'format-version'='2', 'write.delete.mode'='merge-on-read'"))
+        withSQLConf(CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key -> "false") {
+          coalesceInsert("report_delta", Seq((1, "us-east", 1.5), (2, "us-east", 2.5)))
+        }
+      }
 
       val writes = reportedWrites {
         withNativeEnabled {
@@ -3987,14 +4116,19 @@ class CometIcebergWriteActionSuite
             .sql(s"INSERT INTO $catalog.$ns.report_parquet VALUES (1, 'us-east', 1.5)")
             .collect()
           spark.sql(s"INSERT INTO $catalog.$ns.report_orc VALUES (2, 'eu', 2.5)")
+          if (isSpark35Plus) {
+            spark.sql(s"DELETE FROM $catalog.$ns.report_delta WHERE id = 1")
+          }
         }
         withSQLConf(CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key -> "false") {
           spark.sql(s"INSERT INTO $catalog.$ns.report_parquet VALUES (3, 'eu', 3.5)")
         }
       }
-      assert(writes.map(_.writer) == Seq("native", "jvm", "spark"), writes.mkString("\n"))
+      val expectedWriters =
+        Seq("native", "jvm") ++ (if (isSpark35Plus) Seq("jvm") else Nil) ++ Seq("spark")
+      assert(writes.map(_.writer) == expectedWriters, writes.mkString("\n"))
       assert(writes(1).reasons.exists(_.contains("only parquet")))
-      assert(writes(2).node == "AppendData")
+      assert(writes.last.node == "AppendData")
       assert(writes.forall(!_.failed))
     }
   }
