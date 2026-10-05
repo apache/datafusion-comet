@@ -35,7 +35,7 @@ class CometEmptyRelationParquetWriterSuite extends CometParquetWriterTestBase {
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
       SQLConf.SHUFFLE_PARTITIONS.key -> "2",
       "spark.sql.optimizer.plannedWrite.enabled" -> "true",
-      CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "false",
+      CometConf.COMET_CONVERT_FROM_RANGE_ENABLED.key -> "false",
       CometConf.COMET_SHUFFLE_CONVERT_FROM_SPARK_PLAN_ENABLED.key -> "false") {
       withNativeWriter {
         withTempPath { dir =>
