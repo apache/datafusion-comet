@@ -2545,11 +2545,15 @@ class CometIcebergWriteActionSuite
         .toDF("id", "region", "amount")
         .coalesce(1)
         .createOrReplaceTempView("retry_src")
+      // The native writer holds back a partition's first data page of rows for its dictionary
+      // choice and writes nothing before then. A 1000-row page lets it finalize files well before
+      // the failure at row 7000, which the default 20000-row page would not.
       createTable(
         warehouseDir,
         "retry_target",
         partitionSpec = "",
-        properties = Some("'write.target-file-size-bytes'='1'"))
+        properties =
+          Some("'write.target-file-size-bytes'='1', 'write.parquet.page-row-limit'='1000'"))
       NativeWriteRetryProbe.reset()
       val dataLocation = dataDir("retry_target").getAbsolutePath
       spark.udf.register(
