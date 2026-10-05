@@ -43,6 +43,19 @@ trait CometCodegenAssertions {
   }
 
   /**
+   * Asserts the dispatcher did not run during `f`, for the cases where the expression is expected
+   * to be routed back to Spark rather than into a kernel.
+   */
+  protected def assertNoCodegen(f: => Unit): Unit = {
+    CometScalaUDFCodegen.resetStats()
+    f
+    val after = CometScalaUDFCodegen.stats()
+    assert(
+      after.compileCount + after.cacheHitCount == 0,
+      s"expected no codegen dispatcher activity, got $after")
+  }
+
+  /**
    * Asserts the composed subtree fused into one kernel signature, not N (one per sub-expression).
    * Uses the JVM-wide signature set rather than `compileCount` because per-task `boundExpr`
    * isolation makes multi-partition queries trip `compileCount > 1` even when the bytecode is
