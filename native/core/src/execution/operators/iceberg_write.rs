@@ -210,13 +210,13 @@ impl LocationGenerator for TrackingLocationGenerator {
     }
 }
 
-/// Deletes the tracked files if the write task is dropped before it finished.
+/// Deletes the tracked files if the write task is dropped before the JVM acknowledges its output.
 ///
 /// A task can end without its future ever observing an error: when the JVM-side input iterator
 /// throws, `executePlan` returns that error straight from the JNI batch pull and the JVM then
 /// releases the plan, dropping this future mid-flight. The guard turns that drop into the same
-/// cleanup the explicit error path performs. It stays armed until the task's output batch has
-/// been handed to the JVM, which is the point where the JVM takes over cleanup ownership.
+/// cleanup the explicit error path performs. It stays armed until the JVM polls past the output
+/// batch, after recording the locations in its task-failure listener.
 struct AbortOnDrop {
     file_io: FileIO,
     generator: TrackingLocationGenerator,
@@ -281,6 +281,28 @@ impl Drop for AbortOnDrop {
             },
         }
     }
+}
+
+/// The JVM reads the locations from the single output batch, registers its cleanup listener,
+/// and then polls once more to verify that the stream ended. Keep native cleanup armed through
+/// that last poll: a cancelled task or a failure decoding the locations before then must still
+/// delete the files, even though the output batch was successfully constructed.
+fn output_with_cleanup_ack(
+    batch: RecordBatch,
+    abort_guard: AbortOnDrop,
+) -> impl futures::Stream<Item = DFResult<RecordBatch>> + Send {
+    futures::stream::unfold(
+        (Some(batch), abort_guard),
+        |(batch, mut abort_guard)| async move {
+            match batch {
+                Some(batch) => Some((Ok::<_, DataFusionError>(batch), (None, abort_guard))),
+                None => {
+                    abort_guard.disarm();
+                    None
+                }
+            }
+        },
+    )
 }
 
 /// Best-effort deletion of every file a failed task attempt created, the native counterpart of
@@ -486,12 +508,9 @@ impl ExecutionPlan for IcebergWriteExec {
             }
             .await;
             match packaged {
-                // The batch carries the locations, and the JVM takes cleanup ownership of them
-                // before it decodes the manifest, so the guard's job is done.
-                Ok(batch) => {
-                    abort_guard.disarm();
-                    Ok::<_, DataFusionError>(futures::stream::iter(vec![Ok(batch)]))
-                }
+                // The JVM registers the locations before polling for EOF. Keep the guard armed
+                // until that poll, so dropping the stream during the handoff still cleans up.
+                Ok(batch) => Ok::<_, DataFusionError>(output_with_cleanup_ack(batch, abort_guard)),
                 Err(e) => {
                     abort_guard.abort().await;
                     Err(e)
@@ -539,7 +558,7 @@ impl DisplayAs for IcebergWriteExec {
 /// depending on `writer_mode`.
 ///
 /// On success the still-armed [`AbortOnDrop`] is returned along with the data files: the caller
-/// owns cleanup until the output batch has been handed to the JVM.
+/// owns cleanup until the JVM acknowledges the output after recording its locations.
 #[allow(clippy::too_many_arguments)]
 async fn run_write_task(
     mut input: SendableRecordBatchStream,
@@ -1974,6 +1993,7 @@ mod tests {
             CompressionCodec as ProtoCodec, IcebergParquetWriteSettings, IcebergWriteCommon,
             IcebergWriterMode as ProtoIcebergWriterMode,
         };
+        use futures::StreamExt;
         use iceberg::spec::{
             Manifest, NestedField, PartitionSpec, PrimitiveType, Schema, Transform, Type,
         };
@@ -1981,6 +2001,7 @@ mod tests {
         use std::collections::HashMap;
         use std::path::PathBuf;
         use std::sync::Arc;
+        use std::time::Duration;
         use tempfile::TempDir;
 
         fn user_schema() -> SchemaRef {
@@ -2197,7 +2218,7 @@ mod tests {
 
             assert!(
                 abort_guard.armed,
-                "the caller owns cleanup until the JVM does"
+                "the caller owns cleanup until the JVM acknowledges the handoff"
             );
             let written: Vec<PathBuf> = data_files
                 .iter()
@@ -2211,6 +2232,66 @@ mod tests {
             abort_guard.abort().await;
             assert!(written.iter().all(|p| !p.exists()), "{written:?}");
             assert!(!abort_guard.armed, "aborting also gives up ownership");
+        }
+
+        #[tokio::test]
+        async fn output_stream_waits_for_jvm_eof_poll_before_releasing_cleanup() {
+            for acknowledge in [false, true] {
+                let temp_dir = TempDir::new().unwrap();
+                let data_location = format!("file://{}", temp_dir.path().display());
+                let schema = iceberg_user_schema();
+                let spec = PartitionSpec::builder(Arc::new(schema.clone()))
+                    .build()
+                    .unwrap();
+                let common = common(
+                    data_location,
+                    serde_json::to_string(&spec).unwrap(),
+                    serde_json::to_string(&schema).unwrap(),
+                    ProtoIcebergWriterMode::IcebergWriterUnpartitioned,
+                );
+                let (data_files, guard) = run_write_task(
+                    input_stream(vec![batch(&[1], &["us"])]),
+                    common,
+                    Arc::new(schema),
+                    Arc::new(spec),
+                    ProtoIcebergWriterMode::IcebergWriterUnpartitioned,
+                    WriterProperties::builder().build(),
+                    Some(0),
+                    Some(0),
+                    Time::default(),
+                )
+                .await
+                .unwrap();
+
+                let written: Vec<PathBuf> = data_files
+                    .iter()
+                    .map(|file| PathBuf::from(file.file_path().trim_start_matches("file:")))
+                    .collect();
+                assert!(!written.is_empty());
+                assert!(written.iter().all(|path| path.exists()));
+
+                let output =
+                    build_output_batch(vec![], &guard.locations(), &build_output_schema()).unwrap();
+                let mut stream = Box::pin(output_with_cleanup_ack(output, guard));
+                assert!(stream.next().await.unwrap().is_ok());
+
+                if acknowledge {
+                    assert!(stream.next().await.is_none());
+                }
+                drop(stream);
+
+                if acknowledge {
+                    assert!(written.iter().all(|path| path.exists()));
+                } else {
+                    tokio::time::timeout(Duration::from_secs(5), async {
+                        while written.iter().any(|path| path.exists()) {
+                            tokio::time::sleep(Duration::from_millis(10)).await;
+                        }
+                    })
+                    .await
+                    .expect("dropping an unacknowledged output must delete its files");
+                }
+            }
         }
 
         #[tokio::test]
