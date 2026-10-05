@@ -167,12 +167,14 @@ class CometSqlFileTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                   case ExpectOperator(name) =>
                     // This mode permits a mixed plan, for example native C2R feeding a
                     // Spark projection. Require the named operator, not full native coverage.
-                    val (_, plan) = withSQLConf(CometConf.COMET_STRICT_TESTING.key -> "false") {
-                      checkSparkAnswer(sql)
+                    withSQLConf(CometConf.COMET_STRICT_TESTING.key -> "false") {
+                      val (_, plan) = checkSparkAnswer(sql)
+                      assert(
+                        collect(plan) {
+                          case p if p.getClass.getSimpleName == name => p
+                        }.nonEmpty,
+                        s"Expected $name in:\n$plan")
                     }
-                    assert(
-                      collect(plan) { case p if p.getClass.getSimpleName == name => p }.nonEmpty,
-                      s"Expected $name in:\n$plan")
                   case Ignore(reason) =>
                     logInfo(s"IGNORED query ($reason): $sql")
                   case ExpectError(pattern) =>
