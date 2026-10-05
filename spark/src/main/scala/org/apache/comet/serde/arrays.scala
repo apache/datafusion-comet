@@ -22,8 +22,10 @@ package org.apache.comet.serde
 import scala.annotation.tailrec
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.catalyst.expressions.{And, ArrayAggregate, ArrayAppend, ArrayContains, ArrayExcept, ArrayExists, ArrayFilter, ArrayForAll, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArraySort, ArraysOverlap, ArraysZip, ArrayTransform, ArrayUnion, Attribute, BoundReference, Cast, CreateArray, ElementAt, EmptyRow, Expression, Flatten, GetArrayItem, IsNotNull, IsNull, LambdaFunction, Literal, NamedLambdaVariable, Reverse, Sequence, Size, Slice, SortArray, ZipWith}
+import org.apache.spark.SPARK_VERSION
+import org.apache.spark.sql.catalyst.expressions.{And, ArrayAggregate, ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayExists, ArrayFilter, ArrayForAll, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArraySort, ArraysOverlap, ArraysZip, ArrayTransform, ArrayUnion, Attribute, BoundReference, Cast, CreateArray, ElementAt, EmptyRow, Expression, Flatten, GetArrayItem, IsNotNull, IsNull, LambdaFunction, Literal, NamedLambdaVariable, Reverse, Sequence, Size, Slice, SortArray, ZipWith}
 import org.apache.spark.sql.catalyst.util.GenericArrayData
+import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
@@ -536,7 +538,45 @@ object CometSlice extends CometExpressionSerde[Slice] {
   }
 }
 
+private[comet] object ArraySetSupport {
+  val floatingPointReason: String =
+    "Floating-point elements match Spark's signed-zero and NaN semantics natively only on " +
+      "Spark 4.2.0, whose optimizer normalizes the arguments (SPARK-54918)"
+
+  // The native kernels match Spark only when the plan has already normalized the arguments, and
+  // only Spark 4.2.0 does that (SPARK-54918). Earlier releases keep flat signed zeros apart.
+  // From 4.0.5, 4.1.4 and 4.2.1, SPARK-59602 normalizes during evaluation instead, which the
+  // native kernels do not match for NaN payloads or nested zeros. A top-level
+  // KnownFloatingPointNormalized marker cannot replace the version check: Spark also normalizes
+  // CreateArray, If, CaseWhen, and Coalesce recursively without wrapping the resulting array.
+  def normalizesArgumentsInPlan(version: String): Boolean =
+    Utils.majorMinorPatchVersion(version).contains((4, 2, 0))
+
+  def supportLevel(dataType: DataType): SupportLevel = {
+    if (SupportLevel.containsType(dataType, classOf[FloatType], classOf[DoubleType]) &&
+      !normalizesArgumentsInPlan(SPARK_VERSION)) {
+      Incompatible(Some(floatingPointReason))
+    } else {
+      Compatible()
+    }
+  }
+}
+
+// Use projection fallback to avoid codegen dispatch overhead for array-valued results.
+// The native implementation remains available through opt-in.
+object CometArrayDistinct extends CometScalarFunction[ArrayDistinct]("array_distinct") {
+  override def getIncompatibleReasons(): Seq[String] = Seq(ArraySetSupport.floatingPointReason)
+
+  override def getSupportLevel(expr: ArrayDistinct): SupportLevel =
+    ArraySetSupport.supportLevel(expr.dataType)
+}
+
 object CometArrayUnion extends CometExpressionSerde[ArrayUnion] {
+  override def getIncompatibleReasons(): Seq[String] = Seq(ArraySetSupport.floatingPointReason)
+
+  override def getSupportLevel(expr: ArrayUnion): SupportLevel =
+    ArraySetSupport.supportLevel(expr.dataType)
+
   override def convert(
       expr: ArrayUnion,
       inputs: Seq[Attribute],
