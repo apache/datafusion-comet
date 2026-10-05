@@ -60,6 +60,18 @@ Sampling with replacement (`df.sample(withReplacement = true, ...)`) falls back 
 it draws from a Poisson distribution that Comet does not implement natively
 ([#5109](https://github.com/apache/datafusion-comet/issues/5109)).
 
+## Sort
+
+Spark orders a null element of an array sort key, or a null field of a struct sort key, below
+every other value, whatever the key's `NULLS FIRST` or `NULLS LAST`. Comet's native sort places it
+by the key's null order instead. So a sort, TopK, or window order key whose type can hold a null
+element or field falls back to Spark under `ASC NULLS LAST` or `DESC NULLS FIRST`
+([#6476](https://github.com/apache/datafusion-comet/issues/6476)). The default null orders,
+`ASC NULLS FIRST` and `DESC NULLS LAST`, place it where Spark does and run natively, and so does a
+key whose type cannot hold a null element or field, such as `array(coalesce(x, 0))`. Set
+`spark.comet.expression.SortOrder.allowIncompatible=true` to run the other null orders natively
+anyway.
+
 ## Window Functions
 
 Comet runs `WindowExec` natively and it is enabled by default (`spark.comet.exec.window.enabled`). A broad set of
