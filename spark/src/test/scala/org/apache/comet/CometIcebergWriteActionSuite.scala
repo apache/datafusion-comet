@@ -2835,65 +2835,61 @@ class CometIcebergWriteActionSuite
         coalesceInsert(table, Seq((0, "seed", 0.0)))
         val committed = parquetFiles(dataDir(table))
         val before = countSnapshots(table)
-        val session = spark
-        import session.implicits._
-        withTempPath { dir =>
-          (1 to 30)
-            .map(i => (i, s"r$i", i.toDouble))
-            .toDF("id", "region", "amount")
-            .repartition(3)
-            .write
-            .parquet(dir.getAbsolutePath)
-          spark.read.parquet(dir.getAbsolutePath).createOrReplaceTempView("job_abort_src")
-          JobAbortGate.reset(othersToFinish = 2)
-          spark.udf.register(
-            "boom_after_others",
-            (id: Int) => {
-              if (id == 25) {
-                JobAbortGate.awaitOthers()
-                throw new RuntimeException("boom")
-              }
-              id
-            })
-          val listener = new SparkListener {
-            override def onTaskEnd(taskEnd: SparkListenerTaskEnd): Unit =
-              if (taskEnd.reason == Success) JobAbortGate.taskFinished()
+        JobAbortGate.reset(othersToFinish = 2)
+        // One task per slice. The task whose slice holds id 25 waits for the other two while it
+        // computes that slice, which runs in JVM code on its own task thread. Waiting inside the
+        // UDF instead would hold the thread that evaluates the native plan, which can be a worker
+        // of Comet's process-wide Tokio runtime, and with one worker the other two tasks' plans
+        // could not run. See https://github.com/apache/datafusion-comet/issues/6643.
+        val rows = spark.sparkContext
+          .parallelize(1 to 30, numSlices = 3)
+          .mapPartitions { ids =>
+            val slice = ids.toVector
+            if (slice.contains(25)) JobAbortGate.awaitOthers()
+            slice.iterator.map(i => Row(i, s"r$i", i.toDouble))
           }
-          spark.sparkContext.addSparkListener(listener)
-          try {
-            // One task per source file: openCostInBytes equal to maxPartitionBytes stops the
-            // planner from packing two of these tiny files into one task.
-            val run = () =>
-              withSQLConf(
-                "spark.sql.files.maxPartitionBytes" -> "1048576",
-                "spark.sql.files.openCostInBytes" -> "1048576") {
-                spark.sql(s"INSERT INTO $catalog.$ns.$table " +
-                  "SELECT boom_after_others(id), region, amount FROM job_abort_src")
-              }
-            val (failedPlans, error) = captureFailedPlans(spark) {
-              if (native) withNativeEnabled(run()) else run()
-            }
-            assert(
-              error.toSeq
-                .flatMap(exceptionChain)
-                .exists(t => Option(t.getMessage).exists(_.contains("boom"))),
-              s"expected the injected task failure to surface, got $error")
-            val nativeWrites = failedPlans.flatMap(p =>
-              collectWithSubqueries(p) { case w: CometIcebergWriteExec => w })
-            assert(
-              nativeWrites.nonEmpty == native,
-              s"native=$native but the failed plans were:\n${failedPlans.mkString("\n--\n")}")
-          } finally {
-            spark.sparkContext.removeSparkListener(listener)
-          }
-          assert(JobAbortGate.finished >= 2, "the gate must have seen two completed tasks")
-          assert(countSnapshots(table) == before, "failed write must not commit")
-          val remaining = parquetFiles(dataDir(table))
-          assert(
-            remaining == committed,
-            s"completed tasks left data files behind: ${remaining -- committed}")
-          assertRows(table, expectedIds = Seq(0))
+        val schema = StructType(
+          Seq(
+            StructField("id", IntegerType),
+            StructField("region", StringType),
+            StructField("amount", DoubleType)))
+        spark.createDataFrame(rows, schema).createOrReplaceTempView("job_abort_src")
+        spark.udf.register(
+          "boom_at_25",
+          (id: Int) => if (id == 25) throw new RuntimeException("boom") else id)
+        val listener = new SparkListener {
+          override def onTaskEnd(taskEnd: SparkListenerTaskEnd): Unit =
+            if (taskEnd.reason == Success) JobAbortGate.taskFinished()
         }
+        spark.sparkContext.addSparkListener(listener)
+        try {
+          val run = () =>
+            spark.sql(
+              s"INSERT INTO $catalog.$ns.$table " +
+                "SELECT boom_at_25(id), region, amount FROM job_abort_src")
+          val (failedPlans, error) = captureFailedPlans(spark) {
+            if (native) withNativeEnabled(run()) else run()
+          }
+          assert(
+            error.toSeq
+              .flatMap(exceptionChain)
+              .exists(t => Option(t.getMessage).exists(_.contains("boom"))),
+            s"expected the injected task failure to surface, got $error")
+          val nativeWrites = failedPlans.flatMap(p =>
+            collectWithSubqueries(p) { case w: CometIcebergWriteExec => w })
+          assert(
+            nativeWrites.nonEmpty == native,
+            s"native=$native but the failed plans were:\n${failedPlans.mkString("\n--\n")}")
+        } finally {
+          spark.sparkContext.removeSparkListener(listener)
+        }
+        assert(JobAbortGate.finished >= 2, "the gate must have seen two completed tasks")
+        assert(countSnapshots(table) == before, "failed write must not commit")
+        val remaining = parquetFiles(dataDir(table))
+        assert(
+          remaining == committed,
+          s"completed tasks left data files behind: ${remaining -- committed}")
+        assertRows(table, expectedIds = Seq(0))
       }
     }
   }
@@ -3945,8 +3941,8 @@ private object NativeWriteRetryProbe {
  */
 /**
  * Lets the failing task of a multi-task write wait until the other tasks have finished, so the
- * driver has their commit messages when the job fails. Top-level so the UDF closure doesn't
- * capture the suite.
+ * driver has their commit messages when the job fails. Top-level so the closure that waits on it
+ * doesn't capture the suite.
  */
 private object JobAbortGate {
   @volatile private var others = new CountDownLatch(0)
