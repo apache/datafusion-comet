@@ -32,12 +32,12 @@ import scala.concurrent.duration.DurationInt
 import scala.jdk.CollectionConverters._
 import scala.util.control.NonFatal
 
-import org.apache.hadoop.fs.Path
-import org.apache.parquet.hadoop.ParquetFileReader
-import org.apache.parquet.hadoop.util.HadoopInputFile
 import org.json4s.{DefaultFormats, Formats}
 import org.json4s.jackson.JsonMethods.parse
 
+import org.apache.hadoop.fs.{Path => HadoopPath}
+import org.apache.parquet.hadoop.ParquetFileReader
+import org.apache.parquet.hadoop.util.HadoopInputFile
 import org.apache.spark.{CometListenerBusUtils, SparkConf, SparkException, Success, TaskContext}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
@@ -2120,7 +2120,7 @@ class CometIcebergWriteActionSuite
       .map(_.getString(0))
     paths.map { path =>
       val reader = ParquetFileReader.open(
-        HadoopInputFile.fromPath(new Path(path), spark.sessionState.newHadoopConf()))
+        HadoopInputFile.fromPath(new HadoopPath(path), spark.sessionState.newHadoopConf()))
       val columns =
         try {
           reader.getFooter.getBlocks.asScala
