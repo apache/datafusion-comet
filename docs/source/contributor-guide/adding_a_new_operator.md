@@ -739,6 +739,13 @@ and drops the `WriteFilesExec` under it; its override puts that wrapper back aro
 input. `CometIcebergWriteExec` keeps the same shape as `IcebergWriteExec`, so the default is
 enough.
 
+Also override `sparkFallback` when the operator's live state differs from `originalPlan`.
+`CometNativeScanExec` restores its current partition and data filters, and
+`CometIcebergNativeScanExec` restores its current runtime filters, so AQE's executable DPP
+subqueries survive reversion. `CometLocalTopKExec` returns the restored child directly: Comet
+inserted that local candidate selection, and only the outer TopK restores Spark's offset and
+projection. Rebuilding the original TopK at both nodes would apply it twice.
+
 Do not point `originalPlan` at a child. If that child is a shuffle or query stage, the copied
 logical link puts this node inside the stage's `LogicalQueryStage`. AQE then re-plans a second
 copy of the operator around the one that is already there.

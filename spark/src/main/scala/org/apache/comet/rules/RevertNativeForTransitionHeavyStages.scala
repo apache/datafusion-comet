@@ -23,7 +23,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.rules.Rule
-import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometExec, CometHashAggregateExec, CometIcebergNativeScanExec, CometLocalTopKExec, CometNativeColumnarToRowExec, CometNativeScanExec, CometSparkToColumnarExec}
+import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometExec, CometHashAggregateExec, CometNativeColumnarToRowExec, CometSparkToColumnarExec}
 import org.apache.spark.sql.comet.execution.shuffle.{CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, ColumnarToRowTransition, RowToColumnarExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.QueryStageExec
@@ -257,29 +257,8 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession, wholePlan
       throw new CometExec.InvalidSparkFallbackException(
         "Cannot revert a stage whose stripped root is a stage boundary")
     }
-    val reverted = transformStageUp(stripped) {
-      // Local candidate selection was inserted by Comet. Only the outer TopK owns
-      // the original Spark operator's offset and projection.
-      case local: CometLocalTopKExec => local.child
-      case scan: CometNativeScanExec =>
-        // AQE's query-stage optimizer rewrites DPP placeholders in the live Comet scan
-        // before this post-columnar rule runs. The frozen FileSourceScanExec in
-        // originalPlan still contains SubqueryAdaptiveBroadcastExec, which cannot execute.
-        // Preserve the rewritten filters when reverting the scan to Spark.
-        val originalScan = scan.originalPlan.copy(
-          partitionFilters = scan.partitionFilters,
-          dataFilters = scan.dataFilters)
-        scan.originalPlan.logicalLink.foreach(originalScan.setLogicalLink)
-        originalScan
-      case scan: CometIcebergNativeScanExec =>
-        // Iceberg's native scan has the same split between live and frozen filters.
-        // serializedPartitionData rebuilds originalPlan from runtimeFilters before
-        // execution, but transition reversion skips that path and executes the restored
-        // BatchScanExec directly. Carry the executable DPP filters across here as well.
-        val originalScan = scan.originalPlan.copy(runtimeFilters = scan.runtimeFilters)
-        scan.originalPlan.logicalLink.foreach(originalScan.setLogicalLink)
-        originalScan
-      case cometExec: CometExec => cometExec.sparkFallback(cometExec.children)
+    val reverted = transformStageUp(stripped) { case cometExec: CometExec =>
+      cometExec.sparkFallback(cometExec.children)
     }
     insertTransitions(reverted)
   }

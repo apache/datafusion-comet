@@ -663,7 +663,8 @@ abstract class CometExec extends CometPlan {
   /**
    * Rebuilds the Spark operator represented by this Comet operator with reverted children.
    *
-   * Operators whose Comet representation changes the Spark plan shape must override this method.
+   * Operators whose Comet representation changes the Spark plan shape or whose live state differs
+   * from the original Spark plan must override this method.
    */
   def sparkFallback(newChildren: Seq[SparkPlan]): SparkPlan = {
     val sparkPlan = originalPlan

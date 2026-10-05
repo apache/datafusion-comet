@@ -432,6 +432,26 @@ class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
     }
   }
 
+  test("local TopK sparkFallback returns the supplied restored child") {
+    val child = spark.range(20).queryExecution.sparkPlan
+    val originalPlan = TakeOrderedAndProjectExec(5, Seq.empty, child.output, child)
+    val local = CometLocalTopKExec(
+      Operator.newBuilder().build(),
+      originalPlan,
+      child.output,
+      5,
+      Seq.empty,
+      dynamicFilterEnabled = false,
+      child,
+      SerializedPlan(None))
+    val restoredChild = spark.range(10).queryExecution.sparkPlan
+
+    assert(local.sparkFallback(Seq(restoredChild)) eq restoredChild)
+    intercept[CometExec.InvalidSparkFallbackException] {
+      local.sparkFallback(Seq.empty)
+    }
+  }
+
   for (adaptive <- Seq(false, true)) {
     test(s"transition reversion preserves local TopK: AQE=$adaptive") {
       withSQLConf(
