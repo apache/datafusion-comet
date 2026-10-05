@@ -49,7 +49,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 arrow = "59"
-comet-udf-sdk = { git = "https://github.com/apache/datafusion-comet", tag = "1.1.0" }
+comet-udf-sdk = { git = "https://github.com/apache/datafusion-comet", tag = "$COMET_VERSION" }
 ```
 
 Pin `tag` to the Comet release your cluster runs. The SDK is not published to crates.io, and a
@@ -58,6 +58,13 @@ so an untagged dependency that follows `main` will eventually stop loading. Use 
 major version as that release's SDK, which is the `arrow` entry in `native/Cargo.toml` at the tag.
 The trait's signatures use the SDK's `arrow` types, so a different major version fails to compile
 with `E0053` (incompatible type for trait).
+
+<!-- IF_SNAPSHOT -->
+
+This page is for the current development version of Comet, which has no release tag yet. Until it
+is released, pin `rev` to the commit your Comet build was made from instead of `tag`.
+
+<!-- ENDIF -->
 
 Implement the `CometCScalarUdf` trait and export it:
 
