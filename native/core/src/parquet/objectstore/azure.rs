@@ -1256,18 +1256,19 @@ fn extract_container(url: &Url) -> Option<String> {
 
 /// The tenant id and authority host of an OAuth token endpoint like
 /// `https://login.microsoftonline.com/<tenant>/oauth2/token`. The tenant is the path segment
-/// before `oauth2`, or the first segment when no later segment is `oauth2`. The authority
-/// host is the origin plus every segment before the tenant, so object_store's
-/// `<authority host>/<tenant>/oauth2/v2.0/token` keeps a proxy's path prefix. The host is
-/// `None` when the endpoint has no `scheme://host` origin.
+/// before the last `oauth2`, or the first segment when no later segment is `oauth2`, so a
+/// prefix that itself contains `oauth2` is kept. The authority host is the origin plus every
+/// segment before the tenant, so object_store's `<authority host>/<tenant>/oauth2/v2.0/token`
+/// keeps a proxy's path prefix. The host is `None` when the endpoint has no `scheme://host`
+/// origin.
 fn oauth_endpoint_parts(endpoint: &str) -> Option<(String, Option<String>)> {
     let parsed = Url::parse(endpoint).ok()?;
     let segments: Vec<&str> = parsed.path_segments()?.collect();
     let tenant_at = segments
         .iter()
-        .skip(1)
-        .position(|segment| *segment == "oauth2")
-        .unwrap_or(0);
+        .rposition(|segment| *segment == "oauth2")
+        .filter(|&at| at > 0)
+        .map_or(0, |at| at - 1);
     let tenant = segments.get(tenant_at).filter(|t| !t.is_empty())?;
     let origin = parsed.origin();
     let host = origin.is_tuple().then(|| {
@@ -4466,6 +4467,13 @@ mod tests {
                 tenant,
                 "https://auth-proxy.example/a/b/synthetic-tenant/oauth2/v2.0/token",
             ),
+            // A prefix may itself contain `oauth2`; the tenant precedes the last one.
+            (
+                "https://auth-proxy.example/gateway/oauth2/synthetic-tenant/oauth2/v2.0/token",
+                "https://auth-proxy.example/gateway/oauth2",
+                tenant,
+                "https://auth-proxy.example/gateway/oauth2/synthetic-tenant/oauth2/v2.0/token",
+            ),
             (
                 "https://auth-proxy.example:8443/aad/synthetic-tenant/oauth2/v2.0/token",
                 "https://auth-proxy.example:8443/aad",
@@ -4511,6 +4519,25 @@ mod tests {
                 "{endpoint}"
             );
         }
+        // The same `oauth2` prefix with the unread MSI keys set to match it.
+        let endpoint =
+            "https://auth-proxy.example/gateway/oauth2/synthetic-tenant/oauth2/v2.0/token";
+        let configs = hadoop(&[
+            ("fs.azure.account.auth.type", "OAuth"),
+            (
+                "fs.azure.account.oauth.provider.type",
+                CLIENT_CREDS_PROVIDER,
+            ),
+            ("fs.azure.account.oauth2.client.id", "hadoop-client"),
+            ("fs.azure.account.oauth2.client.secret", "hadoop-secret"),
+            ("fs.azure.account.oauth2.client.endpoint", endpoint),
+            (
+                "fs.azure.account.oauth2.msi.authority",
+                "https://auth-proxy.example/gateway/oauth2",
+            ),
+            ("fs.azure.account.oauth2.msi.tenant", tenant),
+        ]);
+        assert_eq!(token_request_url(&configs, &[]).await, endpoint);
         // A dot segment cannot move the request to another host.
         let configs =
             configs_for("https://auth-proxy.example/.//evil.example/synthetic-tenant/oauth2/token");
@@ -4638,7 +4665,7 @@ mod tests {
             ),
             (
                 "https://h/a/oauth2/b/oauth2/token",
-                parts("a", Some("https://h")),
+                parts("b", Some("https://h/a/oauth2")),
             ),
             (
                 "https://h/u@evil.example/t/oauth2/token",
