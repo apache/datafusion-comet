@@ -406,18 +406,5 @@ object CometFloatSemanticsSuite {
     KnownGap(
       issue(5312),
       "collect_set before Spark 4.2 treats -0.0 and 0.0 as one value and NaNs as distinct.",
-      c => in("aggregate", "collect_set")(c) && !CometSparkSessionExtensions.isSpark42Plus),
-    KnownGap(
-      issue(6549),
-      "Spark 4.0+ normalizes a map key, so -0.0 and 0.0 are one key and map_from_entries " +
-        "stores 0.0. The native map builders compare and keep the raw bits.",
-      c =>
-        CometSparkSessionExtensions.isSpark40Plus && c.group == "map builder" &&
-          (c.variant == "signed zeros" || c.context == "map_from_entries, one key")),
-    KnownGap(
-      issue(6549),
-      "Spark treats NaNs with different bits as one map key on every version, with " +
-        "Double.equals before 4.0 and by normalization from 4.0. The native map builders keep " +
-        "them apart.",
-      c => c.group == "map builder" && c.variant == "NaNs"))
+      c => in("aggregate", "collect_set")(c) && !CometSparkSessionExtensions.isSpark42Plus))
 }

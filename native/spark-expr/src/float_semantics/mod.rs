@@ -27,8 +27,9 @@
 //! - `NormalizeNaNAndZero`, which Spark applies to grouping, join and window partition keys:
 //!   `-0.0` becomes `0.0` and every NaN becomes the canonical NaN. See [`normalize_float`],
 //!   [`normalize_floats`] and [`normalize_nested_floats`].
-//! - `java.lang.Double.equals`, which boxed keys such as those in `OpenHashSet` use: all NaNs are
-//!   equal, but `-0.0` and `0.0` are distinct. See [`canonicalize_nan`].
+//! - `java.lang.Double.equals`, which boxed keys such as those in `OpenHashSet` and
+//!   `ArrayBasedMapBuilder` use: all NaNs are equal, but `-0.0` and `0.0` are distinct. See
+//!   [`canonicalize_nan`] and [`canonicalize_nans`].
 //! - `java.lang.Double.compare`, which `java.util.Arrays.sort` on a primitive array uses: the SQL
 //!   ordering, except that `-0.0` sorts before `0.0`. Spark's generated code sorts an ascending
 //!   `sort_array` of `FLOAT` or `DOUBLE` elements that cannot be null this way. See
@@ -49,8 +50,8 @@ mod normalize;
 
 pub use compare::{spark_comparator, spark_equality};
 pub use normalize::{
-    has_float_leaf, normalize_floats, normalize_nested_floats, NormalizeNaNAndZero,
-    NormalizeNestedFloats,
+    canonicalize_nans, has_float_leaf, normalize_floats, normalize_nested_floats,
+    NormalizeNaNAndZero, NormalizeNestedFloats,
 };
 
 use num::Float;

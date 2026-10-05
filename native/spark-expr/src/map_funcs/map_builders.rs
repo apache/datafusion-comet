@@ -31,13 +31,26 @@
 //!
 //! `str_to_map` builds its keys by splitting a string, so it needs only the duplicate-key
 //! restatement.
+//!
+//! The kernels find duplicate keys by comparing `ScalarValue`s, which compare a `FLOAT` or
+//! `DOUBLE` by its bits. Spark compares those keys as boxed values, where every NaN is one key,
+//! and from Spark 4.0 it normalizes them first, so `-0.0` and `0.0` are one key too. For such a
+//! key the wrappers hand the kernel the keys as Spark compares them, put back the keys that Spark
+//! stores in the map it returns, and name a duplicate key as Spark does. [`MapFloatKeys`] says
+//! which rule a call follows.
 
+use crate::conversion_funcs::java_float_string;
+use crate::float_semantics::{canonicalize_nans, normalize_floats};
 use crate::SparkError;
-use arrow::array::{Array, ArrayRef, AsArray, ListArray};
-use arrow::buffer::{NullBuffer, OffsetBuffer};
-use arrow::datatypes::{DataType, FieldRef};
+use arrow::array::{
+    Array, ArrayRef, AsArray, BooleanArray, BooleanBufferBuilder, ListArray, MapArray, StructArray,
+};
+use arrow::buffer::{BooleanBuffer, NullBuffer, OffsetBuffer};
+use arrow::compute::filter;
+use arrow::compute::kernels::zip::zip;
+use arrow::datatypes::{DataType, FieldRef, Float32Type, Float64Type};
 use datafusion::common::config::MapKeyDedupPolicy;
-use datafusion::common::{exec_err, DataFusionError, HashSet, Result, ScalarValue};
+use datafusion::common::{exec_err, internal_err, DataFusionError, HashSet, Result, ScalarValue};
 use datafusion::logical_expr::{
     ColumnarValue, ReturnFieldArgs, ScalarFunctionArgs, ScalarUDFImpl, Signature,
 };
@@ -46,15 +59,46 @@ use datafusion_spark::function::map::map_from_entries::MapFromEntries as DataFus
 use datafusion_spark::function::map::str_to_map::SparkStrToMap as DataFusionStrToMap;
 use std::sync::Arc;
 
+/// How a map builder compares and stores a `FLOAT` or `DOUBLE` key. Spark's `ArrayBasedMapBuilder`
+/// finds duplicates in a `HashMap` of boxed keys and, from Spark 4.0, normalizes a float key
+/// before it looks it up, unless `spark.sql.legacy.disableMapKeyNormalization` is set. The serde
+/// picks the rule for the session, and each rule has its own function name.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum MapFloatKeys {
+    /// The equality of a boxed `java.lang.Double` or `java.lang.Float`, which compares
+    /// `doubleToLongBits` or `floatToIntBits`: every NaN is one key, while `-0.0` and `0.0` are
+    /// two. A map keeps each key as it first occurred. Spark 3.4 and 3.5, and Spark 4.0+ with
+    /// `spark.sql.legacy.disableMapKeyNormalization`.
+    #[default]
+    Boxed,
+    /// Spark 4.0+ compares and stores the key `NormalizeFloatingNumbers` gives: `-0.0` becomes
+    /// `0.0`, and every NaN the canonical NaN. `map_from_arrays` stores the keys it was given
+    /// when none of them repeats, because `ArrayBasedMapBuilder.from` then returns its input.
+    Normalized,
+}
+
 /// Spark-compatible `map_from_arrays(keys, values)`.
 #[derive(Debug, Default, PartialEq, Eq, Hash)]
 pub struct SparkMapFromArrays {
     inner: DataFusionMapFromArrays,
+    float_keys: MapFloatKeys,
+}
+
+impl SparkMapFromArrays {
+    pub fn new(float_keys: MapFloatKeys) -> Self {
+        Self {
+            inner: DataFusionMapFromArrays::default(),
+            float_keys,
+        }
+    }
 }
 
 impl ScalarUDFImpl for SparkMapFromArrays {
     fn name(&self) -> &str {
-        self.inner.name()
+        match self.float_keys {
+            MapFloatKeys::Boxed => self.inner.name(),
+            MapFloatKeys::Normalized => "map_from_arrays_normalized_keys",
+        }
     }
 
     fn signature(&self) -> &Signature {
@@ -70,12 +114,18 @@ impl ScalarUDFImpl for SparkMapFromArrays {
     }
 
     fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
-        invoke_list_builder(&self.inner, args, |args, last_value_wins| match args {
-            [ColumnarValue::Array(keys), ColumnarValue::Array(values)] => {
-                validate_map_from_arrays(keys, values, last_value_wins)
-            }
-            other => exec_err!("map_from_arrays expects 2 arguments, got {}", other.len()),
-        })
+        invoke_list_builder(
+            &self.inner,
+            args,
+            KeyLayout::Arrays,
+            self.float_keys,
+            |args, last_value_wins| match args {
+                [ColumnarValue::Array(keys), ColumnarValue::Array(values)] => {
+                    validate_map_from_arrays(keys, values, last_value_wins)
+                }
+                other => exec_err!("map_from_arrays expects 2 arguments, got {}", other.len()),
+            },
+        )
     }
 }
 
@@ -83,11 +133,24 @@ impl ScalarUDFImpl for SparkMapFromArrays {
 #[derive(Debug, Default, PartialEq, Eq, Hash)]
 pub struct SparkMapFromEntries {
     inner: DataFusionMapFromEntries,
+    float_keys: MapFloatKeys,
+}
+
+impl SparkMapFromEntries {
+    pub fn new(float_keys: MapFloatKeys) -> Self {
+        Self {
+            inner: DataFusionMapFromEntries::default(),
+            float_keys,
+        }
+    }
 }
 
 impl ScalarUDFImpl for SparkMapFromEntries {
     fn name(&self) -> &str {
-        self.inner.name()
+        match self.float_keys {
+            MapFloatKeys::Boxed => self.inner.name(),
+            MapFloatKeys::Normalized => "map_from_entries_normalized_keys",
+        }
     }
 
     fn signature(&self) -> &Signature {
@@ -103,10 +166,18 @@ impl ScalarUDFImpl for SparkMapFromEntries {
     }
 
     fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
-        invoke_list_builder(&self.inner, args, |args, last_value_wins| match args {
-            [ColumnarValue::Array(entries)] => validate_map_from_entries(entries, last_value_wins),
-            other => exec_err!("map_from_entries expects 1 argument, got {}", other.len()),
-        })
+        invoke_list_builder(
+            &self.inner,
+            args,
+            KeyLayout::Entries,
+            self.float_keys,
+            |args, last_value_wins| match args {
+                [ColumnarValue::Array(entries)] => {
+                    validate_map_from_entries(entries, last_value_wins)
+                }
+                other => exec_err!("map_from_entries expects 1 argument, got {}", other.len()),
+            },
+        )
     }
 }
 
@@ -148,6 +219,8 @@ impl ScalarUDFImpl for SparkStrToMap {
 fn invoke_list_builder(
     inner: &dyn ScalarUDFImpl,
     mut args: ScalarFunctionArgs,
+    layout: KeyLayout,
+    float_keys: MapFloatKeys,
     validate: impl FnOnce(&[ColumnarValue], bool) -> Result<()>,
 ) -> Result<ColumnarValue> {
     // The kernel evaluates an all-scalar call once and returns a scalar, which DataFusion then
@@ -163,15 +236,283 @@ fn invoke_list_builder(
     rebase_sliced_lists(&mut args)?;
     let last_value_wins =
         args.config_options.spark.map_key_dedup_policy == MapKeyDedupPolicy::LastWin;
-    validate(&args.args, last_value_wins)?;
-    let result = inner
-        .invoke_with_args(args)
-        .map_err(|error| as_spark_error(error, DuplicateKeyFormat::Bare))?;
+    let float_keys = FloatKeyRewrite::prepare(&mut args.args, layout, float_keys)?;
+    let result = validate(&args.args, last_value_wins).and_then(|()| {
+        inner
+            .invoke_with_args(args)
+            .map_err(|error| as_spark_error(error, DuplicateKeyFormat::Bare))
+    });
+    let result = match &float_keys {
+        None => result?,
+        Some(keys) => keys.restore(result.map_err(|error| keys.restate_duplicate(error))?)?,
+    };
     match (all_scalar, result) {
         (true, ColumnarValue::Array(array)) => Ok(ColumnarValue::Scalar(
             ScalarValue::try_from_array(&array, 0)?,
         )),
         (_, result) => Ok(result),
+    }
+}
+
+/// Where a builder finds its keys among its arguments.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum KeyLayout {
+    /// `map_from_arrays(keys, values)`: the elements of the first list.
+    Arrays,
+    /// `map_from_entries(entries)`: the first field of the list's structs.
+    Entries,
+}
+
+/// The `FLOAT` or `DOUBLE` keys of one call. The kernel compares keys by their bits, so it is
+/// handed them as Spark compares them, with every NaN made canonical and, under
+/// [`MapFloatKeys::Normalized`], `-0.0` made `0.0`. Its result then gets back the keys Spark
+/// stores.
+struct FloatKeyRewrite {
+    layout: KeyLayout,
+    rule: MapFloatKeys,
+    /// The flat keys as the call passed them.
+    original: ArrayRef,
+    /// The flat keys as Spark compares them, when that changes the bits of any of them.
+    compared: Option<ArrayRef>,
+    /// Each row's range of flat keys.
+    offsets: OffsetBuffer<i32>,
+    /// The rows Spark builds a map for. Every other row is a NULL map, whose keys it never sees.
+    built: BooleanBuffer,
+}
+
+impl FloatKeyRewrite {
+    /// Hands `args` the keys as Spark compares them, when the keys are `FLOAT` or `DOUBLE`. Returns
+    /// `None` for any other key type.
+    fn prepare(
+        args: &mut [ColumnarValue],
+        layout: KeyLayout,
+        rule: MapFloatKeys,
+    ) -> Result<Option<Self>> {
+        let Some((original, offsets, built)) = float_keys_of(args, layout) else {
+            return Ok(None);
+        };
+        let compared = match rule {
+            MapFloatKeys::Boxed => canonicalize_nans(&original),
+            MapFloatKeys::Normalized => normalize_floats(&original),
+        };
+        // Keys that are not NaN, or not `-0.0` under normalization, compare the same either way,
+        // and then the kernel's own result is already Spark's. `ArrayData` compares primitive
+        // values byte for byte, so this sees their bits.
+        let compared = if original.to_data() == compared.to_data() {
+            None
+        } else {
+            replace_keys(args, layout, Arc::clone(&compared))?;
+            Some(compared)
+        };
+        Ok(Some(Self {
+            layout,
+            rule,
+            original,
+            compared,
+            offsets,
+            built,
+        }))
+    }
+
+    /// Replaces the keys of the kernel's map with the ones Spark stores. The kernel keeps the first
+    /// occurrence of each key, as Spark does, but it stored them as they were compared.
+    fn restore(&self, result: ColumnarValue) -> Result<ColumnarValue> {
+        let Some(compared) = &self.compared else {
+            return Ok(result);
+        };
+        // `map_from_entries` on Spark 4.0+ always stores the normalized key.
+        if self.rule == MapFloatKeys::Normalized && self.layout == KeyLayout::Entries {
+            return Ok(result);
+        }
+        let ColumnarValue::Array(array) = &result else {
+            return Ok(result);
+        };
+        let (Some(map), DataType::Map(field, ordered)) = (array.as_map_opt(), array.data_type())
+        else {
+            return Ok(result);
+        };
+        let (kept, repeats) = self.first_occurrences();
+        let stored = match self.rule {
+            MapFloatKeys::Boxed => Arc::clone(&self.original),
+            // `ArrayBasedMapBuilder.from` returns a row's keys as given when none of them repeats,
+            // and otherwise builds the map from the normalized keys.
+            MapFloatKeys::Normalized => zip(&repeats, compared, &self.original)?,
+        };
+        let keys = filter(&stored, &kept)?;
+        if keys.len() != map.keys().len() {
+            return internal_err!(
+                "map builder kept {} keys where the kernel kept {}",
+                keys.len(),
+                map.keys().len()
+            );
+        }
+        let entries = map.entries();
+        let mut columns = entries.columns().to_vec();
+        columns[0] = keys;
+        let entries =
+            StructArray::try_new(entries.fields().clone(), columns, entries.nulls().cloned())?;
+        let map = MapArray::try_new(
+            Arc::clone(field),
+            map.offsets().clone(),
+            entries,
+            map.nulls().cloned(),
+            *ordered,
+        )?;
+        Ok(ColumnarValue::Array(Arc::new(map)))
+    }
+
+    /// Names the key of a `DUPLICATED_MAP_KEY` error as Spark does: the repeated key as the call
+    /// passed it, written by `Double.toString` or `Float.toString`. The kernel and the `NULL` check
+    /// both name the key as it was compared, in Rust's notation. Any other error is passed through.
+    fn restate_duplicate(&self, error: DataFusionError) -> DataFusionError {
+        let is_duplicate = matches!(
+            &error,
+            DataFusionError::External(e)
+                if matches!(e.downcast_ref::<SparkError>(), Some(SparkError::DuplicatedMapKey { .. }))
+        );
+        if !is_duplicate {
+            return error;
+        }
+        // The error came from the first repeated key of the first row that repeats one, since an
+        // earlier `NULL` key or length mismatch would have been reported instead.
+        let (kept, repeats) = self.first_occurrences();
+        let Some(index) = (0..kept.len()).find(|&index| repeats.value(index) && !kept.value(index))
+        else {
+            return error;
+        };
+        let key = match self.original.data_type() {
+            DataType::Float32 => {
+                java_float_string(self.original.as_primitive::<Float32Type>().value(index))
+            }
+            _ => java_float_string(self.original.as_primitive::<Float64Type>().value(index)),
+        };
+        SparkError::DuplicatedMapKey { key }.into()
+    }
+
+    /// The keys the kernel keeps, the first occurrence of each as Spark compares them in a row
+    /// that builds a map, and for every key whether its row repeats one. Both cover every flat
+    /// key.
+    fn first_occurrences(&self) -> (BooleanArray, BooleanArray) {
+        let bits = float_bits(self.compared.as_ref().unwrap_or(&self.original));
+        let mut kept = BooleanBufferBuilder::new(bits.len());
+        let mut repeats = BooleanBufferBuilder::new(bits.len());
+        let leading = self.offsets[0] as usize;
+        kept.append_n(leading, false);
+        repeats.append_n(leading, false);
+        let mut seen = HashSet::new();
+        for (row, window) in self.offsets.windows(2).enumerate() {
+            let (start, end) = (window[0] as usize, window[1] as usize);
+            let mut row_repeats = false;
+            if self.built.value(row) {
+                seen.clear();
+                for &key in &bits[start..end] {
+                    let first = seen.insert(key);
+                    row_repeats |= !first;
+                    kept.append(first);
+                }
+            } else {
+                kept.append_n(end - start, false);
+            }
+            repeats.append_n(end - start, row_repeats);
+        }
+        let trailing = bits.len() - kept.len();
+        kept.append_n(trailing, false);
+        repeats.append_n(trailing, false);
+        (
+            BooleanArray::new(kept.finish(), None),
+            BooleanArray::new(repeats.finish(), None),
+        )
+    }
+}
+
+/// The flat `FLOAT` or `DOUBLE` keys of a call, with each row's range of them and the rows Spark
+/// builds a map for, which are the ones the kernel builds. `None` for any other key type.
+fn float_keys_of(
+    args: &[ColumnarValue],
+    layout: KeyLayout,
+) -> Option<(ArrayRef, OffsetBuffer<i32>, BooleanBuffer)> {
+    let is_float =
+        |keys: &ArrayRef| matches!(keys.data_type(), DataType::Float32 | DataType::Float64);
+    match (layout, args) {
+        (KeyLayout::Arrays, [ColumnarValue::Array(keys), ColumnarValue::Array(values)]) => {
+            let (keys, values) = (keys.as_list_opt::<i32>()?, values.as_list_opt::<i32>()?);
+            if !is_float(keys.values()) {
+                return None;
+            }
+            let built = BooleanBuffer::collect_bool(keys.len(), |row| {
+                keys.is_valid(row) && values.is_valid(row)
+            });
+            Some((Arc::clone(keys.values()), keys.offsets().clone(), built))
+        }
+        (KeyLayout::Entries, [ColumnarValue::Array(entries)]) => {
+            let entries = entries.as_list_opt::<i32>()?;
+            let structs = entries.values().as_struct_opt()?;
+            let keys = structs.column(0);
+            if !is_float(keys) {
+                return None;
+            }
+            // A NULL entry makes its row a NULL map.
+            let offsets = entries.value_offsets();
+            let built = BooleanBuffer::collect_bool(entries.len(), |row| {
+                let (start, end) = (offsets[row] as usize, offsets[row + 1] as usize);
+                entries.is_valid(row)
+                    && structs
+                        .nulls()
+                        .is_none_or(|nulls| nulls.slice(start, end - start).null_count() == 0)
+            });
+            Some((Arc::clone(keys), entries.offsets().clone(), built))
+        }
+        _ => None,
+    }
+}
+
+/// Puts `keys` in place of the flat keys of the call's first argument.
+fn replace_keys(args: &mut [ColumnarValue], layout: KeyLayout, keys: ArrayRef) -> Result<()> {
+    let Some(ColumnarValue::Array(array)) = args.first_mut() else {
+        return internal_err!("map builder expects an array argument");
+    };
+    let list = as_list(array)?;
+    let DataType::List(field) = list.data_type() else {
+        return internal_err!("map builder expects a list argument");
+    };
+    let values: ArrayRef = match layout {
+        KeyLayout::Arrays => keys,
+        KeyLayout::Entries => {
+            let structs = list.values().as_struct();
+            let mut columns = structs.columns().to_vec();
+            columns[0] = keys;
+            Arc::new(StructArray::try_new(
+                structs.fields().clone(),
+                columns,
+                structs.nulls().cloned(),
+            )?)
+        }
+    };
+    let list = ListArray::try_new(
+        Arc::clone(field),
+        list.offsets().clone(),
+        values,
+        list.nulls().cloned(),
+    )?;
+    *array = Arc::new(list);
+    Ok(())
+}
+
+/// The bits of each value of a `FLOAT` or `DOUBLE` array, the way the kernel tells keys apart.
+fn float_bits(keys: &ArrayRef) -> Vec<u64> {
+    match keys.data_type() {
+        DataType::Float32 => keys
+            .as_primitive::<Float32Type>()
+            .values()
+            .iter()
+            .map(|key| u64::from(key.to_bits()))
+            .collect(),
+        _ => keys
+            .as_primitive::<Float64Type>()
+            .values()
+            .iter()
+            .map(|key| key.to_bits())
+            .collect(),
     }
 }
 
@@ -408,7 +749,8 @@ fn duplicate_map_key(message: &str, key_format: DuplicateKeyFormat) -> Option<St
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{Int32Array, MapArray, StringArray, StructArray};
+    use crate::float_semantics::NEGATIVE_NAN;
+    use arrow::array::{Float32Array, Float64Array, Int32Array, StringArray};
     use arrow::datatypes::{Field, Fields, Int32Type};
     use datafusion::common::config::ConfigOptions;
 
@@ -869,5 +1211,316 @@ mod tests {
             ),
             None
         );
+    }
+
+    /// `List<Float64>` keys, with `nulls` marking whole rows NULL.
+    fn double_list(values: Vec<f64>, offsets: &[i32], nulls: Option<NullBuffer>) -> ArrayRef {
+        let field = Arc::new(Field::new("item", DataType::Float64, true));
+        Arc::new(ListArray::new(
+            field,
+            OffsetBuffer::new(offsets.to_vec().into()),
+            Arc::new(Float64Array::from(values)),
+            nulls,
+        ))
+    }
+
+    /// `1, 2, 3, ...` as one value per key in `offsets`.
+    fn counting_list(offsets: &[i32]) -> ArrayRef {
+        let count = offsets[offsets.len() - 1];
+        int_list(Int32Array::from_iter_values(1..=count), offsets, None)
+    }
+
+    /// `array<struct<key double, value int>>` with values `1, 2, 3, ...`.
+    fn double_entry_list(keys: Vec<f64>, offsets: &[i32]) -> ArrayRef {
+        let fields = Fields::from(vec![
+            Field::new("key", DataType::Float64, true),
+            Field::new("value", DataType::Int32, true),
+        ]);
+        let count = keys.len() as i32;
+        let structs = StructArray::new(
+            fields.clone(),
+            vec![
+                Arc::new(Float64Array::from(keys)),
+                Arc::new(Int32Array::from_iter_values(1..=count)),
+            ],
+            None,
+        );
+        let field = Arc::new(Field::new("item", DataType::Struct(fields), true));
+        Arc::new(ListArray::new(
+            field,
+            OffsetBuffer::new(offsets.to_vec().into()),
+            Arc::new(structs),
+            None,
+        ))
+    }
+
+    fn key_bits(map: &MapArray) -> Vec<u64> {
+        float_bits(map.keys())
+    }
+
+    fn map_values(map: &MapArray) -> Vec<i32> {
+        map.values().as_primitive::<Int32Type>().values().to_vec()
+    }
+
+    const NAN: u64 = 0x7ff8_0000_0000_0000;
+    const NEGATIVE_ZERO: u64 = 0x8000_0000_0000_0000;
+
+    /// Spark 3.4 and 3.5 find duplicates with `Double.equals`, so the two NaNs of a row are one
+    /// key and the zeros are two. Under `LAST_WIN` the merged key keeps the bits of its first
+    /// occurrence and takes the last value.
+    #[test]
+    fn boxed_keys_merge_nans_but_not_zeros() {
+        let keys = double_list(
+            vec![f64::NAN, NEGATIVE_NAN, 0.0, -0.0, NEGATIVE_NAN, f64::NAN],
+            &[0, 4, 6],
+            None,
+        );
+        let values = counting_list(&[0, 4, 6]);
+        for udf in [
+            &SparkMapFromArrays::new(MapFloatKeys::Boxed) as &dyn ScalarUDFImpl,
+            &SparkMapFromArrays::default(),
+        ] {
+            let map = map_result(
+                invoke(
+                    udf,
+                    vec![Arc::clone(&keys), Arc::clone(&values)],
+                    MapKeyDedupPolicy::LastWin,
+                )
+                .unwrap(),
+            );
+            assert_eq!(map.value_offsets(), &[0, 3, 4]);
+            assert_eq!(
+                key_bits(&map),
+                vec![NAN, 0, NEGATIVE_ZERO, NEGATIVE_NAN.to_bits()]
+            );
+            assert_eq!(map_values(&map), vec![2, 3, 4, 6]);
+        }
+    }
+
+    #[test]
+    fn boxed_keys_report_a_nan_duplicate() {
+        let keys = double_list(vec![f64::NAN, NEGATIVE_NAN], &[0, 2], None);
+        let err = invoke_err(
+            &SparkMapFromArrays::new(MapFloatKeys::Boxed),
+            vec![keys, counting_list(&[0, 2])],
+            MapKeyDedupPolicy::Exception,
+        );
+        assert!(err.contains("duplicate keys: NaN."), "{err}");
+    }
+
+    /// From Spark 4.0 the key is normalized first, so `0.0` and `-0.0` collide. Spark names the
+    /// repeated key as it was passed, written by `Double.toString`.
+    #[test]
+    fn normalized_keys_report_a_signed_zero_duplicate() {
+        let keys = double_list(vec![1.5, 0.0, -0.0], &[0, 3], None);
+        let err = invoke_err(
+            &SparkMapFromArrays::new(MapFloatKeys::Normalized),
+            vec![Arc::clone(&keys), counting_list(&[0, 3])],
+            MapKeyDedupPolicy::Exception,
+        );
+        assert!(err.contains("duplicate keys: -0.0."), "{err}");
+
+        let entries = double_entry_list(vec![1.5, 0.0, -0.0], &[0, 3]);
+        let err = invoke_err(
+            &SparkMapFromEntries::new(MapFloatKeys::Normalized),
+            vec![entries],
+            MapKeyDedupPolicy::Exception,
+        );
+        assert!(err.contains("duplicate keys: -0.0."), "{err}");
+
+        // Spark 3.4 and 3.5 keep the zeros apart.
+        let map = map_result(
+            invoke(
+                &SparkMapFromArrays::new(MapFloatKeys::Boxed),
+                vec![keys, counting_list(&[0, 3])],
+                MapKeyDedupPolicy::Exception,
+            )
+            .unwrap(),
+        );
+        assert_eq!(map.value_offsets(), &[0, 3]);
+    }
+
+    /// `ArrayBasedMapBuilder.from` returns a row's keys as given when none of them repeats, and
+    /// builds the map from the normalized keys when one does, so each row gets its own.
+    #[test]
+    fn normalized_map_from_arrays_keeps_the_keys_of_a_row_without_a_repeat() {
+        let offsets = [0, 2, 4, 6, 8];
+        let keys = double_list(
+            vec![
+                -0.0,
+                1.5,
+                -0.0,
+                0.0,
+                NEGATIVE_NAN,
+                2.5,
+                NEGATIVE_NAN,
+                f64::NAN,
+            ],
+            &offsets,
+            None,
+        );
+        let map = map_result(
+            invoke(
+                &SparkMapFromArrays::new(MapFloatKeys::Normalized),
+                vec![keys, counting_list(&offsets)],
+                MapKeyDedupPolicy::LastWin,
+            )
+            .unwrap(),
+        );
+        assert_eq!(map.value_offsets(), &[0, 2, 3, 5, 6]);
+        assert_eq!(
+            key_bits(&map),
+            vec![
+                NEGATIVE_ZERO,
+                1.5f64.to_bits(),
+                0,
+                NEGATIVE_NAN.to_bits(),
+                2.5f64.to_bits(),
+                NAN
+            ]
+        );
+        assert_eq!(map_values(&map), vec![1, 2, 4, 5, 6, 8]);
+    }
+
+    /// `map_from_entries` inserts its entries one at a time, so from Spark 4.0 it stores every key
+    /// normalized. Before, it stores each key as it first occurred.
+    #[test]
+    fn map_from_entries_stores_keys_by_the_rule() {
+        let entries = double_entry_list(vec![-0.0, NEGATIVE_NAN, f64::NAN], &[0, 3]);
+        let map = map_result(
+            invoke(
+                &SparkMapFromEntries::new(MapFloatKeys::Normalized),
+                vec![Arc::clone(&entries)],
+                MapKeyDedupPolicy::LastWin,
+            )
+            .unwrap(),
+        );
+        assert_eq!(key_bits(&map), vec![0, NAN]);
+        assert_eq!(map_values(&map), vec![1, 3]);
+
+        let map = map_result(
+            invoke(
+                &SparkMapFromEntries::new(MapFloatKeys::Boxed),
+                vec![entries],
+                MapKeyDedupPolicy::LastWin,
+            )
+            .unwrap(),
+        );
+        assert_eq!(key_bits(&map), vec![NEGATIVE_ZERO, NEGATIVE_NAN.to_bits()]);
+        assert_eq!(map_values(&map), vec![1, 3]);
+    }
+
+    /// A NULL keys array, or a NULL values array, makes its row a NULL map whose keys Spark never
+    /// inserts, so they neither collide nor count toward the keys that are kept.
+    #[test]
+    fn float_keys_in_a_null_row_are_skipped() {
+        let offsets = [0, 2, 4, 6];
+        let keys = double_list(
+            vec![NEGATIVE_NAN, f64::NAN, NEGATIVE_NAN, 1.0, -0.0, 0.0],
+            &offsets,
+            Some(NullBuffer::from(vec![false, true, true])),
+        );
+        let values = int_list(
+            Int32Array::from_iter_values(1..=6),
+            &offsets,
+            Some(NullBuffer::from(vec![true, true, false])),
+        );
+        let map = map_result(
+            invoke(
+                &SparkMapFromArrays::new(MapFloatKeys::Normalized),
+                vec![keys, values],
+                MapKeyDedupPolicy::Exception,
+            )
+            .unwrap(),
+        );
+        assert!(map.is_null(0) && map.is_valid(1) && map.is_null(2));
+        assert_eq!(map.value_offsets(), &[0, 0, 2, 2]);
+        assert_eq!(
+            key_bits(&map),
+            vec![NEGATIVE_NAN.to_bits(), 1.0f64.to_bits()]
+        );
+    }
+
+    /// A list sliced past its first row is rebased before the keys are compared.
+    #[test]
+    fn float_keys_of_a_sliced_list() {
+        let offsets = [0, 2, 4];
+        let keys = double_list(vec![1.0, 2.0, NEGATIVE_NAN, f64::NAN], &offsets, None);
+        let values = counting_list(&offsets);
+        let map = map_result(
+            invoke(
+                &SparkMapFromArrays::new(MapFloatKeys::Boxed),
+                vec![keys.slice(1, 1), values.slice(1, 1)],
+                MapKeyDedupPolicy::LastWin,
+            )
+            .unwrap(),
+        );
+        assert_eq!(map.value_offsets(), &[0, 1]);
+        assert_eq!(key_bits(&map), vec![NEGATIVE_NAN.to_bits()]);
+        assert_eq!(map_values(&map), vec![4]);
+    }
+
+    /// The keys of an all-scalar call are compared and stored by the same rule.
+    #[test]
+    fn float_keys_of_an_all_scalar_call() {
+        let entries = double_entry_list(vec![-0.0, 2.0], &[0, 2]);
+        let result = invoke_values(
+            &SparkMapFromEntries::new(MapFloatKeys::Normalized),
+            vec![ColumnarValue::Scalar(
+                ScalarValue::try_from_array(&entries, 0).unwrap(),
+            )],
+            3,
+            MapKeyDedupPolicy::Exception,
+        )
+        .unwrap();
+        let ColumnarValue::Scalar(ScalarValue::Map(map)) = result else {
+            panic!("expected a scalar map, got {result:?}");
+        };
+        assert_eq!(key_bits(&map), vec![0, 2.0f64.to_bits()]);
+    }
+
+    /// Keys whose bits no rule changes still have a repeated key named as Spark names it, with
+    /// the fractional digit Rust drops.
+    #[test]
+    fn float_keys_name_a_duplicate_as_java_does() {
+        let keys = double_list(vec![1.0, 1.0], &[0, 2], None);
+        let err = invoke_err(
+            &SparkMapFromArrays::new(MapFloatKeys::Boxed),
+            vec![keys, counting_list(&[0, 2])],
+            MapKeyDedupPolicy::Exception,
+        );
+        assert!(err.contains("duplicate keys: 1.0."), "{err}");
+
+        let field = Arc::new(Field::new("item", DataType::Float32, true));
+        let keys: ArrayRef = Arc::new(ListArray::new(
+            field,
+            OffsetBuffer::new(vec![0, 2].into()),
+            Arc::new(Float32Array::from(vec![0.0f32, -0.0])),
+            None,
+        ));
+        let err = invoke_err(
+            &SparkMapFromArrays::new(MapFloatKeys::Normalized),
+            vec![keys, counting_list(&[0, 2])],
+            MapKeyDedupPolicy::Exception,
+        );
+        assert!(err.contains("duplicate keys: -0.0."), "{err}");
+    }
+
+    /// The `NULL` check reports a duplicate ahead of a later `NULL` key, and names it as Spark does
+    /// too.
+    #[test]
+    fn float_keys_name_a_duplicate_ahead_of_a_null_key() {
+        let keys: ArrayRef = Arc::new(ListArray::new(
+            Arc::new(Field::new("item", DataType::Float64, true)),
+            OffsetBuffer::new(vec![0, 3].into()),
+            Arc::new(Float64Array::from(vec![Some(0.0), Some(-0.0), None])),
+            None,
+        ));
+        let err = invoke_err(
+            &SparkMapFromArrays::new(MapFloatKeys::Normalized),
+            vec![keys, counting_list(&[0, 3])],
+            MapKeyDedupPolicy::Exception,
+        );
+        assert!(err.contains("duplicate keys: -0.0."), "{err}");
     }
 }

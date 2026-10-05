@@ -15,12 +15,11 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- With `spark.comet.exec.strictFloatingPoint` on, the native map constructors decline a
--- floating-point key type, which they compare by its raw bits where Spark 4.0+ normalizes it (see
--- the map_funcs expression audit). Each constructor goes a different way: `CometMapFromArrays` has
--- no codegen dispatcher, so the projection falls back to Spark, while `CometMapFromEntries` mixes
--- in `CodegenDispatchFallback`, so it stays in the Comet pipeline running Spark's own generated
--- code. A floating-point value type is not affected.
+-- The native map constructors compare and store a floating-point key as Spark does on every
+-- version (see the map_funcs expression audit), so they stay native with
+-- `spark.comet.exec.strictFloatingPoint` on, for a floating-point key type and a floating-point
+-- value type alike. A struct or array key that holds a floating-point field still declines; see
+-- `map_builders_nested_fp.sql`.
 
 -- Config: spark.comet.exec.strictFloatingPoint=true
 
@@ -30,10 +29,10 @@ CREATE TABLE test_map_builders_strict_fp(k double, v int) USING parquet
 statement
 INSERT INTO test_map_builders_strict_fp VALUES (1.0D, 1), (double('-0.0'), 2), (2.5D, 3)
 
-query expect_fallback(Map construction on a floating-point key)
+query expect_native(map_from_arrays)
 SELECT map_from_arrays(array(k), array(v)) FROM test_map_builders_strict_fp
 
-query expect_dispatch(map_from_entries)
+query expect_native(map_from_entries)
 SELECT map_from_entries(array(struct(k, v))) FROM test_map_builders_strict_fp
 
 query expect_native(map_from_arrays)

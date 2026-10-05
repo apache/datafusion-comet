@@ -23,7 +23,7 @@ import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
-import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, hasNonDefaultStringCollation, scalarFunctionExprToProto}
 import org.apache.comet.shims.CometTypeShim
@@ -135,30 +135,30 @@ object CometMapExtract extends CometExpressionSerde[GetMapValue] {
 
 /**
  * Shared gate for the native map constructors (`map_from_arrays`, `map_from_entries`), which
- * reproduce Spark's `ArrayBasedMapBuilder`, including `spark.sql.mapKeyDedupPolicy`. The
- * map_funcs expression audit covers how, and where they still differ from Spark.
+ * reproduce Spark's `ArrayBasedMapBuilder`, including `spark.sql.mapKeyDedupPolicy` and the
+ * equality it gives a `FLOAT` or `DOUBLE` key. The map_funcs expression audit covers how, and
+ * where they still differ from Spark.
  */
 private object MapBuilderSupport {
 
-  /** Top-level floating-point keys: see the map_funcs expression audit. */
-  val floatingPointKeyNote: String =
-    "Comet's native map construction compares a `FLOAT` or `DOUBLE` map key by its raw bits. " +
-      "On every Spark version, Spark treats `NaN`s with different bit patterns as one key, " +
-      "where Comet keeps them apart. On Spark 4.0 and later, `ArrayBasedMapBuilder` also " +
-      "normalizes the key before it compares it, so `-0.0` and `+0.0` are one key. Where Spark " +
-      "reports a duplicate key, or keeps one entry under `LAST_WIN`, Comet keeps both entries. " +
-      "`map_from_entries` on Spark 4.0 and later also stores the normalized key, so Spark " +
-      "returns `+0.0` for a `-0.0` key where Comet returns `-0.0`. `map_from_arrays` keeps the " +
-      "original keys in both engines when no key repeats. Spark 3.4 and 3.5 do not normalize " +
-      "the key, so `-0.0` and `+0.0` are two keys in both engines there. This applies to a " +
-      "top-level key only: a struct or array key that contains a floating-point field does not " +
-      "run natively by default on any Spark version. Set " +
-      s"`${COMET_EXEC_STRICT_FLOATING_POINT.key}=true` to keep a floating-point map key off " +
-      "the native path."
+  private val disableMapKeyNormalizationKey = "spark.sql.legacy.disableMapKeyNormalization"
 
-  val strictFloatingPointKeyReason: String =
-    s"When `${COMET_EXEC_STRICT_FLOATING_POINT.key}=true`, map construction on a floating-point " +
-      "key is not 100% compatible with Spark"
+  /**
+   * Whether `ArrayBasedMapBuilder` normalizes a `FLOAT` or `DOUBLE` key before it compares and
+   * stores it, as Spark 4.0 and later do unless `spark.sql.legacy.disableMapKeyNormalization` is
+   * set: `-0.0` becomes `0.0` and every `NaN` the canonical `NaN`. Otherwise it compares boxed
+   * keys with `Double.equals`, so `NaN`s are one key but `-0.0` and `0.0` are two. The native
+   * builders follow either rule, under different function names.
+   */
+  private def normalizesFloatKeys: Boolean =
+    isSpark40Plus &&
+      !SQLConf.get.getConfString(disableMapKeyNormalizationKey, "false").toBoolean
+
+  /** The native function that builds a map with key type `keyType`. */
+  def nativeFunction(name: String, keyType: DataType): String = keyType match {
+    case FloatType | DoubleType if normalizesFloatKeys => s"${name}_normalized_keys"
+    case _ => name
+  }
 
   /**
    * `ArrayBasedMapBuilder` keys its dedup map on `TypeUtils.getInterpretedOrdering` once the key
@@ -191,10 +191,7 @@ private object MapBuilderSupport {
       SupportLevel.containsType(keyType, classOf[FloatType], classOf[DoubleType])) {
       Incompatible(Some(nestedFloatingPointKeyReason))
     } else {
-      SupportLevel
-        .strictFloatingPointReason(keyType, "Map construction on a floating-point key")
-        .map(reason => Incompatible(Some(reason)))
-        .getOrElse(Compatible(None))
+      Compatible(None)
     }
 }
 
@@ -205,15 +202,9 @@ object CometMapFromArrays extends CometExpressionSerde[MapFromArrays] {
       "keys twice, and the two copies of a stateful expression drift apart"
 
   override def getIncompatibleReasons(): Seq[String] =
-    Seq(
-      MapBuilderSupport.collationKeyReason,
-      MapBuilderSupport.nestedFloatingPointKeyReason,
-      MapBuilderSupport.strictFloatingPointKeyReason)
+    Seq(MapBuilderSupport.collationKeyReason, MapBuilderSupport.nestedFloatingPointKeyReason)
 
   override def getUnsupportedReasons(): Seq[String] = Seq(nondeterministicKeysReason)
-
-  override def getCompatibleNotes(): Seq[String] =
-    Seq(MapBuilderSupport.floatingPointKeyNote)
 
   override def getSupportLevel(expr: MapFromArrays): SupportLevel =
     if (expr.left.nullable && !expr.left.deterministic) {
@@ -235,8 +226,10 @@ object CometMapFromArrays extends CometExpressionSerde[MapFromArrays] {
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val keysExpr = exprToProtoInternal(expr.left, inputs, binding)
     val valuesExpr = exprToProtoInternal(expr.right, inputs, binding)
-    val mapFromArraysExprProto =
-      scalarFunctionExprToProto("map_from_arrays", keysExpr, valuesExpr)
+    val mapFromArraysExprProto = scalarFunctionExprToProto(
+      MapBuilderSupport.nativeFunction("map_from_arrays", expr.dataType.keyType),
+      keysExpr,
+      valuesExpr)
     // Non-nullable keys pass the guard on every row, so emit the call alone and serialize the
     // keys once.
     if (!expr.left.nullable) {
@@ -273,11 +266,7 @@ object CometMapFromEntries
       keyUnsupportedReason,
       valueUnsupportedReason,
       MapBuilderSupport.collationKeyReason,
-      MapBuilderSupport.nestedFloatingPointKeyReason,
-      MapBuilderSupport.strictFloatingPointKeyReason)
-
-  override def getCompatibleNotes(): Seq[String] =
-    Seq(MapBuilderSupport.floatingPointKeyNote)
+      MapBuilderSupport.nestedFloatingPointKeyReason)
 
   override def getSupportLevel(expr: MapFromEntries): SupportLevel = {
     if (SupportLevel.containsType(expr.dataType.keyType, classOf[BinaryType])) {
@@ -287,6 +276,16 @@ object CometMapFromEntries
     } else {
       MapBuilderSupport.keySupport(expr.dataType.keyType)
     }
+  }
+
+  override def convert(
+      expr: MapFromEntries,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val entriesExpr = exprToProtoInternal(expr.child, inputs, binding)
+    scalarFunctionExprToProto(
+      MapBuilderSupport.nativeFunction("map_from_entries", expr.dataType.keyType),
+      entriesExpr)
   }
 }
 

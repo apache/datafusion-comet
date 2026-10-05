@@ -31,12 +31,12 @@ use crate::{
     spark_ceil, spark_day_name, spark_decimal_div, spark_decimal_integral_div, spark_floor,
     spark_isnan, spark_lpad, spark_make_decimal, spark_month_name, spark_read_side_padding,
     spark_round, spark_rpad, spark_sequence, spark_to_time, spark_unhex, spark_unscaled_value,
-    EvalMode, SparkArrayExtrema, SparkArrayPositionFunc, SparkArrayRemove, SparkArraySlice,
-    SparkArraysOverlap, SparkContains, SparkDateDiff, SparkDateFromUnixDate, SparkDateTrunc,
-    SparkDayOfWeek, SparkFlatten, SparkIcebergBucket, SparkIcebergTemporalTransform,
-    SparkIcebergTruncate, SparkMakeDate, SparkMakeInterval, SparkMakeTime, SparkMapExtract,
-    SparkMapFromArrays, SparkMapFromEntries, SparkNextDay, SparkSecondsToTimestamp, SparkSizeFunc,
-    SparkSortArray, SparkStrToMap, SparkWeekDay,
+    EvalMode, MapFloatKeys, SparkArrayExtrema, SparkArrayPositionFunc, SparkArrayRemove,
+    SparkArraySlice, SparkArraysOverlap, SparkContains, SparkDateDiff, SparkDateFromUnixDate,
+    SparkDateTrunc, SparkDayOfWeek, SparkFlatten, SparkIcebergBucket,
+    SparkIcebergTemporalTransform, SparkIcebergTruncate, SparkMakeDate, SparkMakeInterval,
+    SparkMakeTime, SparkMapExtract, SparkMapFromArrays, SparkMapFromEntries, SparkNextDay,
+    SparkSecondsToTimestamp, SparkSizeFunc, SparkSortArray, SparkStrToMap, SparkWeekDay,
 };
 use arrow::datatypes::DataType;
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
@@ -364,8 +364,20 @@ fn all_scalar_functions() -> Vec<Arc<ScalarUDF>> {
         // returns the value itself rather than a one-element list (#5795). It carries the same
         // `element_at` alias so both registry entries the override replaces point here.
         Arc::new(ScalarUDF::new_from_impl(SparkMapExtract::default())),
-        Arc::new(ScalarUDF::new_from_impl(SparkMapFromArrays::default())),
-        Arc::new(ScalarUDF::new_from_impl(SparkMapFromEntries::default())),
+        // The map builders follow Spark 4.0's float key normalization under their
+        // `_normalized_keys` names; the serde picks the name.
+        Arc::new(ScalarUDF::new_from_impl(SparkMapFromArrays::new(
+            MapFloatKeys::Boxed,
+        ))),
+        Arc::new(ScalarUDF::new_from_impl(SparkMapFromArrays::new(
+            MapFloatKeys::Normalized,
+        ))),
+        Arc::new(ScalarUDF::new_from_impl(SparkMapFromEntries::new(
+            MapFloatKeys::Boxed,
+        ))),
+        Arc::new(ScalarUDF::new_from_impl(SparkMapFromEntries::new(
+            MapFloatKeys::Normalized,
+        ))),
         Arc::new(ScalarUDF::new_from_impl(SparkNextDay::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkSecondsToTimestamp::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkSizeFunc::default())),
