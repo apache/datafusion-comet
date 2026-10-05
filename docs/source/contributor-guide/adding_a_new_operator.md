@@ -371,8 +371,15 @@ The examples above follow the implementations in
   rather than serialization state; this method does not define equality.
 
 Some operators use a different convention. `CometNativeScanExec` compares `originalPlan` to retain
-scan identity, and its `doCanonicalize` canonicalizes that plan while removing unused dynamic
-pruning filters. `CometBroadcastExchangeExec` also compares `originalPlan` before canonicalization,
+scan identity. Its `doCanonicalize` strips every dynamic pruning filter from `originalPlan` before
+canonicalizing it, because that copy is stale and no DPP rule rewrites it. The scan's DPP identity
+comes from its top-level `partitionFilters` instead, where
+`CometScanUtils.filterUnusedDynamicPruningExpressions` drops only
+`DynamicPruningExpression(TrueLiteral)`, as Spark's `FileSourceScanExec` does. A new scan with DPP
+support should copy that second rule: a filter that still holds the adaptive broadcast placeholder
+must stay in the canonical form, because AQE canonicalizes a query stage as its exchange was before
+that placeholder was converted, and dropping it lets AQE reuse one stage for scans with different
+filters. `CometBroadcastExchangeExec` also compares `originalPlan` before canonicalization,
 but its `doCanonicalize` clears that reference and retains the canonicalized child. Follow each
 operator's equality and canonicalization together rather than copying an exclusion in isolation.
 
