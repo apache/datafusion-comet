@@ -1036,11 +1036,11 @@ fn translate_hadoop_configs(
     // `https://login.microsoftonline.com/<tenant>/oauth2/token`. object_store wants the
     // tenant id directly (`AuthorityId`), so extract it if AuthorityId hasn't already
     // been set from `fs.azure.account.oauth2.msi.tenant`. For client credentials Hadoop
-    // posts to the endpoint itself, so its origin also becomes `AuthorityHost` unless
-    // `msi.authority` set it. That holds only when object_store will use client
-    // credentials: a client secret and no token file, since a token file selects Workload
-    // Identity first. Otherwise the endpoint is not a token URL, so its host must not
-    // receive another credential.
+    // posts to the endpoint itself, so the part before the tenant (`oauth_endpoint_parts`)
+    // also becomes `AuthorityHost` unless `msi.authority` set it. That holds only when
+    // object_store will use client credentials: a client secret and no token file, since a
+    // token file selects Workload Identity first. Otherwise the endpoint is not a token URL,
+    // so its host must not receive another credential.
     let has = |out: &[(AzureConfigKey, String)], wanted: AzureConfigKey| {
         out.iter().any(|(k, _)| *k == wanted)
     };
@@ -1059,11 +1059,9 @@ fn translate_hadoop_configs(
     {
         if let Some(endpoint) = account_scoped_value(configs, HADOOP_OAUTH_CLIENT_ENDPOINT, account)
         {
-            if let Some(tenant) = tenant_from_oauth_endpoint(&endpoint) {
+            if let Some((tenant, host)) = oauth_endpoint_parts(&endpoint) {
                 out.push((AzureConfigKey::AuthorityId, tenant));
-                if let Some(host) =
-                    authority_host_from_oauth_endpoint(&endpoint).filter(|_| endpoint_is_token_url)
-                {
+                if let Some(host) = host.filter(|_| endpoint_is_token_url) {
                     out.push((AzureConfigKey::AuthorityHost, host));
                 }
             }
@@ -1256,23 +1254,31 @@ fn extract_container(url: &Url) -> Option<String> {
     Some(user.to_string())
 }
 
-/// Pull the tenant id out of an OAuth token endpoint like
-/// `https://login.microsoftonline.com/<tenant>/oauth2/token`.
-fn tenant_from_oauth_endpoint(endpoint: &str) -> Option<String> {
+/// The tenant id and authority host of an OAuth token endpoint like
+/// `https://login.microsoftonline.com/<tenant>/oauth2/token`. The tenant is the path segment
+/// before `oauth2`, or the first segment when no later segment is `oauth2`. The authority
+/// host is the origin plus every segment before the tenant, so object_store's
+/// `<authority host>/<tenant>/oauth2/v2.0/token` keeps a proxy's path prefix. The host is
+/// `None` when the endpoint has no `scheme://host` origin.
+fn oauth_endpoint_parts(endpoint: &str) -> Option<(String, Option<String>)> {
     let parsed = Url::parse(endpoint).ok()?;
-    let mut segments = parsed.path_segments()?;
-    let tenant = segments.next()?;
-    if tenant.is_empty() {
-        return None;
-    }
-    Some(tenant.to_string())
-}
-
-/// The origin (`scheme://host[:port]`) of an OAuth token endpoint, which object_store
-/// joins with the tenant to build the token URL.
-fn authority_host_from_oauth_endpoint(endpoint: &str) -> Option<String> {
-    let origin = Url::parse(endpoint).ok()?.origin();
-    origin.is_tuple().then(|| origin.ascii_serialization())
+    let segments: Vec<&str> = parsed.path_segments()?.collect();
+    let tenant_at = segments
+        .iter()
+        .skip(1)
+        .position(|segment| *segment == "oauth2")
+        .unwrap_or(0);
+    let tenant = segments.get(tenant_at).filter(|t| !t.is_empty())?;
+    let origin = parsed.origin();
+    let host = origin.is_tuple().then(|| {
+        let mut host = origin.ascii_serialization();
+        for segment in &segments[..tenant_at] {
+            host.push('/');
+            host.push_str(segment);
+        }
+        host
+    });
+    Some((tenant.to_string(), host))
 }
 
 #[cfg(test)]
@@ -4425,6 +4431,111 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn client_creds_endpoint_keeps_its_path_prefix() {
+        // Hadoop posts to the full endpoint, so a proxy mounted under a path keeps that
+        // path in the authority host and the tenant is the segment before `oauth2`.
+        let tenant = "synthetic-tenant";
+        let configs_for = |endpoint: &str| {
+            hadoop(&[
+                ("fs.azure.account.auth.type", "OAuth"),
+                (
+                    "fs.azure.account.oauth.provider.type",
+                    CLIENT_CREDS_PROVIDER,
+                ),
+                ("fs.azure.account.oauth2.client.id", "hadoop-client"),
+                ("fs.azure.account.oauth2.client.secret", "hadoop-secret"),
+                ("fs.azure.account.oauth2.client.endpoint", endpoint),
+                // Not read under `ClientCredsTokenProvider`.
+                (
+                    "fs.azure.account.oauth2.msi.authority",
+                    "https://auth-proxy.example/aad",
+                ),
+                ("fs.azure.account.oauth2.msi.tenant", tenant),
+            ])
+        };
+        for (endpoint, authority, expected_tenant, token_url) in [
+            (
+                "https://auth-proxy.example/aad/synthetic-tenant/oauth2/v2.0/token",
+                "https://auth-proxy.example/aad",
+                tenant,
+                "https://auth-proxy.example/aad/synthetic-tenant/oauth2/v2.0/token",
+            ),
+            (
+                "https://auth-proxy.example/a/b/synthetic-tenant/oauth2/v2.0/token",
+                "https://auth-proxy.example/a/b",
+                tenant,
+                "https://auth-proxy.example/a/b/synthetic-tenant/oauth2/v2.0/token",
+            ),
+            (
+                "https://auth-proxy.example:8443/aad/synthetic-tenant/oauth2/v2.0/token",
+                "https://auth-proxy.example:8443/aad",
+                tenant,
+                "https://auth-proxy.example:8443/aad/synthetic-tenant/oauth2/v2.0/token",
+            ),
+            (
+                "https://login.microsoftonline.com/synthetic-tenant/oauth2/v2.0/token",
+                "https://login.microsoftonline.com",
+                tenant,
+                "https://login.microsoftonline.com/synthetic-tenant/oauth2/v2.0/token",
+            ),
+            // A v1 endpoint keeps its tenant and host; object_store always asks v2.0.
+            (
+                "https://login.microsoftonline.com/synthetic-tenant/oauth2/token",
+                "https://login.microsoftonline.com",
+                tenant,
+                "https://login.microsoftonline.com/synthetic-tenant/oauth2/v2.0/token",
+            ),
+            // With no `oauth2` segment the first segment is the tenant, as before.
+            (
+                "https://auth-proxy.example/aad/synthetic-tenant/token",
+                "https://auth-proxy.example",
+                "aad",
+                "https://auth-proxy.example/aad/oauth2/v2.0/token",
+            ),
+        ] {
+            let configs = configs_for(endpoint);
+            let builder = builder_for(&configs, AMBIENT_ENDPOINTS);
+            assert_eq!(
+                value(&builder, AzureConfigKey::AuthorityId).as_deref(),
+                Some(expected_tenant),
+                "{endpoint}"
+            );
+            assert_eq!(
+                value(&builder, AzureConfigKey::AuthorityHost).as_deref(),
+                Some(authority),
+                "{endpoint}"
+            );
+            assert_eq!(
+                token_request_url(&configs, &[]).await,
+                token_url,
+                "{endpoint}"
+            );
+        }
+        // A dot segment cannot move the request to another host.
+        let configs =
+            configs_for("https://auth-proxy.example/.//evil.example/synthetic-tenant/oauth2/token");
+        let requested = token_request_url(&configs, &[]).await;
+        assert_eq!(
+            Url::parse(&requested).unwrap().host_str(),
+            Some("auth-proxy.example"),
+            "{requested}"
+        );
+        // With no provider class the endpoint gives the same tenant.
+        let configs = hadoop(&[
+            ("fs.azure.account.oauth2.client.id", "hadoop-client"),
+            ("fs.azure.account.oauth2.client.secret", "hadoop-secret"),
+            (
+                "fs.azure.account.oauth2.client.endpoint",
+                "https://auth-proxy.example/aad/synthetic-tenant/oauth2/v2.0/token",
+            ),
+        ]);
+        assert_eq!(
+            token_request_url(&configs, &[]).await,
+            "https://auth-proxy.example/aad/synthetic-tenant/oauth2/v2.0/token"
+        );
+    }
+
+    #[tokio::test]
     async fn endpoint_host_is_used_only_for_client_credentials() {
         let proxy = (
             "fs.azure.account.oauth2.client.endpoint",
@@ -4480,30 +4591,82 @@ mod tests {
     }
 
     #[test]
-    fn authority_host_is_the_endpoint_origin() {
+    fn oauth_endpoint_parts_split_tenant_and_authority_host() {
+        type Parts = Option<(&'static str, Option<&'static str>)>;
+        fn parts(tenant: &'static str, host: Option<&'static str>) -> Parts {
+            Some((tenant, host))
+        }
         for (endpoint, expected) in [
             (
                 "https://user:pass@auth-proxy.example/t/oauth2/token",
-                Some("https://auth-proxy.example"),
+                parts("t", Some("https://auth-proxy.example")),
             ),
             (
                 "https://auth-proxy.example:443/t/oauth2/token",
-                Some("https://auth-proxy.example"),
+                parts("t", Some("https://auth-proxy.example")),
             ),
             (
                 "https://auth-proxy.example:8443/t/oauth2/token",
-                Some("https://auth-proxy.example:8443"),
+                parts("t", Some("https://auth-proxy.example:8443")),
             ),
             (
                 "https://[::1]:8443/t/oauth2/token",
-                Some("https://[::1]:8443"),
+                parts("t", Some("https://[::1]:8443")),
             ),
-            ("file:///t/oauth2/token", None),
+            (
+                "https://auth-proxy.example/aad/t/oauth2/v2.0/token",
+                parts("t", Some("https://auth-proxy.example/aad")),
+            ),
+            (
+                "https://auth-proxy.example:8443/a/b/t/oauth2/v2.0/token",
+                parts("t", Some("https://auth-proxy.example:8443/a/b")),
+            ),
+            // No `oauth2` after the first segment: the first segment is the tenant.
+            (
+                "https://auth-proxy.example/aad/t/token",
+                parts("aad", Some("https://auth-proxy.example")),
+            ),
+            (
+                "https://auth-proxy.example/oauth2/token",
+                parts("oauth2", Some("https://auth-proxy.example")),
+            ),
+            ("https://h//t/oauth2/token", parts("t", Some("https://h/"))),
+            ("https://h/a//oauth2/token", None),
+            (
+                "https://h/aad/t/oauth2/v2.0/token?q=oauth2#f",
+                parts("t", Some("https://h/aad")),
+            ),
+            (
+                "https://h/a/oauth2/b/oauth2/token",
+                parts("a", Some("https://h")),
+            ),
+            (
+                "https://h/u@evil.example/t/oauth2/token",
+                parts("t", Some("https://h/u@evil.example")),
+            ),
+            // The URL parser resolves `%2e%2e` and reads `\` as `/`; the host stays `h`.
+            (
+                "https://h/a/%2e%2e/t/oauth2/token",
+                parts("t", Some("https://h")),
+            ),
+            (
+                "https://h/a\\b/t/oauth2/token",
+                parts("t", Some("https://h/a/b")),
+            ),
+            (
+                "https://h/oauth2/t/oauth2/token",
+                parts("t", Some("https://h/oauth2")),
+            ),
+            ("file:///t/oauth2/token", parts("t", None)),
+            ("https://auth-proxy.example/", None),
             ("urn:t:oauth2", None),
             ("not a url", None),
         ] {
+            let actual = oauth_endpoint_parts(endpoint);
             assert_eq!(
-                authority_host_from_oauth_endpoint(endpoint).as_deref(),
+                actual
+                    .as_ref()
+                    .map(|(tenant, host)| (tenant.as_str(), host.as_deref())),
                 expected,
                 "{endpoint}"
             );
