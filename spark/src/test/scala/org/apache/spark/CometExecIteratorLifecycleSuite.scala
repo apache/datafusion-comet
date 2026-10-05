@@ -194,6 +194,8 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
       withTaskContext(4400000L) {
         val failMetrics = new AtomicBoolean(false)
         class ThrowingMetricNode extends CometMetricNode(Map.empty, Nil) {
+          // The iterator hands native a copy of its tree; keep this node so the failure fires.
+          override def newInstance(): CometMetricNode = this
           override def set_all_from_bytes(bytes: Array[Byte]): Unit = {
             if (failMetrics.get()) {
               throw new IllegalStateException("injected metrics update failure")
