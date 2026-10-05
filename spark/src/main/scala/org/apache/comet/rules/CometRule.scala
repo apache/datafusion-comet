@@ -130,14 +130,14 @@ object CometRule {
  * `spark.sql.planChangeLog.rules` has to match.
  *
  * @param queryStagePrep
- *   true for the `injectQueryStagePrepRule` instance, which sees the whole initial plan under
- *   AQE. Only plan-only reporting reads it.
+ *   true for the `injectQueryStagePrepRule` instance, which sees the whole initial plan and each
+ *   re-plan under AQE. Plan-only reporting and [[CometExecRule]] read it.
  */
 case class CometRule(session: SparkSession, queryStagePrep: Boolean = false)
     extends Rule[SparkPlan] {
 
   private val scanRule = CometScanRule(session)
-  private val execRule = CometExecRule(session)
+  private val execRule = CometExecRule(session, queryStagePrep)
 
   override def apply(plan: SparkPlan): SparkPlan = {
     if (planOnlyApplies(plan)) {

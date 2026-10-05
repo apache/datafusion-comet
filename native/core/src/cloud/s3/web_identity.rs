@@ -43,7 +43,7 @@
 //!      still-valid cached credential and is briefly remembered so a throttled burst costs one STS
 //!      call rather than one per reader.
 //!
-//! It is wired into the Iceberg scan path (`iceberg_common::build_s3_credential_loader`), which is
+//! It is wired into the Iceberg scan path (`iceberg_common::build_s3_access`), which is
 //! where the reported failure occurs: opendal's default reqsign chain is the one that downgrades to
 //! the node role. The raw-Parquet path is left on the AWS SDK default chain, which already retries
 //! and stops on a provider error rather than downgrading. The provider is exposed to opendal as
@@ -1223,21 +1223,20 @@ mod tests {
 
     #[test]
     fn iceberg_wiring_reads_s3_prefixed_keys() {
-        // Exercise the real Iceberg wiring (build_s3_credential_loader), not a copy of its closure,
+        // Exercise the real Iceberg wiring (build_s3_access), not a copy of its closure,
         // so a regression that stops installing the loader -- or the wrong key prefix -- is caught.
         use crate::cloud::s3::credential_bridge::AccessMode;
-        use crate::execution::operators::iceberg_common::build_s3_credential_loader;
+        use crate::execution::operators::iceberg_common::{build_s3_access, S3Access};
 
         let _guard = lock_env();
         let _env = IrsaEnv::set("iceberg-keys");
 
         // IRSA, no explicit provider/creds -> the loader engages.
         let empty = HashMap::new();
-        let engaged =
-            build_s3_credential_loader("s3://bucket/db/table", &empty, "cat", AccessMode::Read)
-                .expect("loader builds");
+        let engaged = build_s3_access("s3://bucket/db/table", &empty, "cat", AccessMode::Read)
+            .expect("loader builds");
         assert!(
-            engaged.0.is_some(),
+            matches!(engaged.0, S3Access::Loader(Some(_))),
             "IRSA with nothing configured must install the web-identity loader"
         );
 
@@ -1248,11 +1247,10 @@ mod tests {
             "s3.comet.credential.webIdentity.enabled".to_string(),
             "false".to_string(),
         );
-        let off =
-            build_s3_credential_loader("s3://bucket/db/table", &disabled, "cat", AccessMode::Read)
-                .expect("loader builds");
+        let off = build_s3_access("s3://bucket/db/table", &disabled, "cat", AccessMode::Read)
+            .expect("loader builds");
         assert!(
-            off.0.is_none(),
+            matches!(off.0, S3Access::Loader(None)),
             "enabled=false via the s3.-prefixed catalog key must disable the take-over"
         );
 
@@ -1261,11 +1259,10 @@ mod tests {
             "comet.credential.webIdentity.enabled".to_string(),
             "false".to_string(),
         );
-        let still_on =
-            build_s3_credential_loader("s3://bucket/db/table", &bare, "cat", AccessMode::Read)
-                .expect("loader builds");
+        let still_on = build_s3_access("s3://bucket/db/table", &bare, "cat", AccessMode::Read)
+            .expect("loader builds");
         assert!(
-            still_on.0.is_some(),
+            matches!(still_on.0, S3Access::Loader(Some(_))),
             "a bare (unprefixed) key does not reach the catalog bag, so it must not disable anything"
         );
     }

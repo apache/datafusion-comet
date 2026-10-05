@@ -468,3 +468,18 @@ INSERT INTO cl_src_map VALUES
 
 query spark_answer_only
 SELECT size(collect_list(m)) FROM cl_src_map
+
+-- ============================================================
+-- PartialMerge: combined with distinct and collect-style aggregates
+-- ============================================================
+
+query
+SELECT grp, count(DISTINCT a), sort_array(collect_list(b))
+FROM cl_src_multi GROUP BY grp ORDER BY grp
+
+query
+SELECT grp,
+       count(DISTINCT a),
+       sort_array(collect_list(b)),
+       sort_array(collect_set(b))
+FROM cl_src_multi GROUP BY grp ORDER BY grp
