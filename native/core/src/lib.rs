@@ -41,19 +41,6 @@ use log4rs::{
     Config,
 };
 
-#[cfg(all(
-    not(target_env = "msvc"),
-    feature = "jemalloc",
-    not(feature = "mimalloc")
-))]
-use tikv_jemallocator::Jemalloc;
-
-#[cfg(all(
-    feature = "mimalloc",
-    not(all(not(target_env = "msvc"), feature = "jemalloc"))
-))]
-use mimalloc::MiMalloc;
-
 // Re-export from jvm-bridge crate for internal use
 pub use datafusion_comet_jni_bridge::errors;
 pub use datafusion_comet_jni_bridge::JAVA_VM;
@@ -65,6 +52,7 @@ pub mod jvm_bridge {
 
 use errors::{try_unwrap_or_throw, CometError, CometResult};
 
+pub mod alloc_accounting;
 pub mod cloud;
 pub mod execution;
 pub mod parquet;
@@ -72,20 +60,66 @@ pub mod parquet;
 #[cfg(debug_assertions)]
 pub mod debug;
 
+// Global allocator selection. `backend` names the allocator the feature set asks for: jemalloc
+// where it builds, otherwise mimalloc, otherwise the system allocator. The three cfgs partition
+// every feature combination, so exactly one `backend` exists and a combination matching none would
+// fail to compile. Whichever it is, it is installed wrapped in the `AccountingAllocator`, which
+// counts the bytes Rust code holds for the memory usage log and the `native_allocated` metric.
+
+/// jemalloc, on targets where it builds, unless mimalloc was also requested.
 #[cfg(all(
     not(target_env = "msvc"),
     feature = "jemalloc",
     not(feature = "mimalloc")
 ))]
-#[global_allocator]
-static GLOBAL: Jemalloc = Jemalloc;
+mod backend {
+    pub type Backend = tikv_jemallocator::Jemalloc;
+    pub const BACKEND: Backend = tikv_jemallocator::Jemalloc;
+    pub const NAME: &str = "jemalloc";
+}
 
+/// mimalloc, unless a usable jemalloc was also requested.
 #[cfg(all(
     feature = "mimalloc",
     not(all(not(target_env = "msvc"), feature = "jemalloc"))
 ))]
+mod backend {
+    pub type Backend = mimalloc::MiMalloc;
+    pub const BACKEND: Backend = mimalloc::MiMalloc;
+    pub const NAME: &str = "mimalloc";
+}
+
+/// The system allocator: the complement of the two cases above, which covers neither feature, a
+/// jemalloc request on MSVC, and both features together.
+#[cfg(not(any(
+    all(
+        not(target_env = "msvc"),
+        feature = "jemalloc",
+        not(feature = "mimalloc")
+    ),
+    all(
+        feature = "mimalloc",
+        not(all(not(target_env = "msvc"), feature = "jemalloc"))
+    )
+)))]
+mod backend {
+    pub type Backend = std::alloc::System;
+    pub const BACKEND: Backend = std::alloc::System;
+    pub const NAME: &str = "system";
+}
+
+/// The allocator backend this build selected, its name (`"jemalloc"`, `"mimalloc"` or
+/// `"system"`), and an instance of it. The selection is decided here and nowhere else, so the
+/// `alloc_overhead` benchmark takes the backend from here to measure it with and without the
+/// accounting wrapper.
+#[doc(hidden)]
+pub use backend::{
+    Backend as AllocatorBackend, BACKEND as BACKEND_ALLOCATOR, NAME as ALLOCATOR_BACKEND,
+};
+
 #[global_allocator]
-static GLOBAL: MiMalloc = MiMalloc;
+static GLOBAL: alloc_accounting::AccountingAllocator<backend::Backend> =
+    alloc_accounting::AccountingAllocator::new(backend::BACKEND);
 
 #[no_mangle]
 pub extern "system" fn Java_org_apache_comet_NativeBase_init(
@@ -149,15 +183,18 @@ pub extern "system" fn Java_org_apache_comet_NativeBase_isFeatureEnabled(
 ) -> jni::sys::jboolean {
     try_unwrap_or_throw(&env, |env| {
         let feature: String = feature_name.try_to_string(env)?;
-
-        let enabled = match feature.as_str() {
-            "jemalloc" => cfg!(feature = "jemalloc"),
-            "hdfs-opendal" => cfg!(feature = "hdfs-opendal"),
-            _ => false, // Unknown features return false
-        };
-
-        Ok(enabled)
+        Ok(is_feature_enabled(&feature))
     })
+}
+
+/// Whether the native build enables `feature`; unknown features are disabled. Core of
+/// `NativeBase.isFeatureEnabled`.
+pub fn is_feature_enabled(feature: &str) -> bool {
+    match feature {
+        "jemalloc" => cfg!(feature = "jemalloc"),
+        "hdfs-opendal" => cfg!(feature = "hdfs-opendal"),
+        _ => false, // Unknown features return false
+    }
 }
 
 /// JNI: can object_store build a store AND an object key for this URL?
@@ -184,11 +221,29 @@ pub extern "system" fn Java_org_apache_comet_NativeBase_isObjectStoreSchemeSuppo
 ) -> jni::sys::jboolean {
     try_unwrap_or_throw(&env, |env| {
         let url_str: String = url.try_to_string(env)?;
-        let supported = url::Url::parse(&url_str)
-            .ok()
-            .map(|u| object_store::ObjectStoreScheme::parse(&u).is_ok())
-            .unwrap_or(false);
-        Ok(supported)
+        Ok(is_object_store_scheme_supported(&url_str))
+    })
+}
+
+/// Whether object_store can build a store and an object key for `url`. Core of
+/// `NativeBase.isObjectStoreSchemeSupported`.
+pub fn is_object_store_scheme_supported(url: &str) -> bool {
+    url::Url::parse(url)
+        .ok()
+        .map(|u| object_store::ObjectStoreScheme::parse(&u).is_ok())
+        .unwrap_or(false)
+}
+
+/// JNI: the version of the IANA timezone database native code uses, such as `2025b`. chrono-tz
+/// compiles the database into libcomet, so it can differ from the JVM's `tzdb.dat`, and then local
+/// times computed natively can differ from Spark's.
+#[no_mangle]
+pub extern "system" fn Java_org_apache_comet_NativeBase_getTzdataVersion(
+    env: EnvUnowned,
+    _: JClass,
+) -> jni::sys::jstring {
+    try_unwrap_or_throw(&env, |env| {
+        Ok(env.new_string(chrono_tz::IANA_TZDB_VERSION)?.into_raw())
     })
 }
 
@@ -208,4 +263,27 @@ fn default_logger_config(log_level: &str) -> CometResult<Config> {
         .appender(appender)
         .build(root)
         .map_err(|err| CometError::Config(err.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn feature_enabled() {
+        assert_eq!(is_feature_enabled("jemalloc"), cfg!(feature = "jemalloc"));
+        assert_eq!(
+            is_feature_enabled("hdfs-opendal"),
+            cfg!(feature = "hdfs-opendal")
+        );
+        assert!(!is_feature_enabled("no-such-feature"));
+    }
+
+    #[test]
+    fn object_store_scheme_supported() {
+        assert!(is_object_store_scheme_supported("file:///tmp/data.parquet"));
+        assert!(is_object_store_scheme_supported("s3://bucket/key"));
+        assert!(!is_object_store_scheme_supported("unknown://bucket/key"));
+        assert!(!is_object_store_scheme_supported("not a url"));
+    }
 }

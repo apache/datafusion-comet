@@ -23,7 +23,6 @@ import java.nio.ByteOrder
 
 import org.apache.spark.{SparkConf, SparkEnv}
 import org.apache.spark.internal.Logging
-import org.apache.spark.network.util.ByteUnit
 import org.apache.spark.sql.{SparkSession, SparkSessionExtensions}
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.trees.{TreeNode, TreeNodeTag}
@@ -34,7 +33,7 @@ import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf._
 import org.apache.comet.iceberg.IcebergWriteStrategy
-import org.apache.comet.rules.{CometExecRule, CometPlanAdaptiveDynamicPruningFilters, CometReuseSubquery, CometScanRule, CometSpark34AqeDppFallbackRule, EliminateRedundantTransitions, RevertNativeForTransitionHeavyStages}
+import org.apache.comet.rules.{CometPlanAdaptiveDynamicPruningFilters, CometReuseSubquery, CometRule, CometSpark34AqeDppFallbackRule}
 import org.apache.comet.shims.ShimCometSparkSessionExtensions
 
 /**
@@ -49,7 +48,7 @@ import org.apache.comet.shims.ShimCometSparkSessionExtensions
  *   2. PlanSubqueries               -- Spark creates SubqueryExec for scalar subqueries
  *   3. EnsureRequirements            -- Spark inserts shuffles/sorts
  *   4. ApplyColumnarRulesAndInsertTransitions:
- *      a. preColumnarTransitions:   CometScanRule, CometExecRule
+ *      a. preColumnarTransitions:   CometRule (CometScanRule then CometExecRule)
  *         - CometExecRule.convertSubqueryBroadcasts converts SubqueryBroadcastExec to
  *           CometSubqueryBroadcastExec for exchange reuse with Comet broadcasts
  *      b. insertTransitions:        ColumnarToRow/RowToColumnar added
@@ -62,7 +61,7 @@ import org.apache.comet.shims.ShimCometSparkSessionExtensions
  * {{{
  *   Initial plan:
  *     PlanAdaptiveSubqueries:       creates SubqueryAdaptiveBroadcastExec (SAB) for AQE DPP
- *     queryStagePreparationRules:   CometScanRule, CometExecRule
+ *     queryStagePreparationRules:   CometRule (CometScanRule then CometExecRule)
  *       - CometExecRule.convertSubqueryBroadcasts wraps SABs in
  *         CometSubqueryAdaptiveBroadcastExec to prevent Spark's
  *         PlanAdaptiveDynamicPruningFilters from replacing DPP with Literal.TrueLiteral
@@ -75,7 +74,7 @@ import org.apache.comet.shims.ShimCometSparkSessionExtensions
  *           CometSubqueryBroadcastExec with BroadcastQueryStageExec for broadcast reuse
  *        d. CometReuseSubquery                       -- deduplicates converted subqueries
  *     2. postStageCreationRules -> ApplyColumnarRulesAndInsertTransitions:
- *        a. preColumnarTransitions: CometScanRule, CometExecRule (no-ops, already converted)
+ *        a. preColumnarTransitions: CometRule (no-op, already converted)
  *        b. insertTransitions
  *        c. postColumnarTransitions: RevertNativeForTransitionHeavyStages,
  *                                    EliminateRedundantTransitions
@@ -91,29 +90,31 @@ class CometSparkSessionExtensions
     with Logging
     with ShimCometSparkSessionExtensions {
   override def apply(extensions: SparkSessionExtensions): Unit = {
-    extensions.injectColumnar { session => CometScanColumnar(session) }
-    extensions.injectColumnar { session => CometExecColumnar(session) }
+    // A session can be handed this extension more than once, for example through both
+    // spark.sql.extensions and SparkSession.Builder.withExtensions. Injecting twice would run
+    // every Comet rule twice per plan.
+    if (!CometSparkSessionExtensions.markConfigured(extensions)) {
+      logDebug("Comet extension already applied to these session extensions; skipping")
+      return
+    }
+    extensions.injectColumnar { session => CometColumnar(session) }
     // Pre-3.5 only: tag AQE DPP regions so the conversion rules below leave them Spark-native.
-    // Registered before CometScanRule/CometExecRule so tags are in place when conversion runs.
+    // Registered before CometRule so tags are in place when conversion runs.
     // No-op on Spark 3.5+; see CometSpark34AqeDppFallbackRule's class docstring.
     injectPreSpark35QueryStagePrepRuleShim(extensions, CometSpark34AqeDppFallbackRule)
-    extensions.injectQueryStagePrepRule { session => CometScanRule(session) }
-    extensions.injectQueryStagePrepRule { session => CometExecRule(session) }
+    extensions.injectQueryStagePrepRule { session =>
+      CometRule(session, queryStagePrep = true)
+    }
     injectQueryStageOptimizerRuleShim(extensions, CometPlanAdaptiveDynamicPruningFilters)
     injectQueryStageOptimizerRuleShim(extensions, CometReuseSubquery)
     extensions.injectPlannerStrategy { session => IcebergWriteStrategy(session) }
   }
 
-  case class CometScanColumnar(session: SparkSession) extends ColumnarRule {
-    override def preColumnarTransitions: Rule[SparkPlan] = CometScanRule(session)
-  }
-
-  case class CometExecColumnar(session: SparkSession) extends ColumnarRule {
-    override def preColumnarTransitions: Rule[SparkPlan] = CometExecRule(session)
+  case class CometColumnar(session: SparkSession) extends ColumnarRule {
+    override def preColumnarTransitions: Rule[SparkPlan] = CometRule(session)
 
     override def postColumnarTransitions: Rule[SparkPlan] = {
-      val rules =
-        Seq(RevertNativeForTransitionHeavyStages(session), EliminateRedundantTransitions(session))
+      val rules = CometRule.postColumnarRules(session)
       plan => rules.foldLeft(plan) { case (p, rule) => rule(p) }
     }
   }
@@ -122,6 +123,15 @@ class CometSparkSessionExtensions
 object CometSparkSessionExtensions extends Logging {
   lazy val isBigEndian: Boolean = ByteOrder.nativeOrder().equals(ByteOrder.BIG_ENDIAN)
   private val SHUFFLE_MANAGER_KEY = "spark.shuffle.manager"
+
+  /** Session extensions Comet has already been injected into. Weak so sessions can be GC'd. */
+  private val configuredExtensions =
+    java.util.Collections.synchronizedMap(
+      new java.util.WeakHashMap[SparkSessionExtensions, java.lang.Boolean]())
+
+  /** Records that Comet is being injected into `extensions`; false if it already was. */
+  private def markConfigured(extensions: SparkSessionExtensions): Boolean =
+    configuredExtensions.put(extensions, java.lang.Boolean.TRUE) == null
 
   /**
    * Checks whether Comet extension should be loaded for Spark.
@@ -136,7 +146,18 @@ object CometSparkSessionExtensions extends Logging {
       return false
     }
 
-    if (COMET_SHUFFLE_ENABLED.get(conf) && !isCometShuffleManagerEnabled(conf)) {
+    // CometDriverPlugin makes the same check before registering this extension, but an
+    // application can also register the extension directly with spark.sql.extensions. The memory
+    // mode comes from the SparkContext's conf, which is what executors use. A session's SQLConf
+    // can disagree: when the SparkContext already exists, SparkSession.Builder copies core
+    // configs into it without applying them.
+    val offHeapEnabled = Option(SparkEnv.get).exists(env => isOffHeapEnabled(env.conf))
+    if (!offHeapEnabled && !COMET_ONHEAP_ENABLED.get(conf)) {
+      logWarning("Comet extension is disabled because Spark is not running in off-heap mode.")
+      return false
+    }
+
+    if (COMET_SHUFFLE_ENABLED.get(conf) && !isCometShuffleManagerEnabled) {
       logWarning(
         "Comet extension is disabled because spark.shuffle.manager is not set to " +
           s"${classOf[CometShuffleManager].getName} or " +
@@ -180,7 +201,7 @@ object CometSparkSessionExtensions extends Logging {
   // dependencies without passing through ordinary exchange selection. Celeborn requires explicit
   // native opt-in and compatible application settings; local Comet shuffle keeps its behavior.
   def isCometShuffleEnabled(conf: SQLConf): Boolean =
-    COMET_SHUFFLE_ENABLED.get(conf) && isCometShuffleManagerEnabled(conf) &&
+    COMET_SHUFFLE_ENABLED.get(conf) && isCometShuffleManagerEnabled &&
       cometCelebornShuffleFallbackReason(conf, numPartitions = 1).isEmpty
 
   private def activeCelebornShuffleManager: Option[CometCelebornShuffleManager] =
@@ -193,14 +214,14 @@ object CometSparkSessionExtensions extends Logging {
       conf.getConfString(SHUFFLE_MANAGER_KEY, "") ==
       classOf[CometCelebornShuffleManager].getName
 
-  def isCometShuffleManagerEnabled(conf: SQLConf): Boolean = {
-    conf.contains(SHUFFLE_MANAGER_KEY) && {
-      val manager = conf.getConfString(SHUFFLE_MANAGER_KEY)
-      manager == classOf[CometShuffleManager].getName ||
-      manager == classOf[CometCelebornShuffleManager].getName ||
-      activeCelebornShuffleManager.isDefined
+  // Inspect the manager SparkEnv holds rather than spark.shuffle.manager in the session's
+  // SQLConf. The manager is created once for the application, and when the SparkContext already
+  // exists, SparkSession.Builder copies core configs into the SQLConf without applying them.
+  def isCometShuffleManagerEnabled: Boolean =
+    Option(SparkEnv.get).flatMap(env => Option(env.shuffleManager)).exists {
+      case _: CometShuffleManager | _: CometCelebornShuffleManager => true
+      case _ => false
     }
-  }
 
   /**
    * Native mode and execution can be chosen per query. Encryption, stage recovery, and Celeborn
@@ -245,69 +266,6 @@ object CometSparkSessionExtensions extends Logging {
 
   def isSpark42Plus: Boolean = {
     org.apache.spark.SPARK_VERSION >= "4.2"
-  }
-
-  /**
-   * Whether we should override Spark memory configuration for Comet. This only returns true when
-   * Comet native execution is enabled and/or Comet shuffle is enabled and Comet doesn't use
-   * off-heap mode (unified memory manager).
-   */
-  def shouldOverrideMemoryConf(conf: SparkConf): Boolean = {
-    val cometEnabled = getBooleanConf(conf, CometConf.COMET_ENABLED)
-    val cometShuffleEnabled = getBooleanConf(conf, CometConf.COMET_SHUFFLE_ENABLED)
-    val cometExecEnabled = getBooleanConf(conf, CometConf.COMET_EXEC_ENABLED)
-    val offHeapMode = CometSparkSessionExtensions.isOffHeapEnabled(conf)
-    cometEnabled && (cometShuffleEnabled || cometExecEnabled) && !offHeapMode
-  }
-
-  /**
-   * Determines required memory overhead in MB per executor process for Comet when running in
-   * on-heap mode.
-   */
-  def getCometMemoryOverheadInMiB(sparkConf: SparkConf): Long = {
-    if (isOffHeapEnabled(sparkConf)) {
-      // when running in off-heap mode we use unified memory management to share
-      // off-heap memory with Spark so do not add overhead
-      return 0
-    }
-    ConfigHelpers.byteFromString(
-      sparkConf.get(
-        COMET_ONHEAP_MEMORY_OVERHEAD.key,
-        COMET_ONHEAP_MEMORY_OVERHEAD.defaultValueString),
-      ByteUnit.MiB)
-  }
-
-  private def getBooleanConf(conf: SparkConf, entry: ConfigEntry[Boolean]) =
-    conf.getBoolean(entry.key, entry.defaultValue.get)
-
-  /**
-   * Calculates required memory overhead in bytes per executor process for Comet when running in
-   * on-heap mode.
-   */
-  def getCometMemoryOverhead(sparkConf: SparkConf): Long = {
-    ByteUnit.MiB.toBytes(getCometMemoryOverheadInMiB(sparkConf))
-  }
-
-  /**
-   * Calculates required shuffle memory size in bytes per executor process for Comet when running
-   * in on-heap mode.
-   */
-  def getCometShuffleMemorySize(sparkConf: SparkConf, conf: SQLConf = SQLConf.get): Long = {
-    assert(!isOffHeapEnabled(sparkConf))
-
-    val cometMemoryOverhead = getCometMemoryOverheadInMiB(sparkConf)
-
-    val overheadFactor = COMET_SHUFFLE_JVM_MEMORY_FACTOR.get(conf)
-
-    val shuffleMemorySize = (overheadFactor * cometMemoryOverhead).toLong
-    if (shuffleMemorySize > cometMemoryOverhead) {
-      logWarning(
-        s"Configured shuffle memory size $shuffleMemorySize is larger than Comet memory overhead " +
-          s"$cometMemoryOverhead, using Comet memory overhead instead.")
-      ByteUnit.MiB.toBytes(cometMemoryOverhead)
-    } else {
-      ByteUnit.MiB.toBytes(shuffleMemorySize)
-    }
   }
 
   def isOffHeapEnabled(sparkConf: SparkConf): Boolean = {

@@ -29,7 +29,6 @@ import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.SerializableConfiguration
 
 import org.apache.comet.{CometExecIterator, CometRuntimeException, CometShuffleBlockIterator}
-import org.apache.comet.serde.OperatorOuterClass
 
 /**
  * Partition that carries per-partition planning data, avoiding closure capture of all partitions.
@@ -60,6 +59,7 @@ private[spark] class CometExecRDD(
     commonByKey: Map[String, Array[Byte]],
     @transient perPartitionByKey: Map[String, Array[Array[Byte]]],
     serializedPlan: Array[Byte],
+    planFingerprint: Long,
     defaultNumPartitions: Int,
     numOutputCols: Int,
     nativeMetrics: CometMetricNode,
@@ -112,9 +112,12 @@ private[spark] class CometExecRDD(
         shuffleScanIndices,
         context)
 
-    // Only inject if we have per-partition planning data
+    // Only inject if we have per-partition planning data. The base plan bytes are identical
+    // for every partition of the stage, so the parsed tree and its prepared per-scan data are
+    // shared across this executor's tasks instead of being recomputed per task. The driver
+    // fingerprints the bytes once so the probe here does not rehash them.
     val actualPlan = if (commonByKey.nonEmpty) {
-      val basePlan = OperatorOuterClass.Operator.parseFrom(serializedPlan)
+      val basePlan = PlanDataInjector.parseBasePlan(serializedPlan, planFingerprint)
       val injected =
         PlanDataInjector.injectPlanData(basePlan, commonByKey, partition.planDataByKey)
       PlanDataInjector.serializeOperator(injected)
@@ -218,6 +221,7 @@ object CometExecRDD {
       commonByKey: Map[String, Array[Byte]],
       perPartitionByKey: Map[String, Array[Array[Byte]]],
       serializedPlan: Array[Byte],
+      planFingerprint: Long,
       numPartitions: Int,
       numOutputCols: Int,
       nativeMetrics: CometMetricNode,
@@ -234,6 +238,7 @@ object CometExecRDD {
       commonByKey,
       perPartitionByKey,
       serializedPlan,
+      planFingerprint,
       numPartitions,
       numOutputCols,
       nativeMetrics,

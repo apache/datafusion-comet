@@ -15,9 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Helpers shared by the cast-from-string benchmarks, pulled in with
+//! Helpers shared by expression benchmarks, pulled in with
 //! `#[path = "common/mod.rs"] mod common;`. This lives in a subdirectory so that Cargo's bench
 //! auto-discovery, which only looks at `benches/*.rs`, does not treat it as a bench target.
+//! This directory also holds standalone modules such as `matched_maps.rs`, included directly.
 #![allow(dead_code)]
 
 use arrow::array::{
@@ -36,11 +37,20 @@ pub const ROW_COUNTS: [usize; 3] = [8_192, 65_536, 524_288];
 
 pub const NULL_RATIOS: [(f64, &str); 3] = [(0.0, "no_nulls"), (0.1, "sparse"), (1.0, "all_null")];
 
+/// Whether row `i` is null for the requested null ratio.
+///
+/// The density is approximated by a stride. Below half, every `round(1/ratio)`-th row is null;
+/// above half the stride is taken over the *valid* rows instead, because `round(1/ratio)`
+/// collapses to 1 for any ratio above 2/3 and would make every row null. A dense ratio such as
+/// 0.875 therefore yields one valid row in eight rather than a second all-null shape.
 pub fn is_null(i: usize, null_ratio: f64) -> bool {
     if null_ratio <= 0.0 {
         false
     } else if null_ratio >= 1.0 {
         true
+    } else if null_ratio > 0.5 {
+        let stride = (1.0 / (1.0 - null_ratio)).round() as usize;
+        !(stride != 0 && i.is_multiple_of(stride))
     } else {
         let stride = (1.0 / null_ratio).round() as usize;
         stride != 0 && i.is_multiple_of(stride)
@@ -283,4 +293,13 @@ pub fn list_arrays(
             ScalarValue::Utf8(Some("k500".to_string())),
         ),
     ]
+}
+
+/// Field names shared by the hash and map-sort benchmark inputs.
+pub fn map_field_names() -> arrow::array::MapFieldNames {
+    arrow::array::MapFieldNames {
+        entry: "entries".into(),
+        key: "key".into(),
+        value: "value".into(),
+    }
 }

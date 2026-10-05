@@ -25,18 +25,22 @@ import org.scalatest.Tag
 import org.apache.hadoop.fs.Path
 import org.apache.parquet.hadoop.ParquetFileReader
 import org.apache.parquet.hadoop.util.HadoopInputFile
-import org.apache.spark.sql.{CometTestBase, Row}
+import org.apache.spark.SparkException
+import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.analysis.UnresolvedRelation
-import org.apache.spark.sql.catalyst.expressions.{And, AttributeReference, IsNotNull}
+import org.apache.spark.sql.catalyst.expressions.{And, AttributeReference, DynamicPruningExpression, IsNotNull}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight}
 import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometBroadcastNestedLoopJoinExec, CometFilterExec, CometHashJoinExec, CometNativeScanExec, CometSortMergeJoinExec, CometUnionExec}
-import org.apache.spark.sql.execution.SparkPlan
-import org.apache.spark.sql.execution.adaptive.AQEShuffleReadExec
+import org.apache.spark.sql.execution.{LocalTableScanExec, SparkPlan}
+import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec}
+import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException
+import org.apache.spark.sql.execution.exchange.{ReusedExchangeExec, ShuffleExchangeLike}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, IntegerType, MetadataBuilder, StructField, StructType}
 
 import org.apache.comet.CometConf
+import org.apache.comet.CometSparkSessionExtensions.isSpark35Plus
 
 class CometJoinSuite extends CometTestBase {
 
@@ -47,6 +51,97 @@ class CometJoinSuite extends CometTestBase {
     super.test(testName, testTags: _*) {
       withSQLConf(CometConf.COMET_SHUFFLE_ENABLED.key -> "true") {
         testFun
+      }
+    }
+  }
+
+  for ((hint, joinClass) <- Seq(
+      "SHUFFLE_HASH" -> classOf[CometHashJoinExec],
+      "MERGE" -> classOf[CometSortMergeJoinExec],
+      "BROADCAST" -> classOf[CometBroadcastHashJoinExec]);
+    adaptive <- Seq(false, true)) {
+    test(s"join identity preserves exchange reuse: $hint, AQE=$adaptive") {
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        SQLConf.EXCHANGE_REUSE_ENABLED.key -> "true",
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+        SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+        SQLConf.SHUFFLE_PARTITIONS.key -> "2",
+        CometConf.COMET_EXEC_SORT_MERGE_JOIN_ENABLED.key -> "true",
+        CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+        withParquetTable(Seq((0, 10), (1, 11), (2, 12)), "l") {
+          withParquetTable(Seq((0, 100), (1, 101)), "r") {
+            def branch(joinType: String): DataFrame =
+              sql(s"""SELECT /*+ $hint(r) */ l._1, l._2 FROM l
+                     |$joinType JOIN r ON l._1 = r._1
+                     |WHERE l._1 IS NOT NULL""".stripMargin)
+                .repartition(2, $"_2")
+
+            def nativeJoin(df: DataFrame): SparkPlan =
+              collectFirst(df.queryExecution.executedPlan) {
+                case join if joinClass.isInstance(join) => join
+              }.getOrElse(fail(s"Expected native $hint join"))
+
+            val semi = branch("LEFT SEMI")
+            val anti = branch("LEFT ANTI")
+            // The explicit null check defeats InferFiltersFromConstraints masking this bug.
+            // Shuffle on the payload: a join-key shuffle can be optimized away.
+            checkSparkAnswerAndOperator(semi.unionAll(anti), classOf[ReusedExchangeExec])
+            checkAnswer(semi.unionAll(anti), Seq(Row(0, 10), Row(1, 11), Row(2, 12)))
+            assert(!nativeJoin(semi).sameResult(nativeJoin(anti)))
+
+            val same = branch("LEFT SEMI")
+            assert(nativeJoin(semi).sameResult(nativeJoin(same)))
+            assert(nativeJoin(semi).semanticHash() == nativeJoin(same).semanticHash())
+            val (_, reusedPlan) =
+              checkSparkAnswerAndOperator(semi.unionAll(same), classOf[ReusedExchangeExec])
+            if (adaptive) {
+              assert(reusedPlan.isInstanceOf[AdaptiveSparkPlanExec])
+            }
+            assertExchangeReuseOver(reusedPlan, "Expected equivalent post-join exchange reuse") {
+              case join if joinClass.isInstance(join) => join
+            }
+          }
+        }
+      }
+    }
+  }
+
+  for (adaptive <- Seq(false, true)) {
+    test(s"null-aware anti join identity preserves exchange reuse: AQE=$adaptive") {
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        SQLConf.EXCHANGE_REUSE_ENABLED.key -> "true",
+        SQLConf.SHUFFLE_PARTITIONS.key -> "2",
+        CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+        withParquetTable(Seq((Some(0), 10), (Some(1), 11), (None, 12)), "l") {
+          withParquetTable(Seq(Tuple1(0)), "r") {
+            def branch(predicate: String): DataFrame =
+              sql(s"SELECT l._1, l._2 FROM l WHERE $predicate").repartition(2, $"_2")
+            val anti = branch(
+              "NOT EXISTS (SELECT /*+ BROADCAST(r) */ 1 FROM r " +
+                "WHERE r._1 = l._1 AND r._1 IS NOT NULL)")
+            val nullAware = branch("l._1 NOT IN (SELECT r._1 FROM r WHERE r._1 IS NOT NULL)")
+            checkSparkAnswerAndOperator(anti.unionAll(nullAware), classOf[ReusedExchangeExec])
+            checkAnswer(anti.unionAll(nullAware), Seq(Row(1, 11), Row(1, 11), Row(null, 12)))
+            def nativeJoin(df: DataFrame): CometBroadcastHashJoinExec =
+              collectFirst(df.queryExecution.executedPlan) {
+                case join: CometBroadcastHashJoinExec => join
+              }.getOrElse(fail("Expected native broadcast hash join"))
+            assert(!nativeJoin(anti).sameResult(nativeJoin(nullAware)))
+            val same = branch("l._1 NOT IN (SELECT r._1 FROM r WHERE r._1 IS NOT NULL)")
+            assert(nativeJoin(nullAware).sameResult(nativeJoin(same)))
+            assert(nativeJoin(nullAware).semanticHash() == nativeJoin(same).semanticHash())
+            val (_, reusedPlan) =
+              checkSparkAnswerAndOperator(nullAware.unionAll(same), classOf[ReusedExchangeExec])
+            if (adaptive) {
+              assert(reusedPlan.isInstanceOf[AdaptiveSparkPlanExec])
+            }
+            assertExchangeReuseOver(reusedPlan, "Expected equivalent null-aware join reuse") {
+              case join: CometBroadcastHashJoinExec => join
+            }
+          }
+        }
       }
     }
   }
@@ -84,6 +179,48 @@ class CometJoinSuite extends CometTestBase {
         checkSparkAnswerAndOperator(
           sql("SELECT * FROM t1 JOIN t2 ON t1.time = t2.time"),
           Seq(classOf[CometSortMergeJoinExec]))
+      }
+    }
+  }
+
+  test("SortMergeJoin with floating-point key runs natively under strict floating point") {
+    // CometSortOrder is the admission gate for the sort orders this join synthesizes, so
+    // narrowing it for scalar floats (#5506) admits FP-keyed sort-merge joins under strict mode
+    // too. Comet does not normalize the join keys itself: it compares `join_on`, and correctness
+    // rests on Catalyst's NormalizeFloatingNumbers having already wrapped both sides. This test
+    // pins that, so a future change to that rule fails here rather than silently.
+    //
+    // The fixtures are local relations rather than Parquet tables because a Parquet round trip
+    // canonicalizes every NaN payload, which would collapse the two NaN cases into one.
+    val left = Seq(
+      (1, -0.0d),
+      (2, 0.0d),
+      (3, 1.0d),
+      (4, java.lang.Double.longBitsToDouble(0x7ff8000000000002L)),
+      (5, java.lang.Double.longBitsToDouble(0xfff8000000000002L)))
+    val right = Seq(
+      (10, 0.0d),
+      (20, -0.0d),
+      (30, 1.0d),
+      (40, java.lang.Double.longBitsToDouble(0xfff8000000000002L)),
+      (50, Double.NaN))
+
+    withSQLConf(
+      CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true",
+      CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.PREFER_SORTMERGEJOIN.key -> "true") {
+      withTempView("fp_left", "fp_right") {
+        left.toDF("lid", "k").createOrReplaceTempView("fp_left")
+        right.toDF("rid", "k").createOrReplaceTempView("fp_right")
+
+        // LocalTableScanExec has no native counterpart enabled by default and is only the source
+        // of the unmodified key bits here.
+        checkSparkAnswerAndOperator(
+          sql("SELECT l.lid, r.rid FROM fp_left l JOIN fp_right r ON l.k = r.k"),
+          Seq(classOf[CometSortMergeJoinExec]),
+          classOf[LocalTableScanExec])
       }
     }
   }
@@ -274,16 +411,16 @@ class CometJoinSuite extends CometTestBase {
                 assert(join.metrics("output_rows").value == 4L)
                 val probeRows = join.metrics("input_rows").value
                 if (enabled) {
-                  val evaluated = join.metrics("dynamic_filter_rows_evaluated").value
-                  val pruned = join.metrics("dynamic_filter_rows_pruned").value
-                  val bypassed = join.metrics("dynamic_filter_rows_bypassed").value
+                  val evaluated = join.metrics("dynamic_filter_join_rows_evaluated").value
+                  val pruned = join.metrics("dynamic_filter_join_rows_pruned").value
+                  val bypassed = join.metrics("dynamic_filter_join_rows_bypassed").value
                   assert(evaluated > 0L && pruned > 0L)
                   assert(probeRows + pruned == evaluated + bypassed)
                   assert(probeRows < unfilteredProbeRows)
                   assert(evaluated + bypassed <= unfilteredProbeRows)
-                  assert(join.metrics("dynamic_filter_eval_time").value > 0L)
+                  assert(join.metrics("dynamic_filter_join_eval_time").value > 0L)
                 } else {
-                  assert(!join.metrics.contains("dynamic_filter_rows_pruned"))
+                  assert(!join.metrics.contains("dynamic_filter_join_rows_pruned"))
                   unfilteredProbeRows = probeRows
                 }
               }
@@ -364,10 +501,8 @@ class CometJoinSuite extends CometTestBase {
                   val bytes = scanMetrics("bytes_scanned").value
                   assert(joins.head.metrics("output_rows").value == 1L)
                   if (enabled) {
-                    assert(
-                      joins.head.metrics("dynamic_filter_reader_filters_attached").value > 0L)
-                    assert(
-                      joins.head.metrics("dynamic_filter_reader_filters_skipped").value == 0L)
+                    assert(joins.head.metrics("dynamic_filter_join_filters_attached").value > 0L)
+                    assert(joins.head.metrics("dynamic_filter_join_filters_skipped").value == 0L)
                     assert(
                       probeFilters.head.metrics("output_rows").value > 0L,
                       "Execution-local reader attachment must preserve probe filter metrics")
@@ -379,6 +514,62 @@ class CometJoinSuite extends CometTestBase {
                   } else {
                     unfilteredBytes = bytes
                   }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("join dynamic filter preserves Parquet schema conversion errors") {
+    withTempPath { probePath =>
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+        SQLConf.LEAF_NODE_DEFAULT_PARALLELISM.key -> "1",
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "true") {
+        spark
+          .range(100, 104, 1, 1)
+          .selectExpr("CAST(id AS INT) AS probe_key", "id AS payload")
+          .write
+          .parquet(probePath.getCanonicalPath)
+        withTempView("dynamic_schema_probe") {
+          // INT64 -> INT32 is invalid even when the stored values fit. Keep the
+          // payload projected so discarding the nonmatching keys cannot hide it.
+          spark.read
+            .schema("probe_key INT, payload INT")
+            .parquet(probePath.getCanonicalPath)
+            .createOrReplaceTempView("dynamic_schema_probe")
+          withParquetTable(Seq(Tuple1(0)), "dynamic_schema_build") {
+            for ((comet, dynamicFilter) <- Seq((false, false), (true, false), (true, true))) {
+              withSQLConf(
+                CometConf.COMET_ENABLED.key -> comet.toString,
+                CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_ENABLED.key -> dynamicFilter.toString) {
+                val df = sql(
+                  "SELECT /*+ BROADCAST(b) */ p.probe_key, p.payload " +
+                    "FROM dynamic_schema_probe p JOIN dynamic_schema_build b " +
+                    "ON p.probe_key = b._1")
+                val plan = df.queryExecution.executedPlan
+                if (comet) {
+                  val joins = collect(plan) { case join: CometBroadcastHashJoinExec => join }
+                  assert(joins.size == 1, s"Expected one native broadcast hash join:\n$plan")
+                  assert(joins.head.buildSide == BuildRight)
+                  assert(joins.head.nativeOp.getHashJoin.getDynamicFilterEnabled == dynamicFilter)
+                  val probes = collect(plan) {
+                    case scan: CometNativeScanExec if scan.output.exists(_.name == "payload") =>
+                      scan
+                  }
+                  assert(probes.size == 1, s"Expected one native probe scan:\n$plan")
+                }
+                withClue(s"comet=$comet, dynamicFilter=$dynamicFilter: ") {
+                  val error = intercept[SparkException](df.collect())
+                  val chain = causeChain(error)
+                  assert(
+                    chain.exists(_.isInstanceOf[SchemaColumnConvertNotSupportedException]),
+                    s"Expected a Parquet schema conversion error, found $chain")
                 }
               }
             }
@@ -453,10 +644,10 @@ class CometJoinSuite extends CometTestBase {
                 assert(probeScans.head.metrics("row_groups_pruned_statistics").value == 0L)
 
                 if (enabled) {
-                  assert(joins.head.metrics("dynamic_filter_reader_filters_attached").value == 0L)
-                  assert(joins.head.metrics("dynamic_filter_reader_filters_skipped").value == 1L)
-                  assert(joins.head.metrics("dynamic_filter_rows_evaluated").value == 1L)
-                  assert(joins.head.metrics("dynamic_filter_rows_pruned").value == 0L)
+                  assert(joins.head.metrics("dynamic_filter_join_filters_attached").value == 0L)
+                  assert(joins.head.metrics("dynamic_filter_join_filters_skipped").value == 1L)
+                  assert(joins.head.metrics("dynamic_filter_join_rows_evaluated").value == 1L)
+                  assert(joins.head.metrics("dynamic_filter_join_rows_pruned").value == 0L)
                 }
               }
             }
@@ -473,7 +664,7 @@ class CometJoinSuite extends CometTestBase {
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
       withParquetTable(
-        (0 until 100).map(i => (Some(i), i.toLong)) :+ (None, -1L),
+        (0 until 100).map(i => (Some(i), i.toLong)) :+ ((None, -1L)),
         "dynamic_probe") {
         for (build <- Seq(
             Seq((Some(10), 1L), (None, 2L), (Some(10), 3L), (Some(90), 4L)),
@@ -487,8 +678,8 @@ class CometJoinSuite extends CometTestBase {
             val joins = nativeHashJoins(plan)
             assert(joins.size == 1, s"Expected native hash join:\n$plan")
             if (build.size == 100) {
-              assert(joins.head.metrics("dynamic_filter_rows_evaluated").value > 0L)
-              assert(joins.head.metrics("dynamic_filter_rows_pruned").value == 0L)
+              assert(joins.head.metrics("dynamic_filter_join_rows_evaluated").value > 0L)
+              assert(joins.head.metrics("dynamic_filter_join_rows_pruned").value == 0L)
             }
           }
         }
@@ -520,8 +711,8 @@ class CometJoinSuite extends CometTestBase {
             val (_, plan) = checkSparkAnswerAndOperator(sql(query))
             val native = nativeHashJoins(plan)
             assert(native.size == 1, s"Expected native hash join:\n$plan")
-            assert(native.head.metrics("dynamic_filter_rows_evaluated").value == 0L)
-            assert(native.head.metrics("dynamic_filter_rows_pruned").value == 0L)
+            assert(native.head.metrics("dynamic_filter_join_rows_evaluated").value == 0L)
+            assert(native.head.metrics("dynamic_filter_join_rows_pruned").value == 0L)
           }
           // NOT IN must still observe build-side NULLs; never attach a filter here.
           withSQLConf(
@@ -533,7 +724,7 @@ class CometJoinSuite extends CometTestBase {
             val native = collect(plan) { case join: CometBroadcastHashJoinExec => join }
             assert(native.size == 1, s"Expected native null-aware anti join:\n$plan")
             assert(native.head.nativeOp.getHashJoin.getNullAwareAntiJoin)
-            assert(native.head.metrics("dynamic_filter_rows_evaluated").value == 0L)
+            assert(native.head.metrics("dynamic_filter_join_rows_evaluated").value == 0L)
           }
         }
       }
@@ -558,14 +749,14 @@ class CometJoinSuite extends CometTestBase {
           assert(join.buildSide == BuildRight)
           assert(join.nativeOp.getHashJoin.getDynamicFilterEnabled)
           assert(join.metrics("output_rows").value == 65536L)
-          assert(join.metrics("dynamic_filter_rows_evaluated").value > 0L)
-          assert(join.metrics("dynamic_filter_reader_filters_attached").value > 0L)
+          assert(join.metrics("dynamic_filter_join_rows_evaluated").value > 0L)
+          assert(join.metrics("dynamic_filter_join_filters_attached").value > 0L)
           val probeScans = collect(plan) {
             case scan: CometNativeScanExec if scan.output.size == 1 => scan
           }
           assert(probeScans.size == 1, s"Expected one native byte probe scan:\n$plan")
           val probeRows = probeScans.head.metrics("output_rows").value
-          val residualPruned = join.metrics("dynamic_filter_rows_pruned").value
+          val residualPruned = join.metrics("dynamic_filter_join_rows_pruned").value
           assert(
             probeRows < 2L || residualPruned > 0L,
             "Expected the reader or residual filter to prune probe key 2, " +
@@ -1378,6 +1569,256 @@ class CometJoinSuite extends CometTestBase {
               "SELECT /*+ BROADCAST(tbl_a) */ * FROM tbl_a LEFT OUTER JOIN tbl_b" +
                 " ON tbl_a._1 > tbl_b._1")
           checkSparkAnswer(df)
+        }
+      }
+    }
+  }
+
+  test("ExistenceJoin via BroadcastHashJoin (EXISTS combined with OR)") {
+    withSQLConf(
+      CometConf.COMET_EXEC_EXISTENCE_JOIN_ENABLED.key -> "true",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "10MB",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "10MB") {
+      withParquetTable((0 until 100).map(i => (i, if (i % 3 == 0) "US" else "EU")), "tbl_a") {
+        withParquetTable((0 until 30).map(i => (i, i + 1)), "tbl_b") {
+          val df = sql("SELECT * FROM tbl_a a " +
+            "WHERE a._2 = 'US' OR EXISTS (SELECT /*+ BROADCAST(b) */ 1 FROM tbl_b b WHERE b._1 = a._1)")
+          checkSparkAnswerAndOperator(
+            df,
+            Seq(classOf[CometBroadcastExchangeExec], classOf[CometBroadcastHashJoinExec]))
+        }
+      }
+    }
+  }
+
+  test("ExistenceJoin via ShuffledHashJoin (EXISTS combined with OR)") {
+    withSQLConf(
+      CometConf.COMET_EXEC_EXISTENCE_JOIN_ENABLED.key -> "true",
+      SQLConf.PREFER_SORTMERGEJOIN.key -> "false",
+      "spark.sql.join.forceApplyShuffledHashJoin" -> "true",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+      withParquetTable((0 until 100).map(i => (i, if (i % 3 == 0) "US" else "EU")), "tbl_a") {
+        withParquetTable((0 until 30).map(i => (i, i + 1)), "tbl_b") {
+          val df = sql(
+            "SELECT * FROM tbl_a a " +
+              "WHERE a._2 = 'US' OR EXISTS (SELECT 1 FROM tbl_b b WHERE b._1 = a._1)")
+          checkSparkAnswerAndOperator(df, Seq(classOf[CometHashJoinExec]))
+        }
+      }
+    }
+  }
+
+  test("ExistenceJoin via SortMergeJoin falls back to Spark") {
+    // Existence sort-merge joins are not executed natively; verify the fallback.
+    withSQLConf(
+      CometConf.COMET_EXEC_EXISTENCE_JOIN_ENABLED.key -> "true",
+      SQLConf.PREFER_SORTMERGEJOIN.key -> "true",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+      withParquetTable((0 until 100).map(i => (i, if (i % 3 == 0) "US" else "EU")), "tbl_a") {
+        withParquetTable((0 until 30).map(i => (i, i + 1)), "tbl_b") {
+          val df = sql(
+            "SELECT * FROM tbl_a a " +
+              "WHERE a._2 = 'US' OR EXISTS (SELECT 1 FROM tbl_b b WHERE b._1 = a._1)")
+          checkSparkAnswerAndFallbackReason(df, "Unsupported join type")
+        }
+      }
+    }
+  }
+
+  test("ExistenceJoin with residual condition falls back to Spark") {
+    // A non-equi residual predicate is evaluated over the whole candidate batch by DataFusion's
+    // LeftMark join (no first-match short-circuit), so Comet keeps it on Spark; verify parity.
+    // AQE is disabled because a declined broadcast join loses its fallback reason from the
+    // AQE-final plan; see https://github.com/apache/datafusion-comet/issues/6442.
+    withSQLConf(
+      CometConf.COMET_EXEC_EXISTENCE_JOIN_ENABLED.key -> "true",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "10MB",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "10MB") {
+      withParquetTable((0 until 100).map(i => (i, if (i % 3 == 0) "US" else "EU")), "tbl_a") {
+        withParquetTable((0 until 30).map(i => (i, i + 1)), "tbl_b") {
+          val df = sql(
+            "SELECT * FROM tbl_a a WHERE a._2 = 'US' OR EXISTS " +
+              "(SELECT /*+ BROADCAST(b) */ 1 FROM tbl_b b WHERE b._1 = a._1 AND b._2 > a._1)")
+          checkSparkAnswerAndFallbackReason(df, "residual (non-equi)")
+        }
+      }
+    }
+  }
+
+  test("ExistenceJoin with computed join key falls back to Spark") {
+    // A computed join key (not a bare column reference) is evaluated eagerly over the batch by
+    // the native join, so Comet keeps it on Spark; verify parity.
+    // AQE is disabled because a declined broadcast join loses its fallback reason from the
+    // AQE-final plan; see https://github.com/apache/datafusion-comet/issues/6442.
+    withSQLConf(
+      CometConf.COMET_EXEC_EXISTENCE_JOIN_ENABLED.key -> "true",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "10MB",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "10MB") {
+      withParquetTable((0 until 100).map(i => (i, if (i % 3 == 0) "US" else "EU")), "tbl_a") {
+        withParquetTable((0 until 30).map(i => (i, i + 1)), "tbl_b") {
+          val df = sql(
+            "SELECT * FROM tbl_a a WHERE a._2 = 'US' OR EXISTS " +
+              "(SELECT /*+ BROADCAST(b) */ 1 FROM tbl_b b WHERE b._1 = a._1 + 1)")
+          checkSparkAnswerAndFallbackReason(df, "computed (non-column)")
+        }
+      }
+    }
+  }
+
+  test("ExistenceJoin with duplicate build keys runs natively (markers not multiplied)") {
+    withSQLConf(
+      CometConf.COMET_EXEC_EXISTENCE_JOIN_ENABLED.key -> "true",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "10MB",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "10MB") {
+      withParquetTable((0 until 100).map(i => (i, if (i % 3 == 0) "US" else "EU")), "tbl_a") {
+        // Build side repeats keys 0..4 many times; the existence marker must stay "at least one
+        // match" and must not multiply matching probe rows.
+        withParquetTable((0 until 30).map(i => (i % 5, i)), "tbl_b") {
+          val df = sql(
+            "SELECT * FROM tbl_a a WHERE a._2 = 'US' OR EXISTS " +
+              "(SELECT /*+ BROADCAST(b) */ 1 FROM tbl_b b WHERE b._1 = a._1)")
+          checkSparkAnswerAndOperator(
+            df,
+            Seq(classOf[CometBroadcastExchangeExec], classOf[CometBroadcastHashJoinExec]))
+        }
+      }
+    }
+  }
+
+  test("ExistenceJoin with NOT EXISTS combined with OR runs natively") {
+    withSQLConf(
+      CometConf.COMET_EXEC_EXISTENCE_JOIN_ENABLED.key -> "true",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "10MB",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "10MB") {
+      withParquetTable((0 until 100).map(i => (i, if (i % 3 == 0) "US" else "EU")), "tbl_a") {
+        withParquetTable((0 until 30).map(i => (i, i + 1)), "tbl_b") {
+          val df = sql(
+            "SELECT * FROM tbl_a a WHERE a._2 = 'US' OR NOT EXISTS " +
+              "(SELECT /*+ BROADCAST(b) */ 1 FROM tbl_b b WHERE b._1 = a._1)")
+          checkSparkAnswerAndOperator(
+            df,
+            Seq(classOf[CometBroadcastExchangeExec], classOf[CometBroadcastHashJoinExec]))
+        }
+      }
+    }
+  }
+
+  test("ExistenceJoin falls back to Spark when the feature flag is disabled") {
+    // With the flag off, the join is declined with a toggle-specific reason rather than a generic
+    // "Unsupported join type" message that reads like a permanent limitation. AQE is disabled
+    // because a declined broadcast join loses its fallback reason from the AQE-final plan; see
+    // https://github.com/apache/datafusion-comet/issues/6442.
+    withSQLConf(
+      CometConf.COMET_EXEC_EXISTENCE_JOIN_ENABLED.key -> "false",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "10MB",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "10MB") {
+      withParquetTable((0 until 100).map(i => (i, if (i % 3 == 0) "US" else "EU")), "tbl_a") {
+        withParquetTable((0 until 30).map(i => (i, i + 1)), "tbl_b") {
+          val df = sql(
+            "SELECT * FROM tbl_a a WHERE a._2 = 'US' OR EXISTS " +
+              "(SELECT /*+ BROADCAST(b) */ 1 FROM tbl_b b WHERE b._1 = a._1)")
+          checkSparkAnswerAndFallbackReason(df, "Native ExistenceJoin is disabled")
+        }
+      }
+    }
+  }
+
+  test("ExistenceJoin via SortMergeJoin stays on Spark even with forceShuffledHashJoin") {
+    // RewriteJoin refuses to rewrite an existence SortMergeJoin into a BuildRight ShuffledHashJoin
+    // (https://github.com/apache/datafusion-comet/issues/2697), so even with forced SHJ the join
+    // must stay on Spark rather than run as a native hash join. Assert on the plan (no native join
+    // form) rather than the fallback reason, which is the robust signal for this rewrite guard.
+    withSQLConf(
+      CometConf.COMET_EXEC_EXISTENCE_JOIN_ENABLED.key -> "true",
+      CometConf.COMET_FORCE_SHJ.key -> "true",
+      SQLConf.PREFER_SORTMERGEJOIN.key -> "true",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+      withParquetTable((0 until 100).map(i => (i, if (i % 3 == 0) "US" else "EU")), "tbl_a") {
+        withParquetTable((0 until 30).map(i => (i, i + 1)), "tbl_b") {
+          val df = sql(
+            "SELECT * FROM tbl_a a " +
+              "WHERE a._2 = 'US' OR EXISTS (SELECT 1 FROM tbl_b b WHERE b._1 = a._1)")
+          val (_, cometPlan) = checkSparkAnswer(df)
+          assert(
+            collect(cometPlan) { case h: CometHashJoinExec => h }.isEmpty &&
+              collect(cometPlan) { case s: CometSortMergeJoinExec => s }.isEmpty,
+            s"Existence SMJ must not be rewritten to a native hash join:\n$cometPlan")
+        }
+      }
+    }
+  }
+
+  test("scans of one bucketed table in a single native plan each read their own files") {
+    withTable("bucketed_self", "bucketed_dim") {
+      val rows = for {
+        p <- 1 to 3
+        i <- 0 until 20
+      } yield (i % 10, s"p${p}_$i", p)
+      rows
+        .toDF("k", "v", "p")
+        .write
+        .format("parquet")
+        .partitionBy("p")
+        .bucketBy(4, "k")
+        .saveAsTable("bucketed_self")
+      Seq((1, "one"), (2, "two"), (3, "three"))
+        .toDF("p", "x")
+        .write
+        .format("parquet")
+        .saveAsTable("bucketed_dim")
+
+      // A bucketed sort-merge self-join needs no exchange, so both scans run in one native plan
+      // and must each get their own files, though they read the same table and columns.
+      def assertScansShareOneNativePlan(plan: SparkPlan): Seq[CometNativeScanExec] = {
+        val join = collectFirst(plan) { case j: CometSortMergeJoinExec => j }
+          .getOrElse(fail(s"Expected a native sort-merge join:\n$plan"))
+        val scans = collect(join) { case s: CometNativeScanExec => s }
+        assert(scans.size == 2, s"Expected both scans under the join:\n$plan")
+        assert(
+          collect(join) { case e: ShuffleExchangeLike => e }.isEmpty,
+          s"Expected no exchange between the join and its scans:\n$plan")
+        scans
+      }
+
+      for (adaptive <- Seq(false, true)) {
+        withSQLConf(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+          SQLConf.BUCKETING_ENABLED.key -> "true",
+          SQLConf.AUTO_BUCKETED_SCAN_ENABLED.key -> "false",
+          SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+          SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+          CometConf.COMET_EXEC_SORT_MERGE_JOIN_ENABLED.key -> "true") {
+          // In a full outer join neither side gets an inferred isnotnull data filter, so only
+          // the partition filters tell the two scans apart.
+          val (_, fullOuter) = checkSparkAnswerAndOperator(
+            "SELECT a.k, a.v, b.v FROM (SELECT * FROM bucketed_self WHERE p = 1) a " +
+              "FULL OUTER JOIN (SELECT * FROM bucketed_self WHERE p = 2) b ON a.k = b.k")
+          assertScansShareOneNativePlan(fullOuter)
+
+          // Without filter pushdown the scans carry no data filters, and dynamic partition
+          // pruning picks a different partition for each side. Spark 3.4 only runs this with
+          // AQE off: CometScanRule.transformV1Scan leaves a V1 scan with AQE dynamic pruning in
+          // Spark there (case 2 in CometSpark34AqeDppFallbackRule).
+          if (!adaptive || isSpark35Plus) {
+            withSQLConf(SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED.key -> "false") {
+              val (_, pruned) = checkSparkAnswer(
+                "SELECT /*+ BROADCAST(d1), BROADCAST(d2) */ a.k, a.v, b.v " +
+                  "FROM bucketed_self a JOIN bucketed_self b ON a.k = b.k " +
+                  "JOIN bucketed_dim d1 ON a.p = d1.p JOIN bucketed_dim d2 ON b.p = d2.p " +
+                  "WHERE d1.x = 'one' AND d2.x = 'two'")
+              assertScansShareOneNativePlan(pruned).foreach { scan =>
+                assert(
+                  scan.partitionFilters.exists(_.isInstanceOf[DynamicPruningExpression]),
+                  s"Expected each scan to be pruned dynamically:\n$pruned")
+              }
+            }
+          }
         }
       }
     }

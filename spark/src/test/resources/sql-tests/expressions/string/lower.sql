@@ -25,11 +25,11 @@ CREATE TABLE test_lower(s string) USING parquet
 statement
 INSERT INTO test_lower VALUES ('HELLO'), ('hello'), ('Hello World'), (''), (NULL), ('123ABC')
 
-query
+query expect_dispatch(lower)
 SELECT lower(s) FROM test_lower
 
 -- literal arguments
-query
+query expect_dispatch(lower)
 SELECT lower('HELLO'), lower(''), lower(NULL)
 
 -- locale-sensitive characters: Greek sigma and Turkish dotted I
@@ -39,5 +39,5 @@ CREATE TABLE test_lower_unicode(s string) USING parquet
 statement
 INSERT INTO test_lower_unicode VALUES ('ΣIGMA'), ('İSTANBUL'), ('GROSSE'), ('CAFÉ')
 
-query
+query expect_dispatch(lower)
 SELECT lower(s) FROM test_lower_unicode

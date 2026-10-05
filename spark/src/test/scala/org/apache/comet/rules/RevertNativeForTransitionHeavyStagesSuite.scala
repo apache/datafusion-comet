@@ -19,7 +19,7 @@
 
 package org.apache.comet.rules
 
-import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.{CometTestBase, Row}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial}
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
@@ -28,6 +28,7 @@ import org.apache.spark.sql.execution.adaptive.QueryStageExec
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
+import org.apache.comet.CometSparkSessionExtensions.isSpark35Plus
 
 class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
 
@@ -44,9 +45,9 @@ class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
   }
 
   private def applyFullColumnarPipeline(plan: SparkPlan): SparkPlan = {
-    val cometPlan = CometScanRule(spark).apply(plan)
-    val execPlan = CometExecRule(spark).apply(cometPlan)
-    val withTransitions = ApplyColumnarRulesAndInsertTransitions(Seq.empty, false).apply(execPlan)
+    val cometPlan = CometRule(spark).apply(plan)
+    val withTransitions =
+      ApplyColumnarRulesAndInsertTransitions(Seq.empty, false).apply(cometPlan)
     EliminateRedundantTransitions(spark).apply(withTransitions)
   }
 
@@ -137,6 +138,49 @@ class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
         assert(
           reverted.output.map(_.name) == cometPlan.output.map(_.name),
           "Output schema should be preserved after revert")
+      }
+    }
+  }
+
+  for (adaptive <- Seq(false, true)) {
+    test(s"transition reversion preserves local TopK: AQE=$adaptive") {
+      withSQLConf(
+        CometConf.COMET_EXEC_TOPK_FUSION_ENABLED.key -> "true",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        SQLConf.LEAF_NODE_DEFAULT_PARALLELISM.key -> "1",
+        CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS.key -> "0") {
+        withTempPath { path =>
+          spark
+            .range(0, 20, 1, 1)
+            .selectExpr("CAST(id AS INT) AS k", "id * 10 AS payload")
+            .write
+            .parquet(path.getCanonicalPath)
+          withParquetTable(path.getCanonicalPath, "topk_revert") {
+            for (offset <- Seq(2, 7, 0); projection <- Seq("k", "payload")) {
+              val query = s"SELECT $projection FROM topk_revert ORDER BY k LIMIT 5 OFFSET $offset"
+              withSQLConf(CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "false") {
+                val plan = sql(query).queryExecution.executedPlan
+                val local = collect(plan) { case topK: CometLocalTopKExec => topK }
+                assert(local.size == 1, s"Expected a fused TopK before reversion:\n$plan")
+                assert(local.head.child.isInstanceOf[CometNativeScanExec])
+              }
+              val df = sql(query)
+              val expected = (offset until offset + 5).map { key =>
+                if (projection == "k") Row(key) else Row(key * 10L)
+              }
+              withClue(query) {
+                assert(df.collect().toSeq == expected)
+              }
+              val plan = stripAQEPlan(df.queryExecution.executedPlan)
+              assert(countCometExecs(plan) == 0, s"Expected stage reversion:\n$plan")
+              assert(
+                collect(plan) { case topK: TakeOrderedAndProjectExec => topK }.size == 1,
+                s"Reversion must restore offset and projection exactly once:\n$plan")
+            }
+          }
+        }
       }
     }
   }
@@ -233,6 +277,89 @@ class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
         assert(
           countCometExecs(executedPlan) == 0,
           s"Revert should have removed all CometExec nodes:\n${executedPlan.treeString}")
+      }
+    }
+  }
+
+  test("AQE DPP remains executable when transition reversion restores a V1 scan") {
+    assume(isSpark35Plus, "Comet AQE DPP query-stage optimizer rules require Spark 3.5+")
+    import testImplicits._
+
+    withTempDir { dir =>
+      val factPath = s"${dir.getAbsolutePath}/fact"
+      val dimPath = s"${dir.getAbsolutePath}/dim"
+      withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "false") {
+        (0 until 400)
+          .map(i => (i, i % 10, s"f$i"))
+          .toDF("fact_id", "fact_key", "fact_str")
+          .write
+          .partitionBy("fact_key")
+          .parquet(factPath)
+        (0 until 10)
+          .map(i => (i, i, s"d$i"))
+          .toDF("dim_id", "dim_key", "dim_str")
+          .write
+          .parquet(dimPath)
+      }
+
+      withTempView("revert_dpp_fact", "revert_dpp_dim") {
+        withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> "parquet") {
+          spark.read.parquet(factPath).createOrReplaceTempView("revert_dpp_fact")
+          spark.read.parquet(dimPath).createOrReplaceTempView("revert_dpp_dim")
+
+          val query =
+            """SELECT f.fact_id, f.fact_str, d.dim_str
+              |FROM revert_dpp_fact f JOIN revert_dpp_dim d
+              |  ON f.fact_key = d.dim_key
+              |WHERE d.dim_id < 10""".stripMargin
+
+          for {
+            adaptive <- Seq(false, true)
+            transitionRevert <- Seq(false, true)
+            projectEnabled <- Seq(false, true)
+          } {
+            withClue(
+              s"AQE=$adaptive, transitionRevert=$transitionRevert, " +
+                s"projectEnabled=$projectEnabled: ") {
+              withSQLConf(
+                SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+                SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true",
+                CometConf.COMET_ENABLED.key -> "true",
+                CometConf.COMET_EXEC_ENABLED.key -> "true",
+                "spark.comet.exec.project.enabled" -> projectEnabled.toString,
+                CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key ->
+                  transitionRevert.toString,
+                CometConf.COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS.key -> "0") {
+                val df = sql(query)
+                assert(df.collect().length == 400)
+
+                if (adaptive && transitionRevert) {
+                  val executedPlan = stripAQEPlan(df.queryExecution.executedPlan)
+                  val scans = executedPlan.collect { case scan: FileSourceScanExec => scan }
+                  assert(
+                    scans.nonEmpty,
+                    s"Transition reversion should restore Spark V1 scans:\n$executedPlan")
+                  assert(
+                    scans.exists(_.partitionFilters.exists(_.exists {
+                      case inSub: InSubqueryExec =>
+                        inSub.plan.isInstanceOf[CometSubqueryBroadcastExec] ||
+                        inSub.plan.isInstanceOf[SubqueryBroadcastExec]
+                      case _ => false
+                    })),
+                    s"Reverted scan should retain the executable DPP subquery:\n$executedPlan")
+                  assert(
+                    !scans.exists(_.partitionFilters.exists(_.exists {
+                      case inSub: InSubqueryExec =>
+                        inSub.plan.isInstanceOf[SubqueryAdaptiveBroadcastExec]
+                      case _ => false
+                    })),
+                    "Reverted scan must not restore an unexecutable AQE DPP placeholder:\n" +
+                      executedPlan)
+                }
+              }
+            }
+          }
+        }
       }
     }
   }

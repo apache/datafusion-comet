@@ -198,14 +198,14 @@ object CometArrowStream extends Logging {
    * batch can still be nullable per Spark's contract (the next batch may have one), and a column
    * whose actual buffer carries validity bits must stay nullable even if Spark thought otherwise.
    * Taking only `raw.isNullable` here would advertise non-nullable when the next batch does carry
-   * a null and crash native validation.
+   * a null and crash native validation. Both inputs are borrowed and unchanged; the returned
+   * field owns no buffers. Missing dictionary metadata or provider entries propagate the shared
+   * accessor's named column error.
    */
   private def actualFieldOf(col: CometVector, expected: Field): Field = {
     val raw = col match {
       case d: CometDictionaryVector =>
-        val indices = d.getValueVector
-        val dict = d.provider.lookup(indices.getField.getDictionary.getId)
-        dict.getVector.getField
+        d.getDictionary.getVector.getField
       case _ => col.getValueVector.getField
     }
     val nullable = expected.isNullable || raw.isNullable
@@ -225,6 +225,14 @@ object CometArrowStream extends Logging {
    * (Spark fires listeners in reverse registration order, and the listener that drops the native
    * plan is registered later by `CometExecIterator`), so `allocator.close` finds zero outstanding
    * bytes.
+   *
+   * Native takes the stream on the plan's first `executePlan`. The listener releases a stream
+   * native never took (plan creation failed, the consumer was never polled, the task failed
+   * first, or planning failed before reaching this input) itself: `ArrowArrayStream.close` alone
+   * frees only the C struct, leaving the reader open and pinned for the life of the executor by
+   * the JNI global ref that arrow-java holds on the stream's private data. Taking the stream
+   * leaves a null release callback in the JVM's struct, and arrow-java's `release` skips a null
+   * callback, so a stream native took is still released only once.
    */
   def stream(
       name: String,
@@ -249,6 +257,8 @@ object CometArrowStream extends Logging {
     if (context != null) {
       val streamRef = arrowStream
       context.addTaskCompletionListener[Unit] { _ =>
+        // Release before close: `close` frees the struct that `release` reads.
+        streamRef.release()
         streamRef.close()
         allocator.close()
       }
