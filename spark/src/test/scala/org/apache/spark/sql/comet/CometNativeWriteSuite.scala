@@ -361,10 +361,14 @@ class NativeWriteCommitProtocol(jobId: String, path: String, dynamicPartitionOve
   }
 }
 
-/** With periodic updates disabled, this metric throws only during native iterator teardown. */
+/**
+ * With periodic updates disabled, this metric throws only during native iterator teardown.
+ * CometMetricNode reports a sum metric with `add`, so both update methods throw.
+ */
 class CleanupFailingWriteMetric extends SQLMetric("sum") {
   override def copy(): SQLMetric = new CleanupFailingWriteMetric
   override def set(value: Long): Unit = throw new IOException("injected cleanup failure")
+  override def add(value: Long): Unit = throw new IOException("injected cleanup failure")
 }
 
 class CleanupFailingNativeWriteExec(writer: CometNativeWriteExec)
