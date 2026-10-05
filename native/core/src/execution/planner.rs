@@ -7298,15 +7298,20 @@ mod tests {
             .expect("schema");
         let schema_arc = Arc::new(iceberg_schema);
 
+        let identity_field = |source_id: i32, field_id: i32, name: &str| {
+            iceberg::spec::UnboundPartitionField::builder()
+                .source_ids(vec![source_id])
+                .field_id(field_id)
+                .name(name)
+                .transform(iceberg::spec::Transform::Identity)
+                .build()
+                .expect("unbound field")
+        };
+
         // Spec 0 (older): field 1000 named "region_old".
         let spec0 = PartitionSpec::builder(Arc::clone(&schema_arc))
             .with_spec_id(0)
-            .add_unbound_field(iceberg::spec::UnboundPartitionField {
-                source_id: 2,
-                field_id: Some(1000),
-                name: "region_old".to_string(),
-                transform: iceberg::spec::Transform::Identity,
-            })
+            .add_unbound_field(identity_field(2, 1000, "region_old"))
             .expect("add field")
             .build()
             .expect("build spec0");
@@ -7314,19 +7319,9 @@ mod tests {
         // Spec 1 (newer): same field id 1000 renamed to "region_new", plus a new field 2000.
         let spec1 = PartitionSpec::builder(Arc::clone(&schema_arc))
             .with_spec_id(1)
-            .add_unbound_field(iceberg::spec::UnboundPartitionField {
-                source_id: 2,
-                field_id: Some(1000),
-                name: "region_new".to_string(),
-                transform: iceberg::spec::Transform::Identity,
-            })
+            .add_unbound_field(identity_field(2, 1000, "region_new"))
             .expect("add field")
-            .add_unbound_field(iceberg::spec::UnboundPartitionField {
-                source_id: 3,
-                field_id: Some(2000),
-                name: "category".to_string(),
-                transform: iceberg::spec::Transform::Identity,
-            })
+            .add_unbound_field(identity_field(3, 2000, "category"))
             .expect("add field")
             .build()
             .expect("build spec1");
