@@ -49,5 +49,5 @@ body:
         The Apache DataFusion Comet community encourages bug fix contributions. Would you or another member of your organization be willing to contribute a fix for this bug to the Apache Datafusion Comet codebase?
       options:
         - I can contribute a fix for this bug independently
-        - I would be willing to contribute a fix for this bug with guidance from the Iceberg community
+        - I would be willing to contribute a fix for this bug with guidance from the DataFusion community
         - I cannot contribute a fix for this bug at this time
