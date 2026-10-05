@@ -92,6 +92,11 @@ incorrect result. When any single window expression in a `WindowExec` falls back
   holding an array, such as `array(named_struct('x', x))`. DataFusion cannot compare those values to find the
   frame's bounds ([apache/datafusion#24937](https://github.com/apache/datafusion/issues/24937)). Ranking functions
   and `ROWS` frames over the same keys run natively.
+- `RANGE` frame bounded by `CURRENT ROW` when an `ORDER BY` key is an array or struct whose type can hold a null
+  element or field, such as `array(x)` over a nullable `x`. DataFusion orders such a null above every other value
+  when it looks for the frame's bounds, while the sort puts it first as Spark does, so a frame could run to the end
+  of the partition ([#6477](https://github.com/apache/datafusion-comet/issues/6477)). Ranking functions, `ROWS`
+  frames, and a key that cannot hold a null element or field, such as `array(coalesce(x, 0))`, run natively.
 - `first_value` / `last_value` on a `RANGE` frame with a literal offset
   ([#4835](https://github.com/apache/datafusion-comet/issues/4835)).
 - `lag` / `lead` with a non-literal default value ([#4268](https://github.com/apache/datafusion-comet/issues/4268)).
