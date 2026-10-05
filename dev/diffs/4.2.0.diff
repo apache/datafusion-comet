@@ -960,10 +960,10 @@ index 879569045b6..f3ff89067d2 100644
      assert(exchanges.size == 2)
    }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
-index c68f64d52f2..32489f2cb15 100644
+index c68f64d52f2..59f9f9bb092 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
-@@ -22,6 +22,7 @@ import org.scalatest.GivenWhenThen
+@@ -22,9 +22,11 @@ import org.scalatest.GivenWhenThen
  import org.apache.spark.sql.catalyst.expressions.{DynamicPruningExpression, Expression}
  import org.apache.spark.sql.catalyst.expressions.CodegenObjectFactoryMode._
  import org.apache.spark.sql.catalyst.plans.ExistenceJoin
@@ -971,7 +971,11 @@ index c68f64d52f2..32489f2cb15 100644
  import org.apache.spark.sql.connector.catalog.{InMemoryTableCatalog, InMemoryTableWithV2FilterCatalog}
  import org.apache.spark.sql.execution._
  import org.apache.spark.sql.execution.adaptive._
-@@ -192,6 +193,7 @@ abstract class DynamicPartitionPruningSuiteBase
++import org.apache.spark.sql.execution.columnar.InMemoryTableScanExec
+ import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
+ import org.apache.spark.sql.execution.exchange.{BroadcastExchangeLike, ReusedExchangeExec}
+ import org.apache.spark.sql.execution.joins.BroadcastHashJoinExec
+@@ -192,6 +194,7 @@ abstract class DynamicPartitionPruningSuiteBase
      }
      val subqueryBroadcast = dpExprs.collect {
        case InSubqueryExec(_, b: SubqueryBroadcastExec, _, _, _, _) => b
@@ -979,7 +983,19 @@ index c68f64d52f2..32489f2cb15 100644
      }
  
      val hasFilter = if (withSubquery) "Should" else "Shouldn't"
-@@ -246,6 +248,8 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -228,7 +231,10 @@ abstract class DynamicPartitionPruningSuiteBase
+     }
+ 
+     val isMainQueryAdaptive = plan.isInstanceOf[AdaptiveSparkPlanExec]
+-    subqueriesAll(plan).filterNot(subqueryBroadcast.contains).foreach { s =>
++    // Comet's cache scan exposes Spark's own scan as its one subquery, for Spark's UI to draw
++    // the cached plan below it, but the query never runs it as a subquery.
++    subqueriesAll(plan).filterNot(subqueryBroadcast.contains)
++      .filterNot(_.isInstanceOf[InMemoryTableScanExec]).foreach { s =>
+       val subquery = s match {
+         case r: ReusedSubqueryExec => r.child
+         case o => o
+@@ -246,6 +252,8 @@ abstract class DynamicPartitionPruningSuiteBase
      val buf = collectDynamicPruningExpressions(df.queryExecution.executedPlan).collect {
        case InSubqueryExec(_, b: SubqueryBroadcastExec, _, _, _, _) =>
          b.indices.map(idx => b.buildKeys(idx))
@@ -988,7 +1004,7 @@ index c68f64d52f2..32489f2cb15 100644
      }
      assert(buf.distinct.size == n)
    }
-@@ -261,6 +265,12 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -261,6 +269,12 @@ abstract class DynamicPartitionPruningSuiteBase
        case s: BatchScanExec => s.runtimeFilters.collect {
          case d: DynamicPruningExpression => d.child
        }
@@ -1001,7 +1017,7 @@ index c68f64d52f2..32489f2cb15 100644
        case _ => Nil
      }
    }
-@@ -1203,10 +1213,16 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -1203,10 +1217,16 @@ abstract class DynamicPartitionPruningSuiteBase
  
        val plan = df.queryExecution.executedPlan
        val countSubqueryBroadcasts =
@@ -1020,7 +1036,7 @@ index c68f64d52f2..32489f2cb15 100644
  
        assert(countSubqueryBroadcasts == 1)
        assert(countReusedSubqueryBroadcasts == 1)
-@@ -1578,6 +1594,7 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -1578,6 +1598,7 @@ abstract class DynamicPartitionPruningSuiteBase
  
          val subqueryBroadcastExecs = collectWithSubqueries(df.queryExecution.executedPlan) {
            case s: SubqueryBroadcastExec => s
@@ -1028,7 +1044,7 @@ index c68f64d52f2..32489f2cb15 100644
          }
          assert(subqueryBroadcastExecs.size === 1)
          subqueryBroadcastExecs.foreach { subqueryBroadcastExec =>
-@@ -1730,6 +1747,10 @@ abstract class DynamicPartitionPruningV1Suite extends DynamicPartitionPruningDat
+@@ -1730,6 +1751,10 @@ abstract class DynamicPartitionPruningV1Suite extends DynamicPartitionPruningDat
                case s: BatchScanExec =>
                  // we use f1 col for v2 tables due to schema pruning
                  s.output.exists(_.exists(_.argString(maxFields = 100).contains("f1")))
