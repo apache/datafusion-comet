@@ -273,6 +273,7 @@ mod tests {
         for expected in [
             "add_one_c",
             "sub_c",
+            "sum_c",
             "echo_c",
             "stringify_c",
             "make_ts_utc_c",

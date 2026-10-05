@@ -19,16 +19,14 @@
 
 package org.apache.comet.udf
 
-import org.apache.comet.CometNativeException
-
-/** Thrown when a native UDF dynamic library cannot be opened. */
-class CometNativeUdfLoadException(msg: String, cause: Throwable = null)
-    extends CometNativeException(msg) {
-  if (cause != null) initCause(cause)
-}
+import org.apache.comet.CometRuntimeException
 
 /**
- * Thrown when a native UDF library exposes the wrong ABI version or is missing required discovery
- * symbols.
+ * Thrown when Spark itself evaluates a call to a UDF registered with Comet, which means Comet did
+ * not take the operator holding it.
  */
-class CometNativeUdfAbiException(msg: String) extends CometNativeException(msg)
+class CometUdfNotEvaluatedException(name: String)
+    extends CometRuntimeException(
+      s"UDF '$name' is registered with Comet and runs only inside Comet's native execution, but " +
+        "Spark evaluated it, which means Comet did not take the operator holding the call. The " +
+        "query's extended explain output gives the reason that operator fell back to Spark.")

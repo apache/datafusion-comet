@@ -17,18 +17,16 @@
  * under the License.
  */
 
-package org.apache.comet.udf
+package org.apache.spark.sql.comet
 
-import org.apache.comet.CometNativeException
-
-/** Thrown when a native UDF dynamic library cannot be opened. */
-class CometNativeUdfLoadException(msg: String, cause: Throwable = null)
-    extends CometNativeException(msg) {
-  if (cause != null) initCause(cause)
-}
+import org.apache.spark.sql.errors.QueryCompilationErrors
 
 /**
- * Thrown when a native UDF library exposes the wrong ABI version or is missing required discovery
- * symbols.
+ * Spark's own analysis errors for UDFs registered with Comet, which Spark keeps `private[sql]`.
  */
-class CometNativeUdfAbiException(msg: String) extends CometNativeException(msg)
+object CometUdfErrors {
+
+  /** The error Spark raises when a function is called with the wrong number of arguments. */
+  def wrongNumArgs(name: String, expected: Int, actual: Int): Throwable =
+    QueryCompilationErrors.wrongNumArgsError(name, Seq(expected), actual)
+}

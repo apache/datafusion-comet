@@ -22,6 +22,7 @@
 //! - `add_one_c`: `(Int64) -> Int64`, the basic compute path
 //! - `sub_c`: `(Int64, Int64) -> Int64`, `a - b`, which is order-sensitive
 //!   so a call that delivered its arguments swapped gives a wrong answer
+//! - `sum_c`: `(Int64, ...) -> Int64`, the sum of any number of arguments
 //! - `echo_c`: identity over any type, used to check that each supported
 //!   Spark type survives the round trip through the ABI with its nulls
 //! - `stringify_c`: `(any) -> Utf8`, which forces the UDF to actually
@@ -120,6 +121,47 @@ impl CometCScalarUdf for SubC {
         };
         let (a, b) = (int64(0)?, int64(1)?);
         let out: Int64Array = a.iter().zip(b.iter()).map(|(a, b)| Some(a? - b?)).collect();
+        Ok(Arc::new(out))
+    }
+}
+
+/// The sum of one or more `Int64` arguments, NULL where any of them is.
+///
+/// Takes any number of arguments, so the suite can call it with more than
+/// the four a registration was once limited to.
+#[derive(Default)]
+pub struct SumC;
+
+impl CometCScalarUdf for SumC {
+    fn name(&self) -> &str {
+        "sum_c"
+    }
+
+    fn return_field(&self, args: &[Field]) -> Result<Field, String> {
+        if args.is_empty() || args.iter().any(|a| a.data_type() != &DataType::Int64) {
+            return Err("sum_c expects one or more Int64 arguments".to_string());
+        }
+        Ok(Field::new("sum_c", DataType::Int64, true))
+    }
+
+    fn invoke(&self, args: &[ArrayRef], n_rows: usize) -> Result<ArrayRef, String> {
+        let arrays = args
+            .iter()
+            .enumerate()
+            .map(|(i, a)| {
+                a.as_any()
+                    .downcast_ref::<Int64Array>()
+                    .ok_or_else(|| format!("arg #{i}: expected Int64Array"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let out: Int64Array = (0..n_rows)
+            .map(|row| {
+                arrays
+                    .iter()
+                    .map(|a| a.is_valid(row).then(|| a.value(row)))
+                    .sum::<Option<i64>>()
+            })
+            .collect();
         Ok(Arc::new(out))
     }
 }
@@ -396,6 +438,7 @@ impl CometCScalarUdf for PanicsOnReturnField {
 comet_c_udf_export!(
     AddOneC,
     SubC,
+    SumC,
     EchoC,
     StringifyC,
     MakeTsUtcC,

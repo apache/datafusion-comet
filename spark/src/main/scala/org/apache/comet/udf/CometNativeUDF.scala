@@ -20,8 +20,10 @@
 package org.apache.comet.udf
 
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.expressions.{Expression, ScalaUDF}
+import org.apache.spark.sql.comet.CometUdfErrors
 import org.apache.spark.sql.types.DataType
+
+import org.apache.comet.shims.ShimSessionFunctionRegistry
 
 /**
  * Entry point for registering scalar UDFs that run as native code inside Comet.
@@ -45,18 +47,19 @@ object CometNativeUDF {
    * Register a single native UDF with an explicit signature.
    *
    * Validates the library on the driver (loads it, confirms a UDF named `name` exists), then
-   * registers `name` as a temporary function in `spark`'s function registry, as
-   * `spark.udf.register` does. Like any temporary function it is visible only in that session,
-   * and registering another function under the same name there replaces it.
+   * installs `name` as a temporary function of the session, as `spark.udf.register` would: other
+   * sessions do not see it, and registering another function under the same name replaces it.
    *
    * Executors need no registration: the library path travels with the plan in the
    * `NativeScalarUdf` proto, and each executor loads the library itself on first use. The path
    * must therefore be valid on every executor, not just the driver.
    *
-   * `inputTypes` is the signature every call must match. Comet does not convert arguments to
-   * these types: a call whose argument types differ, other than in nullability or struct field
-   * metadata, is refused at planning time with both signatures named, so cast the arguments in
-   * the query instead.
+   * `inputTypes` is the signature every call must match. Spark's analyzer rejects a call whose
+   * argument types differ, other than in nullability, and inserts no casts, so cast the arguments
+   * in the query instead.
+   *
+   * Spark cannot evaluate the call itself: if Comet does not take the operator holding it, the
+   * query fails.
    *
    * `deterministic` must be `true`. Comet plans every imported kernel as immutable, so a
    * nondeterministic UDF cannot yet be expressed; passing `false` fails here rather than silently
@@ -82,28 +85,21 @@ object CometNativeUDF {
           "See https://github.com/apache/datafusion-comet/issues/5249")
     }
     validateLibrary(libraryPath, name)
-    val function = CometNativeUdfFunction(
-      name,
-      NativeUdfMetadata(libraryPath, inputTypes, returnType, deterministic))
-    // Every call resolved to `name` gets the same function, so the serde recognizes the call by
-    // it, and two identical calls are still equal expressions.
-    def builder(children: Seq[Expression]): Expression = {
-      if (children.length != inputTypes.length) {
-        throw new CometNativeUdfArgumentTypeException(
-          s"native UDF '$name' was registered with ${inputTypes.length} argument(s) but is " +
-            s"called with ${children.length}")
-      }
-      // No input encoders, so Spark inserts no casts and does no null handling for the
-      // arguments. The serde checks their types instead.
-      ScalaUDF(
-        function,
-        returnType,
-        children,
-        inputEncoders = Seq.fill(children.length)(None),
-        udfName = Some(name),
-        udfDeterministic = deterministic)
-    }
-    spark.sessionState.functionRegistry.createOrReplaceTempFunction(name, builder, "scala_udf")
+    ShimSessionFunctionRegistry
+      .functionRegistry(spark)
+      .createOrReplaceTempFunction(
+        name,
+        children => {
+          // Checked here, as built-in functions check it, because the analyzer's type coercion
+          // pairs arguments with types positionally before any check on the call would run.
+          if (children.length != inputTypes.length) {
+            throw CometUdfErrors.wrongNumArgs(name, inputTypes.length, children.length)
+          }
+          NativeUdfCall(name, libraryPath, inputTypes, returnType, deterministic, children)
+        },
+        // `ExpressionInfo` accepts only Spark's own source names. This is the one
+        // `spark.udf.register` gives a Scala UDF.
+        "scala_udf")
   }
 
   /**

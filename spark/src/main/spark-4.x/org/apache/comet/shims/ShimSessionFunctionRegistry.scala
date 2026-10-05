@@ -17,18 +17,21 @@
  * under the License.
  */
 
-package org.apache.comet.udf
+package org.apache.comet.shims
 
-import org.apache.comet.CometNativeException
+import org.apache.spark.sql.{classic, SparkSession}
+import org.apache.spark.sql.catalyst.analysis.FunctionRegistry
 
-/** Thrown when a native UDF dynamic library cannot be opened. */
-class CometNativeUdfLoadException(msg: String, cause: Throwable = null)
-    extends CometNativeException(msg) {
-  if (cause != null) initCause(cause)
+object ShimSessionFunctionRegistry {
+
+  /**
+   * The function registry holding `spark`'s temporary functions. Spark 4 keeps session state on
+   * the classic `SparkSession`; a Spark Connect client session has none to register into.
+   */
+  def functionRegistry(spark: SparkSession): FunctionRegistry = spark match {
+    case session: classic.SparkSession => session.sessionState.functionRegistry
+    case other =>
+      throw new IllegalArgumentException(
+        s"Comet UDFs can only be registered on a classic SparkSession, not ${other.getClass}")
+  }
 }
-
-/**
- * Thrown when a native UDF library exposes the wrong ABI version or is missing required discovery
- * symbols.
- */
-class CometNativeUdfAbiException(msg: String) extends CometNativeException(msg)

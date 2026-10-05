@@ -27,7 +27,7 @@ import org.apache.spark.sql.comet.CometProjectExec
 import org.apache.spark.sql.functions.{col, expr, struct}
 import org.apache.spark.sql.types._
 
-import org.apache.comet.udf.{CometNativeUDF, CometNativeUdfAbiException, CometNativeUdfArgumentTypeException, CometNativeUdfLoadException}
+import org.apache.comet.udf.{CometNativeUDF, CometNativeUdfAbiException, CometNativeUdfLoadException}
 
 /**
  * End-to-end integration suite: register a native UDF, run a Spark query, verify the result.
@@ -35,9 +35,9 @@ import org.apache.comet.udf.{CometNativeUDF, CometNativeUdfAbiException, CometNa
  * Requires the `comet-test-udfs` cdylib, which is found automatically under `native/target` and
  * can be overridden with `-Dcomet.test.udfs.lib=<path>`.
  *
- * Note that these tests are self-guarding on native execution: a native UDF's calls resolve to a
- * `ScalaUDF` whose function throws if Spark ever evaluates it, so a silent fallback to Spark
- * fails the test rather than passing.
+ * Note that these tests are self-guarding on native execution: a native UDF's calls resolve to an
+ * expression Spark cannot evaluate, so a silent fallback to Spark fails the test rather than
+ * passing.
  *
  * To run locally:
  * {{{
@@ -138,8 +138,8 @@ class CometNativeUdfSuite extends CometTestBase {
       spark.range(0, 3).selectExpr("echo_c(id) AS y").collect().map(_.getLong(0)).toSeq
     assert(viaScala == Seq(0L, 10L, 20L), "the Scala UDF's call was answered by the native UDF")
 
-    // Re-registering takes the name back, and the native UDF still runs natively (its function
-    // throws if Spark evaluates it, so a fallback here would be a failure rather than a pass).
+    // Re-registering takes the name back, and the native UDF still runs natively (Spark cannot
+    // evaluate it, so a fallback here would be a failure rather than a pass).
     CometNativeUDF.register(spark, "echo_c", libPath, Seq(LongType), LongType)
     val viaRust =
       spark.range(0, 3).selectExpr("echo_c(id) AS y").collect().map(_.getLong(0)).toSeq
@@ -155,8 +155,7 @@ class CometNativeUdfSuite extends CometTestBase {
     }
     assert(e.getMessage.contains("echo_c"), s"unexpected error: $e")
     // ...and an ordinary UDF it registers under the name is the one that answers there. Comet plans
-    // that session's query too, so the call does pass through the serde that would have sent it to
-    // the native library had it matched on the name.
+    // that session's query too, so a call mistaken for the native UDF would be answered natively.
     other.udf.register("echo_c", (x: Long) => x * 10)
     val viaOther = other.range(0, 3).selectExpr("echo_c(id) AS y")
     assert(viaOther.queryExecution.executedPlan.find(_.isInstanceOf[CometProjectExec]).isDefined)
@@ -369,16 +368,14 @@ class CometNativeUdfSuite extends CometTestBase {
     assert(stackTraceContains(e, "CometNativeUDF.register"), s"error lacks guidance: $e")
   }
 
-  test("a call whose argument types differ from the registered ones is refused") {
+  test("a call whose argument types differ from the registered ones fails analysis") {
     CometNativeUDF.register(spark, "add_one_c", libPath, Seq(LongType), LongType)
-    val e = intercept[Exception] {
-      spark.range(0, 3).selectExpr("add_one_c(cast(id as int)) AS y").collect()
+    val e = intercept[AnalysisException] {
+      spark.range(0, 3).selectExpr("add_one_c(cast(id as int)) AS y")
     }
-    assert(
-      stackTraceContains(e, "registered with argument types (bigint) but is called with (int)"),
-      s"unhelpful error: $e")
+    assert(e.getMessage.contains("BIGINT"), e.getMessage)
 
-    // Casting to the registered type is the fix the message asks for.
+    // Spark inserts no cast, so the query has to.
     val fixed = spark
       .range(0, 3)
       .selectExpr("add_one_c(cast(cast(id as int) as bigint)) AS y")
@@ -401,22 +398,59 @@ class CometNativeUdfSuite extends CometTestBase {
     assert(out == Seq(0, 1, 2))
   }
 
-  test("echo_c rejects a call whose argument count it does not accept") {
+  test("a call with the wrong number of arguments fails analysis") {
     CometNativeUDF.register(spark, "echo_c", libPath, Seq(LongType), LongType)
-    // Registered with one argument, so a 2-arg call is rejected during analysis.
-    val e = intercept[CometNativeUdfArgumentTypeException] {
-      spark.range(0, 2).selectExpr("echo_c(id, id) AS y").collect()
+    val e = intercept[AnalysisException] {
+      spark.range(0, 2).selectExpr("echo_c(id, id) AS y")
     }
     assert(
-      e.getMessage.contains("registered with 1 argument(s) but is called with 2"),
+      e.getMessage.contains("requires 1 parameters but the actual number is 2"),
+      e.getMessage)
+  }
+
+  test("a native UDF can take more than four arguments") {
+    CometNativeUDF.register(spark, "sum_c", libPath, Seq.fill(5)(LongType), LongType)
+    val out = spark
+      .range(0, 3)
+      .selectExpr("sum_c(id, id, id, id, 1L) AS y")
+      .collect()
+      .map(_.getLong(0))
+      .toSeq
+    assert(out == Seq(1L, 5L, 9L))
+  }
+
+  test("a native UDF nested in an ordinary UDF fails the query") {
+    // The codegen dispatcher compiles an ordinary UDF's whole argument tree into one JVM kernel,
+    // which cannot call a native UDF, so it declines the tree and Spark gets the operator.
+    CometNativeUDF.register(spark, "add_one_c", libPath, Seq(LongType), LongType)
+    spark.udf.register("times_ten", (x: Long) => x * 10)
+    val df = spark.range(0, 2).selectExpr("times_ten(add_one_c(id)) AS y")
+    assert(df.queryExecution.executedPlan.find(_.isInstanceOf[CometProjectExec]).isEmpty)
+    val e = intercept[Exception] {
+      df.collect()
+    }
+    assert(
+      stackTraceContains(e, "UDF 'add_one_c' is registered with Comet"),
       s"unhelpful error: $e")
   }
 
-  // A native UDF has to be recognized wherever `CometScalaUDF.convert` can be reached, not just in
-  // a projection. Filters, join conditions, grouping keys and window partitioning each route
+  test("Spark evaluating a native UDF fails the query") {
+    CometNativeUDF.register(spark, "add_one_c", libPath, Seq(LongType), LongType)
+    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+      val e = intercept[Exception] {
+        spark.range(0, 2).selectExpr("add_one_c(id) AS y").collect()
+      }
+      assert(
+        stackTraceContains(e, "UDF 'add_one_c' is registered with Comet"),
+        s"unhelpful error: $e")
+    }
+  }
+
+  // A native UDF call has to reach its serde wherever Comet converts expressions, not just in a
+  // projection. Filters, join conditions, grouping keys and window partitioning each route
   // through a different Comet operator, and a regression in any one of them would show up only as
-  // a fallback to Spark. That is what the UDF's function catches: if Spark evaluates the UDF itself
-  // it throws, so each of these tests fails rather than quietly passing on the JVM path.
+  // a fallback to Spark. Spark cannot evaluate a native UDF, so each of these tests fails rather
+  // than quietly passing on the JVM path.
 
   test("a native UDF in a filter predicate is evaluated natively") {
     CometNativeUDF.register(spark, "add_one_c", libPath, Seq(LongType), LongType)

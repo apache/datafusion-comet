@@ -17,18 +17,14 @@
  * under the License.
  */
 
-package org.apache.comet.udf
+package org.apache.comet.shims
 
-import org.apache.comet.CometNativeException
+import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.catalyst.analysis.FunctionRegistry
 
-/** Thrown when a native UDF dynamic library cannot be opened. */
-class CometNativeUdfLoadException(msg: String, cause: Throwable = null)
-    extends CometNativeException(msg) {
-  if (cause != null) initCause(cause)
+object ShimSessionFunctionRegistry {
+
+  /** The function registry holding `spark`'s temporary functions. */
+  def functionRegistry(spark: SparkSession): FunctionRegistry =
+    spark.sessionState.functionRegistry
 }
-
-/**
- * Thrown when a native UDF library exposes the wrong ABI version or is missing required discovery
- * symbols.
- */
-class CometNativeUdfAbiException(msg: String) extends CometNativeException(msg)
