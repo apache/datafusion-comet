@@ -62,6 +62,7 @@ FILTERS = {
         "!**.md",
         "!native/core/benches/**",
         "!native/spark-expr/benches/**",
+        "!native/operators/benches/**",
         "!spark/src/test/scala/org/apache/spark/sql/benchmark/**",
         "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala",
     ],
@@ -97,12 +98,14 @@ FILTERS = {
         "!**.md",
         "!native/core/benches/**",
         "!native/spark-expr/benches/**",
+        "!native/operators/benches/**",
         "!spark/src/test/scala/org/apache/spark/sql/benchmark/**",
         "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala",
     ],
     "benchmark": [
         "native/core/benches/**",
         "native/spark-expr/benches/**",
+        "native/operators/benches/**",
         "spark/src/test/scala/org/apache/spark/sql/benchmark/**",
     ],
     # dev/verify-contrib-delta-gate.sh proves the default cargo, Maven and
@@ -128,6 +131,7 @@ FILTERS = {
         "!**.md",
         "!native/core/benches/**",
         "!native/spark-expr/benches/**",
+        "!native/operators/benches/**",
         "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala",
     ],
     # A real Python worker against each Spark 4.x Arrow runner. The list is
@@ -157,6 +161,7 @@ FILTERS = {
         "spark/src/main/spark-4.x/org/apache/spark/sql/execution/python/CometArrowPythonRunnerBase.scala",
         "spark/src/test/resources/pyspark/conftest.py",
         "spark/src/test/resources/pyspark/test_pyarrow_udf.py",
+        "spark/src/test/resources/pyspark/test_pyarrow_udf_fuzz.py",
         "spark/src/test/resources/pyspark/test_pyarrow_udf_dictionary_shuffle.py",
         "spark/src/test/spark-3.5/org/apache/spark/sql/comet/CometMapInBatchSuite.scala",
         "spark/src/test/spark-4.x/org/apache/spark/sql/comet/CometMapInBatchSuite.scala",
@@ -501,7 +506,7 @@ POLICY = {
     # day apiece on pull requests in mid-September 2026, and together they
     # were three quarters of the Linux build. A pull request and the queue run
     # the Comet test suites against Spark 4.1 only; the nightly run covers the
-    # other four. The lint-java matrix still compiles Spark 3.4/3.5/4.0 on
+    # other four. The lint-java matrix still compiles every Spark profile on
     # every pull request, so what waits for the nightly is runtime behaviour,
     # not a shim that fails to build. ci.yml turns this output into the
     # workflow's `profiles` input.

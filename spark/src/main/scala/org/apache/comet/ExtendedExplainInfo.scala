@@ -26,7 +26,7 @@ import scala.collection.mutable
 import org.apache.spark.sql.ExtendedExplainGenerator
 import org.apache.spark.sql.catalyst.expressions.{Attribute, BoundReference, Expression, Literal, ScalaUDF}
 import org.apache.spark.sql.catalyst.trees.{TreeNode, TreeNodeTag}
-import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometEmptyRelationExec, CometNativeColumnarToRowExec, CometPlan, CometSparkToColumnarExec}
+import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometEmptyRelationExec, CometInMemoryTableScanExec, CometNativeColumnarToRowExec, CometPlan, CometSparkToColumnarExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, InputAdapter, ReusedSubqueryExec, RowToColumnarExec, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, QueryStageExec}
 import org.apache.spark.sql.execution.exchange.{Exchange, ReusedExchangeExec}
@@ -109,6 +109,10 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
     // Spark's treeString displays the eliminated plan, but it does not execute and must not
     // contribute Spark operators, fallback reasons, or expressions to Comet's reporting.
     case _: CometEmptyRelationExec => Seq.empty
+    // Spark's treeString displays the cached relation and the plan that built it. That plan runs
+    // when the relation is materialized, not as part of every query that reads it, so it must not
+    // count toward the coverage or the fallback reasons of each of those queries.
+    case _: CometInMemoryTableScanExec => Seq.empty
     case _ => node.innerChildren
   }
 
