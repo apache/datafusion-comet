@@ -24,6 +24,8 @@ import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.execution.datasources.v2.MergeRowsExec
 
+import org.apache.comet.shims.MergeRowsMetricsShim
+
 /**
  * Spark 4.1 collects MERGE metrics from the executed plan and hands them to
  * `BatchWrite.commit(messages, summary)`; Iceberg 1.11+ records them in the snapshot summary.
@@ -33,10 +35,13 @@ private[comet] object IcebergWriteSummaryShim extends AdaptiveSparkPlanHelper {
       batchWrite: BatchWrite,
       messages: Array[WriterCommitMessage],
       query: SparkPlan): Unit = {
-    collectFirst(query) { case m: MergeRowsExec => m } match {
-      case Some(mergeRows) =>
-        val metrics = mergeRows.metrics
-        def metricValue(name: String): Long = metrics.get(name).map(_.value).getOrElse(-1L)
+    collectFirst(query) {
+      case m: MergeRowsExec => m.metrics
+      case m: CometMergeRowsExec => m.metrics
+    } match {
+      case Some(metrics) =>
+        def metricValue(name: String): Long =
+          metrics.get(name).map(MergeRowsMetricsShim.value).getOrElse(-1L)
         batchWrite.commit(
           messages,
           MergeSummaryImpl(

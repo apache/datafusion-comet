@@ -695,11 +695,11 @@ mod tests {
     #[cfg_attr(miri, ignore)]
     fn test_nested_nullability_drift_is_reconciled() {
         use super::*;
-        use crate::execution::operators::nested_nullability_fixture::{
-            list_of_struct, list_of_struct_type,
-        };
         use arrow::array::Array;
         use datafusion::physical_plan::ExecutionPlan;
+        use datafusion_comet_common::nested_nullability_fixture::{
+            list_of_struct, list_of_struct_type,
+        };
         use futures::StreamExt;
 
         // The block carries `List(Struct("id": Int64, "flag": non-null Boolean))` while catalyst

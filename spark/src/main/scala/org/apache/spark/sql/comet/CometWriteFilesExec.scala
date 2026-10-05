@@ -396,7 +396,7 @@ object CometWriteFilesExec extends Logging {
         if (!matchingTypes) {
           throw new UnsupportedOperationException(
             "Comet's native Parquet writer cannot report row statistics for a batch whose " +
-              "types differ from the write schema. Set spark.comet.parquet.write.enabled=false " +
+              "types differ from the write schema. Set spark.comet.write.parquet.enabled=false " +
               "to use Spark's writer.")
         }
         val rows = batch.rowIterator()
