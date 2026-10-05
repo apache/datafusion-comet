@@ -483,6 +483,7 @@ class NativeUtilSuite extends CometTestBase {
         .addProjectionVector(0L)
         .setSessionTimezone("UTC")
         .setCaseSensitive(true)
+        .setVariantSizeLimit(Utils.variantSizeLimit)
         .setSource("variant-schema-ffi-roundtrip")
         .build()
       val file = OperatorOuterClass.SparkPartitionedFile
