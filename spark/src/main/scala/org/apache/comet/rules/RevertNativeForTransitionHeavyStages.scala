@@ -24,6 +24,7 @@ import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometExec, CometHashAggregateExec, CometIcebergNativeScanExec, CometLocalTopKExec, CometNativeColumnarToRowExec, CometNativeScanExec, CometSparkToColumnarExec}
+import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, ColumnarToRowTransition, RowToColumnarExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.QueryStageExec
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeLike, ShuffleExchangeLike}
@@ -62,9 +63,7 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession, wholePlan
     plan match {
       case _: BroadcastExchangeLike => plan
       case exchange: ShuffleExchangeLike =>
-        revertStageIfNeeded(exchange.child, exchange.supportsColumnar)
-          .map(reverted => exchange.withNewChildren(Seq(reverted)))
-          .getOrElse(plan)
+        revertShuffleStageIfNeeded(exchange).getOrElse(plan)
       case _ =>
         // Result stage: its output is collected as rows, so no consumer requires columnar input
         // and the reverted stage needs no trailing R2C.
@@ -74,13 +73,30 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession, wholePlan
 
   private def applyForNonAQE(plan: SparkPlan): SparkPlan = {
     val withRevertedStages = plan.transformUp { case exchange: ShuffleExchangeLike =>
-      revertStageIfNeeded(exchange.child, exchange.supportsColumnar)
-        .map(reverted => exchange.withNewChildren(Seq(reverted)))
-        .getOrElse(exchange)
+      revertShuffleStageIfNeeded(exchange).getOrElse(exchange)
     }
     revertStageIfNeeded(withRevertedStages, outputColumnar = false)
       .getOrElse(withRevertedStages)
   }
+
+  /**
+   * Reverts the stage below a shuffle if needed. A native shuffle over rows that
+   * `spark.comet.convert.shuffleInput.enabled` converted loses the conversion with the rest of
+   * the stage, so it goes back to the JVM columnar shuffle that the conversion replaced, which
+   * reads the stage's rows.
+   */
+  private def revertShuffleStageIfNeeded(exchange: ShuffleExchangeLike): Option[SparkPlan] =
+    revertStageIfNeeded(exchange.child, exchange.supportsColumnar).map { reverted =>
+      exchange match {
+        case s: CometShuffleExchangeExec
+            if s.shuffleType == CometNativeShuffle &&
+              s.child.isInstanceOf[CometSparkToColumnarExec] =>
+          val columnar = s.copy(child = reverted, shuffleType = CometColumnarShuffle)
+          columnar.copyTagsFrom(s)
+          columnar
+        case _ => exchange.withNewChildren(Seq(reverted))
+      }
+    }
 
   /**
    * Reverts the stage if C2R count exceeds threshold. Wraps in R2C if exchange needs columnar.

@@ -20,7 +20,7 @@
 package org.apache.comet.exec
 
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
-import org.apache.spark.sql.comet.CometSparkToColumnarExec
+import org.apache.spark.sql.comet.{CometPlan, CometSparkToColumnarExec}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, ColumnarToRowTransition, SparkPlan}
 import org.apache.spark.sql.functions.{array, avg, col, count, hash, length, max, min, size, sum}
@@ -180,6 +180,31 @@ class CometShuffleInputConversionSuite extends CometTestBase {
       withSQLConf(CometConf.COMET_SHUFFLE_REVERT_REDUNDANT_COLUMNAR_ENABLED.key -> "false") {
         val (_, kept) = checkSparkAnswer(rowsDf().groupBy("k").agg(sum("l")))
         assert(convertedShuffles(kept).length == 1, kept)
+      }
+    }
+  }
+
+  convertTest("a stage that the transition revert puts back on Spark keeps the JVM shuffle") {
+    // The typed operation reads the Comet scan through a transition. With no transitions allowed,
+    // the revert puts the stage below the shuffle back on Spark, the conversion included, and the
+    // shuffle goes back to the JVM columnar shuffle, which reads the stage's rows.
+    withParquetTable((0 until 200).map(i => (i, (i % 13).toString)), "tbl") {
+      Seq("true", "false").foreach { aqe =>
+        withSQLConf(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe,
+          CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "true",
+          CometConf.COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS.key -> "0") {
+          val ds = spark.sql("SELECT _1 AS a, _2 AS b FROM tbl").as[ShuffleInputRec]
+          val (_, plan) = checkSparkAnswer(
+            ds.map(r => ShuffleInputRec(r.a % 13, r.b))
+              .repartition(7, col("a"))
+              .groupBy("a")
+              .agg(max("b")))
+          assert(conversions(plan).isEmpty, s"AQE $aqe:\n$plan")
+          val reverted = cometShuffles(plan).filter(_.shuffleType == CometColumnarShuffle)
+          assert(reverted.length == 1, s"AQE $aqe:\n$plan")
+          assert(!reverted.head.child.exists(_.isInstanceOf[CometPlan]), s"AQE $aqe:\n$plan")
+        }
       }
     }
   }
