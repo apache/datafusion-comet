@@ -377,7 +377,7 @@ iceberg-java's _writer-tracked_ state would have recorded, and both are analyzed
   iceberg-java's writer-tracked bounds preserve the exact sign it saw. The native path's
   manifest bounds inherit the normalised values — a strictly conservative widening that cannot
   change pruning decisions.
-- On Iceberg 1.10+, manifest `value_counts` / `null_value_counts` for float/double columns
+- On Iceberg 1.9+, manifest `value_counts` / `null_value_counts` for float/double columns
   nested under a nullable struct count rows whose parent struct is null (they come from the
   parquet footer), while iceberg-java's writer-tracked counts do not. Both counts inflate by
   the same amount, so the derived null ratios and `IS NULL` / `IS NOT NULL` pruning decisions
