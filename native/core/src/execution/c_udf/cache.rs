@@ -45,7 +45,11 @@ pub fn get_or_load(path: impl AsRef<Path>) -> Result<Arc<LoadedLibrary>, LoaderE
 
     let canonical = raw.canonicalize().unwrap_or_else(|_| raw.clone());
     if canonical != raw {
-        if let Some(lib) = cache().read().unwrap().get(&canonical).cloned() {
+        // A statement of its own, so the read guard is dropped before the write lock is taken. In
+        // an `if let` scrutinee it would live until the end of the block, and this thread would
+        // wait on its own read lock forever.
+        let hit = cache().read().unwrap().get(&canonical).cloned();
+        if let Some(lib) = hit {
             cache().write().unwrap().insert(raw, Arc::clone(&lib));
             return Ok(lib);
         }
@@ -86,5 +90,30 @@ mod tests {
     fn missing_path_propagates_error() {
         let err = get_or_load("/no/such/file.dylib").unwrap_err();
         assert!(matches!(err, LoaderError::Open { .. }));
+    }
+
+    /// A path seen for the first time that resolves to an already-loaded library, here a symlink,
+    /// takes the branch that records the new path under the write lock. That branch used to take
+    /// the lock while still holding its own read guard, and hung. The lookup runs on a thread of
+    /// its own so a regression fails this test rather than hanging the run.
+    #[cfg(unix)]
+    #[test]
+    fn new_path_to_a_loaded_library_returns_the_same_arc() {
+        let canonical = test_udfs_path().canonicalize().expect(BUILD_HINT);
+        let loaded = get_or_load(&canonical).expect(BUILD_HINT);
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let alias = dir.path().join(canonical.file_name().expect("file name"));
+        std::os::unix::fs::symlink(&canonical, &alias).expect("symlink");
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(get_or_load(&alias));
+        });
+        let via_alias = rx
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("looking the library up through a symlink hung")
+            .expect(BUILD_HINT);
+        assert!(Arc::ptr_eq(&loaded, &via_alias));
     }
 }
