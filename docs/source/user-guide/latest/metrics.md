@@ -106,6 +106,9 @@ eligibility and reader restrictions.
 | `dynamic_filter_early_rows_bypassed`   | Rows passed through while early filtering is inactive or has stopped after two nonempty all-matching batches. |
 | `dynamic_filter_early_eval_time`       | Time evaluating that early filter.                                                                            |
 
+See [early filtering in join chains](tuning/operators.md#early-filtering-in-join-chains)
+for placement and adaptive bypass behavior.
+
 The row counters measure residual filtering of decoded probe batches. They exclude rows skipped
 by the reader. An attached filter does not guarantee that any row groups are pruned: compare the
 probe scan's `bytes_scanned` and `row_groups_pruned_statistics` with filtering disabled to assess
@@ -275,26 +278,3 @@ If you compare Comet's `bytesRead` against vanilla Spark's on Spark 4.1+ (via th
 the REST API), expect Comet's number to be substantially larger for small files, and closer to
 Spark's for large files in that workload. Neither metric should be interpreted as complete
 filesystem or network traffic accounting.
-
-### Early filtering in join chains
-
-With `spark.comet.exec.join.dynamicFilter.enabled=true`, an eligible join can also
-use its completed build keys to filter decoded rows before an intermediate inner
-join. For example, when a final join accepts only customer 42, it can remove other
-customers before an earlier join looks up their orders. This reduces intermediate
-join work while the final join still checks every match and preserves duplicates.
-
-Placement follows direct probe-side columns through ordinary inner joins already
-eligible for runtime filtering (a single signed-integer key),
-column-only projections, and direct column null checks. It stops at computed
-expressions, other predicates, limits, unsupported joins, and execution boundaries.
-These early filters operate on decoded batches; they do not introduce additional
-Parquet pruning or skip schema conversions. Each intermediate join retains its
-existing reader-filter checks.
-
-Early filtering stops evaluating after two consecutive nonempty evaluated batches
-remove no rows, avoiding repeated membership checks on unselective inputs. That
-decision is local to one execution. The final join remains responsible for matching
-rows, including if later batches become more selective. The `dynamic_filter_early_*`
-metrics belong to the join supplying the filter; intermediate joins and projections
-retain their own input/output metrics.

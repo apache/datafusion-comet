@@ -24,8 +24,6 @@ pub use scan::*;
 
 mod dynamic_filter;
 pub(crate) use dynamic_filter::{DynamicFilterJoinExec, TopKReaderFilterExec};
-mod runtime_filter_projection;
-pub(crate) use runtime_filter_projection::CometProjectionExec;
 pub(crate) mod iceberg_common;
 pub use iceberg_common::clear_file_io_cache;
 mod iceberg_dictionary;

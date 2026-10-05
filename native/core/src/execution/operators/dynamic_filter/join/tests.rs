@@ -15,7 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-mod early_benchmark;
 mod schema_errors;
 mod timestamp_errors;
 
@@ -1596,7 +1595,7 @@ fn chain_join(
 
 #[tokio::test]
 async fn ancestor_filter_prunes_before_intermediate_join_and_keeps_metric_owners() {
-    use crate::execution::operators::CometProjectionExec;
+    use datafusion_comet_operators::CometProjectionExec;
     let ctx = SessionContext::new();
     let fact = input(
         vec![Some(0), Some(1), Some(2), Some(2), Some(3), None],
@@ -1714,7 +1713,7 @@ async fn early_filter_preserves_probe_limit_selection() {
 
 #[tokio::test]
 async fn early_filter_does_not_hide_computed_projection_errors() {
-    use crate::execution::operators::CometProjectionExec;
+    use datafusion_comet_operators::CometProjectionExec;
     let ctx = SessionContext::new();
     let inner = chain_join(
         input(vec![Some(0), Some(2)], &DataType::Int32, 0),
@@ -1868,4 +1867,94 @@ async fn early_consumers_release_ancestor_domains_when_cancelled() {
         assert!(inner.template.dynamic_expressions_produced().is_empty());
         assert!(outer.template.dynamic_expressions_produced().is_empty());
     }
+}
+
+#[tokio::test]
+async fn nullable_unselective_ancestor_bypasses_above_inferred_null_checks() {
+    let ctx = SessionContext::new();
+    // Every decoded batch has a null FK, as in nullable fact-table keys. Null
+    // rejection must belong to Spark's inferred filter, not the adaptation sample.
+    let fact = input(
+        vec![
+            Some(0),
+            None,
+            Some(1),
+            None,
+            Some(2),
+            None,
+            Some(3),
+            None,
+            Some(4),
+            None,
+        ],
+        &DataType::Int32,
+        0,
+    );
+    let checked = Arc::new(CometFilterExec::from_datafusion(
+        FilterExec::try_new(
+            Arc::new(IsNotNullExpr::new(Arc::new(Column::new("key", 0)))),
+            fact,
+        )
+        .unwrap()
+        .with_batch_size(1)
+        .unwrap(),
+    ));
+    let inner = chain_join(
+        input((0..5).map(Some).collect(), &DataType::Int32, 0),
+        checked,
+        0,
+        0,
+    );
+    let inner = Arc::new(
+        DynamicFilterJoinExec::try_new(&inner, ctx.copied_config().options())
+            .unwrap()
+            .unwrap(),
+    );
+    let outer = chain_join(
+        input((0..5).map(Some).collect(), &DataType::Int32, 0),
+        inner,
+        0,
+        2,
+    );
+    let expected = collect(
+        Arc::new(outer.builder().reset_state().build().unwrap()),
+        ctx.task_ctx(),
+    )
+    .await
+    .unwrap();
+    let outer = Arc::new(
+        DynamicFilterJoinExec::try_new(&outer, ctx.copied_config().options())
+            .unwrap()
+            .unwrap(),
+    ) as Arc<dyn ExecutionPlan>;
+    let actual = collect(Arc::clone(&outer), ctx.task_ctx()).await.unwrap();
+    assert_eq!(
+        batches_to_sort_string(&actual),
+        batches_to_sort_string(&expected)
+    );
+    assert_eq!(row_count(&actual), 5);
+    assert_eq!(metric(&outer, "dynamic_filter_early_rows_evaluated"), 2);
+    assert_eq!(metric(&outer, "dynamic_filter_early_rows_pruned"), 0);
+    assert_eq!(metric(&outer, "dynamic_filter_early_rows_bypassed"), 3);
+}
+
+#[test]
+fn early_filter_stops_at_intermediate_join_fetch() {
+    use super::super::early::place_early_filter;
+    let config = ConfigOptions::default();
+    let limited = plain_join().with_fetch(Some(1)).unwrap();
+    let wrapped = Arc::new(
+        DynamicFilterJoinExec::try_new(limited.downcast_ref::<HashJoinExec>().unwrap(), &config)
+            .unwrap()
+            .unwrap(),
+    ) as Arc<dyn ExecutionPlan>;
+    assert_eq!(wrapped.fetch(), Some(1));
+    let predicate = Arc::new(DynamicFilterPhysicalExpr::new(
+        vec![Arc::new(Column::new("key", 2))],
+        lit(true),
+    ));
+    assert!(Arc::ptr_eq(
+        &wrapped,
+        &place_early_filter(&wrapped, predicate, &ExecutionPlanMetricsSet::new()).unwrap()
+    ));
 }

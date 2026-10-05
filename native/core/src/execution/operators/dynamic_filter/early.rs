@@ -33,7 +33,7 @@ use datafusion_comet_operators::CometFilterExec;
 
 use super::parquet_reader::is_direct_column_null_checks;
 use super::{DynamicFilterExec, DynamicFilterJoinExec};
-use crate::execution::operators::CometProjectionExec;
+use datafusion_comet_operators::CometProjectionExec;
 
 pub(super) fn place_early_filter(
     input: &Arc<dyn ExecutionPlan>,
@@ -101,7 +101,14 @@ fn place(
                 }
             }
         } else if let Some(filter) = input.downcast_ref::<CometFilterExec>() {
-            if !filter.has_projection() && is_direct_column_null_checks(filter.predicate()) {
+            // Once below a join, leave the terminal consumer above Spark's
+            // inferred null checks. Rejected nulls otherwise make an unselective
+            // ancestor look selective and prevent adaptive bypass. Early consumers
+            // do not prune readers, so descending farther offers no I/O benefit.
+            if !crossed_join
+                && !filter.has_projection()
+                && is_direct_column_null_checks(filter.predicate())
+            {
                 if let Some(child) = place(
                     filter.input(),
                     Arc::clone(&predicate),
