@@ -26,7 +26,7 @@ import scala.util.matching.Regex
 import org.apache.spark.{QueryContext, SparkDateTimeException, SparkException}
 import org.apache.spark.sql.catalyst.trees.SQLQueryContext
 import org.apache.spark.sql.errors.QueryExecutionErrors
-import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException
+import org.apache.spark.sql.execution.datasources.{DataSourceUtils, SchemaColumnConvertNotSupportedException}
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
 
@@ -105,7 +105,8 @@ trait ShimSparkErrorConverter {
         Some(QueryExecutionErrors.overflowInSumOfDecimalError(sqlCtx(context)))
 
       case "NumericValueOutOfRange" =>
-        val decimal = Decimal(params("value").toString)
+        // Use Java BigDecimal to avoid Scala BigDecimal's DECIMAL128 MathContext rewriting.
+        val decimal = Decimal(new java.math.BigDecimal(params("value").toString))
         Some(
           QueryExecutionErrors.cannotChangeDecimalPrecisionError(
             decimal,
@@ -298,6 +299,9 @@ trait ShimSparkErrorConverter {
         // multipleRowScalarSubqueryError was renamed to multipleRowSubqueryError in Spark 3.x
         Some(QueryExecutionErrors.multipleRowSubqueryError(sqlCtx(context)))
 
+      case "MergeCardinalityViolation" =>
+        Some(QueryExecutionErrors.mergeCardinalityViolationError())
+
       case "IntervalArithmeticOverflowWithSuggestion" =>
         // Spark 3.x uses a single intervalArithmeticOverflowError method
         Some(
@@ -379,6 +383,11 @@ trait ShimSparkErrorConverter {
         Some(
           QueryExecutionErrors
             .cannotReadFilesError(new ArithmeticException("long overflow"), filePath))
+
+      case "ReadAncientDatetime" =>
+        // Spark raises this unwrapped, not as FAILED_READ_FILE. The helper picks the rebase
+        // config for the format and throws on a format it does not know.
+        Some(DataSourceUtils.newRebaseExceptionInRead(params("format").toString))
 
       case "CannotReadFile" =>
         // A per-file read failure (corrupt/truncated/deleted parquet, object_store, IO) classified

@@ -19,7 +19,7 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Abs, Add, Atan2, Attribute, BRound, Ceil, CheckOverflow, Conv, Expression, Floor, Greatest, Hex, Hypot, If, Least, LessThanOrEqual, Literal, Log, Log10, Log1p, Log2, Logarithm, NaNvl, Pmod, Pow, Sqrt, UnaryPositive, Unhex, WidthBucket}
+import org.apache.spark.sql.catalyst.expressions.{Abs, Add, Atan2, Attribute, BRound, Ceil, CheckOverflow, Conv, Expression, Floor, Greatest, Hex, Hypot, If, Least, LessThanOrEqual, Literal, Log, Log10, Log1p, Log2, Logarithm, NaNvl, Pmod, Pow, Signum, Sqrt, UnaryPositive, Unhex, WidthBucket}
 import org.apache.spark.sql.types.{DecimalType, DoubleType, NumericType}
 
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType, serializeDataType}
@@ -236,6 +236,29 @@ object CometSqrt extends CometExpressionSerde[Sqrt] {
     val optExpr =
       scalarFunctionExprToProtoWithReturnType("spark_sqrt", DoubleType, false, childExpr)
     optExpr
+  }
+}
+
+// Uses a custom spark_signum UDF because DataFusion's own `signum` returns 0.0 for both zeros,
+// while Spark's Signum (java.lang.Math.signum) returns the zero it is given, so -0.0 keeps its
+// sign. The kernel takes doubles only. Spark's Signum also accepts the two interval types, which
+// DataFusion's `signum` failed on at execution, so those fall back. As with CometSqrt, the
+// Comet-only name needs its return type set explicitly.
+object CometSignum extends CometExpressionSerde[Signum] {
+
+  override def getUnsupportedReasons(): Seq[String] = Seq("Only `DoubleType` is supported")
+
+  override def getSupportLevel(expr: Signum): SupportLevel = expr.child.dataType match {
+    case DoubleType => Compatible()
+    case other => Unsupported(Some(s"signum does not support input type $other"))
+  }
+
+  override def convert(
+      expr: Signum,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val childExpr = exprToProtoInternal(expr.child, inputs, binding)
+    scalarFunctionExprToProtoWithReturnType("spark_signum", DoubleType, false, childExpr)
   }
 }
 
