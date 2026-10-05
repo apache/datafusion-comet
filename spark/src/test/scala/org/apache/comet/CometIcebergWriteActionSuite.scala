@@ -1264,10 +1264,10 @@ class CometIcebergWriteActionSuite
         val native = nanValueCounts("nan_offset_native")
         val jvm = nanValueCounts("nan_offset_jvm")
         assert(native == jvm, s"native NaN counts $native != JVM NaN counts $jvm")
-        // Iceberg 1.10's `ParquetMetrics` keeps no metrics for a field under a list or map, so
+        // Iceberg 1.9's `ParquetMetrics` keeps no metrics for a field under a list or map, so
         // from then on both maps are empty. Before that, the written ids 40 to 64 hold eight
         // multiples of 3, NaN in the list element and the map value alike.
-        val expected = if (icebergVersionAtLeast(1, 10)) Seq.empty else Seq(8L, 8L)
+        val expected = if (icebergVersionAtLeast(1, 9)) Seq.empty else Seq(8L, 8L)
         assert(jvm.values.toSeq == expected, s"JVM NaN counts $jvm")
       }
     }
@@ -1328,8 +1328,8 @@ class CometIcebergWriteActionSuite
         assert(native == jvm, s"native NaN counts $native != JVM NaN counts $jvm")
         // The kept rows are the even ids, so the NaNs written are the multiples of 6 up to 96:
         // 17 each in `v` and `s.x`, and in the list element and the map value as well before
-        // Iceberg 1.10's `ParquetMetrics` stopped keeping metrics under a list or map.
-        val expected = Seq.fill(if (icebergVersionAtLeast(1, 10)) 2 else 4)(17L)
+        // Iceberg 1.9's `ParquetMetrics` stopped keeping metrics under a list or map.
+        val expected = Seq.fill(if (icebergVersionAtLeast(1, 9)) 2 else 4)(17L)
         assert(jvm.values.toSeq == expected, s"JVM NaN counts $jvm")
       }
     }
