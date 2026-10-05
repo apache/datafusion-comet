@@ -38,8 +38,9 @@ class CometNativeUdfRegistry {
   private val byName = new ConcurrentHashMap[String, NativeUdfMetadata]()
 
   /** Register or replace metadata for a name. */
-  def register(name: String, meta: NativeUdfMetadata): Unit =
-    byName.put(name, meta)
+  def register(name: String, meta: NativeUdfMetadata): Unit = {
+    val _ = byName.put(name, meta)
+  }
 
   /** Return metadata for a name, if registered. */
   def get(name: String): Option[NativeUdfMetadata] =

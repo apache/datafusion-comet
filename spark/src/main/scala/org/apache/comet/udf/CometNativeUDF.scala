@@ -164,6 +164,6 @@ object CometNativeUDF {
             "or open a feature request to extend stub coverage.")
     }
     val finalUdf = if (deterministic) u else u.asNondeterministic()
-    spark.udf.register(name, finalUdf)
+    val _ = spark.udf.register(name, finalUdf)
   }
 }
