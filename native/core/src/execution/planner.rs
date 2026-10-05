@@ -35,6 +35,7 @@ mod delta_scan;
 mod lance_scan;
 
 use crate::execution::operators::init_csv_datasource_exec;
+use crate::execution::operators::init_text_datasource_exec;
 use crate::execution::operators::DynamicFilterJoinExec;
 use crate::execution::operators::IcebergScanExec;
 use crate::execution::operators::TopKReaderFilterExec;
@@ -2090,6 +2091,46 @@ impl PhysicalPlanner {
                     partition_schema,
                     projection_vector,
                     &scan.csv_options.clone().unwrap(),
+                )?;
+                Ok((
+                    vec![],
+                    vec![],
+                    Arc::new(SparkPlan::new(spark_plan.plan_id, scan, vec![])),
+                ))
+            }
+            OpStruct::TextScan(scan) => {
+                let data_schema = convert_spark_types_to_arrow_schema(scan.data_schema.as_slice());
+                let partition_schema =
+                    convert_spark_types_to_arrow_schema(scan.partition_schema.as_slice());
+                let projection_vector: Vec<usize> =
+                    scan.projection_vector.iter().map(|i| *i as usize).collect();
+                let object_store_options: HashMap<String, String> =
+                    scan.object_store_options.clone();
+                let one_file = scan
+                    .file_partitions
+                    .first()
+                    .and_then(|f| f.partitioned_file.first())
+                    .map(|f| f.file_path.clone())
+                    .ok_or(GeneralError("Failed to locate file".to_string()))?;
+                let (object_store_url, _, _) = prepare_object_store_with_configs(
+                    self.session_ctx.runtime_env(),
+                    one_file,
+                    &object_store_options,
+                )?;
+                let files = self.get_partitioned_files(
+                    &scan.file_partitions[self.partition as usize],
+                    &object_store_options,
+                )?;
+                let file_groups: Vec<Vec<PartitionedFile>> = vec![files];
+                let scan = init_text_datasource_exec(
+                    object_store_url,
+                    file_groups,
+                    data_schema,
+                    partition_schema,
+                    projection_vector,
+                    scan.text_options
+                        .as_ref()
+                        .ok_or_else(|| GeneralError("TextScan missing text_options".to_string()))?,
                 )?;
                 Ok((
                     vec![],

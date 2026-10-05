@@ -171,6 +171,17 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_TEXT_V2_NATIVE_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.scan.text.v2.enabled")
+      .category(CATEGORY_TESTING)
+      .doc(
+        "Whether to use the native Comet V2 reader for the text file format (a single " +
+          "'value: string' column). Requires the V2 text source (remove 'text' from " +
+          "spark.sql.sources.useV1SourceList). Default: false. " +
+          "Experimental: Performance benefits are workload-dependent.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.parquet.rowFilterPushdown.enabled")
       .category(CATEGORY_PARQUET)

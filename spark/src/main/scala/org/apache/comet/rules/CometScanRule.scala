@@ -38,9 +38,10 @@ import org.apache.spark.sql.catalyst.util.{sideBySide, ArrayBasedMapData, DateTi
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
 import org.apache.spark.sql.comet.{CometBatchScanExec, CometScanExec}
 import org.apache.spark.sql.execution.{FileSourceScanExec, InSubqueryExec, SparkPlan, SubqueryAdaptiveBroadcastExec}
-import org.apache.spark.sql.execution.datasources.HadoopFsRelation
+import org.apache.spark.sql.execution.datasources.{FilePartition, HadoopFsRelation}
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.datasources.v2.csv.CSVScan
+import org.apache.spark.sql.execution.datasources.v2.text.TextScan
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
@@ -111,7 +112,7 @@ case class CometScanRule(session: SparkSession)
       // is ever offered it. `transformV2Scan` applies the guard right after its contrib hook
       // declines.
       case scanExec: BatchScanExec =>
-        transformV2Scan(scanExec)
+        transformV2Scan(fullPlan, scanExec)
     }
 
     plan.transform {
@@ -375,7 +376,7 @@ case class CometScanRule(session: SparkSession)
     Some(CometScanExec(scanExec, session))
   }
 
-  private def transformV2Scan(scanExec: BatchScanExec): SparkPlan = {
+  private def transformV2Scan(plan: SparkPlan, scanExec: BatchScanExec): SparkPlan = {
 
     // Give any optional, out-of-tree scan contrib (e.g. Lance) first crack at this V2 scan. On a
     // default build no contrib is registered, so this returns None and we proceed with Comet's
@@ -451,6 +452,147 @@ case class CometScanRule(session: SparkSession)
         }
         if (schemaSupported && partitionSchemaSupported && containsCorruptedRecordsColumn
           && !isInferSchemaEnabled && isSingleCharacterDelimiter && parsesTimestampsLikeSpark) {
+          CometBatchScanExec(
+            scanExec.clone().asInstanceOf[BatchScanExec],
+            runtimeFilters = scanExec.runtimeFilters)
+        } else {
+          withFallbackReasons(scanExec, fallbackReasons.toSet)
+        }
+
+      case scan: TextScan if COMET_TEXT_V2_NATIVE_ENABLED.get() =>
+        if (scanExec.output.exists(_.isMetadataCol)) {
+          return withFallbackReason(
+            scanExec,
+            "Metadata columns are not supported for Text V2 scans")
+        }
+        // A native scan is useless without native execution: with exec disabled, CometExecRule
+        // leaves this CometBatchScanExec unconverted and it fails at runtime. Require native exec.
+        if (!COMET_EXEC_ENABLED.get()) {
+          return withFallbackReason(
+            scanExec,
+            s"Native Text scan requires ${COMET_EXEC_ENABLED.key} to be enabled")
+        }
+        // input_file_name/_block_start/_block_length read a thread-local that Spark's FileScanRDD
+        // sets; the native DataFusion scan does not, so they would return "" / -1. Same guard as
+        // the native Parquet path.
+        if (plan.exists(node =>
+            node.expressions.exists(_.exists {
+              case _: InputFileName | _: InputFileBlockStart | _: InputFileBlockLength => true
+              case _ => false
+            }))) {
+          return withFallbackReason(
+            scanExec,
+            "Native Text scan is not compatible with input_file_name, " +
+              "input_file_block_start, or input_file_block_length")
+        }
+        val fallbackReasons = new ListBuffer[String]()
+        val schemaSupported =
+          CometBatchScanExec.isSchemaSupported(scan.readDataSchema, fallbackReasons)
+        if (!schemaSupported) {
+          fallbackReasons += s"Schema ${scan.readDataSchema} is not supported"
+        }
+        // Spark's text source allows only a single data column (TextScan.verifyReadSchema). A
+        // user-forced multi-column read schema is invalid; fall back so Spark raises its structured
+        // AnalysisException rather than letting the native reader fail with an opaque error.
+        if (scan.readDataSchema.size > 1) {
+          fallbackReasons += "Text data source supports only a single column"
+        }
+        // Partition columns are not implemented for native Text scans (unlike the native CSV path,
+        // which forwards them). Fall back to Spark for partitioned reads rather than drop them.
+        if (scan.readPartitionSchema.nonEmpty) {
+          fallbackReasons += "Comet does not support partition columns in native Text scans"
+        }
+        // The native reader loads each file whole. Spark splits a large uncompressed text file
+        // into byte-range partitions (TextScan.isSplitable), and each split would then re-read and
+        // buffer the whole file with no memory-pool reservation. Restrict native execution to
+        // unsplit files (the small build-side lookups this targets); Spark handles large files.
+        val hasSplitFile = scanExec.inputPartitions.exists {
+          case fp: FilePartition => fp.files.exists(_.start != 0)
+          case _ => false
+        }
+        if (hasSplitFile) {
+          fallbackReasons += "Comet native Text scan does not support files split into byte " +
+            "ranges (large files)"
+        }
+        // Comet's native plan does not carry a compression codec, so the native reader would feed
+        // raw compressed bytes to the line splitter. Spark auto-detects a codec by file extension
+        // (e.g. .gz, .bz2). Fall back when any input file is compressed. Use the options-aware
+        // Hadoop conf so a codec registered via a per-read option is honored (as Spark does).
+        val hadoopConf = session.sessionState.newHadoopConfWithOptions(scan.options.asScala.toMap)
+        val codecFactory = new org.apache.hadoop.io.compress.CompressionCodecFactory(hadoopConf)
+        val hasCompressedFile = scan.fileIndex.inputFiles.exists { path =>
+          codecFactory.getCodec(new org.apache.hadoop.fs.Path(path)) != null
+        }
+        if (hasCompressedFile) {
+          fallbackReasons += "Comet does not support compressed text files"
+        }
+        // Spark skips unreadable/missing files when these are set; the native reader's DataFusion
+        // FileStream fails the whole scan instead (OnError::Fail). Fall back to match Spark.
+        if (SQLConf.get.ignoreCorruptFiles || scan.options.getBoolean(
+            "ignoreCorruptFiles",
+            false)) {
+          fallbackReasons += "Comet native Text scan does not support ignoreCorruptFiles"
+        }
+        if (SQLConf.get.ignoreMissingFiles || scan.options.getBoolean(
+            "ignoreMissingFiles",
+            false)) {
+          fallbackReasons += "Comet native Text scan does not support ignoreMissingFiles"
+        }
+        // A wholetext file is never split (TextScan.isSplitable is false for wholeText), so the
+        // split-file guard above does not bound it. Reading a very large file whole is unbounded
+        // memory, and the whole file becomes one Arrow string value. Because a lossy UTF-8 decode
+        // can expand ill-formed bytes up to 3x, cap the raw file size at Int.MaxValue/3 so the
+        // decoded value stays under Arrow's 2GB 32-bit string-offset limit; fall back above that.
+        // (The native reader also fails cleanly rather than panicking if a value still overflows.)
+        val textOptions =
+          new org.apache.spark.sql.execution.datasources.text.TextOptions(
+            scan.options.asScala.toMap)
+        if (textOptions.wholeText) {
+          val maxWholeTextBytes =
+            math.min(session.sessionState.conf.filesMaxPartitionBytes, Int.MaxValue.toLong / 3)
+          val hasLargeWholeTextFile = scanExec.inputPartitions.exists {
+            case fp: FilePartition => fp.files.exists(_.length > maxWholeTextBytes)
+            case _ => false
+          }
+          if (hasLargeWholeTextFile) {
+            fallbackReasons += "Comet native Text scan does not support large wholetext files " +
+              s"(over ${SQLConf.FILES_MAX_PARTITION_BYTES.key}, capped below 2GB)"
+          }
+        }
+        // Comet's native reader opens files through object_store, which only understands a fixed
+        // set of URL schemes. A text file on a custom Hadoop scheme (viewfs://, oss://, ...) would
+        // be claimed here then hard-fail at execution, whereas Spark reads it via the Hadoop FS
+        // API. Decline such schemes (same gate as the native Parquet path); hdfs:// routes through
+        // libhdfs and is left to native.
+        val libhdfsSchemes: Set[String] = COMET_LIBHDFS_SCHEMES.get() match {
+          case Some(s) => NativeConfig.parseSchemeSet(s)
+          case None => Set("hdfs")
+        }
+        val s3CompliantSchemes = NativeConfig.resolveS3CompliantSchemes(hadoopConf)
+        val roots = CometScanRule.classifyRootPaths(
+          scan.fileIndex.rootPaths.map(_.toUri),
+          libhdfsSchemes,
+          s3CompliantSchemes)
+        val unsupportedFsSchemes = roots.iterator.flatMap { root =>
+          root.scheme.filter(_ =>
+            !root.isLibhdfs && !CometScanRule.isNativelyReadableScheme(
+              root.uri,
+              s3CompliantSchemes))
+        }.toSet
+        if (unsupportedFsSchemes.nonEmpty) {
+          fallbackReasons +=
+            s"Unsupported filesystem schemes: ${unsupportedFsSchemes.mkString(", ")}"
+        }
+        // A recognized scheme can still carry a path object_store rejects (e.g. a newline -> %0A),
+        // which native execution would hard-fail on. Root paths only.
+        val rejectedPath = roots.find(root =>
+          root.scheme.isDefined && !root.isLibhdfs && !root.isAlias &&
+            !CometScanRule.objectStoreAcceptsPath(root.uri))
+        if (rejectedPath.nonEmpty) {
+          fallbackReasons += s"Native Text scan cannot open path '${rejectedPath.get.uri}': " +
+            "object_store rejects it (e.g. an unsupported character in the path)"
+        }
+        if (fallbackReasons.isEmpty) {
           CometBatchScanExec(
             scanExec.clone().asInstanceOf[BatchScanExec],
             runtimeFilters = scanExec.runtimeFilters)
