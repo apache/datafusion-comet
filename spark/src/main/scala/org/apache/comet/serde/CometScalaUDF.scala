@@ -28,7 +28,7 @@ import org.apache.spark.sql.types.BinaryType
 import org.apache.comet.CometConf
 import org.apache.comet.CometExplainInfo
 import org.apache.comet.CometSparkSessionExtensions.{withCodegenDispatchExpr, withFallbackReason}
-import org.apache.comet.DataTypeSupport.deepNullable
+import org.apache.comet.DataTypeSupport.equalsIgnoreNullability
 import org.apache.comet.codegen.CometBatchKernelCodegen
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, serializeDataType}
@@ -107,7 +107,8 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
    * The catalog stub Comet installs is untyped, so Spark inserts no casts for it and a call
    * reaches this point with whatever types its arguments happen to have. Converting them here
    * would be a semantic choice Spark never made, so the call is refused instead, naming both
-   * signatures. Nullability is disregarded because it does not change the values a UDF receives.
+   * signatures. Nullability and struct field metadata are disregarded, because neither changes
+   * the values a UDF receives.
    *
    * This throws rather than falling back: the stub cannot evaluate the UDF on the JVM, so a
    * fallback would only fail later with a less useful message.
@@ -115,7 +116,7 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
   private def checkArgumentTypes(name: String, expr: ScalaUDF, meta: NativeUdfMetadata): Unit = {
     val actual = expr.children.map(_.dataType)
     val matches = actual.length == meta.inputTypes.length &&
-      actual.zip(meta.inputTypes).forall { case (a, d) => deepNullable(a) == deepNullable(d) }
+      actual.zip(meta.inputTypes).forall { case (a, d) => equalsIgnoreNullability(a, d) }
     if (!matches) {
       def render(types: Seq[org.apache.spark.sql.types.DataType]) =
         types.map(_.catalogString).mkString("(", ", ", ")")

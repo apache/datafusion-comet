@@ -23,7 +23,7 @@ import java.io.File
 import java.util.Locale
 
 import org.apache.spark.sql.CometTestBase
-import org.apache.spark.sql.functions.expr
+import org.apache.spark.sql.functions.{col, expr, struct}
 import org.apache.spark.sql.types._
 
 import org.apache.comet.udf.{CometNativeUDF, CometNativeUdfAbiException, CometNativeUdfLoadException}
@@ -369,6 +369,19 @@ class CometNativeUdfSuite extends CometTestBase {
       .map(_.getLong(0))
       .toSeq
     assert(fixed == Seq(1L, 2L, 3L))
+  }
+
+  test("argument types are compared without struct field metadata") {
+    // Spark keeps a field's metadata, such as a column comment, inside the struct type, but it is
+    // not part of the SQL type and does not change what the UDF receives.
+    val structType = StructType(Seq(StructField("a", IntegerType)))
+    CometNativeUDF.register(spark, "echo_c", libPath, Seq(structType), structType)
+    val comment = new MetadataBuilder().putString("comment", "documented").build()
+    val df = spark.range(0, 3).select(struct(col("id").cast("int").as("a", comment)).as("c"))
+    val argType = df.schema.head.dataType.asInstanceOf[StructType]
+    assert(argType.head.metadata.contains("comment"), s"no comment on the field: $argType")
+    val out = df.selectExpr("echo_c(c) AS y").collect().map(_.getStruct(0).getInt(0)).toSeq
+    assert(out == Seq(0, 1, 2))
   }
 
   test("echo_c rejects a call whose argument count it does not accept") {

@@ -157,6 +157,23 @@ object DataTypeSupport {
     case other => other
   }
 
+  /**
+   * Whether `left` and `right` are the same type once nullability is disregarded at every nesting
+   * level. Struct field names have to match, but their metadata, such as a column comment, is not
+   * compared, since it is not part of the SQL type. Re-derives Spark's
+   * `DataType.equalsIgnoreNullability`, which is `private[sql]` on Spark 3.4.
+   */
+  def equalsIgnoreNullability(left: DataType, right: DataType): Boolean = (left, right) match {
+    case (ArrayType(l, _), ArrayType(r, _)) => equalsIgnoreNullability(l, r)
+    case (MapType(lk, lv, _), MapType(rk, rv, _)) =>
+      equalsIgnoreNullability(lk, rk) && equalsIgnoreNullability(lv, rv)
+    case (StructType(l), StructType(r)) =>
+      l.length == r.length && l.zip(r).forall { case (lf, rf) =>
+        lf.name == rf.name && equalsIgnoreNullability(lf.dataType, rf.dataType)
+      }
+    case (l, r) => l == r
+  }
+
   def hasTemporalType(t: DataType): Boolean = t match {
     case DataTypes.DateType | DataTypes.TimestampType | DataTypes.TimestampNTZType =>
       true
