@@ -76,6 +76,18 @@ abstract class CometTestBase
     assert(reused.nonEmpty, s"$clue:\n$plan")
   }
 
+  /**
+   * Sets each Spark-to-Arrow conversion that [[sparkConf]] turns on, which are off by default, to
+   * `enabled`. These are the conversions `spark.comet.sparkToColumnar.enabled` stood for before
+   * each had a config of its own.
+   */
+  protected def sparkToArrowConversionConfs(enabled: Boolean): Seq[(String, String)] =
+    Seq(
+      CometConf.COMET_CONVERT_FROM_RANGE_ENABLED,
+      CometConf.COMET_CONVERT_FROM_IN_MEMORY_CACHE_ENABLED,
+      CometConf.COMET_CONVERT_FROM_RDD_ENABLED,
+      CometConf.COMET_CONVERT_FROM_ONE_ROW_RELATION_ENABLED).map(_.key -> enabled.toString)
+
   protected def sparkConf: SparkConf = {
     val conf = new SparkConf()
     conf.set("spark.hadoop.fs.file.impl", classOf[DebugFilesystem].getName)
@@ -90,7 +102,7 @@ abstract class CometTestBase
     conf.set(CometConf.COMET_ONHEAP_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_ENABLED.key, "true")
     conf.set(CometConf.COMET_SHUFFLE_ENABLED.key, "true")
-    conf.set(CometConf.COMET_SPARK_TO_ARROW_ENABLED.key, "true")
+    conf.setAll(sparkToArrowConversionConfs(enabled = true))
     conf.set(CometConf.COMET_NATIVE_SCAN_ENABLED.key, "true")
     conf.set(CometConf.COMET_PARQUET_UNSIGNED_SMALL_INT_CHECK.key, "false")
     conf.set(CometConf.COMET_SCAN_ALLOW_DISABLED_PARQUET_VECTORIZED_READER.key, "true")
@@ -819,9 +831,7 @@ abstract class CometTestBase
       .builder(path)
       .withDictionaryEncoding(dictionaryEnabled)
       .withType(schema)
-      // TODO we need to shim this and use withRowGroupSize(Long) with later parquet-hadoop versions to remove
-      // the deprecated warning here
-      .withRowGroupSize(rowGroupSize.toInt)
+      .withRowGroupSize(rowGroupSize)
       .withPageSize(pageSize)
       .withDictionaryPageSize(dictionaryPageSize)
       .withPageRowCountLimit(pageRowCountLimit)
@@ -937,15 +947,15 @@ abstract class CometTestBase
       opt match {
         case Some(i) =>
           record.add(0, i % 2 == 0)
-          record.add(1, i.toByte)
-          record.add(2, i.toShort)
+          record.add(1, i.toByte.toInt)
+          record.add(2, i.toShort.toInt)
           record.add(3, i)
           record.add(4, i.toLong)
           record.add(5, i.toFloat)
           record.add(6, i.toDouble)
           record.add(7, i.toString * 48)
-          record.add(8, (-i).toByte)
-          record.add(9, (-i).toShort)
+          record.add(8, (-i).toByte.toInt)
+          record.add(9, (-i).toShort.toInt)
           record.add(10, -i)
           record.add(11, (-i).toLong)
           record.add(12, i.toString)
@@ -966,15 +976,15 @@ abstract class CometTestBase
       val i = rand.nextLong()
       val record = new SimpleGroup(schema)
       record.add(0, i % 2 == 0)
-      record.add(1, i.toByte)
-      record.add(2, i.toShort)
+      record.add(1, i.toByte.toInt)
+      record.add(2, i.toShort.toInt)
       record.add(3, i.toInt)
       record.add(4, i)
       record.add(5, java.lang.Float.intBitsToFloat(i.toInt))
       record.add(6, java.lang.Double.longBitsToDouble(i))
       record.add(7, i.toString * 24)
-      record.add(8, (-i).toByte)
-      record.add(9, (-i).toShort)
+      record.add(8, (-i).toByte.toInt)
+      record.add(9, (-i).toShort.toInt)
       record.add(10, (-i).toInt)
       record.add(11, -i)
       record.add(12, i.toString)
@@ -1023,7 +1033,7 @@ abstract class CometTestBase
       if (rand.nextBoolean()) {
         None
       } else {
-        Some(getValue(i, div))
+        Some(getValue(i.toLong, div.toLong))
       }
     }
     expected.foreach { opt =>
@@ -1077,7 +1087,7 @@ abstract class CometTestBase
       if (rand.nextBoolean()) {
         None
       } else {
-        Some(getValue(i, div))
+        Some(getValue(i.toLong, div.toLong))
       }
     }
     expected.foreach { opt =>
@@ -1255,7 +1265,7 @@ abstract class CometTestBase
     val div = if (dictionaryEnabled) 10 else n // maps value to a small range for dict to kick in
 
     val expected = (0 until n).map { i =>
-      Some(getValue(i, div))
+      Some(getValue(i.toLong, div.toLong))
     }
     expected.foreach { opt =>
       val timestampFormats = List(
@@ -1303,7 +1313,7 @@ abstract class CometTestBase
   def makeDecimalRDD(num: Int, decimal: DecimalType, useDictionary: Boolean): DataFrame = {
     val div = if (useDictionary) 5 else num // narrow the space to make it dictionary encoded
     spark
-      .range(num)
+      .range(num.toLong)
       .map(_ % div)
       // Parquet doesn't allow column names with spaces, have to add an alias here.
       // Minus 500 here so that negative decimals are also tested.
@@ -1483,8 +1493,8 @@ abstract class CometTestBase
       val record = new SimpleGroup(schema)
       opt match {
         case Some(i) =>
-          record.add(0, i.toByte)
-          record.add(1, i.toShort)
+          record.add(0, i.toByte.toInt)
+          record.add(1, i.toShort.toInt)
           record.add(2, i)
           record.add(3, i.toLong)
           record.add(4, rand.nextFloat())

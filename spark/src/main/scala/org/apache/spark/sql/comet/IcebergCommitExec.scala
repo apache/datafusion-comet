@@ -56,12 +56,19 @@ case class IcebergCommitExec(
   // Exactly-once relies on V2CommandExec memoizing run() via its `result` lazy val and on
   // the writer executing once inside the AQE bubble anchored by IcebergWriteLogical; pinned
   // by the AQE re-plan test in CometIcebergWriteActionSuite.
-  override protected def run(): Seq[InternalRow] = {
-    try {
-      collectAndCommit()
-    } finally {
-      postDriverMetrics()
-    }
+  override protected def run(): Seq[InternalRow] = runWithHooks(() => ())
+
+  private[comet] final def runWithHooks(
+      commitAttachedTransaction: () => Unit): Seq[InternalRow] = {
+    val result =
+      try {
+        collectAndCommit()
+      } finally {
+        postDriverMetrics()
+      }
+    commitAttachedTransaction()
+    refreshCache()
+    result
   }
 
   private def collectAndCommit(): Seq[InternalRow] = {
@@ -99,7 +106,7 @@ case class IcebergCommitExec(
         }
         throw failure
     }
-    longMetric("numCommittedMessages").add(messages.length)
+    longMetric("numCommittedMessages").add(messages.length.toLong)
 
     try {
       messages.foreach(batchWrite.onDataWriterCommit)
@@ -111,7 +118,6 @@ case class IcebergCommitExec(
         throw abortAfter(messages, cause)
     }
 
-    refreshCache()
     Nil
   }
 
@@ -141,7 +147,7 @@ case class IcebergCommitExec(
         .flatMap(IcebergReflection.getTableIO)
       io match {
         case Some(fileIO) =>
-          IcebergReflection.deleteFilesQuietly(
+          val _ = IcebergReflection.deleteFilesQuietly(
             fileIO,
             locations,
             s"job abort, ${completed.length} completed task(s)")

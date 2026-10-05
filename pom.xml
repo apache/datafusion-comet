@@ -30,7 +30,7 @@ under the License.
   </parent>
   <groupId>org.apache.datafusion</groupId>
   <artifactId>comet-parent-spark${spark.version.short}_${scala.binary.version}</artifactId>
-  <version>1.1.0-SNAPSHOT</version>
+  <version>1.2.0-SNAPSHOT</version>
   <packaging>pom</packaging>
   <name>Comet Project Parent POM</name>
 
@@ -73,7 +73,6 @@ under the License.
     <scalafix-maven-plugin.version>0.1.7_0.10.4</scalafix-maven-plugin.version>
     <extra-enforcer-rules.version>1.7.0</extra-enforcer-rules.version>
     <scalafmt.version>3.6.1</scalafmt.version>
-    <apache-rat-plugin.version>0.16.1</apache-rat-plugin.version>
     <scala.version>2.13.17</scala.version>
     <scala.binary.version>2.13</scala.binary.version>
     <scala.plugin.version>4.9.6</scala.plugin.version>
@@ -89,11 +88,23 @@ under the License.
     <arrow.version>18.3.0</arrow.version>
     <codehaus.jackson.version>1.9.13</codehaus.jackson.version>
     <spotless.version>2.43.0</spotless.version>
-    <semanticdb.version>4.13.6</semanticdb.version>
+    <!-- semanticdb-scalac is published per Scala patch version, so the 2.13 profiles need a
+         release that exists for each of their Scala versions (2.13.16, 2.13.17 and 2.13.18). -->
+    <semanticdb.version>4.13.10</semanticdb.version>
     <slf4j.version>2.0.17</slf4j.version>
     <guava.version>33.2.1-jre</guava.version>
     <testcontainers.version>1.21.4</testcontainers.version>
     <amazon-awssdk-v2.version>2.31.51</amazon-awssdk-v2.version>
+    <!-- AWS SDK v1, present at runtime on Hadoop 3.3.x (spark-3.x profiles). Used at provided
+         scope (the aws-java-sdk-s3 module) to compile the built-in S3 credential adapters and to
+         satisfy hadoop-aws 3.3.4's S3AUtils API during incremental compilation. Matches the
+         version hadoop-aws 3.3.4 bundles. -->
+    <aws-java-sdk-v1.version>1.12.262</aws-java-sdk-v1.version>
+    <!-- hadoop-aws, provided scope, to compile the built-in S3 credential adapters against the S3A
+         provider factory. Default tracks the default shim source set (spark-4.x -> SDK v2, needs
+         Hadoop 3.4.x's CredentialProviderListFactory); the spark-3.4 / spark-3.5 profiles override
+         it down to 3.3.x (SDK v1). hadoop.version itself (hadoop-client) is not changed. -->
+    <hadoop-aws.version>3.4.1</hadoop-aws.version>
     <jni.dir>${project.basedir}/../native/target/debug</jni.dir>
     <platform>darwin</platform>
     <arch>x86_64</arch>
@@ -693,6 +704,7 @@ under the License.
         <scala.binary.version>2.12</scala.binary.version>
         <spark.version>3.4.3</spark.version>
         <spark.version.short>3.4</spark.version.short>
+        <hadoop-aws.version>3.3.4</hadoop-aws.version>
         <parquet.version>1.13.1</parquet.version>
         <semanticdb.version>4.8.8</semanticdb.version>
         <slf4j.version>2.0.6</slf4j.version>
@@ -712,6 +724,7 @@ under the License.
         <scala.binary.version>2.12</scala.binary.version>
         <spark.version>3.5.9</spark.version>
         <spark.version.short>3.5</spark.version.short>
+        <hadoop-aws.version>3.3.4</hadoop-aws.version>
         <parquet.version>1.13.1</parquet.version>
         <semanticdb.version>4.8.8</semanticdb.version>
         <slf4j.version>2.0.7</slf4j.version>
@@ -732,7 +745,7 @@ under the License.
         <spark.version>4.0.4</spark.version>
         <spark.version.short>4.0</spark.version.short>
         <parquet.version>1.15.2</parquet.version>
-        <semanticdb.version>4.13.6</semanticdb.version>
+        <semanticdb.version>4.13.10</semanticdb.version>
         <slf4j.version>2.0.16</slf4j.version>
         <shims.majorVerSrc>spark-4.x</shims.majorVerSrc>
         <shims.minorVerSrc>spark-4.0</shims.minorVerSrc>
@@ -748,14 +761,13 @@ under the License.
       <properties>
         <!-- Spark 4.1 is compiled against Scala 2.13.17 and emits calls into stdlib methods
              added in that release (e.g. MurmurHash3$.caseClassHash$default$2()). Comet must
-             match to avoid runtime NoSuchMethodError. Note: semanticdb-scalac_2.13.17 is not
-             yet published, so the -Psemanticdb / scalafix lint job is skipped for spark-4.1. -->
+             match to avoid runtime NoSuchMethodError. -->
         <scala.version>2.13.17</scala.version>
         <scala.binary.version>2.13</scala.binary.version>
         <spark.version>4.1.3</spark.version>
         <spark.version.short>4.1</spark.version.short>
         <parquet.version>1.16.0</parquet.version>
-        <semanticdb.version>4.13.6</semanticdb.version>
+        <semanticdb.version>4.13.10</semanticdb.version>
         <slf4j.version>2.0.17</slf4j.version>
         <shims.majorVerSrc>spark-4.x</shims.majorVerSrc>
         <shims.minorPlusVerSrc>spark-4.1+</shims.minorPlusVerSrc>
@@ -775,7 +787,7 @@ under the License.
         <spark.version>4.2.0</spark.version>
         <spark.version.short>4.2</spark.version.short>
         <parquet.version>1.17.0</parquet.version>
-        <semanticdb.version>4.13.6</semanticdb.version>
+        <semanticdb.version>4.13.10</semanticdb.version>
         <slf4j.version>2.0.17</slf4j.version>
         <shims.majorVerSrc>spark-4.x</shims.majorVerSrc>
         <shims.minorPlusVerSrc>spark-4.1+</shims.minorPlusVerSrc>
@@ -801,7 +813,7 @@ under the License.
       <properties>
         <scala.version>2.13.16</scala.version>
         <scala.binary.version>2.13</scala.binary.version>
-        <semanticdb.version>4.13.6</semanticdb.version>
+        <semanticdb.version>4.13.10</semanticdb.version>
       </properties>
     </profile>
 
@@ -856,29 +868,84 @@ under the License.
         </pluginManagement>
       </build>
     </profile>
+    <!--
+      Compile Scala with warnings promoted to errors. Not active by default; run it
+      explicitly, e.g. `./mvnw test-compile -Pspark-3.5 -Pstrict-warnings`.
+
+      This passes on the Scala 2.12 profiles. The 2.13 profiles (spark-4.0 and later)
+      still report warnings that 2.12 does not raise at all, dominated by
+      `-Xlint:nonlocal-return` (a `return` inside a closure, which the compiler
+      implements by throwing) and non-exhaustive matches. Clearing those means
+      restructuring control flow rather than annotating it, so they are tracked in
+      https://github.com/apache/datafusion-comet/issues/5893 rather than silenced here.
+
+      `args` is configured per execution rather than on the plugin, because main and
+      test sources warrant different flags (see `-Ywarn-value-discard` below). An
+      execution's `args` replaces the plugin-level list instead of appending to it, so
+      each list below is self-contained.
+
+      Two lints are deliberately absent from both lists:
+
+      `-Ywarn-unused:params` reports parameters that are unused because a signature
+      requires them rather than because they are dead: the `@native` declarations in
+      `Native.scala`, which have no body to use them in; cross-version shims under
+      `src/main/spark-*` that match the signature of the Spark version they shim; and
+      overridable defaults and serde helpers whose parameter is part of their public
+      shape. Suppressing these one by one with `@nowarn` does not work across profiles:
+      some shared sources warn under Scala 2.12 but not 2.13 (`CometScanContrib.scala`,
+      for example), so an annotation that silences one profile is unused on the other,
+      which `-Xlint:_` reports through `-Ywarn-unused:nowarn` and `-Xfatal-warnings`
+      turns into a build failure.
+
+      `-Ywarn-value-discard` stays on for main sources, where a discarded result is
+      usually a dropped builder or a swallowed return, but is off for test sources,
+      where what it reports is the testing idiom itself: an `assert(...)` in trailing
+      position discards an `org.scalatest.Assertion`, and helpers such as
+      `checkSparkAnswerAndOperator` return plans that most callers ignore.
+    -->
     <profile>
-          <id>strict-warnings</id>
-          <build>
-              <plugins>
-                  <plugin>
-                      <groupId>net.alchim31.maven</groupId>
-                      <artifactId>scala-maven-plugin</artifactId>
-                      <configuration>
-                          <args>
-                              <arg>-deprecation</arg>
-                              <arg>-unchecked</arg>
-                              <arg>-feature</arg>
-                              <arg>-Xlint:_</arg>
-                              <arg>-Ywarn-dead-code</arg>
-                              <arg>-Ywarn-numeric-widen</arg>
-                              <arg>-Ywarn-value-discard</arg>
-                              <arg>-Ywarn-unused:imports,patvars,privates,locals,params,-implicits</arg>
-                              <arg>-Xfatal-warnings</arg>
-                          </args>
-                      </configuration>
-                  </plugin>
-              </plugins>
-          </build>
+      <id>strict-warnings</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>net.alchim31.maven</groupId>
+            <artifactId>scala-maven-plugin</artifactId>
+            <executions>
+              <execution>
+                <id>scala-compile-first</id>
+                <configuration>
+                  <args>
+                    <arg>-deprecation</arg>
+                    <arg>-unchecked</arg>
+                    <arg>-feature</arg>
+                    <arg>-Xlint:_</arg>
+                    <arg>-Ywarn-dead-code</arg>
+                    <arg>-Ywarn-numeric-widen</arg>
+                    <arg>-Ywarn-value-discard</arg>
+                    <arg>-Ywarn-unused:imports,patvars,privates,locals,-implicits</arg>
+                    <arg>-Xfatal-warnings</arg>
+                  </args>
+                </configuration>
+              </execution>
+              <execution>
+                <id>scala-test-compile-first</id>
+                <configuration>
+                  <args>
+                    <arg>-deprecation</arg>
+                    <arg>-unchecked</arg>
+                    <arg>-feature</arg>
+                    <arg>-Xlint:_</arg>
+                    <arg>-Ywarn-dead-code</arg>
+                    <arg>-Ywarn-numeric-widen</arg>
+                    <arg>-Ywarn-unused:imports,patvars,privates,locals,-implicits</arg>
+                    <arg>-Xfatal-warnings</arg>
+                  </args>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+        </plugins>
+      </build>
     </profile>
   </profiles>
 
@@ -1031,6 +1098,14 @@ under the License.
           <version>${spotless.version}</version>
           <configuration>
             <java>
+              <includes>
+                <include>src/main/java/**/*.java</include>
+                <include>src/test/java/**/*.java</include>
+                <!-- Include spark shim sources; spotless's Java default only covers
+                     src/main/java and src/test/java, so build-helper-added dirs are missed. -->
+                <include>src/main/spark-*/**/*.java</include>
+                <include>src/test/spark-*/**/*.java</include>
+              </includes>
               <toggleOffOn />
               <googleJavaFormat />
               <removeUnusedImports />
@@ -1129,75 +1204,6 @@ under the License.
             </configuration>
           </execution>
         </executions>
-      </plugin>
-      <plugin>
-        <groupId>org.apache.rat</groupId>
-        <artifactId>apache-rat-plugin</artifactId>
-        <version>${apache-rat-plugin.version}</version>
-        <executions>
-          <execution>
-            <phase>verify</phase>
-            <goals>
-              <goal>check</goal>
-            </goals>
-          </execution>
-        </executions>
-        <configuration>
-          <consoleOutput>true</consoleOutput>
-          <excludes>
-            <exclude>**/*.iml</exclude>
-            <exclude>**/*.log</exclude>
-            <exclude>**/*.md.vm</exclude>
-            <exclude>**/.classpath</exclude>
-            <exclude>**/.project</exclude>
-            <exclude>**/.settings/**</exclude>
-            <exclude>**/build/**</exclude>
-            <exclude>**/target/**</exclude>
-            <exclude>**/apache-spark/**</exclude>
-            <exclude>**/apache-iceberg/**</exclude>
-            <exclude>.dockerignore</exclude>
-            <exclude>.git/**</exclude>
-            <exclude>.github/**</exclude>
-            <exclude>.gitignore</exclude>
-            <exclude>.gitmodules</exclude>
-            <exclude>**/.idea/**</exclude>
-            <exclude>**/dependency-reduced-pom.xml</exclude>
-            <exclude>**/testdata/**</exclude>
-            <exclude>**/.lldbinit</exclude>
-            <exclude>rust-toolchain</exclude>
-            <exclude>Makefile</exclude>
-            <exclude>dev/Dockerfile*</exclude>
-            <exclude>dev/diffs/**</exclude>
-            <exclude>dev/deploy-file</exclude>
-            <exclude>**/test/resources/**</exclude>
-            <exclude>**/benchmarks/*.txt</exclude>
-            <exclude>**/inspections/*.txt</exclude>
-            <exclude>tpcds-kit/**</exclude>
-            <exclude>tpcds-sf-1/**</exclude>
-            <exclude>tpch/**</exclude>
-            <exclude>docs/*.txt</exclude>
-            <!-- JSON has no comment syntax, so no license header can go in it. -->
-            <exclude>docs/puppeteer-config.json</exclude>
-            <exclude>docs/logos/*.png</exclude>
-            <exclude>docs/logos/*.svg</exclude>
-            <exclude>docs/source/_static/images/**</exclude>
-            <exclude>docs/source/contributor-guide/*.svg</exclude>
-            <exclude>dev/release/rat_exclude_files.txt</exclude>
-            <exclude>dev/release/requirements.txt</exclude>
-            <exclude>dev/release/venv/**</exclude>
-            <exclude>dev/release/comet-rm/workdir/**</exclude>
-            <exclude>dev/dist/**</exclude>
-            <exclude>dev/release/rat.txt</exclude>
-            <exclude>dev/release/filtered_rat.txt</exclude>
-            <exclude>dev/release/*.jar</exclude>
-            <exclude>native/proto/src/generated/**</exclude>
-            <exclude>benchmarks/tpc/queries/**</exclude>
-            <exclude>benchmarks/results/**/*.txt</exclude>
-            <exclude>.ai/**</exclude>
-            <exclude>.claude/**</exclude>
-            <exclude>docs/superpowers/**</exclude>
-          </excludes>
-        </configuration>
       </plugin>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>

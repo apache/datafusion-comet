@@ -88,6 +88,10 @@ incorrect result. When any single window expression in a `WindowExec` falls back
   overflow instead of returning Spark's `NULL`.
 - `RANGE` frame with an explicit offset when the `ORDER BY` column is `DATE` or `DECIMAL`
   ([#4834](https://github.com/apache/datafusion-comet/issues/4834)).
+- `RANGE` frame bounded by `CURRENT ROW` when an `ORDER BY` key is an array of arrays or structs, or a struct
+  holding an array, such as `array(named_struct('x', x))`. DataFusion cannot compare those values to find the
+  frame's bounds ([apache/datafusion#24937](https://github.com/apache/datafusion/issues/24937)). Ranking functions
+  and `ROWS` frames over the same keys run natively.
 - `first_value` / `last_value` on a `RANGE` frame with a literal offset
   ([#4835](https://github.com/apache/datafusion-comet/issues/4835)).
 - `lag` / `lead` with a non-literal default value ([#4268](https://github.com/apache/datafusion-comet/issues/4268)).
@@ -103,13 +107,54 @@ runs natively; it is controlled by `spark.comet.exec.windowGroupLimit.enabled` (
   (e.g. `UTF8_LCASE`). The native operator detects partitions and order-key peer groups by
   comparing Arrow row-encoded keys for byte equality, which splits peers that Spark ties.
 
-**Known incompatibilities:**
+Floating-point `ORDER BY` keys, including floats nested in arrays and structs, are normalized
+and match Spark's ranks; see [floating-point ordering](./floating-point.md), which also covers
+strict floating-point mode.
 
-- Floating-point values nested in array or struct `ORDER BY` keys are compared with Arrow's raw
-  total ordering, so ranks can differ from Spark when the data mixes `-0.0` and `+0.0` or more
-  than one NaN representation ([#5507](https://github.com/apache/datafusion-comet/issues/5507)).
-  Scalar `FLOAT` and `DOUBLE` keys are normalized and match Spark; see
-  [floating-point ordering](./floating-point.md).
+## MERGE INTO (MergeRowsExec)
+
+Spark `MergeRowsExec` appears as `CometMergeRows` when native execution is enabled.
+
+Comet can run `MergeRowsExec` (Spark's row-level `MERGE INTO` dispatch operator) natively on
+Spark 3.5+, but it is disabled by default. Enable it with
+`spark.comet.exec.mergeRows.enabled=true`.
+
+On Spark 4.1+, stock V2 writers discover the concrete Spark `MergeRowsExec` to build
+`MergeSummary`. When a write remains on Spark's V2 writer, Comet therefore keeps that JVM node
+even when native MergeRows is enabled. Comet's split Iceberg write path can run MergeRows natively:
+its `IcebergCommit` collects the same eight semantic action counters and forwards them through the
+summary-aware `BatchWrite.commit` contract. Spark 4.2 uses last-attempt metrics for these counters,
+matching Spark's retry-aware summary semantics.
+
+**Cardinality validation memory use can exceed Spark's:** native MERGE cardinality validation
+currently stores matched target row IDs in an unspillable hash set. For MERGEs with many matched
+rows per task, this can use more memory than Spark's compressed bitmap and may reach the native
+memory limit earlier than Spark. See
+[#6608](https://github.com/apache/datafusion-comet/issues/6608).
+
+**Undeclared physical output order can differ from Spark:** native execution is set-at-a-time. Within
+an input batch it emits rows grouped by the MERGE instruction that produced them, and it processes
+the MATCHED, NOT MATCHED, then NOT MATCHED BY SOURCE groups. Spark's row-at-a-time implementation
+emits rows in input order. This is not a MERGE row-value semantic difference: an unordered table
+scan has no row-order guarantee. Downstream V2 write planning still enforces every distribution or
+ordering requirement declared by the writer; only a writer that declares no ordering requirement
+can persist the same rows in a different physical sequence.
+
+**Failure precedence can differ from Spark on rare inputs:** Spark consumes joined rows one at a
+time. For each row it determines the MERGE group, validates cardinality when required, and walks
+that row's instruction list until the first clause fires. Comet intentionally vectorizes this work:
+it validates cardinality for the input batch, then evaluates each instruction over the remaining
+rows of the MATCHED, NOT MATCHED, and NOT MATCHED BY SOURCE groups. Successful deterministic row
+results preserve Spark semantics, including first-match-wins within a row, but the two evaluation
+orders are not identical when more than one row in the same Arrow batch would fail.
+
+For example, Spark may encounter an ANSI cast failure on an earlier input row before reaching a
+later row whose earlier MERGE clause divides by zero, while Comet can evaluate that earlier clause
+across the whole group and report `DIVIDE_BY_ZERO` first. The same ordering difference can occur
+between different MERGE groups, between the two projections of a `Split`, or between a cardinality
+violation and an unrelated clause-evaluation error. In these cases both engines reject the query,
+but the surfaced Spark error condition can differ. This limitation only applies to Spark versions
+where native `MergeRowsExec` is enabled.
 
 ## Round-Robin Partitioning
 

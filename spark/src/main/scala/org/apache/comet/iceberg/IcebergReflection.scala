@@ -446,13 +446,13 @@ object IcebergReflection extends Logging {
    * `taskGroups()`, so for staged scans we flatten the groups instead. Both methods are protected
    * and require reflection.
    */
-  def getTasks(scan: Any): Option[java.util.List[_]] =
+  def getTasks(scan: Any): Option[java.util.List[AnyRef]] =
     if (isStagedScan(scan)) tasksFromTaskGroups(scan) else tasksFromTasksAccessor(scan)
 
-  private def tasksFromTasksAccessor(scan: Any): Option[java.util.List[_]] =
+  private def tasksFromTasksAccessor(scan: Any): Option[java.util.List[AnyRef]] =
     findMethodInHierarchy(scan.getClass, "tasks") match {
       case Some(method) =>
-        Some(method.invoke(scan).asInstanceOf[java.util.List[_]])
+        Some(method.invoke(scan).asInstanceOf[java.util.List[AnyRef]])
       case None =>
         logError(
           "Iceberg reflection failure: Failed to get tasks from SparkScan: " +
@@ -460,7 +460,7 @@ object IcebergReflection extends Logging {
         None
     }
 
-  private def tasksFromTaskGroups(scan: Any): Option[java.util.List[_]] =
+  private def tasksFromTaskGroups(scan: Any): Option[java.util.List[AnyRef]] =
     findMethodInHierarchy(scan.getClass, "taskGroups") match {
       case Some(method) =>
         try {
@@ -475,7 +475,7 @@ object IcebergReflection extends Logging {
             groups.forEach { group =>
               val groupTasks =
                 groupTasksMethod.invoke(group).asInstanceOf[java.util.Collection[_ <: AnyRef]]
-              flat.addAll(groupTasks)
+              val _ = flat.addAll(groupTasks)
             }
             Some(flat)
           }
@@ -760,6 +760,46 @@ object IcebergReflection extends Logging {
         val sourceId =
           getMethod(partitionField.getClass, "sourceId").invoke(partitionField).asInstanceOf[Int]
         if (fieldType == TypeNames.UNKNOWN) None else Some(sourceId)
+      }
+      .toSeq
+  }
+
+  /**
+   * The partition fields of `spec` whose source column is a `float` or `double`, as (partition
+   * field name, Iceberg type name). Only the identity transform applies to those types, so such a
+   * field holds the column's own values. A `void` field is skipped: it only ever holds null, and
+   * its source column may no longer exist. Each field is resolved through its own `sourceId`
+   * rather than by position in `partitionType()`. Throws on reflection failure, or when a field
+   * that is not `void` has no source column, so the caller can fail closed.
+   */
+  def floatingPointPartitionFields(spec: Any): Seq[(String, String)] = {
+    import scala.jdk.CollectionConverters._
+    val schema = getMethod(spec.getClass, "schema").invoke(spec)
+    val findField = getMethod(schema.getClass, "findField", classOf[Int])
+    getMethod(spec.getClass, "fields")
+      .invoke(spec)
+      .asInstanceOf[java.util.List[_]]
+      .asScala
+      .flatMap { partitionField =>
+        val transform =
+          getMethod(partitionField.getClass, "transform").invoke(partitionField).toString
+        if (transform == "void") {
+          None
+        } else {
+          val name =
+            getMethod(partitionField.getClass, "name").invoke(partitionField).asInstanceOf[String]
+          val sourceId =
+            getMethod(partitionField.getClass, "sourceId")
+              .invoke(partitionField)
+              .asInstanceOf[Int]
+          val source = findField.invoke(schema, sourceId.asInstanceOf[Object])
+          if (source == null) {
+            throw new IllegalStateException(
+              s"partition field $name has no source column with id $sourceId")
+          }
+          val sourceType = getMethod(source.getClass, "type").invoke(source).toString
+          if (sourceType == "float" || sourceType == "double") Some(name -> sourceType) else None
+        }
       }
       .toSeq
   }
@@ -1148,6 +1188,74 @@ object IcebergReflection extends Logging {
       }
     here ++ nested
   }
+
+  /**
+   * Returns the nested fields of the `fieldIds` columns of `schema` that some schema in the
+   * table's history (`table.schemas()`) lacks or names differently. Each is a dotted path with
+   * the change, for example `items.element.z (renamed from a)`. A data file written under that
+   * older schema lacks the field, or has it under the old name. Fields are matched by id at every
+   * level (struct fields, list elements, map keys and values), so a reorder or a type promotion
+   * is not a change, and an older schema that lacks the column itself is skipped. Throws on
+   * reflection failure so the caller can fall back.
+   */
+  def nestedFieldsAddedOrRenamed(table: Any, schema: Any, fieldIds: Set[Int]): Seq[String] = {
+    import scala.jdk.CollectionConverters._
+    val findField = getMethod(schema.getClass, "findField", classOf[Int])
+    def fieldById(s: Any, id: Int): Option[Any] =
+      Option(findField.invoke(s, id.asInstanceOf[AnyRef]))
+    lazy val history = getMethod(table.getClass, "schemas")
+      .invoke(table)
+      .asInstanceOf[java.util.Map[_, _]]
+      .values()
+      .asScala
+      .toSeq
+    fieldIds.toSeq.flatMap { id =>
+      fieldById(schema, id).filter(childFields(_).nonEmpty).toSeq.flatMap { field =>
+        history.flatMap(fieldById(_, id)).flatMap { older =>
+          childFieldsChangedFrom(field, older, fieldName(field))
+        }
+      }
+    }.distinct
+  }
+
+  /** The nested fields under `field`, at any depth, that `older` lacks or names differently. */
+  private def childFieldsChangedFrom(field: Any, older: Any, path: String): Seq[String] = {
+    val olderChildren = childFields(older).map(child => fieldIdOf(child) -> child).toMap
+    childFields(field).flatMap { child =>
+      val name = fieldName(child)
+      val childPath = s"$path.$name"
+      olderChildren.get(fieldIdOf(child)) match {
+        case Some(olderChild) =>
+          val olderName = fieldName(olderChild)
+          val renamed =
+            if (olderName != name) Seq(s"$childPath (renamed from $olderName)") else Nil
+          renamed ++ childFieldsChangedFrom(child, olderChild, childPath)
+        case None => Seq(s"$childPath (added)")
+      }
+    }
+  }
+
+  /** A struct's fields, a list's element, or a map's key and value. Empty for other types. */
+  private def childFields(field: Any): Seq[Any] = {
+    import scala.jdk.CollectionConverters._
+    val fieldType = getMethod(field.getClass, "type").invoke(field)
+    if (getMethod(fieldType.getClass, "isNestedType").invoke(fieldType).asInstanceOf[Boolean]) {
+      val nestedType = getMethod(fieldType.getClass, "asNestedType").invoke(fieldType)
+      getMethod(nestedType.getClass, "fields")
+        .invoke(nestedType)
+        .asInstanceOf[java.util.List[_]]
+        .asScala
+        .toSeq
+    } else {
+      Nil
+    }
+  }
+
+  private def fieldName(field: Any): String =
+    getMethod(field.getClass, "name").invoke(field).asInstanceOf[String]
+
+  private def fieldIdOf(field: Any): Int =
+    getMethod(field.getClass, "fieldId").invoke(field).asInstanceOf[Int]
 
   /**
    * Converts an Iceberg `Schema` to the Spark `StructType` it reads as, via
@@ -1725,13 +1833,19 @@ object IcebergReflection extends Logging {
   private def newDataManifestFile(inputFile: AnyRef, specId: Int): AnyRef = {
     val inputFileClass = loadClass(ClassNames.INPUT_FILE)
     val cls = loadClass(ClassNames.GENERIC_MANIFEST_FILE)
-    val (ctor, args): (java.lang.reflect.Constructor[_], Array[Object]) =
+    // `Constructor[AnyRef]` rather than `Constructor[_]`: the two `try`/`catch` branches
+    // would otherwise infer a top-level existential, which `-Xlint:existential` rejects.
+    val (ctor, args): (java.lang.reflect.Constructor[AnyRef], Array[Object]) =
       try {
-        val c = cls.getDeclaredConstructor(inputFileClass, classOf[Int], classOf[Long])
+        val c = cls
+          .getDeclaredConstructor(inputFileClass, classOf[Int], classOf[Long])
+          .asInstanceOf[java.lang.reflect.Constructor[AnyRef]]
         (c, Array[Object](inputFile, Integer.valueOf(specId), java.lang.Long.valueOf(0L)))
       } catch {
         case _: NoSuchMethodException =>
-          val c = cls.getDeclaredConstructor(inputFileClass, classOf[Int])
+          val c = cls
+            .getDeclaredConstructor(inputFileClass, classOf[Int])
+            .asInstanceOf[java.lang.reflect.Constructor[AnyRef]]
           (c, Array[Object](inputFile, Integer.valueOf(specId)))
       }
     ctor.setAccessible(true)
@@ -1767,10 +1881,11 @@ object IcebergReflection extends Logging {
       }
       result
     } finally {
-      try reader.getClass.getMethod("close").invoke(reader)
-      catch {
-        case e: Exception => logWarning(s"Failed to close ManifestReader: ${e.getMessage}")
-      }
+      val _ =
+        try reader.getClass.getMethod("close").invoke(reader)
+        catch {
+          case e: Exception => logWarning(s"Failed to close ManifestReader: ${e.getMessage}")
+        }
     }
   }
 

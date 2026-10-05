@@ -32,7 +32,7 @@ Arrow format, allowing the Comet pipeline to take over after that, but the proce
 Comet accelerates Iceberg scans of Parquet files and has an experimental, opt-in native Iceberg writer.
 See the [Iceberg Guide] and [Iceberg Writes](iceberg-writes.md) for more information.
 
-[Iceberg Guide]: iceberg.md
+[iceberg guide]: iceberg.md
 
 ### CSV
 
@@ -49,13 +49,36 @@ converted into Arrow format, allowing the Comet pipeline to take over after that
 Comet does not provide a Rust-based JSON scan, but when `spark.comet.convert.json.enabled` is enabled, data is immediately
 converted into Arrow format, allowing the Comet pipeline to take over after that.
 
+### Other Spark inputs
+
+Comet can also convert the output of these Spark inputs to Arrow format, so that the operators
+above them can run in Comet. Each conversion is off by default.
+
+- `spark.comet.convert.range.enabled`: `spark.range` and SQL `range()`, for ranges that Comet does
+  not generate natively with `spark.comet.exec.range.enabled`.
+- `spark.comet.convert.inMemoryCache.enabled`: in-memory cached tables that Comet's native cache
+  scan does not read, such as tables cached in Spark's default format.
+- `spark.comet.convert.rdd.enabled`: a DataFrame created from an RDD of rows, for example with
+  `spark.createDataFrame(rdd, schema)`.
+- `spark.comet.convert.oneRowRelation.enabled`: the single row that a query without a `FROM`
+  clause, such as `SELECT 1`, reads.
+
+To convert any other leaf operator, such as the scan of a Data Source V2 connector or of a file
+format other than Parquet, JSON and CSV, set `spark.comet.sparkToColumnar.enabled=true` and name the
+operator in `spark.comet.sparkToColumnar.supportedOperatorList` by its Spark class name without the
+`Exec` suffix, such as `BatchScan` or `FileSourceScan`.
+
 ### Spark-to-Comet conversion types
 
-Spark-to-Comet conversion supports `ARRAY<STRING>` with binary string semantics, including
-nullable arrays and nullable elements, both as top-level fields and inside supported structs.
+Spark-to-Comet conversion supports `ARRAY<STRING>` and `MAP<STRING,STRING>` with binary
+string semantics, both as top-level fields and inside supported structs. Arrays and maps may
+be null; array elements and map values may also be null. Map keys must be non-null.
 This applies to Spark row and columnar inputs when conversion is enabled for the source.
-Other array element types, nested arrays, arrays of structs, maps, and non-binary string
-collations remain unsupported at this conversion boundary. Source defaults are unchanged.
+Other array element types, other map key/value types, nested collections, and non-binary
+string collations remain unsupported at this conversion boundary. Source defaults are unchanged.
+
+This includes row-backed `ExistingRDD` inputs when `spark.comet.convert.rdd.enabled=true`. Spark
+still produces the RDD rows; conversion lets eligible downstream operators execute in Comet.
 
 ## Data Catalogs
 
