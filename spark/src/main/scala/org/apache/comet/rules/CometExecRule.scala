@@ -38,7 +38,7 @@ import org.apache.spark.sql.comet.shims.{ShimCometEmptyRelation, ShimCometOneRow
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, BroadcastQueryStageExec, LogicalQueryStage, QueryStageExec, ShuffleQueryStageExec}
-import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
+import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec, SortAggregateExec}
 import org.apache.spark.sql.execution.columnar.InMemoryTableScanExec
 import org.apache.spark.sql.execution.command.{DataWritingCommandExec, ExecutedCommandExec}
 import org.apache.spark.sql.execution.datasources.{InsertIntoHadoopFsRelationCommand, WriteFilesExec}
@@ -113,6 +113,7 @@ object CometExecRule {
       classOf[GenerateExec] -> CometExplodeExec,
       classOf[HashAggregateExec] -> CometHashAggregateExec,
       classOf[ObjectHashAggregateExec] -> CometObjectHashAggregateExec,
+      classOf[SortAggregateExec] -> CometSortAggregateExec,
       classOf[BroadcastHashJoinExec] -> CometBroadcastHashJoinExec,
       classOf[BroadcastNestedLoopJoinExec] -> CometBroadcastNestedLoopJoinExec,
       classOf[ShuffledHashJoinExec] -> CometHashJoinExec,
@@ -227,8 +228,7 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
    * Comet columnar shuffle.
    */
   private def revertRedundantColumnarShuffle(plan: SparkPlan): SparkPlan = {
-    def isAggregate(p: SparkPlan): Boolean =
-      p.isInstanceOf[HashAggregateExec] || p.isInstanceOf[ObjectHashAggregateExec]
+    def isAggregate(p: SparkPlan): Boolean = p.isInstanceOf[BaseAggregateExec]
 
     def isRedundantShuffle(child: SparkPlan): Boolean = child match {
       case s: CometShuffleExchangeExec =>
@@ -280,7 +280,7 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
    * Restore a Spark Partial while retaining its current children. The tag prevents reconversion
    * when AQE replans the exchange without its Final, and records why the Partial stays in Spark.
    */
-  private def restoreSparkPartial(agg: CometHashAggregateExec, reason: String): SparkPlan = {
+  private def restoreSparkPartial(agg: CometBaseAggregateExec, reason: String): SparkPlan = {
     val partial = agg.originalPlan.withNewChildren(agg.children)
     partial.setTagValue(CometExecRule.COMET_UNSAFE_PARTIAL, reason)
     withFallbackReason(partial, reason)
@@ -301,12 +301,12 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
     def restore(plan: SparkPlan): SparkPlan = plan match {
       // Do not rewrite data that an earlier stage may already have materialized.
       case _: QueryStageExec | _: ShuffleExchangeLike | _: BroadcastExchangeLike => plan
-      case agg: CometHashAggregateExec
+      case agg: CometBaseAggregateExec
           if agg.modes == Seq(Partial) &&
             !QueryPlanSerde.allAggsSupportNativePartialToSparkFinal(agg.aggregateExpressions) =>
         restoreSparkPartial(agg, reason)
       // Final output is ordinary SQL data; any partial below it belongs to another aggregate.
-      case agg: CometHashAggregateExec if agg.modes.contains(Final) => agg
+      case agg: CometBaseAggregateExec if agg.modes.contains(Final) => agg
       case agg: BaseAggregateExec if agg.aggregateExpressions.exists(_.mode == Final) => agg
       case placeholder: CometSinkPlaceHolder =>
         val child = restore(placeholder.child)
@@ -1538,13 +1538,14 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
    * Inspect a failed repair's buffer path without rewriting it or materializing any stage. Report
    * only a native Partial/PartialMerge whose emitted state is not known to be Spark-compatible.
    * Spark Partials and completed aggregates establish new buffers, so stop there rather than
-   * finding an unrelated native producer below them. Only known aggregate and exchange wrappers
-   * forward the same buffer path; an arbitrary operator is not evidence of a mixed boundary.
+   * finding an unrelated native producer below them. Only known aggregate, sort and exchange
+   * wrappers forward the same buffer path; an arbitrary operator is not evidence of a mixed
+   * boundary.
    */
   private def hasUnrepairedNativeBuffer(plan: SparkPlan): Boolean = plan match {
-    case agg: CometHashAggregateExec if agg.aggregateExpressions.isEmpty =>
+    case agg: CometBaseAggregateExec if agg.aggregateExpressions.isEmpty =>
       hasUnrepairedNativeBuffer(agg.child)
-    case agg: CometHashAggregateExec =>
+    case agg: CometBaseAggregateExec =>
       agg.modes.forall(m => m == Partial || m == PartialMerge) &&
       !QueryPlanSerde.allAggsSupportNativePartialToSparkFinal(agg.aggregateExpressions)
     case agg: BaseAggregateExec
@@ -1555,6 +1556,9 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       agg.aggregateExpressions.forall(e => e.mode == Partial || e.mode == PartialMerge) &&
       hasUnrepairedNativeBuffer(agg.child)
     case placeholder: CometSinkPlaceHolder => hasUnrepairedNativeBuffer(placeholder.child)
+    // A sort aggregate reads its buffers through the sort that orders them.
+    case sort: SortExec => hasUnrepairedNativeBuffer(sort.child)
+    case sort: CometSortExec => hasUnrepairedNativeBuffer(sort.child)
     case read: AQEShuffleReadExec => hasUnrepairedNativeBuffer(read.child)
     case stage: ShuffleQueryStageExec => hasUnrepairedNativeBuffer(stage.plan)
     case reused: ReusedExchangeExec => hasUnrepairedNativeBuffer(reused.child)
@@ -1566,22 +1570,22 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
   /**
    * The early tagging pass cannot know whether a Final's child will become native. Check the
    * actual conversion result before serialization or AQE stage creation, restoring the feeding
-   * aggregate/exchange chain while keeping native work below its Partial. When the Partial is
-   * already in Spark, restore the native merge stages above it instead. Return the repaired plan,
-   * or preserve an unrepairable path and record one warning on its Spark Final if an unsafe
+   * aggregate/sort/exchange chain while keeping native work below its Partial. When the Partial
+   * is already in Spark, restore the native merge stages above it instead. Return the repaired
+   * plan, or preserve an unrepairable path and record one warning on its Spark Final if an unsafe
    * native producer remains. Existing stages and their buffers are never rewritten by this pass.
    */
   private[rules] def revertUnsafePartialAggregates(plan: SparkPlan): SparkPlan = {
     // `belowNativeMerge` is set once the walk has passed a native aggregate that merges buffers.
     def revertChain(node: SparkPlan, belowNativeMerge: Boolean): Option[SparkPlan] = node match {
-      case agg: CometHashAggregateExec if agg.modes == Seq(Partial) =>
+      case agg: CometBaseAggregateExec if agg.modes == Seq(Partial) =>
         Some(
           restoreSparkPartial(
             agg,
             "Partial aggregate disabled: corresponding final aggregate " +
               "cannot be converted to Comet and intermediate buffer formats are incompatible"))
 
-      case agg: CometHashAggregateExec
+      case agg: CometBaseAggregateExec
           if agg.modes.forall(m => m == Partial || m == PartialMerge) =>
         val merges = agg.aggregateExpressions.nonEmpty
         revertChain(agg.child, belowNativeMerge || merges).map { child =>
@@ -1608,6 +1612,14 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       case agg: BaseAggregateExec
           if agg.aggregateExpressions.forall(e => e.mode == Partial || e.mode == PartialMerge) =>
         revertChain(agg.child, belowNativeMerge).map(child => agg.withNewChildren(Seq(child)))
+
+      // A sort aggregate reads its buffers through the sort that orders them.
+      case sort: CometSortExec =>
+        revertChain(sort.child, belowNativeMerge)
+          .map(child => sort.originalPlan.withNewChildren(Seq(child)))
+      case sort: SortExec =>
+        revertChain(sort.child, belowNativeMerge)
+          .map(child => sort.withNewChildren(Seq(child)))
 
       case CometSinkPlaceHolder(_, _, shuffle: CometShuffleExchangeExec) =>
         revertChain(shuffle, belowNativeMerge)
@@ -1651,12 +1663,13 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
   /**
    * Look for the bottom Partial-mode aggregate that feeds into the given plan (the child of a
    * Final or PartialMerge), and return it after the aggregates passed on the way down. Walks
-   * through exchanges and AQE stages, and continues down through intermediate aggregate stages
-   * whose modes are all Partial / PartialMerge - these are the PartialMerge (and mixed
-   * Partial/PartialMerge) stages that Spark's distinct-aggregate rewrite inserts between the
-   * Partial and the Final. Stops at anything else, returning nothing if no Partial was reached.
-   * Requires `aggregateExpressions.nonEmpty` so that group-by-only dedup stages are traversed
-   * rather than mistaken for the partial.
+   * through exchanges, AQE stages and the sorts that Spark inserts below sort aggregates, and
+   * continues down through intermediate aggregate stages whose modes are all Partial /
+   * PartialMerge - these are the PartialMerge (and mixed Partial/PartialMerge) stages that
+   * Spark's distinct-aggregate rewrite inserts between the Partial and the Final. Stops at
+   * anything else, returning nothing if no Partial was reached. Requires
+   * `aggregateExpressions.nonEmpty` so that group-by-only dedup stages are traversed rather than
+   * mistaken for the partial.
    */
   private def findBufferProducersInPlan(plan: SparkPlan): Seq[BaseAggregateExec] = plan match {
     case agg: BaseAggregateExec
@@ -1672,6 +1685,7 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
     case a: AQEShuffleReadExec => findBufferProducersInPlan(a.child)
     case s: ShuffleQueryStageExec => findBufferProducersInPlan(s.plan)
     case e: ShuffleExchangeExec => findBufferProducersInPlan(e.child)
+    case s: SortExec => findBufferProducersInPlan(s.child)
     case other =>
       logDebug(
         s"findBufferProducersInPlan: stopping at ${other.nodeName}; not a known passthrough")

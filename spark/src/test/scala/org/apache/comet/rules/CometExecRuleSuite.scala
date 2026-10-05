@@ -40,7 +40,7 @@ import org.apache.spark.sql.comet.CometExec.nativeLeaves
 import org.apache.spark.sql.comet.execution.shuffle.{CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, BroadcastQueryStageExec, LogicalQueryStage, QueryStageExec, ShuffleQueryStageExec, SimpleCost, SimpleCostEvaluator}
-import org.apache.spark.sql.execution.aggregate.{HashAggregateExec, ObjectHashAggregateExec}
+import org.apache.spark.sql.execution.aggregate.{HashAggregateExec, ObjectHashAggregateExec, SortAggregateExec}
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.internal.SQLConf
@@ -1438,6 +1438,61 @@ class CometExecRuleSuite extends CometTestBase {
         }
         assert(stage.plan eq exchange)
         assert(exchange.child eq partial)
+      }
+    }
+  }
+
+  test("buffer repair walks through the sort below a sort aggregate") {
+    // Spark puts a SortExec between a sort aggregate and its exchange, converted or not. Repair
+    // must rebuild through it to restore the native Partial, and when repair stops at a stage it
+    // must still find the native Partial below the sort and warn.
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
+      SQLConf.USE_OBJECT_HASH_AGG.key -> "false",
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+      withTempView("test_data") {
+        createTestDataFrame.createOrReplaceTempView("test_data")
+        val plan = applyCometExecRule(
+          createSparkPlan(spark, "SELECT collect_list(id) FROM test_data GROUP BY (id % 3)"))
+        val nativeFinal = plan
+          .collectFirst { case agg: CometSortAggregateExec if agg.modes == Seq(Final) => agg }
+          .getOrElse(fail(s"Expected a native final sort aggregate in:\n$plan"))
+        val partial = plan
+          .collectFirst { case agg: CometSortAggregateExec if agg.modes == Seq(Partial) => agg }
+          .getOrElse(fail(s"Expected a native partial sort aggregate in:\n$plan"))
+        val sparkFinal = nativeFinal.originalPlan.asInstanceOf[SortAggregateExec]
+        val cometSort = nativeFinal.child.asInstanceOf[CometSortExec]
+        val sorts: Seq[SparkPlan => SparkPlan] = Seq(
+          child => cometSort.copy(child = child),
+          child => cometSort.originalPlan.withNewChildren(Seq(child)))
+        val rule = CometExecRule(spark)
+
+        sorts.foreach { sortOver =>
+          val repaired =
+            rule.revertUnsafePartialAggregates(sparkFinal.copy(child = sortOver(cometSort.child)))
+          assert(repaired.collect { case agg: CometSortAggregateExec => agg }.isEmpty, repaired)
+          val sparkPartial = repaired.collectFirst {
+            case agg: SortAggregateExec if agg.aggregateExpressions.forall(_.mode == Partial) =>
+              agg
+          }.get
+          assert(sparkPartial.getTagValue(CometExecRule.COMET_UNSAFE_PARTIAL).isDefined)
+
+          val exchange = ShuffleExchangeExec(
+            org.apache.spark.sql.catalyst.plans.physical.SinglePartition,
+            partial)
+          val stage = ShuffleQueryStageExec(0, exchange, exchange.canonicalized)
+          val placeholder = CometSinkPlaceHolder(
+            org.apache.comet.serde.OperatorOuterClass.Operator.getDefaultInstance,
+            stage,
+            stage)
+          val consumer = sparkFinal.copy(child = sortOver(placeholder))
+          assert(rule.revertUnsafePartialAggregates(consumer) eq consumer)
+          val reasons = new ExtendedExplainInfo().getFallbackReasons(consumer)
+          assert(reasons.exists(_.contains("could not restore a native intermediate buffer")))
+        }
       }
     }
   }
