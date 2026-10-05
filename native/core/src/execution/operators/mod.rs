@@ -41,5 +41,7 @@ mod csv_scan;
 pub mod projection;
 mod scan;
 mod shuffle_scan;
+mod text_scan;
 pub use csv_scan::init_csv_datasource_exec;
 pub use shuffle_scan::ShuffleScanExec;
+pub use text_scan::init_text_datasource_exec;

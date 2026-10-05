@@ -70,6 +70,7 @@ message Operator {
     IcebergWrite iceberg_write = 120;
     RangeScan range_scan = 121;
     MergeRows merge_rows = 122;
+    TextScan text_scan = 123;
     // Extension point for optional, out-of-tree contrib scans (Delta, Lance, ...). The concrete
     // scan message (e.g. `DeltaScan`) is packed into this envelope on the JVM side and dispatched
     // by `type_url` on the native side. Using a single permanent field -- rather than a new oneof
@@ -218,6 +219,24 @@ message CsvOptions {
   optional string comment = 5;
   string terminator = 7;
   bool truncated_rows = 8;
+}
+
+// Native Text scan, mirroring Spark's `text` data source (a single `value: string` column).
+message TextScan {
+  repeated SparkStructField data_schema = 1;
+  repeated SparkStructField partition_schema = 2;
+  repeated int32 projection_vector = 3;
+  repeated SparkFilePartition file_partitions = 4;
+  map<string, string> object_store_options = 5;
+  TextOptions text_options = 6;
+}
+
+message TextOptions {
+  // When true, each file is read as a single row instead of being split into lines.
+  bool whole_text = 1;
+  // Custom line separator, as the exact bytes Spark computed (lineSeparatorInRead, already encoded
+  // with the file's charset). When unset, lines are split on `\n`, `\r\n`, or `\r`.
+  optional bytes line_sep = 2;
 }
 
 // A typed Iceberg primitive value, shared by partition values and predicate literals. The oneof
