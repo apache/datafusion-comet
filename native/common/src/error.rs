@@ -220,6 +220,12 @@ pub enum SparkError {
     #[error("[SCALAR_SUBQUERY_TOO_MANY_ROWS] Scalar subquery returned more than one row.")]
     ScalarSubqueryTooManyRows,
 
+    /// Mirrors Spark's `QueryExecutionErrors.mergeCardinalityViolationError()`, raised by
+    /// `MergeRowsExec.BitmapCardinalityValidator` when a MERGE's ON condition matches a single
+    /// target row against more than one source row.
+    #[error("[MERGE_CARDINALITY_VIOLATION] The ON search condition of the MERGE statement matched a single row from the target table with multiple rows of the source table. This could result in the target row being operated on more than once with an update or delete operation and is not allowed.")]
+    MergeCardinalityViolation,
+
     #[error("{message}")]
     FileNotFound { message: String },
 
@@ -267,6 +273,14 @@ pub enum SparkError {
     #[error("Encountered error while reading file {file_path}: {message}")]
     CannotReadFile { file_path: String, message: String },
 
+    /// A native scan refused to rebase an ancient date or timestamp under the EXCEPTION rebase
+    /// mode. Converted by the JVM shim with `DataSourceUtils.newRebaseExceptionInRead(format)`,
+    /// which throws on a format it does not know. `format` must be "Parquet" or "Parquet INT96",
+    /// so build it with [`SparkError::read_ancient_datetime`]. `column` only feeds the native
+    /// message: Spark's exception has no column parameter, so the JVM drops it.
+    #[error("[INCONSISTENT_BEHAVIOR_CROSS_VERSION.READ_ANCIENT_DATETIME] Reading dates before 1582-10-15 or timestamps before 1900-01-01T00:00:00Z from {format} files can be ambiguous (column {column})")]
+    ReadAncientDatetime { format: String, column: String },
+
     #[error("ArrowError: {0}.")]
     Arrow(Arc<ArrowError>),
 
@@ -306,6 +320,16 @@ impl SparkError {
         SparkError::DuplicateFieldCaseInsensitive {
             required_field_name: required_field_name.to_string(),
             matched_fields: format!("[{}]", matched.join(", ")),
+        }
+    }
+
+    /// Construct a [`SparkError::ReadAncientDatetime`] for `column`, with Spark's "Parquet INT96"
+    /// format when the column is an INT96 timestamp and "Parquet" otherwise.
+    pub fn read_ancient_datetime(column: &str, is_int96: bool) -> SparkError {
+        let format = if is_int96 { "Parquet INT96" } else { "Parquet" };
+        SparkError::ReadAncientDatetime {
+            format: format.to_string(),
+            column: column.to_string(),
         }
     }
 
@@ -357,12 +381,14 @@ impl SparkError {
             SparkError::InvalidRegexGroupIndex { .. } => "InvalidRegexGroupIndex",
             SparkError::DatatypeCannotOrder { .. } => "DatatypeCannotOrder",
             SparkError::ScalarSubqueryTooManyRows => "ScalarSubqueryTooManyRows",
+            SparkError::MergeCardinalityViolation => "MergeCardinalityViolation",
             SparkError::FileNotFound { .. } => "FileNotFound",
             SparkError::DuplicateFieldCaseInsensitive { .. } => "DuplicateFieldCaseInsensitive",
             SparkError::DuplicateFieldByFieldId { .. } => "DuplicateFieldByFieldId",
             SparkError::ParquetMissingFieldIds { .. } => "ParquetMissingFieldIds",
             SparkError::ParquetSchemaConvert { .. } => "ParquetSchemaConvert",
             SparkError::CannotReadFile { .. } => "CannotReadFile",
+            SparkError::ReadAncientDatetime { .. } => "ReadAncientDatetime",
             SparkError::Arrow(_) => "Arrow",
             SparkError::Internal(_) => "Internal",
         }
@@ -635,6 +661,12 @@ impl SparkError {
                     "message": message,
                 })
             }
+            SparkError::ReadAncientDatetime { format, column } => {
+                serde_json::json!({
+                    "format": format,
+                    "column": column,
+                })
+            }
             SparkError::Arrow(e) => {
                 serde_json::json!({
                     "message": e.to_string(),
@@ -694,7 +726,8 @@ impl SparkError {
             | SparkError::UnexpectedPositiveValue { .. }
             | SparkError::UnexpectedNegativeValue { .. }
             | SparkError::InvalidRegexGroupIndex { .. }
-            | SparkError::ScalarSubqueryTooManyRows => "org/apache/spark/SparkRuntimeException",
+            | SparkError::ScalarSubqueryTooManyRows
+            | SparkError::MergeCardinalityViolation => "org/apache/spark/SparkRuntimeException",
 
             // DateTimeException
             SparkError::InvalidInputInCastToDatetime { .. }
@@ -738,6 +771,10 @@ impl SparkError {
             // CannotReadFile - converted to a FAILED_READ_FILE SparkException by the shim
             // (QueryExecutionErrors.cannotReadFilesError).
             SparkError::CannotReadFile { .. } => "org/apache/spark/SparkException",
+
+            // ReadAncientDatetime - converted to SparkUpgradeException by the shim
+            // (DataSourceUtils.newRebaseExceptionInRead).
+            SparkError::ReadAncientDatetime { .. } => "org/apache/spark/SparkUpgradeException",
 
             // Generic errors
             SparkError::Arrow(_) | SparkError::Internal(_) => "org/apache/spark/SparkException",
@@ -820,6 +857,9 @@ impl SparkError {
             // Subquery errors
             SparkError::ScalarSubqueryTooManyRows => Some("SCALAR_SUBQUERY_TOO_MANY_ROWS"),
 
+            // MERGE INTO errors
+            SparkError::MergeCardinalityViolation => Some("MERGE_CARDINALITY_VIOLATION"),
+
             // File not found
             SparkError::FileNotFound { .. } => Some("_LEGACY_ERROR_TEMP_2055"),
 
@@ -841,6 +881,11 @@ impl SparkError {
             // CannotReadFile — the JVM shim wraps it via cannotReadFilesError, which supplies the
             // FAILED_READ_FILE error class, so none is exposed here.
             SparkError::CannotReadFile { .. } => None,
+
+            // ReadAncientDatetime - set by DataSourceUtils.newRebaseExceptionInRead in the shim.
+            SparkError::ReadAncientDatetime { .. } => {
+                Some("INCONSISTENT_BEHAVIOR_CROSS_VERSION.READ_ANCIENT_DATETIME")
+            }
 
             // Generic errors (no error class)
             SparkError::Arrow(_) | SparkError::Internal(_) => None,
@@ -1100,6 +1145,10 @@ mod tests {
             Some("INVALID_ARRAY_INDEX")
         );
         assert_eq!(SparkError::NullMapKey.error_class(), Some("NULL_MAP_KEY"));
+        assert_eq!(
+            SparkError::read_ancient_datetime("d", false).error_class(),
+            Some("INCONSISTENT_BEHAVIOR_CROSS_VERSION.READ_ANCIENT_DATETIME")
+        );
     }
 
     #[test]
@@ -1121,5 +1170,28 @@ mod tests {
             SparkError::NullMapKey.exception_class(),
             "org/apache/spark/SparkRuntimeException"
         );
+        assert_eq!(
+            SparkError::read_ancient_datetime("d", false).exception_class(),
+            "org/apache/spark/SparkUpgradeException"
+        );
+    }
+
+    #[test]
+    fn test_read_ancient_datetime_json() {
+        for (is_int96, format) in [(false, "Parquet"), (true, "Parquet INT96")] {
+            let error = SparkError::read_ancient_datetime("ts", is_int96);
+            assert_eq!(error.error_type_name(), "ReadAncientDatetime");
+
+            let parsed: serde_json::Value = serde_json::from_str(&error.to_json()).unwrap();
+            assert_eq!(parsed["errorType"], "ReadAncientDatetime");
+            assert_eq!(
+                parsed["errorClass"],
+                "INCONSISTENT_BEHAVIOR_CROSS_VERSION.READ_ANCIENT_DATETIME"
+            );
+            assert_eq!(
+                parsed["params"],
+                serde_json::json!({"format": format, "column": "ts"})
+            );
+        }
     }
 }

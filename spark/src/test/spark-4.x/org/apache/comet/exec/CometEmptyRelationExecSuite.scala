@@ -31,9 +31,9 @@ import org.apache.comet.CometConf
 
 class CometEmptyRelationExecSuite extends CometTestBase {
 
-  // CometTestBase enables the Spark-to-Arrow bridge; use its production default here.
+  // CometTestBase enables the Spark-to-Arrow conversions; use their production defaults here.
   override protected def sparkConf: SparkConf =
-    super.sparkConf.remove(CometConf.COMET_SPARK_TO_ARROW_ENABLED.key)
+    super.sparkConf.setAll(sparkToArrowConversionConfs(enabled = false))
 
   test(
     "EmptyRelationExec is discovered by AQE for joins with default Comet conversion settings") {
@@ -85,7 +85,7 @@ class CometEmptyRelationExecSuite extends CometTestBase {
     withSQLConf(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
       SQLConf.SHUFFLE_PARTITIONS.key -> "2",
-      CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "false",
+      CometConf.COMET_CONVERT_FROM_RANGE_ENABLED.key -> "false",
       CometConf.COMET_SHUFFLE_CONVERT_FROM_SPARK_PLAN_ENABLED.key -> "false") {
       withParquetTable(Seq((1, 2), (2, 3)), "aqe_empty_input") {
         // Retain Spark's Range input so AQE can infer emptiness from its completed shuffle.
