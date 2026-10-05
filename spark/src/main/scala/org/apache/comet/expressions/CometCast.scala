@@ -25,7 +25,7 @@ import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, 
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, withFallbackReason}
-import org.apache.comet.DataTypeSupport.isComplexType
+import org.apache.comet.DataTypeSupport.{hasDuplicateFieldNames, isComplexType}
 import org.apache.comet.serde.{CodegenDispatchFallback, CometExpressionSerde, CometTimeZone, Compatible, ExprOuterClass, Incompatible, SupportLevel, Unsupported}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProtoInternal, serializeDataType}
@@ -36,6 +36,9 @@ object CometCast
     with CometExprShim
     with CometTypeShim
     with CodegenDispatchFallback {
+
+  private[comet] val duplicateStructFieldNamesReason: String =
+    "Cast target contains a struct with duplicate field names"
 
   // Shared with CometNativeCastSuite so the asserted reason cannot drift from production.
   private[comet] val negativeScaleDecimalToStringReason: String =
@@ -270,6 +273,9 @@ object CometCast
       case (DataTypes.DoubleType, _) =>
         canCastFromDouble(toType)
       case (from_struct: StructType, to_struct: StructType) =>
+        if (hasDuplicateFieldNames(to_struct.fields)) {
+          return Unsupported(Some(duplicateStructFieldNamesReason))
+        }
         from_struct.fields.zip(to_struct.fields).foreach { case (a, b) =>
           // `convert` replaces a top-level cast that is always null (DATE to a numeric or boolean
           // type in LEGACY mode) with a null literal, so the native cast never sees one. A struct
