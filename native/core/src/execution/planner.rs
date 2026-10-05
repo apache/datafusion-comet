@@ -1061,21 +1061,43 @@ impl PhysicalPlanner {
         }
     }
 
-    /// Create a data filter that a scan pushes into the Parquet reader. The filter prunes row
-    /// groups and pages, and rows too when row-level pushdown is enabled. Pruning only recognizes
-    /// a column compared with a literal, so that shape leaves a float column as it is rather than
-    /// normalizing it, and every other comparison is normalized; see [`FloatOperands::Raw`].
-    /// Spark's Filter above the scan evaluates the filter again with Spark's semantics.
+    /// Create a data filter that a scan pushes into the Parquet reader, with float operands
+    /// treated as [`Self::data_filter_float_operands`] decides.
     fn create_data_filter(
         &self,
         spark_expr: &Expr,
         input_schema: SchemaRef,
+        float_operands: FloatOperands,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
         let planner = Self {
-            float_operands: FloatOperands::Raw,
+            float_operands,
             ..self.clone()
         };
         planner.create_expr(spark_expr, input_schema)
+    }
+
+    /// How a scan's data filters treat float operands. The Parquet reader prunes row groups and
+    /// pages with them, and with row-level pushdown (`pushdown_filters`) it also drops the rows
+    /// they reject, which Spark's Filter above the scan then never sees.
+    ///
+    /// Without row-level pushdown the filters only prune, and pruning only recognizes a column
+    /// compared with a literal, so that shape keeps the raw column ([`FloatOperands::Raw`]). With
+    /// it, every operand is normalized and float comparisons give up pruning: a raw column
+    /// compared with a normalized literal would drop a stored NaN with other bits, such as one
+    /// with the sign bit set, that Spark matches.
+    fn data_filter_float_operands(&self) -> FloatOperands {
+        if self
+            .session_ctx
+            .copied_config()
+            .options()
+            .execution
+            .parquet
+            .pushdown_filters
+        {
+            FloatOperands::Normalize
+        } else {
+            FloatOperands::Raw
+        }
     }
 
     /// Normalize floating-point comparison keys without changing output values: a `FLOAT` or
@@ -1811,10 +1833,17 @@ impl PhysicalPlanner {
                                 .cloned()
                                 .collect::<Vec<FieldRef>>(),
                         ));
+                        let float_operands = self.data_filter_float_operands();
                         common
                             .data_filters
                             .iter()
-                            .map(|expr| self.create_data_filter(expr, Arc::clone(&filter_schema)))
+                            .map(|expr| {
+                                self.create_data_filter(
+                                    expr,
+                                    Arc::clone(&filter_schema),
+                                    float_operands,
+                                )
+                            })
                             .collect()
                     };
 
@@ -5763,8 +5792,83 @@ mod tests {
         assert!(left_operand(comparison)
             .downcast_ref::<NormalizeNaNAndZero>()
             .is_some());
-        let data_filter = planner.create_data_filter(&expr, schema).unwrap();
+        let data_filter = planner
+            .create_data_filter(&expr, schema, planner.data_filter_float_operands())
+            .unwrap();
         assert!(left_operand(data_filter).downcast_ref::<Column>().is_some());
+    }
+
+    /// With row-level pushdown the Parquet reader drops the rows a data filter rejects, so the
+    /// filter normalizes the column as well as the literal. A raw column would drop a stored NaN
+    /// whose bits differ from the normalized literal, and a stored NaN with the sign bit set
+    /// under any ordering comparison, both of which Spark matches.
+    #[test]
+    fn scan_data_filters_normalize_float_columns_with_row_level_pushdown() {
+        use arrow::array::{AsArray, BooleanArray};
+        use datafusion::physical_expr::expressions::BinaryExpr;
+        use datafusion_comet_spark_expr::{FloatOperands, NormalizeNaNAndZero};
+        let double = spark_expression::DataType {
+            type_id: 6,
+            type_info: None,
+        };
+        let operand = |expr_struct| Expr {
+            expr_struct: Some(expr_struct),
+            query_context: None,
+            expr_id: None,
+        };
+        let column_and = |value: f64| {
+            Box::new(spark_expression::BinaryExpr {
+                left: Some(Box::new(operand(Bound(spark_expression::BoundReference {
+                    index: 0,
+                    datatype: Some(double.clone()),
+                })))),
+                right: Some(Box::new(operand(Literal(spark_expression::Literal {
+                    value: Some(literal::Value::DoubleVal(value)),
+                    datatype: Some(double.clone()),
+                    is_null: false,
+                })))),
+            })
+        };
+        // Spark folds `-double('NaN')` into a literal with the sign bit set.
+        let negative_nan = f64::from_bits(0xfff8_0000_0000_0000);
+        let schema = Arc::new(Schema::new(vec![Field::new("d", DataType::Float64, true)]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Float64Array::from(vec![
+                negative_nan,
+                f64::NAN,
+                1.0,
+            ]))],
+        )
+        .unwrap();
+        let config =
+            SessionConfig::new().set_bool("datafusion.execution.parquet.pushdown_filters", true);
+        let planner = PhysicalPlanner::new(Arc::new(SessionContext::new_with_config(config)), 0);
+        assert_eq!(
+            planner.data_filter_float_operands(),
+            FloatOperands::Normalize
+        );
+        for (expr, expected) in [
+            (operand(Eq(column_and(negative_nan))), [true, true, false]),
+            (operand(Gt(column_and(0.0))), [true, true, true]),
+        ] {
+            let data_filter = planner
+                .create_data_filter(
+                    &expr,
+                    Arc::clone(&schema),
+                    planner.data_filter_float_operands(),
+                )
+                .unwrap();
+            let comparison = data_filter
+                .downcast_ref::<BinaryExpr>()
+                .expect("a comparison");
+            assert!(comparison
+                .left()
+                .downcast_ref::<NormalizeNaNAndZero>()
+                .is_some());
+            let matched = data_filter.evaluate(&batch).unwrap().into_array(3).unwrap();
+            assert_eq!(matched.as_boolean(), &BooleanArray::from(expected.to_vec()));
+        }
     }
 
     #[test]

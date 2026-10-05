@@ -223,12 +223,12 @@ pub enum FloatOperands {
     /// Normalize them, so that the comparison follows Spark's SQL ordering.
     Normalize,
     /// Leave a Float32 or Float64 column compared with a literal as it is, and normalize every
-    /// other operand. Only a scan's pushed-down data filters use this: Parquet pruning recognizes
-    /// a column compared with a literal but not a normalized column. With row-level pushdown the
-    /// reader also evaluates the filters on each row, and a row it drops never reaches Spark's
-    /// Filter above the scan, so any other shape, which pruning cannot use anyway, is normalized.
-    /// A computed operand such as `-d` can hold a NaN with the sign bit set, which a raw
-    /// comparison sorts below every other value.
+    /// other operand. Only a scan's pushed-down data filters use this, and only when the Parquet
+    /// reader prunes with them but does not filter rows: Parquet pruning recognizes a column
+    /// compared with a literal but not a normalized column, and Spark's Filter above the scan
+    /// applies Spark's semantics to every row. With row-level pushdown the reader would drop the
+    /// rows such a comparison rejects, including a stored NaN whose bits differ from the
+    /// normalized literal, so the data filters use [`FloatOperands::Normalize`] there instead.
     Raw,
 }
 
