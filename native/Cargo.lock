@@ -2071,6 +2071,7 @@ dependencies = [
  "datafusion-comet-common",
  "datafusion-comet-spark-expr",
  "futures",
+ "parking_lot",
  "tokio",
 ]
 

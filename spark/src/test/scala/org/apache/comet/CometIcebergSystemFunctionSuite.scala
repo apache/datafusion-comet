@@ -430,33 +430,57 @@ class CometIcebergSystemFunctionSuite
     }
   }
 
-  test("an unlisted static invoke routes through the codegen dispatcher") {
+  test("an unlisted static invoke into a class that is not Spark's falls back") {
     val attr = AttributeReference("v", IntegerType)()
-    val expr =
-      StaticInvoke(classOf[java.lang.Math], IntegerType, "abs", Seq(attr), propagateNull = false)
-    // Nothing in the allowlist matches, so the dispatcher takes it: `StaticInvoke.doGenCode` emits
-    // a static method call, and both the argument and the result are types the kernel handles.
-    val proto = CometStaticInvoke.convert(expr, Seq(attr), binding = true)
-    assert(
-      proto.exists(_.hasJvmScalarUdf),
-      s"expected a codegen-dispatch proto for an unlisted static invoke, got $proto")
+    // Nothing in the allowlist matches, and the codegen dispatcher runs only calls into Spark's
+    // own classes (#6425), so this falls back as an Iceberg function with no handler does. The
+    // fallback reason has to name both the function and the declaring class -- every Iceberg
+    // system function is named `invoke`, so the function name alone is ambiguous -- whether the
+    // dispatcher declines the call or is off.
+    for (dispatcher <- Seq("true", "false")) {
+      withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> dispatcher) {
+        val expr =
+          StaticInvoke(
+            classOf[java.lang.Math],
+            IntegerType,
+            "abs",
+            Seq(attr),
+            propagateNull = false)
+        assert(CometStaticInvoke.convert(expr, Seq(attr), binding = true).isEmpty)
+        val reasons = expr.getTagValue(CometExplainInfo.FALLBACK_REASONS).getOrElse(Set.empty)
+        assert(
+          reasons.exists(r => r.contains("abs") && r.contains("java.lang.Math")),
+          s"unexpected fallback reasons: $reasons")
+      }
+    }
+  }
 
-    // When the dispatcher is off there is nowhere left to run it, and the fallback reason has to
-    // name both the function and the declaring class -- every Iceberg system function is named
-    // `invoke`, so the function name alone is ambiguous.
-    withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
-      val fresh =
-        StaticInvoke(
-          classOf[java.lang.Math],
-          IntegerType,
-          "abs",
-          Seq(attr),
-          propagateNull = false)
-      assert(CometStaticInvoke.convert(fresh, Seq(attr), binding = true).isEmpty)
-      val reasons = fresh.getTagValue(CometExplainInfo.FALLBACK_REASONS).getOrElse(Set.empty)
-      assert(
-        reasons.exists(r => r.contains("abs") && r.contains("java.lang.Math")),
-        s"unexpected fallback reasons: $reasons")
+  test("an Iceberg function under a dispatched expression falls back to Spark (#6425)") {
+    // `map(...)` always runs through the codegen dispatcher, whose kernel runs the whole tree
+    // under it, so the `truncate` call would run there too. `truncate(10, -999.99)` is -1000.00,
+    // which needs six digits where `DECIMAL(5, 2)` has five. The kernel would write null for it
+    // into the map's values, but Spark reads the value as returned: `IS NULL` is false, and
+    // `count` counts it. The dispatcher declines a call into Iceberg's classes, so the operator
+    // falls back.
+    withHadoopCatalog(catalog) {
+      withTable("t") {
+        sql("CREATE TABLE t (d DECIMAL(5, 2)) USING parquet")
+        sql("INSERT INTO t VALUES (-999.99), (-0.01), (9.99), (NULL)")
+        val value = s"map_values(map('k', $catalog.system.truncate(10, d)))[0]"
+        val reason = "calls the DataSource V2 function org.apache.iceberg"
+        val nullness = sql(s"SELECT d, $value IS NULL FROM t")
+        checkSparkAnswerAndFallbackReason(nullness, reason)
+        checkAnswer(
+          nullness,
+          Seq(
+            Row(new JBigDecimal("-999.99"), false),
+            Row(new JBigDecimal("-0.01"), false),
+            Row(new JBigDecimal("9.99"), false),
+            Row(null, true)))
+        val counted = sql(s"SELECT count($value) FROM t")
+        checkSparkAnswerAndFallbackReason(counted, reason)
+        checkAnswer(counted, Row(3L))
+      }
     }
   }
 
