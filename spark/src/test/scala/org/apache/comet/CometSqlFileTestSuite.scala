@@ -21,6 +21,8 @@ package org.apache.comet
 
 import java.io.File
 
+import org.scalatest.exceptions.TestFailedException
+
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal.SQLConf
@@ -112,23 +114,24 @@ class CometSqlFileTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       case _ => false
     }
     if (!hasExpectError) return
-    // `ExpectDispatch` and `ExpectNative` both run `checkSparkAnswerAndImpl`, which performs the
-    // same answer and operator checks as a plain `query` before asserting anything extra, so
-    // either is a strictly stronger sentinel than `CheckCoverageAndAnswer`. Not accepting them
-    // meant upgrading a file's last positive query to one of the new modes made preflight reject
-    // the file for having no sentinel, forcing a redundant plain query alongside it.
+    // The implementation modes check answers and operators. ExpectErrorClass also checks
+    // operators, so each can serve as a sentinel without a redundant successful query.
     val hasSentinel = file.records.exists {
-      case SqlQuery(_, CheckCoverageAndAnswer | _: ExpectDispatch | _: ExpectNative, _) => true
+      case SqlQuery(
+            _,
+            CheckCoverageAndAnswer | _: ExpectDispatch | _: ExpectNative | _: ExpectErrorClass,
+            _) =>
+        true
       case _ => false
     }
     assert(
       hasSentinel,
       s"SQL fixture $relativePath combines `expect_error` with " +
-        s"${CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key}=true but is missing a non-error " +
-        "sentinel query. Without one, a silent dispatcher fallback to Spark would let the " +
-        "`expect_error` queries pass vacuously (Spark raises the same error on the fallback " +
-        "path). Add at least one `query`, `expect_dispatch` or `expect_native` over valid " +
-        "input so the operator check fails if the expression did not execute natively.")
+        s"${CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key}=true but is missing a " +
+        "sentinel query that checks Comet operators. Without one, a silent fallback to Spark " +
+        "would let the `expect_error` queries pass vacuously (Spark raises the same error " +
+        "on the fallback path). Add a `query`, `expect_dispatch`, `expect_native` or " +
+        "`expect_error_class` so the operator check fails if the query falls back to Spark.")
   }
 
   private def runTestFile(relativePath: String, file: SqlTestFile): Unit = {
@@ -180,6 +183,8 @@ class CometSqlFileTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                     assert(
                       cometError.get.getMessage.contains(pattern),
                       s"Comet error '${cometError.get.getMessage}' does not contain '$pattern'")
+                  case ExpectErrorClass(errorClass) =>
+                    checkSparkError(spark.sql(sql), errorClass)
                 }
               }
 
@@ -189,6 +194,79 @@ class CometSqlFileTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             }
         }
       }
+    }
+  }
+
+  test("expect_error_class rejects Spark fallback that a message-only check accepts") {
+    withParquetTable(Seq(Tuple1(0)), "error_class_runner_input") {
+      def fixture(mode: String): SqlTestFile = SqlFileTestParser.parse(
+        Seq(
+          "-- Config: spark.sql.ansi.enabled=true",
+          s"-- Config: ${CometConf.COMET_EXEC_ENABLED.key}=false",
+          s"query $mode",
+          "SELECT 1 / _1 FROM error_class_runner_input"))
+
+      runTestFile("fallback.sql", fixture("expect_error(DIVIDE_BY_ZERO)"))
+      val error = intercept[RuntimeException] {
+        runTestFile("fallback.sql", fixture("expect_error_class(DIVIDE_BY_ZERO)"))
+      }
+      assert(error.getCause.isInstanceOf[TestFailedException])
+      assert(error.getCause.getMessage.contains("fallback.sql:4"))
+      assert(error.getCause.getMessage.contains("Expected only Comet native operators"))
+    }
+  }
+
+  test("expect_error_class rejects substring-only error classes") {
+    withParquetTable(Seq(Tuple1(0)), "error_class_runner_input") {
+      val file = SqlFileTestParser.parse(
+        Seq(
+          "-- Config: spark.sql.ansi.enabled=true",
+          "query expect_error_class(ZERO)",
+          "SELECT 1 / _1 FROM error_class_runner_input"))
+      val error = intercept[RuntimeException] {
+        runTestFile("substring.sql", file)
+      }
+      assert(error.getCause.isInstanceOf[TestFailedException])
+      assert(error.getCause.getMessage.contains("substring.sql:3"))
+      assert(error.getCause.getMessage.contains("did not equal"))
+      // ScalaTest brackets the differing parts of strings in assertion messages.
+      assert(
+        error.getCause.getMessage.replace("[", "").replace("]", "").contains("DIVIDE_BY_ZERO"))
+    }
+  }
+
+  test("expect_error_class checks operators without a successful codegen sentinel") {
+    withParquetTable(Seq(Tuple1(0)), "error_class_runner_input") {
+      val file = SqlFileTestParser.parse(
+        Seq(
+          "-- Config: spark.sql.ansi.enabled=true",
+          s"-- Config: ${CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key}=true",
+          "query expect_error(DIVIDE_BY_ZERO)",
+          "SELECT 1 / _1 FROM error_class_runner_input",
+          "",
+          "query expect_error_class(DIVIDE_BY_ZERO)",
+          "SELECT 1 / _1 FROM error_class_runner_input"))
+      val error = intercept[TestFailedException] {
+        runTestFile("sentinel.sql", file.copy(records = file.records.take(1)))
+      }
+      assert(error.getMessage.contains("is missing a sentinel query"))
+      runTestFile("sentinel.sql", file)
+    }
+  }
+
+  test("expect_error_class rejects successful queries") {
+    withParquetTable(Seq(Tuple1(1)), "error_class_runner_input") {
+      val file = SqlFileTestParser.parse(
+        Seq(
+          "-- Config: spark.sql.ansi.enabled=true",
+          "query expect_error_class(DIVIDE_BY_ZERO)",
+          "SELECT 1 / _1 FROM error_class_runner_input"))
+      val error = intercept[RuntimeException] {
+        runTestFile("successful.sql", file)
+      }
+      assert(error.getCause.isInstanceOf[TestFailedException])
+      assert(error.getCause.getMessage.contains("successful.sql:3"))
+      assert(error.getCause.getMessage.contains("Spark did not fail with DIVIDE_BY_ZERO"))
     }
   }
 

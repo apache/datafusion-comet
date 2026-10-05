@@ -77,14 +77,17 @@ case class ExpectNative(names: Seq[String]) extends QueryAssertionMode
  * Asserts that both Spark and Comet raise an error whose message contains `pattern`.
  *
  * Fixtures that combine `ExpectError` with `spark.comet.exec.scalaUDF.codegen.enabled=true` must
- * also include at least one [[CheckCoverageAndAnswer]] sentinel query over valid input. If the
- * dispatcher silently rejects the expression at plan time, the operator falls back to Spark and
- * Spark itself raises the same error, so the `ExpectError` queries would pass vacuously. The
- * sentinel query uses `checkSparkAnswerAndOperator`, which fails when the expression does not run
- * inside Comet. `CometSqlFileTestSuite.requireSentinelForCodegenExpectError` enforces this shape
- * at test-run time.
+ * also include a query that checks Comet operators, such as [[CheckCoverageAndAnswer]] over valid
+ * input or [[ExpectErrorClass]]. If the dispatcher silently rejects the expression at plan time,
+ * the operator falls back to Spark and Spark itself raises the same error, so the `ExpectError`
+ * queries would pass vacuously. The sentinel query checks Comet operators and fails when the
+ * query falls back to Spark. `CometSqlFileTestSuite.requireSentinelForCodegenExpectError`
+ * enforces this shape at test-run time.
  */
 case class ExpectError(pattern: String) extends QueryAssertionMode
+
+/** Checks Comet operators and Spark exception type, exact error class and SQLSTATE parity. */
+case class ExpectErrorClass(errorClass: String) extends QueryAssertionMode
 
 /**
  * Parsed representation of a .sql test file.
@@ -125,6 +128,9 @@ object SqlFileTestParser {
     val source = Source.fromFile(file, "UTF-8")
     try {
       parse(source.getLines().toSeq)
+    } catch {
+      case e: IllegalArgumentException =>
+        throw new IllegalArgumentException(s"${file.getPath}: ${e.getMessage}", e)
     } finally {
       source.close()
     }
@@ -169,7 +175,7 @@ object SqlFileTestParser {
           lineIdx = nextIdx
 
         case s if s.startsWith("query") =>
-          val mode = parseQueryAssertionMode(s)
+          val mode = parseQueryAssertionMode(s, lineIdx + 1)
           lineIdx += 1
           val startLine = lineIdx + 1
           val (sql, nextIdx) = collectSql(lines, lineIdx)
@@ -194,10 +200,13 @@ object SqlFileTestParser {
   private val FallbackPattern = """query\s+expect_fallback\((.+)\)""".r
   private val IgnorePattern = """query\s+ignore\((.+)\)""".r
   private val ErrorPattern = """query\s+expect_error\((.+)\)""".r
+  private val ErrorClassPattern =
+    """query\s+expect_error_class\(\s*([A-Z0-9_]+(?:\.[A-Z0-9_]+)*)\s*\)""".r
+  private val InvalidErrorClassPattern = """query\s+expect_error_class\b.*""".r
   private val DispatchPattern = """query\s+expect_dispatch\((.+)\)""".r
   private val NativePattern = """query\s+expect_native\((.+)\)""".r
 
-  private def parseQueryAssertionMode(directive: String): QueryAssertionMode = {
+  private def parseQueryAssertionMode(directive: String, line: Int): QueryAssertionMode = {
     directive match {
       case FallbackPattern(reason) =>
         ExpectFallback(reason.trim)
@@ -205,6 +214,12 @@ object SqlFileTestParser {
         Ignore(reason.trim)
       case ErrorPattern(pattern) =>
         ExpectError(pattern.trim)
+      case ErrorClassPattern(errorClass) =>
+        ExpectErrorClass(errorClass)
+      case InvalidErrorClassPattern() =>
+        throw new IllegalArgumentException(
+          s"line $line: invalid directive '$directive'; " +
+            "expected query expect_error_class(ERROR_CLASS)")
       case DispatchPattern(names) =>
         ExpectDispatch(splitNames(names))
       case NativePattern(names) =>

@@ -20,6 +20,8 @@
 package org.apache.comet
 
 import java.io.File
+import java.nio.charset.StandardCharsets
+import java.nio.file.Files
 
 import org.scalatest.funsuite.AnyFunSuite
 
@@ -139,9 +141,55 @@ class SqlFileTestParserSuite extends AnyFunSuite {
     assert(modeOf("query expect_dispatch(lower,,)") === ExpectDispatch(Seq("lower")))
   }
 
+  test("expect_error_class parses an exact class, including subclasses and whitespace") {
+    assert(
+      modeOf("query   expect_error_class( DIVIDE_BY_ZERO )") ===
+        ExpectErrorClass("DIVIDE_BY_ZERO"))
+    assert(
+      modeOf("query expect_error_class(DATATYPE_MISMATCH.INVALID_MAP_KEY_TYPE)") ===
+        ExpectErrorClass("DATATYPE_MISMATCH.INVALID_MAP_KEY_TYPE"))
+  }
+
+  test("malformed expect_error_class directives fail instead of becoming plain queries") {
+    Seq(
+      "query expect_error_class",
+      "query expect_error_class()",
+      "query expect_error_class( )",
+      "query expect_error_class(DIVIDE_BY_ZERO",
+      "query expect_error_class(DIVIDE_BY_ZERO, OTHER)",
+      "query expect_error_class(DIVIDE BY ZERO)",
+      "query expect_error_class(divide_by_zero)",
+      "query expect_error_class(DIVIDE_BY_ZERO) trailing").foreach { directive =>
+      val error = intercept[IllegalArgumentException] {
+        SqlFileTestParser.parse(Seq("-- fixture", directive, "SELECT 1"))
+      }
+      assert(error.getMessage.contains("line 2"))
+      assert(error.getMessage.contains(directive))
+    }
+  }
+
+  test("invalid error-class directives identify the source file") {
+    val tempDir = Files.createDirectories(new File(System.getProperty("java.io.tmpdir")).toPath)
+    val file = Files.createTempFile(tempDir, "invalid-error-class", ".sql")
+    try {
+      val _ = Files.write(
+        file,
+        "-- fixture\nquery expect_error_class()\nSELECT 1\n".getBytes(StandardCharsets.UTF_8))
+      val error = intercept[IllegalArgumentException] {
+        SqlFileTestParser.parse(file.toFile)
+      }
+      assert(error.getMessage.contains(file.toString))
+      assert(error.getMessage.contains("line 2"))
+    } finally {
+      val _ = Files.deleteIfExists(file)
+    }
+  }
+
   test("the new modes do not shadow the existing ones") {
     assert(modeOf("query expect_fallback(some reason)") === ExpectFallback("some reason"))
     assert(modeOf("query expect_error(DIVIDE_BY_ZERO)") === ExpectError("DIVIDE_BY_ZERO"))
+    assert(
+      modeOf("query expect_error_class(DIVIDE_BY_ZERO)") === ExpectErrorClass("DIVIDE_BY_ZERO"))
     assert(modeOf("query spark_answer_only") === SparkAnswerOnly)
     assert(modeOf("query tolerance=0.001") === WithTolerance(0.001))
     assert(
@@ -157,6 +205,20 @@ class SqlFileTestParserSuite extends AnyFunSuite {
       "SELECT hypot(a, b) FROM t")
     assert(queries.map(_.mode) === Seq(ExpectNative(Seq("abs")), ExpectDispatch(Seq("hypot"))))
     assert(queries.map(_.sql) === Seq("SELECT abs(a) FROM t", "SELECT hypot(a, b) FROM t"))
+  }
+
+  test("error-class queries retain their SQL text and source line") {
+    val queries = parseQueries(
+      "-- fixture",
+      "query expect_error_class(DIVIDE_BY_ZERO)",
+      "SELECT a / b FROM t",
+      "",
+      "query expect_error(BY_ZERO)",
+      "SELECT a / b FROM t")
+    assert(
+      queries.map(_.mode) === Seq(ExpectErrorClass("DIVIDE_BY_ZERO"), ExpectError("BY_ZERO")))
+    assert(queries.map(_.sql) === Seq("SELECT a / b FROM t", "SELECT a / b FROM t"))
+    assert(queries.map(_.line) === Seq(3, 6))
   }
 
   // #5702: Spark releases before SPARK-54918 keep -0.0 distinct in array_distinct and array_union,

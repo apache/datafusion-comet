@@ -244,8 +244,12 @@ SELECT space(n) FROM test_space WHERE n < 0
 
 #### `query expect_error(<pattern>)`
 
-Asserts that both Spark and Comet throw an exception containing the given pattern. Use this
-for ANSI mode tests where invalid operations should throw errors.
+Asserts that both Spark and Comet throw an exception containing the given pattern. This mode
+permits fallback to Spark and does not compare structured error classes or SQLSTATE. Use it
+for unstructured exceptions or errors on an intentional fallback path. For structured errors
+from Comet execution, prefer `expect_error_class` below.
+
+The literal-only examples below check error messages; they do not establish Comet coverage.
 
 ```sql
 -- Config: spark.sql.ansi.enabled=true
@@ -262,6 +266,40 @@ SELECT 1 / 0
 query expect_error(INVALID_ARRAY_INDEX)
 SELECT array(1, 2, 3)[10]
 ```
+
+#### `query expect_error_class(<error_class>)`
+
+Checks the planned Comet operators and requires Spark and Comet to throw the same exception
+class, exact error class and SQLSTATE. Neither exception's cause chain may contain a
+`CometNativeException`. Spark 4 also calls the error class a "condition".
+
+The argument is a single uppercase error class, including an optional subclass separated by
+a dot. It is compared exactly, so `ARITHMETIC_OVERFLOW` does not match
+`BINARY_ARITHMETIC_OVERFLOW`.
+
+```sql
+-- Config: spark.sql.ansi.enabled=true
+
+statement
+CREATE TABLE division_input(n int, d int) USING parquet
+
+statement
+INSERT INTO division_input SELECT 1, 0
+
+query expect_error_class(DIVIDE_BY_ZERO)
+SELECT n / d FROM division_input
+```
+
+Read the expression inputs from Parquet columns so the error occurs during execution.
+Errors raised while analyzing or planning the query fail the test. The operator check runs
+before execution, using the initial plan when AQE is enabled, like the other coverage modes.
+Query-context assertions remain in Scala; this mode uses `checkSparkError`'s exception-class,
+error-class and SQLSTATE checks.
+
+Fixtures that enable the codegen dispatcher and use legacy `expect_error` need a sentinel
+query that checks Comet operators. A plain `query`, `expect_native`, `expect_dispatch` or
+`expect_error_class` satisfies that requirement. The strict error-class mode checks its own
+operators and needs no additional successful query.
 
 ## Adding a new test
 
