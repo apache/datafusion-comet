@@ -204,10 +204,8 @@ pub(crate) fn comparison_with_nulls(
 #[inline]
 fn pack<T: Copy>(values: &[T], test: impl Fn(T) -> bool) -> BooleanBuffer {
     let mut buffer = MutableBuffer::new(bit_util::ceil(values.len(), 64) * 8);
-    let chunks = values.chunks_exact(64);
-    let remainder = chunks.remainder();
+    let (chunks, remainder) = values.as_chunks::<64>();
     for chunk in chunks {
-        let chunk: &[T; 64] = chunk.try_into().unwrap();
         let mut word = 0u64;
         for (bit, &value) in chunk.iter().enumerate() {
             word |= (test(value) as u64) << bit;
@@ -229,10 +227,9 @@ fn pack<T: Copy>(values: &[T], test: impl Fn(T) -> bool) -> BooleanBuffer {
 fn pack_pairs<T: Copy>(left: &[T], right: &[T], test: impl Fn(T, T) -> bool) -> BooleanBuffer {
     debug_assert_eq!(left.len(), right.len());
     let mut buffer = MutableBuffer::new(bit_util::ceil(left.len(), 64) * 8);
-    let (left_chunks, right_chunks) = (left.chunks_exact(64), right.chunks_exact(64));
-    let (left_remainder, right_remainder) = (left_chunks.remainder(), right_chunks.remainder());
-    for (l, r) in left_chunks.zip(right_chunks) {
-        let (l, r): (&[T; 64], &[T; 64]) = (l.try_into().unwrap(), r.try_into().unwrap());
+    let (left_chunks, left_remainder) = left.as_chunks::<64>();
+    let (right_chunks, right_remainder) = right.as_chunks::<64>();
+    for (l, r) in left_chunks.iter().zip(right_chunks) {
         let mut word = 0u64;
         for bit in 0..64 {
             word |= (test(l[bit], r[bit]) as u64) << bit;
