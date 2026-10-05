@@ -39,7 +39,10 @@ use crate::execution::operators::DynamicFilterJoinExec;
 use crate::execution::operators::IcebergScanExec;
 use crate::execution::operators::TopKReaderFilterExec;
 use crate::execution::{
-    operators::{ExecutionError, MergeInstructionExec, MergeRowsExec, ScanExec, ShuffleScanExec},
+    operators::{
+        ExecutionError, MergeActionContext, MergeInstructionExec, MergeRowsExec, ScanExec,
+        ShuffleScanExec,
+    },
     planner::expression_registry::ExpressionRegistry,
     planner::operator_registry::OperatorRegistry,
     serde::{to_arrow_datatype, to_arrow_field},
@@ -2107,7 +2110,23 @@ impl PhysicalPlanner {
                                         .collect::<Result<Vec<_>, _>>()
                                 })
                                 .collect::<Result<Vec<_>, _>>()?;
-                            Ok(MergeInstructionExec { condition, outputs })
+                            let context = match instr.context {
+                                None | Some(0) => None,
+                                Some(1) => Some(MergeActionContext::Copy),
+                                Some(2) => Some(MergeActionContext::Delete),
+                                Some(3) => Some(MergeActionContext::Insert),
+                                Some(4) => Some(MergeActionContext::Update),
+                                Some(value) => {
+                                    return Err(ExecutionError::GeneralError(format!(
+                                        "MergeRows instruction has unknown action context {value}"
+                                    )))
+                                }
+                            };
+                            Ok(MergeInstructionExec {
+                                condition,
+                                outputs,
+                                context,
+                            })
                         })
                         .collect()
                 };
@@ -2162,13 +2181,14 @@ impl PhysicalPlanner {
                     }
                 }
 
-                let exec = Arc::new(MergeRowsExec::try_new(
+                let exec = Arc::new(MergeRowsExec::try_new_with_semantic_metrics(
                     is_source_row_present,
                     is_target_row_present,
                     matched_instructions,
                     not_matched_instructions,
                     not_matched_by_source_instructions,
                     merge.row_id_ordinal.map(|ord| ord as usize),
+                    merge.semantic_metrics_required,
                     Arc::clone(&child.native_plan),
                     schema,
                 )?);
@@ -7298,15 +7318,20 @@ mod tests {
             .expect("schema");
         let schema_arc = Arc::new(iceberg_schema);
 
+        let identity_field = |source_id: i32, field_id: i32, name: &str| {
+            iceberg::spec::UnboundPartitionField::builder()
+                .source_ids(vec![source_id])
+                .field_id(field_id)
+                .name(name)
+                .transform(iceberg::spec::Transform::Identity)
+                .build()
+                .expect("unbound field")
+        };
+
         // Spec 0 (older): field 1000 named "region_old".
         let spec0 = PartitionSpec::builder(Arc::clone(&schema_arc))
             .with_spec_id(0)
-            .add_unbound_field(iceberg::spec::UnboundPartitionField {
-                source_id: 2,
-                field_id: Some(1000),
-                name: "region_old".to_string(),
-                transform: iceberg::spec::Transform::Identity,
-            })
+            .add_unbound_field(identity_field(2, 1000, "region_old"))
             .expect("add field")
             .build()
             .expect("build spec0");
@@ -7314,19 +7339,9 @@ mod tests {
         // Spec 1 (newer): same field id 1000 renamed to "region_new", plus a new field 2000.
         let spec1 = PartitionSpec::builder(Arc::clone(&schema_arc))
             .with_spec_id(1)
-            .add_unbound_field(iceberg::spec::UnboundPartitionField {
-                source_id: 2,
-                field_id: Some(1000),
-                name: "region_new".to_string(),
-                transform: iceberg::spec::Transform::Identity,
-            })
+            .add_unbound_field(identity_field(2, 1000, "region_new"))
             .expect("add field")
-            .add_unbound_field(iceberg::spec::UnboundPartitionField {
-                source_id: 3,
-                field_id: Some(2000),
-                name: "category".to_string(),
-                transform: iceberg::spec::Transform::Identity,
-            })
+            .add_unbound_field(identity_field(3, 2000, "category"))
             .expect("add field")
             .build()
             .expect("build spec1");
