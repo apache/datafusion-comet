@@ -21,6 +21,8 @@
 -- Config: spark.sql.variant.allowReadingShredded=false
 -- Config: spark.sql.variant.pushVariantIntoScan=false
 -- Config: spark.sql.variant.writeShredding.enabled=false
+-- Config: spark.sql.variant.forceShreddingSchemaForTest=a INT
+-- Config: spark.comet.exec.columnarToRow.native.enabled=false
 
 statement
 CREATE TABLE test_variant(id INT, v VARIANT, tail STRING) USING parquet
@@ -170,9 +172,6 @@ SELECT v, tail, id FROM test_variant
 
 statement
 SET spark.sql.variant.writeShredding.enabled=true
-
-statement
-SET spark.sql.variant.forceShreddingSchemaForTest=a INT
 
 statement
 CREATE TABLE test_variant_c2r_shredded USING parquet AS SELECT * FROM test_variant

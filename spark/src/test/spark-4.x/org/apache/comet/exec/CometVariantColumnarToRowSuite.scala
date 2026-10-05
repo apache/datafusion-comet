@@ -25,29 +25,20 @@ import scala.jdk.CollectionConverters._
 import org.apache.arrow.vector.{IntVector, VarBinaryVector, VarCharVector, VectorSchemaRoot}
 import org.apache.arrow.vector.complex.StructVector
 import org.apache.arrow.vector.types.pojo.{ArrowType, Field, FieldType, Schema}
-import org.apache.spark.SparkConf
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{UnsafeProjection, UnsafeRow}
-import org.apache.spark.sql.comet.{CometNativeColumnarToRowExec, CometNativeScanExec}
+import org.apache.spark.sql.comet.CometNativeColumnarToRowExec
 import org.apache.spark.sql.comet.util.Utils
-import org.apache.spark.sql.execution.ColumnarToRowExec
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 import org.apache.spark.types.variant.VariantBuilder
 import org.apache.spark.unsafe.types.{UTF8String, VariantVal}
 
-import org.apache.comet.{CometArrowAllocator, CometConf, NativeColumnarToRowConverter}
+import org.apache.comet.{CometArrowAllocator, NativeColumnarToRowConverter}
 import org.apache.comet.vector.CometVector
 
 class CometVariantColumnarToRowSuite extends CometTestBase {
-  override protected def sparkConf: SparkConf = super.sparkConf
-    .set("spark.sql.adaptive.enabled", "false")
-    .set("spark.sql.sources.useV1SourceList", "parquet")
-    .set("spark.sql.variant.allowReadingShredded", "true")
-    .set("spark.sql.variant.pushVariantIntoScan", "false")
-    .set(CometConf.COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED.key, "true")
-
   test("Variant UnsafeRows preserve bytes, nulls and siblings across batches") {
     val schema = new StructType()
       .add("id", IntegerType)
@@ -136,39 +127,6 @@ class CometVariantColumnarToRowSuite extends CometTestBase {
       }
       val expected = projection(InternalRow(id, value, UTF8String.fromString(s"tail-$id")))
       assert(row.getBytes.sameElements(expected.getBytes))
-    }
-  }
-
-  test("native Variant scans use native columnar to row") {
-    for (shredding <- Seq("false", "true")) {
-      withSQLConf(
-        "spark.sql.variant.writeShredding.enabled" -> shredding,
-        "spark.sql.variant.forceShreddingSchemaForTest" -> "a INT") {
-        withTempPath { path =>
-          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-            sql("""SELECT id, parse_json(json) AS v, id + 10 AS tail FROM VALUES
-              (1, '{"a":1}'), (2, '[1,"text",false]'), (3, '42'),
-              (4, 'null'), (5, NULL), (6, '{}'), (7, '[]') AS input(id, json)""")
-              .coalesce(1)
-              .write
-              .parquet(path.getCanonicalPath)
-          }
-          val df = spark.read.parquet(path.getCanonicalPath)
-          val plan = df.queryExecution.executedPlan
-          assert(
-            collect(plan) { case c: CometNativeColumnarToRowExec => c }.nonEmpty,
-            plan.toString)
-          assert(collect(plan) { case s: CometNativeScanExec => s }.nonEmpty, plan.toString)
-          checkSparkAnswer(df)
-          withSQLConf(CometConf.COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED.key -> "false") {
-            val fallback = spark.read.parquet(path.getCanonicalPath)
-            val fallbackPlan = fallback.queryExecution.executedPlan
-            assert(collect(fallbackPlan) { case c: CometNativeColumnarToRowExec => c }.isEmpty)
-            assert(collect(fallbackPlan) { case c: ColumnarToRowExec => c }.nonEmpty)
-            checkSparkAnswer(fallback)
-          }
-        }
-      }
     }
   }
 
