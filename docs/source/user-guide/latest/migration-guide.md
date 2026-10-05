@@ -87,6 +87,27 @@ Comet still addresses a request path-style on its own when the endpoint's host i
 the bucket name cannot be a host name. See
 [Additional S3 Configuration Options](datasources.md#additional-s3-configuration-options).
 
+### Deprecated and Removed Settings
+
+Using `spark.comet.sparkToColumnar.enabled` and `spark.comet.sparkToColumnar.supportedOperatorList`
+to convert ranges, in-memory cached tables, RDDs and queries without a `FROM` clause to Arrow is
+deprecated, and will stop working in a future major release. Each of these now has a config of its
+own:
+
+| Operator in the list | Config                                       |
+| -------------------- | -------------------------------------------- |
+| `Range`              | `spark.comet.convert.range.enabled`          |
+| `InMemoryTableScan`  | `spark.comet.convert.inMemoryCache.enabled`  |
+| `RDDScan`            | `spark.comet.convert.rdd.enabled`            |
+| `OneRowRelation`     | `spark.comet.convert.oneRowRelation.enabled` |
+
+`spark.comet.sparkToColumnar.supportedOperatorList` now defaults to an empty list. When it is not
+set, `spark.comet.sparkToColumnar.enabled=true` still converts these four, and a list that names one
+of them still converts it, as before. In both cases the driver logs a warning that names the config
+to use instead. Before Spark 4.1, Spark plans a query without a `FROM` clause as an `RDDScan`, so on
+those versions `RDDScan` in the list also converted it. The list remains the way to convert other
+leaf operators, such as the scan of a Data Source V2 connector.
+
 ## Upgrading to Comet 1.1.0
 
 Comet `1.1.0` makes no behavior changes that need a `spark.comet.legacy.*` key. The changes below
@@ -153,6 +174,19 @@ Comet also now checks the shuffle manager that the application is running, rathe
 session's `spark.shuffle.manager`. A session that named `CometShuffleManager` after the SparkContext
 had started with a different shuffle manager used to plan Comet shuffles that failed with a
 `ClassCastException`. Such a session now runs without Comet, with a warning.
+
+### Native Iceberg Reads on EKS with IRSA
+
+On EKS with IAM Roles for Service Accounts (IRSA), when `AWS_WEB_IDENTITY_TOKEN_FILE`,
+`AWS_ROLE_ARN` and a region are set and the catalog configures no credentials, Comet `1.1.0`'s
+native Iceberg scan takes its S3 credentials only from the web-identity role. If that fails, it no
+longer falls back to the node role or Pod Identity, as Comet `1.0.0` did. So a cluster whose IRSA
+setup is broken, and that was reading S3 as the node role without anyone noticing, now fails native
+Iceberg reads with `failed to load signing credential`. The "EKS / IRSA" section of
+[S3 Credential Providers](s3-credential-providers.md) explains the change. To go back to the old
+credential chain for a catalog, set
+`spark.sql.catalog.<catalog>.s3.comet.credential.webIdentity.enabled=false`. A table loaded by path
+has no catalog to set that on, so for it set `spark.comet.scan.icebergNative.enabled=false`.
 
 ### Deprecated and Removed Settings
 
