@@ -902,6 +902,54 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     }
   }
 
+  test("ResolvingFileIO S3 delegate ignores wrapper Hadoop options") {
+    withTempIcebergDir { warehouseDir =>
+      val resolvingCatalog = "s3_resolving_hadoop_cat"
+      withSQLConf(
+        s"spark.sql.catalog.$resolvingCatalog" -> "org.apache.iceberg.spark.SparkCatalog",
+        s"spark.sql.catalog.$resolvingCatalog.type" -> "hadoop",
+        s"spark.sql.catalog.$resolvingCatalog.warehouse" -> warehouseDir.getAbsolutePath,
+        s"spark.sql.catalog.$resolvingCatalog.io-impl" -> classOf[ResolvingFileIO].getName,
+        s"spark.sql.catalog.$resolvingCatalog.client.region" -> "us-east-1",
+        s"spark.sql.catalog.$resolvingCatalog.hadoop.fs.s3a.endpoint" ->
+          "https://catalog.example.test",
+        s"spark.sql.catalog.$resolvingCatalog.hadoop.fs.s3a.encryption.algorithm" -> "SSE-KMS",
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        Seq("s3", "s3a").foreach { scheme =>
+          val tableName = s"resolving_$scheme"
+          val location = s"$scheme://probe-bucket/iceberg/db/$tableName"
+          spark.sql(s"""
+            CREATE TABLE $resolvingCatalog.$ns.$tableName (id INT, region STRING, amount DOUBLE)
+            USING iceberg
+            TBLPROPERTIES ('write.data.path'='$location')
+          """)
+
+          // Planning only: resolve the real S3FileIO without issuing S3 requests.
+          val insert = spark.sessionState.sqlParser.parsePlan(
+            s"INSERT INTO $resolvingCatalog.$ns.$tableName VALUES (1, 'us', 1.0)")
+          val plan =
+            spark.sessionState.executePlan(insert, CommandExecutionMode.SKIP).executedPlan
+          val cometWrite = findCometWriteExec(plan)
+            .getOrElse(fail(s"expected CometIcebergWriteExec in:\n$plan"))
+          val fileIO = IcebergReflection
+            .getFileIO(cometWrite.table)
+            .getOrElse(fail("could not resolve table FileIO"))
+          assert(fileIO.isInstanceOf[ResolvingFileIO])
+          assert(
+            fileIO.asInstanceOf[ResolvingFileIO].getConf.get("fs.s3a.endpoint") ==
+              "https://catalog.example.test")
+          assert(
+            IcebergReflection.resolveFileIOClass(fileIO, location).contains(classOf[S3FileIO]))
+          assert(IcebergReflection.getFileIOHadoopConf(cometWrite.table).isEmpty)
+          val properties = cometWrite.nativeOp.getIcebergWrite.getCommon.getCatalogPropertiesMap
+          assert(properties.get("client.region") == "us-east-1", properties)
+          assert(!properties.containsKey("s3.endpoint"), properties)
+          assert(!properties.containsKey("s3.sse.type"), properties)
+        }
+      }
+    }
+  }
+
   test("fall-back: unsupported Hadoop S3A setting on an S3 data location") {
     val secret = "SECRET_VALUE_MUST_NOT_APPEAR"
     withSQLConf("fs.s3a.encryption.algorithm" -> secret) {

@@ -190,6 +190,9 @@ on the driver. Almost all of it is the per-write `IcebergWriteCommon`:
   built-in default-source metadata is recovered separately for the S3 eligibility gate.
   FileIO implementations without a Hadoop configuration, such as `S3FileIO`, use only their
   initialized properties; session and catalog Hadoop options are neither checked nor forwarded.
+  For `ResolvingFileIO`, this decision uses the instantiated delegate for the data location,
+  including its `HadoopFileIO` fallback, rather than the wrapper's Hadoop configuration.
+  Failure to resolve that delegate causes a plan-time fallback.
 
 The per-task `partition_id` and `task_attempt_id` are stamped onto a copy of the proto inside the
 task closure in `CometIcebergWriteExec.doExecuteColumnar`. The native side refuses to run without

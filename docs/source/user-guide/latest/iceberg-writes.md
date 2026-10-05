@@ -67,6 +67,11 @@ the same `TaskCommit` message the JVM writer would have produced. Everything ice
 post-write — snapshot assignment, manifest-list aggregation, commit validation and retries —
 is untouched: `IcebergCommit` performs the normal `BatchWrite.commit`.
 
+For `ResolvingFileIO`, Hadoop settings are taken from the delegate opening the data location.
+An S3 location handled by `S3FileIO` uses its initialized FileIO properties, so Hadoop options
+on the wrapper do not change the native endpoint or encryption settings. If that delegate cannot
+be resolved, the write falls back to iceberg-java.
+
 ## Configuration
 
 Standard Comet + Iceberg setup (see [`iceberg.md`](iceberg.md)) plus the write-side toggle:
