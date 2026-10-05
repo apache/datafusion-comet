@@ -133,6 +133,29 @@ class CometIcebergWriteActionSuite
     }
   }
 
+  // The suite turns the split plan on explicitly, so this test drops that setting to see what an
+  // application that never sets it gets.
+  // https://github.com/apache/datafusion-comet/issues/5644
+  test("an Iceberg write plans the split operator when the flag is not set") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    withIcebergCatalog { warehouseDir =>
+      createTable(warehouseDir, "split_default", partitionSpec = "")
+      val key = CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key
+      val conf = spark.sessionState.conf
+      conf.unsetConf(key)
+      try {
+        val snapshot = captureWrite("split_default") {
+          spark.sql(
+            "INSERT INTO cat.db.split_default VALUES (1, 'us-east', 10.5), (2, 'eu', 20.3)")
+        }
+        assertExactlyOneCommit(snapshot)
+      } finally {
+        conf.setConfString(key, "true")
+      }
+      assertRows("split_default", expectedIds = Seq(1, 2))
+    }
+  }
+
   test("AppendData partitioned INSERT INTO routes through two-op") {
     assume(icebergAvailable, "Iceberg not available in classpath")
     withIcebergCatalog { warehouseDir =>

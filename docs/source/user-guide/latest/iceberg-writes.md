@@ -17,10 +17,15 @@
   under the License.
 -->
 
-# Iceberg Writes: Comet's Split-Operator Plan (Experimental)
+# Iceberg Writes: Comet's Split-Operator Plan
 
-**This feature is experimental and disabled by default.** Enable it only after validating it
-against your own workloads.
+Since Comet 1.2.0, Comet plans Iceberg writes with the split-operator plan described below by
+default. The plan changes only how Spark runs the write, and iceberg-java still writes the data
+files. Set `spark.comet.write.iceberg.splitOperator.enabled=false` to plan Spark's own write
+operator instead.
+
+**The native Parquet writer (`spark.comet.write.iceberg.enabled`) is experimental and disabled by
+default.** Enable it only after validating it against your own workloads.
 
 ## Overview
 
@@ -32,8 +37,8 @@ data-file writing cannot be re-planned in response to how its input ran. And bec
 writing is bundled with the metadata and commit steps, there is no separate step for Comet to
 replace.
 
-When `spark.comet.write.iceberg.splitOperator.enabled=true`, Comet rewrites eligible Iceberg
-writes into two operators:
+When `spark.comet.write.iceberg.splitOperator.enabled=true`, the default, Comet rewrites eligible
+Iceberg writes into two operators:
 
 1. **`IcebergWrite`** — writes the data files on the executors, exactly as iceberg-java does
    today, and returns each task's serialized commit message. This operator and the sub-query
@@ -79,7 +84,7 @@ spark.sql.catalog.<name>=org.apache.iceberg.spark.SparkCatalog
 spark.sql.catalog.<name>.type=hadoop                          # or hive / glue / rest / ...
 spark.sql.catalog.<name>.warehouse=...
 
-# Split-operator plan (experimental, off by default)
+# Split-operator plan (on by default since Comet 1.2.0)
 spark.comet.write.iceberg.splitOperator.enabled=true
 
 # Native Parquet writer (experimental, off by default; requires the split plan)
@@ -120,7 +125,8 @@ changes.
 
 The rewrite is skipped — and the write runs through Spark's stock combined operator — when:
 
-- `spark.comet.write.iceberg.splitOperator.enabled` is `false` (the default);
+- `spark.comet.write.iceberg.splitOperator.enabled` is set to `false`;
+- Comet is disabled (`spark.comet.enabled=false`);
 - the write is not an Iceberg `SparkWrite` (any other V2 data source);
 - the table uses merge-on-read: delta writes (Iceberg `WriteDelta`) are not intercepted;
 - the statement is CTAS / RTAS on Spark 3.4, where the staged exec writes inline; on Spark

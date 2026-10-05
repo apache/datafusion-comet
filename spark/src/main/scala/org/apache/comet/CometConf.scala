@@ -123,13 +123,15 @@ object CometConf extends ShimCometConf {
 
   val COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.write.iceberg.splitOperator.enabled")
-      .category(CATEGORY_TESTING)
+      .category(CATEGORY_EXEC)
       .doc(
         "Whether to rewrite Iceberg V2 writes from Spark's combined V2 write/commit operator " +
           "into Comet's two-operator shape: a file writer exec (inside AQE) and a committer " +
-          "(outside AQE).")
+          "(outside AQE). Iceberg's own writer still writes the data files unless " +
+          "`spark.comet.write.iceberg.enabled` is also set. Set this to false to plan " +
+          "Spark's own V2 write operator.")
       .booleanConf
-      .createWithDefault(false)
+      .createWithDefault(true)
 
   val COMET_ICEBERG_NATIVE_WRITE_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.write.iceberg.enabled")

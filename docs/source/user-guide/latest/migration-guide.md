@@ -80,6 +80,15 @@ to use instead. Before Spark 4.1, Spark plans a query without a `FROM` clause as
 those versions `RDDScan` in the list also converted it. The list remains the way to convert other
 leaf operators, such as the scan of a Data Source V2 connector.
 
+### Iceberg Write Plan
+
+`spark.comet.write.iceberg.splitOperator.enabled` now defaults to `true`. Comet plans an Iceberg
+`INSERT INTO`, `INSERT OVERWRITE`, and copy-on-write `DELETE`, `UPDATE` or `MERGE` as two operators,
+`IcebergWrite` under `IcebergCommit`, in place of Spark's single V2 write operator. iceberg-java
+still writes the data files and commits them, so the written table is the same, but explain output
+and the Spark UI show the two operators. Set `spark.comet.write.iceberg.splitOperator.enabled=false`
+to plan Spark's own operator, as in Comet 1.1.0. See [Iceberg Writes](iceberg-writes.md).
+
 ## Upgrading to Comet 1.1.0
 
 Comet `1.1.0` makes no behavior changes that need a `spark.comet.legacy.*` key. The changes below
