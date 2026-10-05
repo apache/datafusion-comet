@@ -91,6 +91,68 @@ SELECT variant_get(v, '$', 'tinyint') FROM test_variant_get_casts WHERE id = 2
 query expect_error(INVALID_VARIANT_CAST)
 SELECT variant_get(v, '$', 'int') FROM test_variant_get_casts WHERE id = 4
 
+statement
+CREATE TABLE test_variant_get_hex(id INT, v VARIANT) USING parquet
+
+statement
+INSERT INTO test_variant_get_hex VALUES
+  (1, parse_json('"0x1.0p0"')), (2, parse_json('" +0X.8P+2F "')),
+  (3, parse_json('"-0x0p0D"')), (4, parse_json('"0x1.fffffep127"')),
+  (5, parse_json('"0x1.fffffffffffffp1023"')), (6, parse_json('"0x1p1024"')),
+  (7, parse_json('"0x1p-149"')), (8, parse_json('"0x1p-1074"')),
+  (9, parse_json('"0x1.000001p0"')), (10, parse_json('"0x1.00000100000001p0"')),
+  (11, parse_json('"-0x1p-9999999999"')), (12, parse_json('null')), (13, NULL)
+
+-- Both forms must parse Java hexadecimal syntax from stored Variant strings.
+query expect_native(variant_get, try_variant_get)
+SELECT variant_get(v, '$', 'float'), variant_get(v, '$', 'double'),
+       try_variant_get(v, '$', 'float'), try_variant_get(v, '$', 'double')
+FROM test_variant_get_hex
+
+statement
+INSERT INTO test_variant_get_hex VALUES
+  (20, parse_json('"0x1"')), (21, parse_json('"0x.p0"')),
+  (22, parse_json('"0x1p+"')), (23, parse_json('"0x1p0ff"'))
+
+query expect_native(try_variant_get)
+SELECT try_variant_get(v, '$', 'float'), try_variant_get(v, '$', 'double')
+FROM test_variant_get_hex
+
+query expect_error(INVALID_VARIANT_CAST)
+SELECT variant_get(v, '$', 'double') FROM test_variant_get_hex WHERE id = 20
+
+statement
+CREATE TABLE test_variant_get_bigint(id INT, v VARIANT) USING parquet
+
+statement
+INSERT INTO test_variant_get_bigint VALUES
+  (1, CAST(double('9223372036854775808') AS VARIANT)),
+  (2, CAST(float('9223372036854775808') AS VARIANT)),
+  (3, CAST(double('-9223372036854775808') AS VARIANT)),
+  (4, CAST(float('-9223372036854775808') AS VARIANT)),
+  (5, CAST(double('9223372036854774784') AS VARIANT)),
+  (6, CAST(double('-9223372036854774784') AS VARIANT)),
+  (7, parse_json('null')), (8, NULL)
+
+-- Spark accepts the rounded 2^63 boundary and saturates to Long.MaxValue.
+query expect_native(variant_get, try_variant_get)
+SELECT variant_get(v, '$', 'bigint'), try_variant_get(v, '$', 'bigint')
+FROM test_variant_get_bigint
+
+statement
+INSERT INTO test_variant_get_bigint VALUES
+  (20, CAST(double('9223372036854777856') AS VARIANT)),
+  (21, CAST(double('-9223372036854777856') AS VARIANT)),
+  (22, CAST(float('9223373136366403584') AS VARIANT)),
+  (23, CAST(float('-9223373136366403584') AS VARIANT)),
+  (24, CAST(double('NaN') AS VARIANT)), (25, CAST(float('Infinity') AS VARIANT))
+
+query expect_native(try_variant_get)
+SELECT try_variant_get(v, '$', 'bigint') FROM test_variant_get_bigint
+
+query expect_error(INVALID_VARIANT_CAST)
+SELECT variant_get(v, '$', 'bigint') FROM test_variant_get_bigint WHERE id = 20
+
 -- Decimal and date/time extraction use the shared native casts, with their documented limits.
 statement
 SET spark.comet.expression.VariantGet.allowIncompatible=true

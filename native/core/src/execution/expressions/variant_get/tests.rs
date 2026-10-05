@@ -19,7 +19,9 @@ use super::*;
 use arrow::{
     array::{BinaryArray, StructArray},
     buffer::NullBuffer,
-    datatypes::{Decimal128Type, Field, Float64Type, Int32Type, TimestampMicrosecondType},
+    datatypes::{
+        Decimal128Type, Field, Float64Type, Int32Type, Int64Type, TimestampMicrosecondType,
+    },
 };
 use datafusion::physical_expr::expressions::Column;
 use parquet::variant::{VariantBuilder, VariantDecimal16};
@@ -99,6 +101,62 @@ fn scalar_casts_and_nulls() {
         .unwrap_err()
         .to_string();
     assert!(error.contains("INVALID_VARIANT_CAST"), "{error}");
+}
+
+#[test]
+fn floating_point_bigint_boundaries() {
+    let boundary = 9223372036854775808.0_f64;
+    let valid = input(&[
+        Some(Variant::Double(boundary)),
+        Some(Variant::Float(boundary as f32)),
+        Some(Variant::Double(-boundary)),
+        Some(Variant::Float(-boundary as f32)),
+        Some(Variant::Double(boundary.next_down())),
+        Some(Variant::Double((-boundary).next_up())),
+        None,
+        Some(Variant::Null),
+    ]);
+    for strict in [false, true] {
+        let result = expression(DataType::Int64, strict)
+            .evaluate_array(&valid)
+            .unwrap();
+        assert_eq!(
+            result
+                .as_primitive::<Int64Type>()
+                .iter()
+                .collect::<Vec<_>>(),
+            vec![
+                Some(i64::MAX),
+                Some(i64::MAX),
+                Some(i64::MIN),
+                Some(i64::MIN),
+                Some(9223372036854774784),
+                Some(-9223372036854774784),
+                None,
+                None
+            ]
+        );
+    }
+    for value in [
+        Variant::Double(boundary.next_up()),
+        Variant::Double((-boundary).next_down()),
+        Variant::Float((boundary as f32).next_up()),
+        Variant::Float((-boundary as f32).next_down()),
+        Variant::Double(f64::NAN),
+        Variant::Double(f64::INFINITY),
+        Variant::Float(f32::NEG_INFINITY),
+    ] {
+        let invalid = input(&[Some(value)]);
+        assert!(expression(DataType::Int64, false)
+            .evaluate_array(&invalid)
+            .unwrap()
+            .is_null(0));
+        assert!(expression(DataType::Int64, true)
+            .evaluate_array(&invalid)
+            .unwrap_err()
+            .to_string()
+            .contains("INVALID_VARIANT_CAST"));
+    }
 }
 
 #[test]

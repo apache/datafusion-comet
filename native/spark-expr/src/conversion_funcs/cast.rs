@@ -369,8 +369,10 @@ pub(crate) fn cast_array(
         | (Float64, Int8)
         | (Float64, Int16)
         | (Float64, Int32)
-        | (Float64, Int64)
-        | (Decimal128(_, _), Int8)
+        | (Float64, Int64) => {
+            spark_cast_nonintegral_numeric_to_integral(&array, eval_mode, &from_type, to_type)
+        }
+        (Decimal128(_, _), Int8)
         | (Decimal128(_, _), Int16)
         | (Decimal128(_, _), Int32)
         | (Decimal128(_, _), Int64)
