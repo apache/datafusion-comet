@@ -3778,6 +3778,50 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("AQE coalesces the shuffle partitions of a union in a stage Spark coalesced in part") {
+    // Spark's rule coalesces the shuffle on the other side of a Cartesian product as a group of
+    // its own before Comet's rule runs. The read it leaves there should not keep the union's
+    // shuffled branch from being coalesced as it is on Spark.
+    assume(isSpark35Plus, "Comet's query-stage optimizer rules need Spark 3.5+")
+    withTempPath { dir =>
+      spark.range(0, 10, 1, 1).toDF("c").write.parquet(dir.getCanonicalPath)
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+        // Keeps AQE from broadcasting the small side, which would move its shuffle and read into
+        // a stage of their own.
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+        SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+        SQLConf.COALESCE_PARTITIONS_MIN_PARTITION_NUM.key -> "1",
+        SQLConf.SHUFFLE_PARTITIONS.key -> "10") {
+        def query() = spark
+          .range(0, 1000, 1, 2)
+          .toDF("c")
+          .repartition($"c")
+          .union(spark.read.parquet(dir.getCanonicalPath))
+          .crossJoin(spark.range(0, 3).toDF("d").repartition($"d"))
+        // The number of partitions that each coalesced read of the final plan reads.
+        def coalescedReads(df: DataFrame): Seq[Int] = {
+          df.collect()
+          collect(df.queryExecution.executedPlan) {
+            case r: AQEShuffleReadExec if r.isCoalescedRead => r.partitionSpecs.length
+          }
+        }
+        var sparkReads = Seq.empty[Int]
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          sparkReads = coalescedReads(query())
+        }
+        assert(sparkReads == Seq(1, 1), "Spark should coalesce both sides of the product")
+
+        val df = query()
+        checkSparkAnswer(df)
+        assert(coalescedReads(df) == sparkReads, df.queryExecution.executedPlan)
+        val plan = df.queryExecution.executedPlan
+        assert(collect(plan) { case u: CometUnionExec => u }.size == 1, plan)
+        assert(collect(plan) { case j: CartesianProductExec => j }.size == 1, plan)
+      }
+    }
+  }
+
   test("native execution after coalesce") {
     withTable("t1") {
       (0 until 5)

@@ -19,11 +19,14 @@
 
 package org.apache.comet.rules
 
+import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.catalyst.plans.physical.UnknownPartitioning
 import org.apache.spark.sql.catalyst.trees.TreeNodeTag
 import org.apache.spark.sql.comet.CometExec
-import org.apache.spark.sql.execution.{SparkPlan, UnionExec}
+import org.apache.spark.sql.execution.{LeafExecNode, SparkPlan, UnionExec}
 import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, AQEShuffleReadRule, CoalesceShufflePartitions, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.exchange.ShuffleOrigin
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec}
@@ -41,12 +44,12 @@ import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNes
  * needs a few.
  *
  * Comet replaces these operators while AQE prepares a stage, before its optimizer rules run, so
- * this runs after Spark's rule instead, on a stage where that rule put a read over no shuffle. It
- * rebuilds the Spark operator that each such Comet operator replaced, over the Comet children,
- * has Spark's own rule coalesce the whole stage, and swaps the Comet operators back in. Spark's
- * code makes every decision, for its version, so the partitions come out as Spark would have
- * coalesced them, including the smaller target size it uses below a Cartesian product or a nested
- * loop join from Spark 4.0.
+ * this runs after Spark's rule instead. It rebuilds the Spark operator that each such Comet
+ * operator replaced, over the Comet children, has Spark's own rule coalesce the whole stage, and
+ * swaps the Comet operators back in. Spark's code makes every decision, for its version, so the
+ * partitions come out as Spark would have coalesced them, including the smaller target size it
+ * uses below a Cartesian product or a nested loop join from Spark 4.0. A shuffle that Spark's
+ * rule has coalesced already, or that another AQE rule reads its own way, stays as it is.
  *
  * It rebuilds only operators whose output partitioning is unknown. Spark can coalesce the
  * children of a union differently, and from Spark 4.1 a union whose children share a partitioning
@@ -75,12 +78,8 @@ case object CometCoalesceShufflePartitions extends AQEShuffleReadRule {
     CoalesceShufflePartitions(SparkSession.active).supportedShuffleOrigins
 
   override def apply(plan: SparkPlan): SparkPlan = {
-    // A read over a shuffle stage means an AQE rule has already decided how to read it: Spark's
-    // rule coalesced it, or it is a skew-split or local read. Spark's rule expects to coalesce
-    // only reads that split a skewed partition, so leave such a stage as it is.
     if (!conf.coalesceShufflePartitionsEnabled ||
-      !plan.exists(_.isInstanceOf[ShuffleQueryStageExec]) ||
-      plan.exists(_.isInstanceOf[AQEShuffleReadExec])) {
+      !plan.exists(_.isInstanceOf[ShuffleQueryStageExec])) {
       return plan
     }
     val asSpark = plan.transformDown { case comet @ Replaced(original) =>
@@ -89,8 +88,18 @@ case object CometCoalesceShufflePartitions extends AQEShuffleReadRule {
     if (asSpark eq plan) {
       return plan
     }
-    val coalesced = CoalesceShufflePartitions(SparkSession.active).apply(asSpark)
-    if (coalesced eq asSpark) plan else restore(coalesced)
+    // A read over a shuffle stage means an AQE rule has already decided how to read it: Spark's
+    // rule just coalesced it, below a Cartesian product say, or it is a skew-split or local read.
+    // Spark's rule expects to coalesce only reads that split a skewed partition, so hide each read
+    // behind a leaf that is not an exchange stage. Spark's rule then leaves alone every shuffle it
+    // would coalesce together with a read one, and coalesces the others. The hidden groups no
+    // longer count when it shares the minimum number of partitions among groups, so the others
+    // can keep more partitions than on Spark, never fewer.
+    val withDecidedReads = asSpark.transformUp { case read: AQEShuffleReadExec =>
+      DecidedRead(read)
+    }
+    val coalesced = CoalesceShufflePartitions(SparkSession.active).apply(withDecidedReads)
+    if (coalesced eq withDecidedReads) plan else restore(coalesced)
   }
 
   // A Comet operator whose Spark original's children Spark's rule coalesces one by one, with that
@@ -123,14 +132,25 @@ case object CometCoalesceShufflePartitions extends AQEShuffleReadRule {
     standIn
   }
 
-  // Put each Comet operator back over the children of its stand-in. Rebuilt by hand rather than
-  // with transformUp, which copies a replaced node's tags onto a replacement that has none, and so
-  // could leave the stand-in's tag on the Comet operator.
-  private def restore(plan: SparkPlan): SparkPlan = {
-    val children = plan.children.map(restore)
-    plan.getTagValue(COMET_OPERATOR) match {
-      case Some(comet) => comet.withNewChildren(children)
-      case None => plan.withNewChildren(children)
-    }
+  // Stands in for a read that an AQE rule has already decided on while Spark's rule runs.
+  private case class DecidedRead(read: AQEShuffleReadExec) extends LeafExecNode {
+    override def output: Seq[Attribute] = read.output
+
+    override protected def doExecute(): RDD[InternalRow] =
+      throw new UnsupportedOperationException(s"$nodeName never runs")
+  }
+
+  // Put each Comet operator back over the children of its stand-in, and each decided read back in
+  // place of its leaf. Rebuilt by hand rather than with transformUp, which copies a replaced
+  // node's tags onto a replacement that has none, and so could leave the stand-in's tag on the
+  // Comet operator.
+  private def restore(plan: SparkPlan): SparkPlan = plan match {
+    case DecidedRead(read) => read
+    case _ =>
+      val children = plan.children.map(restore)
+      plan.getTagValue(COMET_OPERATOR) match {
+        case Some(comet) => comet.withNewChildren(children)
+        case None => plan.withNewChildren(children)
+      }
   }
 }
