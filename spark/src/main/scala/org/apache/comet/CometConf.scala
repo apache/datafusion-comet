@@ -361,6 +361,17 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_EXEC_IN_MEMORY_CACHE_DELTA_ENCODING_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.exec.inMemoryCache.deltaEncoding.enabled")
+      .category(CATEGORY_EXEC)
+      .doc("Store suitable long columns as deltas before Arrow buffer compression. " +
+        "Only used with compressed caches and only when the delta buffer is over 25% smaller. " +
+        "Can reduce cache footprint for sequential values, but adds cache-build " +
+        "work and a prefix sum on reads. Only affects newly cached data; existing batches " +
+        "remain readable when this setting changes.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_EXEC_IN_MEMORY_CACHE_COMPRESSION_CODEC: ConfigEntry[String] =
     conf("spark.comet.exec.inMemoryCache.compression.codec")
       .category(CATEGORY_EXEC)

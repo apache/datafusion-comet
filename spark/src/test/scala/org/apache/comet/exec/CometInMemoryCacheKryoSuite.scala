@@ -23,7 +23,7 @@ import org.apache.spark.SparkConf
 import org.apache.spark.serializer.KryoRegistrator
 import org.apache.spark.sql.{CometTestBase, Row}
 import org.apache.spark.sql.catalyst.expressions.GenericInternalRow
-import org.apache.spark.sql.comet.execution.arrow.ArrowCachedBatchSerializer
+import org.apache.spark.sql.comet.execution.arrow.{ArrowCachedBatchSerializer, CometCachedBatchHelper}
 import org.apache.spark.sql.execution.columnar.{CometInMemoryRelationHelper, DefaultCachedBatch}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.storage.StorageLevel
@@ -109,6 +109,8 @@ class CometInMemoryCacheKryoSuite extends CometTestBase {
         withSQLConf(
           SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
           CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
+          CometConf.COMET_EXEC_IN_MEMORY_CACHE_DELTA_ENCODING_ENABLED.key -> "true",
+          CometConf.COMET_EXEC_IN_MEMORY_CACHE_COMPRESSION_CODEC.key -> "zstd",
           CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true") {
 
           spark.catalog.clearCache()
@@ -132,6 +134,15 @@ class CometInMemoryCacheKryoSuite extends CometTestBase {
               cachedBatchTypes("kryo_cache").sameElements(
                 Array("org.apache.spark.sql.comet.execution.arrow.CometCachedBatch")),
               "the payload Kryo serialized must be Comet's cached batch format")
+
+            val cached = spark.sharedState.cacheManager
+              .lookupCachedData(spark.table("kryo_cache"))
+              .get
+            assert(
+              cached.cachedRepresentation.cacheBuilder.cachedColumnBuffers
+                .map(b => CometCachedBatchHelper.columnsAreDeltaEncoded(b)(0))
+                .collect()
+                .forall(identity))
 
             // Read the payload back rather than only the row count, so a Kryo round trip that
             // silently mangles the Arrow bytes fails too. The predicate also exercises the

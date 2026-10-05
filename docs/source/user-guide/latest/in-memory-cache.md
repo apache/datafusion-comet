@@ -68,6 +68,14 @@ A relation whose cached plan records observed metrics, from `Dataset.observe`, i
 Comet's format but is scanned by Spark's `InMemoryTableScanExec`, because Spark collects those
 metrics only through that scan.
 
+Set `spark.comet.exec.inMemoryCache.deltaEncoding.enabled=true` to try delta encoding
+for top-level `bigint` columns in compressed caches. A column uses deltas only when
+its compressed data buffer is over 25% smaller than the plain representation.
+This can reduce footprint for sequential values, but adds work and
+a temporary data buffer during cache creation, and a prefix sum during reads.
+It is off by default and is skipped with `compression.codec=none`. The setting
+only affects newly cached batches; changing it leaves existing caches readable.
+
 ## Storage format
 
 Each cached batch is stored as a single Arrow IPC record batch message and its body.

@@ -29,7 +29,7 @@ import scala.util.control.NonFatal
 import org.apache.arrow.compression.{CommonsCompressionFactory, ZstdCompressionCodec}
 import org.apache.arrow.flatbuf.{RecordBatch => FlatBufRecordBatch}
 import org.apache.arrow.memory.{ArrowBuf, BufferAllocator}
-import org.apache.arrow.vector.{FieldVector, TypeLayout, ValueVector, VectorLoader, VectorSchemaRoot, VectorUnloader}
+import org.apache.arrow.vector.{BigIntVector, FieldVector, TypeLayout, ValueVector, VectorLoader, VectorSchemaRoot, VectorUnloader}
 import org.apache.arrow.vector.compression.{CompressionCodec, CompressionUtil, NoCompressionCodec}
 import org.apache.arrow.vector.dictionary.DictionaryEncoder
 import org.apache.arrow.vector.ipc.{ReadChannel, WriteChannel}
@@ -186,10 +186,13 @@ private[comet] object CachedBatchIpc {
    * batch arrives at whatever size the plan above produced. Chunks are appended rather than grown
    * and recopied, so the write also never holds the payload twice.
    *
-   * Returns the message and the decoded size of each top-level column. Each size is measured on
-   * the batch before compression, from the plain lengths of the column's own buffers, which is
-   * what `getBufferSize` reports for a vector. The caller records the sizes in the statistics
-   * row; `ArrowCachedBatchSerializer.statsRow` explains why they are decoded sizes.
+   * Returns the message, the decoded size of each top-level column, and flags for columns stored
+   * as deltas. Delta encoding touches only a top-level long column's data buffer; validity and
+   * statistics remain logical, and Projection restores values before exposing the root. Each size
+   * is measured on the batch before compression, from the plain lengths of the column's own
+   * buffers, which is what `getBufferSize` reports for a vector. The caller records the sizes in
+   * the statistics row; `ArrowCachedBatchSerializer.statsRow` explains why they are decoded
+   * sizes.
    *
    * Dictionary-encoded columns are decoded to their plain form first. A payload with no Schema
    * message cannot describe a dictionary encoding, and the schema the reader rebuilds from Spark
@@ -204,7 +207,8 @@ private[comet] object CachedBatchIpc {
       batch: ColumnarBatch,
       codec: CompressionCodec,
       allocator: BufferAllocator,
-      chunkSize: Int): (ChunkedByteBuffer, Array[Long]) = {
+      chunkSize: Int,
+      deltaEncoding: Boolean = false): (ChunkedByteBuffer, Array[Long], Array[Boolean]) = {
     val (vectors, decoded) = decodeDictionaries(batch, allocator)
     try {
       val root = new VectorSchemaRoot(vectors.asJava)
@@ -219,9 +223,20 @@ private[comet] object CachedBatchIpc {
       val fields = vectors.map(_.getField)
       val unloader = new VectorUnloader(root, true, NoCompressionCodec.INSTANCE, true)
       val plainBatch = unloader.getRecordBatch
+      val deltaEncoded =
+        if (deltaEncoding) new Array[Boolean](vectors.length) else Array.emptyBooleanArray
+      val deltaColumns =
+        if (deltaEncoding && codec.getCodecType != CompressionUtil.CodecType.NO_COMPRESSION) {
+          val starts = fields.scanLeft(0)(_ + fieldBufferCount(_)).toArray
+          vectors.indices.collect {
+            case i if vectors(i).isInstanceOf[BigIntVector] => (starts(i) + 1) -> i
+          }.toMap
+        } else Map.empty[Int, Int]
       val (sizes, recordBatch) =
         try {
-          (columnSizes(fields, plainBatch), compressed(plainBatch, codec, allocator))
+          (
+            columnSizes(fields, plainBatch),
+            compressed(plainBatch, codec, allocator, deltaColumns, deltaEncoded))
         } finally {
           plainBatch.close()
         }
@@ -237,7 +252,10 @@ private[comet] object CachedBatchIpc {
         } finally {
           out.close()
         }
-        (out.toChunkedByteBuffer, sizes)
+        (
+          out.toChunkedByteBuffer,
+          sizes,
+          if (deltaEncoded.contains(true)) deltaEncoded else Array.emptyBooleanArray)
       } finally {
         recordBatch.close()
       }
@@ -283,7 +301,13 @@ private[comet] object CachedBatchIpc {
      * selected are never read, let alone inflated. The windows are then decompressed in one pass;
      * see [[decompressed]] for why that is not left to `VectorLoader`.
      */
-    def load(data: ChunkedByteBuffer, allocator: BufferAllocator): VectorSchemaRoot = {
+    def load(
+        data: ChunkedByteBuffer,
+        allocator: BufferAllocator,
+        deltaEncoded: Array[Boolean] = Array.emptyBooleanArray): VectorSchemaRoot = {
+      require(
+        deltaEncoded.isEmpty || deltaEncoded.length == arrowFields.length,
+        "Delta flags must match the cached schema")
       val readChannel = new ReadChannel(Channels.newChannel(data.toInputStream()))
       // Reads the message metadata only. The body stays in `data` and is copied selectively.
       val metadata = MessageSerializer.readMessage(readChannel)
@@ -393,6 +417,25 @@ private[comet] object CachedBatchIpc {
       val root = VectorSchemaRoot.create(schema, allocator)
       try {
         new VectorLoader(root).load(plainBatch)
+        if (deltaEncoded.nonEmpty) {
+          selectedIndices.indices.foreach { i =>
+            if (deltaEncoded(selectedIndices(i))) {
+              val vector = root.getVector(i)
+              require(
+                vector.isInstanceOf[BigIntVector],
+                "Delta-encoded cache column must contain longs")
+              val data = vector.getDataBuffer
+              var previous = 0L
+              var row = 0
+              while (row < vector.getValueCount) {
+                val value = data.getLong(row * 8L) + previous
+                data.setLong(row * 8L, value)
+                previous = value
+                row += 1
+              }
+            }
+          }
+        }
         root
       } catch {
         case NonFatal(e) =>
@@ -509,7 +552,9 @@ private[comet] object CachedBatchIpc {
   private def compressed(
       batch: ArrowRecordBatch,
       codec: CompressionCodec,
-      allocator: BufferAllocator): ArrowRecordBatch = {
+      allocator: BufferAllocator,
+      deltaColumns: Map[Int, Int],
+      deltaEncoded: Array[Boolean]): ArrowRecordBatch = {
     val buffers = new java.util.ArrayList[ArrowBuf](batch.getBuffers.size)
     try {
       batch.getBuffers.asScala.foreach { buffer =>
@@ -522,6 +567,45 @@ private[comet] object CachedBatchIpc {
               throw e
           }
         buffers.add(packed)
+      }
+
+      deltaColumns.foreach { case (index, column) =>
+        val buffer = batch.getBuffers.get(index)
+        val packed = buffers.get(index)
+        if (batch.getLength > 0) {
+          val deltas = allocator.buffer(buffer.writerIndex())
+          try {
+            var previous = 0L
+            var smallDeltas = 0
+            var row = 0
+            while (row < batch.getLength) {
+              val value = buffer.getLong(row * 8L)
+              val delta = value - previous
+              deltas.setLong(row * 8L, delta)
+              if (delta == delta.toInt.toLong) smallDeltas += 1
+              previous = value
+              row += 1
+            }
+            deltas.writerIndex(buffer.writerIndex())
+            // Skip a second compression for full-width irregular longs. The size comparison
+            // still rejects poorly compressing deltas from narrower distributions.
+            if (smallDeltas.toLong * 2 >= batch.getLength) {
+              deltas.getReferenceManager.retain()
+              val encoded =
+                try codec.compress(allocator, deltas)
+                catch {
+                  case NonFatal(e) =>
+                    deltas.getReferenceManager.release()
+                    throw e
+                }
+              if (encoded.writerIndex() < packed.writerIndex() * 3 / 4) {
+                buffers.set(index, encoded)
+                deltaEncoded(column) = true
+                packed.close()
+              } else encoded.close()
+            }
+          } finally deltas.close()
+        }
       }
 
       val result = new ArrowRecordBatch(
