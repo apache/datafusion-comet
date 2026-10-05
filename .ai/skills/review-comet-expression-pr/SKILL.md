@@ -78,8 +78,10 @@ Location: `spark/src/main/scala/org/apache/comet/serde/`
 - [ ] A change that routes a whole class of expressions to the JVM codegen dispatcher lists the new
       shapes it admits and tests one of each, including decimal results whose scale differs from the
       declared type and boolean inputs from sliced batches (#6424, #6425)
-- [ ] A timezone-aware expression serializes `expr.timeZoneId`, the timezone Spark stamped on it,
-      rather than `SQLConf.get.sessionLocalTimeZone` or the JVM default
+- [ ] A timezone-aware expression serializes `CometTimeZone.nativeId(expr.timeZoneId)`, the
+      timezone Spark stamped on it in a form native code can parse, rather than
+      `SQLConf.get.sessionLocalTimeZone` or the JVM default, and returns
+      `CometTimeZone.supportLevel` from `getSupportLevel` when `nativeId` gives `None`
 
 ### Registration in `QueryPlanSerde.scala`
 

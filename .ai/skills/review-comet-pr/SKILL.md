@@ -200,7 +200,7 @@ For such a PR, hold the diff against "The invariant" and "Guidelines" in
   plan every `TimestampType` value is labelled exactly `"UTC"`, and every `TimestampNTZType` value
   has no timezone. Check the declared type and the arrays the code builds, not only the values.
 - A timezone taken from the JVM default or the host. An expression uses the `timeZoneId` Spark
-  stamped on it, not `SQLConf.get.sessionLocalTimeZone`.
+  stamped on it, passed through `CometTimeZone.nativeId`, not `SQLConf.get.sessionLocalTimeZone`.
 - A path gated on a UTC session. `Etc/UTC` is the session default on Ubuntu and Debian images, so
   check what the gate does with it, and that the output there is still labelled `"UTC"` rather than
   `"Etc/UTC"`.
@@ -209,11 +209,12 @@ For such a PR, hold the diff against "The invariant" and "Guidelines" in
   code" in the same page says what to ask for.
 
 `timezones.md` also describes specific code: where the `"UTC"` label is set, which serdes serialize
-a timezone, what `array_with_timezone` does, how the Parquet scan adapts timestamps, and which
-expressions go through the codegen dispatcher. A PR that changes any of these updates the page in
-the same PR. The page also documents some known limitations as current behavior, such as the
-timezone IDs native code cannot parse. A fix for one of the bugs tracked in
-[#6335](https://github.com/apache/datafusion-comet/issues/6335) usually changes that text too.
+a timezone, how `CometTimeZone` rewrites timezone IDs, what `array_with_timezone` does, how the
+scans adapt timestamps, and which expressions go through the codegen dispatcher. A PR that changes
+any of these updates the page in the same PR. The page also documents some known limitations as
+current behavior, such as chrono-tz's DST horizon and the timezone database versions. A fix for one
+of the bugs tracked in [#6335](https://github.com/apache/datafusion-comet/issues/6335) usually
+changes that text too.
 
 ### Configuration
 

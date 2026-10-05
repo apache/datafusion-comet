@@ -112,14 +112,15 @@ only the latest.
       ([#6138](https://github.com/apache/datafusion-comet/issues/6138)). Check equality, hashing,
       ordering and rendering for float, double, timestamp, timestamptz, binary and decimal.
 - [ ] **Timestamp partition values are UTC.** Iceberg's `years`, `months`, `days` and `hours`
-      ignore the session timezone. The writer computes partition values with iceberg-rust's
-      transforms, and the clustered writer needs them to agree with Comet's kernels in
-      `iceberg_funcs/temporal.rs`, which key the sort in front of it. iceberg-rust's `years` and
-      `months` follow the column's timezone label
-      ([apache/iceberg-rust#3142](https://github.com/apache/iceberg-rust/issues/3142)), so they are
-      only correct because `decorate_batch_with_field_ids` relabels `timestamptz` columns `+00:00`
-      first. Ask for a test in a non-UTC session for a change here. `timezones.md` in the
-      contributor guide covers how Comet labels timestamps.
+      ignore the session timezone. For date and timestamp sources, `PartitionValueCalculator`
+      (`iceberg_partition_value.rs`) computes them with the same kernels in
+      `iceberg_funcs/temporal.rs` that key the sort in front of a clustered write, and those follow
+      iceberg-java's `DateTimeUtil`, including its pre-1970 rounding. A change that moves one of
+      these transforms back to iceberg-rust, or that makes the kernels read the column's timezone
+      label, breaks that agreement. iceberg-rust's `years` and `months` follow the label
+      ([apache/iceberg-rust#3142](https://github.com/apache/iceberg-rust/issues/3142)). Ask for a
+      test in a non-UTC session for a change here. "Partition values" in `iceberg-writes.md` lists
+      where iceberg-rust differs, and `timezones.md` covers how Comet labels timestamps.
 - [ ] **Partition paths use the Java renderers.** Directory names come from
       `CometLocationGenerator` / `partition_to_path` in `iceberg_partition_path.rs`, which follow
       iceberg-java's `partitionToPath`, with `java_float_string` for floats. A PR that calls
