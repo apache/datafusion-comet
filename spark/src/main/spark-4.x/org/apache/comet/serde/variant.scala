@@ -35,7 +35,8 @@ object CometVariantGet extends CometExpressionSerde[VariantGet] {
   private val targetReason =
     "Variant extraction supports Boolean, numeric, binary, date and timestamp targets only."
   private val stringReason =
-    "Variant STRING extraction requires Spark-compatible JSON and scalar formatting."
+    "Variant STRING extraction requires Spark-compatible JSON and scalar formatting " +
+      "(https://github.com/apache/datafusion-comet/issues/5424)."
   private val decimalReason =
     "Floating-point to decimal rounding can differ from Spark on JDK 17 " +
       "(https://github.com/apache/datafusion-comet/issues/5424)."

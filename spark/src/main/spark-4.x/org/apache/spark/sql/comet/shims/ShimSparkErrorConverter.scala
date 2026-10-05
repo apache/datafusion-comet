@@ -304,6 +304,7 @@ trait ShimSparkErrorConverter {
       case "InvalidVariantCast" =>
         // Variant JSON/error rendering depends on Spark and the JDK (e.g. Double.toString).
         // Re-evaluate only the failed row so the exception has Spark's exact parameters.
+        // Native rendering parity: https://github.com/apache/datafusion-comet/issues/5424.
         val variant = new org.apache.spark.unsafe.types.VariantVal(
           java.util.Base64.getDecoder.decode(params("value").toString),
           java.util.Base64.getDecoder.decode(params("metadata").toString))

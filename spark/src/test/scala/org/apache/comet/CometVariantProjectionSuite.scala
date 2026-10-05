@@ -128,7 +128,7 @@ class CometVariantProjectionSuite extends CometTestBase {
   }
 
   test("Variant scalar extraction handles large UTF-16 ordered objects and empty keys") {
-    val fields = (0 until 40).map(i => s"\"key$i\":$i") ++
+    val fields = (0 until 40).map(i => s""""key$i":$i""") ++
       Seq("\"\":70", "\"a.b\":71", "\"\\uE000\":72", "\"\\uD800\\uDC00\":73")
     val json = fields.mkString("{", ",", "}")
     withVariantFile(s"SELECT parse_json('$json') AS v") { path =>

@@ -333,6 +333,7 @@ impl VariantGet {
                 if casted[*group].is_null(*index) && value.is_some_and(|v| v[0] != 0) {
                     // Rendering the offending value is version/JDK dependent (especially
                     // floating point). Reproduce Spark's exception only on this error path.
+                    // Remove the replay after native rendering matches Spark: https://github.com/apache/datafusion-comet/issues/5424.
                     return Err(SparkError::InvalidVariantCast {
                         value: STANDARD.encode(values.value(row)),
                         metadata: STANDARD.encode(metadata.value(row)),
@@ -398,6 +399,7 @@ impl VariantGet {
         }
         // Variant permits scalar casts which the generic Comet cast does not yet expose.
         // Adapt their input to a supported cast while preserving Spark's seconds semantics.
+        // Shared cast coverage: https://github.com/apache/datafusion-comet/issues/5424.
         scalar = match (&scalar, &self.target) {
             (ScalarValue::Boolean(Some(value)), DataType::Decimal128(_, _)) => {
                 ScalarValue::Int64(Some(i64::from(*value)))
