@@ -87,8 +87,8 @@ This shifts the affected shuffles from Comet's off-heap memory pool back to the 
 tuned for a small JVM heap may see `ExternalSorter` spills on queries where this revert fires. Shuffle I/O may also
 grow marginally because Spark's row-based serializer generally compresses less well than Comet's Arrow IPC format.
 
-Each revert is logged at `INFO` level on the driver as `Reverting Comet columnar shuffle to Spark shuffle between
-<parent> and <child>`, which lets you correlate any unexpected behavior with this optimization.
+Each revert is logged at `INFO` level on the driver as `Reverting Comet shuffle to Spark shuffle between <parent>
+and <child>`, which lets you correlate any unexpected behavior with this optimization.
 
 This optimization is enabled by default and can be disabled by setting
 `spark.comet.shuffle.revertRedundantColumnar.enabled=false`, in which case Comet will keep the columnar shuffle
