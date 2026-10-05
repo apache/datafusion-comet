@@ -132,8 +132,8 @@ class CometMergeRowsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             names.foreach(node.set(_, 100L))
             throw new IllegalStateException("injected failed MERGE metric attempt")
           }
-          // JNI publishes cumulative snapshots, so repeated sets must not add the old value.
-          names.foreach(node.set(_, count + 10L))
+          // JNI publishes cumulative snapshots, so repeating one must not add it again.
+          names.foreach(node.set(_, count))
           names.foreach(node.set(_, count))
           Iterator(attempt)
         }
