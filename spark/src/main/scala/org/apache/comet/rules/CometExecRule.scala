@@ -25,7 +25,7 @@ import scala.collection.mutable.ListBuffer
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.expressions.{Divide, DoubleLiteral, EqualNullSafe, EqualTo, Expression, FloatLiteral, GreaterThan, GreaterThanOrEqual, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, NamedExpression, Remainder}
+import org.apache.spark.sql.catalyst.expressions.{Divide, DoubleLiteral, EqualNullSafe, EqualTo, Expression, FloatLiteral, GreaterThan, GreaterThanOrEqual, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, NamedExpression, Remainder, SortOrder}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, Final, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 import org.apache.spark.sql.catalyst.rules.Rule
@@ -49,7 +49,7 @@ import org.apache.spark.sql.execution.datasources.v2.{BatchScanExec, V2CommandEx
 import org.apache.spark.sql.execution.datasources.v2.csv.CSVScan
 import org.apache.spark.sql.execution.datasources.v2.json.JsonScan
 import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
-import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, BroadcastExchangeLike, ReusedExchangeExec, ShuffleExchangeExec, ShuffleExchangeLike}
+import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, BroadcastExchangeLike, Exchange, ReusedExchangeExec, ShuffleExchangeExec, ShuffleExchangeLike}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.internal.SQLConf
@@ -178,6 +178,13 @@ object CometExecRule {
 
   /** Keys of the `spark.comet.convert` configs whose deprecated alternative has been warned. */
   private[rules] val warnedDeprecatedConversions = ConcurrentHashMap.newKeySet[String]()
+
+  /**
+   * Tag set on a `SerializeFromObjectExec` whose output an operator above it can stop reading
+   * early, naming that operator. See `tagPartiallyReadTypedDatasetOutputs`.
+   */
+  private val TYPED_DATASET_PARTIAL_READER: TreeNodeTag[String] =
+    TreeNodeTag[String]("comet.typedDatasetPartialReader")
 }
 
 /**
@@ -390,6 +397,10 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
    */
   // spotless:on
   private def transform(plan: SparkPlan): SparkPlan = {
+    if (CometConf.COMET_CONVERT_FROM_TYPED_DATASET_ENABLED.get(conf)) {
+      tagPartiallyReadTypedDatasetOutputs(plan)
+    }
+
     def convertNode(op: SparkPlan): SparkPlan = op match {
       // Scan marker produced by an optional, out-of-tree scan contrib (e.g. contrib/delta).
       // Matched by trait (no compile-time dependency on the contrib) and present only when that
@@ -493,6 +504,23 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
 
       case op if shouldApplySparkToColumnar(conf, op) =>
         convertToComet(op, CometSparkToColumnarExec).getOrElse(op)
+
+      // Typed Dataset operations (`map`, `flatMap`, `mapPartitions`, `mapGroups`, ...) pass JVM
+      // objects between their operators, so those stay on Spark. Each of them ends in
+      // `SerializeFromObjectExec`, though, whose output is ordinary rows, and converting those to
+      // Arrow lets the operators above the typed operation run natively.
+      case op: SerializeFromObjectExec
+          if CometConf.COMET_CONVERT_FROM_TYPED_DATASET_ENABLED.get(conf) =>
+        op.getTagValue(CometExecRule.TYPED_DATASET_PARTIAL_READER) match {
+          case Some(reader) =>
+            withFallbackReason(
+              op,
+              "Comet does not convert the output of a typed Dataset operation when " +
+                s"$reader can stop reading it early, because filling an Arrow batch would " +
+                "run the user function on rows that Spark never reaches")
+          case None =>
+            convertTypedDatasetOutput(op)
+        }
 
       // Spark 4.0+: replace only the per-task write, leaving DataWritingCommandExec - and
       // therefore Spark's commit protocol, stats trackers and SaveMode handling - in place.
@@ -612,6 +640,10 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
               _: V2CommandExec =>
             // Some execs should never be replaced. We include
             // these cases specially here so we do not add a misleading 'info' message.
+            op
+          case _: ColumnarToRowTransition =>
+            // A transition does no work of its own. This rule only meets one that
+            // `convertTypedDatasetOutput` inserted on an earlier pass over the same plan.
             op
           case _: WriteFilesExec =>
             // The write is converted at the enclosing DataWritingCommandExec above: on Spark 3.x
@@ -1295,6 +1327,83 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
 
   private def hasEnabledHandler(op: SparkPlan): Boolean =
     allExecs.get(op.getClass).exists(_.enabledConfig.forall(_.get(op.conf)))
+
+  /**
+   * Tags each `SerializeFromObjectExec` whose output an operator above it can stop reading early
+   * with that operator, so `transform` does not convert it. Spark computes the rows of a typed
+   * Dataset operation one at a time, as the operator above reads them, while the conversion fills
+   * a whole Arrow batch first. Below a limit, a `mapPartitions` function such as `_.take(1)`, or
+   * code reading `Dataset.rdd`, the conversion would run the user function on rows Spark never
+   * reaches, and a function that throws on one of them would fail a query that succeeds in Spark.
+   * An operator that reads all of its input before it returns a row ends the search, since Spark
+   * computes every row below it anyway: an exchange, a sort, a hash aggregate, or a top-k over
+   * input that is not already sorted.
+   *
+   * Conversion is bottom-up, so this runs first. TreeNode tags survive the child copies made
+   * during transformUp, while an identity set would not.
+   */
+  private def tagPartiallyReadTypedDatasetOutputs(plan: SparkPlan): Unit = {
+    def visit(op: SparkPlan, partialReader: Option[String]): Unit = {
+      val childReader = op match {
+        case serialize: SerializeFromObjectExec =>
+          partialReader.foreach(
+            serialize.setTagValue(CometExecRule.TYPED_DATASET_PARTIAL_READER, _))
+          partialReader
+        case _: CollectLimitExec | _: LocalLimitExec | _: GlobalLimitExec => Some("a limit")
+        // A top-k reads only its first rows when its input is already sorted.
+        case topK: TakeOrderedAndProjectExec
+            if SortOrder.orderingSatisfies(topK.child.outputOrdering, topK.sortOrder) =>
+          Some("a limit")
+        case _: MapPartitionsExec => Some("a mapPartitions function")
+        case _: Exchange | _: SortExec | _: HashAggregateExec | _: ObjectHashAggregateExec |
+            _: TakeOrderedAndProjectExec =>
+          None
+        case _ => partialReader
+      }
+      op.children.foreach(visit(_, childReader))
+    }
+    // `Dataset.rdd` reads the objects the plan produces, and the RDD's own code decides how many
+    // of them to read, as `take(1)` does. The plan's root is the `DeserializeToObjectExec` that
+    // `Dataset.rdd` adds. When the Dataset ends in a typed operation such as `map`, Spark's
+    // `EliminateSerialization` drops that deserializer together with the operation's serializer,
+    // so the root is the operation itself, which produces objects too, or a typed filter or a
+    // project over it. A Dataset's own plan ends in rows, so no other plan has such a root.
+    def producesObjects(op: SparkPlan): Boolean = op match {
+      case _: ObjectProducerExec => true
+      case _: FilterExec | _: ProjectExec => producesObjects(op.children.head)
+      case _ => false
+    }
+    visit(plan, if (producesObjects(plan)) Some("code reading Dataset.rdd") else None)
+  }
+
+  /**
+   * Converts the rows a typed Dataset operation produces to Arrow, so the operators above it can
+   * run natively. See [[CometConf.COMET_CONVERT_FROM_TYPED_DATASET_ENABLED]].
+   *
+   * Spark inserts the columnar transitions after this rule, but it does not look below a
+   * `RowToColumnarTransition` such as `CometSparkToColumnarExec`. That is harmless above a leaf.
+   * Here the typed operation's own operators sit below the conversion, and without a transition
+   * they would read a Comet child through `CometExec.doExecute`, Spark's interpreted
+   * columnar-to-row path. So the subtree gets its transitions now, from Spark's own rule, and
+   * `EliminateRedundantTransitions` later replaces each one over a Comet child with Comet's own.
+   * Spark's rule leaves existing transitions alone, which matters because this rule runs over the
+   * same plan twice under AQE.
+   */
+  private def convertTypedDatasetOutput(op: SerializeFromObjectExec): SparkPlan = {
+    val unsupported = op.output.filterNot(a =>
+      CometSparkToColumnarExec.isTypeSupported(a.dataType, a.name, ListBuffer.empty))
+    if (unsupported.nonEmpty) {
+      withFallbackReason(
+        op,
+        "Comet cannot convert the output of a typed Dataset operation to Arrow because it does " +
+          "not support the type of these columns: " +
+          unsupported.map(a => s"${a.name}: ${a.dataType.simpleString}").mkString(", "))
+    } else {
+      val withTransitions =
+        ApplyColumnarRulesAndInsertTransitions(Seq.empty, outputsColumnar = false).apply(op)
+      convertToComet(withTransitions, CometSparkToColumnarExec).getOrElse(withTransitions)
+    }
+  }
 
   private def shouldApplySparkToColumnar(conf: SQLConf, op: SparkPlan): Boolean = {
     // Only consider converting leaf nodes to columnar currently, so that all the following
