@@ -47,10 +47,12 @@ jobs:
     # A called workflow's jobs can hold no more than the caller grants, and
     # GitHub checks that for every job when the run starts, including the
     # ones this event skips. This is the union of what ci.yml's jobs request:
-    # `changes` and `nightly_report` read the Actions API, and
-    # `nightly_report` files issues (it only runs on the schedule).
+    # `changes` and `nightly_report` read the Actions API, `nightly_report`
+    # files issues (it only runs on the schedule), and `docs` pushes the built
+    # site to asf-site (it only runs on main). Leaving any of them out fails
+    # every label run at startup, before a single job runs.
     permissions:
       actions: read
-      contents: read
+      contents: write
       issues: write
     uses: ./.github/workflows/ci.yml

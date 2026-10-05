@@ -24,13 +24,13 @@ ruleset in `.asf.yaml`. That splits CI into three tiers:
   and one Iceberg version, both the default profile's.
 - **Nightly tier** (`nightly`): the regression sweep of everything else, once
   a day against `main` as it stands. The Comet test suites against the other
-  four Spark profiles, Spark SQL on Spark 3.5 and 4.0, and Iceberg
+  four Spark profiles, Spark SQL on Spark 3.5, 4.0 and 4.2, and Iceberg
   1.8/1.9/1.10. See [Nightly tier](#nightly-tier) below for how a failure
   surfaces.
 
 Every queue-only and nightly job has a `run-*` label that opts a pull request
 into it early, listed in the diagram below. The Lint Java matrix compiles
-Spark 3.4/3.5/4.0 on every pull request, so a shim that fails to build is
+every Spark profile on every pull request, so a shim that fails to build is
 caught there; only the runtime suites wait for the queue or the nightly.
 
 `spark_3_4` is in none of the tiers. Spark 3.4 is deprecated, so its Spark SQL
@@ -42,12 +42,6 @@ publish the advisory `Required Checks (label run)` name rather than the
 required one, so a red 3.4 there changes nothing. It is the next push with
 the label still applied that runs 3.4 under `Required Checks`, and with the
 queue run gone that push is the only thing that makes a 3.4 failure blocking.
-
-`spark_4_2` is in the nightly tier despite Spark 4.2 support being
-experimental. Nightly is what keeps `dev/diffs/4.2.0.diff` honest: the diff
-files for the supported versions are updated together whenever a Comet change
-needs one, and a 4.2 suite that only ran on request would let its diff rot
-unnoticed between requests.
 
 Heavy jobs have no `push` tier. The queue already tested the exact tree that
 lands, so re-running them on push to main would double the cost of every
@@ -505,6 +499,13 @@ before any test has started. Once `Required Checks` is a required context
 which is why plain network flakes are worth retrying rather than re-running
 the whole pipeline by hand.
 
+**Source license check.** `preflight` creates an unsigned source tarball from
+the checked-out commit and runs the same RAT script and exclusion list used to
+create a release candidate. `dev/release/create-source-tarball.sh` is shared by
+CI and `create-tarball.sh`, so CI checks the files that will actually ship
+rather than maintaining a separate Maven RAT configuration. `make rat` runs
+the same check locally against `HEAD`.
+
 **Maven wrapper bootstrap.** `./mvnw` downloads the Maven distribution itself on
 a cold runner, and a blip from `repo.maven.apache.org` fails the job before
 anything is compiled. `./.github/actions/maven-bootstrap` caches that
@@ -516,10 +517,9 @@ bootstrap, never compilation or test execution.
 `./.github/actions/setup-builder` and `./.github/actions/setup-macos-builder`
 run it as their last step, once the JDK is on PATH, so every job that goes
 through either of them is covered without a step of its own; that includes
-the `java-test`, `rust-test` and `setup-spark-builder` callers. `preflight` in
-`ci.yml` uses no setup action and calls it directly before the RAT check. A
-new job that runs `./mvnw` without going through a setup action needs the
-step before its first Maven use.
+the `java-test`, `rust-test` and `setup-spark-builder` callers. A new job that
+runs `./mvnw` without going through a setup action needs the step before its
+first Maven use.
 
 ## Merge queue
 
