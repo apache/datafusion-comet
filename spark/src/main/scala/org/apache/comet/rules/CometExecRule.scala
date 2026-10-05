@@ -1306,6 +1306,8 @@ case class CometExecRule(session: SparkSession)
           isConversionEnabled(conf, op, CometConf.COMET_CONVERT_FROM_ONE_ROW_RELATION_ENABLED)
         case _: RDDScanExec =>
           isConversionEnabled(conf, op, CometConf.COMET_CONVERT_FROM_RDD_ENABLED)
+        case _: RowDataSourceScanExec =>
+          isConversionEnabled(conf, op, CometConf.COMET_CONVERT_FROM_ROW_DATA_SOURCE_ENABLED)
         // other leaf nodes
         case _: LeafExecNode =>
           isSparkToArrowEnabled(conf, op)

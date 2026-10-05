@@ -62,6 +62,8 @@ above them can run in Comet. Each conversion is off by default.
   `spark.createDataFrame(rdd, schema)`.
 - `spark.comet.convert.oneRowRelation.enabled`: the single row that a query without a `FROM`
   clause, such as `SELECT 1`, reads.
+- `spark.comet.convert.rowDataSource.enabled`: Data Source V1 relations that are not file-based,
+  such as JDBC tables, which Spark scans with `RowDataSourceScanExec`.
 
 To convert any other leaf operator, such as the scan of a Data Source V2 connector or of a file
 format other than Parquet, JSON and CSV, set `spark.comet.sparkToColumnar.enabled=true` and name the

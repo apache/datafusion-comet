@@ -248,6 +248,16 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_CONVERT_FROM_ROW_DATA_SOURCE_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.convert.rowDataSource.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "When enabled, data from Data Source V1 relations that are not file-based, such as " +
+          "JDBC tables, will be converted to Arrow format. Spark scans these relations with " +
+          "`RowDataSourceScanExec`.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_EXEC_ENABLED: ConfigEntry[Boolean] = conf(s"$COMET_EXEC_CONFIG_PREFIX.enabled")
     .category(CATEGORY_EXEC)
     .doc(
@@ -1115,8 +1125,9 @@ object CometConf extends ShimCometConf {
           "without the `Exec` suffix. It is for operators that have no `spark.comet.convert` " +
           "config of their own, such as `BatchScan` for a Data Source V2 connector, or " +
           "`FileSourceScan` for file formats other than Parquet, JSON and CSV. Naming `Range`, " +
-          "`InMemoryTableScan`, `RDDScan` or `OneRowRelation` is deprecated and will stop " +
-          "working in a future major release. Use their `spark.comet.convert` configs instead.")
+          "`InMemoryTableScan`, `RDDScan`, `OneRowRelation` or `RowDataSourceScan` is " +
+          "deprecated and will stop working in a future major release. Use their " +
+          "`spark.comet.convert` configs instead.")
       .stringConf
       .toSequence
       .createWithDefault(Nil)
