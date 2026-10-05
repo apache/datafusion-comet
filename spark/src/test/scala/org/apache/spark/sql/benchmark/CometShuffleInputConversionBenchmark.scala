@@ -68,7 +68,7 @@ object CometShuffleInputConversionBenchmark extends CometBenchmarkBase {
     CometConf.COMET_ENABLED.key -> "true",
     CometConf.COMET_EXEC_ENABLED.key -> "true",
     // Spark scans the RDDs, as it does by default, so the shuffle reads a Spark operator.
-    CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "false",
+    CometConf.COMET_CONVERT_FROM_RDD_ENABLED.key -> "false",
     CometConf.COMET_CONVERT_FROM_SHUFFLE_INPUT_ENABLED.key -> convert.toString)
 
   private def shuffles(plan: SparkPlan): Seq[CometShuffleExchangeExec] =

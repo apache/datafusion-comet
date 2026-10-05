@@ -39,11 +39,12 @@ class CometShuffleInputConversionSuite extends CometTestBase {
   import testImplicits._
 
   /**
-   * `CometTestBase` turns on the conversion of leaf operators, which would convert the RDD scans
-   * below the shuffles here before this conversion sees them. It is off by default.
+   * `CometTestBase` turns on the conversion of leaf operators such as RDD scans, which would
+   * convert the scans below the shuffles here before this conversion sees them. It is off by
+   * default.
    */
   private def withoutLeafConversion(f: => Unit): Unit =
-    withSQLConf(CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "false")(f)
+    withSQLConf(sparkToArrowConversionConfs(enabled = false): _*)(f)
 
   /** Defines a test that runs with the shuffle input conversion enabled. */
   private def convertTest(name: String)(f: => Unit): Unit =
@@ -62,7 +63,7 @@ class CometShuffleInputConversionSuite extends CometTestBase {
 
   /**
    * `rows` rows from an RDD, so the shuffle above them reads a Spark operator: the conversion of
-   * leaf operators, `spark.comet.sparkToColumnar.enabled`, is off by default.
+   * RDD scans, `spark.comet.convert.rdd.enabled`, is off by default.
    */
   private def rowsDf(rows: Int = 1000): DataFrame = {
     val data = (0 until rows).map { i =>
@@ -242,12 +243,12 @@ class CometShuffleInputConversionSuite extends CometTestBase {
   }
 
   convertTest("struct columns over several batches") {
-    // The rows of each input partition fill several batches. With the conversion of leaf
-    // operators on, native shuffle reads the converted scan the same way.
+    // The rows of each input partition fill several batches. With the conversion of RDD scans
+    // on, native shuffle reads the converted scan the same way.
     Seq("false", "true").foreach { leafConversion =>
       withSQLConf(
         CometConf.COMET_BATCH_SIZE.key -> "7",
-        CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> leafConversion) {
+        CometConf.COMET_CONVERT_FROM_RDD_ENABLED.key -> leafConversion) {
         val schema = new StructType()
           .add("k", IntegerType)
           .add("payload", new StructType().add("v", LongType).add("s", StringType))
