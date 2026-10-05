@@ -19,6 +19,7 @@
 
 package org.apache.comet.rules
 
+import org.apache.spark.sql.catalyst.expressions.SortOrder
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide, JoinSelectionHelper}
 import org.apache.spark.sql.catalyst.plans.{ExistenceJoin, LeftSemi}
 import org.apache.spark.sql.catalyst.plans.logical.Join
@@ -64,6 +65,22 @@ object RewriteJoin extends JoinSelectionHelper {
   private def removeSort(plan: SparkPlan) = plan match {
     case _: SortExec => plan.children.head
     case _ => plan
+  }
+
+  /**
+   * Adds a local sort under any operator whose child no longer has the ordering the operator
+   * requires, using the same check as EnsureRequirements. EnsureRequirements puts no sort above a
+   * sort-merge join whose output ordering already satisfies its parent, so when rewrite turns
+   * that join into a hash join and removes its sorts, a kept parent such as another sort-merge
+   * join on the same key would read unsorted input. Plans that already satisfy their required
+   * orderings are returned unchanged.
+   */
+  def restoreRequiredOrdering(plan: SparkPlan): SparkPlan = plan.transformUp { case p =>
+    p.withNewChildren(p.children.zip(p.requiredChildOrdering).map {
+      case (child, required) if !SortOrder.orderingSatisfies(child.outputOrdering, required) =>
+        SortExec(required, global = false, child = child)
+      case (child, _) => child
+    })
   }
 
   /**
