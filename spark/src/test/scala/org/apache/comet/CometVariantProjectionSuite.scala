@@ -405,15 +405,47 @@ class CometVariantProjectionSuite extends CometTestBase {
     }
   }
 
-  ignore(
-    "Variant predicates inspect malformed scan bytes - https://github.com/apache/datafusion-comet/issues/5429") {
-    // Spark can pass these residual-only bytes to the predicate. Comet's scan currently
-    // validates the truncated integer before the predicate can inspect it.
-    withVariantFile("SELECT named_struct('value', X'18', 'metadata', X'010000') AS v") { path =>
-      val input = spark.read.schema("v VARIANT").parquet(path)
-      checkSparkAnswerAndOperator(input.selectExpr("is_variant_null(v)"))
-      if (CometSparkSessionExtensions.isSpark42Plus) {
-        checkSparkAnswerAndOperator(input.selectExpr("is_valid_variant(v)"))
+  test("Variant predicates inspect malformed unshredded scan bytes") {
+    for (dictionary <- Seq("false", "true")) {
+      withSQLConf("parquet.enable.dictionary" -> dictionary) {
+        withVariantFile("""SELECT named_struct('value', value, 'metadata', metadata) AS v
+          FROM VALUES (X'18', X'010000'), (X'00', X'01'), (X'00', X'01FF'),
+            (X'FF', X'010000') AS input(value, metadata)""") { path =>
+          val input = spark.read.schema("v VARIANT").parquet(path)
+          val projected = input.selectExpr("is_variant_null(v)")
+          checkSparkAnswerAndOperator(projected)
+          assert(collect(projected.queryExecution.executedPlan) {
+            case scan: CometNativeScanExec => scan
+          }.nonEmpty)
+          if (CometSparkSessionExtensions.isSpark42Plus) {
+            checkSparkAnswerAndOperator(input.selectExpr("is_valid_variant(v)"))
+            checkSparkAnswerAndOperator(input.where("NOT is_valid_variant(v)").selectExpr("1"))
+          }
+        }
+      }
+    }
+  }
+
+  test("unshredded Variant scans preserve constructor errors before predicates") {
+    assume(Utils.variantType.isDefined, "VariantType requires Spark 4.0+")
+    val limit = Utils.variantSizeLimit
+    for ((value, metadata, errorClass) <- Seq(
+        ("X'00'", "X''", "MALFORMED_VARIANT"),
+        ("X'00'", "X'02'", "MALFORMED_VARIANT"),
+        ("CAST(NULL AS BINARY)", "X'01'", "MALFORMED_VARIANT"),
+        ("X'00'", "CAST(NULL AS BINARY)", "MALFORMED_VARIANT"),
+        (s"unhex(repeat('00', ${limit + 1}))", "X'01'", "VARIANT_CONSTRUCTOR_SIZE_LIMIT"),
+        ("X'00'", s"unhex(concat('01', repeat('00', $limit)))", "VARIANT_CONSTRUCTOR_SIZE_LIMIT"))) {
+      withVariantFile(s"SELECT named_struct('value', $value, 'metadata', $metadata) AS v") { path =>
+        val df = spark.read.schema("v VARIANT").parquet(path).selectExpr("is_variant_null(v)")
+        val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+        for (error <- Seq(sparkError, cometError)) {
+          assert(error.isDefined)
+          assert(causeChain(error.get).exists {
+            case e: org.apache.spark.SparkThrowable => e.getErrorClass == errorClass
+            case _ => false
+          })
+        }
       }
     }
   }

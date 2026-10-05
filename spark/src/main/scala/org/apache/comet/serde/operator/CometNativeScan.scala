@@ -330,6 +330,7 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
       commonBuilder.setSessionTimezone(
         CometTimeZone.nativeId(Some(sessionTimeZone)).getOrElse(sessionTimeZone))
       commonBuilder.setCaseSensitive(scan.conf.getConf[Boolean](SQLConf.CASE_SENSITIVE))
+      commonBuilder.setVariantSizeLimit(Utils.variantSizeLimit)
 
       // SPARK-53535 (Spark 4.1+): when reading a struct whose requested fields are all
       // missing in the Parquet file, the new default preserves the parent struct's

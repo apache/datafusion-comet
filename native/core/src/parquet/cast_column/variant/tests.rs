@@ -39,6 +39,10 @@ fn target_field(nullable: bool) -> FieldRef {
     )
 }
 
+fn normalize_variant_array(array: &ArrayRef, field: &FieldRef) -> DataFusionResult<ArrayRef> {
+    super::normalize_variant_array(array, field, 128 * 1024 * 1024)
+}
+
 #[test]
 fn normalize_encoded_storage_and_unsigned_extremes() {
     use arrow::array::{
@@ -959,11 +963,13 @@ fn normalize_spark_empty_key_metadata_rejects_other_malformed_encodings() {
             vec![
                 Field::new("value", DataType::Binary, false),
                 Field::new("metadata", DataType::Binary, false),
+                Field::new("typed_value", DataType::Int32, true),
             ]
             .into(),
             vec![
                 Arc::new(BinaryArray::from(vec![value.as_slice()])),
                 Arc::new(BinaryArray::from(vec![metadata])),
+                Arc::new(arrow::array::Int32Array::from(vec![None])),
             ],
             None,
         ));
@@ -984,6 +990,60 @@ fn normalize_spark_empty_key_metadata_rejects_other_malformed_encodings() {
         vec![1, 3, 0, 1, 1, 2, b'z', b'a', 0], // Unexpected trailing bytes.
     ] {
         assert!(normalize(&malformed).is_err(), "accepted {malformed:?}");
+    }
+}
+
+#[test]
+fn unshredded_bytes_are_validated_by_the_consumer() {
+    let normalize = |value: Option<&[u8]>, metadata: Option<&[u8]>, valid| {
+        let physical: ArrayRef = Arc::new(StructArray::new(
+            vec![
+                Field::new("value", DataType::Binary, true),
+                Field::new("metadata", DataType::Binary, true),
+            ]
+            .into(),
+            vec![
+                Arc::new(BinaryArray::from(vec![value])),
+                Arc::new(BinaryArray::from(vec![metadata])),
+            ],
+            Some(NullBuffer::from(vec![valid])),
+        ));
+        normalize_variant_array(&physical, &target_field(true))
+    };
+    for (value, metadata) in [
+        (&[0x18][..], &[1, 0, 0][..]), // Truncated int64.
+        (&[][..], &[1][..]),           // Empty value and truncated dictionary.
+        (&[0][..], &[1, 0xff][..]),    // Variant null with unused invalid metadata.
+    ] {
+        let result = normalize(Some(value), Some(metadata), true).unwrap();
+        assert_eq!(
+            result.as_struct().column(0).as_binary::<i32>().value(0),
+            value
+        );
+        assert_eq!(
+            result.as_struct().column(1).as_binary::<i32>().value(0),
+            metadata
+        );
+        let limit = value.len().max(metadata.len());
+        assert!(super::normalize_variant_array(&result, &target_field(true), limit).is_ok());
+        assert!(
+            super::normalize_variant_array(&result, &target_field(true), limit - 1)
+                .unwrap_err()
+                .to_string()
+                .contains("VARIANT_CONSTRUCTOR_SIZE_LIMIT")
+        );
+    }
+    for (value, metadata) in [
+        (None, Some(&[1][..])),
+        (Some(&[0][..]), None),
+        (Some(&[0][..]), Some(&[][..])),
+        (Some(&[0][..]), Some(&[2][..])),
+    ] {
+        assert!(normalize(value, metadata, true)
+            .unwrap_err()
+            .to_string()
+            .contains("MALFORMED_VARIANT"));
+        assert!(normalize(value, metadata, false).unwrap().is_null(0));
     }
 }
 

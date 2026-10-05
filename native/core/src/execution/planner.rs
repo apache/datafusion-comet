@@ -1834,6 +1834,7 @@ impl PhysicalPlanner {
                     common.encryption_enabled,
                     common.use_field_id,
                     common.require_field_ids,
+                    common.variant_size_limit as usize,
                 )?;
                 Ok((
                     vec![],

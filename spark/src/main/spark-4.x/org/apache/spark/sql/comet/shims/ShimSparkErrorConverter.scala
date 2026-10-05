@@ -291,6 +291,10 @@ trait ShimSparkErrorConverter {
       case "MalformedVariant" =>
         Some(QueryExecutionErrors.malformedVariant())
 
+      case "VariantConstructorSizeLimit" =>
+        Some(
+          new org.apache.spark.SparkRuntimeException("VARIANT_CONSTRUCTOR_SIZE_LIMIT", Map.empty))
+
       case "InvalidUtf8String" =>
         val hexStr = UTF8String.fromString(params("hexString").toString)
         Some(QueryExecutionErrors.invalidUTF8StringError(hexStr))
