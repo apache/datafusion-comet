@@ -64,7 +64,6 @@ class QueryPlanSerdeSuite extends AnyFunSuite {
           _,
           allowComplex = true,
           allowIntervals = true,
-          allowTimeType = false,
           allowAnyStringType = false),
         Seq(
           IntegerType,
@@ -72,8 +71,8 @@ class QueryPlanSerdeSuite extends AnyFunSuite {
           complex,
           nestedInterval,
           nestedCalendarInterval,
-          duplicateFields),
-        Seq(emptyStruct) ++ timeTypes ++ collatedStrings),
+          duplicateFields) ++ timeTypes,
+        Seq(emptyStruct) ++ collatedStrings),
       (
         "native shuffle",
         supportedDataType(_, allowComplex = true, allowIntervals = true),

@@ -32,6 +32,8 @@ mod iceberg_partition_value;
 mod iceberg_scan;
 mod iceberg_write;
 pub use iceberg_write::IcebergWriteExec;
+mod merge_rows;
+pub use merge_rows::{MergeActionContext, MergeInstructionExec, MergeRowsExec};
 mod parquet_writer;
 pub use parquet_writer::{ParquetCompression, ParquetWriterExec};
 mod csv_scan;
