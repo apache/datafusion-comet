@@ -215,17 +215,18 @@ case class CometShuffleExchangeExec(
           val nativeChild = child.asInstanceOf[CometNativeExec]
           // RangePartitioner needs real rows for sampling. Reuse the precomputed context so we
           // don't re-walk the SparkPlan tree or re-broadcast the encryption Hadoop conf.
-          val samplingRDD: Option[RDD[ColumnarBatch]] = outputPartitioning match {
+          val samplingRows: Option[RDD[InternalRow]] = outputPartitioning match {
             case _: RangePartitioning =>
               Some(
-                nativeChild.executeColumnarWithContext(
-                  ctx,
-                  nativeChildMetricNode.withoutAggregateMetrics(nativeChild)))
+                CometShuffleExchangeExec.rowsOf(
+                  nativeChild.executeColumnarWithContext(
+                    ctx,
+                    nativeChildMetricNode.withoutAggregateMetrics(nativeChild))))
             case _ => None
           }
           CometShuffleExchangeExec.prepareNativeShuffleDependency(
             inputRDD.asInstanceOf[CometNativeShuffleInputRDD],
-            samplingRDD,
+            samplingRows,
             child.output,
             outputPartitioning,
             serializer,
@@ -237,12 +238,19 @@ case class CometShuffleExchangeExec(
               positionalRoundRobin))
         case None =>
           child match {
-            case _: CometNativeArrowSource =>
+            case source: CometNativeArrowSource =>
               CometShuffleExchangeExec.prepareArrowStreamShuffleDependency(
                 inputRDD.asInstanceOf[RDD[ArrowArrayStream]],
-                // The range partitioner samples rows, so it needs them as batches.
                 outputPartitioning match {
-                  case _: RangePartitioning => Some(child.executeColumnar())
+                  // The range partitioner samples only the sort keys, so a conversion of rows
+                  // gives it the rows it reads, rather than all of their columns in Arrow.
+                  case _: RangePartitioning =>
+                    Some(source match {
+                      case conversion: CometSparkToColumnarExec
+                          if !conversion.child.supportsColumnar =>
+                        conversion.child.execute()
+                      case _ => CometShuffleExchangeExec.rowsOf(child.executeColumnar())
+                    })
                   case _ => None
                 },
                 child.output,
@@ -879,6 +887,10 @@ object CometShuffleExchangeExec
     }
   }
 
+  /** The rows of `batches`, for the range partitioner to sample. */
+  private def rowsOf(batches: RDD[ColumnarBatch]): RDD[InternalRow] =
+    batches.mapPartitionsInternal(_.flatMap(_.rowIterator().asScala))
+
   /**
    * Build a Comet native shuffle dependency around an existing `RDD[ColumnarBatch]` of real
    * batches. Used by [[org.apache.spark.sql.comet.CometCollectLimitExec]] and
@@ -908,7 +920,7 @@ object CometShuffleExchangeExec
       "ShuffleWriterInput")
     prepareArrowStreamShuffleDependency(
       streamRDD,
-      Some(rdd),
+      Some(rowsOf(rdd)),
       outputAttributes,
       outputPartitioning,
       serializer,
@@ -917,12 +929,12 @@ object CometShuffleExchangeExec
 
   /**
    * [[prepareShuffleDependency]] for input that native reads as one Arrow stream per partition,
-   * such as a [[CometNativeArrowSource]]'s. `samplingRDD` gives the same rows as batches, and is
-   * only required for [[RangePartitioning]].
+   * such as a [[CometNativeArrowSource]]'s. `samplingRows` gives the same rows, and is only
+   * required for [[RangePartitioning]].
    */
   private def prepareArrowStreamShuffleDependency(
       streamRDD: RDD[ArrowArrayStream],
-      samplingRDD: Option[RDD[ColumnarBatch]],
+      samplingRows: Option[RDD[InternalRow]],
       outputAttributes: Seq[Attribute],
       outputPartitioning: Partitioning,
       serializer: Serializer,
@@ -963,7 +975,7 @@ object CometShuffleExchangeExec
     // is `shuffleWriterMetrics` at the root with one empty leaf for the Scan child.
     prepareNativeShuffleDependency(
       thinRDD,
-      samplingRDD,
+      samplingRows,
       outputAttributes,
       outputPartitioning,
       serializer,
@@ -982,13 +994,14 @@ object CometShuffleExchangeExec
    * @param thinRDD
    *   scheduling-anchor RDD whose `compute` returns a [[CometNativeShuffleInputIterator]];
    *   produces no batches itself.
-   * @param samplingRDD
-   *   regular columnar execution of the child, only required for [[RangePartitioning]] (sampling
-   *   needs real rows). `None` for hash / single / round-robin.
+   * @param samplingRows
+   *   the child's rows, such as those of a regular columnar execution of the child, only required
+   *   for [[RangePartitioning]] (sampling needs real rows). `None` for hash / single /
+   *   round-robin.
    */
   def prepareNativeShuffleDependency(
       thinRDD: CometNativeShuffleInputRDD,
-      samplingRDD: Option[RDD[ColumnarBatch]],
+      samplingRows: Option[RDD[InternalRow]],
       outputAttributes: Seq[Attribute],
       outputPartitioning: Partitioning,
       serializer: Serializer,
@@ -1028,11 +1041,11 @@ object CometShuffleExchangeExec
     // ShuffleExchangeExec::prepareShuffleDependency
     val (partitioner, rangePartitionBounds) = outputPartitioning match {
       case rangePartitioning: RangePartitioning =>
-        // Sampling needs real rows; use the dedicated samplingRDD (a regular columnar execution
-        // of the child). The thin RDD itself yields nothing.
-        val samplingInput = samplingRDD.getOrElse(
+        // Sampling needs real rows; use the dedicated samplingRows (the child's rows). The thin
+        // RDD itself yields nothing.
+        val samplingInput = samplingRows.getOrElse(
           throw new IllegalStateException(
-            "RangePartitioning requires a samplingRDD on the native-shuffle path"))
+            "RangePartitioning requires samplingRows on the native-shuffle path"))
         // Extract only fields used for sorting to avoid collecting large fields that does not
         // affect sorting result when deciding partition bounds in RangePartitioner
         val rddForSampling = samplingInput.mapPartitionsInternal { iter =>
@@ -1042,12 +1055,7 @@ object CometShuffleExchangeExec
 
           // Internally, RangePartitioner runs a job on the RDD that samples keys to compute
           // partition bounds. To get accurate samples, we need to copy the mutable keys.
-          iter.flatMap { batch =>
-            val rowIter = batch.rowIterator().asScala
-            rowIter.map { row =>
-              mutablePair.update(projection(row).copy(), null)
-            }
-          }
+          iter.map(row => mutablePair.update(projection(row).copy(), null))
         }
 
         // Construct ordering on extracted sort key.

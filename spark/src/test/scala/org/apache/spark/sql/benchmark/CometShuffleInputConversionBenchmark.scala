@@ -42,10 +42,10 @@ case class ShuffleInputBenchRec(a: Long, b: String)
  *   - Comet, converted: `spark.comet.convert.shuffleInput.enabled`, which converts the rows with
  *     `CometSparkToColumnarExec` and uses native shuffle.
  *
- * Each case hash-partitions its rows into 200 partitions and aggregates them. The keys are
- * numbers, because the conversion leaves a shuffle that hashes a string on the JVM columnar
- * shuffle. Every arm's result and plan are checked before it is timed, and the Comet arm runs
- * again at the end of each case to show the noise. To run this benchmark:
+ * Each case partitions its rows into 200 partitions and aggregates them. Most hash-partition on a
+ * number, because the conversion leaves a shuffle that hashes a string on the JVM columnar
+ * shuffle, and one range-partitions. Every arm's result and plan are checked before it is timed,
+ * and the Comet arm runs again at the end of each case to show the noise. To run this benchmark:
  * {{{
  *   SPARK_GENERATE_BENCHMARK_FILES=1 make benchmark-org.apache.spark.sql.benchmark.CometShuffleInputConversionBenchmark
  * }}}
@@ -131,6 +131,12 @@ object CometShuffleInputConversionBenchmark extends CometBenchmarkBase {
           .repartition(numPartitions, col("k"))
           .groupBy("k")
           .agg((sum("l") + sum(length(col("s"))) + sum("d") + sum("m")).as("s")))),
+    "RDD rows: int, long, double, range partitioned" -> (() =>
+      total(
+        rddRows()
+          .select("k", "l", "d")
+          .repartitionByRange(numPartitions, col("l"))
+          .select((col("l") + col("d")).as("s")))),
     "map over a Parquet scan" -> (() =>
       total(
         spark
