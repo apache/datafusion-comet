@@ -19,13 +19,17 @@
 
 package org.apache.comet.exec
 
+import java.sql.{Date, Timestamp}
+import java.time.LocalDateTime
+
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
-import org.apache.spark.sql.comet.{CometPlan, CometSparkToColumnarExec}
+import org.apache.spark.sql.comet.{CometHashAggregateExec, CometPlan, CometSparkToColumnarExec}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, ColumnarToRowTransition, SparkPlan}
-import org.apache.spark.sql.functions.{array, avg, col, count, hash, length, max, min, size, sum}
+import org.apache.spark.sql.execution.aggregate.{HashAggregateExec, SortAggregateExec}
+import org.apache.spark.sql.functions.{array, avg, col, count, hash, length, max, min, size, spark_partition_id, sum}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, BinaryType, CalendarIntervalType, DataTypes, DecimalType, IntegerType, LongType, StringType, StructType}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, CalendarIntervalType, DataType, DataTypes, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, StructType, TimestampNTZType, TimestampType}
 import org.apache.spark.unsafe.types.CalendarInterval
 
 import org.apache.comet.{CometConf, ExtendedExplainInfo}
@@ -124,6 +128,62 @@ class CometShuffleInputConversionSuite extends CometTestBase {
     assert(!reasons.exists(_.contains("ColumnarToRow")), reasons)
   }
 
+  /** Runs `f` with each join planned as a sort-merge join of two shuffles into 10 partitions. */
+  private def withShuffledJoins(f: => Unit): Unit =
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "10")(f)
+
+  /**
+   * Values of each type the conversion admits as a hash key, with boundary values. The floating
+   * point values include NaN and both zeros, which a join normalizes.
+   */
+  private val hashKeys: Seq[(DataType, Seq[Any])] = Seq(
+    BooleanType -> Seq(true, false),
+    ByteType -> Seq(0.toByte, -1.toByte, Byte.MinValue, Byte.MaxValue),
+    ShortType -> Seq(0.toShort, -1.toShort, Short.MinValue, Short.MaxValue),
+    IntegerType -> Seq(0, -1, Int.MinValue, Int.MaxValue),
+    LongType -> Seq(0L, -1L, Long.MinValue, Long.MaxValue),
+    FloatType -> Seq(
+      0.0f,
+      -0.0f,
+      1.5f,
+      Float.NaN,
+      Float.MinPositiveValue,
+      Float.MaxValue,
+      Float.NegativeInfinity),
+    DoubleType -> Seq(
+      0.0d,
+      -0.0d,
+      1.5d,
+      Double.NaN,
+      Double.MinPositiveValue,
+      Double.MaxValue,
+      Double.NegativeInfinity),
+    DecimalType(18, 2) -> Seq("0.00", "-0.01", "9999999999999999.99", "-9999999999999999.99")
+      .map(new java.math.BigDecimal(_)),
+    DateType -> Seq("1970-01-01", "1969-12-31", "0001-01-01", "9999-12-31").map(Date.valueOf),
+    TimestampType -> Seq(
+      new Timestamp(0L),
+      new Timestamp(-1L),
+      Timestamp.valueOf("0001-01-01 00:00:00"),
+      Timestamp.valueOf("9999-12-31 23:59:59.999999")),
+    TimestampNTZType -> Seq(
+      LocalDateTime.of(1970, 1, 1, 0, 0),
+      LocalDateTime.of(1969, 12, 31, 23, 59, 59, 999999000),
+      LocalDateTime.of(1, 1, 1, 0, 0),
+      LocalDateTime.of(9999, 12, 31, 23, 59, 59, 999999000)),
+    BinaryType -> Seq(Array.emptyByteArray, Array[Byte](0), Array[Byte](-1, -128, 127)))
+
+  /** Four rows of each value and of a NULL, as column `k`, over four input partitions. */
+  private def keysDf(keyType: DataType, values: Seq[Any]): DataFrame = {
+    val keys = values :+ null
+    val data = (0 until keys.length * 4).map(i => Row(keys(i % keys.length), i.toLong))
+    val schema = new StructType().add("k", keyType).add("v", LongType)
+    spark.createDataFrame(spark.sparkContext.parallelize(data, 4), schema)
+  }
+
   convertTest("the shuffle of a Spark operator's rows runs as native shuffle") {
     Seq("true", "false").foreach { aqe =>
       withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe) {
@@ -167,10 +227,24 @@ class CometShuffleInputConversionSuite extends CometTestBase {
   }
 
   convertTest("aggregates whose partial aggregate runs on Spark") {
-    checkSparkAnswer(
+    // The partial aggregate reads Spark rows, so it runs on Spark, and native shuffle carries its
+    // buffers to the final aggregate. With these aggregates the final one runs natively.
+    val (_, split) = checkSparkAnswer(
+      rowsDf()
+        .groupBy((col("k") % 7).as("g"))
+        .agg(sum("l"), avg("d"), max("l"), min("l")))
+    assert(convertedShuffles(split).length == 1, split)
+    assert(collect(split) { case a: HashAggregateExec => a }.length == 1, split)
+    assert(collect(split) { case a: CometHashAggregateExec => a }.length == 1, split)
+    // The min of a string makes Spark plan sort aggregates, which stay on Spark, so the final
+    // aggregate reads the buffers back as rows. The shuffle stays native: the revert in the next
+    // test covers hash aggregates only.
+    val (_, sorted) = checkSparkAnswer(
       rowsDf()
         .groupBy((col("k") % 7).as("g"))
         .agg(sum("l"), count("s"), avg("d"), sum("m"), max("l"), min("s")))
+    assert(convertedShuffles(sorted).length == 1, sorted)
+    assert(collect(sorted) { case a: SortAggregateExec => a }.length == 2, sorted)
   }
 
   convertTest("a shuffle between two Spark aggregates goes back to Spark's shuffle") {
@@ -209,19 +283,22 @@ class CometShuffleInputConversionSuite extends CometTestBase {
     }
   }
 
-  convertTest("a join with an input that stays on the JVM columnar shuffle") {
-    // The left input converts and the right one, with its array<int> column, does not. Native
-    // shuffle hashes an int key as Spark does, so matching keys still meet.
-    withSQLConf(
-      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
-      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
-      SQLConf.SHUFFLE_PARTITIONS.key -> "10") {
-      val df = rowsDf(100)
-        .select(col("k").as("lk"), col("l"))
-        .join(arraysDf(), col("lk") === col("k"))
-      val (_, plan) = checkSparkAnswer(df)
-      assert(convertedShuffles(plan).length == 1, plan)
-      assert(cometShuffles(plan).count(_.shuffleType == CometColumnarShuffle) == 1, plan)
+  hashKeys.foreach { case (keyType, values) =>
+    convertTest(s"native shuffle puts ${keyType.simpleString} keys where Spark does") {
+      withShuffledJoins {
+        val keys = keysDf(keyType, values)
+        // The partition of each row, against Spark's partitioner, NULL keys included.
+        val (_, placed) = checkSparkAnswer(
+          keys.repartition(10, col("k")).select(col("k"), col("v"), spark_partition_id()))
+        assert(convertedShuffles(placed).length == 1, placed)
+        // The left input converts and the right one, with its array<bigint> column, does not, so
+        // matching keys meet only if both shuffles put them in the same partition.
+        val left = keys.select(col("k").as("lk"), col("v"))
+        val right = keys.select(col("k").as("rk"), array(col("v")).as("xs"))
+        val (_, joined) = checkSparkAnswer(left.join(right, col("lk") === col("rk")))
+        assert(convertedShuffles(joined).length == 1, joined)
+        assert(cometShuffles(joined).count(_.shuffleType == CometColumnarShuffle) == 1, joined)
+      }
     }
   }
 
@@ -229,10 +306,7 @@ class CometShuffleInputConversionSuite extends CometTestBase {
     // Native shuffle hashes a decimal wider than 18 digits differently from Spark's partitioner
     // (#5994). The right input, with its array<int> column, stays on the JVM columnar shuffle,
     // so the left one has to as well, or matching keys land in different partitions.
-    withSQLConf(
-      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
-      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
-      SQLConf.SHUFFLE_PARTITIONS.key -> "10") {
+    withShuffledJoins {
       val left = rowsDf(100).select(col("k").cast(DecimalType(38, 0)).as("lk"), col("l"))
       val right = arraysDf().select(col("k").cast(DecimalType(38, 0)).as("rk"), col("xs"))
       val df = left.join(right, col("lk") === col("rk"))
@@ -251,10 +325,7 @@ class CometShuffleInputConversionSuite extends CometTestBase {
     // replaced string. Both shuffles write the rows with invalid UTF-8 replaced, and the join
     // compares what they wrote, so the two keys stay apart only because each key expression puts
     // them in different partitions.
-    withSQLConf(
-      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
-      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
-      SQLConf.SHUFFLE_PARTITIONS.key -> "10") {
+    withShuffledJoins {
       val schema = new StructType().add("b", BinaryType).add("v", LongType)
       val data = (0 until 40).map { i =>
         Row(Array((if (i % 2 == 0) 0x80 else 0x83).toByte), i.toLong)
@@ -273,17 +344,27 @@ class CometShuffleInputConversionSuite extends CometTestBase {
     }
   }
 
-  convertTest("struct columns over several batches") {
-    // The rows of each input partition fill several batches. With the conversion of RDD scans
-    // on, native shuffle reads the converted scan the same way.
+  convertTest("nested columns over several batches") {
+    // The rows of each input partition fill several batches, and the conversion reuses its
+    // vectors from one batch to the next. With the conversion of RDD scans on, native shuffle
+    // reads the converted scan the same way.
+    val schema = new StructType()
+      .add("k", IntegerType)
+      .add("payload", new StructType().add("v", LongType).add("s", StringType))
+      .add("xs", ArrayType(StringType))
+      .add("m", MapType(StringType, StringType))
+    val data = (0 until 24).map { i =>
+      Row(
+        i,
+        if (i % 5 == 4) null else Row(i.toLong, if (i % 3 == 0) null else s"s$i"),
+        if (i % 6 == 5) null else Seq.tabulate(i % 4)(j => if (j == 1) null else s"x$i-$j"),
+        if (i % 7 == 6) null
+        else Seq.tabulate(i % 3)(j => s"k$j" -> (if (j == 1) null else s"v$i-$j")).toMap)
+    }
     Seq("false", "true").foreach { leafConversion =>
       withSQLConf(
         CometConf.COMET_BATCH_SIZE.key -> "7",
         CometConf.COMET_CONVERT_FROM_RDD_ENABLED.key -> leafConversion) {
-        val schema = new StructType()
-          .add("k", IntegerType)
-          .add("payload", new StructType().add("v", LongType).add("s", StringType))
-        val data = (0 until 24).map(i => Row(i, Row(i.toLong, s"s$i")))
         val df = spark.createDataFrame(spark.sparkContext.parallelize(data, 1), schema)
         Seq(df.repartition(3, col("k")), df.repartitionByRange(3, col("k"))).foreach { shuffled =>
           val (_, plan) = checkSparkAnswer(shuffled)
