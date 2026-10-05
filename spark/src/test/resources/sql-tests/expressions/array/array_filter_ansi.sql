@@ -105,3 +105,16 @@ SELECT filter(a, x -> x = 0 OR (x > 0 AND (1 DIV x) > 0)) FROM test_guarded_nest
 -- Compound condition: guards with multiple logical levels
 query
 SELECT filter(a, x -> (x <> 0 AND (10 DIV x) > 0) AND (x > 0 OR x = -1)) FROM test_guarded_nested;
+
+-- In Spark, binary comparisons evaluate LHS first. If LHS is NULL, the result
+-- is NULL according to 3VL and RHS is never evaluated.
+-- For a = [NULL], the division 1D / spark_partition_id() (which is 1D / 0 in partition 0)
+-- must be skipped entirely, returning [].
+statement
+CREATE TABLE test_null_comparison_division(a ARRAY<DOUBLE>) USING parquet;
+
+statement
+INSERT INTO test_null_comparison_division VALUES (array(cast(null as double)));
+
+query
+SELECT filter(a, x -> x = 1D / spark_partition_id()) FROM test_null_comparison_division;

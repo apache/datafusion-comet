@@ -44,6 +44,7 @@ use std::fmt::{Display, Formatter};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
+use arrow::compute::kernels::cmp::{eq, gt, gt_eq, lt, lt_eq, neq};
 use arrow::datatypes::{DataType, Schema};
 use arrow::record_batch::RecordBatch;
 use datafusion::logical_expr::Operator;
@@ -162,6 +163,12 @@ impl PhysicalExpr for EmptyBatchGuardExpr {
 pub enum ShortCircuitBinaryOp {
     And,
     Or,
+    Eq,
+    NotEq,
+    Lt,
+    LtEq,
+    Gt,
+    GtEq,
 }
 
 /// A physical expression for AND / OR that enforces Spark-compatible strict
@@ -210,6 +217,12 @@ impl Display for ShortCircuitBinaryExpr {
         let op_str = match self.op {
             ShortCircuitBinaryOp::And => "SHORT_CIRCUIT_AND",
             ShortCircuitBinaryOp::Or => "SHORT_CIRCUIT_OR",
+            ShortCircuitBinaryOp::Eq => "SHORT_CIRCUIT_EQ",
+            ShortCircuitBinaryOp::NotEq => "SHORT_CIRCUIT_NOT_EQ",
+            ShortCircuitBinaryOp::Lt => "SHORT_CIRCUIT_LT",
+            ShortCircuitBinaryOp::LtEq => "SHORT_CIRCUIT_LT_EQ",
+            ShortCircuitBinaryOp::Gt => "SHORT_CIRCUIT_GT",
+            ShortCircuitBinaryOp::GtEq => "SHORT_CIRCUIT_GT_EQ",
         };
         write!(f, "({} {} {})", self.left, op_str, self.right)
     }
@@ -251,63 +264,90 @@ impl PhysicalExpr for ShortCircuitBinaryExpr {
         // 1. Evaluate LHS
         let lhs_val = self.left.evaluate(batch)?;
         let lhs_arr = lhs_val.into_array(num_rows)?;
-        let lhs_bool = lhs_arr
-            .as_any()
-            .downcast_ref::<BooleanArray>()
-            .ok_or_else(|| {
-                DataFusionError::Execution(
-                    "LHS of short-circuit binary expression must evaluate to BooleanArray"
-                        .to_string(),
-                )
-            })?;
 
-        // 2. Build selection mask for RHS based on SQL Three-Valued Logic (3VL):
-        // - AND: evaluate RHS if LHS is TRUE or NULL (skips only if LHS is strictly FALSE)
-        // - OR:  evaluate RHS if LHS is FALSE or NULL (skips only if LHS is strictly TRUE)
+        // 2. Build selection mask for RHS
         let mut selection_builder = BooleanBuilder::with_capacity(num_rows);
         match self.op {
             ShortCircuitBinaryOp::And => {
+                let lhs_bool =
+                    lhs_arr
+                        .as_any()
+                        .downcast_ref::<BooleanArray>()
+                        .ok_or_else(|| {
+                            DataFusionError::Execution(
+                                "LHS of AND must be BooleanArray".to_string(),
+                            )
+                        })?;
                 for i in 0..num_rows {
                     selection_builder.append_value(lhs_bool.is_null(i) || lhs_bool.value(i));
                 }
             }
             ShortCircuitBinaryOp::Or => {
+                let lhs_bool =
+                    lhs_arr
+                        .as_any()
+                        .downcast_ref::<BooleanArray>()
+                        .ok_or_else(|| {
+                            DataFusionError::Execution("LHS of OR must be BooleanArray".to_string())
+                        })?;
                 for i in 0..num_rows {
                     selection_builder.append_value(lhs_bool.is_null(i) || !lhs_bool.value(i));
+                }
+            }
+
+            ShortCircuitBinaryOp::Eq
+            | ShortCircuitBinaryOp::NotEq
+            | ShortCircuitBinaryOp::Lt
+            | ShortCircuitBinaryOp::LtEq
+            | ShortCircuitBinaryOp::Gt
+            | ShortCircuitBinaryOp::GtEq => {
+                for i in 0..num_rows {
+                    selection_builder.append_value(!lhs_arr.is_null(i));
                 }
             }
         }
         let selection_mask = selection_builder.finish();
         let true_count = selection_mask.true_count();
 
-        // 3a. If no elements require RHS, skip RHS evaluation completely
         if true_count == 0 {
-            return Ok(ColumnarValue::Array(Arc::new(lhs_bool.clone())));
+            return match self.op {
+                ShortCircuitBinaryOp::And | ShortCircuitBinaryOp::Or => {
+                    Ok(ColumnarValue::Array(Arc::new(lhs_arr)))
+                }
+                _ => {
+                    // Все строки LHS - NULL -> все результаты сравнения - NULL
+                    Ok(ColumnarValue::Array(Arc::new(BooleanArray::new_null(
+                        num_rows,
+                    ))))
+                }
+            };
         }
 
-        // 3b. Evaluate RHS: either on full batch if all rows need it,
-        // or filtered and scattered via DataFusion's `evaluate_selection`
         let rhs_val = if true_count == num_rows {
             self.right.evaluate(batch)?
         } else {
             self.right.evaluate_selection(batch, &selection_mask)?
         };
-
         let rhs_arr = rhs_val.into_array(num_rows)?;
-        let rhs_bool = rhs_arr
-            .as_any()
-            .downcast_ref::<BooleanArray>()
-            .ok_or_else(|| {
-                DataFusionError::Execution(
-                    "RHS of short-circuit binary expression must evaluate to BooleanArray"
-                        .to_string(),
-                )
-            })?;
 
-        // 4. Combine LHS and RHS using Arrow's Kleene Three-Valued Logic
+        // 4. Combine LHS and RHS
         let result = match self.op {
-            ShortCircuitBinaryOp::And => arrow::compute::and_kleene(lhs_bool, rhs_bool)?,
-            ShortCircuitBinaryOp::Or => arrow::compute::or_kleene(lhs_bool, rhs_bool)?,
+            ShortCircuitBinaryOp::And => {
+                let lhs_bool = lhs_arr.as_any().downcast_ref::<BooleanArray>().unwrap();
+                let rhs_bool = rhs_arr.as_any().downcast_ref::<BooleanArray>().unwrap();
+                arrow::compute::and_kleene(lhs_bool, rhs_bool)?
+            }
+            ShortCircuitBinaryOp::Or => {
+                let lhs_bool = lhs_arr.as_any().downcast_ref::<BooleanArray>().unwrap();
+                let rhs_bool = rhs_arr.as_any().downcast_ref::<BooleanArray>().unwrap();
+                arrow::compute::or_kleene(lhs_bool, rhs_bool)?
+            }
+            ShortCircuitBinaryOp::Eq => eq(&lhs_arr, &rhs_arr)?,
+            ShortCircuitBinaryOp::NotEq => neq(&lhs_arr, &rhs_arr)?,
+            ShortCircuitBinaryOp::Lt => lt(&lhs_arr, &rhs_arr)?,
+            ShortCircuitBinaryOp::LtEq => lt_eq(&lhs_arr, &rhs_arr)?,
+            ShortCircuitBinaryOp::Gt => gt(&lhs_arr, &rhs_arr)?,
+            ShortCircuitBinaryOp::GtEq => gt_eq(&lhs_arr, &rhs_arr)?,
         };
 
         Ok(ColumnarValue::Array(Arc::new(result)))
@@ -337,6 +377,12 @@ impl PhysicalExpr for ShortCircuitBinaryExpr {
         let op_str = match self.op {
             ShortCircuitBinaryOp::And => "AND",
             ShortCircuitBinaryOp::Or => "OR",
+            ShortCircuitBinaryOp::Eq => "=",
+            ShortCircuitBinaryOp::NotEq => "!=",
+            ShortCircuitBinaryOp::Lt => "<",
+            ShortCircuitBinaryOp::LtEq => "<=",
+            ShortCircuitBinaryOp::Gt => ">",
+            ShortCircuitBinaryOp::GtEq => ">=",
         };
         write!(f, "(")?;
         self.left.fmt_sql(f)?;
@@ -353,6 +399,12 @@ pub fn rewrite_short_circuit_binary(expr: Arc<dyn PhysicalExpr>) -> Result<Arc<d
         let op = match binary.op() {
             Operator::And => Some(ShortCircuitBinaryOp::And),
             Operator::Or => Some(ShortCircuitBinaryOp::Or),
+            Operator::Eq => Some(ShortCircuitBinaryOp::Eq),
+            Operator::NotEq => Some(ShortCircuitBinaryOp::NotEq),
+            Operator::Lt => Some(ShortCircuitBinaryOp::Lt),
+            Operator::LtEq => Some(ShortCircuitBinaryOp::LtEq),
+            Operator::Gt => Some(ShortCircuitBinaryOp::Gt),
+            Operator::GtEq => Some(ShortCircuitBinaryOp::GtEq),
             _ => None,
         };
         if let Some(short_circuit_op) = op {
