@@ -227,13 +227,15 @@ class CometExecIterator(
   CometExecIterator.startMemoryUsageLog()
 
   /**
-   * What the producer behind one of this plan's Arrow stream inputs threw while native pulled a
-   * batch from it, if anything. See `CometArrowStream.inputFailure`.
+   * Matches any throwable once a JVM input of this plan has failed, and extracts what that input
+   * threw. Native saw only its text. See `CometArrowStream.inputFailure`.
    */
-  private def inputFailure: Option[Throwable] =
-    inputObjects.iterator
-      .collect { case stream: ArrowArrayStream => CometArrowStream.inputFailure(stream) }
-      .collectFirst { case Some(failure) => failure }
+  private object InputFailure {
+    def unapply(nativeFailure: Throwable): Option[Throwable] =
+      inputObjects.iterator
+        .collect { case stream: ArrowArrayStream => CometArrowStream.inputFailure(stream) }
+        .collectFirst { case Some(failure) => failure }
+  }
 
   private def getNextBatch: Option[ColumnarBatch] = {
     assert(partitionIndex >= 0 && partitionIndex < numParts)
@@ -257,11 +259,9 @@ class CometExecIterator(
 
       result
     } catch {
-      // A JVM input threw while native pulled a batch from it. Native saw only the text of that
-      // exception and failed with a CometNativeException built from it, so rethrow the exception
-      // itself, which is what the task would have thrown without Comet.
-      case _: Throwable if inputFailure.isDefined =>
-        throw inputFailure.get
+      // Native saw only the text of what a JVM input threw, so rethrow the exception itself.
+      case InputFailure(failure) =>
+        throw failure
 
       // Handle CometQueryExecutionException with JSON payload first
       case e: CometQueryExecutionException =>
