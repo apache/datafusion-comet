@@ -82,7 +82,7 @@ Native aggregates with grouping keys report these additional metrics:
 | `number of spills`                   | Number of times the aggregate spilled to disk.                                                                                               |
 | `total spilled bytes`                | Bytes written to aggregate spill files.                                                                                                      |
 | `number of spilled rows`             | Rows written to aggregate spill files.                                                                                                       |
-| `peak native aggregate memory`       | Peak memory used by the native aggregate.                                                                                                    |
+| `peak native aggregate memory`       | Peak memory used by the native aggregate. Not currently reported ([#5703](https://github.com/apache/datafusion-comet/issues/5703)).          |
 
 Spill bytes from native sorts, aggregates, and sort-merge joins are also added to Spark's task-level
 `diskBytesSpilled` metric in every stage, not only in shuffle stages.
@@ -178,7 +178,11 @@ fetched from another executor also count as remote reads. See
 ## Native Metrics
 
 Setting `spark.comet.explain.native.enabled=true` will cause native plans to be logged in each executor. Metrics are
-logged for each native plan (and there is one plan per task, so this is very verbose).
+logged for each native plan (and there is usually one plan per task, so this is very verbose).
+
+The SQL metrics that native plans report accumulate per task. When one task runs several native plans, such as a
+coalesce without a shuffle that reads several partitions, each metric reports their sum, while the two memory
+high-water marks, `peak_mem_used` and `build_mem_used`, report the largest value among them.
 
 Here is a guide to some of the native metrics.
 

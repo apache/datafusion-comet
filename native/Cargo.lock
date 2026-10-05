@@ -1979,6 +1979,7 @@ dependencies = [
  "chrono-tz",
  "comet-contrib-delta",
  "comet-contrib-lance",
+ "crc32fast",
  "criterion",
  "datafusion",
  "datafusion-comet-common",
@@ -2071,6 +2072,7 @@ dependencies = [
  "datafusion-comet-common",
  "datafusion-comet-spark-expr",
  "futures",
+ "parking_lot",
  "tokio",
 ]
 
