@@ -27,6 +27,7 @@ Comet provides the following configuration settings.
 <!-- prettier-ignore-start -->
 | Config | Description | Default Value |
 |--------|-------------|---------------|
+| `spark.comet.iceberg.ioTimeout` | Timeout for each storage I/O call, such as one read or write, that Comet's native Iceberg scan and write make. Passed to iceberg-rust as `opendal.io-timeout-ms`. | 30000ms |
 | `spark.comet.scan.allowDisabledParquetVectorizedReader` | Whether to allow Comet's native scan to replace the Parquet scan when Spark's spark.sql.parquet.enableVectorizedReader is set to false. By default (false), Comet falls back to Spark in that case, because Comet's native readers mirror Spark's vectorized reader semantics rather than Spark's parquet-mr (non-vectorized) semantics, which permit silent overflow / null-on-narrowing that Comet has no equivalent for. For more information, refer to the [Comet Compatibility Guide](https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html). | false |
 | `spark.comet.scan.icebergNative.dataFileConcurrencyLimit` | The number of Iceberg data files to read concurrently within a single task. Higher values improve throughput for tables with many small files by overlapping I/O latency, but increase memory usage. Values between 2 and 8 are suggested. | 1 |
 | `spark.comet.scan.icebergNative.enabled` | Whether to enable native Iceberg table scan using iceberg-rust. When enabled, Iceberg tables are read directly through native execution, bypassing Spark's DataSource V2 API for better performance. | true |
@@ -208,7 +209,7 @@ them like any other production setting.
 | `spark.comet.exec.hashJoin.enabled` | Whether to enable hashJoin by default. | true |
 | `spark.comet.exec.localLimit.enabled` | Whether to enable localLimit by default. | true |
 | `spark.comet.exec.localTableScan.enabled` | Whether to enable localTableScan by default. | false |
-| `spark.comet.exec.mergeRows.enabled` | Whether to enable mergeRows by default. Only takes effect on Spark 3.5 and 4.0. Spark 3.4 has no MergeRowsExec, and Spark 4.1 and later keep MergeRowsExec on Spark so V2 writers can consume its row-level metrics (https://github.com/apache/datafusion-comet/issues/6606). | false |
+| `spark.comet.exec.mergeRows.enabled` | Whether to enable mergeRows by default. Only takes effect on Spark 3.5 and later. Spark 3.4 has no MergeRowsExec. On Spark 4.1 and later, stock V2 writers retain Spark MergeRowsExec for MergeSummary; native MergeRows is used only where the enclosing Comet write path preserves that contract.. | false |
 | `spark.comet.exec.project.enabled` | Whether to enable project by default. | true |
 | `spark.comet.exec.range.enabled` | Whether to enable range by default. When enabled, Comet generates the rows of `spark.range` and SQL `range()` in native code, so the operators above them can run natively. It is off by default because it can be slower than Spark when those operators are only cheap expressions, such as a filter, which Spark compiles together with the range into one loop. | false |
 | `spark.comet.exec.sample.enabled` | Whether to enable sample by default. | true |

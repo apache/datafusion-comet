@@ -879,10 +879,10 @@ supports:</p>
 <li><p>Copy-on-write <code class="docutils literal notranslate"><span class="pre">DELETE</span></code> / <code class="docutils literal notranslate"><span class="pre">UPDATE</span></code> / <code class="docutils literal notranslate"><span class="pre">MERGE</span></code> (<code class="docutils literal notranslate"><span class="pre">ReplaceData</span></code>)</p></li>
 </ul>
 <p>For an unpartitioned copy-on-write <code class="docutils literal notranslate"><span class="pre">MERGE</span></code>, the native Iceberg writer is reachable on Spark
-3.5.x and 4.0.x only when <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.mergeRows.enabled=true</span></code>. With the flag disabled,
-the JVM <code class="docutils literal notranslate"><span class="pre">MergeRowsExec</span></code> breaks the fully-native child chain required by <code class="docutils literal notranslate"><span class="pre">CometIcebergWriteExec</span></code>.
-Spark 4.1+ keeps <code class="docutils literal notranslate"><span class="pre">MergeRowsExec</span></code> on the JVM even when the flag is set, so this unpartitioned
-shape continues through the JVM writer there.</p>
+3.5+ when <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.mergeRows.enabled=true</span></code>. With the flag disabled, the JVM
+<code class="docutils literal notranslate"><span class="pre">MergeRowsExec</span></code> breaks the fully-native child chain required by <code class="docutils literal notranslate"><span class="pre">CometIcebergWriteExec</span></code>.
+On Spark 4.1+, the native MergeRows path also preserves the semantic counters required by the
+summary-aware writer commit contract.</p>
 <p>The mechanism behind row-level DML differs by Spark version: on Spark 4.0+ the analyzer emits
 operation-coded rows that Comet’s writer dispatches through <code class="docutils literal notranslate"><span class="pre">ReplaceData</span></code>’s projections, while
 on Spark 3.4/3.5 the rewritten rows are written as a plain row stream. The supported set of

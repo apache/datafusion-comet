@@ -890,15 +890,14 @@ strict floating-point mode.</p>
 <h2>MERGE INTO (MergeRowsExec)<a class="headerlink" href="#merge-into-mergerowsexec" title="Link to this heading">#</a></h2>
 <p>Spark <code class="docutils literal notranslate"><span class="pre">MergeRowsExec</span></code> appears as <code class="docutils literal notranslate"><span class="pre">CometMergeRows</span></code> when native execution is enabled.</p>
 <p>Comet can run <code class="docutils literal notranslate"><span class="pre">MergeRowsExec</span></code> (Spark’s row-level <code class="docutils literal notranslate"><span class="pre">MERGE</span> <span class="pre">INTO</span></code> dispatch operator) natively on
-Spark 3.5.x and Spark 4.0.x, but it is disabled by default. Enable it with
+Spark 3.5+, but it is disabled by default. Enable it with
 <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.mergeRows.enabled=true</span></code>.</p>
-<p>Spark 4.1+ intentionally falls back to Spark even when that flag is enabled. Starting in Spark
-4.1, the V2 existing-table writer locates the concrete Spark <code class="docutils literal notranslate"><span class="pre">MergeRowsExec</span></code>, builds a
-<code class="docutils literal notranslate"><span class="pre">MergeSummary</span></code> from its row-level metrics, and passes that summary to the summary-aware
-<code class="docutils literal notranslate"><span class="pre">BatchWrite.commit</span></code> overload. Replacing the node with <code class="docutils literal notranslate"><span class="pre">CometMergeRowsExec</span></code> would make summary
-discovery fail and silently switch the data source to the legacy summary-less commit overload.
-Comet will keep Spark 4.1+ <code class="docutils literal notranslate"><span class="pre">MERGE</span></code> on the JVM until it can preserve that writer contract end-to-end.
-See <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6606">#6606</a>.</p>
+<p>On Spark 4.1+, stock V2 writers discover the concrete Spark <code class="docutils literal notranslate"><span class="pre">MergeRowsExec</span></code> to build
+<code class="docutils literal notranslate"><span class="pre">MergeSummary</span></code>. When a write remains on Spark’s V2 writer, Comet therefore keeps that JVM node
+even when native MergeRows is enabled. Comet’s split Iceberg write path can run MergeRows natively:
+its <code class="docutils literal notranslate"><span class="pre">IcebergCommit</span></code> collects the same eight semantic action counters and forwards them through the
+summary-aware <code class="docutils literal notranslate"><span class="pre">BatchWrite.commit</span></code> contract. Spark 4.2 uses last-attempt metrics for these counters,
+matching Spark’s retry-aware summary semantics.</p>
 <p><strong>Cardinality validation memory use can exceed Spark’s:</strong> native MERGE cardinality validation
 currently stores matched target row IDs in an unspillable hash set. For MERGEs with many matched
 rows per task, this can use more memory than Spark’s compressed bitmap and may reach the native

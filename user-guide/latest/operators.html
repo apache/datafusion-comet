@@ -1105,7 +1105,7 @@ natively on <code class="docutils literal notranslate"><span class="pre">Broadca
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">MergeRowsExec</span></code></p></td>
 <td><p>⚠️</p></td>
-<td><p>Spark 3.5 and 4.0 only. Experimental, disabled by default (<code class="docutils literal notranslate"><span class="pre">spark.comet.exec.mergeRows.enabled</span></code>). See <a class="reference internal" href="compatibility/operators.html#merge-into-mergerowsexec"><span class="std std-ref">MERGE INTO</span></a>.</p></td>
+<td><p>Spark 3.5+. Experimental, disabled by default (<code class="docutils literal notranslate"><span class="pre">spark.comet.exec.mergeRows.enabled</span></code>). On Spark 4.1+, stock V2 writers retain Spark MergeRowsExec; Comet’s split Iceberg path can run it natively while preserving MergeSummary. See <a class="reference internal" href="compatibility/operators.html#merge-into-mergerowsexec"><span class="std std-ref">MERGE INTO</span></a>.</p></td>
 </tr>
 </tbody>
 </table>

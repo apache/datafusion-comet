@@ -654,6 +654,14 @@ check in <code class="docutils literal notranslate"><span class="pre">buildTwoOp
 <li><p><strong>What is not intercepted:</strong> merge-on-read (<code class="docutils literal notranslate"><span class="pre">WriteDelta</span></code>), streaming writes, and CTAS/RTAS on
 Spark 3.4. Those keep Spark’s plan.</p></li>
 </ul>
+<p>On Spark 4.1+, <code class="docutils literal notranslate"><span class="pre">IcebergWriteSummaryShim</span></code> finds either Spark’s <code class="docutils literal notranslate"><span class="pre">MergeRowsExec</span></code> or
+<code class="docutils literal notranslate"><span class="pre">CometMergeRowsExec</span></code> in the executed query and forwards its eight action counters to
+<code class="docutils literal notranslate"><span class="pre">BatchWrite.commit(messages,</span> <span class="pre">summary)</span></code>. Native instructions carry the context of each <code class="docutils literal notranslate"><span class="pre">Keep</span></code>;
+<code class="docutils literal notranslate"><span class="pre">Discard</span></code> counts a deletion and <code class="docutils literal notranslate"><span class="pre">Split</span></code> counts one update. Spark 4.2 uses last-attempt
+accumulators, read through <code class="docutils literal notranslate"><span class="pre">MergeRowsMetricsShim</span></code>, so summary values come from the tasks that
+produced the committed output. Stock V2 writers still require the concrete Spark node, so
+<code class="docutils literal notranslate"><span class="pre">IcebergWriteStrategy</span></code> tags a copy of its logical MERGE query before planning and AQE. The
+serializer requires that tag on Spark 4.1+, leaving stock writers on Spark throughout replanning.</p>
 </section>
 <section id="from-icebergwrite-to-cometicebergwrite">
 <h2>From <code class="docutils literal notranslate"><span class="pre">IcebergWrite</span></code> to <code class="docutils literal notranslate"><span class="pre">CometIcebergWrite</span></code><a class="headerlink" href="#from-icebergwrite-to-cometicebergwrite" title="Link to this heading">#</a></h2>
