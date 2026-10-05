@@ -1490,11 +1490,10 @@ class CometCodegenSuite
     // `init(int partitionIndex)`, called once per kernel allocation. Spark seeds
     // `XORShiftRandom(seed + partitionIndex)` per partition, so different partitions produce
     // different sequences for the same seed. Matching Spark across partitions requires the
-    // kernel to see the real partition index, which the dispatcher derives from
-    // `TaskContext.get().partitionId()`, live on this path thanks to the bridge-level
-    // TaskContext propagation. Composing with a ScalaUDF (identity on Double here) forces the
-    // tree through codegen dispatch so the Rand evaluation runs inside our kernel's init
-    // rather than via Spark's normal codegen.
+    // kernel to see the real partition index, which the native plan passes through the bridge.
+    // Composing with a ScalaUDF (identity on Double here) forces the tree through codegen
+    // dispatch so the Rand evaluation runs inside our kernel's init rather than via Spark's
+    // normal codegen.
     spark.udf.register("dblId", (d: Double) => d)
     val df = spark
       .range(0, 1024, 1, numPartitions = 4)
@@ -1511,6 +1510,22 @@ class CometCodegenSuite
       checkSparkAnswer(sql("SELECT CAST((SELECT c1 FROM t) AS STRING COLLATE UTF8_LCASE) = 'A'"))
       checkSparkAnswer(
         sql("SELECT COUNT(CAST((SELECT c1 FROM t) AS STRING COLLATE UTF8_LCASE)) FROM t"))
+    }
+  }
+
+  test("dispatched kernels see the index of the partition the native plan computes") {
+    // Under a union, a coalesce and a cartesian product the native plan computes a partition
+    // whose index differs from `TaskContext.partitionId()`, and the coalesce runs two plans in
+    // one task. See https://github.com/apache/datafusion-comet/issues/6570.
+    val df = spark
+      .range(0, 8, 1, numPartitions = 2)
+      .selectExpr("id", "map(1, spark_partition_id()) AS m", "round(rand(42), 6) AS r")
+    Seq(df.union(df), df.coalesce(1)).foreach { q =>
+      assertCodegenRan(checkSparkAnswerAndOperator(q))
+    }
+    withSQLConf(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+      // `CartesianProductExec` stays in Spark, over native children.
+      assertCodegenRan(checkSparkAnswer(df.crossJoin(spark.range(0, 4, 1, 2))))
     }
   }
 
