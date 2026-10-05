@@ -415,11 +415,11 @@ object CometInMemoryCacheBenchmark extends CometBenchmarkBase {
    *
    * Two shapes of plan read the cache. With Comet operators above the cache scan, Comet's format
    * runs the whole query natively, while Spark's leaves the operators directly above its scan on
-   * Spark: Comet reads Spark's cache scan only through spark.comet.sparkToColumnar.enabled, which
-   * is off by default. With a Spark operator above the scan, Comet's format is read by the native
-   * scan and converted to rows for that operator, where Spark's is read by Spark's own scan. The
-   * Spark operator is the aggregate, with Comet's turned off, standing in for any operator Comet
-   * does not support.
+   * Spark: Comet reads Spark's cache scan only through spark.comet.convert.inMemoryCache.enabled,
+   * which is off by default. With a Spark operator above the scan, Comet's format is read by the
+   * native scan and converted to rows for that operator, where Spark's is read by Spark's own
+   * scan. The Spark operator is the aggregate, with Comet's turned off, standing in for any
+   * operator Comet does not support.
    */
   private def runAdaptiveBenchmark(relation: CachedRelation): Unit = {
     val view = s"${relation.table}_adaptive"

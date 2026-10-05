@@ -22,7 +22,7 @@
 Comet can store Spark's in-memory cache (`CACHE TABLE`, `df.cache()`, `df.persist()`) in an Arrow
 format that Comet operators read directly. Without it, a cached table is stored in Spark's own
 format, which Comet operators cannot read. Under Comet's default settings the operators above the
-cache scan then run on Spark. With `spark.comet.sparkToColumnar.enabled`, a
+cache scan then run on Spark. With `spark.comet.convert.inMemoryCache.enabled`, a
 `CometSparkColumnarToColumnar` above the scan converts each batch for Comet operators instead.
 
 This feature is **experimental and enabled by default**. To turn it off, set the config at startup,
@@ -161,8 +161,8 @@ back to Spark row execution above the scan and the two columns stop measuring th
 Read what this compares carefully. Comet execution is on in both columns, so the aggregation runs
 on Comet either way and only the cache-scan boundary moves: on the left, Spark's
 `InMemoryTableScanExec` feeds those same Comet operators through a `CometSparkColumnarToColumnar`
-bridge, which the benchmark turns on with `spark.comet.sparkToColumnar.enabled`; on the right,
-`CometInMemoryTableScan` feeds them directly. Both columns read the same
+bridge, which the benchmark turns on with `spark.comet.convert.inMemoryCache.enabled`; on the
+right, `CometInMemoryTableScan` feeds them directly. Both columns read the same
 Comet-written `CometCachedBatch`. These numbers are therefore "keep the cached scan native" against
 "fall back to a Spark cache scan and convert", not Comet against Spark execution, and not a
 comparison with Spark's own cache format, which follows.
@@ -172,9 +172,9 @@ comparison with Spark's own cache format, which follows.
 What turning the feature on changes for a query that Comet runs is measured against Spark's own
 cache format by the benchmark's adaptive cases. Comet and AQE are on, Comet's other settings are at
 their defaults, and the same 5M-row relation is cached in each format. The defaults leave
-`spark.comet.sparkToColumnar.enabled` off, so Comet operators cannot read Spark's cache scan, and
-with Spark's format the operators directly above the scan run on Spark. Measured on an AMD Ryzen 9
-7950X3D (JDK 17, Spark 4.1, release build):
+`spark.comet.convert.inMemoryCache.enabled` off, so Comet operators cannot read Spark's cache scan,
+and with Spark's format the operators directly above the scan run on Spark. Measured on an AMD
+Ryzen 9 7950X3D (JDK 17, Spark 4.1, release build):
 
 | Query shape                | Spark's cache format | Comet's cache format | Relative |
 | -------------------------- | -------------------: | -------------------: | -------: |
