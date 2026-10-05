@@ -20,18 +20,19 @@
 package org.apache.comet.rules
 
 import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.catalyst.plans.physical.UnknownPartitioning
 import org.apache.spark.sql.catalyst.trees.TreeNodeTag
 import org.apache.spark.sql.comet.CometExec
 import org.apache.spark.sql.execution.{SparkPlan, UnionExec}
 import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, AQEShuffleReadRule, CoalesceShufflePartitions, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.exchange.ShuffleOrigin
-import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, CartesianProductExec}
+import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec}
 
 /**
- * Coalesces the shuffle partitions below a Comet operator that Spark's CoalesceShufflePartitions
- * coalesces child by child but does not recognize.
+ * Coalesces the shuffle partitions of a query stage that Spark's CoalesceShufflePartitions leaves
+ * alone because Comet operators stand where it looks for Spark ones.
  *
- * Spark coalesces each child of a `UnionExec` as a group of its own, and from Spark 4.0 each
+ * Spark coalesces each child of a `UnionExec` as a group of its own, and from Spark 3.5 each
  * child of a `CartesianProductExec`, `BroadcastHashJoinExec` or `BroadcastNestedLoopJoinExec`
  * too. It matches those classes, and the Comet operators that replace them are other classes, so
  * it falls through to the case that coalesces only when every leaf below the operator is an
@@ -39,17 +40,25 @@ import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNes
  * partition of the shuffles in the others: `spark.sql.shuffle.partitions` tasks for a query that
  * needs a few.
  *
- * Comet replaces these operators while AQE prepares a stage, before its optimizer rules run, and
- * plans the operators above them against the Comet versions. So this runs after Spark's rule
- * instead, on each such operator whose shuffle stages that rule left untouched. It rebuilds the
- * Spark operator each Comet one replaced over the Comet children, has Spark's own rule coalesce
- * that, and swaps the Comet operators back in. The partitions come out as Spark would have
- * coalesced them, down to which operators count, since it is Spark's code deciding. The one
- * difference is that Spark divides its minimum partition count among the coalesce groups of the
- * whole plan, and this among those below the Comet operator, which are usually all of them.
+ * Comet replaces these operators while AQE prepares a stage, before its optimizer rules run, so
+ * this runs after Spark's rule instead, on a stage where that rule put a read over no shuffle. It
+ * rebuilds the Spark operator that each such Comet operator replaced, over the Comet children,
+ * has Spark's own rule coalesce the whole stage, and swaps the Comet operators back in. Spark's
+ * code makes every decision, for its version, so the partitions come out as Spark would have
+ * coalesced them, including the smaller target size it uses below a Cartesian product or a nested
+ * loop join from Spark 4.0.
+ *
+ * It rebuilds only operators whose output partitioning is unknown. Spark can coalesce the
+ * children of a union differently, and from Spark 4.1 a union whose children share a partitioning
+ * reports it, so an aggregate above can rely on it instead of a shuffle. AQE discards a
+ * coalescing that breaks a distribution an operator requires, but Comet's operators state none,
+ * so the aggregate would read one key from more than one partition. A broadcast join reports the
+ * partitioning of its streamed side, so the same applies to it.
  *
  * When every leaf below such an operator is an exchange stage, Spark's rule already coalesces its
- * shuffles, together rather than child by child, and this leaves them as they are.
+ * shuffles, together rather than child by child, and this leaves them as they are. It steps in
+ * there only when Spark's rule cannot coalesce them together, as when they differ in partition
+ * count or one of them is a single-partition shuffle.
  *
  * Extending `AQEShuffleReadRule` gets this the same treatment from AQE as Spark's rule: it is
  * skipped for the final stage when that stage's shuffle optimizations are off, and its result is
@@ -66,53 +75,52 @@ case object CometCoalesceShufflePartitions extends AQEShuffleReadRule {
     CoalesceShufflePartitions(SparkSession.active).supportedShuffleOrigins
 
   override def apply(plan: SparkPlan): SparkPlan = {
-    if (!conf.coalesceShufflePartitionsEnabled || !plan.exists(replaced(_).isDefined)) {
+    // A read over a shuffle stage means an AQE rule has already decided how to read it: Spark's
+    // rule coalesced it, or it is a skew-split or local read. Spark's rule expects to coalesce
+    // only reads that split a skewed partition, so leave such a stage as it is.
+    if (!conf.coalesceShufflePartitionsEnabled ||
+      !plan.exists(_.isInstanceOf[ShuffleQueryStageExec]) ||
+      plan.exists(_.isInstanceOf[AQEShuffleReadExec])) {
       return plan
     }
-    plan.transformDown {
-      case p if replaced(p).isDefined && untouched(p) => coalesceBelow(p)
+    val asSpark = plan.transformDown { case comet @ Replaced(original) =>
+      standIn(comet, original)
     }
-  }
-
-  // The Spark operator a Comet operator replaced, if Spark's rule coalesces its children one by
-  // one. The class match mirrors Spark's, and Spark's rule decides, for its version, which of
-  // these it actually treats that way.
-  private def replaced(plan: SparkPlan): Option[SparkPlan] = plan match {
-    case comet: CometExec =>
-      comet.originalPlan match {
-        case original @ (_: UnionExec | _: CartesianProductExec | _: BroadcastHashJoinExec |
-            _: BroadcastNestedLoopJoinExec)
-            if original.children.length == comet.children.length =>
-          Some(original)
-        case _ => None
-      }
-    case _ => None
-  }
-
-  // No AQE rule has put a read over any shuffle stage below `plan`: Spark's rule coalesced none
-  // of them, and none is a skew-split or local read that coalescing now could disturb.
-  private def untouched(plan: SparkPlan): Boolean =
-    plan.exists(_.isInstanceOf[ShuffleQueryStageExec]) &&
-      !plan.exists(_.isInstanceOf[AQEShuffleReadExec])
-
-  private def coalesceBelow(plan: SparkPlan): SparkPlan = {
-    val asSpark = plan.transformUp { case p =>
-      replaced(p) match {
-        case Some(original) =>
-          val standIn = original.withNewChildren(p.children)
-          // `withNewChildren` hands back the original itself when the children are the same ones,
-          // and the tag must not land on the operator that the Comet one keeps.
-          if (standIn eq original) {
-            p
-          } else {
-            standIn.setTagValue(COMET_OPERATOR, p)
-            standIn
-          }
-        case None => p
-      }
+    if (asSpark eq plan) {
+      return plan
     }
     val coalesced = CoalesceShufflePartitions(SparkSession.active).apply(asSpark)
     if (coalesced eq asSpark) plan else restore(coalesced)
+  }
+
+  // A Comet operator whose Spark original's children Spark's rule coalesces one by one, with that
+  // original. The class match mirrors Spark's, and Spark's rule decides, for its version, which
+  // of these it actually treats that way. Comet has no counterpart of `CartesianProductExec`.
+  private object Replaced {
+    def unapply(plan: SparkPlan): Option[SparkPlan] = plan match {
+      case comet: CometExec if comet.outputPartitioning.isInstanceOf[UnknownPartitioning] =>
+        comet.originalPlan match {
+          case original @ (_: UnionExec | _: BroadcastHashJoinExec |
+              _: BroadcastNestedLoopJoinExec)
+              if original.children.length == comet.children.length =>
+            Some(original)
+          case _ => None
+        }
+      case _ => None
+    }
+  }
+
+  private def standIn(comet: SparkPlan, original: SparkPlan): SparkPlan = {
+    val standIn = original.withNewChildren(comet.children) match {
+      // `withNewChildren` hands back the original itself when its children are these already,
+      // as for a union that AQE planned again over materialized stages. The tag must not land on
+      // the operator that the Comet one keeps, so copy it.
+      case same if same eq original =>
+        original.makeCopy(original.productIterator.map(_.asInstanceOf[AnyRef]).toArray)
+      case copy => copy
+    }
+    standIn.setTagValue(COMET_OPERATOR, comet)
+    standIn
   }
 
   // Put each Comet operator back over the children of its stand-in. Rebuilt by hand rather than
