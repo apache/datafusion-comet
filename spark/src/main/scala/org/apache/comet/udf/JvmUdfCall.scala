@@ -29,8 +29,9 @@ import org.apache.spark.sql.types.DataType
  * in the session builds one for each call it resolves.
  *
  * Comet replaces it with a native call that hands the arguments to `className` once per batch.
- * Spark has no way to evaluate it, so `eval` throws. That happens only when Comet does not take
- * the operator holding the call, and failing there makes the fallback visible rather than silent.
+ * Spark has no way to evaluate it, so `eval` throws. Spark evaluates it when Comet does not take
+ * the operator holding the call, and also while planning in a few places: over local data, in a
+ * filter on partition columns, and to sample the keys of a global sort.
  *
  * `argumentTypes` is the registered signature, one type per child. Spark's analyzer checks each
  * call against it, disregarding nullability, and inserts no casts.

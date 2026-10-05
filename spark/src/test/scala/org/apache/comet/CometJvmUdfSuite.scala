@@ -24,7 +24,7 @@ import java.nio.file.Path
 
 import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector.{BigIntVector, IntVector, ValueVector}
-import org.apache.arrow.vector.complex.ListVector
+import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.{AnalysisException, CometTestBase, DataFrame}
 import org.apache.spark.sql.functions.expr
@@ -268,6 +268,27 @@ class CometJvmUdfSuite extends CometTestBase {
     }
   }
 
+  test("a map built with Arrow Java's map writer is accepted") {
+    CometJvmUDF.register(
+      spark,
+      "jvm_singleton_map",
+      classOf[SingletonMapUdf],
+      Seq(LongType),
+      MapType(LongType, LongType))
+    val maps = column(spark.range(0, 3).selectExpr("jvm_singleton_map(id)"))
+    assert(maps == Seq(Map(0L -> 0L), Map(1L -> 10L), Map(2L -> 20L)))
+  }
+
+  test("a struct built with Arrow Java's struct writer is accepted") {
+    // The writer marks both fields nullable, where `a` is declared non-nullable.
+    val pair =
+      StructType(Seq(StructField("a", LongType, nullable = false), StructField("b", LongType)))
+    CometJvmUDF.register(spark, "jvm_pair", classOf[PairStructUdf], Seq(LongType), pair)
+    val rows = spark.range(0, 2).selectExpr("jvm_pair(id) AS p").selectExpr("p.a", "p.b")
+    assert(
+      rows.collect().map(r => (r.getLong(0), r.getLong(1))).toSeq == Seq((0L, 0L), (1L, 10L)))
+  }
+
   test("a result of another type than declared fails naming both types") {
     CometJvmUDF.register(spark, "jvm_int_result", classOf[IntResultUdf], Seq(LongType), LongType)
     val e = intercept[Exception] {
@@ -396,6 +417,24 @@ class CometJvmUdfSuite extends CometTestBase {
       s"unhelpful error: $e")
   }
 
+  test("a UDF under a higher-order function fails the query") {
+    // `transform` runs in the codegen dispatcher, which cannot call a vectorized UDF.
+    registerRangeList(containsNull = false)
+    val e = intercept[Exception] {
+      spark.range(1, 3).selectExpr("transform(jvm_range_list(id), e -> e + 1)").collect()
+    }
+    assert(
+      causeChainContains(e, "UDF 'jvm_range_list' is registered with Comet"),
+      s"unhelpful error: $e")
+  }
+
+  test("a global sort on a column holding a UDF's result runs in the Comet pipeline") {
+    // Sorting on the call itself would make Spark evaluate it to sample range bounds.
+    registerAddOne()
+    val df = spark.range(0, 20, 1, 4).selectExpr("jvm_add_one(19 - id) AS r").orderBy("r")
+    assert(column(df) == (1L to 20L).toSeq)
+  }
+
   test("Spark evaluating the UDF fails the query") {
     registerAddOne()
     withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
@@ -520,6 +559,50 @@ object CometJvmUdfSuite {
         val cells = args.map(a => (a, rowOf(a, i, numRows)))
         if (cells.exists { case (a, r) => a.isNull(r) }) out.setNull(i)
         else out.set(i, cells.map { case (a, r) => a.get(r) }.sum)
+        i += 1
+      }
+      out.setValueCount(numRows)
+      out
+    }
+  }
+
+  /** `{n: n * 10}`, built with Arrow Java's own map writer. */
+  class SingletonMapUdf extends CometUDF {
+    override def evaluate(inputs: Array[ValueVector], numRows: Int): ValueVector = {
+      val in = inputs(0).asInstanceOf[BigIntVector]
+      val out = MapVector.empty("jvm_singleton_map", in.getAllocator, false)
+      val writer = out.getWriter
+      var i = 0
+      while (i < numRows) {
+        val n = in.get(rowOf(in, i, numRows))
+        writer.setPosition(i)
+        writer.startMap()
+        writer.startEntry()
+        writer.key().bigInt().writeBigInt(n)
+        writer.value().bigInt().writeBigInt(n * 10)
+        writer.endEntry()
+        writer.endMap()
+        i += 1
+      }
+      out.setValueCount(numRows)
+      out
+    }
+  }
+
+  /** `{a: n, b: n * 10}`, built with Arrow Java's own struct writer. */
+  class PairStructUdf extends CometUDF {
+    override def evaluate(inputs: Array[ValueVector], numRows: Int): ValueVector = {
+      val in = inputs(0).asInstanceOf[BigIntVector]
+      val out = StructVector.empty("jvm_pair", in.getAllocator)
+      val writer = out.getWriter
+      var i = 0
+      while (i < numRows) {
+        val n = in.get(rowOf(in, i, numRows))
+        writer.setPosition(i)
+        writer.start()
+        writer.bigInt("a").writeBigInt(n)
+        writer.bigInt("b").writeBigInt(n * 10)
+        writer.end()
         i += 1
       }
       out.setValueCount(numRows)

@@ -95,10 +95,16 @@ Comet release, which can change the Arrow Java version behind them.
 ### The contract
 
 - `evaluate` is called once per batch. An argument that is a column arrives as a vector of
-  `numRows` values. An argument that is a literal arrives as a vector holding one value, which
-  applies to every row. Read it at index 0.
+  `numRows` values. An argument that is constant for the batch, such as a literal or the result
+  of a scalar subquery, arrives as a vector holding one value, which applies to every row. Read
+  it at index 0.
 - Comet does not skip null rows. Check each argument with `isNull` and decide what the row
   returns.
+- Comet turns off Arrow Java's bounds and null checks for the whole JVM
+  (`arrow.enable_unsafe_memory_access=true` and `arrow.enable_null_check_for_get=false`), so a
+  mistake does not throw. Reading past the end of a vector, such as reading a one-value argument
+  at the row's index, reads whatever memory is there, and `get` on a null slot returns whatever
+  the slot holds. Check `isNull` before `get`.
 - The result must be a new vector holding exactly `numRows` values, whose Arrow type is that of
   the return type the UDF was registered with. A `LongType` result is a `BigIntVector`, a
   `StringType` result is a `VarCharVector`, a `TimestampType` result is a `TimeStampMicroTZVector`
@@ -130,8 +136,12 @@ import org.apache.comet.udf.CometJvmUDF
 
 CometJvmUDF.register(spark, "add_one", classOf[com.example.AddOne], Seq(LongType), LongType)
 
-spark.sql("SELECT add_one(id) FROM range(5)").show()
+spark.read.parquet("/path/to/events").createOrReplaceTempView("events")
+spark.sql("SELECT add_one(id) FROM events").show()
 ```
+
+The call has to sit in an operator Comet runs natively, over input Comet reads, such as a Parquet
+scan. Spark's `range()` and local data such as `VALUES` do not run natively by default.
 
 From Java, pass the argument types as a `java.util.List` and the `deterministic` flag explicitly:
 
@@ -150,7 +160,9 @@ sessions do not see it, and registering another function under the same name rep
 
 The argument types are a signature every call must match. Spark's analyzer checks each call
 against it, ignoring nullability, and inserts no casts, so a call with other argument types fails
-analysis. Cast the arguments in the query instead, as in `add_one(cast(x AS BIGINT))`.
+analysis. Cast the arguments in the query instead, as in `add_one(cast(x AS BIGINT))`. The analyzer
+compares struct field names the way it is configured to, which by default ignores case, and the
+UDF receives the field names of the call's argument.
 
 Pass `deterministic = false` for a function that can return different results for the same
 arguments, so that Spark does not reorder or deduplicate its calls.
@@ -161,12 +173,14 @@ Comet evaluates each argument natively and passes the UDF only the values. In `a
 `abs` runs natively and only its result crosses into the JVM. An ordinary UDF instead runs its
 whole argument tree in the JVM along with the function.
 
-### When Comet does not run the call
+### When Spark evaluates the call
 
-Spark cannot run a vectorized UDF itself. If Comet does not take the operator holding a call, for
-example because another expression in it is not supported, the query fails with
-`UDF 'add_one' is registered with Comet and runs only inside Comet's native execution`. The query's
-extended explain output gives the reason the operator fell back to Spark.
+Spark cannot run a vectorized UDF itself, so a query fails with
+`UDF 'add_one' is registered with Comet and runs only inside Comet's native execution` if Spark
+evaluates the call. That happens when Comet does not take the operator holding the call, for
+example because another expression in it is not supported, and the query's extended explain
+output gives the reason. It also happens in places where Spark evaluates expressions itself while
+planning a query, which the limitations below list.
 
 ## Limitations
 
@@ -176,8 +190,17 @@ extended explain output gives the reason the operator fell back to Spark.
   arguments has none to use
   ([#4174](https://github.com/apache/datafusion-comet/issues/4174)).
 - There is no fallback to Spark: a call that Comet does not run fails the query.
-- A vectorized UDF cannot be an argument of an ordinary Scala or Java UDF. Comet runs the ordinary
-  UDF by compiling its whole argument tree into one JVM function, which cannot call a vectorized
-  UDF, so the operator falls back to Spark and the query fails.
+- Spark evaluates some expressions itself while planning, so a query fails when the call appears
+  in one of these places:
+  - in a projection or filter over local data, such as `VALUES` or a DataFrame built from a local
+    collection, which Spark's optimizer evaluates eagerly
+  - in a filter on partition columns of a partitioned table, which Spark evaluates to prune
+    partitions
+  - in the sort keys of a global sort without a `LIMIT`, or the keys of `repartitionByRange`, which
+    Spark evaluates to sample range bounds. Sort on a column that holds the UDF's result instead.
+- A vectorized UDF cannot be an argument of an expression that Comet runs in the JVM codegen
+  dispatcher, such as an ordinary Scala or Java UDF or a higher-order function like `transform`.
+  The dispatcher compiles the whole argument tree into one JVM function, which cannot call a
+  vectorized UDF, so the operator falls back to Spark and the query fails.
 - A call that blocks holds one of Comet's native execution threads for as long as it runs
   ([#6293](https://github.com/apache/datafusion-comet/issues/6293)).

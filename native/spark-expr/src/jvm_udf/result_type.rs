@@ -85,15 +85,17 @@ fn relabels_to(actual: &DataType, declared: &DataType) -> bool {
                     .zip(d.iter())
                     .all(|(a, d)| a.name() == d.name() && relabels_to(a.data_type(), d.data_type()))
         }
-        // A map's entries field and the key and value fields inside it are positional, and its
-        // sorted flag is a claim about the data rather than part of how Spark reads it.
-        (DataType::Map(a, _), DataType::Map(d, _)) => match (a.data_type(), d.data_type()) {
-            (DataType::Struct(a), DataType::Struct(d)) if a.len() == 2 && d.len() == 2 => a
-                .iter()
-                .zip(d.iter())
-                .all(|(a, d)| relabels_to(a.data_type(), d.data_type())),
-            _ => false,
-        },
+        // A map's entries field and the key and value fields inside it are positional. Its sorted
+        // flag has to match, because Arrow's cast cannot change it.
+        (DataType::Map(a, a_sorted), DataType::Map(d, d_sorted)) if a_sorted == d_sorted => {
+            match (a.data_type(), d.data_type()) {
+                (DataType::Struct(a), DataType::Struct(d)) if a.len() == 2 && d.len() == 2 => a
+                    .iter()
+                    .zip(d.iter())
+                    .all(|(a, d)| relabels_to(a.data_type(), d.data_type())),
+                _ => false,
+            }
+        }
         _ => actual == declared,
     }
 }
@@ -278,6 +280,49 @@ mod tests {
         ));
         let declared = DataType::Struct(Fields::from(vec![Field::new("a", DataType::Int64, true)]));
         assert!(conform_to_declared_type(CLASS, array, &declared).is_err());
+    }
+
+    /// Spark has no sorted maps and Comet declares every map unsorted. A map that claims sorted keys
+    /// is refused with both types named, since Arrow's cast cannot drop the claim.
+    #[test]
+    fn a_sorted_map_is_refused() {
+        let entries = Fields::from(vec![
+            Field::new("key", DataType::Int64, false),
+            Field::new("value", DataType::Int64, true),
+        ]);
+        let map = |sorted| {
+            DataType::Map(
+                Arc::new(Field::new(
+                    "entries",
+                    DataType::Struct(entries.clone()),
+                    false,
+                )),
+                sorted,
+            )
+        };
+        let array: ArrayRef = Arc::new(MapArray::new(
+            Arc::new(Field::new(
+                "entries",
+                DataType::Struct(entries.clone()),
+                false,
+            )),
+            OffsetBuffer::from_lengths([1]),
+            StructArray::new(
+                entries.clone(),
+                vec![
+                    Arc::new(Int64Array::from(vec![1])),
+                    Arc::new(Int64Array::from(vec![2])),
+                ],
+                None,
+            ),
+            None,
+            true,
+        ));
+        assert_eq!(array.data_type(), &map(true));
+        let err = conform_to_declared_type(CLASS, array, &map(false))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("but its declared return type is"), "{err}");
     }
 
     #[test]

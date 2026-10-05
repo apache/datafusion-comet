@@ -46,9 +46,8 @@ import org.apache.comet.util.ClassLoaders;
  *       name.
  *   <li>A {@link CometUDF} instance is visible only within the Spark task attempt that instantiated
  *       it. Two task attempts observing the same class name receive distinct instances.
- *   <li>At any instant at most one thread is inside {@code evaluate()} for a given {@code
- *       taskAttemptId}. This follows from Spark executing one native future per partition and Tokio
- *       polling one future per worker at a time.
+ *   <li>Calls for a task may arrive concurrently from different Tokio workers. Implementations with
+ *       mutable state are responsible for synchronizing {@code evaluate()}.
  *   <li>All instances for a task are dropped by the {@link TaskCompletionListener} registered on
  *       the first cache miss for that task. No cache entry outlives its task.
  *   <li>When {@code taskContext} is {@code null} (unit tests, direct native driver) the fallback

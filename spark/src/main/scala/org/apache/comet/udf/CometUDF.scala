@@ -39,9 +39,11 @@ import org.apache.arrow.vector.ValueVector
  * state in fields (counters, compiled patterns, scratch buffers); instances are dropped at task
  * completion. Do not hold state that must persist across tasks.
  *
- * At most one thread calls `evaluate` on a given instance at a time: Spark runs one native future
- * per partition and Tokio polls one future per worker, so the per-task instance is never touched
- * concurrently even if the task's future migrates between Tokio workers across batches.
+ * Native execution may call `evaluate` concurrently from multiple Tokio workers within one task:
+ * DataFusion operators can pipeline through spawned Tokio tasks (e.g. `HashJoinExec` overlaps
+ * build and probe via `OnceAsync`), and one Spark task can drive several native plans whose
+ * prefetching drivers run in parallel. Implementations with mutable state must synchronize
+ * access; `CometScalaUDFCodegen` runs its body under `this.synchronized` for this reason.
  */
 trait CometUDF {
   def evaluate(inputs: Array[ValueVector], numRows: Int): ValueVector
