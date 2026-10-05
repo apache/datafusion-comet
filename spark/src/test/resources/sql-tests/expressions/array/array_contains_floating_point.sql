@@ -16,7 +16,8 @@
 -- under the License.
 
 -- array_contains compares floats the way Spark's generated code does: -0.0 equals 0.0, and every
--- NaN equals every other NaN, at any depth of an array or struct element. The result is true when
+-- NaN equals every other NaN, at any depth of an array or struct element. Flat FLOAT and DOUBLE
+-- arrays run natively; nested float elements go through the codegen dispatcher. The result is true when
 -- an element matches, null when none does and the array holds a null element, and false
 -- otherwise; a null array or value gives null.
 --
@@ -62,15 +63,16 @@ SELECT id, array_contains(IF(d IS NULL, NULL, array(d, -d)), 0.0D),
   array_contains(array(d, -d), CAST(NULL AS DOUBLE)), array_contains(array(), d)
 FROM ac_float
 
--- Arrays as elements compare their floats the same way
-query expect_native(array_contains)
+-- Arrays as elements compare their floats the same way. Nested float elements stay on the codegen
+-- dispatcher.
+query expect_dispatch(array_contains)
 SELECT id, array_contains(array(array(-d), array(1.0D)), array(d)),
   array_contains(array(array(d, 1.0D), array(2.0D)), array(-d, 1.0D)),
   array_contains(array(array(d), NULL), array(2.0D))
 FROM ac_float
 
 -- Struct elements too
-query expect_native(array_contains)
+query expect_dispatch(array_contains)
 SELECT id, array_contains(array(named_struct('x', -d, 'y', 1), named_struct('x', 2.0D, 'y', 1)),
   named_struct('x', d, 'y', 1))
 FROM ac_float

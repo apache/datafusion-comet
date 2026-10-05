@@ -113,7 +113,51 @@ object CometArrayAppend extends CometExpressionSerde[ArrayAppend] with ArraysBas
   }
 }
 
-object CometArrayContains extends CometExpressionSerde[ArrayContains] {
+object CometArrayContains
+    extends CometExpressionSerde[ArrayContains]
+    with CodegenDispatchFallback {
+
+  private val nestedFloatReason: String =
+    "Spark compares array elements with ordering.equiv, so -0.0 matches +0.0 and all NaNs match " +
+      "each other; Comet's native array_contains applies that only to flat FLOAT and DOUBLE " +
+      "elements, and nested float elements stay on Spark's comparison"
+
+  private val eagerEvalReason: String =
+    "array_contains evaluates its value eagerly, while Spark skips it when the array is null"
+
+  override def getIncompatibleReasons(): Seq[String] = Seq(nestedFloatReason, eagerEvalReason)
+
+  private def isFlatFloat(elementType: DataType): Boolean = elementType match {
+    case FloatType | DoubleType => true
+    case _ => false
+  }
+
+  // Whether evaluating `expr` earlier than Spark would is unobservable: a literal or column read
+  // cannot throw. See CometArrayJoin.orderInsensitive.
+  private def orderInsensitive(expr: Expression): Boolean = expr match {
+    case _: Literal | _: Attribute | _: BoundReference => true
+    case _ => false
+  }
+
+  override def getSupportLevel(expr: ArrayContains): SupportLevel = {
+    val elementType = expr.left.dataType.asInstanceOf[ArrayType].elementType
+    if (isFlatFloat(elementType)) {
+      // Spark skips the value when the array is null, so a value that can throw (an ANSI cast,
+      // say) must not run for a null array. The native kernel evaluates both arguments first.
+      if (expr.left.nullable && !orderInsensitive(expr.right)) {
+        Incompatible(Some(eagerEvalReason))
+      } else {
+        Compatible()
+      }
+    } else if (SupportLevel.containsType(elementType, classOf[FloatType], classOf[DoubleType])) {
+      // Float leaves inside arrays or structs stay on the codegen dispatcher: the per-element
+      // comparator is slower than Spark's generated code there, and it compares any string field
+      // bytewise, ignoring its collation.
+      Incompatible(Some(nestedFloatReason))
+    } else {
+      Compatible()
+    }
+  }
 
   override def convert(
       expr: ArrayContains,
@@ -122,7 +166,8 @@ object CometArrayContains extends CometExpressionSerde[ArrayContains] {
     val arrayExprProto = exprToProtoInternal(expr.children.head, inputs, binding)
     val keyExprProto = exprToProtoInternal(expr.children(1), inputs, binding)
     // datafusion-spark's array_contains compares floats by their bits. spark_array_contains
-    // compares them as Spark does, with -0.0 equal to 0.0 and all NaNs equal, at any depth.
+    // compares them as Spark does, with -0.0 equal to 0.0 and all NaNs equal, at any depth, so
+    // it also serves nested float elements under allowIncompatible.
     val elementType = expr.left.dataType.asInstanceOf[ArrayType].elementType
     val function =
       if (SupportLevel.containsType(elementType, classOf[FloatType], classOf[DoubleType])) {
