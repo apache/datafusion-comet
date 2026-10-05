@@ -127,9 +127,7 @@ object CometExecRule {
       ShimCometEmptyRelation.emptyRelationClass.map(_ -> CometEmptyRelationExec) ++
       // WindowGroupLimitExec exists only on Spark 3.5+; the shim returns None on 3.4.
       ShimCometWindowGroupLimit.windowGroupLimitClass.map(_ -> CometWindowGroupLimitExec) ++
-      // MergeRowsExec is registered for native execution on Spark 3.5 and 4.0 only. The shim is
-      // empty on 3.4, which has no MergeRowsExec, and on 4.1+, where Spark's V2 writer needs the
-      // concrete MergeRowsExec to build a MergeSummary.
+      // MergeRowsExec exists only on Spark 3.5+; the shim is empty on 3.4.
       ShimCometMergeRows.nativeExecs
 
   /**
@@ -184,8 +182,13 @@ object CometExecRule {
 
 /**
  * Spark physical optimizer rule for replacing Spark operators with Comet operators.
+ *
+ * @param queryStagePrep
+ *   true when the rule runs as an AQE query stage preparation rule, on the initial plan and on
+ *   each re-plan, rather than as the columnar rule that prepares each query stage and the final
+ *   plan.
  */
-case class CometExecRule(session: SparkSession)
+case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
     extends Rule[SparkPlan]
     with CometTypeShim
     with ShimSubqueryBroadcast {
@@ -680,9 +683,15 @@ case class CometExecRule(session: SparkSession)
    * `ShuffleScan` takes the place of the stale leaf. The leaf is patched in place because
    * converting the node again from `originalPlan` would drop the stage's logical link that AQE
    * relies on and re-run serde on a node that is already planned.
+   *
+   * The leaf is patched when a query stage or the final plan is prepared, not when AQE re-plans.
+   * AQE adopts a re-planned plan that differs from its current one, after which it cannot link a
+   * stage built over the reused node back into its logical plan. A broadcast stage it cannot link
+   * no longer fixes the join's build side, so the next re-plan can move the broadcast to the
+   * other side and lose the exchange that dynamic partition pruning reuses.
    */
   private def refreshStaleShuffleScans(op: SparkPlan): SparkPlan = op match {
-    case _ if scansChildAsSeparateBlock(op) => op
+    case _ if queryStagePrep || scansChildAsSeparateBlock(op) => op
     case native: CometNativeExec if native.children.nonEmpty =>
       refreshedNativeOp(native) match {
         case Some(newOp) =>
@@ -701,14 +710,27 @@ case class CometExecRule(session: SparkSession)
    * for extended explain, since the block still reads its shuffle through the JVM.
    */
   private def refreshedNativeOp(native: CometNativeExec): Option[Operator] = {
-    val children = native.children.collect { case child: CometNativeExec => child }
+    // The native node that feeds each plan child's leaves. A read that AQE put between a stage
+    // and the operator planned over it is fed by the stage's sink, whose `ShuffleScan` then reads
+    // the partitions that the read specifies.
+    val feeders = native.children.map {
+      case read: AQEShuffleReadExec =>
+        read.child match {
+          case sink: CometSinkPlaceHolder if sink.nativeOp.hasShuffleScan => Some(sink)
+          case _ => None
+        }
+      case child: CometNativeExec => Some(child)
+      case _ => None
+    }
+    if (feeders.exists(_.isEmpty)) return None
+    val children = feeders.flatten
     // Only a sink that reads a shuffle directly, or a native child that may hold one, can feed
     // a `ShuffleScan`.
     val mayFeedShuffleScan = children.exists {
       case sink: CometSinkPlaceHolder => sink.nativeOp.hasShuffleScan
       case _ => true
     }
-    if (children.length != native.children.length || !mayFeedShuffleScan) return None
+    if (!mayFeedShuffleScan) return None
     val leaves = CometExec.nativeLeaves(native.nativeOp)
     if (!leaves.exists(_.hasScan)) return None
 

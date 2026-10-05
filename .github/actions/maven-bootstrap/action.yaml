@@ -27,7 +27,7 @@ description: >-
 # single request has failed with HTTP 403 and 429 often enough to matter.
 # Every job that runs ./mvnw (directly, via make, or via setup-spark-builder)
 # goes through setup-builder or setup-macos-builder, which end by calling this
-# action; ci.yml's preflight job calls it directly before the RAT check.
+# action.
 #
 # Requires a checkout and a JDK on PATH. Runs from the repository root.
 

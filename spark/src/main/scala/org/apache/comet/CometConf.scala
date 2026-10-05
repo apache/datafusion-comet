@@ -152,6 +152,15 @@ object CometConf extends ShimCometConf {
       .checkValue(v => v > 0, "Data file concurrency limit must be positive")
       .createWithDefault(1)
 
+  val COMET_ICEBERG_IO_TIMEOUT: ConfigEntry[Long] =
+    conf("spark.comet.iceberg.ioTimeout")
+      .category(CATEGORY_SCAN)
+      .doc("Timeout for each storage I/O call, such as one read or write, that Comet's native " +
+        "Iceberg scan and write make. Passed to iceberg-rust as `opendal.io-timeout-ms`.")
+      .timeConf(TimeUnit.MILLISECONDS)
+      .checkValue(_ > 0, "The Iceberg I/O timeout must be positive")
+      .createWithDefault(TimeUnit.SECONDS.toMillis(30))
+
   val COMET_CSV_V2_NATIVE_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.scan.csv.v2.enabled")
       .category(CATEGORY_TESTING)
@@ -332,9 +341,9 @@ object CometConf extends ShimCometConf {
       "mergeRows",
       defaultValue = false,
       notes = Some(
-        "Only takes effect on Spark 3.5 and 4.0. Spark 3.4 has no MergeRowsExec, and Spark " +
-          "4.1 and later keep MergeRowsExec on Spark so V2 writers can consume its row-level " +
-          "metrics (https://github.com/apache/datafusion-comet/issues/6606)"))
+        "Only takes effect on Spark 3.5 and later. Spark 3.4 has no MergeRowsExec. On Spark " +
+          "4.1 and later, stock V2 writers retain Spark MergeRowsExec for MergeSummary; native " +
+          "MergeRows is used only where the enclosing Comet write path preserves that contract."))
 
   val COMET_EXEC_IN_MEMORY_CACHE_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.inMemoryCache.enabled")

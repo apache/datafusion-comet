@@ -95,6 +95,15 @@ Things to know before changing this layer:
 - **What is not intercepted:** merge-on-read (`WriteDelta`), streaming writes, and CTAS/RTAS on
   Spark 3.4. Those keep Spark's plan.
 
+On Spark 4.1+, `IcebergWriteSummaryShim` finds either Spark's `MergeRowsExec` or
+`CometMergeRowsExec` in the executed query and forwards its eight action counters to
+`BatchWrite.commit(messages, summary)`. Native instructions carry the context of each `Keep`;
+`Discard` counts a deletion and `Split` counts one update. Spark 4.2 uses last-attempt
+accumulators, read through `MergeRowsMetricsShim`, so summary values come from the tasks that
+produced the committed output. Stock V2 writers still require the concrete Spark node, so
+`IcebergWriteStrategy` tags a copy of its logical MERGE query before planning and AQE. The
+serializer requires that tag on Spark 4.1+, leaving stock writers on Spark throughout replanning.
+
 ## From `IcebergWrite` to `CometIcebergWrite`
 
 `CometExecRule` converts an `IcebergWriteExec` with the `CometIcebergNativeWrite` operator serde
