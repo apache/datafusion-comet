@@ -18,17 +18,18 @@
 //! Native Iceberg write operator using iceberg-rust.
 //!
 //! Drains the upstream Arrow stream through iceberg-rust's writer stack
-//! (`ParquetWriterBuilder` -> `RollingFileWriterBuilder` -> `DataFileWriterBuilder`
-//! -> `Unpartitioned`/`Fanout`/`Clustered`Writer) and emits a single-row, single-column
-//! Arrow batch carrying the `Vec<DataFile>` produced for the task, packed as an Iceberg V2
-//! data manifest via iceberg-rust's `ManifestWriter` against an in-memory `FileIO`. The JVM
-//! decodes the bytes with `ManifestFiles.read(...)` to recover the `DataFile`s for commit.
+//! (`ParquetWriterBuilder` -> `RollingFileWriterBuilder` -> `DataFileWriterBuilder`, assembled
+//! per partition by [`PartitionWriterBuilder`], under an `Unpartitioned`/`Fanout`/`Clustered`
+//! writer) and emits a single-row, single-column Arrow batch carrying the `Vec<DataFile>`
+//! produced for the task, packed as an Iceberg V2 data manifest via iceberg-rust's
+//! `ManifestWriter` against an in-memory `FileIO`. The JVM decodes the bytes with
+//! `ManifestFiles.read(...)` to recover the `DataFile`s for commit.
 
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
-use arrow::array::{ArrayRef, BinaryArray, RecordBatch, UInt32Array};
+use arrow::array::{Array, ArrayRef, AsArray, BinaryArray, RecordBatch, UInt32Array};
 use arrow::datatypes::{DataType, Field, Schema as ArrowSchema, SchemaRef};
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::error::{DataFusionError, Result as DFResult};
@@ -51,7 +52,7 @@ use iceberg::spec::{
     PartitionSpecRef, Schema as IcebergSchema, SchemaRef as IcebergSchemaRef,
     Struct as IcebergStruct, StructType,
 };
-use iceberg::writer::base_writer::data_file_writer::DataFileWriterBuilder;
+use iceberg::writer::base_writer::data_file_writer::{DataFileWriter, DataFileWriterBuilder};
 use iceberg::writer::file_writer::location_generator::{
     DefaultFileNameGenerator, LocationGenerator,
 };
@@ -60,6 +61,7 @@ use iceberg::writer::file_writer::ParquetWriterBuilder;
 use iceberg::writer::partitioning::clustered_writer::ClusteredWriter;
 use iceberg::writer::partitioning::fanout_writer::FanoutWriter;
 use iceberg::writer::partitioning::unpartitioned_writer::UnpartitionedWriter;
+use iceberg::writer::IcebergWriterBuilder;
 use iceberg::ErrorKind;
 #[cfg(test)]
 use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
@@ -74,17 +76,100 @@ use datafusion_comet_proto::spark_operator::{
 use crate::cloud::s3::credential_bridge::AccessMode;
 use crate::errors::CometError;
 use crate::execution::operators::iceberg_common::load_file_io;
+use crate::execution::operators::iceberg_dictionary::DictionaryChooser;
 use crate::execution::operators::iceberg_partition_path::{
     partition_to_path, CometLocationGenerator,
 };
 use crate::execution::operators::iceberg_partition_value::PartitionValueCalculator;
 
-/// Builder chain instantiated once per task and handed to the partitioning wrapper.
-type IcebergDataFileWriterBuilder = DataFileWriterBuilder<
-    ParquetWriterBuilder,
-    TrackingLocationGenerator,
-    DefaultFileNameGenerator,
->;
+/// The writer every partition gets: iceberg-rust's own data file writer, rolling Parquet files.
+type PartitionDataFileWriter =
+    DataFileWriter<ParquetWriterBuilder, TrackingLocationGenerator, DefaultFileNameGenerator>;
+
+/// Opens each partition's data file writer with the Parquet writer properties chosen for that
+/// partition.
+///
+/// A `ParquetWriterBuilder` fixes one set of writer properties for every file it opens, but which
+/// columns keep dictionary encoding is decided per partition (see [`DictionaryChooser`]). So the
+/// partitioning writers get this builder instead, and it assembles iceberg-rust's usual
+/// `ParquetWriterBuilder` -> `RollingFileWriterBuilder` -> `DataFileWriterBuilder` chain once per
+/// partition, with that partition's properties. Every file the partition rolls into keeps them.
+/// The location and file name generators are shared, so file names still count up across the
+/// task and every location is still tracked for cleanup.
+struct PartitionWriterBuilder {
+    schema: IcebergSchemaRef,
+    target_file_size: usize,
+    file_io: FileIO,
+    location_generator: TrackingLocationGenerator,
+    file_name_generator: DefaultFileNameGenerator,
+    properties: Arc<PartitionProperties>,
+}
+
+#[async_trait::async_trait]
+impl IcebergWriterBuilder for PartitionWriterBuilder {
+    type R = PartitionDataFileWriter;
+
+    async fn build(&self, partition_key: Option<PartitionKey>) -> iceberg::Result<Self::R> {
+        let properties = self
+            .properties
+            .take(partition_key.as_ref().map(PartitionKey::data));
+        let rolling_builder = RollingFileWriterBuilder::new(
+            ParquetWriterBuilder::new(properties, Arc::clone(&self.schema)),
+            self.target_file_size,
+            self.file_io.clone(),
+            self.location_generator.clone(),
+            self.file_name_generator.clone(),
+        );
+        DataFileWriterBuilder::new(rolling_builder)
+            .build(partition_key)
+            .await
+    }
+}
+
+/// The Parquet writer properties each partition's files are written with: the table's, with the
+/// dictionary choice [`DictionaryChooser`] made from the partition's first rows.
+///
+/// A partition's [`PartitionFeed`] records the choice before it hands the partition's first rows
+/// to the writer, and [`PartitionWriterBuilder`] takes it back out when that first write opens the
+/// partition's writer. The partitioning writers open a partition's writer exactly once per task,
+/// on its first write.
+struct PartitionProperties {
+    chooser: DictionaryChooser,
+    /// Keyed by partition value; `None` is the whole task of an unpartitioned write.
+    chosen: Mutex<HashMap<Option<IcebergStruct>, WriterProperties>>,
+}
+
+impl PartitionProperties {
+    fn new(chooser: DictionaryChooser) -> Self {
+        Self {
+            chooser,
+            chosen: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Chooses the properties for `partition`, whose rows start with `sample`.
+    fn choose(&self, partition: &Option<IcebergStruct>, sample: &[RecordBatch]) {
+        let properties = self.chooser.choose(sample);
+        self.chosen
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(partition.clone(), properties);
+    }
+
+    /// The properties chosen for `partition`, or the table's own if none were.
+    fn take(&self, partition: Option<&IcebergStruct>) -> WriterProperties {
+        let chosen = self
+            .chosen
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&partition.cloned());
+        debug_assert!(
+            chosen.is_some(),
+            "a partition's writer opened before its dictionary choice was made"
+        );
+        chosen.unwrap_or_else(|| self.chooser.base().clone())
+    }
+}
 
 /// [`CometLocationGenerator`] that records every location it hands to a file writer.
 ///
@@ -125,13 +210,13 @@ impl LocationGenerator for TrackingLocationGenerator {
     }
 }
 
-/// Deletes the tracked files if the write task is dropped before it finished.
+/// Deletes the tracked files if the write task is dropped before the JVM acknowledges its output.
 ///
 /// A task can end without its future ever observing an error: when the JVM-side input iterator
 /// throws, `executePlan` returns that error straight from the JNI batch pull and the JVM then
 /// releases the plan, dropping this future mid-flight. The guard turns that drop into the same
-/// cleanup the explicit error path performs. It stays armed until the task's output batch has
-/// been handed to the JVM, which is the point where the JVM takes over cleanup ownership.
+/// cleanup the explicit error path performs. It stays armed until the JVM polls past the output
+/// batch, after recording the locations in its task-failure listener.
 struct AbortOnDrop {
     file_io: FileIO,
     generator: TrackingLocationGenerator,
@@ -196,6 +281,28 @@ impl Drop for AbortOnDrop {
             },
         }
     }
+}
+
+/// The JVM reads the locations from the single output batch, registers its cleanup listener,
+/// and then polls once more to verify that the stream ended. Keep native cleanup armed through
+/// that last poll: a cancelled task or a failure decoding the locations before then must still
+/// delete the files, even though the output batch was successfully constructed.
+fn output_with_cleanup_ack(
+    batch: RecordBatch,
+    abort_guard: AbortOnDrop,
+) -> impl futures::Stream<Item = DFResult<RecordBatch>> + Send {
+    futures::stream::unfold(
+        (Some(batch), abort_guard),
+        |(batch, mut abort_guard)| async move {
+            match batch {
+                Some(batch) => Some((Ok::<_, DataFusionError>(batch), (None, abort_guard))),
+                None => {
+                    abort_guard.disarm();
+                    None
+                }
+            }
+        },
+    )
 }
 
 /// Best-effort deletion of every file a failed task attempt created, the native counterpart of
@@ -401,12 +508,9 @@ impl ExecutionPlan for IcebergWriteExec {
             }
             .await;
             match packaged {
-                // The batch carries the locations, and the JVM takes cleanup ownership of them
-                // before it decodes the manifest, so the guard's job is done.
-                Ok(batch) => {
-                    abort_guard.disarm();
-                    Ok::<_, DataFusionError>(futures::stream::iter(vec![Ok(batch)]))
-                }
+                // The JVM registers the locations before polling for EOF. Keep the guard armed
+                // until that poll, so dropping the stream during the handoff still cleans up.
+                Ok(batch) => Ok::<_, DataFusionError>(output_with_cleanup_ack(batch, abort_guard)),
                 Err(e) => {
                     abort_guard.abort().await;
                     Err(e)
@@ -454,7 +558,7 @@ impl DisplayAs for IcebergWriteExec {
 /// depending on `writer_mode`.
 ///
 /// On success the still-armed [`AbortOnDrop`] is returned along with the data files: the caller
-/// owns cleanup until the output batch has been handed to the JVM.
+/// owns cleanup until the JVM acknowledges the output after recording its locations.
 #[allow(clippy::too_many_arguments)]
 async fn run_write_task(
     mut input: SendableRecordBatchStream,
@@ -503,25 +607,27 @@ async fn run_write_task(
         None,
         DataFileFormat::Parquet,
     );
-    let parquet_builder = ParquetWriterBuilder::new(writer_properties, Arc::clone(&iceberg_schema));
-    let rolling_builder = RollingFileWriterBuilder::new(
-        parquet_builder,
-        common.target_file_size_bytes as usize,
-        file_io.clone(),
-        location_generator.clone(),
+    // Build the field-id-decorated target schema once per task; every batch is cast against it.
+    let target_schema =
+        Arc::new(iceberg::arrow::schema_to_arrow_schema(&iceberg_schema).map_err(iceberg_err)?);
+    let slicer = RowSlicer::for_schema(&target_schema);
+    let properties = Arc::new(PartitionProperties::new(DictionaryChooser::try_new(
+        writer_properties,
+        &target_schema,
+    )?));
+    let data_file_builder = PartitionWriterBuilder {
+        schema: Arc::clone(&iceberg_schema),
+        target_file_size: common.target_file_size_bytes as usize,
+        file_io: file_io.clone(),
+        location_generator: location_generator.clone(),
         file_name_generator,
-    );
-    let data_file_builder = DataFileWriterBuilder::new(rolling_builder);
+        properties: Arc::clone(&properties),
+    };
     let mut abort_guard = AbortOnDrop {
         file_io,
         generator: location_generator,
         armed: true,
     };
-
-    // Build the field-id-decorated target schema once per task; every batch is cast against it.
-    let target_schema =
-        Arc::new(iceberg::arrow::schema_to_arrow_schema(&iceberg_schema).map_err(iceberg_err)?);
-    let slicer = RowSlicer::for_schema(&target_schema);
 
     let unpartitioned = partition_spec.is_unpartitioned();
     let splitter = || {
@@ -534,12 +640,12 @@ async fn run_write_task(
     let mut writer = match (unpartitioned, writer_mode) {
         (true, ProtoIcebergWriterMode::IcebergWriterUnpartitioned) => InnerWriter::Unpartitioned(
             UnpartitionedWriter::new(data_file_builder),
-            RowPacer::new(slicer),
+            PartitionFeed::new(None, slicer),
         ),
         (false, ProtoIcebergWriterMode::IcebergWriterFanout) => InnerWriter::Fanout(
             FanoutWriter::new(data_file_builder),
             splitter()?,
-            HashMap::new(),
+            FanoutFeeds::default(),
         ),
         (false, ProtoIcebergWriterMode::IcebergWriterClustered) => {
             InnerWriter::Clustered(ClusteredWriter::new(data_file_builder), splitter()?, None)
@@ -556,10 +662,10 @@ async fn run_write_task(
         while let Some(batch) = input.try_next().await? {
             let decorated = decorate_batch_with_field_ids(batch, &target_schema)?;
             let _timer = write_time.timer();
-            writer.write(decorated).await?;
+            writer.write(decorated, &properties).await?;
         }
         let _timer = write_time.timer();
-        writer.close().await
+        writer.close(&properties).await
     }
     .await;
     match outcome {
@@ -578,72 +684,92 @@ async fn run_write_task(
 }
 
 /// Enum-based dispatch over the three iceberg-rust partitioning writers, each paired with the
-/// [`RowPacer`] state that keeps its rolling writer on iceberg-java's row grid, and the two
-/// partitioned ones with the [`PartitionSplitter`] that cuts their input. Each variant takes the
-/// same builder chain so we can keep the type fixed.
+/// [`PartitionFeed`] state that holds a partition's first rows back for its dictionary choice and
+/// keeps its rolling writer on iceberg-java's row grid, and the two partitioned ones with the
+/// [`PartitionSplitter`] that cuts their input. Each variant takes the same builder so we can keep
+/// the type fixed.
 #[allow(clippy::large_enum_variant)]
 enum InnerWriter {
-    Unpartitioned(UnpartitionedWriter<IcebergDataFileWriterBuilder>, RowPacer),
-    /// The fanout writer keeps one file open per partition, so every partition paces separately.
-    /// The `PartitionKey` is kept alongside so leftovers can still be written out at close.
+    Unpartitioned(UnpartitionedWriter<PartitionWriterBuilder>, PartitionFeed),
+    /// The fanout writer keeps one file open per partition, so every partition is fed separately.
     Fanout(
-        FanoutWriter<IcebergDataFileWriterBuilder>,
+        FanoutWriter<PartitionWriterBuilder>,
         PartitionSplitter,
-        HashMap<IcebergStruct, (PartitionKey, RowPacer)>,
+        FanoutFeeds,
     ),
     /// The clustered writer closes a partition's file as soon as the next key arrives, so only the
-    /// current key's leftovers are live; they are written out before the switch.
+    /// current key's held rows are live; they are written out before the switch.
     Clustered(
-        ClusteredWriter<IcebergDataFileWriterBuilder>,
+        ClusteredWriter<PartitionWriterBuilder>,
         PartitionSplitter,
-        Option<(PartitionKey, RowPacer)>,
+        Option<(PartitionKey, PartitionFeed)>,
     ),
 }
 
 impl InnerWriter {
     /// Writes `batch` through the writer this task built, in the [`ROWS_DIVISOR`]-row units the
     /// rolling writer needs to re-check the target file size on iceberg-java's cadence. Rows are
-    /// paced after partition splitting, so each partition's file is measured against its own row
-    /// count the way the JVM writer measures it.
-    async fn write(&mut self, batch: RecordBatch) -> DFResult<()> {
+    /// fed after partition splitting, so each partition's dictionary choice is made from its own
+    /// rows, and each partition's file is measured against its own row count the way the JVM
+    /// writer measures it.
+    async fn write(
+        &mut self,
+        batch: RecordBatch,
+        properties: &PartitionProperties,
+    ) -> DFResult<()> {
         use iceberg::writer::partitioning::PartitioningWriter;
         match self {
-            InnerWriter::Unpartitioned(w, pacer) => {
-                for unit in pacer.push(batch)? {
+            InnerWriter::Unpartitioned(w, feed) => {
+                for unit in feed.push(batch, properties)? {
                     w.write(unit).await.map_err(iceberg_err)?;
                 }
                 Ok(())
             }
-            InnerWriter::Fanout(w, splitter, pacers) => {
+            InnerWriter::Fanout(w, splitter, fanout) => {
                 for (key, part) in splitter.split_groups(&batch)? {
-                    let (_, pacer) = pacers
-                        .entry(key.data().clone())
-                        .or_insert_with(|| (key.clone(), RowPacer::new(splitter.slicer)));
-                    for unit in pacer.push(part)? {
+                    let (key, feed) = fanout.feeds.entry(key.data().clone()).or_insert_with(|| {
+                        let partition = Some(key.data().clone());
+                        (key, PartitionFeed::new(partition, splitter.slicer))
+                    });
+                    let held_before = feed.held_bytes();
+                    let units = feed.push(part, properties)?;
+                    fanout.held_bytes = fanout.held_bytes - held_before + feed.held_bytes();
+                    for unit in units {
                         w.write(key.clone(), unit).await.map_err(iceberg_err)?;
                     }
+                }
+                // Every partition stays open, so the rows they hold back share one limit.
+                if !properties.chooser.may_hold(fanout.held_bytes) {
+                    for (key, feed) in fanout.feeds.values_mut() {
+                        for unit in feed.release(properties)? {
+                            w.write(key.clone(), unit).await.map_err(iceberg_err)?;
+                        }
+                    }
+                    fanout.held_bytes = 0;
                 }
                 Ok(())
             }
             InnerWriter::Clustered(w, splitter, live) => {
                 for (key, part) in splitter.split_runs(&batch)? {
-                    // A new key closes the previous partition's file, so its leftovers have to go
-                    // out first -- and its row grid does not carry over to the new partition.
-                    if let Some((open, mut pacer)) =
+                    // A new key closes the previous partition's file, so its held rows have to go
+                    // out first -- and neither its row grid nor its dictionary choice carries over
+                    // to the new partition.
+                    if let Some((open, mut feed)) =
                         live.take_if(|(open, _)| open.data() != key.data())
                     {
-                        if let Some(rest) = pacer.flush()? {
-                            // `write` consumes the key, but the unclustered-input error needs it
-                            // for the partition path.
-                            let key_for_error = open.clone();
-                            w.write(open, rest)
+                        for unit in feed.finish(properties)? {
+                            w.write(open.clone(), unit)
                                 .await
-                                .map_err(|e| clustered_write_err(e, &key_for_error, splitter))?;
+                                .map_err(|e| clustered_write_err(e, &open, splitter))?;
                         }
                     }
-                    let (_, pacer) =
-                        live.get_or_insert_with(|| (key.clone(), RowPacer::new(splitter.slicer)));
-                    for unit in pacer.push(part)? {
+                    let (_, feed) = live.get_or_insert_with(|| {
+                        (
+                            key.clone(),
+                            PartitionFeed::new(Some(key.data().clone()), splitter.slicer),
+                        )
+                    });
+                    for unit in feed.push(part, properties)? {
                         w.write(key.clone(), unit)
                             .await
                             .map_err(|e| clustered_write_err(e, &key, splitter))?;
@@ -657,19 +783,19 @@ impl InnerWriter {
     /// Hands over whatever rows are still waiting, then closes. iceberg-java's writer does the
     /// same at close: the leftovers land in the file that is open at that point, unless the
     /// pending target-size check rolls first -- exactly as they would have on the JVM path.
-    async fn close(self) -> DFResult<Vec<DataFile>> {
+    async fn close(self, properties: &PartitionProperties) -> DFResult<Vec<DataFile>> {
         use iceberg::writer::partitioning::PartitioningWriter;
         match self {
-            InnerWriter::Unpartitioned(mut w, mut pacer) => {
-                if let Some(rest) = pacer.flush()? {
-                    w.write(rest).await.map_err(iceberg_err)?;
+            InnerWriter::Unpartitioned(mut w, mut feed) => {
+                for unit in feed.finish(properties)? {
+                    w.write(unit).await.map_err(iceberg_err)?;
                 }
                 w.close().await.map_err(iceberg_err)
             }
-            InnerWriter::Fanout(mut w, _, pacers) => {
-                for (_, (key, mut pacer)) in pacers {
-                    if let Some(rest) = pacer.flush()? {
-                        w.write(key, rest).await.map_err(iceberg_err)?;
+            InnerWriter::Fanout(mut w, _, fanout) => {
+                for (_, (key, mut feed)) in fanout.feeds {
+                    for unit in feed.finish(properties)? {
+                        w.write(key.clone(), unit).await.map_err(iceberg_err)?;
                     }
                 }
                 let mut data_files = w.close().await.map_err(iceberg_err)?;
@@ -690,15 +816,14 @@ impl InnerWriter {
                 Ok(data_files)
             }
             InnerWriter::Clustered(mut w, splitter, live) => {
-                if let Some((key, mut pacer)) = live {
-                    if let Some(rest) = pacer.flush()? {
-                        // Pacing defers a partition's rows to here, so the unclustered-input
-                        // rejection can surface at close rather than during `write`. It still has
-                        // to read as iceberg-java's error.
-                        let key_for_error = key.clone();
-                        w.write(key, rest)
+                if let Some((key, mut feed)) = live {
+                    // Feeding defers a partition's rows to here, so the unclustered-input
+                    // rejection can surface at close rather than during `write`. It still has to
+                    // read as iceberg-java's error.
+                    for unit in feed.finish(properties)? {
+                        w.write(key.clone(), unit)
                             .await
-                            .map_err(|e| clustered_write_err(e, &key_for_error, &splitter))?;
+                            .map_err(|e| clustered_write_err(e, &key, &splitter))?;
                     }
                 }
                 w.close().await.map_err(iceberg_err)
@@ -855,8 +980,9 @@ fn file_name_prefix(partition_id: i32, task_attempt_id: i64, operation_id: &str)
 ///
 /// This replaces iceberg-rust's `RecordBatchPartitionSplitter`, which computes the values with
 /// iceberg-rust's own transforms -- they turn a `year` or `month` past `chrono`'s calendar into a
-/// NULL (apache/datafusion-comet#6145) -- and groups rows through a HashMap, which emits parts in
-/// unspecified order.
+/// NULL (apache/datafusion-comet#6145) and put some pre-epoch timestamps in a different time
+/// partition from iceberg-java (apache/datafusion-comet#6426) -- and groups rows through a
+/// HashMap, which emits parts in unspecified order.
 struct PartitionSplitter {
     calculator: PartitionValueCalculator,
     partition_spec: PartitionSpecRef,
@@ -912,7 +1038,7 @@ impl PartitionSplitter {
     /// would have produced.
     fn split_runs(&self, batch: &RecordBatch) -> DFResult<Vec<(PartitionKey, RecordBatch)>> {
         // A single-run batch (the common case: one partition per task batch) is the whole batch,
-        // which `RowSlicer::slice` hands back as a clone.
+        // which `RowSlicer::slice` hands back as-is unless it arrived sliced.
         self.runs(batch)?
             .into_iter()
             .map(|(value, start, len)| {
@@ -984,6 +1110,11 @@ impl PartitionSplitter {
 /// safe, because `StructArray::slice` slices them, so the only schemas that need the fix are the
 /// ones with a float or double under a list or map; those ranges go through `take`, which gathers
 /// the referenced children into fresh compacted arrays.
+///
+/// A range that covers its whole batch is handed on as-is, which is exact only if the batch itself
+/// spans its children. A batch can arrive already sliced, for example from a `GlobalLimitExec`
+/// whose `OFFSET` hands on `batch.slice(skip, n)`, so a whole-batch range goes through
+/// [`RowSlicer::compact`], which gathers such a batch instead.
 #[derive(Clone, Copy)]
 struct RowSlicer {
     gather: bool,
@@ -1001,9 +1132,24 @@ impl RowSlicer {
         }
     }
 
+    /// Returns `batch` unchanged unless it is a window onto a larger batch that leaves a float
+    /// under a list or map outside it, in which case the window is gathered into fresh arrays.
+    fn compact(&self, batch: RecordBatch) -> DFResult<RecordBatch> {
+        if self.gather
+            && batch
+                .columns()
+                .iter()
+                .any(|column| floats_outside_window(column.as_ref()))
+        {
+            gather_rows(&batch, 0, batch.num_rows())
+        } else {
+            Ok(batch)
+        }
+    }
+
     fn slice(&self, batch: &RecordBatch, offset: usize, len: usize) -> DFResult<RecordBatch> {
         if offset == 0 && len == batch.num_rows() {
-            return Ok(batch.clone());
+            return self.compact(batch.clone());
         }
         if self.gather {
             gather_rows(batch, offset, len)
@@ -1019,7 +1165,7 @@ impl RowSlicer {
     fn detach(&self, batch: &RecordBatch, offset: usize, len: usize) -> DFResult<RecordBatch> {
         if offset == 0 && len == batch.num_rows() {
             // The range is the whole batch, so it pins nothing beyond the rows it holds.
-            return Ok(batch.clone());
+            return self.compact(batch.clone());
         }
         gather_rows(batch, offset, len)
     }
@@ -1112,6 +1258,104 @@ impl RowPacer {
     }
 }
 
+/// One partition's rows on their way to its writer.
+///
+/// The partition's first rows are held back until they make up the first data page of every
+/// column, or the partition runs out of rows, so that its dictionary choice sees what parquet-mr's
+/// would. The choice is recorded before any row reaches the writer, since the first write opens
+/// the partition's writer with it. From then on rows are paced by a [`RowPacer`]. Holding rows back
+/// does not move a roll point: the rolling writer receives the same units, cut at the same rows and
+/// in the same order, only later.
+///
+/// Held batches are kept as they arrive. The fanout splitter's parts are already copies, and only
+/// the live partition of a clustered write holds any, so the slices it holds pin at most the input
+/// batches that one partition's first page spans.
+struct PartitionFeed {
+    /// The partition value, or `None` for the whole task of an unpartitioned write.
+    partition: Option<IcebergStruct>,
+    pacer: RowPacer,
+    /// The rows held back while the choice is pending, or `None` once it is made.
+    held: Option<HeldRows>,
+}
+
+#[derive(Default)]
+struct HeldRows {
+    batches: Vec<RecordBatch>,
+    rows: usize,
+    bytes: usize,
+}
+
+impl PartitionFeed {
+    fn new(partition: Option<IcebergStruct>, slicer: RowSlicer) -> Self {
+        Self {
+            partition,
+            pacer: RowPacer::new(slicer),
+            held: Some(HeldRows::default()),
+        }
+    }
+
+    /// Memory taken by the rows held back.
+    fn held_bytes(&self) -> usize {
+        self.held.as_ref().map_or(0, |held| held.bytes)
+    }
+
+    /// The complete units `batch` makes available, in row order.
+    fn push(
+        &mut self,
+        batch: RecordBatch,
+        properties: &PartitionProperties,
+    ) -> DFResult<Vec<RecordBatch>> {
+        let Some(held) = &mut self.held else {
+            return self.pacer.push(batch);
+        };
+        held.rows += batch.num_rows();
+        held.bytes += batch.get_array_memory_size();
+        held.batches.push(batch);
+        if properties.chooser.wants_more(held.rows, held.bytes) {
+            return Ok(Vec::new());
+        }
+        self.release(properties)
+    }
+
+    /// Every row still waiting, as the units it makes up followed by any partial unit, so a close
+    /// or a partition switch does not lose it. A partition that never filled a first page makes
+    /// its choice from the rows it has.
+    fn finish(&mut self, properties: &PartitionProperties) -> DFResult<Vec<RecordBatch>> {
+        let mut units = self.release(properties)?;
+        units.extend(self.pacer.flush()?);
+        Ok(units)
+    }
+
+    /// Makes the choice from the held rows, if it is still pending, and hands them to the pacer,
+    /// returning the complete units they make up.
+    fn release(&mut self, properties: &PartitionProperties) -> DFResult<Vec<RecordBatch>> {
+        let Some(held) = self.held.take() else {
+            return Ok(Vec::new());
+        };
+        properties.choose(&self.partition, &held.batches);
+        let mut units = Vec::new();
+        for batch in held.batches {
+            units.extend(self.pacer.push(batch)?);
+        }
+        Ok(units)
+    }
+}
+
+/// The feeds of a fanout write, one per partition, all open at once.
+///
+/// Between them they hold back no more than a single partition may: once the rows held across all
+/// partitions reach that, every partition still holding makes its choice from the rows it has. A
+/// task fanning out to many partitions that each get less than a page would otherwise hold all of
+/// its rows back, uncompressed, until it closed.
+#[derive(Default)]
+struct FanoutFeeds {
+    /// The `PartitionKey` is kept alongside each feed so held rows can still be written out at
+    /// close.
+    feeds: HashMap<IcebergStruct, (PartitionKey, PartitionFeed)>,
+    /// Bytes held back across all feeds.
+    held_bytes: usize,
+}
+
 /// `true` when `data_type` puts a float or double under a list or map, where a slice's offset
 /// window is invisible to iceberg-rust's NaN-count visitor.
 fn float_under_list_or_map(data_type: &DataType) -> bool {
@@ -1143,6 +1387,42 @@ fn contains_float(data_type: &DataType) -> bool {
         DataType::Struct(fields) => fields.iter().any(|field| contains_float(field.data_type())),
         _ => false,
     }
+}
+
+/// `true` when `array` holds a float or double under a list or map whose child array reaches
+/// past the rows `array` covers. Slicing a list or map narrows only its offsets and leaves the
+/// child whole, and the NaN-count visitor walks the whole child. A struct's children are sliced
+/// with it, so a struct only matters for the lists and maps inside it. Every batch is cast to the
+/// schema `iceberg::arrow::schema_to_arrow_schema` builds, which nests nothing but lists, maps and
+/// structs. Any other container would be treated as reaching past whenever it holds a float, which
+/// errs toward gathering.
+fn floats_outside_window(array: &dyn Array) -> bool {
+    match array.data_type() {
+        DataType::List(field) => {
+            let list = array.as_list::<i32>();
+            contains_float(field.data_type())
+                && reaches_past(list.value_offsets(), list.values().as_ref())
+        }
+        DataType::Map(entries, _) => {
+            let map = array.as_map();
+            contains_float(entries.data_type()) && reaches_past(map.value_offsets(), map.entries())
+        }
+        DataType::Struct(_) => array
+            .as_struct()
+            .columns()
+            .iter()
+            .any(|column| floats_outside_window(column.as_ref())),
+        other => float_under_list_or_map(other),
+    }
+}
+
+/// `true` when `offsets` leave part of `child` outside them, or when `child` itself holds a float
+/// outside its own rows. A list or map has one more offset than it has rows, so `offsets` is never
+/// empty, even for a batch of zero rows.
+fn reaches_past(offsets: &[i32], child: &dyn Array) -> bool {
+    offsets[0] != 0
+        || offsets[offsets.len() - 1] as usize != child.len()
+        || floats_outside_window(child)
 }
 
 /// Serialise the produced data files as an in-memory Iceberg V2 data manifest, then read the
@@ -1663,6 +1943,94 @@ mod tests {
         }
     }
 
+    fn doubles(rows: usize) -> arrow::array::ListArray {
+        use arrow::datatypes::Float64Type;
+        arrow::array::ListArray::from_iter_primitive::<Float64Type, _, _>(
+            (0..rows).map(|row| Some(vec![Some(row as f64), Some(f64::NAN)])),
+        )
+    }
+
+    #[test]
+    fn floats_outside_window_finds_a_slice_at_any_depth() {
+        use arrow::array::{Float64Array, ListArray, StructArray};
+        use arrow::buffer::OffsetBuffer;
+        use arrow::datatypes::{Float32Type, Int32Type};
+
+        // A list spans its child until it is sliced, from either end.
+        assert!(!floats_outside_window(&doubles(4)));
+        assert!(floats_outside_window(&doubles(4).slice(0, 2)));
+        assert!(floats_outside_window(&doubles(4).slice(2, 2)));
+        // A list of no rows still has its one offset.
+        assert!(!floats_outside_window(&doubles(0)));
+        // A sliced list with no float under it leaves nothing to miscount.
+        let ints = ListArray::from_iter_primitive::<Int32Type, _, _>(
+            (0..4).map(|row| Some(vec![Some(row)])),
+        );
+        assert!(!floats_outside_window(&ints.slice(0, 2)));
+        // A float counts as much as a double does.
+        let floats = ListArray::from_iter_primitive::<Float32Type, _, _>(
+            (0..4).map(|row| Some(vec![Some(row as f32)])),
+        );
+        assert!(floats_outside_window(&floats.slice(2, 2)));
+        // Slicing a struct slices its list child, which then reaches past its rows.
+        let wrapped = StructArray::try_from(vec![("l", Arc::new(doubles(4)) as ArrayRef)]).unwrap();
+        assert!(!floats_outside_window(&wrapped));
+        assert!(floats_outside_window(&wrapped.slice(1, 2)));
+        // A sliced list of structs keeps its whole struct child, as a list of doubles does.
+        let points = StructArray::try_from(vec![(
+            "x",
+            Arc::new(Float64Array::from(vec![0.0, 1.0, 2.0, f64::NAN])) as ArrayRef,
+        )])
+        .unwrap();
+        let points = ListArray::new(
+            Arc::new(Field::new("element", points.data_type().clone(), true)),
+            OffsetBuffer::from_lengths([1; 4]),
+            Arc::new(points),
+            None,
+        );
+        assert!(!floats_outside_window(&points));
+        assert!(floats_outside_window(&points.slice(1, 2)));
+        // An outer list can span its child while an inner list does not span its own.
+        let inner = doubles(4).slice(1, 2);
+        let outer = ListArray::new(
+            Arc::new(Field::new("element", inner.data_type().clone(), true)),
+            OffsetBuffer::from_lengths([2]),
+            Arc::new(inner),
+            None,
+        );
+        assert!(floats_outside_window(&outer));
+    }
+
+    #[test]
+    fn compact_gathers_only_a_batch_that_reaches_past_its_rows() {
+        use arrow::datatypes::Float64Type;
+
+        // Row 1 is NULL, and gathering has to keep it NULL.
+        let lists = arrow::array::ListArray::from_iter_primitive::<Float64Type, _, _>(
+            (0..4).map(|row| (row != 1).then(|| vec![Some(row as f64), Some(f64::NAN)])),
+        );
+        let batch = RecordBatch::try_from_iter([("l", Arc::new(lists) as ArrayRef)]).unwrap();
+        let slicer = RowSlicer::for_schema(&batch.schema());
+
+        let whole = slicer.compact(batch.clone()).unwrap();
+        assert!(
+            Arc::ptr_eq(whole.column(0), batch.column(0)),
+            "a batch that spans its children is handed on as-is"
+        );
+
+        let window = batch.slice(1, 2);
+        let compacted = slicer.compact(window.clone()).unwrap();
+        assert_eq!(
+            compacted, window,
+            "gathering keeps the rows, their values and their NULLs"
+        );
+        assert_eq!(
+            compacted.column(0).as_list::<i32>().values().len(),
+            2,
+            "the child holds only the window's elements"
+        );
+    }
+
     /// Rows `first..first + rows`, so a sequence of batches carries distinguishable values.
     fn int_batch_from(first: i32, rows: usize) -> RecordBatch {
         let schema = Arc::new(ArrowSchema::new(vec![Field::new(
@@ -1769,6 +2137,7 @@ mod tests {
             CompressionCodec as ProtoCodec, IcebergParquetWriteSettings, IcebergWriteCommon,
             IcebergWriterMode as ProtoIcebergWriterMode,
         };
+        use futures::StreamExt;
         use iceberg::spec::{
             Manifest, NestedField, PartitionSpec, PrimitiveType, Schema, Transform, Type,
         };
@@ -1776,6 +2145,7 @@ mod tests {
         use std::collections::HashMap;
         use std::path::PathBuf;
         use std::sync::Arc;
+        use std::time::Duration;
         use tempfile::TempDir;
 
         fn user_schema() -> SchemaRef {
@@ -1858,13 +2228,32 @@ mod tests {
             writer_mode: ProtoIcebergWriterMode,
             batches: Vec<RecordBatch>,
         ) -> DFResult<Vec<DataFile>> {
+            run_with_properties(
+                common,
+                schema,
+                spec,
+                writer_mode,
+                batches,
+                WriterProperties::builder().build(),
+            )
+            .await
+        }
+
+        async fn run_with_properties(
+            common: Arc<IcebergWriteCommon>,
+            schema: Schema,
+            spec: PartitionSpec,
+            writer_mode: ProtoIcebergWriterMode,
+            batches: Vec<RecordBatch>,
+            writer_properties: WriterProperties,
+        ) -> DFResult<Vec<DataFile>> {
             let (data_files, mut abort_guard) = run_write_task(
                 input_stream(batches),
                 common,
                 Arc::new(schema),
                 Arc::new(spec),
                 writer_mode,
-                WriterProperties::builder().build(),
+                writer_properties,
                 Some(0),
                 Some(0),
                 Time::default(),
@@ -1973,7 +2362,7 @@ mod tests {
 
             assert!(
                 abort_guard.armed,
-                "the caller owns cleanup until the JVM does"
+                "the caller owns cleanup until the JVM acknowledges the handoff"
             );
             let written: Vec<PathBuf> = data_files
                 .iter()
@@ -1987,6 +2376,66 @@ mod tests {
             abort_guard.abort().await;
             assert!(written.iter().all(|p| !p.exists()), "{written:?}");
             assert!(!abort_guard.armed, "aborting also gives up ownership");
+        }
+
+        #[tokio::test]
+        async fn output_stream_waits_for_jvm_eof_poll_before_releasing_cleanup() {
+            for acknowledge in [false, true] {
+                let temp_dir = TempDir::new().unwrap();
+                let data_location = format!("file://{}", temp_dir.path().display());
+                let schema = iceberg_user_schema();
+                let spec = PartitionSpec::builder(Arc::new(schema.clone()))
+                    .build()
+                    .unwrap();
+                let common = common(
+                    data_location,
+                    serde_json::to_string(&spec).unwrap(),
+                    serde_json::to_string(&schema).unwrap(),
+                    ProtoIcebergWriterMode::IcebergWriterUnpartitioned,
+                );
+                let (data_files, guard) = run_write_task(
+                    input_stream(vec![batch(&[1], &["us"])]),
+                    common,
+                    Arc::new(schema),
+                    Arc::new(spec),
+                    ProtoIcebergWriterMode::IcebergWriterUnpartitioned,
+                    WriterProperties::builder().build(),
+                    Some(0),
+                    Some(0),
+                    Time::default(),
+                )
+                .await
+                .unwrap();
+
+                let written: Vec<PathBuf> = data_files
+                    .iter()
+                    .map(|file| PathBuf::from(file.file_path().trim_start_matches("file:")))
+                    .collect();
+                assert!(!written.is_empty());
+                assert!(written.iter().all(|path| path.exists()));
+
+                let output =
+                    build_output_batch(vec![], &guard.locations(), &build_output_schema()).unwrap();
+                let mut stream = Box::pin(output_with_cleanup_ack(output, guard));
+                assert!(stream.next().await.unwrap().is_ok());
+
+                if acknowledge {
+                    assert!(stream.next().await.is_none());
+                }
+                drop(stream);
+
+                if acknowledge {
+                    assert!(written.iter().all(|path| path.exists()));
+                } else {
+                    tokio::time::timeout(Duration::from_secs(5), async {
+                        while written.iter().any(|path| path.exists()) {
+                            tokio::time::sleep(Duration::from_millis(10)).await;
+                        }
+                    })
+                    .await
+                    .expect("dropping an unacknowledged output must delete its files");
+                }
+            }
         }
 
         #[tokio::test]
@@ -2551,6 +3000,190 @@ mod tests {
             assert_eq!(rows, vec![1000, 500, 1000, 500]);
         }
 
+        /// Writes `batches` through a fresh table partitioned by `region` (or not, for the
+        /// unpartitioned mode) and returns its data files, with the directory they live in.
+        async fn write_files(
+            writer_mode: ProtoIcebergWriterMode,
+            batches: Vec<RecordBatch>,
+        ) -> (TempDir, Vec<DataFile>) {
+            write_files_with_properties(writer_mode, batches, WriterProperties::builder().build())
+                .await
+        }
+
+        async fn write_files_with_properties(
+            writer_mode: ProtoIcebergWriterMode,
+            batches: Vec<RecordBatch>,
+            writer_properties: WriterProperties,
+        ) -> (TempDir, Vec<DataFile>) {
+            let temp_dir = TempDir::new().unwrap();
+            let data_location = format!("file://{}", temp_dir.path().display());
+            let schema = iceberg_user_schema();
+            let spec = match writer_mode {
+                ProtoIcebergWriterMode::IcebergWriterUnpartitioned => {
+                    PartitionSpec::builder(Arc::new(schema.clone()))
+                        .build()
+                        .unwrap()
+                }
+                _ => identity_region_spec(&schema),
+            };
+            let common = common(
+                data_location,
+                serde_json::to_string(&spec).unwrap(),
+                serde_json::to_string(&schema).unwrap(),
+                writer_mode,
+            );
+            let data_files = run_with_properties(
+                common,
+                schema,
+                spec,
+                writer_mode,
+                batches,
+                writer_properties,
+            )
+            .await
+            .unwrap();
+            (temp_dir, data_files)
+        }
+
+        /// For every column chunk of `data_file`, its column and whether it has a dictionary page.
+        fn dictionary_pages(data_file: &DataFile) -> Vec<(String, bool)> {
+            use parquet::file::reader::{FileReader, SerializedFileReader};
+            let path = data_file.file_path().trim_start_matches("file://");
+            let reader = SerializedFileReader::new(std::fs::File::open(path).unwrap()).unwrap();
+            reader
+                .metadata()
+                .row_groups()
+                .iter()
+                .flat_map(|row_group| row_group.columns())
+                .map(|chunk| {
+                    (
+                        chunk.column_path().string(),
+                        chunk.dictionary_page_offset().is_some(),
+                    )
+                })
+                .collect()
+        }
+
+        /// A column of unique values gets no dictionary page, as iceberg-java writes it, while a
+        /// repetitive one keeps its dictionary (apache/datafusion-comet#6114). parquet-rs alone
+        /// would dictionary-encode `id` until its dictionary filled.
+        #[tokio::test]
+        async fn a_unique_column_is_written_without_a_dictionary() {
+            let batches = (0..3)
+                .map(|batch| {
+                    let ids: Vec<i32> = (batch * 8192..(batch + 1) * 8192).collect();
+                    let regions: Vec<&str> = ids
+                        .iter()
+                        .map(|id| if id % 2 == 0 { "us" } else { "eu" })
+                        .collect();
+                    self::batch(&ids, &regions)
+                })
+                .collect();
+            let (_dir, data_files) =
+                write_files(ProtoIcebergWriterMode::IcebergWriterUnpartitioned, batches).await;
+            assert_eq!(data_files.len(), 1);
+            assert_eq!(
+                dictionary_pages(&data_files[0]),
+                vec![("id".to_string(), false), ("region".to_string(), true)]
+            );
+        }
+
+        /// Every partition chooses from its own rows. `id` is unique in `us` but cycles through
+        /// three values in `eu`, so only the `eu` file keeps a dictionary for it, as it would from
+        /// iceberg-java's per-partition writers. A choice made once for the whole task would treat
+        /// both partitions alike.
+        #[tokio::test]
+        async fn each_partition_chooses_its_own_dictionaries() {
+            let id = |row: i32, region: &str| if region == "us" { row } else { row % 3 };
+            let interleaved: Vec<RecordBatch> = (0..2)
+                .map(|batch| {
+                    let rows = batch * 3000..(batch + 1) * 3000;
+                    let regions: Vec<&str> = rows
+                        .clone()
+                        .map(|row| if row % 2 == 0 { "us" } else { "eu" })
+                        .collect();
+                    let ids: Vec<i32> = rows
+                        .zip(&regions)
+                        .map(|(row, region)| id(row, region))
+                        .collect();
+                    self::batch(&ids, &regions)
+                })
+                .collect();
+            let sorted: Vec<RecordBatch> = ["eu", "us"]
+                .into_iter()
+                .map(|region| {
+                    let ids: Vec<i32> = (0..3000).map(|row| id(row, region)).collect();
+                    self::batch(&ids, &vec![region; 3000])
+                })
+                .collect();
+            for (writer_mode, batches) in [
+                (ProtoIcebergWriterMode::IcebergWriterFanout, interleaved),
+                (ProtoIcebergWriterMode::IcebergWriterClustered, sorted),
+            ] {
+                let (_dir, data_files) = write_files(writer_mode, batches).await;
+                let mut layouts: Vec<(bool, Vec<(String, bool)>)> = data_files
+                    .iter()
+                    .map(|file| {
+                        (
+                            file.file_path().contains("region=eu"),
+                            dictionary_pages(file),
+                        )
+                    })
+                    .collect();
+                layouts.sort();
+                assert_eq!(
+                    layouts,
+                    vec![
+                        (
+                            false,
+                            vec![("id".to_string(), false), ("region".to_string(), true)]
+                        ),
+                        (
+                            true,
+                            vec![("id".to_string(), true), ("region".to_string(), true)]
+                        ),
+                    ],
+                    "{writer_mode:?}"
+                );
+            }
+        }
+
+        /// The partitions of a fanout write hold back no more rows between them than one partition
+        /// may. Ten partitions of 1000 unique ids fill the 50 KiB row group size between them,
+        /// though none fills it alone, so each makes its choice from those rows and writes `id`
+        /// plain -- where the 1000 repeats of one id each gets next would have kept a dictionary.
+        #[tokio::test]
+        async fn fanout_partitions_share_one_limit_on_held_rows() {
+            let regions: Vec<String> = (0..10).map(|p| format!("r{p}")).collect();
+            let batch_of = |id: &dyn Fn(i32) -> i32| {
+                let ids: Vec<i32> = (0..10_000).map(id).collect();
+                let rows: Vec<&str> = (0..10_000)
+                    .map(|row| regions[row as usize / 1000].as_str())
+                    .collect();
+                self::batch(&ids, &rows)
+            };
+            let batches = vec![batch_of(&|row| row), batch_of(&|_| 7)];
+            let properties = WriterProperties::builder()
+                .set_max_row_group_bytes(Some(50 * 1024))
+                .build();
+            let (_dir, data_files) = write_files_with_properties(
+                ProtoIcebergWriterMode::IcebergWriterFanout,
+                batches,
+                properties,
+            )
+            .await;
+            assert_eq!(record_counts(&data_files), vec![2000; 10]);
+            for file in &data_files {
+                assert!(
+                    dictionary_pages(file)
+                        .iter()
+                        .all(|(column, dictionary)| column != "id" || !dictionary),
+                    "{} keeps a dictionary for id",
+                    file.file_path()
+                );
+            }
+        }
+
         /// Cutting a batch into pieces must not disturb the NaN counts the JVM carries into the
         /// manifest. iceberg-rust's visitor reads list children through `values()`, which ignores
         /// a slice's offset window, so a zero-copy slice would report every NaN in the batch once
@@ -2637,6 +3270,185 @@ mod tests {
                 "nan counts: {:?}",
                 data_files[0].nan_value_counts()
             );
+        }
+
+        /// A batch can reach the writer already sliced, as a `LIMIT ... OFFSET` hands it on. Its
+        /// list and map children then still hold the rows outside the slice, which are not
+        /// written, so their NaNs must not be counted either -- by any of the three writers, each of
+        /// which can pass a single-partition batch through whole. The nested columns hold doubles,
+        /// floats and a struct of doubles, and every tenth row of each is NULL.
+        /// See https://github.com/apache/datafusion-comet/issues/6146.
+        #[tokio::test]
+        async fn nan_counts_ignore_rows_outside_an_already_sliced_batch() {
+            use arrow::array::{
+                Array, Float64Array, Float64Builder, ListArray, MapBuilder, StringBuilder,
+                StructArray,
+            };
+            use arrow::buffer::{NullBuffer, OffsetBuffer};
+            use arrow::datatypes::{Float32Type, Float64Type};
+            use iceberg::spec::{ListType, MapType, StructType};
+
+            const ROWS: usize = ROWS_DIVISOR + 100;
+            const NAN_ROWS: [usize; 5] = [3, 50, 60, 90, ROWS_DIVISOR + 70];
+            let value = |row: usize| {
+                if NAN_ROWS.contains(&row) {
+                    f64::NAN
+                } else {
+                    row as f64
+                }
+            };
+            // A NULL entry holds no elements, as arrow's builders lay one out. NaNs under a NULL
+            // entry that does hold some are still counted, which is
+            // https://github.com/apache/datafusion-comet/issues/6562.
+            let present = |row: usize| row % 10 != 7;
+            let list_type = |id: i32, ty: Type| {
+                Type::List(ListType {
+                    element_field: NestedField::list_element(id, ty, false).into(),
+                })
+            };
+
+            let schema = Schema::builder()
+                .with_schema_id(1)
+                .with_fields(vec![
+                    NestedField::required(1, "id", Type::Primitive(PrimitiveType::Int)).into(),
+                    NestedField::required(2, "region", Type::Primitive(PrimitiveType::String))
+                        .into(),
+                    NestedField::optional(
+                        3,
+                        "vals",
+                        list_type(4, Type::Primitive(PrimitiveType::Double)),
+                    )
+                    .into(),
+                    NestedField::optional(
+                        5,
+                        "m",
+                        Type::Map(MapType {
+                            key_field: NestedField::map_key_element(
+                                6,
+                                Type::Primitive(PrimitiveType::String),
+                            )
+                            .into(),
+                            value_field: NestedField::map_value_element(
+                                7,
+                                Type::Primitive(PrimitiveType::Double),
+                                false,
+                            )
+                            .into(),
+                        }),
+                    )
+                    .into(),
+                    NestedField::optional(
+                        8,
+                        "fvals",
+                        list_type(9, Type::Primitive(PrimitiveType::Float)),
+                    )
+                    .into(),
+                    NestedField::optional(
+                        10,
+                        "points",
+                        list_type(
+                            11,
+                            Type::Struct(StructType::new(vec![NestedField::required(
+                                12,
+                                "x",
+                                Type::Primitive(PrimitiveType::Double),
+                            )
+                            .into()])),
+                        ),
+                    )
+                    .into(),
+                ])
+                .build()
+                .unwrap();
+
+            let vals = ListArray::from_iter_primitive::<Float64Type, _, _>(
+                (0..ROWS).map(|row| present(row).then(|| vec![Some(value(row))])),
+            );
+            let mut map = MapBuilder::new(None, StringBuilder::new(), Float64Builder::new());
+            for row in 0..ROWS {
+                if present(row) {
+                    map.keys().append_value("k");
+                    map.values().append_value(value(row));
+                }
+                map.append(present(row)).unwrap();
+            }
+            let map = map.finish();
+            let fvals = ListArray::from_iter_primitive::<Float32Type, _, _>(
+                (0..ROWS).map(|row| present(row).then(|| vec![Some(value(row) as f32)])),
+            );
+            let xs =
+                Float64Array::from_iter_values((0..ROWS).filter(|&row| present(row)).map(value));
+            let points = StructArray::try_from(vec![("x", Arc::new(xs) as ArrayRef)]).unwrap();
+            let points = ListArray::new(
+                Arc::new(Field::new("element", points.data_type().clone(), false)),
+                OffsetBuffer::from_lengths((0..ROWS).map(|row| usize::from(present(row)))),
+                Arc::new(points),
+                Some(NullBuffer::from_iter((0..ROWS).map(present))),
+            );
+            let full = RecordBatch::try_new(
+                Arc::new(ArrowSchema::new(vec![
+                    Field::new("id", DataType::Int32, false),
+                    Field::new("region", DataType::Utf8, false),
+                    Field::new("vals", vals.data_type().clone(), true),
+                    Field::new("m", map.data_type().clone(), true),
+                    Field::new("fvals", fvals.data_type().clone(), true),
+                    Field::new("points", points.data_type().clone(), true),
+                ])),
+                vec![
+                    Arc::new(Int32Array::from_iter_values(0..ROWS as i32)),
+                    Arc::new(StringArray::from(vec!["us"; ROWS])),
+                    Arc::new(vals),
+                    Arc::new(map),
+                    Arc::new(fvals),
+                    Arc::new(points),
+                ],
+            )
+            .unwrap();
+
+            let unpartitioned = PartitionSpec::builder(Arc::new(schema.clone()))
+                .build()
+                .unwrap();
+            let by_region = identity_region_spec(&schema);
+            let writers = [
+                (
+                    ProtoIcebergWriterMode::IcebergWriterUnpartitioned,
+                    &unpartitioned,
+                ),
+                (ProtoIcebergWriterMode::IcebergWriterFanout, &by_region),
+                (ProtoIcebergWriterMode::IcebergWriterClustered, &by_region),
+            ];
+            // A limit's leading window, one that leaves rows out at both ends, and one that fills
+            // exactly one unit, which `RowSlicer::slice` rather than `detach` hands on whole.
+            for (offset, len) in [(0, 10), (40, 25), (50, ROWS_DIVISOR)] {
+                let window = offset..offset + len;
+                let expected = NAN_ROWS.iter().filter(|row| window.contains(*row)).count() as u64;
+                for (mode, spec) in writers {
+                    let temp_dir = TempDir::new().unwrap();
+                    let common = common(
+                        format!("file://{}", temp_dir.path().display()),
+                        serde_json::to_string(spec).unwrap(),
+                        serde_json::to_string(&schema).unwrap(),
+                        mode,
+                    );
+                    let data_files = run(
+                        common,
+                        schema.clone(),
+                        spec.clone(),
+                        mode,
+                        vec![full.slice(offset, len)],
+                    )
+                    .await
+                    .unwrap();
+
+                    let what = format!("{mode:?} over rows {window:?}");
+                    assert_eq!(record_counts(&data_files), vec![len as u64], "{what}");
+                    let nan_counts = data_files[0].nan_value_counts();
+                    assert_eq!(nan_counts.get(&4), Some(&expected), "{what}: list NaNs");
+                    assert_eq!(nan_counts.get(&7), Some(&expected), "{what}: map NaNs");
+                    assert_eq!(nan_counts.get(&9), Some(&expected), "{what}: float NaNs");
+                    assert_eq!(nan_counts.get(&12), Some(&expected), "{what}: struct NaNs");
+                }
+            }
         }
 
         #[tokio::test]
@@ -3314,11 +4126,11 @@ mod tests {
 /// A partitioned write runs both: the sort in front of [`IcebergWriteExec`] is keyed on the
 /// `datafusion-comet-spark-expr` kernels (Iceberg plans the sort as `bucket(...)`, `days(...)`,
 /// ... system-function calls), while [`ClusteredWriter`] groups the sorted rows by the partition
-/// values that [`PartitionValueCalculator`] computes -- with the same kernels for `years` and
-/// `months`, and with iceberg-rust's transforms for everything else. The writer requires the two
-/// to agree: when they do not it fails at runtime with "The input is not sorted! Cannot write to
-/// partition that was previously closed". These tests make an iceberg-rust bump that changes a
-/// transform break here first.
+/// values that [`PartitionValueCalculator`] computes -- with the same kernels for the time
+/// transforms of dates and timestamps, and with iceberg-rust's transforms for everything else. The
+/// writer requires the two to agree: when they do not it fails at runtime with "The input is not
+/// sorted! Cannot write to partition that was previously closed". These tests make an iceberg-rust
+/// bump that changes a transform break here first.
 #[cfg(test)]
 mod iceberg_rust_transform_parity {
     use arrow::array::{
@@ -3569,7 +4381,10 @@ mod iceberg_rust_transform_parity {
         }
     }
 
-    /// `days` and `hours` are plain floor division on both sides, so the whole domain agrees.
+    /// `days` and `hours` agree with iceberg-rust except on the pre-epoch timestamps where
+    /// iceberg-rust parts from iceberg-java (see `PartitionValueCalculator`), which is why the
+    /// writer computes both for timestamps with the Comet kernels; agreeing here means the switch
+    /// changed no other value. `day` of a date still goes through iceberg-rust.
     #[test]
     fn days_and_hours_agree_with_iceberg_rust() {
         let micros = vec![
@@ -3603,12 +4418,12 @@ mod iceberg_rust_transform_parity {
         assert_agree("days(date)", Transform::Day, &days_udf, &dates);
     }
 
-    /// `years` and `months` agree over the dates iceberg-rust can represent -- it splits the
-    /// calendar with `chrono`, so anything past year 262142 comes back NULL there while Comet and
-    /// the JVM keep going (apache/iceberg-rust#3142; see the kernel's own unit tests for those).
-    /// That is why the writer computes these two with the Comet kernels itself
-    /// (apache/datafusion-comet#6145); agreeing here means the switch changed no value iceberg-rust
-    /// could compute.
+    /// `years` and `months` agree over the dates iceberg-rust can represent, apart from the
+    /// pre-epoch timestamps where it parts from iceberg-java (see `PartitionValueCalculator`). It
+    /// splits the calendar with `chrono`, so anything past year 262142 comes back NULL there while
+    /// Comet and the JVM keep going (apache/iceberg-rust#3142; see the kernel's own unit tests for
+    /// those). That is why the writer computes these two with the Comet kernels itself
+    /// (apache/datafusion-comet#6145); agreeing here means the switch changed no other value.
     #[test]
     fn years_and_months_agree_with_iceberg_rust_within_its_range() {
         let years_udf = SparkIcebergTemporalTransform::years();
@@ -3648,14 +4463,17 @@ mod iceberg_rust_transform_parity {
         }
     }
 
-    /// Why `years` and `months` are not delegated to iceberg-rust even though `bucket`, `days`,
-    /// and `hours` could be: its kernels go through Arrow's `date_part`, which honours the
-    /// array's timezone tag, while Iceberg's Java `DateTimeUtil` is always UTC. Comet only ever
-    /// produces `UTC` and untagged timestamps today, so the parity above holds; this pins the
-    /// reason the local kernel exists. Reported as apache/iceberg-rust#3142; if this ever fails,
-    /// iceberg-rust dropped the tag dependency. Delegating is still unsafe until it also covers
-    /// dates past `chrono`'s calendar, which the writer's own partition values depend on too:
-    /// see `years_and_months_past_chronos_calendar_match_iceberg_java` (`iceberg_partition_value`).
+    /// Why `years` and `months` are not delegated to iceberg-rust even though `bucket` could be:
+    /// its kernels go through Arrow's `date_part`, which honours the array's timezone tag, while
+    /// Iceberg's Java `DateTimeUtil` is always UTC. Comet only ever produces `UTC` and untagged
+    /// timestamps today, so the parity above holds; this pins one reason the local kernel exists.
+    /// Reported as apache/iceberg-rust#3142; if this ever fails, iceberg-rust dropped the tag
+    /// dependency. Delegating is still unsafe until it also covers dates past `chrono`'s calendar,
+    /// which the writer's own partition values depend on too: see
+    /// `years_and_months_past_chronos_calendar_match_iceberg_java` (`iceberg_partition_value`).
+    /// Nor can `days` and `hours` be delegated: all four time transforms place some pre-epoch
+    /// timestamps differently from iceberg-java, see
+    /// `pre_epoch_timestamps_partition_like_iceberg_java` there.
     #[test]
     fn iceberg_rust_years_follow_the_timezone_tag() {
         // 1969-12-31T23:59:59.999999Z, which is 1970-01-01T05:44:59.999999 in Kathmandu.
