@@ -108,3 +108,20 @@ SELECT
   date_trunc('SECOND', TIMESTAMP '3333-05-17 12:34:56.123456'),
   date_trunc('MILLISECOND', TIMESTAMP '3333-05-17 12:34:56.123456'),
   date_trunc('MICROSECOND', TIMESTAMP '3333-05-17 12:34:56.123456')
+
+-- Long.MaxValue is used as an end-of-time sentinel and exceeds chrono's range.
+-- Spark returns a far-future date; Comet currently returns NULL for these coarse units.
+-- Accept that range limitation, but reject a null slot accidentally read as epoch zero.
+statement
+CREATE TABLE test_trunc_ts_extreme(ts timestamp) USING parquet
+
+statement
+INSERT INTO test_trunc_ts_extreme VALUES (timestamp_micros(9223372036854775807))
+
+query
+SELECT
+  coalesce(unix_micros(date_trunc('YEAR', ts)) > 0, true),
+  coalesce(unix_micros(date_trunc('QUARTER', ts)) > 0, true),
+  coalesce(unix_micros(date_trunc('MONTH', ts)) > 0, true),
+  coalesce(unix_micros(date_trunc('WEEK', ts)) > 0, true)
+FROM test_trunc_ts_extreme

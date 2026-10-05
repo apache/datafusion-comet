@@ -1017,12 +1017,14 @@ fn timestamp_trunc_upstream(
 
     Ok(
         TimestampMicrosecondArray::from_iter(array.iter().enumerate().map(|(index, value)| {
-            value.map(|micros| {
-                if fits_datafusion_coarse_trunc_range(micros) {
-                    upstream.value(index)
+            value.and_then(|micros| {
+                let result = if fits_datafusion_coarse_trunc_range(micros) {
+                    upstream
                 } else {
-                    legacy.value(index)
-                }
+                    &legacy
+                };
+                // An out-of-range legacy input can produce null even when the input is valid.
+                (!result.is_null(index)).then(|| result.value(index))
             })
         }))
         .with_timezone_opt(array.timezone()),
@@ -1736,6 +1738,39 @@ mod tests {
                 None,
             ],
         );
+    }
+
+    #[test]
+    fn test_timestamp_trunc_preserves_out_of_chrono_range_nulls() {
+        for timezone in [None, Some("UTC"), Some("Etc/UTC"), Some("+00:00")] {
+            let input = TimestampMicrosecondArray::from(vec![
+                Some(instant_micros("2024-05-17T12:34:56Z")),
+                Some(i64::MAX),
+                Some(instant_micros("3333-05-17T12:34:56Z")),
+                Some(i64::MIN),
+                None,
+            ])
+            .with_timezone_opt(timezone);
+            for (format, recent, future) in [
+                ("YEAR", "2024-01-01T00:00:00Z", "3333-01-01T00:00:00Z"),
+                ("QUARTER", "2024-04-01T00:00:00Z", "3333-04-01T00:00:00Z"),
+                ("MONTH", "2024-05-01T00:00:00Z", "3333-05-01T00:00:00Z"),
+                ("WEEK", "2024-05-13T00:00:00Z", "3333-05-11T00:00:00Z"),
+            ] {
+                let expected = TimestampMicrosecondArray::from(vec![
+                    Some(instant_micros(recent)),
+                    None,
+                    Some(instant_micros(future)),
+                    None,
+                    None,
+                ])
+                .with_timezone_opt(timezone);
+                assert_eq!(
+                    timestamp_trunc(&input, format.to_string()).unwrap(),
+                    expected
+                );
+            }
+        }
     }
 
     #[test]
