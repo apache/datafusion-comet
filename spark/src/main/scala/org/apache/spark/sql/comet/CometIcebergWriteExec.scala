@@ -317,6 +317,7 @@ case class CometIcebergWriteExec(
         require(
           batch.numCols() == 2,
           s"iceberg_write expected 2 output columns per task, got ${batch.numCols()}")
+        CometIcebergWriteExec.beforeNativeHandoff()
         val locations = CometIcebergWriteExec.decodeLocations(batch.column(1).getBinary(0))
         cleanup.own(locations)
         schedulerProbe.foreach(_.afterHandoff(locations))
@@ -331,6 +332,21 @@ case class CometIcebergWriteExec(
 }
 
 object CometIcebergWriteExec {
+
+  // Local-executor test hook after the native output batch arrives but before the JVM decodes and
+  // takes cleanup ownership of its locations. The callback is absent outside a scoped test.
+  private val preHandoffFailpoint = new AtomicReference[() => Unit]()
+
+  private[apache] def withPreNativeHandoffFailpoint[T](callback: () => Unit)(body: => T): T = {
+    val previous = preHandoffFailpoint.getAndSet(callback)
+    try body
+    finally preHandoffFailpoint.set(previous)
+  }
+
+  private[comet] def beforeNativeHandoff(): Unit = {
+    val callback = preHandoffFailpoint.get()
+    if (callback != null) callback()
+  }
 
   // Local-executor test hook for the boundary between owning the native payload's paths and
   // decoding its manifest. The callback is absent outside a scoped test invocation.

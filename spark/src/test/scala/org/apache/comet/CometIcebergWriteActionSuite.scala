@@ -43,7 +43,7 @@ import org.apache.spark.sql.DataFrame
 import org.apache.spark.sql.Row
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.Attribute
-import org.apache.spark.sql.comet.{CometIcebergWriteExec, IcebergCommitExec, IcebergSchedulerTestProbe, IcebergWriteExec}
+import org.apache.spark.sql.comet.{CometIcebergWriteExec, CometMergeRowsExec, IcebergCommitExec, IcebergSchedulerTestProbe, IcebergWriteExec}
 import org.apache.spark.sql.connector.catalog.InMemoryTableCatalog
 import org.apache.spark.sql.connector.write.{BatchWrite, DataWriterFactory, PhysicalWriteInfo, Write, WriterCommitMessage}
 import org.apache.spark.sql.execution.{ColumnarToRowTransition, LeafExecNode, SparkPlan}
@@ -985,16 +985,9 @@ class CometIcebergWriteActionSuite
     }
   }
 
-  test("native acceleration: ReplaceData (CoW MERGE) falls back (MergeRowsExec not Comet)") {
-    // TODO(comet-merge-rows): native MERGE engagement requires a Comet equivalent of Iceberg's
-    // `MergeRowsExec` (the per-row dispatch operator that assigns __row_operation codes from
-    // MATCHED/NOT MATCHED clauses). Without it, `MergeRowsExec` stays JVM, the upstream chain
-    // breaks Comet-native partway, and `requiresNativeChildren=true` declines the
-    // `IcebergWriteExec -> CometIcebergWriteExec` conversion. Until that lands, MERGE
-    // falls back to the JVM two-op path -- this test pins that contract. Native `MergeRowsExec`
-    // is being added in https://github.com/apache/datafusion-comet/pull/5318; when that lands
-    // this test will start failing and needs to flip to `assertNativeWriteEngages`.
+  test("native acceleration: ReplaceData (CoW MERGE) honors the versioned native contract") {
     assumeNativeAcceleration()
+
     withIcebergCatalog { warehouseDir =>
       createTable(
         warehouseDir,
@@ -1004,7 +997,8 @@ class CometIcebergWriteActionSuite
       withSQLConf(CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key -> "false") {
         coalesceInsert("native_cow_merge", Seq((1, "us-east", 10.0), (2, "us-west", 20.0)))
       }
-      assertNativeWriteDoesNotEngage("native_cow_merge", Seq(1, 2, 3)) {
+
+      def runMerge(): Unit = {
         spark.sql("""
           |MERGE INTO cat.db.native_cow_merge t
           |USING (SELECT 2 AS id, 'us-west' AS region, 200.0 AS amount UNION ALL
@@ -1014,6 +1008,248 @@ class CometIcebergWriteActionSuite
           |WHEN NOT MATCHED THEN INSERT (id, region, amount) VALUES (s.id, s.region, s.amount)
           |""".stripMargin)
       }
+
+      withSQLConf(CometConf.COMET_EXEC_MERGE_ROWS_ENABLED.key -> "true") {
+        if (isSpark41Plus || !isSpark35Plus) {
+          assertNativeWriteDoesNotEngage("native_cow_merge", Seq(1, 2, 3))(runMerge())
+        } else {
+          val snapshot = withNativeEnabled {
+            captureWrite("native_cow_merge")(runMerge())
+          }
+          assert(
+            snapshot.snapshotDelta == 1L,
+            s"expected exactly one Iceberg snapshot from native MERGE, got ${snapshot.snapshotDelta}")
+          val mergeExecs = snapshot.plans.flatMap { plan =>
+            collectWithSubqueries(plan) { case e: CometMergeRowsExec => e }
+          }
+          assert(
+            mergeExecs.nonEmpty,
+            "expected Iceberg MERGE to execute through CometMergeRowsExec. Plans:\n" +
+              snapshot.plans.mkString("\n--\n"))
+          val nativeWrites = snapshot.plans.flatMap { plan =>
+            collectWithSubqueries(plan) { case e: CometIcebergWriteExec => e }
+          }
+          assert(
+            nativeWrites.nonEmpty,
+            "expected Iceberg MERGE to feed CometIcebergWriteExec. Plans:\n" +
+              snapshot.plans.mkString("\n--\n"))
+          assertRows("native_cow_merge", expectedIds = Seq(1, 2, 3))
+        }
+      }
+
+      val updated = spark
+        .sql(s"SELECT amount FROM $catalog.$ns.native_cow_merge WHERE id = 2")
+        .collect()
+      assert(updated.length == 1 && updated.head.getDouble(0) == 200.0)
+    }
+  }
+
+  test("native MergeRows matches Spark on partitioned Iceberg copy-on-write and merge-on-read") {
+    assumeNativeAcceleration()
+    assume(
+      isSpark35Plus && !isSpark41Plus,
+      "native MergeRows is registered only on Spark 3.5 and 4.0")
+    withIcebergCatalog { warehouseDir =>
+      spark
+        .range(0, 20000, 1, 8)
+        .selectExpr(
+          "CAST(id AS INT) AS id",
+          "concat('r', CAST(id % 8 AS STRING)) AS region",
+          "CAST(id AS DOUBLE) AS amount")
+        .createOrReplaceTempView("merge_parity_seed")
+      spark
+        .range(10000, 30000, 1, 8)
+        .selectExpr(
+          "CAST(id AS INT) AS id",
+          "concat('s', CAST(id % 8 AS STRING)) AS region",
+          "CASE WHEN id % 11 = 0 THEN CAST(NULL AS DOUBLE) ELSE CAST(id * 2 AS DOUBLE) END AS amount")
+        .createOrReplaceTempView("merge_parity_source")
+
+      def merge(table: String): Unit = {
+        spark.sql(s"""
+          |MERGE INTO $catalog.$ns.$table t
+          |USING merge_parity_source s
+          |ON t.id = s.id
+          |WHEN MATCHED AND CAST(NULL AS BOOLEAN) THEN UPDATE SET t.amount = -999.0
+          |WHEN MATCHED AND s.amount IS NULL THEN DELETE
+          |WHEN MATCHED AND s.id % 5 = 0 THEN DELETE
+          |WHEN MATCHED THEN UPDATE SET t.region = s.region, t.amount = s.amount + 0.5
+          |WHEN NOT MATCHED AND s.id IS NOT NULL THEN
+          |  INSERT (id, region, amount) VALUES (s.id, s.region, s.amount)
+          |WHEN NOT MATCHED BY SOURCE AND t.id % 7 = 0 THEN DELETE
+          |WHEN NOT MATCHED BY SOURCE THEN UPDATE SET t.amount = t.amount + 1.0
+          |""".stripMargin)
+      }
+
+      def rows(table: String): Seq[Row] =
+        spark
+          .sql(s"SELECT id, region, amount FROM $catalog.$ns.$table ORDER BY id")
+          .collect()
+          .toSeq
+
+      Seq(true, false).foreach { adaptiveEnabled =>
+        Seq("copy-on-write" -> "cow", "merge-on-read" -> "mor").foreach { case (mode, suffix) =>
+          val nativeTable = s"merge_parity_${suffix}_aqe_${adaptiveEnabled}_native"
+          val sparkTable = s"merge_parity_${suffix}_aqe_${adaptiveEnabled}_spark"
+          Seq(nativeTable, sparkTable).foreach { table =>
+            createTable(
+              warehouseDir,
+              table,
+              partitionSpec = "PARTITIONED BY (region)",
+              properties = Some(s"'format-version'='2', 'write.merge.mode'='$mode'"))
+          }
+
+          withSQLConf(
+            CometConf.COMET_ENABLED.key -> "false",
+            SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptiveEnabled.toString,
+            "spark.sql.adaptive.coalescePartitions.enabled" -> "false",
+            "spark.sql.shuffle.partitions" -> "8") {
+            spark.sql(
+              s"INSERT INTO $catalog.$ns.$nativeTable SELECT id, region, amount FROM merge_parity_seed")
+            spark.sql(
+              s"INSERT INTO $catalog.$ns.$sparkTable SELECT id, region, amount FROM merge_parity_seed")
+          }
+
+          val inputFiles = spark
+            .sql(s"SELECT count(*) FROM $catalog.$ns.$nativeTable.data_files")
+            .collect()
+            .head
+            .getLong(0)
+          assert(inputFiles > 1L, s"expected a multi-file target, got $inputFiles file(s)")
+
+          var snapshot: Option[WriteSnapshot] = None
+          withSQLConf(
+            CometConf.COMET_EXEC_MERGE_ROWS_ENABLED.key -> "true",
+            SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptiveEnabled.toString,
+            "spark.sql.adaptive.coalescePartitions.enabled" -> "false",
+            "spark.sql.shuffle.partitions" -> "8") {
+            snapshot = Some(withNativeEnabled {
+              captureWrite(nativeTable)(merge(nativeTable))
+            })
+          }
+          val writeSnapshot =
+            snapshot.getOrElse(fail(s"$mode MERGE did not produce a write snapshot"))
+          assert(
+            writeSnapshot.snapshotDelta == 1L,
+            s"expected exactly 1 new Iceberg snapshot for $mode, got ${writeSnapshot.snapshotDelta}. Plans:\n" +
+              writeSnapshot.plans.mkString("\n--\n"))
+          val commits = writeSnapshot.plans.flatMap { plan =>
+            collectWithSubqueries(plan) { case c: IcebergCommitExec => c }
+          }
+          if (mode == "copy-on-write") {
+            assert(
+              commits.nonEmpty,
+              s"expected >= 1 IcebergCommitExec for $mode, got 0. Plans:\n" +
+                writeSnapshot.plans.mkString("\n--\n"))
+          } else {
+            assert(
+              commits.isEmpty,
+              s"merge-on-read should stay on Iceberg WriteDelta, got ${commits.size} IcebergCommitExec. Plans:\n" +
+                writeSnapshot.plans.mkString("\n--\n"))
+          }
+          val mergeExecs = writeSnapshot.plans.flatMap { plan =>
+            collectWithSubqueries(plan) { case e: CometMergeRowsExec => e }
+          }
+          assert(
+            mergeExecs.nonEmpty,
+            s"expected CometMergeRowsExec for $mode. Plans:\n" +
+              writeSnapshot.plans.mkString("\n--\n"))
+
+          val nativeWrites = writeSnapshot.plans.flatMap { plan =>
+            collectWithSubqueries(plan) { case e: CometIcebergWriteExec => e }
+          }
+          if (mode == "copy-on-write") {
+            assert(
+              nativeWrites.nonEmpty,
+              "copy-on-write MERGE should feed the native Iceberg writer on this partitioned plan")
+          } else {
+            assert(
+              nativeWrites.isEmpty,
+              "merge-on-read uses Iceberg WriteDelta and must not engage CometIcebergWriteExec")
+          }
+
+          withSQLConf(
+            CometConf.COMET_ENABLED.key -> "false",
+            SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptiveEnabled.toString,
+            "spark.sql.adaptive.coalescePartitions.enabled" -> "false",
+            "spark.sql.shuffle.partitions" -> "8") {
+            merge(sparkTable)
+          }
+          assert(rows(nativeTable) == rows(sparkTable), s"$mode MERGE result differs from Spark")
+        }
+      }
+    }
+  }
+
+  test("native MergeRows Iceberg cardinality violation matches Spark") {
+    assumeNativeAcceleration()
+    assume(
+      isSpark35Plus && !isSpark41Plus,
+      "native MergeRows is registered only on Spark 3.5 and 4.0")
+    withIcebergCatalog { warehouseDir =>
+      val nativeTable = "merge_cardinality_native"
+      val sparkTable = "merge_cardinality_spark"
+      Seq(nativeTable, sparkTable).foreach { table =>
+        createTable(
+          warehouseDir,
+          table,
+          partitionSpec = "PARTITIONED BY (region)",
+          properties = Some("'format-version'='2', 'write.merge.mode'='copy-on-write'"))
+      }
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        Seq(nativeTable, sparkTable).foreach { table =>
+          spark.sql(
+            s"INSERT INTO $catalog.$ns.$table VALUES " +
+              "(42, 'r2', 42.0), (43, 'r3', 43.0)")
+        }
+      }
+
+      def duplicateMerge(table: String): Unit = {
+        spark.sql(s"""
+          |MERGE INTO $catalog.$ns.$table t
+          |USING (
+          |  SELECT 42 AS id, 'a' AS region, 420.0 AS amount
+          |  UNION ALL
+          |  SELECT 42 AS id, 'b' AS region, 421.0 AS amount
+          |) s
+          |ON t.id = s.id
+          |WHEN MATCHED THEN UPDATE SET t.amount = s.amount
+          |""".stripMargin)
+      }
+
+      val (nativePlans, nativeError) = captureFailedPlans(spark) {
+        withSQLConf(
+          CometConf.COMET_EXEC_MERGE_ROWS_ENABLED.key -> "true",
+          CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> "false",
+          "spark.sql.autoBroadcastJoinThreshold" -> "-1") {
+          duplicateMerge(nativeTable)
+        }
+      }
+      val nativeMergeRows = nativePlans.flatMap { plan =>
+        collectWithSubqueries(plan) { case e: CometMergeRowsExec => e }
+      }
+      assert(
+        nativeMergeRows.nonEmpty,
+        "expected cardinality failure to execute through CometMergeRowsExec. Plans:\n" +
+          nativePlans.mkString("\n--\n"))
+      val nativeFailure =
+        nativeError.getOrElse(fail("native cardinality MERGE unexpectedly succeeded"))
+
+      val sparkError = intercept[Exception] {
+        withSQLConf(
+          CometConf.COMET_ENABLED.key -> "false",
+          "spark.sql.autoBroadcastJoinThreshold" -> "-1") {
+          duplicateMerge(sparkTable)
+        }
+      }
+      Seq("Comet" -> nativeFailure, "Spark" -> sparkError).foreach { case (engine, error) =>
+        assert(
+          exceptionChain(error).exists(t =>
+            Option(t.getMessage).exists(_.contains("MERGE_CARDINALITY_VIOLATION"))),
+          s"$engine did not surface MERGE_CARDINALITY_VIOLATION: $error")
+      }
+      assertRows(nativeTable, Seq(42, 43))
+      assertRows(sparkTable, Seq(42, 43))
     }
   }
 
@@ -1051,14 +1287,13 @@ class CometIcebergWriteActionSuite
   }
 
   test("native acceleration: ReplaceData (CoW MERGE) with AQE disabled") {
-    // Unlike the unpartitioned MERGE above, this one *does* engage natively: partitioning the
-    // table puts a `CometColumnarExchange` (REBALANCE_PARTITIONS_BY_COL) between the JVM
-    // `MergeRowsExec` and the write, so the write's own child is Comet-native and
-    // `requiresNativeChildren` is satisfied even though `MergeRowsExec` itself is not.
+    // Partitioning puts a `CometColumnarExchange` (REBALANCE_PARTITIONS_BY_COL) immediately
+    // above MergeRows, so the write still has a Comet-native child even when MergeRows itself
+    // stays on the JVM. This keeps the write-side transition contract covered independently of
+    // whether spark.comet.exec.mergeRows.enabled is on.
     //
-    // That makes this the strongest of the three CoW shapes for issue #5689: the subtree below
-    // the write mixes a Spark-columnar `BatchScan`, a row-based `MergeRowsExec` and Comet
-    // operators, so it needs transitions inserted in three different places.
+    // The subtree below the write mixes a Spark-columnar `BatchScan`, a row-based MergeRows
+    // path, and Comet operators, so it needs transitions inserted in three different places.
     assumeNativeAcceleration()
     withIcebergCatalog { warehouseDir =>
       createTable(
@@ -2032,6 +2267,79 @@ class CometIcebergWriteActionSuite
           s"the failed task left data files behind: ${remaining -- committed}")
         assertRows("cleanup_target", expectedIds = Seq(0))
       })
+    }
+  }
+
+  test("native acceleration: a pre-native handoff failure cleans up task files") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { warehouseDir =>
+      createTable(warehouseDir, "pre_handoff_target", partitionSpec = "")
+      coalesceInsert("pre_handoff_target", Seq((0, "seed", 0.0)))
+      val before = countSnapshots("pre_handoff_target")
+      val root = dataDir("pre_handoff_target").toPath.toAbsolutePath
+
+      def relativePath(location: String): String = {
+        val uri = new java.net.URI(location)
+        val file = if (uri.getScheme == null) new File(location) else new File(uri)
+        root.relativize(file.toPath.toAbsolutePath).toString
+      }
+
+      def metadataFiles: Set[String] = spark
+        .sql(s"SELECT file_path FROM $catalog.$ns.pre_handoff_target.files")
+        .collect()
+        .map(row => relativePath(row.getString(0)))
+        .toSet
+
+      val committed = metadataFiles
+      assert(committed.nonEmpty, "seed write did not create a data file")
+      assert(parquetFiles(root.toFile) == committed)
+
+      val session = spark
+      import session.implicits._
+      (1 to 1000)
+        .map(i => (i, s"r$i", i.toDouble))
+        .toDF("id", "region", "amount")
+        .coalesce(1)
+        .createOrReplaceTempView("pre_handoff_src")
+
+      val attempts = new AtomicReference[Vector[(Int, Int)]](Vector.empty)
+      val (failedPlans, error) = withNativeEnabled {
+        CometIcebergWriteExec.withPreNativeHandoffFailpoint { () =>
+          val tc = TaskContext.get()
+          attempts.getAndUpdate(_ :+ ((tc.partitionId(), tc.attemptNumber())))
+          throw new RuntimeException("pre-native handoff injected failure")
+        } {
+          captureFailedPlans(spark) {
+            spark.sql(s"INSERT INTO $catalog.$ns.pre_handoff_target " +
+              "SELECT id, region, amount FROM pre_handoff_src")
+          }
+        }
+      }
+
+      assert(
+        error.toSeq
+          .flatMap(exceptionChain)
+          .exists(t =>
+            Option(t.getMessage).exists(_.contains("pre-native handoff injected failure"))),
+        s"expected the handoff failure to reach Spark, got $error")
+      assert(
+        failedPlans.exists(p =>
+          collectWithSubqueries(p) { case w: CometIcebergWriteExec => w }.nonEmpty),
+        s"failed write did not run natively:\n${failedPlans.mkString("\n--\n")}")
+
+      val handoffs = attempts.get()
+      assert(handoffs.nonEmpty, "the pre-handoff failpoint was never reached")
+      assert(handoffs.forall(_._1 == 0), s"expected only partition 0: $handoffs")
+      assert(
+        handoffs.map(_._2) == handoffs.indices.toVector,
+        s"expected consecutive attempts: $handoffs")
+
+      assert(countSnapshots("pre_handoff_target") == before, "failed write must not commit")
+      assertRows("pre_handoff_target", expectedIds = Seq(0))
+      val physical = parquetFiles(root.toFile)
+      val referenced = metadataFiles
+      assert(physical == referenced, s"orphan files: ${physical -- referenced}")
+      assert(referenced == committed, s"failed write changed the table files: $referenced")
     }
   }
 
@@ -3241,10 +3549,8 @@ class CometIcebergWriteActionSuite
   }
 
   /**
-   * For writes that *should* fall back even when the native conf is on (e.g. CoW MERGE): exactly
-   * one commit, no `CometIcebergWriteExec`, but the JVM two-op pair still present and rows
-   * correct. Catches regressions where a trigger silently stops firing and we accidentally run
-   * native for an unsupported case.
+   * For writes that should fall back even when the native writer is enabled: exactly one commit,
+   * no CometIcebergWriteExec, and the resulting row set is still correct.
    */
   private def assertNativeWriteDoesNotEngage(tableName: String, expectedIds: Seq[Int])(
       action: => Unit): Unit = {
