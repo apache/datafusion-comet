@@ -99,6 +99,11 @@ the elements the same way. Spark 3.4, 3.5, 4.0.0 to 4.0.4, and 4.1.0 to 4.1.3 ke
 negative zero distinct in flat arrays, so on those versions these functions fall back to Spark.
 Other element types remain native on every version.
 
+An element type that holds both a floating-point value and a string with a non-`UTF8_BINARY`
+collation, such as a struct with a `DOUBLE` and a `STRING COLLATE UTF8_LCASE` field, falls back
+on every version. Spark compares such strings under their collation, so `'a'` and `'A'` are one
+value under `UTF8_LCASE`, while the native kernels compare their bytes.
+
 Where these functions fall back, the check is based on the element type, not the values. It also
 applies to NULL or empty floating-point arrays and columns that never contain negative zero. The
 entire projection falls back to Spark, introducing a `CometColumnarToRow` transition and moving

@@ -29,7 +29,7 @@ import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Cast, Crea
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, DoubleType, FloatType, IntegerType, StringType, StructType}
+import org.apache.spark.sql.types.{ArrayType, DataType, DoubleType, FloatType, IntegerType, StringType, StructType}
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
 import org.apache.comet.DataTypeSupport.isComplexType
@@ -78,6 +78,22 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       assert(CometArrayDistinct.getSupportLevel(ArrayDistinct(child)) == Compatible())
       assert(CometArrayUnion.getSupportLevel(ArrayUnion(child, child)) == Compatible())
       assert(ArraySetSupport.function("array_distinct", child.dataType) == "array_distinct")
+    }
+  }
+
+  test("array set elements with floats and collated strings fall back on every version") {
+    assume(isSpark40Plus)
+    // The spark_ variants normalize the floats but compare strings by their bytes, so an element
+    // that holds both declines on every version, including those whose floats run natively.
+    // expressions/array/array_set_collated_floats.sql checks the answers on the pinned versions.
+    Seq(
+      "STRUCT<s: STRING COLLATE UTF8_LCASE, d: DOUBLE>",
+      "STRUCT<s: ARRAY<STRING COLLATE UTF8_LCASE>, f: FLOAT>",
+      "ARRAY<STRUCT<s: STRING COLLATE UTF8_LCASE, d: DOUBLE>>").foreach { ddl =>
+      val child = AttributeReference("a", ArrayType(DataType.fromDDL(ddl)))()
+      val expected = Incompatible(Some(ArraySetSupport.collationReason))
+      assert(CometArrayDistinct.getSupportLevel(ArrayDistinct(child)) == expected, ddl)
+      assert(CometArrayUnion.getSupportLevel(ArrayUnion(child, child)) == expected, ddl)
     }
   }
 
