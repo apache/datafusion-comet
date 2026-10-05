@@ -1614,9 +1614,9 @@ expressions. The following function families are <strong>not currently planned</
 <td><p>Constant-folded to a literal before Comet sees the plan</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">current_time</span></code></p></td>
-<td><p>🔜</p></td>
+<td><p>✅</p></td>
 <td><p>—</p></td>
-<td><p>Blocked on Spark 4.1 TIME type support (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4288">#4288</a>)</p></td>
+<td><p>Spark 4.1+; requires <code class="docutils literal notranslate"><span class="pre">spark.sql.timeType.enabled=true</span></code>, which Spark leaves off by default. Constant-folded to a literal before Comet sees the plan</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">current_timestamp</span></code></p></td>
 <td><p>✅</p></td>
@@ -1761,12 +1761,12 @@ expressions. The following function families are <strong>not currently planned</
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">make_timestamp_ltz</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>—</p></td>
-<td><p>2-arg TIME form falls back</p></td>
+<td><p>The 2-argument <code class="docutils literal notranslate"><span class="pre">(date,</span> <span class="pre">time)</span></code> form (Spark 4.1+) runs through codegen dispatch</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">make_timestamp_ntz</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>—</p></td>
-<td><p>2-arg TIME form falls back</p></td>
+<td><p>The 2-argument <code class="docutils literal notranslate"><span class="pre">(date,</span> <span class="pre">time)</span></code> form (Spark 4.1+) runs through codegen dispatch</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">make_ym_interval</span></code></p></td>
 <td><p>✅</p></td>
@@ -1819,14 +1819,14 @@ expressions. The following function families are <strong>not currently planned</
 <td><p>Batch session-window grouping falls back (<code class="docutils literal notranslate"><span class="pre">UpdatingSessionsExec</span></code> is not yet native); tracked by <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4785">#4785</a></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">time_diff</span></code></p></td>
-<td><p>🔜</p></td>
+<td><p>✅</p></td>
 <td><p>—</p></td>
-<td><p>Spark 4.1 TIME type; tracked by <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4288">#4288</a></p></td>
+<td><p>Spark 4.1+; requires <code class="docutils literal notranslate"><span class="pre">spark.sql.timeType.enabled=true</span></code>, which Spark leaves off by default</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">time_trunc</span></code></p></td>
-<td><p>🔜</p></td>
+<td><p>✅</p></td>
 <td><p>—</p></td>
-<td><p>Spark 4.1 TIME type; tracked by <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4288">#4288</a></p></td>
+<td><p>Spark 4.1+; requires <code class="docutils literal notranslate"><span class="pre">spark.sql.timeType.enabled=true</span></code>, which Spark leaves off by default</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">timediff</span></code></p></td>
 <td><p>✅</p></td>
@@ -1866,7 +1866,7 @@ expressions. The following function families are <strong>not currently planned</
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">to_time</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>—</p></td>
-<td><p>Spark 4.1+; requires <code class="docutils literal notranslate"><span class="pre">spark.sql.timeType.enabled=true</span></code>, which Spark leaves off by default. The one-argument form runs natively</p></td>
+<td><p>Spark 4.1+; requires <code class="docutils literal notranslate"><span class="pre">spark.sql.timeType.enabled=true</span></code>, which Spark leaves off by default. The one-argument form runs natively, and the form with a format argument runs through codegen dispatch</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">to_timestamp</span></code></p></td>
 <td><p>✅</p></td>
