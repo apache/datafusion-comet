@@ -822,6 +822,38 @@ class CometCodegenSuite
     }
   }
 
+  test("replace literal arguments route at the 64 KiB boundary") {
+    withSQLConf(
+      CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true",
+      CometConf.COMET_EXPLAIN_CODEGEN_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_PROJECT_ENABLED.key -> "true",
+      CometConf.COMET_EXTENDED_EXPLAIN_FORMAT.key ->
+        CometConf.COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE,
+      CometConf.getExprAllowIncompatConfigKey("StringReplace") -> "false") {
+      withTable("t") {
+        sql("CREATE TABLE t (s STRING) USING parquet")
+        sql("INSERT INTO t VALUES ('a'), ('other'), (NULL), (repeat('b', 65536))")
+
+        Seq(
+          ("SELECT replace(s, repeat('b', 65536), 'x') FROM t", false),
+          ("SELECT replace(s, repeat('b', 65537), 'x') FROM t", true),
+          ("SELECT replace(s, 'a', repeat('x', 65536)) FROM t", false),
+          ("SELECT replace(s, 'a', repeat('x', 65537)) FROM t", true)).foreach {
+          case (query, expectDispatcher) =>
+            val df = sql(query)
+            assertReplaceDispatch(df, expectDispatcher, query)
+            if (!expectDispatcher) {
+              val plan = df.queryExecution.executedPlan
+              val info = new ExtendedExplainInfo()
+              assert(
+                info.getNativeExpressions(plan).contains("replace"),
+                s"expected native replace for $query:\n${info.generateExtendedInfo(plan)}")
+            }
+        }
+      }
+    }
+  }
+
   test("replace with a literal search and replacement column runs natively by default") {
     withSQLConf(
       CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true",
@@ -866,6 +898,40 @@ class CometCodegenSuite
         if (isSpark41Plus) {
           val query = "SELECT replace(s COLLATE UTF8_LCASE, 'aa', r) FROM t"
           assertReplaceDispatch(sql(query), expectDispatcher = true, query)
+        }
+      }
+    }
+  }
+
+  test("replace broadcast limit routes actual large batches at 8 MiB") {
+    withSQLConf(
+      CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true",
+      CometConf.COMET_EXPLAIN_CODEGEN_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_PROJECT_ENABLED.key -> "true",
+      CometConf.COMET_EXTENDED_EXPLAIN_FORMAT.key ->
+        CometConf.COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE,
+      CometConf.getExprAllowIncompatConfigKey("StringReplace") -> "false") {
+      withTempPath { dir =>
+        spark
+          .range(0, 32769, 1, numPartitions = 1)
+          .selectExpr("repeat('a', 256) AS s", "CASE WHEN id % 2 = 0 THEN 'x' ELSE 'yz' END AS r")
+          .write
+          .parquet(dir.getCanonicalPath)
+        withTable("t") {
+          sql(s"CREATE TABLE t USING parquet LOCATION '${dir.getCanonicalPath}'")
+          val query = "SELECT replace(s, repeat('a', 256), r) FROM t"
+          withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "32768") {
+            val df = sql(query)
+            assertReplaceDispatch(df, expectDispatcher = false, query)
+            val plan = df.queryExecution.executedPlan
+            val info = new ExtendedExplainInfo()
+            assert(
+              info.getNativeExpressions(plan).contains("replace"),
+              s"expected native replace for $query:\n${info.generateExtendedInfo(plan)}")
+          }
+          withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "32769") {
+            assertReplaceDispatch(sql(query), expectDispatcher = true, query)
+          }
         }
       }
     }
