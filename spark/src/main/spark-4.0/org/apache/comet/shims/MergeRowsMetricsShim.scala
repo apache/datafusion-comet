@@ -19,17 +19,11 @@
 
 package org.apache.comet.shims
 
-import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
-import org.apache.spark.sql.execution.SparkPlan
+import org.apache.spark.SparkContext
+import org.apache.spark.sql.execution.metric.SQLMetric
 
-import org.apache.comet.serde.CometOperatorSerde
-
-/**
- * Spark 3.4 predates the core `MergeRowsExec` implementation used by newer Spark versions.
- * Nothing is registered here, so MERGE continues through the version-specific JVM path.
- */
-object ShimCometMergeRows {
-  val nativeExecs: Map[Class[_ <: SparkPlan], CometOperatorSerde[_]] = Map.empty
-
-  def withNativeMergeSummary(query: LogicalPlan): LogicalPlan = query
+/** Spark versions before 4.1 do not expose semantic MERGE summary metrics. */
+object MergeRowsMetricsShim {
+  def metrics(sc: SparkContext): Map[String, SQLMetric] = Map.empty
+  def value(metric: SQLMetric): Long = metric.value
 }
