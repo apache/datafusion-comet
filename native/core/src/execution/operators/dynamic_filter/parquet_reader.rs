@@ -31,7 +31,7 @@ use datafusion::physical_expr::utils::collect_columns;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ExecutionPlan;
 
-use super::super::CometFilterExec;
+use datafusion_comet_operators::CometFilterExec;
 
 mod schema_adapter;
 

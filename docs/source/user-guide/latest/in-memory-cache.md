@@ -34,11 +34,13 @@ $SPARK_HOME/bin/spark-shell \
 ```
 
 It has to be set before the `SparkContext` starts. Comet's driver plugin chooses
-`spark.sql.cache.serializer` once, while the context is initializing, so a session that started
-with the default goes on using Spark's cache format however the config is set afterwards. The
-plugin installs Comet's serializer only if `spark.comet.enabled` and `spark.comet.exec.enabled`
-are enabled at that point too, because an application that starts without native execution could
-not scan Comet's format natively.
+`spark.sql.cache.serializer` once, while the context is initializing, so an application keeps the
+cache format it started with however the config is set afterwards. The plugin installs Comet's
+serializer only if `spark.comet.enabled` and `spark.comet.exec.enabled` are enabled at that point
+too, because an application that starts without native execution could not scan Comet's format
+natively. It also keeps Spark's format when Comet shuffle is enabled but `spark.shuffle.manager` is
+not one of Comet's shuffle managers, since Comet then disables itself, and when Kryo would reject
+Comet's format; see [Kryo](#kryo).
 
 ## What changes when it is enabled
 
@@ -48,6 +50,9 @@ With Comet's serializer installed as `spark.sql.cache.serializer`:
 - Cached tables are scanned by `CometInMemoryTableScan`, which feeds Comet operators directly.
 - Per-batch column statistics are recorded in the layout Spark's `SimpleMetricsCachedBatchSerializer`
   expects, so Spark can prune whole cached batches on a predicate before any of them is decoded.
+- The size Spark's planner sees for a cached relation is its decoded Arrow size, not the compressed
+  size it occupies in memory, as with Spark's own cache formats. Compression therefore does not
+  change how queries over a cached relation are planned, such as whether a join broadcasts it.
 
 Relations whose schema Comet's Arrow writer cannot store — interval types, most notably — are
 delegated in full to Spark's default cache format, per relation. Which format a relation uses does
@@ -57,6 +62,10 @@ codec is a runtime config, but each batch records the codec it was written with,
 under one setting stays readable after the setting changes. Turning
 `spark.comet.exec.inMemoryCache.enabled` off at runtime only sends cached scans back to Spark's
 execution path; the cached data stays readable either way.
+
+A relation whose cached plan records observed metrics, from `Dataset.observe`, is still stored in
+Comet's format but is scanned by Spark's `InMemoryTableScanExec`, because Spark collects those
+metrics only through that scan.
 
 ## Storage format
 
@@ -172,10 +181,19 @@ spark.kryo.registrator=org.apache.comet.CometKryoRegistrator
 
 Comet cannot set `spark.kryo.registrator` for you the way it sets `spark.sql.cache.serializer`:
 `KryoSerializer` reads it when `SparkEnv` builds the serializer, which happens before any plugin
-runs. Without it, caching fails with a "Class is not registered" error that does not name this
-feature. Comet's driver plugin warns at startup when it sees Kryo, `registrationRequired`, and no
-registrator. Native broadcast needs the same registrator even when the cache is disabled; see
+runs. Without it, Kryo would reject Comet's cached batch with a "Class is not registered" error
+that does not name this feature. So when Kryo requires registration and has not registered
+Comet's cached batch, Comet's driver plugin does not install Comet's serializer, and caches stay in
+Spark's format. Registrations made another way, through a registrator of the application's own or
+`spark.kryo.classesToRegister`, count as well. The plugin warns at startup when Kryo requires
+registration and has not registered every class `CometKryoRegistrator` registers. An application
+that sets `spark.sql.cache.serializer` to Comet's serializer itself gets the error instead. Native
+broadcast needs the same registrator even when the cache is disabled; see
 [Kryo serialization](installation.md#kryo-serialization).
+
+Spark registers its own cached batch with Kryo only from Spark 4.1, so on earlier versions caching
+in either format under `registrationRequired` needs a registrator. `CometKryoRegistrator` registers
+Spark's cached batch too.
 
 ## Limitations
 

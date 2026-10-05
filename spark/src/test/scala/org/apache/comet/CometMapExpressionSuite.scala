@@ -283,7 +283,6 @@ class CometMapExpressionSuite extends CometTestBase {
       }
       withSQLConf(
         CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
-        CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
         CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true") {
         val df = spark.read.parquet(filename)
         df.createOrReplaceTempView("t1")
@@ -502,6 +501,19 @@ class CometMapExpressionSuite extends CometTestBase {
     }
   }
 
+  // A TRY cast over a foldable map folds to a literal whose failing key is null. With a single
+  // entry it has to stay on Spark too, rather than being rebuilt as a `CreateMap` that rejects the
+  // null key. Spark returns NULL for both rows.
+  // https://github.com/apache/datafusion-comet/issues/6584
+  test("folded single-entry map literal with a null key falls back (multirow)") {
+    withParquetTable((1 until 3).map(i => (i, i.toLong)), "tbl") {
+      checkSparkAnswerAndFallbackReason(
+        "SELECT _1 AS id, element_at(try_cast(map(9999999999L, 20) AS map<int, int>), _1) AS v " +
+          "FROM tbl",
+        "Unsupported data type MapType")
+    }
+  }
+
   // Direct single-level folded map with collated string keys. Native lookup is bytewise, so a
   // case-insensitive `a1` lookup against a stored `A1` cannot match; `MapKeySupport` declines it.
   test("folded map literal with collated string keys in element_at falls back (multirow)") {
@@ -553,6 +565,34 @@ class CometMapExpressionSuite extends CometTestBase {
       checkSparkAnswerAndOperator(
         "SELECT _1 AS id, element_at(" +
           "map_from_arrays(sequence(1, 100000), sequence(1, 100000)), _1) AS v FROM tbl")
+    }
+  }
+
+  // A folded `map('z', 0)` has `valueContainsNull = false`, and a `MAP<STRING, INT>` column has
+  // `valueContainsNull = true`. Spark's `If` treats the two as one type and adds no cast, so the
+  // native planner has to cast the branch whose Arrow type differs from the common type (#6334).
+  // Each INSERT writes its own files and a batch never spans files, so there are batches in which
+  // every row takes the THEN branch, batches in which every row takes the ELSE branch, and batches
+  // that mix the two. The ones in which every row takes the ELSE branch failed with "column types
+  // must match schema types". `if_nested_nullability.sql` covers the constructor path.
+  test("IF with a folded map literal branch and a map column (multirow)") {
+    withTable("t") {
+      sql("CREATE TABLE t(c BOOLEAN, m MAP<STRING, INT>) USING parquet")
+      // Write the rows in Spark, so that only the queries below run in Comet
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        // c is true and m is not NULL in every row
+        sql("INSERT INTO t VALUES (true, map('a', 1)), (true, map('b', CAST(NULL AS INT)))")
+        // c is false or NULL and m is NULL in every row
+        sql("INSERT INTO t VALUES (false, NULL), (NULL, NULL)")
+        // pairs of rows that take different branches
+        val mixed =
+          (0 until 10).map(i => if (i % 2 == 0) s"(true, map('k', $i))" else "(false, NULL)")
+        sql(s"INSERT INTO t VALUES ${mixed.mkString(", ")}")
+      }
+      Seq("IF(c, m, map('z', 0))", "IF(c, map('z', 0), m)", "IF(m IS NULL, map('z', 0), m)")
+        .foreach { expr =>
+          checkSparkAnswerAndOperator(s"SELECT $expr AS r FROM t")
+        }
     }
   }
 

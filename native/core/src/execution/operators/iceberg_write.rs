@@ -125,13 +125,13 @@ impl LocationGenerator for TrackingLocationGenerator {
     }
 }
 
-/// Deletes the tracked files if the write task is dropped before it finished.
+/// Deletes the tracked files if the write task is dropped before the JVM acknowledges its output.
 ///
 /// A task can end without its future ever observing an error: when the JVM-side input iterator
 /// throws, `executePlan` returns that error straight from the JNI batch pull and the JVM then
 /// releases the plan, dropping this future mid-flight. The guard turns that drop into the same
-/// cleanup the explicit error path performs. It stays armed until the task's output batch has
-/// been handed to the JVM, which is the point where the JVM takes over cleanup ownership.
+/// cleanup the explicit error path performs. It stays armed until the JVM polls past the output
+/// batch, after recording the locations in its task-failure listener.
 struct AbortOnDrop {
     file_io: FileIO,
     generator: TrackingLocationGenerator,
@@ -196,6 +196,28 @@ impl Drop for AbortOnDrop {
             },
         }
     }
+}
+
+/// The JVM reads the locations from the single output batch, registers its cleanup listener,
+/// and then polls once more to verify that the stream ended. Keep native cleanup armed through
+/// that last poll: a cancelled task or a failure decoding the locations before then must still
+/// delete the files, even though the output batch was successfully constructed.
+fn output_with_cleanup_ack(
+    batch: RecordBatch,
+    abort_guard: AbortOnDrop,
+) -> impl futures::Stream<Item = DFResult<RecordBatch>> + Send {
+    futures::stream::unfold(
+        (Some(batch), abort_guard),
+        |(batch, mut abort_guard)| async move {
+            match batch {
+                Some(batch) => Some((Ok::<_, DataFusionError>(batch), (None, abort_guard))),
+                None => {
+                    abort_guard.disarm();
+                    None
+                }
+            }
+        },
+    )
 }
 
 /// Best-effort deletion of every file a failed task attempt created, the native counterpart of
@@ -401,12 +423,9 @@ impl ExecutionPlan for IcebergWriteExec {
             }
             .await;
             match packaged {
-                // The batch carries the locations, and the JVM takes cleanup ownership of them
-                // before it decodes the manifest, so the guard's job is done.
-                Ok(batch) => {
-                    abort_guard.disarm();
-                    Ok::<_, DataFusionError>(futures::stream::iter(vec![Ok(batch)]))
-                }
+                // The JVM registers the locations before polling for EOF. Keep the guard armed
+                // until that poll, so dropping the stream during the handoff still cleans up.
+                Ok(batch) => Ok::<_, DataFusionError>(output_with_cleanup_ack(batch, abort_guard)),
                 Err(e) => {
                     abort_guard.abort().await;
                     Err(e)
@@ -454,7 +473,7 @@ impl DisplayAs for IcebergWriteExec {
 /// depending on `writer_mode`.
 ///
 /// On success the still-armed [`AbortOnDrop`] is returned along with the data files: the caller
-/// owns cleanup until the output batch has been handed to the JVM.
+/// owns cleanup until the JVM acknowledges the output after recording its locations.
 #[allow(clippy::too_many_arguments)]
 async fn run_write_task(
     mut input: SendableRecordBatchStream,
@@ -855,8 +874,9 @@ fn file_name_prefix(partition_id: i32, task_attempt_id: i64, operation_id: &str)
 ///
 /// This replaces iceberg-rust's `RecordBatchPartitionSplitter`, which computes the values with
 /// iceberg-rust's own transforms -- they turn a `year` or `month` past `chrono`'s calendar into a
-/// NULL (apache/datafusion-comet#6145) -- and groups rows through a HashMap, which emits parts in
-/// unspecified order.
+/// NULL (apache/datafusion-comet#6145) and put some pre-epoch timestamps in a different time
+/// partition from iceberg-java (apache/datafusion-comet#6426) -- and groups rows through a
+/// HashMap, which emits parts in unspecified order.
 struct PartitionSplitter {
     calculator: PartitionValueCalculator,
     partition_spec: PartitionSpecRef,
@@ -1769,6 +1789,7 @@ mod tests {
             CompressionCodec as ProtoCodec, IcebergParquetWriteSettings, IcebergWriteCommon,
             IcebergWriterMode as ProtoIcebergWriterMode,
         };
+        use futures::StreamExt;
         use iceberg::spec::{
             Manifest, NestedField, PartitionSpec, PrimitiveType, Schema, Transform, Type,
         };
@@ -1776,6 +1797,7 @@ mod tests {
         use std::collections::HashMap;
         use std::path::PathBuf;
         use std::sync::Arc;
+        use std::time::Duration;
         use tempfile::TempDir;
 
         fn user_schema() -> SchemaRef {
@@ -1973,7 +1995,7 @@ mod tests {
 
             assert!(
                 abort_guard.armed,
-                "the caller owns cleanup until the JVM does"
+                "the caller owns cleanup until the JVM acknowledges the handoff"
             );
             let written: Vec<PathBuf> = data_files
                 .iter()
@@ -1987,6 +2009,66 @@ mod tests {
             abort_guard.abort().await;
             assert!(written.iter().all(|p| !p.exists()), "{written:?}");
             assert!(!abort_guard.armed, "aborting also gives up ownership");
+        }
+
+        #[tokio::test]
+        async fn output_stream_waits_for_jvm_eof_poll_before_releasing_cleanup() {
+            for acknowledge in [false, true] {
+                let temp_dir = TempDir::new().unwrap();
+                let data_location = format!("file://{}", temp_dir.path().display());
+                let schema = iceberg_user_schema();
+                let spec = PartitionSpec::builder(Arc::new(schema.clone()))
+                    .build()
+                    .unwrap();
+                let common = common(
+                    data_location,
+                    serde_json::to_string(&spec).unwrap(),
+                    serde_json::to_string(&schema).unwrap(),
+                    ProtoIcebergWriterMode::IcebergWriterUnpartitioned,
+                );
+                let (data_files, guard) = run_write_task(
+                    input_stream(vec![batch(&[1], &["us"])]),
+                    common,
+                    Arc::new(schema),
+                    Arc::new(spec),
+                    ProtoIcebergWriterMode::IcebergWriterUnpartitioned,
+                    WriterProperties::builder().build(),
+                    Some(0),
+                    Some(0),
+                    Time::default(),
+                )
+                .await
+                .unwrap();
+
+                let written: Vec<PathBuf> = data_files
+                    .iter()
+                    .map(|file| PathBuf::from(file.file_path().trim_start_matches("file:")))
+                    .collect();
+                assert!(!written.is_empty());
+                assert!(written.iter().all(|path| path.exists()));
+
+                let output =
+                    build_output_batch(vec![], &guard.locations(), &build_output_schema()).unwrap();
+                let mut stream = Box::pin(output_with_cleanup_ack(output, guard));
+                assert!(stream.next().await.unwrap().is_ok());
+
+                if acknowledge {
+                    assert!(stream.next().await.is_none());
+                }
+                drop(stream);
+
+                if acknowledge {
+                    assert!(written.iter().all(|path| path.exists()));
+                } else {
+                    tokio::time::timeout(Duration::from_secs(5), async {
+                        while written.iter().any(|path| path.exists()) {
+                            tokio::time::sleep(Duration::from_millis(10)).await;
+                        }
+                    })
+                    .await
+                    .expect("dropping an unacknowledged output must delete its files");
+                }
+            }
         }
 
         #[tokio::test]
@@ -3314,11 +3396,11 @@ mod tests {
 /// A partitioned write runs both: the sort in front of [`IcebergWriteExec`] is keyed on the
 /// `datafusion-comet-spark-expr` kernels (Iceberg plans the sort as `bucket(...)`, `days(...)`,
 /// ... system-function calls), while [`ClusteredWriter`] groups the sorted rows by the partition
-/// values that [`PartitionValueCalculator`] computes -- with the same kernels for `years` and
-/// `months`, and with iceberg-rust's transforms for everything else. The writer requires the two
-/// to agree: when they do not it fails at runtime with "The input is not sorted! Cannot write to
-/// partition that was previously closed". These tests make an iceberg-rust bump that changes a
-/// transform break here first.
+/// values that [`PartitionValueCalculator`] computes -- with the same kernels for the time
+/// transforms of dates and timestamps, and with iceberg-rust's transforms for everything else. The
+/// writer requires the two to agree: when they do not it fails at runtime with "The input is not
+/// sorted! Cannot write to partition that was previously closed". These tests make an iceberg-rust
+/// bump that changes a transform break here first.
 #[cfg(test)]
 mod iceberg_rust_transform_parity {
     use arrow::array::{
@@ -3569,7 +3651,10 @@ mod iceberg_rust_transform_parity {
         }
     }
 
-    /// `days` and `hours` are plain floor division on both sides, so the whole domain agrees.
+    /// `days` and `hours` agree with iceberg-rust except on the pre-epoch timestamps where
+    /// iceberg-rust parts from iceberg-java (see `PartitionValueCalculator`), which is why the
+    /// writer computes both for timestamps with the Comet kernels; agreeing here means the switch
+    /// changed no other value. `day` of a date still goes through iceberg-rust.
     #[test]
     fn days_and_hours_agree_with_iceberg_rust() {
         let micros = vec![
@@ -3603,12 +3688,12 @@ mod iceberg_rust_transform_parity {
         assert_agree("days(date)", Transform::Day, &days_udf, &dates);
     }
 
-    /// `years` and `months` agree over the dates iceberg-rust can represent -- it splits the
-    /// calendar with `chrono`, so anything past year 262142 comes back NULL there while Comet and
-    /// the JVM keep going (apache/iceberg-rust#3142; see the kernel's own unit tests for those).
-    /// That is why the writer computes these two with the Comet kernels itself
-    /// (apache/datafusion-comet#6145); agreeing here means the switch changed no value iceberg-rust
-    /// could compute.
+    /// `years` and `months` agree over the dates iceberg-rust can represent, apart from the
+    /// pre-epoch timestamps where it parts from iceberg-java (see `PartitionValueCalculator`). It
+    /// splits the calendar with `chrono`, so anything past year 262142 comes back NULL there while
+    /// Comet and the JVM keep going (apache/iceberg-rust#3142; see the kernel's own unit tests for
+    /// those). That is why the writer computes these two with the Comet kernels itself
+    /// (apache/datafusion-comet#6145); agreeing here means the switch changed no other value.
     #[test]
     fn years_and_months_agree_with_iceberg_rust_within_its_range() {
         let years_udf = SparkIcebergTemporalTransform::years();
@@ -3648,14 +3733,17 @@ mod iceberg_rust_transform_parity {
         }
     }
 
-    /// Why `years` and `months` are not delegated to iceberg-rust even though `bucket`, `days`,
-    /// and `hours` could be: its kernels go through Arrow's `date_part`, which honours the
-    /// array's timezone tag, while Iceberg's Java `DateTimeUtil` is always UTC. Comet only ever
-    /// produces `UTC` and untagged timestamps today, so the parity above holds; this pins the
-    /// reason the local kernel exists. Reported as apache/iceberg-rust#3142; if this ever fails,
-    /// iceberg-rust dropped the tag dependency. Delegating is still unsafe until it also covers
-    /// dates past `chrono`'s calendar, which the writer's own partition values depend on too:
-    /// see `years_and_months_past_chronos_calendar_match_iceberg_java` (`iceberg_partition_value`).
+    /// Why `years` and `months` are not delegated to iceberg-rust even though `bucket` could be:
+    /// its kernels go through Arrow's `date_part`, which honours the array's timezone tag, while
+    /// Iceberg's Java `DateTimeUtil` is always UTC. Comet only ever produces `UTC` and untagged
+    /// timestamps today, so the parity above holds; this pins one reason the local kernel exists.
+    /// Reported as apache/iceberg-rust#3142; if this ever fails, iceberg-rust dropped the tag
+    /// dependency. Delegating is still unsafe until it also covers dates past `chrono`'s calendar,
+    /// which the writer's own partition values depend on too: see
+    /// `years_and_months_past_chronos_calendar_match_iceberg_java` (`iceberg_partition_value`).
+    /// Nor can `days` and `hours` be delegated: all four time transforms place some pre-epoch
+    /// timestamps differently from iceberg-java, see
+    /// `pre_epoch_timestamps_partition_like_iceberg_java` there.
     #[test]
     fn iceberg_rust_years_follow_the_timezone_tag() {
         // 1969-12-31T23:59:59.999999Z, which is 1970-01-01T05:44:59.999999 in Kathmandu.

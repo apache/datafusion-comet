@@ -22,11 +22,11 @@ package org.apache.comet.serde
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Expression, Literal}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, ApproximatePercentile, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, CollectList, CollectSet, Complete, Corr, Count, Covariance, CovPopulation, CovSample, First, HyperLogLogPlusPlus, Last, Max, MaxBy, MaxMinBy, Min, MinBy, Mode, Partial, Percentile, RegrIntercept, RegrR2, RegrReplacement, RegrSlope, RegrSXY, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateFunction, ApproximatePercentile, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, CollectList, CollectSet, Complete, Corr, Count, Covariance, CovPopulation, CovSample, First, HyperLogLogPlusPlus, Last, Max, MaxBy, MaxMinBy, Min, MinBy, Mode, Partial, Percentile, RegrIntercept, RegrR2, RegrReplacement, RegrSlope, RegrSXY, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
 import org.apache.spark.sql.catalyst.util.ArrayData
 import org.apache.spark.sql.comet.CometExecUtils
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, NumericType, ShortType, StringType, TimestampNTZType, TimestampType}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DateType, DayTimeIntervalType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, NullType, NumericType, ShortType, StringType, StructType, TimestampNTZType, TimestampType, YearMonthIntervalType}
 
 import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
 import org.apache.comet.CometSparkSessionExtensions.{isSpark41Plus, isSpark42Plus, withFallbackReason}
@@ -929,7 +929,27 @@ private[comet] object RegrSparkVersions {
  * variable (y) and `child2` is the independent variable (x), matching the native accumulator's
  * `regr_*(y, x)` convention.
  */
-trait CometRegrBase {
+trait CometRegrBase[T <: AggregateFunction] extends CometAggregateExpressionSerde[T] {
+
+  /** The SQL function or functions this serde implements, named in the incompatibility note. */
+  protected def sqlFunctions: String
+
+  // The native merge (`variance_merge` and `covariance_merge` in welford.rs) orders its
+  // floating-point operations differently from Spark's CentralMomentAgg and Covariance. Merging
+  // the first partial buffer into the zero-initialized final buffer can leave a one-ULP error on
+  // the mean, so a constant variable ends up with a tiny non-zero m2 and Spark's exact `m2 == 0`
+  // degenerate-case checks never fire. Porting Spark's merge order would make these Compatible.
+  private def mergeOrderReason: String =
+    s"Comet merges the partial aggregates of $sqlFunctions in a different floating-point " +
+      "operation order from Spark. When a group's rows come from more than one partial " +
+      "aggregate and a variable is constant at a value that binary floating point cannot " +
+      "represent exactly, such as 0.1, Comet returns a wrong value where Spark returns NULL, " +
+      "0.0 or 1.0 (https://github.com/apache/datafusion-comet/issues/6423)"
+
+  override def getIncompatibleReasons(): Seq[String] = Seq(mergeOrderReason)
+
+  override def getSupportLevel(expr: T): SupportLevel = Incompatible(Some(mergeOrderReason))
+
   def convertRegr(
       aggExpr: AggregateExpression,
       regrType: ExprOuterClass.Regr.RegrType,
@@ -966,7 +986,9 @@ trait CometRegrBase {
   }
 }
 
-object CometRegrSlope extends CometAggregateExpressionSerde[RegrSlope] with CometRegrBase {
+object CometRegrSlope extends CometRegrBase[RegrSlope] {
+  override protected def sqlFunctions: String = "`regr_slope`"
+
   override def convert(
       aggExpr: AggregateExpression,
       expr: RegrSlope,
@@ -982,9 +1004,9 @@ object CometRegrSlope extends CometAggregateExpressionSerde[RegrSlope] with Come
       binding)
 }
 
-object CometRegrIntercept
-    extends CometAggregateExpressionSerde[RegrIntercept]
-    with CometRegrBase {
+object CometRegrIntercept extends CometRegrBase[RegrIntercept] {
+  override protected def sqlFunctions: String = "`regr_intercept`"
+
   override def convert(
       aggExpr: AggregateExpression,
       expr: RegrIntercept,
@@ -1000,7 +1022,9 @@ object CometRegrIntercept
       binding)
 }
 
-object CometRegrR2 extends CometAggregateExpressionSerde[RegrR2] with CometRegrBase {
+object CometRegrR2 extends CometRegrBase[RegrR2] {
+  override protected def sqlFunctions: String = "`regr_r2`"
+
   override def convert(
       aggExpr: AggregateExpression,
       expr: RegrR2,
@@ -1010,7 +1034,9 @@ object CometRegrR2 extends CometAggregateExpressionSerde[RegrR2] with CometRegrB
     convertRegr(aggExpr, ExprOuterClass.Regr.RegrType.R2, expr.y, expr.x, inputs, binding)
 }
 
-object CometRegrSXY extends CometAggregateExpressionSerde[RegrSXY] with CometRegrBase {
+object CometRegrSXY extends CometRegrBase[RegrSXY] {
+  override protected def sqlFunctions: String = "`regr_sxy`"
+
   override def convert(
       aggExpr: AggregateExpression,
       expr: RegrSXY,
@@ -1027,9 +1053,9 @@ object CometRegrSXY extends CometAggregateExpressionSerde[RegrSXY] with CometReg
  * deviations) of its single child. We serialize it as the `SXX` regression statistic with the
  * child duplicated, since `regr_sxx(c, c) = m2(c)`.
  */
-object CometRegrReplacement
-    extends CometAggregateExpressionSerde[RegrReplacement]
-    with CometRegrBase {
+object CometRegrReplacement extends CometRegrBase[RegrReplacement] {
+  override protected def sqlFunctions: String = "`regr_sxx` and `regr_syy`"
+
   override def convert(
       aggExpr: AggregateExpression,
       expr: RegrReplacement,
@@ -1258,6 +1284,37 @@ object CometCollectList extends CometAggregateExpressionSerde[CollectList] {
   }
 }
 
+/**
+ * Spark's `CollectList` and `CollectSet` serialize their buffer as an `UnsafeRow` holding one
+ * `UnsafeArrayData`. A native PartialMerge decodes that buffer into the list state the native
+ * accumulators merge (`spark_aggregate_state.rs`), so a Spark Partial can feed it, but only for
+ * the element types the decoder reads. For any other, the PartialMerge must stay in Spark.
+ */
+object CometCollectBuffer extends CometTypeShim {
+
+  def nativePartialMergeCanDecode(fn: AggregateFunction): Boolean = fn match {
+    case collect: CollectList => canDecode(collect.child.dataType, nested = false)
+    case collect: CollectSet => canDecode(collect.child.dataType, nested = false)
+    case _ => false
+  }
+
+  private def canDecode(dataType: DataType, nested: Boolean): Boolean = dataType match {
+    case BooleanType | ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType |
+        BinaryType | DateType | TimestampType | TimestampNTZType | NullType =>
+      true
+    case _: StringType | _: DecimalType => true
+    case dt if isTimeType(dt) => true
+    // The decoder reads nested values with the shuffle's unsafe row readers, which do not
+    // support ANSI intervals, so only top-level ones are decoded.
+    case _: YearMonthIntervalType | _: DayTimeIntervalType => !nested
+    case ArrayType(elementType, _) => canDecode(elementType, nested = true)
+    case StructType(fields) => fields.forall(field => canDecode(field.dataType, nested = true))
+    case MapType(keyType, valueType, _) =>
+      canDecode(keyType, nested = true) && canDecode(valueType, nested = true)
+    case _ => false
+  }
+}
+
 object CometApproxCountDistinct extends CometAggregateExpressionSerde[HyperLogLogPlusPlus] {
 
   // The register buffer uses Spark's identical packed-`Long` layout (`numWords` `Long` columns),
@@ -1434,15 +1491,13 @@ object AggSerde {
     }
   }
 
-  /** Shared support level for `Min` / `Max` based on the result data type. */
+  /**
+   * Shared support level for `Min` / `Max` based on the result data type. Floats follow Spark's
+   * ordering natively, so strict floating-point mode does not apply to them.
+   */
   def minMaxSupportLevel(dt: DataType): SupportLevel = {
     if (!minMaxDataTypeSupported(dt)) {
       Unsupported(Some(s"Unsupported data type: $dt"))
-    } else if ((dt == FloatType || dt == DoubleType) &&
-      COMET_EXEC_STRICT_FLOATING_POINT.get()) {
-      // https://github.com/apache/datafusion-comet/issues/2448
-      Unsupported(
-        Some(s"floating-point not supported when ${COMET_EXEC_STRICT_FLOATING_POINT.key}=true"))
     } else {
       Compatible()
     }

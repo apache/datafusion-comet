@@ -22,8 +22,9 @@
 -- Config: spark.comet.expression.ArrayDistinct.allowIncompatible=false
 -- Config: spark.comet.expression.ArrayUnion.allowIncompatible=false
 
--- With the JVM codegen dispatcher disabled, collated array element comparisons have no
--- Spark-compatible Comet path and fall back to Spark.
+-- With the JVM codegen dispatcher disabled, collated array_contains and arrays_overlap have no
+-- Spark-compatible Comet path and fall back to Spark. array_distinct and array_union fall back
+-- whether or not the dispatcher is enabled.
 
 statement
 CREATE TABLE test_array_eq_collation(id int, a string, b string) USING parquet
@@ -39,10 +40,10 @@ query expect_fallback(arrays_overlap: spark.comet.exec.scalaUDF.codegen.enabled=
 SELECT id, arrays_overlap(array(CAST(a AS STRING COLLATE UTF8_BINARY_RTRIM)), array(CAST(b AS STRING COLLATE UTF8_BINARY_RTRIM)))
 FROM test_array_eq_collation
 
-query expect_fallback(array_distinct: spark.comet.exec.scalaUDF.codegen.enabled=false)
+query expect_fallback(native array_distinct compares raw bytes)
 SELECT id, array_distinct(array(CAST(a AS STRING COLLATE UTF8_LCASE), CAST(b AS STRING COLLATE UTF8_LCASE)))
 FROM test_array_eq_collation
 
-query expect_fallback(array_union: spark.comet.exec.scalaUDF.codegen.enabled=false)
+query expect_fallback(native array_union compares raw bytes)
 SELECT id, array_union(array(CAST(a AS STRING COLLATE UTF8_BINARY_RTRIM)), array(CAST(b AS STRING COLLATE UTF8_BINARY_RTRIM)))
 FROM test_array_eq_collation

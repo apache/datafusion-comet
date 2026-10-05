@@ -24,8 +24,10 @@
 
 -- array_contains, arrays_overlap, array_distinct and array_union compare array elements for
 -- equality. The native kernels compare strings by raw bytes, so under a non-UTF8_BINARY collation
--- they would miss 'a' = 'A' (UTF8_LCASE) or 'x ' = 'x' (UTF8_BINARY_RTRIM). Collated inputs route
--- through the JVM codegen dispatcher, which runs Spark's collation-aware comparison.
+-- they would miss 'a' = 'A' (UTF8_LCASE) or 'x ' = 'x' (UTF8_BINARY_RTRIM). Collated
+-- array_contains and arrays_overlap route through the JVM codegen dispatcher, which runs Spark's
+-- collation-aware comparison. array_distinct and array_union return arrays, where dispatch costs
+-- more than a projection fallback (see ArraySetSupport), so they fall back to Spark instead.
 
 statement
 CREATE TABLE test_array_eq_collation(id int, a string, b string) USING parquet
@@ -53,11 +55,11 @@ query expect_dispatch(arrays_overlap)
 SELECT id, arrays_overlap(array(CAST(a AS STRING COLLATE UTF8_LCASE)), array(CAST(b AS STRING COLLATE UTF8_LCASE)))
 FROM test_array_eq_collation
 
-query expect_dispatch(array_distinct)
+query expect_fallback(native array_distinct compares raw bytes)
 SELECT id, array_distinct(array(CAST(a AS STRING COLLATE UTF8_LCASE), CAST(b AS STRING COLLATE UTF8_LCASE)))
 FROM test_array_eq_collation
 
-query expect_dispatch(array_union)
+query expect_fallback(native array_union compares raw bytes)
 SELECT id, array_union(array(CAST(a AS STRING COLLATE UTF8_LCASE)), array(CAST(b AS STRING COLLATE UTF8_LCASE)))
 FROM test_array_eq_collation
 
@@ -70,11 +72,11 @@ query expect_dispatch(arrays_overlap)
 SELECT id, arrays_overlap(array(CAST(a AS STRING COLLATE UTF8_BINARY_RTRIM)), array(CAST(b AS STRING COLLATE UTF8_BINARY_RTRIM)))
 FROM test_array_eq_collation
 
-query expect_dispatch(array_distinct)
+query expect_fallback(native array_distinct compares raw bytes)
 SELECT id, array_distinct(array(CAST(a AS STRING COLLATE UTF8_BINARY_RTRIM), CAST(b AS STRING COLLATE UTF8_BINARY_RTRIM)))
 FROM test_array_eq_collation
 
-query expect_dispatch(array_union)
+query expect_fallback(native array_union compares raw bytes)
 SELECT id, array_union(array(CAST(a AS STRING COLLATE UTF8_BINARY_RTRIM)), array(CAST(b AS STRING COLLATE UTF8_BINARY_RTRIM)))
 FROM test_array_eq_collation
 
