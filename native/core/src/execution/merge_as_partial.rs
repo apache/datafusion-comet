@@ -274,14 +274,14 @@ mod tests {
 
     use std::sync::Arc;
 
-    use arrow::array::{Array, Int64Array, ListArray};
+    use arrow::array::{Array, BinaryArray, Int64Array, ListArray};
     use arrow::datatypes::{Field, Schema};
     use datafusion::functions_aggregate::count::count_udaf;
     use datafusion::logical_expr::AggregateUDF;
     use datafusion::physical_expr::aggregate::AggregateExprBuilder;
     use datafusion::physical_expr::expressions::Column;
     use datafusion::physical_expr::PhysicalExpr;
-    use datafusion_comet_spark_expr::CometCollectSet;
+    use datafusion_comet_spark_expr::{CometCollectList, CometCollectSet};
 
     fn merge_expression(original: &AggregateFunctionExpr) -> AggregateFunctionExpr {
         let fields = original.state_fields().unwrap();
@@ -350,6 +350,47 @@ mod tests {
         scalar.update_batch(&states).unwrap();
         let result = scalar.evaluate().unwrap().to_array().unwrap();
         assert_eq!(sorted_values(&result), expected);
+    }
+
+    #[test]
+    fn spark_collect_state_decodes_before_merge_and_bypass() {
+        // Spark UnsafeRow containing UnsafeArrayData for [1L, 2L]. The outer row
+        // has one variable-width field at offset 16, and the array has two values.
+        let mut row = vec![0_u8; 48];
+        row[8..16].copy_from_slice(&((16_i64 << 32) | 32).to_le_bytes());
+        row[16..24].copy_from_slice(&2_i64.to_le_bytes());
+        row[32..40].copy_from_slice(&1_i64.to_le_bytes());
+        row[40..48].copy_from_slice(&2_i64.to_le_bytes());
+        let states = vec![Arc::new(BinaryArray::from_iter_values([row])) as ArrayRef];
+
+        for function in [
+            AggregateUDF::new_from_impl(CometCollectList::new()),
+            AggregateUDF::new_from_impl(CometCollectSet::new()),
+        ] {
+            let schema = Arc::new(Schema::new(vec![Field::new("v", DataType::Int64, true)]));
+            let original =
+                AggregateExprBuilder::new(Arc::new(function), vec![Arc::new(Column::new("v", 0))])
+                    .schema(schema)
+                    .alias("values")
+                    .build()
+                    .unwrap();
+            let merge = merge_expression(&original);
+            let mut grouped = merge.create_groups_accumulator().unwrap();
+            let converted = grouped.convert_to_state(&states, None).unwrap();
+            assert_eq!(sorted_values(&converted[0]), vec![1, 2]);
+            grouped.update_batch(&states, &[0], None, 1).unwrap();
+            assert_eq!(
+                sorted_values(&grouped.evaluate(EmitTo::All).unwrap()),
+                vec![1, 2]
+            );
+
+            let mut scalar = merge.create_accumulator().unwrap();
+            scalar.update_batch(&states).unwrap();
+            assert_eq!(
+                sorted_values(&scalar.evaluate().unwrap().to_array().unwrap()),
+                vec![1, 2]
+            );
+        }
     }
 
     fn sorted_values(result: &ArrayRef) -> Vec<i64> {
