@@ -33,7 +33,7 @@ import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf._
 import org.apache.comet.iceberg.IcebergWriteStrategy
-import org.apache.comet.rules.{CometPlanAdaptiveDynamicPruningFilters, CometReuseSubquery, CometRule, CometSpark34AqeDppFallbackRule}
+import org.apache.comet.rules.{CometCoalesceShufflePartitions, CometPlanAdaptiveDynamicPruningFilters, CometReuseSubquery, CometRule, CometSpark34AqeDppFallbackRule}
 import org.apache.comet.shims.ShimCometSparkSessionExtensions
 
 /**
@@ -70,9 +70,13 @@ import org.apache.comet.shims.ShimCometSparkSessionExtensions
  *     1. queryStageOptimizerRules:
  *        a. PlanAdaptiveDynamicPruningFilters (Spark) -- skips wrapped SABs
  *        b. ReuseAdaptiveSubquery (Spark)
- *        c. CometPlanAdaptiveDynamicPruningFilters   -- converts wrapped SABs to
+ *        c. OptimizeSkewInRebalancePartitions, CoalesceShufflePartitions,
+ *           OptimizeShuffleWithLocalRead (Spark)
+ *        d. CometPlanAdaptiveDynamicPruningFilters   -- converts wrapped SABs to
  *           CometSubqueryBroadcastExec with BroadcastQueryStageExec for broadcast reuse
- *        d. CometReuseSubquery                       -- deduplicates converted subqueries
+ *        e. CometReuseSubquery                       -- deduplicates converted subqueries
+ *        f. CometCoalesceShufflePartitions           -- coalesces the shuffles that Comet
+ *           unions and broadcast joins keep Spark's CoalesceShufflePartitions from reaching
  *     2. postStageCreationRules -> ApplyColumnarRulesAndInsertTransitions:
  *        a. preColumnarTransitions: CometRule (no-op, already converted)
  *        b. insertTransitions
@@ -81,9 +85,9 @@ import org.apache.comet.shims.ShimCometSparkSessionExtensions
  * }}}
  *
  * On Spark 3.4, injectQueryStageOptimizerRule is unavailable. CometExecRule does not wrap SABs,
- * and CometPlanAdaptiveDynamicPruningFilters/CometReuseSubquery are not registered. AQE DPP scans
- * fall back to Spark so that Spark's PlanAdaptiveDynamicPruningFilters handles them natively
- * (with DPP).
+ * and CometPlanAdaptiveDynamicPruningFilters, CometReuseSubquery and
+ * CometCoalesceShufflePartitions are not registered. AQE DPP scans fall back to Spark so that
+ * Spark's PlanAdaptiveDynamicPruningFilters handles them natively (with DPP).
  */
 class CometSparkSessionExtensions
     extends (SparkSessionExtensions => Unit)
@@ -107,6 +111,7 @@ class CometSparkSessionExtensions
     }
     injectQueryStageOptimizerRuleShim(extensions, CometPlanAdaptiveDynamicPruningFilters)
     injectQueryStageOptimizerRuleShim(extensions, CometReuseSubquery)
+    injectQueryStageOptimizerRuleShim(extensions, CometCoalesceShufflePartitions)
     extensions.injectPlannerStrategy { session => IcebergWriteStrategy(session) }
   }
 
