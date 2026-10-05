@@ -455,6 +455,10 @@ name = "aggregate_stats"
 harness = false
 
 [[bench]]
+name = "aggregate_misc"
+harness = false
+
+[[bench]]
 name = "nondeterministic"
 harness = false
 
@@ -472,4 +476,12 @@ harness = false
 
 [[bench]]
 name = "float_arrays"
+harness = false
+
+[[bench]]
+name = "min_max"
+harness = false
+
+[[bench]]
+name = "greatest_least"
 harness = false
