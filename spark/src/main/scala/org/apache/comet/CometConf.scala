@@ -244,9 +244,10 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_EXEC)
       .doc(
         "When enabled, the single row that a query without a FROM clause, such as `SELECT 1`, " +
-          "reads will be converted to Arrow format.")
+          "reads will be converted to Arrow format. The row has no columns, so converting it " +
+          "costs almost nothing, and it lets the operators above it run in Comet.")
       .booleanConf
-      .createWithDefault(false)
+      .createWithDefault(true)
 
   val COMET_EXEC_ENABLED: ConfigEntry[Boolean] = conf(s"$COMET_EXEC_CONFIG_PREFIX.enabled")
     .category(CATEGORY_EXEC)
