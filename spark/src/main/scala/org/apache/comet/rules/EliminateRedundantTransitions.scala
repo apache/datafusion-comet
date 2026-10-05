@@ -52,12 +52,12 @@ import org.apache.comet.shims.ShimSQLConf
 // `CometExec`. However, for certain operators such as `CometCollectLimitExec` which overrides
 // `executeCollect`, the redundant `ColumnarToRowExec` makes the override ineffective.
 //
-// Note about the second case: When `spark.comet.sparkToColumnar.enabled` is set, Comet will add
-// `CometSparkToColumnarExec` on top of row-based operators first, but the downstream operator
-// only takes row-based input as it's a vanilla Spark operator(as Comet cannot convert it for
-// various reasons) or Spark requests row-based output such as a `collect` call. Spark will adds
-// another `ColumnarToRowExec` on top of `CometSparkToColumnarExec`. In this case, the pair could
-// be removed.
+// Note about the second case: When a Spark-to-Arrow conversion config is set, such as
+// `spark.comet.convert.parquet.enabled`, Comet will add `CometSparkToColumnarExec` on top of
+// row-based operators first, but the downstream operator only takes row-based input as it's a
+// vanilla Spark operator(as Comet cannot convert it for various reasons) or Spark requests
+// row-based output such as a `collect` call. Spark will adds another `ColumnarToRowExec` on top
+// of `CometSparkToColumnarExec`. In this case, the pair could be removed.
 case class EliminateRedundantTransitions(session: SparkSession)
     extends Rule[SparkPlan]
     with ShimCometMapInBatch
@@ -236,7 +236,7 @@ case class EliminateRedundantTransitions(session: SparkSession)
    *     a row child and no Arrow producer at all;
    *   - over a Spark-columnar source it keeps a `ColumnarToRowExec` but drops the Arrow bridge,
    *     so the write would be handed Spark `ColumnarVector`s where the FFI adapter requires
-   *     `CometVector`s. That shape is reachable whenever `spark.comet.sparkToColumnar.enabled`
+   *     `CometVector`s. That shape is reachable whenever a Spark-to-Arrow conversion config
    *     admits the write's source: `CometSparkToColumnarExec.createExec` wraps it in a
    *     `CometScanWrapper` (a `CometNativeExec`, so `requiresNativeChildren` accepts it), and
    *     `CometExecRule` then unwraps the placeholder, leaving the bridge directly beneath the
