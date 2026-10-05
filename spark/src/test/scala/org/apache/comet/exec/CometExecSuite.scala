@@ -4578,7 +4578,7 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
-  test("CometLocalTableScanExec falls back when schema contains TimeType") {
+  test("CometLocalTableScanExec handles TimeType column") {
     assume(
       org.apache.comet.CometSparkSessionExtensions.isSpark41Plus,
       "TimeType requires Spark 4.1+")
@@ -4586,11 +4586,22 @@ class CometExecSuite extends CometTestBase {
     // row encoder accepts TIME (matches Spark's own TimeFunctionsSuiteBase setup).
     withSQLConf(
       "spark.sql.timeType.enabled" -> "true",
-      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
-      // VALUES folds to a LocalRelation, exercising the CometLocalTableScanExec convert
-      // path; the TimeType column should drive the schema-level fallback.
-      val df = spark.sql("SELECT * FROM VALUES (TIME '12:34:56'), (TIME '01:02:03') AS t(c)")
-      checkSparkAnswer(df)
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      // Two rows to a batch, so each scan below writes more than one batch.
+      CometConf.COMET_BATCH_SIZE.key -> "2") {
+      // VALUES folds to a LocalRelation, exercising the CometLocalTableScanExec convert path.
+      // TimeType routes through TimeNanoWriter, so the native scan handles it end-to-end.
+      Seq(
+        "SELECT * FROM VALUES (TIME '12:34:56'), (TIME '01:02:03'), (NULL) AS t(c)",
+        // a precision below the default
+        "SELECT * FROM VALUES (CAST(TIME '12:34:56.789' AS TIME(3))), (NULL), " +
+          "(CAST(TIME '00:00:00' AS TIME(3))) AS t(c)",
+        // TIME inside an array and a struct, written by the nested writers
+        "SELECT * FROM VALUES (array(TIME '01:02:03', CAST(NULL AS TIME))), " +
+          "(CAST(NULL AS ARRAY<TIME>)), (array(TIME '23:59:59.999999')) AS t(a)",
+        "SELECT * FROM VALUES (named_struct('x', TIME '01:02:03')), " +
+          "(CAST(NULL AS STRUCT<x: TIME>)), (named_struct('x', CAST(NULL AS TIME))) AS t(s)")
+        .foreach(query => checkSparkAnswerAndOperator(spark.sql(query)))
     }
   }
 
