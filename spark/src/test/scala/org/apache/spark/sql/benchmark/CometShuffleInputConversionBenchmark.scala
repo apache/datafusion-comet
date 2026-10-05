@@ -131,12 +131,12 @@ object CometShuffleInputConversionBenchmark extends CometBenchmarkBase {
           .repartition(numPartitions, col("k"))
           .groupBy("k")
           .agg((sum("l") + sum(length(col("s"))) + sum("d") + sum("m")).as("s")))),
-    "RDD rows: int, long, double, range partitioned" -> (() =>
+    "RDD rows: int, long, string, double, decimal(18,2), range partitioned" -> (() =>
       total(
         rddRows()
-          .select("k", "l", "d")
           .repartitionByRange(numPartitions, col("l"))
-          .select((col("l") + col("d")).as("s")))),
+          .select((col("k") + col("l") + length(col("s")) + col("d").cast("long") + col("m"))
+            .as("s")))),
     "map over a Parquet scan" -> (() =>
       total(
         spark

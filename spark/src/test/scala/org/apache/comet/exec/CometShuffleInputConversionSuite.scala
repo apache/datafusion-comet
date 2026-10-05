@@ -396,6 +396,9 @@ class CometShuffleInputConversionSuite extends CometTestBase {
   convertTest("range partitioning") {
     val (_, plan) = checkSparkAnswer(rowsDf().orderBy(col("l").desc))
     assert(convertedShuffles(plan).length == 1, plan)
+    // The range partitioner samples the rows that the conversion reads, without converting them,
+    // so the conversion only counts the rows that the shuffle writes.
+    assert(conversions(plan).head.metrics("numInputRows").value == 1000, plan)
   }
 
   convertTest("the conversion only takes over from the JVM columnar shuffle") {
