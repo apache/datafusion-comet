@@ -64,6 +64,7 @@ import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregat
 import org.apache.comet.serde.QueryPlanSerde
 import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, isStringCollationType, supportedSortType}
 import org.apache.comet.serde.operator.CometSink
+import org.apache.comet.shims.MergeRowsMetricsShim
 
 /**
  * Trait for injecting per-partition planning data into operator nodes.
@@ -1841,11 +1842,11 @@ case class CometMergeRowsExec(
       rowIdOrdinal,
       child)
 
-  // Spark 4.1+ per-clause metrics require instruction context that earlier versions lack.
-  // Expose baseline metrics until that context is version-gated through native serde.
   override lazy val metrics: Map[String, SQLMetric] =
-    CometMetricNode.baselineMetrics(sparkContext) ++ Map(
-      "output_batches" -> SQLMetrics.createMetric(sparkContext, "number of output batches"))
+    CometMetricNode.baselineMetrics(sparkContext) ++
+      Map(
+        "output_batches" -> SQLMetrics.createMetric(sparkContext, "number of output batches")) ++
+      MergeRowsMetricsShim.metrics(sparkContext)
 }
 
 object CometExplodeExec extends CometOperatorSerde[GenerateExec] {
