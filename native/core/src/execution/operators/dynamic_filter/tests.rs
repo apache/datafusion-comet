@@ -201,3 +201,45 @@ async fn empty_batches_do_not_disable_early_filtering() {
     assert_eq!(output.iter().map(RecordBatch::num_rows).sum::<usize>(), 1);
     assert_eq!(metric(&filter, "dynamic_filter_early_rows_pruned"), 1);
 }
+
+#[test]
+fn adaptive_mode_survives_rebuilding() {
+    let source = input(vec![Some(1)], &DataType::Int32, 0);
+    let predicate = Arc::new(DynamicFilterPhysicalExpr::new(
+        vec![Arc::new(Column::new("key", 0))],
+        lit(true),
+    ));
+    let original = Arc::new(
+        DynamicFilterExec::new(
+            Arc::clone(&source),
+            Arc::clone(&predicate),
+            ExecutionPlanMetricsSet::new(),
+            "dynamic_filter_early",
+        )
+        .adaptive(),
+    );
+    let execution = original.with_execution_input(Arc::clone(&source));
+    let replaced = Arc::clone(&original)
+        .replace_children(
+            vec![source],
+            ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+        )
+        .unwrap();
+    let reset = original.reset_state().unwrap();
+    for plan in [&execution, &replaced, &reset] {
+        let filter = plan.downcast_ref::<DynamicFilterExec>().unwrap();
+        assert!(filter.adaptive);
+        assert_eq!(filter.metric_prefix, "dynamic_filter_early");
+    }
+    assert!(Arc::ptr_eq(
+        &execution
+            .downcast_ref::<DynamicFilterExec>()
+            .unwrap()
+            .predicate,
+        &predicate
+    ));
+    assert!(!Arc::ptr_eq(
+        &reset.downcast_ref::<DynamicFilterExec>().unwrap().predicate,
+        &predicate
+    ));
+}

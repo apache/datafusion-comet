@@ -46,7 +46,7 @@ use datafusion::physical_plan::{
 use futures::StreamExt;
 
 /// A task-local consumer of a live runtime predicate.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct DynamicFilterExec {
     input: Arc<dyn ExecutionPlan>,
     predicate: Arc<DynamicFilterPhysicalExpr>,
@@ -79,10 +79,7 @@ impl DynamicFilterExec {
     fn with_execution_input(&self, input: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
         Arc::new(Self {
             input,
-            predicate: Arc::clone(&self.predicate),
-            metrics: self.metrics.clone(),
-            metric_prefix: self.metric_prefix,
-            adaptive: self.adaptive,
+            ..self.clone()
         })
     }
 }
@@ -140,14 +137,11 @@ impl ExecutionPlan for DynamicFilterExec {
         if children.len() != 1 {
             return internal_err!("CometDynamicFilterExec requires one child");
         }
-        let mut replaced = Self::new(
-            children.remove(0),
-            Arc::clone(&self.predicate),
-            ExecutionPlanMetricsSet::new(),
-            self.metric_prefix,
-        );
-        replaced.adaptive = self.adaptive;
-        Ok(Arc::new(replaced))
+        Ok(Arc::new(Self {
+            input: children.remove(0),
+            metrics: ExecutionPlanMetricsSet::new(),
+            ..self.as_ref().clone()
+        }))
     }
 
     fn reset_state(self: Arc<Self>) -> Result<Arc<dyn ExecutionPlan>> {
@@ -158,14 +152,11 @@ impl ExecutionPlan for DynamicFilterExec {
             self.predicate.children().into_iter().cloned().collect(),
             lit(true),
         ));
-        let mut reset = Self::new(
-            Arc::clone(&self.input),
+        Ok(Arc::new(Self {
             predicate,
-            ExecutionPlanMetricsSet::new(),
-            self.metric_prefix,
-        );
-        reset.adaptive = self.adaptive;
-        Ok(Arc::new(reset))
+            metrics: ExecutionPlanMetricsSet::new(),
+            ..self.as_ref().clone()
+        }))
     }
 
     fn execute(
@@ -197,6 +188,11 @@ impl ExecutionPlan for DynamicFilterExec {
         // Early filtering duplicates the final consumer. Stop that extra work after
         // two nonempty evaluated batches remove nothing. The downstream join still
         // verifies every row, so later selectivity changes only lose an optimization.
+        // Exact zero avoids a workload-specific break-even ratio: even a small
+        // reduction may save substantial work in an intermediate join. Permanent
+        // bypass bounds duplicate evaluation; clustered inputs may lose later
+        // pruning, but the final consumer preserves correctness. Resampling and
+        // ratio thresholds would need workload evidence before adding more policy.
         // Keep this decision per stream; an inactive TRUE placeholder is not a sample.
         let adaptive = self.adaptive;
         let mut unselective_batches = 0;

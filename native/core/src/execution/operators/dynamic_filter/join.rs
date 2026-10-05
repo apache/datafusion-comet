@@ -212,6 +212,10 @@ impl ExecutionPlan for DynamicFilterJoinExec {
         self.template.maintains_input_order()
     }
 
+    fn fetch(&self) -> Option<usize> {
+        self.template.fetch()
+    }
+
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         self.template.children()
     }
