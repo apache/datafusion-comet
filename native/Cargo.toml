@@ -100,3 +100,40 @@ codegen-units = 16   # Parallel codegen (faster compile, slightly larger binary)
 debug-assertions = true
 panic = "unwind"     # Allow panics to be caught and logged across FFI boundary
 # overflow-checks inherited as false from release
+
+# Temporary Arrow 59-compatible backport of apache/datafusion#25491 onto DataFusion 55.1.
+# Patch the complete crate family so path dependencies share the same Rust types.
+# Remove this pin when Comet upgrades to an official release containing prepared builds.
+[patch.crates-io]
+datafusion = { git = "https://github.com/sunchao/arrow-datafusion", rev = "c9a142d834b6b47c2ac15524171bbf84f3022f73" }
+datafusion-catalog = { git = "https://github.com/sunchao/arrow-datafusion", rev = "c9a142d834b6b47c2ac15524171bbf84f3022f73" }
+datafusion-catalog-listing = { git = "https://github.com/sunchao/arrow-datafusion", rev = "c9a142d834b6b47c2ac15524171bbf84f3022f73" }
+datafusion-common = { git = "https://github.com/sunchao/arrow-datafusion", rev = "c9a142d834b6b47c2ac15524171bbf84f3022f73" }
+datafusion-common-runtime = { git = "https://github.com/sunchao/arrow-datafusion", rev = "c9a142d834b6b47c2ac15524171bbf84f3022f73" }
+datafusion-datasource = { git = "https://github.com/sunchao/arrow-datafusion", rev = "c9a142d834b6b47c2ac15524171bbf84f3022f73" }
+datafusion-datasource-arrow = { git = "https://github.com/sunchao/arrow-datafusion", rev = "c9a142d834b6b47c2ac15524171bbf84f3022f73" }
+datafusion-datasource-csv = { git = "https://github.com/sunchao/arrow-datafusion", rev = "c9a142d834b6b47c2ac15524171bbf84f3022f73" }
+datafusion-datasource-json = { git = "https://github.com/sunchao/arrow-datafusion", rev = "c9a142d834b6b47c2ac15524171bbf84f3022f73" }
+datafusion-datasource-parquet = { git = "https://github.com/sunchao/arrow-datafusion", rev = "c9a142d834b6b47c2ac15524171bbf84f3022f73" }
+datafusion-doc = { git = "https://github.com/sunchao/arrow-datafusion", rev = "c9a142d834b6b47c2ac15524171bbf84f3022f73" }
+datafusion-execution = { git = "https://github.com/sunchao/arrow-datafusion", rev = "c9a142d834b6b47c2ac15524171bbf84f3022f73" }
+datafusion-expr = { git = "https://github.com/sunchao/arrow-datafusion", rev = "c9a142d834b6b47c2ac15524171bbf84f3022f73" }
+datafusion-expr-common = { git = "https://github.com/sunchao/arrow-datafusion", rev = "c9a142d834b6b47c2ac15524171bbf84f3022f73" }
+datafusion-functions = { git = "https://github.com/sunchao/arrow-datafusion", rev = "c9a142d834b6b47c2ac15524171bbf84f3022f73" }
+datafusion-functions-aggregate = { git = "https://github.com/sunchao/arrow-datafusion", rev = "c9a142d834b6b47c2ac15524171bbf84f3022f73" }
+datafusion-functions-aggregate-common = { git = "https://github.com/sunchao/arrow-datafusion", rev = "c9a142d834b6b47c2ac15524171bbf84f3022f73" }
+datafusion-functions-nested = { git = "https://github.com/sunchao/arrow-datafusion", rev = "c9a142d834b6b47c2ac15524171bbf84f3022f73" }
+datafusion-functions-table = { git = "https://github.com/sunchao/arrow-datafusion", rev = "c9a142d834b6b47c2ac15524171bbf84f3022f73" }
+datafusion-functions-window = { git = "https://github.com/sunchao/arrow-datafusion", rev = "c9a142d834b6b47c2ac15524171bbf84f3022f73" }
+datafusion-functions-window-common = { git = "https://github.com/sunchao/arrow-datafusion", rev = "c9a142d834b6b47c2ac15524171bbf84f3022f73" }
+datafusion-macros = { git = "https://github.com/sunchao/arrow-datafusion", rev = "c9a142d834b6b47c2ac15524171bbf84f3022f73" }
+datafusion-optimizer = { git = "https://github.com/sunchao/arrow-datafusion", rev = "c9a142d834b6b47c2ac15524171bbf84f3022f73" }
+datafusion-physical-expr = { git = "https://github.com/sunchao/arrow-datafusion", rev = "c9a142d834b6b47c2ac15524171bbf84f3022f73" }
+datafusion-physical-expr-adapter = { git = "https://github.com/sunchao/arrow-datafusion", rev = "c9a142d834b6b47c2ac15524171bbf84f3022f73" }
+datafusion-physical-expr-common = { git = "https://github.com/sunchao/arrow-datafusion", rev = "c9a142d834b6b47c2ac15524171bbf84f3022f73" }
+datafusion-physical-optimizer = { git = "https://github.com/sunchao/arrow-datafusion", rev = "c9a142d834b6b47c2ac15524171bbf84f3022f73" }
+datafusion-physical-plan = { git = "https://github.com/sunchao/arrow-datafusion", rev = "c9a142d834b6b47c2ac15524171bbf84f3022f73" }
+datafusion-pruning = { git = "https://github.com/sunchao/arrow-datafusion", rev = "c9a142d834b6b47c2ac15524171bbf84f3022f73" }
+datafusion-session = { git = "https://github.com/sunchao/arrow-datafusion", rev = "c9a142d834b6b47c2ac15524171bbf84f3022f73" }
+datafusion-spark = { git = "https://github.com/sunchao/arrow-datafusion", rev = "c9a142d834b6b47c2ac15524171bbf84f3022f73" }
+datafusion-sql = { git = "https://github.com/sunchao/arrow-datafusion", rev = "c9a142d834b6b47c2ac15524171bbf84f3022f73" }
