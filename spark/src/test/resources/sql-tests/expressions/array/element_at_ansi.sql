@@ -126,3 +126,11 @@ SELECT id,
        element_at(IF(monotonically_increasing_id() % 2 = 0, CAST(NULL AS ARRAY<INT>), array(1)), 1) AS v1,
        element_at(IF(rand(7L) < 2, CAST(NULL AS ARRAY<INT>), array(1)), 1 + (id % (id - 2))) AS v2
 FROM ansi_element_at_null
+
+-- The same declined operand holding a calendar interval falls back to Spark rather than
+-- dispatching, since the dispatcher's Arrow nanoseconds overflow beyond about 292 years.
+-- https://github.com/apache/datafusion-comet/issues/5279
+query expect_fallback(holds a calendar interval)
+SELECT element_at(IF(monotonically_increasing_id() >= 0,
+  array(make_interval(0, 0, 0, 0, 0, 0, 10000000000.000000)), NULL), 1)
+FROM ansi_element_at_null

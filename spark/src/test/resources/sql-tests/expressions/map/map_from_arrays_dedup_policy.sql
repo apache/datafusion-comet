@@ -42,3 +42,9 @@ SELECT map_from_arrays(array('a', 'a', 'b'), array(1, 2, 3))
 -- not per-row content.
 query expect_dispatch(map_from_arrays)
 SELECT map_from_arrays(k, v) FROM test_map_from_arrays_dedup
+
+-- A calendar interval value would overflow the dispatcher's Arrow nanoseconds beyond about 292
+-- years, so the incompatible call falls back to Spark instead of dispatching.
+-- https://github.com/apache/datafusion-comet/issues/5279
+query expect_fallback(holds a calendar interval)
+SELECT map_from_arrays(array('a'), array(make_interval(0, 0, 0, 0, 0, 0, 10000000000.000000)))

@@ -80,10 +80,31 @@ private[serde] object NullGuardSupport {
       .map(_ => Unsupported(Some(nondeterministicReason)))
 }
 
+/**
+ * Keeps a result holding a calendar interval, at any nesting depth, off the JVM codegen
+ * dispatcher. The dispatcher writes the interval's microseconds to Arrow as nanoseconds, which
+ * overflows a long beyond about 292 years, a range Spark represents
+ * ([#5279](https://github.com/apache/datafusion-comet/issues/5279)). Such an expression falls
+ * back to Spark instead.
+ */
+private[serde] object CalendarIntervalOutput {
+
+  private val reason: String =
+    "the result holds a calendar interval, whose microseconds overflow the dispatcher's Arrow " +
+      "nanoseconds beyond about 292 years"
+
+  def declineReason(expr: Expression): Option[String] =
+    if (SupportLevel.containsType(expr.dataType, classOf[CalendarIntervalType])) Some(reason)
+    else None
+}
+
 object CometArrayAppend
     extends CometExpressionSerde[ArrayAppend]
     with ArraysBase
     with CodegenDispatchFallback {
+
+  override def dispatchDeclineReason(expr: Expression): Option[String] =
+    CalendarIntervalOutput.declineReason(expr)
 
   override def getUnsupportedReasons(): Seq[String] =
     Seq(NullGuardSupport.nondeterministicReason)
@@ -776,6 +797,9 @@ object CometElementAt extends CometExpressionSerde[ElementAt] with CodegenDispat
 
   override def getUnsupportedReasons(): Seq[String] = eagerIndexReason +: MapKeySupport.reasons
 
+  override def dispatchDeclineReason(expr: Expression): Option[String] =
+    CalendarIntervalOutput.declineReason(expr)
+
   override def getSupportLevel(expr: ElementAt): SupportLevel = {
     if (needsNullGuard(expr) && !expr.left.deterministic) {
       Unsupported(Some(eagerIndexReason))
@@ -992,10 +1016,13 @@ object CometArrayPosition extends CometExpressionSerde[ArrayPosition] with Array
 object CometArraysZip extends CometExpressionSerde[ArraysZip] with CodegenDispatchFallback {
 
   override def getUnsupportedReasons(): Seq[String] = Seq(
-    "An array whose element type is a map, a calendar, day-time or year-month interval, a " +
-      "variant, a `TIME` value or a user-defined type has no native `arrays_zip` kernel, and " +
-      "neither does a struct or inner array that holds one of those.",
+    "An array whose element type is a map, a day-time or year-month interval, a variant, a " +
+      "`TIME` value or a user-defined type has no native `arrays_zip` kernel, and neither does " +
+      "a struct or inner array that holds one of those.",
     NullGuardSupport.nondeterministicReason)
+
+  override def dispatchDeclineReason(expr: Expression): Option[String] =
+    CalendarIntervalOutput.declineReason(expr)
 
   private def isTypeSupported(dt: DataType): Boolean = {
     import DataTypes._

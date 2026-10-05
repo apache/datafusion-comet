@@ -121,6 +121,9 @@ object CometMapExtract extends CometExpressionSerde[GetMapValue] with CodegenDis
 
   override def getUnsupportedReasons(): Seq[String] = MapKeySupport.reasons
 
+  override def dispatchDeclineReason(expr: Expression): Option[String] =
+    CalendarIntervalOutput.declineReason(expr)
+
   override def getSupportLevel(expr: GetMapValue): SupportLevel = expr.child.dataType match {
     case MapType(keyType, _, _) => MapKeySupport.keySupport(keyType)
     case _ => Compatible()
@@ -165,6 +168,9 @@ object CometMapFromArrays
 
   override def getUnsupportedReasons(): Seq[String] =
     Seq(NullGuardSupport.nondeterministicReason)
+
+  override def dispatchDeclineReason(expr: Expression): Option[String] =
+    CalendarIntervalOutput.declineReason(expr)
 
   override def getCompatibleNotes(): Seq[String] =
     Seq(MapKeyDedupPolicySupport.nullKeyReason)
