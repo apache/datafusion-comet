@@ -127,21 +127,23 @@ object CometConf extends ShimCometConf {
       .doc(
         "Whether to rewrite Iceberg V2 writes from Spark's combined V2 write/commit operator " +
           "into Comet's two-operator shape: a file writer exec (inside AQE) and a committer " +
-          "(outside AQE). Iceberg's own writer still writes the data files unless " +
-          "`spark.comet.write.iceberg.enabled` is also set. Set this to false to plan " +
-          "Spark's own V2 write operator.")
+          "(outside AQE). The data files are written by Comet's native writer when " +
+          "`spark.comet.write.iceberg.enabled` allows it, and by Iceberg's own writer " +
+          "otherwise. Set this to false to plan Spark's own V2 write operator.")
       .booleanConf
       .createWithDefault(true)
 
   val COMET_ICEBERG_NATIVE_WRITE_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.write.iceberg.enabled")
-      .category(CATEGORY_TESTING)
+      .category(CATEGORY_EXEC)
       .doc(
         "Whether to delegate the executor-side Parquet write to Comet's native (iceberg-rust) " +
           "writer when the table's properties allow it. Requires " +
-          "`spark.comet.write.iceberg.splitOperator.enabled = true`. Off by default.")
+          "`spark.comet.write.iceberg.splitOperator.enabled = true`. A write the native " +
+          "writer cannot reproduce falls back to Iceberg's own writer. Set this to false to " +
+          "write every data file with Iceberg's own writer.")
       .booleanConf
-      .createWithDefault(false)
+      .createWithDefault(true)
 
   val COMET_ICEBERG_DATA_FILE_CONCURRENCY_LIMIT: ConfigEntry[Int] =
     conf("spark.comet.scan.icebergNative.dataFileConcurrencyLimit")

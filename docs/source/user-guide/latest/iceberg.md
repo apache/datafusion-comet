@@ -198,8 +198,8 @@ The following scenarios will fall back to the JVM Iceberg reader:
   rewritten
 
 Writes are not covered by this list. By default Comet plans an Iceberg write with its split-operator
-plan, and iceberg-java still writes the data files; see [Iceberg Writes](iceberg-writes.md) for the
-plan, the experimental native writer, and when each applies.
+plan and writes eligible data files natively; see [Iceberg Writes](iceberg-writes.md) for the plan,
+the native writer, and when each applies.
 
 ### Iceberg UDFs
 

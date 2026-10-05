@@ -38,10 +38,10 @@ Two flags, each of which builds on the one before it:
 | `spark.comet.write.iceberg.enabled`               | Who writes the data files. An eligible `IcebergWrite` becomes `CometIcebergWrite`, which writes Parquet with iceberg-rust.              |
 
 The native flag does nothing without the split flag, because it converts a node only the split plan
-creates. The split flag defaults to `true` since Comet 1.2.0, so a change to the split plan reaches
-every Iceberg write. The native flag defaults to `false`. The roadmap for making it the default, and
-the criteria for it, are tracked in [#5644](https://github.com/apache/datafusion-comet/issues/5644)
-under the epic [#5649](https://github.com/apache/datafusion-comet/issues/5649).
+creates. Both default to `true` since Comet 1.2.0, so a change to the split plan reaches every
+Iceberg write and a change to the native writer reaches every eligible one. The rollout and its
+criteria are tracked in [#5644](https://github.com/apache/datafusion-comet/issues/5644) under the
+epic [#5649](https://github.com/apache/datafusion-comet/issues/5649).
 
 One rule runs through the whole native path: **the native writer must produce the outcome
 iceberg-java would have produced, or decline.** iceberg-java is the reference for every data file,
