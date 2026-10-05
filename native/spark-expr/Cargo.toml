@@ -83,6 +83,10 @@ name = "cast_from_string"
 harness = false
 
 [[bench]]
+name = "cast_nested"
+harness = false
+
+[[bench]]
 name = "cast_string_to_date"
 harness = false
 
@@ -180,6 +184,10 @@ harness = false
 
 [[bench]]
 name = "bloom_filter_agg"
+harness = false
+
+[[bench]]
+name = "bloom_filter_might_contain"
 harness = false
 
 [[bench]]
@@ -452,6 +460,14 @@ harness = false
 
 [[bench]]
 name = "aggregate_stats"
+harness = false
+
+[[bench]]
+name = "hll_agg"
+harness = false
+
+[[bench]]
+name = "hll_scalar"
 harness = false
 
 [[bench]]
