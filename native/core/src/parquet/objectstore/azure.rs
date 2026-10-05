@@ -85,10 +85,11 @@
 //!    set, only the OAuth keys that class reads in Hadoop's `getTokenProvider` are
 //!    translated or checked for blank values and unsupported mechanisms, so the builder
 //!    sees only what Hadoop would read. Client credentials read the client id, secret and
-//!    endpoint (the tenant comes from the endpoint alone), MSI the MSI endpoint, tenant,
-//!    client id and authority, and Workload Identity the authority, tenant, client id and
-//!    token file. Settings a shared configuration keeps for another provider (a user
-//!    password, a refresh token, an MSI tenant or endpoint, a client secret) are ignored.
+//!    endpoint (the tenant and authority host come from the endpoint alone), MSI the MSI
+//!    endpoint, tenant, client id and authority, and Workload Identity the authority,
+//!    tenant, client id and token file. Settings a shared configuration keeps for another
+//!    provider (a user password, a refresh token, an MSI tenant, endpoint or authority, a
+//!    client secret) are ignored.
 //!    Keys that select a mechanism with no native counterpart (a SAS token provider class,
 //!    an account key provider class other than Hadoop's default
 //!    `org.apache.hadoop.fs.azurebfs.services.SimpleKeyProvider`, a refresh token, or a
@@ -119,7 +120,7 @@
 //! | `fs.azure.account.key`                        | `AccessKey`                          |
 //! | `fs.azure.account.oauth2.client.id`           | `ClientId`                           |
 //! | `fs.azure.account.oauth2.client.secret`       | `ClientSecret`                       |
-//! | `fs.azure.account.oauth2.client.endpoint`     | `AuthorityId` (from URL)             |
+//! | `fs.azure.account.oauth2.client.endpoint`     | `AuthorityId`, `AuthorityHost` (URL) |
 //! | `fs.azure.account.oauth2.msi.tenant`          | `AuthorityId`                        |
 //! | `fs.azure.account.oauth2.msi.endpoint`        | `MsiEndpoint`                        |
 //! | `fs.azure.account.oauth2.msi.authority`       | `AuthorityHost`                      |
@@ -1034,10 +1035,19 @@ fn translate_hadoop_configs(
     // `fs.azure.account.oauth2.client.endpoint` is a full token URL of the form
     // `https://login.microsoftonline.com/<tenant>/oauth2/token`. object_store wants the
     // tenant id directly (`AuthorityId`), so extract it if AuthorityId hasn't already
-    // been set from `fs.azure.account.oauth2.msi.tenant`.
-    let has_authority_id = out
-        .iter()
-        .any(|(k, _)| matches!(k, AzureConfigKey::AuthorityId));
+    // been set from `fs.azure.account.oauth2.msi.tenant`. For client credentials Hadoop
+    // posts to the endpoint itself, so its origin also becomes `AuthorityHost` unless
+    // `msi.authority` set it. That holds only when object_store will use client
+    // credentials: a client secret and no token file, since a token file selects Workload
+    // Identity first. Otherwise the endpoint is not a token URL, so its host must not
+    // receive another credential.
+    let has = |out: &[(AzureConfigKey, String)], wanted: AzureConfigKey| {
+        out.iter().any(|(k, _)| *k == wanted)
+    };
+    let has_authority_id = has(&out, AzureConfigKey::AuthorityId);
+    let endpoint_is_token_url = has(&out, AzureConfigKey::ClientSecret)
+        && !has(&out, AzureConfigKey::FederatedTokenFile)
+        && !has(&out, AzureConfigKey::AuthorityHost);
     if !has_authority_id
         && key_is_read(
             configs,
@@ -1051,6 +1061,11 @@ fn translate_hadoop_configs(
         {
             if let Some(tenant) = tenant_from_oauth_endpoint(&endpoint) {
                 out.push((AzureConfigKey::AuthorityId, tenant));
+                if let Some(host) =
+                    authority_host_from_oauth_endpoint(&endpoint).filter(|_| endpoint_is_token_url)
+                {
+                    out.push((AzureConfigKey::AuthorityHost, host));
+                }
             }
         }
     }
@@ -1253,10 +1268,21 @@ fn tenant_from_oauth_endpoint(endpoint: &str) -> Option<String> {
     Some(tenant.to_string())
 }
 
+/// The origin (`scheme://host[:port]`) of an OAuth token endpoint, which object_store
+/// joins with the tenant to build the token URL.
+fn authority_host_from_oauth_endpoint(endpoint: &str) -> Option<String> {
+    let origin = Url::parse(endpoint).ok()?.origin();
+    origin.is_tuple().then(|| origin.ascii_serialization())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use object_store::{azure::AzureCredential, ClientConfigKey};
+    use object_store::client::{
+        HttpClient, HttpConnector, HttpError, HttpRequest, HttpResponse, HttpResponseBody,
+        HttpService,
+    };
+    use object_store::{azure::AzureCredential, ClientConfigKey, ClientOptions};
 
     fn url(s: &str) -> Url {
         Url::parse(s).unwrap()
@@ -4270,10 +4296,218 @@ mod tests {
             );
         }
 
+        // The client credentials authority is the endpoint's host, never `msi.authority`.
         let configs = client_creds_with(&[msi_authority]);
         assert_builds_client_secret_store(&configs, "client credentials");
         let builder = builder_for(&configs, AMBIENT_CREDENTIALS);
+        assert_eq!(
+            value(&builder, AzureConfigKey::AuthorityHost).as_deref(),
+            Some("https://login.microsoftonline.com")
+        );
+    }
+
+    /// Records the URL of every request and answers 400, which is not retried, so the token
+    /// request `object_store` sends is observed without network access.
+    #[derive(Debug, Default, Clone)]
+    struct RecordingConnector(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+
+    #[async_trait::async_trait]
+    impl HttpService for RecordingConnector {
+        async fn call(&self, req: HttpRequest) -> Result<HttpResponse, HttpError> {
+            self.0.lock().unwrap().push(req.uri().to_string());
+            Ok(http::Response::builder()
+                .status(400)
+                .body(HttpResponseBody::from(String::new()))
+                .unwrap())
+        }
+    }
+
+    impl HttpConnector for RecordingConnector {
+        fn connect(&self, _options: &ClientOptions) -> object_store::Result<HttpClient> {
+            Ok(HttpClient::new(self.clone()))
+        }
+    }
+
+    /// The URL of the first request a store built from `configs` sends for its credential.
+    async fn token_request_url(configs: &HashMap<String, String>, env: &[(&str, &str)]) -> String {
+        let recorder = RecordingConnector::default();
+        let store = builder_for(configs, env)
+            .with_http_connector(recorder.clone())
+            .build()
+            .expect("store builds");
+        assert!(store.credentials().get_credential().await.is_err());
+        let urls = recorder.0.lock().unwrap();
+        urls.first().cloned().expect("a token request")
+    }
+
+    #[tokio::test]
+    async fn client_creds_token_requests_go_to_the_endpoint_host() {
+        // Hadoop's `ClientCredsTokenProvider` posts to `client.endpoint` itself, so the
+        // endpoint's origin is the authority host, beside the tenant taken from its path.
+        let env = [AMBIENT_CREDENTIALS, AMBIENT_ENDPOINTS].concat();
+        for (endpoint, authority) in [
+            (
+                "https://auth-proxy.example/hadoop-tenant/oauth2/v2.0/token",
+                "https://auth-proxy.example",
+            ),
+            (
+                "https://auth-proxy.example:8443/hadoop-tenant/oauth2/token",
+                "https://auth-proxy.example:8443",
+            ),
+        ] {
+            let configs = client_creds_with(&[
+                ("fs.azure.account.oauth2.client.endpoint", endpoint),
+                // Not read under `ClientCredsTokenProvider`.
+                (
+                    "fs.azure.account.oauth2.msi.authority",
+                    "https://login.chinacloudapi.cn",
+                ),
+            ]);
+            assert_builds_client_secret_store(&configs, endpoint);
+            let builder = builder_for(&configs, &env);
+            assert_eq!(
+                value(&builder, AzureConfigKey::AuthorityHost).as_deref(),
+                Some(authority),
+                "{endpoint}"
+            );
+            assert_eq!(
+                value(&builder, AzureConfigKey::AuthorityId).as_deref(),
+                Some("hadoop-tenant"),
+                "{endpoint}"
+            );
+            assert_eq!(
+                token_request_url(&configs, &env).await,
+                format!("{authority}/hadoop-tenant/oauth2/v2.0/token"),
+                "{endpoint}"
+            );
+        }
+        // The default endpoint keeps the public cloud authority.
+        let configs = client_creds_with(&[]);
+        assert_eq!(
+            token_request_url(&configs, &env).await,
+            "https://login.microsoftonline.com/hadoop-tenant/oauth2/v2.0/token"
+        );
+    }
+
+    #[tokio::test]
+    async fn endpoint_host_follows_the_tenant_and_yields_to_a_read_msi_authority() {
+        let proxy = "https://auth-proxy.example/synthetic-tenant/oauth2/token";
+        let principal = [
+            ("fs.azure.account.oauth2.client.id", "hadoop-client"),
+            ("fs.azure.account.oauth2.client.secret", "hadoop-secret"),
+            ("fs.azure.account.oauth2.client.endpoint", proxy),
+        ];
+        // With no provider class the endpoint is the tenant source, so it is the host too.
+        let configs = hadoop(&principal);
+        assert_eq!(
+            token_request_url(&configs, &[]).await,
+            "https://auth-proxy.example/synthetic-tenant/oauth2/v2.0/token"
+        );
+        // `msi.authority` is read there as well, and an explicit one still wins.
+        let mut pairs = principal.to_vec();
+        pairs.push((
+            "fs.azure.account.oauth2.msi.authority",
+            "https://login.chinacloudapi.cn",
+        ));
+        let configs = hadoop(&pairs);
+        assert_eq!(
+            value(&builder_for(&configs, &[]), AzureConfigKey::AuthorityHost).as_deref(),
+            Some("https://login.chinacloudapi.cn")
+        );
+        // An endpoint that yields no tenant yields no host either.
+        let configs = client_creds_with(&[(
+            "fs.azure.account.oauth2.client.endpoint",
+            "https://auth-proxy.example/",
+        )]);
+        let builder = builder_for(&configs, AMBIENT_ENDPOINTS);
+        assert_eq!(value(&builder, AzureConfigKey::AuthorityId), None);
         assert_eq!(value(&builder, AzureConfigKey::AuthorityHost), None);
+    }
+
+    #[tokio::test]
+    async fn endpoint_host_is_used_only_for_client_credentials() {
+        let proxy = (
+            "fs.azure.account.oauth2.client.endpoint",
+            "https://auth-proxy.example/hadoop-tenant/oauth2/token",
+        );
+        let client_id = ("fs.azure.account.oauth2.client.id", "hadoop-client");
+        // Without a secret the principal borrows the ambient token file, which must go to
+        // the Microsoft host and never to a host named only for client credentials.
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), "federated-token").unwrap();
+        let token_file = file.path().to_str().unwrap().to_string();
+        let env = [("AZURE_FEDERATED_TOKEN_FILE", token_file.as_str())];
+        let configs = hadoop(&[client_id, proxy]);
+        let builder = builder_for(&configs, &env);
+        assert_eq!(
+            value(&builder, AzureConfigKey::FederatedTokenFile).as_deref(),
+            Some(token_file.as_str())
+        );
+        assert_eq!(value(&builder, AzureConfigKey::AuthorityHost), None);
+        assert_eq!(
+            token_request_url(&configs, &env).await,
+            "https://login.microsoftonline.com/hadoop-tenant/oauth2/v2.0/token"
+        );
+        // object_store picks Workload Identity over the secret when a token file is set, so
+        // the endpoint is not its token URL then.
+        let configs = hadoop(&[
+            client_id,
+            ("fs.azure.account.oauth2.client.secret", "hadoop-secret"),
+            ("fs.azure.account.oauth2.token.file", token_file.as_str()),
+            proxy,
+        ]);
+        assert_eq!(
+            value(&builder_for(&configs, &[]), AzureConfigKey::AuthorityHost),
+            None
+        );
+        assert_eq!(
+            token_request_url(&configs, &[]).await,
+            "https://login.microsoftonline.com/hadoop-tenant/oauth2/v2.0/token"
+        );
+        // With `msi.tenant` set the endpoint is not the tenant source, so not the host either.
+        let configs = hadoop(&[
+            client_id,
+            ("fs.azure.account.oauth2.client.secret", "hadoop-secret"),
+            ("fs.azure.account.oauth2.msi.tenant", "from-msi"),
+            proxy,
+        ]);
+        let builder = builder_for(&configs, AMBIENT_ENDPOINTS);
+        assert_eq!(
+            value(&builder, AzureConfigKey::AuthorityId).as_deref(),
+            Some("from-msi")
+        );
+        assert_eq!(value(&builder, AzureConfigKey::AuthorityHost), None);
+    }
+
+    #[test]
+    fn authority_host_is_the_endpoint_origin() {
+        for (endpoint, expected) in [
+            (
+                "https://user:pass@auth-proxy.example/t/oauth2/token",
+                Some("https://auth-proxy.example"),
+            ),
+            (
+                "https://auth-proxy.example:443/t/oauth2/token",
+                Some("https://auth-proxy.example"),
+            ),
+            (
+                "https://auth-proxy.example:8443/t/oauth2/token",
+                Some("https://auth-proxy.example:8443"),
+            ),
+            (
+                "https://[::1]:8443/t/oauth2/token",
+                Some("https://[::1]:8443"),
+            ),
+            ("file:///t/oauth2/token", None),
+            ("urn:t:oauth2", None),
+            ("not a url", None),
+        ] {
+            assert_eq!(
+                authority_host_from_oauth_endpoint(endpoint).as_deref(),
+                expected,
+                "{endpoint}"
+            );
+        }
     }
 
     #[test]
