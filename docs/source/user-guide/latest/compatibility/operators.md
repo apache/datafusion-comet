@@ -116,16 +116,15 @@ strict floating-point mode.
 Spark `MergeRowsExec` appears as `CometMergeRows` when native execution is enabled.
 
 Comet can run `MergeRowsExec` (Spark's row-level `MERGE INTO` dispatch operator) natively on
-Spark 3.5.x and Spark 4.0.x, but it is disabled by default. Enable it with
+Spark 3.5+, but it is disabled by default. Enable it with
 `spark.comet.exec.mergeRows.enabled=true`.
 
-Spark 4.1+ intentionally falls back to Spark even when that flag is enabled. Starting in Spark
-4.1, the V2 existing-table writer locates the concrete Spark `MergeRowsExec`, builds a
-`MergeSummary` from its row-level metrics, and passes that summary to the summary-aware
-`BatchWrite.commit` overload. Replacing the node with `CometMergeRowsExec` would make summary
-discovery fail and silently switch the data source to the legacy summary-less commit overload.
-Comet will keep Spark 4.1+ `MERGE` on the JVM until it can preserve that writer contract end-to-end.
-See [#6606](https://github.com/apache/datafusion-comet/issues/6606).
+On Spark 4.1+, stock V2 writers discover the concrete Spark `MergeRowsExec` to build
+`MergeSummary`. When a write remains on Spark's V2 writer, Comet therefore keeps that JVM node
+even when native MergeRows is enabled. Comet's split Iceberg write path can run MergeRows natively:
+its `IcebergCommit` collects the same eight semantic action counters and forwards them through the
+summary-aware `BatchWrite.commit` contract. Spark 4.2 uses last-attempt metrics for these counters,
+matching Spark's retry-aware summary semantics.
 
 **Cardinality validation memory use can exceed Spark's:** native MERGE cardinality validation
 currently stores matched target row IDs in an unspillable hash set. For MERGEs with many matched
