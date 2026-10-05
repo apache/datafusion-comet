@@ -838,7 +838,8 @@ relation whose format could change mid-session could not be read back reliably. 
 codec is a runtime config, but each batch records the codec it was written with, so data cached
 under one setting stays readable after the setting changes. Turning
 <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.inMemoryCache.enabled</span></code> off at runtime only sends cached scans back to Spark’s
-execution path; the cached data stays readable either way.</p>
+execution path, where Spark operators read them through the row reader described under
+<a class="reference internal" href="#limitations">Limitations</a>; the cached data stays readable either way.</p>
 <p>A relation whose cached plan records observed metrics, from <code class="docutils literal notranslate"><span class="pre">Dataset.observe</span></code>, is still stored in
 Comet’s format but is scanned by Spark’s <code class="docutils literal notranslate"><span class="pre">InMemoryTableScanExec</span></code>, because Spark collects those
 metrics only through that scan.</p>
@@ -1044,43 +1045,69 @@ Spark’s cached batch too.</p>
 </section>
 <section id="limitations">
 <h2>Limitations<a class="headerlink" href="#limitations" title="Link to this heading">#</a></h2>
-<p>Reads that feed <strong>Spark</strong> operators rather than Comet ones are slower than Spark’s own cache
-format, and the narrower the read, the wider the gap. Measured by the same benchmark over the same
-5M-row relation, with Comet off so that Spark operators consume the cached data:</p>
+<p>Reads that feed <strong>Spark</strong> operators rather than Comet ones can be slower than Spark’s own cache
+format, because every cached batch is decoded from Arrow before Spark reads it. How a Spark
+operator reads a relation cached in Comet’s format depends on the scan below it:</p>
+<ul class="simple">
+<li><p>With native execution enabled (<code class="docutils literal notranslate"><span class="pre">spark.comet.exec.enabled=true</span></code>), the cache is scanned by
+<code class="docutils literal notranslate"><span class="pre">CometInMemoryTableScan</span></code>, and a Spark operator above it reads the scan’s batches through
+<code class="docutils literal notranslate"><span class="pre">CometColumnarToRow</span></code>, as it would above any other Comet operator.</p></li>
+<li><p>With Comet enabled but native execution disabled, the cache is scanned by Spark’s
+<code class="docutils literal notranslate"><span class="pre">InMemoryTableScanExec</span></code>. When the operator directly above the scan takes part in whole-stage code
+generation, as filters, projections and aggregates do, Comet puts Spark’s <code class="docutils literal notranslate"><span class="pre">ColumnarToRowExec</span></code>
+between the two, and the generated code reads the cached Arrow vectors directly, with no
+intermediate row. The plan shows this as a <code class="docutils literal notranslate"><span class="pre">ColumnarToRow</span></code> above the <code class="docutils literal notranslate"><span class="pre">InMemoryTableScan</span></code>. It
+needs <code class="docutils literal notranslate"><span class="pre">spark.sql.inMemoryColumnarStorage.enableVectorizedReader</span></code> (on by default) and whole-stage
+code generation, and applies to relations of at most <code class="docutils literal notranslate"><span class="pre">spark.sql.codegen.maxFields</span></code> fields (100 by
+default, counting nested fields), beyond which Spark reads a cached relation only as rows. It is
+not applied in plan-only mode (<code class="docutils literal notranslate"><span class="pre">spark.comet.explain.planOnly.enabled</span></code>), where Spark executes its
+own plan unchanged.</p></li>
+<li><p>Otherwise the scan’s row reader decodes each batch and writes its rows into one reused
+<code class="docutils literal notranslate"><span class="pre">UnsafeRow</span></code>. That covers Comet or <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.inMemoryCache.enabled</span></code> turned off at runtime,
+and operators that do not take part in code generation, such as exchanges and limits, or a query
+that returns the cached rows as they are.</p></li>
+</ul>
+<p>Measured by the same benchmark over the same 5M-row relation, with native execution off so that
+Spark operators consume the cached data, Comet disabled for the row reader and enabled for the fused
+reader (Apple M4, JDK 17, Spark 4.1; the average of two runs):</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Read shape</p></th>
 <th class="head text-right"><p>Spark’s cache format</p></th>
-<th class="head text-right"><p>Comet’s cache format</p></th>
-<th class="head text-right"><p>Slowdown</p></th>
+<th class="head text-right"><p>Comet’s format, row reader</p></th>
+<th class="head text-right"><p>Comet’s format, fused reader</p></th>
 </tr>
 </thead>
 <tbody>
 <tr class="row-even"><td><p>Row count only (0 of 6)</p></td>
+<td class="text-right"><p>63 ms</p></td>
+<td class="text-right"><p>57 ms</p></td>
 <td class="text-right"><p>35 ms</p></td>
-<td class="text-right"><p>183 ms</p></td>
-<td class="text-right"><p>5.2x</p></td>
 </tr>
 <tr class="row-odd"><td><p>1 of 6 columns</p></td>
+<td class="text-right"><p>63 ms</p></td>
+<td class="text-right"><p>77 ms</p></td>
 <td class="text-right"><p>54 ms</p></td>
-<td class="text-right"><p>257 ms</p></td>
-<td class="text-right"><p>4.8x</p></td>
 </tr>
 <tr class="row-even"><td><p>3 of 6 columns</p></td>
-<td class="text-right"><p>98 ms</p></td>
-<td class="text-right"><p>331 ms</p></td>
-<td class="text-right"><p>3.4x</p></td>
+<td class="text-right"><p>113 ms</p></td>
+<td class="text-right"><p>176 ms</p></td>
+<td class="text-right"><p>133 ms</p></td>
 </tr>
 <tr class="row-odd"><td><p>6 of 6 columns</p></td>
-<td class="text-right"><p>410 ms</p></td>
-<td class="text-right"><p>623 ms</p></td>
-<td class="text-right"><p>1.5x</p></td>
+<td class="text-right"><p>306 ms</p></td>
+<td class="text-right"><p>500 ms</p></td>
+<td class="text-right"><p>334 ms</p></td>
 </tr>
 </tbody>
 </table>
 </div>
-<p>This is why the feature is off by default. The cause is not yet established;
-<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5485">#5485</a> tracks it.</p>
+<p>The fused reader is faster than Spark’s own format for the narrowest reads and within 20% of it for
+the others. The row reader takes up to 1.6 times as long, and it is the only reader for relations
+wider than <code class="docutils literal notranslate"><span class="pre">spark.sql.codegen.maxFields</span></code>: reading every column of relations of 100, 200 and 1500
+nullable <code class="docutils literal notranslate"><span class="pre">bigint</span></code> columns took 2.2 to 2.5 times as long as from Spark’s format. These gaps are why
+the feature is still off by default;
+<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5485">#5485</a> tracks them.</p>
 <p>Comet’s serializer exists because Spark’s own Arrow cache format
 (<a class="reference external" href="https://issues.apache.org/jira/browse/SPARK-57268">SPARK-57268</a>) is only available from Spark
 4.3, which Comet does not yet support.</p>
