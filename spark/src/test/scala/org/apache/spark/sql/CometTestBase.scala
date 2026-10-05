@@ -76,6 +76,18 @@ abstract class CometTestBase
     assert(reused.nonEmpty, s"$clue:\n$plan")
   }
 
+  /**
+   * Sets each Spark-to-Arrow conversion that [[sparkConf]] turns on, which are off by default, to
+   * `enabled`. These are the conversions `spark.comet.sparkToColumnar.enabled` stood for before
+   * each had a config of its own.
+   */
+  protected def sparkToArrowConversionConfs(enabled: Boolean): Seq[(String, String)] =
+    Seq(
+      CometConf.COMET_CONVERT_FROM_RANGE_ENABLED,
+      CometConf.COMET_CONVERT_FROM_IN_MEMORY_CACHE_ENABLED,
+      CometConf.COMET_CONVERT_FROM_RDD_ENABLED,
+      CometConf.COMET_CONVERT_FROM_ONE_ROW_RELATION_ENABLED).map(_.key -> enabled.toString)
+
   protected def sparkConf: SparkConf = {
     val conf = new SparkConf()
     conf.set("spark.hadoop.fs.file.impl", classOf[DebugFilesystem].getName)
@@ -90,7 +102,7 @@ abstract class CometTestBase
     conf.set(CometConf.COMET_ONHEAP_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_ENABLED.key, "true")
     conf.set(CometConf.COMET_SHUFFLE_ENABLED.key, "true")
-    conf.set(CometConf.COMET_SPARK_TO_ARROW_ENABLED.key, "true")
+    conf.setAll(sparkToArrowConversionConfs(enabled = true))
     conf.set(CometConf.COMET_NATIVE_SCAN_ENABLED.key, "true")
     conf.set(CometConf.COMET_PARQUET_UNSIGNED_SMALL_INT_CHECK.key, "false")
     conf.set(CometConf.COMET_SCAN_ALLOW_DISABLED_PARQUET_VECTORIZED_READER.key, "true")
