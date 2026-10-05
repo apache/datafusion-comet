@@ -1761,7 +1761,7 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           checkSparkAnswerAndFallbackReason(
             s"SELECT array_contains(array($a), $b), " +
               s"arrays_overlap(array($a), array($b)) FROM collation_cast",
-            "Cast from StringType")
+            CometCast.nonDefaultCollationReason)
         }
       }
     }
