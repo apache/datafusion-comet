@@ -260,9 +260,9 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::super::test_util::{bits, first_row_field_bits, list, EDGE_VALUES};
+    use super::super::test_util::{bits, first_row_field_bits, list};
     use super::*;
-    use crate::float_semantics::NEGATIVE_NAN;
+    use crate::float_semantics::{EDGE_VALUES, NEGATIVE_NAN};
     use arrow::array::{Float32Array, Float64Array, StructArray};
     use arrow::datatypes::{Field, Fields};
     use datafusion::config::ConfigOptions;
