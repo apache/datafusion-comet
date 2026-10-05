@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+mod result_type;
+
 use std::fmt::{Display, Formatter};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -258,7 +260,9 @@ impl PhysicalExpr for JvmScalarUdfExpr {
         let imported = make_array(result_data);
         let decoded =
             decode_string_arrays(&imported).map_err(|e| CometError::Arrow { source: e })?;
-        Ok(ColumnarValue::Array(decoded))
+        let result =
+            result_type::conform_to_declared_type(&self.class_name, decoded, &self.return_type)?;
+        Ok(ColumnarValue::Array(result))
     }
 
     fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {

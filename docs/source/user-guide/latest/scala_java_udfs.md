@@ -23,6 +23,8 @@ Comet executes Spark's Scala and Java [scalar user-defined functions (UDFs)](htt
 
 This page covers Spark's `ScalaUDF` (Scala `udf(...)`, `spark.udf.register(...)` over Scala or Java functional interfaces, and SQL `CREATE FUNCTION ... AS 'com.example.MyUDF'`). Other UDF kinds (Python / Pandas, Hive, aggregate) are out of scope and continue to fall back to Spark.
 
+Comet calls these functions once per row. To write a function that is called once per batch with Arrow vectors instead, see the experimental [Vectorized Java and Scala UDFs](jvm_udfs.md).
+
 This feature is enabled by default. Set `spark.comet.exec.scalaUDF.codegen.enabled` to `false` to route plans containing a `ScalaUDF` back to Spark for the enclosing operator.
 
 ## Configuration
