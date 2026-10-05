@@ -165,6 +165,10 @@ The function is then callable from SQL or the DataFrame API like any other:
 spark.range(0, 5).selectExpr("add_one(id) AS y").show()
 ```
 
+Like `spark.udf.register`, `register` creates a temporary function in the session you pass it.
+Another session, including one from `spark.newSession()`, needs to register the function itself, and
+registering any other function under the same name in a session replaces it there.
+
 Your function must be a pure function of its arguments. Comet plans every Rust UDF as immutable,
 which lets the optimizer fold a call over constants, evaluate it once and reuse the result, or drop
 a repeated call as a common subexpression. `register` therefore rejects `deterministic = false`

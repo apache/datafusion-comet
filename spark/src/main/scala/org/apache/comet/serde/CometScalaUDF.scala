@@ -32,7 +32,7 @@ import org.apache.comet.DataTypeSupport.equalsIgnoreNullability
 import org.apache.comet.codegen.CometBatchKernelCodegen
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, serializeDataType}
-import org.apache.comet.udf.{CometNativeUdfArgumentTypeException, CometNativeUdfRegistry, NativeUdfMetadata}
+import org.apache.comet.udf.{CometNativeUdfArgumentTypeException, CometNativeUdfFunction, NativeUdfMetadata}
 import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 
 /**
@@ -58,29 +58,25 @@ import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
 
   override def convert(expr: ScalaUDF, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
-    // A registered native UDF is emitted as NativeScalarUdf and dispatched to the loaded shared
-    // library rather than to the JVM codegen dispatcher.
-    //
-    // The match is on the name alone, which is not enough to identify one: Spark sets `udfName` for
-    // every `spark.udf.register` call, and the registry is process-wide and keyed by bare name, so
-    // an ordinary Scala UDF sharing the name is currently answered out of the native library. The
-    // registration would have to be identified some other way to fix that, since the closure Spark
-    // holds for the catalog stub is one `functions.udf` wrapped rather than the one Comet passed
-    // in. See https://github.com/apache/datafusion-comet/issues/5295.
-    expr.udfName.flatMap(CometNativeUdfRegistry.get) match {
-      case Some(meta) =>
-        emitNativeScalarUdf(expr, meta, inputs, binding)
-      case None =>
+    // A native UDF is emitted as NativeScalarUdf and dispatched to its shared library rather than
+    // to the JVM codegen dispatcher. It is recognized by the function its registration put in the
+    // `ScalaUDF`, not by name, so an ordinary UDF registered under the same name, in this session
+    // or another, holds its own function and stays on the JVM path.
+    expr.function match {
+      case native: CometNativeUdfFunction =>
+        emitNativeScalarUdf(expr, native, inputs, binding)
+      case _ =>
         emitJvmCodegenDispatch(expr, inputs, binding)
     }
   }
 
   private def emitNativeScalarUdf(
       expr: ScalaUDF,
-      meta: NativeUdfMetadata,
+      native: CometNativeUdfFunction,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
-    val name = expr.udfName.get
+    val name = native.name
+    val meta = native.meta
     checkArgumentTypes(name, expr, meta)
     val argProtos = expr.children.map(c => exprToProtoInternal(c, inputs, binding))
     if (argProtos.exists(_.isEmpty)) {
@@ -104,13 +100,13 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
   /**
    * Refuse a call whose argument types differ from the ones the UDF was registered with.
    *
-   * The catalog stub Comet installs is untyped, so Spark inserts no casts for it and a call
-   * reaches this point with whatever types its arguments happen to have. Converting them here
-   * would be a semantic choice Spark never made, so the call is refused instead, naming both
-   * signatures. Nullability and struct field metadata are disregarded, because neither changes
-   * the values a UDF receives.
+   * The `ScalaUDF` a native UDF's calls resolve to declares no input types, so Spark inserts no
+   * casts for it and a call reaches this point with whatever types its arguments happen to have.
+   * Converting them here would be a semantic choice Spark never made, so the call is refused
+   * instead, naming both signatures. Nullability and struct field metadata are disregarded,
+   * because neither changes the values a UDF receives.
    *
-   * This throws rather than falling back: the stub cannot evaluate the UDF on the JVM, so a
+   * This throws rather than falling back: a native UDF cannot be evaluated on the JVM, so a
    * fallback would only fail later with a less useful message.
    */
   private def checkArgumentTypes(name: String, expr: ScalaUDF, meta: NativeUdfMetadata): Unit = {

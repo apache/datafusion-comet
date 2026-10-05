@@ -34,14 +34,15 @@ class CometNativeUdfLoadException(msg: String, cause: Throwable = null)
 class CometNativeUdfAbiException(msg: String) extends CometNativeException(msg)
 
 /**
- * Thrown at planning time when a native UDF is called with argument types other than the ones it
- * was registered with. Comet does not convert arguments to the registered types.
+ * Thrown when a native UDF is called with a different number of arguments than it was registered
+ * with, or at planning time, with different argument types. Comet does not convert arguments to
+ * the registered types.
  */
 class CometNativeUdfArgumentTypeException(msg: String) extends CometRuntimeException(msg)
 
 /**
- * Thrown by the catalog stub if a registered native UDF is invoked on the JVM (which means
- * Comet's plan rule did not replace it).
+ * Thrown if Spark evaluates a native UDF on the JVM, which means Comet's plan rule did not
+ * replace the call.
  */
 class CometNativeUdfNotEvaluatedException(name: String)
     extends CometRuntimeException(

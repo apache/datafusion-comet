@@ -20,8 +20,7 @@
 package org.apache.comet.udf
 
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.expressions.UserDefinedFunction
-import org.apache.spark.sql.functions.udf
+import org.apache.spark.sql.catalyst.expressions.{Expression, ScalaUDF}
 import org.apache.spark.sql.types.DataType
 
 /**
@@ -45,12 +44,12 @@ object CometNativeUDF {
   /**
    * Register a single native UDF with an explicit signature.
    *
-   * Validates the library on the driver (loads it, confirms a UDF named `name` exists). On
-   * success the driver-side registry is updated and a stub Spark catalog UDF is installed, in
-   * that order, so SQL/DataFrame name resolution succeeds only once the plan can be serialized as
-   * a `NativeScalarUdf`.
+   * Validates the library on the driver (loads it, confirms a UDF named `name` exists), then
+   * registers `name` as a temporary function in `spark`'s function registry, as
+   * `spark.udf.register` does. Like any temporary function it is visible only in that session,
+   * and registering another function under the same name there replaces it.
    *
-   * Executors do not consult the driver's registry: the library path travels with the plan in the
+   * Executors need no registration: the library path travels with the plan in the
    * `NativeScalarUdf` proto, and each executor loads the library itself on first use. The path
    * must therefore be valid on every executor, not just the driver.
    *
@@ -83,13 +82,28 @@ object CometNativeUDF {
           "See https://github.com/apache/datafusion-comet/issues/5249")
     }
     validateLibrary(libraryPath, name)
-    val meta = NativeUdfMetadata(libraryPath, inputTypes, returnType, deterministic)
-    CometNativeUdfRegistry.register(name, meta)
-    // Last, because this is the step that makes the name resolvable to Spark's analyzer. A query
-    // planned against a resolvable name that has no registry entry yet would route the call to the
-    // JVM codegen dispatcher and hit the stub's "not evaluated" exception, so the registry entry
-    // has to be in place first.
-    installCatalogStub(spark, name, inputTypes, returnType, deterministic)
+    val function = CometNativeUdfFunction(
+      name,
+      NativeUdfMetadata(libraryPath, inputTypes, returnType, deterministic))
+    // Every call resolved to `name` gets the same function, so the serde recognizes the call by
+    // it, and two identical calls are still equal expressions.
+    def builder(children: Seq[Expression]): Expression = {
+      if (children.length != inputTypes.length) {
+        throw new CometNativeUdfArgumentTypeException(
+          s"native UDF '$name' was registered with ${inputTypes.length} argument(s) but is " +
+            s"called with ${children.length}")
+      }
+      // No input encoders, so Spark inserts no casts and does no null handling for the
+      // arguments. The serde checks their types instead.
+      ScalaUDF(
+        function,
+        returnType,
+        children,
+        inputEncoders = Seq.fill(children.length)(None),
+        udfName = Some(name),
+        udfDeterministic = deterministic)
+    }
+    spark.sessionState.functionRegistry.createOrReplaceTempFunction(name, builder, "scala_udf")
   }
 
   /**
@@ -126,44 +140,5 @@ object CometNativeUDF {
     } else {
       new CometNativeUdfLoadException(s"failed to load $libraryPath: $m", t)
     }
-  }
-
-  /**
-   * Install a Spark catalog UDF under `name` so that SQL and DataFrame name resolution succeed.
-   *
-   * The stub only ever throws: a native UDF that reaches the JVM means Comet did not replace the
-   * expression with a native call. Note that the closure Spark keeps is not the one passed here,
-   * because `functions.udf` wraps the `UDFn` it is handed, which is why the serde cannot
-   * recognize this registration by identity and has to match on the name alone. See
-   * [[https://github.com/apache/datafusion-comet/issues/5295]].
-   */
-  private def installCatalogStub(
-      spark: SparkSession,
-      name: String,
-      inputTypes: Seq[DataType],
-      returnType: DataType,
-      deterministic: Boolean): Unit = {
-    val u: UserDefinedFunction = inputTypes.size match {
-      case 0 =>
-        udf(() => throw new CometNativeUdfNotEvaluatedException(name), returnType)
-      case 1 =>
-        udf((_: Any) => throw new CometNativeUdfNotEvaluatedException(name), returnType)
-      case 2 =>
-        udf((_: Any, _: Any) => throw new CometNativeUdfNotEvaluatedException(name), returnType)
-      case 3 =>
-        udf(
-          (_: Any, _: Any, _: Any) => throw new CometNativeUdfNotEvaluatedException(name),
-          returnType)
-      case 4 =>
-        udf(
-          (_: Any, _: Any, _: Any, _: Any) => throw new CometNativeUdfNotEvaluatedException(name),
-          returnType)
-      case n =>
-        throw new IllegalArgumentException(
-          s"native UDF '$name' arity $n not supported by stub. Reduce arity " +
-            "or open a feature request to extend stub coverage.")
-    }
-    val finalUdf = if (deterministic) u else u.asNondeterministic()
-    val _ = spark.udf.register(name, finalUdf)
   }
 }
