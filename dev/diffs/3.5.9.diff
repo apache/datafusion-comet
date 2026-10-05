@@ -1899,7 +1899,7 @@ index 5a413c77754..207b66e1d7b 100644
  
    import testImplicits._
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
-index 2f8e401e743..1b3a6ff17b5 100644
+index 2f8e401e743..a9567edf805 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
 @@ -27,9 +27,11 @@ import org.scalatest.time.SpanSugar._
@@ -2305,17 +2305,7 @@ index 2f8e401e743..1b3a6ff17b5 100644
          }.size == (if (firstAccess) 2 else 0))
          assert(collect(initialExecutedPlan) {
            case i: InMemoryTableScanLike => i
-@@ -2898,7 +2941,8 @@ class AdaptiveQueryExecSuite
-     }
-   }
- 
--  test("SPARK-42101: Coalesce shuffle partition with union even if exists TableCacheQueryStage") {
-+  test("SPARK-42101: Coalesce shuffle partition with union even if exists TableCacheQueryStage",
-+    IgnoreComet("https://github.com/apache/datafusion-comet/issues/6454")) {
-     withSQLConf(SQLConf.CAN_CHANGE_CACHED_PLAN_OUTPUT_PARTITIONING.key -> "true",
-         SQLConf.COALESCE_PARTITIONS_MIN_PARTITION_NUM.key -> "1") {
-       val cached = Seq(1).toDF("c").cache()
-@@ -2923,7 +2967,8 @@ class AdaptiveQueryExecSuite
+@@ -2923,7 +2966,8 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -2325,7 +2315,7 @@ index 2f8e401e743..1b3a6ff17b5 100644
      withSQLConf(SQLConf.CAN_CHANGE_CACHED_PLAN_OUTPUT_PARTITIONING.key -> "true") {
        withTable("t1", "t2") {
          withCache("t1") {
-@@ -2938,7 +2983,8 @@ class AdaptiveQueryExecSuite
+@@ -2938,7 +2982,8 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -2335,7 +2325,7 @@ index 2f8e401e743..1b3a6ff17b5 100644
      val emptyDf = spark.range(1).where("false")
      val aggDf1 = emptyDf.agg(sum("id").as("id")).withColumn("name", lit("df1"))
      val aggDf2 = emptyDf.agg(sum("id").as("id")).withColumn("name", lit("df2"))
-@@ -2980,7 +3026,9 @@ class AdaptiveQueryExecSuite
+@@ -2980,7 +3025,9 @@ class AdaptiveQueryExecSuite
  
        val plan = df.queryExecution.executedPlan.asInstanceOf[AdaptiveSparkPlanExec]
        assert(plan.inputPlan.isInstanceOf[TakeOrderedAndProjectExec])
