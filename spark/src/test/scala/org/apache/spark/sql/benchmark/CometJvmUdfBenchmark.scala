@@ -86,17 +86,25 @@ object CometJvmUdfBenchmark extends CometBenchmarkBase {
     CometConf.COMET_EXEC_ENABLED.key -> "true",
     CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> dispatch.toString)
 
-  /** One form of a function: the UDF name prefix to call it by, and the confs to run it under. */
-  private case class Form(label: String, udfPrefix: String, configs: Seq[(String, String)])
+  /**
+   * One form of a function: the UDF name prefix to call it by, the confs to run it under, and
+   * whether Comet has to run every operator of the query.
+   */
+  private case class Form(
+      label: String,
+      udfPrefix: String,
+      configs: Seq[(String, String)],
+      native: Boolean)
 
   private val forms = Seq(
-    Form("Spark", "spark_", Seq(CometConf.COMET_ENABLED.key -> "false")),
-    Form("Comet, codegen dispatch", "spark_", cometConfigs(dispatch = true)),
-    // The dispatcher is off, so a plan that needed it would fall back to Spark, which cannot
-    // evaluate the vectorized UDF, and fail the case rather than time the wrong thing.
-    Form("Comet, vectorized UDF", "jvm_", cometConfigs(dispatch = false)))
+    Form("Spark", "spark_", Seq(CometConf.COMET_ENABLED.key -> "false"), native = false),
+    Form("Comet, codegen dispatch", "spark_", cometConfigs(dispatch = true), native = true),
+    Form("Comet, vectorized UDF", "jvm_", cometConfigs(dispatch = false), native = true))
 
-  /** A timing means nothing if one form computed something else. */
+  /**
+   * A timing means nothing if one form computed something else, or ran in Spark: a vectorized UDF
+   * that Spark evaluates runs one row at a time and still returns the right answer.
+   */
   private def verifyFormsAgree(fn: String): Unit = {
     val results = forms.map(f => f.label -> collect(f, fn))
     val (_, expected) = results.head
@@ -109,7 +117,15 @@ object CometJvmUdfBenchmark extends CometBenchmarkBase {
   private def collect(form: Form, fn: String): Seq[Row] = {
     var rows: Seq[Row] = Nil
     withSQLConf(form.configs: _*) {
-      rows = spark.sql(query(form.udfPrefix + fn)).collect().toSeq
+      val df = spark.sql(query(form.udfPrefix + fn))
+      rows = df.collect().toSeq
+      if (form.native) {
+        val plan = stripAQEPlan(df.queryExecution.executedPlan)
+        findFirstNonCometOperator(plan).foreach { op =>
+          throw new IllegalStateException(
+            s"$fn: ${form.label} ran ${op.nodeName} in Spark:\n${plan.treeString}")
+        }
+      }
     }
     rows
   }

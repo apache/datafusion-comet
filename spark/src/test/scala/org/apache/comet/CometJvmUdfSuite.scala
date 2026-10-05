@@ -26,7 +26,7 @@ import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector.{BigIntVector, IntVector, ValueVector}
 import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
 import org.apache.spark.SparkConf
-import org.apache.spark.sql.{AnalysisException, CometTestBase, DataFrame}
+import org.apache.spark.sql.{AnalysisException, CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.functions.expr
 import org.apache.spark.sql.types._
 
@@ -35,9 +35,9 @@ import org.apache.comet.udf.{CometJvmUDF, CometUDF}
 /**
  * End-to-end coverage for vectorized JVM UDFs registered through [[CometJvmUDF]].
  *
- * The tests are self-guarding on Comet execution: Spark cannot evaluate a registered UDF, so a
- * fallback to Spark fails a test rather than passing it. For the same reason they compare with
- * literal expected values rather than with Spark's answer, which Spark cannot produce.
+ * Spark evaluates a registered UDF itself one row at a time, so a fallback to Spark would still
+ * get the right answer. Most tests therefore read results through `column` or `collectNative`,
+ * which check that Comet ran every operator of the query and that its answer matches Spark's.
  */
 class CometJvmUdfSuite extends CometTestBase {
 
@@ -57,8 +57,20 @@ class CometJvmUdfSuite extends CometTestBase {
       Seq(LongType, LongType),
       LongType)
 
-  /** The first column of every row. */
-  private def column(df: DataFrame): Seq[Any] = df.collect().map(_.get(0)).toSeq
+  /**
+   * The rows of `df`, after checking that Comet ran every operator of the query and got the same
+   * answer as Spark, which evaluates a registered UDF one row at a time.
+   */
+  private def collectNative(df: DataFrame): Seq[Row] = {
+    checkSparkAnswerAndOperator(df)
+    df.collect().toSeq
+  }
+
+  /** The first column of every row, checked as `collectNative` checks it. */
+  private def column(df: DataFrame): Seq[Any] = collectNative(df).map(_.get(0))
+
+  /** The first column of every row, wherever the query ran. */
+  private def values(df: DataFrame): Seq[Any] = df.collect().map(_.get(0)).toSeq
 
   private def registerRangeList(containsNull: Boolean): Unit =
     CometJvmUDF.register(
@@ -93,15 +105,15 @@ class CometJvmUdfSuite extends CometTestBase {
   test("literal arguments arrive as one-row vectors in any position") {
     registerAddOne()
     registerSubtract()
-    val rows = spark
-      .range(0, 3)
-      .selectExpr(
-        "jvm_add_one(41L)",
-        "jvm_subtract(id, 10L)",
-        "jvm_subtract(10L, id)",
-        // Spark's analyzer types a bare NULL as the registered argument type.
-        "jvm_add_one(NULL)")
-      .collect()
+    val rows = collectNative(
+      spark
+        .range(0, 3)
+        .selectExpr(
+          "jvm_add_one(41L)",
+          "jvm_subtract(id, 10L)",
+          "jvm_subtract(10L, id)",
+          // Spark's analyzer types a bare NULL as the registered argument type.
+          "jvm_add_one(NULL)"))
     assert(rows.map(_.getLong(0)).toSeq == Seq(42L, 42L, 42L))
     assert(rows.map(_.getLong(1)).toSeq == Seq(-10L, -9L, -8L))
     assert(rows.map(_.getLong(2)).toSeq == Seq(10L, 9L, 8L))
@@ -111,7 +123,7 @@ class CometJvmUdfSuite extends CometTestBase {
   test("arguments are evaluated natively rather than by the codegen dispatcher") {
     registerAddOne()
     // With the dispatcher off, a projection that needed it for `abs` would fall back to Spark,
-    // which cannot evaluate the UDF.
+    // which `column` would catch.
     withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
       val df = spark.range(0, 4).selectExpr("jvm_add_one(abs(id - 2))")
       assert(column(df) == Seq(3L, 2L, 1L, 2L))
@@ -120,7 +132,7 @@ class CometJvmUdfSuite extends CometTestBase {
 
   // Filters, join conditions, grouping keys and window partitioning each reach the serde through
   // a different Comet operator. A regression in any one of them would show only as a fallback to
-  // Spark, which fails because Spark cannot evaluate the UDF.
+  // Spark, which gives the same answer, so these tests check the plan as well.
 
   test("a UDF in a filter predicate runs in the Comet pipeline") {
     registerAddOne()
@@ -133,24 +145,19 @@ class CometJvmUdfSuite extends CometTestBase {
     withTempView("l", "r") {
       spark.range(0, 5).createOrReplaceTempView("l")
       spark.range(0, 5).createOrReplaceTempView("r")
-      val rows = spark
-        .sql("SELECT l.id, r.id FROM l JOIN r ON jvm_add_one(l.id) = r.id")
-        .collect()
-        .map(row => (row.getLong(0), row.getLong(1)))
-        .sorted
-        .toSeq
+      val rows =
+        collectNative(spark.sql("SELECT l.id, r.id FROM l JOIN r ON jvm_add_one(l.id) = r.id"))
+          .map(row => (row.getLong(0), row.getLong(1)))
+          .sorted
+          .toSeq
       assert(rows == Seq((0L, 1L), (1L, 2L), (2L, 3L), (3L, 4L)))
     }
   }
 
   test("a UDF in a grouping key runs in the Comet pipeline") {
     registerAddOne()
-    val rows = spark
-      .range(0, 6)
-      .selectExpr("id % 3 AS k")
-      .groupBy(expr("jvm_add_one(k)").as("g"))
-      .count()
-      .collect()
+    val rows = collectNative(
+      spark.range(0, 6).selectExpr("id % 3 AS k").groupBy(expr("jvm_add_one(k)").as("g")).count())
       .map(row => (row.getLong(0), row.getLong(1)))
       .sorted
       .toSeq
@@ -161,9 +168,9 @@ class CometJvmUdfSuite extends CometTestBase {
     registerAddOne()
     withTempView("w") {
       spark.range(0, 6).selectExpr("id", "id % 3 AS k").createOrReplaceTempView("w")
-      val rows = spark
-        .sql("SELECT id, row_number() OVER (PARTITION BY jvm_add_one(k) ORDER BY id) FROM w")
-        .collect()
+      val rows = collectNative(
+        spark.sql(
+          "SELECT id, row_number() OVER (PARTITION BY jvm_add_one(k) ORDER BY id) FROM w"))
         .map(row => (row.getLong(0), row.getInt(1)))
         .sorted
         .toSeq
@@ -227,7 +234,7 @@ class CometJvmUdfSuite extends CometTestBase {
         df.schema.head.dataType == dataType,
         s"test expression produced ${df.schema.head.dataType}, not $dataType")
       CometJvmUDF.register(spark, "jvm_echo", classOf[EchoUdf], Seq(dataType), dataType)
-      val rows = df.selectExpr("c", "jvm_echo(c)").collect()
+      val rows = collectNative(df.selectExpr("c", "jvm_echo(c)"))
       assert(rows.last.isNullAt(0))
       rows.foreach(row => assert(comparable(row.get(1)) == comparable(row.get(0)), row))
     }
@@ -284,9 +291,9 @@ class CometJvmUdfSuite extends CometTestBase {
     val pair =
       StructType(Seq(StructField("a", LongType, nullable = false), StructField("b", LongType)))
     CometJvmUDF.register(spark, "jvm_pair", classOf[PairStructUdf], Seq(LongType), pair)
-    val rows = spark.range(0, 2).selectExpr("jvm_pair(id) AS p").selectExpr("p.a", "p.b")
-    assert(
-      rows.collect().map(r => (r.getLong(0), r.getLong(1))).toSeq == Seq((0L, 0L), (1L, 10L)))
+    val rows =
+      collectNative(spark.range(0, 2).selectExpr("jvm_pair(id) AS p").selectExpr("p.a", "p.b"))
+    assert(rows.map(r => (r.getLong(0), r.getLong(1))) == Seq((0L, 0L), (1L, 10L)))
   }
 
   test("a result of another type than declared fails naming both types") {
@@ -400,50 +407,54 @@ class CometJvmUdfSuite extends CometTestBase {
     assert(e.getMessage.contains("jvm_add_one"), e.getMessage)
     // The other session can give the name a UDF of its own without disturbing this one.
     CometJvmUDF.register(other, "jvm_add_one", classOf[EchoUdf], Seq(LongType), LongType)
-    assert(column(other.range(0, 3).selectExpr("jvm_add_one(id)")) == Seq(0L, 1L, 2L))
+    assert(values(other.range(0, 3).selectExpr("jvm_add_one(id)")) == Seq(0L, 1L, 2L))
     assert(column(spark.range(0, 3).selectExpr("jvm_add_one(id)")) == Seq(1L, 2L, 3L))
   }
 
-  test("a UDF nested in an ordinary UDF fails the query") {
-    // The codegen dispatcher compiles an ordinary UDF's whole argument tree into one JVM kernel,
-    // which cannot call a vectorized UDF, so it declines the tree and Spark gets the operator.
+  test("a UDF nested in an ordinary UDF runs in the codegen dispatcher") {
+    // The dispatcher compiles the ordinary UDF's whole argument tree into one JVM kernel, which
+    // evaluates the vectorized UDF in it one row at a time.
     registerAddOne()
     spark.udf.register("jvm_times_ten", (x: Long) => x * 10)
-    val e = intercept[Exception] {
-      spark.range(0, 2).selectExpr("jvm_times_ten(jvm_add_one(id))").collect()
-    }
-    assert(
-      causeChainContains(e, "UDF 'jvm_add_one' is registered with Comet"),
-      s"unhelpful error: $e")
+    val df = spark.range(0, 3).selectExpr("jvm_times_ten(jvm_add_one(id))")
+    assert(column(df) == Seq(10L, 20L, 30L))
   }
 
-  test("a UDF under a higher-order function fails the query") {
-    // `transform` runs in the codegen dispatcher, which cannot call a vectorized UDF.
+  test("a UDF under a higher-order function runs in the codegen dispatcher") {
     registerRangeList(containsNull = false)
-    val e = intercept[Exception] {
-      spark.range(1, 3).selectExpr("transform(jvm_range_list(id), e -> e + 1)").collect()
-    }
-    assert(
-      causeChainContains(e, "UDF 'jvm_range_list' is registered with Comet"),
-      s"unhelpful error: $e")
+    val df = spark.range(1, 3).selectExpr("transform(jvm_range_list(id), e -> e + 1)")
+    assert(column(df) == Seq(Seq(1L), Seq(1L, 2L)))
   }
 
-  test("a global sort on a column holding a UDF's result runs in the Comet pipeline") {
-    // Sorting on the call itself would make Spark evaluate it to sample range bounds.
+  test("a global sort on a UDF's result runs in the Comet pipeline") {
+    // Spark evaluates the sort key one row at a time to sample range bounds.
     registerAddOne()
-    val df = spark.range(0, 20, 1, 4).selectExpr("jvm_add_one(19 - id) AS r").orderBy("r")
-    assert(column(df) == (1L to 20L).toSeq)
+    val df = spark.range(0, 20, 1, 4).selectExpr("id").orderBy(expr("jvm_add_one(19 - id)"))
+    assert(column(df) == (19L to 0L by -1L).toSeq)
   }
 
-  test("Spark evaluating the UDF fails the query") {
+  test("a UDF over local data is evaluated by Spark's optimizer") {
+    // Spark evaluates a projection over local data while optimizing the query.
+    registerAddOne()
+    import testImplicits._
+    assert(values(Seq(1L, 2L).toDF("x").selectExpr("jvm_add_one(x)")) == Seq(2L, 3L))
+    assert(values(sql("SELECT jvm_add_one(x) FROM VALUES (1L), (2L) AS t(x)")) == Seq(2L, 3L))
+  }
+
+  test("a UDF in a filter on a partition column prunes partitions") {
+    // Spark evaluates the filter one row at a time to prune partitions on the driver.
+    registerAddOne()
+    withTable("p") {
+      sql("CREATE TABLE p (v BIGINT, k BIGINT) USING parquet PARTITIONED BY (k)")
+      sql("INSERT INTO p VALUES (10, 1), (20, 2), (30, 3)")
+      assert(column(sql("SELECT v FROM p WHERE jvm_add_one(k) = 3")) == Seq(20L))
+    }
+  }
+
+  test("Spark evaluates the UDF one row at a time when Comet is disabled") {
     registerAddOne()
     withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-      val e = intercept[Exception] {
-        spark.range(0, 2).selectExpr("jvm_add_one(id)").collect()
-      }
-      assert(
-        causeChainContains(e, "UDF 'jvm_add_one' is registered with Comet"),
-        s"unhelpful error: $e")
+      assert(values(spark.range(0, 3).selectExpr("jvm_add_one(id)")) == Seq(1L, 2L, 3L))
     }
   }
 

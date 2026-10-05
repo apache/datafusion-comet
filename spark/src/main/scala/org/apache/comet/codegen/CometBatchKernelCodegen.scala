@@ -182,21 +182,17 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
     // `Unevaluable`: rejected by default. `isCodegenInertUnevaluable` exempts version-specific
     // leaves that are `Unevaluable` but never invoked by codegen (e.g. Spark 4.0's
     // `ResolvedCollation` in `Collate.collation`, where `Collate.genCode` delegates to its child).
-    //
-    // A vectorized JVM UDF call is a `CodegenFallback` whose `eval` only throws, since its
-    // implementation runs once per batch rather than per row.
     boundExpr.find {
       case _: org.apache.spark.sql.catalyst.expressions.aggregate.AggregateFunction => true
       case _: org.apache.spark.sql.catalyst.expressions.Generator => true
       case u: Unevaluable if isCodegenInertUnevaluable(u) => false
       case _: Unevaluable => true
-      case _: org.apache.comet.udf.JvmUdfCall => true
       case _ => false
     } match {
       case Some(bad) =>
         return Some(
           s"codegen dispatch: expression ${bad.getClass.getSimpleName} not supported " +
-            "(aggregate, generator, unevaluable, or vectorized JVM UDF)")
+            "(aggregate, generator, or unevaluable)")
       case None =>
     }
     val badRef = boundExpr.collectFirst {

@@ -65,8 +65,8 @@ object CometJvmUDF {
    * in the query instead. `returnType` is what Spark plans the call against, and the vector the
    * UDF returns must have its Arrow type.
    *
-   * Spark cannot evaluate the call itself: if Comet does not take the operator holding it, the
-   * query fails.
+   * Where Spark evaluates the call itself, for example in an operator Comet does not take, the
+   * UDF runs on one row at a time: the same answer, much more slowly.
    */
   def register(
       spark: SparkSession,

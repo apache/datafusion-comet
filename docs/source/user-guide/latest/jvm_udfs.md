@@ -39,14 +39,14 @@ already works on batches.
 
 ## Choosing between an ordinary UDF and a vectorized UDF
 
-|                                      | Ordinary Spark UDF                         | Vectorized Comet UDF                            |
-| ------------------------------------ | ------------------------------------------ | ----------------------------------------------- |
-| Written as                           | A function of one row's values             | A `CometUDF` class over Arrow vectors           |
-| Called                               | Once per row                               | Once per batch                                  |
-| Argument expressions run             | In the JVM, compiled together with the UDF | Natively, before the call                       |
-| Null handling                        | A null primitive argument returns null     | Your code checks each value with `isNull`       |
-| When Comet does not run the operator | Runs on Spark                              | The query fails                                 |
-| Compiled against                     | Spark                                      | Spark and Comet, rebuilt for each Comet release |
+|                                      | Ordinary Spark UDF                         | Vectorized Comet UDF                              |
+| ------------------------------------ | ------------------------------------------ | ------------------------------------------------- |
+| Written as                           | A function of one row's values             | A `CometUDF` class over Arrow vectors             |
+| Called                               | Once per row                               | Once per batch                                    |
+| Argument expressions run             | In the JVM, compiled together with the UDF | Natively, before the call                         |
+| Null handling                        | A null primitive argument returns null     | Your code checks each value with `isNull`         |
+| When Comet does not run the operator | Runs on Spark                              | Runs on Spark one row at a time, much more slowly |
+| Compiled against                     | Spark                                      | Spark and Comet, rebuilt for each Comet release   |
 
 An ordinary UDF needs no Comet-specific code, and Comet already runs it in its pipeline. Write a
 vectorized UDF when calling the function once per row is itself the cost: for example when it
@@ -121,8 +121,11 @@ Comet release, which can change the Arrow Java version behind them.
   such as compiled patterns or scratch buffers. Native execution can call `evaluate` on the same
   instance from more than one thread at once, so synchronize access to any mutable field, or keep
   state local to the call.
+- Where Spark evaluates the call itself (see below), it calls `evaluate` with `numRows = 1` on an
+  instance of its own, sometimes on the driver while planning the query.
 - `TaskContext.get()` returns the task's context, and the task's context ClassLoader is installed
-  for the call, so classes from jars passed with `--jars` resolve.
+  for the call, so classes from jars passed with `--jars` resolve. On the driver,
+  `TaskContext.get()` returns `null`.
 - An exception thrown from `evaluate` fails the task with its message.
 
 ## Registering a UDF
@@ -140,8 +143,9 @@ spark.read.parquet("/path/to/events").createOrReplaceTempView("events")
 spark.sql("SELECT add_one(id) FROM events").show()
 ```
 
-The call has to sit in an operator Comet runs natively, over input Comet reads, such as a Parquet
-scan. Spark's `range()` and local data such as `VALUES` do not run natively by default.
+The call runs natively only in an operator Comet runs, over input Comet reads, such as a Parquet
+scan. Spark's `range()` and local data such as `VALUES` do not run natively by default, so over
+those Spark evaluates the call itself.
 
 From Java, pass the argument types as a `java.util.List` and the `deterministic` flag explicitly:
 
@@ -175,12 +179,17 @@ whole argument tree in the JVM along with the function.
 
 ### When Spark evaluates the call
 
-Spark cannot run a vectorized UDF itself, so a query fails with
-`UDF 'add_one' is registered with Comet and runs only inside Comet's native execution` if Spark
-evaluates the call. That happens when Comet does not take the operator holding the call, for
-example because another expression in it is not supported, and the query's extended explain
-output gives the reason. It also happens in places where Spark evaluates expressions itself while
-planning a query, which the limitations below list.
+Wherever Spark evaluates the call itself, it runs the UDF on one row at a time: it writes the row's
+arguments into one-row vectors, calls `evaluate` with `numRows = 1`, and reads back the single
+value. The answer is the same as the native path's, only much slower. That happens:
+
+- when Comet does not take the operator holding the call, for example because another expression
+  in it is not supported. The query's extended explain output gives the reason.
+- inside an expression that Comet runs in its JVM codegen dispatcher, such as an ordinary Scala or
+  Java UDF called on a vectorized UDF's result, or a higher-order function like `transform`.
+- while Spark plans the query: over local data, which the optimizer evaluates eagerly, in a filter
+  on partition columns, which Spark evaluates to prune partitions, and in the sort keys of a global
+  sort, which Spark evaluates on a sample of rows to choose range bounds.
 
 ## Limitations
 
@@ -189,18 +198,8 @@ planning a query, which the limitations below list.
 - `evaluate` receives no allocator, so a UDF borrows one from its arguments and a UDF without
   arguments has none to use
   ([#4174](https://github.com/apache/datafusion-comet/issues/4174)).
-- There is no fallback to Spark: a call that Comet does not run fails the query.
-- Spark evaluates some expressions itself while planning, so a query fails when the call appears
-  in one of these places:
-  - in a projection or filter over local data, such as `VALUES` or a DataFrame built from a local
-    collection, which Spark's optimizer evaluates eagerly
-  - in a filter on partition columns of a partitioned table, which Spark evaluates to prune
-    partitions
-  - in the sort keys of a global sort without a `LIMIT`, or the keys of `repartitionByRange`, which
-    Spark evaluates to sample range bounds. Sort on a column that holds the UDF's result instead.
-- A vectorized UDF cannot be an argument of an expression that Comet runs in the JVM codegen
-  dispatcher, such as an ordinary Scala or Java UDF or a higher-order function like `transform`.
-  The dispatcher compiles the whole argument tree into one JVM function, which cannot call a
-  vectorized UDF, so the operator falls back to Spark and the query fails.
+- Where Spark evaluates the call itself, the UDF runs one row at a time, which is much slower
+  than the native path. Check the query's extended explain output to see whether Comet ran the
+  operator holding the call.
 - A call that blocks holds one of Comet's native execution threads for as long as it runs
   ([#6293](https://github.com/apache/datafusion-comet/issues/6293)).

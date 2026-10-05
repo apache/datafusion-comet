@@ -29,9 +29,10 @@ import org.apache.spark.sql.types.DataType
  * in the session builds one for each call it resolves.
  *
  * Comet replaces it with a native call that hands the arguments to `className` once per batch.
- * Spark has no way to evaluate it, so `eval` throws. Spark evaluates it when Comet does not take
- * the operator holding the call, and also while planning in a few places: over local data, in a
- * filter on partition columns, and to sample the keys of a global sort.
+ * Spark evaluates it itself when Comet does not take the operator holding the call, inside an
+ * expression the codegen dispatcher runs, and while planning in a few places: over local data, in
+ * a filter on partition columns, and to sample the keys of a global sort. `eval` then runs the
+ * UDF on one row at a time, which gives the same answer, only much more slowly.
  *
  * `argumentTypes` is the registered signature, one type per child. Spark's analyzer checks each
  * call against it, disregarding nullability, and inserts no casts.
@@ -54,7 +55,11 @@ case class JvmUdfCall(
   override lazy val deterministic: Boolean =
     udfDeterministic && children.forall(_.deterministic)
 
-  override def eval(input: InternalRow): Any = throw new CometUdfNotEvaluatedException(name)
+  @transient private lazy val rowEvaluator =
+    new JvmUdfRowEvaluator(className, argumentTypes, dataType)
+
+  override def eval(input: InternalRow): Any =
+    rowEvaluator.evaluate(InternalRow.fromSeq(children.map(_.eval(input))))
 
   override def prettyName: String = name
 
