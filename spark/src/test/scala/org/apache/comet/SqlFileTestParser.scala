@@ -73,6 +73,9 @@ case class ExpectDispatch(names: Seq[String]) extends QueryAssertionMode
  */
 case class ExpectNative(names: Seq[String]) extends QueryAssertionMode
 
+/** Checks results and requires the named SparkPlan class in the executed Comet plan. */
+case class ExpectOperator(name: String) extends QueryAssertionMode
+
 /**
  * Asserts that both Spark and Comet raise an error whose message contains `pattern`.
  *
@@ -196,6 +199,7 @@ object SqlFileTestParser {
   private val ErrorPattern = """query\s+expect_error\((.+)\)""".r
   private val DispatchPattern = """query\s+expect_dispatch\((.+)\)""".r
   private val NativePattern = """query\s+expect_native\((.+)\)""".r
+  private val OperatorPattern = """query\s+expect_operator\((.+)\)""".r
 
   private def parseQueryAssertionMode(directive: String): QueryAssertionMode = {
     directive match {
@@ -209,6 +213,8 @@ object SqlFileTestParser {
         ExpectDispatch(splitNames(names))
       case NativePattern(names) =>
         ExpectNative(splitNames(names))
+      case OperatorPattern(name) =>
+        ExpectOperator(name.trim)
       case _ =>
         val parts = directive.split("\\s+")
         if (parts.length == 1) return CheckCoverageAndAnswer

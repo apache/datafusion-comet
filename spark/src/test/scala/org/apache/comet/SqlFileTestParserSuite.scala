@@ -123,6 +123,12 @@ class SqlFileTestParserSuite extends AnyFunSuite {
     assert(modeOf("query expect_native(length)") === ExpectNative(Seq("length")))
   }
 
+  test("expect_operator preserves the plan class name") {
+    assert(
+      modeOf("query expect_operator( CometNativeColumnarToRowExec )") ===
+        ExpectOperator("CometNativeColumnarToRowExec"))
+  }
+
   test("expect_dispatch parses a comma-separated list and trims whitespace") {
     assert(
       modeOf("query expect_dispatch(rlike,  regexp_replace ,split)") ===
