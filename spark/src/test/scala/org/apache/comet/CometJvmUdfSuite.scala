@@ -26,23 +26,18 @@ import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector.{BigIntVector, IntVector, ValueVector}
 import org.apache.arrow.vector.complex.ListVector
 import org.apache.spark.SparkConf
-import org.apache.spark.sql.{CometTestBase, DataFrame}
+import org.apache.spark.sql.{AnalysisException, CometTestBase, DataFrame}
 import org.apache.spark.sql.functions.expr
 import org.apache.spark.sql.types._
 
-import org.apache.comet.udf.{CometJvmUDF, CometUDF, CometUdfArgumentTypeException, CometUdfRegistry}
+import org.apache.comet.udf.{CometJvmUDF, CometUDF}
 
 /**
  * End-to-end coverage for vectorized JVM UDFs registered through [[CometJvmUDF]].
  *
- * The tests are self-guarding on Comet execution: `CometJvmUDF.register` installs a catalog stub
- * that throws if Spark evaluates the UDF itself, so a fallback to Spark fails a test rather than
- * passing it. For the same reason they compare with literal expected values rather than with
- * Spark's answer, which the stub cannot produce.
- *
- * The UDF names carry a `jvm_` prefix because Comet's UDF registry is process-wide and matched by
- * name, so a registration here would otherwise answer calls to another suite's Scala UDF of the
- * same name.
+ * The tests are self-guarding on Comet execution: Spark cannot evaluate a registered UDF, so a
+ * fallback to Spark fails a test rather than passing it. For the same reason they compare with
+ * literal expected values rather than with Spark's answer, which Spark cannot produce.
  */
 class CometJvmUdfSuite extends CometTestBase {
 
@@ -109,8 +104,8 @@ class CometJvmUdfSuite extends CometTestBase {
 
   test("arguments are evaluated natively rather than by the codegen dispatcher") {
     registerAddOne()
-    // With the dispatcher off, a projection that needed it for `abs` would fall back to Spark and
-    // the stub would throw.
+    // With the dispatcher off, a projection that needed it for `abs` would fall back to Spark,
+    // which cannot evaluate the UDF.
     withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
       val df = spark.range(0, 4).selectExpr("jvm_add_one(abs(id - 2))")
       assert(column(df) == Seq(3L, 2L, 1L, 2L))
@@ -119,7 +114,7 @@ class CometJvmUdfSuite extends CometTestBase {
 
   // Filters, join conditions, grouping keys and window partitioning each reach the serde through
   // a different Comet operator. A regression in any one of them would show only as a fallback to
-  // Spark, which the stub turns into a failure.
+  // Spark, which fails because Spark cannot evaluate the UDF.
 
   test("a UDF in a filter predicate runs in the Comet pipeline") {
     registerAddOne()
@@ -292,24 +287,70 @@ class CometJvmUdfSuite extends CometTestBase {
     assert(causeChainContains(e, "returned 3 rows, expected 4"), s"unhelpful error: $e")
   }
 
-  test("a call whose argument types differ from the registered ones is refused") {
+  test("a call whose argument types differ from the registered ones fails analysis") {
     registerAddOne()
-    val e = intercept[Exception] {
-      spark.range(0, 3).selectExpr("jvm_add_one(cast(id as int))").collect()
+    val e = intercept[AnalysisException] {
+      spark.range(0, 3).selectExpr("jvm_add_one(cast(id as int))")
     }
-    assert(
-      causeChainContains(e, "registered with argument types (bigint) but is called with (int)"),
-      s"unhelpful error: $e")
-    assert(
-      causeChain(e).exists(_.isInstanceOf[CometUdfArgumentTypeException]),
-      s"unexpected exception type: $e")
+    assert(e.getMessage.contains("BIGINT"), e.getMessage)
 
-    // Casting to the registered type is the fix the message asks for.
+    // Spark inserts no cast, so the query has to.
     val fixed = spark.range(0, 3).selectExpr("jvm_add_one(cast(cast(id as int) as bigint))")
     assert(column(fixed) == Seq(1L, 2L, 3L))
   }
 
-  test("the catalog stub fails when Spark evaluates the UDF") {
+  test("a call with the wrong number of arguments fails analysis") {
+    registerAddOne()
+    val e = intercept[AnalysisException] {
+      spark.range(0, 2).selectExpr("jvm_add_one(id, id)")
+    }
+    assert(
+      e.getMessage.contains("requires 1 parameters but the actual number is 2"),
+      e.getMessage)
+  }
+
+  test("a UDF can take more than four arguments") {
+    CometJvmUDF.register(spark, "jvm_sum", classOf[SumUdf], Seq.fill(5)(LongType), LongType)
+    val df = spark.range(0, 3).selectExpr("jvm_sum(id, id, id, id, 1L)")
+    assert(column(df) == Seq(1L, 5L, 9L))
+  }
+
+  test("an ordinary UDF registered under the same name replaces a vectorized one") {
+    registerAddOne()
+    spark.udf.register("jvm_add_one", (x: Long) => x * 10)
+    assert(column(spark.range(0, 3).selectExpr("jvm_add_one(id)")) == Seq(0L, 10L, 20L))
+    // Registering the vectorized UDF again takes the name back.
+    registerAddOne()
+    assert(column(spark.range(0, 3).selectExpr("jvm_add_one(id)")) == Seq(1L, 2L, 3L))
+  }
+
+  test("a registration belongs to the session that made it") {
+    registerAddOne()
+    val other = spark.newSession()
+    val e = intercept[AnalysisException] {
+      other.range(0, 1).selectExpr("jvm_add_one(id)")
+    }
+    assert(e.getMessage.contains("jvm_add_one"), e.getMessage)
+    // The other session can give the name a UDF of its own without disturbing this one.
+    CometJvmUDF.register(other, "jvm_add_one", classOf[EchoUdf], Seq(LongType), LongType)
+    assert(column(other.range(0, 3).selectExpr("jvm_add_one(id)")) == Seq(0L, 1L, 2L))
+    assert(column(spark.range(0, 3).selectExpr("jvm_add_one(id)")) == Seq(1L, 2L, 3L))
+  }
+
+  test("a UDF nested in an ordinary UDF fails the query") {
+    // The codegen dispatcher compiles an ordinary UDF's whole argument tree into one JVM kernel,
+    // which cannot call a vectorized UDF, so it declines the tree and Spark gets the operator.
+    registerAddOne()
+    spark.udf.register("jvm_times_ten", (x: Long) => x * 10)
+    val e = intercept[Exception] {
+      spark.range(0, 2).selectExpr("jvm_times_ten(jvm_add_one(id))").collect()
+    }
+    assert(
+      causeChainContains(e, "UDF 'jvm_add_one' is registered with Comet"),
+      s"unhelpful error: $e")
+  }
+
+  test("Spark evaluating the UDF fails the query") {
     registerAddOne()
     withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
       val e = intercept[Exception] {
@@ -346,16 +387,7 @@ class CometJvmUdfSuite extends CometTestBase {
         .contains("it has no public no-argument constructor"))
     // An inner class's constructor takes the enclosing instance.
     assert(refusal(classOf[InnerUdf]).contains("it has no public no-argument constructor"))
-    assert(CometUdfRegistry.get("jvm_refused").isEmpty)
-  }
-
-  test("more arguments than the catalog stub supports are refused at registration") {
-    val e = intercept[IllegalArgumentException] {
-      CometJvmUDF.register(spark, "jvm_wide", classOf[AddOneUdf], Seq.fill(5)(LongType), LongType)
-    }
-    assert(e.getMessage.contains("takes 5 arguments, but Comet supports at most 4"))
-    // Refused before the registry was touched.
-    assert(CometUdfRegistry.get("jvm_wide").isEmpty)
+    assert(!spark.catalog.functionExists("jvm_refused"))
   }
 
   test("a Java UDF from a jar only the executors can see") {
@@ -425,6 +457,23 @@ object CometJvmUdfSuite {
         val ra = rowOf(a, i, numRows)
         val rb = rowOf(b, i, numRows)
         if (a.isNull(ra) || b.isNull(rb)) out.setNull(i) else out.set(i, a.get(ra) - b.get(rb))
+        i += 1
+      }
+      out.setValueCount(numRows)
+      out
+    }
+  }
+
+  /** The sum of its arguments, however many it is registered with. */
+  class SumUdf extends CometUDF {
+    override def evaluate(inputs: Array[ValueVector], numRows: Int): ValueVector = {
+      val args = inputs.map(_.asInstanceOf[BigIntVector])
+      val out = newLongVector("jvm_sum", args.head.getAllocator, numRows)
+      var i = 0
+      while (i < numRows) {
+        val cells = args.map(a => (a, rowOf(a, i, numRows)))
+        if (cells.exists { case (a, r) => a.isNull(r) }) out.setNull(i)
+        else out.set(i, cells.map { case (a, r) => a.get(r) }.sum)
         i += 1
       }
       out.setValueCount(numRows)

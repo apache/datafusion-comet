@@ -17,16 +17,16 @@
  * under the License.
  */
 
-package org.apache.comet.udf
+package org.apache.spark.sql.comet
 
-import org.apache.comet.CometRuntimeException
+import org.apache.spark.sql.errors.QueryCompilationErrors
 
 /**
- * Thrown when Spark itself evaluates a call to a UDF registered with Comet, which means Comet did
- * not take the operator holding it.
+ * Spark's own analysis errors for UDFs registered with Comet, which Spark keeps `private[sql]`.
  */
-class CometUdfNotEvaluatedException(name: String)
-    extends CometRuntimeException(
-      s"UDF '$name' is registered with Comet and runs only inside Comet's native execution, but " +
-        "Spark evaluated it, which means Comet did not take the operator holding the call. The " +
-        "query's extended explain output gives the reason that operator fell back to Spark.")
+object CometUdfErrors {
+
+  /** The error Spark raises when a function is called with the wrong number of arguments. */
+  def wrongNumArgs(name: String, expected: Int, actual: Int): Throwable =
+    QueryCompilationErrors.wrongNumArgsError(name, Seq(expected), actual)
+}

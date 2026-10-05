@@ -92,8 +92,8 @@ object CometJvmUdfBenchmark extends CometBenchmarkBase {
   private val forms = Seq(
     Form("Spark", "spark_", Seq(CometConf.COMET_ENABLED.key -> "false")),
     Form("Comet, codegen dispatch", "spark_", cometConfigs(dispatch = true)),
-    // The dispatcher is off, so a plan that needed it would fall back to Spark and the vectorized
-    // UDF's catalog stub would fail the case rather than time the wrong thing.
+    // The dispatcher is off, so a plan that needed it would fall back to Spark, which cannot
+    // evaluate the vectorized UDF, and fail the case rather than time the wrong thing.
     Form("Comet, vectorized UDF", "jvm_", cometConfigs(dispatch = false)))
 
   /** A timing means nothing if one form computed something else. */

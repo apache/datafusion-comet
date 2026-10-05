@@ -23,16 +23,14 @@ import scala.util.control.NonFatal
 
 import org.apache.spark.SparkEnv
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, AttributeSeq, BindReferences, Expression, Literal, RuntimeReplaceable, ScalaUDF}
-import org.apache.spark.sql.types.{BinaryType, DataType}
+import org.apache.spark.sql.types.BinaryType
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometExplainInfo
 import org.apache.comet.CometSparkSessionExtensions.{withCodegenDispatchExpr, withFallbackReason}
-import org.apache.comet.DataTypeSupport.deepNullable
 import org.apache.comet.codegen.CometBatchKernelCodegen
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, serializeDataType}
-import org.apache.comet.udf.{CometUdfArgumentTypeException, CometUdfRegistry, JvmUdfMetadata, UdfMetadata}
 import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 
 /**
@@ -41,9 +39,6 @@ import org.apache.comet.udf.codegen.CometScalaUDFCodegen
  * `ctx.addReferenceObj`; the dispatcher serializes the bound tree, the closure serializer carries
  * the function reference across the wire, and the Janino-compiled kernel invokes it in a tight
  * batch loop.
- *
- * A call to a name registered through [[org.apache.comet.udf.CometJvmUDF]] goes to the registered
- * vectorized implementation instead, with its arguments evaluated natively.
  *
  * Not covered:
  *   - Aggregate UDFs (`ScalaAggregator`, `TypedImperativeAggregate`, legacy UDAF).
@@ -61,68 +56,7 @@ import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
 
   override def convert(expr: ScalaUDF, inputs: Seq[Attribute], binding: Boolean): Option[Expr] =
-    // The match is on the name alone, which cannot tell a registered UDF from an ordinary Scala
-    // UDF registered under the same name. See
-    // https://github.com/apache/datafusion-comet/issues/5295.
-    expr.udfName.flatMap(CometUdfRegistry.get) match {
-      case Some(meta: JvmUdfMetadata) => emitRegisteredJvmUdf(expr, meta, inputs, binding)
-      case None => emitJvmCodegenDispatch(expr, inputs, binding)
-    }
-
-  /**
-   * Emit a `JvmScalarUdf` that names the registered [[org.apache.comet.udf.CometUDF]] class, with
-   * each argument serialized as its own native expression. Unlike the codegen dispatcher, which
-   * compiles the whole argument tree into its JVM kernel, only the arguments' values cross into
-   * the JVM.
-   */
-  private def emitRegisteredJvmUdf(
-      expr: ScalaUDF,
-      meta: JvmUdfMetadata,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[Expr] = {
-    val name = expr.udfName.get
-    checkArgumentTypes(name, expr, meta)
-    val args = expr.children.map { child =>
-      exprToProtoInternal(child, inputs, binding).getOrElse {
-        withFallbackReason(expr, s"UDF '$name': argument $child has no native implementation")
-        return None
-      }
-    }
-    val returnType = serializeDataType(expr.dataType).getOrElse {
-      withFallbackReason(expr, s"UDF '$name': unsupported return type ${expr.dataType}")
-      return None
-    }
-    val udfBuilder = ExprOuterClass.JvmScalarUdf
-      .newBuilder()
-      .setClassName(meta.className)
-      .setReturnType(returnType)
-      .setReturnNullable(expr.nullable)
-    args.foreach(udfBuilder.addArgs)
-    Some(ExprOuterClass.Expr.newBuilder().setJvmScalarUdf(udfBuilder.build()).build())
-  }
-
-  /**
-   * Refuse a call whose argument types differ from the ones the UDF was registered with.
-   *
-   * The catalog stub declares no argument types, so Spark inserts no casts for it and a call
-   * arrives with whatever types its arguments have. Converting them here would be a choice Spark
-   * never made, so the call is refused, naming both signatures. Nullability is disregarded, since
-   * it does not change the values a UDF receives.
-   *
-   * This throws rather than falling back: the stub cannot evaluate the UDF on the JVM, so a
-   * fallback would only fail later with a less useful message.
-   */
-  private def checkArgumentTypes(name: String, expr: ScalaUDF, meta: UdfMetadata): Unit = {
-    val actual = expr.children.map(_.dataType)
-    if (actual.map(deepNullable) != meta.inputTypes.map(deepNullable)) {
-      def render(types: Seq[DataType]): String =
-        types.map(_.catalogString).mkString("(", ", ", ")")
-      throw new CometUdfArgumentTypeException(
-        s"UDF '$name' was registered with argument types ${render(meta.inputTypes)} but is " +
-          s"called with ${render(actual)}. Cast the arguments to the registered types, or " +
-          "register the UDF with the types this call produces.")
-    }
-  }
+    emitJvmCodegenDispatch(expr, inputs, binding)
 
   /**
    * Bind `expr`, closure-serialize it, and emit a `JvmScalarUdf` proto routed through

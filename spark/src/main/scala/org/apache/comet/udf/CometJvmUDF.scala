@@ -24,7 +24,10 @@ import java.lang.reflect.Modifier
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.comet.CometUdfErrors
 import org.apache.spark.sql.types.DataType
+
+import org.apache.comet.shims.ShimSessionFunctionRegistry
 
 /**
  * Entry point for registering vectorized scalar UDFs written in Java or Scala.
@@ -47,21 +50,22 @@ import org.apache.spark.sql.types.DataType
 object CometJvmUDF {
 
   /**
-   * Register `udfClass` as a scalar UDF named `name`, callable from SQL and the DataFrame API.
+   * Register `udfClass` as a scalar UDF named `name` in `spark`, callable from SQL and the
+   * DataFrame API.
    *
    * Checks on the driver that the class can be instantiated the way executors will instantiate
-   * it, then records it in Comet's registry and installs a Spark catalog function under `name`.
-   * Executors load the class by name through the task's context ClassLoader, so it has to be
-   * available to them as well, for example through `--jars`.
+   * it, then installs `name` as a temporary function of the session, as `spark.udf.register`
+   * would: other sessions do not see it, and registering another function under the same name
+   * replaces it. Executors load the class by name through the task's context ClassLoader, so it
+   * has to be available to them as well, for example through `--jars`.
    *
-   * `inputTypes` is the signature every call must match. Comet does not convert arguments to
-   * these types: a call whose argument types differ, other than in nullability, is refused at
-   * planning time with both signatures named, so cast the arguments in the query instead.
-   * `returnType` is what Spark plans the call against, and the vector the UDF returns must have
-   * its Arrow type.
+   * `inputTypes` is the signature every call must match. Spark's analyzer rejects a call whose
+   * argument types differ, other than in nullability, and inserts no casts, so cast the arguments
+   * in the query instead. `returnType` is what Spark plans the call against, and the vector the
+   * UDF returns must have its Arrow type.
    *
-   * The catalog function throws if Spark evaluates it, which happens only when Comet does not
-   * take the operator holding the call.
+   * Spark cannot evaluate the call itself: if Comet does not take the operator holding it, the
+   * query fails.
    */
   def register(
       spark: SparkSession,
@@ -71,12 +75,20 @@ object CometJvmUDF {
       returnType: DataType,
       deterministic: Boolean = true): Unit = {
     validateUdfClass(udfClass)
-    val stub = CometUdfCatalogStub(name, inputTypes.size, returnType, deterministic)
-    CometUdfRegistry.register(name, JvmUdfMetadata(udfClass.getName, inputTypes, returnType))
-    // Last, because this is the step that makes the name resolvable to Spark's analyzer. A call
-    // planned against a resolvable name with no registry entry would go to the codegen
-    // dispatcher, which would run the stub and fail.
-    val _ = spark.udf.register(name, stub)
+    val className = udfClass.getName
+    ShimSessionFunctionRegistry
+      .functionRegistry(spark)
+      .createOrReplaceTempFunction(
+        name,
+        children => {
+          // Checked here, as built-in functions check it, because the analyzer's type coercion
+          // pairs arguments with types positionally before any check on the call would run.
+          if (children.length != inputTypes.length) {
+            throw CometUdfErrors.wrongNumArgs(name, inputTypes.length, children.length)
+          }
+          JvmUdfCall(name, className, inputTypes, returnType, deterministic, children)
+        },
+        "java_udf")
   }
 
   /** `register` for Java callers, taking the argument types as a `java.util.List`. */

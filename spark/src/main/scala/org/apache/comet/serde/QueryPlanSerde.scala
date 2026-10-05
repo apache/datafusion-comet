@@ -47,6 +47,7 @@ import org.apache.comet.serde.Types.{DataType => ProtoDataType}
 import org.apache.comet.serde.Types.DataType._
 import org.apache.comet.serde.literals.CometLiteral
 import org.apache.comet.shims.{CometExprShim, CometTypeShim}
+import org.apache.comet.udf.JvmUdfCall
 
 /**
  * An utility object for query plan and expression serialization.
@@ -364,6 +365,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[CheckOverflow] -> CometCheckOverflow,
       classOf[Coalesce] -> CometCoalesce,
       classOf[Invoke] -> CometInvoke,
+      classOf[JvmUdfCall] -> CometJvmUdfCall,
       classOf[KnownFloatingPointNormalized] -> CometKnownFloatingPointNormalized,
       classOf[KnownNotNull] -> CometKnownNotNull,
       classOf[KnownNullable] -> CometKnownNullable,

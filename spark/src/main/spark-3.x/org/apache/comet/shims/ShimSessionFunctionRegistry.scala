@@ -17,16 +17,14 @@
  * under the License.
  */
 
-package org.apache.comet.udf
+package org.apache.comet.shims
 
-import org.apache.comet.CometRuntimeException
+import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.catalyst.analysis.FunctionRegistry
 
-/**
- * Thrown when Spark itself evaluates a call to a UDF registered with Comet, which means Comet did
- * not take the operator holding it.
- */
-class CometUdfNotEvaluatedException(name: String)
-    extends CometRuntimeException(
-      s"UDF '$name' is registered with Comet and runs only inside Comet's native execution, but " +
-        "Spark evaluated it, which means Comet did not take the operator holding the call. The " +
-        "query's extended explain output gives the reason that operator fell back to Spark.")
+object ShimSessionFunctionRegistry {
+
+  /** The function registry holding `spark`'s temporary functions. */
+  def functionRegistry(spark: SparkSession): FunctionRegistry =
+    spark.sessionState.functionRegistry
+}

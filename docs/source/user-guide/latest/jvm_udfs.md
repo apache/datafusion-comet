@@ -144,13 +144,15 @@ CometJvmUDF.register(
 no-argument constructor. Executors load the class by name, so it has to be on their classpath
 too, for example through `--jars`.
 
-The argument types are a signature every call must match. Comet does not convert arguments: a
-call whose argument types differ, other than in nullability, fails at planning time naming both
-signatures. Cast the arguments in the query instead, as in `add_one(cast(x AS BIGINT))`.
+The name becomes a temporary function of the session, just as with `spark.udf.register`: other
+sessions do not see it, and registering another function under the same name replaces it.
+
+The argument types are a signature every call must match. Spark's analyzer checks each call
+against it, ignoring nullability, and inserts no casts, so a call with other argument types fails
+analysis. Cast the arguments in the query instead, as in `add_one(cast(x AS BIGINT))`.
 
 Pass `deterministic = false` for a function that can return different results for the same
-arguments, so that Spark does not reorder or deduplicate its calls. A UDF can take at most four
-arguments.
+arguments, so that Spark does not reorder or deduplicate its calls.
 
 ### Arguments run natively
 
@@ -160,9 +162,8 @@ whole argument tree in the JVM along with the function.
 
 ### When Comet does not run the call
 
-Comet registers the name with Spark as a function that only ever fails, because Spark cannot run a
-vectorized UDF. If Comet does not take the operator holding a call, for example because another
-expression in it is not supported, the query fails with
+Spark cannot run a vectorized UDF itself. If Comet does not take the operator holding a call, for
+example because another expression in it is not supported, the query fails with
 `UDF 'add_one' is registered with Comet and runs only inside Comet's native execution`. The query's
 extended explain output gives the reason the operator fell back to Spark.
 
@@ -174,11 +175,8 @@ extended explain output gives the reason the operator fell back to Spark.
   arguments has none to use
   ([#4174](https://github.com/apache/datafusion-comet/issues/4174)).
 - There is no fallback to Spark: a call that Comet does not run fails the query.
-- Registrations are process-wide rather than per session
-  ([#5294](https://github.com/apache/datafusion-comet/issues/5294)), and an ordinary Scala UDF
-  registered under the same name as a vectorized UDF is answered by the vectorized UDF
-  ([#5295](https://github.com/apache/datafusion-comet/issues/5295)).
-- A UDF takes at most four arguments
-  ([#6177](https://github.com/apache/datafusion-comet/issues/6177)).
+- A vectorized UDF cannot be an argument of an ordinary Scala or Java UDF. Comet runs the ordinary
+  UDF by compiling its whole argument tree into one JVM function, which cannot call a vectorized
+  UDF, so the operator falls back to Spark and the query fails.
 - A call that blocks holds one of Comet's native execution threads for as long as it runs
   ([#6293](https://github.com/apache/datafusion-comet/issues/6293)).
