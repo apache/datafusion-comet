@@ -49,6 +49,28 @@ converted into Arrow format, allowing the Comet pipeline to take over after that
 Comet does not provide a Rust-based JSON scan, but when `spark.comet.convert.json.enabled` is enabled, data is immediately
 converted into Arrow format, allowing the Comet pipeline to take over after that.
 
+### Other Spark inputs
+
+Comet can also convert the output of these Spark inputs to Arrow format, so that the operators
+above them can run in Comet. Only `spark.comet.convert.oneRowRelation.enabled` is on by default,
+because the row it converts has no columns.
+
+- `spark.comet.convert.range.enabled`: `spark.range` and SQL `range()`, for ranges that Comet does
+  not generate natively with `spark.comet.exec.range.enabled`.
+- `spark.comet.convert.inMemoryCache.enabled`: in-memory cached tables that Comet's native cache
+  scan does not read, such as tables cached in Spark's default format.
+- `spark.comet.convert.rdd.enabled`: a DataFrame created from an RDD of rows, for example with
+  `spark.createDataFrame(rdd, schema)`.
+- `spark.comet.convert.oneRowRelation.enabled`: the single row that a query without a `FROM`
+  clause, such as `SELECT 1`, reads.
+- `spark.comet.convert.rowDataSource.enabled`: Data Source V1 relations that are not file-based,
+  such as JDBC tables, which Spark scans with `RowDataSourceScanExec`.
+
+To convert any other leaf operator, such as the scan of a Data Source V2 connector or of a file
+format other than Parquet, JSON and CSV, set `spark.comet.sparkToColumnar.enabled=true` and name the
+operator in `spark.comet.sparkToColumnar.supportedOperatorList` by its Spark class name without the
+`Exec` suffix, such as `BatchScan` or `FileSourceScan`.
+
 ### Spark-to-Comet conversion types
 
 Spark-to-Comet conversion supports `ARRAY<STRING>` and `MAP<STRING,STRING>` with binary
@@ -58,10 +80,12 @@ This applies to Spark row and columnar inputs when conversion is enabled for the
 Other array element types, other map key/value types, nested collections, and non-binary
 string collations remain unsupported at this conversion boundary. Source defaults are unchanged.
 
-This includes row-backed `ExistingRDD` inputs when
-`spark.comet.sparkToColumnar.enabled=true` and
-`spark.comet.sparkToColumnar.supportedOperatorList` includes `RDDScan`. Spark still produces
-the RDD rows; conversion lets eligible downstream operators execute in Comet.
+This includes row-backed `ExistingRDD` inputs when `spark.comet.convert.rdd.enabled=true`. Spark
+still produces the RDD rows; conversion lets eligible downstream operators execute in Comet.
+
+The same types apply to the output of typed `Dataset` operations, such as `map`, which Comet
+converts when `spark.comet.convert.typedDataset.enabled=true`. A column of any other type keeps
+the operators above the typed operation on Spark.
 
 Comet does not convert a source when the query uses `input_file_name()`, `input_file_block_start()`
 or `input_file_block_length()`, so the source and the operators above it run in Spark. These

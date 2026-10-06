@@ -118,6 +118,53 @@ type, they are converted to `ScanExec` in the native plan. This allows them to s
 execution blocks. The original Spark operator is wrapped with `CometScanWrapper` or `CometSinkPlaceHolder` which
 manages the boundary between JVM and native execution.
 
+### Operators That Should Not Be Converted
+
+Before adding an operator, check that converting it would speed anything up. Comet deliberately
+leaves three kinds of Spark plan nodes in place.
+
+**Wrappers and scheduling nodes.** `AdaptiveSparkPlanExec`, the AQE query stages
+(`ShuffleQueryStageExec`, `BroadcastQueryStageExec`, `TableCacheQueryStageExec`, and, on Spark 4.0
+and later, `ResultQueryStageExec`), `AQEShuffleReadExec`, `InputAdapter`, `WholeStageCodegenExec`,
+`ReusedExchangeExec`, and `ReusedSubqueryExec` do no data processing of their own. They schedule
+stages, mark whole-stage code generation boundaries, choose which shuffle blocks each task reads,
+or point at a plan that runs elsewhere. AQE creates the query stages itself, after Comet's rules
+have run on the plan inside them, and depends on their exact class. For example, it casts the root
+of the final plan to `ResultQueryStageExec`. When a query stage wraps a Comet shuffle, broadcast,
+or cached relation, `CometExecRule` reads from it as a native input through `CometExchangeSink`
+and leaves the stage itself in place.
+
+**Operators that run user JVM code on JVM objects.** The typed `Dataset` API plans
+`DeserializeToObjectExec`, `SerializeFromObjectExec`, `MapElementsExec`, `MapPartitionsExec`,
+`AppendColumnsExec`, `AppendColumnsWithObjectExec`, `MapGroupsExec`, and `CoGroupExec`. They
+convert rows to JVM objects, run an arbitrary user function on those objects, or convert them back,
+and most of them pass the objects to the next operator as an `ObjectType` column, which has no
+Arrow representation. None of this can run natively, so these operators stay on Spark. Every typed
+operation ends in `SerializeFromObjectExec`, though, whose output is ordinary rows. With
+`spark.comet.convert.typedDataset.enabled`, `CometExecRule` puts a `CometSparkToColumnarExec` above
+it, so the operators above the typed operation can run natively. Spark inserts no columnar
+transitions below a `RowToColumnarTransition`, so the rule inserts them for the typed operation's
+own operators itself. Spark computes a typed operation's rows one at a time, as they are read, while
+the conversion fills a whole Arrow batch first. So the rule leaves the output unconverted where a
+limit, a `mapPartitions` function, or code reading `Dataset.rdd` could stop reading it early, unless
+an operator that reads all of its input first, such as an exchange, a sort, or a hash aggregate,
+sits in between. Fusing the deserializer, the `Invoke` that calls the user function, and the
+serializer of `Dataset.map` into one projection in the JVM codegen dispatcher was tried in
+[#5714](https://github.com/apache/datafusion-comet/pull/5714) and dropped. The dispatcher only calls
+into Spark's own classes, and the conversion gets nearly the same speedup for `map` while also
+covering the operations that pass the user function an iterator or a whole group. A typed `filter`
+is planned as an ordinary `FilterExec`, not as one of these operators.
+
+**Driver-side commands.** `ExecutedCommandExec` runs a `RunnableCommand`, such as DDL or `SET`, on
+the driver, so there is no data path for Comet to accelerate.
+
+If a new Spark version adds a wrapper node, do not write a serde for it. Add it to the nodes that
+`ExtendedExplainInfo.generateTreeString` skips when counting operators, and to the wrapper list in
+[Understanding Comet Plans](../user-guide/latest/understanding-comet-plans.md), so the coverage
+summary does not count it as a Spark operator. If `CometExecRule` visits the node, also add it to
+the operators it leaves in place without recording a fallback reason. `ExtendedExplainInfo`
+already skips every `QueryStageExec`, so a new query stage type needs no change there.
+
 ## Implementing a Native Operator
 
 This section focuses on adding a native operator, which is the most common and complex case.
@@ -434,6 +481,12 @@ match op.op_struct.as_ref() {
     // ... other cases ...
 }
 ```
+
+`ProjectionBuilder` prunes a DataFusion filter's output for column-only projections, including
+empty projections such as the input to `count(*)`. Each required output column is filtered once,
+then the projection restores its order, duplicates and aliases. The predicate still sees its
+original input schema. Both native plans remain for metrics, including when they share a Spark
+plan ID. Computed projections and projections that use every input column are unchanged.
 
 #### Implement the Operator
 

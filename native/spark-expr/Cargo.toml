@@ -347,6 +347,22 @@ name = "abs"
 harness = false
 
 [[bench]]
+name = "sqrt"
+harness = false
+
+[[bench]]
+name = "concat_ws"
+harness = false
+
+[[bench]]
+name = "list_positions"
+harness = false
+
+[[bench]]
+name = "map_from_arrays"
+harness = false
+
+[[bench]]
 name = "murmur3"
 harness = false
 
@@ -439,6 +455,10 @@ name = "aggregate_stats"
 harness = false
 
 [[bench]]
+name = "aggregate_misc"
+harness = false
+
+[[bench]]
 name = "nondeterministic"
 harness = false
 
@@ -456,4 +476,12 @@ harness = false
 
 [[bench]]
 name = "float_arrays"
+harness = false
+
+[[bench]]
+name = "min_max"
+harness = false
+
+[[bench]]
+name = "greatest_least"
 harness = false
