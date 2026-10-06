@@ -47,7 +47,7 @@ import org.apache.comet.serde.Types.{DataType => ProtoDataType}
 import org.apache.comet.serde.Types.DataType._
 import org.apache.comet.serde.literals.CometLiteral
 import org.apache.comet.shims.{CometExprShim, CometTypeShim}
-import org.apache.comet.udf.JvmUdfCall
+import org.apache.comet.udf.{JvmUdfCall, NativeUdfCall}
 
 /**
  * An utility object for query plan and expression serialization.
@@ -372,6 +372,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[Literal] -> CometLiteral,
       classOf[MakeDecimal] -> CometMakeDecimal,
       classOf[MonotonicallyIncreasingID] -> CometMonotonicallyIncreasingId,
+      classOf[NativeUdfCall] -> CometNativeUdfCall,
       classOf[ScalarSubquery] -> CometScalarSubquery,
       classOf[ScalaUDF] -> CometScalaUDF,
       classOf[SparkPartitionID] -> CometSparkPartitionId,

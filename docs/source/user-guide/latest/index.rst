@@ -52,6 +52,7 @@ the navigation menu to read more.
    Supported Expressions <expressions>
    ScalaUDF and Java UDF Support <scala_java_udfs>
    Vectorized Java and Scala UDFs <jvm_udfs>
+   Custom Rust UDFs <rust_udfs>
 
 .. toctree::
    :maxdepth: 1

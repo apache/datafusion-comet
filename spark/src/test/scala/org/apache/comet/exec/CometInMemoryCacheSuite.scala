@@ -37,7 +37,7 @@ import org.apache.spark.SparkConf
 import org.apache.spark.sql.{CometTestBase, DataFrame, Observation, QueryTest, Row}
 import org.apache.spark.sql.catalyst.expressions.{And, Attribute, AttributeReference, EqualTo, Expression, GreaterThan, GreaterThanOrEqual, LessThan, Literal}
 import org.apache.spark.sql.columnar.{CachedBatch, SimpleMetricsCachedBatch}
-import org.apache.spark.sql.comet.{CometBroadcastHashJoinExec, CometInMemoryTableScanExec, CometSortExec, CometSortMergeJoinExec}
+import org.apache.spark.sql.comet.{CometBroadcastHashJoinExec, CometInMemoryTableScanExec, CometSortAggregateExec, CometSortExec, CometSortMergeJoinExec}
 import org.apache.spark.sql.comet.execution.arrow.{ArrowCachedBatchSerializer, CometCachedBatchHelper}
 import org.apache.spark.sql.comet.execution.shuffle.CometCelebornShuffleManager
 import org.apache.spark.sql.comet.util.Utils
@@ -907,6 +907,35 @@ class CometInMemoryCacheSuite extends CometTestBase {
         s"expected a Comet columnar-to-row above the cache scan, got:\n$plan")
 
       spark.catalog.clearCache()
+    }
+  }
+
+  test("sort aggregate over a sorted cache keeps its grouping-key order") {
+    // The cached relation reports its sort order, so Spark plans both sort aggregates and the
+    // ORDER BY without a SortExec, and the native aggregates read the cache through a scan that
+    // reports no order. NULL and an empty array hash alike, so DataFusion's grouping can emit
+    // the empty array after [1] unless the aggregate output is sorted natively.
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true") {
+      try {
+        Seq[(Option[Seq[Int]], String)]((None, "n"), (Some(Seq.empty), "e"), (Some(Seq(1)), "o"))
+          .toDF("k", "v")
+          .coalesce(1)
+          .sortWithinPartitions("k")
+          .cache()
+          .createOrReplaceTempView("sorted_cache")
+
+        val df = sql("SELECT k, first(v) FROM sorted_cache GROUP BY k ORDER BY k")
+        checkAnswer(df, Seq(Row(null, "n"), Row(Seq.empty[Int], "e"), Row(Seq(1), "o")))
+        val plan = df.queryExecution.executedPlan
+        assert(collect(plan) { case s: CometInMemoryTableScanExec => s }.size == 1, plan)
+        assert(collect(plan) { case a: CometSortAggregateExec => a }.size == 2, plan)
+        assert(collect(plan) { case s @ (_: CometSortExec | _: SortExec) => s }.isEmpty, plan)
+      } finally {
+        spark.catalog.clearCache()
+      }
     }
   }
 
