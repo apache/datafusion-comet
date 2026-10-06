@@ -67,6 +67,12 @@ the same `TaskCommit` message the JVM writer would have produced. Everything ice
 post-write — snapshot assignment, manifest-list aggregation, commit validation and retries —
 is untouched: `IcebergCommit` performs the normal `BatchWrite.commit`.
 
+Before a task opens a partition's first file, it holds that partition's first
+`write.parquet.page-row-limit` rows in memory, so that it can choose which columns to
+dictionary-encode the way iceberg-java would (see the accepted divergences below). The rows a
+task holds back this way, across all of its partitions, stay within about
+`write.parquet.row-group-size-bytes`.
+
 ## Configuration
 
 Standard Comet + Iceberg setup (see [`iceberg.md`](iceberg.md)) plus the write-side toggle:
@@ -182,7 +188,7 @@ A write is eligible only when ALL of the following hold:
 | `write.target-file-size-bytes`                                                                                                              | any value (the two writers can choose different roll points; see accepted divergences)                                                                                                                                                                                                                                                                                                                                                                                          |
 | data location URI scheme                                                                                                                    | `file`, `memory`, `s3`, `s3a`, `gs`, matched case-sensitively (`S3://` falls back). `s3`, `s3a` and `gs` need a bucket in the authority (`s3://bucket/...`), so a hostless form such as `s3:/bucket/key` falls back. `gs` only when the `FileIO` opening the data location is a `GCSFileIO`; see below                                                                                                                                                                          |
 | resolved `table.locationProvider()`                                                                                                         | Iceberg's built-in `DefaultLocationProvider`                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| partition spec                                                                                                                              | any, except an identity partition on a `float` or `double` column (see below)                                                                                                                                                                                                                                                                                                                                                                                                   |
+| partition spec                                                                                                                              | any, except an identity partition on a `float` or `double` column, or a `void` field whose source column was dropped beside a live field (see below)                                                                                                                                                                                                                                                                                                                            |
 | column types                                                                                                                                | any except `uuid` (Spark plans it as a string; no Arrow cast reaches `fixed(16)`) and the v3 types `variant`, `unknown`, `timestamp_ns`, `geometry` and `geography`                                                                                                                                                                                                                                                                                                             |
 
 Within the namespaces that shape data-file bytes — `write.parquet.*` and `parquet.*` —
@@ -225,6 +231,12 @@ rows keep their ids, and the native writer does not write those columns. Appends
 `CREATE TABLE ... AS SELECT` and `REPLACE TABLE ... AS SELECT` write the data columns only, and
 Iceberg assigns the new rows their ids when it commits, so those run natively. Earlier Iceberg
 versions write no lineage columns, so the rule never applies to them.
+
+A format-version-1 table keeps a dropped partition field as a `void` field, and its source column
+can be dropped afterwards. A spec that mixes such a field with a live one falls back: iceberg-java
+cannot write through it either, so the write fails with iceberg-java's own error rather than in
+the native writer ([#6141](https://github.com/apache/datafusion-comet/issues/6141)). A spec whose
+fields are all `void` writes unpartitioned and stays eligible.
 
 Other `write.*` properties are intentionally not gated because they cannot make the native
 writer produce different data files: distribution and ordering settings shape the Spark plan
@@ -307,14 +319,19 @@ a data file but not what any reader computes from it:
 - Dictionary-encoded pages are labeled `RLE_DICTIONARY` (parquet-mr v1 files: `PLAIN_DICTIONARY`).
 - Fixed-length binary columns (`uuid`, `fixed`, decimals with precision > 18) are not
   dictionary-encoded (parquet-mr dictionary-encodes them).
-- High-cardinality columns keep a dictionary page. parquet-mr abandons dictionary encoding for a
-  column chunk, and writes no dictionary page, when the first check shows the dictionary is not
-  saving space. parquet-rs keeps dictionary encoding until the dictionary reaches
-  `write.parquet.dict-size-bytes` (2 MB by default), then switches to plain encoding for the rest
-  of the chunk and still writes the dictionary page. Results are the same, but a selective read of
-  a native-written file fetches that dictionary page for every column chunk it touches, so it
-  reads more bytes than it would from an iceberg-java file
-  ([#6114](https://github.com/apache/datafusion-comet/issues/6114)).
+- Which columns are dictionary-encoded is decided as parquet-mr decides it: a column whose first
+  data page shows the dictionary saving no space is written plain, with no dictionary page,
+  instead of carrying a dictionary page that every selective read of it would have to fetch
+  ([#6114](https://github.com/apache/datafusion-comet/issues/6114)). The native writer decides
+  once per partition, from that partition's first page of rows in the task, and keeps the
+  decision for every file and row group it writes for the partition; parquet-mr decides again
+  for every row group. Where the page size rather than `write.parquet.page-row-limit` ends a
+  column's first page, the native page ends at the first row past parquet-mr's size threshold,
+  while parquet-mr only ends it at its next periodic size check, so a column close to the
+  cut-off can be decided the other way. Close to the cut-off both encodings take about the same
+  space. A column that keeps its dictionary and later fills it falls back to plain on both
+  writers, but parquet-rs's dictionary page then holds every entry, where parquet-mr's holds
+  only the entries earlier pages used.
 - Row-group boundaries: parquet-mr flushes by byte size at a record-count check cadence,
   parquet-rs buffers by row count. File naming follows the same cadence-style difference
   (iceberg-java names files `<partition>-<task>-<operation>-<count>`; iceberg-rust uses a
@@ -378,7 +395,7 @@ iceberg-java's _writer-tracked_ state would have recorded, and both are analyzed
   iceberg-java's writer-tracked bounds preserve the exact sign it saw. The native path's
   manifest bounds inherit the normalised values — a strictly conservative widening that cannot
   change pruning decisions.
-- On Iceberg 1.10+, manifest `value_counts` / `null_value_counts` for float/double columns
+- On Iceberg 1.9+, manifest `value_counts` / `null_value_counts` for float/double columns
   nested under a nullable struct count rows whose parent struct is null (they come from the
   parquet footer), while iceberg-java's writer-tracked counts do not. Both counts inflate by
   the same amount, so the derived null ratios and `IS NULL` / `IS NOT NULL` pruning decisions

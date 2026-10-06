@@ -805,6 +805,37 @@ object IcebergReflection extends Logging {
   }
 
   /**
+   * The names of the `void` partition fields of `spec` whose source column is no longer in the
+   * spec's schema, when `spec` also has a field that is not `void`. A format-version-1 table
+   * keeps a dropped partition field as a `void` transform, and its source column can be dropped
+   * afterwards. Empty when every field is `void`, since such a spec writes unpartitioned. Throws
+   * on reflection failure, so the caller can fail closed.
+   */
+  def voidFieldsWithDroppedSource(spec: Any): Seq[String] = {
+    import scala.jdk.CollectionConverters._
+    val schema = getMethod(spec.getClass, "schema").invoke(spec)
+    val findField = getMethod(schema.getClass, "findField", classOf[Int])
+    val fields =
+      getMethod(spec.getClass, "fields")
+        .invoke(spec)
+        .asInstanceOf[java.util.List[_]]
+        .asScala
+        .toSeq
+    def isVoid(field: Any): Boolean =
+      getMethod(field.getClass, "transform").invoke(field).toString == "void"
+    if (fields.forall(isVoid)) {
+      Seq.empty
+    } else {
+      fields
+        .filter { field =>
+          val sourceId = getMethod(field.getClass, "sourceId").invoke(field).asInstanceOf[Int]
+          isVoid(field) && findField.invoke(schema, sourceId.asInstanceOf[Object]) == null
+        }
+        .map(field => getMethod(field.getClass, "name").invoke(field).asInstanceOf[String])
+    }
+  }
+
+  /**
    * Gets the partition spec from an Iceberg table.
    */
   def getPartitionSpec(table: Any): Option[Any] = {
