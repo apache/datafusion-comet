@@ -841,6 +841,8 @@ scan does not read, such as tables cached in Spark’s default format.</p></li>
 <code class="docutils literal notranslate"><span class="pre">spark.createDataFrame(rdd,</span> <span class="pre">schema)</span></code>.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">spark.comet.convert.oneRowRelation.enabled</span></code>: the single row that a query without a <code class="docutils literal notranslate"><span class="pre">FROM</span></code>
 clause, such as <code class="docutils literal notranslate"><span class="pre">SELECT</span> <span class="pre">1</span></code>, reads.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">spark.comet.convert.rowDataSource.enabled</span></code>: Data Source V1 relations that are not file-based,
+such as JDBC tables, which Spark scans with <code class="docutils literal notranslate"><span class="pre">RowDataSourceScanExec</span></code>.</p></li>
 </ul>
 <p>To convert any other leaf operator, such as the scan of a Data Source V2 connector or of a file
 format other than Parquet, JSON and CSV, set <code class="docutils literal notranslate"><span class="pre">spark.comet.sparkToColumnar.enabled=true</span></code> and name the

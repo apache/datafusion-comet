@@ -818,14 +818,17 @@ ignored and the pool is always <code class="docutils literal notranslate"><span 
 <h2>The pool stack<a class="headerlink" href="#the-pool-stack" title="Link to this heading">#</a></h2>
 <p><code class="docutils literal notranslate"><span class="pre">create_memory_pool</span></code> builds a base pool and <code class="docutils literal notranslate"><span class="pre">createPlan</span></code> then wraps it in decorators. Reading from
 the inside out, a Comet plan in the default configuration sees:</p>
-<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>[LoggingMemoryPool]        &lt;- only when spark.comet.debug.memory=true
-  [TaskSharedMemoryPool]   &lt;- RAII handle for the per-task registry
-    [TrackConsumersPool]   &lt;- DataFusion; names the top 10 consumers in error messages
-      [CometFairMemoryPool]  &lt;- delegates acquire/release to Spark over JNI
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>[LoggingMemoryPool]          &lt;- only when spark.comet.debug.memory=true
+  [TaskSharedMemoryPool]     &lt;- RAII handle for the per-task registry
+    [SpillReplayPool]        &lt;- lets a spilled final aggregate read its spill files back
+      [TrackConsumersPool]   &lt;- DataFusion; names the top 10 consumers in error messages
+        [CometFairMemoryPool]  &lt;- delegates acquire/release to Spark over JNI
 </pre></div>
 </div>
 <p>Each decorator forwards every <code class="docutils literal notranslate"><span class="pre">MemoryPool</span></code> method to its inner pool, so <code class="docutils literal notranslate"><span class="pre">reserved()</span></code> at any level
-reports the base pool’s number.</p>
+reports the base pool’s number. <code class="docutils literal notranslate"><span class="pre">SpillReplayPool</span></code> also turns one kind of refused <code class="docutils literal notranslate"><span class="pre">try_grow</span></code> into a
+<code class="docutils literal notranslate"><span class="pre">grow</span></code>; see
+<a class="reference internal" href="#final-aggregates-reading-their-spill-files-back">Final aggregates reading their spill files back</a>.</p>
 <section id="the-unified-pools">
 <h3>The unified pools<a class="headerlink" href="#the-unified-pools" title="Link to this heading">#</a></h3>
 <p><code class="docutils literal notranslate"><span class="pre">CometUnifiedMemoryPool</span></code> and <code class="docutils literal notranslate"><span class="pre">CometFairMemoryPool</span></code> (<code class="docutils literal notranslate"><span class="pre">unified_pool.rs</span></code>, <code class="docutils literal notranslate"><span class="pre">fair_pool.rs</span></code>) are the
@@ -906,6 +909,18 @@ created it, so the JVM side shares one manager per task as well: <code class="do
 hands every native plan in a task the same one and drops it when the task completes. Its <code class="docutils literal notranslate"><span class="pre">getUsed</span></code>
 covers the whole task, so <code class="docutils literal notranslate"><span class="pre">CometExecIterator.close()</span></code> warns about memory still in use only when
 the task’s last open native plan closes.</p>
+</section>
+<section id="final-aggregates-reading-their-spill-files-back">
+<h3>Final aggregates reading their spill files back<a class="headerlink" href="#final-aggregates-reading-their-spill-files-back" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">SpillReplayPool</span></code> (<code class="docutils literal notranslate"><span class="pre">spill_replay.rs</span></code>) wraps both Comet pools to work around
+<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6254">issue #6254</a>. Once one of DataFusion 55’s
+final aggregates has spilled, it reads its spill files back through an aggregate that cannot spill,
+so a refused <code class="docutils literal notranslate"><span class="pre">try_grow</span></code> there fails the task. When the pool refuses such a request,
+<code class="docutils literal notranslate"><span class="pre">SpillReplayPool</span></code> records it with the pool’s <code class="docutils literal notranslate"><span class="pre">grow</span></code> instead, which skips <code class="docutils literal notranslate"><span class="pre">CometFairMemoryPool</span></code>’s
+local checks and carries what Spark does not grant as overcommit. Every other refusal is passed on
+unchanged. <code class="docutils literal notranslate"><span class="pre">spill_replay.rs</span></code> describes how the wrapper recognizes these requests and what that relies
+on in DataFusion. <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6583">Issue #6583</a> tracks
+removing it.</p>
 </section>
 </section>
 <section id="how-datafusion-consumes-the-pool">
@@ -1211,6 +1226,7 @@ is not.</p></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-pool-stack">The pool stack</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-unified-pools">The unified pools</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#task-shared-pools-and-their-lifetime">Task-shared pools and their lifetime</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#final-aggregates-reading-their-spill-files-back">Final aggregates reading their spill files back</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#how-datafusion-consumes-the-pool">How DataFusion consumes the pool</a></li>
