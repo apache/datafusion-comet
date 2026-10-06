@@ -2319,13 +2319,15 @@ class CometExecRuleSuite extends CometTestBase {
 
   /** Runs `f` with a query over each leaf operator that has a `spark.comet.convert` config. */
   private def withConversionQueries(f: Seq[(ConfigEntry[Boolean], String)] => Unit): Unit = {
-    withTempView("rdd_input", "cached_input") {
+    withTempView("rdd_input", "cached_input", "row_data_source_input") {
       val schema = StructType(Seq(StructField("a", DataTypes.IntegerType)))
       spark
         .createDataFrame(spark.sparkContext.parallelize(Seq(Row(1), Row(2)), 1), schema)
         .createOrReplaceTempView("rdd_input")
       spark.range(10).selectExpr("CAST(id AS INT) AS a").createOrReplaceTempView("cached_input")
       spark.catalog.cacheTable("cached_input")
+      rowDataSourceDataFrame(schema, Seq(Row(1), Row(2)))
+        .createOrReplaceTempView("row_data_source_input")
       try {
         f(
           Seq(
@@ -2335,7 +2337,9 @@ class CometExecRuleSuite extends CometTestBase {
             CometConf.COMET_CONVERT_FROM_RDD_ENABLED -> "SELECT a + 1 FROM rdd_input",
             // Spark plans this as an RDDScanExec before 4.1, so it also checks that the RDD
             // config leaves it alone there.
-            CometConf.COMET_CONVERT_FROM_ONE_ROW_RELATION_ENABLED -> "SELECT 1 AS a"))
+            CometConf.COMET_CONVERT_FROM_ONE_ROW_RELATION_ENABLED -> "SELECT 1 AS a",
+            CometConf.COMET_CONVERT_FROM_ROW_DATA_SOURCE_ENABLED ->
+              "SELECT a + 1 FROM row_data_source_input"))
       } finally {
         spark.catalog.uncacheTable("cached_input")
       }
@@ -2355,15 +2359,20 @@ class CometExecRuleSuite extends CometTestBase {
   test("the deprecated sparkToColumnar settings still convert what they converted before") {
     val switch = CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true"
     val list = CometConf.COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST.key
+    val rowDataSource = CometConf.COMET_CONVERT_FROM_ROW_DATA_SOURCE_ENABLED
     withConversionQueries { queries =>
-      // Without a list, the switch converts the operators the list used to name by default.
-      queries.foreach { case (_, query) =>
-        assert(convertedLeaves(query, switch).nonEmpty, query)
+      // Without a list, the switch converts the operators the list used to name by default,
+      // which did not include RowDataSourceScan.
+      queries.foreach { case (entry, query) =>
+        assert(convertedLeaves(query, switch).nonEmpty == (entry ne rowDataSource), query)
       }
       // A list replaces them.
       val range = queries.head._2
       assert(convertedLeaves(range, switch, list -> "RDDScan").isEmpty)
       assert(convertedLeaves(range, switch, list -> "Range").nonEmpty)
+      // A list that names RowDataSourceScan still converts it.
+      val rowDataSourceQuery = queries.find(_._1 eq rowDataSource).get._2
+      assert(convertedLeaves(rowDataSourceQuery, switch, list -> "RowDataSourceScan").nonEmpty)
     }
     // An operator without a config of its own is converted only when the list names it.
     val values = "SELECT a FROM VALUES (1), (2) AS t(a)"
@@ -2374,29 +2383,38 @@ class CometExecRuleSuite extends CometTestBase {
 
   test("the deprecated sparkToColumnar settings warn once for each config they stand in for") {
     val switch = CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true"
+    val list = CometConf.COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST.key
     val range = "SELECT id + 1 FROM range(10)"
     CometExecRule.warnedDeprecatedConversions.clear()
     val appender = new LogAppender("deprecated Spark-to-Arrow settings")
-    withLogAppender(appender, Seq(classOf[CometExecRule].getName), Some(Level.WARN)) {
-      assert(convertedLeaves(range, switch).nonEmpty)
-      assert(convertedLeaves(range, switch).nonEmpty)
-      // With its own config on, the range does not need the deprecated settings.
-      assert(
-        convertedLeaves(
-          range,
-          switch,
-          CometConf.COMET_CONVERT_FROM_RANGE_ENABLED.key -> "true").nonEmpty)
-      // Converting an operator without a config of its own is not deprecated.
-      assert(convertedLeaves(
-        "SELECT a FROM VALUES (1), (2) AS t(a)",
-        switch,
-        CometConf.COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST.key -> "LocalTableScan").nonEmpty)
+    withConversionQueries { queries =>
+      val rowDataSource =
+        queries.find(_._1 eq CometConf.COMET_CONVERT_FROM_ROW_DATA_SOURCE_ENABLED).get._2
+      withLogAppender(appender, Seq(classOf[CometExecRule].getName), Some(Level.WARN)) {
+        assert(convertedLeaves(range, switch).nonEmpty)
+        assert(convertedLeaves(range, switch).nonEmpty)
+        // With its own config on, the range does not need the deprecated settings.
+        assert(
+          convertedLeaves(
+            range,
+            switch,
+            CometConf.COMET_CONVERT_FROM_RANGE_ENABLED.key -> "true").nonEmpty)
+        // Converting an operator without a config of its own is not deprecated.
+        assert(
+          convertedLeaves(
+            "SELECT a FROM VALUES (1), (2) AS t(a)",
+            switch,
+            list -> "LocalTableScan").nonEmpty)
+        assert(convertedLeaves(rowDataSource, switch, list -> "RowDataSourceScan").nonEmpty)
+      }
     }
     val warnings = appender.loggingEvents
       .map(_.getMessage.getFormattedMessage)
       .filter(_.contains(CometConf.COMET_SPARK_TO_ARROW_ENABLED.key))
-    assert(warnings.size == 1, warnings)
+    assert(warnings.size == 2, warnings)
     assert(warnings.head.contains(s"${CometConf.COMET_CONVERT_FROM_RANGE_ENABLED.key}=true"))
+    assert(
+      warnings(1).contains(s"${CometConf.COMET_CONVERT_FROM_ROW_DATA_SOURCE_ENABLED.key}=true"))
   }
 
 }
