@@ -301,8 +301,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("strict floating point: nested sort keeps NaN payloads and zero signs unchanged") {
     // As in the scalar test, a local relation keeps the raw bits that Parquet would canonicalize.
     // `d` is a primitive `Double`, so it is not nullable, and neither are the element of
-    // `array(d)` and the field of `named_struct('v', d)`: these keys cannot hold a null, and
-    // strict mode admits them.
+    // `array(d)` and the field of `named_struct('v', d)`. The `IF` key's element can be null, and
+    // strict mode admits it too, because its default null order places a null element where
+    // Spark does.
     val negNan = java.lang.Double.longBitsToDouble(0xfff8000000000002L)
     val posNan = java.lang.Double.longBitsToDouble(0x7ff8000000000002L)
     val rows = Seq((0, negNan), (1, posNan), (2, -0.0d), (3, 0.0d), (4, 1.0d))
@@ -317,7 +318,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
       for ((key, value) <- Seq[(String, Row => Double)](
           "array(d)" -> (_.getSeq[Double](1).head),
-          "named_struct('v', d)" -> (_.getStruct(1).getDouble(0)))) {
+          "named_struct('v', d)" -> (_.getStruct(1).getDouble(0)),
+          "array(IF(id < 0, CAST(NULL AS DOUBLE), d))" -> (_.getSeq[Double](1).head))) {
         val query = s"SELECT id, $key AS k FROM strict_fp_nested_bits ORDER BY k, id"
         checkSparkAnswerAndOperator(
           sql(query),
