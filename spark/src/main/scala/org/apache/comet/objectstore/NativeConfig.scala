@@ -187,8 +187,9 @@ object NativeConfig {
 
   /**
    * Options key telling the native Azure store whether the hadoop-azure on the classpath reads
-   * the container-scoped SAS fixed token `fs.azure.sas.fixed.token.<container>.<host>`, as Hadoop
-   * 3.4.2 and later do. It is outside `fs.`, so no forwarded Hadoop key can set it.
+   * the container-scoped form `<key>.<container>.<host>` of the SAS fixed token and the OAuth
+   * keys, as Hadoop 3.4.2 and later do. It is outside `fs.`, so no forwarded Hadoop key can set
+   * it.
    */
   private[comet] val containerScopedSasTokenKey = "comet.azure.containerScopedSasToken"
 
@@ -212,7 +213,7 @@ object NativeConfig {
 
   /**
    * Whether the hadoop-azure visible to the current thread's context loader (or Comet's own
-   * loader when there is none) reads the container-scoped SAS token. Probed on every call.
+   * loader when there is none) reads container-scoped credential keys. Probed on every call.
    */
   private[comet] def hadoopReadsContainerScopedSasToken: Boolean =
     hasContainerConf(
