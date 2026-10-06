@@ -131,17 +131,29 @@ impl ScalarUDFImpl for SparkArraysOverlap {
                 Ok(ColumnarValue::Array(result))
             }
             (left, right) => {
-                // Handle scalar inputs by converting to arrays
+                // At least one side is a scalar. It stays a one-row list that every output row
+                // reads, rather than being repeated to the batch length: repeating a long list
+                // could overflow the list's offsets. Only two scalars produce a scalar result.
+                let left_scalar = matches!(left, ColumnarValue::Scalar(_));
+                let right_scalar = matches!(right, ColumnarValue::Scalar(_));
+                let both_scalar = left_scalar && right_scalar;
+                let rows = RowMapping {
+                    len: if both_scalar { 1 } else { args.number_rows },
+                    left_scalar,
+                    right_scalar,
+                };
                 let left_arr = left.to_array(1)?;
                 let right_arr = right.to_array(1)?;
                 let result = match (left_arr.data_type(), right_arr.data_type()) {
-                    (DataType::List(_), DataType::List(_)) => arrays_overlap_list::<i32>(
+                    (DataType::List(_), DataType::List(_)) => arrays_overlap_rows::<i32>(
                         left_arr.as_any().downcast_ref().unwrap(),
                         right_arr.as_any().downcast_ref().unwrap(),
+                        rows,
                     )?,
-                    (DataType::LargeList(_), DataType::LargeList(_)) => arrays_overlap_list::<i64>(
+                    (DataType::LargeList(_), DataType::LargeList(_)) => arrays_overlap_rows::<i64>(
                         left_arr.as_any().downcast_ref().unwrap(),
                         right_arr.as_any().downcast_ref().unwrap(),
+                        rows,
                     )?,
                     (l, r) => {
                         return exec_err!(
@@ -149,8 +161,13 @@ impl ScalarUDFImpl for SparkArraysOverlap {
                         )
                     }
                 };
-                let scalar = ScalarValue::try_from_array(&result, 0)?;
-                Ok(ColumnarValue::Scalar(scalar))
+                if both_scalar {
+                    Ok(ColumnarValue::Scalar(ScalarValue::try_from_array(
+                        &result, 0,
+                    )?))
+                } else {
+                    Ok(ColumnarValue::Array(result))
+                }
             }
         }
     }
@@ -167,18 +184,62 @@ fn arrays_overlap_list<OffsetSize: OffsetSizeTrait>(
     left: &GenericListArray<OffsetSize>,
     right: &GenericListArray<OffsetSize>,
 ) -> Result<ArrayRef> {
+    arrays_overlap_rows(left, right, RowMapping::aligned(left.len()))
+}
+
+/// Which input row each output row reads. A scalar input is a one-row list that every output row
+/// reads; otherwise output row `i` reads input row `i`.
+#[derive(Clone, Copy)]
+struct RowMapping {
+    len: usize,
+    left_scalar: bool,
+    right_scalar: bool,
+}
+
+impl RowMapping {
+    fn aligned(len: usize) -> Self {
+        Self {
+            len,
+            left_scalar: false,
+            right_scalar: false,
+        }
+    }
+
+    fn left(&self, i: usize) -> usize {
+        if self.left_scalar {
+            0
+        } else {
+            i
+        }
+    }
+
+    fn right(&self, i: usize) -> usize {
+        if self.right_scalar {
+            0
+        } else {
+            i
+        }
+    }
+}
+
+/// `arrays_overlap_list` over `rows.len` output rows, reading the input rows `rows` maps them to.
+fn arrays_overlap_rows<OffsetSize: OffsetSizeTrait>(
+    left: &GenericListArray<OffsetSize>,
+    right: &GenericListArray<OffsetSize>,
+    rows: RowMapping,
+) -> Result<ArrayRef> {
     let left_values = left.values();
     let right_values = right.values();
 
     if left_values.data_type() != right_values.data_type() {
-        return arrays_overlap_list_generic(left, right);
+        return arrays_overlap_list_generic(left, right, rows);
     }
 
     // Fast paths for flat element types: probe the flat value buffers directly instead of
     // slicing each row and running an Arrow compare kernel once per probe element.
     macro_rules! flat_fast_path {
         ($l:expr, $r:expr) => {
-            return Ok(overlap_rows(left, right, flat_row_overlap($l, $r)))
+            return Ok(overlap_rows(left, right, rows, flat_row_overlap($l, $r)))
         };
     }
     macro_rules! primitive_fast_path {
@@ -223,7 +284,7 @@ fn arrays_overlap_list<OffsetSize: OffsetSizeTrait>(
             left_values.as_string::<i64>(),
             right_values.as_string::<i64>()
         ),
-        _ => arrays_overlap_list_generic(left, right),
+        _ => arrays_overlap_list_generic(left, right, rows),
     }
 }
 
@@ -233,9 +294,10 @@ fn arrays_overlap_list<OffsetSize: OffsetSizeTrait>(
 fn overlap_rows<OffsetSize: OffsetSizeTrait>(
     left: &GenericListArray<OffsetSize>,
     right: &GenericListArray<OffsetSize>,
+    rows: RowMapping,
     mut row_overlap: impl FnMut(Range<usize>, Range<usize>) -> bool,
 ) -> ArrayRef {
-    let len = left.len();
+    let len = rows.len;
     let left_offsets = left.offsets();
     let right_offsets = right.offsets();
     let left_element_nulls = left.values().nulls();
@@ -244,13 +306,14 @@ fn overlap_rows<OffsetSize: OffsetSizeTrait>(
     let mut builder = BooleanArray::builder(len);
 
     for i in 0..len {
-        if left.is_null(i) || right.is_null(i) {
+        let (li, ri) = (rows.left(i), rows.right(i));
+        if left.is_null(li) || right.is_null(ri) {
             builder.append_null();
             continue;
         }
 
-        let left_range = left_offsets[i].as_usize()..left_offsets[i + 1].as_usize();
-        let right_range = right_offsets[i].as_usize()..right_offsets[i + 1].as_usize();
+        let left_range = left_offsets[li].as_usize()..left_offsets[li + 1].as_usize();
+        let right_range = right_offsets[ri].as_usize()..right_offsets[ri + 1].as_usize();
 
         if left_range.is_empty() || right_range.is_empty() {
             builder.append_value(false);
@@ -413,6 +476,7 @@ fn normalize_list_element_floats<OffsetSize: OffsetSizeTrait>(
 fn arrays_overlap_list_generic<OffsetSize: OffsetSizeTrait>(
     left: &GenericListArray<OffsetSize>,
     right: &GenericListArray<OffsetSize>,
+    rows: RowMapping,
 ) -> Result<ArrayRef> {
     let left_owned =
         has_float_leaf(left.values().data_type()).then(|| normalize_list_element_floats(left));
@@ -421,17 +485,18 @@ fn arrays_overlap_list_generic<OffsetSize: OffsetSizeTrait>(
         has_float_leaf(right.values().data_type()).then(|| normalize_list_element_floats(right));
     let right: &GenericListArray<OffsetSize> = right_owned.as_ref().unwrap_or(right);
 
-    let len = left.len();
+    let len = rows.len;
     let mut builder = BooleanArray::builder(len);
 
     for i in 0..len {
-        if left.is_null(i) || right.is_null(i) {
+        let (li, ri) = (rows.left(i), rows.right(i));
+        if left.is_null(li) || right.is_null(ri) {
             builder.append_null();
             continue;
         }
 
-        let left_values = left.value(i);
-        let right_values = right.value(i);
+        let left_values = left.value(li);
+        let right_values = right.value(ri);
 
         if left_values.is_empty() || right_values.is_empty() {
             builder.append_value(false);
@@ -538,7 +603,7 @@ fn needs_comparator(dt: &DataType) -> bool {
 mod tests {
     use super::*;
     use arrow::array::{
-        Float64Array, Float64Builder, Int32Array, Int32Builder, ListArray, ListBuilder,
+        Float64Array, Float64Builder, Int32Array, Int32Builder, ListArray, ListBuilder, NullArray,
         StructArray, StructBuilder,
     };
     use arrow::buffer::{NullBuffer, OffsetBuffer};
@@ -1146,6 +1211,121 @@ mod tests {
         let result = arrays_overlap_list::<i32>(&left, &right)?;
         let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
         assert!(result.is_null(0));
+        Ok(())
+    }
+
+    fn invoke(left: ColumnarValue, right: ColumnarValue, rows: usize) -> Result<ColumnarValue> {
+        SparkArraysOverlap::new().invoke_with_args(ScalarFunctionArgs {
+            args: vec![left, right],
+            arg_fields: vec![],
+            number_rows: rows,
+            return_field: Arc::new(Field::new("result", DataType::Boolean, true)),
+            config_options: Arc::new(datafusion::config::ConfigOptions::default()),
+        })
+    }
+
+    fn scalar_list(list: ListArray) -> ColumnarValue {
+        ColumnarValue::Scalar(ScalarValue::List(Arc::new(list)))
+    }
+
+    fn booleans(result: ColumnarValue) -> Vec<Option<bool>> {
+        match result {
+            ColumnarValue::Array(array) => array
+                .as_any()
+                .downcast_ref::<BooleanArray>()
+                .unwrap()
+                .iter()
+                .collect(),
+            ColumnarValue::Scalar(_) => panic!("expected an array result"),
+        }
+    }
+
+    /// A constant array beside an array column is compared with every row, on either side.
+    #[test]
+    fn scalar_beside_column_compares_every_row() -> Result<()> {
+        // [0], [1], [2], [NULL] against the constant [1]
+        let column = make_list_array(
+            &Int32Array::from(vec![Some(0), Some(1), Some(2), None]),
+            &[0, 1, 2, 3, 4],
+            None,
+        );
+        let constant = make_list_array(&Int32Array::from(vec![1]), &[0, 1], None);
+        let expected = vec![Some(false), Some(true), Some(false), None];
+
+        let column_first = invoke(
+            ColumnarValue::Array(Arc::new(column.clone())),
+            scalar_list(constant.clone()),
+            4,
+        )?;
+        assert_eq!(booleans(column_first), expected);
+        let constant_first = invoke(
+            scalar_list(constant),
+            ColumnarValue::Array(Arc::new(column)),
+            4,
+        )?;
+        assert_eq!(booleans(constant_first), expected);
+        Ok(())
+    }
+
+    /// The same for the nested-element path.
+    #[test]
+    fn scalar_beside_column_compares_every_row_nested() -> Result<()> {
+        let rows = [
+            make_struct_list(vec![Some((Some(1), Some(2)))]),
+            make_struct_list(vec![Some((Some(3), Some(4)))]),
+        ];
+        let column = arrow::compute::concat(&[&rows[0], &rows[1]])?;
+        let constant = make_struct_list(vec![Some((Some(3), Some(4)))]);
+        let expected = vec![Some(false), Some(true)];
+
+        let constant_first = invoke(
+            scalar_list(constant.clone()),
+            ColumnarValue::Array(Arc::clone(&column)),
+            2,
+        )?;
+        assert_eq!(booleans(constant_first), expected);
+        let column_first = invoke(ColumnarValue::Array(column), scalar_list(constant), 2)?;
+        assert_eq!(booleans(column_first), expected);
+        Ok(())
+    }
+
+    /// A long constant list is read in place for every row rather than repeated to the batch
+    /// length: 262,144 elements repeated over 8,192 rows would overflow a list's 32-bit offsets.
+    #[test]
+    fn long_scalar_list_is_not_repeated() -> Result<()> {
+        let field = Arc::new(Field::new("item", DataType::Null, true));
+        let constant = ListArray::new(
+            Arc::clone(&field),
+            OffsetBuffer::new(vec![0, 262_144].into()),
+            Arc::new(NullArray::new(262_144)),
+            None,
+        );
+        let rows = 8_192;
+        let column = ListArray::new(
+            field,
+            OffsetBuffer::new(vec![0; rows + 1].into()),
+            Arc::new(NullArray::new(0)),
+            None,
+        );
+
+        let result = invoke(
+            scalar_list(constant),
+            ColumnarValue::Array(Arc::new(column)),
+            rows,
+        )?;
+        assert_eq!(booleans(result), vec![Some(false); rows]);
+        Ok(())
+    }
+
+    /// Two constants still produce a constant.
+    #[test]
+    fn two_scalars_return_a_scalar() -> Result<()> {
+        let one = make_list_array(&Int32Array::from(vec![1]), &[0, 1], None);
+        let result = invoke(scalar_list(one.clone()), scalar_list(one), 4)?;
+        assert!(matches!(
+            result,
+            ColumnarValue::Scalar(ScalarValue::Boolean(Some(true)))
+        ));
         Ok(())
     }
 }

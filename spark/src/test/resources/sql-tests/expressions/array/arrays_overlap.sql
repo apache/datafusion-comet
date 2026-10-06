@@ -285,3 +285,18 @@ SELECT arrays_overlap(array(NULL, 99), b) FROM test_arrays_overlap
 -- conditional (CASE WHEN) arrays
 query
 SELECT arrays_overlap(CASE WHEN a IS NOT NULL THEN a ELSE array(0) END, b) FROM test_arrays_overlap
+
+-- A constant array reaches native as a scalar (a folded literal, or make_array over literals
+-- here, where ConstantFolding is excluded). Beside a column, every row has to be compared with
+-- it: read as a one-row list beside the full column, it ran past its end when the constant came
+-- second, and when it came first only the first row was compared and that answer returned for
+-- the whole batch.
+statement
+CREATE TABLE test_overlap_batch(id bigint) USING parquet
+
+-- One file, so the rows share a batch.
+statement
+INSERT INTO test_overlap_batch SELECT id FROM range(0, 4, 1, 1)
+
+query
+SELECT id, arrays_overlap(array(id), array(1L)), arrays_overlap(array(1L), array(id)) FROM test_overlap_batch
