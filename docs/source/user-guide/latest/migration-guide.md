@@ -93,8 +93,11 @@ iceberg-java's writer, and iceberg-java still commits every write. The table hol
 but natively written files differ from iceberg-java's in the ways listed under
 [Accepted divergences](iceberg-writes.md#accepted-divergences), and explain output and the Spark UI
 show the new operators. Set `spark.comet.write.iceberg.enabled=false` to plan Spark's own operator,
-as in Comet 1.1.0. `spark.comet.write.iceberg.splitOperator.enabled` is now a testing setting, and
-setting it to `false` does not turn the split operator off. See [Iceberg Writes](iceberg-writes.md).
+as in Comet 1.1.0. Comet 1.1.0 named this setting `spark.comet.iceberg.write.enabled`, in the
+testing category, and Comet now ignores that name, so a deployment that set it to `false` gets the
+new default unless it sets `spark.comet.write.iceberg.enabled=false`.
+`spark.comet.write.iceberg.splitOperator.enabled` is now a testing setting, and setting it to
+`false` does not turn the split operator off. See [Iceberg Writes](iceberg-writes.md).
 
 The native writer's buffers count against Comet's off-heap memory pool, where iceberg-java's buffers
 sit on the JVM heap. A fanout write keeps a data file open for every partition a task writes to, and

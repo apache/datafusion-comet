@@ -113,7 +113,8 @@ covers a broader set of table formats overall.
 
 Comet provides a native Iceberg scan built on iceberg-rust. It has been tested with Iceberg 1.5 through 1.10 and
 supports Iceberg spec v1 and v2, schema evolution, time travel and branch reads, positional and equality deletes
-on merge-on-read tables, REST catalogs, and S3-compatible object storage. Iceberg writes still go through Spark.
+on merge-on-read tables, REST catalogs, and S3-compatible object storage. For Iceberg writes, Comet
+writes the data files of eligible writes natively, and iceberg-java writes the rest and commits every write.
 Comet does not currently provide native integrations for Delta Lake, Hudi, or Paimon. See the
 [Comet Iceberg guide] for the full list of supported features and known limitations.
 

@@ -86,7 +86,9 @@ already has, even if they do not fill its first page.
 
 ## Configuration
 
-Standard Comet + Iceberg setup (see [`iceberg.md`](iceberg.md)) plus the write-side toggle:
+Iceberg writes need only the standard Comet and Iceberg setup (see [`iceberg.md`](iceberg.md)).
+`spark.comet.write.iceberg.enabled` is on by default; set it to `false` to plan Spark's own write
+operator instead.
 
 ```
 # Standard Comet / Iceberg wiring
@@ -95,10 +97,6 @@ spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExte
 spark.sql.catalog.<name>=org.apache.iceberg.spark.SparkCatalog
 spark.sql.catalog.<name>.type=hadoop                          # or hive / glue / rest / ...
 spark.sql.catalog.<name>.warehouse=...
-
-# Split-operator plan and native Parquet writer (on by default since Comet 1.2.0; false plans
-# Spark's own write operator)
-spark.comet.write.iceberg.enabled=true
 
 # Lets writes whose input is a local relation (INSERT ... VALUES, a local DataFrame) use the
 # native writer; see "Native Parquet write eligibility" below
@@ -136,7 +134,9 @@ changes.
 The rewrite is skipped — and the write runs through Spark's stock combined operator — when:
 
 - `spark.comet.write.iceberg.enabled` is set to `false`;
-- Comet is disabled (`spark.comet.enabled=false`);
+- Comet is disabled (`spark.comet.enabled=false`), or its native execution is
+  (`spark.comet.exec.enabled=false`);
+- Comet is in plan-only mode (`spark.comet.explain.planOnly.enabled=true`);
 - the write is not an Iceberg `SparkWrite` (any other V2 data source);
 - the table uses merge-on-read: delta writes (Iceberg `WriteDelta`) are not intercepted;
 - the statement is CTAS / RTAS on Spark 3.4, where the staged exec writes inline; on Spark
