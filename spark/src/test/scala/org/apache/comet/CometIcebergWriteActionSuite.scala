@@ -38,7 +38,7 @@ import org.json4s.jackson.JsonMethods.parse
 import org.apache.hadoop.fs.{Path => HadoopPath}
 import org.apache.parquet.hadoop.ParquetFileReader
 import org.apache.parquet.hadoop.util.HadoopInputFile
-import org.apache.spark.{CometListenerBusUtils, SparkConf, SparkException, Success, TaskContext}
+import org.apache.spark.{CometListenerBusUtils, SparkConf, SparkException, SparkThrowable, Success, TaskContext}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
 import org.apache.spark.sql.CometTestBase
@@ -2235,18 +2235,8 @@ class CometIcebergWriteActionSuite
           "region",
           "amount")
 
-      var nativeFailure: Throwable = null
-      val nativePlans = withNativeEnabled {
-        capturePlans(spark, includeFailures = true) {
-          nativeFailure = intercept[Exception](appendUnclustered(nativeTable, rows))
-        }
-      }
-      val jvmFailure = intercept[Exception](appendUnclustered(jvmTable, rows))
-      assert(
-        nativePlans.exists(p =>
-          collectWithSubqueries(p) { case e: CometIcebergWriteExec => e }.nonEmpty),
-        "expected the aborted write to have gone through CometIcebergWriteExec. Plans:\n" +
-          nativePlans.mkString("\n--\n"))
+      val (nativeFailure, jvmFailure) =
+        failedWrites(nativeTable, jvmTable)(appendUnclustered(_, rows))
 
       val nativeError = clusteredWriterError(nativeFailure)
       val jvmError = clusteredWriterError(jvmFailure)
@@ -2293,18 +2283,8 @@ class CometIcebergWriteActionSuite
           (2, new Timestamp(0L), Array[Byte](0)),
           (3, new Timestamp(-1500L), Array[Byte](0, 1, -1))).toDF("id", "ts", "bin")
 
-        var nativeFailure: Throwable = null
-        val nativePlans = withNativeEnabled {
-          capturePlans(spark, includeFailures = true) {
-            nativeFailure = intercept[Exception](appendUnclustered(nativeTable, rows))
-          }
-        }
-        val jvmFailure = intercept[Exception](appendUnclustered(jvmTable, rows))
-        assert(
-          nativePlans.exists(p =>
-            collectWithSubqueries(p) { case e: CometIcebergWriteExec => e }.nonEmpty),
-          "expected the aborted write to have gone through CometIcebergWriteExec. Plans:\n" +
-            nativePlans.mkString("\n--\n"))
+        val (nativeFailure, jvmFailure) =
+          failedWrites(nativeTable, jvmTable)(appendUnclustered(_, rows))
 
         val (_, nativeMessage) = clusteredWriterError(nativeFailure)
         assert(
@@ -2315,6 +2295,51 @@ class CometIcebergWriteActionSuite
         assert(
           nativeMessage.contains("partition 'ts=1969-12-31T23%3A59%3A58.5%2B00%3A00/bin=AAH%2F'"),
           nativeMessage)
+      }
+    }
+  }
+
+  // https://github.com/apache/datafusion-comet/issues/6234. The native writer pulls its input
+  // through an Arrow C stream, and Arrow Java hands native only the text of an exception thrown
+  // while producing a batch, so the user got a CometNativeException instead of Spark's exception.
+  // The first batch is read on the JVM to derive the stream's schema, which is why the overflow
+  // has to land past it: row 90000 of a single 100000-row data file, so one task reads it all.
+  test("native acceleration: an input error past the first batch fails like the JVM writer") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { _ =>
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+        val (nativeTable, jvmTable) = ("overflow_native", "overflow_jvm")
+        Seq("overflow_src", nativeTable, jvmTable).foreach { table =>
+          spark.sql(s"CREATE TABLE $catalog.$ns.$table (v INT) USING iceberg")
+        }
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          spark
+            .range(0, 100000, 1, 1)
+            .selectExpr("CAST(id AS INT) AS v")
+            .writeTo(s"$catalog.$ns.overflow_src")
+            .append()
+        }
+        def insert(table: String): Unit =
+          spark.sql(
+            s"INSERT INTO $catalog.$ns.$table " +
+              s"SELECT v + ${Int.MaxValue - 90000} FROM $catalog.$ns.overflow_src")
+
+        val (nativeFailure, jvmFailure) = failedWrites(nativeTable, jvmTable)(insert)
+
+        def overflow(failure: Throwable): (Int, Class[_], String, String) = {
+          val chain = causeChain(failure)
+          val depth = chain.indexWhere(_.isInstanceOf[ArithmeticException])
+          assert(depth >= 0, s"no ArithmeticException in the cause chain of $failure")
+          val error = chain(depth).asInstanceOf[Throwable with SparkThrowable]
+          (depth, error.getClass, error.getErrorClass, error.getSqlState)
+        }
+        assert(overflow(jvmFailure)._3 == "ARITHMETIC_OVERFLOW", s"JVM writer: $jvmFailure")
+        assert(
+          overflow(nativeFailure) == overflow(jvmFailure),
+          s"native writer: $nativeFailure\nJVM writer: $jvmFailure")
+        Seq(nativeTable, jvmTable).foreach { table =>
+          assert(spark.table(s"$catalog.$ns.$table").count() == 0, s"$table committed rows")
+        }
       }
     }
   }
@@ -3644,6 +3669,28 @@ class CometIcebergWriteActionSuite
     val depth = chain.indexWhere(_.isInstanceOf[IllegalStateException])
     assert(depth >= 0, s"no IllegalStateException in the cause chain of $t")
     (depth, chain(depth).getMessage)
+  }
+
+  /**
+   * Runs `write` against `nativeTable` with the native writer and against `jvmTable` with the JVM
+   * writer, expects both to fail, and returns the two failures. The native write has to go
+   * through [[CometIcebergWriteExec]], so a fallback to the JVM writer cannot pass as parity.
+   */
+  private def failedWrites(nativeTable: String, jvmTable: String)(
+      write: String => Unit): (Throwable, Throwable) = {
+    var nativeFailure: Throwable = null
+    val nativePlans = withNativeEnabled {
+      capturePlans(spark, includeFailures = true) {
+        nativeFailure = intercept[Exception](write(nativeTable))
+      }
+    }
+    val jvmFailure = intercept[Exception](write(jvmTable))
+    assert(
+      nativePlans.exists(p =>
+        collectWithSubqueries(p) { case e: CometIcebergWriteExec => e }.nonEmpty),
+      "expected the failed write to have gone through CometIcebergWriteExec. Plans:\n" +
+        nativePlans.mkString("\n--\n"))
+    (nativeFailure, jvmFailure)
   }
 
   private def captureWrite(tableName: String)(action: => Unit): WriteSnapshot = {
