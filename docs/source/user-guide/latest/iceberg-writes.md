@@ -67,6 +67,12 @@ the same `TaskCommit` message the JVM writer would have produced. Everything ice
 post-write — snapshot assignment, manifest-list aggregation, commit validation and retries —
 is untouched: `IcebergCommit` performs the normal `BatchWrite.commit`.
 
+Before a task opens a partition's first file, it holds that partition's first
+`write.parquet.page-row-limit` rows in memory, so that it can choose which columns to
+dictionary-encode the way iceberg-java would (see the accepted divergences below). The rows a
+task holds back this way, across all of its partitions, stay within about
+`write.parquet.row-group-size-bytes`.
+
 ## Configuration
 
 Standard Comet + Iceberg setup (see [`iceberg.md`](iceberg.md)) plus the write-side toggle:
@@ -99,6 +105,12 @@ supports:
 - `INSERT OVERWRITE`, static and dynamic (`OverwriteByExpression`,
   `OverwritePartitionsDynamic`)
 - Copy-on-write `DELETE` / `UPDATE` / `MERGE` (`ReplaceData`)
+
+For an unpartitioned copy-on-write `MERGE`, the native Iceberg writer is reachable on Spark
+3.5+ when `spark.comet.exec.mergeRows.enabled=true`. With the flag disabled, the JVM
+`MergeRowsExec` breaks the fully-native child chain required by `CometIcebergWriteExec`.
+On Spark 4.1+, the native MergeRows path also preserves the semantic counters required by the
+summary-aware writer commit contract.
 
 The mechanism behind row-level DML differs by Spark version: on Spark 4.0+ the analyzer emits
 operation-coded rows that Comet's writer dispatches through `ReplaceData`'s projections, while
@@ -174,7 +186,7 @@ A write is eligible only when ALL of the following hold:
 | `write.metadata.metrics.*`                                                                                                                  | any value (manifest metrics are re-derived on the JVM with Iceberg's own logic)                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `write.spark.fanout.enabled`                                                                                                                | any value (the native writer implements both clustered and fanout modes)                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `write.target-file-size-bytes`                                                                                                              | any value (the two writers can choose different roll points; see accepted divergences)                                                                                                                                                                                                                                                                                                                                                                                          |
-| data location URI scheme                                                                                                                    | `file`, `memory`, `s3`, `s3a`, `gs` (`gs` only when the `FileIO` opening the data location is a `GCSFileIO`; see below)                                                                                                                                                                                                                                                                                                                                                         |
+| data location URI scheme                                                                                                                    | `file`, `memory`, `s3`, `s3a`, `gs`, matched case-sensitively (`S3://` falls back). `s3`, `s3a` and `gs` need a bucket in the authority (`s3://bucket/...`), so a hostless form such as `s3:/bucket/key` falls back. `gs` only when the `FileIO` opening the data location is a `GCSFileIO`; see below                                                                                                                                                                          |
 | resolved `table.locationProvider()`                                                                                                         | Iceberg's built-in `DefaultLocationProvider`                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | partition spec                                                                                                                              | any, except an identity partition on a `float` or `double` column (see below)                                                                                                                                                                                                                                                                                                                                                                                                   |
 | column types                                                                                                                                | any except `uuid` (Spark plans it as a string; no Arrow cast reaches `fixed(16)`)                                                                                                                                                                                                                                                                                                                                                                                               |
@@ -246,16 +258,17 @@ Partial results are never committed. The commit set is exactly the commit messag
 successful tasks — a failed task contributes none — and if the job fails, the driver-side
 commit operator aborts without committing anything. A failed task attempt also deletes the
 data files it created, as iceberg-java's writer abort does. The native writer records every
-location it hands to a file writer, and exactly one side owns deleting them at any moment: the
-native writer owns them until its output batch reaches the JVM (so it cleans up a failed write,
-a task torn down before the write completed — for example because the operator feeding it threw
-— and a failure encoding the manifest or building that batch), and the JVM owns them from then
-on through a task failure listener. The handoff does not depend on decoding the manifest: the
-native side reports the locations in the output batch alongside it, and the listener is handed
-them before the manifest is decoded, so a failure in that decode still cleans up. Both
-deletions are best-effort and never mask the original failure; anything they miss is invisible
-to every reader, since readers resolve files through committed manifests only, and is reclaimed
-by Iceberg's normal `remove_orphan_files` maintenance.
+location it hands to a file writer, and cleanup has no ownership gap. Native keeps its cleanup
+guard armed after yielding the output batch. The JVM reads those locations into a task failure
+listener first, then polls the native output to EOF; that EOF is the acknowledgement that lets
+native disarm. A failure in this narrow handoff window can therefore trigger best-effort deletion
+on both sides, which is harmless. The native guard still covers a failed write, a task torn down
+before the write completed — for example because the operator feeding it threw — and a failure
+encoding the manifest or building the output batch. The handoff does not depend on decoding the
+manifest: the locations are read before the manifest is decoded, so a failure in that decode still
+cleans up. Cleanup never masks the original failure; anything it misses is invisible to every
+reader, since readers resolve files through committed manifests only, and is reclaimed by Iceberg's
+normal `remove_orphan_files` maintenance.
 
 When one task fails, the tasks that had already completed leave committed-nothing data files
 too. The committer collects each task's commit message as that task finishes, so on a job
@@ -292,14 +305,19 @@ a data file but not what any reader computes from it:
 - Dictionary-encoded pages are labeled `RLE_DICTIONARY` (parquet-mr v1 files: `PLAIN_DICTIONARY`).
 - Fixed-length binary columns (`uuid`, `fixed`, decimals with precision > 18) are not
   dictionary-encoded (parquet-mr dictionary-encodes them).
-- High-cardinality columns keep a dictionary page. parquet-mr abandons dictionary encoding for a
-  column chunk, and writes no dictionary page, when the first check shows the dictionary is not
-  saving space. parquet-rs keeps dictionary encoding until the dictionary reaches
-  `write.parquet.dict-size-bytes` (2 MB by default), then switches to plain encoding for the rest
-  of the chunk and still writes the dictionary page. Results are the same, but a selective read of
-  a native-written file fetches that dictionary page for every column chunk it touches, so it
-  reads more bytes than it would from an iceberg-java file
-  ([#6114](https://github.com/apache/datafusion-comet/issues/6114)).
+- Which columns are dictionary-encoded is decided as parquet-mr decides it: a column whose first
+  data page shows the dictionary saving no space is written plain, with no dictionary page,
+  instead of carrying a dictionary page that every selective read of it would have to fetch
+  ([#6114](https://github.com/apache/datafusion-comet/issues/6114)). The native writer decides
+  once per partition, from that partition's first page of rows in the task, and keeps the
+  decision for every file and row group it writes for the partition; parquet-mr decides again
+  for every row group. Where the page size rather than `write.parquet.page-row-limit` ends a
+  column's first page, the native page ends at the first row past parquet-mr's size threshold,
+  while parquet-mr only ends it at its next periodic size check, so a column close to the
+  cut-off can be decided the other way. Close to the cut-off both encodings take about the same
+  space. A column that keeps its dictionary and later fills it falls back to plain on both
+  writers, but parquet-rs's dictionary page then holds every entry, where parquet-mr's holds
+  only the entries earlier pages used.
 - Row-group boundaries: parquet-mr flushes by byte size at a record-count check cadence,
   parquet-rs buffers by row count. File naming follows the same cadence-style difference
   (iceberg-java names files `<partition>-<task>-<operation>-<count>`; iceberg-rust uses a
@@ -359,7 +377,7 @@ iceberg-java's _writer-tracked_ state would have recorded, and both are analyzed
   iceberg-java's writer-tracked bounds preserve the exact sign it saw. The native path's
   manifest bounds inherit the normalised values — a strictly conservative widening that cannot
   change pruning decisions.
-- On Iceberg 1.10+, manifest `value_counts` / `null_value_counts` for float/double columns
+- On Iceberg 1.9+, manifest `value_counts` / `null_value_counts` for float/double columns
   nested under a nullable struct count rows whose parent struct is null (they come from the
   parquet footer), while iceberg-java's writer-tracked counts do not. Both counts inflate by
   the same amount, so the derived null ratios and `IS NULL` / `IS NOT NULL` pruning decisions
