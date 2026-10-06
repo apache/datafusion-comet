@@ -41,7 +41,8 @@ guide is split into the following pages:
 Rows with many columns, long strings, or nested columns such as arrays of structs make every batch
 larger, so queries over such data spill more. For these workloads:
 
-- Compress spill files, which Comet writes uncompressed by default. See
+- Choose the codec for spill files from native sorts, aggregations, and joins, which Comet
+  compresses with `lz4` by default. See
   [Compressing Spill Files](tuning/memory.md#compressing-spill-files).
 - Lower the batch size if wide batches cause spilling or out-of-memory errors. See
   [Batch Size](tuning/memory.md#batch-size).

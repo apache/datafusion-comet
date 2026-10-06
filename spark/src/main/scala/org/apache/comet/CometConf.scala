@@ -1253,28 +1253,28 @@ object CometConf extends ShimCometConf {
       .bytesConf(ByteUnit.BYTE)
       .createWithDefault(100L * 1024 * 1024 * 1024) // 100 GB
 
+  // Used on native side. Check spark_config.rs how the config is used
+  val COMET_EXEC_SPILL_COMPRESSION_CODEC: ConfigEntry[String] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.spill.compression.codec")
+      .category(CATEGORY_TUNING)
+      .doc(
+        "The codec used to compress the files that native sorts, aggregations, and joins " +
+          "spill to disk. lz4 and zstd are supported, and none disables compression. zstd " +
+          "writes smaller files than lz4 but uses more CPU. Comet's shuffle writers use " +
+          s"${COMET_SHUFFLE_COMPRESSION_CODEC.key} instead. $TUNING_GUIDE.")
+      .stringConf
+      .checkValues(Set("lz4", "zstd", "none"))
+      .createWithDefault("lz4")
+
   val COMET_RESPECT_DATAFUSION_CONFIGS: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.respectDataFusionConfigs")
       .category(CATEGORY_TESTING)
       .doc(
         "Development and testing configuration option to allow DataFusion configs set in " +
           "Spark configuration settings starting with `spark.comet.datafusion.` to be passed " +
-          "into native execution. Configs listed in " +
-          "`spark.comet.exec.allowedDataFusionConfigs` are passed even when this is false.")
+          "into native execution.")
       .booleanConf
       .createWithDefault(false)
-
-  val COMET_ALLOWED_DATAFUSION_CONFIGS: ConfigEntry[Seq[String]] =
-    conf(s"$COMET_EXEC_CONFIG_PREFIX.allowedDataFusionConfigs")
-      .category(CATEGORY_TUNING)
-      .doc(
-        "A comma-separated list of `spark.comet.datafusion.` configs, each named by its full " +
-          "key, that are passed into native execution even when " +
-          s"`${COMET_RESPECT_DATAFUSION_CONFIGS.key}` is false. Setting this replaces the " +
-          s"default list. $TUNING_GUIDE.")
-      .stringConf
-      .toSequence
-      .createWithDefault(Seq("spark.comet.datafusion.execution.spill_compression"))
 
   val COMET_STRICT_TESTING: ConfigEntry[Boolean] = conf(s"$COMET_PREFIX.testing.strict")
     .category(CATEGORY_TESTING)

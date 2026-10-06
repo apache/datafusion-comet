@@ -830,11 +830,9 @@ object CometExecIterator extends Logging {
 
   def serializeCometSQLConfs(): Array[Byte] = {
     val builder = ConfigMap.newBuilder()
-    val respectDataFusionConfigs = CometConf.COMET_RESPECT_DATAFUSION_CONFIGS.get(SQLConf.get)
-    val allowedDataFusionConfigs = CometConf.COMET_ALLOWED_DATAFUSION_CONFIGS.get(SQLConf.get)
     cometSqlConfs.foreach { case (k, v) =>
       if (k.startsWith(s"${CometConf.COMET_PREFIX}.datafusion.")) {
-        if (respectDataFusionConfigs || allowedDataFusionConfigs.contains(k)) {
+        if (CometConf.COMET_RESPECT_DATAFUSION_CONFIGS.get(SQLConf.get)) {
           builder.putEntries(k, v)
         }
       } else {
@@ -855,6 +853,7 @@ object CometExecIterator extends Logging {
       CometConf.COMET_DEBUG_ENABLED,
       CometConf.COMET_DEBUG_MEMORY_ENABLED,
       CometConf.COMET_EXEC_AGGREGATE_SKIP_PARTIAL_ENABLED,
+      CometConf.COMET_EXEC_SPILL_COMPRESSION_CODEC,
       CometConf.COMET_EXPLAIN_NATIVE_ENABLED,
       CometConf.COMET_MAX_TEMP_DIRECTORY_SIZE,
       CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED,

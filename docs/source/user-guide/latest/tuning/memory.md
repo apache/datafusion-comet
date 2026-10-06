@@ -285,17 +285,10 @@ multiple of this value.
 
 ## Compressing Spill Files
 
-Native sorts, aggregations, and sort-merge joins spill through DataFusion, which writes spill files
-uncompressed by default, while Spark compresses its own with `lz4` by default. To compress them,
-which reduces spill I/O and how much of `spark.comet.maxTempDirectorySize` they use, set:
-
-```
-spark.comet.datafusion.execution.spill_compression=zstd
-```
-
-The accepted values are `uncompressed` (the default), `lz4_frame`, and `zstd`. `lz4_frame`
-compresses and decompresses faster than `zstd` but writes larger files. `lz4` is not a valid value,
-and an invalid value fails every query that runs a Comet native plan. This setting does not need
-`spark.comet.exec.respectDataFusionConfigs`, because `spark.comet.exec.allowedDataFusionConfigs`
-lists it by default. Comet's shuffle writers do not use it. See
+`spark.comet.exec.spill.compression.codec` sets the codec for the files that native sorts,
+aggregations, sort-merge joins, and nested loop joins spill to disk. The default is `lz4`, which
+Spark also uses for its own spill files by default. `zstd` writes smaller files, which reduces
+spill I/O and how much of `spark.comet.maxTempDirectorySize` they use, but takes more CPU to
+compress and decompress them. `none` writes them uncompressed. Comet's shuffle writers use
+`spark.comet.shuffle.compression.codec` instead. See
 [Shuffle Compression](shuffle.md#shuffle-compression).

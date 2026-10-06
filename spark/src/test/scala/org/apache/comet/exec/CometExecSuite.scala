@@ -110,17 +110,47 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
-  test("SQLConf serde passes allowed DataFusion configs without respectDataFusionConfigs") {
-    def entries = ConfigMap.parseFrom(CometExecIterator.serializeCometSQLConfs()).getEntriesMap
-    val spillCompression = "spark.comet.datafusion.execution.spill_compression"
-    val spillReservation = "spark.comet.datafusion.execution.sort_spill_reservation_bytes"
+  test("native sort spill files are compressed with the default spill codec") {
+    val numRows = 20000
+    val compressibleValue = "native-sort-spill-compression-" * 8
+    withTempPath { path =>
+      // A single input file keeps all rows in one task so its sort outgrows the tiny memory
+      // pool below and must spill.
+      spark
+        .createDataFrame((0 until numRows).map(i => (i, compressibleValue)))
+        .coalesce(1)
+        .write
+        .parquet(path.getAbsolutePath)
 
-    withSQLConf(spillCompression -> "zstd", spillReservation -> "65536") {
-      assert(entries.get(spillCompression) == "zstd")
-      assert(!entries.containsKey(spillReservation))
+      withParquetTable(path.getAbsolutePath, "tbl") {
+        def sortSpilledBytes(codecConf: (String, String)*): Long = {
+          var spilledBytes = 0L
+          withSQLConf(
+            Seq(
+              CometConf.COMET_BATCH_SIZE.key -> "1024",
+              CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key -> "0.002",
+              CometConf.COMET_RESPECT_DATAFUSION_CONFIGS.key -> "true",
+              "spark.comet.datafusion.execution.sort_spill_reservation_bytes" -> "65536") ++
+              codecConf: _*) {
+            val sorted = sql("SELECT * FROM tbl").sortWithinPartitions($"_1".desc)
+            assert(sorted.collect().length == numRows)
+            val plan = sorted.queryExecution.executedPlan
+            val sorts = collect(plan) { case sort: CometSortExec => sort }
+            assert(sorts.nonEmpty, s"Expected a native sort:\n$plan")
+            spilledBytes = sorts.map(_.metrics("spilled_bytes").value).sum
+            assert(spilledBytes > 0L, "Native sort did not spill")
+          }
+          spilledBytes
+        }
 
-      withSQLConf(CometConf.COMET_ALLOWED_DATAFUSION_CONFIGS.key -> spillReservation) {
-        assert(entries.get(spillReservation) == "65536")
+        // `spilled_bytes` counts what DataFusion wrote to disk, so this shows the default codec
+        // reaching DataFusion's spill writer, not just crossing JNI.
+        val uncompressed =
+          sortSpilledBytes(CometConf.COMET_EXEC_SPILL_COMPRESSION_CODEC.key -> "none")
+        val compressed = sortSpilledBytes()
+        assert(
+          compressed < uncompressed,
+          s"Spilled $compressed bytes with the default codec and $uncompressed with none")
       }
     }
   }
