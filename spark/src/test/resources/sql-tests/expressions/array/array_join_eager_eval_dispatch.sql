@@ -15,7 +15,7 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- A delimiter or replacement that can throw or carry state is routed to the codegen dispatcher,
+-- A delimiter or replacement that can throw or carry state requires Spark evaluation,
 -- because DataFusion evaluates every argument up front while Spark short-circuits past them
 -- (#3178). These must return Spark's answers rather than raising INVALID_INDEX_OF_ZERO.
 
@@ -36,7 +36,7 @@ query
 SELECT array_join(arr, element_at(delims, 0)) FROM test_aj_eager WHERE arr IS NULL
 
 -- doGenCode evaluates the replacement before the delimiter, so a null replacement wins
-query
+query spark_answer_only
 SELECT array_join(arr, element_at(delims, 0), nullrep) FROM test_aj_eager WHERE nullrep IS NULL
 
 -- a non-deterministic replacement is evaluated once per row by Spark
@@ -44,5 +44,5 @@ query
 SELECT array_join(arr, ',', cast(monotonically_increasing_id() as string)) IS NOT NULL FROM test_aj_eager WHERE arr IS NOT NULL
 
 -- the rows that do join still produce the right answer
-query
+query spark_answer_only
 SELECT array_join(arr, element_at(delims, 1), nullrep) FROM test_aj_eager WHERE arr IS NOT NULL

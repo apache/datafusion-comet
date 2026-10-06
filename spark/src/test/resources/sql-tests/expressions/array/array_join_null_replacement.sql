@@ -17,7 +17,7 @@
 
 -- Regression coverage for #3178: Spark returns null whenever nullReplacement is null, even for
 -- an array with no nulls to replace, while array_to_string reads a null null_string as "omit
--- nulls". The replacement is a column so these take the guarded native path.
+-- nulls". Nullable column replacements stay on Spark before 4.2 (SPARK-57200).
 
 statement
 CREATE TABLE test_aj_nullrep(arr array<string>, delim string, nullrep string) USING parquet
@@ -31,10 +31,10 @@ INSERT INTO test_aj_nullrep VALUES
   (array('a', NULL, 'c'), ',', 'X'),
   (array('a', NULL, 'c'), ',', '')
 
-query
+query spark_answer_only
 SELECT array_join(arr, delim, nullrep) FROM test_aj_nullrep
 
-query
+query spark_answer_only
 SELECT array_join(arr, ',', nullrep) FROM test_aj_nullrep
 
 -- a non-nullable literal replacement takes the unguarded path
