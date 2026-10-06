@@ -589,7 +589,14 @@ case class CometScanRule(session: SparkSession)
 
             val effectiveUri = new java.net.URI(effectiveLocation)
 
-            val hadoopS3Options = NativeConfig.extractObjectStoreOptions(hadoopConf, effectiveUri)
+            // Only a scheme the native Iceberg reader can open is worth resolving credentials
+            // for: the ABFS resolver may run a KeyProvider, and the scan is rejected below anyway.
+            val hadoopS3Options =
+              if (CometScanRule.isIcebergReadableScheme(effectiveUri, s3CompliantSchemes)) {
+                NativeConfig.extractObjectStoreOptions(hadoopConf, effectiveUri)
+              } else {
+                Map.empty[String, String]
+              }
 
             // Promote the DATA bucket's per-bucket `fs.s3a.bucket.<b>.*` settings to global (what
             // the native FileIO reads), NOT the metadata bucket's: the FileIO opens data/delete

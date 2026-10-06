@@ -20,16 +20,13 @@
 package org.apache.comet.objectstore
 
 import java.net.URI
-import java.util.Properties
-
-import scala.util.Try
 
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 
 import org.apache.hadoop.conf.Configuration
 
-import org.apache.comet.CometConf.COMET_S3_COMPLIANT_SCHEMES_KEY
+import org.apache.comet.CometConf.{COMET_LIBHDFS_SCHEMES_KEY, COMET_S3_COMPLIANT_SCHEMES_KEY}
 
 class NativeConfigSuite extends AnyFunSuite with Matchers {
 
@@ -84,38 +81,44 @@ class NativeConfigSuite extends AnyFunSuite with Matchers {
     assert(unsupportedOptions.isEmpty, "Unsupported scheme should return empty options")
   }
 
-  test("extractObjectStoreOptions - ABFS forwards Hadoop fs.azure.* auth keys") {
-    // ABFS auth (account keys, OAuth, MSI/Workload Identity, SAS) lives under fs.azure.*, not
-    // fs.abfs.*. Verify abfs[s] forwards fs.azure.* (earlier versions dropped these credentials).
+  test("extractObjectStoreOptions - ABFS forwards the auth Hadoop resolves for the account") {
+    // ABFS auth lives under fs.azure.*; Hadoop (AbfsConfiguration) picks the mechanism and the
+    // values for the URI's account, and only those travel, under the global key names, with the
+    // comet.azure.* markers. Account-scoped keys and other accounts' keys stay on the driver.
     val hadoopConf = new Configuration()
     hadoopConf.set("fs.azure.account.auth.type.myacct.dfs.core.windows.net", "OAuth")
     hadoopConf.set(
       "fs.azure.account.oauth.provider.type.myacct.dfs.core.windows.net",
-      "org.apache.hadoop.fs.azurebfs.oauth2.WorkloadIdentityTokenProvider")
-    hadoopConf.set("fs.azure.account.oauth2.client.id.myacct.dfs.core.windows.net", "client-123")
-    hadoopConf.set("fs.azure.account.oauth2.msi.tenant.myacct.dfs.core.windows.net", "tenant-abc")
+      "org.apache.hadoop.fs.azurebfs.oauth2.ClientCredsTokenProvider")
     hadoopConf.set(
-      "fs.azure.account.oauth2.token.file.myacct.dfs.core.windows.net",
-      "/var/run/secrets/azure/tokens/azure-identity-token")
+      "fs.azure.account.oauth2.client.endpoint.myacct.dfs.core.windows.net",
+      "https://login.microsoftonline.com/tenant-abc/oauth2/token")
+    hadoopConf.set("fs.azure.account.oauth2.client.id.myacct.dfs.core.windows.net", "client-123")
+    hadoopConf.set(
+      "fs.azure.account.oauth2.client.secret.myacct.dfs.core.windows.net",
+      "client-secret-value")
+    hadoopConf.set(
+      "fs.azure.account.oauth2.client.secret.other.dfs.core.windows.net",
+      "other-secret-value")
 
     Seq(
       "abfs://data@myacct.dfs.core.windows.net/path/file.parquet",
       "abfss://data@myacct.dfs.core.windows.net/path/file.parquet").foreach { path =>
       val opts = NativeConfig.extractObjectStoreOptions(hadoopConf, new URI(path))
-      assert(
-        opts("fs.azure.account.oauth2.client.id.myacct.dfs.core.windows.net") == "client-123",
-        s"client id should be forwarded for $path")
-      assert(
-        opts("fs.azure.account.oauth2.msi.tenant.myacct.dfs.core.windows.net") == "tenant-abc",
-        s"tenant id should be forwarded for $path")
-      assert(
-        opts("fs.azure.account.oauth2.token.file.myacct.dfs.core.windows.net") ==
-          "/var/run/secrets/azure/tokens/azure-identity-token",
-        s"federated token file should be forwarded for $path")
-      assert(
-        opts("fs.azure.account.oauth.provider.type.myacct.dfs.core.windows.net") ==
-          "org.apache.hadoop.fs.azurebfs.oauth2.WorkloadIdentityTokenProvider",
-        s"oauth provider type should be forwarded for $path")
+      withClue(s"$path: $opts") {
+        assert(opts("comet.azure.resolution") == "resolved")
+        assert(opts("comet.azure.auth.type") == "OAuth")
+        assert(
+          opts("comet.azure.oauth.provider.class") ==
+            "org.apache.hadoop.fs.azurebfs.oauth2.ClientCredsTokenProvider")
+        assert(
+          opts("fs.azure.account.oauth2.client.endpoint") ==
+            "https://login.microsoftonline.com/tenant-abc/oauth2/token")
+        assert(opts("fs.azure.account.oauth2.client.id") == "client-123")
+        assert(opts("fs.azure.account.oauth2.client.secret") == "client-secret-value")
+        assert(!opts.keys.exists(_.endsWith(".myacct.dfs.core.windows.net")))
+        assert(!opts.values.exists(_ == "other-secret-value"))
+      }
     }
   }
 
@@ -358,65 +361,56 @@ class NativeConfigSuite extends AnyFunSuite with Matchers {
       "schemes must be split on commas, trimmed, lowercased, with blanks dropped")
   }
 
-  test("extractObjectStoreOptions - abfs carries whether hadoop-azure reads container SAS keys") {
-    val key = NativeConfig.containerScopedSasTokenKey
-    val probe = NativeConfig.hadoopReadsContainerScopedSasToken.toString
+  test("extractObjectStoreOptions - abfs without Azure auth keys is 'none' with no fs.* keys") {
+    // The one case where native may read the AZURE_* environment. A key set under the comet
+    // marker name in the Hadoop conf is never forwarded; the resolver's verdict replaces it.
     val hadoopConf = new Configuration()
-    hadoopConf.set("fs.azure.sas.fixed.token", "sv=2020-08-04&sig=fixed")
-    // A value set in the Hadoop conf is never forwarded; the probe result replaces it.
-    hadoopConf.set(key, "user-value")
+    hadoopConf.set(COMET_LIBHDFS_SCHEMES_KEY, "hdfs")
+    hadoopConf.set("comet.azure.resolution", "resolved")
+    hadoopConf.set("fs.azure.account.hns.enabled", "true")
 
     Seq("abfs", "abfss").foreach { scheme =>
       val opts = NativeConfig.extractObjectStoreOptions(
         hadoopConf,
         new URI(s"$scheme://data@myacct.dfs.core.windows.net/path/file.parquet"))
-      assert(opts.get(key).contains(probe), s"$scheme: $opts")
+      withClue(s"$scheme: $opts") {
+        assert(
+          opts == Map(COMET_LIBHDFS_SCHEMES_KEY -> "hdfs", "comet.azure.resolution" -> "none"))
+      }
     }
+  }
+
+  test("extractObjectStoreOptions - abfs resolution failures travel as error markers only") {
+    val hadoopConf = new Configuration()
+    hadoopConf.set("fs.azure.account.key.myacct.dfs.core.windows.net", "not-base64-at-all!!!")
+
+    val opts = NativeConfig.extractObjectStoreOptions(
+      hadoopConf,
+      new URI("abfss://data@myacct.dfs.core.windows.net/path/file.parquet"))
+    assert(opts("comet.azure.resolution") == "error", opts.toString)
+    assert(opts("comet.azure.error.class").endsWith("KeyProviderException"), opts.toString)
+    assert(!opts.keys.exists(_.startsWith("fs.")), opts.toString)
+    assert(!opts.values.exists(_.contains("not-base64-at-all!!!")), opts.toString)
+  }
+
+  test("extractObjectStoreOptions - wasb still forwards fs.azure.* by prefix, without markers") {
+    val hadoopConf = new Configuration()
+    hadoopConf.set("fs.azure.account.key.myacct.blob.core.windows.net", "azure-key")
+    hadoopConf.set("fs.azure.sas.fixed.token", "sv=2020-08-04&sig=fixed")
+
     Seq(
-      "s3a://bucket/key",
-      "gs://bucket/key",
       "wasb://data@myacct.blob.core.windows.net/key",
       "wasbs://data@myacct.blob.core.windows.net/key").foreach { path =>
       val opts = NativeConfig.extractObjectStoreOptions(hadoopConf, new URI(path))
-      assert(!opts.contains(key), s"$path: $opts")
-    }
-  }
-
-  test("hasContainerConf - true only for a loadable class declaring containerConf(String)") {
-    val loader = getClass.getClassLoader
-    assert(!NativeConfig.hasContainerConf("org.apache.comet.objectstore.NoSuchClass", loader))
-    assert(!NativeConfig.hasContainerConf(classOf[String].getName, loader))
-    assert(NativeConfig.hasContainerConf(classOf[ContainerConfProbeTarget].getName, loader))
-  }
-
-  test("hadoopReadsContainerScopedSasToken - matches the hadoop-azure version on the classpath") {
-    val version = Option(
-      getClass.getClassLoader.getResourceAsStream(
-        "META-INF/maven/org.apache.hadoop/hadoop-azure/pom.properties")).flatMap { in =>
-      try {
-        val props = new Properties()
-        props.load(in)
-        Option(props.getProperty("version"))
-      } finally {
-        in.close()
+      withClue(s"$path: $opts") {
+        assert(opts("fs.azure.account.key.myacct.blob.core.windows.net") == "azure-key")
+        assert(opts("fs.azure.sas.fixed.token") == "sv=2020-08-04&sig=fixed")
+        assert(!opts.keys.exists(_.startsWith("comet.azure.")))
       }
     }
-    val parsed = version
-      .flatMap(v => Try(v.split("[.-]").take(3).map(_.toInt).toSeq).toOption)
-      .filter(_.length == 3)
-    assume(parsed.isDefined, s"no parseable hadoop-azure version on the classpath: $version")
-    val probe = NativeConfig.hadoopReadsContainerScopedSasToken
-    info(s"hadoop-azure ${version.get}: hadoopReadsContainerScopedSasToken=$probe")
-    // The first differing component decides; an equal version is 3.4.2 itself.
-    val atLeast342 = parsed.get
-      .zip(Seq(3, 4, 2))
-      .collectFirst { case (have, want) if have != want => have > want }
-      .getOrElse(true)
-    assert(probe == atLeast342)
+    Seq("s3a://bucket/key", "gs://bucket/key").foreach { path =>
+      val opts = NativeConfig.extractObjectStoreOptions(hadoopConf, new URI(path))
+      assert(!opts.keys.exists(_.startsWith("comet.azure.")), s"$path: $opts")
+    }
   }
-}
-
-/** Declares the `containerConf(String)` method `NativeConfig.hasContainerConf` looks for. */
-class ContainerConfProbeTarget {
-  def containerConf(key: String): String = key
 }
