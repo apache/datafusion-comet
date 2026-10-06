@@ -169,6 +169,14 @@ Off-heap Memory:                            │
 The Arrow C Stream Interface transfers ownership by reference count: native takes ownership of each imported batch,
 so it is safe to buffer batches in operators such as `SortExec` or `ShuffleWriterExec` without a deep copy.
 
+`RowArrowReader` and `SparkColumnarArrowReader` write each batch into the buffers of the previous one once nothing
+else references them. The export retains every buffer of a batch until native calls the batch's release callback, so
+the buffers' reference counts show whether native still holds it. While native holds the previous batch, as a sort
+or a shuffle writer does, the next batch goes into new buffers. A streaming plan drops each batch before it pulls the
+next, so the reader allocates buffers for its first batch only. The counts are kept per allocator, so a JVM consumer
+that loads a batch's buffers into vectors of another allocator has to close the batch afterwards, as
+`ColumnarBatchArrowReader` does. Otherwise the reader would write over buffers that consumer still reads.
+
 The whole per-partition stream is exported once, so the JVM allocates one `ArrowArrayStream` per partition rather
 than a per-batch, per-column `ArrowArray`/`ArrowSchema` wrapper object pair. Lifecycle is anchored at the stream: when
 `ScanExec` drops its `ArrowArrayStreamReader`, the stream's release callback fires synchronously back into the JVM

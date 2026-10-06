@@ -39,10 +39,10 @@ import org.apache.comet.vector.NativeUtil
  * responsible for closing it.
  *
  * This differs from [[RowArrowReader]] and [[SparkColumnarArrowReader]], which reuse one stable
- * `VectorSchemaRoot` (release-and-replace) so only one batch is valid at a time. Use this when
- * multiple emitted batches must be alive simultaneously (e.g. tests that buffer several batches
- * before consuming). Buffers come from the caller-provided `BufferAllocator`, whose lifecycle the
- * caller owns.
+ * `VectorSchemaRoot`, writing each batch over the last one's buffers unless something still holds
+ * them, so only one batch is valid at a time. Use this when multiple emitted batches must be
+ * alive simultaneously (e.g. tests that buffer several batches before consuming). Buffers come
+ * from the caller-provided `BufferAllocator`, whose lifecycle the caller owns.
  */
 object CometArrowConverters extends Logging {
 

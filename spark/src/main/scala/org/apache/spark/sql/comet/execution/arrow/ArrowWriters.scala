@@ -24,9 +24,10 @@ import java.nio.ByteOrder
 
 import scala.jdk.CollectionConverters._
 
-import org.apache.arrow.memory.{ArrowBuf, BufferAllocator}
+import org.apache.arrow.memory.{ArrowBuf, BufferAllocator, ReferenceManager}
 import org.apache.arrow.vector._
 import org.apache.arrow.vector.complex._
+import org.apache.arrow.vector.ipc.message.ArrowFieldNode
 import org.apache.arrow.vector.util.OversizedAllocationException
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{SpecializedGetters, UnsafeArrayData, UnsafeRow}
@@ -44,18 +45,122 @@ import org.apache.spark.unsafe.Platform
  * directly.
  */
 private[arrow] object ArrowWriter {
+
+  /**
+   * Prepares the vectors of `root` for a new batch, with room for `fixedWidthCapacity` values in
+   * each top-level fixed-width vector, and returns a writer that appends to them.
+   *
+   * A vector keeps its buffers, and the batch is written over the last one, when nothing else
+   * references them. Otherwise it gets new buffers and leaves the old ones to whoever holds them:
+   * a batch exported over the C Data Interface keeps its buffers until native releases it, and a
+   * batch loaded into another vector until that vector lets go. Both retain each buffer, which
+   * shows in its reference count. The count is per allocator, so loading the buffers into a
+   * vector of another allocator does not show. A consumer that does must close the batch after,
+   * as `ColumnarBatchArrowReader` does, which leaves these vectors no buffers to keep.
+   *
+   * Data buffers are not zeroed, kept or new. The writers write every value of a batch, and a
+   * zero for each null row they write one at a time, so a batch reads the same either way.
+   */
   def create(root: VectorSchemaRoot, fixedWidthCapacity: Int): ArrowWriter = {
     require(fixedWidthCapacity >= 0, "Fixed-width capacity must be non-negative")
     val children = root.getFieldVectors().asScala.map { vector =>
       vector match {
         case fixedWidth: BaseFixedWidthVector =>
-          fixedWidth.allocateNew(fixedWidthCapacity)
+          // The row path writes top-level fixed-width values without checking capacity.
+          if (ownsBuffers(fixedWidth) && fixedWidth.getValueCapacity >= fixedWidthCapacity) {
+            clearKeepingValues(fixedWidth)
+          } else {
+            allocateFixedWidth(fixedWidth, fixedWidthCapacity)
+          }
         case _ =>
-          vector.allocateNew()
+          if (ownsBuffers(vector)) clearKeepingValues(vector) else vector.allocateNew()
       }
       createFieldWriter(vector)
     }
     new ArrowWriter(root, children.toArray)
+  }
+
+  /**
+   * Whether nothing but `vector` and its children references their buffers. Arrow allocates a
+   * vector's validity and data or offset buffers as slices of one allocation, each counting a
+   * reference to it, so references are counted per allocation. A vector whose buffers are empty,
+   * as after `clear`, or of a type not handled here, has nothing to keep.
+   */
+  private def ownsBuffers(vector: FieldVector): Boolean = {
+    val references = new java.util.IdentityHashMap[ReferenceManager, Integer]()
+    def count(v: FieldVector): Boolean = {
+      val buffers = v match {
+        case f: BaseFixedWidthVector => Some(Seq(f.getValidityBuffer, f.getDataBuffer))
+        case f: BaseVariableWidthVector =>
+          Some(Seq(f.getValidityBuffer, f.getOffsetBuffer, f.getDataBuffer))
+        case l: ListVector => Some(Seq(l.getValidityBuffer, l.getOffsetBuffer))
+        case s: StructVector => Some(Seq(s.getValidityBuffer))
+        case _: NullVector => Some(Seq.empty)
+        case _ => None
+      }
+      buffers.exists(_.forall { buffer =>
+        val manager = buffer.getReferenceManager
+        references.put(manager, references.getOrDefault(manager, 0).intValue + 1)
+        buffer.capacity > 0
+      }) && v.getChildrenFromFields.asScala.forall(count)
+    }
+    count(vector) && references.asScala.forall { case (manager, n) =>
+      manager.getRefCount == n.intValue
+    }
+  }
+
+  /**
+   * Empties `vector` and its children for a new batch, zeroing validity and offsets as a new
+   * allocation does, but not the values, which the batch writes over. Booleans are zeroed whole:
+   * their values are bits, and a byte holds some past the end of the batch.
+   */
+  private def clearKeepingValues(vector: FieldVector): Unit = {
+    vector match {
+      case bits: BitVector => bits.reset()
+      case f: BaseFixedWidthVector => zero(f.getValidityBuffer)
+      case f: BaseVariableWidthVector =>
+        zero(f.getValidityBuffer)
+        zero(f.getOffsetBuffer)
+      case l: ListVector =>
+        zero(l.getValidityBuffer)
+        zero(l.getOffsetBuffer)
+        l.setLastSet(-1)
+      case s: StructVector => zero(s.getValidityBuffer)
+      case _: NullVector =>
+    }
+    vector.getChildrenFromFields.asScala.foreach(clearKeepingValues)
+    vector.setValueCount(0)
+  }
+
+  private def zero(buffer: ArrowBuf): Unit = buffer.setZero(0, buffer.capacity)
+
+  /**
+   * Gives `vector` new buffers for `capacity` values. Arrow's `allocateNew` zeroes the values as
+   * well as validity, so it is only used for booleans, whose values are as small as validity, and
+   * for no values at all.
+   */
+  private def allocateFixedWidth(vector: BaseFixedWidthVector, capacity: Int): Unit = {
+    if (capacity == 0 || vector.isInstanceOf[BitVector]) {
+      vector.allocateNew(capacity)
+    } else {
+      val allocator = vector.getAllocator
+      val validity = allocator.buffer(BitVectorHelper.getValidityBufferSize(capacity).toLong)
+      try {
+        zero(validity)
+        val values = allocator.buffer(capacity.toLong * vector.getTypeWidth)
+        try {
+          // This releases the vector's old buffers and retains these. Arrow keeps a validity
+          // buffer that is not empty whatever null count the node gives.
+          vector.loadFieldBuffers(
+            new ArrowFieldNode(0, 0),
+            java.util.Arrays.asList(validity, values))
+        } finally {
+          values.close()
+        }
+      } finally {
+        validity.close()
+      }
+    }
   }
 
   private[sql] def createFieldWriter(vector: ValueVector): ArrowFieldWriter = {
@@ -271,6 +376,27 @@ private[arrow] object ArrowFieldWriter {
     while (i < numRows) {
       writeBit(validity, start + i, !input.isNullAt(startRow + i))
       i += 1
+    }
+  }
+
+  /**
+   * Zeroes the value at `index` of `vector`, which must be within capacity. The data buffer is
+   * not zeroed before a batch, see [[ArrowWriter.create]], so a null row written on its own gets
+   * the zero a freshly zeroed buffer would hold.
+   */
+  def clearValue(vector: BaseFixedWidthVector, index: Int): Unit = {
+    val width = vector.getTypeWidth
+    val address = vector.getDataBufferAddress + index.toLong * width
+    width match {
+      case 0 => BitVectorHelper.unsetBit(vector.getDataBuffer, index)
+      case 1 => Platform.putByte(null, address, 0.toByte)
+      case 2 => Platform.putShort(null, address, 0.toShort)
+      case 4 => Platform.putInt(null, address, 0)
+      case 8 => Platform.putLong(null, address, 0L)
+      case 16 =>
+        Platform.putLong(null, address, 0L)
+        Platform.putLong(null, address + 8, 0L)
+      case _ => vector.getDataBuffer.setZero(index.toLong * width, width.toLong)
     }
   }
 
@@ -706,8 +832,9 @@ private[arrow] abstract class FixedWidthArrowFieldWriter extends ArrowFieldWrite
 
   /**
    * Copies the values of rows `[startRow, startRow + numRows)` of `input` into the data buffer at
-   * index `count`, leaving validity alone. What lands under a null row is unspecified. Returns
-   * false, having written nothing, for a vector type with no such copy.
+   * index `count`, leaving validity alone. Under a null row, a bulk copy leaves whatever Spark
+   * holds there and a copy value by value writes a zero. Returns false, having written nothing,
+   * for a vector type with no such copy.
    *
    * Spark's own vectors without a dictionary are copied in bulk, on-heap ones from
    * [[ArrowFieldWriter.MinOnHeapBulkCopyRows]] rows. Everything else, including a
@@ -736,9 +863,8 @@ private[arrow] abstract class FixedWidthArrowFieldWriter extends ArrowFieldWrite
         } else {
           while (i < numRows) {
             val row = startRow + i
-            if (!hasNull || !input.isNullAt(row)) {
-              Platform.putByte(null, target + i, input.getByte(row))
-            }
+            val value = if (!hasNull || !input.isNullAt(row)) input.getByte(row) else 0.toByte
+            Platform.putByte(null, target + i, value)
             i += 1
           }
         }
@@ -748,9 +874,8 @@ private[arrow] abstract class FixedWidthArrowFieldWriter extends ArrowFieldWrite
         } else {
           while (i < numRows) {
             val row = startRow + i
-            if (!hasNull || !input.isNullAt(row)) {
-              Platform.putShort(null, target + i * 2L, input.getShort(row))
-            }
+            val value = if (!hasNull || !input.isNullAt(row)) input.getShort(row) else 0.toShort
+            Platform.putShort(null, target + i * 2L, value)
             i += 1
           }
         }
@@ -760,9 +885,8 @@ private[arrow] abstract class FixedWidthArrowFieldWriter extends ArrowFieldWrite
         } else {
           while (i < numRows) {
             val row = startRow + i
-            if (!hasNull || !input.isNullAt(row)) {
-              Platform.putInt(null, target + i * 4L, input.getInt(row))
-            }
+            val value = if (!hasNull || !input.isNullAt(row)) input.getInt(row) else 0
+            Platform.putInt(null, target + i * 4L, value)
             i += 1
           }
         }
@@ -773,9 +897,8 @@ private[arrow] abstract class FixedWidthArrowFieldWriter extends ArrowFieldWrite
         } else {
           while (i < numRows) {
             val row = startRow + i
-            if (!hasNull || !input.isNullAt(row)) {
-              Platform.putLong(null, target + i * 8L, input.getLong(row))
-            }
+            val value = if (!hasNull || !input.isNullAt(row)) input.getLong(row) else 0L
+            Platform.putLong(null, target + i * 8L, value)
             i += 1
           }
         }
@@ -785,9 +908,8 @@ private[arrow] abstract class FixedWidthArrowFieldWriter extends ArrowFieldWrite
         } else {
           while (i < numRows) {
             val row = startRow + i
-            if (!hasNull || !input.isNullAt(row)) {
-              Platform.putFloat(null, target + i * 4L, input.getFloat(row))
-            }
+            val value = if (!hasNull || !input.isNullAt(row)) input.getFloat(row) else 0f
+            Platform.putFloat(null, target + i * 4L, value)
             i += 1
           }
         }
@@ -797,9 +919,8 @@ private[arrow] abstract class FixedWidthArrowFieldWriter extends ArrowFieldWrite
         } else {
           while (i < numRows) {
             val row = startRow + i
-            if (!hasNull || !input.isNullAt(row)) {
-              Platform.putDouble(null, target + i * 8L, input.getDouble(row))
-            }
+            val value = if (!hasNull || !input.isNullAt(row)) input.getDouble(row) else 0d
+            Platform.putDouble(null, target + i * 8L, value)
             i += 1
           }
         }
@@ -841,11 +962,15 @@ private[arrow] abstract class FixedWidthArrowFieldWriter extends ArrowFieldWrite
   }
 
   override def setNull(): Unit = {
-    valueVector.setNull(count)
+    val vector = valueVector
+    vector.setNull(count)
+    clearValue(vector, count)
   }
 
   protected def setNullUnsafe(): Unit = {
-    BitVectorHelper.unsetBit(valueVector.getValidityBuffer, count)
+    val vector = valueVector
+    BitVectorHelper.unsetBit(vector.getValidityBuffer, count)
+    clearValue(vector, count)
   }
 
   override def writeUnsafe(input: SpecializedGetters, ordinal: Int): Unit = {
@@ -1115,17 +1240,17 @@ private[arrow] class DecimalWriter(val valueVector: DecimalVector, precision: In
         if (precision <= Decimal.MAX_INT_DIGITS) {
           while (i < numRows) {
             val row = startRow + i
-            if (!hasNull || !vector.isNullAt(row)) {
-              putLong(target + i * 16L, vector.getInt(row).toLong)
-            }
+            val unscaled =
+              if (!hasNull || !vector.isNullAt(row)) vector.getInt(row).toLong else 0L
+            putLong(target + i * 16L, unscaled)
             i += 1
           }
         } else if (precision <= Decimal.MAX_LONG_DIGITS) {
           while (i < numRows) {
             val row = startRow + i
-            if (!hasNull || !vector.isNullAt(row)) {
-              putLong(target + i * 16L, vector.getLong(row))
-            }
+            putLong(
+              target + i * 16L,
+              if (!hasNull || !vector.isNullAt(row)) vector.getLong(row) else 0L)
             i += 1
           }
         } else {
@@ -1165,6 +1290,8 @@ private[arrow] class DecimalWriter(val valueVector: DecimalVector, precision: In
                   count + i,
                   Decimal(new JavaBigDecimal(new BigInteger(value), scale), precision, scale))
               }
+            } else {
+              putLong(target + i * 16L, 0L)
             }
             i += 1
           }

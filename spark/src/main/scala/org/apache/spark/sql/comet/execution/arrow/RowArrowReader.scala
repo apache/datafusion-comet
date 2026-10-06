@@ -29,10 +29,10 @@ import org.apache.spark.sql.catalyst.InternalRow
  * per call into the reader's stable VSR via `ArrowWriter`. `onRows` is told each batch's row
  * count, so a metric need not wrap the row iterator and pay a call per row.
  *
- * `ArrowWriter.create` calls `vector.allocateNew`, which releases any prior buffers and allocates
- * fresh ones. This is required for FFI safety: previously-exported batches retain their buffers
- * via the C release callback, so reusing those buffers in place would corrupt native consumers
- * still holding the prior batch.
+ * `ArrowWriter.create` writes each batch over the buffers of the last one when nothing else
+ * references them. A batch exported over the C Data Interface retains its buffers until native
+ * releases it, so while native still holds the last batch the next one gets new buffers, rather
+ * than overwriting a batch in use.
  */
 private[comet] class RowArrowReader(
     allocator: BufferAllocator,

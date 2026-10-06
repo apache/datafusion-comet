@@ -942,21 +942,21 @@ class CometArrowStreamSuite extends AnyFunSuite with Matchers {
 
   test("fixed-width column write grows an undersized vector") {
     val allocator = new RootAllocator(Long.MaxValue)
-    val numRows = BaseValueVector.INITIAL_VALUE_ALLOCATION + 1
-    val input = new OnHeapColumnVector(numRows, IntegerType)
     val schema = StructType(Seq(StructField("int", IntegerType, nullable = false)))
     val root = VectorSchemaRoot.create(Utils.toArrowSchema(schema, "UTC"), allocator)
+    var input: OnHeapColumnVector = null
 
     try {
+      val writer = ArrowWriter.create(root, BaseValueVector.INITIAL_VALUE_ALLOCATION)
+      val vector = root.getVector(0).asInstanceOf[IntVector]
+      // One row more than the allocation holds, whatever it was rounded up to.
+      val numRows = vector.getValueCapacity + 1
+      input = new OnHeapColumnVector(numRows, IntegerType)
       var i = 0
       while (i < numRows) {
         input.putInt(i, i)
         i += 1
       }
-      val writer = ArrowWriter.create(root, BaseValueVector.INITIAL_VALUE_ALLOCATION)
-      val vector = root.getVector(0).asInstanceOf[IntVector]
-      vector.getValueCapacity should be < numRows
-
       writer.writeColNoNull(new ColumnarArray(input, 0, numRows), 0)
       writer.finish()
 
@@ -964,7 +964,7 @@ class CometArrowStreamSuite extends AnyFunSuite with Matchers {
       vector.get(numRows - 1) shouldBe numRows - 1
     } finally {
       root.close()
-      input.close()
+      if (input != null) input.close()
       allocator.close()
     }
   }

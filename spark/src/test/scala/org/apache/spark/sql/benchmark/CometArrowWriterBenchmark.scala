@@ -25,7 +25,8 @@ import java.nio.charset.StandardCharsets.UTF_8
 import scala.collection.mutable.ArrayBuffer
 
 import org.apache.arrow.memory.RootAllocator
-import org.apache.arrow.vector.VectorSchemaRoot
+import org.apache.arrow.vector.{VectorSchemaRoot, VectorUnloader}
+import org.apache.arrow.vector.ipc.message.ArrowRecordBatch
 import org.apache.spark.benchmark.{Benchmark, BenchmarkBase}
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{GenericInternalRow, UnsafeProjection}
@@ -102,6 +103,7 @@ object CometArrowWriterBenchmark extends BenchmarkBase {
         val offHeap = batch(numRows, offHeap = true, nullEveryOtherRow = false)
         val nullable = batch(numRows, offHeap = false, nullEveryOtherRow = true)
         val root = VectorSchemaRoot.create(arrowSchema, allocator)
+        var held: ArrowRecordBatch = null
         try {
           val benchmark =
             new Benchmark(
@@ -110,6 +112,13 @@ object CometArrowWriterBenchmark extends BenchmarkBase {
               output = output)
           benchmark.addCase("on-heap optimized path") { _ =>
             writeBatch(onHeap, bulkCopy = true, root)
+          }
+          // Each batch is retained until the next is written, as one exported to a native
+          // operator that buffers its input is, so every batch is written into new buffers.
+          benchmark.addCase("on-heap optimized path, last batch still held") { _ =>
+            writeBatch(onHeap, bulkCopy = true, root)
+            if (held != null) held.close()
+            held = new VectorUnloader(root).getRecordBatch
           }
           benchmark.addCase("on-heap scalar copy") { _ =>
             writeBatch(onHeap, bulkCopy = false, root)
@@ -125,6 +134,7 @@ object CometArrowWriterBenchmark extends BenchmarkBase {
           }
           benchmark.run()
         } finally {
+          if (held != null) held.close()
           root.close()
           onHeap.close()
           offHeap.close()

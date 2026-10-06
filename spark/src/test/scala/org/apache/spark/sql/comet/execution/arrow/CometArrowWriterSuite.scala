@@ -20,16 +20,21 @@
 package org.apache.spark.sql.comet.execution.arrow
 
 import java.math.{BigDecimal => JavaBigDecimal, BigInteger}
+import java.nio.file.{Files, Paths}
 
+import scala.collection.mutable.ArrayBuffer
 import scala.jdk.CollectionConverters._
 import scala.util.Random
 
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 
-import org.apache.arrow.memory.RootAllocator
-import org.apache.arrow.vector.{DecimalVector, FieldVector, IntVector, ValueVector, VarCharVector, VectorSchemaRoot}
+import org.apache.arrow.c.{ArrowArrayStream, Data}
+import org.apache.arrow.memory.{ArrowBuf, FilledMemoryAllocators, RootAllocator}
+import org.apache.arrow.vector.{BaseFixedWidthVector, BaseVariableWidthVector, BitVector, DecimalVector, FieldVector, IntVector, NullVector, ValueVector, VarCharVector, VectorLoader, VectorSchemaRoot, VectorUnloader}
 import org.apache.arrow.vector.complex.{ListVector, StructVector}
+import org.apache.arrow.vector.ipc.ArrowReader
+import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{GenericInternalRow, UnsafeProjection}
 import org.apache.spark.sql.catalyst.util.GenericArrayData
 import org.apache.spark.sql.comet.util.Utils
@@ -636,6 +641,325 @@ class CometArrowWriterSuite extends AnyFunSuite with Matchers {
           rows.close()
           allocator.close()
           batches.foreach(_.close())
+        }
+      }
+    }
+  }
+
+  /**
+   * An allocator whose memory starts out holding `fill` in every byte rather than zero, so a
+   * writer that relies on zeroed memory reads `fill` where it expects a zero.
+   */
+  private def filledAllocator(fill: Byte): RootAllocator = FilledMemoryAllocators.create(fill)
+
+  /**
+   * The bytes a consumer of `vector` can read, buffer by buffer and through its children:
+   * validity and offsets for each row, and the values those rows cover.
+   */
+  private def readableBytes(vector: ValueVector, path: String = ""): Seq[(String, Seq[Byte])] = {
+    val name = s"$path/${vector.getName}"
+    val n = vector.getValueCount
+    def read(buffer: String, from: ArrowBuf, length: Long): (String, Seq[Byte]) = {
+      val bytes = new Array[Byte](length.toInt)
+      from.getBytes(0, bytes)
+      s"$name $buffer" -> bytes.toSeq
+    }
+    val validityBytes = (n + 7) / 8L
+    val own = vector match {
+      case v: BitVector =>
+        Seq(
+          read("validity", v.getValidityBuffer, validityBytes),
+          read("values", v.getDataBuffer, validityBytes))
+      case v: BaseFixedWidthVector =>
+        Seq(
+          read("validity", v.getValidityBuffer, validityBytes),
+          read("values", v.getDataBuffer, n.toLong * v.getTypeWidth))
+      case v: BaseVariableWidthVector =>
+        Seq(
+          read("validity", v.getValidityBuffer, validityBytes),
+          read("offsets", v.getOffsetBuffer, (n + 1) * 4L),
+          read("values", v.getDataBuffer, v.getOffsetBuffer.getInt(n * 4L).toLong))
+      case v: ListVector =>
+        Seq(
+          read("validity", v.getValidityBuffer, validityBytes),
+          read("offsets", v.getOffsetBuffer, (n + 1) * 4L))
+      case v: StructVector => Seq(read("validity", v.getValidityBuffer, validityBytes))
+      case _: NullVector => Seq.empty
+    }
+    own ++ vector
+      .asInstanceOf[FieldVector]
+      .getChildrenFromFields
+      .asScala
+      .flatMap(readableBytes(_, name))
+  }
+
+  private def readableBytes(root: VectorSchemaRoot): Seq[(String, Seq[Byte])] =
+    root.getFieldVectors.asScala.toSeq.flatMap(readableBytes(_))
+
+  private def assertSameBytes(
+      expected: Seq[(String, Seq[Byte])],
+      actual: Seq[(String, Seq[Byte])]) = {
+    actual.map(_._1) shouldBe expected.map(_._1)
+    expected.zip(actual).foreach { case ((buffer, e), (_, a)) =>
+      withClue(s"$buffer: ") {
+        a.length shouldBe e.length
+        e.indices.find(i => e(i) != a(i)) shouldBe None
+      }
+    }
+  }
+
+  /** The address of every buffer of `root`'s vectors and their children. */
+  private def bufferAddresses(root: VectorSchemaRoot): Seq[Long] = {
+    def addresses(v: FieldVector): Seq[Long] = {
+      val own = v match {
+        case f: BaseVariableWidthVector =>
+          Seq(f.getValidityBuffer, f.getOffsetBuffer, f.getDataBuffer)
+        case f: BaseFixedWidthVector => Seq(f.getValidityBuffer, f.getDataBuffer)
+        case l: ListVector => Seq(l.getValidityBuffer, l.getOffsetBuffer)
+        case s: StructVector => Seq(s.getValidityBuffer)
+        case _ => Seq.empty
+      }
+      own.map(_.memoryAddress) ++ v.getChildrenFromFields.asScala.flatMap(addresses)
+    }
+    root.getFieldVectors.asScala.toSeq.flatMap(addresses)
+  }
+
+  /** Three batches of one column, with different values and nulls in each. */
+  private def inputBatches(
+      dataType: DataType,
+      offHeap: Boolean,
+      nullFraction: Double,
+      dictionary: Boolean,
+      reversed: Boolean): Seq[ColumnarBatch] =
+    (0 until 3).map { k =>
+      val rnd = new Random(dataType.hashCode + k)
+      val v = newVector(numRows, dataType, offHeap)
+      if (dictionary) fillDictionary(v, dataType, numRows, rnd, nullFraction)
+      else fill(v, dataType, numRows, rnd, nullFraction, reversed)
+      new ColumnarBatch(Array[ColumnVector](v), numRows)
+    }
+
+  /** Writes all of `input` into `root`, as columns or as unsafe rows. */
+  private def writeBatch(
+      root: VectorSchemaRoot,
+      input: ColumnarBatch,
+      columnar: Boolean): Unit = {
+    val writer = ArrowWriter.create(root, input.numRows())
+    if (columnar) {
+      writer.writeColumns(input, 0, input.numRows())
+    } else {
+      val project = UnsafeProjection.create(Utils.fromArrowSchema(root.getSchema))
+      (0 until input.numRows()).foreach(i => writer.write(project(input.getRow(i))))
+    }
+    writer.finish()
+  }
+
+  for (offHeap <- Seq(false, true); nullFraction <- Seq(0.0, 0.2, 1.0)) {
+    test(
+      "batches written over earlier ones or dirty memory read as if written into zeroed " +
+        s"memory: offHeap=$offHeap, nulls=$nullFraction") {
+      val cases = primitiveTypes.map((_, false, false)) ++
+        primitiveTypes.filter(_ != BooleanType).map((_, true, false)) ++
+        nestedTypes.map((_, false, false)) ++
+        nestedTypes.collect { case t @ (_: ArrayType | _: MapType) => (t, false, true) }
+      cases.foreach { case (dataType, dictionary, reversed) =>
+        val inputs = inputBatches(dataType, offHeap, nullFraction, dictionary, reversed)
+        val arrowSchema = Utils.toArrowSchema(new StructType().add("c", dataType), "UTC")
+        try {
+          for (columnar <- Seq(true, false)) {
+            withClue(
+              s"$dataType dictionary=$dictionary reversed=$reversed columnar=$columnar: ") {
+              val zeroed = filledAllocator(0)
+              val expected =
+                try {
+                  inputs.map { input =>
+                    val root = VectorSchemaRoot.create(arrowSchema, zeroed)
+                    try {
+                      writeBatch(root, input, columnar)
+                      readableBytes(root)
+                    } finally root.close()
+                  }
+                } finally zeroed.close()
+              val dirty = filledAllocator(0xa5.toByte)
+              try {
+                // A root of its own for each batch writes it into new buffers of dirty memory.
+                inputs.zip(expected).foreach { case (input, bytes) =>
+                  val root = VectorSchemaRoot.create(arrowSchema, dirty)
+                  try {
+                    writeBatch(root, input, columnar)
+                    assertSameBytes(bytes, readableBytes(root))
+                  } finally root.close()
+                }
+                // One root for all of them writes each batch over the last.
+                val root = VectorSchemaRoot.create(arrowSchema, dirty)
+                try {
+                  inputs.zip(expected).foreach { case (input, bytes) =>
+                    writeBatch(root, input, columnar)
+                    assertSameBytes(bytes, readableBytes(root))
+                  }
+                } finally root.close()
+              } finally dirty.close()
+            }
+          }
+        } finally inputs.foreach(_.close())
+      }
+    }
+  }
+
+  test("a batch something still holds keeps its buffers, which are reused once released") {
+    (primitiveTypes ++ nestedTypes).foreach { dataType =>
+      for (columnar <- Seq(true, false)) {
+        withClue(s"$dataType columnar=$columnar: ") {
+          val inputs = inputBatches(
+            dataType,
+            offHeap = false,
+            nullFraction = 0.2,
+            dictionary = false,
+            reversed = false)
+          val schema = Utils.toArrowSchema(new StructType().add("c", dataType), "UTC")
+          val allocator = filledAllocator(0xa5.toByte)
+          val root = VectorSchemaRoot.create(schema, allocator)
+          val held = VectorSchemaRoot.create(schema, allocator)
+          try {
+            writeBatch(root, inputs(0), columnar)
+            val first = readableBytes(root)
+            // Loading a batch into another root retains its buffers, as an export does.
+            val batch = new VectorUnloader(root).getRecordBatch
+            try new VectorLoader(held).load(batch)
+            finally batch.close()
+            val firstAddresses = bufferAddresses(root)
+
+            writeBatch(root, inputs(1), columnar)
+            bufferAddresses(root).intersect(firstAddresses) shouldBe empty
+            assertSameBytes(first, readableBytes(held))
+
+            // Nothing holds the second batch, so the next is written into its buffers.
+            held.clear()
+            val secondAddresses = bufferAddresses(root)
+            writeBatch(root, inputs(1), columnar)
+            bufferAddresses(root) shouldBe secondAddresses
+          } finally {
+            held.close()
+            root.close()
+            allocator.close()
+            inputs.foreach(_.close())
+          }
+        }
+      }
+    }
+  }
+
+  test("a batch larger than the last gets room for its rows before the row path writes them") {
+    // The row path writes top-level fixed-width values without checking capacity.
+    val schema = new StructType().add("i", IntegerType).add("d", DecimalType(38, 10))
+    val project = UnsafeProjection.create(schema)
+    val allocator = filledAllocator(0xa5.toByte)
+    val root = VectorSchemaRoot.create(Utils.toArrowSchema(schema, "UTC"), allocator)
+    try {
+      Seq(4, 1000).foreach { n =>
+        val writer = ArrowWriter.create(root, n)
+        root.getFieldVectors.asScala.foreach(_.getValueCapacity should be >= n)
+        (0 until n).foreach { i =>
+          val value = if (i % 3 == 0) null else Decimal(i.toLong, 38, 10)
+          writer.write(project(new GenericInternalRow(Array[Any](i, value))))
+        }
+        writer.finish()
+        val ints = root.getVector(0).asInstanceOf[IntVector]
+        val decimals = root.getVector(1).asInstanceOf[DecimalVector]
+        (0 until n).foreach { i =>
+          ints.get(i) shouldBe i
+          decimals.isNull(i) shouldBe (i % 3 == 0)
+          if (i % 3 != 0)
+            decimals.getObject(i) shouldBe Decimal(i.toLong, 38, 10).toJavaBigDecimal
+        }
+      }
+    } finally {
+      root.close()
+      allocator.close()
+    }
+  }
+
+  test("batches a C stream consumer holds keep their values while the reader writes on") {
+    // Maven points java.io.tmpdir at target/tmp, where Arrow extracts its C Data JNI library.
+    Files.createDirectories(Paths.get(System.getProperty("java.io.tmpdir")))
+    val types = Seq(
+      IntegerType,
+      DecimalType(38, 10),
+      StringType,
+      BooleanType,
+      new StructType().add("a", LongType).add("b", StringType),
+      ArrayType(StringType),
+      MapType(StringType, IntegerType))
+    types.foreach { dataType =>
+      for (columnar <- Seq(true, false); hold <- Seq(true, false)) {
+        withClue(s"$dataType columnar=$columnar hold=$hold: ") {
+          val inputs = inputBatches(
+            dataType,
+            offHeap = true,
+            nullFraction = 0.2,
+            dictionary = false,
+            reversed = false)
+          val schema = new StructType().add("c", dataType)
+          val arrowSchema = Utils.toArrowSchema(schema, "UTC")
+          val zeroed = filledAllocator(0)
+          val expected =
+            try {
+              inputs.map { input =>
+                val root = VectorSchemaRoot.create(arrowSchema, zeroed)
+                try {
+                  writeBatch(root, input, columnar)
+                  readableBytes(root)
+                } finally root.close()
+              }
+            } finally zeroed.close()
+          val allocator = filledAllocator(0xa5.toByte)
+          val reader: ArrowReader = if (columnar) {
+            new SparkColumnarArrowReader(allocator, arrowSchema, inputs.iterator, numRows)
+          } else {
+            val project = UnsafeProjection.create(schema)
+            val rows = inputs.iterator.flatMap { input =>
+              (0 until numRows).iterator.map(i => project(input.getRow(i)): InternalRow)
+            }
+            new RowArrowReader(allocator, arrowSchema, rows, numRows)
+          }
+          val stream = ArrowArrayStream.allocateNew(allocator)
+          val held = ArrayBuffer.empty[VectorSchemaRoot]
+          try {
+            Data.exportArrayStream(allocator, reader, stream)
+            val imported = Data.importArrayStream(allocator, stream)
+            try {
+              var addresses = Seq.empty[Long]
+              var batches = 0
+              while (imported.loadNextBatch()) {
+                val batch = imported.getVectorSchemaRoot
+                if (hold) {
+                  // Moving the imported buffers out keeps the batch from being released.
+                  val root = VectorSchemaRoot.create(arrowSchema, allocator)
+                  held += root
+                  batch.getFieldVectors.asScala.zip(root.getFieldVectors.asScala).foreach {
+                    case (from, to) => from.makeTransferPair(to).transfer()
+                  }
+                } else {
+                  assertSameBytes(expected(batches), readableBytes(batch))
+                  // Released before the next batch is pulled, as native releases a batch it is
+                  // done with, so the reader writes the next one into the same buffers.
+                  batch.clear()
+                  if (batches > 0) bufferAddresses(reader.getVectorSchemaRoot) shouldBe addresses
+                  addresses = bufferAddresses(reader.getVectorSchemaRoot)
+                }
+                batches += 1
+              }
+              batches shouldBe inputs.size
+              held.zip(expected).foreach { case (root, bytes) =>
+                assertSameBytes(bytes, readableBytes(root))
+              }
+            } finally imported.close()
+          } finally {
+            held.foreach(_.close())
+            stream.close()
+            allocator.close()
+            inputs.foreach(_.close())
+          }
         }
       }
     }
