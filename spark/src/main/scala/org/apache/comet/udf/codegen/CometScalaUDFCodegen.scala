@@ -35,7 +35,7 @@ import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.types.{BinaryType, DataType, StringType}
 
-import org.apache.comet.codegen.{CometBatchKernel, CometBatchKernelCodegen}
+import org.apache.comet.codegen.{CometBatchKernel, CometBatchKernelCodegen, DispatchOccurrence}
 import org.apache.comet.codegen.CometBatchKernelCodegen.{ArrayColumnSpec, ArrowColumnSpec, MapColumnSpec, ScalarColumnSpec, StructColumnSpec, StructFieldSpec}
 import org.apache.comet.udf.CometUDF
 
@@ -81,7 +81,9 @@ class CometScalaUDFCodegen extends CometUDF with Logging {
    * Per-task cache keyed on serialized expression bytes plus per-column specs. The deserialized
    * `boundExpr` carries mutable state (`NamedLambdaVariable.value` for HOFs, `Rand`'s
    * `XORShiftRandom`) that must not be shared across concurrent tasks running the same query;
-   * keeping the cache per-task gives each task its own copy. Guarded by `this.synchronized`.
+   * keeping the cache per-task gives each task its own copy. Within a task, two occurrences of
+   * one non-deterministic expression get their own entries too, since the serde ships each with
+   * its own [[DispatchOccurrence]]. Guarded by `this.synchronized`.
    */
   private val kernelCache
       : mutable.Map[CometScalaUDFCodegen.CacheKey, CometScalaUDFCodegen.CacheEntry] =
@@ -153,11 +155,14 @@ class CometScalaUDFCodegen extends CometUDF with Logging {
       case None =>
         val loader = Option(Thread.currentThread().getContextClassLoader)
           .getOrElse(classOf[Expression].getClassLoader)
+        // The serde wraps a non-deterministic tree in a `DispatchOccurrence` so each occurrence
+        // has its own cache entry; the wrapper is only a key component and is dropped here.
         val boundExpr =
           try {
-            SparkEnv.get.closureSerializer
-              .newInstance()
-              .deserialize[Expression](ByteBuffer.wrap(bytes), loader)
+            DispatchOccurrence.untag(
+              SparkEnv.get.closureSerializer
+                .newInstance()
+                .deserialize[Expression](ByteBuffer.wrap(bytes), loader))
           } catch {
             case NonFatal(t) =>
               logError(

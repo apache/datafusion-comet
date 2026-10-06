@@ -171,7 +171,8 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
     //
     // Nondeterministic / stateful expressions are accepted: each cache entry holds one kernel
     // instance with a single `init(partitionIndex)` call, so `Rand` / `MonotonicallyIncreasingID`
-    // state advances correctly across batches.
+    // state advances correctly across batches, and each occurrence gets its own entry
+    // (`DispatchOccurrence`).
     //
     // `ExecSubqueryExpression` (`ScalarSubquery`, `InSubqueryExec`) is accepted: the surrounding
     // Comet operator's inherited `SparkPlan.waitForSubqueries` populates the subquery's

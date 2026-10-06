@@ -28,7 +28,7 @@ import org.apache.spark.{SparkConf, SparkEnv, TaskContext}
 import org.apache.spark.sql.{CometTestBase, Row}
 import org.apache.spark.sql.api.java.UDF1
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Add, Alias, ApplyFunctionExpression, AttributeReference, BoundReference, Cast, CreateArray, CreateMap, CreateNamedStruct, Expression, GenericInternalRow, Hypot, Literal, MapConcat, ScalaUDF}
+import org.apache.spark.sql.catalyst.expressions.{Add, Alias, ApplyFunctionExpression, AttributeReference, AttributeSeq, BindReferences, BoundReference, Cast, CreateArray, CreateMap, CreateNamedStruct, Expression, GenericInternalRow, Hypot, Literal, MapConcat, MonotonicallyIncreasingID, ScalaUDF}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial}
 import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
 import org.apache.spark.sql.catalyst.util.GenericArrayData
@@ -41,7 +41,7 @@ import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.{ByteArray, UTF8String}
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
-import org.apache.comet.codegen.CometBatchKernelCodegen
+import org.apache.comet.codegen.{CometBatchKernelCodegen, DispatchOccurrence}
 import org.apache.comet.codegen.CometBatchKernelCodegen.ArrowColumnSpec
 import org.apache.comet.serde.{CometInvokeTargets, CometScalaUDF, QueryPlanSerde}
 import org.apache.comet.serde.ExprOuterClass.Expr.ExprStructCase
@@ -623,6 +623,36 @@ class CometCodegenSuite
         .contains(Set("hypot", "cast", "checkoverflow", "add")))
   }
 
+  test("non-deterministic dispatched subtrees serialize per occurrence") {
+    // The dispatcher keys its per-task kernel cache on the payload bytes, so two identical
+    // non-deterministic occurrences must ship distinct bytes to get distinct state. A
+    // deterministic tree is shipped untouched, so identical occurrences keep sharing one kernel.
+    def payload(expr: Expression, inputs: Seq[AttributeReference]): Array[Byte] = {
+      val proto = QueryPlanSerde.exprToProto(Alias(expr, "v")(), inputs).get
+      assert(proto.hasJvmScalarUdf, s"expected $expr to dispatch, got $proto")
+      proto.getJvmScalarUdf.getArgs(0).getLiteral.getBytesVal.toByteArray
+    }
+    def nondeterministic(): Expression =
+      Hypot(Cast(MonotonicallyIncreasingID(), DoubleType), Literal(4.0d))
+    assert(
+      !java.util.Arrays
+        .equals(payload(nondeterministic(), Nil), payload(nondeterministic(), Nil)))
+
+    // Fresh instances per call: the serde tags the root it dispatched, and tree tags serialize.
+    val x = AttributeReference("x", LongType, nullable = false)()
+    def deterministic(): Expression = Hypot(Cast(x, DoubleType), Literal(4.0d))
+    val bound = BindReferences.bindReference(deterministic(), AttributeSeq(Seq(x)))
+    val serializer = SparkEnv.get.closureSerializer.newInstance()
+    val buffer = serializer.serialize(bound)
+    val plain = new Array[Byte](buffer.remaining())
+    buffer.get(plain)
+    assert(java.util.Arrays.equals(payload(deterministic(), Seq(x)), plain))
+    assert(
+      java.util.Arrays
+        .equals(payload(deterministic(), Seq(x)), payload(deterministic(), Seq(x))))
+    assert(DispatchOccurrence.tag(bound) eq bound)
+  }
+
   test("tags copied onto the shared TrueLiteral do not leak into unrelated plans") {
     // Catalyst copies a rewritten node's tags onto its replacement, so a tagged expression that an
     // earlier query rewrote into `Literal.TrueLiteral` brands that process-wide singleton for the
@@ -939,6 +969,39 @@ class CometCodegenSuite
               "SELECT s, " +
                 "idA(monotonically_increasing_id()) AS a, " +
                 "idB(monotonically_increasing_id()) AS b FROM t"))
+        }
+      }
+    }
+  }
+
+  test("identical non-deterministic dispatched expressions keep their own state") {
+    // Two occurrences of one dispatched subtree bind to the same ordinals and serialize to the
+    // same bytes, so the per-task kernel cache handed both the same kernel and the second column
+    // continued the first one's `monotonically_increasing_id` counter (n..2n-1) where Spark gives
+    // each occurrence its own (0..n-1). The Java UDF has no encoders, so its two calls are
+    // byte-identical; the Scala UDF pair checks that path too. Batches of 8 over 64 rows make
+    // each occurrence carry its counter across batches, which per-batch state would not.
+    spark.udf.register(
+      "javaId",
+      new UDF1[java.lang.Long, java.lang.Long] {
+        override def call(id: java.lang.Long): java.lang.Long = id
+      },
+      LongType)
+    spark.udf.register("idPassthrough", (id: Long) => id)
+    withTempPath { dir =>
+      spark.range(0, 64, 1, numPartitions = 1).write.parquet(dir.getCanonicalPath)
+      withTable("t") {
+        sql(s"CREATE TABLE t USING parquet LOCATION '${dir.getCanonicalPath}'")
+        withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "8") {
+          assertCodegenRan {
+            checkSparkAnswerAndOperator(
+              sql(
+                "SELECT id, " +
+                  "javaId(monotonically_increasing_id()) AS a, " +
+                  "javaId(monotonically_increasing_id()) AS b, " +
+                  "idPassthrough(monotonically_increasing_id()) AS c, " +
+                  "idPassthrough(monotonically_increasing_id()) AS d FROM t"))
+          }
         }
       }
     }
@@ -2159,6 +2222,44 @@ class CometCodegenSuite
       exprVec.close()
       timeVec.close()
     }
+  }
+
+  test("dispatcher keeps one kernel per occurrence id and its state across batches") {
+    // Driven directly: two payloads that differ only in their `DispatchOccurrence` id must get
+    // two cache entries with their own counters, while the same id seen again hits the first
+    // entry and continues its counter. Outside a task `init` runs with partition 0, so the ids
+    // count from 0.
+    def payload(occurrence: Long): Array[Byte] = {
+      val expr = DispatchOccurrence(MonotonicallyIncreasingID(), occurrence)
+      val serialized = SparkEnv.get.closureSerializer.newInstance().serialize(expr)
+      val bytes = new Array[Byte](serialized.remaining())
+      serialized.get(bytes)
+      bytes
+    }
+    val dispatcher = new CometScalaUDFCodegen()
+    def ids(bytes: Array[Byte], n: Int): Seq[Long] = {
+      val exprVec = new VarBinaryVector("expr", CometArrowAllocator)
+      var out: ValueVector = null
+      try {
+        exprVec.allocateNew()
+        exprVec.setSafe(0, bytes)
+        exprVec.setValueCount(1)
+        out = dispatcher.evaluate(Array(exprVec), n)
+        val comet = CometVector.getVector(out.asInstanceOf[FieldVector], null)
+        (0 until n).map(comet.getLong)
+      } finally {
+        if (out != null) out.close()
+        exprVec.close()
+      }
+    }
+    CometScalaUDFCodegen.resetStats()
+    val first = payload(1L)
+    assert(ids(first, 4) === Seq(0L, 1L, 2L, 3L))
+    assert(ids(payload(2L), 4) === Seq(0L, 1L, 2L, 3L))
+    assert(ids(first, 4) === Seq(4L, 5L, 6L, 7L))
+    val stats = CometScalaUDFCodegen.stats()
+    assert(stats.compileCount === 2, s"expected one entry per occurrence id, got $stats")
+    assert(stats.cacheHitCount === 1, s"expected the repeated id to hit its entry, got $stats")
   }
 
   // Runtime coverage for nullable nested `getStruct` / `getArray` / `getMap` element reads is

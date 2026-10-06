@@ -28,7 +28,7 @@ import org.apache.spark.sql.types.BinaryType
 import org.apache.comet.CometConf
 import org.apache.comet.CometExplainInfo
 import org.apache.comet.CometSparkSessionExtensions.{withCodegenDispatchExpr, withFallbackReason}
-import org.apache.comet.codegen.CometBatchKernelCodegen
+import org.apache.comet.codegen.{CometBatchKernelCodegen, DispatchOccurrence}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, serializeDataType}
 import org.apache.comet.udf.codegen.CometScalaUDFCodegen
@@ -127,10 +127,14 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
     // fails planning, which is a much worse outcome than falling the operator back to Spark.
     // `CometStaticInvoke` / `CometInvoke` route unrecognized nodes here as a catch-all, so the
     // trees reaching this point are arbitrary.
+    //
+    // A tree with a `Nondeterministic` node is tagged with a unique occurrence id first, so two
+    // identical occurrences in one plan get distinct bytes and therefore distinct kernels and
+    // state on the executor (see `DispatchOccurrence`).
     val bytes =
       try {
         val serializer = SparkEnv.get.closureSerializer.newInstance()
-        val buffer = serializer.serialize(boundExpr)
+        val buffer = serializer.serialize(DispatchOccurrence.tag(boundExpr))
         val serialized = new Array[Byte](buffer.remaining())
         buffer.get(serialized)
         serialized
