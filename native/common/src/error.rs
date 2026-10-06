@@ -71,8 +71,14 @@ pub enum SparkError {
     #[error("[CANNOT_PARSE_DECIMAL] Cannot parse decimal.")]
     CannotParseDecimal,
 
-    #[error("[ARITHMETIC_OVERFLOW] {from_type} overflow. If necessary set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error.")]
-    ArithmeticOverflow { from_type: String },
+    #[error("[ARITHMETIC_OVERFLOW] {from_type} overflow.{suggestion} If necessary set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error.",
+        suggestion = if function_name.is_empty() { String::new() } else {
+            format!(" Use '{function_name}' to tolerate overflow and return NULL instead.")
+        })]
+    ArithmeticOverflow {
+        from_type: String,
+        function_name: String,
+    },
 
     #[error("[ARITHMETIC_OVERFLOW] Overflow in integral divide. Use 'try_divide' to tolerate overflow and return NULL instead. If necessary set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error.")]
     IntegralDivideOverflow,
@@ -440,9 +446,13 @@ impl SparkError {
                     "toType": to_type,
                 })
             }
-            SparkError::ArithmeticOverflow { from_type } => {
+            SparkError::ArithmeticOverflow {
+                from_type,
+                function_name,
+            } => {
                 serde_json::json!({
                     "fromType": from_type,
+                    "functionName": function_name,
                 })
             }
             SparkError::DecimalSumOverflow { function_name } => {
@@ -1018,6 +1028,28 @@ mod tests {
 
         assert!(json.contains("\"errorType\":\"RemainderByZero\""));
         assert!(json.contains("\"errorClass\":\"REMAINDER_BY_ZERO\""));
+    }
+
+    #[test]
+    fn test_arithmetic_overflow_suggestion_json_and_display() {
+        for function in ["", "try_add", "try_subtract", "try_multiply"] {
+            let error = SparkError::ArithmeticOverflow {
+                from_type: "long".to_string(),
+                function_name: function.to_string(),
+            };
+            let parsed: serde_json::Value = serde_json::from_str(&error.to_json()).unwrap();
+            assert_eq!(parsed["errorClass"], "ARITHMETIC_OVERFLOW");
+            assert_eq!(parsed["params"]["fromType"], "long");
+            assert_eq!(parsed["params"]["functionName"], function);
+            let hint = if function.is_empty() {
+                String::new()
+            } else {
+                format!(" Use '{function}' to tolerate overflow and return NULL instead.")
+            };
+            assert_eq!(error.to_string(), format!(
+                "[ARITHMETIC_OVERFLOW] long overflow.{hint} If necessary set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error."
+            ));
+        }
     }
 
     #[test]
