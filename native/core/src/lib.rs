@@ -54,6 +54,7 @@ use errors::{try_unwrap_or_throw, CometError, CometResult};
 
 pub mod alloc_accounting;
 pub mod cloud;
+pub mod comet_native_udf_bridge;
 pub mod execution;
 pub mod parquet;
 // this module is for non release only. Intended for debugging/profiling purposes
@@ -134,20 +135,17 @@ pub extern "system" fn Java_org_apache_comet_NativeBase_init(
     try_unwrap_or_throw(&e, |env| {
         let path: String = log_conf_path.try_to_string(env)?;
 
-        // empty path means there is no custom log4rs config file provided, so fallback to use
-        // the default configuration
-        let log_config = if path.is_empty() {
-            let log_level: String = match log_level.try_to_string(env) {
+        // The log level only applies without a custom log4rs config file.
+        let log_level: String = if path.is_empty() {
+            match log_level.try_to_string(env) {
                 Ok(level) => level,
-                Err(_) => "info".parse().unwrap(),
-            };
-            default_logger_config(&log_level)
+                Err(_) => "info".to_string(),
+            }
         } else {
-            load_config_file(path, Deserializers::default())
-                .map_err(|err| CometError::Config(err.to_string()))
+            String::new()
         };
 
-        let _ = log4rs::init_config(log_config?).map_err(|err| CometError::Config(err.to_string()));
+        init_logging(&path, &log_level)?;
 
         // Initialize the global Java VM
         let java_vm = env.get_java_vm()?;
@@ -157,6 +155,27 @@ pub extern "system" fn Java_org_apache_comet_NativeBase_init(
         info!("Comet native library version {comet_version} initialized");
         Ok(())
     })
+}
+
+/// Initializes logging from the log4rs config file at `log_conf_path`, or, when it is empty, to the
+/// console at `log_level`. Logging can only be initialized once per process; later calls keep the
+/// first configuration. Core of `NativeBase.init`, except for capturing the `JavaVM`.
+pub fn init_logging(log_conf_path: &str, log_level: &str) -> CometResult<()> {
+    let _ = log4rs::init_config(logger_config(log_conf_path, log_level)?)
+        .map_err(|err| CometError::Config(err.to_string()));
+    Ok(())
+}
+
+/// The log4rs config [`init_logging`] installs.
+fn logger_config(log_conf_path: &str, log_level: &str) -> CometResult<Config> {
+    // empty path means there is no custom log4rs config file provided, so fallback to use
+    // the default configuration
+    if log_conf_path.is_empty() {
+        default_logger_config(log_level)
+    } else {
+        load_config_file(log_conf_path, Deserializers::default())
+            .map_err(|err| CometError::Config(err.to_string()))
+    }
 }
 
 #[no_mangle]
@@ -183,15 +202,18 @@ pub extern "system" fn Java_org_apache_comet_NativeBase_isFeatureEnabled(
 ) -> jni::sys::jboolean {
     try_unwrap_or_throw(&env, |env| {
         let feature: String = feature_name.try_to_string(env)?;
-
-        let enabled = match feature.as_str() {
-            "jemalloc" => cfg!(feature = "jemalloc"),
-            "hdfs-opendal" => cfg!(feature = "hdfs-opendal"),
-            _ => false, // Unknown features return false
-        };
-
-        Ok(enabled)
+        Ok(is_feature_enabled(&feature))
     })
+}
+
+/// Whether the native build enables `feature`; unknown features are disabled. Core of
+/// `NativeBase.isFeatureEnabled`.
+pub fn is_feature_enabled(feature: &str) -> bool {
+    match feature {
+        "jemalloc" => cfg!(feature = "jemalloc"),
+        "hdfs-opendal" => cfg!(feature = "hdfs-opendal"),
+        _ => false, // Unknown features return false
+    }
 }
 
 /// JNI: can object_store build a store AND an object key for this URL?
@@ -218,12 +240,34 @@ pub extern "system" fn Java_org_apache_comet_NativeBase_isObjectStoreSchemeSuppo
 ) -> jni::sys::jboolean {
     try_unwrap_or_throw(&env, |env| {
         let url_str: String = url.try_to_string(env)?;
-        let supported = url::Url::parse(&url_str)
-            .ok()
-            .map(|u| object_store::ObjectStoreScheme::parse(&u).is_ok())
-            .unwrap_or(false);
-        Ok(supported)
+        Ok(is_object_store_scheme_supported(&url_str))
     })
+}
+
+/// Whether object_store can build a store and an object key for `url`. Core of
+/// `NativeBase.isObjectStoreSchemeSupported`.
+pub fn is_object_store_scheme_supported(url: &str) -> bool {
+    url::Url::parse(url)
+        .ok()
+        .map(|u| object_store::ObjectStoreScheme::parse(&u).is_ok())
+        .unwrap_or(false)
+}
+
+/// JNI: the version of the IANA timezone database native code uses, such as `2025b`. chrono-tz
+/// compiles the database into libcomet, so it can differ from the JVM's `tzdb.dat`, and then local
+/// times computed natively can differ from Spark's.
+#[no_mangle]
+pub extern "system" fn Java_org_apache_comet_NativeBase_getTzdataVersion(
+    env: EnvUnowned,
+    _: JClass,
+) -> jni::sys::jstring {
+    try_unwrap_or_throw(&env, |env| Ok(env.new_string(tzdata_version())?.into_raw()))
+}
+
+/// The version of the IANA timezone database compiled into libcomet. Core of
+/// `NativeBase.getTzdataVersion`.
+pub fn tzdata_version() -> &'static str {
+    chrono_tz::IANA_TZDB_VERSION
 }
 
 // Creates a default log4rs config, which logs to console with log level.
@@ -242,4 +286,45 @@ fn default_logger_config(log_level: &str) -> CometResult<Config> {
         .appender(appender)
         .build(root)
         .map_err(|err| CometError::Config(err.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn feature_enabled() {
+        assert_eq!(is_feature_enabled("jemalloc"), cfg!(feature = "jemalloc"));
+        assert_eq!(
+            is_feature_enabled("hdfs-opendal"),
+            cfg!(feature = "hdfs-opendal")
+        );
+        assert!(!is_feature_enabled("no-such-feature"));
+    }
+
+    #[test]
+    fn logger_config_from_level_or_file() {
+        assert!(logger_config("", "debug").is_ok());
+        assert!(matches!(
+            logger_config("", "not-a-level"),
+            Err(CometError::Config(_))
+        ));
+        assert!(matches!(
+            logger_config("/no/such/log4rs.yaml", "info"),
+            Err(CometError::Config(_))
+        ));
+    }
+
+    #[test]
+    fn tzdata_version_is_set() {
+        assert!(!tzdata_version().is_empty());
+    }
+
+    #[test]
+    fn object_store_scheme_supported() {
+        assert!(is_object_store_scheme_supported("file:///tmp/data.parquet"));
+        assert!(is_object_store_scheme_supported("s3://bucket/key"));
+        assert!(!is_object_store_scheme_supported("unknown://bucket/key"));
+        assert!(!is_object_store_scheme_supported("not a url"));
+    }
 }

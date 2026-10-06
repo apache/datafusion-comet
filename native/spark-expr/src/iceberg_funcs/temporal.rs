@@ -19,8 +19,10 @@
 //!
 //! Iceberg's `DateTimeUtil` evaluates all four in UTC regardless of the Spark session timezone
 //! (`TimestampType` and `TimestampNTZType` are handled identically), and all four floor: a value
-//! before the epoch maps to a negative period. `years` and `months` are calendar-aware, `days` and
-//! `hours` are plain floor division of the epoch value. `days` returns a date (Iceberg's
+//! before the epoch maps to a negative period. The one exception is a pre-epoch timestamp whose
+//! microsecond of second is 999999 right after a unit boundary, which Iceberg puts in the unit
+//! before (see `iceberg_div_floor`). `years` and `months` are calendar-aware, `days` and `hours`
+//! are floor division of the epoch value. `days` returns a date (Iceberg's
 //! `DaysFunction.resultType()` is `DateType`), the other three return an int.
 //!
 //! The kernels read the raw epoch values instead of Arrow's timezone-aware `date_part`. That is a
@@ -34,16 +36,17 @@
 //! `LocalDate`, which Iceberg uses, covers all of it, so going through `chrono` would turn values
 //! the JVM handles into execution errors.
 
-use super::{apply_unary, unsupported_type};
+use super::{apply_to_array, apply_unary, unsupported_type};
 use arrow::array::{ArrayRef, AsArray, Int32Array};
 use arrow::datatypes::{DataType, Date32Type, Int32Type, TimeUnit, TimestampMicrosecondType};
 use datafusion::common::{utils::take_function_args, Result};
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
-use num::integer::div_floor;
+use num::integer::{div_floor, mod_floor};
 use std::sync::Arc;
 
+const MICROS_PER_SECOND: i64 = 1_000_000;
 const MICROS_PER_HOUR: i64 = 3_600_000_000;
 const MICROS_PER_DAY: i64 = 86_400_000_000;
 const UNIX_EPOCH_YEAR: i32 = 1970;
@@ -74,18 +77,41 @@ impl TemporalUnit {
     }
 }
 
-/// `DateTimeUtil.microsToDays`: floor division, so `-1` micros is day `-1`. The quotient of the
-/// widest `i64` micros is about 1.07e8, so the narrowing is always exact here.
+/// `micros` divided by `unit_micros`, a whole number of seconds, the way Iceberg's
+/// `DateTimeUtil.convertMicros` divides it.
+///
+/// That is a floor, except for a negative value that lies exactly 999999 microseconds into a unit,
+/// which gets the unit before. For a negative value Java builds an instant from
+/// `floorDiv(micros, 1_000_000)` seconds and `floorMod(micros + 1, 1_000_000)` microseconds, and
+/// subtracts one from the number of whole units between the epoch and that instant. The added
+/// microsecond is what makes the count a floor, but at 999999 it wraps to 0 without carrying into
+/// the seconds, so the instant is a second early, and when that second starts a unit the count
+/// comes out one short. Iceberg puts `1969-01-01T00:00:00.999999` in year -2, month -13, day
+/// 1968-12-31, and hour -8761 rather than -1, -12, 1969-01-01, and -8760. Its Spark functions
+/// return those values and its partition transforms write them, from 1.5.2 through 1.11.0.
+#[inline]
+fn iceberg_div_floor(micros: i64, unit_micros: i64) -> i64 {
+    let units = div_floor(micros, unit_micros);
+    if micros < 0 && mod_floor(micros, unit_micros) == MICROS_PER_SECOND - 1 {
+        units - 1
+    } else {
+        units
+    }
+}
+
+/// `DateTimeUtil.microsToDays`. The quotient of the widest `i64` micros is about 1.07e8, so the
+/// narrowing is always exact here. A month or year boundary is also a day boundary, so the
+/// calendar split of this day gives `microsToMonths` and `microsToYears` too.
 #[inline]
 fn micros_to_days(micros: i64) -> i32 {
-    div_floor(micros, MICROS_PER_DAY) as i32
+    iceberg_div_floor(micros, MICROS_PER_DAY) as i32
 }
 
 /// `DateTimeUtil.microsToHours`. Java narrows the hour count with a plain `(int)` cast, which
 /// wraps beyond about 7.7e18 micros; `as i32` truncates the same way.
 #[inline]
 fn micros_to_hours(micros: i64) -> i32 {
-    div_floor(micros, MICROS_PER_HOUR) as i32
+    iceberg_div_floor(micros, MICROS_PER_HOUR) as i32
 }
 
 /// `DateTimeUtil.daysToYears`: whole calendar years between the epoch and the day, floored.
@@ -189,6 +215,15 @@ impl SparkIcebergTemporalTransform {
     pub fn hours() -> Self {
         Self::new(TemporalUnit::Hours)
     }
+
+    /// Applies the transform to a whole column, for callers outside DataFusion's function
+    /// machinery. The native Iceberg writer computes its time partition values of dates and
+    /// timestamps with it (all but `day` of a date), because iceberg-rust's own transforms return
+    /// NULL past `chrono`'s range and place some pre-epoch timestamps differently from
+    /// iceberg-java.
+    pub fn transform(&self, array: &ArrayRef) -> Result<ArrayRef> {
+        apply_to_array(array, |array| transform_array(self.unit, array))
+    }
 }
 
 impl ScalarUDFImpl for SparkIcebergTemporalTransform {
@@ -222,6 +257,32 @@ mod tests {
             vec![ColumnarValue::Array(value)],
         )
         .unwrap()
+    }
+
+    /// `[years, months, days, hours]` of each of `micros`, as a timestamp column tagged `tz`.
+    fn all_four(micros: &[i64], tz: Option<&str>) -> Vec<[i32; 4]> {
+        let mut array = TimestampMicrosecondArray::from(micros.to_vec());
+        if let Some(tz) = tz {
+            array = array.with_timezone(tz);
+        }
+        let input: ArrayRef = Arc::new(array);
+        let [years, months, days, hours] = [
+            TemporalUnit::Years,
+            TemporalUnit::Months,
+            TemporalUnit::Days,
+            TemporalUnit::Hours,
+        ]
+        .map(|unit| transform(unit, Arc::clone(&input)));
+        (0..micros.len())
+            .map(|i| {
+                [
+                    years.as_primitive::<Int32Type>().value(i),
+                    months.as_primitive::<Int32Type>().value(i),
+                    days.as_primitive::<Date32Type>().value(i),
+                    hours.as_primitive::<Int32Type>().value(i),
+                ]
+            })
+            .collect()
     }
 
     // Boundaries around the epoch, as (epoch days, years, months). The values past the epoch
@@ -300,6 +361,16 @@ mod tests {
             // `(int)` narrowing wraps it exactly as `as i32` does.
             (i64::MAX, 292_277, 3_507_324, 106_751_991, -1_732_919_508),
             (i64::MIN, -292_278, -3_507_325, -106_751_992, 1_732_919_507),
+            // -290307-01-01T00:00:00.999999, 999999 micros into the lowest year boundary in
+            // range, so all four take the unit before it. A floor gives -292_277, -3_507_324,
+            // -106_751_981, and 1_732_919_752.
+            (
+                -106_751_981 * MICROS_PER_DAY + 999_999,
+                -292_278,
+                -3_507_325,
+                -106_751_982,
+                1_732_919_751,
+            ),
             (
                 8_000_000_000_000_000_000,
                 253_509,
@@ -363,6 +434,61 @@ mod tests {
                     && days.is_null(last)
                     && hours.is_null(last)
             );
+        }
+    }
+
+    /// Unit boundaries on both sides of the epoch, as (epoch second, and Iceberg's `[years,
+    /// months, days, hours]` for the last microsecond before the boundary and for the boundary
+    /// itself). The values come from `DateTimeUtil` on a JDK 17 JVM; Iceberg 1.5.2, 1.8.1, 1.10.0,
+    /// and 1.11.0 agree on them.
+    const BOUNDARIES: &[(i64, [i32; 4], [i32; 4])] = &[
+        // 1969-12-31T23:59:30, a whole second that starts no unit.
+        (-30, [-1, -1, -1, -1], [-1, -1, -1, -1]),
+        // 1969-12-31T23:00:00, 1969-12-31, 1969-12-01, 1969-01-01, and 1900-01-01.
+        (-3_600, [-1, -1, -1, -2], [-1, -1, -1, -1]),
+        (-86_400, [-1, -1, -2, -25], [-1, -1, -1, -24]),
+        (-2_678_400, [-1, -2, -32, -745], [-1, -1, -31, -744]),
+        (
+            -31_536_000,
+            [-2, -13, -366, -8_761],
+            [-1, -12, -365, -8_760],
+        ),
+        (
+            -2_208_988_800,
+            [-71, -841, -25_568, -613_609],
+            [-70, -840, -25_567, -613_608],
+        ),
+        // The epoch, then 1970-01-01T01:00:00, 1970-01-02, 1970-02-01, and 1971-01-01.
+        (0, [-1, -1, -1, -1], [0, 0, 0, 0]),
+        (3_600, [0, 0, 0, 0], [0, 0, 0, 1]),
+        (86_400, [0, 0, 0, 23], [0, 0, 1, 24]),
+        (2_678_400, [0, 0, 30, 743], [0, 1, 31, 744]),
+        (31_536_000, [0, 11, 364, 8_759], [1, 12, 365, 8_760]),
+    ];
+
+    /// A pre-epoch timestamp whose microsecond of second is 999999 takes the unit of the second
+    /// before it, so one that follows a boundary lands in the unit before the boundary
+    /// (apache/datafusion-comet#6426). Its neighbours, and every timestamp from the epoch on,
+    /// floor.
+    #[test]
+    fn timestamps_ending_in_999999_match_iceberg_date_time_util() {
+        for &(second, before, at) in BOUNDARIES {
+            let boundary = second * MICROS_PER_SECOND;
+            let cases = [
+                (boundary - 1, before),
+                (boundary, at),
+                (boundary + 999_998, at),
+                (boundary + 999_999, if boundary < 0 { before } else { at }),
+                (boundary + 1_000_000, at),
+                (boundary + 1_999_999, at),
+            ];
+            let micros = cases.map(|(micros, _)| micros);
+            // The two tags Comet produces: untagged `TimestampNTZType` and `UTC` `TimestampType`.
+            for tz in [None, Some("UTC")] {
+                for ((micros, expected), actual) in cases.iter().zip(all_four(&micros, tz)) {
+                    assert_eq!(actual, *expected, "{micros} micros, {tz:?}");
+                }
+            }
         }
     }
 

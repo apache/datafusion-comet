@@ -46,7 +46,7 @@ not, inherits it. There is no query that fails to tell you.
 | Layer                | Flag                                              | Code                                                                                                                         |
 | -------------------- | ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
 | Split-operator plan  | `spark.comet.write.iceberg.splitOperator.enabled` | `IcebergWriteStrategy`, `IcebergWriteLogical`, `IcebergWriteExec`, `IcebergCommitExec`, the `spark-*/.../iceberg/` shims     |
-| Native writer        | `spark.comet.iceberg.write.enabled`               | `CometIcebergNativeWrite` (gate and serde), `IcebergWriteProtoTranslation`, `CometIcebergWriteExec`, `iceberg_write.rs`      |
+| Native writer        | `spark.comet.write.iceberg.enabled`               | `CometIcebergNativeWrite` (gate and serde), `IcebergWriteProtoTranslation`, `CometIcebergWriteExec`, `iceberg_write.rs`      |
 | Shared with the scan | both                                              | `iceberg_common.rs` (`load_file_io`, `storage_factory_for`, `scheme_of`), `IcebergReflection`, `NativeConfig` S3 translation |
 
 A change to the split plan affects every Iceberg write once that flag is on, including writes that
@@ -123,9 +123,11 @@ only the latest.
 
 ## 4. Failure Handling and Cleanup
 
-Files must have exactly one owner at every moment. Read the ownership table in the contributor
-guide before reviewing any change near `AbortOnDrop`, `TrackingLocationGenerator`,
-`WrittenFileCleanup`, `drainNativePayload` or `IcebergCommitExec.collectAndCommit`.
+Cleanup must never have an ownership gap. During the handoff, native remains armed until the JVM
+has taken the locations and acknowledged that by polling EOF, so a brief overlap is intentional.
+Read the ownership table in the contributor guide before reviewing any change near `AbortOnDrop`,
+`TrackingLocationGenerator`, `WrittenFileCleanup`, `drainNativePayload` or
+`IcebergCommitExec.collectAndCommit`.
 
 - [ ] A new failure point between writing a file and the JVM taking the locations is covered by the
       native guard, including the path where the plan is dropped mid-write rather than returning an
@@ -141,8 +143,8 @@ guide before reviewing any change near `AbortOnDrop`, `TrackingLocationGenerator
 - [ ] The user-visible exception type is still what Spark's own write path throws on each Spark
       version ([#6143](https://github.com/apache/datafusion-comet/issues/6143)).
 - [ ] **Every open file and every held-back row is reserved.** Files must be opened through
-      `MeteredParquetWriterBuilder`, and rows the writer holds outside iceberg-rust (the pacers,
-      or anything a new feed holds back) must be added to what `run_write_task` reserves. A
+      `MeteredParquetWriterBuilder`, and rows the writer holds outside iceberg-rust (the
+      `PartitionFeed`s, or anything a new feed holds back) must be added to what `run_write_task` reserves. A
       builder that constructs `ParquetWriterBuilder` directly leaves its files out of the task's
       memory reservation, so a wide fanout write grows past the pool instead of failing its task.
 
@@ -199,7 +201,7 @@ Ask specifically:
       that only compares results passes when both sides used iceberg-java. Look for
       `assertNativeWriteEngages` or a collected `CometIcebergWriteExec`.
 - [ ] **Is the input native?** `withNativeEnabled` also sets `localTableScan`; a test that sets
-      `spark.comet.iceberg.write.enabled` by hand and inserts `VALUES` usually tests the JVM writer.
+      `spark.comet.write.iceberg.enabled` by hand and inserts `VALUES` usually tests the JVM writer.
 - [ ] **Is the comparison against iceberg-java** (a sibling table written by the JVM writer) rather
       than hand-written expected values?
 - [ ] **Enough partitions for an ordering bug?** Two partitions pass half the time; use eight or

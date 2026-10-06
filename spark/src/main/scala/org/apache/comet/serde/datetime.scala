@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import java.util.Locale
 
-import org.apache.spark.sql.catalyst.expressions.{AddMonths, Attribute, Cast, ConvertTimezone, DateAdd, DateDiff, DateFormatClass, DateFromUnixDate, DateSub, DayOfMonth, DayOfWeek, DayOfYear, Days, Expression, FromUTCTimestamp, GetDateField, GetTimestamp, Hour, Hours, LastDay, Literal, MakeDate, MakeDTInterval, MakeInterval, MakeTimestamp, MakeYMInterval, MicrosToTimestamp, MillisToTimestamp, Minute, Month, MonthsBetween, MultiplyDTInterval, NextDay, PreciseTimestampConversion, Quarter, Second, SecondsToTimestamp, TimestampAdd, TimestampDiff, ToUnixTimestamp, ToUTCTimestamp, TruncDate, TruncTimestamp, UnixDate, UnixMicros, UnixMillis, UnixSeconds, UnixTimestamp, WeekDay, WeekOfYear, Year}
+import org.apache.spark.sql.catalyst.expressions.{AddMonths, Attribute, Cast, ConvertTimezone, DateAdd, DateDiff, DateFormatClass, DateFromUnixDate, DateSub, DayOfMonth, DayOfWeek, DayOfYear, Days, DivideDTInterval, Expression, FromUTCTimestamp, GetDateField, GetTimestamp, Hour, Hours, LastDay, Literal, MakeDate, MakeDTInterval, MakeInterval, MakeTimestamp, MakeYMInterval, MicrosToTimestamp, MillisToTimestamp, Minute, Month, MonthsBetween, MultiplyDTInterval, MultiplyYMInterval, NextDay, PreciseTimestampConversion, Quarter, Second, SecondsToTimestamp, TimestampAdd, TimestampDiff, ToUnixTimestamp, ToUTCTimestamp, TruncDate, TruncTimestamp, UnixDate, UnixMicros, UnixMillis, UnixSeconds, UnixTimestamp, WeekDay, WeekOfYear, Year}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{CalendarIntervalType, DataType, DateType, DoubleType, FloatType, IntegerType, LongType, StringType, TimestampNTZType, TimestampType}
 import org.apache.spark.unsafe.types.UTF8String
@@ -169,18 +169,20 @@ object CometQuarter extends CometExpressionSerde[Quarter] with CometExprGetDateF
 
 object CometHour extends CometExpressionSerde[Hour] {
 
+  override def getSupportLevel(expr: Hour): SupportLevel =
+    CometTimeZone.supportLevel(expr.timeZoneId)
+
   override def convert(
       expr: Hour,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val childExpr = exprToProtoInternal(expr.child, inputs, binding)
+    val timeZone = CometTimeZone.nativeId(expr.timeZoneId)
 
-    if (childExpr.isDefined) {
+    if (childExpr.isDefined && timeZone.isDefined) {
       val builder = ExprOuterClass.Hour.newBuilder()
       builder.setChild(childExpr.get)
-
-      val timeZone = expr.timeZoneId.getOrElse("UTC")
-      builder.setTimezone(timeZone)
+      builder.setTimezone(timeZone.get)
 
       Some(
         ExprOuterClass.Expr
@@ -195,18 +197,20 @@ object CometHour extends CometExpressionSerde[Hour] {
 
 object CometMinute extends CometExpressionSerde[Minute] {
 
+  override def getSupportLevel(expr: Minute): SupportLevel =
+    CometTimeZone.supportLevel(expr.timeZoneId)
+
   override def convert(
       expr: Minute,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val childExpr = exprToProtoInternal(expr.child, inputs, binding)
+    val timeZone = CometTimeZone.nativeId(expr.timeZoneId)
 
-    if (childExpr.isDefined) {
+    if (childExpr.isDefined && timeZone.isDefined) {
       val builder = ExprOuterClass.Minute.newBuilder()
       builder.setChild(childExpr.get)
-
-      val timeZone = expr.timeZoneId.getOrElse("UTC")
-      builder.setTimezone(timeZone)
+      builder.setTimezone(timeZone.get)
 
       Some(
         ExprOuterClass.Expr
@@ -221,18 +225,20 @@ object CometMinute extends CometExpressionSerde[Minute] {
 
 object CometSecond extends CometExpressionSerde[Second] {
 
+  override def getSupportLevel(expr: Second): SupportLevel =
+    CometTimeZone.supportLevel(expr.timeZoneId)
+
   override def convert(
       expr: Second,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val childExpr = exprToProtoInternal(expr.child, inputs, binding)
+    val timeZone = CometTimeZone.nativeId(expr.timeZoneId)
 
-    if (childExpr.isDefined) {
+    if (childExpr.isDefined && timeZone.isDefined) {
       val builder = ExprOuterClass.Second.newBuilder()
       builder.setChild(childExpr.get)
-
-      val timeZone = expr.timeZoneId.getOrElse("UTC")
-      builder.setTimezone(timeZone)
+      builder.setTimezone(timeZone.get)
 
       Some(
         ExprOuterClass.Expr
@@ -278,7 +284,7 @@ object CometUnixTimestamp
       val inputType = expr.children.head.dataType
       Unsupported(Some(s"unix_timestamp does not support input type: $inputType"))
     } else {
-      Compatible()
+      CometTimeZone.supportLevel(expr.timeZoneId)
     }
   }
 
@@ -288,13 +294,12 @@ object CometUnixTimestamp
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     // getSupportLevel reports an unsupported input type before reaching here, so no re-check.
     val childExpr = exprToProtoInternal(expr.children.head, inputs, binding)
+    val timeZone = CometTimeZone.nativeId(expr.timeZoneId)
 
-    if (childExpr.isDefined) {
+    if (childExpr.isDefined && timeZone.isDefined) {
       val builder = ExprOuterClass.UnixTimestamp.newBuilder()
       builder.setChild(childExpr.get)
-
-      val timeZone = expr.timeZoneId.getOrElse("UTC")
-      builder.setTimezone(timeZone)
+      builder.setTimezone(timeZone.get)
 
       Some(
         ExprOuterClass.Expr
@@ -449,12 +454,22 @@ object CometMakeDate extends CometExpressionSerde[MakeDate] {
   }
 }
 
+/**
+ * `timestamp_seconds` lowers to the native `seconds_to_timestamp` kernel for integer, long, float
+ * and double inputs. Decimal, byte and short inputs have no native implementation, so
+ * `CodegenDispatchFallback` keeps them in the Comet pipeline by running Spark's own
+ * `SecondsToTimestamp.doGenCode` in the JVM codegen dispatcher, which matches Spark exactly.
+ *
+ * Decimal input is not a plain multiply: Spark computes `longValueExact()` on the scaled value,
+ * which raises rather than rounds when a nonzero digit remains past microsecond precision, and
+ * raises when the result overflows a long.
+ */
 object CometSecondsToTimestamp
-    extends CometScalarFunction[SecondsToTimestamp]("seconds_to_timestamp") {
+    extends CometScalarFunction[SecondsToTimestamp]("seconds_to_timestamp")
+    with CodegenDispatchFallback {
 
   override def getUnsupportedReasons(): Seq[String] = Seq(
-    "Only `IntegerType`, `LongType`, `FloatType`, and `DoubleType` inputs are supported." +
-      " `DecimalType`, `ByteType`, and `ShortType` fall back to Spark.")
+    "`DecimalType`, `ByteType`, and `ShortType` inputs")
 
   override def getSupportLevel(expr: SecondsToTimestamp): SupportLevel =
     expr.child.dataType match {
@@ -595,9 +610,10 @@ object CometTruncTimestamp
   override def getSupportLevel(expr: TruncTimestamp): SupportLevel = {
     if (DatetimeCollation.hasNonDefaultCollation(expr)) {
       Incompatible(Some(collationReason))
+    } else if (CometTimeZone.nativeId(expr.timeZoneId).isEmpty) {
+      CometTimeZone.supportLevel(expr.timeZoneId)
     } else {
-      val timezone = expr.timeZoneId.getOrElse("UTC")
-      val isUtc = timezone == "UTC" || timezone == "Etc/UTC"
+      val isUtc = CometTimeZone.isUtc(expr.timeZoneId)
       expr.format match {
         case Literal(fmt: UTF8String, _) =>
           if (supportedFormats.contains(fmt.toString.toLowerCase(Locale.ROOT))) {
@@ -621,14 +637,13 @@ object CometTruncTimestamp
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val childExpr = exprToProtoInternal(expr.timestamp, inputs, binding)
     val formatExpr = exprToProtoInternal(expr.format, inputs, binding)
+    val timeZone = CometTimeZone.nativeId(expr.timeZoneId)
 
-    if (childExpr.isDefined && formatExpr.isDefined) {
+    if (childExpr.isDefined && formatExpr.isDefined && timeZone.isDefined) {
       val builder = ExprOuterClass.TruncTimestamp.newBuilder()
       builder.setChild(childExpr.get)
       builder.setFormat(formatExpr.get)
-
-      val timeZone = expr.timeZoneId.getOrElse("UTC")
-      builder.setTimezone(timeZone)
+      builder.setTimezone(timeZone.get)
 
       Some(
         ExprOuterClass.Expr
@@ -706,10 +721,7 @@ object CometDateFormat
     case _ => false
   }
 
-  private def isUtc(expr: DateFormatClass): Boolean = {
-    val timezone = expr.timeZoneId.getOrElse("UTC")
-    timezone == "UTC" || timezone == "Etc/UTC"
-  }
+  private def isUtc(expr: DateFormatClass): Boolean = CometTimeZone.isUtc(expr.timeZoneId)
 
   override def getSupportLevel(expr: DateFormatClass): SupportLevel = {
     if (DatetimeCollation.hasNonDefaultCollation(expr)) {
@@ -882,7 +894,11 @@ object CometGetTimestamp extends CometCodegenDispatch[GetTimestamp]
 
 object CometMakeYMInterval extends CometCodegenDispatch[MakeYMInterval]
 
+object CometMultiplyYMInterval extends CometCodegenDispatch[MultiplyYMInterval]
+
 object CometMakeDTInterval extends CometCodegenDispatch[MakeDTInterval]
+
+object CometDivideDTInterval extends CometCodegenDispatch[DivideDTInterval]
 
 object CometMakeInterval extends CometExpressionSerde[MakeInterval] with CodegenDispatchFallback {
   private val incompatReason =

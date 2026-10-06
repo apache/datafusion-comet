@@ -357,7 +357,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
           val equalityIds = equalityIdsMethod
             .invoke(deleteFile)
             .asInstanceOf[java.util.List[Integer]]
-          equalityIds.forEach(id => deleteBuilder.addEqualityIds(id))
+          deleteBuilder.addAllEqualityIds(equalityIds)
         } catch {
           case _: Exception =>
         }
@@ -519,7 +519,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                 commonBuilder.addPartitionTypePool(partitionTypeJson)
                 idx
               })
-            taskBuilder.setPartitionSpecIdx(specIdx)
+            val _ = taskBuilder.setPartitionSpecIdx(specIdx)
           } catch {
             case e: Exception =>
               logWarning(s"Failed to serialize partition spec to JSON: ${e.getMessage}")
@@ -579,7 +579,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
               commonBuilder.addPartitionDataPool(partitionDataProto)
               idx
             })
-          taskBuilder.setPartitionDataIdx(partitionDataIdx)
+          val _ = taskBuilder.setPartitionDataIdx(partitionDataIdx)
         } else {
           // Defensive: ContentScanTask.partition() returns an empty struct (never null) for
           // unpartitioned tables in practice. If it is ever null we cannot compute values, so
@@ -644,6 +644,10 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
 
     global.result() ++ promoted.result()
   }
+
+  /** iceberg-rust's per-I/O-call timeout, set from `spark.comet.iceberg.ioTimeout`. */
+  def ioTimeoutProperty(): (String, String) =
+    "opendal.io-timeout-ms" -> CometConf.COMET_ICEBERG_IO_TIMEOUT.get().toString
 
   /**
    * Converts an Iceberg residual Expression into an IcebergPredicate for the native scan.
@@ -1020,7 +1024,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     commonBuilder.setDataFileConcurrencyLimit(
       CometConf.COMET_ICEBERG_DATA_FILE_CONCURRENCY_LIMIT.get())
     metadata.catalogName.foreach(commonBuilder.setCatalogName)
-    metadata.catalogProperties.foreach { case (key, value) =>
+    (metadata.catalogProperties + ioTimeoutProperty()).foreach { case (key, value) =>
       commonBuilder.putCatalogProperties(key, value)
     }
 

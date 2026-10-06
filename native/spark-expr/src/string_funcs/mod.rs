@@ -30,7 +30,7 @@ mod unbase64;
 pub use base64::spark_base64;
 pub use concat_ws::CometConcatWs;
 pub use contains::SparkContains;
-pub use get_json_object::spark_get_json_object;
+pub use get_json_object::{spark_get_json_object, spark_get_json_object_spark34};
 pub use levenshtein::spark_levenshtein;
 pub use pattern_cache::PatternCache;
 pub use regexp_extract::spark_regexp_extract;
