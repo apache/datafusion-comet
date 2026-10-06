@@ -102,6 +102,8 @@ allowed_expr+="|^org/apache/spark/CometPlugin.class$"
 allowed_expr+="|^org/apache/spark/CometDriverPlugin.*$"
 allowed_expr+="|^org/apache/spark/CometExecutorPlugin.*$"
 allowed_expr+="|^org/apache/spark/CometSource.*$"
+# Native broadcast storage accounting needs Spark-private memory APIs.
+allowed_expr+='|^org/apache/spark/CometBroadcastMemoryManager\.class$'
 allowed_expr+="|^org/apache/spark/CometTaskMemoryManager.class$"
 allowed_expr+="|^org/apache/spark/CometTaskMemoryManager.*$"
 allowed_expr+="|^scala-collection-compat.properties$"

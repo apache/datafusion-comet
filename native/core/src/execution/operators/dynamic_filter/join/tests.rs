@@ -1564,3 +1564,68 @@ fn wrapper_preserves_join_statistics_and_distribution() {
         );
     }
 }
+
+#[tokio::test]
+async fn union_branch_preparation_keeps_renamed_reader_metrics() {
+    use crate::execution::spark_plan::SparkPlan;
+    let session = Arc::new(SessionContext::new());
+    let (_file, scan) = parquet_probe((0..4).collect(), &session, 1);
+    let scan_plan = Arc::new(SparkPlan::new(1, scan as _, vec![]));
+    let filter = Arc::new(
+        FilterExec::try_new(
+            Arc::new(IsNotNullExpr::new(Arc::new(Column::new("key", 0)))),
+            Arc::clone(&scan_plan.native_plan),
+        )
+        .unwrap(),
+    );
+    let filter_plan = Arc::new(SparkPlan::new(2, filter, vec![scan_plan]));
+    let projection = Arc::new(
+        ProjectionExec::try_new(
+            vec![(
+                Arc::new(Column::new("key", 0)) as Arc<dyn PhysicalExpr>,
+                "renamed".to_owned(),
+            )],
+            Arc::clone(&filter_plan.native_plan),
+        )
+        .unwrap(),
+    );
+    let plan = Arc::new(SparkPlan::new(3, projection, vec![filter_plan]));
+    let prepared = PhysicalPlanner::prepare_union_branch_for_runtime_reader(plan);
+    let predicate = Arc::new(DynamicFilterPhysicalExpr::new(
+        vec![Arc::new(Column::new("renamed", 0))],
+        lit(true),
+    ));
+    predicate
+        .update(Arc::new(BinaryExpr::new(
+            Arc::new(Column::new("renamed", 0)),
+            Operator::Eq,
+            lit(3_i32),
+        )))
+        .unwrap();
+    predicate.mark_complete();
+    let mut targets = vec![];
+    let attached = super::super::parquet_reader::try_attach_parquet_reader_filter_with_transport(
+        &prepared.native_plan,
+        predicate,
+        session.copied_config().options(),
+        &mut targets,
+    )
+    .unwrap()
+    .unwrap();
+    assert!(targets.is_empty());
+    let batches = collect(attached, session.task_ctx()).await.unwrap();
+    assert_eq!(row_count(&batches), 1);
+    assert_eq!(batches[0].schema().field(0).name(), "renamed");
+    assert_eq!(
+        prepared.native_plan.metrics().unwrap().output_rows(),
+        Some(1)
+    );
+    assert_eq!(
+        prepared.children[0]
+            .native_plan
+            .metrics()
+            .unwrap()
+            .output_rows(),
+        Some(1)
+    );
+}

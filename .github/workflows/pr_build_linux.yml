@@ -575,6 +575,7 @@ jobs:
               org.apache.spark.sql.CometCollationSuite
               org.apache.spark.sql.CometSortCollationSuite
               org.apache.comet.CometFuzzAggregateSuite
+              org.apache.spark.sql.comet.CometBroadcastInputLifecycleSuite
               org.apache.spark.sql.comet.execution.arrow.CometArrowStreamSuite
               org.apache.spark.sql.comet.execution.arrow.CachedBatchRowIteratorSuite
               org.apache.spark.sql.comet.execution.arrow.CometArrowWriterSuite

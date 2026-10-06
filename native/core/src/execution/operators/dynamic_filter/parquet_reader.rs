@@ -31,6 +31,8 @@ use datafusion::physical_expr::utils::collect_columns;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ExecutionPlan;
 
+use super::super::union_filter::UnionFilterTarget;
+use super::super::{CometProjectionExec, ScanExec};
 use datafusion_comet_operators::CometFilterExec;
 
 mod schema_adapter;
@@ -57,6 +59,29 @@ pub(super) fn try_attach_parquet_reader_filter(
     predicate: Arc<DynamicFilterPhysicalExpr>,
     config: &ConfigOptions,
 ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
+    attach_reader_filter(input, predicate, config, &mut None)
+}
+
+pub(crate) fn try_attach_parquet_reader_filter_with_transport(
+    input: &Arc<dyn ExecutionPlan>,
+    predicate: Arc<DynamicFilterPhysicalExpr>,
+    config: &ConfigOptions,
+    targets: &mut Vec<UnionFilterTarget>,
+) -> Result<Option<Arc<dyn ExecutionPlan>>> {
+    let start = targets.len();
+    let result = attach_reader_filter(input, predicate, config, &mut Some(targets));
+    if !matches!(&result, Ok(Some(_))) {
+        targets.truncate(start);
+    }
+    result
+}
+
+fn attach_reader_filter(
+    input: &Arc<dyn ExecutionPlan>,
+    predicate: Arc<DynamicFilterPhysicalExpr>,
+    config: &ConfigOptions,
+    targets: &mut Option<&mut Vec<UnionFilterTarget>>,
+) -> Result<Option<Arc<dyn ExecutionPlan>>> {
     // Filtering before a fetch can change which rows are selected by its limit.
     if input.fetch().is_some() {
         log::debug!("Join dynamic filter reader pushdown skipped: probe has a fetch limit");
@@ -81,7 +106,7 @@ pub(super) fn try_attach_parquet_reader_filter(
             return Ok(None);
         }
         let Some(reader) =
-            try_attach_parquet_reader_filter(filter.input(), Arc::clone(&predicate), config)?
+            attach_reader_filter(filter.input(), Arc::clone(&predicate), config, targets)?
         else {
             return Ok(None);
         };
@@ -94,6 +119,45 @@ pub(super) fn try_attach_parquet_reader_filter(
                 Ok(None)
             }
         };
+    }
+    // A Union branch can rename/reorder columns. Every projected expression must
+    // be a direct column: otherwise early rejection could suppress its errors.
+    if let Some(projection) = input.downcast_ref::<CometProjectionExec>() {
+        if targets.is_none() {
+            return Ok(None);
+        }
+        let expressions = projection.projection().expr();
+        if !expressions.iter().all(|expr| expr.expr.is::<Column>()) {
+            return Ok(None);
+        }
+        let mut children = Vec::new();
+        for key in predicate.children() {
+            let Some(column) = key.downcast_ref::<Column>() else {
+                return Ok(None);
+            };
+            let Some(expression) = expressions.get(column.index()) else {
+                return Ok(None);
+            };
+            children.push(Arc::clone(&expression.expr));
+        }
+        let rewritten = Arc::clone(&predicate).with_new_children(children)?;
+        let rewritten = Arc::downcast::<DynamicFilterPhysicalExpr>(rewritten).map_err(|_| {
+            datafusion::common::internal_datafusion_err!("Dynamic filter changed type")
+        })?;
+        let Some(child) = attach_reader_filter(projection.input(), rewritten, config, targets)?
+        else {
+            return Ok(None);
+        };
+        return Ok(Some(projection.with_execution_input(child)?));
+    }
+    if let Some(scan) = input.downcast_ref::<ScanExec>() {
+        if let (Some(source), Some(targets)) = (&scan.union_input, targets.as_mut()) {
+            targets.push(UnionFilterTarget {
+                source: Arc::clone(source),
+                predicate,
+            });
+            return Ok(Some(Arc::clone(input)));
+        }
     }
     let Some(scan) = input.downcast_ref::<DataSourceExec>() else {
         log::debug!(

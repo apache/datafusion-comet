@@ -1034,6 +1034,9 @@ message HashJoin {
   // Opt-in completed-build filtering of probe batches and eligible native Parquet readers.
   // Older serialized plans leave it false.
   bool dynamic_filter_enabled = 10;
+  // Carry a completed broadcast join filter into separately planned Union readers.
+  // Older plans and shuffled joins leave this permission false.
+  bool union_filter_transport_enabled = 11;
 }
 
 message SortMergeJoin {
