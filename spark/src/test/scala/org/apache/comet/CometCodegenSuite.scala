@@ -40,7 +40,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.{ByteArray, UTF8String}
 
-import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
+import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark41Plus}
 import org.apache.comet.codegen.CometBatchKernelCodegen
 import org.apache.comet.codegen.CometBatchKernelCodegen.ArrowColumnSpec
 import org.apache.comet.serde.{CometInvokeTargets, CometScalaUDF, QueryPlanSerde}
@@ -1500,6 +1500,18 @@ class CometCodegenSuite
       .range(0, 1024, 1, numPartitions = 4)
       .selectExpr("id", "dblId(rand(42)) as r")
     checkSparkAnswerAndOperator(df)
+  }
+
+  test("scalar subquery inside a dispatched expression falls back to Spark") {
+    assume(isSpark40Plus, "collations are Spark 4.0+")
+    withTable("t") {
+      sql("CREATE TABLE t (c1 STRING) USING parquet")
+      sql("INSERT INTO t VALUES ('a')")
+      checkSparkAnswer(sql("SELECT COUNT(CAST((SELECT c1 FROM t) AS STRING COLLATE UTF8_LCASE))"))
+      checkSparkAnswer(sql("SELECT CAST((SELECT c1 FROM t) AS STRING COLLATE UTF8_LCASE) = 'A'"))
+      checkSparkAnswer(
+        sql("SELECT COUNT(CAST((SELECT c1 FROM t) AS STRING COLLATE UTF8_LCASE)) FROM t"))
+    }
   }
 
   test("ScalaUDF composed with reused scalar subquery across projection and filter") {
