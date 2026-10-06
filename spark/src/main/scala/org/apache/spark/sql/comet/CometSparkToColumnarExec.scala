@@ -19,7 +19,6 @@
 
 package org.apache.spark.sql.comet
 
-import scala.collection.mutable.ListBuffer
 import scala.reflect.ClassTag
 
 import org.apache.arrow.memory.BufferAllocator
@@ -33,7 +32,6 @@ import org.apache.spark.sql.comet.execution.arrow.{CometArrowStream, CometNative
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.{RowToColumnarTransition, SparkPlan}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
-import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.{CometConf, DataTypeSupport}
@@ -136,15 +134,5 @@ object CometSparkToColumnarExec extends CometSink[SparkPlan] with DataTypeSuppor
       nativeOp: OperatorOuterClass.Operator,
       op: SparkPlan): CometNativeExec = {
     CometScanWrapper(nativeOp, CometSparkToColumnarExec(op))
-  }
-
-  override def isTypeSupported(
-      dt: DataType,
-      name: String,
-      fallbackReasons: ListBuffer[String]): Boolean = dt match {
-    case ArrayType(StringType, _) => true
-    case MapType(StringType, StringType, _) => true
-    case _: ArrayType | _: MapType => false
-    case _ => super.isTypeSupported(dt, name, fallbackReasons)
   }
 }

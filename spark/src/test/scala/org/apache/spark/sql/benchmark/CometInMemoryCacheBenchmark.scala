@@ -138,13 +138,10 @@ object CometInMemoryCacheBenchmark extends CometBenchmarkBase {
           "if(id % 8 = 5, null, concat('str_c_', cast(id as string))) AS s3")
         .createOrReplaceTempView(sourceTable)
 
-      // Struct columns, not arrays or maps. The baseline arm needs Spark's cache scan to bridge into
-      // Comet operators, and CometSparkToColumnarExec declines ArrayType and MapType outright, so
-      // for a relation projecting one of those the arm simply does not exist -- the partial
-      // aggregate stays on Spark and the two cases stop being a scan-boundary comparison. Structs
-      // are what can be measured here, and they are the shape that matters for the format anyway: a
-      // struct is where one cached column owns several field nodes and a validity buffer per level.
-      // Array and map coverage lives in CometInMemoryCacheSuite instead.
+      // Struct columns, the shape that matters for the format: one cached column owns several
+      // field nodes and a validity buffer per level. Array and map columns are not measured here.
+      // The baseline arm would bridge them into Comet operators like any other column, and
+      // CometInMemoryCacheSuite covers them.
       //
       // The structs themselves are non-nullable and carry nullable fields, rather than the other way
       // round. Comet cannot evaluate `if(c, null, named_struct(...))` at all: the Spark type keeps
