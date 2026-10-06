@@ -243,15 +243,15 @@ object NativeWriteUtils {
    * S3A settings, without their `fs.s3a.` prefix, that change the objects S3A creates. The native
    * writer does not apply them, so a write that sets one stays on Spark's writer rather than
    * produce files without the encryption, ACL, storage class or content encoding it asks for. The
-   * list covers Hadoop 3.3 and 3.4.
+   * list covers Hadoop 3.3 and 3.4. Each setting is its current name followed by any deprecated
+   * one, see [[effectiveS3AKey]].
    */
-  private val UnsupportedS3AWriteOptions: Seq[String] = Seq(
+  private val UnsupportedS3AWriteOptions: Seq[Seq[String]] = Seq(
     // Server-side and client-side encryption, under its current and its deprecated name
-    "encryption.algorithm",
-    "server-side-encryption-algorithm",
-    "acl.default",
-    "create.storage.class",
-    "object.content.encoding")
+    Seq("encryption.algorithm", "server-side-encryption-algorithm"),
+    Seq("acl.default"),
+    Seq("create.storage.class"),
+    Seq("object.content.encoding"))
 
   /** Custom object headers S3A adds to every file it creates. */
   private val S3ACreateHeaderPrefix = "create.header."
@@ -295,17 +295,20 @@ object NativeWriteUtils {
     path.split('/').exists(_.startsWith("__magic"))
 
   /**
-   * The key S3A takes setting `key` from for `bucket`, `fs.s3a.bucket.<bucket>.<key>` over
-   * `fs.s3a.<key>`, when it holds a value. A blank value, which S3A treats as no setting, does
+   * The key S3A takes the setting `names` from for `bucket`, when it holds a value. As in S3A's
+   * `buildEncryptionSecrets`, that is the first key set among `fs.s3a.bucket.<bucket>.<name>` for
+   * each name, then `fs.s3a.<name>` for each name. A bucket key under either name overrides the
+   * global keys under both, which matters because Hadoop aliases the two global keys once S3A is
+   * loaded but leaves the bucket keys apart. A blank value, which S3A treats as no setting, does
    * not count.
    */
   private def effectiveS3AKey(
       hadoopConf: Configuration,
       bucket: String,
-      key: String): Option[String] =
-    Seq(s"fs.s3a.bucket.$bucket.$key", s"fs.s3a.$key")
-      .find(name => hadoopConf.getTrimmed(name) != null)
-      .filter(name => hadoopConf.getTrimmed(name).nonEmpty)
+      names: Seq[String]): Option[String] =
+    (names.map(name => s"fs.s3a.bucket.$bucket.$name") ++ names.map(name => s"fs.s3a.$name"))
+      .find(key => hadoopConf.getTrimmed(key) != null)
+      .filter(key => hadoopConf.getTrimmed(key).nonEmpty)
 
   /** The FileSystem class Hadoop would serve `scheme` with, or `None` when it has none. */
   private def fileSystemClassName(scheme: String, hadoopConf: Configuration): Option[String] =
@@ -373,7 +376,7 @@ object NativeWriteUtils {
             "uploads S3A leaves pending, which the native writer does not create")
       }
     UnsupportedS3AWriteOptions
-      .flatMap(key => effectiveS3AKey(hadoopConf, bucket, key))
+      .flatMap(names => effectiveS3AKey(hadoopConf, bucket, names))
       .headOption
       .orElse(
         Seq(s"fs.s3a.bucket.$bucket.$S3ACreateHeaderPrefix", s"fs.s3a.$S3ACreateHeaderPrefix")

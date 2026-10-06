@@ -1317,6 +1317,13 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
         out,
         "fs.s3a.encryption.algorithm" -> "SSE-KMS",
         "fs.s3a.bucket.bucket.encryption.algorithm" -> "").isEmpty)
+    // The same under the deprecated name, which Hadoop aliases to the current name globally but
+    // not per bucket.
+    assert(
+      declined(
+        out,
+        "fs.s3a.server-side-encryption-algorithm" -> "AES256",
+        "fs.s3a.bucket.bucket.server-side-encryption-algorithm" -> "").isEmpty)
 
     // The path the commit protocol hands a task is checked again, for the same characters and
     // for a magic committer directory.
