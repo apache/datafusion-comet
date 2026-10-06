@@ -44,8 +44,9 @@ const ICEBERG_PROVIDER_CLASS_PROPERTY: &str = "s3.comet.credential.provider.clas
 
 /// Key prefixes forwarded to iceberg-rust's `FileIO`. The full unfiltered catalog bag (catalog
 /// URI, OAuth tokens, credentials.uri, tenant-id, etc.) is kept upstream so
-/// `CometS3CredentialBridge` can read whatever the vendor needs.
-const STORAGE_PROPERTY_PREFIXES: &[&str] = &["s3.", "gcs.", "adls.", "client."];
+/// `CometS3CredentialBridge` can read whatever the vendor needs. `opendal.` carries
+/// iceberg-storage-opendal's own settings, such as `opendal.io-timeout-ms`.
+const STORAGE_PROPERTY_PREFIXES: &[&str] = &["s3.", "gcs.", "adls.", "client.", "opendal."];
 
 /// Pick an OpenDAL storage backend from a URI's scheme. `file` (or no scheme) falls through to
 /// the local file system. `memory` is used by the write path to assemble manifest bytes that
@@ -773,6 +774,17 @@ mod tests {
             .entries
             .keys()
             .all(|k| scheme_of(&k.reference_path) != "memory"));
+    }
+
+    /// The JVM sets this key from `spark.comet.iceberg.ioTimeout`.
+    #[test]
+    fn io_timeout_reaches_the_file_io() {
+        let key = iceberg_storage_opendal::OPENDAL_IO_TIMEOUT_MS;
+        assert_eq!(key, "opendal.io-timeout-ms");
+        let props = HashMap::from([(key.to_string(), "30000".to_string())]);
+        let (file_io, _) =
+            build_file_io(&props, "file:///tmp/warehouse", "", AccessMode::Read).unwrap();
+        assert_eq!(file_io.config().get(key).map(String::as_str), Some("30000"));
     }
 
     #[test]
