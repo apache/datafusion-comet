@@ -148,7 +148,10 @@ own operators itself. Spark computes a typed operation's rows one at a time, as 
 the conversion fills a whole Arrow batch first. So the rule leaves the output unconverted where a
 limit, a `mapPartitions` function, or code reading `Dataset.rdd` could stop reading it early, unless
 an operator that reads all of its input first, such as an exchange, a sort, or a hash aggregate,
-sits in between. Fusing the deserializer, the `Invoke` that calls the user function, and the
+sits in between. For the same reason, it leaves the output unconverted when the plan uses
+`input_file_name()`, `input_file_block_start()` or `input_file_block_length()`: filling the batch
+moves the scan's reader past the file that these report when Spark evaluates them above the
+conversion. Fusing the deserializer, the `Invoke` that calls the user function, and the
 serializer of `Dataset.map` into one projection in the JVM codegen dispatcher was tried in
 [#5714](https://github.com/apache/datafusion-comet/pull/5714) and dropped. The dispatcher only calls
 into Spark's own classes, and the conversion gets nearly the same speedup for `map` while also
