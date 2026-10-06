@@ -1576,23 +1576,75 @@ class CometIcebergWriteActionSuite
         assertNativeWriteEngages("nan_offset_native", 40 until 65)(insert("nan_offset_native"))
         insert("nan_offset_jvm")
 
-        // Keyed by field id, and both tables get the same ids from the same DDL.
-        def nanCounts(t: String): Map[Int, Long] =
-          spark
-            .sql(s"SELECT nan_value_counts FROM $catalog.$ns.$t.data_files")
-            .collect()
-            .toSeq
-            .flatMap(_.getMap[Int, Long](0).toSeq)
-            .groupBy(_._1)
-            .map { case (id, counts) => id -> counts.map(_._2).sum }
-
-        val native = nanCounts("nan_offset_native")
-        val jvm = nanCounts("nan_offset_jvm")
+        val native = nanValueCounts("nan_offset_native")
+        val jvm = nanValueCounts("nan_offset_jvm")
         assert(native == jvm, s"native NaN counts $native != JVM NaN counts $jvm")
-        // Iceberg 1.10's `ParquetMetrics` keeps no metrics for a field under a list or map, so
+        // Iceberg 1.9's `ParquetMetrics` keeps no metrics for a field under a list or map, so
         // from then on both maps are empty. Before that, the written ids 40 to 64 hold eight
         // multiples of 3, NaN in the list element and the map value alike.
-        val expected = if (icebergVersionAtLeast(1, 10)) Seq.empty else Seq(8L, 8L)
+        val expected = if (icebergVersionAtLeast(1, 9)) Seq.empty else Seq(8L, 8L)
+        assert(jvm.values.toSeq == expected, s"JVM NaN counts $jvm")
+      }
+    }
+  }
+
+  // `IF(cond, col, NULL)` over a nested column runs natively through `nullif`, which NULLs the
+  // struct, list or map but leaves what is under it in place: a NULL struct keeps its fields'
+  // values and a NULL list or map entry still points at its elements. Parquet writes nothing
+  // under a NULL parent, so iceberg-java counts no NaN there, while iceberg-rust's counter used to
+  // count every one of them.
+  // https://github.com/apache/datafusion-comet/issues/6562
+  test("native acceleration: NaN counts skip values under NULL structs, lists and maps") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { _ =>
+      withTempPath { dir =>
+        spark
+          .range(100)
+          .selectExpr(
+            "CAST(id AS INT) AS id",
+            "IF(id % 3 = 0, CAST('NaN' AS DOUBLE), CAST(id AS DOUBLE)) AS v")
+          .selectExpr(
+            "id",
+            "v",
+            "named_struct('x', v) AS s",
+            "array(v) AS xs",
+            "map('k', v) AS m")
+          .write
+          .parquet(dir.getCanonicalPath)
+        Seq("nan_null_parent_native", "nan_null_parent_jvm").foreach { t =>
+          spark.sql(s"""
+            CREATE TABLE $catalog.$ns.$t (
+              id INT,
+              v DOUBLE,
+              s STRUCT<x: DOUBLE>,
+              xs ARRAY<DOUBLE>,
+              m MAP<STRING, DOUBLE>
+            ) USING iceberg
+          """)
+        }
+        def insert(t: String): Unit =
+          spark.read
+            .parquet(dir.getCanonicalPath)
+            .selectExpr(
+              "id",
+              "IF(id % 2 = 0, v, NULL) AS v",
+              "IF(id % 2 = 0, s, NULL) AS s",
+              "IF(id % 2 = 0, xs, NULL) AS xs",
+              "IF(id % 2 = 0, m, NULL) AS m")
+            .writeTo(s"$catalog.$ns.$t")
+            .append()
+
+        assertNativeWriteEngages("nan_null_parent_native", 0 until 100)(
+          insert("nan_null_parent_native"))
+        insert("nan_null_parent_jvm")
+
+        val native = nanValueCounts("nan_null_parent_native")
+        val jvm = nanValueCounts("nan_null_parent_jvm")
+        assert(native == jvm, s"native NaN counts $native != JVM NaN counts $jvm")
+        // The kept rows are the even ids, so the NaNs written are the multiples of 6 up to 96:
+        // 17 each in `v` and `s.x`, and in the list element and the map value as well before
+        // Iceberg 1.9's `ParquetMetrics` stopped keeping metrics under a list or map.
+        val expected = Seq.fill(if (icebergVersionAtLeast(1, 9)) 2 else 4)(17L)
         assert(jvm.values.toSeq == expected, s"JVM NaN counts $jvm")
       }
     }
@@ -2835,65 +2887,61 @@ class CometIcebergWriteActionSuite
         coalesceInsert(table, Seq((0, "seed", 0.0)))
         val committed = parquetFiles(dataDir(table))
         val before = countSnapshots(table)
-        val session = spark
-        import session.implicits._
-        withTempPath { dir =>
-          (1 to 30)
-            .map(i => (i, s"r$i", i.toDouble))
-            .toDF("id", "region", "amount")
-            .repartition(3)
-            .write
-            .parquet(dir.getAbsolutePath)
-          spark.read.parquet(dir.getAbsolutePath).createOrReplaceTempView("job_abort_src")
-          JobAbortGate.reset(othersToFinish = 2)
-          spark.udf.register(
-            "boom_after_others",
-            (id: Int) => {
-              if (id == 25) {
-                JobAbortGate.awaitOthers()
-                throw new RuntimeException("boom")
-              }
-              id
-            })
-          val listener = new SparkListener {
-            override def onTaskEnd(taskEnd: SparkListenerTaskEnd): Unit =
-              if (taskEnd.reason == Success) JobAbortGate.taskFinished()
+        JobAbortGate.reset(othersToFinish = 2)
+        // One task per slice. The task whose slice holds id 25 waits for the other two while it
+        // computes that slice, which runs in JVM code on its own task thread. Waiting inside the
+        // UDF instead would hold the thread that evaluates the native plan, which can be a worker
+        // of Comet's process-wide Tokio runtime, and with one worker the other two tasks' plans
+        // could not run. See https://github.com/apache/datafusion-comet/issues/6643.
+        val rows = spark.sparkContext
+          .parallelize(1 to 30, numSlices = 3)
+          .mapPartitions { ids =>
+            val slice = ids.toVector
+            if (slice.contains(25)) JobAbortGate.awaitOthers()
+            slice.iterator.map(i => Row(i, s"r$i", i.toDouble))
           }
-          spark.sparkContext.addSparkListener(listener)
-          try {
-            // One task per source file: openCostInBytes equal to maxPartitionBytes stops the
-            // planner from packing two of these tiny files into one task.
-            val run = () =>
-              withSQLConf(
-                "spark.sql.files.maxPartitionBytes" -> "1048576",
-                "spark.sql.files.openCostInBytes" -> "1048576") {
-                spark.sql(s"INSERT INTO $catalog.$ns.$table " +
-                  "SELECT boom_after_others(id), region, amount FROM job_abort_src")
-              }
-            val (failedPlans, error) = captureFailedPlans(spark) {
-              if (native) withNativeEnabled(run()) else run()
-            }
-            assert(
-              error.toSeq
-                .flatMap(exceptionChain)
-                .exists(t => Option(t.getMessage).exists(_.contains("boom"))),
-              s"expected the injected task failure to surface, got $error")
-            val nativeWrites = failedPlans.flatMap(p =>
-              collectWithSubqueries(p) { case w: CometIcebergWriteExec => w })
-            assert(
-              nativeWrites.nonEmpty == native,
-              s"native=$native but the failed plans were:\n${failedPlans.mkString("\n--\n")}")
-          } finally {
-            spark.sparkContext.removeSparkListener(listener)
-          }
-          assert(JobAbortGate.finished >= 2, "the gate must have seen two completed tasks")
-          assert(countSnapshots(table) == before, "failed write must not commit")
-          val remaining = parquetFiles(dataDir(table))
-          assert(
-            remaining == committed,
-            s"completed tasks left data files behind: ${remaining -- committed}")
-          assertRows(table, expectedIds = Seq(0))
+        val schema = StructType(
+          Seq(
+            StructField("id", IntegerType),
+            StructField("region", StringType),
+            StructField("amount", DoubleType)))
+        spark.createDataFrame(rows, schema).createOrReplaceTempView("job_abort_src")
+        spark.udf.register(
+          "boom_at_25",
+          (id: Int) => if (id == 25) throw new RuntimeException("boom") else id)
+        val listener = new SparkListener {
+          override def onTaskEnd(taskEnd: SparkListenerTaskEnd): Unit =
+            if (taskEnd.reason == Success) JobAbortGate.taskFinished()
         }
+        spark.sparkContext.addSparkListener(listener)
+        try {
+          val run = () =>
+            spark.sql(
+              s"INSERT INTO $catalog.$ns.$table " +
+                "SELECT boom_at_25(id), region, amount FROM job_abort_src")
+          val (failedPlans, error) = captureFailedPlans(spark) {
+            if (native) withNativeEnabled(run()) else run()
+          }
+          assert(
+            error.toSeq
+              .flatMap(exceptionChain)
+              .exists(t => Option(t.getMessage).exists(_.contains("boom"))),
+            s"expected the injected task failure to surface, got $error")
+          val nativeWrites = failedPlans.flatMap(p =>
+            collectWithSubqueries(p) { case w: CometIcebergWriteExec => w })
+          assert(
+            nativeWrites.nonEmpty == native,
+            s"native=$native but the failed plans were:\n${failedPlans.mkString("\n--\n")}")
+        } finally {
+          spark.sparkContext.removeSparkListener(listener)
+        }
+        assert(JobAbortGate.finished >= 2, "the gate must have seen two completed tasks")
+        assert(countSnapshots(table) == before, "failed write must not commit")
+        val remaining = parquetFiles(dataDir(table))
+        assert(
+          remaining == committed,
+          s"completed tasks left data files behind: ${remaining -- committed}")
+        assertRows(table, expectedIds = Seq(0))
       }
     }
   }
@@ -3504,6 +3552,19 @@ class CometIcebergWriteActionSuite
       .toSet
   }
 
+  /**
+   * The table's NaN counts summed over its data files, keyed by field id. Two tables created from
+   * the same DDL get the same ids, so their maps compare directly.
+   */
+  private def nanValueCounts(tableName: String): Map[Int, Long] =
+    spark
+      .sql(s"SELECT nan_value_counts FROM $catalog.$ns.$tableName.data_files")
+      .collect()
+      .toSeq
+      .flatMap(_.getMap[Int, Long](0).toSeq)
+      .groupBy(_._1)
+      .map { case (id, counts) => id -> counts.map(_._2).sum }
+
   private def assertRows(tableName: String, expectedIds: Seq[Int]): Unit = {
     val ids = spark
       .sql(s"SELECT id FROM $catalog.$ns.$tableName ORDER BY id")
@@ -3945,8 +4006,8 @@ private object NativeWriteRetryProbe {
  */
 /**
  * Lets the failing task of a multi-task write wait until the other tasks have finished, so the
- * driver has their commit messages when the job fails. Top-level so the UDF closure doesn't
- * capture the suite.
+ * driver has their commit messages when the job fails. Top-level so the closure that waits on it
+ * doesn't capture the suite.
  */
 private object JobAbortGate {
   @volatile private var others = new CountDownLatch(0)
