@@ -862,6 +862,22 @@ floating-point values.</p></li>
 <li><p><a class="reference internal" href="tuning/transitions.html"><span class="std std-doc">Reducing Row/Columnar Conversion Overhead</span></a>: stages in which many
 operators fall back to Spark.</p></li>
 </ul>
+<section id="nested-and-wide-data">
+<h2>Nested and Wide Data<a class="headerlink" href="#nested-and-wide-data" title="Link to this heading">#</a></h2>
+<p>Rows with many columns, long strings, or nested columns such as arrays of structs make every batch
+larger, so queries over such data spill more. For these workloads:</p>
+<ul class="simple">
+<li><p>Choose the codec for spill files from native sorts, aggregations, and joins, which Comet
+compresses with <code class="docutils literal notranslate"><span class="pre">lz4</span></code> by default. See
+<a class="reference internal" href="tuning/memory.html#compressing-spill-files"><span class="std std-ref">Compressing Spill Files</span></a>.</p></li>
+<li><p>Lower the batch size if wide batches cause spilling or out-of-memory errors. See
+<a class="reference internal" href="tuning/memory.html#batch-size"><span class="std std-ref">Batch Size</span></a>.</p></li>
+<li><p>Check which shuffles can run natively when partitioning keys are nested. See
+<a class="reference internal" href="tuning/shuffle.html#native-shuffle"><span class="std std-ref">Native Shuffle</span></a>.</p></li>
+<li><p>Watch for row/columnar conversions, which are expensive for such schemas. See
+<a class="reference internal" href="tuning/transitions.html#wide-or-deeply-nested-schemas"><span class="std std-ref">Wide or Deeply Nested Schemas</span></a>.</p></li>
+</ul>
+</section>
 <section id="configuring-tokio-runtime">
 <h2>Configuring Tokio Runtime<a class="headerlink" href="#configuring-tokio-runtime" title="Link to this heading">#</a></h2>
 <p>Comet uses a global tokio runtime per executor process. By default it starts one worker thread per executor core
@@ -932,6 +948,7 @@ fallback to Spark works, see <a class="reference internal" href="understanding-c
   </div>
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#nested-and-wide-data">Nested and Wide Data</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#configuring-tokio-runtime">Configuring Tokio Runtime</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#metrics-overhead">Metrics Overhead</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#explain-plan">Explain Plan</a></li>

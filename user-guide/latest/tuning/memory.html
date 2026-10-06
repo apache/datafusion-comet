@@ -1071,6 +1071,16 @@ fail and the query errors out. Raise this on workloads with large sort/aggregate
 lower it to protect executors on shared disks, remembering that the total across an executor is a
 multiple of this value.</p>
 </section>
+<section id="compressing-spill-files">
+<h2>Compressing Spill Files<a class="headerlink" href="#compressing-spill-files" title="Link to this heading">#</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.spill.compression.codec</span></code> sets the codec for the files that native sorts,
+aggregations, sort-merge joins, and nested loop joins spill to disk. The default is <code class="docutils literal notranslate"><span class="pre">lz4</span></code>, which
+Spark also uses for its own spill files by default. <code class="docutils literal notranslate"><span class="pre">zstd</span></code> writes smaller files, which reduces
+spill I/O and how much of <code class="docutils literal notranslate"><span class="pre">spark.comet.maxTempDirectorySize</span></code> they use, but takes more CPU to
+compress and decompress them. <code class="docutils literal notranslate"><span class="pre">none</span></code> writes them uncompressed. Comet’s shuffle writers use
+<code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.compression.codec</span></code> instead. See
+<a class="reference internal" href="shuffle.html#shuffle-compression"><span class="std std-ref">Shuffle Compression</span></a>.</p>
+</section>
 </section>
 
 
@@ -1128,6 +1138,7 @@ multiple of this value.</p>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#batch-size">Batch Size</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#limiting-spill-disk-usage">Limiting Spill Disk Usage</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#compressing-spill-files">Compressing Spill Files</a></li>
 </ul>
   </nav></div>
 
