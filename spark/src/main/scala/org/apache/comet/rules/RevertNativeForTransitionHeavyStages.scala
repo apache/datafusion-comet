@@ -23,7 +23,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.rules.Rule
-import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometExec, CometHashAggregateExec, CometIcebergNativeScanExec, CometLocalTopKExec, CometNativeColumnarToRowExec, CometNativeScanExec, CometSparkToColumnarExec}
+import org.apache.spark.sql.comet.{CometBaseAggregateExec, CometColumnarToRowExec, CometExec, CometIcebergNativeScanExec, CometLocalTopKExec, CometNativeColumnarToRowExec, CometNativeScanExec, CometSparkToColumnarExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, ColumnarToRowTransition, RowToColumnarExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.QueryStageExec
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeLike, ShuffleExchangeLike}
@@ -121,13 +121,13 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession, wholePlan
   private def hasUnsafeMixedAggregateAtStageBoundary(stagePlan: SparkPlan): Boolean = {
     def reachesBoundaryBeforeAggregate(plan: SparkPlan): Boolean = plan match {
       case _ if isStageBoundary(plan) => true
-      case _: CometHashAggregateExec => false
+      case _: CometBaseAggregateExec => false
       case _ => plan.children.exists(reachesBoundaryBeforeAggregate)
     }
 
     def visit(plan: SparkPlan): Boolean = plan match {
       case _ if isStageBoundary(plan) => false
-      case aggregate: CometHashAggregateExec
+      case aggregate: CometBaseAggregateExec
           if !QueryPlanSerde
             .allAggsSupportNativePartialToSparkFinal(aggregate.aggregateExpressions) ||
             QueryPlanSerde
