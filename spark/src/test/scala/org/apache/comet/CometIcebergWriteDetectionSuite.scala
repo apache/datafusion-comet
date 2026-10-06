@@ -41,7 +41,7 @@ import org.apache.spark.sql.execution.{ApplyColumnarRulesAndInsertTransitions, C
 import org.apache.spark.sql.types.IntegerType
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
-import org.apache.comet.CometSparkSessionExtensions.isSpark35Plus
+import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
 import org.apache.comet.iceberg.IcebergReflection
 import org.apache.comet.rules.EliminateRedundantTransitions
 import org.apache.comet.serde.{Compatible, SupportLevel, Unsupported}
@@ -220,11 +220,56 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     }
   }
 
-  test("fall-back: format-version=3") {
+  test("Compatible for a format-version=3 append") {
     assume(isSpark35Plus, "V3 tables require Iceberg 1.8.1+ (Spark 3.5 profile)")
     withDetectionCatalog { dir =>
       createTable(dir, "v3", partitionSpec = "", properties = Some("'format-version'='3'"))
-      assertUnsupportedContains("v3", "format-version=3")
+      assertSupportLevelIs[Compatible]("v3")
+    }
+  }
+
+  test("fall-back: format-version=4") {
+    assume(icebergVersionAtLeast(1, 10), "V4 tables require Iceberg 1.10+")
+    withDetectionCatalog { dir =>
+      createTable(dir, "v4", partitionSpec = "", properties = Some("'format-version'='4'"))
+      assertUnsupportedContains("v4", "format-version=4")
+    }
+  }
+
+  test("fall-back: variant column in the write schema") {
+    assume(isSpark40Plus, "VARIANT requires Spark 4.0+")
+    assume(icebergVersionAtLeast(1, 10), "VARIANT columns require Iceberg 1.10+")
+    withDetectionCatalog { _ =>
+      spark.sql(s"""
+        CREATE TABLE $catalog.$ns.variant_col (id INT, v VARIANT) USING iceberg
+        TBLPROPERTIES ('format-version'='3')
+      """)
+      val writeExec = captureWriteExec("variant_col", allowWriteFailure = false) {
+        spark.sql(s"""INSERT INTO $catalog.$ns.variant_col VALUES (1, parse_json('{"a": 1}'))""")
+      }
+      assertUnsupportedContains(writeExec, "variant_col", "column v has Iceberg type variant")
+    }
+  }
+
+  test("fall-back: unknown column in the write schema") {
+    assume(icebergVersionAtLeast(1, 10), "The unknown type requires Iceberg 1.10+")
+    withDetectionCatalog { dir =>
+      // Spark DDL cannot declare `unknown` (Iceberg plans it as Spark's NullType), so evolve the
+      // schema through the Iceberg API.
+      createTable(
+        dir,
+        "unknown_col",
+        partitionSpec = "",
+        properties = Some("'format-version'='3'"))
+      addIcebergColumn(
+        loadIcebergTable(spark, catalog, ns, "unknown_col"),
+        "u",
+        icebergUnknownType())
+      spark.sql(s"REFRESH TABLE $catalog.$ns.unknown_col")
+      val writeExec = captureWriteExec("unknown_col", allowWriteFailure = true) {
+        spark.sql(s"INSERT INTO $catalog.$ns.unknown_col VALUES (1, 'us', 1.0, NULL)")
+      }
+      assertUnsupportedContains(writeExec, "unknown_col", "column u has Iceberg type unknown")
     }
   }
 

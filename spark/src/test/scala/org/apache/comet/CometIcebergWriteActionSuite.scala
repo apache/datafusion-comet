@@ -57,6 +57,8 @@ import org.apache.spark.sql.types.{DoubleType, IntegerType, StringType, StructFi
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark41Plus}
 import org.apache.comet.iceberg.{IcebergReflection, IcebergWriteReportListener}
+import org.apache.comet.serde.Unsupported
+import org.apache.comet.serde.operator.CometIcebergNativeWrite
 
 private case class WriteSnapshot(snapshotDelta: Long, plans: Seq[SparkPlan])
 
@@ -901,6 +903,181 @@ class CometIcebergWriteActionSuite
       assertNativeWriteEngages("native_cow_delete", Seq(1, 3, 4)) {
         spark.sql("DELETE FROM cat.db.native_cow_delete WHERE id = 2")
       }
+    }
+  }
+
+  // Format version 3 makes row lineage mandatory, but iceberg-java writes lineage columns into
+  // data files only when it rewrites existing rows: copy-on-write DML and rewrite_data_files, on
+  // Iceberg 1.10+. An append or an overwrite writes the data columns alone, and the driver gives
+  // the new rows their ids at commit time, so those writes stay native on a v3 table.
+  test("native acceleration: format-version=3 appends and overwrites match iceberg-java") {
+    assumeNativeAcceleration()
+    assume(isSpark35Plus, "V3 tables require Iceberg 1.8.1+ (Spark 3.5 profile)")
+    withIcebergCatalog { warehouseDir =>
+      Seq("v3_native", "v3_jvm").foreach { t =>
+        createTable(
+          warehouseDir,
+          t,
+          partitionSpec = "PARTITIONED BY (region)",
+          properties = Some("'format-version'='3'"))
+      }
+      // Eight partitions, so a writer that orders them differently cannot match by luck.
+      val values = (1 to 32).map(i => s"($i, 'r${i % 8}', ${i * 1.5})").mkString(", ")
+      def append(t: String): Unit = spark.sql(s"INSERT INTO $catalog.$ns.$t VALUES $values")
+      def overwrite(t: String): Unit =
+        withSQLConf("spark.sql.sources.partitionOverwriteMode" -> "DYNAMIC") {
+          spark.sql(s"INSERT OVERWRITE $catalog.$ns.$t VALUES (100, 'r0', 1.0), (101, 'r1', 2.0)")
+        }
+      // The overwrite replaces partitions r0 and r1.
+      val survivors = (1 to 32).filter(_ % 8 > 1)
+      assertNativeWriteEngages("v3_native", 1 to 32)(append("v3_native"))
+      assertNativeWriteEngages("v3_native", survivors ++ Seq(100, 101))(overwrite("v3_native"))
+      append("v3_jvm")
+      overwrite("v3_jvm")
+
+      def rows(table: String)(query: String => String): Seq[Row] =
+        spark.sql(query(s"$catalog.$ns.$table")).collect().toSeq
+      def assertSameAsJvm(query: String => String): Seq[Row] = {
+        val native = rows("v3_native")(query)
+        val jvm = rows("v3_jvm")(query)
+        assert(native == jvm, s"native ${native.mkString} != JVM ${jvm.mkString}")
+        native
+      }
+      assertSameAsJvm(t => s"SELECT * FROM $t ORDER BY id")
+      val nativeDirs = partitionDirs(warehouseDir, "v3_native")
+      assert(nativeDirs == partitionDirs(warehouseDir, "v3_jvm"), s"native: $nativeDirs")
+      // Aggregated per partition, so the comparison does not depend on how a write splits into
+      // tasks.
+      assertSameAsJvm(t => s"""
+        SELECT
+          partition.region,
+          sum(record_count),
+          min(readable_metrics.id.lower_bound),
+          max(readable_metrics.id.upper_bound),
+          sum(readable_metrics.amount.value_count),
+          min(readable_metrics.amount.lower_bound),
+          max(readable_metrics.amount.upper_bound)
+        FROM $t.data_files
+        GROUP BY partition.region
+        ORDER BY partition.region
+      """)
+
+      // Spark exposes the lineage columns from Iceberg 1.10 on. The id a row gets follows the
+      // order of the files in its commit, which follows task completion order for either writer,
+      // so compare the commit each row came from rather than the id itself: the append hands out
+      // ids below 32 and the overwrite ids from 32 on.
+      if (icebergVersionAtLeast(1, 10)) {
+        val lineage = assertSameAsJvm(t => s"""
+          SELECT id, _last_updated_sequence_number, _row_id < 32 FROM $t ORDER BY id
+        """)
+        val expected = survivors.map(id => Row(id, 1L, true)) ++
+          Seq(Row(100, 2L, false), Row(101, 2L, false))
+        assert(lineage == expected, s"lineage: ${lineage.mkString}")
+        val distinct = rows("v3_native")(t => s"SELECT count(DISTINCT _row_id) FROM $t")
+        assert(distinct == Seq(Row(expected.length.toLong)), s"duplicate row ids: $distinct")
+      }
+    }
+  }
+
+  // With one file per commit the row ids are deterministic: a v3 commit gives its new rows the
+  // next unused ids in file order, and each row inherits the sequence number of the commit that
+  // wrote it. Copy-on-write DML on Iceberg 1.10+ writes those values into the rewritten files,
+  // which the native writer does not do, so the UPDATE stays on iceberg-java and has to read the
+  // ids of the natively written rows back unchanged.
+  test("native acceleration: format-version=3 row lineage matches iceberg-java") {
+    assumeNativeAcceleration()
+    assume(icebergVersionAtLeast(1, 10), "Spark reads Iceberg row lineage from Iceberg 1.10 on")
+    withIcebergCatalog { warehouseDir =>
+      Seq("lineage_native", "lineage_jvm").foreach { t =>
+        createTable(
+          warehouseDir,
+          t,
+          partitionSpec = "",
+          properties = Some("'format-version'='3', 'write.update.mode'='copy-on-write'"))
+      }
+      Seq(
+        Seq((1, "us-east", 10.0), (2, "us-west", 20.0), (3, "eu", 30.0)),
+        Seq((4, "us-east", 40.0), (5, "eu", 50.0))).foreach { batch =>
+        val snapshot = withNativeEnabled {
+          captureWrite("lineage_native")(coalesceInsert("lineage_native", batch))
+        }
+        assert(snapshot.snapshotDelta == 1L)
+        val engaged = snapshot.plans.exists { p =>
+          collectWithSubqueries(p) { case e: CometIcebergWriteExec => e }.nonEmpty
+        }
+        assert(engaged, s"expected a native append:\n${snapshot.plans.mkString("\n--\n")}")
+        coalesceInsert("lineage_jvm", batch)
+      }
+
+      def lineage(table: String): Seq[(Int, Long, Long)] =
+        spark
+          .sql("SELECT id, _row_id, _last_updated_sequence_number " +
+            s"FROM $catalog.$ns.$table ORDER BY id")
+          .collect()
+          .map(r => (r.getInt(0), r.getLong(1), r.getLong(2)))
+          .toSeq
+      val appended = Seq((1, 0L, 1L), (2, 1L, 1L), (3, 2L, 1L), (4, 3L, 2L), (5, 4L, 2L))
+      assert(lineage("lineage_native") == appended)
+      assert(lineage("lineage_jvm") == appended)
+
+      def update(table: String): Unit =
+        spark.sql(s"UPDATE $catalog.$ns.$table SET amount = amount * 2 WHERE id = 2")
+      val snapshot = withNativeEnabled {
+        captureWrite("lineage_native")(update("lineage_native"))
+      }
+      assert(snapshot.snapshotDelta == 1L)
+      val (_, writes) = collectIcebergWriteOps(snapshot.plans)
+      assert(
+        writes.nonEmpty,
+        s"expected the UPDATE to keep IcebergWrite:\n${snapshot.plans.mkString("\n--\n")}")
+      writes.foreach { write =>
+        CometIcebergNativeWrite.getSupportLevel(write) match {
+          case Unsupported(Some(reason)) => assert(reason.contains("_row_id"), reason)
+          case other => fail(s"expected the lineage write to fall back, got $other")
+        }
+      }
+      update("lineage_jvm")
+      // The updated row keeps its id and takes the UPDATE's sequence number. The other rows of
+      // the rewritten file keep both.
+      val updated = Seq((1, 0L, 1L), (2, 1L, 3L), (3, 2L, 1L), (4, 3L, 2L), (5, 4L, 2L))
+      assert(lineage("lineage_native") == updated)
+      assert(lineage("lineage_jvm") == updated)
+    }
+  }
+
+  // A v3 column can carry initial and write defaults. From Iceberg 1.11 Spark fills a write
+  // default in at analysis, so both writers receive the same rows; Iceberg 1.10 does not expose
+  // defaults to Spark, which then rejects an INSERT that omits the column. Iceberg rebuilds the
+  // write schema from Spark's, which drops the defaults today; if it ever keeps them, they reach
+  // iceberg-rust in the schema JSON and this covers parsing them.
+  test("native acceleration: a format-version=3 column with a default matches iceberg-java") {
+    assumeNativeAcceleration()
+    assume(icebergVersionAtLeast(1, 10), "Column defaults require Iceberg 1.10+")
+    withIcebergCatalog { warehouseDir =>
+      Seq("default_native", "default_jvm").foreach { t =>
+        createTable(
+          warehouseDir,
+          t,
+          partitionSpec = "",
+          properties = Some("'format-version'='3'"))
+        addIcebergIntColumnWithDefault(loadIcebergTable(spark, catalog, ns, t), "c", 7)
+        spark.sql(s"REFRESH TABLE $catalog.$ns.$t")
+      }
+      def insertAll(t: String): Unit =
+        spark.sql(s"INSERT INTO $catalog.$ns.$t VALUES (1, 'us', 1.0, 5), (2, 'eu', 2.0, NULL)")
+      def insertOmitting(t: String): Unit =
+        spark.sql(s"INSERT INTO $catalog.$ns.$t (id, region, amount) VALUES (3, 'ap', 3.0)")
+      val fillsWriteDefault = icebergVersionAtLeast(1, 11)
+      assertNativeWriteEngages("default_native", Seq(1, 2))(insertAll("default_native"))
+      if (fillsWriteDefault) {
+        assertNativeWriteEngages("default_native", Seq(1, 2, 3))(insertOmitting("default_native"))
+      }
+      insertAll("default_jvm")
+      if (fillsWriteDefault) insertOmitting("default_jvm")
+      def rows(t: String): Seq[Row] =
+        spark.sql(s"SELECT * FROM $catalog.$ns.$t ORDER BY id").collect().toSeq
+      val native = rows("default_native")
+      assert(native == rows("default_jvm"), s"native: ${native.mkString}")
     }
   }
 

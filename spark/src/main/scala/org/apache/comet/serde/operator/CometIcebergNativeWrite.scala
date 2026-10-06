@@ -80,7 +80,11 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
   }
 
   private val EncryptionPropertyPrefix = "encryption."
-  private val UnsupportedWriteTypeIds: Set[String] = Set("UUID")
+  // `uuid` plus the v3-only types. Iceberg plans `variant` as Spark's VariantType and `unknown`
+  // as NullType, neither of which the native writer handles; Spark cannot plan a write to
+  // `timestamp_ns`, `geometry` or `geography` today, so those are declined in case it learns to.
+  private val UnsupportedWriteTypeIds: Set[String] =
+    Set("UUID", "VARIANT", "UNKNOWN", "TIMESTAMP_NANO", "GEOMETRY", "GEOGRAPHY")
   // `oss` is deliberately absent: iceberg-rust has an OSS backend, but Comet does not forward
   // `oss.*` catalog properties to it and no functional test covers the path, so an OSS write
   // could silently drop endpoint/credential configuration. Fail closed until it is covered.
@@ -90,7 +94,9 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
   // Supported schemes whose native backend is local and needs no host. Every other supported
   // scheme reads its bucket from the URL host (`requireSupportedStorageScheme`).
   private val LocalStorageSchemes: Set[String] = Set("file", "memory")
-  private val MinUnsupportedFormatVersion = 3
+  private val MaxSupportedFormatVersion = 3
+  // The Iceberg spec reserves field ids above `Integer.MAX_VALUE - 200` for metadata columns.
+  private val MaxDataFieldId = Int.MaxValue - 200
   private val ParquetWritePropertyPrefix = "write.parquet."
   private val ParquetMrPropertyPrefix = "parquet."
 
@@ -177,8 +183,9 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
       PropertyKeys.WriteLocationProviderImpl,
       "custom location provider unsupported"),
     requireDefaultLocationProvider,
-    requireFormatVersionAtMostTwo,
-    requireNoUuidColumns,
+    requireSupportedFormatVersion,
+    requireNoMetadataColumns,
+    requireSupportedColumnTypes,
     requireNoFloatingPointPartitionField,
     requireNoVoidFieldWithDroppedSource,
     requireNoEncryptionPrefix,
@@ -246,20 +253,40 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
             "which the native write path would bypass")
     }
 
-  private val requireFormatVersionAtMostTwo: TriggerRule = ctx =>
+  // Format version 4 is still being specified, and its metadata may change under the writer.
+  private val requireSupportedFormatVersion: TriggerRule = ctx =>
     IcebergReflection.getFormatVersion(ctx.table) match {
-      case Some(v) if v >= MinUnsupportedFormatVersion => Some(s"format-version=$v unsupported")
+      case Some(v) if v > MaxSupportedFormatVersion => Some(s"format-version=$v unsupported")
       case Some(_) => None
       case None => Some("could not determine the table format-version")
     }
 
+  // On a format-version 3 table, iceberg-java 1.10+ adds the row lineage columns `_row_id` and
+  // `_last_updated_sequence_number` to the write schema when the write rewrites existing rows
+  // (copy-on-write DELETE, UPDATE and MERGE, and rewrite_data_files), and fills them from each
+  // row's metadata. The native writer writes the data columns only. Other v3 writes carry no
+  // lineage columns: the driver assigns their rows' ids at commit time, as it does for
+  // iceberg-java's files. Matching on the reserved id range rather than the column names keeps
+  // any other metadata column out too.
+  private val requireNoMetadataColumns: TriggerRule = ctx =>
+    IcebergReflection
+      .getWriteSchemaFromSparkWrite(ctx.sparkWrite)
+      .flatMap(IcebergReflection.getSchemaFieldIds) match {
+      case None => Some("could not resolve the write schema's field ids")
+      case Some(fields) =>
+        fields.collectFirst {
+          case (name, id) if id > MaxDataFieldId =>
+            s"write schema includes metadata column $name, which iceberg-java fills with row " +
+              "lineage and the native writer does not write"
+        }
+    }
+
   // Iceberg maps `uuid` to Spark's StringType, so the native writer would receive a Utf8 column
   // while iceberg-rust's target Arrow schema demands FixedSizeBinary(16) -- no Arrow cast bridges
-  // the two, so the write would pass detection and then fail the task. Decline it up front. This
-  // is the only Spark-writable Iceberg type with such a mismatch: `fixed(N)` arrives as Binary
-  // and casts to FixedSizeBinary(N), and the V3-only types are excluded by the format-version
-  // gate.
-  private val requireNoUuidColumns: TriggerRule = ctx =>
+  // the two, so the write would pass detection and then fail the task. Decline it up front, along
+  // with the v3-only types in `UnsupportedWriteTypeIds`. `fixed(N)` arrives as Binary and casts to
+  // FixedSizeBinary(N), so it needs no rule.
+  private val requireSupportedColumnTypes: TriggerRule = ctx =>
     IcebergReflection
       .getWriteSchemaFromSparkWrite(ctx.sparkWrite)
       .orElse(IcebergReflection.getSchema(ctx.table)) match {
@@ -593,10 +620,10 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
   private def dropNonDataColumns(
       op: IcebergWriteExec,
       scan: OperatorOuterClass.Operator): Option[OperatorOuterClass.Operator] = {
-    // Dropping the metadata columns is behaviour-identical to the JVM writer only while V3
-    // tables are gated out: on format-version >= 3 Iceberg's writer reads row-lineage fields
-    // from the metadata columns (`ExtractRowLineage`), which this projection discards. Revisit
-    // together with `requireFormatVersionAtMostTwo`.
+    // Dropping the metadata columns is behaviour-identical to the JVM writer only while the
+    // write schema has no row lineage columns: when it has, Iceberg's writer reads their values
+    // from the metadata columns (`ExtractRowLineage`), which this projection discards.
+    // `requireNoMetadataColumns` declines those writes.
     if (op.replaceDataDispatch.isEmpty) return Some(scan)
 
     val sparkWrite = IcebergReflection.getOuterSparkWrite(op.batchWrite).getOrElse {
