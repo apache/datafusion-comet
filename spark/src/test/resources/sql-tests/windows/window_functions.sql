@@ -681,15 +681,25 @@ FROM scores
 -- over an array of arrays or structs, or a struct holding an array, the query
 -- fails with "Uncomparable values"
 -- (https://github.com/apache/datafusion/issues/24937). Comet falls back for
--- those keys. Ranking functions, ROWS frames and an unbounded RANGE frame
--- never compare values that way and stay native over the same keys.
+-- those keys. The same comparison orders a null element or field above
+-- every other value, while the sort puts it first, so Comet also falls back
+-- for a key whose type can hold one
+-- (https://github.com/apache/datafusion-comet/issues/6477). Wrapping the
+-- column in coalesce keeps a key native. Ranking functions, ROWS frames and
+-- an unbounded RANGE frame never compare values that way and stay native
+-- over the same keys.
 -- ============================================================
 
 query
 SELECT player, game, score,
-  SUM(score) OVER (PARTITION BY player ORDER BY array(score)) AS by_array,
+  SUM(score) OVER (PARTITION BY player ORDER BY array(coalesce(score, 0))) AS by_array,
   SUM(score) OVER (PARTITION BY player
-                   ORDER BY named_struct('a', named_struct('b', score)) DESC) AS by_struct
+                   ORDER BY named_struct('a', named_struct('b', coalesce(score, 0))) DESC) AS by_struct
+FROM scores
+
+query expect_fallback(can hold a null element or field)
+SELECT player, game, score,
+  SUM(score) OVER (PARTITION BY player ORDER BY array(score)) AS by_array
 FROM scores
 
 query expect_fallback(RANGE frame on array<struct<x:int>> ORDER BY is not supported)
