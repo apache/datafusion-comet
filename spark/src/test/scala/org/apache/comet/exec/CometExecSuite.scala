@@ -38,10 +38,10 @@ import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.connector.catalog.InMemoryTableCatalog
 import org.apache.spark.sql.execution._
-import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, BroadcastQueryStageExec, LogicalQueryStage}
+import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, BroadcastQueryStageExec, LogicalQueryStage}
 import org.apache.spark.sql.execution.columnar.{CometInMemoryRelationHelper, InMemoryTableScanExec}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
-import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, BroadcastExchangeLike, ReusedExchangeExec, ShuffleExchangeExec}
+import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, BroadcastExchangeLike, ReusedExchangeExec, ShuffleExchangeExec, ShuffleExchangeLike}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, CartesianProductExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.reuse.ReuseExchangeAndSubquery
 import org.apache.spark.sql.execution.window.WindowExec
@@ -53,6 +53,7 @@ import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.{CometConf, CometExecIterator, ExtendedExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark41Plus, isSpark42Plus}
+import org.apache.comet.rules.CometCoalesceShufflePartitions
 import org.apache.comet.serde.Config.ConfigMap
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
 
@@ -3591,6 +3592,233 @@ class CometExecSuite extends CometTestBase {
 
       val unionDf3 = df1.union(df2).union(df3).select($"_1" + 1).sortWithinPartitions($"_1")
       checkSparkAnswerAndOperator(unionDf3)
+    }
+  }
+
+  // https://github.com/apache/datafusion-comet/issues/6454
+  test("AQE coalesces the shuffle partitions of a union whose other branch is a scan") {
+    // Spark coalesces each child of a union as its own group, but its rule did not recognize
+    // Comet's union, so the shuffled branch of a union with a scan kept every shuffle partition.
+    // Comet's rule defers to Spark's, so the query should come out partitioned as it is on Spark.
+    assume(isSpark35Plus, "Comet's query-stage optimizer rules need Spark 3.5+")
+    withTempPath { dir =>
+      spark.range(0, 100, 1, 1).toDF("c").write.parquet(dir.getCanonicalPath)
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+        SQLConf.COALESCE_PARTITIONS_MIN_PARTITION_NUM.key -> "1",
+        SQLConf.SHUFFLE_PARTITIONS.key -> "200") {
+        def query() = spark
+          .range(0, 10, 1, 2)
+          .toDF("c")
+          .repartition($"c")
+          .union(spark.read.parquet(dir.getCanonicalPath))
+        var sparkPartitions = 0
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          val df = query()
+          df.collect()
+          sparkPartitions = df.rdd.getNumPartitions
+        }
+        assert(sparkPartitions < 200, "Spark should have coalesced the shuffled branch")
+
+        val df = query()
+        checkSparkAnswer(df)
+        // checkSparkAnswer runs copies of the query, so run this one to finalize its own plan.
+        df.collect()
+        val plan = df.queryExecution.executedPlan
+        assert(plan.asInstanceOf[AdaptiveSparkPlanExec].isFinalPlan)
+        assert(collect(plan) { case u: CometUnionExec => u }.size == 1)
+        assert(collect(plan) { case r: AQEShuffleReadExec if r.isCoalescedRead => r }.size == 1)
+        assert(df.rdd.getNumPartitions == sparkPartitions)
+      }
+    }
+  }
+
+  // https://github.com/apache/spark/blob/v4.1.3/sql/core/src/test/scala/org/apache/spark/sql/execution/CoalesceShufflePartitionsSuite.scala#L466-L484
+  test("AQE coalesces each branch of a union whose shuffles have different partition counts") {
+    // Every leaf below the union is a shuffle stage, so Spark's rule coalesces its shuffles
+    // together, and gives up because the aggregate's single-partition shuffle cannot be
+    // coalesced. Below a Spark union it coalesces the join's shuffles as a group of their own.
+    assume(isSpark35Plus, "Comet's query-stage optimizer rules need Spark 3.5+")
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.COALESCE_PARTITIONS_MIN_PARTITION_NUM.key -> "1",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "5") {
+      val df = spark.range(3).join(spark.range(3), "id").union(spark.range(3).groupBy().sum())
+      checkAnswer(df, (0 to 3).map(i => Row(i.toLong)))
+      val plan = df.queryExecution.executedPlan
+      assert(plan.asInstanceOf[AdaptiveSparkPlanExec].isFinalPlan)
+      assert(collect(plan) { case u: CometUnionExec => u }.size == 1)
+      assert(
+        collect(plan) { case r: AQEShuffleReadExec if r.isCoalescedRead => r }.size == 2,
+        plan)
+    }
+  }
+
+  test("AQE leaves the shuffles of a union alone when an aggregate relies on its partitioning") {
+    // From Spark 4.1 a union whose children share a hash partitioning reports it, and the
+    // aggregate above reads the union without a shuffle. Coalescing the branch that can be
+    // coalesced, and not the other, would split each key between the branches' partitions, and
+    // Comet's aggregate, which requires no distribution, would return each key twice.
+    assume(isSpark35Plus, "Comet's query-stage optimizer rules need Spark 3.5+")
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+      SQLConf.COALESCE_PARTITIONS_MIN_PARTITION_NUM.key -> "1",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "20") {
+      val keys = spark.range(0, 100, 1, 2).selectExpr("id % 10 AS k")
+      // repartition($"k") can be coalesced, and repartition(20, $"k") cannot.
+      val df = keys.repartition($"k").union(keys.repartition(20, $"k")).groupBy("k").count()
+      checkAnswer(df, (0 until 10).map(k => Row(k.toLong, 20L)))
+      val plan = df.queryExecution.executedPlan
+      assert(plan.asInstanceOf[AdaptiveSparkPlanExec].isFinalPlan)
+      assert(collect(plan) { case u: CometUnionExec => u }.size == 1)
+      if (isSpark41Plus) {
+        assert(collect(plan) { case e: ShuffleExchangeLike => e }.size == 2, plan)
+        assert(collect(plan) { case r: AQEShuffleReadExec => r }.isEmpty, plan)
+      }
+    }
+  }
+
+  test("AQE coalesces the shuffle partitions of a union planned again over its stages") {
+    // When AQE plans a query again after its stages materialize, a union directly over those
+    // stages has the same children as the Spark union that Comet replaced.
+    assume(isSpark35Plus, "Comet's query-stage optimizer rules need Spark 3.5+")
+    withTempPath { dir =>
+      spark.range(0, 100, 1, 1).toDF("c").write.parquet(dir.getCanonicalPath)
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+        SQLConf.COALESCE_PARTITIONS_MIN_PARTITION_NUM.key -> "1",
+        SQLConf.SHUFFLE_PARTITIONS.key -> "200") {
+        val df = spark
+          .range(0, 10, 1, 2)
+          .toDF("c")
+          .repartition($"c")
+          .union(spark.read.parquet(dir.getCanonicalPath))
+        df.collect()
+        val union = collect(df.queryExecution.executedPlan) { case u: CometUnionExec => u }.head
+        val children = union.children.map(_.transformUp { case r: AQEShuffleReadExec => r.child })
+        val replanned = CometUnionExec(UnionExec(children), union.output, children)
+        val coalesced = CometCoalesceShufflePartitions(replanned)
+        assert(collect(coalesced) {
+          case r: AQEShuffleReadExec if r.isCoalescedRead => r
+        }.size == 1)
+        assert(coalesced.isInstanceOf[CometUnionExec])
+      }
+    }
+  }
+
+  test("AQE coalesces the shuffle partitions of a union below a join as Spark does") {
+    // Spark coalesces each child of a broadcast join, nested loop join or Cartesian product as a
+    // group of its own, and from Spark 4.0 it targets the minimum partition size rather than the
+    // advisory size below the latter two, which join every row with every row of the other side.
+    // The shuffled branch of the union should keep as many partitions as it does on Spark.
+    assume(isSpark35Plus, "Comet's query-stage optimizer rules need Spark 3.5+")
+    withTempPath { dir =>
+      spark.range(0, 10, 1, 1).toDF("c").write.parquet(dir.getCanonicalPath)
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+        SQLConf.COALESCE_PARTITIONS_MIN_PARTITION_NUM.key -> "1",
+        SQLConf.COALESCE_PARTITIONS_MIN_PARTITION_SIZE.key -> "1",
+        SQLConf.SHUFFLE_PARTITIONS.key -> "10") {
+        def union() = spark
+          .range(0, 1000, 1, 2)
+          .toDF("c")
+          .repartition($"c")
+          .union(spark.read.parquet(dir.getCanonicalPath))
+        def other() = spark.range(0, 3).toDF("d")
+        // The number of partitions the union reads from its shuffled branch.
+        def shuffledBranchPartitions(df: DataFrame): Int = {
+          df.collect()
+          val unions = collect(df.queryExecution.executedPlan) {
+            case u: UnionExec => u
+            case u: CometUnionExec => u
+          }
+          assert(unions.size == 1, df.queryExecution.executedPlan)
+          unions.head.children.head.outputPartitioning.numPartitions
+        }
+        // Each join, the operator Comet plans for it, and whether it joins every row with every
+        // row of the other side.
+        val joins = Seq(
+          (
+            "Cartesian product",
+            () => union().crossJoin(other()),
+            classOf[CartesianProductExec],
+            true),
+          (
+            "broadcast nested loop join",
+            () => union().join(broadcast(other()), $"c" < $"d"),
+            classOf[CometBroadcastNestedLoopJoinExec],
+            true),
+          (
+            "broadcast hash join",
+            () => union().join(broadcast(other()), $"c" === $"d"),
+            classOf[CometBroadcastHashJoinExec],
+            false))
+        joins.foreach { case (join, query, joinClass, explodingJoin) =>
+          var sparkPartitions = 0
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            sparkPartitions = shuffledBranchPartitions(query())
+          }
+          if (isSpark40Plus && explodingJoin) {
+            assert(sparkPartitions == 10, s"Spark should not coalesce below a $join")
+          } else {
+            assert(sparkPartitions == 1, s"Spark should coalesce below a $join")
+          }
+
+          val df = query()
+          checkSparkAnswer(df)
+          assert(shuffledBranchPartitions(df) == sparkPartitions, join)
+          val plan = df.queryExecution.executedPlan
+          assert(collect(plan) { case u: CometUnionExec => u }.size == 1, plan)
+          assert(collect(plan) { case j if joinClass.isInstance(j) => j }.size == 1, plan)
+        }
+      }
+    }
+  }
+
+  test("AQE coalesces the shuffle partitions of a union in a stage Spark coalesced in part") {
+    // Spark's rule coalesces the shuffle on the other side of a Cartesian product as a group of
+    // its own before Comet's rule runs. The read it leaves there should not keep the union's
+    // shuffled branch from being coalesced as it is on Spark.
+    assume(isSpark35Plus, "Comet's query-stage optimizer rules need Spark 3.5+")
+    withTempPath { dir =>
+      spark.range(0, 10, 1, 1).toDF("c").write.parquet(dir.getCanonicalPath)
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+        // Keeps AQE from broadcasting the small side, which would move its shuffle and read into
+        // a stage of their own.
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+        SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+        SQLConf.COALESCE_PARTITIONS_MIN_PARTITION_NUM.key -> "1",
+        SQLConf.SHUFFLE_PARTITIONS.key -> "10") {
+        def query() = spark
+          .range(0, 1000, 1, 2)
+          .toDF("c")
+          .repartition($"c")
+          .union(spark.read.parquet(dir.getCanonicalPath))
+          .crossJoin(spark.range(0, 3).toDF("d").repartition($"d"))
+        // The number of partitions that each coalesced read of the final plan reads.
+        def coalescedReads(df: DataFrame): Seq[Int] = {
+          df.collect()
+          collect(df.queryExecution.executedPlan) {
+            case r: AQEShuffleReadExec if r.isCoalescedRead => r.partitionSpecs.length
+          }
+        }
+        var sparkReads = Seq.empty[Int]
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          sparkReads = coalescedReads(query())
+        }
+        assert(sparkReads == Seq(1, 1), "Spark should coalesce both sides of the product")
+
+        val df = query()
+        checkSparkAnswer(df)
+        assert(coalescedReads(df) == sparkReads, df.queryExecution.executedPlan)
+        val plan = df.queryExecution.executedPlan
+        assert(collect(plan) { case u: CometUnionExec => u }.size == 1, plan)
+        assert(collect(plan) { case j: CartesianProductExec => j }.size == 1, plan)
+      }
     }
   }
 
