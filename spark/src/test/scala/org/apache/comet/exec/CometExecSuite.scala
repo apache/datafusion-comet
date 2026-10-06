@@ -4187,6 +4187,38 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("SparkToColumnar over RowDataSourceScanExec") {
+    val schema = new StructType()
+      .add("id", IntegerType)
+      .add("name", StringType)
+      .add("score", DoubleType)
+    val rows = (0 until 1000).map { i =>
+      Row(i, if (i % 7 == 0) null else s"name_${i % 10}", if (i % 5 == 0) null else i * 0.5)
+    }
+    def source = rowDataSourceDataFrame(schema, rows)
+    def conversions(plan: SparkPlan) = collect(plan) { case c: CometSparkToColumnarExec => c }
+    Seq("true", "false").foreach { aqe =>
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe,
+        CometConf.COMET_CONVERT_FROM_ROW_DATA_SOURCE_ENABLED.key -> "true") {
+        val (_, filtered) = checkSparkAnswerAndOperator(
+          source.filter("id > 10").selectExpr("id", "name", "score * 2"),
+          includeClasses = Seq(classOf[CometSparkToColumnarExec], classOf[CometFilterExec]))
+        assert(conversions(filtered).size == 1, filtered)
+        val scan = conversions(filtered).head.child.find(_.isInstanceOf[RowDataSourceScanExec])
+        assert(scan.isDefined, filtered)
+        // With AQE on, this is the final plan of an adaptive query.
+        val (_, aggregated) =
+          checkSparkAnswerAndOperator(source.groupBy("name").agg(count("score"), sum("id")))
+        assert(conversions(aggregated).size == 1, aggregated)
+        withSQLConf(CometConf.COMET_CONVERT_FROM_ROW_DATA_SOURCE_ENABLED.key -> "false") {
+          val (_, disabled) = checkSparkAnswer(source.filter("id > 10"))
+          assert(conversions(disabled).isEmpty)
+        }
+      }
+    }
+  }
+
   test("SparkToColumnar over BatchScan (Spark Parquet reader)") {
     Seq("", "parquet").foreach { v1List =>
       Seq(true, false).foreach { parquetVectorized =>
@@ -4725,7 +4757,7 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
-  test("CometLocalTableScanExec falls back when schema contains TimeType") {
+  test("CometLocalTableScanExec handles TimeType column") {
     assume(
       org.apache.comet.CometSparkSessionExtensions.isSpark41Plus,
       "TimeType requires Spark 4.1+")
@@ -4733,11 +4765,22 @@ class CometExecSuite extends CometTestBase {
     // row encoder accepts TIME (matches Spark's own TimeFunctionsSuiteBase setup).
     withSQLConf(
       "spark.sql.timeType.enabled" -> "true",
-      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
-      // VALUES folds to a LocalRelation, exercising the CometLocalTableScanExec convert
-      // path; the TimeType column should drive the schema-level fallback.
-      val df = spark.sql("SELECT * FROM VALUES (TIME '12:34:56'), (TIME '01:02:03') AS t(c)")
-      checkSparkAnswer(df)
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      // Two rows to a batch, so each scan below writes more than one batch.
+      CometConf.COMET_BATCH_SIZE.key -> "2") {
+      // VALUES folds to a LocalRelation, exercising the CometLocalTableScanExec convert path.
+      // TimeType routes through TimeNanoWriter, so the native scan handles it end-to-end.
+      Seq(
+        "SELECT * FROM VALUES (TIME '12:34:56'), (TIME '01:02:03'), (NULL) AS t(c)",
+        // a precision below the default
+        "SELECT * FROM VALUES (CAST(TIME '12:34:56.789' AS TIME(3))), (NULL), " +
+          "(CAST(TIME '00:00:00' AS TIME(3))) AS t(c)",
+        // TIME inside an array and a struct, written by the nested writers
+        "SELECT * FROM VALUES (array(TIME '01:02:03', CAST(NULL AS TIME))), " +
+          "(CAST(NULL AS ARRAY<TIME>)), (array(TIME '23:59:59.999999')) AS t(a)",
+        "SELECT * FROM VALUES (named_struct('x', TIME '01:02:03')), " +
+          "(CAST(NULL AS STRUCT<x: TIME>)), (named_struct('x', CAST(NULL AS TIME))) AS t(s)")
+        .foreach(query => checkSparkAnswerAndOperator(spark.sql(query)))
     }
   }
 

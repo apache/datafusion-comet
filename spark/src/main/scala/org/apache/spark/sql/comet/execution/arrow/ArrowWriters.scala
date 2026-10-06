@@ -77,6 +77,7 @@ private[arrow] object ArrowWriter {
       case (DateType, vector: DateDayVector) => new DateWriter(vector)
       case (TimestampType, vector: TimeStampMicroTZVector) => new TimestampWriter(vector)
       case (TimestampNTZType, vector: TimeStampMicroVector) => new TimestampNTZWriter(vector)
+      case (dt, vector: TimeNanoVector) if Utils.isTimeType(dt) => new TimeNanoWriter(vector)
       case (ArrayType(_, _), vector: ListVector) =>
         val elementVector = createFieldWriter(vector.getDataVector())
         new ArrayWriter(vector, elementVector)
@@ -766,7 +767,7 @@ private[arrow] abstract class FixedWidthArrowFieldWriter extends ArrowFieldWrite
           }
         }
       case _: BigIntVector | _: TimeStampMicroTZVector | _: TimeStampMicroVector |
-          _: DurationVector =>
+          _: DurationVector | _: TimeNanoVector =>
         if (bulk) {
           bulkCopy(input, startRow, numRows, target, 8, input.getLongs(_, _))
         } else {
@@ -1357,6 +1358,18 @@ private[arrow] class TimestampWriter(val valueVector: TimeStampMicroTZVector)
 }
 
 private[arrow] class TimestampNTZWriter(val valueVector: TimeStampMicroVector)
+    extends FixedWidthArrowFieldWriter {
+
+  override def setValue(input: SpecializedGetters, ordinal: Int): Unit = {
+    valueVector.setSafe(count, input.getLong(ordinal))
+  }
+
+  override protected def setValueUnsafe(input: SpecializedGetters, ordinal: Int): Unit = {
+    valueVector.set(count, input.getLong(ordinal))
+  }
+}
+
+private[arrow] class TimeNanoWriter(val valueVector: TimeNanoVector)
     extends FixedWidthArrowFieldWriter {
 
   override def setValue(input: SpecializedGetters, ordinal: Int): Unit = {
