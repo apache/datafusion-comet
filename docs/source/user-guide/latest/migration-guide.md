@@ -97,6 +97,15 @@ show the new operators. Set `spark.comet.write.iceberg.enabled=false` to write e
 iceberg-java, and `spark.comet.write.iceberg.splitOperator.enabled=false` as well to plan Spark's own
 operator, as in Comet 1.1.0. See [Iceberg Writes](iceberg-writes.md).
 
+The native writer's buffers count against Comet's off-heap memory pool, where iceberg-java's buffers
+sit on the JVM heap. A fanout write keeps a data file open for every partition a task writes to, and
+each open file holds the row group it is writing, so a task that writes to many partitions can need
+more memory than the pool grants it. The task then fails with
+`Additional allocation failed for IcebergWriteExec`. Disabling the fanout writer
+(`write.spark.fanout.enabled=false`), a smaller `write.parquet.row-group-size-bytes` or a larger
+`spark.memory.offHeap.size` lets such a write fit, and `spark.comet.write.iceberg.enabled=false`
+writes it with iceberg-java as before. See [Failure handling](iceberg-writes.md#failure-handling).
+
 ## Upgrading to Comet 1.1.0
 
 Comet `1.1.0` makes no behavior changes that need a `spark.comet.legacy.*` key. The changes below
