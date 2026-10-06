@@ -707,20 +707,20 @@ object IcebergReflection extends Logging {
     }
   }
 
-  /** Returns the `Types.NestedField` for `fieldId` in `schema`, or None. */
-  def findFieldObject(schema: Any, fieldId: Int): Option[Any] = {
-    try {
-      val findFieldMethod = getMethod(schema.getClass, "findField", classOf[Int])
-      Option(findFieldMethod.invoke(schema, fieldId.asInstanceOf[AnyRef]))
-    } catch {
-      case _: Exception => None
-    }
-  }
+  /**
+   * Returns the `Types.NestedField` for `fieldId` at any depth of `schema`, or None when `schema`
+   * has no such field. A reflection failure propagates rather than reading as a missing field,
+   * because the callers run at serialization time, when the scan can no longer fall back.
+   */
+  def findFieldObject(schema: Any, fieldId: Int): Option[Any] =
+    Option(
+      getMethod(schema.getClass, "findField", classOf[Int])
+        .invoke(schema, fieldId.asInstanceOf[AnyRef]))
 
   /**
    * Returns a schema equal to `baseSchema` but guaranteed to contain `requiredFieldIds`. Any id
-   * not already present is resolved from the table's schema history (`table.schemas()`) and
-   * appended.
+   * not already present is resolved from the table's current schema, or from its schema history
+   * (`table.schemas()`) for a column since dropped, and appended.
    *
    * Two callers need this: an equality delete may be keyed on a column since dropped from the
    * current schema (mirroring Iceberg-Java's `DeleteFilter.fileProjection`), and a partition
@@ -741,12 +741,14 @@ object IcebergReflection extends Logging {
       logDebug(
         s"Native Iceberg scan schema is missing field id(s) ${missingIds.mkString(",")}; " +
           "resolving them from table schema history")
-      val history = getAllSchemas(table)
+      // table.schemas() lists the oldest schema first, so a column the table still has is looked
+      // up in the current schema before it, to keep its current name and type. An older name
+      // could clash with a column that took it over.
+      val schemas = getMethod(table.getClass, "schema").invoke(table) +: getAllSchemas(table)
       val resolvedFields = missingIds.map { id =>
-        history.iterator
-          .flatMap(s => findFieldObject(s, id))
-          .toSeq
-          .headOption
+        schemas.iterator
+          .map(findFieldObject(_, id))
+          .collectFirst { case Some(field) => field }
           .getOrElse(throw new IllegalStateException(
             s"Cannot resolve field id $id in table schema history"))
       }
@@ -761,6 +763,40 @@ object IcebergReflection extends Logging {
         .newInstance(newColumns)
         .asInstanceOf[AnyRef]
     }
+  }
+
+  /** The spec reserves field ids above `Integer.MAX_VALUE - 200` for metadata columns. */
+  val MaxDataFieldId: Int = Int.MaxValue - 200
+
+  /**
+   * Returns `schema` without its top-level metadata columns (`_file`, `_pos`, `_partition` and
+   * the other reserved ids), or `schema` itself when it has none. A scan's expected schema
+   * includes the metadata columns the query selects, which a table schema never has.
+   */
+  def withoutMetadataColumns(schema: Any): Any = {
+    import scala.jdk.CollectionConverters._
+    val columns =
+      getMethod(schema.getClass, "columns").invoke(schema).asInstanceOf[java.util.List[_]]
+    val dataColumns = columns.asScala.filter(fieldIdOf(_) <= MaxDataFieldId)
+    if (dataColumns.size == columns.size) {
+      schema
+    } else {
+      schema.getClass
+        .getConstructor(classOf[java.util.List[_]])
+        .newInstance(new java.util.ArrayList[Any](dataColumns.asJava))
+        .asInstanceOf[AnyRef]
+    }
+  }
+
+  /** Whether `fieldId` is a field of `schema` nested below its top level. */
+  def isNestedField(schema: Any, fieldId: Int): Boolean = {
+    import scala.jdk.CollectionConverters._
+    findFieldObject(schema, fieldId).isDefined &&
+    !getMethod(schema.getClass, "columns")
+      .invoke(schema)
+      .asInstanceOf[java.util.List[_]]
+      .asScala
+      .exists(fieldIdOf(_) == fieldId)
   }
 
   /**
@@ -2344,6 +2380,10 @@ object IcebergReflection extends Logging {
  *   List of FileScanTask objects from Iceberg planning
  * @param scanSchema
  *   The expectedSchema from the SparkScan (for schema evolution / VERSION AS OF)
+ * @param prunedScanSchema
+ *   scanSchema without its metadata columns, which iceberg-rust resolves by reserved field id
+ *   rather than from the task schema. Holds only the nested fields Spark's schema pruning keeps,
+ *   so a task reading with it skips the others.
  * @param globalFieldIdMapping
  *   Mapping from column names to Iceberg field IDs (built from scanSchema)
  * @param catalogProperties
@@ -2358,6 +2398,7 @@ case class CometIcebergNativeScanMetadata(
     nameMapping: Option[String],
     @transient tasks: java.util.List[_],
     scanSchema: Any,
+    prunedScanSchema: Any,
     tableSchema: Any,
     globalFieldIdMapping: Map[String, Int],
     catalogProperties: Map[String, String],
@@ -2418,6 +2459,7 @@ object CometIcebergNativeScanMetadata extends Logging {
         nameMapping = nameMapping,
         tasks = tasks,
         scanSchema = scanSchema,
+        prunedScanSchema = withoutMetadataColumns(scanSchema),
         tableSchema = tableSchema,
         globalFieldIdMapping = globalFieldIdMapping,
         catalogProperties = catalogProperties,
