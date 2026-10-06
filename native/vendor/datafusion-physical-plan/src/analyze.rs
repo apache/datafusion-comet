@@ -1,0 +1,566 @@
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//   http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+//! Defines the ANALYZE operator
+
+use std::sync::Arc;
+
+use super::stream::{RecordBatchReceiverStream, RecordBatchStreamAdapter};
+use super::{
+    DisplayAs, Distribution, ExecutionPlanProperties, PlanProperties,
+    SendableRecordBatchStream,
+};
+use crate::display::DisplayableExecutionPlan;
+use crate::execution_plan::EvaluationType;
+use crate::metrics::{MetricCategory, MetricType};
+use crate::{
+    ChildrenPropertiesMode, DisplayFormatType, ExecutionPlan, Partitioning,
+    ReplaceChildrenOptions,
+};
+
+use arrow::{array::StringBuilder, datatypes::SchemaRef, record_batch::RecordBatch};
+use datafusion_common::format::ExplainFormat;
+use datafusion_common::instant::Instant;
+use datafusion_common::tree_node::TreeNodeRecursion;
+use datafusion_common::{
+    DataFusionError, Result, assert_eq_or_internal_err, internal_err,
+};
+use datafusion_execution::TaskContext;
+use datafusion_physical_expr::EquivalenceProperties;
+use datafusion_physical_expr::PhysicalExpr;
+
+use futures::StreamExt;
+
+/// `EXPLAIN ANALYZE` execution plan operator. This operator runs its input,
+/// discards the results, and then prints out an annotated plan with metrics
+#[derive(Debug, Clone)]
+pub struct AnalyzeExec {
+    /// Control how much extra to print
+    verbose: bool,
+    /// If statistics should be displayed
+    show_statistics: bool,
+    /// Which metric categories should be displayed
+    metric_types: Vec<MetricType>,
+    /// Optional filter by semantic category (rows / bytes / timing).
+    metric_categories: Option<Vec<MetricCategory>>,
+    /// Output format for the rendered plan + metrics.
+    format: ExplainFormat,
+    /// The input plan (the plan being analyzed)
+    pub(crate) input: Arc<dyn ExecutionPlan>,
+    /// The output schema for RecordBatches of this exec node
+    schema: SchemaRef,
+    cache: Arc<PlanProperties>,
+}
+
+/// Builder for [`AnalyzeExec`].
+///
+/// Builder for [AnalyzeExec].
+pub struct AnalyzeExecBuilder {
+    verbose: bool,
+    show_statistics: bool,
+    input: Arc<dyn ExecutionPlan>,
+    schema: SchemaRef,
+    metric_types: Vec<MetricType>,
+    metric_categories: Option<Vec<MetricCategory>>,
+    format: ExplainFormat,
+}
+
+impl AnalyzeExecBuilder {
+    pub fn new(
+        verbose: bool,
+        show_statistics: bool,
+        input: Arc<dyn ExecutionPlan>,
+        schema: SchemaRef,
+    ) -> Self {
+        Self {
+            verbose,
+            show_statistics,
+            input,
+            schema,
+            metric_types: vec![MetricType::Summary, MetricType::Dev],
+            metric_categories: None,
+            format: ExplainFormat::Indent,
+        }
+    }
+
+    pub fn with_metric_types(mut self, metric_types: Vec<MetricType>) -> Self {
+        self.metric_types = metric_types;
+        self
+    }
+
+    pub fn with_metric_categories(
+        mut self,
+        metric_categories: Option<Vec<MetricCategory>>,
+    ) -> Self {
+        self.metric_categories = metric_categories;
+        self
+    }
+
+    pub fn with_format(mut self, format: ExplainFormat) -> Self {
+        self.format = format;
+        self
+    }
+
+    pub fn build(self) -> AnalyzeExec {
+        let cache =
+            AnalyzeExec::compute_properties(&self.input, Arc::clone(&self.schema));
+        AnalyzeExec {
+            verbose: self.verbose,
+            show_statistics: self.show_statistics,
+            metric_types: self.metric_types,
+            metric_categories: self.metric_categories,
+            format: self.format,
+            input: self.input,
+            schema: self.schema,
+            cache: Arc::new(cache),
+        }
+    }
+}
+
+impl AnalyzeExec {
+    /// Returns a builder for constructing an [`AnalyzeExec`].
+    pub fn builder(
+        verbose: bool,
+        show_statistics: bool,
+        input: Arc<dyn ExecutionPlan>,
+        schema: SchemaRef,
+    ) -> AnalyzeExecBuilder {
+        AnalyzeExecBuilder::new(verbose, show_statistics, input, schema)
+    }
+
+    /// Access to verbose
+    pub fn verbose(&self) -> bool {
+        self.verbose
+    }
+
+    /// Access to show_statistics
+    pub fn show_statistics(&self) -> bool {
+        self.show_statistics
+    }
+
+    /// Access to metric_categories
+    pub fn metric_categories(&self) -> Option<&[MetricCategory]> {
+        self.metric_categories.as_deref()
+    }
+
+    /// Access to format
+    pub fn format(&self) -> &ExplainFormat {
+        &self.format
+    }
+
+    /// The input plan
+    pub fn input(&self) -> &Arc<dyn ExecutionPlan> {
+        &self.input
+    }
+
+    /// This function creates the cache object that stores the plan properties such as schema, equivalence properties, ordering, partitioning, etc.
+    fn compute_properties(
+        input: &Arc<dyn ExecutionPlan>,
+        schema: SchemaRef,
+    ) -> PlanProperties {
+        PlanProperties::new(
+            EquivalenceProperties::new(schema),
+            Partitioning::UnknownPartitioning(1),
+            input.pipeline_behavior(),
+            input.boundedness(),
+        )
+        .with_evaluation_type(EvaluationType::Eager)
+    }
+}
+
+impl DisplayAs for AnalyzeExec {
+    fn fmt_as(
+        &self,
+        t: DisplayFormatType,
+        f: &mut std::fmt::Formatter,
+    ) -> std::fmt::Result {
+        match t {
+            DisplayFormatType::Default | DisplayFormatType::Verbose => {
+                write!(f, "AnalyzeExec verbose={}", self.verbose)
+            }
+            DisplayFormatType::TreeRender => {
+                // TODO: collect info
+                write!(f, "")
+            }
+        }
+    }
+}
+
+impl ExecutionPlan for AnalyzeExec {
+    fn name(&self) -> &'static str {
+        "AnalyzeExec"
+    }
+
+    /// Return a reference to Any that can be used for downcasting
+    fn properties(&self) -> &Arc<PlanProperties> {
+        &self.cache
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        vec![&self.input]
+    }
+
+    fn required_input_distribution(&self) -> Vec<Distribution> {
+        self.input_distribution_requirements().into_per_child()
+    }
+
+    fn input_distribution_requirements(&self) -> crate::InputDistributionRequirements {
+        crate::InputDistributionRequirements::new(vec![
+            Distribution::UnspecifiedDistribution,
+        ])
+    }
+
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
+    }
+
+    fn replace_children(
+        self: Arc<Self>,
+        mut children: Vec<Arc<dyn ExecutionPlan>>,
+        _: ReplaceChildrenOptions,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        Ok(Arc::new(
+            AnalyzeExec::builder(
+                self.verbose,
+                self.show_statistics,
+                children.pop().unwrap(),
+                Arc::clone(&self.schema),
+            )
+            .with_metric_types(self.metric_types.clone())
+            .with_metric_categories(self.metric_categories.clone())
+            .with_format(self.format.clone())
+            .build(),
+        ))
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        self.replace_children(
+            children,
+            ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+        )
+    }
+
+    fn execute(
+        &self,
+        partition: usize,
+        context: Arc<TaskContext>,
+    ) -> Result<SendableRecordBatchStream> {
+        assert_eq_or_internal_err!(
+            partition,
+            0,
+            "AnalyzeExec invalid partition. Expected 0, got {partition}"
+        );
+
+        // Gather futures that will run each input partition in
+        // parallel (on a separate tokio task) using a JoinSet to
+        // cancel outstanding futures on drop
+        let num_input_partitions = self.input.output_partitioning().partition_count();
+        let mut builder =
+            RecordBatchReceiverStream::builder(self.schema(), num_input_partitions);
+
+        for input_partition in 0..num_input_partitions {
+            builder.run_input(
+                Arc::clone(&self.input),
+                input_partition,
+                Arc::clone(&context),
+            );
+        }
+
+        // Create future that computes the final output
+        let start = Instant::now();
+        let captured_input = Arc::clone(&self.input);
+        let captured_schema = Arc::clone(&self.schema);
+        let verbose = self.verbose;
+        let show_statistics = self.show_statistics;
+        let metric_types = self.metric_types.clone();
+        let metric_categories = self.metric_categories.clone();
+        let format = self.format.clone();
+
+        // future that gathers the results from all the tasks in the
+        // JoinSet that computes the overall row count and final
+        // record batch
+        let mut input_stream = builder.build();
+        let output = async move {
+            let mut total_rows = 0;
+            while let Some(batch) = input_stream.next().await.transpose()? {
+                total_rows += batch.num_rows();
+            }
+            drop(input_stream);
+
+            let duration = Instant::now() - start;
+            create_output_batch(
+                verbose,
+                show_statistics,
+                total_rows,
+                duration,
+                &captured_input,
+                &captured_schema,
+                &metric_types,
+                metric_categories.as_deref(),
+                &format,
+            )
+        };
+
+        Ok(Box::pin(RecordBatchStreamAdapter::new(
+            Arc::clone(&self.schema),
+            futures::stream::once(output),
+        )))
+    }
+
+    #[cfg(feature = "proto")]
+    fn try_to_proto(
+        &self,
+        ctx: &crate::proto::ExecutionPlanEncodeCtx<'_>,
+    ) -> Result<Option<datafusion_proto_models::protobuf::PhysicalPlanNode>> {
+        use datafusion_proto_models::protobuf;
+
+        // Exhaustive destructure: adding a field to `AnalyzeExec` without
+        // deciding how it is serialized is a compile error, not a silent
+        // round-trip gap.
+        let Self {
+            verbose,
+            show_statistics,
+            // TODO: not on the wire. `AnalyzeExecBuilder` always resets this to
+            // `[Summary, Dev]`, so a non-default selection is lost on
+            // round-trip. Fixing it needs a new proto field.
+            metric_types: _,
+            metric_categories,
+            format,
+            input,
+            schema,
+            // Derived at construction from `input` and `schema`.
+            cache: _,
+        } = self;
+
+        let input = ctx.encode_child(input)?;
+        let (has_metric_categories, metric_categories) = match metric_categories {
+            Some(categories) => {
+                (true, categories.iter().map(ToString::to_string).collect())
+            }
+            None => (false, vec![]),
+        };
+        let format = match format {
+            ExplainFormat::Indent => protobuf::ExplainFormat::Indent,
+            ExplainFormat::Tree => protobuf::ExplainFormat::Tree,
+            ExplainFormat::PostgresJSON => protobuf::ExplainFormat::Pgjson,
+            ExplainFormat::Graphviz => protobuf::ExplainFormat::Graphviz,
+        } as i32;
+        Ok(Some(protobuf::PhysicalPlanNode {
+            physical_plan_type: Some(
+                protobuf::physical_plan_node::PhysicalPlanType::Analyze(Box::new(
+                    protobuf::AnalyzeExecNode {
+                        verbose: *verbose,
+                        show_statistics: *show_statistics,
+                        input: Some(Box::new(input)),
+                        schema: Some(schema.as_ref().try_into()?),
+                        has_metric_categories,
+                        metric_categories,
+                        format,
+                    },
+                )),
+            ),
+        }))
+    }
+}
+
+#[cfg(feature = "proto")]
+impl AnalyzeExec {
+    /// Reconstruct an [`AnalyzeExec`] from its protobuf representation.
+    pub fn try_from_proto(
+        node: &datafusion_proto_models::protobuf::PhysicalPlanNode,
+        ctx: &crate::proto::ExecutionPlanDecodeCtx<'_>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        use datafusion_proto_models::protobuf;
+
+        let analyze = crate::expect_plan_variant!(
+            node,
+            protobuf::physical_plan_node::PhysicalPlanType::Analyze,
+            "AnalyzeExec",
+        );
+        // Exhaustive destructure: a new field on `AnalyzeExecNode` is a compile
+        // error here rather than a silently ignored wire field.
+        let protobuf::AnalyzeExecNode {
+            verbose,
+            show_statistics,
+            input,
+            schema,
+            has_metric_categories,
+            metric_categories,
+            format,
+        } = analyze.as_ref();
+
+        let input =
+            ctx.decode_required_child(input.as_deref(), "AnalyzeExec", "input")?;
+        let metric_categories = if *has_metric_categories {
+            Some(
+                metric_categories
+                    .iter()
+                    .map(|category| category.parse::<MetricCategory>())
+                    .collect::<Result<Vec<_>>>()?,
+            )
+        } else {
+            None
+        };
+        let proto_format = protobuf::ExplainFormat::try_from(*format).map_err(|_| {
+            DataFusionError::Internal(format!(
+                "Received an AnalyzeExecNode message with unknown ExplainFormat {format}"
+            ))
+        })?;
+        let format = match proto_format {
+            protobuf::ExplainFormat::Indent => ExplainFormat::Indent,
+            protobuf::ExplainFormat::Tree => ExplainFormat::Tree,
+            protobuf::ExplainFormat::Pgjson => ExplainFormat::PostgresJSON,
+            protobuf::ExplainFormat::Graphviz => ExplainFormat::Graphviz,
+        };
+        let schema = schema.as_ref().ok_or_else(|| {
+            datafusion_common::internal_datafusion_err!(
+                "AnalyzeExec is missing required field 'schema'"
+            )
+        })?;
+        Ok(Arc::new(
+            AnalyzeExec::builder(
+                *verbose,
+                *show_statistics,
+                input,
+                Arc::new(arrow::datatypes::Schema::try_from(schema)?),
+            )
+            .with_metric_categories(metric_categories)
+            .with_format(format)
+            .build(),
+        ))
+    }
+}
+
+/// Creates the output of AnalyzeExec as a RecordBatch
+#[expect(clippy::too_many_arguments)]
+fn create_output_batch(
+    verbose: bool,
+    show_statistics: bool,
+    total_rows: usize,
+    duration: std::time::Duration,
+    input: &Arc<dyn ExecutionPlan>,
+    schema: &SchemaRef,
+    metric_types: &[MetricType],
+    metric_categories: Option<&[MetricCategory]>,
+    format: &ExplainFormat,
+) -> Result<RecordBatch> {
+    let mut type_builder = StringBuilder::with_capacity(1, 1024);
+    let mut plan_builder = StringBuilder::with_capacity(1, 1024);
+
+    match format {
+        ExplainFormat::Indent => {
+            // TODO use some sort of enum rather than strings?
+            type_builder.append_value("Plan with Metrics");
+            let annotated_plan = DisplayableExecutionPlan::with_metrics(input.as_ref())
+                .set_metric_types(metric_types.to_vec())
+                .set_metric_categories(metric_categories.map(|c| c.to_vec()))
+                .set_show_statistics(show_statistics)
+                .indent(verbose)
+                .to_string();
+            plan_builder.append_value(annotated_plan);
+            // Verbose output
+            // TODO make this more sophisticated
+            if verbose {
+                type_builder.append_value("Plan with Full Metrics");
+                let annotated_plan =
+                    DisplayableExecutionPlan::with_full_metrics(input.as_ref())
+                        .set_metric_types(metric_types.to_vec())
+                        .set_metric_categories(metric_categories.map(|c| c.to_vec()))
+                        .set_show_statistics(show_statistics)
+                        .indent(verbose)
+                        .to_string();
+                plan_builder.append_value(annotated_plan);
+                type_builder.append_value("Output Rows");
+                plan_builder.append_value(total_rows.to_string());
+                type_builder.append_value("Duration");
+                plan_builder.append_value(format!("{duration:?}"));
+            }
+        }
+        ExplainFormat::PostgresJSON => {
+            // `show_statistics` is intentionally not forwarded here: the pgjson
+            // renderer does not emit statistics, and the planner rejects the
+            // `show_statistics` + pgjson combination up front.
+            type_builder.append_value("Plan with Metrics");
+            let mut displayable = if verbose {
+                DisplayableExecutionPlan::with_full_metrics(input.as_ref())
+            } else {
+                DisplayableExecutionPlan::with_metrics(input.as_ref())
+            };
+            displayable = displayable
+                .set_metric_types(metric_types.to_vec())
+                .set_metric_categories(metric_categories.map(|c| c.to_vec()));
+            if verbose {
+                displayable = displayable.set_summary(Some(total_rows), Some(duration));
+            }
+            plan_builder.append_value(displayable.pgjson(verbose).to_string());
+        }
+        ExplainFormat::Tree | ExplainFormat::Graphviz => {
+            return internal_err!("AnalyzeExec does not support {format} output format");
+        }
+    }
+
+    RecordBatch::try_new(
+        Arc::clone(schema),
+        vec![
+            Arc::new(type_builder.finish()),
+            Arc::new(plan_builder.finish()),
+        ],
+    )
+    .map_err(DataFusionError::from)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        collect,
+        test::{
+            assert_is_pending,
+            exec::{BlockingExec, assert_strong_count_converges_to_zero},
+        },
+    };
+
+    use arrow::datatypes::{DataType, Field, Schema};
+    use futures::FutureExt;
+
+    #[tokio::test]
+    async fn test_drop_cancel() -> Result<()> {
+        let task_ctx = Arc::new(TaskContext::default());
+        let schema =
+            Arc::new(Schema::new(vec![Field::new("a", DataType::Float32, true)]));
+
+        let blocking_exec = Arc::new(BlockingExec::new(Arc::clone(&schema), 1));
+        let refs = blocking_exec.refs();
+        let analyze_exec =
+            Arc::new(AnalyzeExec::builder(true, false, blocking_exec, schema).build());
+
+        let fut = collect(analyze_exec, task_ctx);
+        let mut fut = fut.boxed();
+
+        assert_is_pending(&mut fut);
+        drop(fut);
+        assert_strong_count_converges_to_zero(refs).await;
+
+        Ok(())
+    }
+}

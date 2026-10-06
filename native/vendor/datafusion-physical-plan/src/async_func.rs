@@ -1,0 +1,550 @@
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//   http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+use crate::coalesce::LimitedBatchCoalescer;
+use crate::metrics::{ExecutionPlanMetricsSet, MetricsSet};
+use crate::stream::{EmptyRecordBatchStream, RecordBatchStreamAdapter};
+use crate::{
+    ChildrenPropertiesMode, DisplayAs, DisplayFormatType, ExecutionPlan,
+    ExecutionPlanProperties, PlanProperties, ReplaceChildrenOptions,
+    validate_child_count,
+};
+use arrow::array::RecordBatch;
+use arrow_schema::{FieldRef, Fields, Schema, SchemaRef};
+use datafusion_common::Result;
+use datafusion_common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
+use datafusion_execution::{RecordBatchStream, SendableRecordBatchStream, TaskContext};
+use datafusion_physical_expr::ScalarFunctionExpr;
+use datafusion_physical_expr::async_scalar_function::AsyncFuncExpr;
+use datafusion_physical_expr::equivalence::ProjectionMapping;
+use datafusion_physical_expr::expressions::Column;
+use datafusion_physical_expr_common::metrics::{BaselineMetrics, RecordOutput};
+use datafusion_physical_expr_common::physical_expr::PhysicalExpr;
+use futures::Stream;
+use futures::stream::StreamExt;
+use log::trace;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::task::{Context, Poll, ready};
+
+/// This structure evaluates a set of async expressions on a record
+/// batch producing a new record batch
+///
+/// The schema of the output of the AsyncFuncExec is:
+/// Input columns followed by one column for each async expression
+#[derive(Debug, Clone)]
+pub struct AsyncFuncExec {
+    /// The async expressions to evaluate
+    async_exprs: Vec<Arc<AsyncFuncExpr>>,
+    input: Arc<dyn ExecutionPlan>,
+    cache: Arc<PlanProperties>,
+    metrics: ExecutionPlanMetricsSet,
+}
+
+impl AsyncFuncExec {
+    pub fn try_new(
+        async_exprs: Vec<Arc<AsyncFuncExpr>>,
+        input: Arc<dyn ExecutionPlan>,
+    ) -> Result<Self> {
+        let async_fields = async_exprs
+            .iter()
+            .map(|async_expr| async_expr.return_field(input.schema().as_ref()))
+            .collect::<Result<Vec<FieldRef>>>()?;
+
+        // compute the output schema: input schema then async expressions
+        let fields: Fields = input
+            .schema()
+            .fields()
+            .iter()
+            .cloned()
+            .chain(async_fields)
+            .collect();
+
+        let schema = Arc::new(Schema::new(fields));
+        let tuples = async_exprs
+            .iter()
+            .map(|expr| (Arc::clone(&expr.func), expr.name().to_string()))
+            .collect::<Vec<_>>();
+        let async_expr_mapping = ProjectionMapping::try_new(tuples, &input.schema())?;
+        let cache =
+            AsyncFuncExec::compute_properties(&input, schema, &async_expr_mapping)?;
+        Ok(Self {
+            input,
+            async_exprs,
+            cache: Arc::new(cache),
+            metrics: ExecutionPlanMetricsSet::new(),
+        })
+    }
+
+    /// This function creates the cache object that stores the plan properties
+    /// such as schema, equivalence properties, ordering, partitioning, etc.
+    fn compute_properties(
+        input: &Arc<dyn ExecutionPlan>,
+        schema: SchemaRef,
+        async_expr_mapping: &ProjectionMapping,
+    ) -> Result<PlanProperties> {
+        Ok(PlanProperties::new(
+            input
+                .equivalence_properties()
+                .project(async_expr_mapping, schema),
+            input.output_partitioning().clone(),
+            input.pipeline_behavior(),
+            input.boundedness(),
+        ))
+    }
+
+    #[deprecated(
+        since = "55.0.0",
+        note = "unused by DataFusion; `AsyncFuncExec` serializes itself via `AsyncFuncExec::try_to_proto`, which reads the field directly. There is no replacement; please open an issue if you have a use case for it."
+    )]
+    pub fn async_exprs(&self) -> &[Arc<AsyncFuncExpr>] {
+        &self.async_exprs
+    }
+
+    pub fn input(&self) -> &Arc<dyn ExecutionPlan> {
+        &self.input
+    }
+}
+
+impl DisplayAs for AsyncFuncExec {
+    fn fmt_as(
+        &self,
+        t: DisplayFormatType,
+        f: &mut std::fmt::Formatter,
+    ) -> std::fmt::Result {
+        let expr: Vec<String> = self
+            .async_exprs
+            .iter()
+            .map(|async_expr| async_expr.to_string())
+            .collect();
+        let exprs = expr.join(", ");
+        match t {
+            DisplayFormatType::Default | DisplayFormatType::Verbose => {
+                write!(f, "AsyncFuncExec: async_expr=[{exprs}]")
+            }
+            DisplayFormatType::TreeRender => {
+                writeln!(f, "format=async_expr")?;
+                writeln!(f, "async_expr={exprs}")?;
+                Ok(())
+            }
+        }
+    }
+}
+
+impl ExecutionPlan for AsyncFuncExec {
+    fn name(&self) -> &str {
+        "async_func"
+    }
+
+    fn properties(&self) -> &Arc<PlanProperties> {
+        &self.cache
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        vec![&self.input]
+    }
+
+    fn apply_expressions(
+        &self,
+        f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        crate::apply_expression_roots(
+            self.async_exprs
+                .iter()
+                .cloned()
+                .map(|expr| expr as Arc<dyn PhysicalExpr>),
+            f,
+        )
+    }
+
+    fn replace_children(
+        self: Arc<Self>,
+        mut children: Vec<Arc<dyn ExecutionPlan>>,
+        options: ReplaceChildrenOptions,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        validate_child_count!(self, children);
+        match options.children_properties {
+            ChildrenPropertiesMode::Keep => Ok(Arc::new(Self {
+                input: children.swap_remove(0),
+                metrics: ExecutionPlanMetricsSet::new(),
+                ..Self::clone(&*self)
+            })),
+            ChildrenPropertiesMode::Recompute => Ok(Arc::new(AsyncFuncExec::try_new(
+                self.async_exprs.clone(),
+                children.swap_remove(0),
+            )?)),
+        }
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        self.replace_children(
+            children,
+            ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+        )
+    }
+
+    fn with_new_children_and_same_properties(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        self.replace_children(
+            children,
+            ReplaceChildrenOptions::new(ChildrenPropertiesMode::Keep),
+        )
+    }
+
+    fn execute(
+        &self,
+        partition: usize,
+        context: Arc<TaskContext>,
+    ) -> Result<SendableRecordBatchStream> {
+        trace!(
+            "Start AsyncFuncExpr::execute for partition {} of context session_id {} and task_id {:?}",
+            partition,
+            context.session_id(),
+            context.task_id()
+        );
+
+        // first execute the input stream
+        let input_stream = self.input.execute(partition, Arc::clone(&context))?;
+
+        // TODO: Track `elapsed_compute` in `BaselineMetrics`
+        // Issue: <https://github.com/apache/datafusion/issues/19658>
+        let baseline_metrics = BaselineMetrics::new(&self.metrics, partition);
+
+        // now, for each record batch, evaluate the async expressions and add the columns to the result
+        let async_exprs_captured = Arc::new(self.async_exprs.clone());
+        let schema_captured = self.schema();
+        let config_options_ref = Arc::clone(context.session_config().options());
+
+        let coalesced_input_stream = CoalesceInputStream {
+            input_stream,
+            batch_coalescer: LimitedBatchCoalescer::new(
+                Arc::clone(&self.input.schema()),
+                config_options_ref.execution.batch_size.get(),
+                None,
+            ),
+        };
+
+        let stream_with_async_functions = coalesced_input_stream.then(move |batch| {
+            // need to clone *again* to capture the async_exprs and schema in the
+            // stream and satisfy lifetime requirements.
+            let async_exprs_captured = Arc::clone(&async_exprs_captured);
+            let schema_captured = Arc::clone(&schema_captured);
+            let config_options = Arc::clone(&config_options_ref);
+            let baseline_metrics_captured = baseline_metrics.clone();
+
+            async move {
+                let batch = batch?;
+                // append the result of evaluating the async expressions to the output
+                let mut output_arrays = batch.columns().to_vec();
+                for async_expr in async_exprs_captured.iter() {
+                    let output = async_expr
+                        .invoke_with_args(&batch, Arc::clone(&config_options))
+                        .await?;
+                    output_arrays.push(output.to_array(batch.num_rows())?);
+                }
+                let batch = RecordBatch::try_new(schema_captured, output_arrays)?;
+
+                Ok(batch.record_output(&baseline_metrics_captured))
+            }
+        });
+
+        // Adapt the stream with the output schema
+        let adapter =
+            RecordBatchStreamAdapter::new(self.schema(), stream_with_async_functions);
+        Ok(Box::pin(adapter))
+    }
+
+    fn metrics(&self) -> Option<MetricsSet> {
+        Some(self.metrics.clone_inner())
+    }
+
+    #[cfg(feature = "proto")]
+    fn try_to_proto(
+        &self,
+        ctx: &crate::proto::ExecutionPlanEncodeCtx<'_>,
+    ) -> Result<Option<datafusion_proto_models::protobuf::PhysicalPlanNode>> {
+        use datafusion_proto_models::protobuf;
+
+        // Exhaustive destructure: adding a field to `AsyncFuncExec` without
+        // deciding how it is serialized is a compile error, not a silent
+        // round-trip gap.
+        let Self {
+            async_exprs,
+            input,
+            // Derived at construction by `AsyncFuncExec::compute_properties`.
+            cache: _,
+            // Runtime execution state, rebuilt empty on decode.
+            metrics: _,
+        } = self;
+
+        let input = ctx.encode_child(input)?;
+        let async_expr_names = async_exprs.iter().map(|e| e.name().to_string()).collect();
+        let async_exprs = ctx.encode_expressions(async_exprs.iter().map(|e| &e.func))?;
+        Ok(Some(protobuf::PhysicalPlanNode {
+            physical_plan_type: Some(
+                protobuf::physical_plan_node::PhysicalPlanType::AsyncFunc(Box::new(
+                    protobuf::AsyncFuncExecNode {
+                        input: Some(Box::new(input)),
+                        async_exprs,
+                        async_expr_names,
+                    },
+                )),
+            ),
+        }))
+    }
+}
+
+#[cfg(feature = "proto")]
+impl AsyncFuncExec {
+    /// Reconstruct an [`AsyncFuncExec`] from its protobuf representation.
+    ///
+    /// The exact inverse of [`ExecutionPlan::try_to_proto`]: it takes the whole
+    /// [`PhysicalPlanNode`] so every plan's `try_from_proto` shares one
+    /// signature. Child plans and expressions are decoded recursively via the
+    /// [`ExecutionPlanDecodeCtx`].
+    ///
+    /// [`PhysicalPlanNode`]: datafusion_proto_models::protobuf::PhysicalPlanNode
+    /// [`ExecutionPlan::try_to_proto`]: crate::ExecutionPlan::try_to_proto
+    /// [`ExecutionPlanDecodeCtx`]: crate::proto::ExecutionPlanDecodeCtx
+    pub fn try_from_proto(
+        node: &datafusion_proto_models::protobuf::PhysicalPlanNode,
+        ctx: &crate::proto::ExecutionPlanDecodeCtx<'_>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        use datafusion_common::assert_eq_or_internal_err;
+        use datafusion_proto_models::protobuf;
+        let async_func = crate::expect_plan_variant!(
+            node,
+            protobuf::physical_plan_node::PhysicalPlanType::AsyncFunc,
+            "AsyncFuncExec",
+        );
+        // Exhaustive destructure: a new field on `AsyncFuncExecNode` is a
+        // compile error here rather than a silently ignored wire field.
+        let protobuf::AsyncFuncExecNode {
+            input,
+            async_exprs,
+            async_expr_names,
+        } = async_func.as_ref();
+
+        let input =
+            ctx.decode_required_child(input.as_deref(), "AsyncFuncExec", "input")?;
+        let input_schema = input.schema();
+        assert_eq_or_internal_err!(
+            async_exprs.len(),
+            async_expr_names.len(),
+            "AsyncFuncExecNode async_exprs length does not match async_expr_names"
+        );
+        let async_exprs = async_exprs
+            .iter()
+            .zip(async_expr_names.iter())
+            .map(|(expr, name)| {
+                let physical_expr = ctx.decode_expr(expr, input_schema.as_ref())?;
+                Ok(Arc::new(AsyncFuncExpr::try_new(
+                    name.clone(),
+                    physical_expr,
+                    input_schema.as_ref(),
+                )?))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Arc::new(AsyncFuncExec::try_new(async_exprs, input)?))
+    }
+}
+
+struct CoalesceInputStream {
+    input_stream: Pin<Box<dyn RecordBatchStream + Send>>,
+    batch_coalescer: LimitedBatchCoalescer,
+}
+
+impl Stream for CoalesceInputStream {
+    type Item = Result<RecordBatch>;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
+        let mut completed = false;
+
+        loop {
+            if let Some(batch) = self.batch_coalescer.next_completed_batch() {
+                return Poll::Ready(Some(Ok(batch)));
+            }
+
+            if completed {
+                return Poll::Ready(None);
+            }
+
+            match ready!(self.input_stream.poll_next_unpin(cx)) {
+                Some(Ok(batch)) => {
+                    if let Err(err) = self.batch_coalescer.push_batch(batch) {
+                        return Poll::Ready(Some(Err(err)));
+                    }
+                }
+                Some(err) => {
+                    return Poll::Ready(Some(err));
+                }
+                None => {
+                    completed = true;
+                    // Release the input pipeline's resources.
+                    let input_schema = self.input_stream.schema();
+                    self.input_stream =
+                        Box::pin(EmptyRecordBatchStream::new(input_schema));
+                    if let Err(err) = self.batch_coalescer.finish() {
+                        return Poll::Ready(Some(Err(err)));
+                    }
+                }
+            }
+        }
+    }
+}
+
+const ASYNC_FN_PREFIX: &str = "__async_fn_";
+
+/// Maps async_expressions to new columns
+///
+/// The output of the async functions are appended, in order, to the end of the input schema
+#[derive(Debug)]
+pub struct AsyncMapper {
+    /// the number of columns in the input plan
+    /// used to generate the output column names.
+    /// the first async expr is `__async_fn_0`, the second is `__async_fn_1`, etc
+    num_input_columns: usize,
+    /// the expressions to map
+    pub async_exprs: Vec<Arc<AsyncFuncExpr>>,
+}
+
+impl AsyncMapper {
+    pub fn new(num_input_columns: usize) -> Self {
+        Self {
+            num_input_columns,
+            async_exprs: Vec::new(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.async_exprs.is_empty()
+    }
+
+    pub fn next_column_name(&self) -> String {
+        format!("{}{}", ASYNC_FN_PREFIX, self.async_exprs.len())
+    }
+
+    /// Finds any references to async functions in the expression and adds them to the map
+    pub fn find_references(
+        &mut self,
+        physical_expr: &Arc<dyn PhysicalExpr>,
+        schema: &Schema,
+    ) -> Result<()> {
+        // recursively look for references to async functions
+        physical_expr.apply(|expr| {
+            if let Some(scalar_func_expr) = expr.downcast_ref::<ScalarFunctionExpr>()
+                && scalar_func_expr.fun().as_async().is_some()
+            {
+                let next_name = self.next_column_name();
+                self.async_exprs.push(Arc::new(AsyncFuncExpr::try_new(
+                    next_name,
+                    Arc::clone(expr),
+                    schema,
+                )?));
+            }
+            Ok(TreeNodeRecursion::Continue)
+        })?;
+        Ok(())
+    }
+
+    /// If the expression matches any of the async functions, return the new column
+    pub fn map_expr(
+        &self,
+        expr: Arc<dyn PhysicalExpr>,
+    ) -> Transformed<Arc<dyn PhysicalExpr>> {
+        // find the first matching async function if any
+        let Some(idx) =
+            self.async_exprs
+                .iter()
+                .enumerate()
+                .find_map(|(idx, async_expr)| {
+                    if async_expr.func == Arc::clone(&expr) {
+                        Some(idx)
+                    } else {
+                        None
+                    }
+                })
+        else {
+            return Transformed::no(expr);
+        };
+        // rewrite in terms of the output column
+        Transformed::yes(self.output_column(idx))
+    }
+
+    /// return the output column for the async function at index idx
+    pub fn output_column(&self, idx: usize) -> Arc<dyn PhysicalExpr> {
+        let async_expr = &self.async_exprs[idx];
+        let output_idx = self.num_input_columns + idx;
+        Arc::new(Column::new(async_expr.name(), output_idx))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use arrow::array::{RecordBatch, UInt32Array};
+    use arrow_schema::{DataType, Field, Schema};
+    use datafusion_common::Result;
+    use datafusion_execution::{TaskContext, config::SessionConfig};
+    use futures::StreamExt;
+
+    use crate::{ExecutionPlan, async_func::AsyncFuncExec, test::TestMemoryExec};
+
+    #[tokio::test]
+    async fn test_async_fn_with_coalescing() -> Result<()> {
+        let schema =
+            Arc::new(Schema::new(vec![Field::new("c0", DataType::UInt32, false)]));
+
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(UInt32Array::from(vec![1, 2, 3, 4, 5, 6]))],
+        )?;
+
+        let batches: Vec<RecordBatch> = std::iter::repeat_n(batch, 50).collect();
+
+        let session_config = SessionConfig::new().with_batch_size(200);
+        let task_ctx = TaskContext::default().with_session_config(session_config);
+        let task_ctx = Arc::new(task_ctx);
+
+        let test_exec =
+            TestMemoryExec::try_new_exec(&[batches], Arc::clone(&schema), None)?;
+        let exec = AsyncFuncExec::try_new(vec![], test_exec)?;
+
+        let mut stream = exec.execute(0, Arc::clone(&task_ctx))?;
+        let batch = stream
+            .next()
+            .await
+            .expect("expected to get a record batch")?;
+        assert_eq!(200, batch.num_rows());
+        let batch = stream
+            .next()
+            .await
+            .expect("expected to get a record batch")?;
+        assert_eq!(100, batch.num_rows());
+
+        Ok(())
+    }
+}

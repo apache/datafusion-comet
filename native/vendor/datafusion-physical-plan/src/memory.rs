@@ -1,0 +1,993 @@
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//   http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+//! Execution plan for reading in-memory batches of data
+
+use std::any::Any;
+use std::fmt;
+use std::sync::Arc;
+use std::task::{Context, Poll};
+
+use crate::coop::cooperative;
+use crate::execution_plan::{Boundedness, EmissionType, SchedulingType};
+use crate::metrics::{BaselineMetrics, ExecutionPlanMetricsSet, MetricsSet};
+use crate::{
+    ChildrenPropertiesMode, DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning,
+    PlanProperties, RecordBatchStream, ReplaceChildrenOptions, SendableRecordBatchStream,
+};
+
+use arrow::array::RecordBatch;
+use arrow::datatypes::SchemaRef;
+use datafusion_common::tree_node::TreeNodeRecursion;
+use datafusion_common::{Result, assert_eq_or_internal_err, assert_or_internal_err};
+use datafusion_execution::TaskContext;
+use datafusion_execution::memory_pool::MemoryReservation;
+use datafusion_physical_expr::{EquivalenceProperties, PhysicalExpr};
+
+use datafusion_physical_expr_common::sort_expr::PhysicalSortExpr;
+use futures::Stream;
+use parking_lot::RwLock;
+
+/// Iterator over batches
+pub struct MemoryStream {
+    /// Vector of record batches
+    data: Vec<RecordBatch>,
+    /// Optional memory reservation bound to the data, freed on drop
+    reservation: Option<MemoryReservation>,
+    /// Schema representing the data
+    schema: SchemaRef,
+    /// Optional projection for which columns to load
+    projection: Option<Vec<usize>>,
+    /// Index into the data
+    index: usize,
+    /// The remaining number of rows to return. If None, all rows are returned
+    fetch: Option<usize>,
+}
+
+impl MemoryStream {
+    /// Create an iterator for a vector of record batches
+    pub fn try_new(
+        data: Vec<RecordBatch>,
+        schema: SchemaRef,
+        projection: Option<Vec<usize>>,
+    ) -> Result<Self> {
+        Ok(Self {
+            data,
+            reservation: None,
+            schema,
+            projection,
+            index: 0,
+            fetch: None,
+        })
+    }
+
+    /// Set the memory reservation for the data
+    pub fn with_reservation(mut self, reservation: MemoryReservation) -> Self {
+        self.reservation = Some(reservation);
+        self
+    }
+
+    /// Set the number of rows to produce
+    pub fn with_fetch(mut self, fetch: Option<usize>) -> Self {
+        self.fetch = fetch;
+        self
+    }
+}
+
+impl Stream for MemoryStream {
+    type Item = Result<RecordBatch>;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        _: &mut Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
+        if self.index >= self.data.len() {
+            return Poll::Ready(None);
+        }
+        self.index += 1;
+        let batch = &self.data[self.index - 1];
+        // return just the columns requested
+        let batch = match self.projection.as_ref() {
+            Some(columns) => batch.project(columns)?,
+            None => batch.clone(),
+        };
+
+        // MemoryStream advertises `self.schema`, therefore emitted RecordBatches
+        // must conform to it when batches were provided with stricter nested types
+        // (e.g. MemTable accepts stricter batches via Schema::contains).
+        let batch = if batch.schema().as_ref() != self.schema.as_ref()
+            && self.schema.contains(batch.schema().as_ref())
+        {
+            datafusion_common::nested_struct::adapt_batch_to_schema(batch, &self.schema)?
+        } else {
+            batch
+        };
+
+        let Some(&fetch) = self.fetch.as_ref() else {
+            return Poll::Ready(Some(Ok(batch)));
+        };
+        if fetch == 0 {
+            return Poll::Ready(None);
+        }
+
+        let batch = if batch.num_rows() > fetch {
+            batch.slice(0, fetch)
+        } else {
+            batch
+        };
+        self.fetch = Some(fetch - batch.num_rows());
+        Poll::Ready(Some(Ok(batch)))
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.data.len(), Some(self.data.len()))
+    }
+}
+
+impl RecordBatchStream for MemoryStream {
+    /// Get the schema
+    fn schema(&self) -> SchemaRef {
+        Arc::clone(&self.schema)
+    }
+}
+
+pub trait LazyBatchGenerator: Send + Sync + fmt::Debug + fmt::Display {
+    /// Returns the generator as [`Any`] so that it can be
+    /// downcast to a specific implementation.
+    fn as_any(&self) -> &dyn Any;
+
+    fn boundedness(&self) -> Boundedness {
+        Boundedness::Bounded
+    }
+
+    /// Generate the next batch, return `None` when no more batches are available
+    fn generate_next_batch(&mut self) -> Result<Option<RecordBatch>>;
+
+    /// Returns a new instance with the state reset.
+    fn reset_state(&self) -> Arc<RwLock<dyn LazyBatchGenerator>>;
+}
+
+/// Execution plan for lazy in-memory batches of data
+///
+/// This plan generates output batches lazily, it doesn't have to buffer all batches
+/// in memory up front (compared to `MemorySourceConfig`), thus consuming constant memory.
+pub struct LazyMemoryExec {
+    /// Schema representing the data
+    schema: SchemaRef,
+    /// Optional projection for which columns to load
+    projection: Option<Vec<usize>>,
+    /// Functions to generate batches for each partition
+    batch_generators: Vec<Arc<RwLock<dyn LazyBatchGenerator>>>,
+    /// Plan properties cache storing equivalence properties, partitioning, and execution mode
+    cache: Arc<PlanProperties>,
+    /// Execution metrics
+    metrics: ExecutionPlanMetricsSet,
+}
+
+impl LazyMemoryExec {
+    /// Create a new lazy memory execution plan
+    pub fn try_new(
+        schema: SchemaRef,
+        generators: Vec<Arc<RwLock<dyn LazyBatchGenerator>>>,
+    ) -> Result<Self> {
+        let boundedness = generators
+            .iter()
+            .map(|g| g.read().boundedness())
+            .reduce(|acc, b| match acc {
+                Boundedness::Bounded => b,
+                Boundedness::Unbounded {
+                    requires_infinite_memory,
+                } => {
+                    let acc_infinite_memory = requires_infinite_memory;
+                    match b {
+                        Boundedness::Bounded => acc,
+                        Boundedness::Unbounded {
+                            requires_infinite_memory,
+                        } => Boundedness::Unbounded {
+                            requires_infinite_memory: requires_infinite_memory
+                                || acc_infinite_memory,
+                        },
+                    }
+                }
+            })
+            .unwrap_or(Boundedness::Bounded);
+
+        let cache = PlanProperties::new(
+            EquivalenceProperties::new(Arc::clone(&schema)),
+            Partitioning::RoundRobinBatch(generators.len()),
+            EmissionType::Incremental,
+            boundedness,
+        )
+        .with_scheduling_type(SchedulingType::Cooperative)
+        .into();
+
+        Ok(Self {
+            schema,
+            projection: None,
+            batch_generators: generators,
+            cache,
+            metrics: ExecutionPlanMetricsSet::new(),
+        })
+    }
+
+    pub fn with_projection(mut self, projection: Option<Vec<usize>>) -> Self {
+        match projection.as_ref() {
+            Some(columns) => {
+                let projected = Arc::new(self.schema.project(columns).unwrap());
+                Arc::make_mut(&mut self.cache).set_eq_properties(
+                    EquivalenceProperties::new(Arc::clone(&projected)),
+                );
+                self.schema = projected;
+                self.projection = projection;
+                self
+            }
+            _ => self,
+        }
+    }
+
+    pub fn try_set_partitioning(&mut self, partitioning: Partitioning) -> Result<()> {
+        let partition_count = partitioning.partition_count();
+        let generator_count = self.batch_generators.len();
+        assert_eq_or_internal_err!(
+            partition_count,
+            generator_count,
+            "Partition count must match generator count: {} != {}",
+            partition_count,
+            generator_count
+        );
+        Arc::make_mut(&mut self.cache).partitioning = partitioning;
+        Ok(())
+    }
+
+    pub fn add_ordering(&mut self, ordering: impl IntoIterator<Item = PhysicalSortExpr>) {
+        Arc::make_mut(&mut self.cache)
+            .eq_properties
+            .add_orderings(std::iter::once(ordering));
+    }
+
+    /// Get the batch generators
+    pub fn generators(&self) -> &Vec<Arc<RwLock<dyn LazyBatchGenerator>>> {
+        &self.batch_generators
+    }
+}
+
+impl fmt::Debug for LazyMemoryExec {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("LazyMemoryExec")
+            .field("schema", &self.schema)
+            .field("batch_generators", &self.batch_generators)
+            .finish()
+    }
+}
+
+impl DisplayAs for LazyMemoryExec {
+    fn fmt_as(&self, t: DisplayFormatType, f: &mut fmt::Formatter) -> fmt::Result {
+        match t {
+            DisplayFormatType::Default | DisplayFormatType::Verbose => {
+                write!(
+                    f,
+                    "LazyMemoryExec: partitions={}, batch_generators=[{}]",
+                    self.batch_generators.len(),
+                    self.batch_generators
+                        .iter()
+                        .map(|g| g.read().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            }
+            DisplayFormatType::TreeRender => {
+                //TODO: remove batch_size, add one line per generator
+                writeln!(
+                    f,
+                    "batch_generators={}",
+                    self.batch_generators
+                        .iter()
+                        .map(|g| g.read().to_string())
+                        .collect::<Vec<String>>()
+                        .join(", ")
+                )?;
+                Ok(())
+            }
+        }
+    }
+}
+
+impl ExecutionPlan for LazyMemoryExec {
+    fn name(&self) -> &'static str {
+        "LazyMemoryExec"
+    }
+
+    fn schema(&self) -> SchemaRef {
+        Arc::clone(&self.schema)
+    }
+
+    fn properties(&self) -> &Arc<PlanProperties> {
+        &self.cache
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        vec![]
+    }
+
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
+    }
+
+    fn replace_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+        _: ReplaceChildrenOptions,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        assert_or_internal_err!(
+            children.is_empty(),
+            "Children cannot be replaced in LazyMemoryExec"
+        );
+        Ok(self)
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        self.replace_children(
+            children,
+            ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+        )
+    }
+
+    fn execute(
+        &self,
+        partition: usize,
+        _context: Arc<TaskContext>,
+    ) -> Result<SendableRecordBatchStream> {
+        assert_or_internal_err!(
+            partition < self.batch_generators.len(),
+            "Invalid partition {} for LazyMemoryExec with {} partitions",
+            partition,
+            self.batch_generators.len()
+        );
+
+        let baseline_metrics = BaselineMetrics::new(&self.metrics, partition);
+
+        // Create a fresh generator via reset_state() so that each execute()
+        // call produces an independent stream starting from the beginning.
+        let generator = self.batch_generators[partition].read().reset_state();
+
+        let stream = LazyMemoryStream {
+            schema: Arc::clone(&self.schema),
+            projection: self.projection.clone(),
+            generator,
+            baseline_metrics,
+        };
+        Ok(Box::pin(cooperative(stream)))
+    }
+
+    fn metrics(&self) -> Option<MetricsSet> {
+        Some(self.metrics.clone_inner())
+    }
+
+    fn reset_state(self: Arc<Self>) -> Result<Arc<dyn ExecutionPlan>> {
+        let generators = self
+            .generators()
+            .iter()
+            .map(|g| g.read().reset_state())
+            .collect::<Vec<_>>();
+        Ok(Arc::new(LazyMemoryExec {
+            schema: Arc::clone(&self.schema),
+            batch_generators: generators,
+            cache: Arc::clone(&self.cache),
+            metrics: ExecutionPlanMetricsSet::new(),
+            projection: self.projection.clone(),
+        }))
+    }
+}
+
+/// Stream that generates record batches on demand
+pub struct LazyMemoryStream {
+    schema: SchemaRef,
+    /// Optional projection for which columns to load
+    projection: Option<Vec<usize>>,
+    /// Generator to produce batches
+    ///
+    /// Note: Idiomatically, DataFusion uses plan-time parallelism - each stream
+    /// should have a unique `LazyBatchGenerator`. Use RepartitionExec or
+    /// construct multiple `LazyMemoryStream`s during planning to enable
+    /// parallel execution.
+    /// Sharing generators between streams should be used with caution.
+    generator: Arc<RwLock<dyn LazyBatchGenerator>>,
+    /// Execution metrics
+    baseline_metrics: BaselineMetrics,
+}
+
+impl Stream for LazyMemoryStream {
+    type Item = Result<RecordBatch>;
+
+    fn poll_next(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
+        let _timer_guard = self.baseline_metrics.elapsed_compute().timer();
+        let batch = self.generator.write().generate_next_batch();
+
+        let poll = match batch {
+            Ok(Some(batch)) => {
+                // return just the columns requested
+                let batch = match self.projection.as_ref() {
+                    Some(columns) => batch.project(columns)?,
+                    None => batch,
+                };
+                Poll::Ready(Some(Ok(batch)))
+            }
+            Ok(None) => Poll::Ready(None),
+            Err(e) => Poll::Ready(Some(Err(e))),
+        };
+
+        self.baseline_metrics.record_poll(poll)
+    }
+}
+
+impl RecordBatchStream for LazyMemoryStream {
+    fn schema(&self) -> SchemaRef {
+        Arc::clone(&self.schema)
+    }
+}
+
+#[cfg(test)]
+mod lazy_memory_tests {
+    use super::*;
+    use crate::common::collect;
+    use arrow::array::Int64Array;
+    use arrow::datatypes::{DataType, Field, Schema};
+    use futures::StreamExt;
+
+    #[derive(Debug, Clone)]
+    struct TestGenerator {
+        counter: i64,
+        max_batches: i64,
+        batch_size: usize,
+        schema: SchemaRef,
+    }
+
+    impl fmt::Display for TestGenerator {
+        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            write!(
+                f,
+                "TestGenerator: counter={}, max_batches={}, batch_size={}",
+                self.counter, self.max_batches, self.batch_size
+            )
+        }
+    }
+
+    impl LazyBatchGenerator for TestGenerator {
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+
+        fn generate_next_batch(&mut self) -> Result<Option<RecordBatch>> {
+            if self.counter >= self.max_batches {
+                return Ok(None);
+            }
+
+            let array = Int64Array::from_iter_values(
+                (self.counter * self.batch_size as i64)
+                    ..(self.counter * self.batch_size as i64 + self.batch_size as i64),
+            );
+            self.counter += 1;
+            Ok(Some(RecordBatch::try_new(
+                Arc::clone(&self.schema),
+                vec![Arc::new(array)],
+            )?))
+        }
+
+        fn reset_state(&self) -> Arc<RwLock<dyn LazyBatchGenerator>> {
+            Arc::new(RwLock::new(TestGenerator {
+                counter: 0,
+                max_batches: self.max_batches,
+                batch_size: self.batch_size,
+                schema: Arc::clone(&self.schema),
+            }))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_lazy_memory_exec() -> Result<()> {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]));
+        let generator = TestGenerator {
+            counter: 0,
+            max_batches: 3,
+            batch_size: 2,
+            schema: Arc::clone(&schema),
+        };
+
+        let exec =
+            LazyMemoryExec::try_new(schema, vec![Arc::new(RwLock::new(generator))])?;
+
+        // Test schema
+        assert_eq!(exec.schema().fields().len(), 1);
+        assert_eq!(exec.schema().field(0).name(), "a");
+
+        // Test execution
+        let stream = exec.execute(0, Arc::new(TaskContext::default()))?;
+        let batches: Vec<_> = stream.collect::<Vec<_>>().await;
+
+        assert_eq!(batches.len(), 3);
+
+        // Verify batch contents
+        let batch0 = batches[0].as_ref().unwrap();
+        let array0 = batch0
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        assert_eq!(array0.values(), &[0, 1]);
+
+        let batch1 = batches[1].as_ref().unwrap();
+        let array1 = batch1
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        assert_eq!(array1.values(), &[2, 3]);
+
+        let batch2 = batches[2].as_ref().unwrap();
+        let array2 = batch2
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        assert_eq!(array2.values(), &[4, 5]);
+
+        Ok(())
+    }
+
+    /// Verify that calling execute(0) twice on the same LazyMemoryExec
+    /// produces independent streams with the same data.
+    #[tokio::test]
+    async fn test_lazy_memory_exec_multiple_executions_are_independent() -> Result<()> {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]));
+        let generator = TestGenerator {
+            counter: 0,
+            max_batches: 3,
+            batch_size: 2,
+            schema: Arc::clone(&schema),
+        };
+
+        let exec =
+            LazyMemoryExec::try_new(schema, vec![Arc::new(RwLock::new(generator))])?;
+        let task_ctx = Arc::new(TaskContext::default());
+
+        // First execution — consume all batches
+        let batches_1 = collect(exec.execute(0, Arc::clone(&task_ctx))?).await?;
+        let total_rows_1: usize = batches_1.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(total_rows_1, 6);
+
+        // Second execution — should produce the same data, not continue
+        // from where the first execution left off
+        let batches_2 = collect(exec.execute(0, Arc::clone(&task_ctx))?).await?;
+        let total_rows_2: usize = batches_2.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(total_rows_2, 6);
+
+        // Verify contents are identical
+        for (b1, b2) in batches_1.iter().zip(batches_2.iter()) {
+            assert_eq!(b1, b2);
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_lazy_memory_exec_invalid_partition() -> Result<()> {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]));
+        let generator = TestGenerator {
+            counter: 0,
+            max_batches: 1,
+            batch_size: 1,
+            schema: Arc::clone(&schema),
+        };
+
+        let exec =
+            LazyMemoryExec::try_new(schema, vec![Arc::new(RwLock::new(generator))])?;
+
+        // Test invalid partition
+        let result = exec.execute(1, Arc::new(TaskContext::default()));
+
+        // partition is 0-indexed, so there only should be partition 0
+        assert!(matches!(
+            result,
+            Err(e) if e.to_string().contains("Invalid partition 1 for LazyMemoryExec with 1 partitions")
+        ));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_generate_series_metrics_integration() -> Result<()> {
+        // Test LazyMemoryExec metrics with different configurations
+        let test_cases = vec![
+            (10, 2, 10),    // 10 rows, batch size 2, expected 10 rows
+            (100, 10, 100), // 100 rows, batch size 10, expected 100 rows
+            (5, 1, 5),      // 5 rows, batch size 1, expected 5 rows
+        ];
+
+        for (total_rows, batch_size, expected_rows) in test_cases {
+            let schema =
+                Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]));
+            let generator = TestGenerator {
+                counter: 0,
+                max_batches: (total_rows + batch_size - 1) / batch_size, // ceiling division
+                batch_size: batch_size as usize,
+                schema: Arc::clone(&schema),
+            };
+
+            let exec =
+                LazyMemoryExec::try_new(schema, vec![Arc::new(RwLock::new(generator))])?;
+            let task_ctx = Arc::new(TaskContext::default());
+
+            let stream = exec.execute(0, task_ctx)?;
+            let batches = collect(stream).await?;
+
+            // Verify metrics exist with actual expected numbers
+            let metrics = exec.metrics().unwrap();
+
+            // Count actual rows returned
+            let actual_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+            assert_eq!(actual_rows, expected_rows);
+
+            // Verify metrics match actual output
+            assert_eq!(metrics.output_rows().unwrap(), expected_rows);
+            assert!(metrics.elapsed_compute().unwrap() > 0);
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_lazy_memory_exec_reset_state() -> Result<()> {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]));
+        let generator = TestGenerator {
+            counter: 0,
+            max_batches: 3,
+            batch_size: 2,
+            schema: Arc::clone(&schema),
+        };
+
+        let exec = Arc::new(LazyMemoryExec::try_new(
+            schema,
+            vec![Arc::new(RwLock::new(generator))],
+        )?);
+        let stream = exec.execute(0, Arc::new(TaskContext::default()))?;
+        let batches = collect(stream).await?;
+
+        let exec_reset = exec.reset_state()?;
+        let stream = exec_reset.execute(0, Arc::new(TaskContext::default()))?;
+        let batches_reset = collect(stream).await?;
+
+        // if the reset_state is not correct, the batches_reset will be empty
+        assert_eq!(batches, batches_reset);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_memory_stream_emitted_batch_matches_declared_schema() -> Result<()> {
+        use arrow::array::{ArrayRef, BooleanArray, StructArray};
+        use arrow::datatypes::{DataType, Field, Fields, Schema};
+        use futures::StreamExt;
+
+        // Declared schema expects nullable struct field colA
+        let declared_fields =
+            Fields::from(vec![Field::new("colA", DataType::Boolean, true)]);
+        let declared_schema = Arc::new(Schema::new(vec![Field::new(
+            "b",
+            DataType::Struct(declared_fields),
+            false,
+        )]));
+
+        // Runtime batch has stricter non-nullable struct field colA
+        let source_fields =
+            Fields::from(vec![Field::new("colA", DataType::Boolean, false)]);
+        let source_schema = Arc::new(Schema::new(vec![Field::new(
+            "b",
+            DataType::Struct(source_fields.clone()),
+            false,
+        )]));
+
+        let struct_array: ArrayRef = Arc::new(StructArray::new(
+            source_fields,
+            vec![Arc::new(BooleanArray::from(vec![true, false]))],
+            None,
+        ));
+        let stricter_batch = RecordBatch::try_new(source_schema, vec![struct_array])?;
+
+        let mut stream = MemoryStream::try_new(
+            vec![stricter_batch],
+            Arc::clone(&declared_schema),
+            None,
+        )?;
+
+        assert_eq!(stream.schema(), declared_schema);
+
+        let emitted_batch = stream.next().await.unwrap()?;
+        assert_eq!(emitted_batch.schema(), declared_schema);
+
+        let struct_col = emitted_batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StructArray>()
+            .unwrap();
+        assert!(struct_col.fields()[0].is_nullable());
+        let bool_child = struct_col
+            .column(0)
+            .as_any()
+            .downcast_ref::<BooleanArray>()
+            .unwrap();
+        assert!(bool_child.value(0));
+        assert!(!bool_child.value(1));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_memory_stream_emitted_batch_matches_declared_schema_with_projection()
+    -> Result<()> {
+        use arrow::array::{ArrayRef, BooleanArray, Int32Array, StructArray};
+        use arrow::datatypes::{DataType, Field, Fields, Schema};
+        use futures::StreamExt;
+
+        // Declared full schema: col a (Int32), col b (Struct<colA: nullable Boolean>)
+        let declared_fields =
+            Fields::from(vec![Field::new("colA", DataType::Boolean, true)]);
+        let full_declared_schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::Int32, false),
+            Field::new("b", DataType::Struct(declared_fields), false),
+        ]));
+
+        // Projected schema for column "b" (projection = [1])
+        let projected_schema = Arc::new(full_declared_schema.project(&[1])?);
+
+        // Runtime batch has stricter struct
+        let source_fields =
+            Fields::from(vec![Field::new("colA", DataType::Boolean, false)]);
+        let source_schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::Int32, false),
+            Field::new("b", DataType::Struct(source_fields.clone()), false),
+        ]));
+
+        let struct_array: ArrayRef = Arc::new(StructArray::new(
+            source_fields,
+            vec![Arc::new(BooleanArray::from(vec![true, false]))],
+            None,
+        ));
+        let stricter_batch = RecordBatch::try_new(
+            source_schema,
+            vec![Arc::new(Int32Array::from(vec![10, 20])), struct_array],
+        )?;
+
+        let mut stream = MemoryStream::try_new(
+            vec![stricter_batch],
+            Arc::clone(&projected_schema),
+            Some(vec![1]),
+        )?;
+
+        assert_eq!(stream.schema(), projected_schema);
+
+        let emitted_batch = stream.next().await.unwrap()?;
+        assert_eq!(emitted_batch.schema(), projected_schema);
+        assert_eq!(emitted_batch.num_columns(), 1);
+
+        let struct_col = emitted_batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StructArray>()
+            .unwrap();
+        assert!(struct_col.fields()[0].is_nullable());
+        let bool_child = struct_col
+            .column(0)
+            .as_any()
+            .downcast_ref::<BooleanArray>()
+            .unwrap();
+        assert!(bool_child.value(0));
+        assert!(!bool_child.value(1));
+
+        Ok(())
+    }
+
+    /// Regression for the Union reconstruction path at the `MemoryStream`
+    /// producer boundary: a declared nullable Union child vs a stricter
+    /// non-nullable runtime child.
+    #[tokio::test]
+    async fn test_memory_stream_emitted_batch_matches_declared_schema_union() -> Result<()>
+    {
+        use arrow::array::{Array, ArrayRef, Float64Array, Int32Array, UnionArray};
+        use arrow::buffer::ScalarBuffer;
+        use arrow::datatypes::{DataType, Field, Schema, UnionFields, UnionMode};
+        use futures::StreamExt;
+
+        let declared_union_fields = UnionFields::try_new(
+            vec![0_i8, 1],
+            vec![
+                Field::new("i", DataType::Int32, true),
+                Field::new("f", DataType::Float64, true),
+            ],
+        )?;
+        let declared_schema = Arc::new(Schema::new(vec![Field::new(
+            "u",
+            DataType::Union(declared_union_fields, UnionMode::Dense),
+            false,
+        )]));
+
+        let source_union_fields = UnionFields::try_new(
+            vec![0_i8, 1],
+            vec![
+                Field::new("i", DataType::Int32, false),
+                Field::new("f", DataType::Float64, false),
+            ],
+        )?;
+        let source_schema = Arc::new(Schema::new(vec![Field::new(
+            "u",
+            DataType::Union(source_union_fields.clone(), UnionMode::Dense),
+            false,
+        )]));
+
+        let type_ids = ScalarBuffer::from(vec![0_i8, 1, 0]);
+        let offsets = ScalarBuffer::from(vec![0_i32, 0, 1]);
+        let union_array: ArrayRef = Arc::new(UnionArray::try_new(
+            source_union_fields,
+            type_ids,
+            Some(offsets),
+            vec![
+                Arc::new(Int32Array::from(vec![10, 20])),
+                Arc::new(Float64Array::from(vec![1.5])),
+            ],
+        )?);
+        let stricter_batch = RecordBatch::try_new(source_schema, vec![union_array])?;
+
+        assert!(declared_schema.contains(stricter_batch.schema().as_ref()));
+
+        let mut stream = MemoryStream::try_new(
+            vec![stricter_batch],
+            Arc::clone(&declared_schema),
+            None,
+        )?;
+
+        assert_eq!(stream.schema(), declared_schema);
+
+        let emitted_batch = stream.next().await.unwrap()?;
+        assert_eq!(emitted_batch.schema(), stream.schema());
+        assert_eq!(emitted_batch.schema(), declared_schema);
+
+        let union_col = emitted_batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<UnionArray>()
+            .unwrap();
+        assert_eq!(union_col.len(), 3);
+        assert_eq!(union_col.type_id(0), 0);
+        assert_eq!(union_col.type_id(1), 1);
+        assert_eq!(union_col.type_id(2), 0);
+        let i_child = union_col
+            .child(0)
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        assert_eq!(i_child.values(), &[10, 20]);
+
+        Ok(())
+    }
+
+    /// Regression for a contained `Map<.., Struct>` whose runtime nested field
+    /// is non-nullable while the declared nested field is nullable.
+    #[tokio::test]
+    async fn test_memory_stream_emitted_batch_matches_declared_schema_map_of_struct()
+    -> Result<()> {
+        use arrow::array::{
+            Array, ArrayRef, Int32Array, MapArray, StringArray, StructArray,
+        };
+        use arrow::buffer::OffsetBuffer;
+        use arrow::datatypes::{DataType, Field, Fields, Schema};
+        use futures::StreamExt;
+
+        fn map_field(value_child_nullable: bool) -> Field {
+            let value_struct = DataType::Struct(Fields::from(vec![Field::new(
+                "v",
+                DataType::Int32,
+                value_child_nullable,
+            )]));
+            let entries = Field::new(
+                "entries",
+                DataType::Struct(Fields::from(vec![
+                    Field::new("keys", DataType::Utf8, false),
+                    Field::new("values", value_struct, true),
+                ])),
+                false,
+            );
+            Field::new("m", DataType::Map(Arc::new(entries), false), true)
+        }
+
+        let declared_schema = Arc::new(Schema::new(vec![map_field(true)]));
+        let source_schema = Arc::new(Schema::new(vec![map_field(false)]));
+
+        let value_fields = Fields::from(vec![Field::new("v", DataType::Int32, false)]);
+        let values_struct = StructArray::new(
+            value_fields,
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3])) as ArrayRef],
+            None,
+        );
+        let entries = StructArray::new(
+            Fields::from(vec![
+                Field::new("keys", DataType::Utf8, false),
+                Field::new("values", values_struct.data_type().clone(), true),
+            ]),
+            vec![
+                Arc::new(StringArray::from(vec!["a", "b", "c"])) as ArrayRef,
+                Arc::new(values_struct) as ArrayRef,
+            ],
+            None,
+        );
+        let DataType::Map(source_entries_field, _) = source_schema.field(0).data_type()
+        else {
+            unreachable!("map field")
+        };
+        let map_array: ArrayRef = Arc::new(MapArray::try_new(
+            Arc::clone(source_entries_field),
+            OffsetBuffer::new(vec![0, 2, 3].into()),
+            entries,
+            None,
+            false,
+        )?);
+        let stricter_batch = RecordBatch::try_new(source_schema, vec![map_array])?;
+
+        // The stricter batch is accepted by `MemTable::try_new`-style checks.
+        assert!(declared_schema.contains(stricter_batch.schema().as_ref()));
+
+        let mut stream = MemoryStream::try_new(
+            vec![stricter_batch],
+            Arc::clone(&declared_schema),
+            None,
+        )?;
+
+        assert_eq!(stream.schema(), declared_schema);
+
+        let emitted_batch = stream.next().await.unwrap()?;
+        assert_eq!(emitted_batch.schema(), stream.schema());
+        assert_eq!(emitted_batch.schema(), declared_schema);
+
+        let map_col = emitted_batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<MapArray>()
+            .unwrap();
+        assert_eq!(map_col.len(), 2);
+        let values = map_col
+            .values()
+            .as_any()
+            .downcast_ref::<StructArray>()
+            .unwrap();
+        assert!(values.fields()[0].is_nullable());
+        let ints = values
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        assert_eq!(ints.values(), &[1, 2, 3]);
+
+        Ok(())
+    }
+}

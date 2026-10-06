@@ -1,0 +1,1094 @@
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//   http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+//! Defines the LIMIT plan
+
+use std::pin::Pin;
+use std::sync::Arc;
+use std::task::{Context, Poll};
+
+use super::metrics::{BaselineMetrics, ExecutionPlanMetricsSet, MetricsSet};
+use super::{
+    DisplayAs, ExecutionPlanProperties, PlanProperties, RecordBatchStream,
+    SendableRecordBatchStream, Statistics,
+};
+use crate::execution_plan::{Boundedness, CardinalityEffect};
+use crate::statistics::{ChildStats, StatisticsArgs};
+use crate::{
+    ChildrenPropertiesMode, DisplayFormatType, Distribution, ExecutionPlan, Partitioning,
+    ReplaceChildrenOptions, validate_child_count,
+};
+
+use arrow::datatypes::SchemaRef;
+use arrow::record_batch::RecordBatch;
+use datafusion_common::tree_node::TreeNodeRecursion;
+use datafusion_common::{Result, assert_eq_or_internal_err};
+use datafusion_execution::TaskContext;
+
+use datafusion_physical_expr::{LexOrdering, PhysicalExpr};
+use futures::stream::{Stream, StreamExt};
+use log::trace;
+
+/// Limit execution plan
+#[derive(Debug, Clone)]
+pub struct GlobalLimitExec {
+    /// Input execution plan
+    input: Arc<dyn ExecutionPlan>,
+    /// Number of rows to skip before fetch
+    skip: usize,
+    /// Maximum number of rows to fetch,
+    /// `None` means fetching all rows
+    fetch: Option<usize>,
+    /// Execution metrics
+    metrics: ExecutionPlanMetricsSet,
+    /// Input ordering that must be preserved so limit pushdown does not change
+    /// which rows are returned.
+    required_ordering: Option<LexOrdering>,
+    cache: Arc<PlanProperties>,
+}
+
+impl GlobalLimitExec {
+    /// Create a new GlobalLimitExec
+    pub fn new(input: Arc<dyn ExecutionPlan>, skip: usize, fetch: Option<usize>) -> Self {
+        let cache = Self::compute_properties(&input);
+        GlobalLimitExec {
+            input,
+            skip,
+            fetch,
+            metrics: ExecutionPlanMetricsSet::new(),
+            required_ordering: None,
+            cache: Arc::new(cache),
+        }
+    }
+
+    /// Input execution plan
+    pub fn input(&self) -> &Arc<dyn ExecutionPlan> {
+        &self.input
+    }
+
+    /// Number of rows to skip before fetch
+    pub fn skip(&self) -> usize {
+        self.skip
+    }
+
+    /// Maximum number of rows to fetch
+    pub fn fetch(&self) -> Option<usize> {
+        self.fetch
+    }
+
+    /// This function creates the cache object that stores the plan properties such as schema, equivalence properties, ordering, partitioning, etc.
+    fn compute_properties(input: &Arc<dyn ExecutionPlan>) -> PlanProperties {
+        PlanProperties::new(
+            input.equivalence_properties().clone(), // Equivalence Properties
+            Partitioning::UnknownPartitioning(1),   // Output Partitioning
+            input.pipeline_behavior(),
+            // Limit operations are always bounded since they output a finite number of rows
+            Boundedness::Bounded,
+        )
+    }
+
+    /// Get the required ordering from limit
+    pub fn required_ordering(&self) -> &Option<LexOrdering> {
+        &self.required_ordering
+    }
+
+    /// Set the required ordering for limit
+    pub fn set_required_ordering(&mut self, required_ordering: Option<LexOrdering>) {
+        self.required_ordering = required_ordering;
+    }
+}
+
+impl DisplayAs for GlobalLimitExec {
+    fn fmt_as(
+        &self,
+        t: DisplayFormatType,
+        f: &mut std::fmt::Formatter,
+    ) -> std::fmt::Result {
+        match t {
+            DisplayFormatType::Default | DisplayFormatType::Verbose => {
+                write!(
+                    f,
+                    "GlobalLimitExec: skip={}, fetch={}",
+                    self.skip,
+                    self.fetch
+                        .map_or_else(|| "None".to_string(), |x| x.to_string())
+                )
+            }
+            DisplayFormatType::TreeRender => {
+                if let Some(fetch) = self.fetch {
+                    writeln!(f, "limit={fetch}")?;
+                }
+                write!(f, "skip={}", self.skip)
+            }
+        }
+    }
+}
+
+impl ExecutionPlan for GlobalLimitExec {
+    fn name(&self) -> &'static str {
+        "GlobalLimitExec"
+    }
+
+    /// Return a reference to Any that can be used for downcasting
+    fn properties(&self) -> &Arc<PlanProperties> {
+        &self.cache
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        vec![&self.input]
+    }
+
+    fn required_input_distribution(&self) -> Vec<Distribution> {
+        self.input_distribution_requirements().into_per_child()
+    }
+
+    fn input_distribution_requirements(&self) -> crate::InputDistributionRequirements {
+        crate::InputDistributionRequirements::new(vec![Distribution::SinglePartition])
+    }
+
+    fn maintains_input_order(&self) -> Vec<bool> {
+        vec![true]
+    }
+
+    fn benefits_from_input_partitioning(&self) -> Vec<bool> {
+        vec![false]
+    }
+
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
+    }
+
+    fn replace_children(
+        self: Arc<Self>,
+        mut children: Vec<Arc<dyn ExecutionPlan>>,
+        options: ReplaceChildrenOptions,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        validate_child_count!(self, children);
+        match options.children_properties {
+            ChildrenPropertiesMode::Keep => Ok(Arc::new(Self {
+                input: children.swap_remove(0),
+                metrics: ExecutionPlanMetricsSet::new(),
+                ..Self::clone(&*self)
+            })),
+            ChildrenPropertiesMode::Recompute => {
+                let mut new_limit =
+                    GlobalLimitExec::new(children.swap_remove(0), self.skip, self.fetch);
+                new_limit.set_required_ordering(self.required_ordering.clone());
+                Ok(Arc::new(new_limit))
+            }
+        }
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        self.replace_children(
+            children,
+            ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+        )
+    }
+
+    fn with_new_children_and_same_properties(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        self.replace_children(
+            children,
+            ReplaceChildrenOptions::new(ChildrenPropertiesMode::Keep),
+        )
+    }
+
+    fn execute(
+        &self,
+        partition: usize,
+        context: Arc<TaskContext>,
+    ) -> Result<SendableRecordBatchStream> {
+        trace!("Start GlobalLimitExec::execute for partition: {partition}");
+        // GlobalLimitExec has a single output partition
+        assert_eq_or_internal_err!(
+            partition,
+            0,
+            "GlobalLimitExec invalid partition {partition}"
+        );
+
+        // GlobalLimitExec requires a single input partition
+        assert_eq_or_internal_err!(
+            self.input.output_partitioning().partition_count(),
+            1,
+            "GlobalLimitExec requires a single input partition"
+        );
+
+        let baseline_metrics = BaselineMetrics::new(&self.metrics, partition);
+        let stream = self.input.execute(0, context)?;
+        Ok(Box::pin(LimitStream::new(
+            stream,
+            self.skip,
+            self.fetch,
+            baseline_metrics,
+        )))
+    }
+
+    fn metrics(&self) -> Option<MetricsSet> {
+        Some(self.metrics.clone_inner())
+    }
+
+    fn child_stats_requests(&self, partition: Option<usize>) -> Vec<ChildStats> {
+        vec![ChildStats::At(partition)]
+    }
+
+    fn statistics_from_inputs(
+        &self,
+        input_stats: &[Arc<Statistics>],
+        _args: &StatisticsArgs,
+    ) -> Result<Arc<Statistics>> {
+        let stats = input_stats[0].as_ref().clone();
+        Ok(Arc::new(stats.with_fetch(self.fetch, self.skip, 1)?))
+    }
+
+    fn fetch(&self) -> Option<usize> {
+        self.fetch
+    }
+
+    fn supports_limit_pushdown(&self) -> bool {
+        true
+    }
+
+    #[cfg(feature = "proto")]
+    fn try_to_proto(
+        &self,
+        ctx: &crate::proto::ExecutionPlanEncodeCtx<'_>,
+    ) -> Result<Option<datafusion_proto_models::protobuf::PhysicalPlanNode>> {
+        use datafusion_physical_expr_common::sort_expr::optional_ordering_try_to_proto;
+        use datafusion_proto_models::protobuf;
+        let input = ctx.encode_child(self.input())?;
+        let required_ordering = optional_ordering_try_to_proto(
+            self.required_ordering.as_ref(),
+            &ctx.expr_ctx(),
+        )?;
+        Ok(Some(protobuf::PhysicalPlanNode {
+            physical_plan_type: Some(
+                protobuf::physical_plan_node::PhysicalPlanType::GlobalLimit(Box::new(
+                    protobuf::GlobalLimitExecNode {
+                        input: Some(Box::new(input)),
+                        skip: self.skip() as u32,
+                        fetch: match self.fetch() {
+                            Some(n) => n as i64,
+                            _ => -1, // no limit
+                        },
+                        required_ordering,
+                    },
+                )),
+            ),
+        }))
+    }
+}
+
+#[cfg(feature = "proto")]
+impl GlobalLimitExec {
+    pub fn try_from_proto(
+        node: &datafusion_proto_models::protobuf::PhysicalPlanNode,
+        ctx: &crate::proto::ExecutionPlanDecodeCtx<'_>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        use datafusion_physical_expr_common::sort_expr::optional_ordering_try_from_proto;
+        use datafusion_proto_models::protobuf;
+        let limit = crate::expect_plan_variant!(
+            node,
+            protobuf::physical_plan_node::PhysicalPlanType::GlobalLimit,
+            "GlobalLimitExec",
+        );
+        let input = ctx.decode_required_child(
+            limit.input.as_deref(),
+            "GlobalLimitExec",
+            "input",
+        )?;
+        let fetch = if limit.fetch >= 0 {
+            Some(limit.fetch as usize)
+        } else {
+            None
+        };
+        let required_ordering = optional_ordering_try_from_proto(
+            &limit.required_ordering,
+            &ctx.expr_ctx(input.schema().as_ref()),
+        )?;
+        let mut exec = GlobalLimitExec::new(input, limit.skip as usize, fetch);
+        exec.set_required_ordering(required_ordering);
+        Ok(Arc::new(exec))
+    }
+}
+
+/// LocalLimitExec applies a limit to a single partition
+#[derive(Debug, Clone)]
+pub struct LocalLimitExec {
+    /// Input execution plan
+    input: Arc<dyn ExecutionPlan>,
+    /// Maximum number of rows to return
+    fetch: usize,
+    /// Execution metrics
+    metrics: ExecutionPlanMetricsSet,
+    /// Input ordering that must be preserved so limit pushdown does not change
+    /// which rows are returned.
+    required_ordering: Option<LexOrdering>,
+    cache: Arc<PlanProperties>,
+}
+
+impl LocalLimitExec {
+    /// Create a new LocalLimitExec partition
+    pub fn new(input: Arc<dyn ExecutionPlan>, fetch: usize) -> Self {
+        let cache = Self::compute_properties(&input);
+        Self {
+            input,
+            fetch,
+            metrics: ExecutionPlanMetricsSet::new(),
+            required_ordering: None,
+            cache: Arc::new(cache),
+        }
+    }
+
+    /// Input execution plan
+    pub fn input(&self) -> &Arc<dyn ExecutionPlan> {
+        &self.input
+    }
+
+    /// Maximum number of rows to fetch
+    pub fn fetch(&self) -> usize {
+        self.fetch
+    }
+
+    /// This function creates the cache object that stores the plan properties such as schema, equivalence properties, ordering, partitioning, etc.
+    fn compute_properties(input: &Arc<dyn ExecutionPlan>) -> PlanProperties {
+        PlanProperties::new(
+            input.equivalence_properties().clone(), // Equivalence Properties
+            input.output_partitioning().clone(),    // Output Partitioning
+            input.pipeline_behavior(),
+            // Limit operations are always bounded since they output a finite number of rows
+            Boundedness::Bounded,
+        )
+    }
+
+    /// Get the required ordering from limit
+    pub fn required_ordering(&self) -> &Option<LexOrdering> {
+        &self.required_ordering
+    }
+
+    /// Set the required ordering for limit
+    pub fn set_required_ordering(&mut self, required_ordering: Option<LexOrdering>) {
+        self.required_ordering = required_ordering;
+    }
+}
+
+impl DisplayAs for LocalLimitExec {
+    fn fmt_as(
+        &self,
+        t: DisplayFormatType,
+        f: &mut std::fmt::Formatter,
+    ) -> std::fmt::Result {
+        match t {
+            DisplayFormatType::Default | DisplayFormatType::Verbose => {
+                write!(f, "LocalLimitExec: fetch={}", self.fetch)
+            }
+            DisplayFormatType::TreeRender => {
+                write!(f, "limit={}", self.fetch)
+            }
+        }
+    }
+}
+
+impl ExecutionPlan for LocalLimitExec {
+    fn name(&self) -> &'static str {
+        "LocalLimitExec"
+    }
+
+    /// Return a reference to Any that can be used for downcasting
+    fn properties(&self) -> &Arc<PlanProperties> {
+        &self.cache
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        vec![&self.input]
+    }
+
+    fn benefits_from_input_partitioning(&self) -> Vec<bool> {
+        vec![false]
+    }
+
+    fn maintains_input_order(&self) -> Vec<bool> {
+        vec![true]
+    }
+
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
+    }
+
+    fn replace_children(
+        self: Arc<Self>,
+        mut children: Vec<Arc<dyn ExecutionPlan>>,
+        options: ReplaceChildrenOptions,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        validate_child_count!(self, children);
+        match options.children_properties {
+            ChildrenPropertiesMode::Keep => Ok(Arc::new(Self {
+                input: children.swap_remove(0),
+                metrics: ExecutionPlanMetricsSet::new(),
+                ..Self::clone(&*self)
+            })),
+            ChildrenPropertiesMode::Recompute => {
+                let mut new_limit =
+                    LocalLimitExec::new(children.swap_remove(0), self.fetch);
+                new_limit.set_required_ordering(self.required_ordering.clone());
+                Ok(Arc::new(new_limit))
+            }
+        }
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        self.replace_children(
+            children,
+            ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+        )
+    }
+
+    fn with_new_children_and_same_properties(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        self.replace_children(
+            children,
+            ReplaceChildrenOptions::new(ChildrenPropertiesMode::Keep),
+        )
+    }
+
+    fn execute(
+        &self,
+        partition: usize,
+        context: Arc<TaskContext>,
+    ) -> Result<SendableRecordBatchStream> {
+        trace!(
+            "Start LocalLimitExec::execute for partition {} of context session_id {} and task_id {:?}",
+            partition,
+            context.session_id(),
+            context.task_id()
+        );
+        let baseline_metrics = BaselineMetrics::new(&self.metrics, partition);
+        let stream = self.input.execute(partition, context)?;
+        Ok(Box::pin(LimitStream::new(
+            stream,
+            0,
+            Some(self.fetch),
+            baseline_metrics,
+        )))
+    }
+
+    fn metrics(&self) -> Option<MetricsSet> {
+        Some(self.metrics.clone_inner())
+    }
+
+    fn child_stats_requests(&self, partition: Option<usize>) -> Vec<ChildStats> {
+        vec![ChildStats::At(partition)]
+    }
+
+    fn statistics_from_inputs(
+        &self,
+        input_stats: &[Arc<Statistics>],
+        _args: &StatisticsArgs,
+    ) -> Result<Arc<Statistics>> {
+        let stats = input_stats[0].as_ref().clone();
+        Ok(Arc::new(stats.with_fetch(Some(self.fetch), 0, 1)?))
+    }
+
+    fn fetch(&self) -> Option<usize> {
+        Some(self.fetch)
+    }
+
+    fn supports_limit_pushdown(&self) -> bool {
+        true
+    }
+
+    fn cardinality_effect(&self) -> CardinalityEffect {
+        CardinalityEffect::LowerEqual
+    }
+
+    #[cfg(feature = "proto")]
+    fn try_to_proto(
+        &self,
+        ctx: &crate::proto::ExecutionPlanEncodeCtx<'_>,
+    ) -> Result<Option<datafusion_proto_models::protobuf::PhysicalPlanNode>> {
+        use datafusion_physical_expr_common::sort_expr::optional_ordering_try_to_proto;
+        use datafusion_proto_models::protobuf;
+        let input = ctx.encode_child(self.input())?;
+        let required_ordering = optional_ordering_try_to_proto(
+            self.required_ordering.as_ref(),
+            &ctx.expr_ctx(),
+        )?;
+        Ok(Some(protobuf::PhysicalPlanNode {
+            physical_plan_type: Some(
+                protobuf::physical_plan_node::PhysicalPlanType::LocalLimit(Box::new(
+                    protobuf::LocalLimitExecNode {
+                        input: Some(Box::new(input)),
+                        fetch: self.fetch() as u32,
+                        required_ordering,
+                    },
+                )),
+            ),
+        }))
+    }
+}
+
+#[cfg(feature = "proto")]
+impl LocalLimitExec {
+    pub fn try_from_proto(
+        node: &datafusion_proto_models::protobuf::PhysicalPlanNode,
+        ctx: &crate::proto::ExecutionPlanDecodeCtx<'_>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        use datafusion_physical_expr_common::sort_expr::optional_ordering_try_from_proto;
+        use datafusion_proto_models::protobuf;
+        let limit = crate::expect_plan_variant!(
+            node,
+            protobuf::physical_plan_node::PhysicalPlanType::LocalLimit,
+            "LocalLimitExec",
+        );
+        let input =
+            ctx.decode_required_child(limit.input.as_deref(), "LocalLimitExec", "input")?;
+        let required_ordering = optional_ordering_try_from_proto(
+            &limit.required_ordering,
+            &ctx.expr_ctx(input.schema().as_ref()),
+        )?;
+        let mut exec = LocalLimitExec::new(input, limit.fetch as usize);
+        exec.set_required_ordering(required_ordering);
+        Ok(Arc::new(exec))
+    }
+}
+
+/// A Limit stream skips `skip` rows, and then fetch up to `fetch` rows.
+pub struct LimitStream {
+    /// The remaining number of rows to skip
+    skip: usize,
+    /// The remaining number of rows to produce
+    fetch: usize,
+    /// The input to read from. This is set to None once the limit is
+    /// reached to enable early termination
+    input: Option<SendableRecordBatchStream>,
+    /// Copy of the input schema
+    schema: SchemaRef,
+    /// Execution time metrics
+    baseline_metrics: BaselineMetrics,
+}
+
+impl LimitStream {
+    pub fn new(
+        input: SendableRecordBatchStream,
+        skip: usize,
+        fetch: Option<usize>,
+        baseline_metrics: BaselineMetrics,
+    ) -> Self {
+        let schema = input.schema();
+        Self {
+            skip,
+            fetch: fetch.unwrap_or(usize::MAX),
+            input: Some(input),
+            schema,
+            baseline_metrics,
+        }
+    }
+
+    fn poll_and_skip(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<RecordBatch>>> {
+        let input = self.input.as_mut().unwrap();
+        loop {
+            let poll = input.poll_next_unpin(cx);
+            let poll = poll.map_ok(|batch| {
+                if batch.num_rows() <= self.skip {
+                    self.skip -= batch.num_rows();
+                    RecordBatch::new_empty(input.schema())
+                } else {
+                    let new_batch = batch.slice(self.skip, batch.num_rows() - self.skip);
+                    self.skip = 0;
+                    new_batch
+                }
+            });
+
+            match &poll {
+                Poll::Ready(Some(Ok(batch))) => {
+                    if batch.num_rows() > 0 {
+                        break poll;
+                    } else {
+                        // Continue to poll input stream
+                    }
+                }
+                Poll::Ready(Some(Err(_e))) => break poll,
+                Poll::Ready(None) => break poll,
+                Poll::Pending => break poll,
+            }
+        }
+    }
+
+    /// Fetches from the batch
+    fn stream_limit(&mut self, batch: RecordBatch) -> Option<RecordBatch> {
+        // records time on drop
+        let _timer = self.baseline_metrics.elapsed_compute().timer();
+        if self.fetch == 0 {
+            self.input = None; // Clear input so it can be dropped early
+            None
+        } else if batch.num_rows() < self.fetch {
+            //
+            self.fetch -= batch.num_rows();
+            Some(batch)
+        } else if batch.num_rows() >= self.fetch {
+            let batch_rows = self.fetch;
+            self.fetch = 0;
+            self.input = None; // Clear input so it can be dropped early
+
+            // It is guaranteed that batch_rows is <= batch.num_rows
+            Some(batch.slice(0, batch_rows))
+        } else {
+            unreachable!()
+        }
+    }
+}
+
+impl Stream for LimitStream {
+    type Item = Result<RecordBatch>;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
+        let fetch_started = self.skip == 0;
+        let poll = match &mut self.input {
+            Some(input) => {
+                let poll = if fetch_started {
+                    input.poll_next_unpin(cx)
+                } else {
+                    self.poll_and_skip(cx)
+                };
+
+                poll.map(|x| match x {
+                    Some(Ok(batch)) => Ok(self.stream_limit(batch)).transpose(),
+                    other => other,
+                })
+            }
+            // Input has been cleared
+            None => Poll::Ready(None),
+        };
+
+        self.baseline_metrics.record_poll(poll)
+    }
+}
+
+impl RecordBatchStream for LimitStream {
+    /// Get the schema
+    fn schema(&self) -> SchemaRef {
+        Arc::clone(&self.schema)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::coalesce_partitions::CoalescePartitionsExec;
+    use crate::common::collect;
+    use crate::statistics::{StatisticsArgs, StatisticsContext};
+    use crate::test;
+
+    use crate::aggregates::{AggregateExec, AggregateMode, PhysicalGroupBy};
+    use arrow::array::RecordBatchOptions;
+    use arrow::compute::SortOptions;
+    use arrow::datatypes::Schema;
+    use datafusion_common::stats::Precision;
+    use datafusion_physical_expr::expressions::col;
+    use datafusion_physical_expr::{PhysicalExpr, PhysicalSortExpr};
+
+    #[tokio::test]
+    async fn limit() -> Result<()> {
+        let task_ctx = Arc::new(TaskContext::default());
+
+        let num_partitions = 4;
+        let csv = test::scan_partitioned(num_partitions);
+
+        // Input should have 4 partitions
+        assert_eq!(csv.output_partitioning().partition_count(), num_partitions);
+
+        let limit =
+            GlobalLimitExec::new(Arc::new(CoalescePartitionsExec::new(csv)), 0, Some(7));
+
+        // The result should contain 4 batches (one per input partition)
+        let iter = limit.execute(0, task_ctx)?;
+        let batches = collect(iter).await?;
+
+        // There should be a total of 100 rows
+        let row_count: usize = batches.iter().map(|batch| batch.num_rows()).sum();
+        assert_eq!(row_count, 7);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn limit_early_shutdown() -> Result<()> {
+        let batches = vec![
+            test::make_partition(5),
+            test::make_partition(10),
+            test::make_partition(15),
+            test::make_partition(20),
+            test::make_partition(25),
+        ];
+        let input = test::exec::TestStream::new(batches);
+
+        let index = input.index();
+        assert_eq!(index.value(), 0);
+
+        // Limit of six needs to consume the entire first record batch
+        // (5 rows) and 1 row from the second (1 row)
+        let baseline_metrics = BaselineMetrics::new(&ExecutionPlanMetricsSet::new(), 0);
+        let limit_stream =
+            LimitStream::new(Box::pin(input), 0, Some(6), baseline_metrics);
+        assert_eq!(index.value(), 0);
+
+        let results = collect(Box::pin(limit_stream)).await.unwrap();
+        let num_rows: usize = results.into_iter().map(|b| b.num_rows()).sum();
+        // Only 6 rows should have been produced
+        assert_eq!(num_rows, 6);
+
+        // Only the first two batches should be consumed
+        assert_eq!(index.value(), 2);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn limit_equals_batch_size() -> Result<()> {
+        let batches = vec![
+            test::make_partition(6),
+            test::make_partition(6),
+            test::make_partition(6),
+        ];
+        let input = test::exec::TestStream::new(batches);
+
+        let index = input.index();
+        assert_eq!(index.value(), 0);
+
+        // Limit of six needs to consume the entire first record batch
+        // (6 rows) and stop immediately
+        let baseline_metrics = BaselineMetrics::new(&ExecutionPlanMetricsSet::new(), 0);
+        let limit_stream =
+            LimitStream::new(Box::pin(input), 0, Some(6), baseline_metrics);
+        assert_eq!(index.value(), 0);
+
+        let results = collect(Box::pin(limit_stream)).await.unwrap();
+        let num_rows: usize = results.into_iter().map(|b| b.num_rows()).sum();
+        // Only 6 rows should have been produced
+        assert_eq!(num_rows, 6);
+
+        // Only the first batch should be consumed
+        assert_eq!(index.value(), 1);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn limit_no_column() -> Result<()> {
+        let batches = vec![
+            make_batch_no_column(6),
+            make_batch_no_column(6),
+            make_batch_no_column(6),
+        ];
+        let input = test::exec::TestStream::new(batches);
+
+        let index = input.index();
+        assert_eq!(index.value(), 0);
+
+        // Limit of six needs to consume the entire first record batch
+        // (6 rows) and stop immediately
+        let baseline_metrics = BaselineMetrics::new(&ExecutionPlanMetricsSet::new(), 0);
+        let limit_stream =
+            LimitStream::new(Box::pin(input), 0, Some(6), baseline_metrics);
+        assert_eq!(index.value(), 0);
+
+        let results = collect(Box::pin(limit_stream)).await.unwrap();
+        let num_rows: usize = results.into_iter().map(|b| b.num_rows()).sum();
+        // Only 6 rows should have been produced
+        assert_eq!(num_rows, 6);
+
+        // Only the first batch should be consumed
+        assert_eq!(index.value(), 1);
+
+        Ok(())
+    }
+
+    // Test cases for "skip"
+    async fn skip_and_fetch(skip: usize, fetch: Option<usize>) -> Result<usize> {
+        let task_ctx = Arc::new(TaskContext::default());
+
+        // 4 partitions @ 100 rows apiece
+        let num_partitions = 4;
+        let csv = test::scan_partitioned(num_partitions);
+
+        assert_eq!(csv.output_partitioning().partition_count(), num_partitions);
+
+        let offset =
+            GlobalLimitExec::new(Arc::new(CoalescePartitionsExec::new(csv)), skip, fetch);
+
+        // The result should contain 4 batches (one per input partition)
+        let iter = offset.execute(0, task_ctx)?;
+        let batches = collect(iter).await?;
+        Ok(batches.iter().map(|batch| batch.num_rows()).sum())
+    }
+
+    #[tokio::test]
+    async fn skip_none_fetch_none() -> Result<()> {
+        let row_count = skip_and_fetch(0, None).await?;
+        assert_eq!(row_count, 400);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn skip_none_fetch_50() -> Result<()> {
+        let row_count = skip_and_fetch(0, Some(50)).await?;
+        assert_eq!(row_count, 50);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn skip_3_fetch_none() -> Result<()> {
+        // There are total of 400 rows, we skipped 3 rows (offset = 3)
+        let row_count = skip_and_fetch(3, None).await?;
+        assert_eq!(row_count, 397);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn skip_3_fetch_10_stats() -> Result<()> {
+        // There are total of 100 rows, we skipped 3 rows (offset = 3)
+        let row_count = skip_and_fetch(3, Some(10)).await?;
+        assert_eq!(row_count, 10);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn skip_400_fetch_none() -> Result<()> {
+        let row_count = skip_and_fetch(400, None).await?;
+        assert_eq!(row_count, 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn skip_400_fetch_1() -> Result<()> {
+        // There are a total of 400 rows
+        let row_count = skip_and_fetch(400, Some(1)).await?;
+        assert_eq!(row_count, 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn skip_401_fetch_none() -> Result<()> {
+        // There are total of 400 rows, we skipped 401 rows (offset = 3)
+        let row_count = skip_and_fetch(401, None).await?;
+        assert_eq!(row_count, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn replace_children_preserves_required_ordering() -> Result<()> {
+        let source = test::scan_partitioned(1);
+        let schema = source.schema();
+        let ordering = LexOrdering::new(vec![PhysicalSortExpr {
+            expr: col("i", &schema)?,
+            options: SortOptions {
+                descending: true,
+                nulls_first: false,
+            },
+        }]);
+
+        let mut global = GlobalLimitExec::new(Arc::clone(&source), 0, Some(10));
+        global.set_required_ordering(ordering.clone());
+        let rebuilt = Arc::new(global).replace_children(
+            vec![test::scan_partitioned(1)],
+            ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+        )?;
+        let rebuilt = rebuilt.downcast_ref::<GlobalLimitExec>().unwrap();
+        assert_eq!(rebuilt.required_ordering(), &ordering);
+
+        let mut local = LocalLimitExec::new(source, 10);
+        local.set_required_ordering(ordering.clone());
+        let rebuilt = Arc::new(local).replace_children(
+            vec![test::scan_partitioned(1)],
+            ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+        )?;
+        let rebuilt = rebuilt.downcast_ref::<LocalLimitExec>().unwrap();
+        assert_eq!(rebuilt.required_ordering(), &ordering);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_row_number_statistics_for_global_limit() -> Result<()> {
+        let row_count = row_number_statistics_for_global_limit(0, Some(10))?;
+        assert_eq!(row_count, Precision::Exact(10));
+
+        let row_count = row_number_statistics_for_global_limit(5, Some(10))?;
+        assert_eq!(row_count, Precision::Exact(10));
+
+        let row_count = row_number_statistics_for_global_limit(400, Some(10))?;
+        assert_eq!(row_count, Precision::Exact(0));
+
+        let row_count = row_number_statistics_for_global_limit(398, Some(10))?;
+        assert_eq!(row_count, Precision::Exact(2));
+
+        let row_count = row_number_statistics_for_global_limit(398, Some(1))?;
+        assert_eq!(row_count, Precision::Exact(1));
+
+        let row_count = row_number_statistics_for_global_limit(398, None)?;
+        assert_eq!(row_count, Precision::Exact(2));
+
+        let row_count = row_number_statistics_for_global_limit(0, Some(usize::MAX))?;
+        assert_eq!(row_count, Precision::Exact(400));
+
+        let row_count = row_number_statistics_for_global_limit(398, Some(usize::MAX))?;
+        assert_eq!(row_count, Precision::Exact(2));
+
+        let row_count = row_number_inexact_statistics_for_global_limit(0, Some(10))?;
+        assert_eq!(row_count, Precision::Inexact(10));
+
+        let row_count = row_number_inexact_statistics_for_global_limit(5, Some(10))?;
+        assert_eq!(row_count, Precision::Inexact(10));
+
+        // Input was Inexact, so an `nr <= skip` outcome must remain Inexact:
+        // the inexact estimate could be wrong, so we cannot promote 0 to
+        // Exact.
+        let row_count = row_number_inexact_statistics_for_global_limit(400, Some(10))?;
+        assert_eq!(row_count, Precision::Inexact(0));
+
+        let row_count = row_number_inexact_statistics_for_global_limit(398, Some(10))?;
+        assert_eq!(row_count, Precision::Inexact(2));
+
+        let row_count = row_number_inexact_statistics_for_global_limit(398, Some(1))?;
+        assert_eq!(row_count, Precision::Inexact(1));
+
+        let row_count = row_number_inexact_statistics_for_global_limit(398, None)?;
+        assert_eq!(row_count, Precision::Inexact(2));
+
+        let row_count =
+            row_number_inexact_statistics_for_global_limit(0, Some(usize::MAX))?;
+        assert_eq!(row_count, Precision::Inexact(400));
+
+        let row_count =
+            row_number_inexact_statistics_for_global_limit(398, Some(usize::MAX))?;
+        assert_eq!(row_count, Precision::Inexact(2));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_row_number_statistics_for_local_limit() -> Result<()> {
+        let row_count = row_number_statistics_for_local_limit(4, 10)?;
+        assert_eq!(row_count, Precision::Exact(10));
+
+        Ok(())
+    }
+
+    fn row_number_statistics_for_global_limit(
+        skip: usize,
+        fetch: Option<usize>,
+    ) -> Result<Precision<usize>> {
+        let num_partitions = 4;
+        let csv = test::scan_partitioned(num_partitions);
+
+        assert_eq!(csv.output_partitioning().partition_count(), num_partitions);
+
+        let offset =
+            GlobalLimitExec::new(Arc::new(CoalescePartitionsExec::new(csv)), skip, fetch);
+
+        Ok(StatisticsContext::new()
+            .compute(&offset, &StatisticsArgs::new())?
+            .num_rows)
+    }
+
+    pub fn build_group_by(
+        input_schema: &SchemaRef,
+        columns: Vec<String>,
+    ) -> PhysicalGroupBy {
+        let mut group_by_expr: Vec<(Arc<dyn PhysicalExpr>, String)> = vec![];
+        for column in columns.iter() {
+            group_by_expr.push((col(column, input_schema).unwrap(), column.to_string()));
+        }
+        PhysicalGroupBy::new_single(group_by_expr.clone())
+    }
+
+    fn row_number_inexact_statistics_for_global_limit(
+        skip: usize,
+        fetch: Option<usize>,
+    ) -> Result<Precision<usize>> {
+        let num_partitions = 4;
+        let csv = test::scan_partitioned(num_partitions);
+
+        assert_eq!(csv.output_partitioning().partition_count(), num_partitions);
+
+        // Adding a "GROUP BY i" changes the input stats from Exact to Inexact.
+        let agg = AggregateExec::try_new(
+            AggregateMode::Final,
+            build_group_by(&csv.schema(), vec!["i".to_string()]),
+            vec![],
+            vec![],
+            Arc::clone(&csv),
+            Arc::clone(&csv.schema()),
+        )?;
+        let agg_exec: Arc<dyn ExecutionPlan> = Arc::new(agg);
+
+        let offset = GlobalLimitExec::new(
+            Arc::new(CoalescePartitionsExec::new(agg_exec)),
+            skip,
+            fetch,
+        );
+
+        Ok(StatisticsContext::new()
+            .compute(&offset, &StatisticsArgs::new())?
+            .num_rows)
+    }
+
+    fn row_number_statistics_for_local_limit(
+        num_partitions: usize,
+        fetch: usize,
+    ) -> Result<Precision<usize>> {
+        let csv = test::scan_partitioned(num_partitions);
+
+        assert_eq!(csv.output_partitioning().partition_count(), num_partitions);
+
+        let offset = LocalLimitExec::new(csv, fetch);
+
+        Ok(StatisticsContext::new()
+            .compute(&offset, &StatisticsArgs::new())?
+            .num_rows)
+    }
+
+    /// Return a RecordBatch with a single array with row_count sz
+    fn make_batch_no_column(sz: usize) -> RecordBatch {
+        let schema = Arc::new(Schema::empty());
+
+        let options = RecordBatchOptions::new().with_row_count(Option::from(sz));
+        RecordBatch::try_new_with_options(schema, vec![], &options).unwrap()
+    }
+}

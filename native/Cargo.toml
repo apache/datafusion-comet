@@ -17,7 +17,7 @@
 
 [workspace]
 default-members = ["core", "spark-expr", "common", "proto", "jni-bridge", "shuffle", "operators", "comet-udf-sdk", "comet-test-udfs"]
-members = ["core", "spark-expr", "common", "proto", "jni-bridge", "shuffle", "operators", "comet-udf-sdk", "comet-test-udfs"]
+members = ["core", "spark-expr", "common", "proto", "jni-bridge", "shuffle", "operators", "comet-udf-sdk", "comet-test-udfs", "vendor/datafusion-physical-plan", "vendor/datafusion-pruning"]
 # Crates under ../contrib are intentionally NOT workspace members. Core pulls them in as
 # optional path dependencies when their corresponding contrib feature is enabled.
 exclude = ["../contrib"]
@@ -85,6 +85,12 @@ aws-sdk-sts = { version = "1.114.0", default-features = false }
 iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "af1da4c5bc86178c38c1c6db0578bdd9fb7021e3" }
 iceberg-storage-opendal = { git = "https://github.com/apache/iceberg-rust", rev = "af1da4c5bc86178c38c1c6db0578bdd9fb7021e3", features = ["opendal-memory", "opendal-fs", "opendal-s3", "opendal-gcs", "opendal-oss", "opendal-azdls"] }
 reqsign-core = "3"
+
+# Backport DataFusion #25602 without changing Comet's Arrow/Iceberg dependencies.
+# Keep both crates together; provenance and removal instructions are in vendor/README.md.
+[patch.crates-io]
+datafusion-physical-plan = { path = "vendor/datafusion-physical-plan" }
+datafusion-pruning = { path = "vendor/datafusion-pruning" }
 
 [profile.release]
 debug = true

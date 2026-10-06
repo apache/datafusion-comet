@@ -1146,6 +1146,89 @@ async fn broadcast_filter_reaches_parquet_reader_after_complete_build() {
     assert_eq!(unclustered_enabled_filter_rows, 400);
 }
 
+#[tokio::test]
+async fn bitmap_filter_prunes_parquet_row_groups_inside_build_bounds() {
+    for mode in [PartitionMode::CollectLeft, PartitionMode::Partitioned] {
+        let mut scan_bytes = Vec::new();
+        for enabled in [false, true] {
+            let mut config = SessionConfig::new()
+                .with_target_partitions(1)
+                .with_parquet_page_index_pruning(false);
+            // Isolate metadata pruning from filtering decoded rows or pages.
+            config.options_mut().execution.parquet.pushdown_filters = false;
+            let session = Arc::new(SessionContext::new_with_config(config));
+            let (_file, scan) = parquet_probe((0..400).collect(), &session, 100);
+            let filter = filtered_probe(&scan);
+            let schema = Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, false)]));
+            let build = memory_exec(
+                [50, 350]
+                    .into_iter()
+                    .map(|key| {
+                        RecordBatch::try_new(
+                            Arc::clone(&schema),
+                            vec![Arc::new(Int32Array::from(vec![key]))],
+                        )
+                        .unwrap()
+                    })
+                    .collect(),
+            );
+            let join =
+                single_key_join_plans(build, Arc::clone(&filter) as Arc<dyn ExecutionPlan>, mode);
+            let plan = PhysicalPlanner::apply_join_dynamic_filter(
+                Arc::new(join),
+                enabled,
+                session.copied_config().options(),
+            )
+            .unwrap();
+            let expected = RecordBatch::try_new(
+                plan.schema(),
+                vec![
+                    Arc::new(Int32Array::from(vec![50, 350])),
+                    Arc::new(Int32Array::from(vec![50, 350])),
+                ],
+            )
+            .unwrap();
+            let output = collect(Arc::clone(&plan), session.task_ctx())
+                .await
+                .unwrap();
+            assert_eq!(
+                batches_to_sort_string(&output),
+                batches_to_sort_string(&[expected]),
+                "{mode:?}, enabled={enabled}"
+            );
+
+            // Every row group overlaps the build's [50, 350] bounds. Only the
+            // bitmap can exclude the interior groups [100, 199] and [200, 299].
+            // Comet's runtime join forces map membership rather than IN lists.
+            assert_eq!(
+                pruning_metric(&scan, "row_groups_pruned_statistics"),
+                if enabled { 2 } else { 0 },
+                "{mode:?}, enabled={enabled}"
+            );
+            assert_eq!(
+                filter.metrics().unwrap().output_rows().unwrap(),
+                if enabled { 200 } else { 400 }
+            );
+            if enabled {
+                assert_eq!(metric(&plan, "dynamic_filter_join_filters_attached"), 1);
+            }
+            scan_bytes.push(
+                scan.metrics()
+                    .unwrap()
+                    .sum_by_name("bytes_scanned")
+                    .unwrap()
+                    .as_usize(),
+            );
+        }
+        assert!(
+            scan_bytes[1] < scan_bytes[0],
+            "{mode:?}: bitmap pruning should avoid data reads: enabled={}, disabled={}",
+            scan_bytes[1],
+            scan_bytes[0]
+        );
+    }
+}
+
 fn limited_session(bytes: usize) -> (SessionContext, Arc<dyn MemoryPool>) {
     let pool: Arc<dyn MemoryPool> = Arc::new(GreedyMemoryPool::new(bytes));
     let runtime = RuntimeEnvBuilder::new()
