@@ -237,8 +237,9 @@ class CometShuffleInputConversionSuite extends CometTestBase {
     assert(collect(split) { case a: HashAggregateExec => a }.length == 1, split)
     assert(collect(split) { case a: CometHashAggregateExec => a }.length == 1, split)
     // The min of a string makes Spark plan sort aggregates, which stay on Spark, so the final
-    // aggregate reads the buffers back as rows. The shuffle stays native: the revert in the next
-    // test covers hash aggregates only.
+    // aggregate reads the buffers back as rows. The shuffle stays native: the final aggregate
+    // reads it through a sort, and the revert in the next test only takes a shuffle that an
+    // aggregate reads directly.
     val (_, sorted) = checkSparkAnswer(
       rowsDf()
         .groupBy((col("k") % 7).as("g"))
