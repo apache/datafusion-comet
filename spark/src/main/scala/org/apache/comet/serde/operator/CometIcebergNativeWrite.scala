@@ -387,6 +387,7 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     requireFormatVersionAtMostTwo,
     requireNoUuidColumns,
     requireNoFloatingPointPartitionField,
+    requireNoVoidFieldWithDroppedSource,
     requireNoEncryptionPrefix,
     requireNoBloomFilterColumnsEnabled,
     requireRowGroupCheckMinRecordCountAtDefault,
@@ -497,6 +498,29 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
             case (name, typeName) =>
               s"partition field $name has Iceberg type $typeName, and the native writer does " +
                 "not keep -0.0 and 0.0 partitions apart"
+          }
+        } catch {
+          case e: Exception =>
+            Some(s"could not inspect the output partition spec: ${e.getMessage}")
+        }
+    }
+
+  // A format-version-1 spec keeps a dropped partition field as a `void` transform, and its source
+  // column can be dropped afterwards. iceberg-java cannot write through a spec that mixes such a
+  // field with a live one, and the native writer fails resolving the spec's partition type, so
+  // decline and let the write fail the way iceberg-java fails it. An all-`void` spec stays
+  // eligible, since the native writer writes it unpartitioned.
+  // https://github.com/apache/datafusion-comet/issues/6141
+  private val requireNoVoidFieldWithDroppedSource: TriggerRule = ctx =>
+    IcebergReflection
+      .getOutputSpecIdFromSparkWrite(ctx.sparkWrite)
+      .flatMap(IcebergReflection.getPartitionSpecById(ctx.table, _)) match {
+      case None => Some("could not resolve the output partition spec for void field checking")
+      case Some(spec) =>
+        try {
+          IcebergReflection.voidFieldsWithDroppedSource(spec).headOption.map { name =>
+            s"partition field $name is a void transform whose source column was dropped, " +
+              "beside a live partition field"
           }
         } catch {
           case e: Exception =>

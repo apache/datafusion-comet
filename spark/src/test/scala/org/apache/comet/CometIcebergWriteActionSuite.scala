@@ -1576,23 +1576,75 @@ class CometIcebergWriteActionSuite
         assertNativeWriteEngages("nan_offset_native", 40 until 65)(insert("nan_offset_native"))
         insert("nan_offset_jvm")
 
-        // Keyed by field id, and both tables get the same ids from the same DDL.
-        def nanCounts(t: String): Map[Int, Long] =
-          spark
-            .sql(s"SELECT nan_value_counts FROM $catalog.$ns.$t.data_files")
-            .collect()
-            .toSeq
-            .flatMap(_.getMap[Int, Long](0).toSeq)
-            .groupBy(_._1)
-            .map { case (id, counts) => id -> counts.map(_._2).sum }
-
-        val native = nanCounts("nan_offset_native")
-        val jvm = nanCounts("nan_offset_jvm")
+        val native = nanValueCounts("nan_offset_native")
+        val jvm = nanValueCounts("nan_offset_jvm")
         assert(native == jvm, s"native NaN counts $native != JVM NaN counts $jvm")
-        // Iceberg 1.10's `ParquetMetrics` keeps no metrics for a field under a list or map, so
+        // Iceberg 1.9's `ParquetMetrics` keeps no metrics for a field under a list or map, so
         // from then on both maps are empty. Before that, the written ids 40 to 64 hold eight
         // multiples of 3, NaN in the list element and the map value alike.
-        val expected = if (icebergVersionAtLeast(1, 10)) Seq.empty else Seq(8L, 8L)
+        val expected = if (icebergVersionAtLeast(1, 9)) Seq.empty else Seq(8L, 8L)
+        assert(jvm.values.toSeq == expected, s"JVM NaN counts $jvm")
+      }
+    }
+  }
+
+  // `IF(cond, col, NULL)` over a nested column runs natively through `nullif`, which NULLs the
+  // struct, list or map but leaves what is under it in place: a NULL struct keeps its fields'
+  // values and a NULL list or map entry still points at its elements. Parquet writes nothing
+  // under a NULL parent, so iceberg-java counts no NaN there, while iceberg-rust's counter used to
+  // count every one of them.
+  // https://github.com/apache/datafusion-comet/issues/6562
+  test("native acceleration: NaN counts skip values under NULL structs, lists and maps") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { _ =>
+      withTempPath { dir =>
+        spark
+          .range(100)
+          .selectExpr(
+            "CAST(id AS INT) AS id",
+            "IF(id % 3 = 0, CAST('NaN' AS DOUBLE), CAST(id AS DOUBLE)) AS v")
+          .selectExpr(
+            "id",
+            "v",
+            "named_struct('x', v) AS s",
+            "array(v) AS xs",
+            "map('k', v) AS m")
+          .write
+          .parquet(dir.getCanonicalPath)
+        Seq("nan_null_parent_native", "nan_null_parent_jvm").foreach { t =>
+          spark.sql(s"""
+            CREATE TABLE $catalog.$ns.$t (
+              id INT,
+              v DOUBLE,
+              s STRUCT<x: DOUBLE>,
+              xs ARRAY<DOUBLE>,
+              m MAP<STRING, DOUBLE>
+            ) USING iceberg
+          """)
+        }
+        def insert(t: String): Unit =
+          spark.read
+            .parquet(dir.getCanonicalPath)
+            .selectExpr(
+              "id",
+              "IF(id % 2 = 0, v, NULL) AS v",
+              "IF(id % 2 = 0, s, NULL) AS s",
+              "IF(id % 2 = 0, xs, NULL) AS xs",
+              "IF(id % 2 = 0, m, NULL) AS m")
+            .writeTo(s"$catalog.$ns.$t")
+            .append()
+
+        assertNativeWriteEngages("nan_null_parent_native", 0 until 100)(
+          insert("nan_null_parent_native"))
+        insert("nan_null_parent_jvm")
+
+        val native = nanValueCounts("nan_null_parent_native")
+        val jvm = nanValueCounts("nan_null_parent_jvm")
+        assert(native == jvm, s"native NaN counts $native != JVM NaN counts $jvm")
+        // The kept rows are the even ids, so the NaNs written are the multiples of 6 up to 96:
+        // 17 each in `v` and `s.x`, and in the list element and the map value as well before
+        // Iceberg 1.9's `ParquetMetrics` stopped keeping metrics under a list or map.
+        val expected = Seq.fill(if (icebergVersionAtLeast(1, 9)) 2 else 4)(17L)
         assert(jvm.values.toSeq == expected, s"JVM NaN counts $jvm")
       }
     }
@@ -3499,6 +3551,19 @@ class CometIcebergWriteActionSuite
       }
       .toSet
   }
+
+  /**
+   * The table's NaN counts summed over its data files, keyed by field id. Two tables created from
+   * the same DDL get the same ids, so their maps compare directly.
+   */
+  private def nanValueCounts(tableName: String): Map[Int, Long] =
+    spark
+      .sql(s"SELECT nan_value_counts FROM $catalog.$ns.$tableName.data_files")
+      .collect()
+      .toSeq
+      .flatMap(_.getMap[Int, Long](0).toSeq)
+      .groupBy(_._1)
+      .map { case (id, counts) => id -> counts.map(_._2).sum }
 
   private def assertRows(tableName: String, expectedIds: Seq[Int]): Unit = {
     val ids = spark
