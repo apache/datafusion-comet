@@ -800,7 +800,7 @@ mod tests {
         async fn close(&mut self) -> Result<FileMetadata> {
             self.0
                 .check("close", &self.1)
-                .map(|_| FileMetadata { size: 1 })
+                .map(|_| FileMetadata { size: 0 })
         }
     }
 

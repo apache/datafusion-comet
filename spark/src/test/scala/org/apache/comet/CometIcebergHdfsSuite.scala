@@ -54,7 +54,7 @@ import org.apache.comet.iceberg.IcebergReflection
  *
  * What is covered:
  *   - scans of tables on a single-NameNode cluster, whose locations carry a real `host:port`
- *     authority, so iceberg-rust needs no `hdfs.name-node` property;
+ *     authority, so iceberg-rust needs no NameNode declaration;
  *   - native writes on the same cluster (unpartitioned and partitioned `INSERT`, a second
  *     `INSERT`, a copy-on-write `UPDATE`). Each asserts the `CometIcebergWriteExec` /
  *     `IcebergCommitExec` plan shape, that every committed file exists under the table's data
@@ -65,8 +65,9 @@ import org.apache.comet.iceberg.IcebergReflection
  *     storage reports M" when the two differ, and this is the first test to run it against a real
  *     NameNode;
  *   - a two-NameNode HA cluster addressed by nameservice (`hdfs://<ns>/...`), which is not a
- *     host, so the scan and the write only connect through the `hdfs.name-node` list Comet
- *     derives from the session Hadoop configuration. It is read before and after a failover.
+ *     host, so the scan and the write only connect through the `hdfs.name-node.<ns>` declaration
+ *     Comet derives from the session Hadoop configuration (the pinned iceberg-rust resolves a
+ *     portless authority only through it). It is read before and after a failover.
  *
  * Which profiles run it. The cluster needs the `hadoop-client-minicluster` that `pom.xml` pins
  * per Spark profile (`hadoop.version`: 3.4 -> 3.3.4, 3.5 -> 3.3.4, 4.0 -> 3.4.1, 4.1 -> 3.4.2,
@@ -466,7 +467,8 @@ class CometIcebergHdfsSuite
   /**
    * Starts a two-NameNode MiniDFSCluster with `nn1` active, and returns the client configuration
    * a Spark job needs to address it by nameservice: exactly the keys a production `hdfs-site.xml`
-   * carries, so that Comet's derivation of `hdfs.name-node` is what lets the native client dial.
+   * carries, so that Comet's derivation of `hdfs.name-node.<ns>` is what lets the native client
+   * dial.
    */
   private def startHaCluster(): Seq[(String, String)] = {
     val conf = new Configuration()
@@ -525,12 +527,30 @@ class CometIcebergHdfsSuite
           // Written by the JVM writer, through the HA client.
           val before = assertCommittedFilesOnHdfs(catalog, "ha", fs)
 
+          // Succeeding is not enough: the declaration Comet derived is what the client was given.
+          // The per-nameservice key, since iceberg-rust reads the global `hdfs.name-node` only
+          // for authority-less paths.
+          def assertDeclared(properties: Map[String, String]): Unit = {
+            assert(
+              properties.get(s"hdfs.name-node.$haNameservice") == Some(expectedNameNodes),
+              s"$properties")
+            assert(!properties.contains("hdfs.name-node"), s"$properties")
+          }
+
           def scanAndCheck(): Unit = {
-            val (_, cometPlan) = checkSparkAnswer(s"SELECT * FROM $catalog.db.ha ORDER BY id")
-            val properties =
-              assertSingleNativeScan(cometPlan).nativeIcebergScanMetadata.catalogProperties
-            // Succeeding is not enough: the list Comet derived is what the client was given.
-            assert(properties.get("hdfs.name-node") == Some(expectedNameNodes), s"$properties")
+            val query = s"SELECT * FROM $catalog.db.ha ORDER BY id"
+            // Checked on the planned scan before anything runs, so a lost declaration fails here
+            // with the properties in the message, not as a NameNode resolution error on an
+            // executor after the native client's retries.
+            assertDeclared(
+              assertSingleNativeScan(
+                spark
+                  .sql(query)
+                  .queryExecution
+                  .executedPlan).nativeIcebergScanMetadata.catalogProperties)
+            val (_, cometPlan) = checkSparkAnswer(query)
+            assertDeclared(
+              assertSingleNativeScan(cometPlan).nativeIcebergScanMetadata.catalogProperties)
           }
 
           scanAndCheck()
@@ -552,6 +572,19 @@ class CometIcebergHdfsSuite
           scanAndCheck()
           assert(
             spark.sql(s"SELECT count(*) FROM $catalog.db.ha").collect().head.getLong(0) == 4L)
+
+          // A NameNode that is gone rather than standby: connections to nn1 are now refused, and
+          // both the cached read client and a fresh write client must still reach nn2.
+          haCluster.shutdownNameNode(0)
+          scanAndCheck()
+          val goneBefore = assertCommittedFilesOnHdfs(catalog, "ha", fs)
+          val gonePlans = runNativeWrite(s"INSERT INTO $catalog.db.ha VALUES (5, 'e')")
+          assertNativeWrite(gonePlans)
+          val goneAfter = assertCommittedFilesOnHdfs(catalog, "ha", fs)
+          assertWriterReported(gonePlans, addedFiles(goneBefore, goneAfter), rows = 1)
+          scanAndCheck()
+          assert(
+            spark.sql(s"SELECT count(*) FROM $catalog.db.ha").collect().head.getLong(0) == 5L)
         }
       }
     } finally {

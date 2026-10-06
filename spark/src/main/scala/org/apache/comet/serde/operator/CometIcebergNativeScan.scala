@@ -599,26 +599,36 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
   }
 
   /**
-   * Resolves the `hdfs.name-node` property iceberg-rust's `hdfs-native` backend needs, from the
-   * session Hadoop configuration.
+   * Declares the NameNodes of an HDFS location's authority to iceberg-rust's `hdfs-native`
+   * backend, from the session Hadoop configuration.
    *
-   * opendal's `HdfsNativeBuilder` never dials the path authority: it builds one client against a
-   * synthetic authority and synthesizes the HA config from the comma-separated `name_node` value
-   * (`init_hdfs_config` in `opendal-service-hdfs-native`). iceberg-rust falls back to the path
-   * authority only when this property is absent, which is correct just for a real `host:port`. An
-   * HA location reads `hdfs://<nameservice>/...`, and a nameservice is not a routable host, so
-   * without this mapping every HA table fails to connect at execution time -- after the planner
-   * has already committed to the native scan.
+   * The pinned iceberg-rust (apache/iceberg-rust#3111) dials an authority that carries a port
+   * (`hdfs://nn.example.com:8020/...`) as is. An authority without one is a logical name that
+   * resolves only through its declaration: `hdfs.name-node.<authority>`, a comma-separated
+   * `host:port` list (`hdfs://` optional), or Hadoop's own `dfs.ha.namenodes.<authority>` keys
+   * passed as `hadoop.*`. The global `hdfs.name-node` serves authority-less paths only, and there
+   * is no default port. Without a declaration an HA table therefore fails on its first read or
+   * write, after the planner has committed to the native path.
    *
-   * A non-HA authority yields nothing: the path authority is already correct, and a property
-   * would only pin the scan to one endpoint. Call sites order this before the catalog properties,
-   * so an explicit `spark.sql.catalog.<cat>.hdfs.name-node` still wins.
+   * Resolution follows the JVM client:
+   *   - an HA nameservice (`dfs.ha.namenodes.<ns>`) maps to every
+   *     `dfs.namenode.rpc-address.<ns>.<nn>`, all-or-nothing, since a partial list would turn a
+   *     failover into an outage. Each must be `host:port`: the JVM rejects a portless
+   *     rpc-address, so one leaves the nameservice unresolved;
+   *   - a portless authority that is not a configured nameservice (not in `dfs.nameservices`) is
+   *     a plain host, which the JVM dials on the default NameNode RPC port, 8020
+   *     (`DFSUtilClient.getNNAddress`);
+   *   - an authority with a port, an unresolved nameservice, a nameservice whose NameNodes are
+   *     found through DNS (`dfs.client.failover.resolve-needed.<ns>`) and an authority-less
+   *     location yield nothing; [[hdfsNameNodeFallbackReason]] declines all but the first.
    *
-   * An `rpc-address` without a port gets Hadoop's default NameNode RPC port, as the JVM client
-   * does, because iceberg-rust rejects a portless `hdfs.name-node` entry.
+   * Call sites order this before the catalog properties, so an explicit
+   * `spark.sql.catalog.<cat>.hdfs.name-node.<authority>` still wins.
    *
    * @param uri
-   *   the metadata (scan) or data (write) location whose authority names the nameservice
+   *   the data (scan and write) location whose authority names the NameNode
+   * @param hadoopConf
+   *   the configuration from [[hdfsResolutionConf]]
    */
   def hadoopToIcebergHdfsProperties(
       uri: java.net.URI,
@@ -626,57 +636,57 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     if (!NativeConfig.lowerScheme(uri).contains("hdfs")) return Map.empty
     // The RAW authority, not `getHost`, which answers null for a nameservice carrying an
     // underscore.
-    val nameservice = Option(uri.getRawAuthority).filter(_.nonEmpty).getOrElse(return Map.empty)
+    val authority = Option(uri.getRawAuthority).filter(_.nonEmpty).getOrElse(return Map.empty)
+    if (!isLogicalHdfsAuthority(authority)) return Map.empty
 
-    // Absent for a plain `host:port` authority, which needs no mapping.
-    val nnIds = Option(hadoopConf.getTrimmedStrings(s"dfs.ha.namenodes.$nameservice"))
-      .map(_.toSeq)
-      .getOrElse(Seq.empty)
-      .filter(_.nonEmpty)
-
-    val endpoints = nnIds.flatMap { nnId =>
-      Option(hadoopConf.getTrimmed(s"dfs.namenode.rpc-address.$nameservice.$nnId"))
-        .filter(_.nonEmpty)
-        .map { addr =>
-          val hostPort = addr.stripPrefix("hdfs://").stripSuffix("/")
-          val withPort =
-            if (HdfsHostPortPattern.pattern.matcher(hostPort).matches()) hostPort
-            else s"$hostPort:$DefaultNameNodeRpcPort"
-          s"hdfs://$withPort"
-        }
-    }
-
-    // All-or-nothing: a partially resolved list would silently drop a NameNode, turning a
-    // failover into an outage.
-    if (endpoints.nonEmpty && endpoints.size == nnIds.size) {
-      Map(HdfsNameNodeKey -> endpoints.mkString(","))
+    val nnIds = haNameNodeIds(hadoopConf, authority)
+    val nameNodes = if (resolvesNameNodesThroughDns(hadoopConf, authority)) {
+      // The native client dials each rpc-address once and never expands a DNS name to its
+      // addresses, so declaring the names would silently drop the failover targets.
+      None
+    } else if (nnIds.nonEmpty) {
+      val endpoints = nnIds.flatMap { nnId =>
+        Option(hadoopConf.getTrimmed(s"dfs.namenode.rpc-address.$authority.$nnId"))
+          .flatMap(hdfsNameNode)
+      }
+      if (endpoints.size == nnIds.size) Some(endpoints.mkString(",")) else None
+    } else if (isConfiguredNameservice(hadoopConf, authority)) {
+      None
     } else {
-      Map.empty
+      hdfsNameNode(s"$authority:$DefaultNameNodeRpcPort")
     }
+    nameNodes.map(nameNodeDeclarationKey(authority) -> _).toMap
   }
 
   /**
    * Why iceberg-rust's `hdfs-native` backend could not reach the NameNode of an HDFS location, or
-   * None when Comet cannot tell it apart from a reachable one. Shared by the scan and write
-   * planners, which pass the catalog properties exactly as they will hand them to native (Hadoop
-   * derived `hdfs.name-node` first, an explicit catalog value winning), so the decision and the
-   * executed configuration agree.
+   * None when it can. Shared by the scan and write planners, which pass the catalog properties
+   * exactly as they hand them to native (the Hadoop-derived declaration first, an explicit
+   * catalog value winning), so the decision and the executed configuration agree. Declining here
+   * replaces a task failure on an executor with a fallback.
    *
-   * iceberg-rust resolves the NameNode from `hdfs.name-node` (a comma-separated list, each entry
-   * `host:port` with an optional `hdfs://` prefix), else from the path authority. It never
-   * validates the authority, so a plain `host:port` or host is indistinguishable from a real one
-   * and stays native. Three cases are known to fail, and declining them replaces a task failure
-   * on an executor, after the planner committed to the native path, with a fallback:
-   *   - an authority-less `hdfs:///...` location: Comet never relies on `hdfs.host`, `hdfs.port`
-   *     or `hadoop.fs.defaultFS`, which are the only other sources;
-   *   - an `hdfs.name-node` entry that is not `host:port`, which is rejected;
-   *   - a configured HA nameservice that did not resolve to a NameNode list, since a nameservice
-   *     is not a routable host. An explicit `hdfs.name-node` wins over it, as in iceberg-rust.
+   * It mirrors the pinned iceberg-rust's resolver (`hdfs_native_effective_name_node`):
+   *   - an authority-less `hdfs:///...` location falls back even when `hdfs.name-node`,
+   *     `hdfs.host`, `hdfs.port` or `hadoop.fs.defaultFS` is set: Comet does not rely on them;
+   *   - every `hdfs.name-node` and `hdfs.name-node.<nameservice>` entry must be `host:port`,
+   *     because iceberg-rust parses them all when it builds the storage, so one bad entry fails
+   *     every read and write through it;
+   *   - an authority with userinfo, port 0 or an otherwise malformed port is rejected;
+   *   - an authority with a valid port is dialed as is;
+   *   - a portless authority needs a declaration, `hdfs.name-node.<authority>` or
+   *     `hadoop.dfs.ha.namenodes.<authority>` with a `host:port` rpc-address per NameNode;
+   *   - the rest of the HDFS storage configuration must parse (`hdfs.host`, `hdfs.port`, no bare
+   *     `hadoop.` key), and no nameservice may be declared under the name opendal gives its own
+   *     synthetic one, `nameservice`, unless it is the location's own.
+   *
+   * Known limits it cannot see: Kerberos delegation tokens (the native client presents the
+   * synthetic service `ha-hdfs:nameservice`) and NameNodes that stop answering without refusing
+   * connections (the native client has no NameNode connect or RPC timeout).
    *
    * @param uri
    *   the location whose authority names the NameNode (the data location when known)
    * @param hadoopConf
-   *   the session Hadoop configuration the HA mapping reads
+   *   the Hadoop configuration the declaration was derived from, used only to word the reason
    * @param catalogProperties
    *   the effective catalog properties handed to native
    * @return
@@ -690,53 +700,221 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
 
     val authority = Option(uri.getRawAuthority).filter(_.nonEmpty).getOrElse {
       return Some(
-        s"authority-less hdfs location '$uri': Comet's native HDFS client takes the NameNode " +
-          "from the location authority or hdfs.name-node, and does not use hdfs.host, " +
-          "hdfs.port or hadoop.fs.defaultFS")
+        s"authority-less hdfs location '$uri': Comet requires the NameNode or nameservice in " +
+          "the location itself, even when hdfs.name-node, hdfs.host, hdfs.port or " +
+          "hadoop.fs.defaultFS is set")
     }
 
-    // The same normalisation as iceberg-rust: entries are trimmed, a trailing '/' is dropped and
-    // empty entries are ignored, so a list with none left is no `hdfs.name-node` at all.
-    val explicitEntries = catalogProperties
-      .get(HdfsNameNodeKey)
-      .map(_.split(",").toSeq.map(_.trim.stripSuffix("/")).filter(_.nonEmpty))
-      .getOrElse(Seq.empty)
-
-    if (explicitEntries.nonEmpty) {
-      explicitEntries
-        .find(entry => !isHdfsHostPort(entry.stripPrefix("hdfs://")))
-        .map { entry =>
-          s"hdfs.name-node entry '$entry' has no port (or is not host:port): Comet's native " +
-            "HDFS client needs every entry as host:port (for example nn1.example.com:8020) and " +
-            "fails at the first read or write otherwise"
+    invalidNameNodeProperty(catalogProperties)
+      .orElse(invalidHdfsStorageProperty(catalogProperties))
+      .orElse(syntheticNameserviceCollision(catalogProperties, authority))
+      .orElse {
+        if (authority.contains("@")) {
+          Some(
+            s"HDFS location authority '$authority' carries userinfo, which Comet's native HDFS " +
+              "client does not support")
+        } else if (hdfsNameNode(authority).isDefined) {
+          None
+        } else if (!isLogicalHdfsAuthority(authority)) {
+          Some(
+            s"HDFS location authority '$authority' is neither host:port (port 1-65535) nor a " +
+              "nameservice name")
+        } else if (isDeclared(catalogProperties, authority)) {
+          None
+        } else {
+          val source = if (resolvesNameNodesThroughDns(hadoopConf, authority)) {
+            s"its NameNodes are found through DNS (dfs.client.failover.resolve-needed.$authority), " +
+              "which the native client does not expand, so it would lose every failover target " +
+              "but one"
+          } else if (isConfiguredNameservice(hadoopConf, authority)) {
+            s"the session Hadoop configuration declares nameservice '$authority' but Comet " +
+              s"could not resolve it: it needs dfs.ha.namenodes.$authority and a host:port " +
+              s"dfs.namenode.rpc-address.$authority.<nn> for every NameNode listed there"
+          } else {
+            s"no declaration for '$authority' was found"
+          }
+          Some(s"HDFS location authority '$authority' has no port, so Comet's native HDFS client " +
+            s"resolves it only through hdfs.name-node.$authority, and $source. Set the catalog " +
+            s"property hdfs.name-node.$authority=<host:port>[,<host:port>]; it reaches Comet " +
+            "only from catalogs that initialize their FileIO with the catalog properties (for " +
+            "example hadoop or REST catalogs)")
         }
+      }
+  }
+
+  /**
+   * The Hadoop configuration HDFS NameNodes are resolved from: the session's `dfs.*` settings
+   * overlaid with those of the table's FileIO when it has a Hadoop configuration. The FileIO's
+   * carry the catalog's `hadoop.*` overrides the JVM reader honours; the session's carry what was
+   * set after the catalog built its FileIO. A nameservice either one names must not be mistaken
+   * for a plain host on port 8020 because the other does not.
+   */
+  def hdfsResolutionConf(
+      sessionConf: org.apache.hadoop.conf.Configuration,
+      fileIOConf: Option[org.apache.hadoop.conf.Configuration])
+      : org.apache.hadoop.conf.Configuration = {
+    val resolution = new org.apache.hadoop.conf.Configuration(false)
+    (Seq(sessionConf) ++ fileIOConf).foreach { conf =>
+      conf.getPropsWithPrefix("dfs.").asScala.foreach { case (key, value) =>
+        resolution.set(s"dfs.$key", value)
+      }
+    }
+    resolution
+  }
+
+  // iceberg-rust's global NameNode key; a `.<nameservice>` suffix declares that nameservice.
+  private val HdfsNameNodeKey = "hdfs.name-node"
+
+  // The name opendal's `hdfs-native` service gives the HA nameservice it synthesizes for every
+  // client; forwarded options declaring a real nameservice of that name replace its NameNodes.
+  private val OpendalSyntheticNameservice = "nameservice"
+
+  private def nameNodeDeclarationKey(nameservice: String): String =
+    s"$HdfsNameNodeKey.$nameservice"
+
+  // Hadoop's DFS_NAMENODE_RPC_PORT_DEFAULT, which the JVM client applies to a portless
+  // `hdfs://host` URI (DFSUtilClient.getNNAddress). It does NOT apply it to a portless
+  // rpc-address, which it rejects.
+  private val DefaultNameNodeRpcPort = 8020
+
+  // An ASCII host name (letters, digits, '.', '-', '_') or IPv4 literal. Conservative on purpose:
+  // the url crate iceberg-rust parses with re-encodes non-ASCII and canonicalizes IPv6 hosts, so
+  // a declaration keyed by anything else could miss the name iceberg-rust looks up.
+  private val HdfsHostName = """[A-Za-z0-9._-]+"""
+  // `host:port`, the host also allowed as a bracketed IPv6 literal.
+  private val HdfsHostPortPattern = s"""($HdfsHostName|\\[[0-9A-Fa-f:.]+\\]):(\\d{1,5})""".r
+  // A portless authority, which iceberg-rust treats as a logical nameservice name.
+  private val HdfsLogicalAuthorityPattern = s"""($HdfsHostName)""".r
+
+  /**
+   * One NameNode spelling as iceberg-rust's `hdfs_native_name_node` accepts it, normalized to
+   * `hdfs://host:port`: trimmed, a trailing `/` and an `hdfs://` prefix optional, port 1-65535,
+   * no userinfo or path. None for anything else, a logical name included.
+   */
+  private def hdfsNameNode(entry: String): Option[String] = {
+    val hostPort = entry.trim.stripSuffix("/").stripPrefix("hdfs://")
+    hostPort match {
+      case _ if hostPort.contains("://") => None
+      case HdfsHostPortPattern(host, port) if port.toInt >= 1 && port.toInt <= 65535 =>
+        Some(s"hdfs://$host:${port.toInt}")
+      case _ => None
+    }
+  }
+
+  /** A portless authority, which iceberg-rust treats as a logical nameservice name. */
+  private def isLogicalHdfsAuthority(authority: String): Boolean =
+    HdfsLogicalAuthorityPattern.pattern.matcher(authority).matches()
+
+  private def resolvesNameNodesThroughDns(
+      hadoopConf: org.apache.hadoop.conf.Configuration,
+      nameservice: String): Boolean =
+    hadoopConf.getBoolean(s"dfs.client.failover.resolve-needed.$nameservice", false)
+
+  /**
+   * The other HDFS settings iceberg-rust's parser rejects for every path when it builds the
+   * storage: a bare `hadoop.` key, an `hdfs.port` that is not a port, and an `hdfs.host` that
+   * with that port (default 8020) does not form `host:port`.
+   */
+  private def invalidHdfsStorageProperty(
+      catalogProperties: Map[String, String]): Option[String] = {
+    def nonBlank(key: String) = catalogProperties.get(key).map(_.trim).filter(_.nonEmpty)
+    val port = nonBlank("hdfs.port")
+    if (catalogProperties.contains("hadoop.")) {
+      Some("the property 'hadoop.' names no Hadoop key")
+    } else if (port.exists(p => !p.matches("""\d{1,5}""") || p.toInt > 65535)) {
+      Some(s"hdfs.port '${port.get}' is not a port")
     } else {
-      val isNameservice =
-        hadoopConf.getTrimmedStringCollection("dfs.nameservices").contains(authority) ||
-          Option(hadoopConf.getTrimmed(s"dfs.ha.namenodes.$authority")).exists(_.nonEmpty)
-      if (isNameservice) {
-        Some(
-          s"HDFS nameservice '$authority' could not be resolved to NameNode addresses: set " +
-            s"dfs.namenode.rpc-address.$authority.<nn> for every NameNode listed in " +
-            s"dfs.ha.namenodes.$authority, or the catalog's hdfs.name-node")
-      } else {
-        None
+      nonBlank("hdfs.host").flatMap { host =>
+        val bracketed = if (host.contains(":") && !host.startsWith("[")) s"[$host]" else host
+        // Composed as iceberg-rust does, so a host that itself carries a scheme fails here too.
+        val composed = s"hdfs://$bracketed:${port.getOrElse(DefaultNameNodeRpcPort.toString)}"
+        if (hdfsNameNode(composed).isDefined) None
+        else Some(s"hdfs.host '$host' with hdfs.port does not form a host:port NameNode")
       }
     }
   }
 
-  private val HdfsNameNodeKey = "hdfs.name-node"
-
-  // Hadoop's DFS_NAMENODE_RPC_PORT_DEFAULT, which the JVM client applies to a portless rpc-address.
-  private val DefaultNameNodeRpcPort = 8020
-
-  // `host:port`, the host being a name, an IPv4 literal or a bracketed IPv6 literal.
-  private val HdfsHostPortPattern = """(\[[0-9A-Fa-f:.]+\]|[^\s:/\[\]]+):(\d{1,5})""".r
-
-  private def isHdfsHostPort(entry: String): Boolean = entry match {
-    case HdfsHostPortPattern(_, port) => port.toInt <= 65535
-    case _ => false
+  /** A declaration of opendal's synthetic nameservice name for a location that is not it. */
+  private def syntheticNameserviceCollision(
+      catalogProperties: Map[String, String],
+      authority: String): Option[String] = {
+    val declared =
+      catalogProperties.contains(nameNodeDeclarationKey(OpendalSyntheticNameservice)) ||
+        catalogProperties.contains(s"hadoop.dfs.ha.namenodes.$OpendalSyntheticNameservice")
+    if (declared && authority != OpendalSyntheticNameservice) {
+      Some(
+        s"a nameservice named '$OpendalSyntheticNameservice' is declared, the name Comet's " +
+          "native HDFS client gives its own synthetic nameservice, so it would route " +
+          s"'$authority' to that nameservice's NameNodes")
+    } else {
+      None
+    }
   }
+
+  private def haNameNodeIds(
+      hadoopConf: org.apache.hadoop.conf.Configuration,
+      nameservice: String): Seq[String] =
+    Option(hadoopConf.getTrimmedStrings(s"dfs.ha.namenodes.$nameservice"))
+      .map(_.toSeq)
+      .getOrElse(Seq.empty)
+      .filter(_.nonEmpty)
+
+  private def isConfiguredNameservice(
+      hadoopConf: org.apache.hadoop.conf.Configuration,
+      authority: String): Boolean =
+    hadoopConf.getTrimmedStringCollection("dfs.nameservices").contains(authority) ||
+      haNameNodeIds(hadoopConf, authority).nonEmpty
+
+  /**
+   * The first `hdfs.name-node` or `hdfs.name-node.<nameservice>` property iceberg-rust would
+   * reject when it parses the storage configuration, as a fallback reason.
+   */
+  private def invalidNameNodeProperty(catalogProperties: Map[String, String]): Option[String] =
+    catalogProperties.toSeq
+      .sortBy(_._1)
+      .iterator
+      .flatMap { case (key, value) =>
+        val isGlobal = key == HdfsNameNodeKey
+        if (!isGlobal && !key.startsWith(s"$HdfsNameNodeKey.")) {
+          None
+        } else {
+          val nameservice = key.stripPrefix(HdfsNameNodeKey).stripPrefix(".")
+          val entries = value.split(",").toSeq.map(_.trim).filter(_.nonEmpty)
+          if (!isGlobal && (nameservice.isEmpty || nameservice.exists(_.isWhitespace))) {
+            Some(s"$key does not name a nameservice")
+          } else if (!isGlobal && entries.isEmpty) {
+            Some(s"$key lists no NameNodes")
+          } else {
+            entries.find(hdfsNameNode(_).isEmpty).map { entry =>
+              s"$key entry '$entry' is not host:port: Comet's native HDFS client needs every " +
+                "entry as host:port (for example nn1.example.com:8020) and fails at the first " +
+                "read or write otherwise"
+            }
+          }
+        }
+      }
+      .toSeq
+      .headOption
+
+  /**
+   * Whether the catalog properties declare a portless authority the way iceberg-rust reads it:
+   * Hadoop's `hadoop.dfs.ha.namenodes.<ns>` keys win over the `hdfs.name-node.<ns>` sugar.
+   */
+  private def isDeclared(catalogProperties: Map[String, String], nameservice: String): Boolean =
+    catalogProperties.get(s"hadoop.dfs.ha.namenodes.$nameservice") match {
+      case Some(ids) =>
+        val nnIds = ids.split(",").toSeq.map(_.trim).filter(_.nonEmpty)
+        nnIds.nonEmpty && nnIds.forall { nnId =>
+          catalogProperties
+            .get(s"hadoop.dfs.namenode.rpc-address.$nameservice.$nnId")
+            .flatMap(hdfsNameNode)
+            .isDefined
+        }
+      case None =>
+        catalogProperties
+          .get(nameNodeDeclarationKey(nameservice))
+          .exists(_.split(",").exists(_.trim.nonEmpty))
+    }
 
   /**
    * Transforms Hadoop S3A configuration keys to Iceberg FileIO property keys.
@@ -784,6 +962,10 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
 
     global.result() ++ promoted.result()
   }
+
+  /** iceberg-rust's per-I/O-call timeout, set from `spark.comet.iceberg.ioTimeout`. */
+  def ioTimeoutProperty(): (String, String) =
+    "opendal.io-timeout-ms" -> CometConf.COMET_ICEBERG_IO_TIMEOUT.get().toString
 
   /**
    * Converts an Iceberg residual Expression into an IcebergPredicate for the native scan.
@@ -1160,7 +1342,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     commonBuilder.setDataFileConcurrencyLimit(
       CometConf.COMET_ICEBERG_DATA_FILE_CONCURRENCY_LIMIT.get())
     metadata.catalogName.foreach(commonBuilder.setCatalogName)
-    metadata.catalogProperties.foreach { case (key, value) =>
+    (metadata.catalogProperties + ioTimeoutProperty()).foreach { case (key, value) =>
       commonBuilder.putCatalogProperties(key, value)
     }
 

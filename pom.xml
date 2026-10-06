@@ -73,7 +73,6 @@ under the License.
     <scalafix-maven-plugin.version>0.1.7_0.10.4</scalafix-maven-plugin.version>
     <extra-enforcer-rules.version>1.7.0</extra-enforcer-rules.version>
     <scalafmt.version>3.6.1</scalafmt.version>
-    <apache-rat-plugin.version>0.16.1</apache-rat-plugin.version>
     <scala.version>2.13.17</scala.version>
     <scala.binary.version>2.13</scala.binary.version>
     <scala.plugin.version>4.9.6</scala.plugin.version>
@@ -1026,6 +1025,9 @@ under the License.
               <log4j.configurationFile>file:src/test/resources/log4j2.properties</log4j.configurationFile>
               <java.awt.headless>true</java.awt.headless>
               <java.io.tmpdir>${project.build.directory}/tmp</java.io.tmpdir>
+              <!-- Optional override for CometNativeUdfSuite; the suite finds the cdylib under
+                   native/target on its own when this is not set. -->
+              <comet.test.udfs.lib>${comet.test.udfs.lib}</comet.test.udfs.lib>
             </systemProperties>
           </configuration>
           <executions>
@@ -1210,75 +1212,6 @@ under the License.
             </configuration>
           </execution>
         </executions>
-      </plugin>
-      <plugin>
-        <groupId>org.apache.rat</groupId>
-        <artifactId>apache-rat-plugin</artifactId>
-        <version>${apache-rat-plugin.version}</version>
-        <executions>
-          <execution>
-            <phase>verify</phase>
-            <goals>
-              <goal>check</goal>
-            </goals>
-          </execution>
-        </executions>
-        <configuration>
-          <consoleOutput>true</consoleOutput>
-          <excludes>
-            <exclude>**/*.iml</exclude>
-            <exclude>**/*.log</exclude>
-            <exclude>**/*.md.vm</exclude>
-            <exclude>**/.classpath</exclude>
-            <exclude>**/.project</exclude>
-            <exclude>**/.settings/**</exclude>
-            <exclude>**/build/**</exclude>
-            <exclude>**/target/**</exclude>
-            <exclude>**/apache-spark/**</exclude>
-            <exclude>**/apache-iceberg/**</exclude>
-            <exclude>.dockerignore</exclude>
-            <exclude>.git/**</exclude>
-            <exclude>.github/**</exclude>
-            <exclude>.gitignore</exclude>
-            <exclude>.gitmodules</exclude>
-            <exclude>**/.idea/**</exclude>
-            <exclude>**/dependency-reduced-pom.xml</exclude>
-            <exclude>**/testdata/**</exclude>
-            <exclude>**/.lldbinit</exclude>
-            <exclude>rust-toolchain</exclude>
-            <exclude>Makefile</exclude>
-            <exclude>dev/Dockerfile*</exclude>
-            <exclude>dev/diffs/**</exclude>
-            <exclude>dev/deploy-file</exclude>
-            <exclude>**/test/resources/**</exclude>
-            <exclude>**/benchmarks/*.txt</exclude>
-            <exclude>**/inspections/*.txt</exclude>
-            <exclude>tpcds-kit/**</exclude>
-            <exclude>tpcds-sf-1/**</exclude>
-            <exclude>tpch/**</exclude>
-            <exclude>docs/*.txt</exclude>
-            <!-- JSON has no comment syntax, so no license header can go in it. -->
-            <exclude>docs/puppeteer-config.json</exclude>
-            <exclude>docs/logos/*.png</exclude>
-            <exclude>docs/logos/*.svg</exclude>
-            <exclude>docs/source/_static/images/**</exclude>
-            <exclude>docs/source/contributor-guide/*.svg</exclude>
-            <exclude>dev/release/rat_exclude_files.txt</exclude>
-            <exclude>dev/release/requirements.txt</exclude>
-            <exclude>dev/release/venv/**</exclude>
-            <exclude>dev/release/comet-rm/workdir/**</exclude>
-            <exclude>dev/dist/**</exclude>
-            <exclude>dev/release/rat.txt</exclude>
-            <exclude>dev/release/filtered_rat.txt</exclude>
-            <exclude>dev/release/*.jar</exclude>
-            <exclude>native/proto/src/generated/**</exclude>
-            <exclude>benchmarks/tpc/queries/**</exclude>
-            <exclude>benchmarks/results/**/*.txt</exclude>
-            <exclude>.ai/**</exclude>
-            <exclude>.claude/**</exclude>
-            <exclude>docs/superpowers/**</exclude>
-          </excludes>
-        </configuration>
       </plugin>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>

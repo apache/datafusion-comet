@@ -2715,6 +2715,45 @@ index daf4e29ac0..d01e51fc0d 100644
              .enableHiveSupport()
              .getOrCreate();
  
+diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/actions/TestRewriteDataFilesAction.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/actions/TestRewriteDataFilesAction.java
+index 50e42dcbb5..8616922d14 100644
+--- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/actions/TestRewriteDataFilesAction.java
++++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/actions/TestRewriteDataFilesAction.java
+@@ -127,6 +127,7 @@ import org.apache.spark.sql.Encoders;
+ import org.apache.spark.sql.Row;
+ import org.apache.spark.sql.catalyst.analysis.NoSuchTableException;
+ import org.apache.spark.sql.internal.SQLConf;
++import org.junit.jupiter.api.AfterEach;
+ import org.junit.jupiter.api.BeforeAll;
+ import org.junit.jupiter.api.BeforeEach;
+ import org.junit.jupiter.api.TestTemplate;
+@@ -138,6 +139,9 @@ import org.mockito.Mockito;
+ @ExtendWith(ParameterizedTestExtension.class)
+ public class TestRewriteDataFilesAction extends TestBase {
+ 
++  private static final String COMET_NATIVE_ICEBERG_WRITE_ENABLED =
++      "spark.comet.write.iceberg.enabled";
++
+   @TempDir private File tableDir;
+   private static final int SCALE = 400000;
+ 
+@@ -170,6 +174,16 @@ public class TestRewriteDataFilesAction extends TestBase {
+   @BeforeEach
+   public void setupTableLocation() {
+     this.tableLocation = tableDir.toURI().toString();
++    // These tests calibrate bin-packing thresholds against parquet-mr file sizes. Comet's native
++    // writer produces different-sized Parquet files, so keep v3 setup writes on parquet-mr while
++    // the Comet suites cover native v3 writes and row-lineage fallback directly.
++    spark.conf()
++        .set(COMET_NATIVE_ICEBERG_WRITE_ENABLED, Boolean.toString(formatVersion != 3));
++  }
++
++  @AfterEach
++  public void restoreCometNativeIcebergWrite() {
++    spark.conf().set(COMET_NATIVE_ICEBERG_WRITE_ENABLED, "true");
+   }
+ 
+   private RewriteDataFilesSparkAction basicRewrite(Table table) {
 diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/data/AvroDataTestBase.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/data/AvroDataTestBase.java
 index 0db6a65fd3..9ee8b9e084 100644
 --- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/data/AvroDataTestBase.java

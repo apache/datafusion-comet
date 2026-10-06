@@ -20,13 +20,17 @@ mod fair_pool;
 pub mod logging_pool;
 mod plan_pool;
 mod spark_memory;
+mod spill_replay;
 mod task_shared;
+#[cfg(test)]
+pub(crate) mod testing;
 mod unified_pool;
 
 use datafusion::execution::memory_pool::{MemoryPool, TrackConsumersPool, UnboundedMemoryPool};
 use fair_pool::CometFairMemoryPool;
 use jni::objects::{Global, JObject};
 use spark_memory::SparkMemory;
+use spill_replay::SpillReplayPool;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use unified_pool::CometUnifiedMemoryPool;
@@ -70,10 +74,16 @@ fn create_pool(
 
     match pool_type {
         MemoryPoolType::GreedyUnified => acquire_task_shared_pool(task_attempt_id, || {
-            tracked(CometUnifiedMemoryPool::with_spark(spark()))
+            Arc::new(SpillReplayPool::new(
+                task_attempt_id,
+                tracked(CometUnifiedMemoryPool::with_spark(spark())),
+            ))
         }),
         MemoryPoolType::FairUnified => acquire_task_shared_pool(task_attempt_id, || {
-            tracked(CometFairMemoryPool::with_spark(spark(), pool_size))
+            Arc::new(SpillReplayPool::new(
+                task_attempt_id,
+                tracked(CometFairMemoryPool::with_spark(spark(), pool_size)),
+            ))
         }),
         MemoryPoolType::Unbounded => Arc::new(UnboundedMemoryPool::default()),
     }
@@ -85,6 +95,7 @@ fn create_pool(
 /// takes nothing from Spark or that the function did not create.
 pub(crate) fn overcommit(pool: &Arc<dyn MemoryPool>) -> usize {
     let pool = task_shared::unwrap_task_shared(pool).unwrap_or(pool);
+    let pool = spill_replay::unwrap_spill_replay(pool).unwrap_or(pool);
     if let Some(tracked) = pool.downcast_ref::<TrackConsumersPool<CometUnifiedMemoryPool>>() {
         tracked.inner().overcommit()
     } else if let Some(tracked) = pool.downcast_ref::<TrackConsumersPool<CometFairMemoryPool>>() {

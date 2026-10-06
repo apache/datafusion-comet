@@ -1529,6 +1529,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "comet-test-udfs"
+version = "1.2.0"
+dependencies = [
+ "arrow",
+ "comet-udf-sdk",
+]
+
+[[package]]
+name = "comet-udf-sdk"
+version = "1.2.0"
+dependencies = [
+ "arrow",
+]
+
+[[package]]
 name = "comfy-table"
 version = "7.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2049,6 +2064,9 @@ dependencies = [
  "chrono-tz",
  "comet-contrib-delta",
  "comet-contrib-lance",
+ "comet-test-udfs",
+ "comet-udf-sdk",
+ "crc32fast",
  "criterion",
  "datafusion",
  "datafusion-comet-common",
@@ -2071,6 +2089,7 @@ dependencies = [
  "itertools 0.15.0",
  "jni 0.22.4",
  "lazy_static",
+ "libloading 0.8.9",
  "log",
  "log4rs",
  "mimalloc",
@@ -2194,6 +2213,7 @@ dependencies = [
  "datafusion",
  "datafusion-comet-common",
  "datafusion-comet-jni-bridge",
+ "datafusion-functions",
  "datafusion-spark",
  "datasketches",
  "futures",
@@ -3721,7 +3741,7 @@ dependencies = [
 [[package]]
 name = "iceberg"
 version = "0.10.1"
-source = "git+https://github.com/mixermt/iceberg-rust?rev=22db8e6f6c3be85fbc06186365862ef40ba24075#22db8e6f6c3be85fbc06186365862ef40ba24075"
+source = "git+https://github.com/mixermt/iceberg-rust?rev=b9624086d7282f2c960d8c89327471a684d9ebc2#b9624086d7282f2c960d8c89327471a684d9ebc2"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -3779,7 +3799,7 @@ dependencies = [
 [[package]]
 name = "iceberg-property-macro"
 version = "0.10.1"
-source = "git+https://github.com/mixermt/iceberg-rust?rev=22db8e6f6c3be85fbc06186365862ef40ba24075#22db8e6f6c3be85fbc06186365862ef40ba24075"
+source = "git+https://github.com/mixermt/iceberg-rust?rev=b9624086d7282f2c960d8c89327471a684d9ebc2#b9624086d7282f2c960d8c89327471a684d9ebc2"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3789,7 +3809,7 @@ dependencies = [
 [[package]]
 name = "iceberg-storage-opendal"
 version = "0.10.1"
-source = "git+https://github.com/mixermt/iceberg-rust?rev=22db8e6f6c3be85fbc06186365862ef40ba24075#22db8e6f6c3be85fbc06186365862ef40ba24075"
+source = "git+https://github.com/mixermt/iceberg-rust?rev=b9624086d7282f2c960d8c89327471a684d9ebc2#b9624086d7282f2c960d8c89327471a684d9ebc2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3797,10 +3817,13 @@ dependencies = [
  "cfg-if",
  "futures",
  "iceberg",
+ "iceberg-property-macro",
  "opendal",
  "reqsign-aws-v4",
  "reqsign-core",
  "serde",
+ "tokio",
+ "tracing",
  "typetag",
  "url",
 ]
@@ -6171,9 +6194,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.44"
+version = "0.23.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6725596c3f2c3a0aef021139e145d4eafe314a6623e4680ca83852b2c67ab2ba"
+checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
 dependencies = [
  "aws-lc-rs",
  "once_cell",
@@ -6797,7 +6820,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

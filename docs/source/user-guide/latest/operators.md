@@ -40,10 +40,11 @@ all native execution can be turned off with `spark.comet.exec.enabled=false`. Se
 ## Wrapper nodes
 
 Some nodes in a Spark plan do no work of their own: `AdaptiveSparkPlan`, the AQE query stages
-(including `ResultQueryStage` on Spark 4.0 and later), `AQEShuffleRead`, `InputAdapter`,
-`WholeStageCodegen`, and the reuse markers `ReusedExchange` and `ReusedSubquery`. Comet leaves
-them in place around the operators it converts, so this page does not list them, and seeing one in
-a plan does not mean that part of the query fell back to Spark. The coverage summary described in
+(`ShuffleQueryStage`, `BroadcastQueryStage`, `TableCacheQueryStage` on Spark 3.5 and later, and
+`ResultQueryStage` on Spark 4.0 and later), `AQEShuffleRead`, `InputAdapter`, `WholeStageCodegen`,
+and the reuse markers `ReusedExchange` and `ReusedSubquery`. Comet leaves them in place around the
+operators it converts, so this page does not list them, and seeing one in a plan does not mean
+that part of the query fell back to Spark. The coverage summary described in
 [Understanding Comet Plans](understanding-comet-plans.md) does not count them.
 
 ## Not currently planned
@@ -54,7 +55,7 @@ omitted from the tables below and may be reconsidered based on demand:
 - **Structured Streaming operators** (`StateStoreSaveExec`, `StateStoreRestoreExec`, `StreamingSymmetricHashJoinExec`, and similar): Comet targets batch execution.
 - **Cartesian / cross joins** (`CartesianProductExec`): rare and expensive, with little acceleration benefit.
 - **Pickled (non-Arrow) Python UDFs** (`BatchEvalPythonExec`): Comet accelerates Arrow-based Python UDFs only ([#4234](https://github.com/apache/datafusion-comet/pull/4234)).
-- **Typed Dataset operators** (`DeserializeToObjectExec`, `SerializeFromObjectExec`, `MapElementsExec`, `MapPartitionsExec`, `MapGroupsExec`, `CoGroupExec`, `AppendColumnsExec`, and similar): produced by `map`, `mapPartitions`, `groupByKey`, `cogroup`, and other typed `Dataset` transformations. They exist to run user JVM functions on JVM objects, which Comet cannot do natively.
+- **Typed Dataset operators** (`DeserializeToObjectExec`, `SerializeFromObjectExec`, `MapElementsExec`, `MapPartitionsExec`, `MapGroupsExec`, `CoGroupExec`, `AppendColumnsExec`, and similar): produced by `map`, `mapPartitions`, `groupByKey`, `cogroup`, and other typed `Dataset` transformations. They exist to run user JVM functions on JVM objects, which Comet cannot do natively. The operators above them can still run natively: set `spark.comet.convert.typedDataset.enabled=true` and Comet converts the output of a typed operation to Arrow. This is disabled by default because it can be slower than Spark when the operators above do little work, such as an aggregate over a few groups, which Spark compiles together with the typed operation into one loop.
 
 ## Scans
 
@@ -91,7 +92,7 @@ omitted from the tables below and may be reconsidered based on demand:
 | ------------------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `HashAggregateExec`       | ✅     |                                                                                                                                                                                                                                                                                                                                    |
 | `ObjectHashAggregateExec` | ✅     | Runs the object-buffer aggregates Comet supports, such as `collect_list`, `collect_set`, `percentile`, `approx_percentile`, `mode`, `bloom_filter_agg`, and (Spark 4.0+) `listagg`. Falls back when Comet shuffle is disabled, which would otherwise split the aggregate across Comet and Spark. See [Shuffle](tuning/shuffle.md). |
-| `SortAggregateExec`       | 🔜     | Falls back today; Comet currently accelerates hash aggregates.                                                                                                                                                                                                                                                                     |
+| `SortAggregateExec`       | ✅     | Runs when Comet supports every aggregate in it, including the object-buffer aggregates listed for `ObjectHashAggregateExec`. Falls back when Comet shuffle is disabled, which would otherwise split the aggregate across Comet and Spark. See [Shuffle](tuning/shuffle.md).                                                        |
 
 ## Joins
 
@@ -136,6 +137,7 @@ natively on `BroadcastHashJoinExec` and `ShuffledHashJoinExec`. Existence sort-m
 | `WriteFilesExec`                                                                                                   | ⚠️     | Spark 4.0+. Experimental native Parquet writes, disabled by default (opt-in). Non-partitioned, non-bucketed writes only, and not when `spark.sql.files.maxRecordsPerFile` is set.                                                                                                                                                                                                                                                                                                                       |
 | `DataWritingCommandExec`                                                                                           | ⚠️     | Spark 3.4/3.5 only. Experimental native Parquet writes, disabled by default (opt-in). Replaced by `WriteFilesExec` on Spark 4.0+ and removed with Spark 3.x support.                                                                                                                                                                                                                                                                                                                                    |
 | Iceberg writes: `AppendDataExec`, `OverwriteByExpressionExec`, `OverwritePartitionsDynamicExec`, `ReplaceDataExec` | ⚠️     | Experimental, disabled by default. `spark.comet.write.iceberg.splitOperator.enabled=true` plans the write as `IcebergWrite` and `IcebergCommit`, and Iceberg's Java writer still writes the data files. `spark.comet.write.iceberg.enabled=true` then writes eligible data files natively (`CometIcebergWrite`). Covers `INSERT INTO`, `INSERT OVERWRITE`, and copy-on-write `DELETE` / `UPDATE` / `MERGE`. Merge-on-read writes (`WriteDeltaExec`) fall back. See [Iceberg Writes](iceberg-writes.md). |
+| `MergeRowsExec`                                                                                                    | ⚠️     | Spark 3.5+. Experimental, disabled by default (`spark.comet.exec.mergeRows.enabled`). On Spark 4.1+, stock V2 writers retain Spark MergeRowsExec; Comet's split Iceberg path can run it natively while preserving MergeSummary. See [MERGE INTO](compatibility/operators.md#merge-into-mergerowsexec).                                                                                                                                                                                                  |
 
 ## Python and UDF
 

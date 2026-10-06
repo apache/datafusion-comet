@@ -28,7 +28,7 @@ import org.apache.spark.{SparkConf, SparkEnv, TaskContext}
 import org.apache.spark.sql.{CometTestBase, Row}
 import org.apache.spark.sql.api.java.UDF1
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Add, Alias, ApplyFunctionExpression, AttributeReference, BoundReference, Cast, CreateArray, CreateMap, CreateNamedStruct, Expression, GenericInternalRow, Hypot, Literal, MapConcat, ScalaUDF}
+import org.apache.spark.sql.catalyst.expressions.{Add, Alias, ApplyFunctionExpression, AttributeReference, AttributeSeq, BindReferences, BoundReference, Cast, CreateArray, CreateMap, CreateNamedStruct, Expression, GenericInternalRow, Hypot, Literal, MapConcat, ScalaUDF}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial}
 import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
 import org.apache.spark.sql.catalyst.util.GenericArrayData
@@ -40,7 +40,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.{ByteArray, UTF8String}
 
-import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
+import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark41Plus}
 import org.apache.comet.codegen.CometBatchKernelCodegen
 import org.apache.comet.codegen.CometBatchKernelCodegen.ArrowColumnSpec
 import org.apache.comet.serde.{CometInvokeTargets, CometScalaUDF, QueryPlanSerde}
@@ -264,6 +264,38 @@ class CometCodegenSuite
     } finally {
       output.close()
       input.close()
+    }
+  }
+
+  test("a closed allocateOutput vector releases all of its memory") {
+    // Struct outputs leaked the children that StructVector's writer allocates in its
+    // constructor. The List and Map cases make sure that these outputs do not start to leak.
+    val pair = StructType(
+      Seq(StructField("name", StringType), StructField("age", IntegerType, nullable = false)))
+    val outputTypes = Seq(
+      pair,
+      StructType(
+        Seq(StructField("_1", LongType, nullable = false), StructField("_2", StringType))),
+      StructType(
+        Seq(
+          StructField("inner", pair),
+          StructField("tags", ArrayType(StringType)),
+          StructField("attrs", MapType(StringType, IntegerType)))),
+      ArrayType(pair),
+      MapType(StringType, pair),
+      StringType)
+    outputTypes.foreach { dataType =>
+      val field = CometBatchKernelCodegen.toFfiArrowField("out", dataType, nullable = true)
+      val allocator =
+        CometArrowAllocator.newChildAllocator(s"allocateOutput($dataType)", 0, Long.MaxValue)
+      try {
+        CometBatchKernelCodegen.allocateOutput(field, 4, 0, allocator).close()
+        assert(
+          allocator.getAllocatedMemory == 0,
+          s"the $dataType output did not release all of its memory")
+      } finally {
+        allocator.close()
+      }
     }
   }
 
@@ -1272,6 +1304,137 @@ class CometCodegenSuite
     }
   }
 
+  private val boxedPrimitiveTypes = Seq("bool", "byte", "short", "int", "long", "float", "double")
+
+  /**
+   * Boxed primitive UDFs for the #6706 tests, where the kernel drops Spark's encoders. Each
+   * `<type>_str` function names the exact value it receives, null included, so a value converted
+   * differently from Spark's encoder (a null read as 0, a -0.0 read as 0.0) fails the comparison
+   * with Spark. Each `<type>_id` function returns the boxed value it receives, which covers the
+   * result side. `long_tag` and `opt_long` pair a boxed parameter with ones that keep their
+   * encoders.
+   */
+  private def registerBoxedPrimitiveUdfs(): Unit = {
+    spark.udf.register("bool_str", (x: java.lang.Boolean) => String.valueOf(x))
+    spark.udf.register("byte_str", (x: java.lang.Byte) => String.valueOf(x))
+    spark.udf.register("short_str", (x: java.lang.Short) => String.valueOf(x))
+    spark.udf.register("int_str", (x: java.lang.Integer) => String.valueOf(x))
+    spark.udf.register("long_str", (x: java.lang.Long) => String.valueOf(x))
+    // Raw bits, so the sign of a zero or a NaN payload would show.
+    spark.udf.register(
+      "float_str",
+      (x: java.lang.Float) =>
+        if (x == null) "null" else java.lang.Float.floatToRawIntBits(x).toString)
+    spark.udf.register(
+      "double_str",
+      (x: java.lang.Double) =>
+        if (x == null) "null" else java.lang.Double.doubleToRawLongBits(x).toString)
+    spark.udf.register("bool_id", (x: java.lang.Boolean) => x)
+    spark.udf.register("byte_id", (x: java.lang.Byte) => x)
+    spark.udf.register("short_id", (x: java.lang.Short) => x)
+    spark.udf.register("int_id", (x: java.lang.Integer) => x)
+    spark.udf.register("long_id", (x: java.lang.Long) => x)
+    spark.udf.register("float_id", (x: java.lang.Float) => x)
+    spark.udf.register("double_id", (x: java.lang.Double) => x)
+    spark.udf.register("long_tag", (x: java.lang.Long, s: String) => s"$x:$s")
+    spark.udf.register("opt_long", (x: Option[Long]) => x.map(_ + 1).getOrElse(-1L))
+  }
+
+  private def withBoxedPrimitiveTable(f: => Unit): Unit = {
+    withTable("t") {
+      sql(
+        "CREATE TABLE t (c_bool BOOLEAN, c_byte TINYINT, c_short SMALLINT, c_int INT, " +
+          "c_long BIGINT, c_float FLOAT, c_double DOUBLE, s STRING) USING parquet")
+      sql(
+        "INSERT INTO t VALUES " +
+          "(true, CAST(-128 AS TINYINT), CAST(-32768 AS SMALLINT), -2147483648, " +
+          "-9223372036854775808, CAST('-0.0' AS FLOAT), CAST('-0.0' AS DOUBLE), 'a'), " +
+          "(false, CAST(127 AS TINYINT), CAST(32767 AS SMALLINT), 2147483647, " +
+          "9223372036854775807, CAST('NaN' AS FLOAT), CAST('NaN' AS DOUBLE), NULL), " +
+          "(NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'c'), " +
+          "(true, CAST(0 AS TINYINT), CAST(1000 AS SMALLINT), 1000, 1000, " +
+          "CAST('Infinity' AS FLOAT), CAST(0.0 AS DOUBLE), 'd'), " +
+          "(false, CAST(-1 AS TINYINT), CAST(-1000 AS SMALLINT), -1000, -1000, " +
+          "CAST(1.5 AS FLOAT), CAST('-Infinity' AS DOUBLE), NULL)")
+      f
+    }
+  }
+
+  test("the kernel drops only boxed primitive encoders from a ScalaUDF (#6706)") {
+    registerBoxedPrimitiveUdfs()
+    spark.udf.register("str_id", (x: String) => x)
+    spark.udf.register("long_in_prim_out", (x: java.lang.Long) => if (x == null) -1L else x + 1L)
+    spark.udf.register("prim_add_one", (x: Long) => x + 1)
+    withBoxedPrimitiveTable {
+      def boundUdf(call: String): ScalaUDF = {
+        val udf = sql(s"SELECT $call FROM t").queryExecution.optimizedPlan.expressions
+          .flatMap(_.collect { case u: ScalaUDF => u })
+          .head
+        val attrs = udf.collect { case a: AttributeReference => a }.distinct
+        BindReferences.bindReference(udf, AttributeSeq(attrs))
+      }
+      // Whether the kernel drops the encoder of each parameter and then of the result.
+      def dropped(call: String): Seq[Boolean] = {
+        val udf = boundUdf(call)
+        val kernelUdf =
+          CometBatchKernelCodegen.withoutBoxedPrimitiveEncoders(udf).asInstanceOf[ScalaUDF]
+        (udf.inputEncoders :+ udf.outputEncoder)
+          .zip(kernelUdf.inputEncoders :+ kernelUdf.outputEncoder)
+          .map { case (before, after) => before.isDefined && after.isEmpty }
+      }
+      boxedPrimitiveTypes.foreach { t =>
+        assert(dropped(s"${t}_id(c_$t)") === Seq(true, true), t)
+      }
+      assert(dropped("long_in_prim_out(c_long)") === Seq(true, false))
+      assert(dropped("long_tag(c_long, s)") === Seq(true, false, false))
+      assert(dropped("prim_add_one(c_long)") === Seq(false, false))
+      assert(dropped("opt_long(c_long)") === Seq(false, false))
+      assert(dropped("str_id(s)") === Seq(false, false))
+
+      // Spark's encoder path calls the parameter's converter even for a null input. Without the
+      // encoder, `ScalaUDF` tests for null itself, which shows the kernel compiles the rewrite.
+      def kernelSource(call: String, vectorClass: Class[_ <: ValueVector]): String =
+        CometBatchKernelCodegen
+          .generateSource(
+            boundUdf(call),
+            IndexedSeq(ArrowColumnSpec(vectorClass, nullable = true)))
+          .body
+      assert(kernelSource("str_id(s)", classOf[VarCharVector]).contains(".apply(null)"))
+      assert(!kernelSource("long_id(c_long)", classOf[BigIntVector]).contains(".apply(null)"))
+    }
+  }
+
+  test("boxed primitive UDF parameters and results match Spark (#6706)") {
+    registerBoxedPrimitiveUdfs()
+    withBoxedPrimitiveTable {
+      val calls = boxedPrimitiveTypes.flatMap(t => Seq(s"${t}_str(c_$t)", s"${t}_id(c_$t)"))
+      assertCodegenRan {
+        checkSparkAnswerAndOperator(sql(s"SELECT ${calls.mkString(", ")} FROM t"))
+      }
+    }
+  }
+
+  test("boxed primitive UDF parameters next to other parameters match Spark (#6706)") {
+    registerBoxedPrimitiveUdfs()
+    // Spark guards the call with a null check for the primitive parameter, not the boxed one.
+    spark.udf.register("long_or", (x: java.lang.Long, y: Long) => if (x == null) y else x + y)
+    withBoxedPrimitiveTable {
+      val calls = Seq(
+        "long_tag(c_long, s)",
+        "opt_long(c_long)",
+        "long_or(c_long, c_int)",
+        // Spark casts the int column to the `java.lang.Long` parameter's type.
+        "long_str(c_int)",
+        "long_id(long_id(c_long))",
+        // Inside a lambda, Spark evaluates the UDF through `eval` rather than generated code,
+        // with the same converters.
+        "transform(array(c_int, NULL), x -> int_str(x))")
+      assertCodegenRan {
+        checkSparkAnswerAndOperator(sql(s"SELECT ${calls.mkString(", ")} FROM t"))
+      }
+    }
+  }
+
   test("ScalaUDF returning a different type than its input") {
     // String -> Int output transition. Identity-loop above keeps input == output. This asserts
     // the writer can switch types per the UDF's declared return.
@@ -1468,6 +1631,18 @@ class CometCodegenSuite
       .range(0, 1024, 1, numPartitions = 4)
       .selectExpr("id", "dblId(rand(42)) as r")
     checkSparkAnswerAndOperator(df)
+  }
+
+  test("scalar subquery inside a dispatched expression falls back to Spark") {
+    assume(isSpark40Plus, "collations are Spark 4.0+")
+    withTable("t") {
+      sql("CREATE TABLE t (c1 STRING) USING parquet")
+      sql("INSERT INTO t VALUES ('a')")
+      checkSparkAnswer(sql("SELECT COUNT(CAST((SELECT c1 FROM t) AS STRING COLLATE UTF8_LCASE))"))
+      checkSparkAnswer(sql("SELECT CAST((SELECT c1 FROM t) AS STRING COLLATE UTF8_LCASE) = 'A'"))
+      checkSparkAnswer(
+        sql("SELECT COUNT(CAST((SELECT c1 FROM t) AS STRING COLLATE UTF8_LCASE)) FROM t"))
+    }
   }
 
   test("ScalaUDF composed with reused scalar subquery across projection and filter") {

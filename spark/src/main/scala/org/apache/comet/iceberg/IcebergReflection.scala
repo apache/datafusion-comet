@@ -24,6 +24,7 @@ import java.util.concurrent.ConcurrentHashMap
 
 import scala.util.control.NonFatal
 
+import org.apache.hadoop.conf.Configuration
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
 
@@ -554,12 +555,15 @@ object IcebergReflection extends Logging {
    * reflection failure; callers must fail closed.
    */
   def resolveFileIOClass(fileIO: Any, location: String): Option[Class[_]] =
+    resolveFileIO(fileIO, location).map(_.getClass)
+
+  private def resolveFileIO(fileIO: Any, location: String): Option[Any] =
     if (!classNameInHierarchy(fileIO.getClass, Set(ClassNames.RESOLVING_FILE_IO))) {
-      Some(fileIO.getClass)
+      Some(fileIO)
     } else {
       try {
         findMethodInHierarchy(fileIO.getClass, "io", classOf[String]) match {
-          case Some(ioMethod) => Option(ioMethod.invoke(fileIO, location)).map(_.getClass)
+          case Some(ioMethod) => Option(ioMethod.invoke(fileIO, location))
           case None =>
             logError(
               s"Iceberg reflection failure: ${fileIO.getClass.getName} has no io(String) method")
@@ -623,6 +627,36 @@ object IcebergReflection extends Logging {
       }
     }
   }
+
+  /**
+   * Gets the effective Hadoop configuration of the FileIO opening the table's data location.
+   *
+   * SparkCatalog overlays `spark.sql.catalog.<catalog>.hadoop.*` settings onto the configuration
+   * installed in HadoopConfigurable FileIO implementations. Reading the Spark session's Hadoop
+   * configuration directly misses those catalog-specific overrides. FileIO is test-scoped on the
+   * main classpath, so invoke `getConf` reflectively instead of linking HadoopConfigurable.
+   * ResolvingFileIO's own configuration does not imply that its delegate consumes Hadoop
+   * settings. Read the instantiated delegate instead, including its HadoopFileIO fallback. Throw
+   * when the delegate cannot be resolved so write detection fails closed; None means the resolved
+   * FileIO does not expose a Hadoop configuration.
+   */
+  def getFileIOHadoopConf(table: Any): Option[Configuration] =
+    getFileIO(table).flatMap { fileIO =>
+      val resolved =
+        if (classNameInHierarchy(fileIO.getClass, Set(ClassNames.RESOLVING_FILE_IO))) {
+          val location = getDataLocation(table)
+            .getOrElse(
+              throw new IllegalStateException("could not resolve the table data location"))
+          resolveFileIO(fileIO, location)
+            .getOrElse(
+              throw new IllegalStateException(s"could not resolve the FileIO for $location"))
+        } else {
+          fileIO
+        }
+      findMethodInHierarchy(resolved.getClass, "getConf").flatMap { confMethod =>
+        Option(confMethod.invoke(resolved)).collect { case conf: Configuration => conf }
+      }
+    }
 
   /**
    * Gets the schema from an Iceberg table.
@@ -802,6 +836,37 @@ object IcebergReflection extends Logging {
         }
       }
       .toSeq
+  }
+
+  /**
+   * The names of the `void` partition fields of `spec` whose source column is no longer in the
+   * spec's schema, when `spec` also has a field that is not `void`. A format-version-1 table
+   * keeps a dropped partition field as a `void` transform, and its source column can be dropped
+   * afterwards. Empty when every field is `void`, since such a spec writes unpartitioned. Throws
+   * on reflection failure, so the caller can fail closed.
+   */
+  def voidFieldsWithDroppedSource(spec: Any): Seq[String] = {
+    import scala.jdk.CollectionConverters._
+    val schema = getMethod(spec.getClass, "schema").invoke(spec)
+    val findField = getMethod(schema.getClass, "findField", classOf[Int])
+    val fields =
+      getMethod(spec.getClass, "fields")
+        .invoke(spec)
+        .asInstanceOf[java.util.List[_]]
+        .asScala
+        .toSeq
+    def isVoid(field: Any): Boolean =
+      getMethod(field.getClass, "transform").invoke(field).toString == "void"
+    if (fields.forall(isVoid)) {
+      Seq.empty
+    } else {
+      fields
+        .filter { field =>
+          val sourceId = getMethod(field.getClass, "sourceId").invoke(field).asInstanceOf[Int]
+          isVoid(field) && findField.invoke(schema, sourceId.asInstanceOf[Object]) == null
+        }
+        .map(field => getMethod(field.getClass, "name").invoke(field).asInstanceOf[String])
+    }
   }
 
   /**
@@ -1523,18 +1588,27 @@ object IcebergReflection extends Logging {
    * the native iceberg-rust writer expects.
    */
   def getSchemaFieldNames(schema: Any): Option[Seq[String]] =
+    getSchemaFieldIds(schema).map(_.map(_._1))
+
+  /**
+   * Returns the `(name, fieldId)` of each top-level column of an Iceberg `Schema`, in declared
+   * order.
+   */
+  def getSchemaFieldIds(schema: Any): Option[Seq[(String, Int)]] =
     try {
       val cols = schema.getClass
         .getMethod("columns")
         .invoke(schema)
         .asInstanceOf[java.util.List[_]]
-      val names = new scala.collection.mutable.ArrayBuffer[String](cols.size())
+      val fields = new scala.collection.mutable.ArrayBuffer[(String, Int)](cols.size())
       val it = cols.iterator()
       while (it.hasNext) {
         val col = it.next().asInstanceOf[AnyRef]
-        names += col.getClass.getMethod("name").invoke(col).asInstanceOf[String]
+        val name = col.getClass.getMethod("name").invoke(col).asInstanceOf[String]
+        val id = col.getClass.getMethod("fieldId").invoke(col).asInstanceOf[Int]
+        fields += ((name, id))
       }
-      Some(names.toSeq)
+      Some(fields.toSeq)
     } catch {
       case e: Exception =>
         logError(s"Iceberg reflection failure: Schema.columns(): ${e.getMessage}")
@@ -1816,12 +1890,13 @@ object IcebergReflection extends Logging {
    * Construct a `GenericManifestFile` pointing at an in-memory data manifest. Two version-skew
    * issues to handle:
    *
-   *   1. Constructor shape changed in Iceberg 1.6 when V3's `first_row_id` field was added:
+   *   1. Iceberg 1.8 added a constructor that also takes the snapshot id, and 1.10 removed the
+   *      older one:
    *      - 1.5.2 (Spark 3.4 profile): `(InputFile, int)` -- 2-arg
-   *      - 1.6+ (Spark 3.5 / 4.0 profiles): `(InputFile, int, long)` -- 3-arg with `firstRowId`
-   *        Both forms are package-private. We pass `firstRowId = 0` for the V3 variant because
-   *        all our data manifests are V2 (V3 row-lineage is gated as Unsupported in
-   *        `checkTriggers`).
+   *      - 1.8+ (Spark 3.5 / 4.x profiles): `(InputFile, int, long)` -- 3-arg, the third being
+   *        the snapshot id. Both forms are package-private, and both leave the manifest's
+   *        `first_row_id` null, so the reader assigns no row ids to the decoded `DataFile`s. On a
+   *        format-version 3 table the commit assigns them, as it does for iceberg-java's files.
    *
    * 2. `ManifestFiles.read` on Iceberg 1.5.2 refuses to read a `ManifestFile` whose
    * `snapshotId()` is `null` (`InheritableMetadataFactory.fromManifest` throws "Cannot read from

@@ -549,14 +549,14 @@ case class CometScanRule(session: SparkSession)
         }
         val icebergDataBucket: Option[String] = taskValidation.dataFileBuckets.headOption
 
-        // The HDFS analogue of the multi-bucket check above: one `hdfs.name-node` per scan, and
-        // it wins over every path authority, so a second nameservice would be read from the
-        // first one's NameNode at the same relative path.
+        // The HDFS analogue of the multi-bucket check above: Comet declares the NameNodes of one
+        // HDFS authority per scan (`hadoopToIcebergHdfsProperties`), so a second portless
+        // authority would reach native undeclared.
         if (taskValidation.dataFileHdfsAuthorities.size > 1) {
           fallbackReasons +=
             "Iceberg scan reads data/delete files across multiple HDFS authorities " +
               s"(${taskValidation.dataFileHdfsAuthorities.toSeq.sorted.mkString(", ")}); " +
-              "Comet's native reader resolves a single NameNode per scan"
+              "Comet declares the NameNodes of a single HDFS authority per scan"
           return withFallbackReasons(scanExec, fallbackReasons.toSet)
         }
         // The DATA authority, which Iceberg allows to differ from the metadata location
@@ -575,6 +575,17 @@ case class CometScanRule(session: SparkSession)
         // If any required reflection fails, this returns None, and we fall back to Spark.
         // First get metadataLocation and catalogProperties which are needed by the factory.
         val tableOpt = IcebergReflection.getTable(scanExec.scan)
+
+        // The Hadoop configuration HDFS NameNodes are resolved from: the session's, overlaid
+        // with the table FileIO's, which carries the catalog's `hadoop.*` overrides the JVM reader
+        // honours. Only an HDFS location asks, so other tables never resolve their FileIO.
+        lazy val hdfsResolutionConf: Configuration = CometIcebergNativeScan.hdfsResolutionConf(
+          hadoopConf,
+          tableOpt.flatMap(table =>
+            scala.util.Try(IcebergReflection.getFileIOHadoopConf(table)).toOption.flatten))
+        def hdfsHadoopConf(location: java.net.URI): Configuration =
+          if (NativeConfig.lowerScheme(location).contains("hdfs")) hdfsResolutionConf
+          else hadoopConf
 
         val metadataLocationOpt = tableOpt.flatMap { table =>
           IcebergReflection.getMetadataLocation(table)
@@ -633,9 +644,10 @@ case class CometScanRule(session: SparkSession)
               .flatMap(IcebergReflection.getFileIOProperties)
               .getOrElse(Map.empty)
 
-            // Before `fileIOProperties` so an explicit catalog `hdfs.name-node` wins.
+            // Before `fileIOProperties` so an explicit catalog `hdfs.name-node.<nameservice>` wins.
+            val hdfsUri = hdfsLocationUri(effectiveUri)
             val hadoopDerivedHdfsProperties = CometIcebergNativeScan
-              .hadoopToIcebergHdfsProperties(hdfsLocationUri(effectiveUri), hadoopConf)
+              .hadoopToIcebergHdfsProperties(hdfsUri, hdfsHadoopConf(hdfsUri))
 
             // Iceberg reads the alias opt-in from catalog_properties (IcebergScanCommon has no
             // object_store_options), and hadoopToIcebergS3Properties drops non-fs.s3a keys, so
@@ -688,13 +700,15 @@ case class CometScanRule(session: SparkSession)
             false
           }
 
-        // The native HDFS client reaches the NameNode only through `hdfs.name-node` or the path
-        // authority. Decline what it could not reach (authority-less locations, a portless
-        // `hdfs.name-node` entry, an HA nameservice that did not resolve) here, against the very
-        // catalog properties native receives, instead of failing a task on an executor.
+        // The native HDFS client dials an authority with a port as is and resolves a portless one
+        // (a nameservice) only through its `hdfs.name-node.<nameservice>` declaration. Decline what
+        // it could not reach (authority-less locations, a NameNode entry that is not host:port, a
+        // nameservice that did not resolve) here, against the very catalog properties native
+        // receives, instead of failing a task on an executor.
+        val hdfsUri = hdfsLocationUri(metadataUri)
         val hdfsNameNodeReachable = CometIcebergNativeScan.hdfsNameNodeFallbackReason(
-          hdfsLocationUri(metadataUri),
-          hadoopConf,
+          hdfsUri,
+          hdfsHadoopConf(hdfsUri),
           metadata.catalogProperties) match {
           case Some(reason) =>
             fallbackReasons += reason
@@ -1189,6 +1203,12 @@ case class CometScanTypeChecker() extends DataTypeSupport with CometTypeShim {
           s"$dt. Set ${CometConf.COMET_PARQUET_UNSIGNED_SMALL_INT_CHECK.key}=false to allow " +
           "native execution if your data does not contain unsigned small integers. " +
           CometConf.COMPAT_GUIDE
+        false
+      case dt if isTimeType(dt) =>
+        // The native Parquet reader has not been taught to decode the TIME logical type into
+        // an Arrow Time64(NANOSECOND) vector, so fall back to Spark for scans that expose one.
+        fallbackReasons += s"Unsupported $name of type $dt (native Parquet scan does not " +
+          "support TIME)"
         false
       case dt if isStringCollationType(dt) =>
         // we don't need specific support for collation in scans, but this
