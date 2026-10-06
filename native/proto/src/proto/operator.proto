@@ -782,6 +782,16 @@ message IcebergWriteCommon {
   // string when the table has no catalog identity (e.g. HadoopTables loaded by raw path). Mirrors
   // `IcebergScanCommon.catalog_name`.
   string catalog_name = 11;
+
+  // Internal scheduler integration test hook. Never populated by the planner or SQLConf.
+  // The test captures it on the driver and stamps a distinct directory per task attempt.
+  IcebergWriteTestProbe test_probe = 12;
+}
+
+message IcebergWriteTestProbe {
+  string attempt_directory = 1;
+  uint64 pause_after_rows = 2;
+  uint64 timeout_millis = 3;
 }
 
 // Single Iceberg write operator. Per-task fields are populated by the JVM exec wrapper at task

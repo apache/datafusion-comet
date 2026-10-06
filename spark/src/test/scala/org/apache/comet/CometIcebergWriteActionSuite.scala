@@ -20,7 +20,7 @@
 package org.apache.comet
 
 import java.io.File
-import java.nio.file.{FileAlreadyExistsException, Files, Path}
+import java.nio.file.{FileAlreadyExistsException, Files}
 import java.sql.Timestamp
 import java.util.concurrent.{CountDownLatch, TimeUnit}
 import java.util.concurrent.atomic.AtomicReference
@@ -46,7 +46,7 @@ import org.apache.spark.sql.DataFrame
 import org.apache.spark.sql.Row
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.Attribute
-import org.apache.spark.sql.comet.{CometIcebergWriteExec, CometMergeRowsExec, IcebergCommitExec, IcebergWriteExec}
+import org.apache.spark.sql.comet.{CometIcebergWriteExec, CometMergeRowsExec, IcebergCommitExec, IcebergSchedulerTestProbe, IcebergWriteExec}
 import org.apache.spark.sql.connector.catalog.InMemoryTableCatalog
 import org.apache.spark.sql.connector.write.{BatchWrite, DataWriterFactory, PhysicalWriteInfo, Write, WriterCommitMessage}
 import org.apache.spark.sql.execution.{ColumnarToRowTransition, LeafExecNode, SparkPlan}
@@ -61,24 +61,6 @@ import org.apache.comet.serde.Unsupported
 import org.apache.comet.serde.operator.CometIcebergNativeWrite
 
 private case class WriteSnapshot(snapshotDelta: Long, plans: Seq[SparkPlan])
-
-private object IcebergTestFiles {
-
-  /** Relative paths of every regular parquet file under `root`. */
-  def parquetFiles(root: Path): Set[String] = {
-    if (!Files.exists(root)) return Set.empty
-    val stream = Files.walk(root)
-    try {
-      stream
-        .iterator()
-        .asScala
-        .filter(path =>
-          Files.isRegularFile(path) && path.getFileName.toString.endsWith(".parquet"))
-        .map(path => root.relativize(path).toString)
-        .toSet
-    } finally stream.close()
-  }
-}
 
 private case class ReportedWrite(
     writer: String,
@@ -3071,6 +3053,70 @@ class CometIcebergWriteActionSuite
     }
   }
 
+  test("native acceleration: a post-native handoff failure retries once") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { warehouseDir =>
+      val table = "handoff_retry_target"
+      createTable(warehouseDir, table, partitionSpec = "")
+      val session = spark
+      import session.implicits._
+      (1 to 1000)
+        .map(i => (i, s"r$i", i.toDouble))
+        .toDF("id", "region", "amount")
+        .coalesce(1)
+        .createOrReplaceTempView("handoff_retry_src")
+
+      val handoffs = new AtomicReference[Vector[(Int, Vector[String])]](Vector.empty)
+      val snapshot = withNativeEnabled {
+        CometIcebergWriteExec.withPostNativeHandoffFailpoint { locations =>
+          val attempt = TaskContext.get().attemptNumber()
+          handoffs.getAndUpdate(_ :+ ((attempt, locations.toVector)))
+          if (attempt == 0) throw new RuntimeException("first handoff fails")
+        } {
+          captureWrite(table) {
+            spark.sql(s"INSERT INTO $catalog.$ns.$table " +
+              "SELECT id, region, amount FROM handoff_retry_src")
+          }
+        }
+      }
+      assert(snapshot.snapshotDelta == 1L, s"expected one snapshot, got $snapshot")
+      assert(
+        snapshot.plans.exists(p =>
+          collectWithSubqueries(p) { case w: CometIcebergWriteExec => w }.nonEmpty),
+        s"retry did not run the native writer: ${snapshot.plans.mkString("\n--\n")}")
+      val attempts = handoffs.get()
+      assert(
+        attempts.map(_._1) == Vector(0, 1),
+        s"expected one failed attempt and retry: $attempts")
+      assert(attempts.forall(_._2.nonEmpty), s"native handoff reported no files: $attempts")
+      val root = dataDir(table).toPath.toAbsolutePath
+      def relativePath(location: String): String = {
+        val uri = new java.net.URI(location)
+        val file = if (uri.getScheme == null) new File(location) else new File(uri)
+        root.relativize(file.toPath.toAbsolutePath).toString
+      }
+      val failedPaths = attempts.head._2.map(relativePath).toSet
+      val winnerPaths = attempts.last._2.map(relativePath).toSet
+      assert(
+        (failedPaths intersect winnerPaths).isEmpty,
+        "retry reused failed attempt file names")
+      val referenced = spark
+        .sql(s"SELECT file_path FROM $catalog.$ns.$table.files")
+        .collect()
+        .map(row => relativePath(row.getString(0)))
+        .toSet
+      val physical = parquetFiles(root.toFile)
+      assert(referenced == winnerPaths, s"manifest differs from retry files: $referenced")
+      assert(
+        physical == referenced,
+        s"orphan or missing files: ${physical -- referenced}, ${referenced -- physical}")
+      assert(
+        (failedPaths intersect physical).isEmpty,
+        s"failed attempt files survived: $failedPaths")
+      assertRows(table, expectedIds = 1 to 1000)
+    }
+  }
+
   test("native acceleration: a mid-write failure retries without orphan files") {
     assumeNativeAcceleration()
     withIcebergCatalog { warehouseDir =>
@@ -3668,6 +3714,65 @@ class CometIcebergWriteActionSuite
       }
       assertSplitUsage(rtasPlans, "RTAS")
       assertRows("ctas_tgt", expectedIds = Seq(1, 2))
+    }
+  }
+
+  test("native acceleration: scheduler probe records handoff and accepted files") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    withIcebergCatalog { warehouseDir =>
+      createTable(warehouseDir, "scheduler_smoke", partitionSpec = "")
+      withTempIcebergDir { gates =>
+        val probe = SharedIcebergSchedulerProbe(gates.getAbsolutePath, "smoke", 10000L)
+        // Round-trip the actual probe, rather than depending on local-mode static state.
+        val bytes = new java.io.ByteArrayOutputStream()
+        val output = new java.io.ObjectOutputStream(bytes)
+        try output.writeObject(probe)
+        finally output.close()
+        val input =
+          new java.io.ObjectInputStream(new java.io.ByteArrayInputStream(bytes.toByteArray))
+        val restored =
+          try input.readObject().asInstanceOf[SharedIcebergSchedulerProbe]
+          finally input.close()
+        val snapshot = withNativeEnabled {
+          IcebergSchedulerTestProbe.withProbe(restored) {
+            captureWrite("scheduler_smoke") {
+              coalesceInsert("scheduler_smoke", (0 until 100).map(i => (i, "r", i.toDouble)))
+            }
+          }
+        }
+        assert(
+          snapshot.snapshotDelta == 1L,
+          s"expected 1 snapshot, got ${snapshot.snapshotDelta}")
+        assert(
+          collectIcebergWriteOps(snapshot.plans)._1.nonEmpty,
+          s"expected IcebergCommitExec in captured plans:\n${snapshot.plans.mkString("\n--\n")}")
+        val nativeWrites = snapshot.plans.flatMap { plan =>
+          collectWithSubqueries(plan) { case w: CometIcebergWriteExec => w }
+        }
+        assert(
+          nativeWrites.nonEmpty,
+          "expected CometIcebergWriteExec in captured plans:\n" +
+            snapshot.plans.mkString("\n--\n"))
+        val handoffs = IcebergSchedulerFiles.attempts(gates.toPath, "handoff")
+        assert(handoffs.size == 1 && handoffs.head.files.nonEmpty)
+        assert(IcebergSchedulerFiles.attempts(gates.toPath, "complete").size == 1)
+        val accepted = parse(
+          new String(
+            Files.readAllBytes(gates.toPath.resolve("accepted-0.json")),
+            java.nio.charset.StandardCharsets.UTF_8))
+        implicit val formats: Formats = DefaultFormats
+        assert((accepted \ "files").extract[Seq[String]].toSet == handoffs.head.files.toSet)
+        assert(Files.exists(gates.toPath.resolve("committed")))
+        assertRows("scheduler_smoke", expectedIds = 0 until 100)
+        val root = dataDir("scheduler_smoke").toPath.toAbsolutePath.normalize()
+        val owned = handoffs.head.files.map(IcebergSchedulerFiles.relative(root, _)).toSet
+        val referenced = spark
+          .sql(s"SELECT file_path FROM $catalog.$ns.scheduler_smoke.files")
+          .collect()
+          .map(r => IcebergSchedulerFiles.relative(root, r.getString(0)))
+          .toSet
+        assert(IcebergTestFiles.parquetFiles(root) == owned && referenced == owned)
+      }
     }
   }
 

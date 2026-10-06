@@ -1027,16 +1027,37 @@ async fn run_write_task(
         }
     };
 
+    let probe_locations = common
+        .test_probe
+        .as_ref()
+        .map(|_| abort_guard.generator.clone());
     let outcome = async move {
+        let mut rows_written = 0u64;
+        let mut probe_reached = false;
         while let Some(batch) = input.try_next().await? {
             let mut decorated = decorate_batch_with_field_ids(batch, &target_schema)?;
             if nests_floats {
                 decorated = drop_unwritten_values(decorated)?;
             }
+            let rows = decorated.num_rows() as u64;
             let timer = write_time.timer();
             writer.write(decorated, &properties).await?;
             timer.done();
             reservation.try_resize(open_files.bytes() + writer.pending_bytes())?;
+            if let Some(probe) = common.test_probe.as_ref() {
+                rows_written += rows;
+                if !probe_reached && rows_written >= probe.pause_after_rows {
+                    // After write() has made progress, before EOF and close(). The native
+                    // guard still owns these locations, including files not finalized yet.
+                    scheduler_test_gate(
+                        probe,
+                        rows_written,
+                        &probe_locations.as_ref().unwrap().locations(),
+                    )
+                    .await?;
+                    probe_reached = true;
+                }
+            }
         }
         let _timer = write_time.timer();
         writer.close(&properties).await
@@ -1055,6 +1076,36 @@ async fn run_write_task(
             Err(e)
         }
     }
+}
+
+/// Shared-POSIX, bounded gate used only by the explicit scheduler integration probe.
+async fn scheduler_test_gate(
+    probe: &datafusion_comet_proto::spark_operator::IcebergWriteTestProbe,
+    rows: u64,
+    locations: &[String],
+) -> DFResult<()> {
+    use std::path::Path;
+    use std::time::{Duration, Instant};
+
+    let directory = Path::new(&probe.attempt_directory);
+    let payload = serde_json::json!({"rows": rows, "files": locations}).to_string();
+    let pending = directory.join("native-progress.pending");
+    let io_error = |e| DataFusionError::Execution(format!("Iceberg scheduler test probe: {e}"));
+    std::fs::write(&pending, payload).map_err(io_error)?;
+    std::fs::rename(pending, directory.join("native-progress.json")).map_err(io_error)?;
+    let deadline = Instant::now() + Duration::from_millis(probe.timeout_millis);
+    while !directory.join("release-native").exists()
+        && !directory.parent().unwrap().join("release-all").exists()
+    {
+        if Instant::now() >= deadline {
+            return Err(DataFusionError::Execution(format!(
+                "Iceberg scheduler test probe timed out: {}, rows={rows}, files={locations:?}",
+                directory.display()
+            )));
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    Ok(())
 }
 
 /// Enum-based dispatch over the three iceberg-rust partitioning writers, each paired with the
@@ -2794,6 +2845,7 @@ mod tests {
                 writer_mode: writer_mode as i32,
                 parquet_settings: Some(settings),
                 catalog_name: String::new(),
+                test_probe: None,
             })
         }
 
