@@ -1186,6 +1186,20 @@ object CometConf extends ShimCometConf {
       .toSequence
       .createWithDefault(Nil)
 
+  val COMET_SPARK_TO_ARROW_BROADCAST_BUILD_SIDE_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.sparkToColumnar.broadcastBuildSide.enabled")
+      .category(CATEGORY_EXEC)
+      .doc("When enabled, Comet automatically inserts a Spark to Arrow columnar conversion at " +
+        "a leaf that Comet cannot scan natively (for example a Text file source) when that " +
+        "leaf feeds a broadcast join's build side, so the build branch and the join can run " +
+        "natively over the large probe input. The build side is usually small (auto-broadcasts " +
+        "are capped by the broadcast threshold), so the row to Arrow copy is usually cheap - " +
+        "though an explicit BROADCAST hint or a selective filter above the scan can make it " +
+        "larger, so set this to false if that copy is not worth it. This does not require " +
+        s"`${COMET_SPARK_TO_ARROW_ENABLED.key}` to be enabled.")
+      .booleanConf
+      .createWithDefault(true)
+
   val COMET_CASE_CONVERSION_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.caseConversion.enabled")
       .category(CATEGORY_EXEC)
