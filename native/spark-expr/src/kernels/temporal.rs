@@ -731,7 +731,8 @@ pub(crate) fn timestamp_trunc_dyn(
 /// Keep key masking for fallible values and for coarse units with many distinct values, where
 /// masking can avoid expensive calendar work on unused entries. Fine arithmetic processes the
 /// physical values regardless of validity, so infallible fine units never need a key scan.
-/// MICROSECOND is always infallible; SECOND and MILLISECOND are only while they wrap.
+/// MICROSECOND is always infallible. SECOND and MILLISECOND ignore the timezone and, when they do
+/// not wrap, fail only near the lower bound, so only such a value needs the key scan.
 fn timestamp_trunc_dictionary_needs_mask(
     values: &dyn Array,
     keys_len: usize,
@@ -741,11 +742,24 @@ fn timestamp_trunc_dictionary_needs_mask(
     let Some(values) = values.as_any().downcast_ref::<TimestampMicrosecondArray>() else {
         return Ok(true);
     };
+    // Truncation moves backwards by at most a year. Above this conservative lower-bound margin,
+    // UTC/NTZ truncation cannot underflow i64 and all values can be evaluated without a key scan.
+    const LOWER_SAFE_MICROS: i64 = i64::MIN + 370 * MICROS_PER_DAY;
+    let has_value_near_lower_bound = || {
+        values
+            .iter()
+            .flatten()
+            .any(|micros| micros < LOWER_SAFE_MICROS)
+    };
     let granularity = normalize_timestamp_trunc_format(format)?;
     if granularity == "microsecond"
         || (wrap_second_millisecond_overflow && matches!(granularity, "millisecond" | "second"))
     {
         return Ok(false);
+    }
+    if matches!(granularity, "millisecond" | "second") {
+        // These units ignore the timezone, so a non-UTC value needs no masking of its own.
+        return Ok(has_value_near_lower_bound());
     }
     if values.timezone().is_some_and(|tz| !is_utc_timezone(tz)) {
         // Unused non-UTC values can also hit chrono boundary panics, not just Result errors.
@@ -757,13 +771,7 @@ fn timestamp_trunc_dictionary_needs_mask(
         // Dense NULLs/high cardinality otherwise benefit from masking before truncation.
         return Ok(true);
     }
-    // Truncation moves backwards by at most a year. Above this conservative lower-bound margin,
-    // UTC/NTZ truncation cannot underflow i64 and all values can be evaluated without a key scan.
-    const LOWER_SAFE_MICROS: i64 = i64::MIN + 370 * MICROS_PER_DAY;
-    Ok(values
-        .iter()
-        .flatten()
-        .any(|micros| micros < LOWER_SAFE_MICROS))
+    Ok(has_value_near_lower_bound())
 }
 
 /// Convert microseconds since epoch to NaiveDateTime
@@ -1448,8 +1456,8 @@ where
 mod tests {
     use super::{
         naive_to_micros, normalize_timestamp_trunc_format, ntz_trunc_fn_for_format,
-        timestamp_trunc_coarse_micros, timestamp_trunc_ntz, MICROS_PER_DAY,
-        TIMESTAMP_TRUNC_ALIASES,
+        timestamp_trunc_coarse_micros, timestamp_trunc_dictionary_needs_mask, timestamp_trunc_ntz,
+        MICROS_PER_DAY, TIMESTAMP_TRUNC_ALIASES,
     };
     use crate::kernels::temporal::{
         date_trunc, date_trunc_array_fmt_dyn, date_trunc_dyn, timestamp_trunc,
@@ -2200,6 +2208,34 @@ mod tests {
                     .downcast_ref::<TimestampMicrosecondArray>()
                     .unwrap();
                 assert!(decoded.iter().all(|value| value == Some(expected.value(0))));
+            }
+        }
+    }
+
+    #[test]
+    fn test_timestamp_trunc_dictionary_fine_mask_decision() {
+        // SECOND/MILLISECOND ignore the timezone, so a dictionary of safe values is truncated
+        // through its values alone in either mode. Only a value that can fail needs the key scan.
+        for timezone in [None, Some("UTC"), Some("Asia/Tokyo")] {
+            let safe = TimestampMicrosecondArray::from(vec![
+                Some(instant_micros("2024-05-17T12:34:56Z")),
+                None,
+            ])
+            .with_timezone_opt(timezone);
+            let near_min =
+                TimestampMicrosecondArray::from(vec![Some(i64::MIN)]).with_timezone_opt(timezone);
+            for format in ["SECOND", "MILLISECOND"] {
+                for wrap in [true, false] {
+                    assert!(
+                        !timestamp_trunc_dictionary_needs_mask(&safe, 8192, format, wrap).unwrap()
+                    );
+                }
+                assert!(
+                    !timestamp_trunc_dictionary_needs_mask(&near_min, 8192, format, true).unwrap()
+                );
+                assert!(
+                    timestamp_trunc_dictionary_needs_mask(&near_min, 8192, format, false).unwrap()
+                );
             }
         }
     }
