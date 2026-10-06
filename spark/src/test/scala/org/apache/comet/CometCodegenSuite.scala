@@ -241,7 +241,7 @@ class CometCodegenSuite
     val input = new IntervalMonthDayNanoVector("in", CometArrowAllocator)
     val field =
       CometBatchKernelCodegen.toFfiArrowField("out", CalendarIntervalType, nullable = true)
-    val output = CometBatchKernelCodegen.allocateOutput(field, 2, 0)
+    val output = CometBatchKernelCodegen.allocateOutput(CometArrowAllocator, field, 2, 0)
     try {
       input.allocateNew()
       input.setSafe(0, 14, -3, 1234567000L)
@@ -289,7 +289,7 @@ class CometCodegenSuite
       val allocator =
         CometArrowAllocator.newChildAllocator(s"allocateOutput($dataType)", 0, Long.MaxValue)
       try {
-        CometBatchKernelCodegen.allocateOutput(field, 4, 0, allocator).close()
+        CometBatchKernelCodegen.allocateOutput(allocator, field, 4, 0).close()
         assert(
           allocator.getAllocatedMemory == 0,
           s"the $dataType output did not release all of its memory")
@@ -2162,7 +2162,7 @@ class CometCodegenSuite
       exprVec.setSafe(0, bytes)
       exprVec.setValueCount(1)
 
-      out = new CometScalaUDFCodegen().evaluate(Array(exprVec, timeVec), 2)
+      out = new CometScalaUDFCodegen().evaluate(CometArrowAllocator, Array(exprVec, timeVec), 2)
       val comet = CometVector.getVector(out.asInstanceOf[FieldVector], null)
       assert(comet.getLong(0) === 45296000000000L)
       assert(comet.isNullAt(1))

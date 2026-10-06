@@ -30,7 +30,6 @@ import org.apache.spark.sql.execution.ExecSubqueryExpression
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
-import org.apache.comet.CometArrowAllocator
 import org.apache.comet.shims.{CometExprTraitShim, CometTypeShim}
 
 /**
@@ -212,11 +211,11 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
    * [[CometBatchKernelCodegenOutput.allocateOutput]].
    */
   def allocateOutput(
+      allocator: BufferAllocator,
       field: Field,
       numRows: Int,
-      estimatedBytes: Int,
-      allocator: BufferAllocator = CometArrowAllocator): FieldVector =
-    CometBatchKernelCodegenOutput.allocateOutput(field, numRows, estimatedBytes, allocator)
+      estimatedBytes: Int): FieldVector =
+    CometBatchKernelCodegenOutput.allocateOutput(allocator, field, numRows, estimatedBytes)
 
   /**
    * Spark `DataType` to an Arrow `Field`, resolving mismatches between Arrow Java's default field

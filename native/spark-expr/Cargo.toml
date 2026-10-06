@@ -47,6 +47,8 @@ jni = "0.22.4"
 # jni-bridge's `jni_static_call!` expands to `paste::paste!`, so callers need `paste` directly
 paste = "1.0.14"
 futures = { workspace = true }
+# `block_in_place` for the JVM UDF call, which sometimes waits on Spark memory
+tokio = { version = "1", features = ["rt-multi-thread"] }
 twox-hash = "2.1.2"
 rand = { workspace = true }
 base64 = "0.23.0"
@@ -60,7 +62,6 @@ datasketches = { workspace = true }
 arrow = {workspace = true}
 criterion = { version = "0.7", features = ["async", "async_tokio", "async_std"] }
 rand = { workspace = true}
-tokio = { version = "1", features = ["rt-multi-thread"] }
 datafusion = { workspace = true, features = ["sql"] }
 
 # `paste` is only used through macro expansion, which cargo machete cannot see

@@ -19,7 +19,14 @@
 
 package org.apache.comet.udf
 
+import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector.ValueVector
+
+import org.apache.comet.CometArrowAllocator
+
+object CometUDF {
+  def rootAllocator: BufferAllocator = CometArrowAllocator
+}
 
 /**
  * Scalar UDF invoked from native execution via JNI. Receives Arrow vectors as input and returns
@@ -28,6 +35,16 @@ import org.apache.arrow.vector.ValueVector
  *   - Vector arguments arrive at the row count of the current batch.
  *   - Scalar (literal-folded) arguments arrive as length-1 vectors and must be read at index 0.
  *   - The returned vector's length must match `numRows`.
+ *   - Returned vectors and temporary buffers must use `allocator`, and buffers kept past the call
+ *     must be released in `close` (see below). With off-heap Tungsten memory
+ *     (`spark.memory.offHeap.enabled`), allocations are charged to the current Spark task while
+ *     the UDF holds them; when the returned vector is handed to native execution its accounting
+ *     moves with it, so native operators that retain the buffers do not charge the task a second
+ *     time. The charge records memory use but never refuses it: when Spark grants less than an
+ *     allocation asks for, the allocation still succeeds and only the granted part is charged,
+ *     leaving the pressure to native operators, which can spill. With on-heap Tungsten memory
+ *     there is no matching Spark pool for off-heap Arrow buffers, so they are tracked by the
+ *     allocator but not charged to the task.
  *
  * `numRows` mirrors DataFusion's `ScalarFunctionArgs.number_rows` and is the batch row count.
  * UDFs that always have at least one batch-length input can read length from it and ignore
@@ -36,13 +53,27 @@ import org.apache.arrow.vector.ValueVector
  *
  * Implementations must have a public no-arg constructor. A fresh instance is created per Spark
  * task attempt per class and reused for every call within that task. Instances may hold per-task
- * state in fields (counters, compiled patterns, scratch buffers); instances are dropped at task
- * completion. Do not hold state that must persist across tasks.
+ * state in fields (counters, compiled patterns, scratch buffers). Do not hold state that must
+ * persist across tasks. Once the task has completed and no `evaluate` call is in flight, the
+ * instance is closed with `close` and dropped. A scratch buffer kept in a field must come from
+ * `allocator` and be released in `close`: the task's allocator closes only once it holds no
+ * memory, so a buffer that is never released leaks for the life of the executor.
  *
- * At most one thread calls `evaluate` on a given instance at a time: Spark runs one native future
- * per partition and Tokio polls one future per worker, so the per-task instance is never touched
- * concurrently even if the task's future migrates between Tokio workers across batches.
+ * Native execution may call `evaluate` concurrently from multiple Tokio workers within one task:
+ * DataFusion operators can pipeline through spawned Tokio tasks (e.g. `HashJoinExec` overlaps
+ * build and probe via `OnceAsync`), and one Spark task can drive several native plans whose
+ * prefetching drivers run in parallel. Implementations with mutable state must synchronize
+ * access; `CometScalaUDFCodegen` runs its body under `this.synchronized` for this reason.
  */
 trait CometUDF {
-  def evaluate(inputs: Array[ValueVector], numRows: Int): ValueVector
+  def evaluate(allocator: BufferAllocator, inputs: Array[ValueVector], numRows: Int): ValueVector
+
+  /**
+   * Releases what this instance holds, in particular buffers it kept from the `allocator` passed
+   * to `evaluate`. Called once, after the Spark task that created the instance has completed and
+   * no `evaluate` call is in flight, possibly on a different thread from the last `evaluate`. Not
+   * called for instances created outside a Spark task, which live for the life of the process. A
+   * non-fatal failure is logged and does not fail the task. The default does nothing.
+   */
+  def close(): Unit = {}
 }
