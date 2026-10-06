@@ -21,21 +21,24 @@ package org.apache.spark.sql.comet.execution.arrow
 
 import java.math.{BigDecimal => JavaBigDecimal, BigInteger}
 
+import scala.collection.mutable.ArrayBuffer
 import scala.jdk.CollectionConverters._
 import scala.util.Random
 
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 
-import org.apache.arrow.memory.RootAllocator
-import org.apache.arrow.vector.{DecimalVector, FieldVector, IntVector, ValueVector, VarCharVector, VectorSchemaRoot}
+import org.apache.arrow.memory.{ArrowBuf, RootAllocator}
+import org.apache.arrow.vector.{BaseVariableWidthVector, DecimalVector, FieldVector, IntVector, ValueVector, VarCharVector, VectorSchemaRoot}
 import org.apache.arrow.vector.complex.{ListVector, StructVector}
-import org.apache.spark.sql.catalyst.expressions.{GenericInternalRow, UnsafeProjection}
-import org.apache.spark.sql.catalyst.util.GenericArrayData
+import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.catalyst.expressions.{GenericInternalRow, UnsafeProjection, UnsafeRow}
+import org.apache.spark.sql.catalyst.util.{ArrayBasedMapData, GenericArrayData}
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.vectorized.{ConstantColumnVector, Dictionary, OffHeapColumnVector, OnHeapColumnVector, WritableColumnVector}
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
+import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
 
@@ -124,6 +127,7 @@ class CometArrowWriterSuite extends AnyFunSuite with Matchers {
   /**
    * Fills rows `[0, n)`. Array and map rows are laid out back to back, or from the last row
    * backwards when `reversed`, and null rows get no offsets at all, as in Spark's readers.
+   * Collections hold fewer than `maxLength` elements.
    */
   private def fill(
       v: WritableColumnVector,
@@ -131,18 +135,19 @@ class CometArrowWriterSuite extends AnyFunSuite with Matchers {
       n: Int,
       rnd: Random,
       nullFraction: Double,
-      reversed: Boolean): Unit = dataType match {
+      reversed: Boolean,
+      maxLength: Int = 6): Unit = dataType match {
     case st: StructType =>
       (0 until n).foreach(i => if (rnd.nextDouble() < nullFraction) v.putNull(i))
       st.fields.zipWithIndex.foreach { case (field, ordinal) =>
         val child = v.getChild(ordinal)
         child.reserve(n)
-        fill(child, field.dataType, n, rnd, nullFraction, reversed)
+        fill(child, field.dataType, n, rnd, nullFraction, reversed, maxLength)
         // Spark's Parquet reader nulls the fields of a null struct. Other producers need not.
         (0 until n).foreach(i => if (v.isNullAt(i) && rnd.nextBoolean()) child.putNull(i))
       }
     case _: ArrayType | _: MapType =>
-      val lengths = Array.fill(n)(rnd.nextInt(6))
+      val lengths = Array.fill(n)(rnd.nextInt(maxLength))
       val children = dataType match {
         case _: ArrayType => Seq(v.arrayData())
         case _ => Seq(v.getChild(0), v.getChild(1))
@@ -159,10 +164,10 @@ class CometArrowWriterSuite extends AnyFunSuite with Matchers {
       }
       dataType match {
         case ArrayType(elementType, _) =>
-          fill(v.arrayData(), elementType, offset, rnd, nullFraction, reversed)
+          fill(v.arrayData(), elementType, offset, rnd, nullFraction, reversed, maxLength)
         case MapType(keyType, valueType, _) =>
-          fill(v.getChild(0), keyType, offset, rnd, 0.0, reversed)
-          fill(v.getChild(1), valueType, offset, rnd, nullFraction, reversed)
+          fill(v.getChild(0), keyType, offset, rnd, 0.0, reversed, maxLength)
+          fill(v.getChild(1), valueType, offset, rnd, nullFraction, reversed, maxLength)
       }
     case _ =>
       (0 until n).foreach { i =>
@@ -222,12 +227,20 @@ class CometArrowWriterSuite extends AnyFunSuite with Matchers {
               a.getElementStartIndex(i) shouldBe e.getElementStartIndex(i)
               a.getElementEndIndex(i) shouldBe e.getElementEndIndex(i)
             case (_: StructVector, _) =>
-            case _ if !expected.isNull(i) =>
-              (expected.getObject(i), actual.getObject(i)) match {
-                case (e: Array[Byte], a: Array[Byte]) => a.toSeq shouldBe e.toSeq
-                case (e, a) => a shouldBe e
-              }
             case _ =>
+              // A reader takes each value's start from the end of the one before, null or not.
+              // The paths may differ in the bytes under a null struct, but never go backwards.
+              actual match {
+                case a: BaseVariableWidthVector =>
+                  a.getStartOffset(i + 1) should be >= a.getStartOffset(i)
+                case _ =>
+              }
+              if (!expected.isNull(i)) {
+                (expected.getObject(i), actual.getObject(i)) match {
+                  case (e: Array[Byte], a: Array[Byte]) => a.toSeq shouldBe e.toSeq
+                  case (e, a) => a shouldBe e
+                }
+              }
           }
         }
       }
@@ -638,6 +651,151 @@ class CometArrowWriterSuite extends AnyFunSuite with Matchers {
           batches.foreach(_.close())
         }
       }
+    }
+  }
+
+  // Nested shapes whose unsafe forms take paths of their own: elements converted one at a time,
+  // collections inside collections, and a struct wider than one word of null bits.
+  private val moreNestedTypes: Seq[DataType] = Seq(
+    ArrayType(BooleanType),
+    ArrayType(DecimalType(38, 10)),
+    ArrayType(BinaryType),
+    ArrayType(MapType(StringType, IntegerType)),
+    MapType(StringType, ArrayType(StringType)),
+    MapType(LongType, DecimalType(9, 2)),
+    new StructType()
+      .add("m", MapType(IntegerType, StringType))
+      .add("s", new StructType().add("x", BinaryType).add("y", DecimalType(18, 4))),
+    StructType(
+      (0 until 70).map(i => StructField(s"f$i", if (i % 7 == 3) StringType else LongType))))
+
+  /**
+   * Writes `numRows` rows, `row(i)` through the generic row path and its unsafe projection
+   * through the unsafe one, the latter copied to off-heap memory when `offHeap`, as Spark's
+   * off-heap pages hold rows. A third writer alternates between the two kinds of row, so each
+   * path appends where the other left off, and a fourth writes generic rows holding the unsafe
+   * row's values, as a copied row holds unsafe arrays. All of them must write the same vectors.
+   */
+  private def assertUnsafeRowsMatchGeneric(numRows: Int, schema: StructType, offHeap: Boolean)(
+      row: Int => InternalRow): Unit = {
+    val allocator = new RootAllocator(Long.MaxValue)
+    val arrowSchema = Utils.toArrowSchema(schema, "UTC")
+    val roots = Seq.fill(4)(VectorSchemaRoot.create(arrowSchema, allocator))
+    val buffers = ArrayBuffer.empty[ArrowBuf]
+    try {
+      // Every writer starts undersized, so each buffer has to grow.
+      val writers = roots.map(ArrowWriter.create(_, 1))
+      val project = UnsafeProjection.create(schema)
+      (0 until numRows).foreach { i =>
+        val generic = row(i)
+        val projected = project(generic)
+        val unsafe = if (offHeap) {
+          val buffer = allocator.buffer(math.max(projected.getSizeInBytes, 8).toLong)
+          buffers += buffer
+          projected.writeToMemory(null, buffer.memoryAddress())
+          val copy = new UnsafeRow(projected.numFields())
+          copy.pointTo(null, buffer.memoryAddress(), projected.getSizeInBytes)
+          copy
+        } else {
+          projected
+        }
+        writers(0).write(generic)
+        writers(1).write(unsafe)
+        writers(2).write(if (i % 3 == 1) generic else unsafe)
+        writers(3).write(new GenericInternalRow(Array.tabulate[Any](schema.length) { ordinal =>
+          unsafe.get(ordinal, schema(ordinal).dataType)
+        }))
+      }
+      writers.foreach(_.finish())
+      roots.tail.foreach { root =>
+        root.getRowCount shouldBe numRows
+        roots.head.getFieldVectors.asScala.zip(root.getFieldVectors.asScala).foreach {
+          case (e, a) => assertSameVectors(e, a, "")
+        }
+      }
+    } finally {
+      roots.foreach(_.close())
+      buffers.foreach(_.close())
+      allocator.close()
+    }
+  }
+
+  for (offHeap <- Seq(false, true); nullFraction <- Seq(0.0, 0.2, 1.0)) {
+    test(s"unsafe rows match the generic row path: offHeap=$offHeap, nulls=$nullFraction") {
+      val types = primitiveTypes ++ nestedTypes ++ moreNestedTypes
+      val schemas = types.map(t => new StructType().add("c", t)) :+
+        // A row wider than one word of null bits, with every type in it.
+        StructType(types.zipWithIndex.flatMap { case (t, i) =>
+          Seq(StructField(s"a$i", t), StructField(s"b$i", t), StructField(s"c$i", t))
+        })
+      schemas.foreach { schema =>
+        withClue(s"${schema.simpleString}: ") {
+          val rnd = new Random(schema.hashCode)
+          val vectors = schema.fields.map(f => newVector(numRows, f.dataType, offHeap = false))
+          try {
+            schema.fields.zip(vectors).foreach { case (field, v) =>
+              fill(v, field.dataType, numRows, rnd, nullFraction, reversed = false)
+            }
+            val batch = new ColumnarBatch(vectors.toArray[ColumnVector], numRows)
+            assertUnsafeRowsMatchGeneric(numRows, schema, offHeap)(batch.getRow)
+          } finally {
+            vectors.foreach(_.close())
+          }
+        }
+      }
+    }
+  }
+
+  test("unsafe rows match the generic row path with collections past 64 elements") {
+    // An unsafe array keeps its null bits in 64-bit words, so long collections span several,
+    // and their elements land at every bit offset of the Arrow validity buffer.
+    val types = (nestedTypes ++ moreNestedTypes).collect { case t @ (_: ArrayType | _: MapType) =>
+      t
+    }
+    for (dataType <- types; nullFraction <- Seq(0.0, 0.3)) {
+      withClue(s"$dataType nulls=$nullFraction: ") {
+        val n = 24
+        val rnd = new Random(dataType.hashCode)
+        val v = newVector(n, dataType, offHeap = false)
+        try {
+          fill(v, dataType, n, rnd, nullFraction, reversed = false, maxLength = 150)
+          val batch = new ColumnarBatch(Array[ColumnVector](v), n)
+          assertUnsafeRowsMatchGeneric(n, new StructType().add("c", dataType), offHeap = false)(
+            batch.getRow)
+        } finally {
+          v.close()
+        }
+      }
+    }
+  }
+
+  test("unsafe rows copy strings and binaries of every length") {
+    // Short values are copied a word at a time and long ones in one call, so this covers both
+    // sides of the threshold and every remainder.
+    val schema = new StructType()
+      .add("s", StringType)
+      .add("b", BinaryType)
+      .add("a", ArrayType(StringType))
+      .add("m", MapType(StringType, BinaryType))
+    val rows = (0 to 140).map { length =>
+      if (length % 17 == 5) {
+        new GenericInternalRow(4)
+      } else {
+        val bytes = Array.tabulate[Byte](length)(i => (i * 31 + length).toByte)
+        val text = UTF8String.fromBytes(bytes)
+        val half = UTF8String.fromBytes(bytes, length / 3, length / 2)
+        new GenericInternalRow(
+          Array[Any](
+            text,
+            bytes,
+            new GenericArrayData(Array[Any](text, null, half)),
+            new ArrayBasedMapData(
+              new GenericArrayData(Array[Any](text, UTF8String.fromString(s"key-$length"))),
+              new GenericArrayData(Array[Any](null, bytes)))))
+      }
+    }
+    Seq(false, true).foreach { offHeap =>
+      assertUnsafeRowsMatchGeneric(rows.size, schema, offHeap)(rows)
     }
   }
 }
