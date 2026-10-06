@@ -26,6 +26,7 @@ import org.apache.arrow.vector.types.pojo.Field
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions.{BoundReference, Expression, Literal, Unevaluable}
 import org.apache.spark.sql.catalyst.expressions.codegen._
+import org.apache.spark.sql.execution.ExecSubqueryExpression
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
@@ -173,26 +174,29 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
     // instance with a single `init(partitionIndex)` call, so `Rand` / `MonotonicallyIncreasingID`
     // state advances correctly across batches.
     //
-    // `ExecSubqueryExpression` (`ScalarSubquery`, `InSubqueryExec`) is accepted: the surrounding
-    // Comet operator's inherited `SparkPlan.waitForSubqueries` populates the subquery's
-    // `result` field before evaluation. The closure serializer captures that value into the
-    // arg-0 bytes, and the dispatcher keys its compile cache on those bytes, so distinct subquery
-    // results produce distinct cache entries.
+    // `ExecSubqueryExpression` (`ScalarSubquery`, `InSubqueryExec`): rejected. The tree is
+    // closure-serialized at plan time, before Spark has run the subquery, so the deserialized
+    // copy never holds a result and `ScalarSubquery.doGenCode` fails with "has not finished".
     //
     // `Unevaluable`: rejected by default. `isCodegenInertUnevaluable` exempts version-specific
     // leaves that are `Unevaluable` but never invoked by codegen (e.g. Spark 4.0's
     // `ResolvedCollation` in `Collate.collation`, where `Collate.genCode` delegates to its child).
+    //
+    // A native UDF call is a `CodegenFallback` whose `eval` only throws, since its implementation
+    // runs in the native library.
     boundExpr.find {
       case _: org.apache.spark.sql.catalyst.expressions.aggregate.AggregateFunction => true
       case _: org.apache.spark.sql.catalyst.expressions.Generator => true
+      case _: ExecSubqueryExpression => true
       case u: Unevaluable if isCodegenInertUnevaluable(u) => false
       case _: Unevaluable => true
+      case _: org.apache.comet.udf.NativeUdfCall => true
       case _ => false
     } match {
       case Some(bad) =>
         return Some(
           s"codegen dispatch: expression ${bad.getClass.getSimpleName} not supported " +
-            "(aggregate, generator, or unevaluable)")
+            "(aggregate, generator, subquery, unevaluable, or native UDF)")
       case None =>
     }
     val badRef = boundExpr.collectFirst {

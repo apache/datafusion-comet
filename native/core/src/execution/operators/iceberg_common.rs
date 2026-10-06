@@ -574,7 +574,7 @@ fn env_region_present() -> bool {
 /// The JVM write gate (`CometIcebergNativeWrite.storageScheme`) mirrors this rule exactly, case
 /// included. Change both together, and keep the cases in
 /// `scheme_of_extracts_scheme_from_all_uri_forms` in step with its `storageScheme` test.
-fn scheme_of(path: &str) -> &str {
+pub(crate) fn scheme_of(path: &str) -> &str {
     match path.split_once(':') {
         Some((scheme, _)) if !scheme.is_empty() && !scheme.contains('/') => scheme,
         _ => "file",
