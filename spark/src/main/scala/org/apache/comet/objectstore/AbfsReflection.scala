@@ -82,6 +82,11 @@ private[objectstore] object AbfsReflection {
         container: String,
         uri: URI): AnyRef
 
+    /**
+     * `new AbfsConfiguration(conf, account)`: the form `SimpleKeyProvider` reads the key with.
+     */
+    def newKeyProviderConfiguration(conf: Configuration, account: String): AnyRef
+
     /** `getAuthType(account)`: the `AuthType` enum constant. */
     def getAuthType(abfsConf: AnyRef, account: String): Enum[_]
 
@@ -210,6 +215,9 @@ private[objectstore] object AbfsReflection {
           construct(accountConstructor, conf, account)
       }
     }
+
+    override def newKeyProviderConfiguration(conf: Configuration, account: String): AnyRef =
+      construct(accountConstructor, conf, account)
 
     override def getAuthType(abfsConf: AnyRef, account: String): Enum[_] =
       invoke(getAuthTypeMethod, abfsConf, account).asInstanceOf[Enum[_]]

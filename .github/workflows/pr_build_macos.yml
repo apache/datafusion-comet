@@ -274,6 +274,7 @@ jobs:
               org.apache.comet.udf.CometUdfBridgeSuite
               org.apache.comet.objectstore.NativeConfigSuite
               org.apache.comet.objectstore.AbfsAuthResolverSuite
+              org.apache.comet.objectstore.AbfsAuthParitySuite
               org.apache.comet.serde.operator.CometIcebergNativeScanSuite
               org.apache.comet.serde.operator.CometNativeScanSuite
               org.apache.spark.sql.CometToPrettyStringSuite

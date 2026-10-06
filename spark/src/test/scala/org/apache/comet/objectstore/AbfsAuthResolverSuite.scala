@@ -196,7 +196,7 @@ class AbfsAuthResolverSuite extends AnyFunSuite with Matchers {
     assertNoAzureKeys(options)
   }
 
-  test("Failed - an AccessTokenProvider that is not one of the five built-ins is Hadoop's F16") {
+  test("Failed - an AccessTokenProvider that is not one of the five built-ins fails in Hadoop") {
     // Hadoop matches the class by `==` and rejects anything else without constructing it.
     val providerClass = classOf[NeverInstantiatedAccessTokenProvider].getName
     val outcome = resolveWith(
@@ -285,7 +285,7 @@ class AbfsAuthResolverSuite extends AnyFunSuite with Matchers {
 
   test("Failed - account-specific OAuth with only a global provider class (auth-type guard)") {
     // getTokenProviderClass reads the global provider class only when the GLOBAL auth type
-    // matches, so Hadoop sees no class and throws F15.
+    // matches, so Hadoop sees no class and fails to initialize the provider.
     val outcome = resolveWith(
       acct(Keys.AUTH_TYPE) -> "OAuth",
       Keys.OAUTH_PROVIDER_TYPE -> Providers.CLIENT_CREDS,
@@ -587,6 +587,8 @@ object LinkageStub extends Handles {
       account: String,
       container: String,
       uri: URI): AnyRef = throw linkageFailure
+  override def newKeyProviderConfiguration(conf: Configuration, account: String): AnyRef =
+    notReached
   override def getAuthType(abfsConf: AnyRef, account: String): Enum[_] = notReached
   override def get(abfsConf: AnyRef, key: String): Option[String] = notReached
   override def getPasswordString(abfsConf: AnyRef, key: String): Option[String] = notReached

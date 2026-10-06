@@ -42,6 +42,11 @@ import org.apache.comet.objectstore.AbfsReflection.Handles
  * resolver forwards the resolved values under the global key names plus `comet.azure.*` markers,
  * never a key for another account, and never the environment. Anything Hadoop throws becomes an
  * error marker: the native scan fails with it instead of trying a lookup of its own.
+ *
+ * `AbfsAuthParitySuite` pins the outcome of every configuration shape per hadoop-azure version
+ * (`spark/src/test/resources/abfs-auth-parity/expected-<version>.json`) and cross-checks it
+ * against the real `AzureBlobFileSystem`; its scaladoc says how to regenerate those files after a
+ * deliberate change here.
  */
 private[comet] object AbfsAuthResolver extends Logging {
 
@@ -124,7 +129,7 @@ private[comet] object AbfsAuthResolver extends Logging {
     classOf[NoSuchFieldException].getName)
 
   // An IllegalArgumentException is verbatim only when Hadoop or the JDK enum parser raised it
-  // (F5 "No enum constant", F15/F16 "Failed to initialize", "Invalid account key."). One thrown
+  // ("No enum constant", "Failed to initialize", "Invalid account key."). One thrown
   // by a user KeyProvider could carry anything, so it is reported by class only.
   private val HADOOP_AZURE_PACKAGE = "org.apache.hadoop.fs.azurebfs."
   private val JAVA_ENUM_CLASS = "java.lang.Enum"
@@ -144,7 +149,7 @@ private[comet] object AbfsAuthResolver extends Logging {
   private val QUOTED_KEY_PATTERN = "key =\"[^\"]*\"".r
   private val MAX_CAUSE_DEPTH = 8
 
-  // The keys that name a mechanism or carry a credential (spec key table). A configuration where
+  // The keys that name a mechanism or carry a credential in hadoop-azure. A configuration where
   // none of them resolves for the account is `Unconfigured`; any one of them hands the decision to
   // Hadoop, which defaults to SharedKey and fails in its own words when that does not fit.
   private[objectstore] val plainAuthKeys: Seq[String] = Seq(
@@ -214,6 +219,8 @@ private[comet] object AbfsAuthResolver extends Logging {
               val session = new Session(
                 h,
                 h.newAbfsConfiguration(hadoopConf, account, container, uri),
+                hadoopConf,
+                account,
                 secrets)
               if (!session.isConfigured) {
                 Unconfigured
@@ -267,6 +274,8 @@ private[comet] object AbfsAuthResolver extends Logging {
   private final class Session(
       val h: Handles,
       val abfsConf: AnyRef,
+      hadoopConf: Configuration,
+      account: String,
       secrets: ArrayBuffer[String]) {
 
     def get(key: String): Option[String] = h.get(abfsConf, key)
@@ -295,7 +304,22 @@ private[comet] object AbfsAuthResolver extends Logging {
       // Every credential is read (no short circuit) so a later failure message is redacted
       // against all of them.
       val anyPassword = passwordAuthKeys.map(password).exists(_.isDefined)
-      plainAuthKeys.exists(get(_).isDefined) || anyPassword
+      val keyProviderKey = keyProviderAccountKey.isDefined
+      plainAuthKeys.exists(get(_).isDefined) || anyPassword || keyProviderKey
+    }
+
+    // SimpleKeyProvider reads the key through its own two-argument AbfsConfiguration, whose
+    // container level on 3.4.2+ is the literal `key.null.<account>`; a key placed there
+    // configures the account for Hadoop, so it counts here too.
+    private def keyProviderAccountKey: Option[String] = {
+      if (!h.hasContainerScopedConfiguration) {
+        None
+      } else {
+        val keyProviderConf = h.newKeyProviderConfiguration(hadoopConf, account)
+        val value = h.getPasswordString(keyProviderConf, Keys.ACCOUNT_KEY)
+        value.foreach(v => recordSecret(v))
+        value
+      }
     }
   }
 
@@ -349,9 +373,9 @@ private[comet] object AbfsAuthResolver extends Logging {
         // 3.5.0 Workload Identity with a custom ClientAssertionProvider: user code per request.
         Declined(AuthTypes.OAUTH, className, Some(assertion))
       case None =>
-        // Hadoop validates the configuration and throws in its own words: an unresolved class
-        // (F15), a class that is not one of its five built-ins (F16, by `==`, never
-        // instantiated), a missing mandatory key. The built-in constructors do no I/O.
+        // Hadoop validates the configuration and throws in its own words: an unresolved class,
+        // a class that is not one of its five built-ins (matched by `==`, never instantiated),
+        // a missing mandatory key. The built-in constructors do no I/O.
         h.getTokenProvider(session.abfsConf)
         Resolved(AuthTypes.OAUTH, className, oauthValues(session, className.getOrElse("")))
     }

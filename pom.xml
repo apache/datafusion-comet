@@ -1033,6 +1033,9 @@ under the License.
               <!-- Optional override for CometNativeUdfSuite; the suite finds the cdylib under
                    native/target on its own when this is not set. -->
               <comet.test.udfs.lib>${comet.test.udfs.lib}</comet.test.udfs.lib>
+              <!-- Set to a directory to make AbfsAuthParitySuite record its expectation file for
+                   the hadoop-azure on the classpath instead of asserting against it. -->
+              <comet.abfs.parity.record>${comet.abfs.parity.record}</comet.abfs.parity.record>
             </systemProperties>
           </configuration>
           <executions>
