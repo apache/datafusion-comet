@@ -19,12 +19,15 @@ mod config;
 mod fair_pool;
 pub mod logging_pool;
 mod spark_memory;
+mod spill_replay;
 mod task_shared;
 mod unified_pool;
 
 use datafusion::execution::memory_pool::{MemoryPool, TrackConsumersPool, UnboundedMemoryPool};
 use fair_pool::CometFairMemoryPool;
 use jni::objects::{Global, JObject};
+use spark_memory::SparkMemory;
+use spill_replay::SpillReplayPool;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use unified_pool::CometUnifiedMemoryPool;
@@ -41,6 +44,18 @@ pub(crate) fn create_memory_pool(
     comet_task_memory_manager: Arc<Global<JObject<'static>>>,
     task_attempt_id: i64,
 ) -> Arc<dyn MemoryPool> {
+    create_pool(memory_pool_config, task_attempt_id, || {
+        SparkMemory::new(comet_task_memory_manager, task_attempt_id)
+    })
+}
+
+/// Creates the pool that [`create_memory_pool`] does, with `spark` connecting it to Spark's memory
+/// manager, so that tests can connect it to a fake instead.
+fn create_pool(
+    memory_pool_config: &MemoryPoolConfig,
+    task_attempt_id: i64,
+    spark: impl FnOnce() -> SparkMemory,
+) -> Arc<dyn MemoryPool> {
     const NUM_TRACKED_CONSUMERS: usize = 10;
 
     fn tracked(pool: impl MemoryPool + 'static) -> Arc<dyn MemoryPool> {
@@ -55,16 +70,15 @@ pub(crate) fn create_memory_pool(
 
     match pool_type {
         MemoryPoolType::GreedyUnified => acquire_task_shared_pool(task_attempt_id, || {
-            tracked(CometUnifiedMemoryPool::new(
-                comet_task_memory_manager,
+            Arc::new(SpillReplayPool::new(
                 task_attempt_id,
+                tracked(CometUnifiedMemoryPool::with_spark(spark())),
             ))
         }),
         MemoryPoolType::FairUnified => acquire_task_shared_pool(task_attempt_id, || {
-            tracked(CometFairMemoryPool::new(
-                comet_task_memory_manager,
-                pool_size,
+            Arc::new(SpillReplayPool::new(
                 task_attempt_id,
+                tracked(CometFairMemoryPool::with_spark(spark(), pool_size)),
             ))
         }),
         MemoryPoolType::Unbounded => Arc::new(UnboundedMemoryPool::default()),
