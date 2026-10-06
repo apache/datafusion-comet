@@ -82,6 +82,10 @@ string collations remain unsupported at this conversion boundary. Source default
 This includes row-backed `ExistingRDD` inputs when `spark.comet.convert.rdd.enabled=true`. Spark
 still produces the RDD rows; conversion lets eligible downstream operators execute in Comet.
 
+The same types apply to the output of typed `Dataset` operations, such as `map`, which Comet
+converts when `spark.comet.convert.typedDataset.enabled=true`. A column of any other type keeps
+the operators above the typed operation on Spark.
+
 ## Data Catalogs
 
 ### Apache Iceberg
