@@ -645,6 +645,10 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     global.result() ++ promoted.result()
   }
 
+  /** iceberg-rust's per-I/O-call timeout, set from `spark.comet.iceberg.ioTimeout`. */
+  def ioTimeoutProperty(): (String, String) =
+    "opendal.io-timeout-ms" -> CometConf.COMET_ICEBERG_IO_TIMEOUT.get().toString
+
   /**
    * Converts an Iceberg residual Expression into an IcebergPredicate for the native scan.
    *
@@ -1020,7 +1024,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     commonBuilder.setDataFileConcurrencyLimit(
       CometConf.COMET_ICEBERG_DATA_FILE_CONCURRENCY_LIMIT.get())
     metadata.catalogName.foreach(commonBuilder.setCatalogName)
-    metadata.catalogProperties.foreach { case (key, value) =>
+    (metadata.catalogProperties + ioTimeoutProperty()).foreach { case (key, value) =>
       commonBuilder.putCatalogProperties(key, value)
     }
 
