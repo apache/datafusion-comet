@@ -24,7 +24,7 @@ import java.util.concurrent.atomic.AtomicLong
 import scala.util.Random
 
 import org.apache.hadoop.fs.Path
-import org.apache.spark.{CometListenerBusUtils, SparkConf}
+import org.apache.spark.{CometListenerBusUtils, SparkConf, SparkThrowable}
 import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
 import org.apache.spark.sql.{Column, CometTestBase, DataFrame, QueryTest, Row}
 import org.apache.spark.sql.catalyst.expressions.Cast
@@ -3297,6 +3297,30 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     (1 to 50).flatMap(_ => Seq((maxDec38_0, 1)))
   }
 
+  /**
+   * Spark's integral SUM adds through `Add`, so an ANSI overflow is `long overflow` with the
+   * `try_add` suggestion. Compare the structured error, not just its error class.
+   */
+  private def assertAnsiSumOverflowMatchesSpark(df: DataFrame): Unit = {
+    val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+    def structured(error: Option[Throwable]): SparkThrowable with Throwable = {
+      val failure = error.getOrElse(fail("Expected SUM overflow in ANSI mode"))
+      causeChain(failure)
+        .collect { case e: SparkThrowable with Throwable => e }
+        .lastOption
+        .getOrElse(fail(s"Expected SparkThrowable: $failure"))
+    }
+    val expected = structured(sparkError)
+    val actual = structured(cometError)
+    assert(expected.getErrorClass == "ARITHMETIC_OVERFLOW")
+    assert(actual.getClass == expected.getClass)
+    assert(actual.getErrorClass == expected.getErrorClass)
+    assert(actual.getSqlState == expected.getSqlState)
+    assert(actual.getMessageParameters == expected.getMessageParameters)
+    assert(actual.getMessage.contains("long overflow"))
+    assert(actual.getMessage.contains("try_add"))
+  }
+
   test("ANSI support - SUM function") {
     Seq(true, false).foreach { ansiEnabled =>
       withSQLConf(SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString) {
@@ -3304,13 +3328,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         withParquetTable(Seq((Long.MaxValue, 1L), (100L, 1L)), "tbl") {
           val res = sql("SELECT SUM(_1) FROM tbl")
           if (ansiEnabled) {
-            checkSparkAnswerMaybeThrows(res) match {
-              case (Some(sparkExc), Some(cometExc)) =>
-                // make sure that the error message throws overflow exception only
-                assert(sparkExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
-                assert(cometExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
-              case _ => fail("Exception should be thrown for Long overflow in ANSI mode")
-            }
+            assertAnsiSumOverflowMatchesSpark(res)
           } else {
             checkSparkAnswerAndOperator(res)
           }
@@ -3319,14 +3337,40 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         withParquetTable(Seq((Long.MinValue, 1L), (-100L, 1L)), "tbl") {
           val res = sql("SELECT SUM(_1) FROM tbl")
           if (ansiEnabled) {
-            checkSparkAnswerMaybeThrows(res) match {
-              case (Some(sparkExc), Some(cometExc)) =>
-                assert(sparkExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
-                assert(cometExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
-              case _ => fail("Exception should be thrown for Long underflow in ANSI mode")
-            }
+            assertAnsiSumOverflowMatchesSpark(res)
           } else {
             checkSparkAnswerAndOperator(res)
+          }
+        }
+        // Overflow only when the partial sums of two scan partitions are merged, ungrouped and
+        // grouped. A large open cost keeps the two files in separate scan partitions.
+        withSQLConf(SQLConf.FILES_OPEN_COST_IN_BYTES.key -> (128L * 1024 * 1024).toString) {
+          withTempView("tbl") {
+            withTempPath { dir =>
+              Seq((Long.MaxValue, 1), (1L, 1)).foreach { row =>
+                spark
+                  .createDataFrame(Seq(row))
+                  .write
+                  .mode("append")
+                  .parquet(dir.getCanonicalPath)
+              }
+              spark.read.parquet(dir.getCanonicalPath).createOrReplaceTempView("tbl")
+              // One row per scan partition, so no partial update can overflow: the error
+              // below can only come from merging the two partial sums.
+              val rowsPerPartition =
+                spark.table("tbl").rdd.mapPartitions(rows => Iterator(rows.size)).collect()
+              assert(rowsPerPartition.toSeq == Seq(1, 1), rowsPerPartition.mkString(","))
+              for (query <- Seq(
+                  "SELECT SUM(_1) FROM tbl",
+                  "SELECT _2, SUM(_1) FROM tbl GROUP BY _2")) {
+                val res = sql(query)
+                if (ansiEnabled) {
+                  assertAnsiSumOverflowMatchesSpark(res)
+                } else {
+                  checkSparkAnswerAndOperator(res)
+                }
+              }
+            }
           }
         }
         // Test Int SUM (should not overflow)
