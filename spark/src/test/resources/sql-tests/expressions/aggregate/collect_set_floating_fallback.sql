@@ -17,6 +17,9 @@
 
 -- MaxSparkVersion: 4.1
 -- Config: spark.comet.exec.strictFloatingPoint=true
+-- Disabling ObjectHashAggregate makes Spark plan SortAggregateExec for collect_set instead, so the
+-- matrix checks that both aggregate operators fall back.
+-- ConfigMatrix: spark.sql.execution.useObjectHashAggregateExec=true,false
 
 statement
 CREATE TABLE cs_fallback_float(v float, grp string) USING parquet
