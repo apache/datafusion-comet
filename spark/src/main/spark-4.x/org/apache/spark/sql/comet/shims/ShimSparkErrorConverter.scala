@@ -318,6 +318,12 @@ trait ShimSparkErrorConverter {
             params("groupCount").toString.toInt,
             params("groupIndex").toString.toInt))
 
+      case "InvalidUrl" =>
+        Some(
+          QueryExecutionErrors.invalidUrlError(
+            UTF8String.fromString(params("url").toString),
+            new java.net.URISyntaxException(params("url").toString, "Invalid URL")))
+
       case "DatatypeCannotOrder" =>
         Some(
           QueryExecutionErrors.orderedOperationUnsupportedByDataTypeError(

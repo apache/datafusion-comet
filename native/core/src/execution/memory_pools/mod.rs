@@ -22,6 +22,8 @@ mod plan_pool;
 mod spark_memory;
 mod spill_replay;
 mod task_shared;
+#[cfg(test)]
+pub(crate) mod testing;
 mod unified_pool;
 
 use datafusion::execution::memory_pool::{MemoryPool, TrackConsumersPool, UnboundedMemoryPool};
