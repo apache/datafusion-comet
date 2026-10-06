@@ -1006,6 +1006,13 @@ namespace that reaches the writer, as the <code class="docutils literal notransl
 <li><p><strong>Map iteration order leaks.</strong> It reaches file names, manifest order and read order.</p></li>
 <li><p><strong>Values that compare equal in Rust may not in Java.</strong> Signed zeros and NaN under <code class="docutils literal notranslate"><span class="pre">OrderedFloat</span></code>,
 and string or float rendering in partition paths.</p></li>
+<li><p><strong>iceberg-rust counts NaNs that Parquet never writes.</strong> Its NaN counter reads each struct, list
+and map child whole, with only the child’s own validity. So it counts a NaN under a NULL struct,
+under a NULL list or map entry that still points at elements, or outside a sliced list’s window.
+<code class="docutils literal notranslate"><span class="pre">nullif</span></code> and <code class="docutils literal notranslate"><span class="pre">RecordBatch::slice</span></code> produce all of these, so <code class="docutils literal notranslate"><span class="pre">drop_unwritten_values</span></code> removes them
+before a batch reaches the writer
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6146">#6146</a>,
+<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6562">#6562</a>).</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">chrono</span></code> stops at year 262142.</strong> A Spark date reaches year 5881580 and a timestamp year 294247,
 and iceberg-java handles all of them. Code that goes through <code class="docutils literal notranslate"><span class="pre">chrono</span></code>, including Arrow’s
 <code class="docutils literal notranslate"><span class="pre">date_part</span></code>, panics or returns NULL past that

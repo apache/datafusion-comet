@@ -411,6 +411,13 @@ Each of these has caused a bug on this path:
 - **Map iteration order leaks.** It reaches file names, manifest order and read order.
 - **Values that compare equal in Rust may not in Java.** Signed zeros and NaN under `OrderedFloat`,
   and string or float rendering in partition paths.
+- **iceberg-rust counts NaNs that Parquet never writes.** Its NaN counter reads each struct, list
+  and map child whole, with only the child's own validity. So it counts a NaN under a NULL struct,
+  under a NULL list or map entry that still points at elements, or outside a sliced list's window.
+  `nullif` and `RecordBatch::slice` produce all of these, so `drop_unwritten_values` removes them
+  before a batch reaches the writer
+  ([#6146](https://github.com/apache/datafusion-comet/issues/6146),
+  [#6562](https://github.com/apache/datafusion-comet/issues/6562)).
 - **`chrono` stops at year 262142.** A Spark date reaches year 5881580 and a timestamp year 294247,
   and iceberg-java handles all of them. Code that goes through `chrono`, including Arrow's
   `date_part`, panics or returns NULL past that
