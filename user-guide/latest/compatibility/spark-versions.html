@@ -877,11 +877,13 @@ persisting, or read the file with Comet disabled for that query.</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">FILTER</span></code> on window aggregates</strong>: Spark 4.2 accepts a <code class="docutils literal notranslate"><span class="pre">FILTER</span> <span class="pre">(WHERE</span> <span class="pre">...)</span></code> clause on an
 aggregate function used as a window function. Comet does not support the clause there, so the
 window operator falls back to Spark.</p></li>
-<li><p><strong><code class="docutils literal notranslate"><span class="pre">OneRowRelation</span></code> in <code class="docutils literal notranslate"><span class="pre">UNION</span></code> branches</strong>
-(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4949">#4949</a>): Spark 4.2 plans a
-<code class="docutils literal notranslate"><span class="pre">OneRowRelation</span></code> into the <code class="docutils literal notranslate"><span class="pre">UNION</span></code> branches of some queries, for example TPC-DS q77a. Comet does
-not convert <code class="docutils literal notranslate"><span class="pre">OneRowRelation</span></code> by default, so the union and the aggregates above it fall back to
-Spark.</p></li>
+<li><p><strong>Merged subqueries in <code class="docutils literal notranslate"><span class="pre">UNION</span></code> branches</strong>
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4949">#4949</a>): Spark 4.2 turns a single-row
+aggregate in some queries, for example TPC-DS q77a, into a scalar subquery that returns a struct,
+and reads its fields in a projection over a <code class="docutils literal notranslate"><span class="pre">OneRowRelation</span></code>. Comet does not support a
+struct-typed scalar subquery result yet
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5834">#5834</a>), so that projection, and the
+union and the aggregates above it, fall back to Spark.</p></li>
 <li><p><strong>ANSI arithmetic overflow</strong>
 (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4967">#4967</a>): Spark 4.2 changed some
 ANSI-mode arithmetic overflow behavior, and Comet does not match these changes yet. See

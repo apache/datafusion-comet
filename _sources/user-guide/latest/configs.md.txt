@@ -57,7 +57,7 @@ Comet provides the following configuration settings.
 | `spark.comet.convert.csv.enabled` | When enabled, data from Spark (non-native) CSV v1 and v2 scans will be converted to Arrow format. | false |
 | `spark.comet.convert.inMemoryCache.enabled` | When enabled, data from in-memory cached tables that Comet's native cache scan does not read (see `spark.comet.exec.inMemoryCache.enabled`), such as tables cached in Spark's default format, will be converted to Arrow format. | false |
 | `spark.comet.convert.json.enabled` | When enabled, data from Spark (non-native) JSON v1 and v2 scans will be converted to Arrow format. | false |
-| `spark.comet.convert.oneRowRelation.enabled` | When enabled, the single row that a query without a FROM clause, such as `SELECT 1`, reads will be converted to Arrow format. | false |
+| `spark.comet.convert.oneRowRelation.enabled` | When enabled, the single row that a query without a FROM clause, such as `SELECT 1`, reads will be converted to Arrow format. The row has no columns, so converting it costs almost nothing, and it lets the operators above it run in Comet. | true |
 | `spark.comet.convert.parquet.enabled` | When enabled, data from Spark (non-native) Parquet v1 and v2 scans will be converted to Arrow format. | false |
 | `spark.comet.convert.range.enabled` | When enabled, the rows of `spark.range` and SQL `range()` that Comet does not generate natively (see `spark.comet.exec.range.enabled`) will be converted to Arrow format. | false |
 | `spark.comet.convert.rdd.enabled` | When enabled, data from a DataFrame created from an RDD of rows, for example with `spark.createDataFrame(rdd, schema)`, will be converted to Arrow format. | false |
