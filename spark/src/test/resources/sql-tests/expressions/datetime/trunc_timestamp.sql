@@ -18,6 +18,8 @@
 -- Keep the wide-range fallback fixture independent of far-future JVM/native timezone rules.
 -- Config: spark.sql.session.timeZone=UTC
 -- Config: spark.sql.parquet.int96RebaseModeInWrite=CORRECTED
+-- Config: spark.sql.parquet.datetimeRebaseModeInWrite=CORRECTED
+-- Config: spark.sql.parquet.outputTimestampType=TIMESTAMP_MICROS
 -- Dictionary-encoded timestamps reuse the scalar timestamp path for dictionary values.
 -- ConfigMatrix: parquet.enable.dictionary=false,true
 
@@ -110,18 +112,44 @@ SELECT
   date_trunc('MICROSECOND', TIMESTAMP '3333-05-17 12:34:56.123456')
 
 -- Long.MaxValue is used as an end-of-time sentinel and exceeds chrono's range.
--- Spark returns a far-future date; Comet currently returns NULL for these coarse units.
--- Accept that range limitation, but reject a null slot accidentally read as epoch zero.
+-- Use microsecond storage to preserve the extreme value without an INT96 conversion.
+-- Direct date_trunc projections must execute natively and match Spark exactly.
+-- Wrapping them in unix_micros would dispatch the whole subtree to the JVM.
 statement
 CREATE TABLE test_trunc_ts_extreme(ts timestamp) USING parquet
 
 statement
-INSERT INTO test_trunc_ts_extreme VALUES (timestamp_micros(9223372036854775807))
+INSERT INTO test_trunc_ts_extreme VALUES
+  (timestamp_micros(9223372036854775807)),
+  (timestamp_micros(-9000000000000000000)),
+  (timestamp('2024-05-17 12:34:56.123456')),
+  (timestamp('3333-05-17 12:34:56.123456')),
+  (NULL)
 
-query
+query expect_native(date_trunc)
 SELECT
-  coalesce(unix_micros(date_trunc('YEAR', ts)) > 0, true),
-  coalesce(unix_micros(date_trunc('QUARTER', ts)) > 0, true),
-  coalesce(unix_micros(date_trunc('MONTH', ts)) > 0, true),
-  coalesce(unix_micros(date_trunc('WEEK', ts)) > 0, true)
+  date_trunc('YEAR', ts),
+  date_trunc('QUARTER', ts),
+  date_trunc('MONTH', ts),
+  date_trunc('WEEK', ts)
 FROM test_trunc_ts_extreme
+ORDER BY ts
+
+-- A valid microsecond input can truncate below Long.MinValue. Spark raises an error.
+statement
+CREATE TABLE test_trunc_ts_overflow(ts timestamp) USING parquet
+
+statement
+INSERT INTO test_trunc_ts_overflow VALUES (timestamp_micros(-9223372036854775808))
+
+query expect_error(long overflow)
+SELECT date_trunc('YEAR', ts) FROM test_trunc_ts_overflow
+
+query expect_error(long overflow)
+SELECT date_trunc('QUARTER', ts) FROM test_trunc_ts_overflow
+
+query expect_error(long overflow)
+SELECT date_trunc('MONTH', ts) FROM test_trunc_ts_overflow
+
+query expect_error(long overflow)
+SELECT date_trunc('WEEK', ts) FROM test_trunc_ts_overflow

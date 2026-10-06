@@ -423,6 +423,68 @@ fn fits_datafusion_coarse_trunc_range(micros: i64) -> bool {
         && micros >= LOWER_NANOSECOND_MICROS + COARSE_TRUNC_MARGIN_MICROS
 }
 
+// Integer proleptic Gregorian calendar conversion, adapted from DataFusion 55.1.0's
+// datetime/date_trunc.rs (Howard Hinnant's algorithms):
+// https://howardhinnant.github.io/date_algorithms.html
+// These helpers only receive days derived from i64 microseconds (about +/-107 million),
+// so the calendar intermediates fit in i64 even outside chrono's year range.
+fn civil_from_days(days: i64) -> (i64, i64, i64) {
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let day_of_era = z.rem_euclid(146_097);
+    let year_of_era =
+        (day_of_era - day_of_era / 1460 + day_of_era / 36524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_index = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_index + 2) / 5 + 1;
+    let month = if month_index < 10 {
+        month_index + 3
+    } else {
+        month_index - 9
+    };
+    let year = year_of_era + era * 400 + i64::from(month <= 2);
+    (year, month, day)
+}
+
+fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    let year = year - i64::from(month <= 2);
+    let era = year.div_euclid(400);
+    let year_of_era = year.rem_euclid(400);
+    let month_index = if month > 2 { month - 3 } else { month + 9 };
+    let day_of_year = (153 * month_index + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    era * 146_097 + day_of_era - 719_468
+}
+
+/// Truncate UTC/NTZ coarse units directly in microseconds, avoiding both DataFusion's
+/// intermediate nanosecond conversion and chrono's year limit. A representable input can
+/// truncate below i64::MIN; report that overflow rather than returning NULL or wrapping.
+fn timestamp_trunc_coarse_micros(micros: i64, granularity: &str) -> Result<i64, SparkError> {
+    let days = micros.div_euclid(MICROS_PER_DAY);
+    let truncated_days = match granularity {
+        // The epoch is Thursday, three days after Monday.
+        "week" => days - (days + 3).rem_euclid(7),
+        "month" => {
+            let (_, _, day) = civil_from_days(days);
+            days - (day - 1)
+        }
+        "quarter" => {
+            let (year, month, _) = civil_from_days(days);
+            days_from_civil(year, 1 + 3 * ((month - 1) / 3), 1)
+        }
+        "year" => {
+            let (year, _, _) = civil_from_days(days);
+            days_from_civil(year, 1, 1)
+        }
+        _ => unreachable!("integer fallback only handles normalized coarse units"),
+    };
+    truncated_days.checked_mul(MICROS_PER_DAY).ok_or_else(|| {
+        SparkError::Internal(format!(
+            "long overflow: Timestamp {micros} out of range after date_trunc({granularity})"
+        ))
+    })
+}
+
 /// Truncate Date32 values directly in days since the epoch.
 ///
 /// Routing Date32 through DataFusion's timestamp kernel requires two casts and temporary arrays,
@@ -776,8 +838,9 @@ where
     Ok(result)
 }
 
-/// The scalar-format implementation retained for values outside DataFusion 55.1's internal
-/// TimestampNanosecond range. Row-format paths continue to call the same underlying helpers.
+/// The zone-aware scalar-format fallback for HOUR/DAY outside DataFusion 55.1's internal
+/// TimestampNanosecond range. UTC/NTZ coarse units use integer calendar arithmetic instead.
+/// Row-format paths continue to call the same underlying helpers.
 fn timestamp_trunc_legacy(
     array: &TimestampMicrosecondArray,
     format: &str,
@@ -1001,34 +1064,40 @@ fn timestamp_trunc_upstream(
             .map(|value| value.filter(|micros| fits_datafusion_coarse_trunc_range(*micros))),
     )
     .with_timezone_opt(array.timezone());
-    let legacy_input = TimestampMicrosecondArray::from_iter(
-        array
-            .iter()
-            .map(|value| value.filter(|micros| !fits_datafusion_coarse_trunc_range(*micros))),
-    )
-    .with_timezone_opt(array.timezone());
-
     let upstream = datafusion_date_trunc(Arc::new(upstream_input), granularity)?;
     let upstream = upstream
         .as_any()
         .downcast_ref::<TimestampMicrosecondArray>()
         .expect("DataFusion date_trunc timestamp result mismatch");
-    let legacy = timestamp_trunc_legacy(&legacy_input, format)?;
-
-    Ok(
-        TimestampMicrosecondArray::from_iter(array.iter().enumerate().map(|(index, value)| {
-            value.and_then(|micros| {
-                let result = if fits_datafusion_coarse_trunc_range(micros) {
-                    upstream
-                } else {
-                    &legacy
-                };
-                // An out-of-range legacy input can produce null even when the input is valid.
-                (!result.is_null(index)).then(|| result.value(index))
-            })
-        }))
-        .with_timezone_opt(array.timezone()),
-    )
+    // Non-UTC HOUR/DAY still need the zone-aware fallback. UTC coarse units have already
+    // removed their timezone label and must not fall back through chrono.
+    let legacy = if array.timezone().is_some() {
+        let input = TimestampMicrosecondArray::from_iter(
+            array
+                .iter()
+                .map(|value| value.filter(|micros| !fits_datafusion_coarse_trunc_range(*micros))),
+        )
+        .with_timezone_opt(array.timezone());
+        Some(timestamp_trunc_legacy(&input, format)?)
+    } else {
+        None
+    };
+    let mut builder = TimestampMicrosecondBuilder::with_capacity(array.len());
+    for (index, value) in array.iter().enumerate() {
+        match value {
+            None => builder.append_null(),
+            Some(micros) if fits_datafusion_coarse_trunc_range(micros) => {
+                builder.append_option((!upstream.is_null(index)).then(|| upstream.value(index)));
+            }
+            Some(micros) => match &legacy {
+                Some(result) => {
+                    builder.append_option((!result.is_null(index)).then(|| result.value(index)));
+                }
+                None => builder.append_value(timestamp_trunc_coarse_micros(micros, granularity)?),
+            },
+        }
+    }
+    Ok(builder.finish().with_timezone_opt(array.timezone()))
 }
 
 /// Truncate a single NTZ value and append to builder
@@ -1242,6 +1311,11 @@ where
 
 #[cfg(test)]
 mod tests {
+    use super::{
+        naive_to_micros, normalize_timestamp_trunc_format, ntz_trunc_fn_for_format,
+        timestamp_trunc_coarse_micros, timestamp_trunc_ntz, MICROS_PER_DAY,
+        TIMESTAMP_TRUNC_ALIASES,
+    };
     use crate::kernels::temporal::{
         date_trunc, date_trunc_array_fmt_dyn, date_trunc_dyn, timestamp_trunc,
         timestamp_trunc_array_fmt_dyn, timestamp_trunc_dyn,
@@ -1251,7 +1325,8 @@ mod tests {
         builder::{PrimitiveDictionaryBuilder, StringDictionaryBuilder},
         iterator::ArrayIter,
         types::{Date32Type, Int32Type, TimestampMicrosecondType},
-        Array, Date32Array, PrimitiveArray, StringArray, TimestampMicrosecondArray,
+        Array, Date32Array, DictionaryArray, Int32Array, PrimitiveArray, StringArray,
+        TimestampMicrosecondArray,
     };
     use chrono::{DateTime, Datelike, NaiveDate};
     use std::sync::Arc;
@@ -1741,27 +1816,58 @@ mod tests {
     }
 
     #[test]
-    fn test_timestamp_trunc_preserves_out_of_chrono_range_nulls() {
+    fn test_timestamp_trunc_out_of_chrono_range() {
         for timezone in [None, Some("UTC"), Some("Etc/UTC"), Some("+00:00")] {
             let input = TimestampMicrosecondArray::from(vec![
                 Some(instant_micros("2024-05-17T12:34:56Z")),
                 Some(i64::MAX),
+                Some(i64::MAX - 1),
+                Some(i64::MAX - 2),
                 Some(instant_micros("3333-05-17T12:34:56Z")),
-                Some(i64::MIN),
+                Some(-9_000_000_000_000_000_000),
                 None,
             ])
             .with_timezone_opt(timezone);
-            for (format, recent, future) in [
-                ("YEAR", "2024-01-01T00:00:00Z", "3333-01-01T00:00:00Z"),
-                ("QUARTER", "2024-04-01T00:00:00Z", "3333-04-01T00:00:00Z"),
-                ("MONTH", "2024-05-01T00:00:00Z", "3333-05-01T00:00:00Z"),
-                ("WEEK", "2024-05-13T00:00:00Z", "3333-05-11T00:00:00Z"),
+            // Expected extremes were computed independently with java.time.LocalDate:
+            // MAX, MAX - 1, and MAX - 2 are all +294247-01-10;
+            // the negative input is -283229-05-10.
+            for (format, recent, future, maximum, negative) in [
+                (
+                    "YEAR",
+                    "2024-01-01T00:00:00Z",
+                    "3333-01-01T00:00:00Z",
+                    9_223_371_244_800_000_000,
+                    -9_000_011_174_400_000_000,
+                ),
+                (
+                    "QUARTER",
+                    "2024-04-01T00:00:00Z",
+                    "3333-04-01T00:00:00Z",
+                    9_223_371_244_800_000_000,
+                    -9_000_003_398_400_000_000,
+                ),
+                (
+                    "MONTH",
+                    "2024-05-01T00:00:00Z",
+                    "3333-05-01T00:00:00Z",
+                    9_223_371_244_800_000_000,
+                    -9_000_000_806_400_000_000,
+                ),
+                (
+                    "WEEK",
+                    "2024-05-13T00:00:00Z",
+                    "3333-05-11T00:00:00Z",
+                    9_223_371_504_000_000_000,
+                    -9_000_000_028_800_000_000,
+                ),
             ] {
                 let expected = TimestampMicrosecondArray::from(vec![
                     Some(instant_micros(recent)),
-                    None,
+                    Some(maximum),
+                    Some(maximum),
+                    Some(maximum),
                     Some(instant_micros(future)),
-                    None,
+                    Some(negative),
                     None,
                 ])
                 .with_timezone_opt(timezone);
@@ -1769,6 +1875,106 @@ mod tests {
                     timestamp_trunc(&input, format.to_string()).unwrap(),
                     expected
                 );
+                for (alias, canonical) in TIMESTAMP_TRUNC_ALIASES {
+                    if canonical == normalize_timestamp_trunc_format(format).unwrap() {
+                        assert_eq!(
+                            timestamp_trunc(&input, alias.to_lowercase()).unwrap(),
+                            expected
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_timestamp_trunc_coarse_overflow() {
+        for timezone in [None, Some("UTC"), Some("Etc/UTC"), Some("+00:00")] {
+            let input =
+                TimestampMicrosecondArray::from(vec![Some(i64::MIN)]).with_timezone_opt(timezone);
+            for format in ["YEAR", "QUARTER", "MONTH", "WEEK"] {
+                let error = timestamp_trunc(&input, format.to_string()).unwrap_err();
+                assert!(error.to_string().contains("out of range"), "{error}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_timestamp_trunc_integer_calendar_matches_chrono() {
+        // Exercise negative eras, year zero, Gregorian leap centuries, and month boundaries.
+        for year in [-2000, -400, -1, 0, 1, 1500, 1600, 1900, 2000, 2024, 3333] {
+            for month in 1..=12 {
+                for day in [1, 15, 28, 29, 30, 31] {
+                    let Some(date) = NaiveDate::from_ymd_opt(year, month, day) else {
+                        continue;
+                    };
+                    let datetime = date.and_hms_micro_opt(23, 59, 59, 999_999).unwrap();
+                    for format in ["YEAR", "QUARTER", "MONTH", "WEEK"] {
+                        let expected = naive_to_micros(
+                            ntz_trunc_fn_for_format(format).unwrap()(datetime).unwrap(),
+                        );
+                        assert_eq!(
+                            timestamp_trunc_coarse_micros(
+                                naive_to_micros(datetime),
+                                normalize_timestamp_trunc_format(format).unwrap()
+                            )
+                            .unwrap(),
+                            expected
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_timestamp_trunc_coarse_guard_boundaries() {
+        let lower = i64::MIN / 1_000 + 370 * MICROS_PER_DAY;
+        let upper = i64::MAX / 1_000;
+        let input = TimestampMicrosecondArray::from(vec![
+            Some(lower - 1),
+            Some(lower),
+            Some(lower + 1),
+            Some(upper - 1),
+            Some(upper),
+            Some(upper + 1),
+            None,
+        ]);
+        for format in ["YEAR", "QUARTER", "MONTH", "WEEK"] {
+            let expected = timestamp_trunc_ntz(&input, format.to_string()).unwrap();
+            assert_eq!(
+                timestamp_trunc(&input, format.to_string()).unwrap(),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn test_timestamp_trunc_extreme_dictionary() {
+        let values = TimestampMicrosecondArray::from(vec![Some(i64::MAX), None]);
+        let keys = Int32Array::from(vec![Some(0), None, Some(1), Some(0)]);
+        let input =
+            DictionaryArray::<arrow::datatypes::Int32Type>::try_new(keys.clone(), Arc::new(values))
+                .unwrap();
+        let expected_values =
+            TimestampMicrosecondArray::from(vec![Some(9_223_371_244_800_000_000), None]);
+        let expected = DictionaryArray::<arrow::datatypes::Int32Type>::try_new(
+            keys,
+            Arc::new(expected_values),
+        )
+        .unwrap();
+        let result = timestamp_trunc_dyn(&input, "YEAR".to_string()).unwrap();
+        assert_eq!(result.as_ref(), &expected as &dyn Array);
+    }
+
+    #[test]
+    fn test_timestamp_trunc_empty_and_null_batches() {
+        for timezone in [None, Some("UTC")] {
+            for values in [vec![], vec![None, None]] {
+                let input = TimestampMicrosecondArray::from(values).with_timezone_opt(timezone);
+                for format in ["YEAR", "QUARTER", "MONTH", "WEEK"] {
+                    assert_eq!(timestamp_trunc(&input, format.to_string()).unwrap(), input);
+                }
             }
         }
     }
