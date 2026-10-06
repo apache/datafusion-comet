@@ -605,25 +605,78 @@ object CometArrayDistinct extends CometExpressionSerde[ArrayDistinct] {
 }
 
 object CometArrayUnion extends CometExpressionSerde[ArrayUnion] {
+
+  /**
+   * Spark's `ArrayUnion` is a `BinaryExpression`: for a NULL left array it returns NULL without
+   * evaluating the right operand. The native function evaluates both operands over the whole
+   * batch first, so a right operand that throws, such as `slice(b, 0, 1)` or an ANSI cast, fails
+   * on rows Spark never evaluates it for. `convert` reproduces the short-circuit with a `CASE
+   * WHEN <left> IS NOT NULL` guard, as `CometElementAt` does. A column or literal cannot throw,
+   * so it needs no guard. The guard serializes the left operand twice, which a stateful operand
+   * cannot survive, so that shape stays on Spark. See
+   * https://github.com/apache/datafusion-comet/issues/6613.
+   */
+  private val eagerRightOperandReason: String =
+    "a nullable nondeterministic left operand: native array_union evaluates the right operand " +
+      "over the whole batch, where Spark skips it on the rows whose left operand is NULL"
+
+  /** True when `convert` has to guard the call to reproduce Spark's NULL short-circuit. */
+  private def needsNullGuard(expr: ArrayUnion): Boolean =
+    expr.left.nullable && !expr.right.isInstanceOf[Attribute] && !expr.right.isInstanceOf[Literal]
+
   override def getIncompatibleReasons(): Seq[String] =
     Seq(ArraySetSupport.floatingPointReason, ArraySetSupport.collationReason)
 
+  override def getUnsupportedReasons(): Seq[String] = Seq(eagerRightOperandReason)
+
   override def getSupportLevel(expr: ArrayUnion): SupportLevel =
-    ArraySetSupport.supportLevel(expr.dataType)
+    if (needsNullGuard(expr) && !expr.left.deterministic) {
+      Unsupported(Some(eagerRightOperandReason))
+    } else {
+      ArraySetSupport.supportLevel(expr.dataType)
+    }
 
   override def convert(
       expr: ArrayUnion,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val leftArrayExprProto = exprToProtoInternal(expr.children.head, inputs, binding)
-    val rightArrayExprProto = exprToProtoInternal(expr.children(1), inputs, binding)
+    val leftArrayExprProto = exprToProtoInternal(expr.left, inputs, binding)
+    val rightArrayExprProto = exprToProtoInternal(expr.right, inputs, binding)
 
     val arraysUnionScalarExpr =
       scalarFunctionExprToProto(
         ArraySetSupport.function("array_union", expr.dataType),
         leftArrayExprProto,
         rightArrayExprProto)
-    arraysUnionScalarExpr
+    if (!needsNullGuard(expr)) {
+      arraysUnionScalarExpr
+    } else {
+      // DataFusion's CaseExpr evaluates the THEN branch only on the rows the guard selects.
+      val isNotNullExpr = createUnaryExpr(
+        expr,
+        expr.left,
+        inputs,
+        binding,
+        (builder, unaryExpr) => builder.setIsNotNull(unaryExpr))
+      val nullLiteralProto =
+        exprToProtoInternal(Literal(null, expr.dataType), Seq.empty, binding = true)
+      for {
+        union <- arraysUnionScalarExpr
+        notNull <- isNotNullExpr
+        nullLit <- nullLiteralProto
+      } yield {
+        val caseWhenExpr = ExprOuterClass.CaseWhen
+          .newBuilder()
+          .addWhen(notNull)
+          .addThen(union)
+          .setElseExpr(nullLit)
+          .build()
+        ExprOuterClass.Expr
+          .newBuilder()
+          .setCaseWhen(caseWhenExpr)
+          .build()
+      }
+    }
   }
 }
 
