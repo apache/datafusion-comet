@@ -30,18 +30,20 @@ does not repeat those lists; it explains the code that implements them.
 
 ## Overview
 
-Two flags, each of which builds on the one before it:
+Two layers, the second built on the first, both switched by `spark.comet.write.iceberg.enabled`:
 
-| Flag                                              | What it changes                                                                                                                         |
-| ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `spark.comet.write.iceberg.splitOperator.enabled` | The plan shape. Spark's single V2 write operator becomes `IcebergCommit` over `IcebergWrite`. iceberg-java still writes the data files. |
-| `spark.comet.write.iceberg.enabled`               | Who writes the data files. An eligible `IcebergWrite` becomes `CometIcebergWrite`, which writes Parquet with iceberg-rust.              |
+| Layer                   | What it changes                                                                                                                                 |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| The split-operator plan | The plan shape. Spark's single V2 write operator becomes `IcebergCommit` over `IcebergWrite`, and iceberg-java writes the data files inside it. |
+| The native writer       | Who writes the data files. An eligible `IcebergWrite` becomes `CometIcebergWrite`, which writes Parquet with iceberg-rust.                      |
 
-The native flag does nothing without the split flag, because it converts a node only the split plan
-creates. Both default to `true` since Comet 1.2.0, so a change to the split plan reaches every
-Iceberg write and a change to the native writer reaches every eligible one. The rollout and its
-criteria are tracked in [#5644](https://github.com/apache/datafusion-comet/issues/5644) under the
-epic [#5649](https://github.com/apache/datafusion-comet/issues/5649).
+The flag defaults to `true` since Comet 1.2.0, so a change to the split plan reaches every Iceberg
+write and a change to the native writer reaches every eligible one. Set to `false`, it plans Spark's
+own write operator. The testing-only `spark.comet.write.iceberg.splitOperator.enabled` plans the
+split operator with the native writer off, which the suites use to compare the two writers under
+the same plan. The rollout and its criteria are tracked in
+[#5644](https://github.com/apache/datafusion-comet/issues/5644) under the epic
+[#5649](https://github.com/apache/datafusion-comet/issues/5649).
 
 One rule runs through the whole native path: **the native writer must produce the outcome
 iceberg-java would have produced, or decline.** iceberg-java is the reference for every data file,
@@ -442,7 +444,7 @@ When writing a native-write test:
 - **Check storage state for failure tests**, not only the table: list the files under the data
   location and compare them with what the manifests reference.
 
-The upstream Iceberg Spark tests also run with both flags and `localTableScan` enabled (see
+The upstream Iceberg Spark tests also run with the native writer and `localTableScan` enabled (see
 [Running Iceberg Spark Tests](iceberg-spark-tests.md)). They are a broad regression net, but they do
 not assert which writer ran, and Comet's fallback reasons do not appear in their CI logs, so a green
 run is not evidence that the native writer handled a given test

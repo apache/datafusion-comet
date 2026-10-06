@@ -38,9 +38,13 @@ case class IcebergWriteStrategy(session: SparkSession) extends SparkStrategy {
 
   override def apply(plan: LogicalPlan): Seq[SparkPlan] = {
     val conf = session.sessionState.conf
+    // The native write flag plans the split operator on its own. The split flag plans it with
+    // the native writer off, which only tests do.
+    val splitEnabled = CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.get(conf) ||
+      CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.get(conf)
     // Planner strategies run whether or not Comet is enabled, so check it here too: with Comet
     // off, Spark must plan its own V2 write operator.
-    if (!isCometLoaded(conf) || !CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.get(conf)) {
+    if (!isCometLoaded(conf) || !splitEnabled) {
       return Nil
     }
     // Planner strategies run before CometRule, so plan-only mode needs its own guard here.

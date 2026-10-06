@@ -123,25 +123,24 @@ object CometConf extends ShimCometConf {
 
   val COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.write.iceberg.splitOperator.enabled")
-      .category(CATEGORY_EXEC)
+      .category(CATEGORY_TESTING)
       .doc(
-        "Whether to rewrite Iceberg V2 writes from Spark's combined V2 write/commit operator " +
-          "into Comet's two-operator shape: a file writer exec (inside AQE) and a committer " +
-          "(outside AQE). The data files are written by Comet's native writer when " +
-          "`spark.comet.write.iceberg.enabled` allows it, and by Iceberg's own writer " +
-          "otherwise. Set this to false to plan Spark's own V2 write operator.")
+        "Whether to plan Iceberg writes as Comet's file writer and committer even when " +
+          "`spark.comet.write.iceberg.enabled` is false, so that Iceberg's own writer writes " +
+          "every data file inside Comet's plan. Used by tests to compare the two writers " +
+          "under the same plan.")
       .booleanConf
-      .createWithDefault(true)
+      .createWithDefault(false)
 
   val COMET_ICEBERG_NATIVE_WRITE_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.write.iceberg.enabled")
       .category(CATEGORY_EXEC)
       .doc(
-        "Whether to delegate the executor-side Parquet write to Comet's native (iceberg-rust) " +
-          "writer when the table's properties allow it. Requires " +
-          "`spark.comet.write.iceberg.splitOperator.enabled = true`. A write the native " +
-          "writer cannot reproduce falls back to Iceberg's own writer. Set this to false to " +
-          "write every data file with Iceberg's own writer.")
+        "Whether Comet plans Iceberg writes and writes their data files natively. Comet " +
+          "replaces Spark's combined V2 write operator with a file writer (inside AQE) under a " +
+          "committer (outside AQE), and writes the data files of each eligible write with its " +
+          "native (iceberg-rust) writer. Other writes use Iceberg's own writer, and Iceberg " +
+          "commits every write. Set this to false to plan Spark's own V2 write operator.")
       .booleanConf
       .createWithDefault(true)
 

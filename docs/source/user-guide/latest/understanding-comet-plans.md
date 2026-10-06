@@ -222,8 +222,8 @@ Keep the following in mind when reading the reports:
   also counts its subqueries, so do not add the reports together.
 - Only the JVM side of planning runs. Anything that would fail when DataFusion builds the
   native plan still counts as accelerated, so treat the percentage as an upper bound.
-- Comet's split Iceberg V2 write (`spark.comet.write.iceberg.splitOperator.enabled`) is
-  declined in plan-only mode, so such writes run on, and are reported as, Spark.
+- Comet's split Iceberg V2 write (`spark.comet.write.iceberg.enabled`) is declined in
+  plan-only mode, so such writes run on, and are reported as, Spark.
 - Under AQE the report describes the plan before any adaptive re-planning, so coverage of the
   plan that finally executes can differ. In particular, AQE plans subqueries into the outer
   query only after the report is produced, so the outer report counts their operators as

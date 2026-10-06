@@ -93,9 +93,9 @@ class CometIcebergWriteActionSuite
 
   override protected def sparkConf: SparkConf = {
     super.sparkConf
+      // The split plan with the native writer off: a table written outside `withNativeEnabled` is
+      // the iceberg-java baseline that the native writer's output is compared against.
       .set(CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key, "true")
-      // A table written outside `withNativeEnabled` is the iceberg-java baseline that the native
-      // writer's output is compared against.
       .set(CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key, "false")
       // local[N,M] sets task max failures to M; the retry test needs one retry, and
       // spark.task.maxFailures does not override this part of a local master URL.
@@ -141,34 +141,10 @@ class CometIcebergWriteActionSuite
     }
   }
 
-  // The suite turns the split plan on explicitly, so this test drops that setting to see what an
-  // application that never sets it gets.
+  // The suite pins both write flags, so this test unsets them to see what an application that
+  // sets neither gets. A Parquet scan is a native input, so the write is eligible.
   // https://github.com/apache/datafusion-comet/issues/5644
-  test("an Iceberg write plans the split operator when the flag is not set") {
-    assume(icebergAvailable, "Iceberg not available in classpath")
-    withIcebergCatalog { warehouseDir =>
-      createTable(warehouseDir, "split_default", partitionSpec = "")
-      val key = CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key
-      val conf = spark.sessionState.conf
-      conf.unsetConf(key)
-      try {
-        val snapshot = captureWrite("split_default") {
-          spark.sql(
-            "INSERT INTO cat.db.split_default VALUES (1, 'us-east', 10.5), (2, 'eu', 20.3)")
-        }
-        assertExactlyOneCommit(snapshot)
-      } finally {
-        conf.setConfString(key, "true")
-      }
-      assertRows("split_default", expectedIds = Seq(1, 2))
-    }
-  }
-
-  // The suite pins the native writer off for its iceberg-java baselines, so this test drops that
-  // setting to see what an application that never sets it gets. A Parquet scan is a native input,
-  // so the write is eligible.
-  // https://github.com/apache/datafusion-comet/issues/5644
-  test("an eligible Iceberg write runs natively when the native flag is not set") {
+  test("an eligible Iceberg write runs natively under the split plan when no flag is set") {
     assume(icebergAvailable, "Iceberg not available in classpath")
     withIcebergCatalog { warehouseDir =>
       withTempPath { dir =>
@@ -177,30 +153,27 @@ class CometIcebergWriteActionSuite
           .selectExpr("CAST(id AS INT) AS id", "'eu' AS region", "CAST(id AS DOUBLE) AS amount")
           .write
           .parquet(dir.getCanonicalPath)
-        createTable(warehouseDir, "native_default", partitionSpec = "")
-        val key = CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key
-        val conf = spark.sessionState.conf
-        conf.unsetConf(key)
-        try {
-          val snapshot = captureWrite("native_default") {
+        createTable(warehouseDir, "write_defaults", partitionSpec = "")
+        val snapshot = captureWrite("write_defaults") {
+          withSessionConf(
+            CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key -> None,
+            CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> None) {
             spark.read
               .parquet(dir.getCanonicalPath)
-              .writeTo(s"$catalog.$ns.native_default")
+              .writeTo(s"$catalog.$ns.write_defaults")
               .append()
           }
-          assert(
-            snapshot.snapshotDelta == 1L,
-            s"expected 1 commit, got ${snapshot.snapshotDelta}")
-          val nativeWrites = snapshot.plans.flatMap { plan =>
-            collectWithSubqueries(plan) { case e: CometIcebergWriteExec => e }
-          }
-          assert(
-            nativeWrites.nonEmpty,
-            "expected a CometIcebergWriteExec. Plans:\n" + snapshot.plans.mkString("\n--\n"))
-        } finally {
-          conf.setConfString(key, "false")
         }
-        assertRows("native_default", expectedIds = 0 until 10)
+        assert(snapshot.snapshotDelta == 1L, s"expected 1 commit, got ${snapshot.snapshotDelta}")
+        val (commits, _) = collectIcebergWriteOps(snapshot.plans)
+        val nativeWrites = snapshot.plans.flatMap { plan =>
+          collectWithSubqueries(plan) { case e: CometIcebergWriteExec => e }
+        }
+        assert(
+          commits.nonEmpty && nativeWrites.nonEmpty,
+          "expected an IcebergCommitExec over a CometIcebergWriteExec. Plans:\n" +
+            snapshot.plans.mkString("\n--\n"))
+        assertRows("write_defaults", expectedIds = 0 until 10)
       }
     }
   }
@@ -828,13 +801,15 @@ class CometIcebergWriteActionSuite
     }
   }
 
-  test("disabled config falls through to Spark's V2ExistingTableWriteExec") {
+  // The split flag is a testing setting, so an application turns Comet's Iceberg writes off with
+  // spark.comet.write.iceberg.enabled alone. The suite already pins that flag off.
+  test("spark.comet.write.iceberg.enabled=false plans Spark's V2ExistingTableWriteExec") {
     assume(icebergAvailable, "Iceberg not available in classpath")
     withIcebergCatalog { warehouseDir =>
       createTable(warehouseDir, "disabled_conf", partitionSpec = "")
 
       val snapshot = captureWrite("disabled_conf") {
-        withSQLConf(CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key -> "false") {
+        withSessionConf(CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key -> None) {
           spark.sql("INSERT INTO cat.db.disabled_conf VALUES (1, 'us-east', 10.5)")
         }
       }
@@ -3973,24 +3948,28 @@ class CometIcebergWriteActionSuite
    * (rather than `withSQLConf`) keeps the override visible to the columnar rule across some Spark
    * version / session-state combinations where `withSQLConf` loses the override before the rule
    * fires.
-   *
-   * Each setting is put back to the value it had before, not unset: unsetting the native write
-   * flag would turn it on, because it defaults to true while this suite pins it off.
    */
-  private def withNativeEnabled[T](action: => T): T = {
+  private def withNativeEnabled[T](action: => T): T =
+    withSessionConf(
+      CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> Some("true"),
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> Some("true"))(action)
+
+  /**
+   * Sets each key to its value, or unsets it for `None`, for the duration of `action`, then puts
+   * back the value each key had before. It writes the session conf directly; see
+   * [[withNativeEnabled]] for why. A key is restored rather than unset because unsetting the
+   * native write flag would turn it on: it defaults to true while this suite pins it off.
+   */
+  private def withSessionConf[T](settings: (String, Option[String])*)(action: => T): T = {
     val conf = spark.sessionState.conf
-    val keys = Seq(
-      CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key,
-      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key)
-    val previous = keys.map(key => key -> Option(conf.getConfString(key, null)))
-    keys.foreach(conf.setConfString(_, "true"))
-    try action
-    finally {
-      previous.foreach {
-        case (key, Some(value)) => conf.setConfString(key, value)
-        case (key, None) => conf.unsetConf(key)
-      }
+    def set(key: String, value: Option[String]): Unit = value match {
+      case Some(v) => conf.setConfString(key, v)
+      case None => conf.unsetConf(key)
     }
+    val previous = settings.map { case (key, _) => key -> Option(conf.getConfString(key, null)) }
+    settings.foreach { case (key, value) => set(key, value) }
+    try action
+    finally previous.foreach { case (key, value) => set(key, value) }
   }
 
   /**

@@ -85,17 +85,16 @@ operators, such as the scan of a Data Source V2 connector.
 
 ### Iceberg Writes
 
-`spark.comet.write.iceberg.splitOperator.enabled` and `spark.comet.write.iceberg.enabled` now default
-to `true`. Comet plans an Iceberg `INSERT INTO`, `INSERT OVERWRITE`, and copy-on-write `DELETE`,
-`UPDATE` or `MERGE` as two operators, `IcebergWrite` under `IcebergCommit`, in place of Spark's
-single V2 write operator, and writes the data files of each eligible write natively with
-iceberg-rust. A write that is not eligible still uses iceberg-java's writer, and iceberg-java still
-commits every write. The table holds the same rows, but natively written files differ from
-iceberg-java's in the ways listed under
+`spark.comet.write.iceberg.enabled` now defaults to `true`. Comet plans an Iceberg `INSERT INTO`,
+`INSERT OVERWRITE`, and copy-on-write `DELETE`, `UPDATE` or `MERGE` as two operators, `IcebergWrite`
+under `IcebergCommit`, in place of Spark's single V2 write operator, and writes the data files of
+each eligible write natively with iceberg-rust. A write that is not eligible still uses
+iceberg-java's writer, and iceberg-java still commits every write. The table holds the same rows,
+but natively written files differ from iceberg-java's in the ways listed under
 [Accepted divergences](iceberg-writes.md#accepted-divergences), and explain output and the Spark UI
-show the new operators. Set `spark.comet.write.iceberg.enabled=false` to write every data file with
-iceberg-java, and `spark.comet.write.iceberg.splitOperator.enabled=false` as well to plan Spark's own
-operator, as in Comet 1.1.0. See [Iceberg Writes](iceberg-writes.md).
+show the new operators. Set `spark.comet.write.iceberg.enabled=false` to plan Spark's own operator,
+as in Comet 1.1.0. `spark.comet.write.iceberg.splitOperator.enabled` is now a testing setting, and
+setting it to `false` does not turn the split operator off. See [Iceberg Writes](iceberg-writes.md).
 
 The native writer's buffers count against Comet's off-heap memory pool, where iceberg-java's buffers
 sit on the JVM heap. A fanout write keeps a data file open for every partition a task writes to, and

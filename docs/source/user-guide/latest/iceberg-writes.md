@@ -24,8 +24,8 @@ writes the data files of each eligible write natively with iceberg-rust. A write
 eligible falls back to iceberg-java's writer. Natively written files differ from iceberg-java's in
 the ways listed under [Accepted divergences](#accepted-divergences).
 
-Set `spark.comet.write.iceberg.enabled=false` to write every data file with iceberg-java, and
-`spark.comet.write.iceberg.splitOperator.enabled=false` as well to plan Spark's own write operator.
+`spark.comet.write.iceberg.enabled` switches both. Set it to `false` to plan Spark's own write
+operator instead, as Comet 1.1.0 did, so that iceberg-java writes every data file.
 
 ## Overview
 
@@ -37,8 +37,8 @@ data-file writing cannot be re-planned in response to how its input ran. And bec
 writing is bundled with the metadata and commit steps, there is no separate step for Comet to
 replace.
 
-When `spark.comet.write.iceberg.splitOperator.enabled=true`, the default, Comet rewrites eligible
-Iceberg writes into two operators:
+When `spark.comet.write.iceberg.enabled=true`, the default, Comet rewrites eligible Iceberg writes
+into two operators:
 
 1. **`IcebergWrite`** — writes the data files on the executors, exactly as iceberg-java does
    today, and returns each task's serialized commit message. This operator and the sub-query
@@ -46,14 +46,12 @@ Iceberg writes into two operators:
 2. **`IcebergCommit`** — collects the commit messages on the driver and performs the normal
    Iceberg commit (including commit-time validation), outside AQE, exactly once.
 
-With only the split plan enabled, data files are still written by iceberg-java; only the plan
-shape changes. The split moves data-file writing inside AQE and separates it from the commit,
-and it is the foundation for the second toggle: when
-`spark.comet.write.iceberg.enabled=true`, also the default, and the write passes the eligibility
-check below, the
-`IcebergWrite` operator's per-task Parquet write is delegated to
+The split moves data-file writing inside AQE and separates it from the commit, which gives Comet
+a step to replace: when the write passes the eligibility check below, the `IcebergWrite`
+operator's per-task Parquet write is delegated to
 [iceberg-rust](https://github.com/apache/iceberg-rust) via Comet's native execution pipeline
-([#5361](https://github.com/apache/datafusion-comet/pull/5361)).
+([#5361](https://github.com/apache/datafusion-comet/pull/5361)). A write that does not pass keeps
+`IcebergWrite`, and iceberg-java writes its data files; only the plan shape changes.
 
 ## How the native write works
 
@@ -98,10 +96,8 @@ spark.sql.catalog.<name>=org.apache.iceberg.spark.SparkCatalog
 spark.sql.catalog.<name>.type=hadoop                          # or hive / glue / rest / ...
 spark.sql.catalog.<name>.warehouse=...
 
-# Split-operator plan (on by default since Comet 1.2.0)
-spark.comet.write.iceberg.splitOperator.enabled=true
-
-# Native Parquet writer (on by default since Comet 1.2.0; requires the split plan)
+# Split-operator plan and native Parquet writer (on by default since Comet 1.2.0; false plans
+# Spark's own write operator)
 spark.comet.write.iceberg.enabled=true
 
 # Lets writes whose input is a local relation (INSERT ... VALUES, a local DataFrame) use the
@@ -139,7 +135,7 @@ changes.
 
 The rewrite is skipped — and the write runs through Spark's stock combined operator — when:
 
-- `spark.comet.write.iceberg.splitOperator.enabled` is set to `false`;
+- `spark.comet.write.iceberg.enabled` is set to `false`;
 - Comet is disabled (`spark.comet.enabled=false`);
 - the write is not an Iceberg `SparkWrite` (any other V2 data source);
 - the table uses merge-on-read: delta writes (Iceberg `WriteDelta`) are not intercepted;
@@ -173,8 +169,8 @@ The native writer reads its input as Arrow batches from a Comet operator, so the
 must itself run in Comet. A write whose input is a local relation, such as `INSERT ... VALUES` or
 `df.writeTo(...).append()` on a DataFrame built from local data, is fed by Spark's
 `LocalTableScanExec`, which Comet only converts when `spark.comet.exec.localTableScan.enabled=true`
-(off by default). Without that setting such writes run through iceberg-java even when both write
-flags are on.
+(off by default). Without that setting such writes keep `IcebergWrite` and run through
+iceberg-java.
 
 **Most Iceberg write settings are not supported.** Detection is an allowlist: a write is
 eligible only when its entire effective configuration matches the table below, and anything
