@@ -674,6 +674,12 @@ pub(crate) fn timestamp_trunc_dyn(
         DataType::Dictionary(_, _) => {
             downcast_dictionary_array!(
                 array => {
+                    // Safe, low-cardinality truncation can operate only on distinct values,
+                    // rather than scanning every key just to discover unused values.
+                    if !timestamp_trunc_dictionary_needs_mask(array.values(), array.len(), &format)? {
+                        let values = timestamp_trunc_dyn(array.values(), format)?;
+                        return Ok(Arc::new(array.with_values(values)));
+                    }
                     // Dictionary values can outlive the rows that reference them (e.g. after
                     // filtering). Unused entries, including entries hidden by NULL keys,
                     // must not raise errors in the fallible timestamp kernel.
@@ -703,6 +709,40 @@ pub(crate) fn timestamp_trunc_dyn(
             )
         }
     }
+}
+
+/// Keep key masking for fallible values and for coarse units with many distinct values, where
+/// masking can avoid expensive calendar work on unused entries. Fine arithmetic processes the
+/// physical values regardless of validity, so infallible fine units never need a key scan.
+fn timestamp_trunc_dictionary_needs_mask(
+    values: &dyn Array,
+    keys_len: usize,
+    format: &str,
+) -> Result<bool, SparkError> {
+    let Some(values) = values.as_any().downcast_ref::<TimestampMicrosecondArray>() else {
+        return Ok(true);
+    };
+    let granularity = normalize_timestamp_trunc_format(format)?;
+    if matches!(granularity, "microsecond" | "millisecond" | "second") {
+        return Ok(false);
+    }
+    if values.timezone().is_some_and(|tz| !is_utc_timezone(tz)) {
+        // Unused non-UTC values can also hit chrono boundary panics, not just Result errors.
+        return Ok(true);
+    }
+    if matches!(granularity, "week" | "month" | "quarter" | "year") && values.len() > keys_len / 64
+    {
+        // Require substantial repetition before speculatively computing unused calendar values.
+        // Dense NULLs/high cardinality otherwise benefit from masking before truncation.
+        return Ok(true);
+    }
+    // Truncation moves backwards by at most a year. Above this conservative lower-bound margin,
+    // UTC/NTZ truncation cannot underflow i64 and all values can be evaluated without a key scan.
+    const LOWER_SAFE_MICROS: i64 = i64::MIN + 370 * MICROS_PER_DAY;
+    Ok(values
+        .iter()
+        .flatten()
+        .any(|micros| micros < LOWER_SAFE_MICROS))
 }
 
 /// Convert microseconds since epoch to NaiveDateTime
@@ -2054,6 +2094,7 @@ mod tests {
                 vec![Some(0), None, Some(2), Some(0)],
                 vec![None, None],
                 vec![],
+                vec![Some(0); 8192],
             ] {
                 let keys = Int32Array::from(keys);
                 let input =
@@ -2094,6 +2135,66 @@ mod tests {
                     .unwrap_err()
                     .to_string()
                     .contains("long overflow"));
+            }
+        }
+    }
+
+    #[test]
+    fn test_timestamp_trunc_dictionary_unused_chrono_boundary() {
+        // These unused values can panic in timezone-aware calendar helpers, so they must still
+        // be masked before computing the distinct values, even in a low-cardinality dictionary.
+        for timezone in ["+01:00", "Asia/Tokyo"] {
+            let values = TimestampMicrosecondArray::from(vec![
+                instant_micros("2024-05-17T12:34:56Z"),
+                chrono::NaiveDateTime::MIN.and_utc().timestamp_micros() + MICROS_PER_DAY,
+            ])
+            .with_timezone(timezone);
+            let input = DictionaryArray::<Int32Type>::try_new(
+                Int32Array::from(vec![Some(0); 8192]),
+                Arc::new(values.clone()),
+            )
+            .unwrap();
+            for format in ["YEAR", "WEEK"] {
+                let result = timestamp_trunc_dyn(&input, format.into()).unwrap();
+                let decoded = arrow::compute::cast(result.as_ref(), values.data_type()).unwrap();
+                let expected = timestamp_trunc(&values.slice(0, 1), format.into()).unwrap();
+                let decoded = decoded
+                    .as_any()
+                    .downcast_ref::<TimestampMicrosecondArray>()
+                    .unwrap();
+                assert!(decoded.iter().all(|value| value == Some(expected.value(0))));
+            }
+        }
+    }
+
+    #[test]
+    fn test_timestamp_trunc_dictionary_infallible_unused_extremes() {
+        for timezone in [None, Some("UTC"), Some("Asia/Tokyo")] {
+            let values = TimestampMicrosecondArray::from(vec![
+                Some(instant_micros("2024-05-17T12:34:56Z")),
+                Some(i64::MIN),
+                None,
+            ])
+            .with_timezone_opt(timezone);
+            for keys in [
+                vec![Some(0), None, Some(2), Some(0)],
+                vec![None, None],
+                vec![],
+            ] {
+                let input = DictionaryArray::<Int32Type>::try_new(
+                    Int32Array::from(keys),
+                    Arc::new(values.clone()),
+                )
+                .unwrap();
+                let decoded_input = arrow::compute::cast(&input, values.data_type()).unwrap();
+                for format in ["MICROSECOND", "MILLISECOND", "SECOND"] {
+                    let result = timestamp_trunc_dyn(&input, format.into()).unwrap();
+                    let decoded =
+                        arrow::compute::cast(result.as_ref(), values.data_type()).unwrap();
+                    let expected =
+                        timestamp_trunc_dyn(decoded_input.as_ref(), format.into()).unwrap();
+                    assert_eq!(decoded.as_ref(), expected.as_ref());
+                }
             }
         }
     }
