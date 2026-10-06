@@ -34,6 +34,7 @@ import org.apache.spark.sql.catalyst.{FunctionIdentifier, TableIdentifier}
 import org.apache.spark.sql.catalyst.catalog.{BucketSpec, CatalogStatistics, CatalogTable}
 import org.apache.spark.sql.catalyst.expressions.{DynamicPruningExpression, Expression, ExpressionInfo, Hex, Literal}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, BloomFilterAggregate, Final}
+import org.apache.spark.sql.catalyst.plans.logical.Expand
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.connector.catalog.InMemoryTableCatalog
@@ -2851,6 +2852,14 @@ class CometExecSuite extends CometTestBase {
         checkSparkAnswerAndOperator(df)
       }
     }
+  }
+
+  test("expand operator with no output columns falls back to Spark") {
+    // Column pruning leaves this shape when nothing above the Expand reads its output.
+    val child = spark.range(3).queryExecution.analyzed
+    val expand = Expand(Seq(Seq.empty[Expression], Seq.empty[Expression]), Seq.empty, child)
+    val df = datasetOfRows(spark, expand).groupBy().count()
+    checkSparkAnswerAndFallbackReason(df, "Expand without output columns is not supported")
   }
 
   test("multiple distinct multiple columns sets") {
