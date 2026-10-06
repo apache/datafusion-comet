@@ -358,9 +358,11 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_EXEC)
       .doc(
         "Whether to enable Comet native scans and fused Spark reads of in-memory cached tables. " +
-          "Requires spark.comet.enabled=true. At startup, this setting also decides whether " +
-          "CometDriverPlugin installs Comet's cache serializer, which stores cached data in " +
-          "Arrow format. The plugin installs it only if spark.comet.enabled and " +
+          "Requires spark.comet.enabled=true. Defaults to true from Spark 3.5 and to false on " +
+          "Spark 3.4, where AQE cannot coalesce the shuffle partitions of a union that Comet " +
+          "runs with a cached relation in one branch. At startup, this setting also decides " +
+          "whether CometDriverPlugin installs Comet's cache serializer, which stores cached " +
+          "data in Arrow format. The plugin installs it only if spark.comet.enabled and " +
           "spark.comet.exec.enabled are also enabled at startup, and only with one of Comet's " +
           "shuffle managers while Comet shuffle is enabled. " +
           "Because spark.sql.cache.serializer is a " +
@@ -381,7 +383,9 @@ object CometConf extends ShimCometConf {
           "soon as it is serialized, including the disk half of the default " +
           "MEMORY_AND_DISK storage level.")
       .booleanConf
-      .createWithDefault(true)
+      // CometCoalesceShufflePartitions needs a query-stage optimizer rule hook, which Spark 3.4
+      // lacks.
+      .createWithDefault(CometSparkSessionExtensions.isSpark35Plus)
 
   val COMET_EXEC_IN_MEMORY_CACHE_COMPRESSION_CODEC: ConfigEntry[String] =
     conf("spark.comet.exec.inMemoryCache.compression.codec")

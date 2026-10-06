@@ -25,14 +25,19 @@ format, which Comet operators cannot read. Under Comet's default settings the op
 cache scan then run on Spark. With `spark.comet.convert.inMemoryCache.enabled`, a
 `CometSparkColumnarToColumnar` above the scan converts each batch for Comet operators instead.
 
-This feature is **experimental and enabled by default**. To turn it off, set the config at startup,
-alongside the rest of Comet's configuration:
+This feature is **experimental and enabled by default** from Spark 3.5. To turn it off, set the
+config at startup, alongside the rest of Comet's configuration:
 
 ```shell
 $SPARK_HOME/bin/spark-shell \
     ... \
     --conf spark.comet.exec.inMemoryCache.enabled=false
 ```
+
+On Spark 3.4 it is disabled by default, and setting the config to `true` turns it on. Spark 3.4 has
+no hook for the rule through which Comet lets AQE coalesce the shuffle partitions of a union that
+Comet runs, so a union of a shuffle and a relation cached in Comet's format keeps every shuffle
+partition there.
 
 It has to be set before the `SparkContext` starts. Comet's driver plugin chooses
 `spark.sql.cache.serializer` once, while the context is initializing, so an application keeps the
@@ -113,7 +118,7 @@ nowhere to record either that a column is dictionary encoded or the dictionary i
 
 | Config                                                  | Default | Description                                                                                                                                    |
 | ------------------------------------------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `spark.comet.exec.inMemoryCache.enabled`                | `true`  | Whether to store and scan Spark's in-memory cache in Comet's format. Read at startup.                                                          |
+| `spark.comet.exec.inMemoryCache.enabled`                | `true`  | Whether to store and scan Spark's in-memory cache in Comet's format. Read at startup. Defaults to `false` on Spark 3.4.                        |
 | `spark.comet.exec.inMemoryCache.compression.codec`      | `zstd`  | Arrow IPC compression codec for cached data: `zstd` or `none`. Affects newly cached data only — a batch records the codec it was written with. |
 | `spark.comet.exec.inMemoryCache.compression.zstd.level` | `1`     | Compression level when the codec is `zstd`. Ignored otherwise.                                                                                 |
 
