@@ -1231,6 +1231,30 @@ query-stage wrappers when checking the native operator and reused exchange.</p>
 </pre></div>
 </div>
 </section>
+<section id="restoring-the-spark-operator-sparkfallback">
+<h3>Restoring the Spark operator (<code class="docutils literal notranslate"><span class="pre">sparkFallback</span></code>)<a class="headerlink" href="#restoring-the-spark-operator-sparkfallback" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">CometExec.originalPlan</span></code> is the Spark operator this node replaced. <code class="docutils literal notranslate"><span class="pre">CometExecRule</span></code> copies
+<code class="docutils literal notranslate"><span class="pre">originalPlan.logicalLink</span></code> onto the Comet node, which is how AQE finds the node again when it
+re-plans a stage. <code class="docutils literal notranslate"><span class="pre">RevertNativeForTransitionHeavyStages</span></code> calls <code class="docutils literal notranslate"><span class="pre">sparkFallback(newChildren)</span></code> to
+rebuild that Spark operator with the children of the reverted stage.</p>
+<p>The default implementation is <code class="docutils literal notranslate"><span class="pre">originalPlan.withNewChildren(newChildren)</span></code>. It refuses a null
+<code class="docutils literal notranslate"><span class="pre">originalPlan</span></code>, an <code class="docutils literal notranslate"><span class="pre">originalPlan</span></code> that is one of the node’s own children, or a different number of
+children than the Spark operator has.</p>
+<p>Override <code class="docutils literal notranslate"><span class="pre">sparkFallback</span></code> when conversion changes the plan shape, so the restored node is not that
+Spark operator with the same children. <code class="docutils literal notranslate"><span class="pre">CometNativeWriteExec</span></code> replaces a <code class="docutils literal notranslate"><span class="pre">DataWritingCommandExec</span></code>
+and drops the <code class="docutils literal notranslate"><span class="pre">WriteFilesExec</span></code> under it; its override puts that wrapper back around the restored
+input. <code class="docutils literal notranslate"><span class="pre">CometIcebergWriteExec</span></code> keeps the same shape as <code class="docutils literal notranslate"><span class="pre">IcebergWriteExec</span></code>, so the default is
+enough.</p>
+<p>Also override <code class="docutils literal notranslate"><span class="pre">sparkFallback</span></code> when the operator’s live state differs from <code class="docutils literal notranslate"><span class="pre">originalPlan</span></code>.
+<code class="docutils literal notranslate"><span class="pre">CometNativeScanExec</span></code> restores its current partition and data filters, and
+<code class="docutils literal notranslate"><span class="pre">CometIcebergNativeScanExec</span></code> restores its current runtime filters, so AQE’s executable DPP
+subqueries survive reversion. <code class="docutils literal notranslate"><span class="pre">CometLocalTopKExec</span></code> returns the restored child directly: Comet
+inserted that local candidate selection, and only the outer TopK restores Spark’s offset and
+projection. Rebuilding the original TopK at both nodes would apply it twice.</p>
+<p>Do not point <code class="docutils literal notranslate"><span class="pre">originalPlan</span></code> at a child. If that child is a shuffle or query stage, the copied
+logical link puts this node inside the stage’s <code class="docutils literal notranslate"><span class="pre">LogicalQueryStage</span></code>. AQE then re-plans a second
+copy of the operator around the one that is already there.</p>
+</section>
 <section id="handling-fallback">
 <h3>Handling Fallback<a class="headerlink" href="#handling-fallback" title="Link to this heading">#</a></h3>
 <p>Use <code class="docutils literal notranslate"><span class="pre">withInfo</span></code> to tag operators with fallback reasons:</p>
@@ -1365,6 +1389,7 @@ query-stage wrappers when checking the native operator and reused exchange.</p>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#implementing-a-jvm-operator">Implementing a JVM Operator</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#common-patterns-and-helpers">Common Patterns and Helpers</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#expression-conversion">Expression Conversion</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#restoring-the-spark-operator-sparkfallback">Restoring the Spark operator (<code class="docutils literal notranslate"><span class="pre">sparkFallback</span></code>)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#handling-fallback">Handling Fallback</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#child-operator-validation">Child Operator Validation</a></li>
 </ul>

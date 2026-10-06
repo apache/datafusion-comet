@@ -566,6 +566,11 @@ overhead that JVM shuffle incurs.</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>Comet Native (columnar) → ColumnarToRowExec → rows → JVM Shuffle → Arrow IPC → columnar
 </pre></div>
 </div>
+<p>When <code class="docutils literal notranslate"><span class="pre">RevertNativeForTransitionHeavyStages</span></code> restores the map stage to Spark execution, the
+native exchange stays in place. Its input still needs Arrow-backed Comet vectors, even if the
+restored Spark operator supports columnar output. The rule adds <code class="docutils literal notranslate"><span class="pre">CometSparkToColumnarExec</span></code> to
+convert either Spark rows or Spark columnar batches to Arrow before the native shuffle consumes
+them. Spark’s <code class="docutils literal notranslate"><span class="pre">RowToColumnarExec</span></code> alone does not satisfy this input contract.</p>
 </section>
 <section id="when-native-shuffle-is-used">
 <h2>When Native Shuffle is Used<a class="headerlink" href="#when-native-shuffle-is-used" title="Link to this heading">#</a></h2>
