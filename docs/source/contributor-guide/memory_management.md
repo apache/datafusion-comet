@@ -243,14 +243,17 @@ ignored and the pool is always `UnboundedMemoryPool`.
 the inside out, a Comet plan in the default configuration sees:
 
 ```text
-[LoggingMemoryPool]        <- only when spark.comet.debug.memory=true
-  [TaskSharedMemoryPool]   <- RAII handle for the per-task registry
-    [TrackConsumersPool]   <- DataFusion; names the top 10 consumers in error messages
-      [CometFairMemoryPool]  <- delegates acquire/release to Spark over JNI
+[LoggingMemoryPool]          <- only when spark.comet.debug.memory=true
+  [TaskSharedMemoryPool]     <- RAII handle for the per-task registry
+    [SpillReplayPool]        <- lets a spilled final aggregate read its spill files back
+      [TrackConsumersPool]   <- DataFusion; names the top 10 consumers in error messages
+        [CometFairMemoryPool]  <- delegates acquire/release to Spark over JNI
 ```
 
 Each decorator forwards every `MemoryPool` method to its inner pool, so `reserved()` at any level
-reports the base pool's number.
+reports the base pool's number. `SpillReplayPool` also turns one kind of refused `try_grow` into a
+`grow`; see
+[Final aggregates reading their spill files back](#final-aggregates-reading-their-spill-files-back).
 
 ### The unified pools
 
@@ -329,6 +332,18 @@ forget, and a `createPlan` that fails partway through cleans up on unwind.
 `TaskSharedMemoryPool::drop` has to handle one race: an `acquire` can observe an expired `Weak` and
 insert a replacement before the dying pool reaches the registry lock. The drop therefore compares
 pointers and only removes an entry that is still its own.
+
+### Final aggregates reading their spill files back
+
+`SpillReplayPool` (`spill_replay.rs`) wraps both Comet pools to work around
+[issue #6254](https://github.com/apache/datafusion-comet/issues/6254). Once one of DataFusion 55's
+final aggregates has spilled, it reads its spill files back through an aggregate that cannot spill,
+so a refused `try_grow` there fails the task. When the pool refuses such a request,
+`SpillReplayPool` records it with the pool's `grow` instead, which skips `CometFairMemoryPool`'s
+local checks and carries what Spark does not grant as overcommit. Every other refusal is passed on
+unchanged. `spill_replay.rs` describes how the wrapper recognizes these requests and what that relies
+on in DataFusion. [Issue #6583](https://github.com/apache/datafusion-comet/issues/6583) tracks
+removing it.
 
 ## How DataFusion consumes the pool
 
