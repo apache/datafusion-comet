@@ -741,7 +741,7 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_SHUFFLE)
       .doc("When enabled, Comet reverts a `CometShuffleExchangeExec` with `CometColumnarShuffle` " +
         "back to Spark's `ShuffleExchangeExec` when both its parent and child are non-Comet " +
-        "hash aggregate operators. The same applies to a native shuffle whose input " +
+        "aggregate operators. The same applies to a native shuffle whose input " +
         s"`${COMET_CONVERT_FROM_SHUFFLE_INPUT_ENABLED.key}` converted. This avoids a redundant " +
         "row -> Arrow -> shuffle -> Arrow -> row conversion when no Comet operator on either " +
         "side can consume columnar output. Disable to keep the Comet shuffle even in " +

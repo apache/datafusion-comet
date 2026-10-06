@@ -205,12 +205,14 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
 
   /**
    * Revert any `CometShuffleExchangeExec` with `CometColumnarShuffle` whose parent and child are
-   * both non-Comet `HashAggregateExec` / `ObjectHashAggregateExec` operators back to the original
-   * Spark `ShuffleExchangeExec`. This is the partial-final-aggregate pattern where Comet couldn't
+   * both non-Comet aggregate operators (any `BaseAggregateExec`) back to the original Spark
+   * `ShuffleExchangeExec`. This is the partial-final-aggregate pattern where Comet couldn't
    * convert either aggregate; keeping a columnar shuffle between them only adds
    * row->arrow->shuffle->arrow->row conversion overhead with no Comet consumer on either side.
    * See https://github.com/apache/datafusion-comet/issues/4004. A native shuffle over rows that
-   * `convertShuffleInput` converted is the same pattern, and is reverted the same way.
+   * `convertShuffleInput` converted is the same pattern, and is reverted the same way. A
+   * `SortAggregateExec` with grouping keys reads the shuffle through the `SortExec` that
+   * `EnsureRequirements` adds, so it is not the shuffle's parent and the shuffle stays.
    *
    * The match is intentionally narrow (both sides must be row-based aggregates that remained JVM
    * after the main transform pass). Running the revert post-transform means we only fire when the
