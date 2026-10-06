@@ -28,7 +28,7 @@ import org.apache.spark.{SparkConf, SparkEnv, TaskContext}
 import org.apache.spark.sql.{CometTestBase, Row}
 import org.apache.spark.sql.api.java.UDF1
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Add, Alias, ApplyFunctionExpression, AttributeReference, BoundReference, Cast, CreateArray, CreateMap, CreateNamedStruct, Expression, GenericInternalRow, Hypot, Literal, MapConcat, ScalaUDF}
+import org.apache.spark.sql.catalyst.expressions.{Add, Alias, ApplyFunctionExpression, AttributeReference, BoundReference, Cast, CreateArray, CreateMap, CreateNamedStruct, Expression, GenericInternalRow, Hypot, If, IsNull, LessThan, Literal, MapConcat, Or, Rand, ScalaUDF}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial}
 import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
 import org.apache.spark.sql.catalyst.util.GenericArrayData
@@ -1000,6 +1000,114 @@ class CometCodegenSuite
         checkSparkAnswerAndOperator(sql("SELECT javaLen(s) FROM t"))
       }
       assertKernelSignaturePresent(Seq(classOf[VarCharVector]), IntegerType)
+    }
+  }
+
+  test("a primitive ScalaUDF's null guard runs in the UDF's kernel (#6704)") {
+    // Spark's `HandleNullInputsForUDF` wraps each call below as
+    // `if (isnull(a) or ...) null else f(knownnotnull(a), ...)`. Run natively, the `if` is a
+    // `CASE` that splits each batch on the predicate and merges the two halves back, so the guard
+    // goes to the kernel with the call, and neither `if` nor `isnull` is native.
+    spark.udf.register("plusOne", (x: Long) => x + 1)
+    spark.udf.register("combine", (a: Long, b: Int, s: String) => s"$s:${a + b}")
+    withTable("t") {
+      sql("CREATE TABLE t (a BIGINT, b INT, s STRING) USING parquet")
+      sql(
+        "INSERT INTO t VALUES (1, 10, 'x'), (NULL, 20, 'y'), (3, NULL, 'z'), " +
+          "(NULL, NULL, NULL), (-5, 7, NULL)")
+      val guard = Seq("if", "isnull")
+      checkSparkAnswerAndImpl(sql("SELECT plusOne(a) FROM t"), dispatched = "plusone" +: guard)
+      checkSparkAnswerAndImpl(
+        sql("SELECT max(plusOne(a)), count(plusOne(a)) FROM t"),
+        dispatched = "plusone" +: guard)
+      // An argument that is an expression is checked as it is.
+      checkSparkAnswerAndImpl(
+        sql("SELECT plusOne(a * 2) FROM t"),
+        dispatched = "plusone" +: guard)
+      // One `isnull` per primitive parameter, joined by `or`. The `String` one is not checked.
+      checkSparkAnswerAndImpl(
+        sql("SELECT combine(a, b, s) FROM t"),
+        dispatched = Seq("combine", "or") ++ guard)
+    }
+  }
+
+  test("a boolean ScalaUDF's null guard runs in the kernel with false for null (#6704)") {
+    // In a filter, and in the predicate of a conditional, `ReplaceNullWithFalseInPredicate`
+    // rewrites the guard to `if (isnull(a)) false else f(knownnotnull(a))`.
+    spark.udf.register("isPositive", (x: Long) => x > 0)
+    withTypedCol("BIGINT", "1", "NULL", "-3", "0", "7") {
+      checkSparkAnswerAndImpl(
+        sql("SELECT c FROM t WHERE isPositive(c)"),
+        dispatched = Seq("ispositive", "if", "isnull"))
+      // The query's own `if` is native, so only the guard's `isnull` is checked.
+      checkSparkAnswerAndImpl(
+        sql("SELECT IF(isPositive(c), 'yes', 'no') FROM t"),
+        dispatched = Seq("ispositive", "isnull"))
+    }
+  }
+
+  test("a nondeterministic ScalaUDF under its guard is called only for non-null rows (#6704)") {
+    // Each result counts the calls made so far in the task, so a call on a null row would shift
+    // every result after it.
+    import org.apache.spark.sql.functions.udf
+    var calls = 0L
+    val countCalls = udf { (x: Long) =>
+      calls += 1
+      x * 1000 + calls
+    }
+    spark.udf.register("countCalls", countCalls.asNondeterministic())
+    withTypedCol("BIGINT", "1", "NULL", "2", "NULL", "NULL", "3") {
+      checkSparkAnswerAndImpl(
+        sql("SELECT countCalls(c) FROM t"),
+        dispatched = Seq("countcalls", "if", "isnull"))
+    }
+  }
+
+  test("a null guard the dispatcher cannot take whole stays native around its UDF (#6704)") {
+    spark.udf.register("plusOne", (x: Long) => x + 1)
+    withTypedCol("BIGINT", "1", "NULL", "-3") {
+      // `canHandle` counts each reference to a column against `maxFields`, and the guard reads
+      // `c` a second time: the UDF alone counts its output and one input, 2, and the guard 3. At
+      // 2 the guard is refused while the UDF is not, so the guard has to stay a native `if`
+      // around the dispatched UDF rather than take the projection to Spark.
+      withSQLConf("spark.sql.codegen.maxFields" -> "2") {
+        checkSparkAnswerAndImpl(
+          sql("SELECT plusOne(c) FROM t"),
+          native = Seq("if", "isnull"),
+          dispatched = Seq("plusone"))
+      }
+      // With the dispatcher off, the fallback reason is the UDF's own, and none is recorded for
+      // a guard that the query does not contain.
+      withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
+        val (_, cometPlan) = checkSparkAnswerAndFallbackReason(
+          sql("SELECT plusOne(c) FROM t"),
+          s"plusone: ${CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key}=false")
+        val reasons = new ExtendedExplainInfo().getFallbackReasons(cometPlan)
+        assert(!reasons.exists(_.startsWith("if:")), s"unexpected fallback reasons: $reasons")
+      }
+    }
+  }
+
+  test("only the null guard Spark builds goes to the kernel with its UDF (#6704)") {
+    spark.udf.register("plusOne", (x: Long) => x + 1)
+    withTable("t") {
+      sql("CREATE TABLE t (a BIGINT, b BIGINT) USING parquet")
+      val plan = sql("SELECT plusOne(a), b FROM t").queryExecution.optimizedPlan
+      val guard = plan.expressions.flatMap(_.collect { case g: If => g }).head
+      val Seq(a, b) = plan.collectLeaves().head.output
+      def root(expr: Expression): ExprStructCase =
+        QueryPlanSerde.exprToProto(expr, Seq(a, b)).get.getExprStructCase
+      assert(root(guard) == ExprStructCase.JVM_SCALAR_UDF)
+      // A predicate that checks a column the call does not read, or one besides its arguments.
+      assert(root(guard.copy(predicate = IsNull(b))) == ExprStructCase.IF)
+      assert(root(guard.copy(predicate = Or(guard.predicate, IsNull(b)))) == ExprStructCase.IF)
+      // A branch that is not null.
+      assert(root(guard.copy(trueValue = Literal(0L))) == ExprStructCase.IF)
+      // A nondeterministic argument, which the guard and the call would each evaluate.
+      val random = guard.transformUp { case r: AttributeReference =>
+        If(LessThan(Rand(Literal(1L)), Literal(2.0)), r, Literal(null, LongType))
+      }
+      assert(root(random) == ExprStructCase.IF)
     }
   }
 
