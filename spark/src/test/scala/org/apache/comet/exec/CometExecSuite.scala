@@ -4040,6 +4040,38 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("SparkToColumnar over RowDataSourceScanExec") {
+    val schema = new StructType()
+      .add("id", IntegerType)
+      .add("name", StringType)
+      .add("score", DoubleType)
+    val rows = (0 until 1000).map { i =>
+      Row(i, if (i % 7 == 0) null else s"name_${i % 10}", if (i % 5 == 0) null else i * 0.5)
+    }
+    def source = rowDataSourceDataFrame(schema, rows)
+    def conversions(plan: SparkPlan) = collect(plan) { case c: CometSparkToColumnarExec => c }
+    Seq("true", "false").foreach { aqe =>
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe,
+        CometConf.COMET_CONVERT_FROM_ROW_DATA_SOURCE_ENABLED.key -> "true") {
+        val (_, filtered) = checkSparkAnswerAndOperator(
+          source.filter("id > 10").selectExpr("id", "name", "score * 2"),
+          includeClasses = Seq(classOf[CometSparkToColumnarExec], classOf[CometFilterExec]))
+        assert(conversions(filtered).size == 1, filtered)
+        val scan = conversions(filtered).head.child.find(_.isInstanceOf[RowDataSourceScanExec])
+        assert(scan.isDefined, filtered)
+        // With AQE on, this is the final plan of an adaptive query.
+        val (_, aggregated) =
+          checkSparkAnswerAndOperator(source.groupBy("name").agg(count("score"), sum("id")))
+        assert(conversions(aggregated).size == 1, aggregated)
+        withSQLConf(CometConf.COMET_CONVERT_FROM_ROW_DATA_SOURCE_ENABLED.key -> "false") {
+          val (_, disabled) = checkSparkAnswer(source.filter("id > 10"))
+          assert(conversions(disabled).isEmpty)
+        }
+      }
+    }
+  }
+
   test("SparkToColumnar over BatchScan (Spark Parquet reader)") {
     Seq("", "parquet").foreach { v1List =>
       Seq(true, false).foreach { parquetVectorized =>
