@@ -262,14 +262,15 @@ attempt id is embedded in its data file names.
 
 The native writer's buffers are charged to Comet's memory pool, the off-heap budget Comet's other
 native operators draw on, where iceberg-java's buffers sit on the JVM heap. A fanout write keeps a
-data file open for every partition a task writes to, and each open file holds up to one row group
-(`write.parquet.row-group-size-bytes`) in memory, so a task writing to many partitions needs memory
-in proportion to them. When the pool cannot grant it, the task fails with a `CometNativeException`
-reading `Additional allocation failed for IcebergWriteExec` instead of exceeding the executor's
-memory, and Spark retries it like any other task failure. Such a write fits in less memory with the
-fanout writer disabled (`write.spark.fanout.enabled=false`): Spark then sorts each task's rows by
-partition, and the task keeps one file open at a time. A smaller row-group size also helps.
-Otherwise the write needs a larger `spark.memory.offHeap.size`.
+data file open for every partition a task writes to. Each open file holds the row group it is
+writing in memory, up to `write.parquet.row-group-size-bytes`, and on S3 or GCS also the last row
+group it flushed, which is uploaded once the next one is complete or the file closes. So a task
+writing to many partitions needs memory in proportion to them. When the pool cannot grant it, the
+task fails with a `CometNativeException` reading `Additional allocation failed for IcebergWriteExec`
+instead of exceeding the executor's memory, and Spark retries it like any other task failure. Such a
+write fits in less memory with the fanout writer disabled (`write.spark.fanout.enabled=false`):
+Spark then sorts each task's rows by partition, and the task keeps one file open at a time. A
+smaller row-group size also helps. Otherwise the write needs a larger `spark.memory.offHeap.size`.
 
 Partial results are never committed. The commit set is exactly the commit messages returned by
 successful tasks — a failed task contributes none — and if the job fails, the driver-side

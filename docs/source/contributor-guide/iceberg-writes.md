@@ -264,15 +264,20 @@ Points where Comet adapts iceberg-rust to match iceberg-java:
 
 iceberg-rust keeps each open file writer private inside its rolling and partitioning writers, so
 Comet wraps `ParquetWriterBuilder` in `MeteredParquetWriterBuilder`, whose files report what they
-hold in memory. After every batch `run_write_task` resizes the task's reservation to what the open
-files report plus the rows each `PartitionFeed` holds, for the dictionary choice or for pacing, and a resize the pool refuses fails the task. What
-that figure covers, and what it misses, is described under
+hold in memory. It hands `ParquetWriter` each file's `OutputFile` behind a `CountedOutput`, whose
+writer counts the bytes that leave memory on their way to storage, and a file reports what it has
+written less those. When they leave depends on the storage (`StorageWrites`). After every batch
+`run_write_task` resizes the task's reservation to what the open files report plus the rows each
+`PartitionFeed` holds, for the dictionary choice or for pacing, and a resize the pool refuses fails
+the task. What that figure covers, and what it misses, is described under
 [Native writers](memory_management.md#native-writers).
 
 `FileIO` comes from `load_file_io` in `iceberg_common.rs`, shared with the native scan. It picks
 the storage backend from the data location's scheme and wires in Comet's S3 credential bridge when
 one is configured. For writes the bridge fails closed: if a configured provider cannot initialize,
-the task fails rather than writing with the default credential chain.
+the task fails rather than writing with the default credential chain. A storage scheme newly
+supported for writes also needs its entry in `StorageWrites::for_location`, which treats an unknown
+scheme as one that uploads in parts.
 
 ### Native to JVM: the task payload
 

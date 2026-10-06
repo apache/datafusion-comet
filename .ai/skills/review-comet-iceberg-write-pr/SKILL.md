@@ -147,6 +147,9 @@ Read the ownership table in the contributor guide before reviewing any change ne
       `PartitionFeed`s, or anything a new feed holds back) must be added to what `run_write_task` reserves. A
       builder that constructs `ParquetWriterBuilder` directly leaves its files out of the task's
       memory reservation, so a wide fanout write grows past the pool instead of failing its task.
+      A storage scheme newly supported for writes needs its entry in
+      `StorageWrites::for_location`: a file reports its flushed row groups until its storage has
+      written them out, which a local file does at once and an object store only part by part.
 
 ## 5. Plan Shape
 

@@ -391,11 +391,16 @@ the executor.
   ([#5304](https://github.com/apache/datafusion-comet/issues/5304)).
 - The Iceberg writer keeps one file open per partition in a fanout write, so its reservation grows
   with the number of partitions a task writes. iceberg-rust's `ParquetWriter` does not expose
-  parquet-rs's `memory_size`, only the bytes written so far plus the in-progress row group's
-  encoded size, so each open file reports that figure capped at the row-group size
-  (`write.parquet.row-group-size-bytes`). The reservation also covers the rows each partition holds
-  back, first for its dictionary choice and then until they fill the 1000-row unit the rolling
-  writer is fed in. It does not cover what
+  parquet-rs's `memory_size`, only every byte the file has written, its in-progress row group's
+  encoded size included. So each file's writer counts the bytes that leave memory on their way to
+  storage, and the file reports what it has written less those. A local file writes a flushed row
+  group out at once, so it reports its in-progress row group and the few KiB parquet-rs buffers in
+  front of storage. S3 and GCS take a file in parts of at least 5 MiB, and OpenDAL holds each part
+  in memory until the next one is complete or the file closes, so there a file also reports what
+  it has flushed since its last part was uploaded. At the default row-group size
+  (`write.parquet.row-group-size-bytes`, 128 MiB) that is the last row group it flushed. The
+  reservation also covers the rows each partition holds back, first for its dictionary choice and
+  then until they fill the 1000-row unit the rolling writer is fed in. It does not cover what
   parquet-rs holds beyond the encoded size: dictionary hash tables, unencoded dictionary indices
   and buffer capacity. Native writes decline Bloom filters today, and neither figure would include
   them.
