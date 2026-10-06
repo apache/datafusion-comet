@@ -471,6 +471,10 @@ name = "hll_scalar"
 harness = false
 
 [[bench]]
+name = "aggregate_misc"
+harness = false
+
+[[bench]]
 name = "nondeterministic"
 harness = false
 
