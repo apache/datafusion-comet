@@ -45,6 +45,7 @@ import org.apache.comet.exceptions.CometQueryExecutionException
 import org.apache.comet.parquet.CometFileKeyUnwrapper
 import org.apache.comet.serde.Config.ConfigMap
 import org.apache.comet.shuffle.ShufflePartitionPusher
+import org.apache.comet.udf.CometUdfBridge
 import org.apache.comet.vector.NativeUtil
 
 /**
@@ -355,6 +356,10 @@ class CometExecIterator(
       // execution context frees this plan's task-shared memory pool reference and several JNI
       // global refs.
       attempt(nativeLib.releasePlan(plan))
+
+      // Drops what the task's JVM UDFs keep for this plan, such as its dispatched kernels. `id` is
+      // the plan id the native plan passed them.
+      attempt(CometUdfBridge.releasePlan(taskAttemptId, id))
 
       // Run the diagnostics even when teardown failed: a failed teardown is exactly when the
       // non-zero memory usage warning below is most informative.
