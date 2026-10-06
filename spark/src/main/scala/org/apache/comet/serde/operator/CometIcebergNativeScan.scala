@@ -723,11 +723,11 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
           None
         } else {
           val source = if (resolvesNameNodesThroughDns(hadoopConf, authority)) {
-            s"its NameNodes are found through DNS (dfs.client.failover.resolve-needed.$authority), " +
-              "which the native client does not expand, so it would lose every failover target " +
-              "but one"
+            "its NameNodes are found through DNS " +
+              s"(dfs.client.failover.resolve-needed.$authority), which the native client does " +
+              "not expand, so it would lose every failover target but one"
           } else if (isConfiguredNameservice(hadoopConf, authority)) {
-            s"the session Hadoop configuration declares nameservice '$authority' but Comet " +
+            s"the Hadoop configuration declares nameservice '$authority' but Comet " +
               s"could not resolve it: it needs dfs.ha.namenodes.$authority and a host:port " +
               s"dfs.namenode.rpc-address.$authority.<nn> for every NameNode listed there"
           } else {
