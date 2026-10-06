@@ -38,6 +38,14 @@ filters reject, so every comparison in a data filter is normalized, and a `FLOAT
 comparison in a data filter does not prune row groups or pages
 ([#6702](https://github.com/apache/datafusion-comet/issues/6702)).
 
+Spark's own Parquet reader keeps `-0.0` and `0.0` apart when it prunes row groups with dictionaries
+and bloom filters, so it can skip a row group holding rows that its filter matches. For example,
+`WHERE d = -0.0D` can skip a row group that holds `0.0` but not `-0.0`, and so can `<=>` or `IN`
+against `-0.0D`. `WHERE d >= 0.0D` can skip a dictionary-encoded row group whose largest value is
+`-0.0`, and `WHERE d <= -0.0D` one whose smallest value is `0.0`. Comet reads those row groups, so
+it can return rows that Spark does not. Comet's result is the one that Spark's comparison semantics
+call for, and Spark returns the same rows with `spark.sql.parquet.filterPushdown=false`.
+
 Top-level `IN`, `InSet`, and `NOT IN` membership also normalize dynamic candidates and lists
 containing NaN. When every candidate is a non-NaN literal, Comet keeps DataFusion's static filter
 and pruning path, enumerating both signed-zero forms when a list contains zero.

@@ -40,19 +40,28 @@ include a NaN with the sign bit set.
 | SQL ordering (`SQLOrderingUtil.compareDoubles`, `genEqual`) | Equal                     | All NaNs are equal, and NaN sorts above all values         | Comparisons, `IN`, sorting and ranking, `min`/`max`, `greatest`/`least`, `sort_array`, `array_min`/`array_max`, `array_contains`, `array_position`, `array_remove`, and comparisons of arrays and structs |
 | `NormalizeNaNAndZero`, inserted by Spark's optimizer        | `-0.0` becomes `0.0`      | Every NaN becomes the canonical NaN                        | Grouping keys, join keys and window partition keys                                                                                                                                                        |
 | `Murmur3Hash` and `XxHash64`                                | Same hash                 | Hashed through `doubleToLongBits`, which canonicalizes NaN | `hash`, `xxhash64` and hash partitioning                                                                                                                                                                  |
-| `java.lang.Double.equals`, for boxed values                 | Distinct                  | All NaNs are equal                                         | Hash sets and maps of boxed values                                                                                                                                                                        |
+| `java.lang.Double.equals`, for boxed values                 | Distinct                  | All NaNs are equal                                         | Java hash sets and maps of boxed values, and Spark's `OpenHashSet` and `OpenHashMap` from Spark 3.5.2 and 4.0.0                                                                                           |
+| Scala `==`, for boxed values (`BoxesRunTime.equals`)        | Equal                     | A NaN equals nothing, not even another NaN                 | Scala sets and maps of `Any`, such as `collect_set`'s buffer before Spark 4.2                                                                                                                             |
 | `java.lang.Double.compare`                                  | `-0.0` sorts before `0.0` | As in SQL ordering                                         | An ascending `sort_array` of elements that cannot be null, in Spark's generated code                                                                                                                      |
 
 Some functions changed rules in a Spark release, so a native path has to follow the Spark version
 it runs against:
 
-- `collect_set` keys its buffer by `Double.equals` before Spark 4.2. Spark 4.2 normalizes NaN and
-  `-0.0` first (SPARK-57298).
-- `mode` keys its frequency map by `Double.equals` before Spark 4.2. Spark 4.2 folds `-0.0` into
-  `0.0` first (SPARK-57329).
-- `array_distinct` and `array_union` keep signed zeros apart in a flat array before Spark 4.2.0.
-  Spark 4.2.0 normalizes their arguments in the plan (SPARK-54918). From 4.0.5, 4.1.4 and 4.2.1
-  they normalize while they evaluate instead (SPARK-59602).
+- `collect_set` keys its buffer with Scala's `==` before Spark 4.2, so `-0.0` and `0.0` are one
+  value and every NaN is a value of its own. Spark 4.2 normalizes NaN and `-0.0` first and keys the
+  buffer by the normalized bits, so all NaNs are one value too (SPARK-57298).
+- Spark's `OpenHashSet`, and the `OpenHashMap` built on it, follow `Double.equals` only from Spark
+  3.5.2 and 4.0.0 (SPARK-45599). In every 3.4 release and in 3.5.0 and 3.5.1 they match a key with
+  `==` but hash its bits (`doubleToLongBits`), so two NaNs never match, and `-0.0` and `0.0` match
+  only when probing from one reaches the other. `mode` and `percentile` count values in an
+  `OpenHashMap`. `array_distinct`, `array_union`, `array_intersect` and `array_except` look up the
+  elements of a flat array in an `OpenHashSet`, but treat all NaNs as one value.
+- `mode` follows `Double.equals` from Spark 3.5.2 and 4.0.0 until Spark 4.2, which folds `-0.0`
+  into `0.0` first (SPARK-57329).
+- `array_distinct` and `array_union` keep signed zeros apart in a flat array before Spark 4.2.0
+  (before 3.5.2, unless probing merges them). Spark 4.2.0 normalizes their arguments in the plan
+  (SPARK-54918). From 4.0.5, 4.1.4 and 4.2.1 they normalize while they evaluate instead
+  (SPARK-59602).
 - Map construction (`ArrayBasedMapBuilder`) finds duplicate keys by `Double.equals` in Spark 3.4
   and 3.5. From Spark 4.0 it normalizes each key first, unless
   `spark.sql.legacy.disableMapKeyNormalization` is set
@@ -105,12 +114,16 @@ normalized and the output keeps the original values.
   `=`, `<>`, `<=>`, `<`, `<=`, `>`, `>=` and `IS DISTINCT FROM`, whichever operator evaluates it. It
   normalizes float operands, and folds a literal while the plan is built so that it stays a
   literal. Nested `=` and `<>` compare in place with `spark_equality`.
-- A scan's pushed-down data filters leave a float column compared with a literal unwrapped
-  (`FloatOperands::Raw`) so that Parquet pruning still recognizes it, but only while the reader
-  prunes with them without filtering rows. With
+- A scan's pushed-down data filters leave a float column compared with a literal other than NaN
+  unwrapped (`FloatOperands::Raw`) so that Parquet pruning still recognizes it, but only while the
+  reader prunes with them without filtering rows. A bloom filter probe hashes the literal's bits, so
+  `=` against either zero becomes `= -0.0 OR = 0.0`. With
   `spark.comet.parquet.rowFilterPushdown.enabled=true` they normalize both sides, because the
   reader drops the rows a filter rejects, and a raw column would reject a stored NaN that Spark
-  matches.
+  matches ([#6702](https://github.com/apache/datafusion-comet/issues/6702)). Spark's own reader
+  keeps the two zeros apart in its dictionary and bloom filters, so it can skip a row group that
+  Comet reads. A test of this pruning writes out the expected rows instead of comparing them with
+  Spark's.
 - `IN` normalizes its operands in the serde (`normalizeInOperand` in `predicates.scala`).
 - `hash`, `xxhash64`, the native shuffle's hash partitioner and `approx_count_distinct` hash floats
   through `hash_input`.
@@ -134,9 +147,11 @@ and only for a type that contains a `FLOAT` or `DOUBLE`.
 
 1. Read Spark's implementation, both `eval` and `doGenCode`, in every Spark version that Comet
    supports, at the latest patch release of each. What it calls decides the rule. `ordering.compare`,
-   `ordering.equiv`, `ctx.genComp` and `ctx.genEqual` mean SQL ordering. A `java.util.HashMap`, an
-   `OpenHashSet` or another collection of boxed values means `Double.equals`. `java.util.Arrays.sort`
-   on a primitive array means `Double.compare`.
+   `ordering.equiv`, `ctx.genComp` and `ctx.genEqual` mean SQL ordering. A `java.util.HashMap` or
+   another Java collection of boxed values means `Double.equals`, and so does an `OpenHashSet` or
+   `OpenHashMap` from Spark 3.5.2 and 4.0.0. A Scala collection of `Any`, such as
+   `mutable.HashSet[Any]`, means Scala's `==`. `java.util.Arrays.sort` on a primitive array means
+   `Double.compare`.
 2. Check whether Spark's optimizer normalizes the input in the plan. If it does, Comet receives
    normalized values on that version only.
 3. Apply the rule at every depth. A float inside an array, struct or map follows the same rule, and
