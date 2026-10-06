@@ -62,6 +62,8 @@ above them can run in Comet. Each conversion is off by default.
   `spark.createDataFrame(rdd, schema)`.
 - `spark.comet.convert.oneRowRelation.enabled`: the single row that a query without a `FROM`
   clause, such as `SELECT 1`, reads.
+- `spark.comet.convert.rowDataSource.enabled`: Data Source V1 relations that are not file-based,
+  such as JDBC tables, which Spark scans with `RowDataSourceScanExec`.
 
 To convert any other leaf operator, such as the scan of a Data Source V2 connector or of a file
 format other than Parquet, JSON and CSV, set `spark.comet.sparkToColumnar.enabled=true` and name the
@@ -79,6 +81,10 @@ string collations remain unsupported at this conversion boundary. Source default
 
 This includes row-backed `ExistingRDD` inputs when `spark.comet.convert.rdd.enabled=true`. Spark
 still produces the RDD rows; conversion lets eligible downstream operators execute in Comet.
+
+The same types apply to the output of typed `Dataset` operations, such as `map`, which Comet
+converts when `spark.comet.convert.typedDataset.enabled=true`. A column of any other type keeps
+the operators above the typed operation on Spark.
 
 ## Data Catalogs
 

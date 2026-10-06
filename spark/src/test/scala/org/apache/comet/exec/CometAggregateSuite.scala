@@ -26,17 +26,17 @@ import scala.util.Random
 import org.apache.hadoop.fs.Path
 import org.apache.spark.{CometListenerBusUtils, SparkConf}
 import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
-import org.apache.spark.sql.{Column, CometTestBase, DataFrame, Row}
+import org.apache.spark.sql.{Column, CometTestBase, DataFrame, QueryTest, Row}
 import org.apache.spark.sql.catalyst.expressions.Cast
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.optimizer.EliminateSorts
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, RangePartitioning}
-import org.apache.spark.sql.comet.{CometFilterExec, CometHashAggregateExec, CometNativeExec, CometProjectExec}
+import org.apache.spark.sql.comet.{CometBaseAggregateExec, CometFilterExec, CometHashAggregateExec, CometNativeExec, CometProjectExec, CometSortAggregateExec, CometSortExec}
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.LocalTableScanExec
 import org.apache.spark.sql.execution.SQLExecution
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AdaptiveSparkPlanHelper, ShuffleQueryStageExec}
-import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, ObjectHashAggregateExec}
+import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, ObjectHashAggregateExec, SortAggregateExec}
 import org.apache.spark.sql.execution.exchange.{ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.functions.{avg, col, collect_list, collect_set, count_distinct, expr, sort_array, sum}
 import org.apache.spark.sql.internal.SQLConf
@@ -151,6 +151,94 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
         assert(ranged.collect().length == 64)
         assert(aggregate.metrics("peak_mem_used").value > 0L)
+      }
+    }
+  }
+
+  /**
+   * Returns the native final aggregates in the plan that `df` last ran, after checking that there
+   * is one and that each spilled.
+   */
+  private def spilledFinalAggregates(df: DataFrame): Seq[CometHashAggregateExec] = {
+    val plan = df.queryExecution.executedPlan
+    val finalAggregates = collect(plan) {
+      case aggregate: CometHashAggregateExec if aggregate.modes.contains(Final) => aggregate
+    }
+    assert(finalAggregates.nonEmpty, s"Expected a native final aggregate:\n$plan")
+    assert(
+      finalAggregates.forall(_.metrics("spill_count").value > 0),
+      "The final aggregate did not spill")
+    finalAggregates
+  }
+
+  test("final aggregate that has spilled reads its spill files back (issue #6254)") {
+    withTempPath { dir =>
+      val path = dir.getCanonicalPath
+      spark
+        .range(0, 125000, 1, 1)
+        .selectExpr("lpad(cast(id % 62500 AS STRING), 128, 'k') AS k", "id AS v")
+        .write
+        .parquet(path)
+      // A 3 MiB pool (3/2048 of the suite's 2g off-heap) makes the final aggregate spill several
+      // runs of its 62,500 groups. Merging the runs then takes nearly all of its share, and
+      // reading them back must not fail the task.
+      withSQLConf(
+        SQLConf.SHUFFLE_PARTITIONS.key -> "1",
+        CometConf.COMET_BATCH_SIZE.key -> "1024",
+        CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key -> (3.0 / 2048).toString) {
+        val df = spark.read.parquet(path).groupBy("k").agg(expr("count(1)"), expr("max(v)"))
+        val expected = (0 until 62500).map { i =>
+          val key = i.toString
+          Row("k" * (128 - key.length) + key, 2L, i + 62500L)
+        }
+        // checkCometAnswer runs the query once, so the plan read below is the one that ran.
+        checkCometAnswer(df, expected)
+        spilledFinalAggregates(df)
+      }
+    }
+  }
+
+  test("ordered final aggregate that has spilled reads its spill files back (issue #6254)") {
+    withTempPath { dir =>
+      val path = dir.getCanonicalPath
+      spark
+        .range(0, 125000, 1, 1)
+        .selectExpr("0L AS g", "lpad(cast(id % 62500 AS STRING), 128, 'k') AS k", "id AS v")
+        .write
+        .parquet(path)
+      // Sorting on g, the first grouping key, makes DataFusion run the final aggregate as an
+      // OrderedFinalAggregateStream, which spills and reads its spill files back the same way.
+      // Spark drops a sort under an aggregate unless EliminateSorts is excluded. With a 2.5 MiB
+      // pool, merging the runs takes nearly all of the aggregate's share. The sort's merge
+      // reservation is lowered so that the sort fits in the pool too.
+      withSQLConf(
+        SQLConf.OPTIMIZER_EXCLUDED_RULES.key -> EliminateSorts.ruleName,
+        CometConf.COMET_BATCH_SIZE.key -> "1024",
+        CometConf.COMET_RESPECT_DATAFUSION_CONFIGS.key -> "true",
+        "spark.comet.datafusion.execution.sort_spill_reservation_bytes" -> "65536",
+        CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key -> (2.5 / 2048).toString) {
+        val df = spark.read
+          .parquet(path)
+          .repartition(1, col("g"))
+          .sortWithinPartitions("g")
+          .groupBy("g", "k")
+          .agg(expr("count(1)"), expr("max(v)"))
+        val expected = (0 until 62500).map { i =>
+          val key = i.toString
+          Row(0L, "k" * (128 - key.length) + key, 2L, i + 62500L)
+        }
+        // checkCometAnswer would compare the rows in order, because the plan has a sort.
+        // Collecting runs the query once, so the plan read below is the one that ran.
+        QueryTest.sameRows(expected, df.collect().toSeq).foreach(fail(_))
+
+        // Only a sort in the same native plan keeps the final aggregate's input sorted.
+        assert(
+          spilledFinalAggregates(df).exists(_.child match {
+            case partial: CometHashAggregateExec => partial.child.isInstanceOf[CometSortExec]
+            case _ => false
+          }),
+          "Expected a native final aggregate over a partial aggregate over a sort:\n" +
+            df.queryExecution.executedPlan)
       }
     }
   }
@@ -956,26 +1044,34 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   // cascade so that neither half runs in Comet - a Spark final cannot read a Comet-produced list,
   // and adjustOutputForNativeState would misinterpret Spark's Binary buffer as a list if a Comet
   // final ran above a Spark partial. count(*) is included so the aggregate also carries a
-  // buffer-compatible function, which is the shape most likely to be split by mistake.
-  Seq(
-    ("Comet partial + Spark final", CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE),
-    ("Spark partial + Comet final", CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE)).foreach {
-    case (name, disabledHalf) =>
-      test(s"mixed engine collect_list: $name matches Spark") {
-        val data = (0 until 100).map(i => (if (i % 11 == 0) None else Some(i), i % 7))
-        withParquetTable(data, "tbl") {
-          withSQLConf(
-            disabledHalf.key -> "false",
-            CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
-            CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
-            val df = sql("SELECT _2, sort_array(collect_list(_1)), count(*) FROM tbl GROUP BY _2")
-            checkSparkAnswer(df)
-            // Without the cascade the surviving half would still convert, so pinning this at zero
-            // is what keeps the test from passing on a regression.
-            assert(getNumCometHashAggregate(df) == 0)
-          }
+  // buffer-compatible function, which is the shape most likely to be split by mistake. Disabling
+  // ObjectHashAggregate plans the same aggregate as SortAggregateExec, which puts a sort between
+  // each half and its exchange.
+  for {
+    (name, disabledHalf) <- Seq(
+      ("Comet partial + Spark final", CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE),
+      ("Spark partial + Comet final", CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE))
+    objectHash <- Seq(true, false)
+  } {
+    val suffix = if (objectHash) "" else " with sort aggregates"
+    test(s"mixed engine collect_list: $name matches Spark$suffix") {
+      val data = (0 until 100).map(i => (if (i % 11 == 0) None else Some(i), i % 7))
+      withParquetTable(data, "tbl") {
+        withSQLConf(
+          disabledHalf.key -> "false",
+          SQLConf.USE_OBJECT_HASH_AGG.key -> objectHash.toString,
+          CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+          CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
+          val df = sql("SELECT _2, sort_array(collect_list(_1)), count(*) FROM tbl GROUP BY _2")
+          checkSparkAnswer(df)
+          val plan = stripAQEPlan(df.queryExecution.executedPlan)
+          assert(plan.find(_.isInstanceOf[SortAggregateExec]).isDefined != objectHash, plan)
+          // Without the cascade the surviving half would still convert, so pinning this at zero
+          // is what keeps the test from passing on a regression.
+          assert(plan.collect { case agg: CometBaseAggregateExec => agg }.isEmpty, plan)
         }
       }
+    }
   }
 
   test("Aggregation without aggregate expressions should use correct result expressions") {
@@ -3502,6 +3598,132 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           |GROUP BY a
           |""".stripMargin,
         "Grouping on map-containing types is not supported")
+    }
+  }
+
+  // useObjectHashAggregateExec=false forces Spark to plan SortAggregateExec for
+  // TypedImperativeAggregate functions like collect_set. Comet converts those just like
+  // ObjectHashAggregateExec via the shared CometBaseAggregate path. Broader data-type and
+  // edge-case coverage lives in the SQL file tests collect_set.sql (whose ConfigMatrix runs it
+  // through SortAggregateExec) and sort_aggregate.sql; this test additionally asserts that Spark
+  // actually planned a SortAggregateExec, which the SQL framework cannot check.
+  private def assertSortAggregateRunsNatively(query: String): Unit = {
+    withSQLConf(
+      SQLConf.USE_OBJECT_HASH_AGG.key -> "false",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      withTempView("tbl") {
+        Seq((1, "a"), (2, "a"), (1, "a"), (3, "b"), (4, "b"), (4, "b"))
+          .toDF("v", "g")
+          .createOrReplaceTempView("tbl")
+        // Spark must actually plan a SortAggregateExec for this query; otherwise the test
+        // would pass without exercising the new code path.
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          val plan = stripAQEPlan(sql(query).queryExecution.executedPlan)
+          assert(
+            plan.find(_.isInstanceOf[SortAggregateExec]).isDefined,
+            s"Expected SortAggregateExec in Spark-only plan but got:\n$plan")
+        }
+        checkSparkAnswerAndOperator(sql(query))
+      }
+    }
+  }
+
+  test("SortAggregate with collect_set is converted to native") {
+    Seq(
+      "SELECT g, sort_array(collect_set(v)) FROM tbl GROUP BY g ORDER BY g",
+      // Empty grouping is a distinct plan shape: no pre-aggregate sort, empty output ordering,
+      // and adjustOutputForNativeState with zero grouping columns.
+      "SELECT sort_array(collect_set(v)) FROM tbl").foreach(assertSortAggregateRunsNatively)
+  }
+
+  // Spark puts a SortExec between each sort aggregate and the exchange below it, so the passes
+  // that pair a buffer-consuming aggregate with its Partial must walk through it. If they stop
+  // there, a native collect_list Partial stays native under a Spark consumer.
+  private def assertSortAggregateStaysInSpark(query: String, confs: (String, String)*): Unit = {
+    Seq("false", "true").foreach { aqe =>
+      withSQLConf(
+        Seq(
+          SQLConf.USE_OBJECT_HASH_AGG.key -> "false",
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe,
+          CometConf.COMET_SHUFFLE_ENABLED.key -> "true") ++ confs: _*) {
+        withParquetTable((0 until 8).map(i => (i % 2, i)), "tbl") {
+          val df = sql(query)
+          checkSparkAnswer(df)
+          val plan = df.queryExecution.executedPlan
+          assert(collect(plan) { case agg: SortAggregateExec => agg }.nonEmpty, plan)
+          assert(collect(plan) { case agg: CometSortAggregateExec => agg }.isEmpty, plan)
+        }
+      }
+    }
+  }
+
+  test("SortAggregate keeps a collect_list partial in Spark when its final cannot convert") {
+    assertSortAggregateStaysInSpark(
+      "SELECT _1, sort_array(collect_list(_2)) FROM tbl GROUP BY _1",
+      CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> "false")
+  }
+
+  test("SortAggregate runs a distinct collect_list chain natively") {
+    // Each stage of the distinct rewrite runs as a native sort aggregate, including the
+    // collect_list PartialMerge that carries the native list state between the shuffles.
+    val query = "SELECT _1, sort_array(collect_list(_2)), count(DISTINCT _2) FROM tbl GROUP BY _1"
+    Seq("false", "true").foreach { aqe =>
+      withSQLConf(
+        SQLConf.USE_OBJECT_HASH_AGG.key -> "false",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe,
+        CometConf.COMET_SHUFFLE_ENABLED.key -> "true") {
+        withParquetTable((0 until 8).map(i => (i % 2, i)), "tbl") {
+          val (_, cometPlan) = checkSparkAnswerAndOperator(sql(query))
+          assert(collect(cometPlan) { case a: CometSortAggregateExec => a }.nonEmpty, cometPlan)
+          assert(cometPlan.toString.contains("merge_collect_list"), cometPlan)
+        }
+      }
+    }
+  }
+
+  test("SortAggregate keeps a distinct collect_list chain in Spark under a Spark final") {
+    // Every buffer producer between the final and the bottom Partial, the PartialMerge stages of
+    // the distinct rewrite included, must stay in Spark, through the sort below each of them.
+    assertSortAggregateStaysInSpark(
+      "SELECT _1, sort_array(collect_list(_2)), count(DISTINCT _2) FROM tbl GROUP BY _1",
+      CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> "false")
+  }
+
+  test("SortAggregate keeps a decimal AVG with a maximum-precision sum in Spark") {
+    // A string FIRST cannot use a hash aggregation buffer, so Spark plans sort aggregates and
+    // keeps the AVG sum in a generic row, where it is unbounded: 0.6 + 0.6 leaves DECIMAL(38,38)
+    // and -0.4 brings it back. The native AVG records that overflow and would return NULL, or
+    // raise under ANSI. Sorting on ord fixes the order in which the partial adds the values.
+    withTempPath { dir =>
+      Seq((1, 1, "0.6"), (1, 2, "0.6"), (1, 3, "-0.4"))
+        .toDF("g", "ord", "raw")
+        .selectExpr("g", "ord", "CAST(raw AS DECIMAL(38,38)) AS v", "'x' AS label")
+        .coalesce(1)
+        .write
+        .parquet(dir.toString)
+      withParquetTable(dir.toString, "dec_avg") {
+        Seq("false", "true").foreach { ansi =>
+          withSQLConf(
+            SQLConf.ANSI_ENABLED.key -> ansi,
+            CometConf.COMET_SHUFFLE_ENABLED.key -> "true") {
+            val df = sql(
+              "SELECT g, avg(v), first(label) FROM (SELECT * FROM dec_avg SORT BY g, ord) " +
+                "GROUP BY g")
+            val (sparkPlan, cometPlan) = checkSparkAnswerAndFallbackReason(
+              df,
+              "Decimal AVG with a maximum-precision sum cannot match Spark's " +
+                "sort aggregation buffer")
+            assert(collect(sparkPlan) { case agg: SortAggregateExec => agg }.nonEmpty, sparkPlan)
+            assert(
+              collect(cometPlan) { case agg: CometSortAggregateExec => agg }.isEmpty,
+              cometPlan)
+            checkAnswer(
+              df,
+              Row(1, new java.math.BigDecimal("0.26666666666666666666666666666666666667"), "x"))
+          }
+        }
+      }
     }
   }
 

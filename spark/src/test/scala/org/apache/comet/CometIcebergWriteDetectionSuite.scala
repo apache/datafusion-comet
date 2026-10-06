@@ -1044,6 +1044,55 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     }
   }
 
+  // A format-version-1 spec keeps a dropped partition field as a `void` transform, and the
+  // field's source column can be dropped afterwards. Neither writer can write through a spec that
+  // mixes such a field with a live one: iceberg-java fails building the partition key, and the
+  // native writer fails resolving the spec's partition type. Declining keeps the failure
+  // iceberg-java's own. The insert fails either way, so only the gate's decision is checked, on
+  // an insert that is planned but not run.
+  // https://github.com/apache/datafusion-comet/issues/6141
+  test("fall-back: void partition field whose source column was dropped, beside a live field") {
+    withDetectionCatalog { dir =>
+      createTable(
+        dir,
+        "void_dropped",
+        partitionSpec = "PARTITIONED BY (region, id)",
+        properties = Some("'format-version'='1'"))
+      // Loaded afresh for each change, as each change commits a new metadata version.
+      def table: org.apache.iceberg.Table =
+        loadIcebergTable(spark, catalog, ns, "void_dropped")
+          .asInstanceOf[org.apache.iceberg.Table]
+      table.updateSpec().removeField("id").commit()
+      table.updateSchema().deleteColumn("id").commit()
+      spark.sql(s"REFRESH TABLE $catalog.$ns.void_dropped")
+      val writeExec = planInsertWriteExec(s"$catalog.$ns.void_dropped", values = "('us', 1.0)")
+      assertUnsupportedContains(writeExec, "void_dropped", "void", "source column", "dropped")
+    }
+  }
+
+  test("Compatible when every partition field is void, even with its source column dropped") {
+    // Such a spec writes unpartitioned, so the native writer needs no source column for it. On
+    // Iceberg 1.8 neither writer can write to this table, since iceberg-java cannot bind the
+    // original spec on the executors once its source column is gone, so only the gate's decision
+    // is checked, on an insert that is planned but not run.
+    withDetectionCatalog { dir =>
+      createTable(
+        dir,
+        "all_void_dropped",
+        partitionSpec = "PARTITIONED BY (region)",
+        properties = Some("'format-version'='1'"))
+      def table: org.apache.iceberg.Table =
+        loadIcebergTable(spark, catalog, ns, "all_void_dropped")
+          .asInstanceOf[org.apache.iceberg.Table]
+      table.updateSpec().removeField("region").commit()
+      table.updateSchema().deleteColumn("region").commit()
+      spark.sql(s"REFRESH TABLE $catalog.$ns.all_void_dropped")
+      val writeExec = planInsertWriteExec(s"$catalog.$ns.all_void_dropped", values = "(1, 1.0)")
+      val support = CometIcebergNativeWrite.getSupportLevel(writeExec)
+      assert(support.isInstanceOf[Compatible], s"expected Compatible, got $support")
+    }
+  }
+
   test("fall-back: uuid column in the write schema") {
     withDetectionCatalog { dir =>
       // Spark DDL cannot declare `uuid`, so evolve the schema through the Iceberg API. Spark
@@ -1102,9 +1151,11 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
    * `CommandExecutionMode.SKIP` keeps `QueryExecution` from eagerly running the write command, so
    * a data location no filesystem on this classpath can reach never triggers a write.
    */
-  private def planInsertWriteExec(qualifiedTable: String): IcebergWriteExec = {
+  private def planInsertWriteExec(
+      qualifiedTable: String,
+      values: String = "(1, 'us', 1.0)"): IcebergWriteExec = {
     val plan =
-      spark.sessionState.sqlParser.parsePlan(s"INSERT INTO $qualifiedTable VALUES (1, 'us', 1.0)")
+      spark.sessionState.sqlParser.parsePlan(s"INSERT INTO $qualifiedTable VALUES $values")
     findWriteExecOrFail(
       spark.sessionState.executePlan(plan, CommandExecutionMode.SKIP).executedPlan)
   }
