@@ -53,7 +53,7 @@ import org.apache.comet.shims.ShimCometSparkSessionExtensions
  *           CometSubqueryBroadcastExec for exchange reuse with Comet broadcasts
  *      b. insertTransitions:        ColumnarToRow/RowToColumnar added
  *      c. postColumnarTransitions:  RevertNativeForTransitionHeavyStages,
- *                                   EliminateRedundantTransitions
+ *                                   EliminateRedundantTransitions, CometCacheColumnarRule
  *   5. ReuseExchangeAndSubquery     -- Spark deduplicates subqueries (sees Comet nodes)
  * }}}
  *
@@ -77,7 +77,7 @@ import org.apache.comet.shims.ShimCometSparkSessionExtensions
  *        a. preColumnarTransitions: CometRule (no-op, already converted)
  *        b. insertTransitions
  *        c. postColumnarTransitions: RevertNativeForTransitionHeavyStages,
- *                                    EliminateRedundantTransitions
+ *                                    EliminateRedundantTransitions, CometCacheColumnarRule
  * }}}
  *
  * On Spark 3.4, injectQueryStageOptimizerRule is unavailable. CometExecRule does not wrap SABs,
