@@ -1301,6 +1301,24 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   }
 
   /**
+   * Has native execution evaluate the arguments of `scalarFunc` the way Spark evaluates those of
+   * a null-intolerant `BinaryExpression` or `TernaryExpression`: each argument after the first
+   * only for the rows where no earlier argument is NULL. Otherwise every argument is evaluated
+   * over the whole batch, so one that can fail, such as an ANSI cast of a malformed string, fails
+   * on a row that Spark returns NULL for without evaluating it (#6613). The arguments must be in
+   * the order Spark evaluates them, and the function must return NULL wherever an argument other
+   * than the last is NULL. The native planner drops the guard when every later argument can be
+   * evaluated for any row, such as a column or a literal.
+   */
+  def withNullShortCircuit(scalarFunc: Option[Expr]): Option[Expr] =
+    scalarFunc.map { expr =>
+      require(expr.hasScalarFunc, s"not a scalar function: $expr")
+      expr.toBuilder
+        .setScalarFunc(expr.getScalarFunc.toBuilder.setNullShortCircuit(true))
+        .build()
+    }
+
+  /**
    * If `handler` is a `CodegenDispatchFallback`, run `expr` through the JVM codegen dispatcher
    * and return `Some((handler, proto))` on success; otherwise return `None`. Shared by the
    * `Unsupported` and (non-opt-in) `Incompatible` arms of `exprToProtoInternal` so they don't

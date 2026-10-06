@@ -146,8 +146,8 @@ use datafusion_comet_spark_expr::{
     ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Correlation, Covariance, CreateNamedStruct,
     DecimalRescaleCheckOverflow, GetArrayStructFields, GetStructField, HllPlusPlus, HllSketchAgg,
     HllUnionAgg, IfExpr, ListExtract, MaxMinBy, Mode, NormalizeNaNAndZero, NormalizeNestedFloats,
-    Regr, RegrType, SparkCastOptions, SparkMinMax, Stddev, SumDecimal, ToJson, UnboundColumn,
-    Variance, WideDecimalBinaryExpr, WideDecimalOp,
+    NullShortCircuit, Regr, RegrType, SparkCastOptions, SparkMinMax, Stddev, SumDecimal, ToJson,
+    UnboundColumn, Variance, WideDecimalBinaryExpr, WideDecimalOp,
 };
 use itertools::Itertools;
 use jni::objects::{Global, JObject};
@@ -947,7 +947,7 @@ impl PhysicalPlanner {
                     .as_ref()
                     .map(|e| self.create_expr(e, Arc::clone(&input_schema)))
                     .transpose()?;
-                Ok(Arc::new(ListExtract::new(
+                let list_extract: Arc<dyn PhysicalExpr> = Arc::new(ListExtract::new(
                     child,
                     ordinal,
                     default_value,
@@ -955,7 +955,12 @@ impl PhysicalPlanner {
                     expr.fail_on_error,
                     spark_expr.expr_id,
                     Arc::clone(&self.query_context_registry),
-                )))
+                ));
+                if expr.null_short_circuit {
+                    Ok(NullShortCircuit::wrap(list_extract, &input_schema)?)
+                } else {
+                    Ok(list_extract)
+                }
             }
             ExprStruct::GetArrayStructFields(expr) => {
                 let child =
@@ -3959,6 +3964,11 @@ impl PhysicalPlanner {
             Arc::new(Field::new(fun_name, data_type.clone(), true)),
             Arc::new(ConfigOptions::default()),
         ));
+        let scalar_expr = if expr.null_short_circuit {
+            NullShortCircuit::wrap(scalar_expr, &input_schema)?
+        } else {
+            scalar_expr
+        };
 
         // DF53 changed some UDFs (e.g. md5) to return StringViewArray at execution
         // time (apache/datafusion#20045). Comet does not yet support view types, so
@@ -6505,6 +6515,7 @@ mod tests {
                         args: vec![array_col, array_col_1],
                         return_type: None,
                         fail_on_error: false,
+                        null_short_circuit: false,
                     })),
                     query_context: None,
                     expr_id: None,
@@ -6631,6 +6642,7 @@ mod tests {
                         args: vec![array_col, array_col_1],
                         return_type: None,
                         fail_on_error: false,
+                        null_short_circuit: false,
                     })),
                     query_context: None,
                     expr_id: None,

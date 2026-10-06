@@ -152,6 +152,10 @@ object CometLevenshtein extends CometExpressionSerde[Levenshtein] {
 
 When the return type is set on the proto, the native planner skips the registry lookup entirely and routes straight to the Comet UDF registered in `create_comet_physical_fun_with_eval_mode`.
 
+#### Arguments that Spark skips after a NULL
+
+A null-intolerant `BinaryExpression` or `TernaryExpression` returns NULL as soon as one of its arguments is NULL, without evaluating the arguments after it. DataFusion evaluates every argument of a `ScalarFunc` over the whole batch, so an argument that can fail, such as an ANSI cast of a malformed string, fails on a row where Spark returns NULL. Wrapping the serialized call in `withNullShortCircuit` has native execution evaluate each argument after the first only for the rows where no earlier argument is NULL, as `CometArrayContains` and `CometSlice` do. The arguments must be in the order Spark evaluates them, and the function must return NULL wherever an argument other than the last is NULL. The native planner drops the guard when every later argument can be evaluated for any row, so a column or literal argument costs nothing.
+
 #### Registering the Expression Handler
 
 Once you've created your `CometExpressionSerde` implementation, register it in `QueryPlanSerde.scala` by adding it to the appropriate expression map (e.g., `mathExpressions`, `stringExpressions`, `predicateExpressions`, etc.):

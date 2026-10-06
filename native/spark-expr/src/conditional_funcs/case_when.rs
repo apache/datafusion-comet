@@ -390,7 +390,7 @@ impl PhysicalExpr for CaseWhenExpr {
 /// That holds when it can neither fail nor return something different for seeing more rows: a
 /// column, a literal, and comparisons, boolean logic, null checks, widening casts and wrapping
 /// arithmetic over them. Anything else, including every function, is assumed to be able to fail.
-fn is_infallible(expr: &Arc<dyn PhysicalExpr>, input_schema: &Schema) -> bool {
+pub(super) fn is_infallible(expr: &Arc<dyn PhysicalExpr>, input_schema: &Schema) -> bool {
     if expr.is::<Column>() || expr.is::<Literal>() {
         return true;
     }

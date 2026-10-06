@@ -24,7 +24,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import org.apache.comet.DataTypeSupport.isComplexType
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, hasNonDefaultStringCollation, scalarFunctionExprToProto}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, hasNonDefaultStringCollation, scalarFunctionExprToProto, withNullShortCircuit}
 import org.apache.comet.shims.CometTypeShim
 
 /**
@@ -128,7 +128,7 @@ object CometMapExtract extends CometExpressionSerde[GetMapValue] {
     val mapExpr = exprToProtoInternal(expr.child, inputs, binding)
     val keyExpr = exprToProtoInternal(expr.key, inputs, binding)
     val mapExtractExpr = scalarFunctionExprToProto("map_extract", mapExpr, keyExpr)
-    mapExtractExpr
+    withNullShortCircuit(mapExtractExpr)
   }
 }
 
