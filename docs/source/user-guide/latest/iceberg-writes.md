@@ -72,11 +72,13 @@ An S3 location handled by `S3FileIO` uses its initialized FileIO properties, so 
 on the wrapper do not change the native endpoint or encryption settings. If that delegate cannot
 be resolved, the write falls back to iceberg-java.
 
-Before a task opens a partition's first file, it holds that partition's first
-`write.parquet.page-row-limit` rows in memory, so that it can choose which columns to
-dictionary-encode the way iceberg-java would (see the accepted divergences below). The rows a
-task holds back this way, across all of its partitions, stay within about
-`write.parquet.row-group-size-bytes`.
+Before a task opens a partition's first file, it holds the partition's initial rows in memory
+to choose which columns to dictionary-encode using parquet-mr's size accounting (see the
+accepted divergences below). It normally waits for at least `write.parquet.page-row-limit`
+rows (at least 100 when the configured limit is lower), or until the partition ends. The
+buffering threshold is `write.parquet.row-group-size-bytes`, shared across all partitions in
+a fanout write. Reaching it makes each partition still holding rows choose from the rows it
+already has, even if they do not fill its first page.
 
 ## Configuration
 
@@ -334,13 +336,17 @@ a data file but not what any reader computes from it:
 - Dictionary-encoded pages are labeled `RLE_DICTIONARY` (parquet-mr v1 files: `PLAIN_DICTIONARY`).
 - Fixed-length binary columns (`uuid`, `fixed`, decimals with precision > 18) are not
   dictionary-encoded (parquet-mr dictionary-encodes them).
-- Which columns are dictionary-encoded is decided as parquet-mr decides it: a column whose first
-  data page shows the dictionary saving no space is written plain, with no dictionary page,
+- The native writer uses parquet-mr's size accounting to choose dictionary encoding: a column
+  whose sampled rows show the dictionary saving no space is written plain, with no dictionary page,
   instead of carrying a dictionary page that every selective read of it would have to fetch
   ([#6114](https://github.com/apache/datafusion-comet/issues/6114)). The native writer decides
-  once per partition, from that partition's first page of rows in the task, and keeps the
+  once per partition, normally from that partition's first page of rows in the task, and keeps the
   decision for every file and row group it writes for the partition; parquet-mr decides again
-  for every row group. Where the page size rather than `write.parquet.page-row-limit` ends a
+  for every row group. If buffered rows reach `write.parquet.row-group-size-bytes`, the choice
+  uses the rows collected so far. In a fanout write, all partitions share this threshold, so
+  each partition still buffering can make its choice before it has a full first page. Later
+  rows could have changed parquet-mr's decision, so this difference is not limited to columns
+  close to the size cut-off. Where the page size rather than `write.parquet.page-row-limit` ends a
   column's first page, the native page ends at the first row past parquet-mr's size threshold,
   while parquet-mr only ends it at its next periodic size check, so a column close to the
   cut-off can be decided the other way. Close to the cut-off both encodings take about the same
