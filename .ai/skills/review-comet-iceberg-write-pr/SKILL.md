@@ -152,6 +152,14 @@ Read the ownership table in the contributor guide before reviewing any change ne
       `SparkWrite.abort` keeps working.
 - [ ] The user-visible exception type is still what Spark's own write path throws on each Spark
       version ([#6143](https://github.com/apache/datafusion-comet/issues/6143)).
+- [ ] **Every open file and every held-back row is reserved.** Files must be opened through
+      `MeteredParquetWriterBuilder`, and rows the writer holds outside iceberg-rust (the
+      `PartitionFeed`s, or anything a new feed holds back) must be added to what `run_write_task` reserves. A
+      builder that constructs `ParquetWriterBuilder` directly leaves its files out of the task's
+      memory reservation, so a wide fanout write grows past the pool instead of failing its task.
+      A storage scheme newly supported for writes needs its entry in
+      `StorageWrites::for_location`: a file reports its flushed row groups until its storage has
+      written them out, which a local file does at once and an object store only part by part.
 
 ## 5. Plan Shape
 
@@ -189,16 +197,16 @@ Read the ownership table in the contributor guide before reviewing any change ne
 
 ## 7. Tests
 
-| Suite                               | Covers                                                                               |
-| ----------------------------------- | ------------------------------------------------------------------------------------ |
-| `CometIcebergWriteActionSuite`      | Both layers end to end, parity with iceberg-java, DML, failure cleanup, AQE re-plans |
-| `CometIcebergWriteDetectionSuite`   | One case per eligibility rule                                                        |
-| `CometIcebergSystemFunctionSuite`   | Native partition transforms keeping partitioned writes native                        |
-| `CometIcebergRewriteActionSuite`    | `rewrite_data_files` through the split plan and the native writer                    |
-| `IcebergWriteProtoTranslationSuite` | Property to `IcebergParquetWriteSettings` translation                                |
-| Rust tests in `iceberg_write.rs`    | Rolling, fanout order, clustered checks, cleanup guard, manifest round trip          |
-| `iceberg_partition_path.rs` tests   | Partition path rendering against iceberg-java                                        |
-| `CometIcebergWriteBenchmark`        | Native versus iceberg-java throughput                                                |
+| Suite                               | Covers                                                                                          |
+| ----------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `CometIcebergWriteActionSuite`      | Both layers end to end, parity with iceberg-java, DML, failure cleanup, AQE re-plans            |
+| `CometIcebergWriteDetectionSuite`   | One case per eligibility rule                                                                   |
+| `CometIcebergSystemFunctionSuite`   | Native partition transforms keeping partitioned writes native                                   |
+| `CometIcebergRewriteActionSuite`    | `rewrite_data_files` through the split plan and the native writer                               |
+| `IcebergWriteProtoTranslationSuite` | Property to `IcebergParquetWriteSettings` translation                                           |
+| Rust tests in `iceberg_write.rs`    | Rolling, fanout order, clustered checks, cleanup guard, manifest round trip, memory reservation |
+| `iceberg_partition_path.rs` tests   | Partition path rendering against iceberg-java                                                   |
+| `CometIcebergWriteBenchmark`        | Native versus iceberg-java throughput                                                           |
 
 Ask specifically:
 
