@@ -102,9 +102,11 @@
 //!    neither borrow an ambient identity nor fall back to managed identity in place of the
 //!    one Hadoop was told to use.
 //!
-//! Within the Hadoop keys, the account-scoped variant
-//! (`fs.azure.account.X.<account>.dfs.core.windows.net`) wins over the global one
-//! (`fs.azure.account.X`), mirroring Hadoop ABFS's own `AbfsConfiguration` precedence.
+//! Within the Hadoop keys, the account-scoped variant (`fs.azure.account.X.<host>`, where
+//! `<host>` is the URL host with any explicit port, the account name Hadoop's
+//! `AbfsConfiguration.accountConf` appends) wins over the global one (`fs.azure.account.X`),
+//! mirroring Hadoop ABFS's own precedence. No other endpoint suffix or shorter form is
+//! read, so a key scoped to a sovereign-cloud or Fabric host is found under that host.
 //! Hadoop 3.4.2 and later check a container-scoped form of the SAS fixed token and the OAuth
 //! keys first. This module reads that form only for the SAS fixed token, and only when the
 //! JVM sets `comet.azure.containerScopedSasToken=true` because its hadoop-azure reads it.
@@ -127,7 +129,7 @@
 //! | `fs.azure.account.oauth2.token.file`          | `FederatedTokenFile`                 |
 //! | `fs.azure.sas.fixed.token.<container>.<host>` | `SasKey` (first, Hadoop 3.4.2+ only) |
 //! | `fs.azure.sas.fixed.token`                    | `SasKey`                             |
-//! | `fs.azure.sas.<container>.<account>`          | `SasKey` (lower priority)            |
+//! | `fs.azure.sas.<container>.<host>`             | `SasKey` (lower priority)            |
 //!
 //! Hadoop keys outside this table are not translated; the URL supplies the account and
 //! container.
@@ -392,18 +394,16 @@ fn is_simple_key_provider(class: &str) -> bool {
     class == HADOOP_SIMPLE_KEY_PROVIDER_CLASS
 }
 
-const ENDPOINT_SUFFIXES: &[&str] = &["dfs.core.windows.net", "blob.core.windows.net"];
-
 /// Environment variable object_store's `from_env` reads for the managed identity endpoint.
 const MSI_ENDPOINT_ENV_KEY: &str = "IDENTITY_ENDPOINT";
 const AZURE_ENV_PREFIX: &str = "AZURE_";
 /// The one variable a named principal may borrow from the environment.
 const ENV_FEDERATED_TOKEN_FILE: &str = "AZURE_FEDERATED_TOKEN_FILE";
 
-/// The container a URL names and the host it names it on, with any explicit port, which
-/// is the account name Hadoop takes from the raw authority to scope container-level keys.
-/// `container_fixed_token` says whether the container-scoped SAS fixed token is read
-/// (`reads_container_fixed_token`).
+/// The container a URL names and the host it names it on, with any explicit port: the same
+/// account name (`extract_account`) Hadoop appends to account-scoped keys, here appended
+/// after the container to scope container-level keys. `container_fixed_token` says whether
+/// the container-scoped SAS fixed token is read (`reads_container_fixed_token`).
 #[derive(Debug, Clone, Copy)]
 struct UrlContainer<'a> {
     name: &'a str,
@@ -453,16 +453,17 @@ fn create_store_with_env(
 
     let account = extract_account(url);
     let container = extract_container(url);
-    let host = &url[url::Position::BeforeHost..url::Position::AfterPort];
-    let url_container = container.as_deref().map(|name| UrlContainer {
-        name,
-        host,
-        container_fixed_token: reads_container_fixed_token(configs),
-    });
+    let url_container = container
+        .as_deref()
+        .zip(account)
+        .map(|(name, host)| UrlContainer {
+            name,
+            host,
+            container_fixed_token: reads_container_fixed_token(configs),
+        });
 
-    let oauth_keys = OAuthKeys::resolve(configs, account.as_deref());
-    let translated =
-        translate_hadoop_configs(configs, account.as_deref(), url_container, oauth_keys);
+    let oauth_keys = OAuthKeys::resolve(configs, account);
+    let translated = translate_hadoop_configs(configs, account, url_container, oauth_keys);
     debug!(
         "Azure configs for account={:?}, container={:?}: keys={:?}",
         account,
@@ -477,7 +478,7 @@ fn create_store_with_env(
     validate_translated(
         configs,
         &translated,
-        account.as_deref(),
+        account,
         url_container,
         oauth_keys,
         env_token_file(&env).is_some(),
@@ -485,7 +486,7 @@ fn create_store_with_env(
     let store = build_builder(
         url,
         configs,
-        account.as_deref(),
+        account,
         url_container,
         oauth_keys,
         &translated,
@@ -1007,9 +1008,9 @@ fn apply_env(
 /// Translate a Hadoop ABFS configuration map into `(AzureConfigKey, value)` pairs.
 ///
 /// `account` and `container` are extracted from the URL and used to resolve account-scoped
-/// keys (`fs.azure.X.<account>.<endpoint-suffix>`) and the container-scoped SAS keys
-/// (`fs.azure.sas.fixed.token.<container>.<host>`, when `container_fixed_token` is set, and
-/// `fs.azure.sas.<container>.<account>`).
+/// keys (`fs.azure.X.<account>`, with the account name of `extract_account`) and the
+/// container-scoped SAS keys (`fs.azure.sas.fixed.token.<container>.<host>`, when
+/// `container_fixed_token` is set, and `fs.azure.sas.<container>.<account>`).
 /// Account-scoped keys win over global ones.
 fn translate_hadoop_configs(
     configs: &HashMap<String, String>,
@@ -1081,10 +1082,8 @@ fn translate_hadoop_configs(
     out
 }
 
-/// Look up `base_key`, preferring account-scoped variants.
-///
-/// Probes (in order): `<base>.<account>.<endpoint-suffix>`, `<base>.<account>`,
-/// then the unscoped `<base>`. Returns the first hit.
+/// Look up `base_key` the way Hadoop's `AbfsConfiguration.get` does: the account-scoped
+/// form `<base>.<account>` (`scoped_entry`), then the global `<base>`.
 fn account_scoped_value(
     configs: &HashMap<String, String>,
     base_key: &str,
@@ -1099,22 +1098,26 @@ fn account_scoped_entry(
     base_key: &str,
     account: Option<&str>,
 ) -> Option<(String, String)> {
-    let mut candidates = account_candidates(base_key, account);
-    candidates.push(base_key.to_string());
-    first_entry(configs, candidates)
+    scoped_entry(configs, base_key, account).or_else(|| entry(configs, base_key))
 }
 
-/// The account-scoped forms of `base_key` in lookup order:
-/// `<base>.<account>.<endpoint-suffix>`, then `<base>.<account>`. Empty without an account.
-fn account_candidates(base_key: &str, account: Option<&str>) -> Vec<String> {
-    let Some(acc) = account else {
-        return Vec::new();
-    };
-    ENDPOINT_SUFFIXES
-        .iter()
-        .map(|suffix| format!("{base_key}.{acc}.{suffix}"))
-        .chain(std::iter::once(format!("{base_key}.{acc}")))
-        .collect()
+/// The account-scoped entry of `base_key`, under the one key Hadoop's
+/// `AbfsConfiguration.accountConf` builds: `<base>.<account>`, where the account is the
+/// URL authority host with any explicit port (`extract_account`). No other endpoint suffix
+/// or shorter form is read. `None` without an account.
+fn scoped_entry(
+    configs: &HashMap<String, String>,
+    base_key: &str,
+    account: Option<&str>,
+) -> Option<(String, String)> {
+    entry(configs, &format!("{base_key}.{}", account?))
+}
+
+/// The `(key, value)` entry of `key`, if present.
+fn entry(configs: &HashMap<String, String>, key: &str) -> Option<(String, String)> {
+    configs
+        .get(key)
+        .map(|value| (key.to_string(), value.clone()))
 }
 
 /// Look up a token provider class the way Hadoop's `AbfsConfiguration.getTokenProviderClass`
@@ -1125,15 +1128,13 @@ fn token_provider_entry(
     base_key: &str,
     account: Option<&str>,
 ) -> Option<(String, String)> {
-    if let Some(entry) = first_entry(configs, account_candidates(base_key, account)) {
-        return Some(entry);
+    if let Some(found) = scoped_entry(configs, base_key, account) {
+        return Some(found);
     }
     if !global_auth_type_matches(configs, account) {
         return None;
     }
-    configs
-        .get(base_key)
-        .map(|value| (base_key.to_string(), value.clone()))
+    entry(configs, base_key)
 }
 
 /// Whether the global `fs.azure.account.auth.type` equals the one the account resolves to,
@@ -1144,18 +1145,8 @@ fn global_auth_type_matches(configs: &HashMap<String, String>, account: Option<&
     let global = configs
         .get(HADOOP_AUTH_TYPE)
         .map_or("SharedKey", |value| value.trim());
-    first_entry(configs, account_candidates(HADOOP_AUTH_TYPE, account))
+    scoped_entry(configs, HADOOP_AUTH_TYPE, account)
         .is_none_or(|(_, scoped)| scoped.trim().eq_ignore_ascii_case(global))
-}
-
-/// The first `(key, value)` of `candidates` that is present in `configs`.
-fn first_entry(
-    configs: &HashMap<String, String>,
-    candidates: Vec<String>,
-) -> Option<(String, String)> {
-    candidates
-        .into_iter()
-        .find_map(|key| configs.get(&key).map(|v| (key, v.clone())))
 }
 
 /// `sas_token`, but only while SAS is the selected mechanism.
@@ -1176,8 +1167,8 @@ fn active_sas_token(
 /// `account_scoped_entry` probes them. In Hadoop 3.4.2 and later it probes
 /// `fs.azure.sas.fixed.token.<container>.<host>` before them, with the URL's host and port
 /// as `containerConf` builds it; that key is read only when `container_fixed_token` is set.
-/// The WASB driver's `fs.azure.sas.<container>.<account>[.<endpoint-suffix>]` variants come
-/// last as a fallback.
+/// The WASB driver's `fs.azure.sas.<container>.<account>` key, scoped to the same host,
+/// comes last as a fallback.
 fn sas_token(
     configs: &HashMap<String, String>,
     account: Option<&str>,
@@ -1188,16 +1179,9 @@ fn sas_token(
             .filter(|c| c.container_fixed_token)
             .and_then(|c| container_fixed_entry(configs, c))
     };
-    let container_scoped = || match (container, account) {
-        (Some(UrlContainer { name, .. }), Some(account)) => {
-            let mut candidates: Vec<String> = ENDPOINT_SUFFIXES
-                .iter()
-                .map(|suffix| format!("{HADOOP_SAS_PREFIX}{name}.{account}.{suffix}"))
-                .collect();
-            candidates.push(format!("{HADOOP_SAS_PREFIX}{name}.{account}"));
-            first_entry(configs, candidates)
-        }
-        _ => None,
+    let container_scoped = || {
+        let name = container?.name;
+        scoped_entry(configs, &format!("{HADOOP_SAS_PREFIX}{name}"), account)
     };
     container_fixed()
         .or_else(|| account_scoped_entry(configs, HADOOP_SAS_FIXED_TOKEN, account))
@@ -1231,16 +1215,16 @@ fn has_unread_container_fixed_token(
         })
 }
 
-/// Extract the storage account name from an `abfs[s]://` URL.
+/// The account name of an `abfs[s]://` URL as Hadoop scopes keys with it.
 ///
-/// ABFS hostnames are `<account>.<endpoint-suffix>` (e.g. `myacct.dfs.core.windows.net`),
-/// so the account is the first label of the host. It is kept as written, the way Hadoop's
-/// `AzureBlobFileSystemStore.authorityParts` takes it from the raw URL authority and
-/// `AbfsConfiguration.accountConf` appends it to each key, so the native scan finds the
-/// same account-scoped key Hadoop finds and no other.
-fn extract_account(url: &Url) -> Option<String> {
-    let host = url.host_str()?;
-    host.split('.').next().map(str::to_string)
+/// Hadoop's `AzureBlobFileSystemStore.authorityParts` takes everything after the `@` of
+/// the raw URL authority, so the account name is the full host with any explicit port
+/// (`myacct.dfs.core.windows.net`, or `myacct.dfs.core.windows.net:443`), kept as written,
+/// and `AbfsConfiguration.accountConf` appends it to each key. The native scan uses the
+/// same string, so it finds the account-scoped key Hadoop finds and no other.
+fn extract_account(url: &Url) -> Option<&str> {
+    url.host_str()?;
+    Some(&url[url::Position::BeforeHost..url::Position::AfterPort])
 }
 
 /// Extract the container name from an `abfs[s]://` URL.
@@ -1295,20 +1279,21 @@ mod tests {
         Url::parse(s).unwrap()
     }
 
+    /// The account name Hadoop scopes keys with for the test URL: its host, with the port
+    /// when the URL gives one.
+    const ACCOUNT: &str = "myacct.dfs.core.windows.net";
+
     /// `translate_hadoop_configs` with the OAuth keys resolved as `create_store` does.
     fn translate(
         configs: &HashMap<String, String>,
         account: Option<&str>,
         container: Option<&str>,
     ) -> Vec<(AzureConfigKey, String)> {
-        let host = account.map(|account| format!("{account}.dfs.core.windows.net"));
-        let container = container
-            .zip(host.as_deref())
-            .map(|(name, host)| UrlContainer {
-                name,
-                host,
-                container_fixed_token: reads_container_fixed_token(configs),
-            });
+        let container = container.zip(account).map(|(name, host)| UrlContainer {
+            name,
+            host,
+            container_fixed_token: reads_container_fixed_token(configs),
+        });
         translate_hadoop_configs(
             configs,
             account,
@@ -1320,7 +1305,7 @@ mod tests {
     #[test]
     fn extracts_account_and_container_from_abfss_url() {
         let u = url("abfss://data@myacct.dfs.core.windows.net/path/file.parquet");
-        assert_eq!(extract_account(&u).as_deref(), Some("myacct"));
+        assert_eq!(extract_account(&u), Some(ACCOUNT));
         assert_eq!(extract_container(&u).as_deref(), Some("data"));
     }
 
@@ -1336,7 +1321,7 @@ mod tests {
             "scoped-client".into(),
         );
         assert_eq!(
-            account_scoped_value(&configs, HADOOP_OAUTH_CLIENT_ID, Some("myacct")).as_deref(),
+            account_scoped_value(&configs, HADOOP_OAUTH_CLIENT_ID, Some(ACCOUNT)).as_deref(),
             Some("scoped-client"),
         );
     }
@@ -1349,7 +1334,7 @@ mod tests {
             "global-client".into(),
         );
         assert_eq!(
-            account_scoped_value(&configs, HADOOP_OAUTH_CLIENT_ID, Some("myacct")).as_deref(),
+            account_scoped_value(&configs, HADOOP_OAUTH_CLIENT_ID, Some(ACCOUNT)).as_deref(),
             Some("global-client"),
         );
     }
@@ -1369,7 +1354,7 @@ mod tests {
             "fs.azure.account.oauth2.token.file.myacct.dfs.core.windows.net".into(),
             "/var/run/secrets/azure/tokens/azure-identity-token".into(),
         );
-        let translated = translate(&configs, Some("myacct"), Some("data"));
+        let translated = translate(&configs, Some(ACCOUNT), Some("data"));
 
         let by_key: HashMap<_, _> = translated.into_iter().collect();
         assert_eq!(
@@ -1392,10 +1377,10 @@ mod tests {
     fn translates_account_key() {
         let mut configs = HashMap::new();
         configs.insert(
-            "fs.azure.account.key.myacct.blob.core.windows.net".into(),
+            "fs.azure.account.key.myacct.dfs.core.windows.net".into(),
             "secret==".into(),
         );
-        let translated = translate(&configs, Some("myacct"), None);
+        let translated = translate(&configs, Some(ACCOUNT), None);
         let by_key: HashMap<_, _> = translated.into_iter().collect();
         assert_eq!(
             by_key.get(&AzureConfigKey::AccessKey).map(String::as_str),
@@ -1410,7 +1395,7 @@ mod tests {
             "fs.azure.sas.data.myacct.dfs.core.windows.net".into(),
             "sv=2020-08-04&sig=xyz".into(),
         );
-        let translated = translate(&configs, Some("myacct"), Some("data"));
+        let translated = translate(&configs, Some(ACCOUNT), Some("data"));
         let by_key: HashMap<_, _> = translated.into_iter().collect();
         assert_eq!(
             by_key.get(&AzureConfigKey::SasKey).map(String::as_str),
@@ -1426,7 +1411,7 @@ mod tests {
             "https://login.microsoftonline.com/00000000-1111-2222-3333-444444444444/oauth2/token"
                 .into(),
         );
-        let translated = translate(&configs, Some("myacct"), None);
+        let translated = translate(&configs, Some(ACCOUNT), None);
         let by_key: HashMap<_, _> = translated.into_iter().collect();
         assert_eq!(
             by_key.get(&AzureConfigKey::AuthorityId).map(String::as_str),
@@ -1445,7 +1430,7 @@ mod tests {
             "fs.azure.account.oauth2.client.endpoint".into(),
             "https://login.microsoftonline.com/from-endpoint/oauth2/token".into(),
         );
-        let translated = translate(&configs, Some("myacct"), None);
+        let translated = translate(&configs, Some(ACCOUNT), None);
         let by_key: HashMap<_, _> = translated.into_iter().collect();
         assert_eq!(
             by_key.get(&AzureConfigKey::AuthorityId).map(String::as_str),
@@ -1532,17 +1517,17 @@ mod tests {
         env: &[(&str, &str)],
     ) -> MicrosoftAzureBuilder {
         let u = url("abfss://data@myacct.dfs.core.windows.net/path/file.parquet");
-        let oauth_keys = OAuthKeys::resolve(hadoop, Some("myacct"));
+        let oauth_keys = OAuthKeys::resolve(hadoop, Some(ACCOUNT));
         let container = Some(UrlContainer {
             name: "data",
-            host: "myacct.dfs.core.windows.net",
+            host: ACCOUNT,
             container_fixed_token: reads_container_fixed_token(hadoop),
         });
-        let translated = translate_hadoop_configs(hadoop, Some("myacct"), container, oauth_keys);
+        let translated = translate_hadoop_configs(hadoop, Some(ACCOUNT), container, oauth_keys);
         build_builder(
             &u,
             hadoop,
-            Some("myacct"),
+            Some(ACCOUNT),
             container,
             oauth_keys,
             &translated,
@@ -1946,7 +1931,7 @@ mod tests {
         assert_eq!(value(&builder, AzureConfigKey::MsiEndpoint), None);
     }
 
-    const ERROR_PREFIX: &str = "Hadoop configuration for account myacct: ";
+    const ERROR_PREFIX: &str = "Hadoop configuration for account myacct.dfs.core.windows.net: ";
 
     /// The error for a rejected Hadoop configuration; every one carries `ERROR_PREFIX`.
     fn err_of(configs: &HashMap<String, String>) -> String {
@@ -2034,11 +2019,10 @@ mod tests {
     fn translates_fixed_sas_token() {
         for key in [
             "fs.azure.sas.fixed.token",
-            "fs.azure.sas.fixed.token.myacct",
             "fs.azure.sas.fixed.token.myacct.dfs.core.windows.net",
         ] {
             let configs = hadoop(&[(key, "sv=2020-08-04&sig=fixed")]);
-            let translated = translate(&configs, Some("myacct"), Some("data"));
+            let translated = translate(&configs, Some(ACCOUNT), Some("data"));
             let by_key: HashMap<_, _> = translated.into_iter().collect();
             assert_eq!(
                 by_key.get(&AzureConfigKey::SasKey).map(String::as_str),
@@ -2054,13 +2038,16 @@ mod tests {
         // the WASB container key, so the driver and the native scan must agree on the
         // fixed token when both are set.
         let configs = hadoop(&[
-            ("fs.azure.sas.data.myacct", "sv=2020-08-04&sig=container"),
+            (
+                "fs.azure.sas.data.myacct.dfs.core.windows.net",
+                "sv=2020-08-04&sig=container",
+            ),
             (
                 "fs.azure.sas.fixed.token.myacct.dfs.core.windows.net",
                 "sv=2020-08-04&sig=fixed",
             ),
         ]);
-        let translated = translate(&configs, Some("myacct"), Some("data"));
+        let translated = translate(&configs, Some(ACCOUNT), Some("data"));
         let sas: Vec<_> = translated
             .iter()
             .filter(|(k, _)| *k == AzureConfigKey::SasKey)
@@ -2098,7 +2085,6 @@ mod tests {
         for (key, val) in UNSUPPORTED_MECHANISMS {
             for scoped in [
                 key.to_string(),
-                format!("{key}.myacct"),
                 format!("{key}.myacct.dfs.core.windows.net"),
             ] {
                 let configs = hadoop(&[(&scoped, val)]);
@@ -2312,7 +2298,7 @@ mod tests {
                 container_fixed_token: true,
             });
             assert_eq!(
-                sas_token(&configs, Some("myacct"), container),
+                sas_token(&configs, Some(host), container),
                 Some((container_key, "sv=2020-08-04&sig=container".to_string())),
                 "{host}"
             );
@@ -2417,7 +2403,7 @@ mod tests {
         let u = url("abfss://data@myacct.dfs.core.windows.net:443/path/file.parquet");
         let sas = ("fs.azure.account.auth.type", "SAS");
         let account = (
-            "fs.azure.sas.fixed.token.myacct.dfs.core.windows.net",
+            "fs.azure.sas.fixed.token.myacct.dfs.core.windows.net:443",
             "sv=2020-08-04&sig=account",
         );
         let port_key = "fs.azure.sas.fixed.token.data.myacct.dfs.core.windows.net:443";
@@ -2495,7 +2481,7 @@ mod tests {
             ("fs.azure.sas.fixed.token", "sv=2020-08-04&sig=global"),
         ]);
         for container in [Some("data"), None] {
-            let translated = translate(&configs, Some("myacct"), container);
+            let translated = translate(&configs, Some(ACCOUNT), container);
             let sas: Vec<_> = translated
                 .iter()
                 .filter(|(k, _)| *k == AzureConfigKey::SasKey)
@@ -2529,7 +2515,7 @@ mod tests {
             ),
             ("fs.azure.sas.fixed.token", "sv=2020-08-04&sig=global"),
         ]);
-        let translated = translate(&configs, Some("myacct"), Some("data"));
+        let translated = translate(&configs, Some(ACCOUNT), Some("data"));
         assert!(
             !translated.iter().any(|(k, _)| *k == AzureConfigKey::SasKey),
             "{translated:?}"
@@ -2745,7 +2731,7 @@ mod tests {
         }
         // The flag alone is no Hadoop key: nothing is translated and the environment applies.
         let configs = with_container_flag(&[], Some("true"));
-        let translated = translate(&configs, Some("myacct"), Some("data"));
+        let translated = translate(&configs, Some(ACCOUNT), Some("data"));
         assert!(translated.is_empty(), "{translated:?}");
         let builder = builder_for(&configs, &[("AZURE_STORAGE_TOKEN", "ambient")]);
         assert_eq!(
@@ -2782,7 +2768,7 @@ mod tests {
         ] {
             for blank in ["", "  "] {
                 let configs = hadoop(&[(key, blank)]);
-                let translated = translate(&configs, Some("myacct"), Some("data"));
+                let translated = translate(&configs, Some(ACCOUNT), Some("data"));
                 assert!(
                     !translated.iter().any(|(k, _)| *k == AzureConfigKey::SasKey),
                     "key {key}, value {blank:?}"
@@ -2795,8 +2781,8 @@ mod tests {
     fn create_store_rejects_blank_sas_token() {
         for key in [
             "fs.azure.sas.data.myacct.dfs.core.windows.net",
-            "fs.azure.sas.data.myacct",
-            "fs.azure.sas.fixed.token.myacct",
+            "fs.azure.sas.fixed.token",
+            "fs.azure.sas.fixed.token.myacct.dfs.core.windows.net",
         ] {
             let configs = hadoop(&[(key, "  ")]);
             let err = err_of(&configs);
@@ -2808,7 +2794,7 @@ mod tests {
     fn create_store_rejects_shared_key_auth_type_without_account_key() {
         for key in [
             "fs.azure.account.auth.type",
-            "fs.azure.account.auth.type.myacct",
+            "fs.azure.account.auth.type.myacct.dfs.core.windows.net",
         ] {
             let configs = hadoop(&[(key, "SharedKey")]);
             let err = err_of(&configs);
@@ -2836,7 +2822,7 @@ mod tests {
     fn create_store_rejects_oauth_auth_type_with_unrecognised_provider() {
         for key in [
             "fs.azure.account.auth.type",
-            "fs.azure.account.auth.type.myacct",
+            "fs.azure.account.auth.type.myacct.dfs.core.windows.net",
         ] {
             let configs = hadoop(&[
                 (key, "OAuth"),
@@ -2920,7 +2906,7 @@ mod tests {
     fn create_store_rejects_unknown_auth_type() {
         for key in [
             "fs.azure.account.auth.type",
-            "fs.azure.account.auth.type.myacct",
+            "fs.azure.account.auth.type.myacct.dfs.core.windows.net",
         ] {
             let configs = hadoop(&[(key, "Bogus")]);
             let err = err_of(&configs);
@@ -2981,18 +2967,18 @@ mod tests {
             "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
         )]);
         let account = extract_account(&u);
-        assert_eq!(account.as_deref(), Some("MyAcct"));
-        let translated = translate(&configs, account.as_deref(), Some("data"));
+        assert_eq!(account, Some("MyAcct.dfs.core.windows.net"));
+        let translated = translate(&configs, account, Some("data"));
         let builder = build_builder(
             &u,
             &configs,
-            account.as_deref(),
+            account,
             Some(UrlContainer {
                 name: "data",
                 host: "MyAcct.dfs.core.windows.net",
                 container_fixed_token: false,
             }),
-            OAuthKeys::resolve(&configs, account.as_deref()),
+            OAuthKeys::resolve(&configs, account),
             &translated,
             env_of(&[("AZURE_STORAGE_TOKEN", "ambient")]),
         );
@@ -3013,12 +2999,9 @@ mod tests {
             "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
         )]);
         let account = extract_account(&u);
-        assert_eq!(account.as_deref(), Some("MyAcct"));
-        assert_eq!(
-            account_scoped_entry(&configs, HADOOP_KEY, account.as_deref()),
-            None
-        );
-        let translated = translate(&configs, account.as_deref(), Some("data"));
+        assert_eq!(account, Some("MyAcct.dfs.core.windows.net"));
+        assert_eq!(account_scoped_entry(&configs, HADOOP_KEY, account), None);
+        let translated = translate(&configs, account, Some("data"));
         assert!(translated.is_empty(), "{translated:?}");
     }
 
@@ -3027,7 +3010,7 @@ mod tests {
         // The fixed token is read first, so the WASB container key is never consulted
         // and its blank value is no error, as it is none for ABFS.
         let configs = hadoop(&[
-            ("fs.azure.sas.data.myacct", "  "),
+            ("fs.azure.sas.data.myacct.dfs.core.windows.net", "  "),
             ("fs.azure.sas.fixed.token", "sv=2020-08-04&sig=fixed"),
         ]);
         let u = url("abfss://data@myacct.dfs.core.windows.net/path/file.parquet");
@@ -3041,10 +3024,11 @@ mod tests {
 
     #[test]
     fn blank_container_sas_is_rejected_without_fixed_token() {
-        let configs = hadoop(&[("fs.azure.sas.data.myacct", "  ")]);
+        let configs = hadoop(&[("fs.azure.sas.data.myacct.dfs.core.windows.net", "  ")]);
         let err = err_of(&configs);
         assert!(
-            err.contains("`fs.azure.sas.data.myacct` is blank") && !err.contains("fallback"),
+            err.contains("`fs.azure.sas.data.myacct.dfs.core.windows.net` is blank")
+                && !err.contains("fallback"),
             "unexpected error: {err}"
         );
     }
@@ -3055,7 +3039,10 @@ mod tests {
         // native scan reports the blank key rather than reading the WASB container key.
         let configs = hadoop(&[
             ("fs.azure.sas.fixed.token", ""),
-            ("fs.azure.sas.data.myacct", "sv=2020-08-04&sig=container"),
+            (
+                "fs.azure.sas.data.myacct.dfs.core.windows.net",
+                "sv=2020-08-04&sig=container",
+            ),
         ]);
         let err = err_of(&configs);
         assert!(
@@ -3069,11 +3056,11 @@ mod tests {
     fn blank_sas_is_reported_before_sas_auth_type() {
         let configs = hadoop(&[
             ("fs.azure.account.auth.type", "SAS"),
-            ("fs.azure.sas.data.myacct", ""),
+            ("fs.azure.sas.data.myacct.dfs.core.windows.net", ""),
         ]);
         let err = err_of(&configs);
         assert!(
-            err.contains("fs.azure.sas.data.myacct") && !err.contains("needs"),
+            err.contains("fs.azure.sas.data.myacct.dfs.core.windows.net") && !err.contains("needs"),
             "unexpected error: {err}"
         );
     }
@@ -3088,7 +3075,7 @@ mod tests {
             "fs.azure.account.oauth2.token.file",
         ] {
             let configs = hadoop(&[(key, " ")]);
-            let translated = translate(&configs, Some("myacct"), Some("data"));
+            let translated = translate(&configs, Some(ACCOUNT), Some("data"));
             assert!(translated.is_empty(), "key {key}: {translated:?}");
         }
     }
@@ -3188,26 +3175,126 @@ mod tests {
     }
 
     #[test]
-    fn account_scoped_lookup_prefers_dfs_then_blob_then_bare() {
+    fn account_scoped_lookup_reads_only_the_url_host_form() {
+        // Hadoop's `accountConf` builds `<key>.<host[:port]>` and nothing else, so a key
+        // under another endpoint suffix or the bare account name is not this account's.
         let mut configs = hadoop(&[
-            (
-                "fs.azure.account.oauth2.client.id.myacct.dfs.core.windows.net",
-                "dfs",
-            ),
+            ("fs.azure.account.oauth2.client.id", "global"),
             (
                 "fs.azure.account.oauth2.client.id.myacct.blob.core.windows.net",
                 "blob",
             ),
             ("fs.azure.account.oauth2.client.id.myacct", "bare"),
         ]);
+        let u = url("abfss://data@myacct.dfs.core.windows.net/path/file.parquet");
+        let account = extract_account(&u);
         let lookup = |configs: &HashMap<String, String>| {
-            account_scoped_value(configs, HADOOP_OAUTH_CLIENT_ID, Some("myacct"))
+            account_scoped_value(configs, HADOOP_OAUTH_CLIENT_ID, account)
         };
-        assert_eq!(lookup(&configs).as_deref(), Some("dfs"));
-        configs.remove("fs.azure.account.oauth2.client.id.myacct.dfs.core.windows.net");
-        assert_eq!(lookup(&configs).as_deref(), Some("blob"));
-        configs.remove("fs.azure.account.oauth2.client.id.myacct.blob.core.windows.net");
-        assert_eq!(lookup(&configs).as_deref(), Some("bare"));
+        assert_eq!(lookup(&configs).as_deref(), Some("global"));
+        configs.remove("fs.azure.account.oauth2.client.id");
+        assert_eq!(lookup(&configs), None);
+    }
+
+    #[test]
+    fn credential_key_scoped_to_another_endpoint_host_is_not_read() {
+        // A key under the blob host belongs to another account name, so a dfs URL reads
+        // the global key, as Hadoop does, and nothing when there is no global key.
+        let blob_key = (
+            "fs.azure.account.key.myacct.blob.core.windows.net",
+            "blob==",
+        );
+        let configs = hadoop(&[blob_key, ("fs.azure.account.key", VALID_ACCOUNT_KEY)]);
+        let u = url("abfss://data@myacct.dfs.core.windows.net/path/file.parquet");
+        create_store_with_env(&u, &configs, env_of(&[])).expect("store builds");
+        let builder = builder_for(&configs, &[]);
+        assert_eq!(
+            value(&builder, AzureConfigKey::AccessKey).as_deref(),
+            Some(VALID_ACCOUNT_KEY)
+        );
+        let configs = hadoop(&[blob_key]);
+        let translated = translate(&configs, Some(ACCOUNT), Some("data"));
+        assert!(translated.is_empty(), "{translated:?}");
+    }
+
+    #[test]
+    fn global_oauth_is_selected_over_an_auth_type_scoped_to_another_host() {
+        // Hadoop reads `fs.azure.account.auth.type.myacct.dfs.core.windows.net` and the
+        // global key for this URL, so a `SharedKey` scoped to the blob host does not apply.
+        let configs = client_creds_with(&[(
+            "fs.azure.account.auth.type.myacct.blob.core.windows.net",
+            "SharedKey",
+        )]);
+        assert_builds_client_secret_store(&configs, "SharedKey scoped to the blob host");
+    }
+
+    #[test]
+    fn auth_type_scoped_to_the_host_with_port_overrides_the_global_one() {
+        // Hadoop's account name is the raw URL authority, port included, so the scoped
+        // keys of a URL with an explicit port carry the port.
+        let u = url("abfss://data@myacct.dfs.core.windows.net:443/path/file.parquet");
+        let configs = hadoop(&[
+            ("fs.azure.account.auth.type", "SharedKey"),
+            (
+                "fs.azure.account.auth.type.myacct.dfs.core.windows.net:443",
+                "OAuth",
+            ),
+            (
+                "fs.azure.account.oauth.provider.type.myacct.dfs.core.windows.net:443",
+                CLIENT_CREDS_PROVIDER,
+            ),
+            ("fs.azure.account.oauth2.client.id", "hadoop-client"),
+            ("fs.azure.account.oauth2.client.secret", "hadoop-secret"),
+            (
+                "fs.azure.account.oauth2.client.endpoint",
+                "https://login.microsoftonline.com/hadoop-tenant/oauth2/token",
+            ),
+        ]);
+        if let Err(err) = create_store_with_env(&u, &configs, env_of(&[])) {
+            panic!("store must build: {err}");
+        }
+        let account = extract_account(&u);
+        assert_eq!(account, Some("myacct.dfs.core.windows.net:443"));
+        let by_key: HashMap<_, _> = translate(&configs, account, Some("data"))
+            .into_iter()
+            .collect();
+        assert_eq!(
+            by_key
+                .get(&AzureConfigKey::ClientSecret)
+                .map(String::as_str),
+            Some("hadoop-secret")
+        );
+        assert!(!by_key.contains_key(&AzureConfigKey::AccessKey));
+    }
+
+    #[test]
+    fn account_key_scoped_to_a_sovereign_cloud_or_fabric_host_is_read() {
+        // The scoped key is `<key>.<host>` whatever the endpoint suffix, so a sovereign
+        // cloud or Fabric host needs no special casing.
+        for host in [
+            "myacct.dfs.core.chinacloudapi.cn",
+            "myacct.dfs.fabric.microsoft.com",
+        ] {
+            let u = url(&format!("abfss://data@{host}/path/file.parquet"));
+            let key = format!("fs.azure.account.key.{host}");
+            let configs = hadoop(&[(&key, VALID_ACCOUNT_KEY)]);
+            let account = extract_account(&u);
+            assert_eq!(account, Some(host));
+            let translated = translate(&configs, account, Some("data"));
+            assert_eq!(
+                translated,
+                vec![(AzureConfigKey::AccessKey, VALID_ACCOUNT_KEY.to_string())],
+                "{host}"
+            );
+        }
+        // `object_store` recognises the Fabric host, so that store builds end to end.
+        let u = url("abfss://data@myacct.dfs.fabric.microsoft.com/path/file.parquet");
+        let configs = hadoop(&[(
+            "fs.azure.account.key.myacct.dfs.fabric.microsoft.com",
+            VALID_ACCOUNT_KEY,
+        )]);
+        let (_, path) = create_store_with_env(&u, &configs, env_of(&[])).expect("store builds");
+        assert_eq!(path.as_ref(), "path/file.parquet");
     }
 
     #[test]
@@ -3231,7 +3318,7 @@ mod tests {
     fn create_store_rejects_blank_auth_type_as_blank() {
         for key in [
             "fs.azure.account.auth.type",
-            "fs.azure.account.auth.type.myacct",
+            "fs.azure.account.auth.type.myacct.dfs.core.windows.net",
         ] {
             for blank in ["", " \n"] {
                 let configs = hadoop(&[(key, blank)]);
@@ -3269,7 +3356,7 @@ mod tests {
     fn create_store_rejects_provider_class_alone() {
         for key in [
             "fs.azure.account.oauth.provider.type",
-            "fs.azure.account.oauth.provider.type.myacct",
+            "fs.azure.account.oauth.provider.type.myacct.dfs.core.windows.net",
         ] {
             for (class, needs) in PROVIDER_CLASSES_ALONE {
                 let configs = hadoop(&[(key, class)]);
