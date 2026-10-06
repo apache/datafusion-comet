@@ -823,10 +823,21 @@ mismatch fails the task instead of writing NULLs.</p></li>
 (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5776">#5776</a>). Manifest order becomes the row
 order of an unordered read, so any map iteration that reaches the output needs the same care.</p></li>
 </ul>
+<p>iceberg-rust keeps each open file writer private inside its rolling and partitioning writers, so
+Comet wraps <code class="docutils literal notranslate"><span class="pre">ParquetWriterBuilder</span></code> in <code class="docutils literal notranslate"><span class="pre">MeteredParquetWriterBuilder</span></code>, whose files report what they
+hold in memory. It hands <code class="docutils literal notranslate"><span class="pre">ParquetWriter</span></code> each file’s <code class="docutils literal notranslate"><span class="pre">OutputFile</span></code> behind a <code class="docutils literal notranslate"><span class="pre">CountedOutput</span></code>, whose
+writer counts the bytes that leave memory on their way to storage, and a file reports what it has
+written less those. When they leave depends on the storage (<code class="docutils literal notranslate"><span class="pre">StorageWrites</span></code>). After every batch
+<code class="docutils literal notranslate"><span class="pre">run_write_task</span></code> resizes the task’s reservation to what the open files report plus the rows each
+<code class="docutils literal notranslate"><span class="pre">PartitionFeed</span></code> holds, for the dictionary choice or for pacing, and a resize the pool refuses fails
+the task. What that figure covers, and what it misses, is described under
+<a class="reference internal" href="memory_management.html#native-writers"><span class="std std-ref">Native writers</span></a>.</p>
 <p><code class="docutils literal notranslate"><span class="pre">FileIO</span></code> comes from <code class="docutils literal notranslate"><span class="pre">load_file_io</span></code> in <code class="docutils literal notranslate"><span class="pre">iceberg_common.rs</span></code>, shared with the native scan. It picks
 the storage backend from the data location’s scheme and wires in Comet’s S3 credential bridge when
 one is configured. For writes the bridge fails closed: if a configured provider cannot initialize,
-the task fails rather than writing with the default credential chain.</p>
+the task fails rather than writing with the default credential chain. A storage scheme newly
+supported for writes also needs its entry in <code class="docutils literal notranslate"><span class="pre">StorageWrites::for_location</span></code>, which treats an unknown
+scheme as one that uploads in parts.</p>
 <p>The JVM eligibility gate fails closed before building that <code class="docutils literal notranslate"><span class="pre">FileIO</span></code> for an <code class="docutils literal notranslate"><span class="pre">s3</span></code> or <code class="docutils literal notranslate"><span class="pre">s3a</span></code> data
 location. It checks effective <code class="docutils literal notranslate"><span class="pre">fs.s3a.*</span></code> Hadoop settings against the six keys translated by
 <code class="docutils literal notranslate"><span class="pre">NativeConfig</span></code>, and separately checks <code class="docutils literal notranslate"><span class="pre">table.io().properties()</span></code> for <code class="docutils literal notranslate"><span class="pre">s3.*</span></code> / <code class="docutils literal notranslate"><span class="pre">client.*</span></code> keys
@@ -976,7 +987,7 @@ the writer: run the write suites and the Iceberg Spark tests. The pin policy is 
 </thead>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CometIcebergWriteActionSuite</span></code></p></td>
-<td><p>End-to-end writes through the split plan and the native writer: parity with iceberg-java, row-level DML, partition evolution, file order, cleanup on task and job failure, AQE re-planning.</p></td>
+<td><p>End-to-end writes through the split plan and the native writer: parity with iceberg-java, row-level DML, partition evolution, file order, cleanup on task and job failure, a fanout write outgrowing the memory pool, AQE re-planning.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CometIcebergWriteDetectionSuite</span></code></p></td>
 <td><p>One case per eligibility rule, accepted and declined.</p></td>
@@ -991,7 +1002,7 @@ the writer: run the write suites and the Iceberg Spark tests. The pin policy is 
 <td><p>Translation of properties into <code class="docutils literal notranslate"><span class="pre">IcebergParquetWriteSettings</span></code> and the writer mode.</p></td>
 </tr>
 <tr class="row-odd"><td><p>Rust tests in <code class="docutils literal notranslate"><span class="pre">iceberg_write.rs</span></code> and in <code class="docutils literal notranslate"><span class="pre">iceberg_partition_*.rs</span></code></p></td>
-<td><p>File rolling on the 1000-row grid, fanout order, clustered input checks, cleanup guard, manifest round trip, partition path rendering, partition values past <code class="docutils literal notranslate"><span class="pre">chrono</span></code>’s calendar.</p></td>
+<td><p>File rolling on the 1000-row grid, fanout order, clustered input checks, cleanup guard, manifest round trip, memory reservation, partition path rendering, partition values past <code class="docutils literal notranslate"><span class="pre">chrono</span></code>’s calendar.</p></td>
 </tr>
 <tr class="row-even"><td><p>Rust tests in <code class="docutils literal notranslate"><span class="pre">iceberg_dictionary.rs</span></code></p></td>
 <td><p>The per-column dictionary choice against answers recorded from parquet-mr, including columns either side of its cut-off.</p></td>

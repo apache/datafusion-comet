@@ -648,6 +648,16 @@ realigns under-aligned buffers on import (<a class="reference external" href="ht
 the <code class="docutils literal notranslate"><span class="pre">realigns_under_aligned_decimal128</span></code> test in <code class="docutils literal notranslate"><span class="pre">scan.rs</span></code> guards against an arrow downgrade that would bring back the
 panic (<a class="reference external" href="https://github.com/apache/arrow-rs/issues/10028">apache/arrow-rs#10028</a>).</p>
 </section>
+<section id="errors-from-the-jvm-producer">
+<h3>Errors from the JVM Producer<a class="headerlink" href="#errors-from-the-jvm-producer" title="Link to this heading">#</a></h3>
+<p>Arrow Java’s exported stream catches whatever the reader throws in <code class="docutils literal notranslate"><span class="pre">get_next</span></code> and hands native only its text, so
+native fails the plan with a <code class="docutils literal notranslate"><span class="pre">CometNativeException</span></code> built from that text. <code class="docutils literal notranslate"><span class="pre">CometArrowStream.stream</span></code> wraps every
+reader to keep the throwable itself until the task completes, and <code class="docutils literal notranslate"><span class="pre">CometExecIterator</span></code> rethrows it in place of the
+native error. The task then fails with the exception Spark would have thrown, such as a <code class="docutils literal notranslate"><span class="pre">SparkArithmeticException</span></code>
+from an upstream plan. For an input of Arrow-backed <code class="docutils literal notranslate"><span class="pre">ColumnarBatch</span></code>es, the first batch never takes this path: schema
+reconciliation reads it on the JVM before the stream is exported, so what it throws propagates directly. A test of
+this path therefore has to fail a later batch.</p>
+</section>
 <section id="schema-reconciliation">
 <h3>Schema Reconciliation<a class="headerlink" href="#schema-reconciliation" title="Link to this heading">#</a></h3>
 <p><code class="docutils literal notranslate"><span class="pre">CometArrowStream.reconcileStreamSchema</span></code> advertises the stream’s schema from the actual <code class="docutils literal notranslate"><span class="pre">CometVector</span></code> types in the
@@ -877,6 +887,7 @@ resident until the JVM closes it. See <a class="reference internal" href="memory
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#jvm-native-data-flow-scanexec">JVM → Native Data Flow (ScanExec)</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#architecture">Architecture</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#stream-export-and-import">Stream Export and Import</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#errors-from-the-jvm-producer">Errors from the JVM Producer</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#schema-reconciliation">Schema Reconciliation</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#memory-layout">Memory Layout</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#ownership-and-lifecycle">Ownership and Lifecycle</a></li>
