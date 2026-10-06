@@ -119,6 +119,16 @@ realigns under-aligned buffers on import ([apache/arrow-rs#10030](https://github
 the `realigns_under_aligned_decimal128` test in `scan.rs` guards against an arrow downgrade that would bring back the
 panic ([apache/arrow-rs#10028](https://github.com/apache/arrow-rs/issues/10028)).
 
+### Errors from the JVM Producer
+
+Arrow Java's exported stream catches whatever the reader throws in `get_next` and hands native only its text, so
+native fails the plan with a `CometNativeException` built from that text. `CometArrowStream.stream` wraps every
+reader to keep the throwable itself until the task completes, and `CometExecIterator` rethrows it in place of the
+native error. The task then fails with the exception Spark would have thrown, such as a `SparkArithmeticException`
+from an upstream plan. For an input of Arrow-backed `ColumnarBatch`es, the first batch never takes this path: schema
+reconciliation reads it on the JVM before the stream is exported, so what it throws propagates directly. A test of
+this path therefore has to fail a later batch.
+
 ### Schema Reconciliation
 
 `CometArrowStream.reconcileStreamSchema` advertises the stream's schema from the actual `CometVector` types in the
