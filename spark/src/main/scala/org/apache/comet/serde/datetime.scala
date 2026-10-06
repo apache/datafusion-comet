@@ -21,12 +21,12 @@ package org.apache.comet.serde
 
 import java.util.Locale
 
-import org.apache.spark.sql.catalyst.expressions.{AddMonths, Attribute, Cast, ConvertTimezone, DateAdd, DateDiff, DateFormatClass, DateFromUnixDate, DateSub, DayOfMonth, DayOfWeek, DayOfYear, Days, DivideDTInterval, Expression, FromUTCTimestamp, GetDateField, GetTimestamp, Hour, Hours, LastDay, Literal, MakeDate, MakeDTInterval, MakeInterval, MakeTimestamp, MakeYMInterval, MicrosToTimestamp, MillisToTimestamp, Minute, Month, MonthsBetween, MultiplyDTInterval, MultiplyYMInterval, NextDay, PreciseTimestampConversion, Quarter, Second, SecondsToTimestamp, TimestampAdd, TimestampDiff, ToUnixTimestamp, ToUTCTimestamp, TruncDate, TruncTimestamp, UnixDate, UnixMicros, UnixMillis, UnixSeconds, UnixTimestamp, WeekDay, WeekOfYear, Year}
+import org.apache.spark.sql.catalyst.expressions.{AddMonths, Attribute, BoundReference, Cast, ConvertTimezone, DateAdd, DateDiff, DateFormatClass, DateFromUnixDate, DateSub, DayOfMonth, DayOfWeek, DayOfYear, Days, DivideDTInterval, Expression, FromUTCTimestamp, GetDateField, GetTimestamp, Hour, Hours, LastDay, Literal, MakeDate, MakeDTInterval, MakeInterval, MakeTimestamp, MakeYMInterval, MicrosToTimestamp, MillisToTimestamp, Minute, Month, MonthsBetween, MultiplyDTInterval, MultiplyYMInterval, NextDay, PreciseTimestampConversion, Quarter, Second, SecondsToTimestamp, TimestampAdd, TimestampDiff, ToUnixTimestamp, ToUTCTimestamp, TruncDate, TruncTimestamp, UnixDate, UnixMicros, UnixMillis, UnixSeconds, UnixTimestamp, WeekDay, WeekOfYear, Year}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{CalendarIntervalType, DataType, DateType, DoubleType, FloatType, IntegerType, LongType, StringType, TimestampNTZType, TimestampType}
 import org.apache.spark.unsafe.types.UTF8String
 
-import org.apache.comet.CometConf
+import org.apache.comet.{CometConf, CometExplainInfo}
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.serde.CometGetDateField.CometGetDateField
 import org.apache.comet.serde.ExprOuterClass.Expr
@@ -901,35 +901,60 @@ object CometMakeDTInterval extends CometCodegenDispatch[MakeDTInterval]
 object CometDivideDTInterval extends CometCodegenDispatch[DivideDTInterval]
 
 object CometMakeInterval extends CometExpressionSerde[MakeInterval] with CodegenDispatchFallback {
-  private val incompatReason =
-    "The native implementation converts seconds to `Float64`, which can lose microsecond" +
-      " precision, and stores time in nanoseconds, which overflows for large time components" +
-      " (hours, minutes, seconds) that Spark can represent."
 
-  override def getCompatibleNotes(): Seq[String] = Seq(
-    "Both the default JVM codegen-dispatch path and the native path currently limit the" +
-      " elapsed-time component to about 292 years in either direction. This only affects" +
-      " extreme intervals and is tracked in" +
-      " [#5279](https://github.com/apache/datafusion-comet/issues/5279).")
+  private val eagerArgumentReason =
+    "An argument that follows a nullable argument and is not a column reference, a literal, or " +
+      "a lossless up-cast of one, such as an ANSI `CAST` that can fail: Spark stops at the " +
+      "first NULL argument without evaluating the rest, while the native kernel evaluates every " +
+      "argument first"
 
-  override def getIncompatibleReasons(): Seq[String] = Seq(incompatReason)
+  override def getUnsupportedReasons(): Seq[String] = Seq(eagerArgumentReason)
 
   override def getSupportLevel(expr: MakeInterval): SupportLevel =
-    Incompatible(Some(incompatReason))
+    if (argumentsCanBeEvaluatedEagerly(expr)) Compatible()
+    else Unsupported(Some(eagerArgumentReason))
+
+  /**
+   * Spark's `MakeInterval` is a `SeptenaryExpression`: it evaluates its arguments left to right
+   * and returns NULL at the first NULL one, so an argument that follows a nullable argument only
+   * runs on the rows where every earlier argument is non-null. The native scalar function
+   * evaluates every argument over the whole batch before its kernel checks for nulls. Running
+   * such an argument on the extra rows is unobservable only when it cannot throw, carry state or
+   * have a side effect. That holds for a column reference, a literal, and a lossless up-cast of
+   * either, which covers the implicit casts Spark adds to widen integral and decimal arguments.
+   * Anything else routes through the JVM codegen dispatcher, which runs Spark's own nested
+   * evaluation. `foldable` is not a usable test: an unfolded foldable argument can still throw.
+   * Arguments before the first nullable one run on every row in Spark too, so they are
+   * unrestricted.
+   */
+  private def argumentsCanBeEvaluatedEagerly(expr: MakeInterval): Boolean = {
+    def unobservable(arg: Expression): Boolean = arg match {
+      case _: Literal | _: Attribute | _: BoundReference => true
+      case cast: Cast =>
+        Cast.canUpCast(cast.child.dataType, cast.dataType) && unobservable(cast.child)
+      case _ => false
+    }
+    val firstNullable = expr.children.indexWhere(_.nullable)
+    firstNullable < 0 || expr.children.drop(firstNullable + 1).forall(unobservable)
+  }
 
   override def convert(
       expr: MakeInterval,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
-    // The explicit return type skips DataFusion's registry coercion, but its kernel needs Float64.
-    val children = expr.children.updated(6, Cast(expr.secs, DoubleType))
-    val childExprs = children.map(exprToProtoInternal(_, inputs, binding))
-    val optExpr = scalarFunctionExprToProtoWithReturnType(
+    val restoreArgumentTags = CometExplainInfo.saveTags(expr.children)
+    val childExprs = expr.children.map(exprToProtoInternal(_, inputs, binding))
+    scalarFunctionExprToProtoWithReturnType(
       "make_interval",
       CalendarIntervalType,
       expr.failOnError,
-      childExprs: _*)
-    optExpr
+      childExprs: _*).orElse {
+      // An argument has no native path, so the dispatcher runs the whole expression instead.
+      val dispatched = CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
+      // The arguments now run in the dispatcher, so the tags of the failed conversion are stale.
+      if (dispatched.isDefined) restoreArgumentTags()
+      dispatched
+    }
   }
 }
 

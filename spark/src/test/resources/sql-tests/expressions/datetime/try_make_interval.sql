@@ -31,9 +31,21 @@ CREATE TABLE test_try_make_interval(
 statement
 INSERT INTO test_try_make_interval VALUES
   (1, 2, 3, 4, 5, 6, 7.123456),
+  (0, 0, 0, 0, 2562048, 0, 999999999.000001),
   (2147483647, 0, 0, 0, 0, 0, 0.000000)
 
 query
 SELECT try_make_interval(years, months, weeks, days, hours, mins, secs)
 FROM test_try_make_interval
 ORDER BY years
+
+query
+-- Adapted from Spark's try_make_interval default-argument API tests:
+-- https://github.com/apache/spark/blob/v4.2.0/sql/connect/client/jvm/src/test/scala/org/apache/spark/sql/PlanGenerationTestSuite.scala#L2037-L2076
+SELECT try_make_interval(1),
+       try_make_interval(1, 2),
+       try_make_interval(1, 2, 3),
+       try_make_interval(1, 2, 3, 4),
+       try_make_interval(1, 2, 3, 4, 5),
+       try_make_interval(1, 2, 3, 4, 5, 6),
+       try_make_interval(1, 2, 3, 4, 5, 6, 7.008009)

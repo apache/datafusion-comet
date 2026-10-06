@@ -97,6 +97,8 @@ private[arrow] object ArrowWriter {
       case (_: DayTimeIntervalType, vector: DurationVector) => new DurationWriter(vector)
       case (CalendarIntervalType, vector: IntervalMonthDayNanoVector) =>
         new IntervalMonthDayNanoWriter(vector)
+      case (CalendarIntervalType, vector: StructVector) =>
+        new CalendarIntervalStructWriter(vector)
       case (dt, _) =>
         throw QueryExecutionErrors.notSupportTypeError(dt)
     }
@@ -1511,6 +1513,33 @@ private[arrow] class StructWriter(
   override def reset(): Unit = {
     super.reset()
     children.foreach(_.reset())
+  }
+}
+
+/**
+ * Writes the three child vectors directly, as the codegen output does, so it boxes no value. A
+ * null sets the struct and each child null, as [[StructWriter]] does.
+ */
+private[arrow] class CalendarIntervalStructWriter(val valueVector: StructVector)
+    extends ArrowFieldWriter {
+
+  private val months = valueVector.getChildByOrdinal(0).asInstanceOf[IntVector]
+  private val days = valueVector.getChildByOrdinal(1).asInstanceOf[IntVector]
+  private val microseconds = valueVector.getChildByOrdinal(2).asInstanceOf[BigIntVector]
+
+  override def setNull(): Unit = {
+    months.setNull(count)
+    days.setNull(count)
+    microseconds.setNull(count)
+    valueVector.setNull(count)
+  }
+
+  override def setValue(input: SpecializedGetters, ordinal: Int): Unit = {
+    val interval = input.getInterval(ordinal)
+    valueVector.setIndexDefined(count)
+    months.setSafe(count, interval.months)
+    days.setSafe(count, interval.days)
+    microseconds.setSafe(count, interval.microseconds)
   }
 }
 

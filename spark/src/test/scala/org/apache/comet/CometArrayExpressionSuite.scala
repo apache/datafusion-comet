@@ -1473,24 +1473,25 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
-  // https://github.com/apache/datafusion-comet/issues/5544: Arrow's IntervalMonthDayNano holds
-  // elapsed time in nanoseconds, so the dispatcher's `Math.multiplyExact(microseconds, 1000L)`
-  // overflows past about 292 years, where Spark accepts the value (#5279). Expansion has to
-  // decline the value, not just the type: the calendar-interval restriction in
-  // `mapKeyTypesExpandable` only covers map keys. The `array(map(...))` spelling also covers the
-  // outer `ArrayType` recursion of the value walk.
-  test("folded map value with an out-of-range calendar interval falls back (multirow)") {
+  // https://github.com/apache/datafusion-comet/issues/5279: a calendar interval crosses into Arrow
+  // as a months/days/microseconds struct, and the dispatcher writes `microseconds` into it as-is,
+  // so a folded map value keeps Spark's whole microsecond range. Expansion used to decline any
+  // value past about 292 years, which the nanosecond `IntervalMonthDayNano` encoding could not
+  // hold. 2562048 hours is the first whole hour past that limit, and 2147483647 hours and minutes
+  // plus 999999999999.999999 seconds is about 96% of `Long.MaxValue` microseconds. The
+  // `array(map(...))` spelling also covers the outer `ArrayType` recursion of expansion.
+  test("folded map value with a calendar interval past the nanosecond range (multirow)") {
     withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
       Seq(
-        "array(map(1, make_interval(0, 0, 0, 0, 3000000, 0, 0)))" -> "ArrayType",
-        "map(1, make_interval(0, 0, 0, 0, 3000000, 0, 0))" -> "MapType",
-        "map(1, make_interval(0, 0, 0, 0, -3000000, 0, 0))" -> "MapType").foreach {
-        case (value, declaredType) =>
-          checkSparkAnswerAndFallbackReason(
-            s"SELECT _1 AS id, $value AS v FROM tbl",
-            s"Unsupported data type $declaredType")
-      }
-      // An interval inside the nanosecond range still runs natively.
+        "map('k', make_interval(0, 0, 0, 0, 2562048))",
+        "map(1, make_interval(0, 0, 0, 0, -3000000, 0, 0))",
+        "array(map(1, make_interval(0, 0, 0, 0, 3000000, 0, 0)))",
+        "map(1, make_interval(0, 0, 0, 0, 2147483647, 2147483647, 999999999999.999999))",
+        "map(1, make_interval(0, 0, 0, 0, -2147483647, -2147483647, -999999999999.999999))")
+        .foreach { value =>
+          checkSparkAnswerAndOperator(s"SELECT _1 AS id, $value AS v FROM tbl")
+        }
+      // An interval inside the old nanosecond range runs natively as before.
       checkSparkAnswerAndOperator(
         "SELECT _1 AS id, array(map(1, make_interval(0, 0, 0, 0, 24, 0, 0))) AS a FROM tbl")
     }

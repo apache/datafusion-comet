@@ -29,7 +29,7 @@ import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 
 import org.apache.arrow.memory.{AllocationListener, RootAllocator}
-import org.apache.arrow.vector.{BaseFixedWidthVector, BaseValueVector, BigIntVector, BitVector, DecimalVector, IntervalMonthDayNanoVector, IntVector, VarCharVector, VectorLoader, VectorSchemaRoot, VectorUnloader}
+import org.apache.arrow.vector.{BaseFixedWidthVector, BaseValueVector, BigIntVector, BitVector, DecimalVector, IntVector, VarCharVector, VectorLoader, VectorSchemaRoot, VectorUnloader}
 import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
 import org.apache.arrow.vector.dictionary.{Dictionary => ArrowDictionary}
 import org.apache.arrow.vector.dictionary.DictionaryProvider.MapDictionaryProvider
@@ -72,21 +72,37 @@ class CometArrowStreamSuite extends AnyFunSuite with Matchers {
     Utils.fromArrowField(field) shouldBe CalendarIntervalType
     val root = VectorSchemaRoot.create(new Schema(Seq(field).asJava), allocator)
     try {
-      val expected = new CalendarInterval(14, -3, 1234567L)
+      val expected = new CalendarInterval(14, -3, Long.MaxValue)
       val writer = ArrowWriter.create(root, 2)
       writer.write(new GenericInternalRow(Array[Any](expected)))
       writer.write(new GenericInternalRow(Array[Any](null)))
       writer.finish()
 
-      val arrow = root.getVector(0).asInstanceOf[IntervalMonthDayNanoVector]
-      IntervalMonthDayNanoVector.getMonths(arrow.getDataBuffer, 0) shouldBe expected.months
-      IntervalMonthDayNanoVector.getDays(arrow.getDataBuffer, 0) shouldBe expected.days
-      IntervalMonthDayNanoVector.getNanoseconds(arrow.getDataBuffer, 0) shouldBe
-        expected.microseconds * 1000L
+      val arrow = root.getVector(0).asInstanceOf[StructVector]
+      val months = arrow.getChild("months").asInstanceOf[IntVector]
+      val days = arrow.getChild("days").asInstanceOf[IntVector]
+      val micros = arrow.getChild("microseconds").asInstanceOf[BigIntVector]
+      months.get(0) shouldBe expected.months
+      days.get(0) shouldBe expected.days
+      micros.get(0) shouldBe expected.microseconds
+      // A null interval is null in the struct and in each child.
+      Seq(arrow, months, days, micros).foreach { vector =>
+        vector.getValueCount shouldBe 2
+        vector.isNull(1) shouldBe true
+      }
 
-      val comet = new CometPlainVector(arrow, false)
+      val comet = CometVector.getVector(arrow, null)
       comet.getInterval(0) shouldBe expected
       comet.getInterval(1) shouldBe null
+
+      // After a reset, the writer fills the same vectors again, with the null first this time.
+      writer.reset()
+      writer.write(new GenericInternalRow(Array[Any](null)))
+      writer.write(new GenericInternalRow(Array[Any](expected)))
+      writer.finish()
+      val reused = CometVector.getVector(arrow, null)
+      reused.getInterval(0) shouldBe null
+      reused.getInterval(1) shouldBe expected
     } finally {
       root.close()
       allocator.close()
