@@ -1082,9 +1082,9 @@ impl PhysicalPlanner {
     ///
     /// Without row-level pushdown the filters only prune, and pruning only recognizes a column
     /// compared with a literal, so that shape keeps the raw column ([`FloatOperands::Raw`]). With
-    /// it, every operand is normalized and float comparisons give up pruning: a raw column
-    /// compared with a normalized literal would drop a stored NaN with other bits, such as one
-    /// with the sign bit set, that Spark matches.
+    /// it, every operand is normalized and float comparisons give up pruning: a raw column would
+    /// drop a stored NaN that Spark matches, such as one with the sign bit set, which Arrow orders
+    /// below every other value.
     fn data_filter_float_operands(&self) -> FloatOperands {
         if self
             .session_ctx

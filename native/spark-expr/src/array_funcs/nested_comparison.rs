@@ -222,13 +222,16 @@ impl PhysicalExpr for NestedPredicate {
 pub enum FloatOperands {
     /// Normalize them, so that the comparison follows Spark's SQL ordering.
     Normalize,
-    /// Leave a Float32 or Float64 column compared with a literal as it is, and normalize every
-    /// other operand. Only a scan's pushed-down data filters use this, and only when the Parquet
-    /// reader prunes with them but does not filter rows: Parquet pruning recognizes a column
-    /// compared with a literal but not a normalized column, and Spark's Filter above the scan
-    /// applies Spark's semantics to every row. With row-level pushdown the reader would drop the
-    /// rows such a comparison rejects, including a stored NaN whose bits differ from the
-    /// normalized literal, so the data filters use [`FloatOperands::Normalize`] there instead.
+    /// Leave a Float32 or Float64 column compared with a literal other than NaN as it is, and
+    /// normalize every other operand. Only a scan's pushed-down data filters use this, and only
+    /// when the Parquet reader prunes with them but does not filter rows: Parquet pruning
+    /// recognizes a column compared with a literal but not a normalized column, and Spark's
+    /// Filter above the scan applies Spark's semantics to every row. A NaN literal is normalized
+    /// with the column, giving up pruning, because a stored NaN can have other bits than the
+    /// literal and a writer can leave NaNs out of the column statistics. With row-level pushdown
+    /// the reader would drop the rows such a comparison rejects, including a stored NaN with the
+    /// sign bit set, which Arrow orders below every other value, so the data filters use
+    /// [`FloatOperands::Normalize`] there instead.
     Raw,
 }
 
@@ -269,18 +272,69 @@ pub fn spark_comparison(
             membership: false,
         }));
     }
-    let raw = float_operands == FloatOperands::Raw;
-    let (left, right) = if raw && is_float_column(&left, schema) && is_literal(&right) {
-        (left, normalize_comparison_operand(right, schema)?)
-    } else if raw && is_literal(&left) && is_float_column(&right, schema) {
-        (normalize_comparison_operand(left, schema)?, right)
-    } else {
-        (
-            normalize_comparison_operand(left, schema)?,
-            normalize_comparison_operand(right, schema)?,
-        )
+    if float_operands == FloatOperands::Raw {
+        if let Some(comparison) = raw_float_comparison(&left, op, &right, schema) {
+            return Ok(comparison);
+        }
+    }
+    Ok(Arc::new(BinaryExpr::new(
+        normalize_comparison_operand(left, schema)?,
+        op,
+        normalize_comparison_operand(right, schema)?,
+    )))
+}
+
+/// The comparison that [`FloatOperands::Raw`] builds for a Float32 or Float64 column compared with
+/// a literal other than NaN: the column and the literal as they are. `None` for any other operands.
+///
+/// Statistics pruning compares `-0.0` and `0.0` as equal, but a bloom filter probe hashes the
+/// literal's bits, so `=` against a zero literal becomes `=` against either zero.
+fn raw_float_comparison(
+    left: &Arc<dyn PhysicalExpr>,
+    op: Operator,
+    right: &Arc<dyn PhysicalExpr>,
+    schema: &Schema,
+) -> Option<Arc<dyn PhysicalExpr>> {
+    let (literal, literal_on_left) = match (
+        left.downcast_ref::<Literal>(),
+        right.downcast_ref::<Literal>(),
+    ) {
+        (None, Some(literal)) if is_float_column(left, schema) => (literal, false),
+        (Some(literal), None) if is_float_column(right, schema) => (literal, true),
+        _ => return None,
     };
-    Ok(Arc::new(BinaryExpr::new(left, op, right)))
+    let (negative_zero, positive_zero) = match literal.value() {
+        ScalarValue::Float32(Some(v)) if v.is_nan() => return None,
+        ScalarValue::Float64(Some(v)) if v.is_nan() => return None,
+        ScalarValue::Float32(Some(v)) if op == Operator::Eq && *v == 0.0 => (
+            ScalarValue::Float32(Some(-0.0)),
+            ScalarValue::Float32(Some(0.0)),
+        ),
+        ScalarValue::Float64(Some(v)) if op == Operator::Eq && *v == 0.0 => (
+            ScalarValue::Float64(Some(-0.0)),
+            ScalarValue::Float64(Some(0.0)),
+        ),
+        _ => {
+            return Some(Arc::new(BinaryExpr::new(
+                Arc::clone(left),
+                op,
+                Arc::clone(right),
+            )))
+        }
+    };
+    let equal_to = |zero: ScalarValue| -> Arc<dyn PhysicalExpr> {
+        let zero: Arc<dyn PhysicalExpr> = Arc::new(Literal::new(zero));
+        if literal_on_left {
+            Arc::new(BinaryExpr::new(zero, op, Arc::clone(right)))
+        } else {
+            Arc::new(BinaryExpr::new(Arc::clone(left), op, zero))
+        }
+    };
+    Some(Arc::new(BinaryExpr::new(
+        equal_to(negative_zero),
+        Operator::Or,
+        equal_to(positive_zero),
+    )))
 }
 
 /// Whether `expr` is a Float32 or Float64 column, the operand that Parquet pruning reads.
@@ -290,10 +344,6 @@ fn is_float_column(expr: &Arc<dyn PhysicalExpr>, schema: &Schema) -> bool {
             expr.data_type(schema),
             Ok(DataType::Float32 | DataType::Float64)
         )
-}
-
-fn is_literal(expr: &Arc<dyn PhysicalExpr>) -> bool {
-    expr.downcast_ref::<Literal>().is_some()
 }
 
 fn validate_types(
@@ -965,8 +1015,8 @@ mod tests {
     }
 
     /// A literal operand is normalized while planning, so the comparison stays `column op
-    /// literal`. With `FloatOperands::Raw`, as for a scan's data filters, only the column of that
-    /// shape is left unwrapped.
+    /// literal`. With `FloatOperands::Raw`, as for a scan's data filters, the column and the
+    /// literal of that shape are left as they are.
     #[test]
     fn float_operand_shapes() -> Result<()> {
         use crate::float_semantics::NormalizeNaNAndZero;
@@ -992,8 +1042,8 @@ mod tests {
         let folded = binary.right().downcast_ref::<Literal>().unwrap();
         assert!(matches!(folded.value(), ScalarValue::Float64(Some(v)) if v.to_bits() == 0));
 
-        // With `FloatOperands::Raw`, a float column compared with a literal keeps the column, on
-        // either side, and the literal is still normalized.
+        // With `FloatOperands::Raw`, a float column compared with a literal keeps both as they
+        // are, on either side.
         let expr = spark_comparison(
             Arc::new(Column::new("a", 0)),
             Operator::Lt,
@@ -1003,8 +1053,7 @@ mod tests {
         )?;
         let binary = expr.downcast_ref::<BinaryExpr>().unwrap();
         assert!(binary.left().downcast_ref::<Column>().is_some());
-        let folded = binary.right().downcast_ref::<Literal>().unwrap();
-        assert!(matches!(folded.value(), ScalarValue::Float64(Some(v)) if v.to_bits() == 0));
+        assert!(Arc::ptr_eq(binary.right(), &negative_zero));
         let expr = spark_comparison(
             Arc::clone(&negative_zero),
             Operator::Lt,
@@ -1013,6 +1062,7 @@ mod tests {
             FloatOperands::Raw,
         )?;
         let binary = expr.downcast_ref::<BinaryExpr>().unwrap();
+        assert!(Arc::ptr_eq(binary.left(), &negative_zero));
         assert!(binary.right().downcast_ref::<Column>().is_some());
 
         // Any other shape is normalized even with `FloatOperands::Raw`, because a reader with
@@ -1046,6 +1096,81 @@ mod tests {
         let binary = expr.downcast_ref::<BinaryExpr>().unwrap();
         assert!(Arc::ptr_eq(binary.left(), &a));
         assert!(Arc::ptr_eq(binary.right(), &b));
+        Ok(())
+    }
+
+    /// A bloom filter holds the bits of each value, so with `FloatOperands::Raw` an `=` against
+    /// either zero probes the filter for both zeros, while other operators keep the literal. A
+    /// NaN literal is normalized together with the column instead, because no single literal
+    /// stands for every NaN a file can hold.
+    #[test]
+    fn raw_float_comparison_literals() -> Result<()> {
+        use crate::float_semantics::NormalizeNaNAndZero;
+        use datafusion::physical_expr::utils::{Guarantee, LiteralGuarantee};
+        use std::collections::HashSet;
+        let schema = Schema::new(vec![
+            Field::new("f", DataType::Float32, true),
+            Field::new("d", DataType::Float64, true),
+        ]);
+        let scalar = |value: f64, data_type: &DataType| match data_type {
+            DataType::Float32 => ScalarValue::Float32(Some(value as f32)),
+            _ => ScalarValue::Float64(Some(value)),
+        };
+        for (index, name, data_type) in [(0, "f", DataType::Float32), (1, "d", DataType::Float64)] {
+            let column: Arc<dyn PhysicalExpr> = Arc::new(Column::new(name, index));
+            for zero in [-0.0, 0.0] {
+                let literal: Arc<dyn PhysicalExpr> =
+                    Arc::new(Literal::new(scalar(zero, &data_type)));
+                for (left, right) in [(&column, &literal), (&literal, &column)] {
+                    let expr = spark_comparison(
+                        Arc::clone(left),
+                        Operator::Eq,
+                        Arc::clone(right),
+                        &schema,
+                        FloatOperands::Raw,
+                    )?;
+                    let guarantees = LiteralGuarantee::analyze(&expr);
+                    assert_eq!(guarantees.len(), 1, "{expr}");
+                    assert_eq!(guarantees[0].guarantee, Guarantee::In, "{expr}");
+                    assert_eq!(guarantees[0].column.name(), name, "{expr}");
+                    assert_eq!(
+                        guarantees[0].literals,
+                        HashSet::from([scalar(-0.0, &data_type), scalar(0.0, &data_type)]),
+                        "{expr}"
+                    );
+                }
+                let expr = spark_comparison(
+                    Arc::clone(&column),
+                    Operator::GtEq,
+                    Arc::clone(&literal),
+                    &schema,
+                    FloatOperands::Raw,
+                )?;
+                let binary = expr.downcast_ref::<BinaryExpr>().unwrap();
+                assert!(Arc::ptr_eq(binary.left(), &column));
+                assert!(Arc::ptr_eq(binary.right(), &literal));
+            }
+        }
+
+        let column: Arc<dyn PhysicalExpr> = Arc::new(Column::new("d", 1));
+        for nan in [f64::NAN, f64::from_bits(0xfff8_0000_0000_0000)] {
+            let expr = spark_comparison(
+                Arc::clone(&column),
+                Operator::Eq,
+                Arc::new(Literal::new(ScalarValue::Float64(Some(nan)))),
+                &schema,
+                FloatOperands::Raw,
+            )?;
+            let binary = expr.downcast_ref::<BinaryExpr>().unwrap();
+            assert!(binary
+                .left()
+                .downcast_ref::<NormalizeNaNAndZero>()
+                .is_some());
+            let folded = binary.right().downcast_ref::<Literal>().unwrap();
+            assert!(
+                matches!(folded.value(), ScalarValue::Float64(Some(v)) if v.to_bits() == f64::NAN.to_bits())
+            );
+        }
         Ok(())
     }
 

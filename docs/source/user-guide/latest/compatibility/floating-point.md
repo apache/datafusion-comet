@@ -28,14 +28,15 @@ normalizes both operands before native execution, including noncanonical NaN lit
 applies wherever a comparison appears: projections, filters, aggregate arguments and `FILTER`
 clauses, join conditions, sort keys, and generator arguments.
 
-A native Parquet scan skips row groups with its data filters. So that statistics pruning still
-applies, a `FLOAT` or `DOUBLE` column compared with a constant in a data filter is compared
-without normalizing the column, and the filter above the scan evaluates the comparison again with
-Spark's semantics. Every other comparison in a data filter is normalized. With
-`spark.comet.parquet.rowFilterPushdown.enabled=true` the scan also filters rows with these
-comparisons, so a noncanonical NaN stored in the file, such as one with the sign bit set, can be
-filtered differently from Spark when compared with a constant. Spark's Parquet writer only writes
-canonical NaNs.
+A native Parquet scan prunes row groups and pages with its data filters. So that this pruning
+still applies, a `FLOAT` or `DOUBLE` column compared with a constant other than NaN in a data
+filter is compared without normalizing the column, and the filter above the scan evaluates the
+comparison again with Spark's semantics. Every other comparison in a data filter is normalized.
+Bloom filters store `-0.0` and `0.0` separately, so `=` against either zero checks them for both.
+With `spark.comet.parquet.rowFilterPushdown.enabled=true` the scan also drops the rows its data
+filters reject, so every comparison in a data filter is normalized, and a `FLOAT` or `DOUBLE`
+comparison in a data filter does not prune row groups or pages
+([#6702](https://github.com/apache/datafusion-comet/issues/6702)).
 
 Top-level `IN`, `InSet`, and `NOT IN` membership also normalize dynamic candidates and lists
 containing NaN. When every candidate is a non-NaN literal, Comet keeps DataFusion's static filter
