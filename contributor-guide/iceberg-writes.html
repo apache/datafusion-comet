@@ -1012,7 +1012,8 @@ and iceberg-java handles all of them. Code that goes through <code class="docuti
 (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6145">#6145</a>).</p></li>
 <li><p><strong>Partition evolution leaves <code class="docutils literal notranslate"><span class="pre">void</span></code> fields behind.</strong> A v1 spec keeps a dropped partition field as
 a <code class="docutils literal notranslate"><span class="pre">void</span></code> transform, whose source column may later be dropped from the schema. Resolving the spec
-against the schema then fails
+against the schema then fails. An all-<code class="docutils literal notranslate"><span class="pre">void</span></code> spec is written unpartitioned, and a spec that mixes
+such a field with a live one is declined by the gate, since iceberg-java cannot write it either
 (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5691">#5691</a>,
 <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5693">#5693</a>,
 <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6141">#6141</a>).</p></li>

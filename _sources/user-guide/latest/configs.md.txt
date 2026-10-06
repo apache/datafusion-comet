@@ -398,6 +398,7 @@ them like any other production setting.
 | `spark.comet.expression.MultiplyYMInterval.enabled` | Enable Comet acceleration for `MultiplyYMInterval` | true |
 | `spark.comet.expression.Murmur3Hash.enabled` | Enable Comet acceleration for `Murmur3Hash` | true |
 | `spark.comet.expression.NaNvl.enabled` | Enable Comet acceleration for `NaNvl` | true |
+| `spark.comet.expression.NativeUdfCall.enabled` | Enable Comet acceleration for `NativeUdfCall` | true |
 | `spark.comet.expression.NextDay.enabled` | Enable Comet acceleration for `NextDay` | true |
 | `spark.comet.expression.Not.enabled` | Enable Comet acceleration for `Not` | true |
 | `spark.comet.expression.OctetLength.enabled` | Enable Comet acceleration for `OctetLength` | true |

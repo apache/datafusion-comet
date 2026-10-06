@@ -29,7 +29,7 @@ under the License.
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Spark Operator Support &#8212; Apache DataFusion Comet  documentation</title>
+    <title>Custom Rust UDFs &#8212; Apache DataFusion Comet  documentation</title>
   
   
   
@@ -63,13 +63,13 @@ under the License.
     <script src="../../_static/documentation_options.js?v=5929fcd5"></script>
     <script src="../../_static/doctools.js?v=9a2dae69"></script>
     <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script>DOCUMENTATION_OPTIONS.pagename = 'user-guide/latest/operators';</script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'user-guide/latest/rust_udfs';</script>
     <script async="true" defer="true" src="https://buttons.github.io/buttons.js"></script>
     <script src="../../_static/comet-ux.js?v=97577a30"></script>
     <link rel="index" title="Index" href="../../genindex.html" />
     <link rel="search" title="Search" href="../../search.html" />
-    <link rel="next" title="Spark Expression Support" href="expressions.html" />
-    <link rel="prev" title="Spark Data Type Support" href="datatypes.html" />
+    <link rel="next" title="Compatibility Guide" href="compatibility/index.html" />
+    <link rel="prev" title="Scala UDF and Java UDF Support" href="scala_java_udfs.html" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
@@ -499,10 +499,10 @@ under the License.
 <ul class="current">
 <li class="toctree-l2"><a class="reference internal" href="datasources.html">Supported Data Sources</a></li>
 <li class="toctree-l2"><a class="reference internal" href="datatypes.html">Supported Data Types</a></li>
-<li class="toctree-l2 current"><a class="current reference internal" href="#">Supported Operators</a></li>
+<li class="toctree-l2"><a class="reference internal" href="operators.html">Supported Operators</a></li>
 <li class="toctree-l2"><a class="reference internal" href="expressions.html">Supported Expressions</a></li>
 <li class="toctree-l2"><a class="reference internal" href="scala_java_udfs.html">ScalaUDF and Java UDF Support</a></li>
-<li class="toctree-l2"><a class="reference internal" href="rust_udfs.html">Custom Rust UDFs</a></li>
+<li class="toctree-l2 current"><a class="current reference internal" href="#">Custom Rust UDFs</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Compatibility</span></p>
 <ul>
@@ -764,7 +764,7 @@ under the License.
     
     <li class="breadcrumb-item"><a href="index.html" class="nav-link">Comet 1.2.0-SNAPSHOT User Guide</a></li>
     
-    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Spark Operator Support</span></li>
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Custom Rust UDFs</span></li>
   </ul>
 </nav>
 </div>
@@ -799,347 +799,303 @@ under the License.
   specific language governing permissions and limitations
   under the License.
 -->
-<section id="spark-operator-support">
-<h1>Spark Operator Support<a class="headerlink" href="#spark-operator-support" title="Link to this heading">#</a></h1>
-<p>This page is the complete reference for how Apache Comet handles each Spark physical operator.
-Comet replaces supported operators with native equivalents. Comet runs whole subtrees of native
-operators together, so if a query stage contains an operator Comet does not support, that stage
-falls back to regular Spark execution. Results are unaffected.</p>
-<p>Operators marked ✅ Supported are enabled by default. Each can be turned off individually with
-<code class="docutils literal notranslate"><span class="pre">spark.comet.exec.OPERATOR.enabled=false</span></code> (for example <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.sort.enabled=false</span></code>), and
-all native execution can be turned off with <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.enabled=false</span></code>. See the
-<a class="reference internal" href="configs.html"><span class="std std-doc">Comet Configuration Guide</span></a> for the full list.</p>
-<section id="status-legend">
-<h2>Status legend<a class="headerlink" href="#status-legend" title="Link to this heading">#</a></h2>
+<section id="custom-rust-udfs">
+<h1>Custom Rust UDFs<a class="headerlink" href="#custom-rust-udfs" title="Link to this heading">#</a></h1>
+<p>Comet can load scalar user-defined functions written in Rust from a shared library and run them
+natively, inside the Comet pipeline, with no JVM round trip per row.</p>
+<p>This is different from <a class="reference internal" href="scala_java_udfs.html"><span class="std std-doc">Scala UDF and Java UDF Support</span></a>, where the user
+function stays on the JVM and Comet dispatches into it. Here the function is compiled Rust that
+operates directly on Arrow arrays.</p>
+<blockquote>
+<div><p><strong>Experimental.</strong> This feature and the ABI it depends on are experimental. Neither
+<code class="docutils literal notranslate"><span class="pre">comet-udf-sdk</span></code> nor <code class="docutils literal notranslate"><span class="pre">CometNativeUDF</span></code> is part of Comet’s supported API: they fall under
+<a class="reference internal" href="../../about/versioning_policy.html#everything-else-is-internal"><span class="std std-ref">everything else is internal</span></a> in the
+<a class="reference internal" href="../../about/versioning_policy.html"><span class="std std-doc">versioning policy</span></a>, so they may change or be removed in any
+release, including a patch release, with no deprecation cycle. Expect to rebuild your UDF library
+against the SDK from each Comet release you upgrade to. It is not yet recommended for production
+use. See <a class="reference internal" href="#limitations">Limitations</a> before adopting it.</p>
+</div></blockquote>
+<section id="writing-a-udf">
+<h2>Writing a UDF<a class="headerlink" href="#writing-a-udf" title="Link to this heading">#</a></h2>
+<p>A UDF library is an ordinary Rust <code class="docutils literal notranslate"><span class="pre">cdylib</span></code> that depends on <code class="docutils literal notranslate"><span class="pre">comet-udf-sdk</span></code> and <code class="docutils literal notranslate"><span class="pre">arrow</span></code>:</p>
+<div class="highlight-toml notranslate"><div class="highlight"><pre><span></span><span class="k">[package]</span>
+<span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"my-comet-udfs"</span>
+<span class="n">version</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"0.1.0"</span>
+<span class="n">edition</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"2021"</span>
+
+<span class="k">[lib]</span>
+<span class="n">crate-type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">"cdylib"</span><span class="p">]</span>
+
+<span class="k">[dependencies]</span>
+<span class="n">arrow</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"59"</span>
+<span class="n">comet-udf-sdk</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">git</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">"https://github.com/apache/datafusion-comet"</span><span class="p">,</span><span class="w"> </span><span class="n">tag</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">"1.2.0-SNAPSHOT"</span><span class="w"> </span><span class="p">}</span>
+</pre></div>
+</div>
+<p>Pin <code class="docutils literal notranslate"><span class="pre">tag</span></code> to the Comet release your cluster runs. The SDK is not published to crates.io, and a
+library built against one release’s SDK is refused by any other (see <a class="reference internal" href="#limitations">Limitations</a>),
+so an untagged dependency that follows <code class="docutils literal notranslate"><span class="pre">main</span></code> will eventually stop loading. Use the same <code class="docutils literal notranslate"><span class="pre">arrow</span></code>
+major version as that release’s SDK, which is the <code class="docutils literal notranslate"><span class="pre">arrow</span></code> entry in <code class="docutils literal notranslate"><span class="pre">native/Cargo.toml</span></code> at the tag.
+The trait’s signatures use the SDK’s <code class="docutils literal notranslate"><span class="pre">arrow</span></code> types, so a different major version fails to compile
+with <code class="docutils literal notranslate"><span class="pre">E0053</span></code> (incompatible type for trait).</p>
+<p>This page is for the current development version of Comet, which has no release tag yet. Until it
+is released, pin <code class="docutils literal notranslate"><span class="pre">rev</span></code> to the commit your Comet build was made from instead of <code class="docutils literal notranslate"><span class="pre">tag</span></code>.</p>
+<p>Implement the <code class="docutils literal notranslate"><span class="pre">CometCScalarUdf</span></code> trait and export it:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">use</span><span class="w"> </span><span class="n">std</span><span class="p">::</span><span class="n">sync</span><span class="p">::</span><span class="n">Arc</span><span class="p">;</span>
+
+<span class="k">use</span><span class="w"> </span><span class="n">arrow</span><span class="p">::</span><span class="n">array</span><span class="p">::{</span><span class="n">ArrayRef</span><span class="p">,</span><span class="w"> </span><span class="n">Int64Array</span><span class="p">};</span>
+<span class="k">use</span><span class="w"> </span><span class="n">arrow</span><span class="p">::</span><span class="n">datatypes</span><span class="p">::{</span><span class="n">DataType</span><span class="p">,</span><span class="w"> </span><span class="n">Field</span><span class="p">};</span>
+<span class="k">use</span><span class="w"> </span><span class="n">comet_udf_sdk</span><span class="p">::</span><span class="n">c_abi</span><span class="p">::</span><span class="n">CometCScalarUdf</span><span class="p">;</span>
+<span class="k">use</span><span class="w"> </span><span class="n">comet_udf_sdk</span><span class="p">::</span><span class="n">comet_c_udf_export</span><span class="p">;</span>
+
+<span class="cp">#[derive(Default)]</span>
+<span class="k">pub</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">AddOne</span><span class="p">;</span>
+
+<span class="k">impl</span><span class="w"> </span><span class="n">CometCScalarUdf</span><span class="w"> </span><span class="k">for</span><span class="w"> </span><span class="n">AddOne</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="sd">/// The name the function is registered and called under.</span>
+<span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">name</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="kp">&amp;</span><span class="kt">str</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="s">"add_one"</span>
+<span class="w">    </span><span class="p">}</span>
+
+<span class="w">    </span><span class="sd">/// Validate the argument types and declare the output type. Called once</span>
+<span class="w">    </span><span class="sd">/// per execution, before `invoke`. Returning `Err` fails the query with</span>
+<span class="w">    </span><span class="sd">/// your message.</span>
+<span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">return_field</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span><span class="w"> </span><span class="n">args</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="p">[</span><span class="n">Field</span><span class="p">])</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nb">Result</span><span class="o">&lt;</span><span class="n">Field</span><span class="p">,</span><span class="w"> </span><span class="nb">String</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="n">args</span><span class="p">.</span><span class="n">len</span><span class="p">()</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="mi">1</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="n">args</span><span class="p">[</span><span class="mi">0</span><span class="p">].</span><span class="n">data_type</span><span class="p">()</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="o">&amp;</span><span class="n">DataType</span><span class="p">::</span><span class="n">Int64</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="k">return</span><span class="w"> </span><span class="nb">Err</span><span class="p">(</span><span class="s">"add_one expects (Int64) -&gt; Int64"</span><span class="p">.</span><span class="n">into</span><span class="p">());</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">        </span><span class="nb">Ok</span><span class="p">(</span><span class="n">Field</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="s">"add_one"</span><span class="p">,</span><span class="w"> </span><span class="n">DataType</span><span class="p">::</span><span class="n">Int64</span><span class="p">,</span><span class="w"> </span><span class="kc">true</span><span class="p">))</span>
+<span class="w">    </span><span class="p">}</span>
+
+<span class="w">    </span><span class="sd">/// Evaluate one batch. `args` holds one Arrow array per argument.</span>
+<span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">invoke</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span><span class="w"> </span><span class="n">args</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="p">[</span><span class="n">ArrayRef</span><span class="p">],</span><span class="w"> </span><span class="n">_n_rows</span><span class="p">:</span><span class="w"> </span><span class="kt">usize</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nb">Result</span><span class="o">&lt;</span><span class="n">ArrayRef</span><span class="p">,</span><span class="w"> </span><span class="nb">String</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">a</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">args</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
+<span class="w">            </span><span class="p">.</span><span class="n">as_any</span><span class="p">()</span>
+<span class="w">            </span><span class="p">.</span><span class="n">downcast_ref</span><span class="p">::</span><span class="o">&lt;</span><span class="n">Int64Array</span><span class="o">&gt;</span><span class="p">()</span>
+<span class="w">            </span><span class="p">.</span><span class="n">ok_or</span><span class="p">(</span><span class="s">"expected an Int64Array"</span><span class="p">)</span><span class="o">?</span><span class="p">;</span>
+<span class="w">        </span><span class="nb">Ok</span><span class="p">(</span><span class="n">Arc</span><span class="p">::</span><span class="n">new</span><span class="p">(</span>
+<span class="w">            </span><span class="n">a</span><span class="p">.</span><span class="n">iter</span><span class="p">().</span><span class="n">map</span><span class="p">(</span><span class="o">|</span><span class="n">v</span><span class="o">|</span><span class="w"> </span><span class="n">v</span><span class="p">.</span><span class="n">map</span><span class="p">(</span><span class="o">|</span><span class="n">x</span><span class="o">|</span><span class="w"> </span><span class="n">x</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="mi">1</span><span class="p">)).</span><span class="n">collect</span><span class="p">::</span><span class="o">&lt;</span><span class="n">Int64Array</span><span class="o">&gt;</span><span class="p">(),</span>
+<span class="w">        </span><span class="p">))</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+
+<span class="n">comet_c_udf_export</span><span class="o">!</span><span class="p">(</span><span class="n">AddOne</span><span class="p">);</span>
+</pre></div>
+</div>
+<p>Each type passed to <code class="docutils literal notranslate"><span class="pre">comet_c_udf_export!</span></code> must implement <code class="docutils literal notranslate"><span class="pre">CometCScalarUdf</span></code> and <code class="docutils literal notranslate"><span class="pre">Default</span></code>. One
+library may export any number of functions.</p>
+<p>Your UDF must be safe to call from several threads at once. Comet loads a library once per
+executor process and shares it across every Spark task running there, so <code class="docutils literal notranslate"><span class="pre">return_field</span></code> and
+<code class="docutils literal notranslate"><span class="pre">invoke</span></code> take <code class="docutils literal notranslate"><span class="pre">&amp;self</span></code> and can run concurrently on the same value. In practice this costs nothing:
+a UDF that computes its output purely from its arguments, which is what <code class="docutils literal notranslate"><span class="pre">Volatility::Immutable</span></code>
+requires anyway, satisfies it already. Keep per-batch scratch space local to <code class="docutils literal notranslate"><span class="pre">invoke</span></code> rather than
+in the struct, and give anything that genuinely has to be shared and mutable its own
+synchronization.</p>
+<p>Build it:</p>
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span>cargo<span class="w"> </span>build<span class="w"> </span>--release
+<span class="c1"># target/release/libmy_comet_udfs.so   (Linux)</span>
+<span class="c1"># target/release/libmy_comet_udfs.dylib (macOS)</span>
+</pre></div>
+</div>
+<p>Note that the library depends only on <code class="docutils literal notranslate"><span class="pre">arrow</span></code> and the SDK, not on DataFusion. The ABI is built
+purely on the <a class="reference external" href="https://arrow.apache.org/docs/format/CDataInterface.html">Arrow C Data Interface</a>,
+which keeps your library decoupled from the DataFusion version Comet happens to use.</p>
+<p>Nothing in that ABI is Rust-specific, since it is C structs of function pointers carrying Arrow C
+Data Interface arrays, so a library written in C or C++ could implement it. That is not supported or
+tested today, though: no C header is published, the struct layouts are only defined in the Rust
+source and are not stable across Comet releases, and the SDK’s panic guards, which keep a bug in
+your UDF from taking down the executor, have no automatic equivalent in another language. Treat the
+Rust SDK as the way to write a UDF for now.</p>
+</section>
+<section id="registering-and-calling-a-udf">
+<h2>Registering and calling a UDF<a class="headerlink" href="#registering-and-calling-a-udf" title="Link to this heading">#</a></h2>
+<p>Register the function on the driver, giving its name, the library path, and its signature:</p>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="k">import</span><span class="w"> </span><span class="nn">org</span><span class="p">.</span><span class="nn">apache</span><span class="p">.</span><span class="nn">comet</span><span class="p">.</span><span class="nn">udf</span><span class="p">.</span><span class="nc">CometNativeUDF</span>
+<span class="k">import</span><span class="w"> </span><span class="nn">org</span><span class="p">.</span><span class="nn">apache</span><span class="p">.</span><span class="nn">spark</span><span class="p">.</span><span class="nn">sql</span><span class="p">.</span><span class="nn">types</span><span class="p">.</span><span class="nc">LongType</span>
+
+<span class="nc">CometNativeUDF</span><span class="p">.</span><span class="n">register</span><span class="p">(</span>
+<span class="w">  </span><span class="n">spark</span><span class="p">,</span>
+<span class="w">  </span><span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">"add_one"</span><span class="p">,</span>
+<span class="w">  </span><span class="n">libraryPath</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">"/opt/udfs/libmy_comet_udfs.so"</span><span class="p">,</span>
+<span class="w">  </span><span class="n">inputTypes</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nc">Seq</span><span class="p">(</span><span class="nc">LongType</span><span class="p">),</span>
+<span class="w">  </span><span class="n">returnType</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nc">LongType</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>Registration loads the library on the driver and verifies that a function with that name exists, so
+a bad path or a missing function fails immediately with a clear error rather than at execution time.</p>
+<p>The function is then callable from SQL or the DataFrame API like any other:</p>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="n">spark</span><span class="p">.</span><span class="n">range</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="mi">5</span><span class="p">).</span><span class="n">selectExpr</span><span class="p">(</span><span class="s">"add_one(id) AS y"</span><span class="p">).</span><span class="n">show</span><span class="p">()</span>
+</pre></div>
+</div>
+<p>Like <code class="docutils literal notranslate"><span class="pre">spark.udf.register</span></code>, <code class="docutils literal notranslate"><span class="pre">register</span></code> creates a temporary function in the session you pass it.
+Another session, including one from <code class="docutils literal notranslate"><span class="pre">spark.newSession()</span></code>, needs to register the function itself, and
+registering any other function under the same name in a session replaces it there.</p>
+<p>Your function must be a pure function of its arguments. Comet plans every Rust UDF as immutable,
+which lets the optimizer fold a call over constants, evaluate it once and reuse the result, or drop
+a repeated call as a common subexpression. <code class="docutils literal notranslate"><span class="pre">register</span></code> therefore rejects <code class="docutils literal notranslate"><span class="pre">deterministic</span> <span class="pre">=</span> <span class="pre">false</span></code>
+rather than accept a function whose volatility it would go on to ignore.</p>
+<p><code class="docutils literal notranslate"><span class="pre">libraryPath</span></code> is passed to the platform’s dynamic loader. An absolute path is what you want in
+practice, and it is what the rest of this page assumes, but a bare library name resolves the same
+way it would for any other shared object, through <code class="docutils literal notranslate"><span class="pre">LD_LIBRARY_PATH</span></code> on Linux and
+<code class="docutils literal notranslate"><span class="pre">DYLD_LIBRARY_PATH</span></code> on macOS. That is a convenience, not a sandbox: Comet does not restrict which
+paths may be loaded, so it makes no difference to the trust decision described under
+<a class="reference internal" href="#limitations">Limitations</a>.</p>
+</section>
+<section id="return-types">
+<h2>Return types<a class="headerlink" href="#return-types" title="Link to this heading">#</a></h2>
+<p>A UDF does not have one fixed return type. Its <code class="docutils literal notranslate"><span class="pre">return_field</span></code> is called with the actual argument
+types and computes the output type on demand, so a single kernel can serve many signatures: the
+<code class="docutils literal notranslate"><span class="pre">echo_c</span></code> UDF in Comet’s own test library returns whatever type it is given, for every type in the
+table below.</p>
+<p>What is fixed is the type you declare to <code class="docutils literal notranslate"><span class="pre">register</span></code>, because Spark needs a concrete <code class="docutils literal notranslate"><span class="pre">DataType</span></code> at
+analysis time in order to plan the query. That declaration is per-registration, not per-kernel:
+re-registering the same function under different types is supported, and the kernel computes the
+matching return type each time.</p>
+<p>The two must agree. Comet checks the declared type against what <code class="docutils literal notranslate"><span class="pre">return_field</span></code> reports at planning
+time and fails with both types named if they differ, rather than letting it surface as a type
+assertion partway through execution. Nested nullability (<code class="docutils literal notranslate"><span class="pre">containsNull</span></code>, struct field nullability)
+is not part of that comparison, since Spark and Arrow disagree about it harmlessly, and neither are
+the positional child names of lists and maps, but everything that changes how bytes are read or how
+Spark addresses them is: decimal precision and scale, timestamp unit and timezone, and struct field
+names and order.</p>
+<p>Watch for Spark’s own type promotion when declaring: <code class="docutils literal notranslate"><span class="pre">cast(id</span> <span class="pre">as</span> <span class="pre">decimal(10,2))</span> <span class="pre">+</span> <span class="pre">0.25</span></code> has type
+<code class="docutils literal notranslate"><span class="pre">decimal(11,2)</span></code>, not <code class="docutils literal notranslate"><span class="pre">decimal(10,2)</span></code>, so registering the latter is a mismatch.</p>
+</section>
+<section id="supported-types">
+<h2>Supported types<a class="headerlink" href="#supported-types" title="Link to this heading">#</a></h2>
+<p>Arguments and return values may be any of:</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
-<tr class="row-odd"><th class="head"><p>Status</p></th>
-<th class="head"><p>Meaning</p></th>
+<tr class="row-odd"><th class="head"><p>Spark type</p></th>
+<th class="head"><p>Arrow type</p></th>
 </tr>
 </thead>
 <tbody>
-<tr class="row-even"><td><p>✅ Supported</p></td>
-<td><p>Native implementation, enabled by default; works in the common case. Some inputs or forms may fall back to Spark.</p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">BooleanType</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">Boolean</span></code></p></td>
 </tr>
-<tr class="row-odd"><td><p>⚠️ Supported (caveats)</p></td>
-<td><p>Experimental or disabled by default, or accelerates only a limited subset. See the <a class="reference internal" href="compatibility/index.html"><span class="std std-doc">Compatibility Guide</span></a>.</p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ByteType</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">Int8</span></code></p></td>
 </tr>
-<tr class="row-even"><td><p>🔜 Planned</p></td>
-<td><p>Intended; tracked by an open issue or pull request.</p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ShortType</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">Int16</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">IntegerType</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">Int32</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">LongType</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">Int64</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">FloatType</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">Float32</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">DoubleType</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">Float64</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">DecimalType(p,</span> <span class="pre">s)</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">Decimal128(p,</span> <span class="pre">s)</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">StringType</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">Utf8</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">BinaryType</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">Binary</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">DateType</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">Date32</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">TimestampType</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">Timestamp(Microsecond,</span> <span class="pre">Some(&quot;UTC&quot;))</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">TimestampNTZType</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">Timestamp(Microsecond,</span> <span class="pre">None)</span></code></p></td>
 </tr>
 </tbody>
 </table>
 </div>
+<p>The timezone is what separates the two timestamp types, and it is compared exactly. A UDF that
+returns <code class="docutils literal notranslate"><span class="pre">TimestampType</span></code> must tag its output array as UTC, for example with
+<code class="docutils literal notranslate"><span class="pre">TimestampMicrosecondArray::from(values).with_timezone(&quot;UTC&quot;)</span></code>; building one without a timezone
+declares <code class="docutils literal notranslate"><span class="pre">TimestampNTZType</span></code> and is rejected at planning time against a <code class="docutils literal notranslate"><span class="pre">TimestampType</span></code>
+registration. Note that the tag is the Arrow type only: the values themselves are the same
+microseconds-since-epoch in both cases, and no conversion happens at the boundary.</p>
+<p>Complex types are supported and may be nested arbitrarily:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Spark type</p></th>
+<th class="head"><p>Arrow type</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ArrayType(t)</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">List(item:</span> <span class="pre">t)</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">StructType(f1,</span> <span class="pre">f2,</span> <span class="pre">...)</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">Struct(f1,</span> <span class="pre">f2,</span> <span class="pre">...)</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">MapType(k,</span> <span class="pre">v)</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">Map(entries:</span> <span class="pre">Struct(key:</span> <span class="pre">k,</span> <span class="pre">value:</span> <span class="pre">v))</span></code></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The field names shown for <code class="docutils literal notranslate"><span class="pre">List</span></code> and <code class="docutils literal notranslate"><span class="pre">Map</span></code> are the ones Comet itself emits, but you do not have to
+match them. Arrow addresses a list’s element and a map’s entries by position, so those names are
+disregarded when the declared type is compared against your <code class="docutils literal notranslate"><span class="pre">return_field</span></code>, and arrow-rs’s
+<code class="docutils literal notranslate"><span class="pre">MapBuilder::new(None,</span> <span class="pre">..)</span></code> defaults (<code class="docutils literal notranslate"><span class="pre">entries</span></code> / <code class="docutils literal notranslate"><span class="pre">keys</span></code> / <code class="docutils literal notranslate"><span class="pre">values</span></code>) work unchanged. Comet renames
+them to its own names before your result enters the plan, so it combines with maps and arrays from
+any other expression, for example in <code class="docutils literal notranslate"><span class="pre">if</span></code> or <code class="docutils literal notranslate"><span class="pre">CASE</span></code>.</p>
+<p>Struct field names are different: they are part of the Spark type and are how a caller reads the
+result, so they are compared exactly, in order.</p>
+<p>Nulls are preserved in both directions; a null input row arrives as a null slot in the Arrow array
+and your output nulls come back to Spark as nulls.</p>
+<p>Not yet supported: <code class="docutils literal notranslate"><span class="pre">CalendarIntervalType</span></code>, <code class="docutils literal notranslate"><span class="pre">NullType</span></code>, <code class="docutils literal notranslate"><span class="pre">UserDefinedType</span></code>, and Arrow extension types
+such as Variant and Geometry.</p>
 </section>
-<section id="wrapper-nodes">
-<h2>Wrapper nodes<a class="headerlink" href="#wrapper-nodes" title="Link to this heading">#</a></h2>
-<p>Some nodes in a Spark plan do no work of their own: <code class="docutils literal notranslate"><span class="pre">AdaptiveSparkPlan</span></code>, the AQE query stages
-(<code class="docutils literal notranslate"><span class="pre">ShuffleQueryStage</span></code>, <code class="docutils literal notranslate"><span class="pre">BroadcastQueryStage</span></code>, <code class="docutils literal notranslate"><span class="pre">TableCacheQueryStage</span></code> on Spark 3.5 and later, and
-<code class="docutils literal notranslate"><span class="pre">ResultQueryStage</span></code> on Spark 4.0 and later), <code class="docutils literal notranslate"><span class="pre">AQEShuffleRead</span></code>, <code class="docutils literal notranslate"><span class="pre">InputAdapter</span></code>, <code class="docutils literal notranslate"><span class="pre">WholeStageCodegen</span></code>,
-and the reuse markers <code class="docutils literal notranslate"><span class="pre">ReusedExchange</span></code> and <code class="docutils literal notranslate"><span class="pre">ReusedSubquery</span></code>. Comet leaves them in place around the
-operators it converts, so this page does not list them, and seeing one in a plan does not mean
-that part of the query fell back to Spark. The coverage summary described in
-<a class="reference internal" href="understanding-comet-plans.html"><span class="std std-doc">Understanding Comet Plans</span></a> does not count them.</p>
+<section id="error-handling">
+<h2>Error handling<a class="headerlink" href="#error-handling" title="Link to this heading">#</a></h2>
+<p>Returning <code class="docutils literal notranslate"><span class="pre">Err(String)</span></code> from <code class="docutils literal notranslate"><span class="pre">return_field</span></code> or <code class="docutils literal notranslate"><span class="pre">invoke</span></code> fails the query with your message attached.
+This is the intended way to reject bad input.</p>
+<p>The array <code class="docutils literal notranslate"><span class="pre">invoke</span></code> returns must have the type <code class="docutils literal notranslate"><span class="pre">return_field</span></code> declared, apart from the names of
+nested fields. The SDK checks this before handing the result to Comet and fails the query if it
+does not hold, since Comet would otherwise read the buffers as the declared type.</p>
+<p>Panics in your code are caught at the FFI boundary and converted into query errors, so an <code class="docutils literal notranslate"><span class="pre">unwrap</span></code>
+on <code class="docutils literal notranslate"><span class="pre">None</span></code> fails that query rather than taking down the executor. Do not rely on this as a control
+flow mechanism: prefer returning <code class="docutils literal notranslate"><span class="pre">Err</span></code>, which produces a much better message.</p>
+<p>Catching a panic requires the library to be built with <code class="docutils literal notranslate"><span class="pre">panic</span> <span class="pre">=</span> <span class="pre">&quot;unwind&quot;</span></code>, which is Cargo’s
+default. A library built with <code class="docutils literal notranslate"><span class="pre">panic</span> <span class="pre">=</span> <span class="pre">&quot;abort&quot;</span></code> in its profile aborts the whole executor process on
+the first panic, and the SDK cannot prevent it.</p>
 </section>
-<section id="not-currently-planned">
-<h2>Not currently planned<a class="headerlink" href="#not-currently-planned" title="Link to this heading">#</a></h2>
-<p>The following operator families fall back to Spark and are not on the current roadmap. They are
-omitted from the tables below and may be reconsidered based on demand:</p>
+<section id="limitations">
+<h2>Limitations<a class="headerlink" href="#limitations" title="Link to this heading">#</a></h2>
+<p>This feature is at an early stage. The current limitations are:</p>
 <ul class="simple">
-<li><p><strong>Structured Streaming operators</strong> (<code class="docutils literal notranslate"><span class="pre">StateStoreSaveExec</span></code>, <code class="docutils literal notranslate"><span class="pre">StateStoreRestoreExec</span></code>, <code class="docutils literal notranslate"><span class="pre">StreamingSymmetricHashJoinExec</span></code>, and similar): Comet targets batch execution.</p></li>
-<li><p><strong>Cartesian / cross joins</strong> (<code class="docutils literal notranslate"><span class="pre">CartesianProductExec</span></code>): rare and expensive, with little acceleration benefit.</p></li>
-<li><p><strong>Pickled (non-Arrow) Python UDFs</strong> (<code class="docutils literal notranslate"><span class="pre">BatchEvalPythonExec</span></code>): Comet accelerates Arrow-based Python UDFs only (<a class="reference external" href="https://github.com/apache/datafusion-comet/pull/4234">#4234</a>).</p></li>
-<li><p><strong>Typed Dataset operators</strong> (<code class="docutils literal notranslate"><span class="pre">DeserializeToObjectExec</span></code>, <code class="docutils literal notranslate"><span class="pre">SerializeFromObjectExec</span></code>, <code class="docutils literal notranslate"><span class="pre">MapElementsExec</span></code>, <code class="docutils literal notranslate"><span class="pre">MapPartitionsExec</span></code>, <code class="docutils literal notranslate"><span class="pre">MapGroupsExec</span></code>, <code class="docutils literal notranslate"><span class="pre">CoGroupExec</span></code>, <code class="docutils literal notranslate"><span class="pre">AppendColumnsExec</span></code>, and similar): produced by <code class="docutils literal notranslate"><span class="pre">map</span></code>, <code class="docutils literal notranslate"><span class="pre">mapPartitions</span></code>, <code class="docutils literal notranslate"><span class="pre">groupByKey</span></code>, <code class="docutils literal notranslate"><span class="pre">cogroup</span></code>, and other typed <code class="docutils literal notranslate"><span class="pre">Dataset</span></code> transformations. They exist to run user JVM functions on JVM objects, which Comet cannot do natively. The operators above them can still run natively: set <code class="docutils literal notranslate"><span class="pre">spark.comet.convert.typedDataset.enabled=true</span></code> and Comet converts the output of a typed operation to Arrow. This is disabled by default because it can be slower than Spark when the operators above do little work, such as an aggregate over a few groups, which Spark compiles together with the typed operation into one loop.</p></li>
-</ul>
-</section>
-<section id="scans">
-<h2>Scans<a class="headerlink" href="#scans" title="Link to this heading">#</a></h2>
-<div class="pst-scrollable-table-container"><table class="table">
-<thead>
-<tr class="row-odd"><th class="head"><p>Operator</p></th>
-<th class="head"><p>Status</p></th>
-<th class="head"><p>Notes</p></th>
-</tr>
-</thead>
-<tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">FileSourceScanExec</span></code></p></td>
-<td><p>✅</p></td>
-<td><p>Parquet only. Some types and configurations fall back. See <a class="reference internal" href="compatibility/scans.html"><span class="std std-doc">Parquet Scan Compatibility</span></a>.</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">BatchScanExec</span></code></p></td>
-<td><p>✅</p></td>
-<td><p>Apache Iceberg Parquet scans run natively. Native CSV scans are experimental and disabled by default. DataSource V2 Parquet scans are not accelerated. See <a class="reference internal" href="compatibility/scans.html"><span class="std std-doc">Parquet Scan Compatibility</span></a> and the <a class="reference internal" href="iceberg.html"><span class="std std-doc">Iceberg Guide</span></a>.</p></td>
-</tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">LocalTableScanExec</span></code></p></td>
-<td><p>⚠️</p></td>
-<td><p>Disabled by default; there is no acceleration advantage and this operator is typically only used in test code. Can be opted into via config (<a class="reference external" href="https://github.com/apache/datafusion-comet/pull/4393">#4393</a>).</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">EmptyRelationExec</span></code></p></td>
-<td><p>✅</p></td>
-<td><p>Spark 4.0 and later. See <a class="reference internal" href="compatibility/operators.html#empty-relations"><span class="std std-ref">Empty Relations</span></a> for native-input support and writer fallback.</p></td>
-</tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">RangeExec</span></code></p></td>
-<td><p>⚠️</p></td>
-<td><p>Disabled by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.range.enabled=true</span></code> to generate the rows of <code class="docutils literal notranslate"><span class="pre">spark.range</span></code> and SQL <code class="docutils literal notranslate"><span class="pre">range()</span></code> in native code, so the operators above them run natively. It can be slower than Spark when those operators are only cheap expressions, such as a filter, which Spark compiles together with the range into one loop. Ranges whose arithmetic overflows the <code class="docutils literal notranslate"><span class="pre">Long</span></code> range fall back to Spark.</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">InMemoryTableScanExec</span></code></p></td>
-<td><p>⚠️</p></td>
-<td><p>Experimental, disabled by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.inMemoryCache.enabled=true</span></code> before the application starts so Comet installs its Arrow cache serializer. Relations with unsupported column types stay in Spark’s cache format and fall back. See <a class="reference internal" href="in-memory-cache.html"><span class="std std-doc">In-Memory Cache</span></a>.</p></td>
-</tr>
-</tbody>
-</table>
-</div>
-</section>
-<section id="projection-and-filtering">
-<h2>Projection and filtering<a class="headerlink" href="#projection-and-filtering" title="Link to this heading">#</a></h2>
-<div class="pst-scrollable-table-container"><table class="table">
-<thead>
-<tr class="row-odd"><th class="head"><p>Operator</p></th>
-<th class="head"><p>Status</p></th>
-<th class="head"><p>Notes</p></th>
-</tr>
-</thead>
-<tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ProjectExec</span></code></p></td>
-<td><p>✅</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">FilterExec</span></code></p></td>
-<td><p>✅</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">SampleExec</span></code></p></td>
-<td><p>⚠️</p></td>
-<td><p>Sampling without replacement only. See <a class="reference internal" href="compatibility/operators.html"><span class="std std-doc">Operator Compatibility</span></a>.</p></td>
-</tr>
-</tbody>
-</table>
-</div>
-</section>
-<section id="sorting-and-limiting">
-<h2>Sorting and limiting<a class="headerlink" href="#sorting-and-limiting" title="Link to this heading">#</a></h2>
-<div class="pst-scrollable-table-container"><table class="table">
-<thead>
-<tr class="row-odd"><th class="head"><p>Operator</p></th>
-<th class="head"><p>Status</p></th>
-<th class="head"><p>Notes</p></th>
-</tr>
-</thead>
-<tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">SortExec</span></code></p></td>
-<td><p>✅</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">GlobalLimitExec</span></code></p></td>
-<td><p>✅</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">LocalLimitExec</span></code></p></td>
-<td><p>✅</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CollectLimitExec</span></code></p></td>
-<td><p>✅</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">TakeOrderedAndProjectExec</span></code></p></td>
-<td><p>✅</p></td>
-<td><p></p></td>
-</tr>
-</tbody>
-</table>
-</div>
-</section>
-<section id="aggregation">
-<h2>Aggregation<a class="headerlink" href="#aggregation" title="Link to this heading">#</a></h2>
-<div class="pst-scrollable-table-container"><table class="table">
-<thead>
-<tr class="row-odd"><th class="head"><p>Operator</p></th>
-<th class="head"><p>Status</p></th>
-<th class="head"><p>Notes</p></th>
-</tr>
-</thead>
-<tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">HashAggregateExec</span></code></p></td>
-<td><p>✅</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ObjectHashAggregateExec</span></code></p></td>
-<td><p>✅</p></td>
-<td><p>Runs the object-buffer aggregates Comet supports, such as <code class="docutils literal notranslate"><span class="pre">collect_list</span></code>, <code class="docutils literal notranslate"><span class="pre">collect_set</span></code>, <code class="docutils literal notranslate"><span class="pre">percentile</span></code>, <code class="docutils literal notranslate"><span class="pre">approx_percentile</span></code>, <code class="docutils literal notranslate"><span class="pre">mode</span></code>, <code class="docutils literal notranslate"><span class="pre">bloom_filter_agg</span></code>, and (Spark 4.0+) <code class="docutils literal notranslate"><span class="pre">listagg</span></code>. Falls back when Comet shuffle is disabled, which would otherwise split the aggregate across Comet and Spark. See <a class="reference internal" href="tuning/shuffle.html"><span class="std std-doc">Shuffle</span></a>.</p></td>
-</tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">SortAggregateExec</span></code></p></td>
-<td><p>✅</p></td>
-<td><p>Runs when Comet supports every aggregate in it, including the object-buffer aggregates listed for <code class="docutils literal notranslate"><span class="pre">ObjectHashAggregateExec</span></code>. Falls back when Comet shuffle is disabled, which would otherwise split the aggregate across Comet and Spark. See <a class="reference internal" href="tuning/shuffle.html"><span class="std std-doc">Shuffle</span></a>.</p></td>
-</tr>
-</tbody>
-</table>
-</div>
-</section>
-<section id="joins">
-<h2>Joins<a class="headerlink" href="#joins" title="Link to this heading">#</a></h2>
-<div class="pst-scrollable-table-container"><table class="table">
-<thead>
-<tr class="row-odd"><th class="head"><p>Operator</p></th>
-<th class="head"><p>Status</p></th>
-<th class="head"><p>Notes</p></th>
-</tr>
-</thead>
-<tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">BroadcastHashJoinExec</span></code></p></td>
-<td><p>✅</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ShuffledHashJoinExec</span></code></p></td>
-<td><p>✅</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">SortMergeJoinExec</span></code></p></td>
-<td><p>✅</p></td>
-<td><p>Supports <code class="docutils literal notranslate"><span class="pre">BINARY</span></code> join keys. Nested-type (struct, array, map) and collated-string join keys fall back to Spark.</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">BroadcastNestedLoopJoinExec</span></code></p></td>
-<td><p>✅</p></td>
-<td><p>Falls back to Spark when the preserved side is broadcast (for example LEFT OUTER with BROADCAST on the left) (<a class="reference external" href="https://github.com/apache/datafusion-comet/pull/4429">#4429</a>).</p></td>
-</tr>
-</tbody>
-</table>
-</div>
-<p><code class="docutils literal notranslate"><span class="pre">ExistenceJoin</span></code> (produced when <code class="docutils literal notranslate"><span class="pre">EXISTS</span></code> / <code class="docutils literal notranslate"><span class="pre">IN</span></code> is combined with another predicate via <code class="docutils literal notranslate"><span class="pre">OR</span></code>) runs
-natively on <code class="docutils literal notranslate"><span class="pre">BroadcastHashJoinExec</span></code> and <code class="docutils literal notranslate"><span class="pre">ShuffledHashJoinExec</span></code>. Existence sort-merge joins, residual
-(non-equi) join conditions, computed (non-column) join keys, and <code class="docutils literal notranslate"><span class="pre">NOT</span> <span class="pre">IN</span></code> fall back to Spark.</p>
-</section>
-<section id="exchanges">
-<h2>Exchanges<a class="headerlink" href="#exchanges" title="Link to this heading">#</a></h2>
-<div class="pst-scrollable-table-container"><table class="table">
-<thead>
-<tr class="row-odd"><th class="head"><p>Operator</p></th>
-<th class="head"><p>Status</p></th>
-<th class="head"><p>Notes</p></th>
-</tr>
-</thead>
-<tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ShuffleExchangeExec</span></code></p></td>
-<td><p>✅</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">BroadcastExchangeExec</span></code></p></td>
-<td><p>✅</p></td>
-<td><p></p></td>
-</tr>
-</tbody>
-</table>
-</div>
-</section>
-<section id="window">
-<h2>Window<a class="headerlink" href="#window" title="Link to this heading">#</a></h2>
-<div class="pst-scrollable-table-container"><table class="table">
-<thead>
-<tr class="row-odd"><th class="head"><p>Operator</p></th>
-<th class="head"><p>Status</p></th>
-<th class="head"><p>Notes</p></th>
-</tr>
-</thead>
-<tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">WindowExec</span></code></p></td>
-<td><p>⚠️</p></td>
-<td><p>Runs natively and is enabled by default. A broad set of window functions is accelerated; unsupported shapes fall back to Spark. See <a class="reference internal" href="compatibility/operators.html"><span class="std std-doc">window function compatibility</span></a>.</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">WindowGroupLimitExec</span></code></p></td>
-<td><p>✅</p></td>
-<td><p>Spark 3.5 and later. Streaming per-partition top-K pushdown for <code class="docutils literal notranslate"><span class="pre">ROW_NUMBER</span></code>, <code class="docutils literal notranslate"><span class="pre">RANK</span></code>, and <code class="docutils literal notranslate"><span class="pre">DENSE_RANK</span></code>.</p></td>
-</tr>
-</tbody>
-</table>
-</div>
-</section>
-<section id="generators-and-set-operations">
-<h2>Generators and set operations<a class="headerlink" href="#generators-and-set-operations" title="Link to this heading">#</a></h2>
-<div class="pst-scrollable-table-container"><table class="table">
-<thead>
-<tr class="row-odd"><th class="head"><p>Operator</p></th>
-<th class="head"><p>Status</p></th>
-<th class="head"><p>Notes</p></th>
-</tr>
-</thead>
-<tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">GenerateExec</span></code></p></td>
-<td><p>✅</p></td>
-<td><p>Supports <code class="docutils literal notranslate"><span class="pre">explode</span></code>, <code class="docutils literal notranslate"><span class="pre">explode_outer</span></code>, <code class="docutils literal notranslate"><span class="pre">posexplode</span></code>, <code class="docutils literal notranslate"><span class="pre">posexplode_outer</span></code> over arrays. <code class="docutils literal notranslate"><span class="pre">inline</span></code> / <code class="docutils literal notranslate"><span class="pre">stack</span></code> fall back.</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ExpandExec</span></code></p></td>
-<td><p>✅</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">UnionExec</span></code></p></td>
-<td><p>✅</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CoalesceExec</span></code></p></td>
-<td><p>✅</p></td>
-<td><p></p></td>
-</tr>
-</tbody>
-</table>
-</div>
-</section>
-<section id="writes">
-<h2>Writes<a class="headerlink" href="#writes" title="Link to this heading">#</a></h2>
-<div class="pst-scrollable-table-container"><table class="table">
-<thead>
-<tr class="row-odd"><th class="head"><p>Operator</p></th>
-<th class="head"><p>Status</p></th>
-<th class="head"><p>Notes</p></th>
-</tr>
-</thead>
-<tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">WriteFilesExec</span></code></p></td>
-<td><p>⚠️</p></td>
-<td><p>Spark 4.0+. Experimental native Parquet writes, disabled by default (opt-in). Non-partitioned, non-bucketed writes only, and not when <code class="docutils literal notranslate"><span class="pre">spark.sql.files.maxRecordsPerFile</span></code> is set.</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">DataWritingCommandExec</span></code></p></td>
-<td><p>⚠️</p></td>
-<td><p>Spark 3.4/3.5 only. Experimental native Parquet writes, disabled by default (opt-in). Replaced by <code class="docutils literal notranslate"><span class="pre">WriteFilesExec</span></code> on Spark 4.0+ and removed with Spark 3.x support.</p></td>
-</tr>
-<tr class="row-even"><td><p>Iceberg writes: <code class="docutils literal notranslate"><span class="pre">AppendDataExec</span></code>, <code class="docutils literal notranslate"><span class="pre">OverwriteByExpressionExec</span></code>, <code class="docutils literal notranslate"><span class="pre">OverwritePartitionsDynamicExec</span></code>, <code class="docutils literal notranslate"><span class="pre">ReplaceDataExec</span></code></p></td>
-<td><p>⚠️</p></td>
-<td><p>Experimental, disabled by default. <code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.splitOperator.enabled=true</span></code> plans the write as <code class="docutils literal notranslate"><span class="pre">IcebergWrite</span></code> and <code class="docutils literal notranslate"><span class="pre">IcebergCommit</span></code>, and Iceberg’s Java writer still writes the data files. <code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.enabled=true</span></code> then writes eligible data files natively (<code class="docutils literal notranslate"><span class="pre">CometIcebergWrite</span></code>). Covers <code class="docutils literal notranslate"><span class="pre">INSERT</span> <span class="pre">INTO</span></code>, <code class="docutils literal notranslate"><span class="pre">INSERT</span> <span class="pre">OVERWRITE</span></code>, and copy-on-write <code class="docutils literal notranslate"><span class="pre">DELETE</span></code> / <code class="docutils literal notranslate"><span class="pre">UPDATE</span></code> / <code class="docutils literal notranslate"><span class="pre">MERGE</span></code>. Merge-on-read writes (<code class="docutils literal notranslate"><span class="pre">WriteDeltaExec</span></code>) fall back. See <a class="reference internal" href="iceberg-writes.html"><span class="std std-doc">Iceberg Writes</span></a>.</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">MergeRowsExec</span></code></p></td>
-<td><p>⚠️</p></td>
-<td><p>Spark 3.5+. Experimental, disabled by default (<code class="docutils literal notranslate"><span class="pre">spark.comet.exec.mergeRows.enabled</span></code>). On Spark 4.1+, stock V2 writers retain Spark MergeRowsExec; Comet’s split Iceberg path can run it natively while preserving MergeSummary. See <a class="reference internal" href="compatibility/operators.html#merge-into-mergerowsexec"><span class="std std-ref">MERGE INTO</span></a>.</p></td>
-</tr>
-</tbody>
-</table>
-</div>
-</section>
-<section id="python-and-udf">
-<h2>Python and UDF<a class="headerlink" href="#python-and-udf" title="Link to this heading">#</a></h2>
-<div class="pst-scrollable-table-container"><table class="table">
-<thead>
-<tr class="row-odd"><th class="head"><p>Operator</p></th>
-<th class="head"><p>Status</p></th>
-<th class="head"><p>Notes</p></th>
-</tr>
-</thead>
-<tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">MapInArrowExec</span></code>, <code class="docutils literal notranslate"><span class="pre">MapInPandasExec</span></code></p></td>
-<td><p>⚠️</p></td>
-<td><p>Spark 4.0 and later. Experimental, disabled by default (<code class="docutils literal notranslate"><span class="pre">spark.comet.exec.pyarrowUDF.enabled</span></code>). See <a class="reference internal" href="pyarrow-udfs.html"><span class="std std-doc">PyArrow UDF Acceleration</span></a>.</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ArrowEvalPythonExec</span></code>, <code class="docutils literal notranslate"><span class="pre">FlatMapGroupsInPandasExec</span></code></p></td>
-<td><p>🔜</p></td>
-<td><p>Scalar <code class="docutils literal notranslate"><span class="pre">&#64;pandas_udf</span></code> (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5386">#5386</a>) and grouped <code class="docutils literal notranslate"><span class="pre">applyInPandas</span></code> (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5123">#5123</a>) fall back to Spark.</p></td>
-</tr>
-</tbody>
-</table>
-</div>
-</section>
-<section id="see-also">
-<h2>See also<a class="headerlink" href="#see-also" title="Link to this heading">#</a></h2>
-<ul class="simple">
-<li><p><a class="reference internal" href="compatibility/index.html"><span class="std std-doc">Comet Compatibility Guide</span></a> - known incompatibilities and edge cases.</p></li>
-<li><p><a class="reference internal" href="expressions.html"><span class="std std-doc">Supported Spark Expressions</span></a> - the equivalent reference for expressions.</p></li>
+<li><p><strong>Scalar functions only.</strong> Aggregate, window, and table functions are not supported.</p></li>
+<li><p><strong>Immutable functions only.</strong> A UDF must return the same output for the same input. Comet plans
+every Rust UDF with DataFusion’s <code class="docutils literal notranslate"><span class="pre">Volatility::Immutable</span></code>, so a function that reads a clock, draws
+from an RNG, or carries state across batches may be folded at plan time, evaluated once and
+reused, or eliminated as a common subexpression. <code class="docutils literal notranslate"><span class="pre">register</span></code> rejects <code class="docutils literal notranslate"><span class="pre">deterministic</span> <span class="pre">=</span> <span class="pre">false</span></code>.</p></li>
+<li><p><strong>The library must already be present on every executor</strong>, at the same absolute path given to
+<code class="docutils literal notranslate"><span class="pre">register</span></code>. Comet does not distribute it for you: stage it with your image, a mounted volume, or
+your cluster’s own file distribution, and pass a path that is valid cluster-wide. A path that
+exists only on the driver will fail at execution time.</p></li>
+<li><p><strong>No type coercion.</strong> Every call must pass exactly the argument types given to <code class="docutils literal notranslate"><span class="pre">register</span></code>,
+apart from nullability. Spark’s analyzer checks each call and inserts no casts, so a call that
+passes, say, an <code class="docutils literal notranslate"><span class="pre">int</span></code> column to a UDF registered with <code class="docutils literal notranslate"><span class="pre">LongType</span></code> fails analysis, and the fix is
+an explicit <code class="docutils literal notranslate"><span class="pre">cast</span></code> in the query. <code class="docutils literal notranslate"><span class="pre">return_field</span></code> should still reject anything it does not handle.
+Downcast defensively in <code class="docutils literal notranslate"><span class="pre">invoke</span></code> and return a clear <code class="docutils literal notranslate"><span class="pre">Err</span></code> rather than assuming a particular array
+layout.</p></li>
+<li><p><strong>Loading a library is loading native code.</strong> It runs with the full privileges of the executor
+process and Comet cannot sandbox it: a bug in a UDF can corrupt memory or crash the executor.
+Only register libraries you trust and control.</p></li>
+<li><p>Once loaded, a library stays loaded for the life of the process, and <code class="docutils literal notranslate"><span class="pre">register</span></code> loads it on the
+driver as well as on the executors. To deploy a new build, write it to a new path and register
+that, or restart the executors and the driver. Never copy a new build over a library that is
+already loaded: overwriting the file in place changes the code under a running process and can
+crash the executors and the driver. Moving a new file into place with a rename is safe, but the
+running processes keep using the old library until they restart.</p></li>
+<li><p>The ABI is versioned and checked strictly at load time. A library built against a different
+Comet’s SDK is refused with an explicit ABI-mismatch error rather than being loaded unsafely.
+Rebuild your UDF library when upgrading Comet.</p></li>
 </ul>
 </section>
 </section>
@@ -1155,20 +1111,20 @@ natively on <code class="docutils literal notranslate"><span class="pre">Broadca
                   
 <div class="prev-next-area">
     <a class="left-prev"
-       href="datatypes.html"
+       href="scala_java_udfs.html"
        title="previous page">
       <i class="fa-solid fa-angle-left"></i>
       <div class="prev-next-info">
         <p class="prev-next-subtitle">previous</p>
-        <p class="prev-next-title">Spark Data Type Support</p>
+        <p class="prev-next-title">Scala UDF and Java UDF Support</p>
       </div>
     </a>
     <a class="right-next"
-       href="expressions.html"
+       href="compatibility/index.html"
        title="next page">
       <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">Spark Expression Support</p>
+        <p class="prev-next-title">Compatibility Guide</p>
       </div>
       <i class="fa-solid fa-angle-right"></i>
     </a>
@@ -1191,20 +1147,12 @@ natively on <code class="docutils literal notranslate"><span class="pre">Broadca
   </div>
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#status-legend">Status legend</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#wrapper-nodes">Wrapper nodes</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#not-currently-planned">Not currently planned</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#scans">Scans</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#projection-and-filtering">Projection and filtering</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#sorting-and-limiting">Sorting and limiting</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#aggregation">Aggregation</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#joins">Joins</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#exchanges">Exchanges</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#window">Window</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#generators-and-set-operations">Generators and set operations</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#writes">Writes</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#python-and-udf">Python and UDF</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#see-also">See also</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#writing-a-udf">Writing a UDF</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#registering-and-calling-a-udf">Registering and calling a UDF</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#return-types">Return types</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#supported-types">Supported types</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#error-handling">Error handling</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#limitations">Limitations</a></li>
 </ul>
   </nav></div>
 

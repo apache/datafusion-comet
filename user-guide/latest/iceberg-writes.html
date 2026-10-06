@@ -502,6 +502,7 @@ under the License.
 <li class="toctree-l2"><a class="reference internal" href="operators.html">Supported Operators</a></li>
 <li class="toctree-l2"><a class="reference internal" href="expressions.html">Supported Expressions</a></li>
 <li class="toctree-l2"><a class="reference internal" href="scala_java_udfs.html">ScalaUDF and Java UDF Support</a></li>
+<li class="toctree-l2"><a class="reference internal" href="rust_udfs.html">Custom Rust UDFs</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Compatibility</span></p>
 <ul>
@@ -993,7 +994,7 @@ iceberg-java resolves per-write options and <code class="docutils literal notran
 <td><p>Iceberg’s built-in <code class="docutils literal notranslate"><span class="pre">DefaultLocationProvider</span></code></p></td>
 </tr>
 <tr class="row-even"><td><p>partition spec</p></td>
-<td><p>any, except an identity partition on a <code class="docutils literal notranslate"><span class="pre">float</span></code> or <code class="docutils literal notranslate"><span class="pre">double</span></code> column (see below)</p></td>
+<td><p>any, except an identity partition on a <code class="docutils literal notranslate"><span class="pre">float</span></code> or <code class="docutils literal notranslate"><span class="pre">double</span></code> column, or a <code class="docutils literal notranslate"><span class="pre">void</span></code> field whose source column was dropped beside a live field (see below)</p></td>
 </tr>
 <tr class="row-odd"><td><p>column types</p></td>
 <td><p>any except <code class="docutils literal notranslate"><span class="pre">uuid</span></code> (Spark plans it as a string; no Arrow cast reaches <code class="docutils literal notranslate"><span class="pre">fixed(16)</span></code>)</p></td>
@@ -1030,6 +1031,11 @@ would put rows with either value in the same partition, where iceberg-java write
 that prunes on the other value’s partition would then miss rows. The fall-back stays until
 iceberg-rust distinguishes the two values
 (<a class="reference external" href="https://github.com/apache/iceberg-rust/issues/3325">apache/iceberg-rust#3325</a>).</p>
+<p>A format-version-1 table keeps a dropped partition field as a <code class="docutils literal notranslate"><span class="pre">void</span></code> field, and its source column
+can be dropped afterwards. A spec that mixes such a field with a live one falls back: iceberg-java
+cannot write through it either, so the write fails with iceberg-java’s own error rather than in
+the native writer (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6141">#6141</a>). A spec whose
+fields are all <code class="docutils literal notranslate"><span class="pre">void</span></code> writes unpartitioned and stays eligible.</p>
 <p>Other <code class="docutils literal notranslate"><span class="pre">write.*</span></code> properties are intentionally not gated because they cannot make the native
 writer produce different data files: distribution and ordering settings shape the Spark plan
 identically on both paths, WAP / branch / snapshot properties act on the JVM committer,
