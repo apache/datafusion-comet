@@ -856,6 +856,9 @@ Other array element types, other map key/value types, nested collections, and no
 string collations remain unsupported at this conversion boundary. Source defaults are unchanged.</p>
 <p>This includes row-backed <code class="docutils literal notranslate"><span class="pre">ExistingRDD</span></code> inputs when <code class="docutils literal notranslate"><span class="pre">spark.comet.convert.rdd.enabled=true</span></code>. Spark
 still produces the RDD rows; conversion lets eligible downstream operators execute in Comet.</p>
+<p>The same types apply to the output of typed <code class="docutils literal notranslate"><span class="pre">Dataset</span></code> operations, such as <code class="docutils literal notranslate"><span class="pre">map</span></code>, which Comet
+converts when <code class="docutils literal notranslate"><span class="pre">spark.comet.convert.typedDataset.enabled=true</span></code>. A column of any other type keeps
+the operators above the typed operation on Spark.</p>
 </section>
 </section>
 <section id="data-catalogs">

@@ -887,10 +887,6 @@ Code that catches <code class="docutils literal notranslate"><span class="pre">S
 inspects the exception class, <code class="docutils literal notranslate"><span class="pre">getCondition()</span></code>, or the parameterised error class will observe
 divergence:</p>
 <ul class="simple">
-<li><p>Byte / Short <code class="docutils literal notranslate"><span class="pre">Add</span></code>, <code class="docutils literal notranslate"><span class="pre">Subtract</span></code>, and <code class="docutils literal notranslate"><span class="pre">Multiply</span></code> overflow raises <code class="docutils literal notranslate"><span class="pre">ARITHMETIC_OVERFLOW</span></code> (for
-example <code class="docutils literal notranslate"><span class="pre">byte</span> <span class="pre">overflow</span></code>) where Spark raises <code class="docutils literal notranslate"><span class="pre">BINARY_ARITHMETIC_OVERFLOW</span></code>, and integral
-<code class="docutils literal notranslate"><span class="pre">ARITHMETIC_OVERFLOW</span></code> messages omit Spark’s <code class="docutils literal notranslate"><span class="pre">try_</span></code> suggestion
-(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6217">#6217</a>).</p></li>
 <li><p>Spark 4.2 introduced additional ANSI arithmetic overflow behavior differences that Comet does
 not yet track (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4967">#4967</a>).</p></li>
 </ul>

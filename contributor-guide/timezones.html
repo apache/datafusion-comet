@@ -653,30 +653,31 @@ uses when it exports Spark data to native code. That includes <code class="docut
 <code class="docutils literal notranslate"><span class="pre">Timestamp(µs,</span> <span class="pre">&quot;UTC&quot;)</span></code> fails with <code class="docutils literal notranslate"><span class="pre">Invalid</span> <span class="pre">comparison</span> <span class="pre">operation</span></code>, even though the values are
 comparable. DataFusion’s <code class="docutils literal notranslate"><span class="pre">BinaryExpr</span></code> does not coerce, and Comet builds binary expressions
 directly from Spark’s already-typed plan.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">CASE</span></code> and <code class="docutils literal notranslate"><span class="pre">COALESCE</span></code> reconcile differing branch types with casts that are built without a
-timezone. Those casts panic when a timestamp branch has to change its label.</p></li>
 <li><p>Native datetime kernels decide between wall-clock and instant semantics from the label. A
 <code class="docutils literal notranslate"><span class="pre">TimestampType</span></code> value labelled <code class="docutils literal notranslate"><span class="pre">None</span></code> is treated as <code class="docutils literal notranslate"><span class="pre">TimestampNTZType</span></code> and silently loses the
 session timezone.</p></li>
 </ul>
 <p>A mislabelled column is easy to miss in tests. <code class="docutils literal notranslate"><span class="pre">ScanExec</span></code> casts every column it imports from the
 JVM to its declared type, and the shuffle writer’s <code class="docutils literal notranslate"><span class="pre">SchemaAlignExec</span></code> does the same before it
-partitions, so a wrong label disappears at the next stage boundary. A test that only projects the
-result passes. The label only matters when the result is compared, goes through a <code class="docutils literal notranslate"><span class="pre">CASE</span></code>, or
-feeds another native expression.</p>
+partitions, so a wrong label disappears at the next stage boundary. <code class="docutils literal notranslate"><span class="pre">CASE</span></code>, <code class="docutils literal notranslate"><span class="pre">COALESCE</span></code> and <code class="docutils literal notranslate"><span class="pre">IF</span></code>
+cast a branch whose Arrow type differs from the others to a common type (<code class="docutils literal notranslate"><span class="pre">coerce_branch</span></code> in
+<code class="docutils literal notranslate"><span class="pre">native/spark-expr/src/conditional_funcs/case_when.rs</span></code>). For a timestamp that cast only changes the
+label, so a mislabelled branch does not fail there either. A test that only projects the result
+passes. The label only matters when the result is compared or feeds another native expression.</p>
 </section>
 </section>
 <section id="how-the-session-timezone-reaches-native-code">
 <h2>How the session timezone reaches native code<a class="headerlink" href="#how-the-session-timezone-reaches-native-code" title="Link to this heading">#</a></h2>
 <p>Each timezone-aware serde reads the timezone that Spark stamped on the expression
-(<code class="docutils literal notranslate"><span class="pre">expr.timeZoneId</span></code>) and serializes it into the expression’s protobuf message. That includes <code class="docutils literal notranslate"><span class="pre">Cast</span></code>,
-<code class="docutils literal notranslate"><span class="pre">Hour</span></code>, <code class="docutils literal notranslate"><span class="pre">Minute</span></code>, <code class="docutils literal notranslate"><span class="pre">Second</span></code>, <code class="docutils literal notranslate"><span class="pre">UnixTimestamp</span></code>, <code class="docutils literal notranslate"><span class="pre">TruncTimestamp</span></code>, <code class="docutils literal notranslate"><span class="pre">ToJson</span></code>, <code class="docutils literal notranslate"><span class="pre">ToCsv</span></code> and
-<code class="docutils literal notranslate"><span class="pre">ToPrettyString</span></code>. Serdes should use this value rather than <code class="docutils literal notranslate"><span class="pre">SQLConf.get.sessionLocalTimeZone</span></code> or
-the JVM default, because it is what Spark itself evaluates the expression with.</p>
-<p>When the expression has no timezone, the serdes pass <code class="docutils literal notranslate"><span class="pre">&quot;UTC&quot;</span></code> (<code class="docutils literal notranslate"><span class="pre">timeZoneId.getOrElse(&quot;UTC&quot;)</span></code>).
-Spark does not resolve a timezone-aware expression without one, so in practice the fallback only
-applies to casts that do not use the timezone. It cannot simply be removed, though, because the
-native side asserts a non-empty timezone even for those casts.</p>
+(<code class="docutils literal notranslate"><span class="pre">expr.timeZoneId</span></code>), converts it with <code class="docutils literal notranslate"><span class="pre">CometTimeZone.nativeId</span></code>, and serializes the result into the
+expression’s protobuf message. That includes <code class="docutils literal notranslate"><span class="pre">Cast</span></code>, <code class="docutils literal notranslate"><span class="pre">Hour</span></code>, <code class="docutils literal notranslate"><span class="pre">Minute</span></code>, <code class="docutils literal notranslate"><span class="pre">Second</span></code>, <code class="docutils literal notranslate"><span class="pre">UnixTimestamp</span></code>,
+<code class="docutils literal notranslate"><span class="pre">TruncTimestamp</span></code>, <code class="docutils literal notranslate"><span class="pre">ToJson</span></code>, <code class="docutils literal notranslate"><span class="pre">ToCsv</span></code> and <code class="docutils literal notranslate"><span class="pre">ToPrettyString</span></code>. Serdes should use this value rather than
+<code class="docutils literal notranslate"><span class="pre">SQLConf.get.sessionLocalTimeZone</span></code> or the JVM default, because it is what Spark itself evaluates
+the expression with.</p>
+<p>When the expression has no timezone, <code class="docutils literal notranslate"><span class="pre">nativeId</span></code> returns <code class="docutils literal notranslate"><span class="pre">&quot;UTC&quot;</span></code>. Spark does not resolve a
+timezone-aware expression without one, so this only happens for casts that do not use the
+timezone. Native code reports an empty timezone as an error (<code class="docutils literal notranslate"><span class="pre">require_timezone</span></code> in
+<code class="docutils literal notranslate"><span class="pre">native/spark-expr/src/utils.rs</span></code>) rather than guessing one.</p>
 <p>On the native side, <code class="docutils literal notranslate"><span class="pre">array_with_timezone</span></code> in <code class="docutils literal notranslate"><span class="pre">native/spark-expr/src/utils.rs</span></code> is the common entry
 point:</p>
 <ul class="simple">
@@ -698,11 +699,17 @@ passed explicitly. For example, <code class="docutils literal notranslate"><span
 runs natively only in UTC sessions.</p>
 <section id="parsing-timezone-ids">
 <h3>Parsing timezone IDs<a class="headerlink" href="#parsing-timezone-ids" title="Link to this heading">#</a></h3>
-<p>Native code parses timezone IDs with arrow’s <code class="docutils literal notranslate"><span class="pre">Tz::from_str</span></code>. It accepts IANA names such as
-<code class="docutils literal notranslate"><span class="pre">America/Los_Angeles</span></code>, <code class="docutils literal notranslate"><span class="pre">Etc/UTC</span></code> and <code class="docutils literal notranslate"><span class="pre">UTC</span></code>, and fixed offsets written as <code class="docutils literal notranslate"><span class="pre">+HH</span></code>, <code class="docutils literal notranslate"><span class="pre">+HHMM</span></code> or
-<code class="docutils literal notranslate"><span class="pre">+HH:MM</span></code>. Spark resolves IDs with <code class="docutils literal notranslate"><span class="pre">ZoneId.of(id,</span> <span class="pre">ZoneId.SHORT_IDS)</span></code>, which also accepts <code class="docutils literal notranslate"><span class="pre">Z</span></code>,
-offsets such as <code class="docutils literal notranslate"><span class="pre">+8</span></code> and <code class="docutils literal notranslate"><span class="pre">+08:00:00</span></code>, prefixed offsets such as <code class="docutils literal notranslate"><span class="pre">GMT+8</span></code>, and short IDs such as
-<code class="docutils literal notranslate"><span class="pre">PST</span></code>. Code that takes a fast path for UTC should compare the ID against a fixed list of UTC
+<p>Spark resolves session timezone IDs with <code class="docutils literal notranslate"><span class="pre">ZoneId.of(id,</span> <span class="pre">ZoneId.SHORT_IDS)</span></code>, which accepts forms
+such as <code class="docutils literal notranslate"><span class="pre">Z</span></code>, offsets like <code class="docutils literal notranslate"><span class="pre">+8</span></code> and <code class="docutils literal notranslate"><span class="pre">+08:00:00</span></code>, prefixed offsets like <code class="docutils literal notranslate"><span class="pre">GMT+8</span></code>, and short IDs like
+<code class="docutils literal notranslate"><span class="pre">PST</span></code>. Native code parses timezone IDs with arrow’s <code class="docutils literal notranslate"><span class="pre">Tz::from_str</span></code>, which accepts only IANA names
+such as <code class="docutils literal notranslate"><span class="pre">America/Los_Angeles</span></code> and fixed offsets written as <code class="docutils literal notranslate"><span class="pre">+HH</span></code>, <code class="docutils literal notranslate"><span class="pre">+HHMM</span></code> or <code class="docutils literal notranslate"><span class="pre">+HH:MM</span></code>.</p>
+<p><code class="docutils literal notranslate"><span class="pre">CometTimeZone.nativeId</span></code> in <code class="docutils literal notranslate"><span class="pre">spark/src/main/scala/org/apache/comet/serde/CometTimeZone.scala</span></code>
+bridges the two. It normalizes the zone first, so an ID whose offset never changes becomes <code class="docutils literal notranslate"><span class="pre">UTC</span></code>
+for a zero offset, which covers <code class="docutils literal notranslate"><span class="pre">Z</span></code>, <code class="docutils literal notranslate"><span class="pre">GMT</span></code> and <code class="docutils literal notranslate"><span class="pre">Etc/UTC</span></code>, or <code class="docutils literal notranslate"><span class="pre">+HH:MM</span></code> otherwise. A short ID becomes
+its region. An offset with seconds, such as <code class="docutils literal notranslate"><span class="pre">+05:45:30</span></code>, has no native spelling, so <code class="docutils literal notranslate"><span class="pre">nativeId</span></code>
+returns <code class="docutils literal notranslate"><span class="pre">None</span></code>. The serde then reports the expression as unsupported through
+<code class="docutils literal notranslate"><span class="pre">CometTimeZone.supportLevel</span></code>, and it runs in the codegen dispatcher or falls back to Spark.</p>
+<p>Code that takes a fast path for UTC should still compare the ID against a fixed list of UTC
 aliases, and send everything else down the general path. The list in <code class="docutils literal notranslate"><span class="pre">extract_date_part.rs</span></code> is an
 example.</p>
 </section>
@@ -712,7 +719,10 @@ example.</p>
 code uses chrono-tz, which compiles its own copy of the IANA database into libcomet
 (<code class="docutils literal notranslate"><span class="pre">chrono_tz::IANA_TZDB_VERSION</span></code>), and its precomputed DST transitions end around 2100. The two can
 disagree, both for zones whose rules changed between the two database versions and for far-future
-timestamps.</p>
+timestamps. When the library loads, <code class="docutils literal notranslate"><span class="pre">NativeBase</span></code> compares the native version (<code class="docutils literal notranslate"><span class="pre">getTzdataVersion</span></code>)
+with the JVM’s and logs a warning if they differ. The user guide describes the effect under
+“Timezone Database Versions” on the datetime
+<a class="reference internal" href="../user-guide/latest/compatibility/expressions/index.html"><span class="std std-doc">expression compatibility</span></a> page.</p>
 </section>
 </section>
 <section id="scans">
@@ -768,15 +778,20 @@ timestamps is itself timezone-dependent.</p></li>
 <p>For Iceberg, iceberg-rust labels <code class="docutils literal notranslate"><span class="pre">timestamptz</span></code> columns <code class="docutils literal notranslate"><span class="pre">Timestamp(Microsecond,</span> <span class="pre">&quot;+00:00&quot;)</span></code>. The
 Iceberg scan adapts its batches to the Spark schema, which relabels them <code class="docutils literal notranslate"><span class="pre">&quot;UTC&quot;</span></code>. Iceberg’s
 partition transforms (<code class="docutils literal notranslate"><span class="pre">years</span></code>, <code class="docutils literal notranslate"><span class="pre">months</span></code>, <code class="docutils literal notranslate"><span class="pre">days</span></code> and <code class="docutils literal notranslate"><span class="pre">hours</span></code>) are defined in UTC.</p>
+<p>The native CSV scan, which is only enabled for testing, parses a timestamp without an offset as
+UTC. Spark parses it in the CSV <code class="docutils literal notranslate"><span class="pre">timeZone</span></code> option, which defaults to the session timezone, so
+<code class="docutils literal notranslate"><span class="pre">CometScanRule</span></code> falls back when the read schema has a <code class="docutils literal notranslate"><span class="pre">TimestampType</span></code> column and that timezone is
+not UTC.</p>
 </section>
 <section id="the-codegen-dispatcher">
 <h2>The codegen dispatcher<a class="headerlink" href="#the-codegen-dispatcher" title="Link to this heading">#</a></h2>
 <p>Several timezone-dependent expressions have no native implementation that is compatible in every
 session, including <code class="docutils literal notranslate"><span class="pre">date_trunc</span></code>, <code class="docutils literal notranslate"><span class="pre">date_format</span></code>, <code class="docutils literal notranslate"><span class="pre">from_unixtime</span></code>, <code class="docutils literal notranslate"><span class="pre">from_utc_timestamp</span></code>,
 <code class="docutils literal notranslate"><span class="pre">to_utc_timestamp</span></code>, <code class="docutils literal notranslate"><span class="pre">make_timestamp</span></code> and <code class="docutils literal notranslate"><span class="pre">to_timestamp</span></code>. Their serdes route the cases the native
-path cannot handle through the JVM codegen dispatcher. The dispatcher runs Spark’s generated code
-with the <code class="docutils literal notranslate"><span class="pre">timeZoneId</span></code> stamped on the expression, so the results match Spark, and its Arrow output
-is labelled <code class="docutils literal notranslate"><span class="pre">&quot;UTC&quot;</span></code> like everything else.</p>
+path cannot handle through the JVM codegen dispatcher, as they do for a session timezone that
+<code class="docutils literal notranslate"><span class="pre">CometTimeZone.nativeId</span></code> cannot express. The dispatcher runs Spark’s generated code with the
+<code class="docutils literal notranslate"><span class="pre">timeZoneId</span></code> stamped on the expression, so the results match Spark, and its Arrow output is
+labelled <code class="docutils literal notranslate"><span class="pre">&quot;UTC&quot;</span></code> like everything else.</p>
 </section>
 <section id="guidelines">
 <h2>Guidelines<a class="headerlink" href="#guidelines" title="Link to this heading">#</a></h2>
@@ -784,6 +799,8 @@ is labelled <code class="docutils literal notranslate"><span class="pre">&quot;U
 <li><p>Never read <code class="docutils literal notranslate"><span class="pre">TimeZone.getDefault</span></code>, <code class="docutils literal notranslate"><span class="pre">ZoneId.systemDefault</span></code> or the host’s local time in Comet code.
 Spark’s semantics come from the timezone stamped on the expression. The JVM default only matters
 as the default value of <code class="docutils literal notranslate"><span class="pre">spark.sql.session.timeZone</span></code>.</p></li>
+<li><p>Pass a timezone to native code only through <code class="docutils literal notranslate"><span class="pre">CometTimeZone.nativeId</span></code>, and return
+<code class="docutils literal notranslate"><span class="pre">CometTimeZone.supportLevel</span></code> from <code class="docutils literal notranslate"><span class="pre">getSupportLevel</span></code> when it gives <code class="docutils literal notranslate"><span class="pre">None</span></code>.</p></li>
 <li><p>Never label a <code class="docutils literal notranslate"><span class="pre">TimestampType</span></code> value with the session timezone, and never return
 <code class="docutils literal notranslate"><span class="pre">Timestamp(_,</span> <span class="pre">None)</span></code> for a <code class="docutils literal notranslate"><span class="pre">TimestampType</span></code> result.</p></li>
 <li><p>Don’t assume <code class="docutils literal notranslate"><span class="pre">&quot;UTC&quot;</span></code> is the only UTC session timezone. <code class="docutils literal notranslate"><span class="pre">Etc/UTC</span></code> is the common default, and a
@@ -798,16 +815,24 @@ native path gated on “the session is UTC” must still return <code class="doc
 <li><p>Run in several session timezones: <code class="docutils literal notranslate"><span class="pre">UTC</span></code>, <code class="docutils literal notranslate"><span class="pre">Etc/UTC</span></code>, a zone with DST such as
 <code class="docutils literal notranslate"><span class="pre">America/Los_Angeles</span></code>, and a zone with a half-hour offset such as <code class="docutils literal notranslate"><span class="pre">Asia/Kolkata</span></code>. SQL file tests
 can use <code class="docutils literal notranslate"><span class="pre">--</span> <span class="pre">ConfigMatrix:</span> <span class="pre">spark.sql.session.timeZone=...</span></code> (see
-<a class="reference internal" href="sql-file-tests.html"><span class="std std-doc">Comet SQL Tests</span></a>).</p></li>
-<li><p>Use the result, rather than only projecting it. Compare it with another timestamp, put it in a
-<code class="docutils literal notranslate"><span class="pre">CASE</span></code>, and feed it to <code class="docutils literal notranslate"><span class="pre">hour</span></code> or a cast to string. A wrong label only shows up there.</p></li>
+<a class="reference internal" href="sql-file-tests.html"><span class="std std-doc">Comet SQL Tests</span></a>). <code class="docutils literal notranslate"><span class="pre">session_timezone_ids.sql</span></code> runs the forms that
+<code class="docutils literal notranslate"><span class="pre">CometTimeZone.nativeId</span></code> rewrites, such as <code class="docutils literal notranslate"><span class="pre">GMT+8</span></code>, <code class="docutils literal notranslate"><span class="pre">Z</span></code> and <code class="docutils literal notranslate"><span class="pre">PST</span></code>.</p></li>
+<li><p>Use the result, rather than only projecting it. Compare it with another timestamp, and feed it to
+<code class="docutils literal notranslate"><span class="pre">hour</span></code> or a cast to string. A wrong label only shows up there.</p></li>
 <li><p>Include timestamps around DST transitions, before the epoch, and before 1900, when many zones
 used local mean time offsets.</p></li>
+<li><p>Avoid dates in zones whose rules changed in recent tzdata releases unless the test needs them. A
+JDK with older timezone data gives Spark different answers there, and the warning from
+<code class="docutils literal notranslate"><span class="pre">NativeBase</span></code> shows when the two versions differ.</p></li>
 <li><p>Build inputs from Parquet tables rather than <code class="docutils literal notranslate"><span class="pre">VALUES</span></code> lists. The optimizer evaluates a
 projection over <code class="docutils literal notranslate"><span class="pre">VALUES</span></code> itself, so Comet never runs the expression.</p></li>
 <li><p>When collecting timestamps in Scala tests, set <code class="docutils literal notranslate"><span class="pre">spark.sql.datetime.java8API.enabled=true</span></code>, or
 cast to strings. <code class="docutils literal notranslate"><span class="pre">java.sql.Timestamp</span></code> conversion goes through the JVM’s default timezone and the
 hybrid calendar.</p></li>
+<li><p>Check that the expression ran natively, not only that the plan has Comet operators. The codegen
+dispatcher returns Spark’s answer from inside a Comet operator, and a dispatched expression takes
+its whole subtree with it, including children that have a native implementation. <code class="docutils literal notranslate"><span class="pre">expect_native</span></code>
+in SQL file tests and <code class="docutils literal notranslate"><span class="pre">checkSparkAnswerAndImpl</span></code> in Scala tests check which one ran.</p></li>
 </ul>
 </section>
 </section>

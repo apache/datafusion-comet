@@ -660,12 +660,21 @@ and leaves the stage itself in place.</p>
 <code class="docutils literal notranslate"><span class="pre">AppendColumnsExec</span></code>, <code class="docutils literal notranslate"><span class="pre">AppendColumnsWithObjectExec</span></code>, <code class="docutils literal notranslate"><span class="pre">MapGroupsExec</span></code>, and <code class="docutils literal notranslate"><span class="pre">CoGroupExec</span></code>. They
 convert rows to JVM objects, run an arbitrary user function on those objects, or convert them back,
 and most of them pass the objects to the next operator as an <code class="docutils literal notranslate"><span class="pre">ObjectType</span></code> column, which has no
-Arrow representation. None of this can run natively. Per-row operators can still stay inside a
-Comet plan: <code class="docutils literal notranslate"><span class="pre">MapElementsExec</span></code>, the operator behind <code class="docutils literal notranslate"><span class="pre">Dataset.map</span></code>, generates its call to the user
-function as a Catalyst <code class="docutils literal notranslate"><span class="pre">Invoke</span></code> expression, so the deserializer, the call, and the serializer could
-run together as one projection in the JVM codegen dispatcher. <code class="docutils literal notranslate"><span class="pre">mapPartitions</span></code>, <code class="docutils literal notranslate"><span class="pre">mapGroups</span></code>, and
-<code class="docutils literal notranslate"><span class="pre">cogroup</span></code> pass the user function an iterator or a whole group, so there is no per-row expression to
-build. A typed <code class="docutils literal notranslate"><span class="pre">filter</span></code> is planned as an ordinary <code class="docutils literal notranslate"><span class="pre">FilterExec</span></code>, not as one of these operators.</p>
+Arrow representation. None of this can run natively, so these operators stay on Spark. Every typed
+operation ends in <code class="docutils literal notranslate"><span class="pre">SerializeFromObjectExec</span></code>, though, whose output is ordinary rows. With
+<code class="docutils literal notranslate"><span class="pre">spark.comet.convert.typedDataset.enabled</span></code>, <code class="docutils literal notranslate"><span class="pre">CometExecRule</span></code> puts a <code class="docutils literal notranslate"><span class="pre">CometSparkToColumnarExec</span></code> above
+it, so the operators above the typed operation can run natively. Spark inserts no columnar
+transitions below a <code class="docutils literal notranslate"><span class="pre">RowToColumnarTransition</span></code>, so the rule inserts them for the typed operation’s
+own operators itself. Spark computes a typed operation’s rows one at a time, as they are read, while
+the conversion fills a whole Arrow batch first. So the rule leaves the output unconverted where a
+limit, a <code class="docutils literal notranslate"><span class="pre">mapPartitions</span></code> function, or code reading <code class="docutils literal notranslate"><span class="pre">Dataset.rdd</span></code> could stop reading it early, unless
+an operator that reads all of its input first, such as an exchange, a sort, or a hash aggregate,
+sits in between. Fusing the deserializer, the <code class="docutils literal notranslate"><span class="pre">Invoke</span></code> that calls the user function, and the
+serializer of <code class="docutils literal notranslate"><span class="pre">Dataset.map</span></code> into one projection in the JVM codegen dispatcher was tried in
+<a class="reference external" href="https://github.com/apache/datafusion-comet/pull/5714">#5714</a> and dropped. The dispatcher only calls
+into Spark’s own classes, and the conversion gets nearly the same speedup for <code class="docutils literal notranslate"><span class="pre">map</span></code> while also
+covering the operations that pass the user function an iterator or a whole group. A typed <code class="docutils literal notranslate"><span class="pre">filter</span></code>
+is planned as an ordinary <code class="docutils literal notranslate"><span class="pre">FilterExec</span></code>, not as one of these operators.</p>
 <p><strong>Driver-side commands.</strong> <code class="docutils literal notranslate"><span class="pre">ExecutedCommandExec</span></code> runs a <code class="docutils literal notranslate"><span class="pre">RunnableCommand</span></code>, such as DDL or <code class="docutils literal notranslate"><span class="pre">SET</span></code>, on
 the driver, so there is no data path for Comet to accelerate.</p>
 <p>If a new Spark version adds a wrapper node, do not write a serde for it. Add it to the nodes that

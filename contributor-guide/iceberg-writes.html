@@ -758,10 +758,12 @@ columns.</p>
 <section id="native-execution">
 <h3>Native execution<a class="headerlink" href="#native-execution" title="Link to this heading">#</a></h3>
 <p>The planner builds <code class="docutils literal notranslate"><span class="pre">IcebergWriteExec</span></code> (<code class="docutils literal notranslate"><span class="pre">native/core/src/execution/operators/iceberg_write.rs</span></code>) over
-the FFI scan of the child’s batches. <code class="docutils literal notranslate"><span class="pre">run_write_task</span></code> builds iceberg-rust’s writer stack once per
-task:</p>
-<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>ParquetWriterBuilder -&gt; RollingFileWriterBuilder -&gt; DataFileWriterBuilder
-  -&gt; UnpartitionedWriter | FanoutWriter | ClusteredWriter
+the FFI scan of the child’s batches. <code class="docutils literal notranslate"><span class="pre">run_write_task</span></code> builds iceberg-rust’s partitioning writer once
+per task, and <code class="docutils literal notranslate"><span class="pre">PartitionWriterBuilder</span></code> builds the rest of the stack once per partition, with that
+partition’s Parquet writer properties:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>UnpartitionedWriter | FanoutWriter | ClusteredWriter
+  -&gt; PartitionWriterBuilder, per partition:
+       ParquetWriterBuilder -&gt; RollingFileWriterBuilder -&gt; DataFileWriterBuilder
 </pre></div>
 </div>
 <p>Points where Comet adapts iceberg-rust to match iceberg-java:</p>
@@ -790,6 +792,19 @@ id, so a retried or speculative attempt never reuses another attempt’s file na
 <li><p><strong>Row pacing.</strong> iceberg-java’s rolling writer checks the target file size every 1000 rows of the
 current file. iceberg-rust checks once per <code class="docutils literal notranslate"><span class="pre">write</span></code> call. <code class="docutils literal notranslate"><span class="pre">RowPacer</span></code> hands the writer rows in
 <code class="docutils literal notranslate"><span class="pre">ROWS_DIVISOR</span></code> (1000) row units per file, so both writers roll on the same grid.</p></li>
+<li><p><strong>Dictionary choice.</strong> parquet-mr writes a column chunk plain, with no dictionary page, when its
+first data page shows the dictionary saving no space. parquet-rs has no such check, and fixes a
+column’s encoding when the file opens
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6114">#6114</a>). So each partition’s
+<code class="docutils literal notranslate"><span class="pre">PartitionFeed</span></code> holds back the partition’s first page of rows (<code class="docutils literal notranslate"><span class="pre">write.parquet.page-row-limit</span></code>,
+capped by <code class="docutils literal notranslate"><span class="pre">write.parquet.row-group-size-bytes</span></code>, which the fanout feeds share) before any of them
+reaches the writer. <code class="docutils literal notranslate"><span class="pre">DictionaryChooser</span></code> (<code class="docutils literal notranslate"><span class="pre">iceberg_dictionary.rs</span></code>) replays parquet-mr’s accounting
+over those rows and turns dictionary encoding off for the columns parquet-mr would write plain.
+It reads only the columns there is a choice for, one at a time, and walks each lazily only as far
+as its first page, so beyond the held rows it keeps no more than one column’s dictionary. The
+accounting follows <code class="docutils literal notranslate"><span class="pre">FallbackValuesWriter</span></code>, <code class="docutils literal notranslate"><span class="pre">DictionaryValuesWriter</span></code> and
+<code class="docutils literal notranslate"><span class="pre">RunLengthBitPackingHybridEncoder</span></code>, and its tests pin answers recorded from parquet-mr itself. The
+held rows then go through <code class="docutils literal notranslate"><span class="pre">RowPacer</span></code>, so the roll grid does not move.</p></li>
 <li><p><strong>Field ids and casting.</strong> <code class="docutils literal notranslate"><span class="pre">decorate_batch_with_field_ids</span></code> casts each batch to the
 field-id-annotated Arrow schema derived from the Iceberg schema, with <code class="docutils literal notranslate"><span class="pre">safe:</span> <span class="pre">false</span></code>, so a type
 mismatch fails the task instead of writing NULLs.</p></li>
@@ -941,7 +956,10 @@ the writer: run the write suites and the Iceberg Spark tests. The pin policy is 
 <tr class="row-odd"><td><p>Rust tests in <code class="docutils literal notranslate"><span class="pre">iceberg_write.rs</span></code> and in <code class="docutils literal notranslate"><span class="pre">iceberg_partition_*.rs</span></code></p></td>
 <td><p>File rolling on the 1000-row grid, fanout order, clustered input checks, cleanup guard, manifest round trip, partition path rendering, partition values past <code class="docutils literal notranslate"><span class="pre">chrono</span></code>’s calendar.</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CometIcebergWriteBenchmark</span></code></p></td>
+<tr class="row-even"><td><p>Rust tests in <code class="docutils literal notranslate"><span class="pre">iceberg_dictionary.rs</span></code></p></td>
+<td><p>The per-column dictionary choice against answers recorded from parquet-mr, including columns either side of its cut-off.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CometIcebergWriteBenchmark</span></code></p></td>
 <td><p>Native versus iceberg-java for unpartitioned, clustered, fanout and copy-on-write delete writes. It checks each arm’s plan before timing it.</p></td>
 </tr>
 </tbody>

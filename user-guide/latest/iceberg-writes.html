@@ -845,6 +845,11 @@ truncation, and bounds decisions are iceberg-java’s by construction), and wrap
 the same <code class="docutils literal notranslate"><span class="pre">TaskCommit</span></code> message the JVM writer would have produced. Everything iceberg-java does
 post-write — snapshot assignment, manifest-list aggregation, commit validation and retries —
 is untouched: <code class="docutils literal notranslate"><span class="pre">IcebergCommit</span></code> performs the normal <code class="docutils literal notranslate"><span class="pre">BatchWrite.commit</span></code>.</p>
+<p>Before a task opens a partition’s first file, it holds that partition’s first
+<code class="docutils literal notranslate"><span class="pre">write.parquet.page-row-limit</span></code> rows in memory, so that it can choose which columns to
+dictionary-encode the way iceberg-java would (see the accepted divergences below). The rows a
+task holds back this way, across all of its partitions, stay within about
+<code class="docutils literal notranslate"><span class="pre">write.parquet.row-group-size-bytes</span></code>.</p>
 </section>
 <section id="configuration">
 <h2>Configuration<a class="headerlink" href="#configuration" title="Link to this heading">#</a></h2>
@@ -1101,14 +1106,19 @@ should have read; page pruning uses the column index, which the native writer do
 <li><p>Dictionary-encoded pages are labeled <code class="docutils literal notranslate"><span class="pre">RLE_DICTIONARY</span></code> (parquet-mr v1 files: <code class="docutils literal notranslate"><span class="pre">PLAIN_DICTIONARY</span></code>).</p></li>
 <li><p>Fixed-length binary columns (<code class="docutils literal notranslate"><span class="pre">uuid</span></code>, <code class="docutils literal notranslate"><span class="pre">fixed</span></code>, decimals with precision &gt; 18) are not
 dictionary-encoded (parquet-mr dictionary-encodes them).</p></li>
-<li><p>High-cardinality columns keep a dictionary page. parquet-mr abandons dictionary encoding for a
-column chunk, and writes no dictionary page, when the first check shows the dictionary is not
-saving space. parquet-rs keeps dictionary encoding until the dictionary reaches
-<code class="docutils literal notranslate"><span class="pre">write.parquet.dict-size-bytes</span></code> (2 MB by default), then switches to plain encoding for the rest
-of the chunk and still writes the dictionary page. Results are the same, but a selective read of
-a native-written file fetches that dictionary page for every column chunk it touches, so it
-reads more bytes than it would from an iceberg-java file
-(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6114">#6114</a>).</p></li>
+<li><p>Which columns are dictionary-encoded is decided as parquet-mr decides it: a column whose first
+data page shows the dictionary saving no space is written plain, with no dictionary page,
+instead of carrying a dictionary page that every selective read of it would have to fetch
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6114">#6114</a>). The native writer decides
+once per partition, from that partition’s first page of rows in the task, and keeps the
+decision for every file and row group it writes for the partition; parquet-mr decides again
+for every row group. Where the page size rather than <code class="docutils literal notranslate"><span class="pre">write.parquet.page-row-limit</span></code> ends a
+column’s first page, the native page ends at the first row past parquet-mr’s size threshold,
+while parquet-mr only ends it at its next periodic size check, so a column close to the
+cut-off can be decided the other way. Close to the cut-off both encodings take about the same
+space. A column that keeps its dictionary and later fills it falls back to plain on both
+writers, but parquet-rs’s dictionary page then holds every entry, where parquet-mr’s holds
+only the entries earlier pages used.</p></li>
 <li><p>Row-group boundaries: parquet-mr flushes by byte size at a record-count check cadence,
 parquet-rs buffers by row count. File naming follows the same cadence-style difference
 (iceberg-java names files <code class="docutils literal notranslate"><span class="pre">&lt;partition&gt;-&lt;task&gt;-&lt;operation&gt;-&lt;count&gt;</span></code>; iceberg-rust uses a
@@ -1169,7 +1179,7 @@ statistics to min <code class="docutils literal notranslate"><span class="pre">-
 iceberg-java’s writer-tracked bounds preserve the exact sign it saw. The native path’s
 manifest bounds inherit the normalised values — a strictly conservative widening that cannot
 change pruning decisions.</p></li>
-<li><p>On Iceberg 1.10+, manifest <code class="docutils literal notranslate"><span class="pre">value_counts</span></code> / <code class="docutils literal notranslate"><span class="pre">null_value_counts</span></code> for float/double columns
+<li><p>On Iceberg 1.9+, manifest <code class="docutils literal notranslate"><span class="pre">value_counts</span></code> / <code class="docutils literal notranslate"><span class="pre">null_value_counts</span></code> for float/double columns
 nested under a nullable struct count rows whose parent struct is null (they come from the
 parquet footer), while iceberg-java’s writer-tracked counts do not. Both counts inflate by
 the same amount, so the derived null ratios and <code class="docutils literal notranslate"><span class="pre">IS</span> <span class="pre">NULL</span></code> / <code class="docutils literal notranslate"><span class="pre">IS</span> <span class="pre">NOT</span> <span class="pre">NULL</span></code> pruning decisions
