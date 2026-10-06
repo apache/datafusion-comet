@@ -175,26 +175,26 @@
 - Benchmark (2026-10-05): `CometStringExpressionBenchmark` on Apple M4, macOS 26.7.1, JDK 21.0.12, Spark 4.1, release build, 65,536 rows, one run per route. The same query and Parquet inputs were used with only the default `replace` routing changed. These end-to-end figures include scan and projection; 10% match density is approximate.
 
   | Match density | Dispatcher ns/row | Native ns/row | Dispatcher M rows/s | Native M rows/s | Native speedup |
-  | --- | ---: | ---: | ---: | ---: | ---: |
-  | 0% | 207.5 | 149.5 | 4.8 | 6.7 | 1.39× |
-  | ~10% | 277.5 | 141.8 | 3.6 | 7.1 | 1.96× |
-  | 100% | 309.9 | 170.5 | 3.2 | 5.9 | 1.82× |
+  | ------------- | ----------------: | ------------: | ------------------: | --------------: | -------------: |
+  | 0%            |             207.5 |         149.5 |                 4.8 |             6.7 |          1.39× |
+  | ~10%          |             277.5 |         141.8 |                 3.6 |             7.1 |          1.96× |
+  | 100%          |             309.9 |         170.5 |                 3.2 |             5.9 |          1.82× |
 
 - Column replacement benchmark rerun (2026-10-05): same Apple M4, Spark 4.1 release build and 65,536-row setup, one run. Spark versus native Comet measured 263.5 versus 149.9 ns/row (3.8 versus 6.7 M rows/s) at 0% matches, 225.2 versus 136.9 (4.4 versus 7.3 M rows/s) at about 10%, and 286.5 versus 164.9 (3.5 versus 6.1 M rows/s) at 100%. End-to-end scan and projection times.
 - Column replacement dispatcher baseline (2026-10-05): same machine and setup, with only the default route temporarily forced through the JVM codegen dispatcher. Dispatcher versus native measured 184.4 versus 149.9 ns/row (5.4 versus 6.7 M rows/s, 1.23× native speedup) at 0% matches, 243.3 versus 136.9 (4.1 versus 7.3 M rows/s, 1.78×) at about 10%, and 281.5 versus 164.9 (3.6 versus 6.1 M rows/s, 1.71×) at 100%. The dispatcher and native runs were separate single runs; benchmark timing includes scan and projection.
 - Long search literal benchmark (2026-10-05): Apple M4, macOS 26.7.1, JDK 21.0.12, Spark 4.1 release build, 65,536 rows, one run per route and case. Source strings were 2,048 bytes; search literals were 16, 256, or 1,024 ASCII bytes with 0%, about 10%, or 100% match density. Each run includes scan and projection. Dispatcher / native ns per row and native speedup over dispatcher:
 
   | Search bytes | Match density | Dispatcher ns/row | Native ns/row | Dispatcher M rows/s | Native M rows/s | Native speedup |
-  | ---: | --- | ---: | ---: | ---: | ---: | ---: |
-  | 16 | 0% | 1,734.6 | 723.6 | 0.6 | 1.4 | 2.40× |
-  | 16 | ~10% | 3,071.5 | 715.8 | 0.3 | 1.4 | 4.29× |
-  | 16 | 100% | 2,667.7 | 715.1 | 0.4 | 1.4 | 3.73× |
-  | 256 | 0% | 2,823.3 | 1,270.9 | 0.4 | 0.8 | 2.22× |
-  | 256 | ~10% | 2,802.2 | 1,280.0 | 0.4 | 0.8 | 2.19× |
-  | 256 | 100% | 2,234.7 | 1,464.3 | 0.4 | 0.7 | 1.53× |
-  | 1,024 | 0% | 1,847.0 | 3,239.8 | 0.5 | 0.3 | 0.57× |
-  | 1,024 | ~10% | 1,808.6 | 3,287.6 | 0.6 | 0.3 | 0.55× |
-  | 1,024 | 100% | 1,195.0 | 4,004.1 | 0.8 | 0.2 | 0.30× |
+  | -----------: | ------------- | ----------------: | ------------: | ------------------: | --------------: | -------------: |
+  |           16 | 0%            |           1,734.6 |         723.6 |                 0.6 |             1.4 |          2.40× |
+  |           16 | ~10%          |           3,071.5 |         715.8 |                 0.3 |             1.4 |          4.29× |
+  |           16 | 100%          |           2,667.7 |         715.1 |                 0.4 |             1.4 |          3.73× |
+  |          256 | 0%            |           2,823.3 |       1,270.9 |                 0.4 |             0.8 |          2.22× |
+  |          256 | ~10%          |           2,802.2 |       1,280.0 |                 0.4 |             0.8 |          2.19× |
+  |          256 | 100%          |           2,234.7 |       1,464.3 |                 0.4 |             0.7 |          1.53× |
+  |        1,024 | 0%            |           1,847.0 |       3,239.8 |                 0.5 |             0.3 |          0.57× |
+  |        1,024 | ~10%          |           1,808.6 |       3,287.6 |                 0.6 |             0.3 |          0.55× |
+  |        1,024 | 100%          |           1,195.0 |       4,004.1 |                 0.8 |             0.2 |          0.30× |
 
   These results led to the 256-byte default limit for replacement-column routing. Runs are independent single benchmark invocations, so treat small differences as directional rather than statistically conclusive.
 
