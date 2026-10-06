@@ -22,6 +22,7 @@ package org.apache.spark.sql.comet.execution.arrow
 import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.{Files, Paths}
 
+import scala.reflect.ClassTag
 import scala.util.Using
 
 import org.scalatest.funsuite.AnyFunSuite
@@ -36,7 +37,6 @@ import org.apache.spark.sql.catalyst.expressions.{GenericInternalRow, UnsafeArra
 import org.apache.spark.sql.catalyst.util.GenericArrayData
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.types.{ArrayType, StringType, StructField, StructType}
-import org.apache.spark.unsafe.Platform
 import org.apache.spark.unsafe.types.UTF8String
 
 class CometStringWriterSuite extends AnyFunSuite with Matchers {
@@ -315,50 +315,49 @@ class CometStringWriterSuite extends AnyFunSuite with Matchers {
       .getArray(0)
   }
 
-  /** Packs a negative size into the slot that locates element `ordinal` of `array`. */
-  private def corruptLength(array: UnsafeArrayData, ordinal: Int): Unit = {
-    val slot = array.getBaseOffset +
-      UnsafeArrayData.calculateHeaderPortionInBytes(array.numElements()) + 8L * ordinal
-    val offsetAndSize = Platform.getLong(array.getBaseObject, slot)
-    Platform.putLong(array.getBaseObject, slot, (offsetAndSize & ~0xffffffffL) | 0xffffffffL)
-  }
+  /** `offsetAndSize`, as an unsafe row or array packs it, with the size made negative. */
+  private def negativeSize(offsetAndSize: Long): Long =
+    (offsetAndSize & ~0xffffffffL) | 0xffffffffL
 
   /**
-   * Runs `write` from row `index(vector)` of a vector whose 32-bit offsets are nearly used up
-   * after one value at row 0, and checks that it throws Arrow's oversized allocation exception
-   * having changed and allocated nothing.
+   * Runs `write` from row `index(vector)` of a vector holding one value at row 0, whose offsets
+   * then end at `end`, and checks that it throws `E` having changed and allocated nothing.
    */
-  private def assertOverflowRejected(index: VarCharVector => Int)(
-      write: StringWriter => Unit): Unit = {
+  private def assertRejected[E <: Exception: ClassTag](end: Int, index: VarCharVector => Int)(
+      write: StringWriter => Unit): E = {
     Using.resource(new RootAllocator(1024 * 1024)) { allocator =>
-      Using.Manager { use =>
+      val rejected = Using.Manager { use =>
         val vector = use(new VarCharVector("text", allocator))
         vector.allocateNew(8, 4)
         vector.setSafe(0, Array[Byte](42))
-        val start = Int.MaxValue - 5
-        vector.getOffsetBuffer.setInt(4L, start)
+        vector.getOffsetBuffer.setInt(4L, end)
         val writer = new StringWriter(vector)
         val at = index(vector)
         writer.count = at
         val allocated = allocator.getAllocatedMemory
-        intercept[OversizedAllocationException](write(writer))
+        val e = intercept[E](write(writer))
         allocator.getAllocatedMemory shouldBe allocated
         writer.count shouldBe at
         vector.getLastSet shouldBe 0
-        vector.getOffsetBuffer.getInt(4L) shouldBe start
+        vector.getOffsetBuffer.getInt(4L) shouldBe end
         vector.getOffsetBuffer.getInt(8L) shouldBe 0
         vector.getDataBuffer.getByte(0L) shouldBe 42.toByte
         if (at < vector.getValueCapacity) vector.isNull(at) shouldBe true
+        e
       }.get
       allocator.getAllocatedMemory shouldBe 0L
+      rejected
     }
   }
 
   test("unsafe row string offset overflow throws before anything changes or is allocated") {
     // Unlike Arrow's setters, the unsafe paths check before growing the offsets.
+    val nearlyFull = Int.MaxValue - 5
     val value = unsafeRow(UTF8String.fromBytes(Array[Byte](1, 2, 3, 4, 5, 6)))
     Seq[VarCharVector => Int](_ => 1, _.getValueCapacity).foreach { index =>
-      assertOverflowRejected(index)(_.writeUnsafeRowField(value, 0))
+      assertRejected[OversizedAllocationException](nearlyFull, index) {
+        _.writeUnsafeRowField(value, 0)
+      }
     }
     // An array's elements are all checked before any of them is written.
     val fitsThenOverflows = unsafeArray(
@@ -366,38 +365,21 @@ class CometStringWriterSuite extends AnyFunSuite with Matchers {
       null,
       UTF8String.fromBytes(Array[Byte](3, 4, 5, 6)))
     Seq[VarCharVector => Int](_ => 1, _.getValueCapacity - 1).foreach { index =>
-      assertOverflowRejected(index)(_.writeArrayElements(fitsThenOverflows))
+      assertRejected[OversizedAllocationException](nearlyFull, index) {
+        _.writeArrayElements(fitsThenOverflows)
+      }
     }
   }
 
   test("unsafe row negative string length is rejected before reserving or copying") {
     val value = unsafeRow(UTF8String.fromString("abc"))
-    value.setLong(0, (value.getLong(0) & ~0xffffffffL) | 0xffffffffL)
+    value.setLong(0, negativeSize(value.getLong(0)))
     val array = unsafeArray(UTF8String.fromString("ab"), UTF8String.fromString("cd"))
-    corruptLength(array, 1)
+    array.setLong(1, negativeSize(array.getLong(1)))
     Seq[StringWriter => Unit](_.writeUnsafeRowField(value, 0), _.writeArrayElements(array))
       .foreach { write =>
-        Using.resource(new RootAllocator(1024 * 1024)) { allocator =>
-          Using.Manager { use =>
-            val vector = use(new VarCharVector("text", allocator))
-            vector.allocateNew(8, 4)
-            vector.setSafe(0, Array[Byte](42))
-            val writer = new StringWriter(vector)
-            writer.count = 1
-            val allocated = allocator.getAllocatedMemory
-            intercept[IllegalArgumentException] {
-              write(writer)
-            }.getMessage should include("String length must be non-negative")
-            allocator.getAllocatedMemory shouldBe allocated
-            writer.count shouldBe 1
-            vector.getLastSet shouldBe 0
-            vector.getOffsetBuffer.getInt(4L) shouldBe 1
-            vector.getOffsetBuffer.getInt(8L) shouldBe 0
-            vector.getDataBuffer.getByte(0L) shouldBe 42.toByte
-            vector.isNull(1) shouldBe true
-          }.get
-          allocator.getAllocatedMemory shouldBe 0L
-        }
+        assertRejected[IllegalArgumentException](1, _ => 1)(write).getMessage should
+          include("String length must be non-negative")
       }
   }
 }

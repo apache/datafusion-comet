@@ -211,6 +211,14 @@ class CometArrowWriterSuite extends AnyFunSuite with Matchers {
     }
   }
 
+  /** Both roots must hold the same rows, compared vector by vector. */
+  private def assertSameRoots(expected: VectorSchemaRoot, actual: VectorSchemaRoot): Unit = {
+    actual.getRowCount shouldBe expected.getRowCount
+    expected.getFieldVectors.asScala.zip(actual.getFieldVectors.asScala).foreach { case (e, a) =>
+      assertSameVectors(e, a, "")
+    }
+  }
+
   /** Each vector in the tree must match, leaf values under null parents included. */
   private def assertSameVectors(
       expected: ValueVector,
@@ -282,9 +290,7 @@ class CometArrowWriterSuite extends AnyFunSuite with Matchers {
       rowWriter.finish()
 
       columnar.getRowCount shouldBe length
-      rows.getFieldVectors.asScala.zip(columnar.getFieldVectors.asScala).foreach { case (e, a) =>
-        assertSameVectors(e, a, "")
-      }
+      assertSameRoots(rows, columnar)
     } finally {
       columnar.close()
       rows.close()
@@ -640,10 +646,7 @@ class CometArrowWriterSuite extends AnyFunSuite with Matchers {
           val rowWriter = ArrowWriter.create(rows, batches.map(_.numRows()).sum)
           batches.foreach(b => (0 until b.numRows()).foreach(i => rowWriter.write(b.getRow(i))))
           rowWriter.finish()
-          columnar.getRowCount shouldBe rows.getRowCount
-          rows.getFieldVectors.asScala.zip(columnar.getFieldVectors.asScala).foreach {
-            case (e, a) => assertSameVectors(e, a, "")
-          }
+          assertSameRoots(rows, columnar)
         } finally {
           columnar.close()
           rows.close()
@@ -707,16 +710,32 @@ class CometArrowWriterSuite extends AnyFunSuite with Matchers {
         }))
       }
       writers.foreach(_.finish())
-      roots.tail.foreach { root =>
-        root.getRowCount shouldBe numRows
-        roots.head.getFieldVectors.asScala.zip(root.getFieldVectors.asScala).foreach {
-          case (e, a) => assertSameVectors(e, a, "")
-        }
-      }
+      roots.head.getRowCount shouldBe numRows
+      roots.tail.foreach(assertSameRoots(roots.head, _))
     } finally {
       roots.foreach(_.close())
       buffers.foreach(_.close())
       allocator.close()
+    }
+  }
+
+  /** Fills `n` rows of `schema` as Spark's readers lay them out, and checks them as above. */
+  private def assertFilledRowsMatch(
+      schema: StructType,
+      n: Int,
+      nullFraction: Double,
+      offHeap: Boolean,
+      maxLength: Int = 6): Unit = {
+    val rnd = new Random(schema.hashCode)
+    val vectors = schema.fields.map(f => newVector(n, f.dataType, offHeap = false))
+    try {
+      schema.fields.zip(vectors).foreach { case (field, v) =>
+        fill(v, field.dataType, n, rnd, nullFraction, reversed = false, maxLength)
+      }
+      val batch = new ColumnarBatch(vectors.toArray[ColumnVector], n)
+      assertUnsafeRowsMatchGeneric(n, schema, offHeap)(batch.getRow)
+    } finally {
+      vectors.foreach(_.close())
     }
   }
 
@@ -730,17 +749,7 @@ class CometArrowWriterSuite extends AnyFunSuite with Matchers {
         })
       schemas.foreach { schema =>
         withClue(s"${schema.simpleString}: ") {
-          val rnd = new Random(schema.hashCode)
-          val vectors = schema.fields.map(f => newVector(numRows, f.dataType, offHeap = false))
-          try {
-            schema.fields.zip(vectors).foreach { case (field, v) =>
-              fill(v, field.dataType, numRows, rnd, nullFraction, reversed = false)
-            }
-            val batch = new ColumnarBatch(vectors.toArray[ColumnVector], numRows)
-            assertUnsafeRowsMatchGeneric(numRows, schema, offHeap)(batch.getRow)
-          } finally {
-            vectors.foreach(_.close())
-          }
+          assertFilledRowsMatch(schema, numRows, nullFraction, offHeap)
         }
       }
     }
@@ -754,17 +763,8 @@ class CometArrowWriterSuite extends AnyFunSuite with Matchers {
     }
     for (dataType <- types; nullFraction <- Seq(0.0, 0.3)) {
       withClue(s"$dataType nulls=$nullFraction: ") {
-        val n = 24
-        val rnd = new Random(dataType.hashCode)
-        val v = newVector(n, dataType, offHeap = false)
-        try {
-          fill(v, dataType, n, rnd, nullFraction, reversed = false, maxLength = 150)
-          val batch = new ColumnarBatch(Array[ColumnVector](v), n)
-          assertUnsafeRowsMatchGeneric(n, new StructType().add("c", dataType), offHeap = false)(
-            batch.getRow)
-        } finally {
-          v.close()
-        }
+        val schema = new StructType().add("c", dataType)
+        assertFilledRowsMatch(schema, 24, nullFraction, offHeap = false, maxLength = 150)
       }
     }
   }
