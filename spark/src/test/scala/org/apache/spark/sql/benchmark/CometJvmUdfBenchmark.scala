@@ -22,6 +22,7 @@ package org.apache.spark.sql.benchmark
 import org.apache.arrow.vector.{BigIntVector, BitVectorHelper, ValueVector}
 import org.apache.spark.benchmark.Benchmark
 import org.apache.spark.sql.Row
+import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, QueryStageExec}
 import org.apache.spark.sql.types.LongType
 
 import org.apache.comet.CometConf
@@ -39,8 +40,11 @@ import org.apache.comet.udf.{CometJvmUDF, CometUDF}
  *     itself.
  *
  * The vectorized form reads and writes the value buffers directly and copies the validity bitmap
- * in one call, which is what the API exists to allow. Its arguments are evaluated natively, so
- * only the column itself crosses into the JVM.
+ * in one call. Its arguments are evaluated natively, so only the column itself crosses into the
+ * JVM. For functions this simple, most of the difference from the dispatched form is the
+ * dispatcher's overhead around the call, not the call itself, which the JIT inlines into the
+ * generated loop: Spark guards a primitive parameter with a null check that runs natively as a
+ * `CASE` over the batch, and the dispatcher pays a fixed cost per batch.
  *
  * A last row runs the query without the UDF. Its time is the floor every Comet row shares, so the
  * difference between it and a UDF row is what that form of the UDF costs.
@@ -106,7 +110,7 @@ object CometJvmUdfBenchmark extends CometBenchmarkBase {
    * that Spark evaluates runs one row at a time and still returns the right answer.
    */
   private def verifyFormsAgree(fn: String): Unit = {
-    val results = forms.map(f => f.label -> collect(f, fn))
+    val results = forms.map(f => f.label -> rows(f, fn))
     val (_, expected) = results.head
     results.tail.foreach { case (label, rows) =>
       assert(rows == expected, s"$fn: $label returned $rows, not $expected")
@@ -114,20 +118,27 @@ object CometJvmUdfBenchmark extends CometBenchmarkBase {
   }
 
   /** `withSQLConf` returns `Unit` on Spark 3.x, so the rows leave through a local. */
-  private def collect(form: Form, fn: String): Seq[Row] = {
-    var rows: Seq[Row] = Nil
+  private def rows(form: Form, fn: String): Seq[Row] = {
+    var result: Seq[Row] = Nil
     withSQLConf(form.configs: _*) {
       val df = spark.sql(query(form.udfPrefix + fn))
-      rows = df.collect().toSeq
+      result = df.collect().toSeq
       if (form.native) {
-        val plan = stripAQEPlan(df.queryExecution.executedPlan)
-        findFirstNonCometOperator(plan).foreach { op =>
-          throw new IllegalStateException(
-            s"$fn: ${form.label} ran ${op.nodeName} in Spark:\n${plan.treeString}")
-        }
+        // A query stage is a leaf, so the plan inside each stage is checked too, as
+        // `CometTestBase.checkCometOperatorsInFinalPlan` does.
+        val plan = df.queryExecution.executedPlan
+        val stagePlans = collect(plan) { case s: QueryStageExec => s.plan }
+        (stripAQEPlan(plan) +: stagePlans)
+          .flatMap(
+            findFirstNonCometOperator(_, classOf[QueryStageExec], classOf[AQEShuffleReadExec]))
+          .headOption
+          .foreach { op =>
+            throw new IllegalStateException(
+              s"$fn: ${form.label} ran ${op.nodeName} in Spark:\n${stripAQEPlan(plan)}")
+          }
       }
     }
-    rows
+    result
   }
 
   private def runCase(name: String, fn: String): Unit = {

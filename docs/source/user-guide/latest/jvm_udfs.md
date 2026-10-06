@@ -26,9 +26,7 @@ Arrow vector.
 This is different from [Scala UDF and Java UDF Support](scala_java_udfs.md), which covers
 ordinary Spark UDFs. Comet runs those through a code generator that calls the function once per
 row, converting every value to and from the function's Java or Scala types. A vectorized UDF is
-called once per batch and reads and writes Arrow buffers directly, so it suits a function that is
-a tight loop over primitive values, or one that makes a single call per batch into a library that
-already works on batches.
+called once per batch and reads and writes Arrow buffers directly.
 
 > **Experimental.** This feature is experimental. `CometJvmUDF` and the `CometUDF` interface are
 > not part of Comet's supported API: they fall under
@@ -48,10 +46,16 @@ already works on batches.
 | When Comet does not run the operator | Runs on Spark                              | Runs on Spark one row at a time, much more slowly |
 | Compiled against                     | Spark                                      | Spark and Comet, rebuilt for each Comet release   |
 
-An ordinary UDF needs no Comet-specific code, and Comet already runs it in its pipeline. Write a
-vectorized UDF when calling the function once per row is itself the cost: for example when it
-reads a primitive column in a loop that benefits from staying in one place, or when it hands each
-batch to a library in one call.
+An ordinary UDF needs no Comet-specific code, and Comet already runs it in its pipeline. The
+code generator compiles the call into a loop that the JVM optimizes well, so rewriting a simple
+function of primitive values in vectorized form gains little. Write a vectorized UDF for what a
+function of one row cannot express:
+
+- Work done once per batch rather than once per row, such as building a lookup structure from the
+  batch's values.
+- A different representation of the values, such as working on the UTF-8 bytes of a string
+  column instead of one `String` per row.
+- One call per batch into a library that already works on batches.
 
 ## Writing a UDF
 
