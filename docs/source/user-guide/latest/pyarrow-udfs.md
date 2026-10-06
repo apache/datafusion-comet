@@ -131,6 +131,8 @@ The initial native path accepts scalar `@arrow_udf` calls with regular or named 
 multiple independent UDFs in one `ArrowEvalPythonExec`. Chained Python UDFs, broadcast variables,
 Python includes, per-function environment overrides other than Spark's default
 `PYTHONHASHSEED=0`, and `spark.sql.execution.arrow.useLargeVarTypes=true` stay on Spark's path.
+UDFs that capture a PySpark accumulator also stay on Spark's worker path so their task updates
+reach the driver.
 Queries also stay on Spark's Python worker path when the Spark context has files added through
 `addPyFile` or `addFile`, because the embedded interpreter does not receive Spark's per-task file
 setup.
@@ -286,6 +288,17 @@ on the unoptimized path.
   requested by the configuration. `EliminateRedundantTransitions` therefore skips the rewrite
   and vanilla Spark handles the operation. Comet can read `large_string` and `large_binary`
   columns returned by a Python worker; that output support does not widen the input vectors.
+- PySpark does not convert the batches a `mapInArrow` UDF returns to the declared output schema,
+  so Comet checks their Arrow schema before reading them. When a column cannot be read as its
+  declared type, Comet raises Spark's `ARROW_TYPE_MISMATCH` error (on Spark 4.0, a
+  `SparkException` with the same message). Column names, nullability, `large_string` and
+  `large_binary` offsets, the time zone of a timestamp, and an all-null column of Arrow type
+  `null` may differ from the declared schema. Vanilla Spark reads some mismatches that Comet
+  rejects, unless `spark.sql.execution.arrow.pyspark.validateSchema.enabled` is set: it rescales
+  a decimal to the declared precision and scale, reads a timestamp without a time zone as
+  `TimestampType`, reads other types of the same width (for example `int64` as a timestamp), and
+  ignores extra columns. Return the declared types, or set
+  `spark.comet.exec.pyarrowUDF.enabled=false` for such UDFs.
 - Comet applies `spark.sql.execution.arrow.maxRecordsPerBatch` to every input batch, including
   batches with only plain columns. Before decoding dictionary-encoded shuffle columns, Comet also
   compares their estimated decoded size with `spark.sql.execution.arrow.maxBytesPerBatch`.

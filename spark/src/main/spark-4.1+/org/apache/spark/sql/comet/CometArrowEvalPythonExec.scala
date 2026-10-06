@@ -19,6 +19,8 @@
 
 package org.apache.spark.sql.comet
 
+import java.nio.charset.StandardCharsets
+
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.api.python.PythonEvalType
@@ -45,6 +47,14 @@ object CometArrowEvalPythonExec extends CometOperatorSerde[ArrowEvalPythonExec] 
     env != null && env.asScala.exists { case (key, value) =>
       key != "PYTHONHASHSEED" || value != "0"
     }
+
+  // PySpark's Accumulator.__reduce__ serializes a reference to
+  // pyspark.accumulators._deserialize_accumulator. Spark's worker forwards its
+  // task-local updates to the JVM when the task finishes; embedded Python does
+  // not have that worker protocol. A match may also come from a harmless string
+  // in the pickle, in which case Spark's worker path is the safe choice.
+  private def hasSerializedAccumulator(command: Seq[Byte]): Boolean =
+    new String(command.toArray, StandardCharsets.ISO_8859_1).contains("pyspark.accumulators")
 
   private def hasCompatibleArrowSchema(dataType: DataType): Boolean = dataType match {
     case _: BooleanType | _: ByteType | _: ShortType | _: IntegerType | _: LongType |
@@ -88,6 +98,8 @@ object CometArrowEvalPythonExec extends CometOperatorSerde[ArrowEvalPythonExec] 
         "Arrow UDF broadcast variables are not supported in-process"
       case udf if udf.func.pythonIncludes != null && !udf.func.pythonIncludes.isEmpty =>
         "Arrow UDF Python includes are not supported in-process"
+      case udf if hasSerializedAccumulator(udf.func.command) =>
+        "Arrow UDF accumulators are not supported in-process"
       case udf if hasUnsupportedEnvironment(udf.func.envVars) =>
         "Arrow UDF Python environment overrides are not supported in-process"
       case udf if udf.children.exists(_.find(_.isInstanceOf[PythonUDF]).nonEmpty) =>

@@ -87,6 +87,9 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
   // `gs` is additionally gated on the resolved FileIO (`requireGcsFileIOForGcsDataLocation`).
   private val SupportedStorageSchemes: Set[String] =
     Set("file", "memory", "s3", "s3a", "gs")
+  // Supported schemes whose native backend is local and needs no host. Every other supported
+  // scheme reads its bucket from the URL host (`requireSupportedStorageScheme`).
+  private val LocalStorageSchemes: Set[String] = Set("file", "memory")
   private val MinUnsupportedFormatVersion = 3
   private val ParquetWritePropertyPrefix = "write.parquet."
   private val ParquetMrPropertyPrefix = "parquet."
@@ -176,6 +179,8 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     requireDefaultLocationProvider,
     requireFormatVersionAtMostTwo,
     requireNoUuidColumns,
+    requireNoFloatingPointPartitionField,
+    requireNoVoidFieldWithDroppedSource,
     requireNoEncryptionPrefix,
     requireNoBloomFilterColumnsEnabled,
     requireRowGroupCheckMinRecordCountAtDefault,
@@ -268,6 +273,52 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
           }
     }
 
+  // iceberg-rust holds a float partition value as an `OrderedFloat`, whose equality treats -0.0
+  // and 0.0 as one value, and its fanout and clustered writers group rows by that equality.
+  // iceberg-java keeps the two apart, so the native writer would file both under whichever
+  // arrived first, and a read that prunes on the other value would lose rows (#6138). Remove this
+  // rule once the iceberg-rust pin carries a fix for apache/iceberg-rust#3325; #5643 tracks it.
+  private val requireNoFloatingPointPartitionField: TriggerRule = ctx =>
+    IcebergReflection
+      .getOutputSpecIdFromSparkWrite(ctx.sparkWrite)
+      .flatMap(IcebergReflection.getPartitionSpecById(ctx.table, _)) match {
+      case None => Some("could not resolve the output partition spec for type checking")
+      case Some(spec) =>
+        try {
+          IcebergReflection.floatingPointPartitionFields(spec).headOption.map {
+            case (name, typeName) =>
+              s"partition field $name has Iceberg type $typeName, and the native writer does " +
+                "not keep -0.0 and 0.0 partitions apart"
+          }
+        } catch {
+          case e: Exception =>
+            Some(s"could not inspect the output partition spec: ${e.getMessage}")
+        }
+    }
+
+  // A format-version-1 spec keeps a dropped partition field as a `void` transform, and its source
+  // column can be dropped afterwards. iceberg-java cannot write through a spec that mixes such a
+  // field with a live one, and the native writer fails resolving the spec's partition type, so
+  // decline and let the write fail the way iceberg-java fails it. An all-`void` spec stays
+  // eligible, since the native writer writes it unpartitioned.
+  // https://github.com/apache/datafusion-comet/issues/6141
+  private val requireNoVoidFieldWithDroppedSource: TriggerRule = ctx =>
+    IcebergReflection
+      .getOutputSpecIdFromSparkWrite(ctx.sparkWrite)
+      .flatMap(IcebergReflection.getPartitionSpecById(ctx.table, _)) match {
+      case None => Some("could not resolve the output partition spec for void field checking")
+      case Some(spec) =>
+        try {
+          IcebergReflection.voidFieldsWithDroppedSource(spec).headOption.map { name =>
+            s"partition field $name is a void transform whose source column was dropped, " +
+              "beside a live partition field"
+          }
+        } catch {
+          case e: Exception =>
+            Some(s"could not inspect the output partition spec: ${e.getMessage}")
+        }
+    }
+
   private val requireNoEncryptionPrefix: TriggerRule = ctx =>
     ctx.properties.keys
       .find(_.startsWith(EncryptionPropertyPrefix))
@@ -331,20 +382,51 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
       .find(k => !IgnoredHadoopParquetConfKeys.contains(k))
       .map(k => s"Hadoop configuration sets $k (reaches iceberg-java's writer but not native)")
 
-  private def storageScheme(location: String): String =
-    if (location.contains("://")) {
-      location.substring(0, location.indexOf("://")).toLowerCase(Locale.ROOT)
-    } else {
-      "file"
-    }
+  /**
+   * The scheme the native writer picks its storage backend from. Must follow the same rule as
+   * `scheme_of` in `native/core/src/execution/operators/iceberg_common.rs`: split on the first
+   * `:`, not `://`, so a hostless `hdfs:/warehouse/t` (as Hadoop normalises `hdfs:///...`) is
+   * read as `hdfs` rather than admitted as `file`. An empty prefix, or one containing `/` (a `:`
+   * inside a path segment such as `/tmp/a:b`), means there is no scheme. The scheme is kept as
+   * written, not lowercased: `storage_factory_for` matches it case-sensitively, so `S3://` must
+   * be declined here rather than fail at execution.
+   *
+   * String-based rather than `java.net.URI` (`NativeConfig.lowerScheme`): `URI` throws on
+   * characters an Iceberg location may carry unencoded, and its scheme grammar is not the
+   * first-`:` split that `scheme_of` uses.
+   */
+  private[comet] def storageScheme(location: String): String = {
+    val colon = location.indexOf(':')
+    val prefix = if (colon > 0) location.substring(0, colon) else ""
+    if (prefix.isEmpty || prefix.contains('/')) "file" else prefix
+  }
+
+  /**
+   * True when `location` carries a non-empty authority (`scheme://host/...`). iceberg-rust's S3
+   * and GCS backends take the bucket from the URL host and never from the path, so a hostless
+   * `s3:/bucket/key` or `s3:///bucket/key` fails natively with a missing-bucket error.
+   *
+   * The write-side counterpart of `CometScanRule.hasOpenableAuthority`, which additionally admits
+   * hostless S3-compliant aliases because the native reader promotes their bucket from the path.
+   * The write gate admits no aliases, so it needs no such exception.
+   */
+  private[comet] def hasBucketAuthority(location: String): Boolean = {
+    val rest = location.substring(location.indexOf(':') + 1)
+    rest.startsWith("//") && rest.length > 2 && rest.charAt(2) != '/'
+  }
 
   private val requireSupportedStorageScheme: TriggerRule = ctx =>
     IcebergReflection.getDataLocation(ctx.table) match {
       case None => Some("could not resolve the table data location")
       case Some(location) =>
         val scheme = storageScheme(location)
-        if (SupportedStorageSchemes.contains(scheme)) None
-        else Some(s"unsupported storage scheme: $scheme")
+        if (!SupportedStorageSchemes.contains(scheme)) {
+          Some(s"unsupported storage scheme: $scheme")
+        } else if (!LocalStorageSchemes.contains(scheme) && !hasBucketAuthority(location)) {
+          Some(s"$scheme data location has no bucket in its authority: $location")
+        } else {
+          None
+        }
     }
 
   // HadoopFileIO takes its GCS configuration from `fs.gs.*`, which is not forwarded to the
@@ -708,7 +790,8 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     val hadoopDerivedProperties = CometIcebergNativeScan.hadoopToIcebergS3Properties(
       NativeConfig.extractObjectStoreOptions(writeHadoopConf, dataUri),
       dataBucket)
-    val catalogProperties = hadoopDerivedProperties ++ fileIOProperties
+    val catalogProperties =
+      hadoopDerivedProperties ++ fileIOProperties + CometIcebergNativeScan.ioTimeoutProperty()
 
     val common = IcebergWriteProtoTranslation.buildCommon(
       catalogProperties = catalogProperties,

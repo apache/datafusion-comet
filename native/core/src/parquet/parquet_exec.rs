@@ -24,6 +24,7 @@ use crate::parquet::parquet_support::{
 };
 use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
 use arrow::datatypes::{Field, FieldRef, SchemaRef};
+use datafusion::common::tree_node::TreeNode;
 use datafusion::config::{ParquetOptions, TableParquetOptions};
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::physical_plan::{
@@ -36,6 +37,7 @@ use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr_adapter::PhysicalExprAdapterFactory;
 use datafusion::prelude::SessionContext;
 use datafusion::scalar::ScalarValue;
+use datafusion_comet_spark_expr::jvm_udf::JvmScalarUdfExpr;
 use datafusion_comet_spark_expr::EvalMode;
 use datafusion_datasource::TableSchema;
 use parquet::variant::VariantType;
@@ -194,7 +196,15 @@ pub(crate) fn init_datasource_exec(
             parquet_source.metrics(),
         )
         .with_spark_variant_schema(projects_variant)
-        .with_require_field_ids(require_field_ids),
+        .with_require_field_ids(require_field_ids)
+        .with_conversion_check(
+            Arc::clone(&required_schema),
+            spark_parquet_options.clone(),
+            session_config.options().execution.parquet.pushdown_filters
+                && data_filters
+                    .as_ref()
+                    .is_some_and(|filters| !filters.is_empty()),
+        ),
     );
     parquet_source = parquet_source.with_parquet_file_reader_factory(reader_factory);
 
@@ -208,7 +218,14 @@ pub(crate) fn init_datasource_exec(
     // config only gates per-row `RowFilter` evaluation. We discard
     // `propagation.parent_pushdown_result` because Spark's Filter above the
     // scan re-evaluates every dataFilter, so No-classified filters stay
-    // correct without us inserting a FilterExec here.
+    // correct without us inserting a FilterExec here. That also makes it safe
+    // to drop the filters that call into the JVM first; see `calls_jvm`.
+    let data_filters = data_filters.map(|filters| {
+        filters
+            .into_iter()
+            .filter(|filter| !calls_jvm(filter))
+            .collect::<Vec<_>>()
+    });
     let file_source: Arc<dyn FileSource> = match data_filters {
         Some(filters) if !filters.is_empty() => {
             let propagation =
@@ -245,6 +262,16 @@ pub(crate) fn init_datasource_exec(
     let data_source_exec = Arc::new(DataSourceExec::new(Arc::new(file_scan_config)));
 
     Ok(data_source_exec)
+}
+
+/// Whether `expr` evaluates any part of itself in the JVM. Such a filter is kept out of the scan:
+/// DataFusion's parquet `RowFilter` flattens an evaluation error to a string, which drops the Java
+/// throwable a JVM UDF raises (e.g. a Spark `SparkIllegalArgumentException`) and surfaces it as a
+/// generic `CometNativeException`. Spark's Filter above the scan evaluates the predicate anyway, and
+/// a JVM call is opaque to row-group, page-index, and bloom-filter pruning, so nothing is lost.
+fn calls_jvm(expr: &Arc<dyn PhysicalExpr>) -> bool {
+    expr.exists(|e| Ok(e.downcast_ref::<JvmScalarUdfExpr>().is_some()))
+        .unwrap_or(true)
 }
 
 // Registration URLs use a reserved suffix to distinguish backend/configuration
@@ -379,6 +406,27 @@ mod tests {
     use parquet::file::properties::{EnabledStatistics, WriterProperties};
     use std::fs::File;
     use std::time::Duration;
+
+    #[test]
+    fn calls_jvm_finds_a_nested_jvm_udf() {
+        let column: Arc<dyn PhysicalExpr> = Arc::new(Column::new("a", 0));
+        let udf: Arc<dyn PhysicalExpr> = Arc::new(JvmScalarUdfExpr::new(
+            "org.example.Udf".to_string(),
+            vec![Arc::clone(&column)],
+            DataType::Int32,
+            true,
+            None,
+            None,
+        ));
+        let literal: Arc<dyn PhysicalExpr> = Arc::new(Literal::new(ScalarValue::Int32(Some(1))));
+        let nested: Arc<dyn PhysicalExpr> =
+            Arc::new(BinaryExpr::new(udf, Operator::Gt, Arc::clone(&literal)));
+        let native: Arc<dyn PhysicalExpr> =
+            Arc::new(BinaryExpr::new(column, Operator::Gt, literal));
+
+        assert!(calls_jvm(&nested));
+        assert!(!calls_jvm(&native));
+    }
 
     fn write_scan_io_fixture() -> (String, SchemaRef) {
         let schema = Arc::new(Schema::new(vec![

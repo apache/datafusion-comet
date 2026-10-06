@@ -35,7 +35,7 @@ Two flags, each of which builds on the one before it:
 | Flag                                              | What it changes                                                                                                                         |
 | ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
 | `spark.comet.write.iceberg.splitOperator.enabled` | The plan shape. Spark's single V2 write operator becomes `IcebergCommit` over `IcebergWrite`. iceberg-java still writes the data files. |
-| `spark.comet.iceberg.write.enabled`               | Who writes the data files. An eligible `IcebergWrite` becomes `CometIcebergWrite`, which writes Parquet with iceberg-rust.              |
+| `spark.comet.write.iceberg.enabled`               | Who writes the data files. An eligible `IcebergWrite` becomes `CometIcebergWrite`, which writes Parquet with iceberg-rust.              |
 
 The native flag does nothing without the split flag, because it converts a node only the split plan
 creates. Both default to `false`. The roadmap for making them the default, and the criteria for it,
@@ -59,13 +59,15 @@ gets a failed query instead of a fallback.
 ## The Split-Operator Plan
 
 Spark plans an Iceberg write as one physical operator (`AppendDataExec`, `ReplaceDataExec` and so
-on) that runs the input query, writes the files, and commits, all outside AQE. The split plan
-replaces it with two operators so that the write's input becomes an ordinary query stage.
+on) that writes the files and commits. It is a `V2CommandExec`, so Spark's
+`InsertAdaptiveSparkPlan` wraps its input query in AQE but leaves the operator itself outside. The
+split plan replaces it with two operators so that data-file writing moves inside AQE, apart from
+the commit.
 
 ```text
-IcebergCommit                 driver: collect task commit messages, BatchWrite.commit
-+- IcebergWrite               executors: write data files, emit one commit message per task
-   +- <input query>           scans, projects, exchanges, sorts; now visible to AQE and Comet
+IcebergCommit                 driver: collect task commit messages, BatchWrite.commit; outside AQE
++- IcebergWrite               executors: write data files, emit one commit message per task; inside AQE
+   +- <input query>           scans, projects, exchanges, sorts; inside AQE with or without the split
 ```
 
 | Component                                                                       | Location                                           | Role                                                                                                                                                                                                                                    |
@@ -93,10 +95,19 @@ Things to know before changing this layer:
 - **What is not intercepted:** merge-on-read (`WriteDelta`), streaming writes, and CTAS/RTAS on
   Spark 3.4. Those keep Spark's plan.
 
+On Spark 4.1+, `IcebergWriteSummaryShim` finds either Spark's `MergeRowsExec` or
+`CometMergeRowsExec` in the executed query and forwards its eight action counters to
+`BatchWrite.commit(messages, summary)`. Native instructions carry the context of each `Keep`;
+`Discard` counts a deletion and `Split` counts one update. Spark 4.2 uses last-attempt
+accumulators, read through `MergeRowsMetricsShim`, so summary values come from the tasks that
+produced the committed output. Stock V2 writers still require the concrete Spark node, so
+`IcebergWriteStrategy` tags a copy of its logical MERGE query before planning and AQE. The
+serializer requires that tag on Spark 4.1+, leaving stock writers on Spark throughout replanning.
+
 ## From `IcebergWrite` to `CometIcebergWrite`
 
 `CometExecRule` converts an `IcebergWriteExec` with the `CometIcebergNativeWrite` operator serde
-when `spark.comet.iceberg.write.enabled` is on. Two arms in `CometExecRule` handle it: one unwraps
+when `spark.comet.write.iceberg.enabled` is on. Two arms in `CometExecRule` handle it: one unwraps
 the double conversion AQE can produce when it re-fires write planning over a sub-tree that already
 contains a `CometIcebergWriteExec`, and the other calls `convertToComet`.
 
@@ -194,12 +205,14 @@ columns.
 ### Native execution
 
 The planner builds `IcebergWriteExec` (`native/core/src/execution/operators/iceberg_write.rs`) over
-the FFI scan of the child's batches. `run_write_task` builds iceberg-rust's writer stack once per
-task:
+the FFI scan of the child's batches. `run_write_task` builds iceberg-rust's partitioning writer once
+per task, and `PartitionWriterBuilder` builds the rest of the stack once per partition, with that
+partition's Parquet writer properties:
 
 ```text
-ParquetWriterBuilder -> RollingFileWriterBuilder -> DataFileWriterBuilder
-  -> UnpartitionedWriter | FanoutWriter | ClusteredWriter
+UnpartitionedWriter | FanoutWriter | ClusteredWriter
+  -> PartitionWriterBuilder, per partition:
+       ParquetWriterBuilder -> RollingFileWriterBuilder -> DataFileWriterBuilder
 ```
 
 Points where Comet adapts iceberg-rust to match iceberg-java:
@@ -207,15 +220,40 @@ Points where Comet adapts iceberg-rust to match iceberg-java:
 - **Location generation.** `CometLocationGenerator` (`iceberg_partition_path.rs`) replaces
   iceberg-rust's `DefaultLocationGenerator` and renders partition directories the way iceberg-java's
   `PartitionSpec.partitionToPath` does. iceberg-rust's own rendering differs for several types, and
-  panics for pre-1970 `timestamptz`. Float and double values use Comet's Java `Double.toString`
-  renderer (`java_float_string`), shared with `cast(float as string)`. The partition type is
-  resolved once when the generator is built, because `LocationGenerator::generate_location` cannot
-  return an error.
+  panics for pre-1970 `timestamptz` and for dates past `chrono`'s calendar. Float and double values
+  use Comet's Java `Double.toString` renderer (`java_float_string`), shared with
+  `cast(float as string)`. The partition type is resolved once when the generator is built, because
+  `LocationGenerator::generate_location` cannot return an error.
+- **Partition values.** `PartitionValueCalculator` (`iceberg_partition_value.rs`) replaces
+  iceberg-rust's calculator of the same name, and `PartitionSplitter` replaces its
+  `RecordBatchPartitionSplitter`. `year`, `month`, `day` and `hour` of a date or timestamp go
+  through Comet's `iceberg_years` / `iceberg_months` / `iceberg_days` / `iceberg_hours` kernels, the
+  ones the sort in front of a clustered write runs (`day` of a date is the date itself and stays on
+  iceberg-rust). iceberg-rust computes `year` and `month` with Arrow's `date_part`, which returns
+  NULL past `chrono`'s calendar ([#6145](https://github.com/apache/datafusion-comet/issues/6145)).
+  All four of its transforms floor a pre-1970 timestamp that lies exactly 999999 microseconds into a
+  unit, which iceberg-java puts in the unit before
+  ([#6426](https://github.com/apache/datafusion-comet/issues/6426)), and its `day` puts some
+  timestamps from the last second before a pre-1970 midnight in the next day. Every other transform
+  stays on iceberg-rust.
 - **File names.** `file_name_prefix` embeds the partition id, the task attempt id and the operation
   id, so a retried or speculative attempt never reuses another attempt's file names.
 - **Row pacing.** iceberg-java's rolling writer checks the target file size every 1000 rows of the
   current file. iceberg-rust checks once per `write` call. `RowPacer` hands the writer rows in
   `ROWS_DIVISOR` (1000) row units per file, so both writers roll on the same grid.
+- **Dictionary choice.** parquet-mr writes a column chunk plain, with no dictionary page, when its
+  first data page shows the dictionary saving no space. parquet-rs has no such check, and fixes a
+  column's encoding when the file opens
+  ([#6114](https://github.com/apache/datafusion-comet/issues/6114)). So each partition's
+  `PartitionFeed` holds back the partition's first page of rows (`write.parquet.page-row-limit`,
+  capped by `write.parquet.row-group-size-bytes`, which the fanout feeds share) before any of them
+  reaches the writer. `DictionaryChooser` (`iceberg_dictionary.rs`) replays parquet-mr's accounting
+  over those rows and turns dictionary encoding off for the columns parquet-mr would write plain.
+  It reads only the columns there is a choice for, one at a time, and walks each lazily only as far
+  as its first page, so beyond the held rows it keeps no more than one column's dictionary. The
+  accounting follows `FallbackValuesWriter`, `DictionaryValuesWriter` and
+  `RunLengthBitPackingHybridEncoder`, and its tests pin answers recorded from parquet-mr itself. The
+  held rows then go through `RowPacer`, so the roll grid does not move.
 - **Field ids and casting.** `decorate_batch_with_field_ids` casts each batch to the
   field-id-annotated Arrow schema derived from the Iceberg schema, with `safe: false`, so a type
   mismatch fails the task instead of writing NULLs.
@@ -258,19 +296,25 @@ discards them. The price is one footer read per written file.
 ## Failure Handling and Cleanup Ownership
 
 A failed attempt must leave no data files behind, as iceberg-java's `DataWriter.abort()` does, and a
-failed job must not commit anything. The files are always owned by exactly one side:
+failed job must not commit anything. Cleanup must never have an ownership gap. During the handoff,
+the native guard intentionally stays armed after the JVM takes the locations and is disarmed only
+when the JVM polls the output stream to EOF:
 
-| Phase                                                               | Owner                        | Mechanism                                                                                                                                                                        |
-| ------------------------------------------------------------------- | ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Writing, closing writers, encoding the manifest, building the batch | Native                       | `TrackingLocationGenerator` records every location. `AbortOnDrop` deletes them on an error, and also when the plan is dropped mid-write, from inside or outside a Tokio runtime. |
-| After the batch reaches the JVM, until the task succeeds            | JVM task                     | `WrittenFileCleanup`, a task failure listener registered before the payload is read, takes the locations before the manifest is decoded.                                         |
-| Job failure after some tasks completed                              | Driver (`IcebergCommitExec`) | Calls `BatchWrite.abort` with the completed messages, then deletes their files through the table's `FileIO`.                                                                     |
-| Commit failure                                                      | Iceberg                      | `SparkWrite.abort` on the genuine `TaskCommit` messages, the same as the stock path.                                                                                             |
+| Phase                                                               | Owner                        | Mechanism                                                                                                                                       |
+| ------------------------------------------------------------------- | ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| Writing, closing writers, encoding the manifest, building the batch | Native                       | `TrackingLocationGenerator` records every location. `AbortOnDrop` deletes on error or plan drop and stays armed after yielding the batch.       |
+| JVM has recorded locations, before its final EOF poll               | Native + JVM task            | `WrittenFileCleanup` owns the decoded locations while `AbortOnDrop` is still armed. A failure may make both sides attempt best-effort deletion. |
+| After the JVM's EOF poll, until the task succeeds                   | JVM task                     | The EOF poll disarms `AbortOnDrop`; `WrittenFileCleanup` remains registered for the rest of the task.                                           |
+| Job failure after some tasks completed                              | Driver (`IcebergCommitExec`) | Calls `BatchWrite.abort` with the completed messages, then deletes their files through the table's `FileIO`.                                    |
+| Commit failure                                                      | Iceberg                      | `SparkWrite.abort` on the genuine `TaskCommit` messages, the same as the stock path.                                                            |
 
-The handoff between the first two rows is why the payload carries the locations separately from the
-manifest: a failure decoding the manifest would otherwise lose the list of files to delete. All
-deletion is best effort and logged. It must never replace the original exception, and anything it
-misses is unreferenced and reclaimed by Iceberg's `remove_orphan_files`.
+The handoff between the first two rows intentionally overlaps: `WrittenFileCleanup` takes the
+locations before the final EOF poll, and that poll is the acknowledgement that lets `AbortOnDrop`
+disarm. Deleting the same file from both sides during a failure in that narrow window is harmless
+because cleanup is best effort. The payload carries the locations separately from the manifest so a
+failure decoding the manifest cannot lose the list of files to delete. Cleanup is logged and must
+never replace the original exception; anything it misses is unreferenced and reclaimed by Iceberg's
+`remove_orphan_files`.
 
 The same planning-time rule applies to failures: a failure that happens because the native side
 rejected something the gate admitted is a bug in the gate, even if cleanup works.
@@ -321,7 +365,8 @@ the writer: run the write suites and the Iceberg Spark tests. The pin policy is 
 | `CometIcebergSystemFunctionSuite`                                | Native `bucket`, `truncate`, `years`/`months`/`days`/`hours`, which keep a partitioned write's hash distribution and sort native end to end.                                                |
 | `CometIcebergRewriteActionSuite`                                 | Iceberg's `rewrite_data_files` with the split plan and the native writer.                                                                                                                   |
 | `IcebergWriteProtoTranslationSuite`                              | Translation of properties into `IcebergParquetWriteSettings` and the writer mode.                                                                                                           |
-| Rust tests in `iceberg_write.rs` and `iceberg_partition_path.rs` | File rolling on the 1000-row grid, fanout order, clustered input checks, cleanup guard, manifest round trip, partition path rendering.                                                      |
+| Rust tests in `iceberg_write.rs` and in `iceberg_partition_*.rs` | File rolling on the 1000-row grid, fanout order, clustered input checks, cleanup guard, manifest round trip, partition path rendering, partition values past `chrono`'s calendar.           |
+| Rust tests in `iceberg_dictionary.rs`                            | The per-column dictionary choice against answers recorded from parquet-mr, including columns either side of its cut-off.                                                                    |
 | `CometIcebergWriteBenchmark`                                     | Native versus iceberg-java for unpartitioned, clustered, fanout and copy-on-write delete writes. It checks each arm's plan before timing it.                                                |
 
 The Comet suites run against the Iceberg version each Spark profile pins in `spark/pom.xml`: 1.5.2
@@ -366,9 +411,21 @@ Each of these has caused a bug on this path:
 - **Map iteration order leaks.** It reaches file names, manifest order and read order.
 - **Values that compare equal in Rust may not in Java.** Signed zeros and NaN under `OrderedFloat`,
   and string or float rendering in partition paths.
+- **iceberg-rust counts NaNs that Parquet never writes.** Its NaN counter reads each struct, list
+  and map child whole, with only the child's own validity. So it counts a NaN under a NULL struct,
+  under a NULL list or map entry that still points at elements, or outside a sliced list's window.
+  `nullif` and `RecordBatch::slice` produce all of these, so `drop_unwritten_values` removes them
+  before a batch reaches the writer
+  ([#6146](https://github.com/apache/datafusion-comet/issues/6146),
+  [#6562](https://github.com/apache/datafusion-comet/issues/6562)).
+- **`chrono` stops at year 262142.** A Spark date reaches year 5881580 and a timestamp year 294247,
+  and iceberg-java handles all of them. Code that goes through `chrono`, including Arrow's
+  `date_part`, panics or returns NULL past that
+  ([#6145](https://github.com/apache/datafusion-comet/issues/6145)).
 - **Partition evolution leaves `void` fields behind.** A v1 spec keeps a dropped partition field as
   a `void` transform, whose source column may later be dropped from the schema. Resolving the spec
-  against the schema then fails
+  against the schema then fails. An all-`void` spec is written unpartitioned, and a spec that mixes
+  such a field with a live one is declined by the gate, since iceberg-java cannot write it either
   ([#5691](https://github.com/apache/datafusion-comet/issues/5691),
   [#5693](https://github.com/apache/datafusion-comet/issues/5693),
   [#6141](https://github.com/apache/datafusion-comet/issues/6141)).

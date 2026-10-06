@@ -1068,6 +1068,29 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       .foreach(castTest(values, _))
   }
 
+  test("cast StringType to DateType - whitespace trim parity") {
+    castTest(trimPaddedValues("2020-01-01").toDF("a"), DataTypes.DateType)
+  }
+
+  test("cast StringType to timestamp types - whitespace trim parity") {
+    withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC") {
+      val values = trimPaddedValues("2020-01-01 12:34:56").toDF("a")
+      Seq(DataTypes.TimestampType, DataTypes.TimestampNTZType).foreach(castTest(values, _))
+    }
+  }
+
+  test("cast StringType to timestamp types - ANSI rejects a value that trims to nothing") {
+    // Spark's parseTimestampString finds no segments in such a value, so ANSI mode raises
+    // CAST_INVALID_INPUT for it like for any other malformed value. The batch-wide ANSI check in
+    // the parity test above cannot see this, since other rows in its batch raise as well.
+    withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC") {
+      for {
+        value <- Seq("", " ", "\t", "\u0001", "\u007f")
+        toType <- Seq(DataTypes.TimestampType, DataTypes.TimestampNTZType)
+      } castTest(Seq(value).toDF("a"), toType, expectAnsiFailure = true)
+    }
+  }
+
   private val castStringToIntegralInputs: Seq[String] = Seq(
     "",
     ".",
@@ -1524,6 +1547,13 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         " T2:30",
         "\tT2:30",
         "\nT2:30",
+        // ISO control characters are trimmed like whitespace, on either side
+        "\u0001T2",
+        "\u007fT2:30",
+        "T2\u0001",
+        // Non-ASCII whitespace is never trimmed (null on all versions)
+        "\u3000T2",
+        "T2\u3000",
         // Full datetime: leading whitespace (valid on all versions — full trim applies)
         " 2020-01-01T12:34:56",
         "\t2020-01-01T12:34:56",
@@ -2011,7 +2041,7 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       spark.sparkContext.parallelize(rowData),
       StructType(Seq(StructField("a", DataTypes.createDecimalType(10, 4)))))
 
-    castTest(df, DecimalType(6, 2))
+    castTest(df, DecimalType(6, 2), expectAnsiFailure = true)
   }
 
   test("cast between decimals with higher precision than source") {
@@ -2231,6 +2261,43 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               Unsupported(Some(expectedMessage)))
           checkSparkAnswerAndOperator(data.select(col("a").cast(toType).as("converted")))
         }
+      }
+    }
+  }
+
+  test("cast StructType and MapType with DateType to numeric routes through codegen dispatch") {
+    // LEGACY DATE to a numeric or boolean type is always null. `convert` folds the top-level cast
+    // to a null literal, but a struct field or map value reaches the native cast, which returns
+    // the day count for INT and fails for the other targets. Results are covered by
+    // `cast_complex.sql`; this pins the support levels that keep those casts off the native path.
+    def struct(dt: DataType): StructType = StructType(Seq(StructField("d", dt)))
+    val nullResultTypes = Seq(
+      BooleanType,
+      ByteType,
+      ShortType,
+      IntegerType,
+      LongType,
+      FloatType,
+      DoubleType,
+      DecimalType(10, 2))
+    nullResultTypes.foreach { toElementType =>
+      Seq(
+        struct(DateType) -> struct(toElementType),
+        MapType(StringType, DateType) -> MapType(StringType, toElementType),
+        ArrayType(struct(DateType)) -> ArrayType(struct(toElementType))).foreach {
+        case (fromType, toType) =>
+          val level = CometCast.isSupported(fromType, toType, None, CometEvalMode.LEGACY)
+          assert(level.isInstanceOf[Unsupported], s"$fromType to $toType: $level")
+      }
+    }
+    // Other DATE casts nested in a struct or map keep the support level of the element cast.
+    Seq(TimestampType, DataTypes.TimestampNTZType, StringType).foreach { toElementType =>
+      Seq(
+        struct(DateType) -> struct(toElementType),
+        MapType(StringType, DateType) -> MapType(StringType, toElementType)).foreach {
+        case (fromType, toType) =>
+          val level = CometCast.isSupported(fromType, toType, None, CometEvalMode.LEGACY)
+          assert(level.isInstanceOf[Compatible], s"$fromType to $toType: $level")
       }
     }
   }
@@ -2706,28 +2773,7 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     values.map(v => Some(v)) ++ Seq(None)
   }
 
-  private def castFallbackTest(
-      input: DataFrame,
-      toType: DataType,
-      expectedMessage: String): Unit = {
-    withTempPath { dir =>
-      val data = roundtripParquet(input, dir).coalesce(1)
-      data.createOrReplaceTempView("t")
-
-      withSQLConf((SQLConf.ANSI_ENABLED.key, "false")) {
-        val df = data.withColumn("converted", col("a").cast(toType))
-        df.collect()
-        val str =
-          new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
-        assert(str.contains(expectedMessage))
-      }
-    }
-  }
-
-  private def castTimestampTest(
-      input: DataFrame,
-      toType: DataType,
-      assertNative: Boolean = false) = {
+  private def castTimestampTest(input: DataFrame, toType: DataType, assertNative: Boolean) = {
     withTempPath { dir =>
       val data = roundtripParquet(input, dir).coalesce(1)
       data.createOrReplaceTempView("t")
@@ -2863,26 +2909,19 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               val cometMessage =
                 if (cometException.getCause != null) cometException.getCause.getMessage
                 else cometException.getMessage
-              // https://github.com/apache/datafusion-comet/issues/5072
-              // this if branch should only check decimal to decimal cast and errors when output precision, scale causes overflow.
-              if (df.schema("a").dataType.typeName.contains("decimal") && toType.typeName
-                  .contains("decimal") && sparkMessage.contains("cannot be represented as")) {
-                assert(cometMessage.contains("too large to store"))
+              if (CometSparkSessionExtensions.isSpark40Plus) {
+                // for Spark 4 we expect to sparkException carries the message
+                assert(sparkMessage.contains("SQLSTATE"))
+                // we compare a subset of the error message. Comet grabs the query
+                // context eagerly so it displays the call site at the
+                // line of code where the cast method was called, whereas spark grabs the context
+                // lazily and displays the call site at the line of code where the error is checked.
+                assert(
+                  sparkMessage.startsWith(
+                    cometMessage.substring(0, math.min(40, cometMessage.length))))
               } else {
-                if (CometSparkSessionExtensions.isSpark40Plus) {
-                  // for Spark 4 we expect to sparkException carries the message
-                  assert(sparkMessage.contains("SQLSTATE"))
-                  // we compare a subset of the error message. Comet grabs the query
-                  // context eagerly so it displays the call site at the
-                  // line of code where the cast method was called, whereas spark grabs the context
-                  // lazily and displays the call site at the line of code where the error is checked.
-                  assert(
-                    sparkMessage.startsWith(
-                      cometMessage.substring(0, math.min(40, cometMessage.length))))
-                } else {
-                  // for Spark 3.4 we expect to reproduce the error message exactly
-                  assert(cometMessage == sparkMessage)
-                }
+                // for Spark 3.4 we expect to reproduce the error message exactly
+                assert(cometMessage == sparkMessage)
               }
           }
         }

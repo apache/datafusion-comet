@@ -79,6 +79,11 @@ trait CometBenchmarkBase
     sparkSession.conf.set(CometConf.COMET_EXEC_ENABLED.key, "false")
     // Benchmarks use invalid input values that should produce NULL, not exceptions
     sparkSession.conf.set(SQLConf.ANSI_ENABLED.key, "false")
+    // Comet falls back to Spark for any Parquet scan of a ShortType column unless this check is
+    // disabled, because the column may hold an unsigned UINT_8. Benchmark tables are written by
+    // Spark, where ShortType is always a signed INT16, so the check only turns Comet cases that
+    // read a ShortType column into Spark measurements.
+    sparkSession.conf.set(CometConf.COMET_PARQUET_UNSIGNED_SMALL_INT_CHECK.key, "false")
 
     sparkSession
   }
@@ -106,7 +111,7 @@ trait CometBenchmarkBase
       // generator, so that results are comparable across runs. Seeding a driver-side `Random`
       // would not work here: the closure runs per row on the executor.
       spark
-        .range(values)
+        .range(values.toLong)
         .map(i =>
           if (useDictionary) CometBenchmarkBase.mix64(i) % 5 else CometBenchmarkBase.mix64(i))
         .createOrReplaceTempView(tbl)
@@ -394,7 +399,7 @@ trait CometBenchmarkBase
 
     val div = if (useDictionary) 5 else values
     spark
-      .range(values)
+      .range(values.toLong)
       .map(_ % div)
       .select((($"value" - 500) / 100.0) cast decimal as Symbol("dec"))
   }

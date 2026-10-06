@@ -34,11 +34,11 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, BoundReference, Exp
 import org.apache.spark.sql.catalyst.expressions.codegen.LazilyGeneratedOrdering
 import org.apache.spark.sql.catalyst.plans.logical.Statistics
 import org.apache.spark.sql.catalyst.plans.physical._
-import org.apache.spark.sql.comet.{CometFilterExec, CometMetricNode, CometNativeExec, CometNativeScanExec, CometPlan, CometProjectExec, CometSinkPlaceHolder, NativeExecContext}
+import org.apache.spark.sql.comet.{CometFilterExec, CometMetricNode, CometNativeExec, CometNativeScanExec, CometPlan, CometProjectExec, CometScanWrapper, CometSinkPlaceHolder, CometSparkToColumnarExec, NativeExecContext}
 import org.apache.spark.sql.comet.execution.arrow.CometArrowStream
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.ShuffleQueryStageExec
-import org.apache.spark.sql.execution.exchange.{ENSURE_REQUIREMENTS, ShuffleExchangeExec, ShuffleExchangeLike, ShuffleOrigin}
+import org.apache.spark.sql.execution.exchange.{ENSURE_REQUIREMENTS, Exchange, ShuffleExchangeExec, ShuffleExchangeLike, ShuffleOrigin}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics, SQLShuffleReadMetricsReporter, SQLShuffleWriteMetricsReporter}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, StructField, StructType, TimestampNTZType, TimestampType}
@@ -234,7 +234,7 @@ case class CometShuffleExchangeExec(
             serializer,
             metrics)
       }
-      metrics("numPartitions").set(dep.partitioner.numPartitions)
+      metrics("numPartitions").set(dep.partitioner.numPartitions.toLong)
       val executionId = sparkContext.getLocalProperty(SQLExecution.EXECUTION_ID_KEY)
       SQLMetrics.postDriverMetricUpdates(
         sparkContext,
@@ -248,7 +248,7 @@ case class CometShuffleExchangeExec(
         outputPartitioning,
         serializer,
         metrics)
-      metrics("numPartitions").set(dep.partitioner.numPartitions)
+      metrics("numPartitions").set(dep.partitioner.numPartitions.toLong)
       val executionId = sparkContext.getLocalProperty(SQLExecution.EXECUTION_ID_KEY)
       SQLMetrics.postDriverMetricUpdates(
         sparkContext,
@@ -387,7 +387,7 @@ object CometShuffleExchangeExec
    * `native_shuffle.md` for why the starts must be decorrelated rather than merely distinct.
    */
   def positionalStartPartition(mapPartitionId: Int, numPartitions: Int): Int =
-    new XORShiftRandom(mapPartitionId).nextInt(math.max(numPartitions, 1)) + 1
+    new XORShiftRandom(mapPartitionId.toLong).nextInt(math.max(numPartitions, 1)) + 1
 
   /**
    * Whether re-executing this subtree yields the same rows in the same order.
@@ -525,6 +525,19 @@ object CometShuffleExchangeExec
   }
 
   /**
+   * Whether the stage feeding a shuffle starts at a typed Dataset conversion (see
+   * [[CometConf.COMET_CONVERT_FROM_TYPED_DATASET_ENABLED]]). `CometExecRule` decides the shuffle
+   * before it removes its placeholders, so the conversion is still inside its `CometScanWrapper`.
+   */
+  private def readsTypedDatasetConversion(plan: SparkPlan): Boolean = plan match {
+    case _: Exchange => false
+    case CometScanWrapper(_, wrapped) => readsTypedDatasetConversion(wrapped)
+    case conversion: CometSparkToColumnarExec =>
+      conversion.child.isInstanceOf[SerializeFromObjectExec]
+    case other => other.children.exists(readsTypedDatasetConversion)
+  }
+
+  /**
    * Reasons the native shuffle path cannot handle this shuffle. Empty means native is supported.
    * Pure: does not tag the node.
    */
@@ -621,6 +634,19 @@ object CometShuffleExchangeExec
           if (!supportedHashPartitioningDataType(dt)) {
             reasons += s"unsupported hash partitioning data type for native shuffle: $dt"
           }
+        }
+        // A typed Dataset conversion moves the shuffle above it from Comet's columnar shuffle,
+        // which partitions with Spark's hash, to native shuffle. Native shuffle hashes a decimal
+        // wider than 18 digits differently from Spark, so a join with an input that is still on
+        // the columnar shuffle would put matching keys in different partitions. Leave such a
+        // shuffle where it was. A single partition hashes nothing.
+        // TODO: remove once native hashing matches Spark for wide decimals (#5994).
+        if (CometConf.COMET_CONVERT_FROM_TYPED_DATASET_ENABLED.get(conf) && reasons.isEmpty &&
+          partitioning.numPartitions > 1 &&
+          expressions.exists(_.dataType.existsRecursively(DecimalType.isByteArrayDecimalType)) &&
+          readsTypedDatasetConversion(s.child)) {
+          reasons += "a shuffle above a typed Dataset conversion that hashes a decimal wider " +
+            "than 18 digits stays on Comet's columnar shuffle, which hashes it as Spark does"
         }
       case SinglePartition =>
       // we already checked that the input types are supported
@@ -1117,7 +1143,7 @@ object CometShuffleExchangeExec
         // end up being almost the same regardless of the index. substantially scrambling the
         // seed by hashing will help. Refer to SPARK-21782 for more details.
         val partitionId = TaskContext.get().partitionId()
-        var position = new XORShiftRandom(partitionId).nextInt(numPartitions)
+        var position = new XORShiftRandom(partitionId.toLong).nextInt(numPartitions)
         (_: InternalRow) => {
           // The HashPartitioner will handle the `mod` by the number of partitions
           position += 1
@@ -1164,7 +1190,7 @@ object CometShuffleExchangeExec
                 row: InternalRow): UnsafeExternalRowSorter.PrefixComputer.Prefix = {
               // The hashcode generated from the binary form of a [[UnsafeRow]] should not be null.
               result.isNull = false
-              result.value = row.hashCode()
+              result.value = row.hashCode().toLong
               result
             }
           }
