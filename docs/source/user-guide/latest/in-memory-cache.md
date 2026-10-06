@@ -152,11 +152,8 @@ several times faster, at six times the memory.
 The two relations are not comparable to each other — different row counts, and a struct column
 carries several values per row.
 
-Array and map columns are deliberately absent from the benchmark, not from the format — the cache
-stores and projects them, and `CometInMemoryCacheSuite` covers them. They cannot be measured _here_
-because the left column would not exist: it needs Spark's cache scan to bridge into Comet operators,
-and `CometSparkToColumnarExec` declines `ArrayType` and `MapType`, so a query projecting one falls
-back to Spark row execution above the scan and the two columns stop measuring the same boundary.
+Array and map columns are not in the benchmark, though the cache stores and projects them, and
+`CometInMemoryCacheSuite` covers them.
 
 Read what this compares carefully. Comet execution is on in both columns, so the aggregation runs
 on Comet either way and only the cache-scan boundary moves: on the left, Spark's

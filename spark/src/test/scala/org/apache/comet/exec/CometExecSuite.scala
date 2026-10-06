@@ -4150,43 +4150,190 @@ class CometExecSuite extends CometTestBase {
     })
   }
 
-  test("SparkToColumnar admits only binary string arrays and maps through the collection gate") {
-    for (nullable <- Seq(false, true); containsNull <- Seq(false, true)) {
-      for (dataType <- Seq(
-          ArrayType(StringType, containsNull),
-          MapType(StringType, StringType, containsNull))) {
-        val field = StructField("tags", dataType, nullable)
-        Seq(
-          StructType(Seq(field)),
-          StructType(Seq(StructField("nested", StructType(Seq(field))))))
-          .foreach { schema =>
-            assert(CometSparkToColumnarExec.isSchemaSupported(schema, ListBuffer.empty))
-          }
-      }
-    }
-    val unsupported = Seq(
+  test("SparkToColumnar admits arrays and maps of every type the shared rule supports") {
+    val struct = StructType(Seq(StructField("i", IntegerType), StructField("s", StringType)))
+    val admitted = Seq(
+      ArrayType(StringType),
       ArrayType(IntegerType),
+      ArrayType(DecimalType(38, 10)),
+      ArrayType(TimestampType),
       ArrayType(BinaryType),
       ArrayType(ArrayType(StringType)),
-      ArrayType(StructType(Seq(StructField("s", StringType)))),
-      MapType(StringType, IntegerType),
-      MapType(IntegerType, StringType),
-      MapType(StringType, ArrayType(StringType)),
-      MapType(StringType, StructType(Seq(StructField("s", StringType))))) ++
-      (if (isSpark40Plus)
+      ArrayType(struct),
+      ArrayType(MapType(StringType, IntegerType)),
+      MapType(StringType, StringType),
+      MapType(IntegerType, IntegerType),
+      MapType(DateType, DecimalType(20, 2)),
+      MapType(StringType, ArrayType(IntegerType)),
+      MapType(IntegerType, struct),
+      MapType(struct, StringType),
+      MapType(ArrayType(IntegerType), IntegerType),
+      MapType(StringType, MapType(IntegerType, StringType)))
+    for (nullable <- Seq(false, true); containsNull <- Seq(false, true); dataType <- admitted) {
+      val collection = dataType match {
+        case a: ArrayType => a.copy(containsNull = containsNull)
+        case m: MapType => m.copy(valueContainsNull = containsNull)
+      }
+      val field = StructField("c", collection, nullable)
+      Seq(StructType(Seq(field)), StructType(Seq(StructField("nested", StructType(Seq(field))))))
+        .foreach { schema =>
+          val reasons = ListBuffer.empty[String]
+          assert(CometSparkToColumnarExec.isSchemaSupported(schema, reasons), s"$collection")
+          assert(reasons.isEmpty, reasons)
+        }
+    }
+
+    // The shared rule looks inside a collection and declines these for what it finds there. A
+    // decline of the whole collection would record no reason, which is how the two differ.
+    val duplicate = StructType(Seq(StructField("a", LongType), StructField("a", LongType)))
+    val declined = Seq(
+      ArrayType(duplicate),
+      MapType(LongType, duplicate),
+      ArrayType(ArrayType(duplicate)),
+      ArrayType(NullType),
+      MapType(IntegerType, ArrayType(NullType)),
+      ArrayType(DayTimeIntervalType()),
+      MapType(StringType, YearMonthIntervalType())) ++
+      (if (isSpark40Plus) {
          Seq(
-           DataType.fromDDL("ARRAY<STRING COLLATE UTF8_LCASE>"),
-           DataType.fromDDL("MAP<STRING COLLATE UTF8_LCASE,STRING>"),
-           DataType.fromDDL("MAP<STRING,STRING COLLATE UTF8_LCASE>"))
-       else Seq.empty)
-    unsupported.foreach { dataType =>
+           "ARRAY<STRING COLLATE UTF8_LCASE>",
+           "ARRAY<ARRAY<STRING COLLATE UTF8_LCASE>>",
+           "ARRAY<STRUCT<s: STRING COLLATE UTF8_LCASE>>",
+           "MAP<STRING COLLATE UTF8_LCASE,STRING>",
+           "MAP<STRING,STRING COLLATE UTF8_LCASE>",
+           "MAP<INT,ARRAY<STRING COLLATE UTF8_LCASE>>").map(DataType.fromDDL)
+       } else Seq.empty)
+    declined.foreach { dataType =>
       val schema = StructType(Seq(StructField("value", dataType)))
-      assert(!CometSparkToColumnarExec.isSchemaSupported(schema, ListBuffer.empty), dataType)
-      assert(
-        !CometSparkToColumnarExec.isSchemaSupported(
-          StructType(Seq(StructField("nested", schema))),
-          ListBuffer.empty),
-        dataType)
+      Seq(schema, StructType(Seq(StructField("nested", schema)))).foreach { declinedSchema =>
+        val reasons = ListBuffer.empty[String]
+        assert(!CometSparkToColumnarExec.isSchemaSupported(declinedSchema, reasons), dataType)
+        assert(reasons.nonEmpty, s"$dataType was declined without a reason")
+      }
+    }
+  }
+
+  // A column of each array and map shape the conversion admits, as its type, an expression over
+  // `id` that builds it, and one that reads an element of it. The column has, in some rows, a
+  // null collection, an empty one, and elements that are null.
+  private val sparkToColumnarShapes: Seq[(String, String, String)] = {
+    val positions = "sequence(0, cast(id % 4 AS INT))"
+    def collection(ddl: String, empty: String, body: String): String =
+      "cast(if(id % 7 = 0, null, " +
+        s"if(id % 7 = 1, cast($empty AS $ddl), cast($body AS $ddl))) AS $ddl)"
+    def array(ddl: String, element: String): (String, String, String) =
+      (
+        ddl,
+        collection(
+          ddl,
+          "array()",
+          s"transform($positions, x -> if((x + id) % 5 = 4, null, $element))"),
+        "if(size(c) > 0, c[0], null)")
+    def map(ddl: String, key: String, value: String): (String, String, String) =
+      (
+        ddl,
+        collection(
+          ddl,
+          "map()",
+          s"map_from_arrays(transform($positions, x -> $key), " +
+            s"transform($positions, x -> if((x + id) % 5 = 4, null, $value)))"),
+        "if(size(c) > 0, element_at(map_values(c), 1), null)")
+    val struct = "named_struct('i', cast(id + x AS INT), 's', concat('s', cast(x AS STRING)))"
+    Seq(
+      array("ARRAY<INT>", "cast(id * 10 + x AS INT)"),
+      array(
+        "ARRAY<DECIMAL(38,10)>",
+        "cast(concat(if(x % 2 = 0, '-', ''), cast(id AS STRING), '12345678901234567.0123456789') " +
+          "AS DECIMAL(38,10))"),
+      array("ARRAY<TIMESTAMP>", "timestamp_micros(1700000000000000 + id * 1000003 + x)"),
+      array(
+        "ARRAY<BINARY>",
+        "cast(concat('b', cast(id AS STRING), cast(x AS STRING)) AS BINARY)"),
+      array("ARRAY<DOUBLE>", "cast(id AS DOUBLE) / 3 + x"),
+      array("ARRAY<BOOLEAN>", "(id + x) % 3 = 0"),
+      array(
+        "ARRAY<ARRAY<INT>>",
+        "if((x + id) % 4 = 3, null, if((x + id) % 4 = 2, cast(array() AS ARRAY<INT>), " +
+          "transform(sequence(0, cast(x % 3 AS INT)), y -> cast(id + x + y AS INT))))"),
+      array("ARRAY<STRUCT<i: INT, s: STRING>>", struct),
+      array("ARRAY<MAP<STRING,INT>>", "map(concat('k', cast(x AS STRING)), cast(id AS INT))"),
+      map("MAP<INT,INT>", "x", "cast(id * 10 + x AS INT)"),
+      map(
+        "MAP<DATE,DECIMAL(20,2)>",
+        "date_add(DATE'2024-01-01', x)",
+        "cast((id * 1000003 + x) / 100 AS DECIMAL(20,2))"),
+      map(
+        "MAP<DECIMAL(20,2),STRING>",
+        "cast(concat(cast(x AS STRING), '.25') AS DECIMAL(20,2))",
+        "concat('v', cast(id AS STRING), '_', cast(x AS STRING))"),
+      map(
+        "MAP<STRING,ARRAY<INT>>",
+        "concat('k', cast(x AS STRING))",
+        "transform(sequence(0, x), y -> cast(id + y AS INT))"),
+      map("MAP<INT,STRUCT<i: INT, s: STRING>>", "x", struct),
+      map(
+        "MAP<STRUCT<i: INT, s: STRING>,STRING>",
+        "named_struct('i', x, 's', concat('k', cast(x AS STRING)))",
+        "concat('v', cast(id AS STRING))"),
+      map("MAP<ARRAY<INT>,INT>", "array(x, x + 1)", "cast(id + x AS INT)"),
+      map(
+        "MAP<STRING,MAP<INT,STRING>>",
+        "concat('k', cast(x AS STRING))",
+        "map_from_arrays(array(x, x + 1), array('a', concat('b', cast(id AS STRING))))"))
+  }
+
+  sparkToColumnarShapes.foreach { case (ddl, expression, element) =>
+    test(s"SparkToColumnar converts $ddl columns that native operators read") {
+      withTempPath { dir =>
+        var schema: StructType = null
+        var rows: Seq[Row] = Seq.empty
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          val data = spark.range(100).selectExpr("id", s"$expression AS c")
+          schema = data.schema
+          rows = data.collect().toSeq
+          data.repartition(1).write.parquet(dir.toString)
+        }
+        for (sourceType <- Seq("rdd", "parquet-row", "parquet-columnar")) {
+          val vectorized = sourceType == "parquet-columnar"
+          withSQLConf(
+            SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+            SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> vectorized.toString,
+            SQLConf.PARQUET_VECTORIZED_READER_NESTED_COLUMN_ENABLED.key -> "true",
+            // Spark batches smaller than Comet's, so an Arrow batch spans several of them.
+            SQLConf.PARQUET_VECTORIZED_READER_BATCH_SIZE.key -> "30",
+            CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
+            CometConf.COMET_BATCH_SIZE.key -> "16",
+            CometConf.COMET_SHUFFLE_MODE.key -> "native",
+            CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true",
+            CometConf.COMET_CONVERT_FROM_RDD_ENABLED.key -> "true") {
+            def source =
+              if (sourceType == "rdd") {
+                spark.createDataFrame(spark.sparkContext.parallelize(rows, 2), schema)
+              } else {
+                spark.read.parquet(dir.toString)
+              }
+            def query =
+              source.filter("id > 0").selectExpr("id", "c", "size(c) AS n", s"$element AS e")
+            val (_, plan) = checkSparkAnswerAndOperator(
+              query,
+              includeClasses = Seq(
+                classOf[CometSparkToColumnarExec],
+                classOf[CometProjectExec],
+                classOf[CometFilterExec]))
+            val conversions = collect(plan) { case c: CometSparkToColumnarExec => c }
+            assert(conversions.size == 1, plan)
+            assert(conversions.head.child.supportsColumnar == vectorized, plan)
+            checkSparkSchema(query)
+            val (_, shuffled) = checkSparkAnswerAndOperator(
+              query.repartition(2, col("id")),
+              includeClasses = Seq(classOf[CometShuffleExchangeExec]))
+            val exchanges = collect(shuffled) { case s: CometShuffleExchangeExec => s }
+            assert(exchanges.nonEmpty && exchanges.forall(_.shuffleType == CometNativeShuffle))
+            // Stop before draining the input to exercise normal task-completion cleanup.
+            checkSparkAnswer(query.limit(1))
+          }
+        }
+      }
     }
   }
 
