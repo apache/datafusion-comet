@@ -17,15 +17,15 @@
 
 use super::case_when::is_infallible;
 use arrow::array::{new_null_array, Array, BooleanArray};
-use arrow::buffer::BooleanBuffer;
+use arrow::buffer::NullBuffer;
 use arrow::datatypes::{DataType, FieldRef, Schema};
 use arrow::record_batch::{RecordBatch, RecordBatchOptions};
-use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
+use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::common::{internal_datafusion_err, internal_err, Result};
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_expr::expressions::{Column, Literal};
+use datafusion::physical_expr::utils::collect_columns;
 use datafusion::physical_expr::PhysicalExpr;
-use std::collections::BTreeSet;
 use std::fmt::{Display, Formatter};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -38,7 +38,8 @@ use std::sync::Arc;
 /// DataFusion evaluates every argument over the whole batch before it calls a function, so an
 /// argument that can fail, such as an ANSI cast of a malformed string, would fail on a row that
 /// Spark answers with NULL, and a nondeterministic argument would see rows that it does not see in
-/// Spark.
+/// Spark. An argument that can be evaluated for any row, such as a column, is evaluated for all of
+/// them.
 ///
 /// The function still sees every row, with NULL for each argument skipped there, so it has to
 /// return NULL wherever an argument other than the last is NULL. Its arguments have to be its
@@ -51,8 +52,6 @@ pub struct NullShortCircuit {
     /// The function over the evaluated arguments, reading each one that is not a literal from a
     /// column of the batch that holds them
     body: Arc<dyn PhysicalExpr>,
-    /// The fields of those columns
-    fields: Vec<FieldRef>,
     args: Vec<Arg>,
 }
 
@@ -63,55 +62,61 @@ impl NullShortCircuit {
         inner: Arc<dyn PhysicalExpr>,
         input_schema: &Schema,
     ) -> Result<Arc<dyn PhysicalExpr>> {
-        let children = inner.children();
-        if children
+        let masked = inner
+            .children()
             .iter()
-            .skip(1)
-            .all(|arg| is_infallible(arg, input_schema))
-        {
+            .enumerate()
+            .map(|(i, arg)| i > 0 && !is_infallible(arg, input_schema))
+            .collect::<Vec<_>>();
+        if !masked.contains(&true) {
             return Ok(inner);
         }
-        // An argument after the first is NULL on the rows it is skipped for
-        let fields = children
-            .iter()
-            .filter(|arg| !arg.is::<Literal>())
-            .map(|arg| {
-                let field = arg.return_field(input_schema)?;
-                Ok(Arc::new(field.as_ref().clone().with_nullable(true)) as FieldRef)
-            })
-            .collect::<Result<Vec<_>>>()?;
-        Ok(Arc::new(Self::try_new(inner, fields)?))
-    }
-
-    fn try_new(inner: Arc<dyn PhysicalExpr>, fields: Vec<FieldRef>) -> Result<Self> {
-        let args = inner
+        let plans = inner
             .children()
             .into_iter()
-            .map(Arg::try_new)
-            .collect::<Result<Vec<_>>>()?;
-        let mut columns = fields.iter().enumerate();
-        let body_children = args
-            .iter()
-            .map(|arg| {
-                if arg.is_literal {
-                    return Ok(Arc::clone(&arg.expr));
+            .zip(masked)
+            .map(|(arg, masked)| {
+                if arg.is::<Literal>() {
+                    return Ok((None, masked));
                 }
-                let (index, field) = columns
-                    .next()
-                    .ok_or_else(|| internal_datafusion_err!("NullShortCircuit lacks a field"))?;
-                Ok(Arc::new(Column::new(field.name(), index)) as Arc<dyn PhysicalExpr>)
+                // A masked argument is NULL on the rows it is skipped for
+                let field = arg.return_field(input_schema)?;
+                Ok((
+                    Some(Arc::new(field.as_ref().clone().with_nullable(true))),
+                    masked,
+                ))
             })
             .collect::<Result<Vec<_>>>()?;
-        if columns.next().is_some() {
-            return internal_err!("NullShortCircuit has a field for no argument");
+        Ok(Arc::new(Self::try_new(inner, plans)?))
+    }
+
+    /// `plans` holds each argument's [`Arg::field`] and whether it is masked.
+    fn try_new(inner: Arc<dyn PhysicalExpr>, plans: Vec<(Option<FieldRef>, bool)>) -> Result<Self> {
+        let children = inner.children();
+        if children.len() != plans.len() {
+            return internal_err!(
+                "NullShortCircuit has {} plans for {} arguments",
+                plans.len(),
+                children.len()
+            );
+        }
+        let args = children
+            .into_iter()
+            .zip(plans)
+            .map(|(expr, (field, masked))| Arg::try_new(expr, field, masked))
+            .collect::<Result<Vec<_>>>()?;
+        let mut body_children = Vec::with_capacity(args.len());
+        let mut column = 0;
+        for arg in &args {
+            if let Some(field) = &arg.field {
+                body_children.push(Arc::new(Column::new(field.name(), column)) as _);
+                column += 1;
+            } else {
+                body_children.push(Arc::clone(&arg.expr));
+            }
         }
         let body = Arc::clone(&inner).with_new_children(body_children)?;
-        Ok(Self {
-            inner,
-            body,
-            fields,
-            args,
-        })
+        Ok(Self { inner, body, args })
     }
 }
 
@@ -150,17 +155,15 @@ impl PhysicalExpr for NullShortCircuit {
 
     fn evaluate(&self, batch: &RecordBatch) -> Result<ColumnarValue> {
         let num_rows = batch.num_rows();
-        // The rows where no argument evaluated so far is NULL, or `None` while that is all of them
-        let mut rows: Option<BooleanArray> = None;
-        let mut columns = Vec::with_capacity(self.fields.len());
+        // The rows where an argument evaluated so far is NULL, or `None` while there are none
+        let mut nulls: Option<NullBuffer> = None;
+        let mut fields = vec![];
+        let mut columns = vec![];
         let last = self.args.len() - 1;
         for (i, arg) in self.args.iter().enumerate() {
-            let value = match &rows {
-                Some(rows) if !arg.is_literal => arg.evaluate_rows(batch, rows)?,
-                _ => arg.expr.evaluate(batch)?,
-            };
+            let value = arg.evaluate(batch, nulls.as_ref())?;
             if i < last {
-                let valid = match &value {
+                let value_nulls = match &value {
                     ColumnarValue::Array(array) if array.len() != num_rows => {
                         return internal_err!(
                             "{} returned {} rows for a batch of {num_rows}",
@@ -168,40 +171,25 @@ impl PhysicalExpr for NullShortCircuit {
                             array.len()
                         );
                     }
-                    ColumnarValue::Array(array) => array
-                        .logical_nulls()
-                        .filter(|nulls| nulls.null_count() > 0)
-                        .map(|nulls| nulls.into_inner()),
+                    ColumnarValue::Array(array) => array.logical_nulls(),
                     ColumnarValue::Scalar(scalar) if scalar.is_null() => {
-                        Some(BooleanBuffer::new_unset(num_rows))
+                        Some(NullBuffer::new_null(num_rows))
                     }
                     ColumnarValue::Scalar(_) => None,
                 };
-                if let Some(valid) = valid {
-                    let selected = match rows.take() {
-                        Some(rows) => rows.values() & &valid,
-                        None => valid,
-                    };
-                    if selected.count_set_bits() == 0 {
-                        // Every row is NULL, and no later argument is evaluated for any of them
-                        let data_type = self.inner.data_type(batch.schema_ref())?;
-                        return Ok(ColumnarValue::Array(new_null_array(&data_type, num_rows)));
-                    }
-                    rows = Some(BooleanArray::new(selected, None));
+                nulls = NullBuffer::union(nulls.as_ref(), value_nulls.as_ref())
+                    .filter(|n| n.null_count() > 0);
+                if nulls.as_ref().is_some_and(|n| n.null_count() == num_rows) {
+                    // Every row is NULL, and no later argument is evaluated for any of them
+                    let data_type = self.inner.data_type(batch.schema_ref())?;
+                    return Ok(ColumnarValue::Array(new_null_array(&data_type, num_rows)));
                 }
             }
-            if !arg.is_literal {
-                columns.push(value.into_array(num_rows)?);
-            }
-        }
-        // The batch is checked against the types the arguments have at run time, which can differ
-        // from their planned types in the names and nullability of nested fields
-        let fields = self
-            .fields
-            .iter()
-            .zip(&columns)
-            .map(|(field, column)| {
-                if field.data_type() == column.data_type() {
+            if let Some(field) = &arg.field {
+                let column = value.into_array(num_rows)?;
+                // The batch is checked against the types the arguments have at run time, which
+                // can differ from their planned types in the names and nullability of nested fields
+                fields.push(if field.data_type() == column.data_type() {
                     Arc::clone(field)
                 } else {
                     Arc::new(
@@ -210,9 +198,10 @@ impl PhysicalExpr for NullShortCircuit {
                             .clone()
                             .with_data_type(column.data_type().clone()),
                     )
-                }
-            })
-            .collect::<Vec<_>>();
+                });
+                columns.push(column);
+            }
+        }
         let options = RecordBatchOptions::new().with_row_count(Some(num_rows));
         let args =
             RecordBatch::try_new_with_options(Arc::new(Schema::new(fields)), columns, &options)?;
@@ -228,7 +217,12 @@ impl PhysicalExpr for NullShortCircuit {
         children: Vec<Arc<dyn PhysicalExpr>>,
     ) -> Result<Arc<dyn PhysicalExpr>> {
         let inner = Arc::clone(&self.inner).with_new_children(children)?;
-        Ok(Arc::new(Self::try_new(inner, self.fields.clone())?))
+        let plans = self
+            .args
+            .iter()
+            .map(|arg| (arg.field.clone(), arg.masked.is_some()))
+            .collect();
+        Ok(Arc::new(Self::try_new(inner, plans)?))
     }
 
     fn fmt_sql(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -240,54 +234,71 @@ impl PhysicalExpr for NullShortCircuit {
     }
 }
 
-/// An argument, with how to evaluate it for only some of the rows.
+/// An argument, and how it is evaluated.
 #[derive(Debug)]
 struct Arg {
     expr: Arc<dyn PhysicalExpr>,
-    is_literal: bool,
-    /// The input columns that `expr` reads
-    projection: Vec<usize>,
-    /// `expr` reading those columns from a batch of just them, so that evaluating it for some of
-    /// the rows filters no other column
-    projected: Arc<dyn PhysicalExpr>,
+    /// The field of the column that `body` reads the argument from, or `None` for a literal,
+    /// which `body` keeps
+    field: Option<FieldRef>,
+    /// For an argument evaluated for only the rows where no earlier argument is NULL, the input
+    /// columns it reads, and the argument reading them from a batch of just those columns, so
+    /// that skipping rows filters no other column
+    masked: Option<(Vec<usize>, Arc<dyn PhysicalExpr>)>,
 }
 
 impl Arg {
-    fn try_new(expr: &Arc<dyn PhysicalExpr>) -> Result<Self> {
-        let mut projection = BTreeSet::new();
-        expr.apply(|e| {
-            if let Some(column) = e.downcast_ref::<Column>() {
-                projection.insert(column.index());
-            }
-            Ok(TreeNodeRecursion::Continue)
-        })?;
-        let projection = projection.into_iter().collect::<Vec<_>>();
-        let projected = Arc::clone(expr)
-            .transform_down(|e| {
-                let Some(column) = e.downcast_ref::<Column>() else {
-                    return Ok(Transformed::no(e));
-                };
-                let index = projection
-                    .binary_search(&column.index())
-                    .map_err(|_| internal_datafusion_err!("{column} is not projected"))?;
-                Ok(Transformed::yes(
-                    Arc::new(Column::new(column.name(), index)) as Arc<dyn PhysicalExpr>,
-                ))
-            })?
-            .data;
+    fn try_new(
+        expr: &Arc<dyn PhysicalExpr>,
+        field: Option<FieldRef>,
+        masked: bool,
+    ) -> Result<Self> {
+        let masked = masked.then(|| project(expr)).transpose()?;
         Ok(Self {
             expr: Arc::clone(expr),
-            is_literal: expr.is::<Literal>(),
-            projection,
-            projected,
+            field,
+            masked,
         })
     }
 
-    /// Evaluates the argument for just `rows`, returning a value for every row of the batch.
-    fn evaluate_rows(&self, batch: &RecordBatch, rows: &BooleanArray) -> Result<ColumnarValue> {
-        self.projected
-            .evaluate_selection(&batch.project(&self.projection)?, rows)
+    /// Evaluates the argument, for just the rows outside `nulls` if it is masked, returning a
+    /// value for every row of the batch.
+    fn evaluate(&self, batch: &RecordBatch, nulls: Option<&NullBuffer>) -> Result<ColumnarValue> {
+        match (&self.masked, nulls) {
+            (Some((projection, projected)), Some(nulls)) => {
+                let rows = BooleanArray::new(nulls.inner().clone(), None);
+                projected.evaluate_selection(&batch.project(projection)?, &rows)
+            }
+            _ => self.expr.evaluate(batch),
+        }
     }
+}
+
+/// The input columns that `expr` reads, and `expr` reading them from a batch of just those columns.
+fn project(expr: &Arc<dyn PhysicalExpr>) -> Result<(Vec<usize>, Arc<dyn PhysicalExpr>)> {
+    let mut projection = collect_columns(expr)
+        .iter()
+        .map(Column::index)
+        .collect::<Vec<_>>();
+    projection.sort_unstable();
+    projection.dedup();
+    let projected = Arc::clone(expr)
+        .transform_down(|e| {
+            let Some(column) = e.downcast_ref::<Column>() else {
+                return Ok(Transformed::no(e));
+            };
+            let index = projection
+                .binary_search(&column.index())
+                .map_err(|_| internal_datafusion_err!("{column} is not projected"))?;
+            if index == column.index() {
+                return Ok(Transformed::no(e));
+            }
+            Ok(Transformed::yes(
+                Arc::new(Column::new(column.name(), index)) as Arc<dyn PhysicalExpr>,
+            ))
+        })?
+        .data;
+    Ok((projection, projected))
 }
 
 #[cfg(test)]
@@ -392,6 +403,18 @@ mod tests {
         ]))
     }
 
+    /// `slice(a, CAST(s AS INT), len)` over `test_batch`
+    fn expected_slices() -> ArrayRef {
+        Arc::new(ListArray::from_iter_primitive::<Int32Type, _, _>(vec![
+            None,
+            Some(vec![Some(2)]),
+            None,
+            None,
+            Some(vec![Some(6)]),
+            None,
+        ]))
+    }
+
     #[test]
     fn later_argument_is_not_evaluated_where_the_array_is_null() {
         let batch = test_batch();
@@ -472,17 +495,36 @@ mod tests {
         let args = vec![col("a", &schema).unwrap(), start, Arc::clone(&length) as _];
         let guarded = NullShortCircuit::wrap(slice(args, &schema), &schema).unwrap();
         let actual = evaluate(&guarded, &batch).unwrap();
-        let expected = ListArray::from_iter_primitive::<Int32Type, _, _>(vec![
-            None,
-            Some(vec![Some(2)]),
-            None,
-            None,
-            Some(vec![Some(6)]),
-            None,
-        ]);
-        assert_eq!(actual.as_ref(), &expected as &dyn Array);
+        assert_eq!(actual.as_ref(), expected_slices().as_ref());
         // The length saw the three rows that have an array, and only the column it reads
         assert_eq!(*length.seen.lock().unwrap(), vec![(3, 1)]);
+    }
+
+    #[test]
+    fn infallible_later_argument_is_evaluated_for_every_row() {
+        let batch = test_batch();
+        let schema = batch.schema();
+        let start = ansi_cast(
+            ansi_cast(col("s", &schema).unwrap(), DataType::Int32),
+            DataType::Int64,
+        );
+        let args = vec![
+            col("a", &schema).unwrap(),
+            start,
+            col("len", &schema).unwrap(),
+        ];
+        let guarded = NullShortCircuit::wrap(slice(args, &schema), &schema).unwrap();
+        // Only the start, which can fail, skips the rows whose array is NULL
+        let masked = guarded
+            .downcast_ref::<NullShortCircuit>()
+            .unwrap()
+            .args
+            .iter()
+            .map(|arg| arg.masked.is_some())
+            .collect::<Vec<_>>();
+        assert_eq!(masked, vec![false, true, false]);
+        let actual = evaluate(&guarded, &batch).unwrap();
+        assert_eq!(actual.as_ref(), expected_slices().as_ref());
     }
 
     #[test]

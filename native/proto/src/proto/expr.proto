@@ -558,8 +558,8 @@ message ScalarFunc {
   DataType return_type = 3;
   bool fail_on_error = 4;
   // Evaluate each argument after the first only for the rows where no earlier argument is NULL,
-  // as Spark does for a null-intolerant BinaryExpression or TernaryExpression. Only for a
-  // function that returns NULL wherever an argument other than the last is NULL.
+  // as Spark does for a null-intolerant BinaryExpression or TernaryExpression. See
+  // QueryPlanSerde.withNullShortCircuit.
   bool null_short_circuit = 5;
 }
 
