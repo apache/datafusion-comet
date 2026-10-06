@@ -89,11 +89,21 @@ trait MathBase {
       Unsupported(Some(s"Unsupported datatype $dt"))
     }
 
-  // Native decimal Add/Subtract/Divide/IntegralDivide/Remainder scale-aligns operands by
-  // multiplying by 10^|delta|, which overflows (subtract-with-overflow panic in debug, silent
-  // wrap in release) whenever any operand or the result has negative scale. See issue #5013.
+  // Only `Divide` and `IntegralDivide` need this. `spark_decimal_div` computes its
+  // scale-alignment exponents in `u32`, so a negative scale wraps to roughly 4.29e9, clears the
+  // precision check, and sends the BigInt branch into `10.pow(~4.29e9)`. That is an unbounded
+  // allocation rather than an overflow, so it hangs rather than failing. `decimal_div` now
+  // rejects a negative scale up front, which makes that diagnosable, but there is still no
+  // usable native result, so division stays unsupported here.
+  //
+  // `Add`, `Subtract`, `Multiply`, `Remainder` and `UnaryMinus` are deliberately not guarded.
+  // Their kernels scale-align by `10^(max_scale - s)`, which is never negative. The `u8`
+  // underflow that used to break them lived in the two width tests this PR rewrites in `i16`,
+  // in `PhysicalPlanner::create_binary_expr_with_options` and `create_modulo_expr`. They run
+  // natively on negative-scale decimals and are pinned by a regression test in
+  // `CometExpressionSuite`. See issue #5013.
   private[comet] val negScaleDecimalArithmeticReason: String =
-    "Arithmetic on negative-scale decimal is not supported natively"
+    "Decimal division with negative scale is not supported natively"
 
   private[comet] def negScaleDecimalRejection(expr: BinaryArithmetic): Option[Unsupported] = {
     def isNegScale(dt: DataType): Boolean = dt match {
@@ -170,11 +180,8 @@ trait MathBase {
 
 object CometAdd extends CometExpressionSerde[Add] with MathBase {
 
-  override def getUnsupportedReasons(): Seq[String] =
-    Seq(negScaleDecimalArithmeticReason)
-
   override def getSupportLevel(expr: Add): SupportLevel =
-    negScaleDecimalRejection(expr).getOrElse(mathDataTypeSupportLevel(expr.left.dataType))
+    mathDataTypeSupportLevel(expr.left.dataType)
 
   override def convert(
       expr: Add,
@@ -211,11 +218,8 @@ object CometAdd extends CometExpressionSerde[Add] with MathBase {
 
 object CometSubtract extends CometExpressionSerde[Subtract] with MathBase {
 
-  override def getUnsupportedReasons(): Seq[String] =
-    Seq(negScaleDecimalArithmeticReason)
-
   override def getSupportLevel(expr: Subtract): SupportLevel =
-    negScaleDecimalRejection(expr).getOrElse(mathDataTypeSupportLevel(expr.left.dataType))
+    mathDataTypeSupportLevel(expr.left.dataType)
 
   override def convert(
       expr: Subtract,
@@ -235,8 +239,6 @@ object CometSubtract extends CometExpressionSerde[Subtract] with MathBase {
 
 object CometMultiply extends CometExpressionSerde[Multiply] with MathBase {
 
-  // No `negScaleDecimalRejection` guard: Multiply doesn't scale-align operands, so negative-scale
-  // decimals are safe here. Pinned by a regression test in CometExpressionSuite. See issue #5013.
   override def getSupportLevel(expr: Multiply): SupportLevel =
     mathDataTypeSupportLevel(expr.left.dataType)
 
@@ -382,11 +384,8 @@ object CometIntegralDivide extends CometExpressionSerde[IntegralDivide] with Mat
 
 object CometRemainder extends CometExpressionSerde[Remainder] with MathBase {
 
-  override def getUnsupportedReasons(): Seq[String] =
-    Seq(negScaleDecimalArithmeticReason)
-
   override def getSupportLevel(expr: Remainder): SupportLevel =
-    negScaleDecimalRejection(expr).getOrElse(mathDataTypeSupportLevel(expr.left.dataType))
+    mathDataTypeSupportLevel(expr.left.dataType)
 
   override def convert(
       expr: Remainder,

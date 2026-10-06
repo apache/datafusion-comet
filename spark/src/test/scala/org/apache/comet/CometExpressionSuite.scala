@@ -23,7 +23,7 @@ import scala.util.Random
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{Column, CometTestBase, DataFrame, Row}
-import org.apache.spark.sql.catalyst.expressions.{Add, Alias, AttributeReference, Cast, Divide, FromUnixTime, In, InSet, IntegralDivide, Literal, Remainder, StructsToJson, Subtract, TruncDate, TruncTimestamp}
+import org.apache.spark.sql.catalyst.expressions.{Add, Alias, AttributeReference, Cast, Divide, FromUnixTime, In, InSet, IntegralDivide, Literal, Multiply, Remainder, StructsToJson, Subtract, TruncDate, TruncTimestamp}
 import org.apache.spark.sql.catalyst.optimizer.{ConvertToLocalRelation, OptimizeIn, SimplifyExtractValueOps}
 import org.apache.spark.sql.comet.{CometFilterExec, CometProjectExec, CometSortExec, CometTakeOrderedAndProjectExec}
 import org.apache.spark.sql.execution.{LocalTableScanExec, ProjectExec, SparkPlan}
@@ -34,7 +34,7 @@ import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark41Plus, isSpark42Plus}
-import org.apache.comet.serde.{CometAdd, CometDivide, CometIntegralDivide, CometRemainder, CometSubtract, Unsupported}
+import org.apache.comet.serde.{CometAdd, CometDivide, CometIntegralDivide, CometMultiply, CometRemainder, CometSubtract, Compatible, Unsupported}
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
@@ -1352,31 +1352,40 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("arithmetic on negative-scale decimal reports unsupported via getSupportLevel") {
-    // Guards issue #5013: native scale-align multiplies by 10^|delta| which overflows to a
-    // subtract-with-overflow panic (debug) / silent wrap (release) whenever any operand or the
-    // result has negative scale. Constructing the expressions requires
-    // allowNegativeScaleOfDecimal so DecimalType(_, s<0) passes Spark's own check.
+  test("division on negative-scale decimal reports unsupported via getSupportLevel") {
+    // Issue #5013: `spark_decimal_div` computes its scale-alignment exponents in `u32`, so a
+    // negative scale wraps to roughly 4.29e9 and the BigInt branch attempts an unbounded
+    // allocation. Only division is affected. The other arithmetic operators scale-align by
+    // `10^(max_scale - s)`, which is never negative, so they stay native and are pinned by
+    // "safe ops on negative-scale decimal run natively" below. Constructing the expressions
+    // requires allowNegativeScaleOfDecimal so DecimalType(_, s<0) passes Spark's own check.
     withSQLConf("spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true") {
       Seq(DecimalType(10, -1), DecimalType(20, -5)).foreach { negScale =>
         val posDec = DecimalType(10, 0)
         val negAttr = AttributeReference("n", negScale)()
         val posAttr = AttributeReference("p", posDec)()
-        val expected = Unsupported(Some(CometAdd.negScaleDecimalArithmeticReason))
+        val expected = Unsupported(Some(CometDivide.negScaleDecimalArithmeticReason))
 
-        assert(CometAdd.getSupportLevel(Add(negAttr, posAttr)) == expected)
-        assert(CometSubtract.getSupportLevel(Subtract(negAttr, posAttr)) == expected)
         assert(CometDivide.getSupportLevel(Divide(negAttr, posAttr)) == expected)
         assert(CometIntegralDivide.getSupportLevel(IntegralDivide(negAttr, posAttr)) == expected)
-        assert(CometRemainder.getSupportLevel(Remainder(negAttr, posAttr)) == expected)
         // Guard also fires when negative scale is only on the right operand.
-        assert(CometAdd.getSupportLevel(Add(posAttr, negAttr)) == expected)
+        assert(CometDivide.getSupportLevel(Divide(posAttr, negAttr)) == expected)
+
+        // The unguarded operators must not report unsupported for the same operands.
+        assert(CometAdd.getSupportLevel(Add(negAttr, posAttr)) == Compatible())
+        assert(CometSubtract.getSupportLevel(Subtract(negAttr, posAttr)) == Compatible())
+        assert(CometRemainder.getSupportLevel(Remainder(negAttr, posAttr)) == Compatible())
+        assert(CometMultiply.getSupportLevel(Multiply(negAttr, posAttr)) == Compatible())
       }
     }
   }
 
-  test("arithmetic on negative-scale decimal falls back and returns correct results") {
+  test("division on negative-scale decimal falls back and returns correct results") {
     // End-to-end proof for issue #5013 that the previously-panicking queries now complete.
+    // `checkSparkAnswerAndFallbackReason` rather than `checkSparkAnswer`: these five serdes do
+    // not mix in `CodegenDispatchFallback`, so `Unsupported` falls the whole projection back to
+    // Spark, and asserting the reason is what proves the guard fired. A plain answer comparison
+    // would pass whether or not it did.
     // ConvertToLocalRelation is excluded so the arithmetic actually runs on the plan rather
     // than being folded at plan time (#4789). `DecimalType(_, s<0)` must be constructed under
     // allowNegativeScaleOfDecimal=true because the case class initializer reads the flag, so
@@ -1396,13 +1405,11 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         // source construction does not depend on any of the guards under test.
         val strs = Seq(10 * unit, 20 * unit, 30 * unit).map(_.toString)
         val v = strs.toDF("s").select(col("s").cast(negScaleType).as("v"))
-        // v % v keeps both operands at the negative-scale type through Spark's coercion so the
-        // arithmetic guard is the only thing preventing a native panic.
-        checkSparkAnswer(v.selectExpr("v % v"))
-        checkSparkAnswer(v.selectExpr("v + cast(2 as decimal(10, 0))"))
-        checkSparkAnswer(v.selectExpr("v - cast(2 as decimal(10, 0))"))
-        checkSparkAnswer(v.selectExpr("v / cast(3 as decimal(10, 0))"))
-        checkSparkAnswer(v.selectExpr("v div cast(3 as decimal(10, 0))"))
+        Seq("v / cast(3 as decimal(10, 0))", "v div cast(3 as decimal(10, 0))").foreach { e =>
+          checkSparkAnswerAndFallbackReason(
+            v.selectExpr(e),
+            CometDivide.negScaleDecimalArithmeticReason)
+        }
       }
     }
   }
@@ -1433,6 +1440,19 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         checkSparkAnswerAndOperator(v.selectExpr("v * cast(2 as int)"))
         // UnaryMinus on Decimal(neg) - no alignment, must stay native.
         checkSparkAnswerAndOperator(v.selectExpr("-v"))
+        // Add, Subtract and Remainder scale-align by `10^(max_scale - s)`, which is never
+        // negative. They were guarded in an earlier revision of this PR because the `u8`
+        // underflow in the two width tests made them fail. Those are rewritten in `i16` here,
+        // so they run natively again. If either rewrite is reverted these assertions fail.
+        Seq(
+          "v + v",
+          "v - v",
+          "v % v",
+          "v + cast(2 as decimal(10, 0))",
+          "v - cast(2 as decimal(10, 0))",
+          "v % cast(3 as decimal(10, 0))").foreach { e =>
+          checkSparkAnswerAndOperator(v.selectExpr(e))
+        }
       }
     }
   }

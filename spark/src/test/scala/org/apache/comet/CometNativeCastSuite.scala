@@ -1017,12 +1017,10 @@ class CometNativeCastSuite
     }
   }
 
-  test("cast between negative-scale decimal and integer/float/timestamp is unsupported") {
-    // Native casts here have no usable path in either direction. Integer and timestamp
-    // scale-align by multiplying by 10^|scale|, which overflows the underlying integer (panic
-    // in debug, silent wrap in release). Float and double divide by 10^scale, which is not
-    // exactly representable for a negative scale, so they silently diverge from Spark -- a
-    // Decimal(20,-5) holding 1000000 comes back as 999999.9999999999. See #5013.
+  test("cast between negative-scale decimal and integer/timestamp is unsupported") {
+    // Native casts here have no usable path in either direction: they scale-align by
+    // multiplying by 10^|scale|, which overflows the underlying integer (panic in debug,
+    // silent wrap in release). See #5013.
     // `DecimalType(_, s<0)` must be constructed under allowNegativeScaleOfDecimal=true
     // because the case class initializer reads the flag, so wrap everything in one block.
     withSQLConf(
@@ -1053,12 +1051,6 @@ class CometNativeCastSuite
             DataTypes.TimestampType,
             None,
             CometEvalMode.LEGACY) == expected)
-        // Decimal(neg) -> Float/Double: divides by a 10^scale that is not representable.
-        Seq(DataTypes.FloatType, DataTypes.DoubleType).foreach { fpType =>
-          assert(
-            CometCast.isSupported(negScaleType, fpType, None, CometEvalMode.LEGACY) == expected,
-            s"expected $negScaleType -> $fpType to be Unsupported")
-        }
 
         // End-to-end: reporting `Unsupported` does not fall the projection back to Spark --
         // `CometCast` mixes in `CodegenDispatchFallback`, so these route through the JVM codegen
@@ -1085,12 +1077,39 @@ class CometNativeCastSuite
           checkSparkAnswerAndOperator(
             negDec.select(col("v").cast(DataTypes.TimestampType).as("t")))
         }
-        assertCodegenRan {
-          checkSparkAnswerAndOperator(negDec.select(col("v").cast(FloatType).as("f")))
+      }
+    }
+  }
+
+  test("dispatched cast reads a materialized negative-scale decimal column correctly") {
+    // The test above builds the negative-scale column inside the same projection as the cast
+    // under test, so `CollapseProject` folds them together and the dispatched expression never
+    // reads a `Decimal(neg)` input vector. Excluding `CollapseProject` keeps the decimal as a
+    // real input, which is the case that broke: the dispatcher's unscaled-long reader produces a
+    // long-backed `Decimal`, and Spark's integer conversion then indexes `Decimal.POW_10(scale)`,
+    // which throws for a negative scale. TRY mode swallowed that into NULL and LEGACY mode failed
+    // the query, both against Spark returning the original values.
+    withSQLConf(
+      "spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true",
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+        ("org.apache.spark.sql.catalyst.optimizer.ConvertToLocalRelation," +
+          "org.apache.spark.sql.catalyst.optimizer.CollapseProject")) {
+      Seq(DecimalType(10, -1), DecimalType(20, -5)).foreach { negScaleType =>
+        val unit = math.pow(10, -negScaleType.scale).toLong
+        val base = Seq(10 * unit, -10 * unit, 0L)
+          .map(_.toString)
+          .toDF("s")
+          .select(col("s").cast(negScaleType).as("v"))
+        // int and bigint are guarded, so they go through the dispatcher.
+        Seq("try_cast(v as int)", "cast(v as int)", "cast(v as bigint)").foreach { e =>
+          assertCodegenRan {
+            checkSparkAnswerAndOperator(base.selectExpr(e))
+          }
         }
-        assertCodegenRan {
-          checkSparkAnswerAndOperator(negDec.select(col("v").cast(DoubleType).as("d")))
-        }
+        // double is not guarded, so it stays on the native path. It reads the same input vector,
+        // so it pins that the reader change did not break the native side.
+        checkSparkAnswerAndOperator(base.selectExpr("cast(v as double)"))
       }
     }
   }
@@ -1120,10 +1139,11 @@ class CometNativeCastSuite
           checkSparkAnswerAndOperator(floats.toDF("n").select(col("n").cast(negScaleType)))
           checkSparkAnswerAndOperator(doubles.toDF("n").select(col("n").cast(negScaleType)))
         }
-        // Casts OUT of Decimal(neg) that neither scale-align an integer nor divide by
-        // 10^scale. Float and double are deliberately absent: they divide by a 10^scale that
-        // is not representable for a negative scale, so they are guarded and covered by the
-        // dispatcher assertions in the test above.
+        // Casts OUT of Decimal(neg) that don't scale-align an integer. Float and double are
+        // included: `decimal128_to_f64` / `decimal128_to_f32` round the exact decimal value
+        // once and handle a negative scale deliberately (#5684).
+        checkSparkAnswerAndOperator(negDec.select(col("v").cast(FloatType)))
+        checkSparkAnswerAndOperator(negDec.select(col("v").cast(DoubleType)))
         checkSparkAnswerAndOperator(negDec.select(col("v").cast(StringType)))
         checkSparkAnswerAndOperator(negDec.select(col("v").cast(DecimalType(38, 10))))
         checkSparkAnswerAndOperator(negDec.select(col("v").cast(BooleanType)))
