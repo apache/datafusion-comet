@@ -349,6 +349,44 @@ index 507d7b313b..cea692da3f 100644
              .config("spark.ui.enabled", "false")
              .config(DISABLE_UI)
              .enableHiveSupport()
+diff --git a/spark/v4.1/spark/src/test/java/org/apache/iceberg/spark/actions/TestRewriteDataFilesAction.java b/spark/v4.1/spark/src/test/java/org/apache/iceberg/spark/actions/TestRewriteDataFilesAction.java
+index 110e43ede1..bcd3b318b8 100644
+--- a/spark/v4.1/spark/src/test/java/org/apache/iceberg/spark/actions/TestRewriteDataFilesAction.java
++++ b/spark/v4.1/spark/src/test/java/org/apache/iceberg/spark/actions/TestRewriteDataFilesAction.java
+@@ -130,6 +130,7 @@ import org.apache.spark.sql.Row;
+ import org.apache.spark.sql.catalyst.analysis.NoSuchTableException;
+ import org.apache.spark.sql.internal.SQLConf;
+ import org.apache.spark.sql.types.DataTypes;
++import org.junit.jupiter.api.AfterEach;
+ import org.junit.jupiter.api.BeforeAll;
+ import org.junit.jupiter.api.BeforeEach;
+ import org.junit.jupiter.api.TestTemplate;
+@@ -141,6 +142,9 @@ import org.mockito.Mockito;
+ @ExtendWith(ParameterizedTestExtension.class)
+ public class TestRewriteDataFilesAction extends TestBase {
+ 
++  private static final String COMET_NATIVE_ICEBERG_WRITE_ENABLED =
++      "spark.comet.write.iceberg.enabled";
++
+   @TempDir private File tableDir;
+   private static final int SCALE = 400000;
+ 
+@@ -173,6 +177,15 @@ public class TestRewriteDataFilesAction extends TestBase {
+   @BeforeEach
+   public void setupTableLocation() {
+     this.tableLocation = tableDir.toURI().toString();
++    // These tests calibrate bin-packing thresholds against parquet-mr file sizes. Comet's native
++    // writer produces different-sized Parquet files, so keep v3 setup writes on parquet-mr while
++    // the Comet suites cover native v3 writes and row-lineage fallback directly.
++    spark.conf().set(COMET_NATIVE_ICEBERG_WRITE_ENABLED, Boolean.toString(formatVersion != 3));
++  }
++
++  @AfterEach
++  public void restoreCometNativeIcebergWrite() {
++    spark.conf().set(COMET_NATIVE_ICEBERG_WRITE_ENABLED, "true");
+   }
+ 
+   private RewriteDataFilesSparkAction basicRewrite(Table table) {
 diff --git a/spark/v4.1/spark/src/test/java/org/apache/iceberg/spark/data/AvroDataTestBase.java b/spark/v4.1/spark/src/test/java/org/apache/iceberg/spark/data/AvroDataTestBase.java
 index 8ce60f6275..75112b4354 100644
 --- a/spark/v4.1/spark/src/test/java/org/apache/iceberg/spark/data/AvroDataTestBase.java
