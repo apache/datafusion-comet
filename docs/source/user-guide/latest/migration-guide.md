@@ -79,8 +79,9 @@ set, `spark.comet.sparkToColumnar.enabled=true` still converts the first four, w
 by default, and a list that names any of the five still converts it, as before. In both cases the
 driver logs a warning that names the config to use instead. Before Spark 4.1, Spark plans a query
 without a `FROM` clause as an `RDDScan`, so on those versions `RDDScan` in the list also converted
-it. The list remains the way to convert other leaf operators, such as the scan of a Data Source V2
-connector.
+it. `spark.comet.convert.oneRowRelation.enabled` is on by default, so such a query is now converted
+without either setting, and logs no warning. The list remains the way to convert other leaf
+operators, such as the scan of a Data Source V2 connector.
 
 ### Iceberg Writes
 
