@@ -79,7 +79,7 @@ use datafusion::{
         limit::LocalLimitExec,
         projection::ProjectionExec,
         sorts::sort::SortExec,
-        ChildrenPropertiesMode, ExecutionPlan, ReplaceChildrenOptions,
+        ChildrenPropertiesMode, ExecutionPlan, ExecutionPlanProperties, ReplaceChildrenOptions,
     },
     prelude::SessionContext,
 };
@@ -1082,9 +1082,9 @@ impl PhysicalPlanner {
     ///
     /// Without row-level pushdown the filters only prune, and pruning only recognizes a column
     /// compared with a literal, so that shape keeps the raw column ([`FloatOperands::Raw`]). With
-    /// it, every operand is normalized and float comparisons give up pruning: a raw column
-    /// compared with a normalized literal would drop a stored NaN with other bits, such as one
-    /// with the sign bit set, that Spark matches.
+    /// it, every operand is normalized and float comparisons give up pruning: a raw column would
+    /// drop a stored NaN that Spark matches, such as one with the sign bit set, which Arrow orders
+    /// below every other value.
     fn data_filter_float_operands(&self) -> FloatOperands {
         if self
             .session_ctx
@@ -1475,8 +1475,16 @@ impl PhysicalPlanner {
                     .iter()
                     .enumerate()
                     .map(|(idx, expr)| {
-                        self.create_expr(expr, child.schema())
-                            .map(|r| (r, format!("col_{idx}")))
+                        // A native sort normalizes float keys, so normalize float grouping keys
+                        // the same way for DataFusion to see that the sort below a sort aggregate
+                        // orders them. Spark already normalized these values, so this changes
+                        // none of them.
+                        if agg.ordered_by_grouping_keys {
+                            self.create_normalized_key_expr(expr, child.schema())
+                        } else {
+                            self.create_expr(expr, child.schema())
+                        }
+                        .map(|r| (r, format!("col_{idx}")))
                     })
                     .collect();
                 let group_by = PhysicalGroupBy::new_single(group_exprs?);
@@ -1595,6 +1603,46 @@ impl PhysicalPlanner {
                         Arc::clone(&schema),
                     )?,
                 );
+
+                // Spark's SortAggregateExec reports its output as ordered by the grouping keys,
+                // and Spark may have removed a sort above it on that basis. DataFusion emits
+                // groups in input order only when it sees the input sorted on them. When that
+                // ordering comes from outside this native plan, for example from a cached sorted
+                // relation that reaches native code as an unordered ScanExec, the hash table can
+                // emit groups out of order, so sort the aggregate output instead.
+                if agg.ordered_by_grouping_keys && !agg.grouping_exprs.is_empty() {
+                    let aggregate_schema = aggregate.schema();
+                    let ordering: Vec<PhysicalSortExpr> = (0..agg.grouping_exprs.len())
+                        .map(|idx| {
+                            PhysicalSortExpr::new(
+                                Arc::new(Column::new(aggregate_schema.field(idx).name(), idx)),
+                                SortOptions {
+                                    descending: false,
+                                    nulls_first: true,
+                                },
+                            )
+                        })
+                        .collect();
+                    if !aggregate
+                        .equivalence_properties()
+                        .ordering_satisfy(ordering.clone())?
+                    {
+                        let sort: Arc<dyn ExecutionPlan> = Arc::new(SortExec::new(
+                            LexOrdering::new(ordering).unwrap(),
+                            Arc::clone(&aggregate),
+                        ));
+                        return Ok((
+                            scans,
+                            shuffle_scans,
+                            Arc::new(SparkPlan::new_with_additional(
+                                spark_plan.plan_id,
+                                sort,
+                                vec![child],
+                                vec![aggregate],
+                            )),
+                        ));
+                    }
+                }
 
                 Ok((
                     scans,
@@ -6001,6 +6049,7 @@ mod tests {
                 mode: spark_operator::AggregateMode::Partial as i32,
                 expr_modes: vec![],
                 initial_input_buffer_offset: 0,
+                ordered_by_grouping_keys: false,
             })),
         };
         let projection = Operator {
@@ -6024,6 +6073,159 @@ mod tests {
         );
         assert_eq!(1, projection_exec.children.len());
         assert_eq!("ScanExec", projection_exec.children[0].native_plan.name());
+    }
+
+    #[tokio::test]
+    async fn sort_aggregate_output_is_ordered_by_grouping_keys() {
+        use arrow::datatypes::Int32Type;
+        use datafusion::common::tree_node::{Transformed, TreeNode};
+        use spark_expression::data_type::{data_type_info::DatatypeStruct, DataTypeInfo, ListInfo};
+
+        let array_type = spark_expression::DataType {
+            type_id: 14,
+            type_info: Some(Box::new(DataTypeInfo {
+                datatype_struct: Some(DatatypeStruct::List(Box::new(ListInfo {
+                    element_type: Some(Box::new(create_proto_datatype())),
+                    contains_null: true,
+                    element_field_id: None,
+                }))),
+            })),
+        };
+        let key = Expr {
+            expr_struct: Some(Bound(spark_expression::BoundReference {
+                index: 0,
+                datatype: Some(array_type.clone()),
+            })),
+            ..Default::default()
+        };
+        let scan = Operator {
+            op_struct: Some(OpStruct::Scan(spark_operator::Scan {
+                fields: vec![array_type],
+                source: String::new(),
+            })),
+            ..Default::default()
+        };
+        let sort = Operator {
+            children: vec![scan.clone()],
+            op_struct: Some(OpStruct::Sort(spark_operator::Sort {
+                sort_orders: vec![Expr {
+                    expr_struct: Some(SortOrder(Box::new(spark_expression::SortOrder {
+                        child: Some(Box::new(key.clone())),
+                        direction: spark_expression::SortDirection::Ascending as i32,
+                        null_ordering: spark_expression::NullOrdering::NullsFirst as i32,
+                    }))),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        let aggregate = |child: Operator| Operator {
+            plan_id: 1,
+            children: vec![child],
+            op_struct: Some(OpStruct::HashAgg(spark_operator::HashAggregate {
+                grouping_exprs: vec![key.clone()],
+                mode: spark_operator::AggregateMode::Final as i32,
+                ordered_by_grouping_keys: true,
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        let ctx = SessionContext::new();
+        let task_ctx = ctx.task_ctx();
+        let planner = PhysicalPlanner::new(Arc::new(ctx), 0);
+
+        // DataFusion sees a sort in the same native plan and emits the groups in input order.
+        let (_, _, planned) = planner
+            .create_plan(&aggregate(sort), &mut vec![], 1)
+            .unwrap();
+        assert_eq!("AggregateExec", planned.native_plan.name());
+
+        // An input ordered outside the native plan, as a cached sorted relation is, is not visible
+        // to DataFusion. NULL and an empty list hash alike, so its vectorized grouping would emit
+        // the empty list after [1] if the planner did not sort the output.
+        let (_, _, planned) = planner
+            .create_plan(&aggregate(scan), &mut vec![], 1)
+            .unwrap();
+        assert_eq!("SortExec", planned.native_plan.name());
+        assert_eq!(1, planned.additional_native_plans.len());
+        assert_eq!("AggregateExec", planned.additional_native_plans[0].name());
+
+        let keys = Arc::new(ListArray::from_iter_primitive::<Int32Type, _, _>(vec![
+            None,
+            Some(vec![]),
+            Some(vec![Some(1)]),
+        ])) as ArrayRef;
+        let batch =
+            RecordBatch::try_new(planned.children[0].schema(), vec![Arc::clone(&keys)]).unwrap();
+        let input: Arc<dyn ExecutionPlan> =
+            MemorySourceConfig::try_new_exec(&[vec![batch.clone()]], batch.schema(), None).unwrap();
+        let native_plan = Arc::clone(&planned.native_plan)
+            .transform_up(|node| {
+                Ok(if node.name() == "ScanExec" {
+                    Transformed::yes(Arc::clone(&input))
+                } else {
+                    Transformed::no(node)
+                })
+            })
+            .unwrap()
+            .data;
+        let results = collect(native_plan.execute(0, task_ctx).unwrap())
+            .await
+            .unwrap();
+        let output = arrow::compute::concat_batches(&results[0].schema(), &results).unwrap();
+        assert_eq!(keys.as_ref(), output.column(0).as_ref());
+    }
+
+    #[test]
+    fn sort_aggregate_float_key_streams_over_native_sort() {
+        // A native sort normalizes a float key, so the aggregate above it must group on the
+        // normalized key too for DataFusion to see the ordering and skip the output sort.
+        let double_type = spark_expression::DataType {
+            type_id: 6,
+            type_info: None,
+        };
+        let key = Expr {
+            expr_struct: Some(Bound(spark_expression::BoundReference {
+                index: 0,
+                datatype: Some(double_type.clone()),
+            })),
+            ..Default::default()
+        };
+        let op = Operator {
+            plan_id: 1,
+            children: vec![Operator {
+                children: vec![Operator {
+                    op_struct: Some(OpStruct::Scan(spark_operator::Scan {
+                        fields: vec![double_type],
+                        source: String::new(),
+                    })),
+                    ..Default::default()
+                }],
+                op_struct: Some(OpStruct::Sort(spark_operator::Sort {
+                    sort_orders: vec![Expr {
+                        expr_struct: Some(SortOrder(Box::new(spark_expression::SortOrder {
+                            child: Some(Box::new(key.clone())),
+                            direction: spark_expression::SortDirection::Ascending as i32,
+                            null_ordering: spark_expression::NullOrdering::NullsFirst as i32,
+                        }))),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                })),
+                ..Default::default()
+            }],
+            op_struct: Some(OpStruct::HashAgg(spark_operator::HashAggregate {
+                grouping_exprs: vec![key],
+                mode: spark_operator::AggregateMode::Final as i32,
+                ordered_by_grouping_keys: true,
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        let planner = PhysicalPlanner::default();
+        let (_, _, planned) = planner.create_plan(&op, &mut vec![], 1).unwrap();
+        assert_eq!("AggregateExec", planned.native_plan.name());
     }
 
     #[tokio::test]

@@ -178,10 +178,12 @@ object CometConf extends ShimCometConf {
         "When enabled, the native Parquet reader evaluates pushed filters during decode " +
           "and lazily materializes projected columns for surviving rows (DataFusion's " +
           "pushdown_filters / late-materialization). Format-level pruning (row-group " +
-          "statistics, page index, bloom filters) is independent of this flag and runs " +
-          "whenever Spark's spark.sql.parquet.filterPushdown is enabled. Disabling this " +
-          "flag still lets format-level pruning work; the per-row eval falls back to " +
-          "the CometFilter operator above the scan.")
+          "statistics, page index, bloom filters) runs whenever Spark's " +
+          "spark.sql.parquet.filterPushdown is enabled, except that while this flag is " +
+          "enabled, a pushed filter that compares FLOAT or DOUBLE values does not prune, " +
+          "because the reader must evaluate it with Spark's NaN and signed-zero semantics. " +
+          "Disabling this flag still lets format-level pruning work; the per-row eval falls " +
+          "back to the CometFilter operator above the scan.")
       .booleanConf
       .createWithDefault(false)
 
@@ -245,6 +247,18 @@ object CometConf extends ShimCometConf {
       .doc(
         "When enabled, the single row that a query without a FROM clause, such as `SELECT 1`, " +
           "reads will be converted to Arrow format.")
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_CONVERT_FROM_TYPED_DATASET_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.convert.typedDataset.enabled")
+      .category(CATEGORY_EXEC)
+      .doc("When enabled, the output of typed Dataset operations, such as `map`, `flatMap`, " +
+        "`mapPartitions` and `groupByKey(...).mapGroups`, will be converted to Arrow format so " +
+        "that the operators above them can run natively. The user function still runs in " +
+        "Spark. This pays off when the operators above do enough work, such as an " +
+        "aggregation over many groups, and can be slower when they are cheap, such as an " +
+        "aggregation over a few groups after a selective filter.")
       .booleanConf
       .createWithDefault(false)
 
@@ -334,25 +348,30 @@ object CometConf extends ShimCometConf {
   val COMET_EXEC_IN_MEMORY_CACHE_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.inMemoryCache.enabled")
       .category(CATEGORY_EXEC)
-      .doc("Whether to enable Comet native execution for in-memory cached tables. Its value at " +
-        "startup also decides whether CometDriverPlugin installs Comet's cache serializer, " +
-        "which stores cached data in Arrow format. The plugin installs it only if " +
-        "spark.comet.enabled and spark.comet.exec.enabled are also enabled at startup, and " +
-        "only with one of Comet's shuffle managers while Comet shuffle is enabled. " +
-        "Because spark.sql.cache.serializer is a " +
-        "static config, the cached format is fixed for the application, and disabling this " +
-        "at runtime only sends cached scans back to Spark's execution path. Relations whose " +
-        "schema Comet's Arrow writer does not support are always cached in Spark's default " +
-        "format. Each cached batch is stored as one Arrow IPC record batch with per-buffer " +
-        "zstd compression, and a scan copies out only the buffers of the columns it projected, " +
-        "so the unselected ones are never decompressed. Reads that feed Spark operators rather " +
-        "than Comet ones still pay a row conversion the default format avoids, and can be " +
-        "slower than Spark's cache. With spark.kryo.registrationRequired=true, the plugin " +
-        "installs it only if Kryo has registered Comet's cached batch, as " +
-        "spark.kryo.registrator=org.apache.comet.CometKryoRegistrator does when set before " +
-        "creating the SparkContext, because Kryo would otherwise reject a cached block as soon " +
-        "as it is serialized, including the disk half of the default MEMORY_AND_DISK storage " +
-        "level.")
+      .doc(
+        "Whether to enable Comet native scans and fused Spark reads of in-memory cached tables. " +
+          "Requires spark.comet.enabled=true. At startup, this setting also decides whether " +
+          "CometDriverPlugin installs Comet's cache serializer, which stores cached data in " +
+          "Arrow format. The plugin installs it only if spark.comet.enabled and " +
+          "spark.comet.exec.enabled are also enabled at startup, and only with one of Comet's " +
+          "shuffle managers while Comet shuffle is enabled. " +
+          "Because spark.sql.cache.serializer is a " +
+          "static config, the cached format is fixed for the application, and disabling this " +
+          "or spark.comet.enabled at runtime sends cached scans back to Spark's execution path " +
+          "without the fused reader. Relations whose schema Comet's Arrow writer does not " +
+          "support are always cached in Spark's default " +
+          "format. Each cached batch is stored as one Arrow IPC record batch with per-buffer " +
+          "zstd compression, and a scan copies out only the buffers of the columns it " +
+          "projected, so the unselected ones are never decompressed. Eligible Spark " +
+          "whole-stage codegen consumers read cached vectors directly when vectorized cache " +
+          "reading is enabled; other Spark row consumers use a reusable row buffer. Decoding " +
+          "costs can still make wide numeric reads slower than Spark's default cache. With " +
+          "spark.kryo.registrationRequired=true, the plugin installs it only if Kryo has " +
+          "registered Comet's cached batch, as " +
+          "spark.kryo.registrator=org.apache.comet.CometKryoRegistrator does when set before " +
+          "creating the SparkContext, because Kryo would otherwise reject a cached block as " +
+          "soon as it is serialized, including the disk half of the default " +
+          "MEMORY_AND_DISK storage level.")
       .booleanConf
       .createWithDefault(false)
 
