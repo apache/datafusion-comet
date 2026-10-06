@@ -60,6 +60,23 @@ Sampling with replacement (`df.sample(withReplacement = true, ...)`) falls back 
 it draws from a Poisson distribution that Comet does not implement natively
 ([#5109](https://github.com/apache/datafusion-comet/issues/5109)).
 
+## Sort Aggregation
+
+Comet runs `SortAggregateExec` natively when Comet shuffle is enabled and Comet supports every
+aggregate in it. The native aggregate keeps the grouping-key output order that Spark relies on.
+
+Decimal `sum` and `avg` over input precision 28 or more keep a running sum at precision 38, which
+can overflow even when the final sum fits. Whether Spark's sort aggregation recovers from such an
+overflow depends on the other aggregates in the operator and on codegen. Comet does not track
+this, so a sort aggregate that contains such a `sum` or `avg` falls back to Spark.
+
+`first` and `last` return the first or last value in the order that rows reach the aggregate,
+which Spark does not define within a group. Spark plans a sort aggregate for them when their buffer
+cannot use hash aggregation, for example over a string column. The sort below the aggregate orders
+rows by the grouping keys only, and Spark and Comet can leave rows with equal keys in different
+orders, so a group with more than one candidate value can return a different value than Spark.
+Both results are valid under Spark's semantics for these functions.
+
 ## Window Functions
 
 Comet runs `WindowExec` natively and it is enabled by default (`spark.comet.exec.window.enabled`). A broad set of
