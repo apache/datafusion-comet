@@ -1,0 +1,1339 @@
+<!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+
+
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../../" data-theme="light">
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Iceberg Writes: Comet’s Split-Operator Plan (Experimental) &#8212; Apache DataFusion Comet  documentation</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "light";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "light";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../../_static/styles/theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+<link href="../../_static/styles/pydata-sphinx-theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../../_static/theme_overrides.css?v=bfdde722" />
+  
+  <!-- So that users can add custom icons -->
+  <script src="../../_static/scripts/fontawesome.js?digest=8878045cc6db502f8baf"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf" />
+<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf" />
+
+    <script src="../../_static/documentation_options.js?v=5929fcd5"></script>
+    <script src="../../_static/doctools.js?v=9a2dae69"></script>
+    <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'user-guide/1.1/iceberg-writes';</script>
+    <script async="true" defer="true" src="https://buttons.github.io/buttons.js"></script>
+    <script src="../../_static/comet-ux.js?v=97577a30"></script>
+    <link rel="index" title="Index" href="../../genindex.html" />
+    <link rel="search" title="Search" href="../../search.html" />
+    <link rel="next" title="S3 Credential Providers" href="s3-credential-providers.html" />
+    <link rel="prev" title="Accelerating Apache Iceberg Parquet Scans using Comet" href="iceberg.html" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="preload" as="style"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+      media="print" onload="this.media='all'">
+<noscript>
+  <link rel="stylesheet"
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+</noscript>
+
+  </head>
+  
+  
+  <body data-bs-spy="scroll" data-bs-target=".bd-toc-nav" data-offset="180" data-bs-root-margin="0px 0px -60%" data-default-mode="light">
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../../index.html">
+  
+  
+  
+  
+  
+    
+    
+    
+    <img src="../../_static/DataFusionComet-Logo-Light.png" class="logo__image only-light" alt="Apache DataFusion Comet  documentation - Home"/>
+    <img src="../../_static/DataFusionComet-Logo-Dark.png" class="logo__image only-dark pst-js-only" alt="Apache DataFusion Comet  documentation - Home"/>
+  
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="../index.html">
+    User Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../contributor-guide/index.html">
+    Contributor Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../changelog/index.html">
+    Changelog
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../about/index.html">
+    About
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/apache/datafusion-comet" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+</ul></div>
+      
+        <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="../index.html">
+    User Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../contributor-guide/index.html">
+    Contributor Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../changelog/index.html">
+    Changelog
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../about/index.html">
+    About
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/apache/datafusion-comet" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+</ul></div>
+        
+          <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+<form class="bd-search d-flex align-items-center"
+      action="../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form></div>
+        <div class="sidebar-primary-item"><!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+
+
+
+
+<nav class="bd-links" id="bd-docs-nav" aria-label="Main navigation">
+  <div class="bd-toc-item active">
+    
+      <p aria-level="2" class="caption" role="heading"><span class="caption-text">User Guide</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1 current active has-children"><a class="reference internal" href="index.html">1.1.x (current)</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><p aria-level="2" class="caption" role="heading"><span class="caption-text">Getting Started</span></p>
+<ul>
+<li class="toctree-l2"><a class="reference internal" href="installation.html">Installing Comet</a></li>
+<li class="toctree-l2"><a class="reference internal" href="configs.html">Configuration Settings</a></li>
+<li class="toctree-l2"><a class="reference internal" href="migration-guide.html">Upgrading Comet</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">What Comet Supports</span></p>
+<ul>
+<li class="toctree-l2"><a class="reference internal" href="datasources.html">Supported Data Sources</a></li>
+<li class="toctree-l2"><a class="reference internal" href="datatypes.html">Supported Data Types</a></li>
+<li class="toctree-l2"><a class="reference internal" href="operators.html">Supported Operators</a></li>
+<li class="toctree-l2"><a class="reference internal" href="expressions.html">Supported Expressions</a></li>
+<li class="toctree-l2"><a class="reference internal" href="scala_java_udfs.html">ScalaUDF and Java UDF Support</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Compatibility</span></p>
+<ul>
+<li class="toctree-l2"><a class="reference internal" href="compatibility/index.html">Overview</a></li>
+<li class="toctree-l2"><a class="reference internal" href="compatibility/scans.html">Parquet Compatibility</a></li>
+<li class="toctree-l2"><a class="reference internal" href="compatibility/floating-point.html">Floating-point Number Comparison</a></li>
+<li class="toctree-l2"><a class="reference internal" href="compatibility/regex.html">Regular Expressions</a></li>
+<li class="toctree-l2"><a class="reference internal" href="compatibility/operators.html">Operator Compatibility</a></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="compatibility/expressions/index.html">Expression Compatibility</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3 has-children"><a class="reference internal" href="compatibility/expressions/spark-3.4/index.html">Spark 3.4</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.4/aggregate.html">Aggregate Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.4/array.html">Array Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.4/datetime.html">Date/Time Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.4/map.html">Map Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.4/math.html">Math Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.4/misc.html">Miscellaneous Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.4/string.html">String Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.4/struct.html">Struct Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.4/url.html">URL Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.4/cast.html">Cast</a></li>
+</ul>
+</details></li>
+<li class="toctree-l3 has-children"><a class="reference internal" href="compatibility/expressions/spark-3.5/index.html">Spark 3.5</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.5/aggregate.html">Aggregate Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.5/array.html">Array Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.5/datetime.html">Date/Time Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.5/map.html">Map Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.5/math.html">Math Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.5/misc.html">Miscellaneous Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.5/string.html">String Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.5/struct.html">Struct Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.5/url.html">URL Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.5/cast.html">Cast</a></li>
+</ul>
+</details></li>
+<li class="toctree-l3 has-children"><a class="reference internal" href="compatibility/expressions/spark-4.0/index.html">Spark 4.0</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.0/aggregate.html">Aggregate Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.0/array.html">Array Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.0/datetime.html">Date/Time Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.0/map.html">Map Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.0/math.html">Math Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.0/misc.html">Miscellaneous Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.0/string.html">String Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.0/struct.html">Struct Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.0/url.html">URL Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.0/cast.html">Cast</a></li>
+</ul>
+</details></li>
+<li class="toctree-l3 has-children"><a class="reference internal" href="compatibility/expressions/spark-4.1/index.html">Spark 4.1</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.1/aggregate.html">Aggregate Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.1/array.html">Array Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.1/datetime.html">Date/Time Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.1/map.html">Map Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.1/math.html">Math Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.1/misc.html">Miscellaneous Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.1/string.html">String Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.1/struct.html">Struct Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.1/url.html">URL Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.1/cast.html">Cast</a></li>
+</ul>
+</details></li>
+</ul>
+</details></li>
+<li class="toctree-l2"><a class="reference internal" href="compatibility/json.html">JSON Compatibility</a></li>
+<li class="toctree-l2"><a class="reference internal" href="compatibility/spark-versions.html">Spark Version Compatibility</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Operating Comet</span></p>
+<ul>
+<li class="toctree-l2"><a class="reference internal" href="understanding-comet-plans.html">Understanding Comet Plans</a></li>
+<li class="toctree-l2"><a class="reference internal" href="metrics.html">Metrics Guide</a></li>
+<li class="toctree-l2"><a class="reference internal" href="in-memory-cache.html">In-Memory Cache</a></li>
+<li class="toctree-l2"><a class="reference internal" href="pyarrow-udfs.html">PyArrow UDF Acceleration</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Tuning</span></p>
+<ul>
+<li class="toctree-l2"><a class="reference internal" href="tuning.html">Overview</a></li>
+<li class="toctree-l2"><a class="reference internal" href="tuning/memory.html">Memory</a></li>
+<li class="toctree-l2"><a class="reference internal" href="tuning/shuffle.html">Shuffle</a></li>
+<li class="toctree-l2"><a class="reference internal" href="tuning/celeborn.html">Celeborn Shuffle</a></li>
+<li class="toctree-l2"><a class="reference internal" href="tuning/scans.html">Scans</a></li>
+<li class="toctree-l2"><a class="reference internal" href="tuning/operators.html">Operators</a></li>
+<li class="toctree-l2"><a class="reference internal" href="tuning/transitions.html">Row/Columnar Transitions</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Integrations</span></p>
+<ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="iceberg.html">Iceberg Guide</a></li>
+<li class="toctree-l2 current"><a class="current reference internal" href="#">Iceberg Writes</a></li>
+<li class="toctree-l2"><a class="reference internal" href="s3-credential-providers.html">S3 Credential Providers</a></li>
+<li class="toctree-l2"><a class="reference internal" href="kubernetes.html">Kubernetes Guide</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Advanced</span></p>
+<ul>
+<li class="toctree-l2"><a class="reference internal" href="source.html">Building From Source</a></li>
+</ul>
+
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../latest/index.html">Development Snapshot</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><p aria-level="2" class="caption" role="heading"><span class="caption-text">Getting Started</span></p>
+<ul>
+<li class="toctree-l2"><a class="reference internal" href="../latest/installation.html">Installing Comet</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../latest/configs.html">Configuration Settings</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../latest/migration-guide.html">Upgrading Comet</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">What Comet Supports</span></p>
+<ul>
+<li class="toctree-l2"><a class="reference internal" href="../latest/datasources.html">Supported Data Sources</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../latest/datatypes.html">Supported Data Types</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../latest/operators.html">Supported Operators</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../latest/expressions.html">Supported Expressions</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../latest/scala_java_udfs.html">ScalaUDF and Java UDF Support</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../latest/rust_udfs.html">Custom Rust UDFs</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Compatibility</span></p>
+<ul>
+<li class="toctree-l2"><a class="reference internal" href="../latest/compatibility/index.html">Overview</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../latest/compatibility/scans.html">Parquet Compatibility</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../latest/compatibility/floating-point.html">Floating-point Number Comparison</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../latest/compatibility/regex.html">Regular Expressions</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../latest/compatibility/operators.html">Operator Compatibility</a></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../latest/compatibility/expressions/index.html">Expression Compatibility</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3 has-children"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.4/index.html">Spark 3.4</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.4/aggregate.html">Aggregate Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.4/array.html">Array Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.4/datetime.html">Date/Time Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.4/map.html">Map Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.4/math.html">Math Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.4/misc.html">Miscellaneous Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.4/string.html">String Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.4/struct.html">Struct Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.4/url.html">URL Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.4/cast.html">Cast</a></li>
+</ul>
+</details></li>
+<li class="toctree-l3 has-children"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.5/index.html">Spark 3.5</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.5/aggregate.html">Aggregate Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.5/array.html">Array Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.5/datetime.html">Date/Time Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.5/map.html">Map Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.5/math.html">Math Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.5/misc.html">Miscellaneous Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.5/string.html">String Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.5/struct.html">Struct Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.5/url.html">URL Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.5/cast.html">Cast</a></li>
+</ul>
+</details></li>
+<li class="toctree-l3 has-children"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.0/index.html">Spark 4.0</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.0/aggregate.html">Aggregate Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.0/array.html">Array Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.0/datetime.html">Date/Time Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.0/map.html">Map Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.0/math.html">Math Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.0/misc.html">Miscellaneous Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.0/string.html">String Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.0/struct.html">Struct Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.0/url.html">URL Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.0/cast.html">Cast</a></li>
+</ul>
+</details></li>
+<li class="toctree-l3 has-children"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.1/index.html">Spark 4.1</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.1/aggregate.html">Aggregate Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.1/array.html">Array Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.1/datetime.html">Date/Time Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.1/map.html">Map Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.1/math.html">Math Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.1/misc.html">Miscellaneous Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.1/string.html">String Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.1/struct.html">Struct Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.1/url.html">URL Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.1/cast.html">Cast</a></li>
+</ul>
+</details></li>
+<li class="toctree-l3 has-children"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.2/index.html">Spark 4.2</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.2/aggregate.html">Aggregate Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.2/array.html">Array Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.2/datetime.html">Date/Time Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.2/map.html">Map Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.2/math.html">Math Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.2/misc.html">Miscellaneous Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.2/string.html">String Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.2/struct.html">Struct Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.2/url.html">URL Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.2/cast.html">Cast</a></li>
+</ul>
+</details></li>
+</ul>
+</details></li>
+<li class="toctree-l2"><a class="reference internal" href="../latest/compatibility/json.html">JSON Compatibility</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../latest/compatibility/spark-versions.html">Spark Version Compatibility</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Operating Comet</span></p>
+<ul>
+<li class="toctree-l2"><a class="reference internal" href="../latest/understanding-comet-plans.html">Understanding Comet Plans</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../latest/metrics.html">Metrics Guide</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../latest/in-memory-cache.html">In-Memory Cache</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../latest/pyarrow-udfs.html">PyArrow UDF Acceleration</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Tuning</span></p>
+<ul>
+<li class="toctree-l2"><a class="reference internal" href="../latest/tuning.html">Overview</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../latest/tuning/memory.html">Memory</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../latest/tuning/shuffle.html">Shuffle</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../latest/tuning/celeborn.html">Celeborn Shuffle</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../latest/tuning/scans.html">Scans</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../latest/tuning/operators.html">Operators</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../latest/tuning/transitions.html">Row/Columnar Transitions</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Integrations</span></p>
+<ul>
+<li class="toctree-l2"><a class="reference internal" href="../latest/iceberg.html">Iceberg Guide</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../latest/iceberg-writes.html">Iceberg Writes</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../latest/celeborn.html">Celeborn Guide</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../latest/s3-credential-providers.html">S3 Credential Providers</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../latest/kubernetes.html">Kubernetes Guide</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Advanced</span></p>
+<ul>
+<li class="toctree-l2"><a class="reference internal" href="../latest/source.html">Building From Source</a></li>
+</ul>
+
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../older-versions.html">Older Versions</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../1.0/index.html">1.0.x</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../1.0/installation.html">Installing Comet</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../1.0/configs.html">Configuration Settings</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../1.0/migration-guide.html">Upgrading Comet</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../1.0/datasources.html">Supported Data Sources</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../1.0/datatypes.html">Supported Data Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../1.0/operators.html">Supported Operators</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../1.0/expressions.html">Supported Expressions</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../1.0/scala_java_udfs.html">ScalaUDF and Java UDF Support</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../1.0/compatibility/index.html">Overview</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../1.0/compatibility/scans.html">Parquet Compatibility</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../1.0/compatibility/floating-point.html">Floating-point Number Comparison</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../1.0/compatibility/regex.html">Regular Expressions</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../1.0/compatibility/operators.html">Operator Compatibility</a></li>
+<li class="toctree-l3 has-children"><a class="reference internal" href="../1.0/compatibility/expressions/index.html">Expression Compatibility</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l4"><a class="reference internal" href="../1.0/compatibility/expressions/spark-3.4/index.html">Spark 3.4</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../1.0/compatibility/expressions/spark-3.5/index.html">Spark 3.5</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../1.0/compatibility/expressions/spark-4.0/index.html">Spark 4.0</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../1.0/compatibility/expressions/spark-4.1/index.html">Spark 4.1</a></li>
+</ul>
+</details></li>
+<li class="toctree-l3"><a class="reference internal" href="../1.0/compatibility/json.html">JSON Compatibility</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../1.0/compatibility/spark-versions.html">Spark Version Compatibility</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../1.0/understanding-comet-plans.html">Understanding Comet Plans</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../1.0/tuning.html">Tuning Guide</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../1.0/metrics.html">Metrics Guide</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../1.0/pyarrow-udfs.html">PyArrow UDF Acceleration</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../1.0/iceberg.html">Iceberg Guide</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../1.0/s3-credential-providers.html">S3 Credential Providers</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../1.0/kubernetes.html">Kubernetes Guide</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../1.0/source.html">Building From Source</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../0.17/index.html">0.17.x</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../0.17/installation.html">Installing Comet</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.17/configs.html">Configuration Settings</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.17/datasources.html">Supported Data Sources</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.17/datatypes.html">Supported Data Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.17/operators.html">Supported Operators</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.17/expressions.html">Supported Expressions</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.17/scala_java_udfs.html">ScalaUDF and Java UDF Support</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.17/compatibility/index.html">Overview</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.17/compatibility/scans.html">Parquet Compatibility</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.17/compatibility/floating-point.html">Floating-point Number Comparison</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.17/compatibility/regex.html">Regular Expressions</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.17/compatibility/operators.html">Operator Compatibility</a></li>
+<li class="toctree-l3 has-children"><a class="reference internal" href="../0.17/compatibility/expressions/index.html">Expression Compatibility</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l4"><a class="reference internal" href="../0.17/compatibility/expressions/spark-3.4/index.html">Spark 3.4</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../0.17/compatibility/expressions/spark-3.5/index.html">Spark 3.5</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../0.17/compatibility/expressions/spark-4.0/index.html">Spark 4.0</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../0.17/compatibility/expressions/spark-4.1/index.html">Spark 4.1</a></li>
+</ul>
+</details></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.17/compatibility/json.html">JSON Compatibility</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.17/compatibility/spark-versions.html">Spark Version Compatibility</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.17/understanding-comet-plans.html">Understanding Comet Plans</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.17/tuning.html">Tuning Guide</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.17/metrics.html">Metrics Guide</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.17/iceberg.html">Iceberg Guide</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.17/s3-credential-providers.html">S3 Credential Providers</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.17/kubernetes.html">Kubernetes Guide</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.17/source.html">Building From Source</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../0.16/index.html">0.16.x</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../0.16/installation.html">Installing Comet</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.16/source.html">Building From Source</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.16/datasources.html">Supported Data Sources</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.16/datatypes.html">Supported Data Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.16/operators.html">Supported Operators</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.16/expressions.html">Supported Expressions</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.16/configs.html">Configuration Settings</a></li>
+<li class="toctree-l3 has-children"><a class="reference internal" href="../0.16/compatibility/index.html">Compatibility Guide</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l4"><a class="reference internal" href="../0.16/compatibility/scans.html">Parquet Compatibility</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../0.16/compatibility/floating-point.html">Floating-point Number Comparison</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../0.16/compatibility/regex.html">Regular Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../0.16/compatibility/operators.html">Operator Compatibility</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../0.16/compatibility/expressions/index.html">Expression Compatibility</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../0.16/compatibility/spark-versions.html">Spark Version Compatibility</a></li>
+</ul>
+</details></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.16/understanding-comet-plans.html">Understanding Comet Plans</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.16/tuning.html">Tuning Guide</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.16/metrics.html">Metrics Guide</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.16/iceberg.html">Iceberg Guide</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.16/kubernetes.html">Kubernetes Guide</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../0.15/index.html">0.15.x</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../0.15/installation.html">Installing Comet</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.15/source.html">Building From Source</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.15/datasources.html">Supported Data Sources</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.15/datatypes.html">Supported Data Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.15/operators.html">Supported Operators</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.15/expressions.html">Supported Expressions</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.15/configs.html">Configuration Settings</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.15/compatibility.html">Compatibility Guide</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.15/tuning.html">Tuning Guide</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.15/metrics.html">Metrics Guide</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.15/iceberg.html">Iceberg Guide</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.15/kubernetes.html">Kubernetes Guide</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../0.14/index.html">0.14.x</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../0.14/installation.html">Installing Comet</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.14/source.html">Building From Source</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.14/datasources.html">Supported Data Sources</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.14/datatypes.html">Supported Data Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.14/operators.html">Supported Operators</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.14/expressions.html">Supported Expressions</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.14/configs.html">Configuration Settings</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.14/compatibility.html">Compatibility Guide</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.14/tuning.html">Tuning Guide</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.14/metrics.html">Metrics Guide</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.14/iceberg.html">Iceberg Guide</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.14/kubernetes.html">Kubernetes Guide</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../0.13/index.html">0.13.x</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../0.13/installation.html">Installing Comet</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.13/source.html">Building From Source</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.13/datasources.html">Supported Data Sources</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.13/datatypes.html">Supported Data Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.13/operators.html">Supported Operators</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.13/expressions.html">Supported Expressions</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.13/configs.html">Configuration Settings</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.13/compatibility.html">Compatibility Guide</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.13/tuning.html">Tuning Guide</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.13/metrics.html">Metrics Guide</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.13/iceberg.html">Iceberg Guide</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.13/kubernetes.html">Kubernetes Guide</a></li>
+</ul>
+</details></li>
+</ul>
+</details></li>
+</ul>
+
+    
+  </div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    
+    <li class="breadcrumb-item"><a href="../index.html" class="nav-link">Comet User Guide</a></li>
+    
+    
+    <li class="breadcrumb-item"><a href="index.html" class="nav-link">Comet 1.1.0 User Guide</a></li>
+    
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Iceberg Writes: Comet’s Split-Operator Plan (Experimental)</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <!---
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+<section id="iceberg-writes-comet-s-split-operator-plan-experimental">
+<h1>Iceberg Writes: Comet’s Split-Operator Plan (Experimental)<a class="headerlink" href="#iceberg-writes-comet-s-split-operator-plan-experimental" title="Link to this heading">#</a></h1>
+<p><strong>This feature is experimental and disabled by default.</strong> Enable it only after validating it
+against your own workloads.</p>
+<section id="overview">
+<h2>Overview<a class="headerlink" href="#overview" title="Link to this heading">#</a></h2>
+<p>Spark writes an Iceberg table through a single physical operator that combines data-file
+writing with metadata writing, committing, and catalog validation. Because that operator sits
+outside Spark’s Adaptive Query Execution (AQE), the sub-query feeding the write — the scans,
+projects, sorts, and exchanges producing the rows — cannot be re-planned at runtime.</p>
+<p>When <code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.splitOperator.enabled=true</span></code>, Comet rewrites eligible Iceberg
+writes into two operators:</p>
+<ol class="arabic simple">
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">IcebergWrite</span></code></strong> — writes the data files on the executors, exactly as iceberg-java does
+today, and returns each task’s serialized commit message. This operator and the sub-query
+feeding it run inside AQE.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">IcebergCommit</span></code></strong> — collects the commit messages on the driver and performs the normal
+Iceberg commit (including commit-time validation), outside AQE, exactly once.</p></li>
+</ol>
+<p>With only the split plan enabled, data files are still written by iceberg-java; only the plan
+shape changes. The split makes the write’s input visible to AQE and to Comet’s columnar rules,
+and it is the foundation for the second toggle: when
+<code class="docutils literal notranslate"><span class="pre">spark.comet.iceberg.write.enabled=true</span></code> and the write passes the eligibility check below, the
+<code class="docutils literal notranslate"><span class="pre">IcebergWrite</span></code> operator’s per-task Parquet write is delegated to
+<a class="reference external" href="https://github.com/apache/iceberg-rust">iceberg-rust</a> via Comet’s native execution pipeline
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/pull/5361">#5361</a>).</p>
+</section>
+<section id="how-the-native-write-works">
+<h2>How the native write works<a class="headerlink" href="#how-the-native-write-works" title="Link to this heading">#</a></h2>
+<p>The JVM-side planner marshals everything iceberg-rust needs — the write schema and partition
+spec as JSON, the data location, the resolved parquet writer settings, the writer mode
+(unpartitioned / fanout / clustered, mirroring <code class="docutils literal notranslate"><span class="pre">SparkWrite</span></code>’s own choice), object-store
+configuration (the table’s <code class="docutils literal notranslate"><span class="pre">FileIO</span></code> properties, e.g. REST-vended credentials, merged over
+<code class="docutils literal notranslate"><span class="pre">fs.s3a.*</span></code> settings translated from the session Hadoop configuration — the same translation
+the native scan uses, since <code class="docutils literal notranslate"><span class="pre">HadoopFileIO</span></code> carries its S3 configuration in the Hadoop
+Configuration rather than in <code class="docutils literal notranslate"><span class="pre">FileIO</span></code> properties), and per-task IDs — into the serialized
+native plan. On each task, iceberg-rust writes the Parquet files and
+returns its <code class="docutils literal notranslate"><span class="pre">DataFile</span></code> metadata packed as a single in-memory Iceberg V2 data manifest; the JVM
+decodes those bytes with Iceberg’s own <code class="docutils literal notranslate"><span class="pre">ManifestFiles.read</span></code>, re-derives each file’s manifest
+metrics from the written Parquet footer with Iceberg’s <code class="docutils literal notranslate"><span class="pre">MetricsConfig</span></code> logic (so metrics modes,
+truncation, and bounds decisions are iceberg-java’s by construction), and wraps the result in
+the same <code class="docutils literal notranslate"><span class="pre">TaskCommit</span></code> message the JVM writer would have produced. Everything iceberg-java does
+post-write — snapshot assignment, manifest-list aggregation, commit validation and retries —
+is untouched: <code class="docutils literal notranslate"><span class="pre">IcebergCommit</span></code> performs the normal <code class="docutils literal notranslate"><span class="pre">BatchWrite.commit</span></code>.</p>
+</section>
+<section id="configuration">
+<h2>Configuration<a class="headerlink" href="#configuration" title="Link to this heading">#</a></h2>
+<p>Standard Comet + Iceberg setup (see <a class="reference internal" href="iceberg.html"><span class="std std-doc"><code class="docutils literal notranslate"><span class="pre">iceberg.md</span></code></span></a>) plus the write-side toggle:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># Standard Comet / Iceberg wiring</span>
+<span class="n">spark</span><span class="o">.</span><span class="n">plugins</span><span class="o">=</span><span class="n">org</span><span class="o">.</span><span class="n">apache</span><span class="o">.</span><span class="n">spark</span><span class="o">.</span><span class="n">CometPlugin</span>
+<span class="n">spark</span><span class="o">.</span><span class="n">sql</span><span class="o">.</span><span class="n">extensions</span><span class="o">=</span><span class="n">org</span><span class="o">.</span><span class="n">apache</span><span class="o">.</span><span class="n">iceberg</span><span class="o">.</span><span class="n">spark</span><span class="o">.</span><span class="n">extensions</span><span class="o">.</span><span class="n">IcebergSparkSessionExtensions</span>
+<span class="n">spark</span><span class="o">.</span><span class="n">sql</span><span class="o">.</span><span class="n">catalog</span><span class="o">.&lt;</span><span class="n">name</span><span class="o">&gt;=</span><span class="n">org</span><span class="o">.</span><span class="n">apache</span><span class="o">.</span><span class="n">iceberg</span><span class="o">.</span><span class="n">spark</span><span class="o">.</span><span class="n">SparkCatalog</span>
+<span class="n">spark</span><span class="o">.</span><span class="n">sql</span><span class="o">.</span><span class="n">catalog</span><span class="o">.&lt;</span><span class="n">name</span><span class="o">&gt;.</span><span class="n">type</span><span class="o">=</span><span class="n">hadoop</span>                          <span class="c1"># or hive / glue / rest / ...</span>
+<span class="n">spark</span><span class="o">.</span><span class="n">sql</span><span class="o">.</span><span class="n">catalog</span><span class="o">.&lt;</span><span class="n">name</span><span class="o">&gt;.</span><span class="n">warehouse</span><span class="o">=...</span>
+
+<span class="c1"># Split-operator plan (experimental, off by default)</span>
+<span class="n">spark</span><span class="o">.</span><span class="n">comet</span><span class="o">.</span><span class="n">write</span><span class="o">.</span><span class="n">iceberg</span><span class="o">.</span><span class="n">splitOperator</span><span class="o">.</span><span class="n">enabled</span><span class="o">=</span><span class="n">true</span>
+
+<span class="c1"># Native Parquet writer (experimental, off by default; requires the split plan)</span>
+<span class="n">spark</span><span class="o">.</span><span class="n">comet</span><span class="o">.</span><span class="n">iceberg</span><span class="o">.</span><span class="n">write</span><span class="o">.</span><span class="n">enabled</span><span class="o">=</span><span class="n">true</span>
+
+<span class="c1"># Lets writes whose input is a local relation (INSERT ... VALUES, a local DataFrame) use the</span>
+<span class="c1"># native writer; see "Native Parquet write eligibility" below</span>
+<span class="n">spark</span><span class="o">.</span><span class="n">comet</span><span class="o">.</span><span class="n">exec</span><span class="o">.</span><span class="n">localTableScan</span><span class="o">.</span><span class="n">enabled</span><span class="o">=</span><span class="n">true</span>
+</pre></div>
+</div>
+</section>
+<section id="supported-operations">
+<h2>Supported operations<a class="headerlink" href="#supported-operations" title="Link to this heading">#</a></h2>
+<p>The split-operator plan supports the following operations on every Spark version Comet
+supports:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">INSERT</span> <span class="pre">INTO</span></code> / DataFrame <code class="docutils literal notranslate"><span class="pre">append</span></code> (<code class="docutils literal notranslate"><span class="pre">AppendData</span></code>)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">INSERT</span> <span class="pre">OVERWRITE</span></code>, static and dynamic (<code class="docutils literal notranslate"><span class="pre">OverwriteByExpression</span></code>,
+<code class="docutils literal notranslate"><span class="pre">OverwritePartitionsDynamic</span></code>)</p></li>
+<li><p>Copy-on-write <code class="docutils literal notranslate"><span class="pre">DELETE</span></code> / <code class="docutils literal notranslate"><span class="pre">UPDATE</span></code> / <code class="docutils literal notranslate"><span class="pre">MERGE</span></code> (<code class="docutils literal notranslate"><span class="pre">ReplaceData</span></code>)</p></li>
+</ul>
+<p>The mechanism behind row-level DML differs by Spark version: on Spark 4.0+ the analyzer emits
+operation-coded rows that Comet’s writer dispatches through <code class="docutils literal notranslate"><span class="pre">ReplaceData</span></code>’s projections, while
+on Spark 3.4/3.5 the rewritten rows are written as a plain row stream. The supported set of
+operations is the same either way.</p>
+<p>On Spark 4.1+ the split plan matches two further stock-Spark behaviours: MERGE metrics are
+forwarded to the writer’s commit (Iceberg 1.11+ records them in the snapshot summary), and
+cached catalog tables are recached by name after a write so cache entries survive schema
+changes.</p>
+</section>
+<section id="when-comet-falls-back-to-spark-s-write-operator">
+<h2>When Comet falls back to Spark’s write operator<a class="headerlink" href="#when-comet-falls-back-to-spark-s-write-operator" title="Link to this heading">#</a></h2>
+<p>The rewrite is skipped — and the write runs through Spark’s stock combined operator — when:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.splitOperator.enabled</span></code> is <code class="docutils literal notranslate"><span class="pre">false</span></code> (the default);</p></li>
+<li><p>the write is not an Iceberg <code class="docutils literal notranslate"><span class="pre">SparkWrite</span></code> (any other V2 data source);</p></li>
+<li><p>the table uses merge-on-read: delta writes (Iceberg <code class="docutils literal notranslate"><span class="pre">WriteDelta</span></code>) are not intercepted;</p></li>
+<li><p>the statement is CTAS / RTAS on Spark 3.4, where the staged exec writes inline; on Spark
+3.5+ those statements re-plan their inner append, which is intercepted normally;</p></li>
+<li><p>the write requires Spark’s commit coordinator, which Comet’s per-task commit protocol does
+not use;</p></li>
+<li><p>Comet cannot reflect the Iceberg internals needed to build the two-operator plan (for
+example an unrecognised write class or a <code class="docutils literal notranslate"><span class="pre">ReplaceData</span></code> projection it cannot map).</p></li>
+</ul>
+<p>In every fallback case the write is planned as if Comet were absent; there is no correctness
+trade-off, only no plan change.</p>
+</section>
+<section id="native-parquet-write-eligibility">
+<h2>Native Parquet write eligibility<a class="headerlink" href="#native-parquet-write-eligibility" title="Link to this heading">#</a></h2>
+<p>When <code class="docutils literal notranslate"><span class="pre">spark.comet.iceberg.write.enabled=true</span></code>
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/pull/5361">#5361</a>), the <code class="docutils literal notranslate"><span class="pre">IcebergWrite</span></code> operator’s
+per-task Parquet write is delegated to <a class="reference external" href="https://github.com/apache/iceberg-rust">iceberg-rust</a>.
+The native writer must produce the same outcome as iceberg-java — the same Parquet features,
+statistics, and manifest metadata — so a write is only eligible when every table property it
+depends on is one the native path reproduces exactly, and additionally only when the plan
+feeding the write is fully Comet-native. For a partitioned table that plan includes the hash
+distribution and local sort Iceberg requests on its partition transforms; those stay native
+because the transforms themselves have native implementations (see
+<a class="reference internal" href="iceberg.html"><span class="std std-doc">Iceberg system functions</span></a>). Ineligible writes run through iceberg-java unchanged,
+with the reason reported as a fall-back reason in Comet’s extended EXPLAIN output. A write that
+runs natively shows <code class="docutils literal notranslate"><span class="pre">CometIcebergWrite</span></code> under <code class="docutils literal notranslate"><span class="pre">IcebergCommit</span></code> in the physical plan; an ineligible
+write keeps <code class="docutils literal notranslate"><span class="pre">IcebergWrite</span></code>.</p>
+<p>The native writer reads its input as Arrow batches from a Comet operator, so the write’s input
+must itself run in Comet. A write whose input is a local relation, such as <code class="docutils literal notranslate"><span class="pre">INSERT</span> <span class="pre">...</span> <span class="pre">VALUES</span></code> or
+<code class="docutils literal notranslate"><span class="pre">df.writeTo(...).append()</span></code> on a DataFrame built from local data, is fed by Spark’s
+<code class="docutils literal notranslate"><span class="pre">LocalTableScanExec</span></code>, which Comet only converts when <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.localTableScan.enabled=true</span></code>
+(off by default). Without that setting such writes run through iceberg-java even when both write
+flags are on.</p>
+<p><strong>Most Iceberg write settings are not supported.</strong> Detection is an allowlist: a write is
+eligible only when its entire effective configuration matches the table below, and anything
+else — any other write-affecting property, any key added by a future Iceberg version, any
+value outside the supported set, any reflection failure while inspecting the write — falls
+back to iceberg-java with a reason reported in extended EXPLAIN. Checks run on the effective
+configuration: table properties overlaid with <code class="docutils literal notranslate"><span class="pre">SparkWrite.writeProperties</span></code>, which is where
+iceberg-java resolves per-write options and <code class="docutils literal notranslate"><span class="pre">spark.sql.iceberg.*</span></code> session overrides.</p>
+<p>A write is eligible only when ALL of the following hold:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Setting</p></th>
+<th class="head"><p>Supported values</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>resolved write format (<code class="docutils literal notranslate"><span class="pre">write-format</span></code> option overlaid on <code class="docutils literal notranslate"><span class="pre">write.format.default</span></code>)</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">parquet</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">format-version</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">1</span></code> or <code class="docutils literal notranslate"><span class="pre">2</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">write.parquet.compression-codec</span></code> / <code class="docutils literal notranslate"><span class="pre">compression-level</span></code> / <code class="docutils literal notranslate"><span class="pre">row-group-size-bytes</span></code> / <code class="docutils literal notranslate"><span class="pre">page-size-bytes</span></code> / <code class="docutils literal notranslate"><span class="pre">page-row-limit</span></code> / <code class="docutils literal notranslate"><span class="pre">dict-size-bytes</span></code></p></td>
+<td><p>the sizes/limit must be positive Java ints (<code class="docutils literal notranslate"><span class="pre">Integer.parseInt</span></code> semantics — no trimming, no values past <code class="docutils literal notranslate"><span class="pre">Int.MaxValue</span></code> — matching iceberg-java, whose writer fails on anything else); <code class="docutils literal notranslate"><span class="pre">compression-level</span></code> must be a Java int within the native writer’s per-codec range (zstd 1–22, gzip 0–9, brotli 0–11; ignored by both writers for snappy/lz4/none) — iceberg-java never validates the level, so an out-of-range value falls back rather than becoming a native task failure</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">write.parquet.row-group-check-min-record-count</span></code></p></td>
+<td><p>unset or <code class="docutils literal notranslate"><span class="pre">100</span></code> (the default)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">write.parquet.row-group-check-max-record-count</span></code></p></td>
+<td><p>unset or <code class="docutils literal notranslate"><span class="pre">10000</span></code> (the default)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">write.parquet.page-version</span></code></p></td>
+<td><p>unset or <code class="docutils literal notranslate"><span class="pre">v1</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">write.parquet.shred-variants</span></code></p></td>
+<td><p>unset or <code class="docutils literal notranslate"><span class="pre">false</span></code> (Spark 4.x / Iceberg 1.11 resolve this into every parquet write)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">write.parquet.variant-inference-buffer-size</span></code></p></td>
+<td><p>any value (only meaningful when shredding, which is gated)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">write.parquet.bloom-filter-enabled.column.&lt;col&gt;</span></code></p></td>
+<td><p>unset or <code class="docutils literal notranslate"><span class="pre">false</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">write.metadata.metrics.*</span></code></p></td>
+<td><p>any value (manifest metrics are re-derived on the JVM with Iceberg’s own logic)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">write.spark.fanout.enabled</span></code></p></td>
+<td><p>any value (the native writer implements both clustered and fanout modes)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">write.target-file-size-bytes</span></code></p></td>
+<td><p>any value (the two writers can choose different roll points; see accepted divergences)</p></td>
+</tr>
+<tr class="row-even"><td><p>data location URI scheme</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">file</span></code>, <code class="docutils literal notranslate"><span class="pre">memory</span></code>, <code class="docutils literal notranslate"><span class="pre">s3</span></code>, <code class="docutils literal notranslate"><span class="pre">s3a</span></code>, <code class="docutils literal notranslate"><span class="pre">gs</span></code> (<code class="docutils literal notranslate"><span class="pre">gs</span></code> only when the <code class="docutils literal notranslate"><span class="pre">FileIO</span></code> opening the data location is a <code class="docutils literal notranslate"><span class="pre">GCSFileIO</span></code>; see below)</p></td>
+</tr>
+<tr class="row-odd"><td><p>resolved <code class="docutils literal notranslate"><span class="pre">table.locationProvider()</span></code></p></td>
+<td><p>Iceberg’s built-in <code class="docutils literal notranslate"><span class="pre">DefaultLocationProvider</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>partition spec</p></td>
+<td><p>any</p></td>
+</tr>
+<tr class="row-odd"><td><p>column types</p></td>
+<td><p>any except <code class="docutils literal notranslate"><span class="pre">uuid</span></code> (Spark plans it as a string; no Arrow cast reaches <code class="docutils literal notranslate"><span class="pre">fixed(16)</span></code>)</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Within the namespaces that shape data-file bytes — <code class="docutils literal notranslate"><span class="pre">write.parquet.*</span></code> and <code class="docutils literal notranslate"><span class="pre">parquet.*</span></code> —
+everything not listed above must be absent: unvetted <code class="docutils literal notranslate"><span class="pre">write.parquet.*</span></code> keys (e.g.
+<code class="docutils literal notranslate"><span class="pre">bloom-filter-max-bytes</span></code>, <code class="docutils literal notranslate"><span class="pre">stats-enabled.column.*</span></code>, keys added by future Iceberg versions),
+any <code class="docutils literal notranslate"><span class="pre">parquet.*</span></code> table property (including <code class="docutils literal notranslate"><span class="pre">parquet.enable.dictionary</span></code>), and any <code class="docutils literal notranslate"><span class="pre">parquet.*</span></code>
+key in the session Hadoop configuration other than the reader-only
+<code class="docutils literal notranslate"><span class="pre">parquet.hadoop.vectored.io.enabled</span></code> (with <code class="docutils literal notranslate"><span class="pre">HadoopFileIO</span></code>-backed output those reach
+iceberg-java’s writer but not the native one). Also gated explicitly: any <code class="docutils literal notranslate"><span class="pre">encryption.*</span></code> key,
+<code class="docutils literal notranslate"><span class="pre">write.object-storage.enabled=true</span></code>, <code class="docutils literal notranslate"><span class="pre">write.location-provider.impl</span></code>, and <code class="docutils literal notranslate"><span class="pre">io-impl</span></code>.</p>
+<p>Three checks look past properties at the table’s instantiated state, because they can be
+configured at the catalog level (or by a custom <code class="docutils literal notranslate"><span class="pre">TableOperations</span></code>) without any table or write
+property changing: <code class="docutils literal notranslate"><span class="pre">table.locationProvider()</span></code> must be Iceberg’s <code class="docutils literal notranslate"><span class="pre">DefaultLocationProvider</span></code>;
+<code class="docutils literal notranslate"><span class="pre">table.io()</span></code> must be a recognized <code class="docutils literal notranslate"><span class="pre">FileIO</span></code> (the same allowlist the native scan uses, minus the
+<code class="docutils literal notranslate"><span class="pre">EncryptingFileIO</span></code> family — the native writer produces plaintext files, so an encrypting <code class="docutils literal notranslate"><span class="pre">FileIO</span></code>
+is rejected on the write side); and <code class="docutils literal notranslate"><span class="pre">table.encryption()</span></code> must be Iceberg’s
+<code class="docutils literal notranslate"><span class="pre">PlaintextEncryptionManager</span></code>. Anything else falls back.</p>
+<p>A <code class="docutils literal notranslate"><span class="pre">gs</span></code> data location additionally requires that the <code class="docutils literal notranslate"><span class="pre">FileIO</span></code> actually opening it is a
+<code class="docutils literal notranslate"><span class="pre">GCSFileIO</span></code> (for a <code class="docutils literal notranslate"><span class="pre">ResolvingFileIO</span></code>, the delegate it instantiates for that location,
+which is a <code class="docutils literal notranslate"><span class="pre">HadoopFileIO</span></code> when the GCS <code class="docutils literal notranslate"><span class="pre">FileIO</span></code> cannot be loaded or initialized). A
+<code class="docutils literal notranslate"><span class="pre">HadoopFileIO</span></code> takes its GCS credentials, endpoint and project from <code class="docutils literal notranslate"><span class="pre">fs.gs.*</span></code> in the Hadoop
+Configuration, and only <code class="docutils literal notranslate"><span class="pre">fs.s3a.*</span></code> is translated into the native <code class="docutils literal notranslate"><span class="pre">FileIO</span></code>, so the native writer
+could resolve a different storage identity or endpoint than the JVM writer would. That
+combination falls back; a <code class="docutils literal notranslate"><span class="pre">GCSFileIO</span></code> carries its <code class="docutils literal notranslate"><span class="pre">gcs.*</span></code> settings in <code class="docutils literal notranslate"><span class="pre">FileIO.properties()</span></code>,
+which are forwarded.</p>
+<p>Other <code class="docutils literal notranslate"><span class="pre">write.*</span></code> properties are intentionally not gated because they cannot make the native
+writer produce different data files: distribution and ordering settings shape the Spark plan
+identically on both paths, WAP / branch / snapshot properties act on the JVM committer,
+<code class="docutils literal notranslate"><span class="pre">write.avro.*</span></code> / <code class="docutils literal notranslate"><span class="pre">write.orc.*</span></code> apply only to formats already excluded, and merge-on-read
+settings route the write through <code class="docutils literal notranslate"><span class="pre">WriteDelta</span></code>, which the split plan never intercepts. Every
+rule is pinned by <code class="docutils literal notranslate"><span class="pre">CometIcebergWriteDetectionSuite</span></code>.</p>
+<p>Manifest <code class="docutils literal notranslate"><span class="pre">DataFile</span></code> metrics are assembled on the JVM before commit: each written file’s
+metrics are re-derived from its parquet footer through the version-matched
+<code class="docutils literal notranslate"><span class="pre">ParquetUtil.footerMetrics</span></code> and <code class="docutils literal notranslate"><span class="pre">MetricsConfig.forTable</span></code>, with float/double NaN counts and
+bounds carried over from the native writer’s tracked state. iceberg-java’s metadata decisions
+— metrics modes, the inferred-column cap
+(<code class="docutils literal notranslate"><span class="pre">write.metadata.metrics.max-inferred-column-defaults</span></code>), bound truncation, and list/map bounds
+suppression — are therefore applied by iceberg-java’s own code regardless of what the native
+writer reports. This costs one footer-sized ranged read per written file at write time.</p>
+</section>
+<section id="failure-handling">
+<h2>Failure handling<a class="headerlink" href="#failure-handling" title="Link to this heading">#</a></h2>
+<p>Eligibility is decided entirely at plan time. That includes the reflection surface: every
+iceberg-java class, method, and constructor the executor-side commit-message assembly uses is
+eagerly resolved by the eligibility gate on the driver, so an Iceberg release that moves any
+of them declines the native path with a fall-back reason instead of failing tasks mid-write.
+Once planned, the physical plan is fixed — there is no per-task re-decision or runtime switch
+back to the JVM writer.</p>
+<p>When a native write fails partway through a task (an object-store error, a data-dependent cast
+failure), the error propagates as an ordinary Spark task failure and Spark’s task retry
+re-executes it — through the native writer again. Retries cannot collide: each attempt’s task
+attempt id is embedded in its data file names.</p>
+<p>Partial results are never committed. The commit set is exactly the commit messages returned by
+successful tasks — a failed task contributes none — and if the job fails, the driver-side
+commit operator aborts without committing anything. A failed task attempt also deletes the
+data files it created, as iceberg-java’s writer abort does. The native writer records every
+location it hands to a file writer, and exactly one side owns deleting them at any moment: the
+native writer owns them until its output batch reaches the JVM (so it cleans up a failed write,
+a task torn down before the write completed — for example because the operator feeding it threw
+— and a failure encoding the manifest or building that batch), and the JVM owns them from then
+on through a task failure listener. The handoff does not depend on decoding the manifest: the
+native side reports the locations in the output batch alongside it, and the listener is handed
+them before the manifest is decoded, so a failure in that decode still cleans up. Both
+deletions are best-effort and never mask the original failure; anything they miss is invisible
+to every reader, since readers resolve files through committed manifests only, and is reclaimed
+by Iceberg’s normal <code class="docutils literal notranslate"><span class="pre">remove_orphan_files</span></code> maintenance.</p>
+<p>When one task fails, the tasks that had already completed leave committed-nothing data files
+too. The committer collects each task’s commit message as that task finishes, so on a job
+failure it aborts with the completed messages and deletes their data files through the table
+<code class="docutils literal notranslate"><span class="pre">FileIO</span></code>. (Iceberg’s own <code class="docutils literal notranslate"><span class="pre">SparkWrite.abort</span></code> skips cleanup unless a commit failed with a
+cleanable error, so on the stock path those files are left for <code class="docutils literal notranslate"><span class="pre">remove_orphan_files</span></code>.) A
+failure during the driver-side commit itself behaves exactly as on the stock path: the commit
+messages carry genuine <code class="docutils literal notranslate"><span class="pre">SparkWrite$TaskCommit</span></code> objects, so Iceberg’s own <code class="docutils literal notranslate"><span class="pre">SparkWrite.abort</span></code>
+cleanup (which deletes the files listed in the commit messages for cleanable failures) applies
+unchanged.</p>
+</section>
+<section id="accepted-divergences-behind-the-toggle">
+<h2>Accepted divergences behind the toggle<a class="headerlink" href="#accepted-divergences-behind-the-toggle" title="Link to this heading">#</a></h2>
+<p>Some differences between parquet-mr and the pinned parquet-rs / iceberg-rust are unconditional —
+they apply to every native write and cannot be configured away. Enabling
+<code class="docutils literal notranslate"><span class="pre">spark.comet.iceberg.write.enabled</span></code> accepts them. They fall into three classes with very
+different blast radius: differences confined to the physical bytes of a data file (cosmetic —
+no reader decision is based on them), differences visible in manifest metadata (these outlive
+the write and feed later readers’ pruning decisions, so each one is analyzed individually
+below), and one operational path-layout caveat.</p>
+<section id="physical-file-layout-only-cosmetic">
+<h3>Physical file layout only (cosmetic)<a class="headerlink" href="#physical-file-layout-only-cosmetic" title="Link to this heading">#</a></h3>
+<p>No Iceberg reader bases a planning or correctness decision on these; they change the bytes of
+a data file but not what any reader computes from it:</p>
+<ul class="simple">
+<li><p>Footer key-value metadata differs: native files carry an <code class="docutils literal notranslate"><span class="pre">ARROW:schema</span></code> entry and no
+<code class="docutils literal notranslate"><span class="pre">iceberg.schema</span></code> entry; iceberg-java files are the opposite.</p></li>
+<li><p>The Parquet root schema element is named <code class="docutils literal notranslate"><span class="pre">arrow_schema</span></code> (iceberg-java: <code class="docutils literal notranslate"><span class="pre">table</span></code>).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">created_by</span></code> identifies parquet-rs, not parquet-mr.</p></li>
+<li><p>No page CRC checksums and no page-header statistics (parquet-mr writes both by default).
+Absent page-header statistics can only make a reader scan more pages, never skip pages it
+should have read; page pruning uses the column index, which the native writer does produce.</p></li>
+<li><p>Dictionary-encoded pages are labeled <code class="docutils literal notranslate"><span class="pre">RLE_DICTIONARY</span></code> (parquet-mr v1 files: <code class="docutils literal notranslate"><span class="pre">PLAIN_DICTIONARY</span></code>).</p></li>
+<li><p>Fixed-length binary columns (<code class="docutils literal notranslate"><span class="pre">uuid</span></code>, <code class="docutils literal notranslate"><span class="pre">fixed</span></code>, decimals with precision &gt; 18) are not
+dictionary-encoded (parquet-mr dictionary-encodes them).</p></li>
+<li><p>High-cardinality columns keep a dictionary page. parquet-mr abandons dictionary encoding for a
+column chunk, and writes no dictionary page, when the first check shows the dictionary is not
+saving space. parquet-rs keeps dictionary encoding until the dictionary reaches
+<code class="docutils literal notranslate"><span class="pre">write.parquet.dict-size-bytes</span></code> (2 MB by default), then switches to plain encoding for the rest
+of the chunk and still writes the dictionary page. Results are the same, but a selective read of
+a native-written file fetches that dictionary page for every column chunk it touches, so it
+reads more bytes than it would from an iceberg-java file
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6114">#6114</a>).</p></li>
+<li><p>Row-group boundaries: parquet-mr flushes by byte size at a record-count check cadence,
+parquet-rs buffers by row count. File naming follows the same cadence-style difference
+(iceberg-java names files <code class="docutils literal notranslate"><span class="pre">&lt;partition&gt;-&lt;task&gt;-&lt;operation&gt;-&lt;count&gt;</span></code>; iceberg-rust uses a
+process-local counter).</p></li>
+<li><p>Partition directory names match iceberg-java 1.8+’s <code class="docutils literal notranslate"><span class="pre">PartitionSpec.partitionToPath</span></code> for every
+partition type. <code class="docutils literal notranslate"><span class="pre">float</span></code> and <code class="docutils literal notranslate"><span class="pre">double</span></code> values are rendered with Java’s <code class="docutils literal notranslate"><span class="pre">Float.toString</span></code> /
+<code class="docutils literal notranslate"><span class="pre">Double.toString</span></code> rules (<code class="docutils literal notranslate"><span class="pre">f=1.0</span></code>, <code class="docutils literal notranslate"><span class="pre">f=1.0E10</span></code>), as iceberg-java renders them. On Iceberg 1.5.x,
+which the Spark 3.4 profile pins, iceberg-java itself spelled <code class="docutils literal notranslate"><span class="pre">timestamp</span></code> and <code class="docutils literal notranslate"><span class="pre">timestamptz</span></code>
+directories with <code class="docutils literal notranslate"><span class="pre">LocalDateTime.toString()</span></code> / <code class="docutils literal notranslate"><span class="pre">OffsetDateTime.toString()</span></code>
+(<code class="docutils literal notranslate"><span class="pre">ts=1969-12-31T23:59:58.500Z</span></code>) and left the partition field name unescaped; Comet uses the
+1.8+ spelling on every profile. Distinct partition values still get distinct directories in all
+cases, and no reader parses these names: files are resolved through committed manifests.</p></li>
+<li><p>File rolling lands on the same row grid as iceberg-java but not necessarily on the same row.
+Both writers re-check the current file’s size against <code class="docutils literal notranslate"><span class="pre">write.target-file-size-bytes</span></code> once
+every 1000 rows of that file (iceberg-java’s <code class="docutils literal notranslate"><span class="pre">RollingFileWriter.ROWS_DIVISOR</span></code>; Comet hands the
+iceberg-rust writer rows in 1000-row units, per partition file, to get the same grid), so each
+writer rolls only on a 1000-row boundary of its own file.
+The shared grid is all that is shared. What each writer compares against the target differs —
+flushed bytes plus parquet-rs’s estimate of the open row group, versus parquet-mr’s file
+position plus its buffered size — and the two use different threshold comparisons. These are
+independent size estimates, so nothing bounds how far apart the two writers’ roll points are:
+they may cross the target several grid steps apart, and the resulting files can differ in row
+count by an arbitrary number of 1000-row blocks. Do not rely on file-layout parity between the
+two writers; rely only on each file rolling on its own 1000-row boundary.</p></li>
+<li><p>A fanout write lists a task’s data files in file-path order, where iceberg-java lists them in
+its own <code class="docutils literal notranslate"><span class="pre">StructLikeMap</span></code> iteration order. Both are stable across runs, and neither is a
+documented ordering, but the manifest entry order becomes the scan-task order and so the row
+order of an unordered <code class="docutils literal notranslate"><span class="pre">SELECT</span> <span class="pre">*</span></code>. Only the sorted order is reproducible on the native path:
+iceberg-rust’s <code class="docutils literal notranslate"><span class="pre">FanoutWriter</span></code> closes its per-partition writers out of a <code class="docutils literal notranslate"><span class="pre">HashMap</span></code>, which under
+Rust’s per-process <code class="docutils literal notranslate"><span class="pre">RandomState</span></code> would otherwise give a different order on every run. Clustered
+and unpartitioned writes append in creation order on both paths and are unaffected.</p></li>
+<li><p>Compressed page bytes are implementation-defined: the codec and any explicit level are
+translated, but parquet-rs and parquet-mr embed different encoder implementations and
+defaults (zstd default levels, LZ4 framing), so byte-identical output is not achievable even
+for a default <code class="docutils literal notranslate"><span class="pre">zstd</span></code> table. The decompressed data is identical. For the same reason,
+codec-level side channels (<code class="docutils literal notranslate"><span class="pre">zlib.compress.level</span></code>, <code class="docutils literal notranslate"><span class="pre">compression.brotli.quality</span></code>,
+<code class="docutils literal notranslate"><span class="pre">io.compression.codec.zstd.level</span></code> — the last is present in every Hadoop configuration by
+default) are not gated: they can only shift compressed bytes, which are already accepted as
+divergent.</p></li>
+</ul>
+</section>
+<section id="manifest-metadata-visible-to-later-readers">
+<h3>Manifest metadata visible to later readers<a class="headerlink" href="#manifest-metadata-visible-to-later-readers" title="Link to this heading">#</a></h3>
+<p>Manifest metrics drive partition- and file-level pruning for every future reader of the table,
+so a divergence here would outlive the write. This class is deliberately kept almost empty:
+<code class="docutils literal notranslate"><span class="pre">DataFile</span></code> metrics are not taken from the native writer’s manifest but re-derived on the JVM
+from each written file’s parquet footer through iceberg-java’s own <code class="docutils literal notranslate"><span class="pre">ParquetUtil.footerMetrics</span></code>
+and <code class="docutils literal notranslate"><span class="pre">MetricsConfig.forTable</span></code> (see above). Metrics modes, lower/upper bound truncation, the
+null-count conventions, and list/map bounds suppression are therefore iceberg-java’s code
+making iceberg-java’s decisions. The parity tests write the same rows through both writers and
+compare the committed <code class="docutils literal notranslate"><span class="pre">readable_metrics</span></code> (value, null and NaN counts, and lower and upper bounds)
+for the column types they cover. Two footer-derived values can still differ from what
+iceberg-java’s <em>writer-tracked</em> state would have recorded, and both are analyzed safe:</p>
+<ul class="simple">
+<li><p>Float/double bounds involving zero may differ in sign: parquet-rs normalises footer
+statistics to min <code class="docutils literal notranslate"><span class="pre">-0.0</span></code> / max <code class="docutils literal notranslate"><span class="pre">+0.0</span></code> (the parquet-format recommendation), while
+iceberg-java’s writer-tracked bounds preserve the exact sign it saw. The native path’s
+manifest bounds inherit the normalised values — a strictly conservative widening that cannot
+change pruning decisions.</p></li>
+<li><p>On Iceberg 1.10+, manifest <code class="docutils literal notranslate"><span class="pre">value_counts</span></code> / <code class="docutils literal notranslate"><span class="pre">null_value_counts</span></code> for float/double columns
+nested under a nullable struct count rows whose parent struct is null (they come from the
+parquet footer), while iceberg-java’s writer-tracked counts do not. Both counts inflate by
+the same amount, so the derived null ratios and <code class="docutils literal notranslate"><span class="pre">IS</span> <span class="pre">NULL</span></code> / <code class="docutils literal notranslate"><span class="pre">IS</span> <span class="pre">NOT</span> <span class="pre">NULL</span></code> pruning decisions
+are unaffected.</p></li>
+</ul>
+<p>All content not listed above — the logical data, encodings for non-FLBA columns, statistics
+values, and manifest metadata — must match iceberg-java exactly, or the write falls back.</p>
+</section>
+</section>
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="iceberg.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">Accelerating Apache Iceberg Parquet Scans using Comet</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="s3-credential-providers.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">S3 Credential Providers</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#overview">Overview</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#how-the-native-write-works">How the native write works</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#configuration">Configuration</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#supported-operations">Supported operations</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#when-comet-falls-back-to-spark-s-write-operator">When Comet falls back to Spark’s write operator</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#native-parquet-write-eligibility">Native Parquet write eligibility</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#failure-handling">Failure handling</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#accepted-divergences-behind-the-toggle">Accepted divergences behind the toggle</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#physical-file-layout-only-cosmetic">Physical file layout only (cosmetic)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#manifest-metadata-visible-to-later-readers">Manifest metadata visible to later readers</a></li>
+</ul>
+</li>
+</ul>
+  </nav></div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf"></script>
+<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf"></script>
+
+<footer class="comet-footer" role="contentinfo">
+  <div class="comet-footer__inner">
+
+    <!-- Brand: logo only — no duplicated tagline -->
+    <a class="comet-footer__brand" href="../../index.html" aria-label="Apache DataFusion Comet — home">
+      <img src="../../_static/images/DataFusionComet-Logo-Light.png"
+           class="comet-footer__logo only-light"
+           width="3256" height="836"
+           loading="lazy" decoding="async"
+           alt="" />
+      <img src="../../_static/images/DataFusionComet-Logo-Dark.png"
+           class="comet-footer__logo only-dark pst-js-only"
+           width="3256" height="836"
+           loading="lazy" decoding="async"
+           alt="" />
+    </a>
+
+    <!-- Two compact link columns: documentation + community -->
+    <nav class="comet-footer__links" aria-label="Footer navigation">
+      <div class="comet-footer__col">
+        <div class="comet-footer__col-title">Documentation</div>
+        <a href="../index.html">User Guide</a>
+        <a href="../../contributor-guide/index.html">Contributor Guide</a>
+        <a href="../../changelog/index.html">Changelog</a>
+      </div>
+
+      <div class="comet-footer__col">
+        <div class="comet-footer__col-title">Community</div>
+        <a href="https://github.com/apache/datafusion-comet" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://datafusion.apache.org/contributor-guide/communication.html" target="_blank" rel="noopener">Slack &amp; Discord</a>
+        <a href="https://apache.org" target="_blank" rel="noopener">Apache Software Foundation</a>
+      </div>
+    </nav>
+  </div>
+
+  <!-- Legal: license, copyright, trademark — single quiet line -->
+  <div class="comet-footer__legal">
+    <p>
+      &copy; 2023&ndash;2026 Apache Software Foundation &nbsp;·&nbsp;
+      Licensed under the <a href="https://www.apache.org/licenses/LICENSE-2.0" target="_blank" rel="noopener">Apache License 2.0</a>
+    </p>
+    <p class="comet-footer__trademark">
+      Apache DataFusion, Apache DataFusion Comet, the Apache feather logo, and the Apache DataFusion project logo are trademarks of The Apache Software Foundation.
+    </p>
+  </div>
+</footer>
+
+  </body>
+</html>
