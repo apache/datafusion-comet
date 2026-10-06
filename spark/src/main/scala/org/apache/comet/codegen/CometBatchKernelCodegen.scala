@@ -24,10 +24,11 @@ import org.apache.arrow.vector._
 import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
 import org.apache.arrow.vector.types.pojo.Field
 import org.apache.spark.internal.Logging
+import org.apache.spark.sql.catalyst.DeserializerBuildHelper.createDeserializerForTypesSupportValueOf
+import org.apache.spark.sql.catalyst.SerializerBuildHelper.{createSerializerForBoolean, createSerializerForByte, createSerializerForDouble, createSerializerForFloat, createSerializerForInteger, createSerializerForLong, createSerializerForShort}
 import org.apache.spark.sql.catalyst.encoders.ExpressionEncoder
 import org.apache.spark.sql.catalyst.expressions.{BoundReference, Expression, Literal, ScalaUDF, Unevaluable}
 import org.apache.spark.sql.catalyst.expressions.codegen._
-import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
@@ -392,65 +393,54 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
    * `Option` unwrap that a boxed value never takes. The function receives the same value or null,
    * and Catalyst gets the same result. Spark 4 builds a Java UDF the same way, with no encoders.
    *
-   * Only an encoder whose expression is exactly that call on the raw value is dropped. Every
-   * other encoder (`String`, `Option`, case classes, collections) stays, and so does any boxed
-   * one of a different shape.
+   * Only an encoder whose expression is exactly the one Spark builds for a boxed primitive is
+   * dropped. Every other encoder (`String`, `Option`, case classes, collections) stays.
    */
   private[comet] def withoutBoxedPrimitiveEncoders(expr: Expression): Expression =
     expr.transformUp { case udf: ScalaUDF =>
-      val inputEncoders = udf.inputEncoders.zip(udf.children).map {
-        case (Some(enc), child) if isBoxedPrimitiveDeserializer(enc, child.dataType) => None
-        case (enc, _) => enc
-      }
-      val outputEncoder = udf.outputEncoder.filterNot(isBoxedPrimitiveSerializer(_, udf.dataType))
-      if (inputEncoders == udf.inputEncoders && outputEncoder == udf.outputEncoder) {
-        udf
-      } else {
-        udf.copy(inputEncoders = inputEncoders, outputEncoder = outputEncoder)
-      }
+      udf.copy(
+        inputEncoders = udf.inputEncoders.zip(udf.children).map { case (enc, child) =>
+          enc.filterNot(isBoxedPrimitiveDeserializer(_, child.dataType))
+        },
+        outputEncoder = udf.outputEncoder.filterNot(isBoxedPrimitiveSerializer(_, udf.dataType)))
     }
 
-  /** Boxed class and unboxing method of each type `CatalystTypeConverters` passes through. */
-  private def boxedPrimitive(dt: DataType): Option[(Class[_], String)] = dt match {
-    case BooleanType => Some((classOf[java.lang.Boolean], "booleanValue"))
-    case ByteType => Some((classOf[java.lang.Byte], "byteValue"))
-    case ShortType => Some((classOf[java.lang.Short], "shortValue"))
-    case IntegerType => Some((classOf[java.lang.Integer], "intValue"))
-    case LongType => Some((classOf[java.lang.Long], "longValue"))
-    case FloatType => Some((classOf[java.lang.Float], "floatValue"))
-    case DoubleType => Some((classOf[java.lang.Double], "doubleValue"))
-    case _ => None
-  }
+  /**
+   * Boxed class of each type `CatalystTypeConverters` passes through, and Spark's builder for the
+   * serializer of that class's encoder.
+   */
+  private def boxedPrimitive(dt: DataType): Option[(Class[_], Expression => Expression)] =
+    dt match {
+      case BooleanType => Some((classOf[java.lang.Boolean], createSerializerForBoolean))
+      case ByteType => Some((classOf[java.lang.Byte], createSerializerForByte))
+      case ShortType => Some((classOf[java.lang.Short], createSerializerForShort))
+      case IntegerType => Some((classOf[java.lang.Integer], createSerializerForInteger))
+      case LongType => Some((classOf[java.lang.Long], createSerializerForLong))
+      case FloatType => Some((classOf[java.lang.Float], createSerializerForFloat))
+      case DoubleType => Some((classOf[java.lang.Double], createSerializerForDouble))
+      case _ => None
+    }
 
   /**
-   * True iff `enc` deserializes a `dt` value as `valueOf` on the boxed class. The argument must
-   * be a nullable reference, because `StaticInvoke` propagates null only from a nullable
-   * argument: over a non-nullable one, Spark would box the 0 that a row holds for a null.
+   * True iff `enc` deserializes a `dt` value exactly as the encoder of its boxed class does, with
+   * `valueOf` over a nullable reference. The reference must be nullable because `StaticInvoke`
+   * propagates null only from a nullable argument: over a non-nullable one, Spark would box the 0
+   * that a row holds for a null.
    */
   private def isBoxedPrimitiveDeserializer(enc: ExpressionEncoder[_], dt: DataType): Boolean =
-    (boxedPrimitive(dt), enc.objDeserializer) match {
-      case (Some((boxed, _)), si: StaticInvoke) =>
-        si.staticObject == boxed && si.functionName == "valueOf" && si.propagateNull &&
-        (si.arguments match {
-          case Seq(BoundReference(0, `dt`, true)) => true
-          case _ => false
-        })
-      case _ => false
+    boxedPrimitive(dt).exists { case (boxed, _) =>
+      enc.objDeserializer ==
+        createDeserializerForTypesSupportValueOf(BoundReference(0, dt, nullable = true), boxed)
     }
 
   /**
-   * True iff `enc` serializes a boxed `dt` value by unboxing it. `ScalaUDF` turns a null result
-   * into null before it calls the serializer, so the serializer only ever sees a boxed value.
+   * True iff `enc` serializes a boxed `dt` value exactly as the encoder of the boxed class does,
+   * by unboxing it. `ScalaUDF` turns a null result into null before it calls the serializer, so
+   * the serializer only ever sees a boxed value.
    */
   private def isBoxedPrimitiveSerializer(enc: ExpressionEncoder[_], dt: DataType): Boolean =
-    (boxedPrimitive(dt), enc.objSerializer) match {
-      case (Some((boxed, unbox)), inv: Invoke) =>
-        inv.functionName == unbox && inv.dataType == dt && inv.arguments.isEmpty &&
-        (inv.targetObject match {
-          case BoundReference(0, ObjectType(cls), _) => cls == boxed
-          case _ => false
-        })
-      case _ => false
+    boxedPrimitive(dt).exists { case (boxed, serializerFor) =>
+      enc.objSerializer == serializerFor(BoundReference(0, ObjectType(boxed), nullable = true))
     }
 
   /**

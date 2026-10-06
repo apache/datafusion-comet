@@ -1311,7 +1311,8 @@ class CometCodegenSuite
    * `<type>_str` function names the exact value it receives, null included, so a value converted
    * differently from Spark's encoder (a null read as 0, a -0.0 read as 0.0) fails the comparison
    * with Spark. Each `<type>_id` function returns the boxed value it receives, which covers the
-   * result side.
+   * result side. `long_tag` and `opt_long` pair a boxed parameter with ones that keep their
+   * encoders.
    */
   private def registerBoxedPrimitiveUdfs(): Unit = {
     spark.udf.register("bool_str", (x: java.lang.Boolean) => String.valueOf(x))
@@ -1335,6 +1336,8 @@ class CometCodegenSuite
     spark.udf.register("long_id", (x: java.lang.Long) => x)
     spark.udf.register("float_id", (x: java.lang.Float) => x)
     spark.udf.register("double_id", (x: java.lang.Double) => x)
+    spark.udf.register("long_tag", (x: java.lang.Long, s: String) => s"$x:$s")
+    spark.udf.register("opt_long", (x: Option[Long]) => x.map(_ + 1).getOrElse(-1L))
   }
 
   private def withBoxedPrimitiveTable(f: => Unit): Unit = {
@@ -1344,9 +1347,8 @@ class CometCodegenSuite
           "c_long BIGINT, c_float FLOAT, c_double DOUBLE, s STRING) USING parquet")
       sql(
         "INSERT INTO t VALUES " +
-          "(true, CAST(-128 AS TINYINT), CAST(-32768 AS SMALLINT), CAST(-2147483648 AS INT), " +
-          "CAST(-9223372036854775808 AS BIGINT), CAST('-0.0' AS FLOAT), " +
-          "CAST('-0.0' AS DOUBLE), 'a'), " +
+          "(true, CAST(-128 AS TINYINT), CAST(-32768 AS SMALLINT), -2147483648, " +
+          "-9223372036854775808, CAST('-0.0' AS FLOAT), CAST('-0.0' AS DOUBLE), 'a'), " +
           "(false, CAST(127 AS TINYINT), CAST(32767 AS SMALLINT), 2147483647, " +
           "9223372036854775807, CAST('NaN' AS FLOAT), CAST('NaN' AS DOUBLE), NULL), " +
           "(NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'c'), " +
@@ -1363,8 +1365,6 @@ class CometCodegenSuite
     spark.udf.register("str_id", (x: String) => x)
     spark.udf.register("long_in_prim_out", (x: java.lang.Long) => if (x == null) -1L else x + 1L)
     spark.udf.register("prim_add_one", (x: Long) => x + 1)
-    spark.udf.register("long_tag", (x: java.lang.Long, s: String) => s"$x:$s")
-    spark.udf.register("opt_long", (x: Option[Long]) => x.map(_ + 1).getOrElse(-1L))
     withBoxedPrimitiveTable {
       def boundUdf(call: String): ScalaUDF = {
         val udf = sql(s"SELECT $call FROM t").queryExecution.optimizedPlan.expressions
@@ -1393,17 +1393,14 @@ class CometCodegenSuite
 
       // Spark's encoder path calls the parameter's converter even for a null input. Without the
       // encoder, `ScalaUDF` tests for null itself, which shows the kernel compiles the rewrite.
-      def kernelSource(call: String, vectorClass: String): String =
+      def kernelSource(call: String, vectorClass: Class[_ <: ValueVector]): String =
         CometBatchKernelCodegen
           .generateSource(
             boundUdf(call),
-            IndexedSeq(
-              ArrowColumnSpec(
-                CometBatchKernelCodegen.vectorClassBySimpleName(vectorClass),
-                nullable = true)))
+            IndexedSeq(ArrowColumnSpec(vectorClass, nullable = true)))
           .body
-      assert(kernelSource("str_id(s)", "VarCharVector").contains(".apply(null)"))
-      assert(!kernelSource("long_id(c_long)", "BigIntVector").contains(".apply(null)"))
+      assert(kernelSource("str_id(s)", classOf[VarCharVector]).contains(".apply(null)"))
+      assert(!kernelSource("long_id(c_long)", classOf[BigIntVector]).contains(".apply(null)"))
     }
   }
 
@@ -1419,13 +1416,10 @@ class CometCodegenSuite
 
   test("boxed primitive UDF parameters next to other parameters match Spark (#6706)") {
     registerBoxedPrimitiveUdfs()
-    // The string and the `Option` parameters keep their encoders.
-    spark.udf.register("long_tag", (x: java.lang.Long, s: String) => s"$x:$s")
-    spark.udf.register("opt_long", (x: Option[Long]) => x.map(_ + 1).getOrElse(-1L))
     // Spark guards the call with a null check for the primitive parameter, not the boxed one.
     spark.udf.register("long_or", (x: java.lang.Long, y: Long) => if (x == null) y else x + y)
     withBoxedPrimitiveTable {
-      Seq(
+      val calls = Seq(
         "long_tag(c_long, s)",
         "opt_long(c_long)",
         "long_or(c_long, c_int)",
@@ -1434,12 +1428,9 @@ class CometCodegenSuite
         "long_id(long_id(c_long))",
         // Inside a lambda, Spark evaluates the UDF through `eval` rather than generated code,
         // with the same converters.
-        "transform(array(c_int, NULL), x -> int_str(x))").foreach { call =>
-        withClue(call) {
-          assertCodegenRan {
-            checkSparkAnswerAndOperator(sql(s"SELECT $call FROM t"))
-          }
-        }
+        "transform(array(c_int, NULL), x -> int_str(x))")
+      assertCodegenRan {
+        checkSparkAnswerAndOperator(sql(s"SELECT ${calls.mkString(", ")} FROM t"))
       }
     }
   }
