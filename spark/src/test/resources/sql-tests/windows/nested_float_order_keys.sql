@@ -75,9 +75,10 @@ query
 SELECT id FROM nested_float_keys ORDER BY named_struct('x', IF(s, -f, f)), id DESC LIMIT 4
 
 -- Window order keys: peers share a rank, and the default RANGE frame of a running sum spans
--- all of them. The running sums leave out row 8: DataFusion finds a RANGE frame's end by ordering
--- a null element above every value, while the sort puts it first, so the frame of every row
--- after it would run to the end of the partition, with or without floats (#6477).
+-- all of them. DataFusion finds a RANGE frame's end by ordering a null element above every value,
+-- while the sort puts it first, so a RANGE frame over a key whose type can hold a null element or
+-- field falls back, with or without floats (#6477, nested_null_range_frame.sql). The running sums
+-- wrap the floats in coalesce to stay native, which makes row 8 a third zero.
 query
 SELECT id,
   RANK() OVER (ORDER BY array(IF(s, -d, d))) AS r,
@@ -89,9 +90,9 @@ FROM nested_float_keys
 query
 SELECT id,
   RANK() OVER (PARTITION BY g ORDER BY named_struct('x', IF(s, -d, d))) AS r,
-  SUM(id) OVER (ORDER BY array(IF(s, -d, d))) AS running,
-  SUM(id) OVER (PARTITION BY g ORDER BY array(IF(s, -f, f)) DESC) AS by_group
-FROM nested_float_keys WHERE id <> 8
+  SUM(id) OVER (ORDER BY array(coalesce(IF(s, -d, d), 0.0D))) AS running,
+  SUM(id) OVER (PARTITION BY g ORDER BY array(coalesce(IF(s, -f, f), 0.0F)) DESC) AS by_group
+FROM nested_float_keys
 
 -- A rank limit keeps every peer of the last rank it admits
 query
