@@ -38,6 +38,7 @@ use crate::execution::operators::init_csv_datasource_exec;
 use crate::execution::operators::DynamicFilterJoinExec;
 use crate::execution::operators::IcebergScanExec;
 use crate::execution::operators::TopKReaderFilterExec;
+use crate::execution::operators::{reuse_broadcast_build, BroadcastInputExec};
 use crate::execution::{
     operators::{
         ExecutionError, MergeActionContext, MergeInstructionExec, MergeRowsExec, ScanExec,
@@ -2058,6 +2059,22 @@ impl PhysicalPlanner {
                     None
                 } else {
                     let java_stream = inputs.remove(0);
+                    // A broadcast carrier exposes its schema without decoding. Keep it
+                    // out of ordinary scans, which JNI eagerly pulls before execution;
+                    // the cache winner alone opens this replayable input.
+                    if let Some(broadcast) =
+                        BroadcastInputExec::try_new(Arc::clone(&java_stream), &data_types)?
+                    {
+                        return Ok((
+                            vec![],
+                            vec![],
+                            Arc::new(SparkPlan::new(
+                                spark_plan.plan_id,
+                                Arc::new(broadcast),
+                                vec![],
+                            )),
+                        ));
+                    }
                     let address: i64 = JVMClasses::with_env(|env| unsafe {
                         jni_call!(env, arrow_array_stream(java_stream.as_obj()).memory_address() -> i64)
                     })?;
@@ -2609,6 +2626,7 @@ impl PhysicalPlanner {
                         join.dynamic_filter_enabled && !join.null_aware_anti_join,
                         self.session_ctx.copied_config().options(),
                     )?;
+                    let hash_join = reuse_broadcast_build(hash_join)?;
                     Ok((
                         scans,
                         shuffle_scans,
@@ -2626,7 +2644,7 @@ impl PhysicalPlanner {
                         join.dynamic_filter_enabled,
                         self.session_ctx.copied_config().options(),
                     )?;
-
+                    let swapped_hash_join = reuse_broadcast_build(swapped_hash_join)?;
                     let mut additional_native_plans = vec![];
                     if swapped_hash_join.is::<ProjectionExec>() {
                         // a projection was added to the hash join

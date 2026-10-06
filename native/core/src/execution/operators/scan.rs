@@ -179,7 +179,7 @@ impl ScanExec {
 /// Spark-rendered form, since arrow's `from_ffi` imports string buffers unchecked. Otherwise the
 /// column keeps the imported buffers without a copy: the stream transfers ownership by reference
 /// count, and the JVM decodes dictionaries before export.
-fn import_column(col: &ArrayRef) -> Result<ArrayRef, CometError> {
+pub(super) fn import_column(col: &ArrayRef) -> Result<ArrayRef, CometError> {
     Ok(decode_string_arrays(col)?)
 }
 
