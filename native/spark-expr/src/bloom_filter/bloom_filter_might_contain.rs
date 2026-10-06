@@ -57,6 +57,8 @@ fn evaluate_bloom_filter(
         ColumnarValue::Scalar(ScalarValue::Binary(v)) => {
             Ok(v.map(|v| SparkBloomFilter::from(v.as_slice())))
         }
+        // An untyped NULL literal, as in `might_contain(null, 1L)`
+        ColumnarValue::Scalar(ScalarValue::Null) => Ok(None),
         _ => internal_err!("Bloom filter expression should be evaluated as a scalar binary value"),
     }
 }
@@ -90,6 +92,10 @@ fn execute_might_contain(
                 .and_then(|filter| optional_value.map(|value| filter.might_contain_long(value)));
             Ok(ColumnarValue::Scalar(ScalarValue::Boolean(result)))
         }
+        // An untyped NULL literal, as in `might_contain(bf, null)`
+        ColumnarValue::Scalar(ScalarValue::Null) => {
+            Ok(ColumnarValue::Scalar(ScalarValue::Boolean(None)))
+        }
         ColumnarValue::Array(values_array) => {
             let values = values_array
                 .as_any()
@@ -109,7 +115,7 @@ fn execute_might_contain(
                 })
                 .unwrap_or_else(|| Ok(ColumnarValue::Scalar(ScalarValue::Boolean(None))))
         }
-        _ => internal_err!("Expected Int64Array or Int64 Scalar as arguments"),
+        other => internal_err!("Expected Int64Array or Int64 Scalar as arguments, got {other:?}"),
     }
 }
 
@@ -117,6 +123,7 @@ fn execute_might_contain(
 mod tests {
     use super::*;
     use arrow::array::BooleanArray;
+    use datafusion::physical_expr::expressions::Literal;
 
     fn assert_result_eq<T: Into<Option<bool>>>(result: ColumnarValue, expected: Vec<T>) {
         let array = result.to_array(1).unwrap();
@@ -169,6 +176,24 @@ mod tests {
 
         let result = execute_might_contain(&Some(filter), &args).unwrap();
         assert_all_null(result);
+    }
+
+    #[test]
+    fn test_execute_untyped_null_value() {
+        let mut filter = SparkBloomFilter::from((4, 64));
+        filter.put_long(123);
+
+        let args = [ColumnarValue::Scalar(ScalarValue::Null)];
+
+        let result = execute_might_contain(&Some(filter), &args).unwrap();
+        assert_all_null(result);
+    }
+
+    #[test]
+    fn test_untyped_null_bloom_filter() {
+        let bloom_filter_expr: Arc<dyn PhysicalExpr> = Arc::new(Literal::new(ScalarValue::Null));
+        let expr = BloomFilterMightContain::try_new(bloom_filter_expr).unwrap();
+        assert!(expr.bloom_filter.is_none());
     }
 
     #[test]
