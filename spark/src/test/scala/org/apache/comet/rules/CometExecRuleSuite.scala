@@ -2356,6 +2356,20 @@ class CometExecRuleSuite extends CometTestBase {
     }
   }
 
+  test("only the OneRowRelation conversion is on by default") {
+    withConversionQueries { queries =>
+      // CometTestBase turns every conversion on, so set each back to its default.
+      val defaults = queries.map { case (entry, _) => entry.key -> entry.defaultValueString }
+      for ((entry, query) <- queries) {
+        withClue(s"$query: ") {
+          assert(
+            convertedLeaves(query, defaults: _*).nonEmpty ==
+              (entry eq CometConf.COMET_CONVERT_FROM_ONE_ROW_RELATION_ENABLED))
+        }
+      }
+    }
+  }
+
   test("the deprecated sparkToColumnar settings still convert what they converted before") {
     val switch = CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true"
     val list = CometConf.COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST.key
