@@ -24,6 +24,7 @@ import java.util.concurrent.ConcurrentHashMap
 
 import scala.util.control.NonFatal
 
+import org.apache.hadoop.conf.Configuration
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
 
@@ -554,12 +555,15 @@ object IcebergReflection extends Logging {
    * reflection failure; callers must fail closed.
    */
   def resolveFileIOClass(fileIO: Any, location: String): Option[Class[_]] =
+    resolveFileIO(fileIO, location).map(_.getClass)
+
+  private def resolveFileIO(fileIO: Any, location: String): Option[Any] =
     if (!classNameInHierarchy(fileIO.getClass, Set(ClassNames.RESOLVING_FILE_IO))) {
-      Some(fileIO.getClass)
+      Some(fileIO)
     } else {
       try {
         findMethodInHierarchy(fileIO.getClass, "io", classOf[String]) match {
-          case Some(ioMethod) => Option(ioMethod.invoke(fileIO, location)).map(_.getClass)
+          case Some(ioMethod) => Option(ioMethod.invoke(fileIO, location))
           case None =>
             logError(
               s"Iceberg reflection failure: ${fileIO.getClass.getName} has no io(String) method")
@@ -623,6 +627,36 @@ object IcebergReflection extends Logging {
       }
     }
   }
+
+  /**
+   * Gets the effective Hadoop configuration of the FileIO opening the table's data location.
+   *
+   * SparkCatalog overlays `spark.sql.catalog.<catalog>.hadoop.*` settings onto the configuration
+   * installed in HadoopConfigurable FileIO implementations. Reading the Spark session's Hadoop
+   * configuration directly misses those catalog-specific overrides. FileIO is test-scoped on the
+   * main classpath, so invoke `getConf` reflectively instead of linking HadoopConfigurable.
+   * ResolvingFileIO's own configuration does not imply that its delegate consumes Hadoop
+   * settings. Read the instantiated delegate instead, including its HadoopFileIO fallback. Throw
+   * when the delegate cannot be resolved so write detection fails closed; None means the resolved
+   * FileIO does not expose a Hadoop configuration.
+   */
+  def getFileIOHadoopConf(table: Any): Option[Configuration] =
+    getFileIO(table).flatMap { fileIO =>
+      val resolved =
+        if (classNameInHierarchy(fileIO.getClass, Set(ClassNames.RESOLVING_FILE_IO))) {
+          val location = getDataLocation(table)
+            .getOrElse(
+              throw new IllegalStateException("could not resolve the table data location"))
+          resolveFileIO(fileIO, location)
+            .getOrElse(
+              throw new IllegalStateException(s"could not resolve the FileIO for $location"))
+        } else {
+          fileIO
+        }
+      findMethodInHierarchy(resolved.getClass, "getConf").flatMap { confMethod =>
+        Option(confMethod.invoke(resolved)).collect { case conf: Configuration => conf }
+      }
+    }
 
   /**
    * Gets the schema from an Iceberg table.

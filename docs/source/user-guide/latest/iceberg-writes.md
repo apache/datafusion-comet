@@ -55,10 +55,10 @@ The JVM-side planner marshals everything iceberg-rust needs — the write schema
 spec as JSON, the data location, the resolved parquet writer settings, the writer mode
 (unpartitioned / fanout / clustered, mirroring `SparkWrite`'s own choice), object-store
 configuration (the table's `FileIO` properties, e.g. REST-vended credentials, merged over
-`fs.s3a.*` settings translated from the session Hadoop configuration — the same translation
-the native scan uses, since `HadoopFileIO` carries its S3 configuration in the Hadoop
-Configuration rather than in `FileIO` properties), and per-task IDs — into the serialized
-native plan. On each task, iceberg-rust writes the Parquet files and
+`fs.s3a.*` settings translated from the effective Hadoop configuration carried by the table's
+`FileIO`, including catalog-specific `hadoop.*` overrides, since `HadoopFileIO` carries its S3
+configuration in the Hadoop Configuration rather than in `FileIO` properties), and per-task IDs —
+into the serialized native plan. On each task, iceberg-rust writes the Parquet files and
 returns its `DataFile` metadata packed as a single in-memory Iceberg V2 data manifest; the JVM
 decodes those bytes with Iceberg's own `ManifestFiles.read`, re-derives each file's manifest
 metrics from the written Parquet footer with Iceberg's `MetricsConfig` logic (so metrics modes,
@@ -67,11 +67,18 @@ the same `TaskCommit` message the JVM writer would have produced. Everything ice
 post-write — snapshot assignment, manifest-list aggregation, commit validation and retries —
 is untouched: `IcebergCommit` performs the normal `BatchWrite.commit`.
 
-Before a task opens a partition's first file, it holds that partition's first
-`write.parquet.page-row-limit` rows in memory, so that it can choose which columns to
-dictionary-encode the way iceberg-java would (see the accepted divergences below). The rows a
-task holds back this way, across all of its partitions, stay within about
-`write.parquet.row-group-size-bytes`.
+For `ResolvingFileIO`, Hadoop settings are taken from the delegate opening the data location.
+An S3 location handled by `S3FileIO` uses its initialized FileIO properties, so Hadoop options
+on the wrapper do not change the native endpoint or encryption settings. If that delegate cannot
+be resolved, the write falls back to iceberg-java.
+
+Before a task opens a partition's first file, it holds the partition's initial rows in memory
+to choose which columns to dictionary-encode using parquet-mr's size accounting (see the
+accepted divergences below). It normally waits for at least `write.parquet.page-row-limit`
+rows (at least 100 when the configured limit is lower), or until the partition ends. The
+buffering threshold is `write.parquet.row-group-size-bytes`, shared across all partitions in
+a fanout write. Reaching it makes each partition still holding rows choose from the rows it
+already has, even if they do not fill its first page.
 
 ## Configuration
 
@@ -188,6 +195,8 @@ A write is eligible only when ALL of the following hold:
 | `write.target-file-size-bytes`                                                                                                              | any value (the two writers can choose different roll points; see accepted divergences)                                                                                                                                                                                                                                                                                                                                                                                          |
 | data location URI scheme                                                                                                                    | `file`, `memory`, `s3`, `s3a`, `gs`, matched case-sensitively (`S3://` falls back). `s3`, `s3a` and `gs` need a bucket in the authority (`s3://bucket/...`), so a hostless form such as `s3:/bucket/key` falls back. `gs` only when the `FileIO` opening the data location is a `GCSFileIO`; see below                                                                                                                                                                          |
 | resolved `table.locationProvider()`                                                                                                         | Iceberg's built-in `DefaultLocationProvider`                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| Hadoop S3A settings for an `s3` / `s3a` data location                                                                                       | only `fs.s3a.access.key`, `secret.key`, `session.token`, `endpoint`, `endpoint.region`, and `path.style.access`, including their `fs.s3a.bucket.<data-bucket>.*` forms; any other effective `fs.s3a.*` setting falls back                                                                                                                                                                                                                                                       |
+| Iceberg `FileIO` S3 settings for an `s3` / `s3a` data location                                                                              | the S3 endpoint, region, static/session credentials, path-style, SSE (`none`, `s3`, `kms`, or `custom`; not `dsse-kms`), assume-role, anonymous/config-chain settings parsed by the pinned iceberg-rust version, plus Comet's credential-provider class and built-in web-identity properties. When a custom provider is configured, its vendor-owned `s3.*` / `client.*` properties are also forwarded; unsupported Iceberg-defined S3 settings still fall back                 |
 | partition spec                                                                                                                              | any, except an identity partition on a `float` or `double` column, or a `void` field whose source column was dropped beside a live field (see below)                                                                                                                                                                                                                                                                                                                            |
 | column types                                                                                                                                | any except `uuid` (Spark plans it as a string; no Arrow cast reaches `fixed(16)`) and the v3 types `variant`, `unknown`, `timestamp_ns`, `geometry` and `geography`                                                                                                                                                                                                                                                                                                             |
 
@@ -216,6 +225,28 @@ Configuration, and only `fs.s3a.*` is translated into the native `FileIO`, so th
 could resolve a different storage identity or endpoint than the JVM writer would. That
 combination falls back; a `GCSFileIO` carries its `gcs.*` settings in `FileIO.properties()`,
 which are forwarded.
+
+For an `s3` or `s3a` data location, the gate also inspects both the table FileIO's effective Hadoop
+configuration and `table.io().properties()`. These are separate allowlists because Hadoop S3A
+keys are translated before they reach iceberg-rust, while Iceberg `FileIO` keys are forwarded
+directly. When the FileIO exposes a Hadoop configuration, its initialized values govern both the
+gate and native translation, including after session or catalog options change. FileIO
+implementations without a Hadoop configuration, such as `S3FileIO`, use only their initialized
+properties; session and catalog Hadoop options are neither checked nor forwarded. Hadoop's built-in
+`core-default.xml` values are not treated as explicit settings, but
+programmatic settings and values from site or custom `*-default.xml` resources are. Spark's
+session-wide S3A vectored-read and `downgrade.syncable.exceptions` compatibility settings are also
+ignored because they cannot alter an Iceberg data-file write request. Unknown explicit
+`fs.s3a.*`, `s3.*`, or `client.*` settings therefore fall back at planning time instead of being
+silently ignored by the native storage backend. The exception is a vendor-owned `s3.*` /
+`client.*` property when
+`s3.comet.credential.provider.class` is configured: the provider receives the unfiltered FileIO
+bag and can consume that property. Iceberg-defined settings that the native storage path cannot
+honour still fall back even with a provider. A per-bucket Hadoop setting counts only for the exact
+data-bucket name, so configuration for a longer dotted bucket does not by itself disable the
+native write. If Iceberg's AWS property classes cannot be loaded, vendor `s3.*` / `client.*` keys
+fall back too and planning still completes. The fall-back reason reports only sorted property
+names, never their values, so credentials and tokens do not enter EXPLAIN or plan logs.
 
 An identity partition on a `float` or `double` column falls back. iceberg-rust compares float
 partition values with an equality that treats `-0.0` and `0.0` as one value, so the native writer
@@ -319,13 +350,17 @@ a data file but not what any reader computes from it:
 - Dictionary-encoded pages are labeled `RLE_DICTIONARY` (parquet-mr v1 files: `PLAIN_DICTIONARY`).
 - Fixed-length binary columns (`uuid`, `fixed`, decimals with precision > 18) are not
   dictionary-encoded (parquet-mr dictionary-encodes them).
-- Which columns are dictionary-encoded is decided as parquet-mr decides it: a column whose first
-  data page shows the dictionary saving no space is written plain, with no dictionary page,
+- The native writer uses parquet-mr's size accounting to choose dictionary encoding: a column
+  whose sampled rows show the dictionary saving no space is written plain, with no dictionary page,
   instead of carrying a dictionary page that every selective read of it would have to fetch
   ([#6114](https://github.com/apache/datafusion-comet/issues/6114)). The native writer decides
-  once per partition, from that partition's first page of rows in the task, and keeps the
+  once per partition, normally from that partition's first page of rows in the task, and keeps the
   decision for every file and row group it writes for the partition; parquet-mr decides again
-  for every row group. Where the page size rather than `write.parquet.page-row-limit` ends a
+  for every row group. If buffered rows reach `write.parquet.row-group-size-bytes`, the choice
+  uses the rows collected so far. In a fanout write, all partitions share this threshold, so
+  each partition still buffering can make its choice before it has a full first page. Later
+  rows could have changed parquet-mr's decision, so this difference is not limited to columns
+  close to the size cut-off. Where the page size rather than `write.parquet.page-row-limit` ends a
   column's first page, the native page ends at the first row past parquet-mr's size threshold,
   while parquet-mr only ends it at its next periodic size check, so a column close to the
   cut-off can be decided the other way. Close to the cut-off both encodings take about the same
