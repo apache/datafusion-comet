@@ -52,7 +52,8 @@ converted into Arrow format, allowing the Comet pipeline to take over after that
 ### Other Spark inputs
 
 Comet can also convert the output of these Spark inputs to Arrow format, so that the operators
-above them can run in Comet. Each conversion is off by default.
+above them can run in Comet. Only `spark.comet.convert.oneRowRelation.enabled` is on by default,
+because the row it converts has no columns.
 
 - `spark.comet.convert.range.enabled`: `spark.range` and SQL `range()`, for ranges that Comet does
   not generate natively with `spark.comet.exec.range.enabled`.

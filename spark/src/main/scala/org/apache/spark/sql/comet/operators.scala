@@ -1714,6 +1714,13 @@ object CometExpandExec extends CometOperatorSerde[ExpandExec] {
       op: ExpandExec,
       builder: Operator.Builder,
       childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
+    // The native Expand regroups the flattened expressions by their count per projection, so a
+    // projection with no columns, which column pruning leaves when nothing above the Expand reads
+    // its output, would reach it as no projections at all.
+    if (op.projections.isEmpty || op.projections.head.isEmpty) {
+      withFallbackReason(op, "Expand without output columns is not supported")
+      return None
+    }
     val projExprs = op.projections.flatMap(_.map(e => exprToProto(e, op.child.output)))
 
     if (projExprs.forall(_.isDefined) && childOp.nonEmpty) {
