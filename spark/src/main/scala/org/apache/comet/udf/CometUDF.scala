@@ -58,4 +58,10 @@ trait CometUDF {
       partitionIndex: Int,
       planId: Long): ValueVector =
     evaluate(inputs, numRows)
+
+  /**
+   * Called once native plan `planId` has closed, so an implementation that keeps state per plan
+   * can drop it before the task ends. The default does nothing.
+   */
+  def releasePlan(planId: Long): Unit = ()
 }

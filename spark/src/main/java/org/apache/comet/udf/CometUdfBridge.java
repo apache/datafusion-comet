@@ -32,6 +32,8 @@ import org.apache.spark.TaskContext;
 import org.apache.spark.comet.CometTaskContextShim;
 import org.apache.spark.util.TaskCompletionListener;
 
+import com.google.common.annotations.VisibleForTesting;
+
 import org.apache.comet.util.ClassLoaders;
 
 /**
@@ -296,6 +298,27 @@ public class CometUdfBridge {
         }
       }
     }
+  }
+
+  /**
+   * Called by {@code CometExecIterator} once native plan {@code planId} of task {@code
+   * taskAttemptId} has closed. Passes the plan to every {@link CometUDF} instance of the task, see
+   * {@code CometUDF.releasePlan}.
+   */
+  public static void releasePlan(long taskAttemptId, long planId) {
+    ConcurrentHashMap<String, CometUDF> perTask = INSTANCES.get(taskAttemptId);
+    if (perTask != null) {
+      for (CometUDF udf : perTask.values()) {
+        udf.releasePlan(planId);
+      }
+    }
+  }
+
+  /** The instance of {@code udfClassName} that task {@code taskAttemptId} holds, or null. */
+  @VisibleForTesting
+  public static CometUDF instanceFor(long taskAttemptId, String udfClassName) {
+    ConcurrentHashMap<String, CometUDF> perTask = INSTANCES.get(taskAttemptId);
+    return perTask == null ? null : perTask.get(udfClassName);
   }
 
   /** Whether the UDF handed back one of the vectors it was given, rather than a new one. */
