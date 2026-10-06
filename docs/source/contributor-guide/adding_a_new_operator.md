@@ -139,12 +139,21 @@ and leaves the stage itself in place.
 `AppendColumnsExec`, `AppendColumnsWithObjectExec`, `MapGroupsExec`, and `CoGroupExec`. They
 convert rows to JVM objects, run an arbitrary user function on those objects, or convert them back,
 and most of them pass the objects to the next operator as an `ObjectType` column, which has no
-Arrow representation. None of this can run natively. Per-row operators can still stay inside a
-Comet plan: `MapElementsExec`, the operator behind `Dataset.map`, generates its call to the user
-function as a Catalyst `Invoke` expression, so the deserializer, the call, and the serializer could
-run together as one projection in the JVM codegen dispatcher. `mapPartitions`, `mapGroups`, and
-`cogroup` pass the user function an iterator or a whole group, so there is no per-row expression to
-build. A typed `filter` is planned as an ordinary `FilterExec`, not as one of these operators.
+Arrow representation. None of this can run natively, so these operators stay on Spark. Every typed
+operation ends in `SerializeFromObjectExec`, though, whose output is ordinary rows. With
+`spark.comet.convert.typedDataset.enabled`, `CometExecRule` puts a `CometSparkToColumnarExec` above
+it, so the operators above the typed operation can run natively. Spark inserts no columnar
+transitions below a `RowToColumnarTransition`, so the rule inserts them for the typed operation's
+own operators itself. Spark computes a typed operation's rows one at a time, as they are read, while
+the conversion fills a whole Arrow batch first. So the rule leaves the output unconverted where a
+limit, a `mapPartitions` function, or code reading `Dataset.rdd` could stop reading it early, unless
+an operator that reads all of its input first, such as an exchange, a sort, or a hash aggregate,
+sits in between. Fusing the deserializer, the `Invoke` that calls the user function, and the
+serializer of `Dataset.map` into one projection in the JVM codegen dispatcher was tried in
+[#5714](https://github.com/apache/datafusion-comet/pull/5714) and dropped. The dispatcher only calls
+into Spark's own classes, and the conversion gets nearly the same speedup for `map` while also
+covering the operations that pass the user function an iterator or a whole group. A typed `filter`
+is planned as an ordinary `FilterExec`, not as one of these operators.
 
 **Driver-side commands.** `ExecutedCommandExec` runs a `RunnableCommand`, such as DDL or `SET`, on
 the driver, so there is no data path for Comet to accelerate.

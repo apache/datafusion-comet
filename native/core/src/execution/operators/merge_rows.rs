@@ -26,7 +26,9 @@ use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_expr::{EquivalenceProperties, PhysicalExpr};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
-use datafusion::physical_plan::metrics::{BaselineMetrics, ExecutionPlanMetricsSet, MetricsSet};
+use datafusion::physical_plan::metrics::{
+    BaselineMetrics, Count, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet,
+};
 use datafusion::{
     execution::TaskContext,
     physical_plan::{
@@ -43,12 +45,99 @@ use std::{
     task::{Context, Poll},
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MergeActionContext {
+    Copy,
+    Delete,
+    Insert,
+    Update,
+}
+
 /// A MergeRows instruction: condition plus zero (Discard), one (Keep), or two (Split)
 /// output row projections.
 #[derive(Debug, Clone)]
 pub struct MergeInstructionExec {
     pub condition: Arc<dyn PhysicalExpr>,
     pub outputs: Vec<Vec<Arc<dyn PhysicalExpr>>>,
+    pub context: Option<MergeActionContext>,
+}
+
+#[derive(Debug, Default)]
+struct MergeSemanticMetrics {
+    copied: Count,
+    inserted: Count,
+    deleted: Count,
+    updated: Count,
+    matched_updated: Count,
+    matched_deleted: Count,
+    not_matched_by_source_updated: Count,
+    not_matched_by_source_deleted: Count,
+}
+
+impl MergeSemanticMetrics {
+    fn new(metrics: &ExecutionPlanMetricsSet, partition: usize) -> Self {
+        Self {
+            copied: MetricBuilder::new(metrics).counter("numTargetRowsCopied", partition),
+            inserted: MetricBuilder::new(metrics).counter("numTargetRowsInserted", partition),
+            deleted: MetricBuilder::new(metrics).counter("numTargetRowsDeleted", partition),
+            updated: MetricBuilder::new(metrics).counter("numTargetRowsUpdated", partition),
+            matched_updated: MetricBuilder::new(metrics)
+                .counter("numTargetRowsMatchedUpdated", partition),
+            matched_deleted: MetricBuilder::new(metrics)
+                .counter("numTargetRowsMatchedDeleted", partition),
+            not_matched_by_source_updated: MetricBuilder::new(metrics)
+                .counter("numTargetRowsNotMatchedBySourceUpdated", partition),
+            not_matched_by_source_deleted: MetricBuilder::new(metrics)
+                .counter("numTargetRowsNotMatchedBySourceDeleted", partition),
+        }
+    }
+
+    fn record_delete(&self, count: usize, source_present: bool) {
+        self.deleted.add(count);
+        if source_present {
+            self.matched_deleted.add(count);
+        } else {
+            self.not_matched_by_source_deleted.add(count);
+        }
+    }
+
+    fn record_update(&self, count: usize, source_present: bool) {
+        self.updated.add(count);
+        if source_present {
+            self.matched_updated.add(count);
+        } else {
+            self.not_matched_by_source_updated.add(count);
+        }
+    }
+
+    fn record_instruction(
+        &self,
+        instruction: &MergeInstructionExec,
+        count: usize,
+        source_present: bool,
+    ) -> Result<(), DataFusionError> {
+        match (instruction.outputs.len(), instruction.context) {
+            (0, None) => self.record_delete(count, source_present),
+            (1, Some(MergeActionContext::Copy)) => self.copied.add(count),
+            (1, Some(MergeActionContext::Delete)) => self.record_delete(count, source_present),
+            (1, Some(MergeActionContext::Insert)) => self.inserted.add(count),
+            (1, Some(MergeActionContext::Update)) | (2, None) => {
+                self.record_update(count, source_present)
+            }
+            (1, None) => (),
+            (0 | 2, Some(_)) => {
+                return Err(DataFusionError::Internal(
+                    "MergeRows: action context is invalid for Discard or Split".to_string(),
+                ));
+            }
+            (outputs, _) => {
+                return Err(DataFusionError::Internal(format!(
+                    "MergeRows: unsupported instruction output count {outputs}"
+                )));
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -59,6 +148,7 @@ struct MergeConfig {
     not_matched_instructions: Vec<MergeInstructionExec>,
     not_matched_by_source_instructions: Vec<MergeInstructionExec>,
     row_id_ordinal: Option<usize>,
+    semantic_metrics_required: bool,
 }
 
 impl MergeConfig {
@@ -100,6 +190,17 @@ impl MergeConfig {
                         instruction.outputs.len()
                     )));
                 }
+                let valid_context = match instruction.outputs.len() {
+                    0 | 2 => instruction.context.is_none(),
+                    1 => instruction.context.is_some() || !self.semantic_metrics_required,
+                    _ => false,
+                };
+                if !valid_context {
+                    return Err(DataFusionError::Internal(format!(
+                        "MergeRows: {group} instruction {instruction_index} has invalid action context for {} output rows",
+                        instruction.outputs.len()
+                    )));
+                }
                 for (output_index, output) in instruction.outputs.iter().enumerate() {
                     if output.len() != output_width {
                         return Err(DataFusionError::Internal(format!(
@@ -135,6 +236,31 @@ impl MergeRowsExec {
         child: Arc<dyn ExecutionPlan>,
         schema: SchemaRef,
     ) -> Result<Self, DataFusionError> {
+        Self::try_new_with_semantic_metrics(
+            is_source_row_present,
+            is_target_row_present,
+            matched_instructions,
+            not_matched_instructions,
+            not_matched_by_source_instructions,
+            row_id_ordinal,
+            false,
+            child,
+            schema,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn try_new_with_semantic_metrics(
+        is_source_row_present: Arc<dyn PhysicalExpr>,
+        is_target_row_present: Arc<dyn PhysicalExpr>,
+        matched_instructions: Vec<MergeInstructionExec>,
+        not_matched_instructions: Vec<MergeInstructionExec>,
+        not_matched_by_source_instructions: Vec<MergeInstructionExec>,
+        row_id_ordinal: Option<usize>,
+        semantic_metrics_required: bool,
+        child: Arc<dyn ExecutionPlan>,
+        schema: SchemaRef,
+    ) -> Result<Self, DataFusionError> {
         let config = Arc::new(MergeConfig {
             is_source_row_present,
             is_target_row_present,
@@ -142,6 +268,7 @@ impl MergeRowsExec {
             not_matched_instructions,
             not_matched_by_source_instructions,
             row_id_ordinal,
+            semantic_metrics_required,
         });
         config.validate(&child, &schema)?;
 
@@ -250,6 +377,10 @@ impl ExecutionPlan for MergeRowsExec {
                 .register(&context.runtime_env().memory_pool)
         });
         let child_stream = self.child.execute(partition, Arc::clone(&context))?;
+        let semantic_metrics = self
+            .config
+            .semantic_metrics_required
+            .then(|| MergeSemanticMetrics::new(&self.metrics, partition));
         Ok(Box::pin(MergeRowsStream {
             config: Arc::clone(&self.config),
             child_stream,
@@ -257,6 +388,7 @@ impl ExecutionPlan for MergeRowsExec {
             seen: HashSet::new(),
             reservation,
             baseline: BaselineMetrics::new(&self.metrics, partition),
+            semantic_metrics,
         }))
     }
 
@@ -281,6 +413,7 @@ pub struct MergeRowsStream {
     seen: HashSet<i64>,
     reservation: Option<MemoryReservation>,
     baseline: BaselineMetrics,
+    semantic_metrics: Option<MergeSemanticMetrics>,
 }
 
 const SEEN_FIXED_BYTES: usize = std::mem::size_of::<HashSet<i64>>();
@@ -349,6 +482,8 @@ fn run_group(
     group_mask: &BooleanArray,
     instructions: &[MergeInstructionExec],
     schema: &SchemaRef,
+    source_present: bool,
+    metrics: Option<&MergeSemanticMetrics>,
 ) -> Result<Vec<RecordBatch>, DataFusionError> {
     if instructions.is_empty() || group_mask.true_count() == 0 {
         return Ok(vec![]);
@@ -383,6 +518,10 @@ fn run_group(
 
         if fire.true_count() == 0 {
             continue;
+        }
+
+        if let Some(metrics) = metrics {
+            metrics.record_instruction(instr, fire.true_count(), source_present)?;
         }
 
         let filtered = filter_or_pass_through(&current, &fire)?;
@@ -470,12 +609,13 @@ fn check_cardinality(
     Ok(())
 }
 
-fn process_batch(
+fn process_batch_with_metrics(
     batch: RecordBatch,
     config: &MergeConfig,
     seen: &mut HashSet<i64>,
     reservation: Option<&mut MemoryReservation>,
     schema: &SchemaRef,
+    metrics: Option<&MergeSemanticMetrics>,
 ) -> Result<RecordBatch, DataFusionError> {
     let source_present = eval_bool(&config.is_source_row_present, &batch)?;
     let target_present = eval_bool(&config.is_target_row_present, &batch)?;
@@ -496,15 +636,23 @@ fn process_batch(
     }
 
     let mut batches = Vec::new();
-    for (mask, instructions) in [
-        (&matched_mask, &config.matched_instructions),
-        (&not_matched_mask, &config.not_matched_instructions),
+    for (mask, instructions, source_present) in [
+        (&matched_mask, &config.matched_instructions, true),
+        (&not_matched_mask, &config.not_matched_instructions, true),
         (
             &not_matched_by_source_mask,
             &config.not_matched_by_source_instructions,
+            false,
         ),
     ] {
-        batches.extend(run_group(&batch, mask, instructions, schema)?);
+        batches.extend(run_group(
+            &batch,
+            mask,
+            instructions,
+            schema,
+            source_present,
+            metrics,
+        )?);
     }
 
     if batches.is_empty() {
@@ -512,6 +660,17 @@ fn process_batch(
     }
 
     arrow::compute::concat_batches(schema, &batches).map_err(|e| e.into())
+}
+
+#[cfg(test)]
+fn process_batch(
+    batch: RecordBatch,
+    config: &MergeConfig,
+    seen: &mut HashSet<i64>,
+    reservation: Option<&mut MemoryReservation>,
+    schema: &SchemaRef,
+) -> Result<RecordBatch, DataFusionError> {
+    process_batch_with_metrics(batch, config, seen, reservation, schema, None)
 }
 
 // Bound synchronous all-discard processing so a delete-heavy stream yields cooperatively.
@@ -528,12 +687,13 @@ impl Stream for MergeRowsStream {
                 Poll::Ready(Some(Ok(batch))) => {
                     // Keep elapsed_compute scoped to this operator, not the upstream poll.
                     let _timer = this.baseline.elapsed_compute().timer();
-                    let result = process_batch(
+                    let result = process_batch_with_metrics(
                         batch,
                         &this.config,
                         &mut this.seen,
                         this.reservation.as_mut(),
                         &this.schema,
+                        this.semantic_metrics.as_ref(),
                     );
                     match result {
                         Ok(batch) if batch.num_rows() == 0 => {
@@ -674,6 +834,7 @@ mod tests {
         MergeInstructionExec {
             condition: lit(true),
             outputs: vec![vec![col("val", &test_schema()).unwrap()]],
+            context: None,
         }
     }
 
@@ -681,6 +842,7 @@ mod tests {
         MergeInstructionExec {
             condition: lit(true),
             outputs: vec![],
+            context: None,
         }
     }
 
@@ -697,6 +859,7 @@ mod tests {
             not_matched_instructions,
             not_matched_by_source_instructions,
             row_id_ordinal,
+            semantic_metrics_required: false,
         }
     }
 
@@ -740,10 +903,12 @@ mod tests {
             )
             .unwrap(),
             outputs: vec![vec![lit(1i32)]],
+            context: None,
         };
         let cond_true = MergeInstructionExec {
             condition: lit(true),
             outputs: vec![vec![lit(2i32)]],
+            context: None,
         };
         let config = test_config(vec![cond_false, cond_true], vec![], vec![], None);
         let out = process_batch(
@@ -770,6 +935,7 @@ mod tests {
             )
             .unwrap(),
             outputs: vec![vec![lit(111i32)]],
+            context: None,
         };
         let divides_by_val = MergeInstructionExec {
             condition: binary(
@@ -786,6 +952,7 @@ mod tests {
             )
             .unwrap(),
             outputs: vec![vec![lit(222i32)]],
+            context: None,
         };
         let config = test_config(vec![claims_zero, divides_by_val], vec![], vec![], None);
         let out = process_batch(
@@ -823,10 +990,12 @@ mod tests {
             )
             .unwrap(),
             outputs: vec![vec![lit(1i32)]],
+            context: None,
         };
         let keep_catch_all = MergeInstructionExec {
             condition: lit(true),
             outputs: vec![vec![lit(2i32)]],
+            context: None,
         };
         let config = test_config(vec![cond_null, keep_catch_all], vec![], vec![], None);
         let out = process_batch(
@@ -873,8 +1042,10 @@ mod tests {
             not_matched_by_source_instructions: vec![MergeInstructionExec {
                 condition: lit(true),
                 outputs: vec![vec![col("val", &schema).unwrap()]],
+                context: None,
             }],
             row_id_ordinal: None,
+            semantic_metrics_required: false,
         };
         let out = process_batch(
             batch,
@@ -907,6 +1078,7 @@ mod tests {
             )
             .unwrap(),
             outputs: vec![vec![col("val", &test_schema()).unwrap()]],
+            context: None,
         };
         assert!(
             eval_bool(&div_cond.condition, &batch).is_err(),
@@ -1142,6 +1314,7 @@ mod tests {
         let split = MergeInstructionExec {
             condition: lit(true),
             outputs: vec![vec![lit(1i32)], vec![lit(2i32)]],
+            context: None,
         };
         let config = test_config(vec![split], vec![], vec![], None);
         let out = process_batch(
@@ -1155,6 +1328,75 @@ mod tests {
         let vals = out.column(0).as_any().downcast_ref::<Int32Array>().unwrap();
         let got: Vec<i32> = vals.iter().flatten().collect();
         assert_eq!(got, vec![1, 2]);
+    }
+
+    #[test]
+    fn semantic_metrics_count_all_merge_actions_once_per_input_row() {
+        let batch = test_batch(
+            vec![1, 2, 3, 4, 5, 6],
+            vec![10, 11, 12, 13, 14, 15],
+            vec![true, true, true, true, false, true],
+            vec![true, true, true, true, true, false],
+        );
+        let clause =
+            |value: i32, outputs: Vec<Vec<Arc<dyn PhysicalExpr>>>, context| MergeInstructionExec {
+                condition: binary(
+                    col("val", &test_schema()).unwrap(),
+                    DFOperator::Eq,
+                    lit(value),
+                    &test_schema(),
+                )
+                .unwrap(),
+                outputs,
+                context,
+            };
+        let value_projection = || vec![col("val", &test_schema()).unwrap()];
+        let config = MergeConfig {
+            is_source_row_present: col("source_present", &test_schema()).unwrap(),
+            is_target_row_present: col("target_present", &test_schema()).unwrap(),
+            matched_instructions: vec![
+                clause(10, vec![value_projection()], Some(MergeActionContext::Copy)),
+                clause(11, vec![], None),
+                clause(
+                    12,
+                    vec![value_projection()],
+                    Some(MergeActionContext::Update),
+                ),
+                clause(13, vec![vec![lit(13i32)], vec![lit(13i32)]], None),
+            ],
+            not_matched_instructions: vec![clause(
+                14,
+                vec![value_projection()],
+                Some(MergeActionContext::Insert),
+            )],
+            not_matched_by_source_instructions: vec![clause(
+                15,
+                vec![value_projection()],
+                Some(MergeActionContext::Delete),
+            )],
+            row_id_ordinal: None,
+            semantic_metrics_required: true,
+        };
+        let metrics = MergeSemanticMetrics::default();
+        let output = process_batch_with_metrics(
+            batch,
+            &config,
+            &mut HashSet::new(),
+            Some(&mut test_reservation()),
+            &out_schema(),
+            Some(&metrics),
+        )
+        .unwrap();
+
+        assert_eq!(output.num_rows(), 6);
+        assert_eq!(metrics.copied.value(), 1);
+        assert_eq!(metrics.inserted.value(), 1);
+        assert_eq!(metrics.deleted.value(), 2);
+        assert_eq!(metrics.updated.value(), 2);
+        assert_eq!(metrics.matched_updated.value(), 2);
+        assert_eq!(metrics.matched_deleted.value(), 1);
+        assert_eq!(metrics.not_matched_by_source_updated.value(), 0);
+        assert_eq!(metrics.not_matched_by_source_deleted.value(), 1);
     }
 
     #[test]
@@ -1224,6 +1466,7 @@ mod tests {
         let invalid = MergeInstructionExec {
             condition: lit(true),
             outputs: vec![vec![lit(1i32)], vec![lit(2i32)], vec![lit(3i32)]],
+            context: None,
         };
         let err = MergeRowsExec::try_new(
             col("source_present", &test_schema()).unwrap(),
@@ -1246,6 +1489,7 @@ mod tests {
         let invalid = MergeInstructionExec {
             condition: lit(true),
             outputs: vec![vec![lit(1i32), lit(2i32)]],
+            context: None,
         };
         let err = MergeRowsExec::try_new(
             col("source_present", &test_schema()).unwrap(),
