@@ -33,7 +33,7 @@ use datafusion::{
 use parking_lot::Mutex;
 
 /// Size of the anchor, the byte the pool keeps on the JVM side for its whole life.
-const ANCHOR_BYTES: usize = 1;
+pub(super) const ANCHOR_BYTES: usize = 1;
 // A grant short of the anchor is a zero grant, so `take_missing_anchor` has nothing to hand
 // back when Spark declines it.
 const _: () = assert!(ANCHOR_BYTES == 1);
