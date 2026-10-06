@@ -1166,24 +1166,21 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       }
 
       val builder = OperatorOuterClass.Operator.newBuilder().setPlanId(op.id)
-      if (op.children.nonEmpty && op.children.forall(_.isInstanceOf[CometNativeExec])) {
-        val childOp = op.children.map(_.asInstanceOf[CometNativeExec].nativeOp)
-        childOp.foreach(builder.addChildren)
-        return serde
-          .convert(op, builder, childOp: _*)
-          .map { nativeOp =>
-            val exec = serde.createExec(nativeOp, op)
-            rollUpInfoMessages(op, exec)
-            exec
-          }
-      } else {
-        return serde
-          .convert(op, builder)
-          .map { nativeOp =>
-            val exec = serde.createExec(nativeOp, op)
-            rollUpInfoMessages(op, exec)
-            exec
-          }
+      // Which subexpressions Spark evaluates for every row decides where native execution may
+      // skip a function's arguments (see `QueryPlanSerde.canShortCircuitNulls`)
+      val nativeOp = QueryPlanSerde.withSharedSubexpressions(op.expressions) {
+        if (op.children.nonEmpty && op.children.forall(_.isInstanceOf[CometNativeExec])) {
+          val childOp = op.children.map(_.asInstanceOf[CometNativeExec].nativeOp)
+          childOp.foreach(builder.addChildren)
+          serde.convert(op, builder, childOp: _*)
+        } else {
+          serde.convert(op, builder)
+        }
+      }
+      return nativeOp.map { nativeOp =>
+        val exec = serde.createExec(nativeOp, op)
+        rollUpInfoMessages(op, exec)
+        exec
       }
     }
     None

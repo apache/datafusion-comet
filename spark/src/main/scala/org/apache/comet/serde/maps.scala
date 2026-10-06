@@ -128,7 +128,7 @@ object CometMapExtract extends CometExpressionSerde[GetMapValue] {
     val mapExpr = exprToProtoInternal(expr.child, inputs, binding)
     val keyExpr = exprToProtoInternal(expr.key, inputs, binding)
     val mapExtractExpr = scalarFunctionExprToProto("map_extract", mapExpr, keyExpr)
-    withNullShortCircuit(mapExtractExpr)
+    withNullShortCircuit(expr, mapExtractExpr)
   }
 }
 

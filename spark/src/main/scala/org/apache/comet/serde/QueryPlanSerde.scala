@@ -24,6 +24,7 @@ import java.util.concurrent.atomic.AtomicLong
 import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
 import scala.jdk.CollectionConverters._
+import scala.util.DynamicVariable
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
@@ -1301,21 +1302,55 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   }
 
   /**
-   * Has native execution evaluate the arguments of `scalarFunc` the way Spark evaluates those of
-   * a null-intolerant `BinaryExpression` or `TernaryExpression`: each argument after the first
-   * only for the rows where no earlier argument is NULL. Otherwise every argument is evaluated
-   * over the whole batch, so one that can fail, such as an ANSI cast of a malformed string, fails
-   * on a row that Spark returns NULL for without evaluating it (#6613). The arguments must be in
-   * the order Spark evaluates them, and the function must return NULL wherever an argument other
-   * than the last is NULL. The native planner drops the guard when every later argument can be
-   * evaluated for any row, such as a column or a literal.
+   * The subexpressions that occur more than once in the expressions of the operator being
+   * serialized, as Spark's subexpression elimination finds them. Spark's generated code for a
+   * projection or an aggregation evaluates each of them for every row, before the expressions
+   * that use them. They are treated that way for every operator, and whatever
+   * `spark.sql.subexpressionElimination.enabled` says, which only keeps them evaluated for every
+   * row where Spark might not.
    */
-  def withNullShortCircuit(scalarFunc: Option[Expr]): Option[Expr] =
-    scalarFunc.map { expr =>
-      require(expr.hasScalarFunc, s"not a scalar function: $expr")
-      expr.toBuilder
-        .setScalarFunc(expr.getScalarFunc.toBuilder.setNullShortCircuit(true))
-        .build()
+  private val sharedSubexpressions = new DynamicVariable[Seq[Expression]](Nil)
+
+  /** Runs `f`, which serializes an operator whose expressions are `expressions`. */
+  def withSharedSubexpressions[T](expressions: Seq[Expression])(f: => T): T = {
+    val equivalence = new EquivalentExpressions
+    expressions.foreach(equivalence.addExprTree(_))
+    sharedSubexpressions.withValue(equivalence.getCommonSubexpressions)(f)
+  }
+
+  /**
+   * Whether native execution may skip the arguments of `expr` after the first on the rows where
+   * an earlier argument is NULL, as Spark's evaluation of a null-intolerant `BinaryExpression` or
+   * `TernaryExpression` does. Not if one of them holds a subexpression that the operator's
+   * expressions share: Spark evaluates that for every row, and raises if it fails on a row whose
+   * array is NULL.
+   */
+  def canShortCircuitNulls(expr: Expression): Boolean = {
+    val shared = sharedSubexpressions.value
+    !expr.children.tail.exists(_.exists(e => shared.exists(_.semanticEquals(e))))
+  }
+
+  /**
+   * Has native execution evaluate the arguments of `scalarFunc`, the serialized `expr`, the way
+   * Spark evaluates those of a null-intolerant `BinaryExpression` or `TernaryExpression`: each
+   * argument after the first only for the rows where no earlier argument is NULL, unless
+   * `canShortCircuitNulls` rules it out. Otherwise every argument is evaluated over the whole
+   * batch, so one that can fail, such as an ANSI cast of a malformed string, fails on a row that
+   * Spark returns NULL for without evaluating it (#6613). The arguments must be in the order
+   * Spark evaluates them, and the function must return NULL wherever an argument other than the
+   * last is NULL. The native planner drops the guard when every later argument can be evaluated
+   * for any row, such as a column or a literal.
+   */
+  def withNullShortCircuit(expr: Expression, scalarFunc: Option[Expr]): Option[Expr] =
+    scalarFunc.map { proto =>
+      require(proto.hasScalarFunc, s"not a scalar function: $proto")
+      if (canShortCircuitNulls(expr)) {
+        proto.toBuilder
+          .setScalarFunc(proto.getScalarFunc.toBuilder.setNullShortCircuit(true))
+          .build()
+      } else {
+        proto
+      }
     }
 
   /**

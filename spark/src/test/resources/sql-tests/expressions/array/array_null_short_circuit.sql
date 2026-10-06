@@ -68,6 +68,22 @@ SELECT array_union(ai, slice(array(1), IF(ai IS NULL, 0, 1), 1)) FROM array_null
 query expect_native(array_position)
 SELECT array_position(ai, CAST(rand(7L) * 3 AS INT)) FROM array_null_short_circuit
 
+-- Spark's subexpression elimination evaluates a subexpression that an operator's expressions share
+-- for every row, before them, so this cast raises on the rows whose array is NULL as well, in a
+-- projection and in an aggregation. Comet does not skip an argument that holds one.
+query expect_error(CAST_INVALID_INPUT)
+SELECT array_contains(ai, CAST(s AS INT)), array_position(ai, CAST(s AS INT))
+FROM array_null_short_circuit
+
+query expect_error(CAST_INVALID_INPUT)
+SELECT sum(array_position(ai, CAST(s AS INT))), max(array_contains(ai, CAST(s AS INT)))
+FROM array_null_short_circuit
+
+-- Here the whole call is shared, and Spark evaluates its cast only where the array is not NULL
+query expect_native(array_contains)
+SELECT array_contains(ai, CAST(s AS INT)), NOT array_contains(ai, CAST(s AS INT))
+FROM array_null_short_circuit
+
 -- Where the array is not NULL, the argument is evaluated and raises as in Spark
 query expect_error(CAST_INVALID_INPUT)
 SELECT array_contains(ai, CAST(s || 'x' AS INT)) FROM array_null_short_circuit
