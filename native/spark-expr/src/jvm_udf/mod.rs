@@ -327,5 +327,17 @@ mod tests {
         assert_eq!(literal.len(), 1);
         assert_eq!(literal.value(0), bytes.as_slice());
         assert!(udf.literal_arrays[1].is_none());
+
+        // New children rebuild the arrays, so a position that no longer holds a literal does not
+        // keep sending the old literal's array.
+        let swapped = Arc::new(udf)
+            .with_new_children(vec![
+                Arc::new(Column::new("a", 0)),
+                Arc::new(Literal::new(ScalarValue::Binary(Some(bytes)))),
+            ])
+            .unwrap();
+        let swapped = swapped.downcast_ref::<JvmScalarUdfExpr>().unwrap();
+        assert!(swapped.literal_arrays[0].is_none());
+        assert!(swapped.literal_arrays[1].is_some());
     }
 }
