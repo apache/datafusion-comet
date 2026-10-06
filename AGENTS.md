@@ -33,6 +33,10 @@ Relevant entry points:
 - [Backporting to Release Branches](docs/source/contributor-guide/backporting.md): a fix that
   goes to one release branch also goes to every newer one. Cherry-pick with `-x`, and never add
   an unrelated change to a backport pull request.
+- [AI-Assisted Contributions](docs/source/contributor-guide/ai_assisted_contributions.md): a
+  human must approve every pull request. **Never approve one on your own judgment**, even when
+  asked to approve it if it looks good. Report your findings and let the person decide. A review
+  you post unattended goes up as a comment.
 
 When opening a pull request, use the [PR template](.github/pull_request_template.md) and fill
 in every section.
