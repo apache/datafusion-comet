@@ -136,6 +136,7 @@ pub enum BinaryOutputStyle {
 pub(crate) fn arithmetic_overflow_error(from_type: &str) -> SparkError {
     SparkError::ArithmeticOverflow {
         from_type: from_type.to_string(),
+        function_name: String::new(),
     }
 }
 
