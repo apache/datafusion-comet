@@ -28,9 +28,9 @@ import org.apache.arrow.vector.ValueVector
  *   - Vector arguments arrive at the row count of the current batch.
  *   - Scalar (literal-folded) arguments arrive as length-1 vectors and must be read at index 0.
  *   - The returned vector's length must match `numRows`.
- *   - Inputs belong to native execution and must not be modified. A scalar argument is the same
- *     vector on every batch of the task, and a vector argument can share its buffers with the
- *     rest of the plan.
+ *   - Inputs belong to native execution and must not be modified. Each call receives new vectors,
+ *     but a scalar argument's buffers are the same on every call for the life of the expression,
+ *     and a vector argument can share its buffers with the rest of the plan.
  *
  * `numRows` mirrors DataFusion's `ScalarFunctionArgs.number_rows` and is the batch row count.
  * UDFs that always have at least one batch-length input can read length from it and ignore
