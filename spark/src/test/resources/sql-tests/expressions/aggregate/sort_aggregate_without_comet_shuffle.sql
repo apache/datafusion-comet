@@ -15,17 +15,16 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
-statement
-CREATE TABLE test_min_max(i int, d double, s string, grp string) USING parquet
+-- Without Comet shuffle, a sort aggregate's Partial and Final would be split across Comet and
+-- Spark, and Spark cannot read Comet's collect_set buffer, so SortAggregateExec stays in Spark.
+-- Config: spark.sql.execution.useObjectHashAggregateExec=false
+-- Config: spark.comet.shuffle.enabled=false
 
 statement
-INSERT INTO test_min_max VALUES (1, 1.5, 'b', 'x'), (3, 3.5, 'a', 'x'), (2, 2.5, 'c', 'y'), (NULL, NULL, NULL, 'y'), (-1, -1.5, 'z', 'x')
+CREATE TABLE sa_no_shuffle(i int, g string) USING parquet
 
--- min/max over StringType is not yet supported natively, so this falls back to Spark.
--- (Spark plans this global aggregate as SortAggregateExec because the string min/max buffer
--- is not hash-friendly; that operator is now supported, but the string aggregate itself is not.)
-query expect_fallback(Unsupported data type: StringType)
-SELECT min(i), max(i), min(d), max(d), min(s), max(s) FROM test_min_max
+statement
+INSERT INTO sa_no_shuffle VALUES (1, 'a'), (2, 'a'), (1, 'a'), (3, 'b'), (NULL, 'b')
 
-query
-SELECT grp, min(i), max(i) FROM test_min_max GROUP BY grp ORDER BY grp
+query expect_fallback(Comet shuffle is not enabled, so converting SortAggregate would split the aggregate across Comet and Spark)
+SELECT g, sort_array(collect_set(i)) FROM sa_no_shuffle GROUP BY g ORDER BY g

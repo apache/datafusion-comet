@@ -828,6 +828,10 @@ message HashAggregate {
   // Offset in the child's output where aggregate buffer attributes start.
   // Used by PartialMerge to locate state fields in the input.
   int32 initial_input_buffer_offset = 7;
+  // Set for Spark's SortAggregateExec, which reports its output as ordered by the grouping
+  // keys (ascending, nulls first). The native planner sorts the aggregate output on the
+  // grouping columns unless the aggregate already emits its groups in that order.
+  bool ordered_by_grouping_keys = 9;
 }
 
 message Limit {
