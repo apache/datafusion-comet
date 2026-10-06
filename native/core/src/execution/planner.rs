@@ -1229,6 +1229,82 @@ impl PhysicalPlanner {
                     self.class_loader.clone(),
                 )))
             }
+            ExprStruct::NativeScalarUdf(call) => {
+                let arg_exprs: Vec<Arc<dyn PhysicalExpr>> = call
+                    .args
+                    .iter()
+                    .map(|e| self.create_expr(e, Arc::clone(&input_schema)))
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                let lib = crate::execution::c_udf::cache::get_or_load(&call.library_path).map_err(
+                    |e| GeneralError(format!("native UDF load '{}': {e}", call.library_path)),
+                )?;
+
+                let loaded = lib
+                    .udfs
+                    .iter()
+                    .find(|u| u.name == call.name)
+                    .ok_or_else(|| {
+                        GeneralError(format!(
+                            "native UDF '{}' not found in '{}'",
+                            call.name, call.library_path
+                        ))
+                    })?;
+
+                let udf = Arc::new(ScalarUDF::new_from_shared_impl(Arc::clone(
+                    &loaded.udf_impl,
+                )));
+
+                let return_type =
+                    to_arrow_datatype(call.return_type.as_ref().ok_or_else(|| {
+                        GeneralError("NativeScalarUdf missing return_type".into())
+                    })?);
+
+                // The declared return type comes from the JVM-side `CometNativeUDF.register` call
+                // and is what Spark planned against; the kernel's own `return_field` is what will
+                // actually be produced. If they disagree, fail here with both types named rather
+                // than letting it surface later as a bare type assertion mid-execution.
+                let arg_types = arg_exprs
+                    .iter()
+                    .map(|e| e.data_type(input_schema.as_ref()))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let kernel_return_type = loaded.udf_impl.return_type(&arg_types)?;
+                if !crate::execution::c_udf::return_types_compatible(
+                    &return_type,
+                    &kernel_return_type,
+                ) {
+                    return Err(GeneralError(format!(
+                        "native UDF '{}' was registered as returning {return_type} but its \
+                         return_field reports {kernel_return_type} for argument types {arg_types:?}. \
+                         Make the type passed to CometNativeUDF.register match what the UDF returns. \
+                         Note that a timestamp's timezone, a decimal's precision and scale, and \
+                         struct field names all have to match exactly; Spark's TimestampType is \
+                         Timestamp(Microsecond, Some(\"UTC\")) and TimestampNTZType is \
+                         Timestamp(Microsecond, None).",
+                        call.name
+                    )));
+                }
+
+                // Promise DataFusion the kernel's type in the form other expressions producing it
+                // use, rather than as the kernel reports it: list and map child fields carry
+                // Comet's canonical names, and every nested field is nullable. An operator that
+                // combines this column with one from another expression, such as `if`, needs the
+                // two types to agree, and cannot narrow a nullable field to match a non-nullable
+                // one. The adapter conforms each result to this type.
+                let return_field = Arc::new(Field::new(
+                    &call.name,
+                    crate::execution::c_udf::promised_return_type(&kernel_return_type),
+                    true,
+                ));
+                let expr = Arc::new(ScalarFunctionExpr::new(
+                    &call.name,
+                    udf,
+                    arg_exprs,
+                    return_field,
+                    Arc::new(ConfigOptions::default()),
+                ));
+                Ok(expr)
+            }
             expr => Err(GeneralError(format!("Not implemented: {expr:?}"))),
         }
     }
@@ -7936,5 +8012,60 @@ mod tests {
             err.to_string().contains("Non-empty FileScanTask partition"),
             "unexpected error: {err}"
         );
+    }
+
+    /// The planner promises DataFusion a native UDF's return type with every nested field nullable,
+    /// whatever the kernel reports, and every batch the UDF produces has that type. `make_struct_c`
+    /// reports its struct's field `a` as non-nullable for a registration that declares it nullable.
+    #[test]
+    fn native_scalar_udf_promises_nullable_nested_fields() {
+        use crate::execution::c_udf::test_support::{test_udfs_path, BUILD_HINT};
+        use datafusion_comet_proto::spark_expression::data_type::{
+            data_type_info::DatatypeStruct, DataTypeInfo, StructInfo,
+        };
+
+        let int_type = |type_id| spark_expression::DataType {
+            type_id,
+            type_info: None,
+        };
+        let declared = spark_expression::DataType {
+            type_id: 16, // STRUCT
+            type_info: Some(Box::new(DataTypeInfo {
+                datatype_struct: Some(DatatypeStruct::Struct(StructInfo {
+                    field_names: vec!["a".to_string()],
+                    field_datatypes: vec![int_type(3)], // INT32
+                    field_nullable: vec![true],
+                    field_metadata: vec![],
+                })),
+            })),
+        };
+        let call = Expr {
+            expr_struct: Some(NativeScalarUdf(spark_expression::NativeScalarUdf {
+                name: "make_struct_c".to_string(),
+                library_path: test_udfs_path().to_string_lossy().into_owned(),
+                args: vec![Expr {
+                    expr_struct: Some(Bound(spark_expression::BoundReference {
+                        index: 0,
+                        datatype: Some(int_type(4)), // INT64
+                    })),
+                    ..Default::default()
+                }],
+                return_type: Some(declared),
+                deterministic: true,
+            })),
+            ..Default::default()
+        };
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, true)]));
+        let expr = PhysicalPlanner::default()
+            .create_expr(&call, Arc::clone(&schema))
+            .expect(BUILD_HINT);
+
+        let promised = DataType::Struct(Fields::from(vec![Field::new("a", DataType::Int32, true)]));
+        assert_eq!(expr.data_type(&schema).unwrap(), promised);
+
+        let ids: ArrayRef = Arc::new(arrow::array::Int64Array::from(vec![Some(1), None]));
+        let batch = RecordBatch::try_new(schema, vec![ids]).unwrap();
+        let out = expr.evaluate(&batch).unwrap().into_array(2).unwrap();
+        assert_eq!(out.data_type(), &promised);
     }
 }

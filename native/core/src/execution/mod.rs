@@ -16,6 +16,7 @@
 // under the License.
 
 //! PoC of vectorization execution through JNI to Rust.
+pub mod c_udf;
 pub mod columnar_to_row;
 #[cfg(feature = "delta")]
 pub mod delta_dv;
