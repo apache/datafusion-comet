@@ -70,10 +70,11 @@ SELECT str_to_map('a')
 query
 SELECT str_to_map('a=1&b=2&c=3', '&', '=')
 
--- Duplicate keys: EXCEPTION policy (Spark 3.0+ default)
--- TODO: Add LAST_WIN policy tests when spark.sql.mapKeyDedupPolicy config is supported
--- query
--- SELECT str_to_map('a:1,b:2,a:3')
+-- Duplicate keys under the default EXCEPTION policy; `str_to_map_dedup_policy.sql` covers
+-- LAST_WIN. Spark's message names the key unquoted, while the upstream kernel's quotes it, so this
+-- only matches once Comet has converted the error to Spark's.
+query expect_error(Duplicate map key a was found)
+SELECT str_to_map('a:1,b:2,a:3')
 
 -- NULL input returns NULL
 query

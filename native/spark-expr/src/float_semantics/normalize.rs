@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use super::normalize_float;
+use super::{canonicalize_nan, normalize_float};
 use arrow::array::{
     Array, ArrayRef, AsArray, FixedSizeListArray, Float32Array, Float64Array, LargeListArray,
     ListArray, StructArray,
@@ -227,6 +227,24 @@ pub fn normalize_floats(array: &ArrayRef) -> ArrayRef {
             let normalized: Float64Array =
                 array.as_primitive::<Float64Type>().unary(normalize_float);
             Arc::new(normalized)
+        }
+        _ => Arc::clone(array),
+    }
+}
+
+/// Applies [`canonicalize_nan`] to a Float32 or Float64 array, keeping the sign of zero. Any other
+/// array is returned as is.
+pub fn canonicalize_nans(array: &ArrayRef) -> ArrayRef {
+    match array.data_type() {
+        DataType::Float32 => {
+            let canonical: Float32Array =
+                array.as_primitive::<Float32Type>().unary(canonicalize_nan);
+            Arc::new(canonical)
+        }
+        DataType::Float64 => {
+            let canonical: Float64Array =
+                array.as_primitive::<Float64Type>().unary(canonicalize_nan);
+            Arc::new(canonical)
         }
         _ => Arc::clone(array),
     }

@@ -17,18 +17,13 @@
 
 -- Config: spark.comet.exec.scalaUDF.codegen.enabled=false
 -- Config: spark.sql.legacy.truncateForEmptyRegexSplit=true
--- Config: spark.sql.mapKeyDedupPolicy=LAST_WIN
 -- Config: spark.comet.expression.StringToMap.allowIncompatible=false
--- Config: spark.comet.expression.MapFromEntries.allowIncompatible=false
 
 statement
-CREATE TABLE routing_map_legacy(s STRING, e ARRAY<STRUCT<key: STRING, value: INT>>) USING parquet
+CREATE TABLE routing_map_legacy(s STRING) USING parquet
 
 statement
-INSERT INTO routing_map_legacy VALUES ('a:1,b:2', array(named_struct('key', 'a', 'value', 1))), (NULL, NULL)
+INSERT INTO routing_map_legacy VALUES ('a:1,b:2'), (NULL)
 
 query expect_fallback(str_to_map: spark.comet.exec.scalaUDF.codegen.enabled=false)
 SELECT str_to_map(s) FROM routing_map_legacy
-
-query expect_fallback(map_from_entries: spark.comet.exec.scalaUDF.codegen.enabled=false)
-SELECT map_from_entries(e) FROM routing_map_legacy

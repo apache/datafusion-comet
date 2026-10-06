@@ -19,7 +19,7 @@ use crate::datetime_funcs::spark_seconds_of_time;
 use crate::hash_funcs::*;
 use crate::hll_scalar::{spark_hll_sketch_estimate, spark_hll_union};
 use crate::json_funcs::JsonArrayLength;
-use crate::map_funcs::{spark_map_sort, SparkMapFromArrays};
+use crate::map_funcs::spark_map_sort;
 use crate::math_funcs::abs::abs;
 use crate::math_funcs::checked_arithmetic::{checked_add, checked_div, checked_mul, checked_sub};
 use crate::math_funcs::log::spark_log;
@@ -32,11 +32,12 @@ use crate::{
     spark_ceil, spark_day_name, spark_decimal_div, spark_decimal_integral_div, spark_floor,
     spark_isnan, spark_lpad, spark_make_decimal, spark_month_name, spark_read_side_padding,
     spark_round, spark_rpad, spark_sequence, spark_to_time, spark_unhex, spark_unscaled_value,
-    EvalMode, SparkArrayExtrema, SparkArrayPositionFunc, SparkArrayRemove, SparkArraySlice,
-    SparkArraysOverlap, SparkContains, SparkDateDiff, SparkDateFromUnixDate, SparkDateTrunc,
-    SparkDayOfWeek, SparkFlatten, SparkIcebergBucket, SparkIcebergTemporalTransform,
-    SparkIcebergTruncate, SparkMakeDate, SparkMakeInterval, SparkMakeTime, SparkMapExtract,
-    SparkNextDay, SparkSecondsToTimestamp, SparkSizeFunc, SparkSortArray, SparkWeekDay,
+    EvalMode, MapFloatKeys, SparkArrayExtrema, SparkArrayPositionFunc, SparkArrayRemove,
+    SparkArraySlice, SparkArraysOverlap, SparkContains, SparkDateDiff, SparkDateFromUnixDate,
+    SparkDateTrunc, SparkDayOfWeek, SparkFlatten, SparkIcebergBucket,
+    SparkIcebergTemporalTransform, SparkIcebergTruncate, SparkMakeDate, SparkMakeInterval,
+    SparkMakeTime, SparkMapExtract, SparkMapFromArrays, SparkMapFromEntries, SparkNextDay,
+    SparkSecondsToTimestamp, SparkSizeFunc, SparkSortArray, SparkStrToMap, SparkWeekDay,
 };
 use arrow::datatypes::DataType;
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
@@ -274,9 +275,6 @@ pub fn create_comet_physical_fun_with_eval_mode(
             let func = Arc::new(crate::string_funcs::spark_get_json_object_spark34);
             make_comet_scalar_udf!("get_json_object_spark34", func, without data_type)
         }
-        "map" => Ok(Arc::new(ScalarUDF::new_from_impl(
-            SparkMapFromArrays::default(),
-        ))),
         "map_sort" => {
             let func = Arc::new(spark_map_sort);
             make_comet_scalar_udf!("spark_map_sort", func, without data_type)
@@ -372,9 +370,24 @@ fn all_scalar_functions() -> Vec<Arc<ScalarUDF>> {
         // returns the value itself rather than a one-element list (#5795). It carries the same
         // `element_at` alias so both registry entries the override replaces point here.
         Arc::new(ScalarUDF::new_from_impl(SparkMapExtract::default())),
+        // The map builders follow Spark 4.0's float key normalization under their
+        // `_normalized_keys` names; the serde picks the name.
+        Arc::new(ScalarUDF::new_from_impl(SparkMapFromArrays::new(
+            MapFloatKeys::Boxed,
+        ))),
+        Arc::new(ScalarUDF::new_from_impl(SparkMapFromArrays::new(
+            MapFloatKeys::Normalized,
+        ))),
+        Arc::new(ScalarUDF::new_from_impl(SparkMapFromEntries::new(
+            MapFloatKeys::Boxed,
+        ))),
+        Arc::new(ScalarUDF::new_from_impl(SparkMapFromEntries::new(
+            MapFloatKeys::Normalized,
+        ))),
         Arc::new(ScalarUDF::new_from_impl(SparkNextDay::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkSecondsToTimestamp::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkSizeFunc::default())),
+        Arc::new(ScalarUDF::new_from_impl(SparkStrToMap::default())),
         Arc::new(ScalarUDF::new_from_impl(JsonArrayLength::default())),
     ]
 }
