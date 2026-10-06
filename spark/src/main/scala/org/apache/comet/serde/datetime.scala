@@ -27,6 +27,7 @@ import org.apache.spark.sql.types.{CalendarIntervalType, DataType, DateType, Dou
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometConf
+import org.apache.comet.CometSparkSessionExtensions.isSpark42Plus
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.serde.CometGetDateField.CometGetDateField
 import org.apache.comet.serde.ExprOuterClass.Expr
@@ -644,6 +645,10 @@ object CometTruncTimestamp
       builder.setChild(childExpr.get)
       builder.setFormat(formatExpr.get)
       builder.setTimezone(timeZone.get)
+      // Spark 4.2.0 (SPARK-56663) raises `long overflow` when SECOND or MILLISECOND truncation
+      // falls below the smallest timestamp; earlier versions wrap the Long subtraction. The
+      // native side has to match whichever Spark we are running against.
+      builder.setWrapSecondMillisecondOverflow(!isSpark42Plus)
 
       Some(
         ExprOuterClass.Expr
