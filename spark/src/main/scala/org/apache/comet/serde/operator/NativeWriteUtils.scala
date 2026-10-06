@@ -195,7 +195,7 @@ object NativeWriteUtils {
       throw new UnsupportedOperationException(
         s"Comet's native Parquet writer cannot write to '$filePath': the object it would create " +
           "on S3 is not the one the commit protocol expects. Set " +
-          "spark.comet.parquet.write.enabled=false to write this table with Spark.")
+          "spark.comet.write.parquet.enabled=false to write this table with Spark.")
     }
   }
 

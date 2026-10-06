@@ -22,7 +22,10 @@ use std::{
     fmt,
     fmt::{Debug, Formatter},
     fs::File,
-    sync::Arc,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
 };
 
 #[cfg(feature = "hdfs-opendal")]
@@ -37,6 +40,7 @@ use crate::parquet::parquet_support::{is_hdfs_scheme, object_store_for_write};
 use arrow::datatypes::{Schema, SchemaRef};
 use arrow::record_batch::{RecordBatch, RecordBatchOptions};
 use async_trait::async_trait;
+use bytes::Bytes;
 use datafusion::{
     common::tree_node::TreeNodeRecursion,
     error::{DataFusionError, Result},
@@ -50,13 +54,14 @@ use datafusion::{
         SendableRecordBatchStream,
     },
 };
-use futures::TryStreamExt;
-use object_store::buffered::BufWriter;
+use futures::{future::BoxFuture, TryStreamExt};
+use object_store::{path::Path, MultipartUpload, ObjectStore, ObjectStoreExt, PutPayloadMut};
 use parquet::{
-    arrow::{ArrowWriter, AsyncArrowWriter},
+    arrow::{async_writer::AsyncFileWriter, ArrowWriter, AsyncArrowWriter},
     basic::{Compression, GzipLevel, ZstdLevel},
     file::properties::WriterProperties,
 };
+use tokio::task::JoinSet;
 use url::Url;
 
 /// Compression codecs supported by the native Parquet writer.
@@ -102,10 +107,12 @@ enum ParquetWriter {
         String,
     ),
     /// Writer for S3 and S3-compatible object stores. Each row group is encoded in memory and
-    /// handed to a `BufWriter`, which uploads a file smaller than its buffer with one PUT and
-    /// switches to a multipart upload once the file outgrows it. The object only becomes visible
-    /// when `close` completes the upload.
-    ObjectStore(Box<AsyncArrowWriter<BufWriter>>),
+    /// handed to an [`ObjectStoreUpload`], which uploads a file smaller than one part with one PUT
+    /// and switches to a multipart upload once the file outgrows it. The object only becomes
+    /// visible when `close` completes the upload. The counter is the upload's
+    /// [`ObjectStoreUpload::held`], kept here because the Arrow writer does not hand its inner
+    /// writer back until it is consumed.
+    ObjectStore(Box<AsyncArrowWriter<ObjectStoreUpload>>, Arc<AtomicUsize>),
 }
 
 impl ParquetWriter {
@@ -161,7 +168,7 @@ impl ParquetWriter {
 
                 Ok(())
             }
-            ParquetWriter::ObjectStore(writer) => writer.write(batch).await,
+            ParquetWriter::ObjectStore(writer, _) => writer.write(batch).await,
         }
     }
 
@@ -169,8 +176,8 @@ impl ParquetWriter {
     /// group, which counts encoded pages, encoder buffers, dictionaries and any Bloom filters.
     /// The remote writer flushes a row group after every batch and stages it in a buffer that is
     /// cleared after each upload but keeps its capacity, so that buffer counts too. The object
-    /// store writer hands each finished row group to its `BufWriter`, whose upload buffers, up to
-    /// 10 MiB plus eight 10 MiB parts in flight, are not counted.
+    /// store writer adds what its upload holds: the part being filled and the parts uploading, up
+    /// to nine parts of 10 MiB.
     fn memory_size(&self) -> usize {
         match self {
             ParquetWriter::LocalFile(writer) => writer.memory_size(),
@@ -178,7 +185,9 @@ impl ParquetWriter {
             ParquetWriter::Remote(writer, ..) => {
                 writer.memory_size() + writer.inner().get_ref().capacity()
             }
-            ParquetWriter::ObjectStore(writer) => writer.memory_size(),
+            ParquetWriter::ObjectStore(writer, held) => {
+                writer.memory_size() + held.load(Ordering::Relaxed)
+            }
         }
     }
 
@@ -238,30 +247,191 @@ impl ParquetWriter {
 
                 Ok(None)
             }
-            ParquetWriter::ObjectStore(mut writer) => {
-                // `finish` rather than `close`, so that the writer is still around to report its
-                // byte count, footer included, once the upload has completed.
-                writer.finish().await?;
+            ParquetWriter::ObjectStore(mut writer, _) => {
+                // `finish` rather than `close`, so that the writer is still around afterwards: to
+                // report its byte count, footer included, once the upload has completed, or to
+                // abort the upload when finishing the file failed.
+                if let Err(e) = writer.finish().await {
+                    let mut upload = (*writer).into_inner();
+                    if let Err(abort_error) = upload.abort().await {
+                        log::warn!(
+                            "Failed to abort the upload of '{}': {abort_error}",
+                            upload.path
+                        );
+                    }
+                    return Err(e);
+                }
                 Ok(Some(writer.bytes_written() as u64))
             }
         }
     }
 
-    /// Discard a file whose write failed before `close`. Only an object store writer has anything
-    /// to discard: once a file outgrows the writer's buffer it is uploaded as a multipart upload,
-    /// whose parts stay stored, and billed, until the upload is completed or aborted. The other
-    /// writers leave a partial file in place. A write that is cancelled rather than failed, such
-    /// as a killed task, drops the writer without calling this, so its upload is left for the
-    /// bucket's lifecycle rules to remove.
+    /// Discard a file whose write failed before `close`, which discards its own on failure. Only
+    /// an object store writer has anything to discard: once a file outgrows one part it is
+    /// uploaded as a multipart upload, whose parts stay stored, and billed, until the upload is
+    /// completed or aborted. The other writers leave a partial file in place. A write that is
+    /// cancelled rather than failed, such as a killed task, drops the writer without calling
+    /// this, so its upload is left for the bucket's lifecycle rules to remove.
     async fn abort(self) -> std::result::Result<(), parquet::errors::ParquetError> {
         match self {
-            ParquetWriter::ObjectStore(writer) => (*writer)
+            ParquetWriter::ObjectStore(writer, _) => (*writer)
                 .into_inner()
                 .abort()
                 .await
                 .map_err(|e| parquet::errors::ParquetError::External(Box::new(e))),
             _ => Ok(()),
         }
+    }
+}
+
+/// Size of every multipart upload part but the last, and the size from which a file is uploaded
+/// in parts. Above S3's 5 MiB minimum, and equal for every part, as R2 requires.
+const UPLOAD_PART_SIZE: usize = 10 * 1024 * 1024;
+
+/// Parts of one file uploading at the same time.
+const MAX_PARTS_IN_FLIGHT: usize = 8;
+
+/// Uploads one file to an object store. A file smaller than one part goes up with a single PUT
+/// when it is complete. A larger one becomes a multipart upload of [`UPLOAD_PART_SIZE`] parts, up
+/// to [`MAX_PARTS_IN_FLIGHT`] of them uploading at once, which only becomes an object when
+/// `complete` completes it.
+///
+/// `object_store::buffered::BufWriter` does the same, but moves its upload into the future that
+/// completes it, so a part that fails while the file is being completed leaves an upload nothing
+/// can abort. This keeps the upload until it has completed, so `abort` can discard it after any
+/// failure, including one in `complete`.
+struct ObjectStoreUpload {
+    store: Arc<dyn ObjectStore>,
+    path: Path,
+    /// Bytes not handed to a part yet, fewer than one part.
+    buffer: PutPayloadMut,
+    /// The multipart upload, started once the file has outgrown one part.
+    upload: Option<Box<dyn MultipartUpload>>,
+    /// Parts still uploading.
+    parts: JoinSet<object_store::Result<()>>,
+    /// Bytes the upload holds in memory: the buffer and the parts still uploading.
+    held: Arc<AtomicUsize>,
+}
+
+impl ObjectStoreUpload {
+    fn new(store: Arc<dyn ObjectStore>, path: Path) -> Self {
+        Self {
+            store,
+            path,
+            buffer: PutPayloadMut::new(),
+            upload: None,
+            parts: JoinSet::new(),
+            held: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    /// Copies `bytes` into the buffer, uploading every part that fills. Copying lets the row group
+    /// the bytes come from go as soon as this returns, so that `held` is what the upload keeps.
+    async fn write_bytes(&mut self, mut bytes: Bytes) -> object_store::Result<()> {
+        while !bytes.is_empty() {
+            let take = bytes
+                .len()
+                .min(UPLOAD_PART_SIZE - self.buffer.content_length());
+            self.buffer.extend_from_slice(&bytes.split_to(take));
+            self.held.fetch_add(take, Ordering::Relaxed);
+            if self.buffer.content_length() == UPLOAD_PART_SIZE {
+                self.upload_buffer().await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Uploads the buffer as the next part, starting the multipart upload first if there is none
+    /// yet, and waiting for a part to finish while [`MAX_PARTS_IN_FLIGHT`] are uploading.
+    async fn upload_buffer(&mut self) -> object_store::Result<()> {
+        if self.upload.is_none() {
+            self.upload = Some(self.store.put_multipart(&self.path).await?);
+        }
+        while self.parts.len() >= MAX_PARTS_IN_FLIGHT {
+            self.join_next_part().await?;
+        }
+        let part = std::mem::take(&mut self.buffer).freeze();
+        let size = part.content_length();
+        let upload = self
+            .upload
+            .as_mut()
+            .expect("the multipart upload was started above")
+            .put_part(part);
+        let held = Arc::clone(&self.held);
+        self.parts.spawn(async move {
+            let uploaded = upload.await;
+            held.fetch_sub(size, Ordering::Relaxed);
+            uploaded
+        });
+        Ok(())
+    }
+
+    /// Waits for one of the parts still uploading to finish and returns how it ended.
+    async fn join_next_part(&mut self) -> object_store::Result<()> {
+        match self.parts.join_next().await {
+            Some(Ok(uploaded)) => uploaded,
+            Some(Err(e)) => Err(object_store::Error::Generic {
+                store: "ObjectStoreUpload",
+                source: Box::new(e),
+            }),
+            None => Ok(()),
+        }
+    }
+
+    /// Uploads what is left and makes the file an object: with a single PUT for a file smaller
+    /// than one part, otherwise by uploading the last part, waiting for every part and completing
+    /// the multipart upload.
+    async fn complete_upload(&mut self) -> object_store::Result<()> {
+        if self.upload.is_none() {
+            let payload = std::mem::take(&mut self.buffer).freeze();
+            let size = payload.content_length();
+            let put = self.store.put(&self.path, payload).await;
+            self.held.fetch_sub(size, Ordering::Relaxed);
+            return put.map(|_| ());
+        }
+        if !self.buffer.is_empty() {
+            self.upload_buffer().await?;
+        }
+        while !self.parts.is_empty() {
+            self.join_next_part().await?;
+        }
+        if let Some(upload) = self.upload.as_mut() {
+            upload.complete().await?;
+        }
+        // Completed, so there is nothing left to abort.
+        self.upload = None;
+        Ok(())
+    }
+
+    /// Discards the file after a failure: stops the parts still uploading and aborts the multipart
+    /// upload, whose stored parts would otherwise stay, and be billed, until the bucket's lifecycle
+    /// rules remove them. A file small enough for a single PUT has stored nothing.
+    async fn abort(&mut self) -> object_store::Result<()> {
+        self.parts.shutdown().await;
+        self.buffer = PutPayloadMut::new();
+        self.held.store(0, Ordering::Relaxed);
+        match self.upload.take() {
+            Some(mut upload) => upload.abort().await,
+            None => Ok(()),
+        }
+    }
+}
+
+impl AsyncFileWriter for ObjectStoreUpload {
+    fn write(&mut self, bs: Bytes) -> BoxFuture<'_, parquet::errors::Result<()>> {
+        Box::pin(async move {
+            self.write_bytes(bs)
+                .await
+                .map_err(|e| parquet::errors::ParquetError::External(Box::new(e)))
+        })
+    }
+
+    fn complete(&mut self) -> BoxFuture<'_, parquet::errors::Result<()>> {
+        Box::pin(async move {
+            self.complete_upload()
+                .await
+                .map_err(|e| parquet::errors::ParquetError::External(Box::new(e)))
+        })
     }
 }
 
@@ -462,15 +632,12 @@ impl ParquetWriterExec {
                         output_file_path, e
                     ))
                 })?;
-            let writer =
-                AsyncArrowWriter::try_new(BufWriter::new(store, path), schema, Some(props))
-                    .map_err(|e| {
-                        DataFusionError::Execution(format!(
-                            "Failed to create object store writer: {}",
-                            e
-                        ))
-                    })?;
-            Ok(ParquetWriter::ObjectStore(Box::new(writer)))
+            let upload = ObjectStoreUpload::new(store, path);
+            let held = Arc::clone(&upload.held);
+            let writer = AsyncArrowWriter::try_new(upload, schema, Some(props)).map_err(|e| {
+                DataFusionError::Execution(format!("Failed to create object store writer: {}", e))
+            })?;
+            Ok(ParquetWriter::ObjectStore(Box::new(writer), held))
         } else {
             // Unsupported storage scheme
             Err(DataFusionError::Execution(format!(
@@ -985,6 +1152,12 @@ mod tests {
         started: AtomicUsize,
         completed: AtomicUsize,
         aborted: AtomicUsize,
+        /// Parts handed to the store's uploads so far.
+        parts: AtomicUsize,
+        /// Fails the part with this index, counted across the store's uploads.
+        failing_part: Option<usize>,
+        /// Fails every attempt to complete an upload.
+        failing_complete: bool,
     }
 
     impl RecordingStore {
@@ -1078,17 +1251,31 @@ mod tests {
     #[async_trait]
     impl MultipartUpload for RecordingUpload {
         fn put_part(&mut self, data: PutPayload) -> UploadPart {
+            let part = self.counts.parts.fetch_add(1, Ordering::SeqCst);
+            if self.counts.failing_part == Some(part) {
+                return Box::pin(futures::future::ready(Err(injected_failure("part"))));
+            }
             self.inner.put_part(data)
         }
 
         async fn complete(&mut self) -> object_store::Result<PutResult> {
             self.counts.completed.fetch_add(1, Ordering::SeqCst);
+            if self.counts.failing_complete {
+                return Err(injected_failure("complete"));
+            }
             self.inner.complete().await
         }
 
         async fn abort(&mut self) -> object_store::Result<()> {
             self.counts.aborted.fetch_add(1, Ordering::SeqCst);
             self.inner.abort().await
+        }
+    }
+
+    fn injected_failure(what: &str) -> object_store::Error {
+        object_store::Error::Generic {
+            store: "RecordingStore",
+            source: format!("injected {what} failure").into(),
         }
     }
 
@@ -1100,7 +1287,21 @@ mod tests {
         Arc<RecordingStore>,
         crate::parquet::parquet_support::CachedObjectStoreForTest,
     ) {
-        let store = Arc::new(RecordingStore::default());
+        record_writes_with(bucket, UploadCounts::default())
+    }
+
+    /// [`record_writes_to`], with the store's uploads failing as `counts` asks.
+    fn record_writes_with(
+        bucket: &str,
+        counts: UploadCounts,
+    ) -> (
+        Arc<RecordingStore>,
+        crate::parquet::parquet_support::CachedObjectStoreForTest,
+    ) {
+        let store = Arc::new(RecordingStore {
+            uploads: Arc::new(counts),
+            ..Default::default()
+        });
         let cached = cache_object_store_for_test(
             &format!("s3a://{bucket}/"),
             &HashMap::new(),
@@ -1110,8 +1311,8 @@ mod tests {
         (store, cached)
     }
 
-    /// One full row group of two `Int64` columns, roughly 16 MiB once encoded: more than the
-    /// 10 MiB a `BufWriter` holds before it switches to a multipart upload.
+    /// One full row group of two `Int64` columns, roughly 16 MiB once encoded: more than the one
+    /// part a file can fill before the writer switches to a multipart upload.
     fn multipart_sized_batch(schema: SchemaRef) -> Result<RecordBatch> {
         let rows = DEFAULT_MAX_ROW_GROUP_ROW_COUNT as i64;
         Ok(RecordBatch::try_new(
@@ -1275,6 +1476,127 @@ mod tests {
             .await
             .is_err());
 
+        Ok(())
+    }
+
+    /// Writes one [`multipart_sized_batch`] to `s3a://<bucket>/out/part-00000.parquet` and
+    /// returns how the write ended. The batch fills the first part while it is written. The
+    /// second part, the rest of the row group and the footer, only goes up when `close` completes
+    /// the file.
+    async fn write_multipart_sized_file(bucket: &str, context: Arc<TaskContext>) -> Result<()> {
+        let schema = two_long_columns(true);
+        let batch = multipart_sized_batch(Arc::clone(&schema))?;
+        let memory_source = MemorySourceConfig::try_new(&[vec![batch]], schema, None)?;
+        let input = Arc::new(DataSourceExec::new(Arc::new(memory_source)));
+        let writer = ParquetWriterExec::try_new(
+            input,
+            format!("s3a://{bucket}/out/part-00000.parquet"),
+            None,
+            None,
+            None,
+            ParquetCompression::None,
+            0,
+            vec!["a".to_string(), "b".to_string()],
+            None,
+            HashMap::new(),
+        )?;
+        let mut stream = writer.execute(0, context)?;
+        while stream.try_next().await?.is_some() {}
+        Ok(())
+    }
+
+    /// A part that fails while `close` completes the file aborts the upload. Object store's
+    /// `BufWriter` cannot abort once it has started completing a file.
+    #[tokio::test]
+    async fn test_parquet_writer_aborts_the_s3_upload_when_a_part_fails_on_close() -> Result<()> {
+        let bucket = "comet-writer-close-part";
+        let (store, _cached) = record_writes_with(
+            bucket,
+            UploadCounts {
+                failing_part: Some(1),
+                ..Default::default()
+            },
+        );
+        let error = write_multipart_sized_file(bucket, SessionContext::new().task_ctx())
+            .await
+            .expect_err("a part that fails must fail the write");
+        assert!(
+            error.to_string().contains("Failed to close writer"),
+            "unexpected error: {error}"
+        );
+
+        assert_eq!(store.counts(), (0, 1, 0, 1));
+        assert!(store
+            .inner
+            .head(&Path::from("out/part-00000.parquet"))
+            .await
+            .is_err());
+
+        Ok(())
+    }
+
+    /// An upload that fails to complete is aborted, so that its stored parts do not stay behind.
+    #[tokio::test]
+    async fn test_parquet_writer_aborts_the_s3_upload_when_it_fails_to_complete() -> Result<()> {
+        let bucket = "comet-writer-close-complete";
+        let (store, _cached) = record_writes_with(
+            bucket,
+            UploadCounts {
+                failing_complete: true,
+                ..Default::default()
+            },
+        );
+        let error = write_multipart_sized_file(bucket, SessionContext::new().task_ctx())
+            .await
+            .expect_err("an upload that does not complete must fail the write");
+        assert!(
+            error.to_string().contains("Failed to close writer"),
+            "unexpected error: {error}"
+        );
+
+        assert_eq!(store.counts(), (0, 1, 1, 1));
+        assert!(store
+            .inner
+            .head(&Path::from("out/part-00000.parquet"))
+            .await
+            .is_err());
+
+        Ok(())
+    }
+
+    /// The memory the writer reports, which it reserves after every batch, includes what its
+    /// upload holds. Once a row group is flushed, parquet-rs's estimate falls to almost nothing,
+    /// while the part of the row group that did not fill a part still waits in the buffer.
+    #[tokio::test]
+    async fn test_parquet_writer_counts_what_its_s3_upload_holds() -> Result<()> {
+        let bucket = "comet-writer-held";
+        let (_store, _cached) = record_writes_to(bucket);
+        let schema = two_long_columns(true);
+        let mut writer = ParquetWriterExec::create_arrow_writer(
+            &format!("s3a://{bucket}/out/part-00000.parquet"),
+            Arc::clone(&schema),
+            WriterProperties::builder().build(),
+            Arc::new(RuntimeEnv::default()),
+            &HashMap::new(),
+        )?;
+        writer.write(&multipart_sized_batch(schema)?).await?;
+
+        let ParquetWriter::ObjectStore(arrow_writer, _) = &writer else {
+            panic!("an s3a:// destination must get the object store writer");
+        };
+        assert!(
+            arrow_writer.memory_size() < 1024 * 1024,
+            "the row group was not flushed: {} bytes in progress",
+            arrow_writer.memory_size()
+        );
+        let buffered = arrow_writer.bytes_written() - UPLOAD_PART_SIZE;
+        assert!(
+            writer.memory_size() >= buffered,
+            "reported {} bytes while the upload buffered {buffered}",
+            writer.memory_size()
+        );
+
+        writer.close().await?;
         Ok(())
     }
 
