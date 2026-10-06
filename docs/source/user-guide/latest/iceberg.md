@@ -26,7 +26,7 @@ then serialized to Comet's native execution engine (see
 [PR #2528](https://github.com/apache/datafusion-comet/pull/2528)).
 
 The example below uses Spark's package downloader to retrieve Comet $COMET_VERSION and Iceberg
-1.8.1, but Comet has been tested with Iceberg 1.5, 1.7, 1.8, 1.9, 1.10, and 1.11. The native Iceberg
+1.8.1, but Comet has been tested with Iceberg 1.5, 1.8, 1.9, 1.10, and 1.11. The native Iceberg
 reader is enabled by default. To disable it, set `spark.comet.scan.icebergNative.enabled=false`.
 
 The example uses the Spark 3.5 / Scala 2.12 build of Comet; substitute the Comet artifact
@@ -97,7 +97,7 @@ The native Iceberg reader supports the following features:
 - Equality and comparison predicates (`=`, `!=`, `>`, `>=`, `<`, `<=`)
 - Logical operators (`AND`, `OR`)
 - NULL checks (`IS NULL`, `IS NOT NULL`) on primitive columns
-- `IN` and `NOT IN` list operations
+- `IN` list operations (`NOT IN` is applied after the scan)
 - `BETWEEN` operations
 
 NULL checks on struct, array, and map columns still use native scans and return correct
@@ -118,8 +118,9 @@ safe partial pruning is tracked in [#5883](https://github.com/apache/datafusion-
 - Local filesystem
 - S3-compatible storage (AWS S3, MinIO)
 - Google Cloud Storage (`gs`) and Alibaba Cloud OSS (`oss`)
-
-HDFS-backed tables are not supported by the native Iceberg reader and fall back to Spark.
+- HDFS (`hdfs`), through iceberg-rust's own HDFS client. See
+  [Object store configuration (HDFS)](#object-store-configuration-hdfs) for NameNode
+  configuration and the cases that fall back to Spark
 
 ### REST Catalog
 
@@ -156,6 +157,8 @@ scala> spark.sql("SELECT * FROM rest_cat.db.test_table").show()
 
 The native reader has its own Rust object store client and does not go through Iceberg's JVM FileIO, neither `S3FileIO` nor the older Hadoop S3A filesystem. It configures that client from the catalog's `s3.*` properties (the same keys `S3FileIO` reads), from `spark.hadoop.fs.s3a.*` settings, or, for a scheme opted into `spark.hadoop.fs.comet.s3Compliant.schemes`, from vendor-style `fs.<scheme>.<authority>.*` keys (see [S3-Compliant Filesystem Schemes](datasources.md#s3-compliant-filesystem-schemes)). That third source is translated into the same `fs.s3a.*` shape as the second before it reaches the reader. S3 configuration therefore reaches the native reader through one of these three channels.
 
+Per-bucket `fs.s3a.bucket.<bucket>.*` settings apply to the bucket that holds the table's data and delete files. The native reader uses one object-store configuration per scan, so a scan whose data or delete files span more than one S3 bucket falls back to Spark.
+
 For a custom S3-compatible endpoint, configure the catalog with the endpoint, path-style access, region, and credentials (Hive shown):
 
 ```shell
@@ -170,15 +173,15 @@ For a custom S3-compatible endpoint, configure the catalog with the endpoint, pa
     --conf spark.sql.catalog.s3_cat.s3.secret-access-key=...
 ```
 
-These `s3.*` storage properties are not specific to the Hive catalog shown here. When `s3.access-key-id` / `s3.secret-access-key` are omitted, credentials come from the standard AWS chain (environment variables, instance profiles, and so on). `client.region` is auto-detected for AWS but should be set for non-AWS endpoints. If your REST catalog vends temporary credentials, the native reader does not consume them automatically, and wiring that requires the credential provider bridge. See Iceberg's [S3 FileIO](https://iceberg.apache.org/docs/latest/aws/#s3-fileio) docs for the full property list, and [S3 Credential Providers](s3-credential-providers.md) for vended or per-request credentials.
+These `s3.*` storage properties are not specific to the Hive catalog shown here. When `s3.access-key-id` / `s3.secret-access-key` are omitted, credentials come from the standard AWS chain (environment variables, instance profiles, and so on). The region is not auto-detected: when neither the catalog (`client.region` or `s3.region`) nor the executor environment (`AWS_REGION` or `AWS_DEFAULT_REGION`) supplies one, Comet uses `us-east-1`, so set it for AWS buckets in any other region. If your REST catalog vends temporary credentials, the native reader does not consume them automatically, and wiring that requires the credential provider bridge. See Iceberg's [S3 FileIO](https://iceberg.apache.org/docs/latest/aws/#s3-fileio) docs for the full property list, and [S3 Credential Providers](s3-credential-providers.md) for vended or per-request credentials.
 
 ### Object store configuration (HDFS)
 
-`hdfs://` tables are read and written through iceberg-rust's `hdfs-native` backend, a pure-Rust HDFS RPC client. This is **not** the libhdfs/JNI client that the plain-Parquet native scan uses for `spark.hadoop.fs.comet.libhdfs.schemes`: the two clients live in the same process but connect independently, so an Iceberg table and a plain Parquet file on the same cluster each open their own connections. The Rust client still reads `core-site.xml` / `hdfs-site.xml` from `$HADOOP_CONF_DIR` (or `$HADOOP_HOME`), and Kerberos works through the system `libgssapi_krb5` and the ambient credential cache — it does not reuse the JVM's Kerberos subject.
+`hdfs://` tables are read and written through iceberg-rust's `hdfs-native` backend, a pure-Rust HDFS RPC client. This is **not** the libhdfs/JNI client that the plain-Parquet native scan uses for `spark.hadoop.fs.comet.libhdfs.schemes`: the two clients live in the same process but connect independently, so an Iceberg table and a plain Parquet file on the same cluster each open their own connections. The Rust client still reads `core-site.xml` / `hdfs-site.xml` from `$HADOOP_CONF_DIR` (or `$HADOOP_HOME/etc/hadoop`), and Kerberos works through the system `libgssapi_krb5` and the ambient credential cache — it does not reuse the JVM's Kerberos subject.
 
 The NameNode endpoints are the one thing the Rust client cannot infer from the Hadoop XML. The underlying OpenDAL builder connects to the endpoints given in the `hdfs.name-node` property (comma-separated for HA failover) and falls back to the authority written in the table location when that property is absent. A single-NameNode cluster therefore needs no configuration, because `hdfs://nn.example.com:8020/...` is already a routable address. An HA cluster does: its locations read `hdfs://<nameservice>/...`, and a nameservice is not a host.
 
-Comet resolves this automatically from the session Hadoop configuration — it reads `dfs.ha.namenodes.<nameservice>` and each `dfs.namenode.rpc-address.<nameservice>.<nn>` and hands iceberg-rust the same failover list the JVM client would use. Nothing needs to be set as long as the standard HDFS client configuration is on the classpath. To override it (or to supply endpoints Spark's configuration does not carry), set the property on the catalog:
+Comet resolves this automatically from the session Hadoop configuration — it reads `dfs.ha.namenodes.<nameservice>` and each `dfs.namenode.rpc-address.<nameservice>.<nn>` and hands iceberg-rust the same failover list the JVM client would use. The nameservice is the authority of the table's data files, which Iceberg allows to differ from the metadata location. A `dfs.namenode.rpc-address` without a port gets Hadoop's default NameNode RPC port, 8020, as it does for the JVM client. The list is all-or-nothing: if any NameNode named in `dfs.ha.namenodes.<nameservice>` has no `rpc-address`, Comet derives no list rather than hand over a partial failover list. Nothing needs to be set as long as the standard HDFS client configuration is on the classpath. To override it (or to supply endpoints Spark's configuration does not carry), set the property on the catalog:
 
 ```shell
     --conf spark.sql.catalog.hdfs_cat=org.apache.iceberg.spark.SparkCatalog \
@@ -187,9 +190,16 @@ Comet resolves this automatically from the session Hadoop configuration — it r
     --conf spark.sql.catalog.hdfs_cat.hdfs.name-node=hdfs://nn1.example.com:8020,hdfs://nn2.example.com:8020
 ```
 
-An explicit catalog property always wins over the values derived from the Hadoop configuration. Individual HDFS client settings can also be forwarded with `hadoop.`-prefixed catalog properties (for example `spark.sql.catalog.hdfs_cat.hadoop.dfs.client.failover.random.order=true`), which override the values loaded from `$HADOOP_CONF_DIR`.
+An explicit catalog property always wins over the values derived from the Hadoop configuration. Every entry in `hdfs.name-node` must be `host:port` (an IPv6 literal in brackets, such as `[::1]:8020`). The `hdfs://` prefix is optional, and spaces around an entry and a trailing `/` are tolerated. Comet does not add a default port to an entry you write yourself. Individual HDFS client settings can also be forwarded with `hadoop.`-prefixed catalog properties (for example `spark.sql.catalog.hdfs_cat.hadoop.dfs.client.failover.random.order=true`), which override the values loaded from `$HADOOP_CONF_DIR`.
 
-A location with no authority at all (`hdfs:///warehouse/...`) falls back to the JVM reader: the scheme gate runs before the catalog properties are assembled, so Comet declines rather than assume a NameNode.
+The following cases fall back to Spark at planning, instead of failing (or reading from the wrong NameNode) on an executor:
+
+- A location with no authority (`hdfs:///warehouse/...`) falls back for both reads and writes. Comet does not assume a NameNode for it, so `hdfs.host`, `hdfs.port`, and `hadoop.fs.defaultFS` do not enable these locations.
+- A catalog `hdfs.name-node` entry that is not `host:port`, such as one without a port, falls back, and the reason names the entry.
+- A nameservice that the Hadoop configuration declares (in `dfs.nameservices`, or through `dfs.ha.namenodes.<nameservice>`) but Comet could not resolve to a NameNode list falls back unless the catalog sets `hdfs.name-node`. Typically a `dfs.namenode.rpc-address.<nameservice>.<nn>` entry is missing: add it, or set `hdfs.name-node` on the catalog.
+- A read whose data and delete files carry more than one `hdfs://` authority falls back, because the native reader resolves a single NameNode per scan. Authorities are compared as written, so one cluster under two spellings counts as two.
+
+An authority that the Hadoop configuration does not declare is taken to be a real host and is not validated, so a mistyped host still fails when a task first opens a file. To see why a table fell back, set `spark.comet.explain.fallback.enabled=true`: the driver log then lists the reason each stage could not run in Comet (see [Understanding Comet Plans](understanding-comet-plans.md)).
 
 ### Current limitations
 
@@ -197,15 +207,30 @@ The following scenarios will fall back to the JVM Iceberg reader:
 
 - Iceberg table spec v4 or newer
 - v3 tables with columns that declare an initial default value
-- v3 column types the native reader cannot read (`variant`, `geometry`, `geography`, `unknown`)
+- v3 column types the native reader cannot read (`geometry`, `geography`, `unknown`), and
+  `variant` columns the query reads (on Spark 4.0+, a table whose `variant` columns are not
+  projected is read natively)
 - Encrypted tables with 192-bit data keys (no AES-192-GCM in the underlying crypto)
 - Delete files in a format other than Parquet or Puffin (Avro or ORC positional/equality deletes)
-- Iceberg writes (reads are accelerated, writes use Spark)
 - Tables backed by Avro or ORC data files (only Parquet is accelerated)
+- Scans whose data or delete files span more than one S3 bucket (the native reader uses one
+  object-store configuration per scan)
+- Scans whose data or delete files span more than one HDFS authority (the native reader resolves
+  one NameNode per scan)
+- HDFS locations the native client could not reach: no authority (`hdfs:///...`), an
+  `hdfs.name-node` entry that is not `host:port`, or a configured nameservice Comet could not
+  resolve to NameNodes (see [Object store configuration (HDFS)](#object-store-configuration-hdfs))
 - Tables partitioned on `BINARY` or `DECIMAL` (with precision >28) columns
 - Scans with residual filters using `truncate`, `bucket`, `year`, `month`, `day`, or `hour`
   transform functions (partition pruning still works, but row-level filtering of these
   transforms falls back)
+- Scans that read a struct, array, or map column with a nested field that schema evolution added
+  or renamed. The native reader cannot yet match such a field to data files written before the
+  change. The check uses the table's schema history, so the fallback stays after those files are
+  rewritten
+
+Writes are not covered by this list. By default Iceberg writes use Spark's own writer; see
+[Iceberg Writes](iceberg-writes.md) for the experimental native writer and when it applies.
 
 ### Iceberg UDFs
 
@@ -231,7 +256,9 @@ Iceberg's system functions `bucket`, `truncate`, `years`, `months`, `days`, and 
 form of its partition transforms, for example `SELECT system.bucket(16, id) FROM t`) run natively.
 Spark binds them as static invocations of Iceberg's per-type implementations under
 `org.apache.iceberg.spark.functions`, and Comet recognizes those classes wherever the expression
-appears: in a projection, a filter, a sort key, or the hash partitioning of a shuffle.
+appears: in a projection, a filter, a sort key, or the hash partitioning of a shuffle. The
+exception is a call nested inside an expression that Comet runs through the JVM codegen
+dispatcher, such as `map(...)`. That makes the operator fall back to Spark.
 
 The native kernels reproduce Iceberg's Java semantics exactly rather than approximately:
 
@@ -262,19 +289,10 @@ the expression fall back to Spark.
 
 ### Task input metrics
 
-The native Iceberg reader populates Spark's task-level `inputMetrics.bytesRead` (visible in the Spark UI Stages tab) using the `bytes_read` counter from iceberg-rust's `ScanMetrics`. This counter includes bytes read from both data files and delete files.
+The native Iceberg reader populates Spark's task-level `inputMetrics.bytesRead` (visible in the Spark UI Stages tab) using the `bytes_read` counter from iceberg-rust's `ScanMetrics`. This counter includes bytes read from both data files and delete files. The scan's SQL metrics, including Iceberg's planning counters, are listed in the [Metrics Guide](metrics.md#cometicebergnativescan).
 
 Iceberg Java does not explicitly report `bytesRead` to Spark's task input metrics. On the iceberg Java path, any `bytesRead` value comes from Hadoop's filesystem-level I/O counters, not from Iceberg itself. Because Comet's native reader and the Hadoop filesystem use different counting mechanisms, the exact byte counts will differ between the two paths.
 
-### SQL tab metrics
+The task-level `inputMetrics.recordsRead` is the scan's `number of output rows`. iceberg-rust applies the residual predicate Comet hands it as a row filter inside the scan, so both count the rows that pass it. They can therefore be lower than the `BatchScan` figures on the Iceberg Java path, where every row leaves the scan and is filtered by the `Filter` above it.
 
-`CometIcebergNativeScan` reports Iceberg's planning metrics (manifests and data files scanned or
-skipped, planning duration, total data and delete file sizes) under their Iceberg names, posted
-from the driver for each execution once the scan's partitions are planned, and the native read time
-as `scan time`.
-
-iceberg-rust applies the residual predicate Comet hands it as a row filter inside the scan, so
-`number of output rows`, and with it the task-level `recordsRead`, count the rows that pass it. They
-are therefore lower than the `BatchScan` figures on the Iceberg Java path, where every row leaves
-the scan and is filtered by the `Filter` above it. `number of row deletes applied` has no native
-counterpart: iceberg-rust's `ScanMetrics` exposes bytes read only.
+Iceberg's `number of row deletes applied` is not reported for the native scan. It counts deletes applied by Iceberg Java's reader, and iceberg-rust's `ScanMetrics` exposes bytes read only, so Comet omits it instead of showing a constant 0.

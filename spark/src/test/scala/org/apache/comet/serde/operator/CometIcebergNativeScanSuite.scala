@@ -55,6 +55,83 @@ class CometIcebergNativeScanSuite extends AnyFunSuite with Matchers {
       .nonEmpty shouldBe true
   }
 
+  /** The scan output the residual tests below convert against. */
+  private val intColumn = Seq(AttributeReference("value", IntegerType)())
+
+  private def serialize(residual: Any) =
+    CometIcebergNativeScan.serializeResidual(residual, intColumn, Set.empty)
+
+  private def causes(t: Throwable): Iterator[Throwable] =
+    Iterator.iterate(t)(_.getCause).takeWhile(_ != null)
+
+  /**
+   * Shaped like an Iceberg `UnboundPredicate` as far as the residual converter is concerned -- it
+   * dispatches on the class-name suffix -- but its accessor throws, the way reflection would
+   * against an Iceberg whose expression API has moved. It must stay a named class: a local or
+   * anonymous one gets a runtime name that no longer ends in `UnboundPredicate`.
+   */
+  class ThrowingUnboundPredicate {
+    def op(): AnyRef = throw new IllegalStateException("residual op() blew up")
+  }
+
+  /** Same shape, but the accessor is not declared at all. */
+  class AccessorlessUnboundPredicate
+
+  // Serde keeps its two ways of not pushing a residual apart. A reflection failure fails the
+  // query: serde runs after CometScanRule has committed the scan to native execution, so there
+  // is no fallback left. A residual the converter declines on purpose is left to the post-scan
+  // filter. These go through serializeResidual, so a swallowing catch in either it or the
+  // converter underneath turns them red.
+  test("a residual whose reflection fails is fatal, not a silent drop") {
+    val thrown = intercept[RuntimeException](serialize(new ThrowingUnboundPredicate))
+    thrown.getMessage should include("Iceberg reflection failure")
+    causes(thrown).exists(_.getMessage == "residual op() blew up") shouldBe true
+  }
+
+  test("a residual whose accessor is missing is fatal, not a silent drop") {
+    val thrown = intercept[RuntimeException](serialize(new AccessorlessUnboundPredicate))
+    causes(thrown).exists(_.isInstanceOf[NoSuchMethodException]) shouldBe true
+  }
+
+  test("residuals the converter declines are still dropped rather than raised") {
+    val declined = Seq(
+      // No native predicate models NOT_IN.
+      Expressions.notIn("value", Integer.valueOf(1), Integer.valueOf(2)),
+      // Not a node type the converter maps.
+      Expressions.alwaysTrue(),
+      Expressions.alwaysFalse(),
+      // Iceberg spells a nested field as a dotted path, which is never a scan output attribute.
+      Expressions.equal("outer.value", Integer.valueOf(1)),
+      // A conjunct that does not convert elides the whole residual.
+      Expressions.and(
+        Expressions.equal("value", Integer.valueOf(1)),
+        Expressions.notIn("value", Integer.valueOf(2))))
+    for (expr <- declined) {
+      withClue(s"$expr: ") {
+        serialize(expr).isEmpty shouldBe true
+      }
+    }
+    // iceberg-rust cannot use these columns in the page index; the post-scan filter has them.
+    CometIcebergNativeScan
+      .serializeResidual(Expressions.equal("value", Integer.valueOf(1)), intColumn, Set("value"))
+      .isEmpty shouldBe true
+    // The same predicate converts when nothing declines it, so the cases above are not vacuous.
+    serialize(Expressions.equal("value", Integer.valueOf(1))).nonEmpty shouldBe true
+  }
+
+  test("a transform residual is declined rather than read as its source column") {
+    // UnboundTransform answers ref() with the source column, so converting the term like a bare
+    // reference would push bucket(4, value) = 1 as value = 1 and drop matching rows.
+    // CometScanRule declines a non-identity transform during planning, but only when the
+    // residual is a bare predicate, so a nested one has to be declined here. The end-to-end
+    // wrong answer is pinned in CometIcebergResidualPushdownSuite.
+    val bucketed =
+      Expressions.equal(Expressions.bucket[Integer]("value", 4), Integer.valueOf(1))
+    serialize(bucketed).isEmpty shouldBe true
+    val nested = Expressions.and(bucketed, Expressions.equal("value", Integer.valueOf(1)))
+    serialize(nested).isEmpty shouldBe true
+  }
+
   private def translate(
       props: Map[String, String],
       targetBucket: Option[String]): Map[String, String] =
@@ -168,11 +245,16 @@ class CometIcebergNativeScanSuite extends AnyFunSuite with Matchers {
   // These pin the HA translation that makes `hdfs://<nameservice>/...` reachable; see that
   // method's scaladoc for why the property is required rather than optional.
 
-  private def hdfsProps(location: String, conf: Map[String, String]): Map[String, String] = {
+  private def hadoopConfOf(conf: Map[String, String]): org.apache.hadoop.conf.Configuration = {
     val hadoopConf = new org.apache.hadoop.conf.Configuration(false)
     conf.foreach { case (k, v) => hadoopConf.set(k, v) }
-    CometIcebergNativeScan.hadoopToIcebergHdfsProperties(new java.net.URI(location), hadoopConf)
+    hadoopConf
   }
+
+  private def hdfsProps(location: String, conf: Map[String, String]): Map[String, String] =
+    CometIcebergNativeScan.hadoopToIcebergHdfsProperties(
+      new java.net.URI(location),
+      hadoopConfOf(conf))
 
   test("HA nameservice resolves to the comma-separated NameNode list, in declaration order") {
     val out = hdfsProps(
@@ -212,5 +294,191 @@ class CometIcebergNativeScanSuite extends AnyFunSuite with Matchers {
   test("non-hdfs and authority-less locations are ignored") {
     hdfsProps("s3://bucket/key", Map("dfs.ha.namenodes.bucket" -> "nn1")) shouldBe Map.empty
     hdfsProps("hdfs:///warehouse/db/t", Map.empty) shouldBe Map.empty
+  }
+
+  test("an rpc-address without a port gets Hadoop's default NameNode RPC port 8020") {
+    // iceberg-rust rejects a portless `hdfs.name-node` entry, while the JVM client falls back to
+    // DFS_NAMENODE_RPC_PORT_DEFAULT for the same rpc-address.
+    hdfsProps(
+      "hdfs://ns/warehouse",
+      Map(
+        "dfs.ha.namenodes.ns" -> "nn1,nn2",
+        "dfs.namenode.rpc-address.ns.nn1" -> "host-a.example.com",
+        "dfs.namenode.rpc-address.ns.nn2" -> "host-b.example.com:9000")) shouldBe
+      Map("hdfs.name-node" -> "hdfs://host-a.example.com:8020,hdfs://host-b.example.com:9000")
+  }
+
+  test("a portless rpc-address that carries the hdfs:// prefix gets the default port") {
+    hdfsProps(
+      "hdfs://ns/warehouse",
+      Map(
+        "dfs.ha.namenodes.ns" -> "nn1",
+        "dfs.namenode.rpc-address.ns.nn1" -> "hdfs://host-a.example.com")) shouldBe
+      Map("hdfs.name-node" -> "hdfs://host-a.example.com:8020")
+  }
+
+  test("a bracketed IPv6 rpc-address keeps its port, or gets the default one") {
+    // The colons inside the brackets must not be mistaken for a host:port separator.
+    def resolved(address: String): Map[String, String] =
+      hdfsProps(
+        "hdfs://ns/warehouse",
+        Map("dfs.ha.namenodes.ns" -> "nn1", "dfs.namenode.rpc-address.ns.nn1" -> address))
+
+    resolved("[::1]:9000") shouldBe Map("hdfs.name-node" -> "hdfs://[::1]:9000")
+    resolved("[::1]") shouldBe Map("hdfs.name-node" -> "hdfs://[::1]:8020")
+    resolved("hdfs://[2001:db8::1]") shouldBe Map("hdfs.name-node" -> "hdfs://[2001:db8::1]:8020")
+  }
+
+  // --- hdfsNameNodeFallbackReason ----------------------------------------------------------
+  //
+  // The decision shared by the scan and the write planners: Some(reason) only when the native
+  // HDFS client could not reach the NameNode, None for anything indistinguishable from a real
+  // host.
+
+  private def hdfsReason(
+      location: String,
+      conf: Map[String, String] = Map.empty,
+      catalogProperties: Map[String, String] = Map.empty): Option[String] =
+    CometIcebergNativeScan.hdfsNameNodeFallbackReason(
+      new java.net.URI(location),
+      hadoopConfOf(conf),
+      catalogProperties)
+
+  private val haConf = Map(
+    "dfs.nameservices" -> "ns1",
+    "dfs.ha.namenodes.ns1" -> "nn1,nn2",
+    "dfs.namenode.rpc-address.ns1.nn1" -> "host-a.example.com:8020",
+    "dfs.namenode.rpc-address.ns1.nn2" -> "host-b.example.com:8020")
+
+  test("an authority-less hdfs location is declined, whatever else is configured") {
+    // `hdfs.host`, `hdfs.port` and `hadoop.fs.defaultFS` are the only other sources iceberg-rust
+    // reads for it, and Comet never relies on them. Even an explicit `hdfs.name-node` does not
+    // make it native.
+    val reason = hdfsReason("hdfs:///warehouse/db/t")
+    reason.getOrElse(fail("expected a reason")) should startWith("authority-less hdfs location")
+    reason.get should include("hdfs:///warehouse/db/t")
+    hdfsReason(
+      "hdfs:///warehouse/db/t",
+      haConf ++ Map("fs.defaultFS" -> "hdfs://nn.example.com:8020"),
+      Map(
+        "hdfs.name-node" -> "nn.example.com:8020",
+        "hdfs.host" -> "nn.example.com",
+        "hdfs.port" -> "8020",
+        "hadoop.fs.defaultFS" -> "hdfs://nn.example.com:8020")).isDefined shouldBe true
+  }
+
+  test("an hdfs.name-node entry without a port is declined") {
+    for (entry <- Seq(
+        "nn1.example.com",
+        "hdfs://nn1.example.com",
+        "hdfs://nn1.example.com/",
+        "[::1]",
+        "nn1.example.com:",
+        "nn1.example.com:http",
+        "nn1.example.com:99999")) {
+      withClue(s"hdfs.name-node=$entry: ") {
+        val reason = hdfsReason(
+          "hdfs://nn1.example.com:8020/warehouse",
+          catalogProperties = Map("hdfs.name-node" -> entry))
+        reason.getOrElse(fail("expected a reason")) should include(
+          s"hdfs.name-node entry '${entry.stripSuffix("/")}' has no port")
+      }
+    }
+  }
+
+  test("one bad entry in an hdfs.name-node list is enough to decline it") {
+    val reason = hdfsReason(
+      "hdfs://ns1/warehouse",
+      catalogProperties = Map("hdfs.name-node" -> "nn1.example.com:8020, nn2.example.com"))
+    reason.getOrElse(fail("expected a reason")) should include(
+      "hdfs.name-node entry 'nn2.example.com' has no port")
+    reason.get should not include "nn1.example.com:8020'"
+  }
+
+  test("well formed hdfs.name-node lists stay native") {
+    // As iceberg-rust reads them: entries trimmed, a trailing '/' dropped, `hdfs://` optional,
+    // a bracketed IPv6 literal allowed, and empty entries ignored.
+    for (value <- Seq(
+        "nn1.example.com:8020",
+        "hdfs://nn1.example.com:8020",
+        " hdfs://nn1.example.com:8020/ , nn2.example.com:9000 ",
+        "[::1]:8020,hdfs://[2001:db8::1]:8020",
+        "nn1.example.com:8020,")) {
+      withClue(s"hdfs.name-node=$value: ") {
+        hdfsReason("hdfs://ns1/warehouse", haConf, Map("hdfs.name-node" -> value)) shouldBe None
+      }
+    }
+  }
+
+  test("a configured nameservice that did not resolve to a NameNode list is declined") {
+    // Nothing the planner could put into `hdfs.name-node`: the rpc-address of nn2 is missing, so
+    // the mapping is all-or-nothing empty.
+    val conf = haConf - "dfs.namenode.rpc-address.ns1.nn2"
+    hdfsProps("hdfs://ns1/warehouse", conf) shouldBe Map.empty
+
+    val reason = hdfsReason("hdfs://ns1/warehouse", conf, hdfsProps("hdfs://ns1/warehouse", conf))
+    reason.getOrElse(fail("expected a reason")) should include("HDFS nameservice 'ns1'")
+    reason.get should include("could not be resolved")
+    reason.get should include("dfs.namenode.rpc-address.ns1.")
+    reason.get should include("hdfs.name-node")
+  }
+
+  test("a nameservice listed only in dfs.nameservices is declined") {
+    // No `dfs.ha.namenodes.ns2`, so the mapping resolves nothing, yet `ns2` is not a host.
+    val conf = Map("dfs.nameservices" -> "ns1, ns2")
+    hdfsReason("hdfs://ns2/warehouse", conf).getOrElse(fail("expected a reason")) should include(
+      "HDFS nameservice 'ns2'")
+    // A nameservice that has only `dfs.ha.namenodes.<ns>` set is configured too.
+    hdfsReason("hdfs://ns3/warehouse", Map("dfs.ha.namenodes.ns3" -> "nn1"))
+      .getOrElse(fail("expected a reason")) should include("HDFS nameservice 'ns3'")
+  }
+
+  test("a resolved nameservice stays native") {
+    val location = "hdfs://ns1/warehouse"
+    val props = hdfsProps(location, haConf)
+    props.keySet shouldBe Set("hdfs.name-node")
+    hdfsReason(location, haConf, props) shouldBe None
+  }
+
+  test("a plain host:port or host, with no nameservice configured, stays native") {
+    // Indistinguishable from a real NameNode, so Comet cannot tell a mistake from a host.
+    hdfsReason("hdfs://nn.example.com:8020/warehouse") shouldBe None
+    hdfsReason("hdfs://nn.example.com/warehouse") shouldBe None
+    hdfsReason("hdfs://[::1]:8020/warehouse") shouldBe None
+    // An authority that merely differs from the configured nameservice is just an unknown host.
+    hdfsReason("hdfs://other.example.com:8020/warehouse", haConf) shouldBe None
+    hdfsReason("hdfs://unknown-authority/warehouse", haConf) shouldBe None
+  }
+
+  test("an explicit hdfs.name-node overrides an unresolved nameservice") {
+    // iceberg-rust prefers it to the path authority, so the nameservice is never dialled.
+    val conf = haConf - "dfs.namenode.rpc-address.ns1.nn2"
+    hdfsReason(
+      "hdfs://ns1/warehouse",
+      conf,
+      Map("hdfs.name-node" -> "host-a.example.com:8020,host-b.example.com:8020")) shouldBe None
+    // A blank value is no `hdfs.name-node` at all, so the nameservice still decides.
+    hdfsReason("hdfs://ns1/warehouse", conf, Map("hdfs.name-node" -> " , "))
+      .getOrElse(fail("expected a reason")) should include("HDFS nameservice 'ns1'")
+  }
+
+  test("non-hdfs locations never get an HDFS reason") {
+    val badProps = Map("hdfs.name-node" -> "no-port")
+    for (location <- Seq(
+        "s3://ns1/key",
+        "s3a://ns1/key",
+        "gs://ns1/key",
+        "file:///tmp/warehouse",
+        "/tmp/warehouse",
+        "memory://ns1/key")) {
+      withClue(s"$location: ") {
+        hdfsReason(location, haConf - "dfs.namenode.rpc-address.ns1.nn2", badProps) shouldBe None
+      }
+    }
+  }
+
+  test("the hdfs scheme is matched case-insensitively") {
+    hdfsReason("HDFS:///warehouse").isDefined shouldBe true
+    hdfsReason("HDFS://ns1/warehouse", Map("dfs.nameservices" -> "ns1")).isDefined shouldBe true
   }
 }

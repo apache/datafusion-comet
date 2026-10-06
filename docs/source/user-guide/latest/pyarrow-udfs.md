@@ -30,7 +30,7 @@ using the Arrow IPC format.
 
 Without Comet, the execution path for these UDFs involves unnecessary data conversions:
 
-1. Comet reads data in Arrow columnar format (via CometScan)
+1. Comet reads data in Arrow columnar format (via `CometNativeScan`)
 2. Spark inserts a ColumnarToRow transition (converts Arrow to UnsafeRow)
 3. The Python runner converts those rows back to Arrow to send to Python
 4. Python executes the UDF on Arrow batches
@@ -40,8 +40,8 @@ Steps 2 and 3 are redundant since the data starts and ends in Arrow format.
 
 ## How Comet Optimizes This
 
-When enabled, Comet detects `PythonMapInArrowExec` / `MapInArrowExec` and `MapInPandasExec`
-operators in the physical plan and replaces them with `CometMapInBatchExec`, which:
+When enabled, Comet detects `MapInArrowExec` and `MapInPandasExec` operators in the physical plan
+and replaces them with `CometMapInBatchExec` (shown as `CometMapInBatch` in plans), which:
 
 - Reads Arrow columnar batches directly from the upstream Comet operator
 - Feeds them to the Python runner without the expensive UnsafeProjection copy
@@ -58,18 +58,16 @@ copies that remain.
 Without Comet's optimization:
 
 ```
-PythonMapInArrow / MapInArrow / MapInPandas
-+- ColumnarToRow         <- Arrow -> Row copy
-   +- CometNativeExec    <- Arrow batch
-      +- CometScan
+MapInArrow / MapInPandas
++- CometColumnarToRow    <- Arrow -> Row copy
+   +- CometNativeScan    <- Arrow batch
 ```
 
 With the optimization enabled:
 
 ```
 CometMapInBatch          <- Arrow batch in/out, Python runner attached
-+- CometNativeExec
-   +- CometScan
++- CometNativeScan
 ```
 
 ## Configuration
@@ -95,7 +93,7 @@ worker. Both confs can be set independently.
 
 | PySpark API                      | Spark Plan Node             | Supported |
 | -------------------------------- | --------------------------- | --------- |
-| `df.mapInArrow(func, schema)`    | `PythonMapInArrowExec`      | Yes       |
+| `df.mapInArrow(func, schema)`    | `MapInArrowExec`            | Yes       |
 | `df.mapInPandas(func, schema)`   | `MapInPandasExec`           | Yes       |
 | `@pandas_udf` (scalar)           | `ArrowEvalPythonExec`       | Not yet   |
 | `df.applyInPandas(func, schema)` | `FlatMapGroupsInPandasExec` | Not yet   |
@@ -144,17 +142,15 @@ You should see:
 
 ```
 CometMapInBatch ...
-+- CometNativeExec ...
-   +- CometScan ...
++- CometNativeScan parquet ...
 ```
 
 Instead of the unoptimized plan:
 
 ```
-PythonMapInArrow ...
-+- ColumnarToRow
-   +- CometNativeExec ...
-      +- CometScan ...
+MapInArrow ...
++- CometColumnarToRow
+   +- CometNativeScan parquet ...
 ```
 
 When AQE is enabled (the Spark default) and the query contains a shuffle, the
@@ -163,7 +159,7 @@ running an action will show the unoptimized plan:
 
 ```
 AdaptiveSparkPlan isFinalPlan=false
-+- PythonMapInArrow ...
++- MapInArrow ...
    +- CometExchange ...
 ```
 
@@ -211,6 +207,17 @@ on the unoptimized path.
   requested by the configuration. `EliminateRedundantTransitions` therefore skips the rewrite
   and vanilla Spark handles the operation. Comet can read `large_string` and `large_binary`
   columns returned by a Python worker; that output support does not widen the input vectors.
+- PySpark does not convert the batches a `mapInArrow` UDF returns to the declared output schema,
+  so Comet checks their Arrow schema before reading them. When a column cannot be read as its
+  declared type, Comet raises Spark's `ARROW_TYPE_MISMATCH` error (on Spark 4.0, a
+  `SparkException` with the same message). Column names, nullability, `large_string` and
+  `large_binary` offsets, the time zone of a timestamp, and an all-null column of Arrow type
+  `null` may differ from the declared schema. Vanilla Spark reads some mismatches that Comet
+  rejects, unless `spark.sql.execution.arrow.pyspark.validateSchema.enabled` is set: it rescales
+  a decimal to the declared precision and scale, reads a timestamp without a time zone as
+  `TimestampType`, reads other types of the same width (for example `int64` as a timestamp), and
+  ignores extra columns. Return the declared types, or set
+  `spark.comet.exec.pyarrowUDF.enabled=false` for such UDFs.
 - Comet applies `spark.sql.execution.arrow.maxRecordsPerBatch` to every input batch, including
   batches with only plain columns. Before decoding dictionary-encoded shuffle columns, Comet also
   compares their estimated decoded size with `spark.sql.execution.arrow.maxBytesPerBatch`.

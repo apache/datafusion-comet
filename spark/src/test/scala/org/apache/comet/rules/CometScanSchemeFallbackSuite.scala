@@ -25,12 +25,14 @@ import java.nio.file.Files
 import java.util.UUID
 
 import org.apache.commons.io.FileUtils
+import org.apache.iceberg.{DataFiles, FileFormat, Table}
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.{CometTestBase, SaveMode}
-import org.apache.spark.sql.comet.CometScanExec
+import org.apache.spark.sql.comet.{CometBatchScanExec, CometScanExec}
 import org.apache.spark.sql.execution.{FileSourceScanExec, SparkPlan}
+import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 
-import org.apache.comet.CometConf
+import org.apache.comet.{CometConf, CometExplainInfo, CometIcebergTestBase}
 import org.apache.comet.hadoop.fs.{FakeHDFSFileSystem, FakeHdfsSchemeFileSystem}
 
 /**
@@ -43,7 +45,7 @@ import org.apache.comet.hadoop.fs.{FakeHDFSFileSystem, FakeHdfsSchemeFileSystem}
  * native probe is cached per probe URL so an authorityless URL can't poison the authority-bearing
  * form of the same scheme.
  */
-class CometScanSchemeFallbackSuite extends CometTestBase {
+class CometScanSchemeFallbackSuite extends CometTestBase with CometIcebergTestBase {
 
   private var fakeRootDir: File = _
 
@@ -254,5 +256,139 @@ class CometScanSchemeFallbackSuite extends CometTestBase {
           s"but it fell back to Spark:\n$transformed")
       assert(sparkScans.isEmpty, s"expected no leftover Spark FileSourceScanExec:\n$transformed")
     }
+  }
+
+  // --- Iceberg scans over HDFS data files ---------------------------------------------------
+  //
+  // These drive the real planner gate (`CometScanRule` on a `BatchScanExec` over a real Iceberg
+  // table) rather than the static helpers above, because the NameNode decisions need the catalog
+  // properties the rule assembles from the session Hadoop configuration. The data files are only
+  // registered in the table's manifests, with the `hdfs://` paths the test names: planning reads
+  // manifests, never the data files, so nothing here needs a NameNode and nothing is executed.
+
+  /**
+   * Plans `SELECT id` over an Iceberg table whose data files sit at `dataFiles`, applies
+   * `CometScanRule` with native Iceberg scans enabled and `hadoopConf` set on the session, and
+   * returns the scans the rule claimed plus the fallback reasons it left on the ones it declined.
+   */
+  private def planIcebergScanOverHdfs(
+      dataFiles: Seq[String],
+      hadoopConf: Seq[(String, String)] = Seq.empty): (Seq[CometBatchScanExec], Set[String]) = {
+    // A catalog of its own, so no test reads another's cached catalog or warehouse.
+    val catalog = s"hdfs_gate_${UUID.randomUUID().toString.take(8)}"
+    var claimed = Seq.empty[CometBatchScanExec]
+    var reasons = Set.empty[String]
+    withHadoopCatalog(catalog) {
+      spark.sql(s"CREATE TABLE $catalog.db.t (id INT) USING iceberg")
+      val table = loadIcebergTable(spark, catalog, "db", "t").asInstanceOf[Table]
+      val append = table.newAppend()
+      dataFiles.foreach { path =>
+        append.appendFile(
+          DataFiles
+            .builder(table.spec())
+            .withPath(path)
+            .withFormat(FileFormat.PARQUET)
+            .withFileSizeInBytes(1024)
+            .withRecordCount(1)
+            .build())
+      }
+      append.commit()
+
+      // The Spark plan first, with Comet off, then the rule alone: no execution.
+      var sparkPlan: SparkPlan = null
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        sparkPlan = spark.sql(s"SELECT id FROM $catalog.db.t").queryExecution.executedPlan
+      }
+      val confs = Seq(
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") ++ hadoopConf
+      withSQLConf(confs: _*) {
+        val transformed = CometScanRule(spark).apply(stripAQEPlan(sparkPlan))
+        claimed = transformed.collect { case s: CometBatchScanExec => s }
+        reasons = transformed
+          .collect { case s: BatchScanExec =>
+            s.getTagValue(CometExplainInfo.FALLBACK_REASONS).getOrElse(Set.empty[String])
+          }
+          .flatten
+          .toSet
+      }
+    }
+    (claimed, reasons)
+  }
+
+  test("iceberg scan: a configured HDFS nameservice that does not resolve is declined") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    // nn2 has no rpc-address, so the mapping to `hdfs.name-node` is all-or-nothing empty and the
+    // executor would dial `ns1` as if it were a host.
+    val (claimed, reasons) = planIcebergScanOverHdfs(
+      Seq("hdfs://ns1/warehouse/db/t/a.parquet"),
+      Seq(
+        "dfs.nameservices" -> "ns1",
+        "dfs.ha.namenodes.ns1" -> "nn1,nn2",
+        "dfs.namenode.rpc-address.ns1.nn1" -> "nn1.example.com:8020"))
+    assert(claimed.isEmpty, "an unresolvable nameservice must not be claimed natively")
+    assert(
+      reasons.exists(_.contains("HDFS nameservice 'ns1' could not be resolved")),
+      s"expected the nameservice fall-back reason, got: $reasons")
+  }
+
+  test("iceberg scan: a nameservice listed only in dfs.nameservices is declined") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    val (claimed, reasons) = planIcebergScanOverHdfs(
+      Seq("hdfs://ns1/warehouse/db/t/a.parquet"),
+      Seq("dfs.nameservices" -> "ns1,ns2"))
+    assert(claimed.isEmpty, "a configured nameservice without NameNodes must not be claimed")
+    assert(
+      reasons.exists(_.contains("HDFS nameservice 'ns1' could not be resolved")),
+      s"expected the nameservice fall-back reason, got: $reasons")
+  }
+
+  test("iceberg scan: a resolvable HDFS nameservice is claimed with its NameNode list") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    // The control for the two tests above, and for the multi-authority one below: the same table
+    // shape is claimed once the nameservice resolves, so the declines are down to the gate under
+    // test. nn2's rpc-address has no port, which Hadoop (and now Comet) defaults to 8020.
+    val (claimed, reasons) = planIcebergScanOverHdfs(
+      Seq("hdfs://ns1/warehouse/db/t/a.parquet"),
+      Seq(
+        "dfs.nameservices" -> "ns1",
+        "dfs.ha.namenodes.ns1" -> "nn1,nn2",
+        "dfs.namenode.rpc-address.ns1.nn1" -> "nn1.example.com:9000",
+        "dfs.namenode.rpc-address.ns1.nn2" -> "nn2.example.com"))
+    assert(claimed.size == 1, s"expected the scan to be claimed, fell back with: $reasons")
+    val metadata = claimed.head.nativeIcebergScanMetadata.get
+    assert(
+      metadata.catalogProperties.get("hdfs.name-node") ==
+        Some("hdfs://nn1.example.com:9000,hdfs://nn2.example.com:8020"),
+      s"unexpected catalog properties: ${metadata.catalogProperties}")
+  }
+
+  test("iceberg scan: a plain host:port HDFS location is claimed with no NameNode property") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    // Indistinguishable from a real NameNode, so the path authority is left to iceberg-rust.
+    val (claimed, reasons) =
+      planIcebergScanOverHdfs(Seq("hdfs://nn.example.com:8020/warehouse/db/t/a.parquet"))
+    assert(claimed.size == 1, s"expected the scan to be claimed, fell back with: $reasons")
+    assert(
+      !claimed.head.nativeIcebergScanMetadata.get.catalogProperties.contains("hdfs.name-node"))
+  }
+
+  test("iceberg scan: data files on two HDFS authorities are declined") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    // One `hdfs.name-node` per scan, and it wins over every path authority, so the second
+    // NameNode's files would be read from the first at the same relative path. The decline sits
+    // inline in the scan case of `CometScanRule.apply`, with no static helper of its own, so a real
+    // scan is the lowest layer that reaches it.
+    val (claimed, reasons) = planIcebergScanOverHdfs(
+      Seq(
+        "hdfs://nn1.example.com:8020/warehouse/db/t/a.parquet",
+        "hdfs://nn2.example.com:8020/warehouse/db/t/b.parquet"))
+    assert(claimed.isEmpty, "files on two NameNodes must not be claimed natively")
+    assert(
+      reasons.exists(
+        _.contains(
+          "across multiple HDFS authorities (nn1.example.com:8020, nn2.example.com:8020)")),
+      s"expected the multi-authority fall-back reason, got: $reasons")
   }
 }

@@ -25,7 +25,7 @@ import org.scalactic.source.Position
 import org.scalatest.Tag
 
 import org.apache.hadoop.fs.Path
-import org.apache.spark.sql.{CometTestBase, Row}
+import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, Divide, Expression, MakeDecimal, WindowExpression}
 import org.apache.spark.sql.comet.{CometSortExec, CometWindowExec, CometWindowGroupLimitExec}
 import org.apache.spark.sql.execution.SparkPlan
@@ -206,6 +206,68 @@ class CometWindowExecSuite extends CometTestBase {
             assertRawBits(actual)
           }
         }
+      }
+    }
+  }
+
+  test("window group limit: floating-point values nested in the order key") {
+    assume(isSpark35Plus, "WindowGroupLimit was added in Spark 3.5")
+    // The native RANK and DENSE_RANK find ties by byte equality, on order keys that the native
+    // planner has normalized, nested floats included. So [-0.0] and [0.0] are peers, and the
+    // cutoff keeps both rows, as Spark does (#5507). Strict floating-point mode declines a nested
+    // key whose type can hold a null element or field (#6476, #6477), and these columns, read
+    // back from Parquet, can. ROW_NUMBER never compares peers, and Spark normalizes nested
+    // floating-point partition keys itself.
+    withTempDir { dir =>
+      val path = new Path(dir.toString, "nested_float_order").toString
+      Seq((1, -0.0f, -0.0d), (2, 0.0f, 0.0d), (3, 1.0f, 1.0d))
+        .toDF("id", "f", "d")
+        .write
+        .parquet(path)
+      spark.read.parquet(path).createOrReplaceTempView("nested_float_order")
+
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.SHUFFLE_PARTITIONS.key -> "1",
+        CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "false",
+        CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false",
+        CometConf.COMET_EXEC_WINDOW_GROUP_LIMIT_ENABLED.key -> "true") {
+        for {
+          rankFunction <- Seq("RANK", "DENSE_RANK")
+          // A struct needs a second key, because a lone struct sort key falls back on its own.
+          orderBy <- Seq("array(f)", "array(d)", "named_struct('x', d), id > 0")
+        } {
+          def rankLimit(): DataFrame = sql(s"""
+               |SELECT id FROM (
+               |  SELECT id, $rankFunction() OVER (ORDER BY $orderBy) AS rnk
+               |  FROM nested_float_order
+               |) WHERE rnk <= 1
+               |""".stripMargin)
+
+          checkSparkAnswerAndOperator(rankLimit(), Seq(classOf[CometWindowGroupLimitExec]))
+          assert(rankLimit().collect().map(_.getInt(0)).sorted.toSeq == Seq(1, 2))
+
+          withSQLConf(CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
+            checkSparkAnswerAndFallbackReason(rankLimit(), "can hold a null element or field")
+            assert(rankLimit().collect().map(_.getInt(0)).sorted.toSeq == Seq(1, 2))
+          }
+        }
+
+        checkSparkAnswerAndOperator(
+          sql("""
+              |SELECT id FROM (
+              |  SELECT id, ROW_NUMBER() OVER (PARTITION BY id > 0 ORDER BY array(d), id) AS rn
+              |  FROM nested_float_order
+              |) WHERE rn <= 2
+              |""".stripMargin),
+          Seq(classOf[CometWindowGroupLimitExec]))
+
+        checkSparkAnswer(sql("""
+            |SELECT id FROM (
+            |  SELECT id, RANK() OVER (PARTITION BY array(d) ORDER BY id) AS rnk
+            |  FROM nested_float_order
+            |) WHERE rnk <= 1
+            |""".stripMargin))
       }
     }
   }
@@ -710,6 +772,59 @@ class CometWindowExecSuite extends CometTestBase {
       val (sparkPlan, cometPlan) = checkSparkAnswerAndOperator(df)
       assertSparkPlanHasDecimalSumRewrite(sparkPlan)
       assertCometWindowExecExists(cometPlan)
+    }
+  }
+
+  test("window: decimal SUM recovers from an intermediate overflow in an expanding frame") {
+    // Running sums 0.6, 1.2, 0.6 at DECIMAL(38,38): only the middle frame leaves the
+    // precision, so the third row must recover instead of staying latched at null.
+    Seq(true, false).foreach { ansiEnabled =>
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString) {
+        withTempDir { dir =>
+          Seq((1, "0.6"), (2, "0.6"), (3, "-0.6"))
+            .toDF("ord", "raw_v")
+            .selectExpr("ord", "CAST(raw_v AS DECIMAL(38,38)) AS v")
+            .repartition(1)
+            .write
+            .mode("overwrite")
+            .parquet(dir.toString)
+
+          spark.read.parquet(dir.toString).createOrReplaceTempView("dec_sum_recover")
+          def runningSums(function: String): DataFrame = sql(s"""
+            SELECT ord, run_sum
+            FROM (
+              SELECT ord,
+                $function(v) OVER (
+                  ORDER BY ord
+                  ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                ) AS run_sum
+              FROM dec_sum_recover
+            )
+            ORDER BY ord
+          """)
+          def assertRecovered(function: String): Unit = {
+            val (_, cometPlan) = checkSparkAnswerAndOperator(runningSums(function))
+            assertCometWindowExecExists(cometPlan)
+            val answer = runningSums(function).collect().toSeq
+            val recovered = new java.math.BigDecimal("0.6").setScale(38)
+            assert(
+              answer == Seq(Row(1, recovered), Row(2, null), Row(3, recovered)),
+              s"$function running sums were $answer, expected 0.6, null, 0.6")
+          }
+          if (ansiEnabled) {
+            // The frame whose sum is 1.2 holds a value that does not fit, so Spark fails in
+            // toPrecision with the out-of-range error rather than the latched sum overflow.
+            val errorClass =
+              if (isSpark40Plus) "NUMERIC_VALUE_OUT_OF_RANGE.WITH_SUGGESTION"
+              else "NUMERIC_VALUE_OUT_OF_RANGE"
+            checkSparkError(runningSums("SUM"), errorClass)
+          } else {
+            assertRecovered("SUM")
+          }
+          // try_sum returns null for the frame that does not fit in every mode.
+          assertRecovered("try_sum")
+        }
+      }
     }
   }
 

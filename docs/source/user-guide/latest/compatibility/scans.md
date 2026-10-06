@@ -38,8 +38,9 @@ The following features are not supported and cause Comet to fall back to Spark:
 - Default values that are nested types (e.g., maps, arrays, structs). Literal default values are supported.
 - Spark's Datasource V2 API. When `spark.sql.sources.useV1SourceList` does not include `parquet`, Spark uses the
   V2 API for Parquet scans. Comet's Parquet scan only supports the V1 API.
-- `_metadata.row_index`. Other `_metadata` columns (`file_path`, `file_name`, `file_size`, `file_block_start`,
-  `file_block_length`, `file_modification_time`) are supported.
+- `_metadata.row_index`, `_metadata.file_block_start` and `_metadata.file_block_length`. When Spark splits a file,
+  the native scan and Spark can read a row group in different splits, so the block values would differ. Other
+  `_metadata` columns (`file_path`, `file_name`, `file_size`, `file_modification_time`) are supported.
 - No support for `input_file_name()`, `input_file_block_start()`, or `input_file_block_length()` SQL functions.
   Comet's Parquet scan does not use Spark's `FileScanRDD`, so these functions cannot populate their values.
 - No support for `ignoreMissingFiles` or `ignoreCorruptFiles` being set to `true`
@@ -48,6 +49,11 @@ The following features are not supported and cause Comet to fall back to Spark:
   does not replicate. By default Comet falls back to Spark in this case. Set
   `spark.comet.scan.allowDisabledParquetVectorizedReader=true` to opt in to running the
   Comet Parquet scan regardless.
+- A read schema that repeats a Parquet field id, at the top level or within a struct, when
+  `spark.sql.parquet.fieldId.read.enabled=true`.
+- A read schema with sibling struct fields whose names collide case-insensitively, when
+  `spark.sql.caseSensitive=false`. Spark's analyzer normally rejects such a schema before the scan
+  is planned.
 
 The following limitation may produce incorrect results without falling back to Spark:
 
@@ -62,6 +68,20 @@ The following limitation may produce incorrect results without falling back to S
 
 The following limitations raise an error at scan time rather than falling back to Spark:
 
+- Selecting a field by name when multiple physical siblings match, including inside structs,
+  arrays, and maps. Comet raises a duplicate-field error instead of resolving the collision.
+  Checks cover referenced columns, including predicates; unselected roots do not prevent
+  reading a unique field by name or field ID. Exact-name projections of unique children in
+  structs and arrays of structs remain supported. Casts that cannot use this pruning reject
+  byte-identical duplicate siblings anywhere in the decoded physical subtree, including maps.
+  Field-ID resolution retains precedence, but selecting a byte-identically duplicated physical
+  root name still raises a duplicate-field error, even when the requested field is renamed.
+  Names in separate groups do not collide. Spark may read a duplicate-bearing file with an
+  explicit schema in case-sensitive mode, but its choice of sibling depends on the field shape
+  and can produce unexpected values. Spark rejects schema inference from a single file with
+  duplicate names; inference across files can depend on merge order.
+  Resolution is tracked in [#5884](https://github.com/apache/datafusion-comet/issues/5884),
+  with mixed-type behavior in [#5964](https://github.com/apache/datafusion-comet/issues/5964).
 - Invalid UTF-8 bytes in `STRING` columns. Spark permits arbitrary byte sequences in a `STRING`
   column (for example from `CAST(X'C1' AS STRING)`), but Comet's native execution path is built on
   Arrow, whose string type is strictly UTF-8. Reading a Parquet file whose `STRING` column contains
@@ -106,6 +126,11 @@ and `INT32 → DOUBLE` widening that Spark 4.0+ accepts unconditionally; `Timest
 is rejected by Spark 3.x but accepted by Spark 4.0+). Comet aims to follow the per-version Spark
 behavior.
 
+- **Conversion errors precede pushed row filters**. Empty files and files whose row groups or
+  pages are all pruned read without decode-time conversion errors. When row-filter pushdown is
+  enabled, Comet checks rejected conversions before reading surviving data pages, so a row filter
+  cannot suppress the error by discarding every row. Legacy LIST shape mismatches that Spark cannot
+  clip are rejected when the file is opened, including for empty and fully pruned files.
 - **List conversion error paths assume Spark's standard encoding**. Comet inserts `list`
   before the element name when reporting a rejected array element conversion. Arrow's schema
   omits the repeated group name, so paths for legacy LIST encodings or custom group names may

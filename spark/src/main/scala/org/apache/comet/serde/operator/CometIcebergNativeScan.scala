@@ -75,6 +75,9 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       val AND = "And"
       val OR = "Or"
       val NOT = "Not"
+      // The only UnboundTerm shape this serde converts. The others, UnboundTransform and (on
+      // Iceberg versions that have it) UnboundExtract, are declined; see icebergExprToProto.
+      val NAMED_REFERENCE = "NamedReference"
     }
   }
 
@@ -354,7 +357,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
           val equalityIds = equalityIdsMethod
             .invoke(deleteFile)
             .asInstanceOf[java.util.List[Integer]]
-          equalityIds.forEach(id => deleteBuilder.addEqualityIds(id))
+          deleteBuilder.addAllEqualityIds(equalityIds)
         } catch {
           case _: Exception =>
         }
@@ -516,7 +519,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                 commonBuilder.addPartitionTypePool(partitionTypeJson)
                 idx
               })
-            taskBuilder.setPartitionSpecIdx(specIdx)
+            val _ = taskBuilder.setPartitionSpecIdx(specIdx)
           } catch {
             case e: Exception =>
               logWarning(s"Failed to serialize partition spec to JSON: ${e.getMessage}")
@@ -576,7 +579,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
               commonBuilder.addPartitionDataPool(partitionDataProto)
               idx
             })
-          taskBuilder.setPartitionDataIdx(partitionDataIdx)
+          val _ = taskBuilder.setPartitionDataIdx(partitionDataIdx)
         } else {
           // Defensive: ContentScanTask.partition() returns an empty struct (never null) for
           // unpartitioned tables in practice. If it is ever null we cannot compute values, so
@@ -611,6 +614,9 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
    * would only pin the scan to one endpoint. Call sites order this before the catalog properties,
    * so an explicit `spark.sql.catalog.<cat>.hdfs.name-node` still wins.
    *
+   * An `rpc-address` without a port gets Hadoop's default NameNode RPC port, as the JVM client
+   * does, because iceberg-rust rejects a portless `hdfs.name-node` entry.
+   *
    * @param uri
    *   the metadata (scan) or data (write) location whose authority names the nameservice
    */
@@ -631,16 +637,105 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     val endpoints = nnIds.flatMap { nnId =>
       Option(hadoopConf.getTrimmed(s"dfs.namenode.rpc-address.$nameservice.$nnId"))
         .filter(_.nonEmpty)
-        .map(addr => if (addr.startsWith("hdfs://")) addr else s"hdfs://$addr")
+        .map { addr =>
+          val hostPort = addr.stripPrefix("hdfs://").stripSuffix("/")
+          val withPort =
+            if (HdfsHostPortPattern.pattern.matcher(hostPort).matches()) hostPort
+            else s"$hostPort:$DefaultNameNodeRpcPort"
+          s"hdfs://$withPort"
+        }
     }
 
     // All-or-nothing: a partially resolved list would silently drop a NameNode, turning a
     // failover into an outage.
     if (endpoints.nonEmpty && endpoints.size == nnIds.size) {
-      Map("hdfs.name-node" -> endpoints.mkString(","))
+      Map(HdfsNameNodeKey -> endpoints.mkString(","))
     } else {
       Map.empty
     }
+  }
+
+  /**
+   * Why iceberg-rust's `hdfs-native` backend could not reach the NameNode of an HDFS location, or
+   * None when Comet cannot tell it apart from a reachable one. Shared by the scan and write
+   * planners, which pass the catalog properties exactly as they will hand them to native (Hadoop
+   * derived `hdfs.name-node` first, an explicit catalog value winning), so the decision and the
+   * executed configuration agree.
+   *
+   * iceberg-rust resolves the NameNode from `hdfs.name-node` (a comma-separated list, each entry
+   * `host:port` with an optional `hdfs://` prefix), else from the path authority. It never
+   * validates the authority, so a plain `host:port` or host is indistinguishable from a real one
+   * and stays native. Three cases are known to fail, and declining them replaces a task failure
+   * on an executor, after the planner committed to the native path, with a fallback:
+   *   - an authority-less `hdfs:///...` location: Comet never relies on `hdfs.host`, `hdfs.port`
+   *     or `hadoop.fs.defaultFS`, which are the only other sources;
+   *   - an `hdfs.name-node` entry that is not `host:port`, which is rejected;
+   *   - a configured HA nameservice that did not resolve to a NameNode list, since a nameservice
+   *     is not a routable host. An explicit `hdfs.name-node` wins over it, as in iceberg-rust.
+   *
+   * @param uri
+   *   the location whose authority names the NameNode (the data location when known)
+   * @param hadoopConf
+   *   the session Hadoop configuration the HA mapping reads
+   * @param catalogProperties
+   *   the effective catalog properties handed to native
+   * @return
+   *   Some(reason) to decline the native path; always None for a non-hdfs location
+   */
+  def hdfsNameNodeFallbackReason(
+      uri: java.net.URI,
+      hadoopConf: org.apache.hadoop.conf.Configuration,
+      catalogProperties: Map[String, String]): Option[String] = {
+    if (!NativeConfig.lowerScheme(uri).contains("hdfs")) return None
+
+    val authority = Option(uri.getRawAuthority).filter(_.nonEmpty).getOrElse {
+      return Some(
+        s"authority-less hdfs location '$uri': Comet's native HDFS client takes the NameNode " +
+          "from the location authority or hdfs.name-node, and does not use hdfs.host, " +
+          "hdfs.port or hadoop.fs.defaultFS")
+    }
+
+    // The same normalisation as iceberg-rust: entries are trimmed, a trailing '/' is dropped and
+    // empty entries are ignored, so a list with none left is no `hdfs.name-node` at all.
+    val explicitEntries = catalogProperties
+      .get(HdfsNameNodeKey)
+      .map(_.split(",").toSeq.map(_.trim.stripSuffix("/")).filter(_.nonEmpty))
+      .getOrElse(Seq.empty)
+
+    if (explicitEntries.nonEmpty) {
+      explicitEntries
+        .find(entry => !isHdfsHostPort(entry.stripPrefix("hdfs://")))
+        .map { entry =>
+          s"hdfs.name-node entry '$entry' has no port (or is not host:port): Comet's native " +
+            "HDFS client needs every entry as host:port (for example nn1.example.com:8020) and " +
+            "fails at the first read or write otherwise"
+        }
+    } else {
+      val isNameservice =
+        hadoopConf.getTrimmedStringCollection("dfs.nameservices").contains(authority) ||
+          Option(hadoopConf.getTrimmed(s"dfs.ha.namenodes.$authority")).exists(_.nonEmpty)
+      if (isNameservice) {
+        Some(
+          s"HDFS nameservice '$authority' could not be resolved to NameNode addresses: set " +
+            s"dfs.namenode.rpc-address.$authority.<nn> for every NameNode listed in " +
+            s"dfs.ha.namenodes.$authority, or the catalog's hdfs.name-node")
+      } else {
+        None
+      }
+    }
+  }
+
+  private val HdfsNameNodeKey = "hdfs.name-node"
+
+  // Hadoop's DFS_NAMENODE_RPC_PORT_DEFAULT, which the JVM client applies to a portless rpc-address.
+  private val DefaultNameNodeRpcPort = 8020
+
+  // `host:port`, the host being a name, an IPv4 literal or a bracketed IPv6 literal.
+  private val HdfsHostPortPattern = """(\[[0-9A-Fa-f:.]+\]|[^\s:/\[\]]+):(\d{1,5})""".r
+
+  private def isHdfsHostPort(entry: String): Boolean = entry match {
+    case HdfsHostPortPattern(_, port) => port.toInt <= 65535
+    case _ => false
   }
 
   /**
@@ -691,31 +786,48 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
   }
 
   /**
-   * Converts an Iceberg residual Expression into an IcebergPredicate for native row-group
-   * pruning.
+   * Converts an Iceberg residual Expression into an IcebergPredicate for the native scan.
    *
    * Residuals come from Iceberg's ResidualEvaluator (partial evaluation of the scan filter
-   * against each file's partition data). This is only a pruning hint: the CometFilter above the
-   * scan enforces correctness, so any node or literal we cannot represent yields None (no
-   * pushdown). Predicates over `pageIndexUnsupportedColumns` also yield None (iceberg-rust cannot
-   * use those columns in the page index). Uses reflection because Iceberg's expression classes
+   * against each file's partition data). iceberg-rust prunes row groups and pages with the
+   * predicate and also filters rows by it, so what this returns may be weaker than the residual
+   * but never stronger. Iceberg keeps every predicate that can survive into a residual in the
+   * scan's postScanFilters, so the filter above the scan re-applies whatever is not pushed, but
+   * it cannot restore rows the scan dropped. Uses reflection because Iceberg's expression classes
    * are not on Spark's classpath at planning time; residuals are unbound predicates carrying a
    * NamedReference (column name) and a literal.
+   *
+   * Not pushing a residual therefore takes one of two forms, kept deliberately distinct:
+   *
+   *   - `None` is a decision. Every point that returns it has established that this serde does
+   *     not model the node, term shape, operation, column or literal in front of it, so the
+   *     predicate is left to the post-scan filter.
+   *   - An exception means reflection over Iceberg's expression API did something unexpected, so
+   *     no such decision was reached. It propagates instead of folding into `None`, which would
+   *     make the two indistinguishable; see [[serializeResidual]].
    */
   def icebergExprToProto(
       icebergExpr: Any,
       output: Seq[Attribute],
       pageIndexUnsupportedColumns: Set[String]): Option[OperatorOuterClass.IcebergPredicate] = {
-    try {
-      val exprClass = icebergExpr.getClass
-      val attributeMap = output.map(attr => attr.name -> attr).toMap
+    val exprClass = icebergExpr.getClass
+    val attributeMap = output.map(attr => attr.name -> attr).toMap
 
-      if (exprClass.getName.endsWith(Constants.ExpressionTypes.UNBOUND_PREDICATE)) {
-        val operation = IcebergReflection.getMethod(exprClass, "op").invoke(icebergExpr).toString
-        val term = IcebergReflection.getMethod(exprClass, "term").invoke(icebergExpr)
-        val ref = IcebergReflection.getMethod(term.getClass, "ref").invoke(term)
+    if (exprClass.getName.endsWith(Constants.ExpressionTypes.UNBOUND_PREDICATE)) {
+      val operation = IcebergReflection.getMethod(exprClass, "op").invoke(icebergExpr).toString
+      val term = IcebergReflection.getMethod(exprClass, "term").invoke(icebergExpr)
+
+      // Only a bare column reference converts. UnboundTransform (and UnboundExtract, on Iceberg
+      // versions that have it) answers ref() with its *source* column, so reading the name off
+      // it would push `bucket(4, id) = 2` as `id = 2` and drop every matching row whose id is
+      // not 2. CometScanRule declines a non-identity transform at planning time, but only when
+      // the residual is a bare predicate rather than one under AND/OR/NOT, so the term shape is
+      // checked here too rather than assumed.
+      if (!term.getClass.getName.endsWith(Constants.ExpressionTypes.NAMED_REFERENCE)) {
+        None
+      } else {
         val columnName =
-          IcebergReflection.getMethod(ref.getClass, "name").invoke(ref).asInstanceOf[String]
+          IcebergReflection.getMethod(term.getClass, "name").invoke(term).asInstanceOf[String]
 
         // Iceberg names a nested reference by its dotted path ("struct.field"), which never matches
         // a top-level scan output attribute, so a residual on a nested field drops here. That miss
@@ -742,54 +854,68 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
             }
           }
         }
-      } else if (exprClass.getName.endsWith(Constants.ExpressionTypes.AND)) {
-        val left = icebergExprToProto(
-          IcebergReflection.getMethod(exprClass, "left").invoke(icebergExpr),
-          output,
-          pageIndexUnsupportedColumns)
-        val right = icebergExprToProto(
-          IcebergReflection.getMethod(exprClass, "right").invoke(icebergExpr),
-          output,
-          pageIndexUnsupportedColumns)
-        (left, right) match {
-          // Push the residual only if it converts whole. Dropping a conjunct is safe in positive
-          // position but strengthens the predicate under a NOT (De Morgan), which would wrongly
-          // prune, and tracking polarity across arbitrary nesting is error prone. So an
-          // unconvertible conjunct elides the whole residual; the post-scan CometFilter is exact.
-          case (Some(l), Some(r)) => Some(logicalPredicate(isAnd = true, l, r))
-          case _ => None
-        }
-      } else if (exprClass.getName.endsWith(Constants.ExpressionTypes.OR)) {
-        val left = icebergExprToProto(
-          IcebergReflection.getMethod(exprClass, "left").invoke(icebergExpr),
-          output,
-          pageIndexUnsupportedColumns)
-        val right = icebergExprToProto(
-          IcebergReflection.getMethod(exprClass, "right").invoke(icebergExpr),
-          output,
-          pageIndexUnsupportedColumns)
-        // Dropping a disjunct would strengthen the predicate and wrongly prune, so require both.
-        (left, right) match {
-          case (Some(l), Some(r)) => Some(logicalPredicate(isAnd = false, l, r))
-          case _ => None
-        }
-      } else if (exprClass.getName.endsWith(Constants.ExpressionTypes.NOT)) {
-        val child = IcebergReflection.getMethod(exprClass, "child").invoke(icebergExpr)
-        icebergExprToProto(child, output, pageIndexUnsupportedColumns).map(notPredicate)
-      } else {
-        None
       }
-    } catch {
-      // Reflection over Iceberg's expression classes can fail on an unexpected shape (e.g. an
-      // Iceberg version change). A residual is only a pruning hint, so skip pushdown rather than
-      // fail the scan, but log it: a persistent warning here signals a real API drift to fix.
-      case e: Exception =>
-        logWarning(
-          "Skipping Iceberg residual pushdown; could not convert expression: " +
-            s"${e.getMessage}")
-        None
+    } else if (exprClass.getName.endsWith(Constants.ExpressionTypes.AND)) {
+      val left = icebergExprToProto(
+        IcebergReflection.getMethod(exprClass, "left").invoke(icebergExpr),
+        output,
+        pageIndexUnsupportedColumns)
+      val right = icebergExprToProto(
+        IcebergReflection.getMethod(exprClass, "right").invoke(icebergExpr),
+        output,
+        pageIndexUnsupportedColumns)
+      (left, right) match {
+        // Push the residual only if it converts whole. Dropping a conjunct is safe in positive
+        // position but strengthens the predicate under a NOT (De Morgan), which would wrongly
+        // prune, and tracking polarity across arbitrary nesting is error prone. So an
+        // unconvertible conjunct elides the whole residual; the post-scan CometFilter is exact.
+        case (Some(l), Some(r)) => Some(logicalPredicate(isAnd = true, l, r))
+        case _ => None
+      }
+    } else if (exprClass.getName.endsWith(Constants.ExpressionTypes.OR)) {
+      val left = icebergExprToProto(
+        IcebergReflection.getMethod(exprClass, "left").invoke(icebergExpr),
+        output,
+        pageIndexUnsupportedColumns)
+      val right = icebergExprToProto(
+        IcebergReflection.getMethod(exprClass, "right").invoke(icebergExpr),
+        output,
+        pageIndexUnsupportedColumns)
+      // Dropping a disjunct would strengthen the predicate and wrongly prune, so require both.
+      (left, right) match {
+        case (Some(l), Some(r)) => Some(logicalPredicate(isAnd = false, l, r))
+        case _ => None
+      }
+    } else if (exprClass.getName.endsWith(Constants.ExpressionTypes.NOT)) {
+      val child = IcebergReflection.getMethod(exprClass, "child").invoke(icebergExpr)
+      icebergExprToProto(child, output, pageIndexUnsupportedColumns).map(notPredicate)
+    } else {
+      // Anything else, such as Expressions.alwaysTrue or alwaysFalse, or a node type a future
+      // Iceberg introduces, carries no pushdown this serde can express.
+      None
     }
   }
+
+  /**
+   * Converts a FileScanTask's residual with [[icebergExprToProto]], failing the query if that
+   * throws. The converter returns None only for a residual it deliberately leaves to the
+   * post-scan filter, so a failure means this serde has misread Iceberg's expression API. Serde
+   * runs after CometScanRule committed the scan to native execution, so there is no fallback to
+   * take.
+   */
+  private[operator] def serializeResidual(
+      residual: Any,
+      output: Seq[Attribute],
+      pageIndexUnsupportedColumns: Set[String]): Option[OperatorOuterClass.IcebergPredicate] =
+    try {
+      icebergExprToProto(residual, output, pageIndexUnsupportedColumns)
+    } catch {
+      case e: Exception =>
+        val msg = "Iceberg reflection failure: Failed to convert residual expression " +
+          s"'$residual' from FileScanTask: ${e.getMessage}"
+        logError(msg)
+        throw new RuntimeException(msg, e)
+    }
 
   private def unaryPredicate(
       column: String,
@@ -1241,18 +1367,10 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                 }
 
                 val residualExprOpt =
-                  try {
-                    icebergExprToProto(
-                      residualMethod.invoke(task),
-                      output,
-                      pageIndexUnsupportedColumns)
-                  } catch {
-                    case e: Exception =>
-                      logWarning(
-                        "Failed to extract residual expression from FileScanTask: " +
-                          s"${e.getMessage}")
-                      None
-                  }
+                  serializeResidual(
+                    residualMethod.invoke(task),
+                    output,
+                    pageIndexUnsupportedColumns)
 
                 residualExprOpt.foreach { residual =>
                   val residualIdx = residualToPoolIndex.getOrElseUpdate(

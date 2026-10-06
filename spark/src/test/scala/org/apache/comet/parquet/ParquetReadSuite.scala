@@ -21,6 +21,7 @@ package org.apache.comet.parquet
 
 import java.io.File
 import java.math.{BigDecimal, BigInteger}
+import java.sql.Timestamp
 import java.time.{ZoneId, ZoneOffset}
 import java.util.{Base64, Collections}
 
@@ -49,7 +50,7 @@ import org.apache.spark.sql.types._
 import com.google.common.primitives.UnsignedLong
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
+import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark41Plus}
 import org.apache.comet.vector.CometVector
 
 abstract class ParquetReadSuite extends CometTestBase {
@@ -736,8 +737,8 @@ abstract class ParquetReadSuite extends CometTestBase {
         opt match {
           case Some(i) =>
             record.add(0, i % 2 == 0)
-            record.add(1, i.toByte)
-            record.add(2, i.toShort)
+            record.add(1, i.toByte.toInt)
+            record.add(2, i.toShort.toInt)
             record.add(3, i)
             record.add(4, i.toLong)
             record.add(5, i.toFloat)
@@ -823,6 +824,7 @@ abstract class ParquetReadSuite extends CometTestBase {
     // TODO(https://github.com/apache/datafusion-comet/issues/3432): `_metadata.row_index` is
     // generated per row by the reader, not constant per file, so it needs DataFusion's
     // virtual-column mechanism rather than the partition-value path used here. Not covered.
+    // file_block_start and file_block_length fall back; see the test below.
     withTempPath { dir =>
       (1 to 100).toDF("id").repartition(1).write.parquet(dir.getCanonicalPath)
       val df = spark.read
@@ -832,10 +834,39 @@ abstract class ParquetReadSuite extends CometTestBase {
           $"_metadata.file_path",
           $"_metadata.file_name",
           $"_metadata.file_size",
-          $"_metadata.file_block_start",
-          $"_metadata.file_block_length",
           $"_metadata.file_modification_time")
       checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("_metadata.file_block_start and file_block_length fall back to Spark") {
+    // When Spark splits a file, DataFusion keeps a row group in the split that holds its first
+    // page and Spark keeps it in the split that holds its midpoint, so these per-split values
+    // would be wrong for some rows if the scan ran natively (#6505).
+    withSQLConf(SQLConf.FILES_MAX_PARTITION_BYTES.key -> "4096") {
+      withTempPath { dir =>
+        spark
+          .range(0, 5000)
+          .selectExpr("id", "concat('value_', cast(id as string)) as s")
+          .coalesce(1)
+          .write
+          .parquet(dir.getCanonicalPath)
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          assert(
+            spark.read.parquet(dir.getCanonicalPath).rdd.getNumPartitions > 1,
+            "the file has to be split across partitions for this test to mean anything")
+        }
+
+        val df = spark.read.parquet(dir.getCanonicalPath)
+        for (column <- Seq("file_block_start", "file_block_length")) {
+          checkSparkAnswerAndFallbackReason(
+            df.select($"id", $"s", $"_metadata.$column"),
+            s"Metadata column(s) $column is not supported")
+        }
+        // The per-file constants don't depend on which split reads a row group.
+        checkSparkAnswerAndOperator(
+          df.select($"id", $"s", $"_metadata.file_path", $"_metadata.file_size"))
+      }
     }
   }
 
@@ -1153,7 +1184,7 @@ abstract class ParquetReadSuite extends CometTestBase {
         var b = record.addGroup("b")
         b.add("b1", 1)
         b.add("b2", 1)
-        var c = record.addGroup("c")
+        val c = record.addGroup("c")
         c.add("c1", 1)
         c.add("c2", 1)
         writer.write(record)
@@ -1223,7 +1254,7 @@ abstract class ParquetReadSuite extends CometTestBase {
         var b = record.addGroup("b")
         b.add("b1", 1)
         b.add("b2", 1)
-        var c = record.addGroup("c")
+        val c = record.addGroup("c")
         c.add("c1", 1)
         c.add("c2", 1)
         writer.write(record)
@@ -1648,6 +1679,149 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
+  test("native scan reads files with nothing to decode whose types Spark rejects") {
+    // Regression guard for #6506. Spark checks a conversion only while it decodes a row group,
+    // so an empty file, or one whose only row group a filter prunes, reads even when a column
+    // has a type the read schema can't convert. The native scan used to reject such a file
+    // when it opened it.
+    withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> "parquet") {
+      val cases = Seq(
+        // (written expression of the read type, written expression of another type, read type)
+        ("named_struct('x', 1)", "named_struct('x', 'a')", "struct<x:int>"),
+        (
+          "named_struct('d', cast(1.23 as decimal(10,2)))",
+          "named_struct('d', cast(1.2345 as decimal(10,4)))",
+          "struct<d:decimal(10,2)>"),
+        ("array(1)", "array('a')", "array<int>"),
+        ("map('k', 1)", "map('k', 'v')", "map<string,int>"),
+        ("named_struct('x', array(1))", "named_struct('x', 1)", "struct<x:array<int>>"),
+        ("1", "'a'", "int"))
+      cases.foreach { case (matching, mismatched, readType) =>
+        withClue(s"$mismatched read as $readType: ") {
+          withTempPath { dir =>
+            val path = dir.getCanonicalPath
+            spark.sql(s"select $matching as s").write.parquet(path)
+            spark.sql(s"select $mismatched as s where false").write.mode("append").parquet(path)
+            checkSparkAnswerAndOperator(spark.read.schema(s"s $readType").parquet(path))
+          }
+          withTempPath { dir =>
+            val path = dir.getCanonicalPath
+            spark.sql(s"select 100 as id, $matching as s").write.parquet(path)
+            spark.sql(s"select 1 as id, $mismatched as s").write.mode("append").parquet(path)
+            val df = spark.read.schema(s"id int, s $readType").parquet(path)
+            checkSparkAnswerAndOperator(df.where("id = 100"))
+            // The pruned row group still fails in both engines when it is decoded.
+            val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+            assert(sparkError.isDefined && cometError.isDefined, s"$sparkError, $cometError")
+          }
+        }
+      }
+      // Spark fails a shape it can't clip when it opens the file, so an empty file with one
+      // still fails, even after a field whose type Spark only rejects while decoding.
+      withTempPath { dir =>
+        val path = dir.getCanonicalPath
+        spark.sql("select named_struct('a', 1, 'b', 1) as s").write.parquet(path)
+        spark
+          .sql("select named_struct('a', 'x', 'b', array(1)) as s where false")
+          .write
+          .mode("append")
+          .parquet(path)
+        val (sparkError, cometError) =
+          checkSparkAnswerMaybeThrows(spark.read.schema("s struct<a:int, b:int>").parquet(path))
+        assert(sparkError.isDefined && cometError.isDefined, s"$sparkError, $cometError")
+      }
+    }
+  }
+
+  test("native scan rejects legacy LIST shape mismatches before decoding") {
+    for (legacy <- Seq(false, true); empty <- Seq(false, true)) {
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        SQLConf.PARQUET_WRITE_LEGACY_FORMAT.key -> legacy.toString) {
+        withTempPath { dir =>
+          val path = dir.getCanonicalPath
+          val rows = spark.sql("select 1 as id, array(1) as a")
+          (if (empty) rows.where("false") else rows).write.parquet(path)
+          for (element <- Seq("array<int>", "map<int,int>")) {
+            val df = spark.read
+              .schema(s"id int, a array<$element>")
+              .parquet(path)
+              .where("id = 100")
+            if (legacy) {
+              checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+              val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+              assert(sparkError.isDefined && cometError.isDefined, s"$sparkError, $cometError")
+            } else {
+              checkSparkAnswerAndOperator(df)
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("native scan preserves duplicate field error types with row filter pushdown") {
+    withTempPath { dir =>
+      val path = dir.getCanonicalPath
+      withSQLConf(SQLConf.CASE_SENSITIVE.key -> "true") {
+        spark.range(5).selectExpr("id as A", "id as B", "id as b").write.parquet(path)
+      }
+      for (pushdown <- Seq(false, true)) {
+        withSQLConf(
+          SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+          SQLConf.CASE_SENSITIVE.key -> "false",
+          CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.key -> pushdown.toString) {
+          val df = spark.read.schema("A long, B long").parquet(path).where("A = 1")
+          checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+          val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+          Seq("Spark" -> sparkError, "Comet" -> cometError).foreach { case (engine, error) =>
+            val chain = error.toSeq.flatMap(causeChain)
+            assert(
+              chain.exists(e =>
+                e.getClass.getName == "org.apache.spark.SparkRuntimeException" &&
+                  e.getMessage.contains("Found duplicate field")),
+              s"$engine: ${chain.mkString("\n")}")
+          }
+        }
+      }
+    }
+  }
+
+  test("native scan preserves conversion errors with row filter pushdown") {
+    for (pushdown <- Seq(false, true); nested <- Seq(false, true)) {
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.key -> pushdown.toString) {
+        withTempPath { dir =>
+          val path = dir.getCanonicalPath
+          val value = if (nested) "named_struct('x', 'bad')" else "'bad'"
+          val readType = if (nested) "struct<x:int>" else "int"
+          spark
+            .sql(s"select 1 as id, $value as s union all select 3 as id, $value as s")
+            .coalesce(1)
+            .write
+            .option("parquet.enable.dictionary", "false")
+            .parquet(path)
+          val df = spark.read.schema(s"id int, s $readType").parquet(path)
+          // Statistics retain [1, 3], but no row passes id = 2.
+          checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+          val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df.where("id = 2"))
+          Seq("Spark" -> sparkError, "Comet" -> cometError).foreach { case (engine, error) =>
+            val chain = error.toSeq.flatMap(causeChain)
+            assert(
+              chain.exists(
+                _.isInstanceOf[org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException]),
+              s"$engine: ${chain.mkString("\n")}")
+          }
+          // Format pruning must still suppress the decode-time mismatch (#6506).
+          checkSparkAnswerAndOperator(df.where("id = 100"))
+          // A mismatch in an unrequested column must not affect the scan.
+          checkSparkAnswerAndOperator(df.select("id").where("id = 2"))
+        }
+      }
+    }
+  }
+
   test("nested schema evolution follows Spark's per-version widening rules") {
     // Companion to "schema evolution": `INT32 -> bigint` inside a struct is gated by the same
     // per-Spark-version constant as the top level (see ShimCometConf), and accepted nested
@@ -1900,7 +2074,7 @@ abstract class ParquetReadSuite extends CometTestBase {
   }
 
   private def withId(id: Int) =
-    new MetadataBuilder().putLong(ParquetUtils.FIELD_ID_METADATA_KEY, id).build()
+    new MetadataBuilder().putLong(ParquetUtils.FIELD_ID_METADATA_KEY, id.toLong).build()
 
   // Based on Spark ParquetIOSuite.test("vectorized reader: array of nested struct")
   test("array of nested struct with and without field id") {
@@ -2079,10 +2253,102 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
-  // Verbatim port of Spark `ParquetFieldIdIOSuite.test("multiple id matches")` so the shim
-  // error path is exercised on both 3.x and 4.x. The stock suite is the CI signal but it
-  // requires the Spark test jars and `withAllParquetReaders`; keeping a copy here lets us
-  // iterate locally.
+  // The two shapes of #6192. A nested column dropped and added back under its old name gets a
+  // fresh field id, so the file holds `struct<x (id 1), y (id 2)>` while the table reads
+  // `struct<x (id 3), y (id 2)>`, and a swapped pair reads `struct<x (id 2), y (id 1)>`. The
+  // names line up at every position, which is exactly what the metadata-only relabel shortcut
+  // in the native cast looks for, so without the field id check in that shortcut the scan
+  // hands back the file's values by position. Spark returns null for the re-added `x` and
+  // keeps `y`, and swaps the two values for the swapped ids. Each nesting is read on its own,
+  // so a wrong answer names the level that produced it. Before Spark 4.1 the vectorized reader
+  // raises on both reads below a list or map, since its column vector rejects the clipped
+  // struct, which carries a placeholder field for the unmatched id and the file's field order
+  // for the swapped ids, so that comparison with Spark runs from 4.1 on. The pinned rows hold
+  // everywhere.
+  test("nested field ids resolve by id below struct, list and map, not by position") {
+    def struct(xId: Int, yId: Int): StructType = new StructType()
+      .add("x", LongType, true, withId(xId))
+      .add("y", LongType, true, withId(yId))
+    def schema(inner: StructType): StructType = new StructType()
+      .add("id", LongType, true, withId(10))
+      .add("s", inner, true, withId(11))
+      .add("l", ArrayType(inner), true, withId(12))
+      .add("m", MapType(StringType, inner), true, withId(13))
+    val writeData = Seq(
+      Row(1L, Row(1L, 10L), Seq(Row(2L, 20L), Row(3L, 30L)), Map("k" -> Row(4L, 40L))),
+      Row(2L, Row(5L, 50L), Seq(Row(6L, 60L), null), Map("a" -> Row(7L, 70L), "b" -> null)),
+      Row(3L, Row(null, 80L), Seq(), Map()),
+      Row(4L, null, null, null))
+    // Each read schema with what Spark answers for one file struct `(x, y)` under it.
+    val cases = Seq(
+      ("dropped and re-added", struct(3, 2), (r: Row) => Row(null, r.get(1))),
+      ("swapped", struct(2, 1), (r: Row) => Row(r.get(1), r.get(0))))
+    val columns = Seq(("s", 1), ("l", 2), ("m", 3))
+
+    withSQLConf(
+      SQLConf.PARQUET_FIELD_ID_WRITE_ENABLED.key -> "true",
+      SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
+      withTempPath { dir =>
+        spark
+          .createDataFrame(spark.sparkContext.parallelize(writeData), schema(struct(1, 2)))
+          .write
+          .mode("overwrite")
+          .parquet(dir.getCanonicalPath)
+        for ((label, readStruct, remap) <- cases; (column, index) <- columns) {
+          withClue(s"$label, column $column: ") {
+            def read(): DataFrame = spark.read
+              .schema(schema(readStruct))
+              .parquet(dir.getCanonicalPath)
+              .select("id", column)
+              .sort("id")
+            def remapNested(value: Any): Any = value match {
+              case null => null
+              case r: Row => remap(r)
+              case seq: Seq[_] => seq.map(remapNested)
+              case map: Map[_, _] => map.map { case (k, v) => k -> remapNested(v) }
+            }
+            val expected = writeData.map(r => Row(r.get(0), remapNested(r.get(index))))
+
+            if (column == "s" || isSpark41Plus) {
+              checkSparkAnswerAndOperator(read())
+            }
+            val plan = stripAQEPlan(read().queryExecution.executedPlan)
+            assert(
+              collect(plan) { case scan: CometNativeScanExec => scan }.nonEmpty,
+              s"expected CometNativeScanExec in the plan:\n$plan")
+            // Pin the values too, so the test states what Spark answers rather than only
+            // that Comet agrees with it.
+            checkAnswer(read(), expected)
+          }
+        }
+      }
+    }
+  }
+
+  // The duplicate field id error Comet raises for `df` must carry the message Spark raises
+  // for the same read, with the matching file fields listed the way `matchIdField` lists
+  // them. `matched` is that list, for instance `"1": [x, y]`.
+  private def checkDuplicateFieldIdMessage(df: => DataFrame, matched: String): Unit = {
+    val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+    // The deepest cause carrying the text: the wrappers above it quote it with a stack trace.
+    def message(error: Option[Throwable]): String =
+      error.toSeq
+        .flatMap(causeChain)
+        .flatMap(e => Option(e.getMessage))
+        .reverse
+        .find(_.contains("Found duplicate field(s)"))
+        .getOrElse(fail(s"expected a duplicate field id error, got: $error"))
+    val expected = message(sparkError)
+    assert(
+      expected.contains(s"Found duplicate field(s) $matched in id mapping mode"),
+      s"Spark did not raise the expected duplicate field id error: $expected")
+    assert(message(cometError) == expected)
+  }
+
+  // Port of Spark `ParquetFieldIdIOSuite.test("multiple id matches")` so the shim error path
+  // is exercised on both 3.x and 4.x. The stock suite is the CI signal but it requires the
+  // Spark test jars and `withAllParquetReaders`. Keeping a copy here lets us iterate locally.
+  // On top of the port, the message is compared with Spark's in full.
   test("multiple id matches") {
     withSQLConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
       withTempPath { dir =>
@@ -2109,47 +2375,282 @@ abstract class ParquetReadSuite extends CometTestBase {
         assert(
           cause.isInstanceOf[RuntimeException] &&
             cause.getMessage.contains("Found duplicate field(s)"))
+        checkDuplicateFieldIdMessage(
+          spark.read.schema(readSchema).parquet(dir.getCanonicalPath),
+          """"1": [a, rand2]""")
       }
     }
   }
 
-  // Verbatim port of Spark `ParquetFieldIdIOSuite.test("read parquet file without ids")`,
-  // for the same reason as the duplicate-id test above.
-  test("read parquet file without ids") {
+  test("duplicate field id inside a struct is rejected when a requested id matches two fields") {
+    // The requested struct names one id that two file fields carry. A requested schema that
+    // repeats an id itself is declined at planning time, so this is the shape the native scan
+    // still has to refuse. The schema adapter refuses it while resolving the file's fields,
+    // with the message Spark raises for the same read.
     withSQLConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
       withTempPath { dir =>
+        val schema =
+          new StructType()
+            .add(
+              "s",
+              new StructType()
+                .add("x", LongType, true, withId(1))
+                .add("y", LongType, true, withId(1)),
+              true,
+              withId(2))
         val readSchema =
           new StructType()
-            .add("a", IntegerType, true, withId(1))
+            .add("s", new StructType().add("x", LongType, true, withId(1)), true, withId(2))
 
-        val writeSchema =
-          new StructType()
-            .add("a", IntegerType, true)
-            .add("rand1", StringType, true)
-            .add("rand2", StringType, true)
+        val writeData = Seq(Row(Row(42L, 43L)))
+        spark
+          .createDataFrame(spark.sparkContext.parallelize(writeData), schema)
+          .write
+          .mode("overwrite")
+          .parquet(dir.getCanonicalPath)
 
-        val writeData = Seq(Row(100, "text", "txt"), Row(200, "more", "mr"))
+        val df = spark.read.schema(readSchema).parquet(dir.getCanonicalPath)
+        val scans = stripAQEPlan(df.queryExecution.executedPlan).collect {
+          case scan: CometNativeScanExec => scan
+        }
+        assert(scans.nonEmpty, "expected CometNativeScanExec in the plan")
+        val cause = intercept[SparkException] {
+          df.collect()
+        }.getCause
+        assert(
+          cause.isInstanceOf[RuntimeException] &&
+            cause.getMessage.contains("Found duplicate field(s)"))
+        checkDuplicateFieldIdMessage(df, """"1": [x, y]""")
+      }
+    }
+  }
+
+  // Port of Spark `ParquetFieldIdIOSuite.test("read parquet file without ids")`, for the same
+  // reason as the duplicate-id test above. It runs with the read flag off as well, since Spark's
+  // `ParquetReadSupport` checks for missing ids before it consults the flag, and with id zero as
+  // one of the read schemas, since zero is an id like any other.
+  test("read parquet file without ids") {
+    Seq("true", "false").foreach { readEnabled =>
+      withSQLConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> readEnabled) {
+        withTempPath { dir =>
+          val readSchema =
+            new StructType()
+              .add("a", IntegerType, true, withId(1))
+
+          val writeSchema =
+            new StructType()
+              .add("a", IntegerType, true)
+              .add("rand1", StringType, true)
+              .add("rand2", StringType, true)
+
+          val writeData = Seq(Row(100, "text", "txt"), Row(200, "more", "mr"))
+          spark
+            .createDataFrame(spark.sparkContext.parallelize(writeData), writeSchema)
+            .write
+            .mode("overwrite")
+            .parquet(dir.getCanonicalPath)
+
+          val idZeroSchema = new StructType().add("a", IntegerType, true, withId(0))
+          Seq(readSchema, readSchema.add("b", StringType, true), idZeroSchema).foreach { schema =>
+            withClue(s"read flag $readEnabled, schema $schema: ") {
+              val cause = intercept[SparkException] {
+                spark.read.schema(schema).parquet(dir.getCanonicalPath).collect()
+              }.getCause
+              assert(cause.isInstanceOf[RuntimeException] &&
+                cause.getMessage.contains("Parquet file schema doesn't contain any field Ids"))
+              withSQLConf(SQLConf.IGNORE_MISSING_PARQUET_FIELD_ID.key -> "true") {
+                val df = spark.read.schema(schema).parquet(dir.getCanonicalPath)
+                if (readEnabled.toBoolean) {
+                  // Spark's own assertion: no file field carries a requested id, so every
+                  // column is null filled.
+                  val expectedValues = (1 to schema.length).map(_ => null)
+                  checkAnswer(df, Row(expectedValues: _*) :: Row(expectedValues: _*) :: Nil)
+                } else {
+                  checkSparkAnswerAndOperator(df)
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // Spark's `containsFieldIds` walks the whole file schema, so ids that sit only on struct
+  // children count. The root field whose id the file lacks is null filled rather than rejected.
+  test("a file whose field ids are only on nested fields reads without a missing-id error") {
+    withSQLConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
+      withTempPath { dir =>
+        val nested = StructType(Seq(StructField("a", IntegerType, nullable = true, withId(11))))
+        val writeSchema = new StructType().add("s", nested, true)
+        val readSchema = new StructType()
+          .add("s", nested, true)
+          .add("missing", IntegerType, true, withId(7))
+        val writeData = Seq(Row(Row(1)), Row(Row(2)))
         spark
           .createDataFrame(spark.sparkContext.parallelize(writeData), writeSchema)
           .write
           .mode("overwrite")
           .parquet(dir.getCanonicalPath)
 
-        Seq(readSchema, readSchema.add("b", StringType, true)).foreach { schema =>
-          val cause = intercept[SparkException] {
-            spark.read.schema(schema).parquet(dir.getCanonicalPath).collect()
-          }.getCause
-          assert(
-            cause.isInstanceOf[RuntimeException] &&
-              cause.getMessage.contains("Parquet file schema doesn't contain any field Ids"))
-          val expectedValues = (1 to schema.length).map(_ => null)
-          withSQLConf(SQLConf.IGNORE_MISSING_PARQUET_FIELD_ID.key -> "true") {
-            checkAnswer(
-              spark.read.schema(schema).parquet(dir.getCanonicalPath),
-              Row(expectedValues: _*) :: Row(expectedValues: _*) :: Nil)
+        checkSparkAnswerAndOperator(spark.read.schema(readSchema).parquet(dir.getCanonicalPath))
+      }
+    }
+  }
+
+  // Spark's `containsFieldIds` walks the raw Parquet schema, where an id may sit on the
+  // repeated `list` or `key_value` group of a list or map, which no Spark or Arrow field ever
+  // shows. Such a file carries ids, so it is not rejected. With the read flag on, the root
+  // fields ask for ids that no root field of the file carries and are null filled.
+  test("ids on repeated list and key_value groups count as file ids") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "part-r-0.parquet")
+      val schema = MessageTypeParser.parseMessageType("""
+        |message schema {
+        |  optional group l (LIST) {
+        |    repeated group list = 5 {
+        |      optional int32 element;
+        |    }
+        |  }
+        |  optional group m (MAP) {
+        |    repeated group key_value = 6 {
+        |      required int32 key;
+        |      optional int32 value;
+        |    }
+        |  }
+        |}
+        |""".stripMargin)
+      val writer = createParquetWriter(schema, path)
+      (1 to 2).foreach { i =>
+        val record = new SimpleGroup(schema)
+        record.addGroup(0).addGroup(0).add(0, i)
+        val entry = record.addGroup(1).addGroup(0)
+        entry.add(0, i)
+        entry.add(1, i * 10)
+        writer.write(record)
+      }
+      writer.close()
+
+      val readSchema = new StructType()
+        .add("l", ArrayType(IntegerType), true, withId(5))
+        .add("m", MapType(IntegerType, IntegerType), true, withId(6))
+      Seq("false", "true").foreach { readEnabled =>
+        withSQLConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> readEnabled) {
+          withClue(s"read flag $readEnabled: ") {
+            checkSparkAnswerAndOperator(
+              spark.read.schema(readSchema).parquet(dir.getCanonicalPath))
           }
         }
       }
+    }
+  }
+
+  // Spark checks for missing ids against the pruned schema it hands the reader, so an id on a
+  // column or struct child the query never reads does not reject a file without ids, and a
+  // count reads no column at all. A read that touches an id-bearing field still raises.
+  test("missing ids are checked against the pruned read schema") {
+    withSQLConf(SQLConf.NESTED_SCHEMA_PRUNING_ENABLED.key -> "true") {
+      withTempPath { dir =>
+        val writeSchema = new StructType()
+          .add("a", IntegerType)
+          .add("b", IntegerType)
+          .add("s", new StructType().add("a", IntegerType).add("b", IntegerType))
+        val readSchema = new StructType()
+          .add("a", IntegerType, true, withId(1))
+          .add("b", IntegerType)
+          .add(
+            "s",
+            new StructType().add("a", IntegerType, true, withId(11)).add("b", IntegerType))
+        val writeData = Seq(Row(1, 2, Row(3, 4)), Row(5, 6, Row(7, 8)))
+        spark
+          .createDataFrame(spark.sparkContext.parallelize(writeData), writeSchema)
+          .write
+          .mode("overwrite")
+          .parquet(dir.getCanonicalPath)
+
+        def read(): DataFrame = spark.read.schema(readSchema).parquet(dir.getCanonicalPath)
+        checkSparkAnswerAndOperator(read().select("b"))
+        checkSparkAnswerAndOperator(read().select("s.b"))
+        checkSparkAnswerAndOperator(read().selectExpr("count(*)"))
+        assertMissingFieldIds(read().select("a"))
+        assertMissingFieldIds(read().select("s.a"))
+      }
+    }
+  }
+
+  // Spark writes timestamps as INT96 by default. The id on `s` is in the Parquet schema, which
+  // the check reads, so the file opens and `s` resolves by name.
+  test("field ids on a struct holding a timestamp survive the missing-id check") {
+    withSQLConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "false") {
+      withTempPath { dir =>
+        val nested = new StructType().add("a", IntegerType).add("ts", TimestampType)
+        val schema = new StructType().add("s", nested, true, withId(1))
+        val ts = Timestamp.valueOf("2020-01-01 00:00:00")
+        val writeData = Seq(Row(Row(1, ts)), Row(Row(2, ts)))
+        spark
+          .createDataFrame(spark.sparkContext.parallelize(writeData), schema)
+          .write
+          .mode("overwrite")
+          .parquet(dir.getCanonicalPath)
+
+        checkSparkAnswerAndOperator(spark.read.schema(schema).parquet(dir.getCanonicalPath))
+      }
+    }
+  }
+
+  // Spark checks each file on its own. A directory holding one file with ids and one without
+  // raises on the second, and with `ignoreMissing` the file without ids reads as nulls because
+  // no root field of it carries the requested id. Each side is written as one file. Spread over
+  // the session's cores, each write would also leave an empty `part-00000`, and on Spark 3.x a
+  // file without ids read after an empty one in the same task raises inside one more
+  // `SparkException`, so the error the job reports would depend on which task failed first.
+  test("a file without ids next to a file with ids is checked on its own") {
+    withSQLConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
+      withTempPath { dir =>
+        val idSchema = new StructType().add("x", IntegerType, true, withId(1))
+        val plainSchema = new StructType().add("a", IntegerType, true)
+        val readSchema = new StructType().add("a", IntegerType, true, withId(1))
+        spark
+          .createDataFrame(spark.sparkContext.parallelize(Seq(Row(100), Row(200))), idSchema)
+          .repartition(1)
+          .write
+          .mode("overwrite")
+          .parquet(dir.getCanonicalPath)
+        spark
+          .createDataFrame(spark.sparkContext.parallelize(Seq(Row(1), Row(2))), plainSchema)
+          .repartition(1)
+          .write
+          .mode("append")
+          .parquet(dir.getCanonicalPath)
+
+        assertMissingFieldIds(spark.read.schema(readSchema).parquet(dir.getCanonicalPath))
+
+        withSQLConf(SQLConf.IGNORE_MISSING_PARQUET_FIELD_ID.key -> "true") {
+          val df = spark.read.schema(readSchema).parquet(dir.getCanonicalPath)
+          checkSparkAnswerAndOperator(df)
+          checkAnswer(df, Row(100) :: Row(200) :: Row(null) :: Row(null) :: Nil)
+        }
+      }
+    }
+  }
+
+  // Spark's own assertion from `ParquetFieldIdIOSuite`: the `SparkException` a read raises has
+  // the `RuntimeException` from `ParquetReadSupport` as its cause.
+  private def isMissingFieldIdsError(error: Throwable): Boolean = {
+    val cause = error.getCause
+    cause.isInstanceOf[RuntimeException] &&
+    cause.getMessage.contains("Parquet file schema doesn't contain any field Ids")
+  }
+
+  // Spark and Comet both raise the missing field ids error for `df`, and Comet plans the read
+  // natively, so the error comes from the native check rather than from a fallback to Spark.
+  private def assertMissingFieldIds(df: => DataFrame): Unit = {
+    checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+    val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+    Seq("Spark" -> sparkError, "Comet" -> cometError).foreach { case (engine, error) =>
+      assert(
+        error.exists(isMissingFieldIdsError),
+        s"$engine: " + error.map(causeChain(_).mkString("\n  ")).getOrElse("no error"))
     }
   }
 }

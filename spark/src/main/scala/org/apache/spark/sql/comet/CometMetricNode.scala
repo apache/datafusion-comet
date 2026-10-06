@@ -22,7 +22,6 @@ package org.apache.spark.sql.comet
 import java.util.IdentityHashMap
 import java.util.concurrent.ConcurrentHashMap
 
-import scala.collection.mutable
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.{SparkContext, TaskContext}
@@ -78,11 +77,7 @@ case class CometMetricNode(metrics: Map[String, SQLMetric], children: Seq[CometM
       seenMetrics: IdentityHashMap[SQLMetric, java.lang.Boolean]): Long = {
     def sumFromNode(metricNode: CometMetricNode): Long = {
       val nodeValue = metricNode.metrics.get(metricName).fold(0L) { metric =>
-        if (seenMetrics.put(metric, java.lang.Boolean.TRUE) == null) {
-          math.max(metric.value, 0L)
-        } else {
-          0L
-        }
+        CometMetricNode.claimMetricValue(metric, seenMetrics)
       }
       nodeValue + metricNode.children.iterator.map(sumFromNode).sum
     }
@@ -106,41 +101,38 @@ case class CometMetricNode(metrics: Map[String, SQLMetric], children: Seq[CometM
       })
 
   /**
-   * Reports the scan leaves' bytes and rows (output rows plus rows pruned by pushed-down
-   * predicates) to Spark's task-level [[org.apache.spark.executor.InputMetrics]], so the Spark UI
-   * Stages tab Input column shows them. Scan leaves are the leaf nodes carrying `bytes_scanned`.
+   * Reports the scan leaves' bytes and rows (summed across joins and unions) to Spark's task
+   * input metrics, which drive the Input column on the UI's Stages and Executors tabs.
    *
    * Must be registered on the task thread before [[org.apache.comet.CometExecIterator]] so its
-   * completion listener publishes final SQL metrics before this listener runs, including when the
-   * iterator was not drained. Increments rather than sets so several scan trees in one task, and
-   * input reported by other sources, all add up; as in [[reportSpillMetrics]], each accumulator
-   * is claimed once per task so overlapping trees do not double count. A coalesced task reports
-   * what its last native plan left in the shared accumulators, as the SQL metrics themselves do.
+   * completion listener publishes final SQL metrics before this listener runs. A block with a JVM
+   * input only publishes on the metrics update interval, and a consumer that stops early, such as
+   * a limit, leaves the final publish to that close.
+   *
+   * Adds to the task's counters instead of replacing them, so bytes that a fallback Spark scan
+   * accumulated in the same task survive. That holds only when the fallback scan registers its
+   * completion listener after this one, which a `CometSparkToColumnarExec` input always does and
+   * a coalesced Spark-scan partition computed first does not: `FileScanRDD`'s close then runs
+   * last and sets bytesRead from the value it snapshotted at construction. Trees registered on
+   * one task may share accumulators (see [[reportSpillMetrics]]), so each accumulator is counted
+   * once per task.
    */
   def reportScanInputMetrics(ctx: TaskContext): Unit = {
-    val seenMetrics = CometMetricNode.taskSeenMetrics(ctx)
-    ctx.addTaskCompletionListener[Unit] { _ =>
+    val seenMetrics = CometMetricNode.taskSeenMetrics(ctx).scanInput
+    val _ = ctx.addTaskCompletionListener[Unit] { _ =>
       val scanLeaves = leafNodes.filter(_.metrics.contains("bytes_scanned"))
-      def sumUnclaimed(metricName: String): Long =
-        scanLeaves
-          .flatMap(_.metrics.get(metricName))
-          .map { metric =>
-            if (seenMetrics(metricName).put(metric, java.lang.Boolean.TRUE) == null) {
-              math.max(metric.value, 0L)
-            } else {
-              0L
-            }
-          }
-          .sum
+      def claimed(leaf: CometMetricNode, metricName: String): Long =
+        leaf.metrics.get(metricName).fold(0L)(CometMetricNode.claimMetricValue(_, seenMetrics))
 
-      val bytesRead = sumUnclaimed("bytes_scanned")
-      if (bytesRead > 0L) {
-        ctx.taskMetrics().inputMetrics.incBytesRead(bytesRead)
+      val totalBytes = scanLeaves.map(claimed(_, "bytes_scanned")).sum
+      val totalRows = scanLeaves.map { leaf =>
+        claimed(leaf, "output_rows") + claimed(leaf, "pushdown_rows_pruned")
+      }.sum
+      if (totalBytes > 0L) {
+        ctx.taskMetrics().inputMetrics.incBytesRead(totalBytes)
       }
-
-      val recordsRead = sumUnclaimed("output_rows") + sumUnclaimed("pushdown_rows_pruned")
-      if (recordsRead > 0L) {
-        ctx.taskMetrics().inputMetrics.incRecordsRead(recordsRead)
+      if (totalRows > 0L) {
+        ctx.taskMetrics().inputMetrics.incRecordsRead(totalRows)
       }
     }
   }
@@ -153,9 +145,13 @@ case class CometMetricNode(metrics: Map[String, SQLMetric], children: Seq[CometM
    * Must be registered on the task thread before [[org.apache.comet.CometExecIterator]] so
    * Spark's completion listener stack invokes the iterator `close` (final SQL metric update)
    * before this listener runs.
+   *
+   * The native writer is the root of its task's plan and runs once per task, so its values
+   * replace the task's output counters without the per-task registry that the scan input and
+   * spill reports share.
    */
   def reportNativeWriteOutputMetrics(ctx: TaskContext): Unit = {
-    ctx.addTaskCompletionListener[Unit] { _ =>
+    val _ = ctx.addTaskCompletionListener[Unit] { _ =>
       metrics.get("bytes_written").foreach { m =>
         ctx.taskMetrics().outputMetrics.setBytesWritten(m.value)
       }
@@ -180,14 +176,13 @@ case class CometMetricNode(metrics: Map[String, SQLMetric], children: Seq[CometM
    */
   def reportSpillMetrics(ctx: TaskContext): Unit = {
     val seenMetrics = CometMetricNode.taskSeenMetrics(ctx)
-    ctx.addTaskCompletionListener[Unit] { _ =>
-      val diskBytesSpilled = sumMetricValues("spilled_bytes", seenMetrics("spilled_bytes"))
+    val _ = ctx.addTaskCompletionListener[Unit] { _ =>
+      val diskBytesSpilled = sumMetricValues("spilled_bytes", seenMetrics.disk)
       if (diskBytesSpilled > 0L) {
         ctx.taskMetrics().incDiskBytesSpilled(diskBytesSpilled)
       }
 
-      val memoryBytesSpilled =
-        sumMetricValues("memory_spilled_bytes", seenMetrics("memory_spilled_bytes"))
+      val memoryBytesSpilled = sumMetricValues("memory_spilled_bytes", seenMetrics.memory)
       if (memoryBytesSpilled > 0L) {
         ctx.taskMetrics().incMemoryBytesSpilled(memoryBytesSpilled)
       }
@@ -244,19 +239,17 @@ object CometMetricNode {
   private val aggregateMetricNames =
     Set("spill_count", "spilled_bytes", "spilled_rows", "peak_mem_used")
 
-  /** The accumulators a task's reporting listeners have claimed, one identity set per metric. */
-  private class SeenMetrics {
-    private val byName =
-      mutable.HashMap.empty[String, IdentityHashMap[SQLMetric, java.lang.Boolean]]
+  private type SeenMetricSet = IdentityHashMap[SQLMetric, java.lang.Boolean]
 
-    def apply(metricName: String): IdentityHashMap[SQLMetric, java.lang.Boolean] =
-      byName.getOrElseUpdate(metricName, new IdentityHashMap())
-  }
+  private case class SeenMetrics(
+      disk: SeenMetricSet,
+      memory: SeenMetricSet,
+      scanInput: SeenMetricSet)
 
-  // Per running task attempt: the accumulators already claimed by a reporting listener (see
-  // reportSpillMetrics and reportScanInputMetrics). The first registration installs a cleanup
-  // listener ahead of every reporting listener, so it runs last (reverse registration order) and
-  // removes the entry.
+  // Per running task attempt: the accumulators already claimed by a reporting listener, one
+  // identity set per reported task metric (see reportSpillMetrics and reportScanInputMetrics).
+  // The first registration installs a cleanup listener ahead of every reporting listener, so it
+  // runs last (reverse registration order) and removes the entry.
   private val seenMetricsByTask = new ConcurrentHashMap[Long, SeenMetrics]()
 
   private def taskSeenMetrics(ctx: TaskContext): SeenMetrics = {
@@ -266,12 +259,20 @@ object CometMetricNode {
       existing
     } else {
       // The task thread is the only registrant for its attempt id, so there is no put race.
-      val created = new SeenMetrics
+      val created =
+        SeenMetrics(new IdentityHashMap(), new IdentityHashMap(), new IdentityHashMap())
       seenMetricsByTask.put(attemptId, created)
-      ctx.addTaskCompletionListener[Unit](_ => seenMetricsByTask.remove(attemptId))
+      ctx.addTaskCompletionListener[Unit](_ => {
+        val _ = seenMetricsByTask.remove(attemptId)
+      })
       created
     }
   }
+
+  /** The metric's value the first time it is claimed for a task, zero afterwards. */
+  private def claimMetricValue(metric: SQLMetric, seenMetrics: SeenMetricSet): Long =
+    if (seenMetrics.put(metric, java.lang.Boolean.TRUE) == null) math.max(metric.value, 0L)
+    else 0L
 
   /**
    * The baseline SQL metrics for DataFusion `BaselineMetrics`.
@@ -384,6 +385,8 @@ object CometMetricNode {
           "Number of row groups whose statistics were checked and matched (not pruned)"),
       "row_groups_pruned_statistics" ->
         SQLMetrics.createMetric(sc, "Number of row groups pruned by statistics"),
+      "row_groups_pruned_dynamic_filter" ->
+        SQLMetrics.createMetric(sc, "Number of row groups pruned by live runtime filters"),
       "limit_pruned_row_groups" ->
         SQLMetrics.createMetric(sc, "Number of row groups pruned due to limit pruning"),
       "limit_matched_row_groups" ->
@@ -546,9 +549,6 @@ object CometMetricNode {
    */
   def fromCometPlan(cometPlan: SparkPlan): CometMetricNode = {
     val nodeMetrics = cometPlan match {
-      // Driver-only planning metrics stay out of the tasks' accumulators, which would otherwise
-      // report zeros into the SQL UI's per-task statistics.
-      case scan: CometIcebergNativeScanExec => scan.runtimeMetrics
       case _: CometPlan => cometPlan.metrics
       case _ =>
         try cometPlan.metrics

@@ -32,6 +32,18 @@ operator restrictions and aggregate buffer compatibility checks still apply.
 Parquet writes whose input plans contain an empty relation use Spark's writer to preserve
 readable empty output files and their schema metadata.
 
+## In-Memory Cache
+
+Comet can store cached relations (`df.cache()`, `CACHE TABLE`) in Arrow format and scan them
+natively. This is experimental and disabled by default; see [In-Memory Cache](../in-memory-cache.md)
+for how to enable it. Comet does not replace a `spark.sql.cache.serializer` that the application
+has already set. Relations whose schema Comet's Arrow writer does not support are cached in
+Spark's default format, and their scans fall back to Spark. Reads that feed Spark operators rather
+than Comet operators can be slower than Spark's cache.
+
+With Kryo and `spark.kryo.registrationRequired=true`, Comet needs its Kryo registrator whether or
+not the cache is enabled; see [Kryo serialization](../installation.md#kryo-serialization).
+
 ## Sampling
 
 Comet runs `SampleExec` natively when sampling is performed without replacement, which covers
@@ -76,12 +88,14 @@ incorrect result. When any single window expression in a `WindowExec` falls back
   overflow instead of returning Spark's `NULL`.
 - `RANGE` frame with an explicit offset when the `ORDER BY` column is `DATE` or `DECIMAL`
   ([#4834](https://github.com/apache/datafusion-comet/issues/4834)).
+- `RANGE` frame bounded by `CURRENT ROW` when an `ORDER BY` key is an array of arrays or structs, or a struct
+  holding an array, such as `array(named_struct('x', x))`. DataFusion cannot compare those values to find the
+  frame's bounds ([apache/datafusion#24937](https://github.com/apache/datafusion/issues/24937)). Ranking functions
+  and `ROWS` frames over the same keys run natively.
 - `first_value` / `last_value` on a `RANGE` frame with a literal offset
   ([#4835](https://github.com/apache/datafusion-comet/issues/4835)).
 - `lag` / `lead` with a non-literal default value ([#4268](https://github.com/apache/datafusion-comet/issues/4268)).
 - A `ROWS` offset that is not an integer or long, or a `RANGE` offset that is not numeric.
-- `GROUPS` frames ([#4836](https://github.com/apache/datafusion-comet/issues/4836)). `DISTINCT` aggregates over a
-  window are not supported by Spark either.
 - Any `PARTITION BY` or `ORDER BY` expression that Comet cannot serialize.
 
 `WindowGroupLimitExec` (window-based limit pushdown for `ROW_NUMBER`, `RANK`, and `DENSE_RANK`)
@@ -93,10 +107,9 @@ runs natively; it is controlled by `spark.comet.exec.windowGroupLimit.enabled` (
   (e.g. `UTF8_LCASE`). The native operator detects partitions and order-key peer groups by
   comparing Arrow row-encoded keys for byte equality, which splits peers that Spark ties.
 
-**Known incompatibilities:**
-
-- Signed-zero ordering (`-0.0` vs `+0.0`) diverges from Spark's `RankLimitIterator`; see
-  [floating-point ordering](./floating-point.md#ordering-signed-zero-00-vs-00).
+Floating-point `ORDER BY` keys, including floats nested in arrays and structs, are normalized
+and match Spark's ranks; see [floating-point ordering](./floating-point.md), which also covers
+strict floating-point mode.
 
 ## Round-Robin Partitioning
 

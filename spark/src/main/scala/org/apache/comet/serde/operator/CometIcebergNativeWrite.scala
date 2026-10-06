@@ -85,7 +85,9 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
   // `oss.*` catalog properties to it and no functional test covers the path, so an OSS write
   // could silently drop endpoint/credential configuration. Fail closed until it is covered.
   //
-  // `hdfs` IS present: its NameNode endpoints are forwarded below, so nothing is dropped.
+  // `hdfs` IS present: its NameNode endpoints are forwarded below, so nothing is dropped. The
+  // scheme alone does not make the location writable, though: `requireReachableHdfsNameNode`
+  // declines one whose NameNode the native client could not reach.
   // `gs` is additionally gated on the resolved FileIO (`requireGcsFileIOForGcsDataLocation`).
   private val SupportedStorageSchemes: Set[String] =
     Set("file", "memory", "s3", "s3a", "gs", "hdfs")
@@ -175,8 +177,10 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     requirePropertyAbsent(
       PropertyKeys.WriteLocationProviderImpl,
       "custom location provider unsupported"),
+    requireDefaultLocationProvider,
     requireFormatVersionAtMostTwo,
     requireNoUuidColumns,
+    requireNoFloatingPointPartitionField,
     requireNoEncryptionPrefix,
     requireNoBloomFilterColumnsEnabled,
     requireRowGroupCheckMinRecordCountAtDefault,
@@ -195,6 +199,7 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     requirePositiveIntParquetSizes,
     requireNoParquetHadoopConfOverrides,
     requireSupportedStorageScheme,
+    requireReachableHdfsNameNode,
     requireGcsFileIOForGcsDataLocation,
     requireExecutorReflectionResolvable)
 
@@ -217,6 +222,29 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
   private def requirePropertyAbsent(key: String, reason: String): TriggerRule =
     ctx => {
       if (ctx.properties.contains(key)) Some(s"$key is set ($reason)") else None
+    }
+
+  // The property rule above only sees providers configured through table/write properties. A
+  // custom TableOperations can return a LocationProvider directly, while the native writer always
+  // generates `<data location>/<partition path>/<file>`. Admit only Iceberg's default provider;
+  // object-storage layout is already declined by the preceding property rule.
+  //
+  // Before Iceberg 1.11, iceberg-java does not preserve that TableOperations-supplied provider on
+  // executors: it reconstructs the provider from the table location and properties, so those
+  // writes use the default layout anyway. From 1.11 on, iceberg-java keeps and uses the custom
+  // provider. This gate stays unconditional and fail-closed on every Iceberg version Comet pins,
+  // so a non-default provider always falls back.
+  private val requireDefaultLocationProvider: TriggerRule = ctx =>
+    IcebergReflection.getLocationProvider(ctx.table) match {
+      case None =>
+        Some("could not resolve table.locationProvider() for native write compatibility checking")
+      case Some(provider)
+          if provider.getClass.getName == IcebergReflection.ClassNames.DEFAULT_LOCATION_PROVIDER =>
+        None
+      case Some(provider) =>
+        Some(
+          s"table.locationProvider() is ${provider.getClass.getName}, " +
+            "which the native write path would bypass")
     }
 
   private val requireFormatVersionAtMostTwo: TriggerRule = ctx =>
@@ -244,6 +272,29 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
             s"column $name has Iceberg type ${typeId.toLowerCase(Locale.ROOT)}, " +
               "which the native writer cannot reproduce"
           }
+    }
+
+  // iceberg-rust holds a float partition value as an `OrderedFloat`, whose equality treats -0.0
+  // and 0.0 as one value, and its fanout and clustered writers group rows by that equality.
+  // iceberg-java keeps the two apart, so the native writer would file both under whichever
+  // arrived first, and a read that prunes on the other value would lose rows (#6138). Remove this
+  // rule once the iceberg-rust pin carries a fix for apache/iceberg-rust#3325; #5643 tracks it.
+  private val requireNoFloatingPointPartitionField: TriggerRule = ctx =>
+    IcebergReflection
+      .getOutputSpecIdFromSparkWrite(ctx.sparkWrite)
+      .flatMap(IcebergReflection.getPartitionSpecById(ctx.table, _)) match {
+      case None => Some("could not resolve the output partition spec for type checking")
+      case Some(spec) =>
+        try {
+          IcebergReflection.floatingPointPartitionFields(spec).headOption.map {
+            case (name, typeName) =>
+              s"partition field $name has Iceberg type $typeName, and the native writer does " +
+                "not keep -0.0 and 0.0 partitions apart"
+          }
+        } catch {
+          case e: Exception =>
+            Some(s"could not inspect the output partition spec: ${e.getMessage}")
+        }
     }
 
   private val requireNoEncryptionPrefix: TriggerRule = ctx =>
@@ -324,6 +375,34 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
         if (SupportedStorageSchemes.contains(scheme)) None
         else Some(s"unsupported storage scheme: $scheme")
     }
+
+  // The scheme rule above admits any `hdfs://` location, but native reaches the NameNode only
+  // through `hdfs.name-node` or the path authority. An authority-less `hdfs:///` location, a
+  // portless `hdfs.name-node` entry or an HA nameservice that did not resolve would pass planning
+  // and then fail on an executor, so decline them here. The judgement uses the properties
+  // `buildIcebergWriteProto` hands to native (see `hdfsCatalogProperties`), so the decision and
+  // the execution agree.
+  private val requireReachableHdfsNameNode: TriggerRule = ctx =>
+    IcebergReflection.getDataLocation(ctx.table).filter(storageScheme(_) == "hdfs").flatMap {
+      location =>
+        val dataUri = new java.net.URI(location)
+        val fileIOProperties =
+          IcebergReflection.getFileIOProperties(ctx.table).getOrElse(Map.empty[String, String])
+        CometIcebergNativeScan.hdfsNameNodeFallbackReason(
+          dataUri,
+          ctx.hadoopConf,
+          hdfsCatalogProperties(dataUri, ctx.hadoopConf, fileIOProperties))
+    }
+
+  // NameNode-related catalog properties for native: the ones derived from the session Hadoop
+  // configuration first, so an explicit catalog `hdfs.name-node` among the FileIO properties wins,
+  // as on the scan path.
+  private def hdfsCatalogProperties(
+      dataUri: java.net.URI,
+      hadoopConf: Configuration,
+      fileIOProperties: Map[String, String]): Map[String, String] =
+    CometIcebergNativeScan.hadoopToIcebergHdfsProperties(dataUri, hadoopConf) ++
+      fileIOProperties
 
   // HadoopFileIO takes its GCS configuration from `fs.gs.*`, which is not forwarded to the
   // native writer (only `fs.s3a.*` is bridged). Admit a gs:// data location only when the FileIO
@@ -686,11 +765,9 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     val hadoopDerivedProperties = CometIcebergNativeScan.hadoopToIcebergS3Properties(
       NativeConfig.extractObjectStoreOptions(writeHadoopConf, dataUri),
       dataBucket)
-    // Before `fileIOProperties` so an explicit catalog `hdfs.name-node` wins, as on the scan path.
-    val hadoopDerivedHdfsProperties =
-      CometIcebergNativeScan.hadoopToIcebergHdfsProperties(dataUri, writeHadoopConf)
+    // Same properties `requireReachableHdfsNameNode` judged at planning time.
     val catalogProperties =
-      hadoopDerivedProperties ++ hadoopDerivedHdfsProperties ++ fileIOProperties
+      hadoopDerivedProperties ++ hdfsCatalogProperties(dataUri, writeHadoopConf, fileIOProperties)
 
     val common = IcebergWriteProtoTranslation.buildCommon(
       catalogProperties = catalogProperties,
