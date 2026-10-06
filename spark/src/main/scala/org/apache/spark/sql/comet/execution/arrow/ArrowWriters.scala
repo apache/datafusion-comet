@@ -132,7 +132,9 @@ private[arrow] object ArrowWriter {
     vector.setValueCount(0)
   }
 
-  private def zero(buffer: ArrowBuf): Unit = buffer.setZero(0, buffer.capacity)
+  private def zero(buffer: ArrowBuf): Unit = {
+    val _ = buffer.setZero(0, buffer.capacity)
+  }
 
   /**
    * Gives `vector` new buffers for `capacity` values. Arrow's `allocateNew` zeroes the values as
@@ -396,7 +398,8 @@ private[arrow] object ArrowFieldWriter {
       case 16 =>
         Platform.putLong(null, address, 0L)
         Platform.putLong(null, address + 8, 0L)
-      case _ => vector.getDataBuffer.setZero(index.toLong * width, width.toLong)
+      case _ =>
+        val _ = vector.getDataBuffer.setZero(index.toLong * width, width.toLong)
     }
   }
 
