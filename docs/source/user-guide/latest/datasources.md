@@ -63,6 +63,11 @@ This includes row-backed `ExistingRDD` inputs when
 `spark.comet.sparkToColumnar.supportedOperatorList` includes `RDDScan`. Spark still produces
 the RDD rows; conversion lets eligible downstream operators execute in Comet.
 
+Comet does not convert a source when the query uses `input_file_name()`, `input_file_block_start()`
+or `input_file_block_length()`, so the source and the operators above it run in Spark. These
+functions report the file that Spark's reader is on when Spark evaluates them, and the conversion and
+the Comet operators above it would read ahead of that.
+
 ## Data Catalogs
 
 ### Apache Iceberg

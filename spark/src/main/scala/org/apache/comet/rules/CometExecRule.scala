@@ -359,6 +359,9 @@ case class CometExecRule(session: SparkSession)
    */
   // spotless:on
   private def transform(plan: SparkPlan): SparkPlan = {
+    // Walks the whole plan, so it is lazy: only consulted once a leaf could be converted.
+    lazy val readsInputFileBlock = CometScanRule.readsInputFileBlock(plan)
+
     def convertNode(op: SparkPlan): SparkPlan = op match {
       // Scan marker produced by an optional, out-of-tree scan contrib (e.g. contrib/delta).
       // Matched by trait (no compile-time dependency on the contrib) and present only when that
@@ -430,7 +433,7 @@ case class CometExecRule(session: SparkSession)
                 s"Set ${CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key}=true to enable it.")
           }
 
-          if (shouldApplySparkToColumnar(conf, scan)) {
+          if (shouldApplySparkToColumnar(conf, scan, readsInputFileBlock)) {
             convertToComet(scan, CometSparkToColumnarExec).getOrElse(scan)
           } else {
             scan
@@ -447,7 +450,7 @@ case class CometExecRule(session: SparkSession)
       case c: CometSparkToColumnarExec =>
         convertToComet(c, CometScanWrapper).getOrElse(c)
 
-      case op if shouldApplySparkToColumnar(conf, op) =>
+      case op if shouldApplySparkToColumnar(conf, op, readsInputFileBlock) =>
         convertToComet(op, CometSparkToColumnarExec).getOrElse(op)
 
       // Spark 4.0+: replace only the per-task write, leaving DataWritingCommandExec - and
@@ -1149,7 +1152,30 @@ case class CometExecRule(session: SparkSession)
     }
   }
 
-  private def shouldApplySparkToColumnar(conf: SQLConf, op: SparkPlan): Boolean = {
+  private def shouldApplySparkToColumnar(
+      conf: SQLConf,
+      op: SparkPlan,
+      readsInputFileBlock: => Boolean): Boolean = {
+    // A converted leaf reads ahead of the Spark operator that evaluates input_file_name and
+    // friends: the conversion fills a whole batch, and Comet operators above it may pull more
+    // before they emit. By the time Spark evaluates them, the leaf's reader may have moved on to
+    // a later file or unset InputFileBlockHolder at the end of its input, so rows would report
+    // another file's values or the unset defaults. Leave the leaf on Spark so that the plan above
+    // it stays on Spark too.
+    if (!canApplySparkToColumnar(conf, op)) {
+      false
+    } else if (readsInputFileBlock) {
+      withFallbackReason(
+        op,
+        "Spark to Arrow conversion is not compatible with input_file_name, " +
+          "input_file_block_start, or input_file_block_length")
+      false
+    } else {
+      true
+    }
+  }
+
+  private def canApplySparkToColumnar(conf: SQLConf, op: SparkPlan): Boolean = {
     // Only consider converting leaf nodes to columnar currently, so that all the following
     // operators can have a chance to be converted to columnar. Leaf operators that output
     // columnar batches, such as Spark's vectorized readers, will also be converted to native

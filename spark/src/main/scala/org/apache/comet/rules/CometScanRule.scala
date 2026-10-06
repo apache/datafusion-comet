@@ -354,14 +354,10 @@ case class CometScanRule(session: SparkSession)
       withFallbackReason(scanExec, "Native Parquet Variant scans do not support encryption")
       return None
     }
-    // input_file_name, input_file_block_start, and input_file_block_length read from
-    // InputFileBlockHolder, a thread-local set by Spark's FileScanRDD. The native DataFusion
-    // scan does not use FileScanRDD, so these expressions would return empty/default values.
-    if (plan.exists(node =>
-        node.expressions.exists(_.exists {
-          case _: InputFileName | _: InputFileBlockStart | _: InputFileBlockLength => true
-          case _ => false
-        }))) {
+    // input_file_name, input_file_block_start, and input_file_block_length read values that
+    // Spark's FileScanRDD sets. The native DataFusion scan does not use FileScanRDD, so these
+    // expressions would return empty/default values.
+    if (CometScanRule.readsInputFileBlock(plan)) {
       withFallbackReason(
         scanExec,
         "Native Parquet scan is not compatible with input_file_name, " +
@@ -1136,6 +1132,20 @@ case class CometScanTypeChecker() extends DataTypeSupport with CometTypeShim {
 }
 
 object CometScanRule extends Logging {
+
+  /**
+   * Whether any node in `plan` evaluates `input_file_name`, `input_file_block_start` or
+   * `input_file_block_length`. These read `InputFileBlockHolder`, a thread-local that the reader
+   * producing the rows (`FileScanRDD`, the V2 file readers, `HadoopRDD`, `NewHadoopRDD`,
+   * connector readers such as Iceberg's) sets as it moves from file to file, so they only return
+   * each row's values when Spark evaluates them as that reader produces the row.
+   */
+  def readsInputFileBlock(plan: SparkPlan): Boolean =
+    plan.exists(node =>
+      node.expressions.exists(_.exists {
+        case _: InputFileName | _: InputFileBlockStart | _: InputFileBlockLength => true
+        case _ => false
+      }))
 
   // Memo of `NativeBase.isObjectStoreSchemeSupported`, keyed by the probe URL rather than the
   // scheme: object_store's parser keys on (scheme, host-presence), so an authorityless URL would
