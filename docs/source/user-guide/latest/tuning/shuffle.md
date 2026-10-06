@@ -78,11 +78,12 @@ the JVM outside Comet's memory pools. The setting is disabled by default.
 ### Automatic Revert to Spark Shuffle
 
 When a Comet columnar shuffle, or a native shuffle over rows that `spark.comet.convert.shuffleInput.enabled` converted,
-ends up between a partial and a final aggregate that Comet could not convert (both remain Spark `HashAggregateExec` or
-`ObjectHashAggregateExec` operators), Comet reverts it to Spark's built-in shuffle.
+ends up between a partial and a final aggregate that Comet could not convert (both remain Spark `HashAggregateExec`,
+`ObjectHashAggregateExec` or `SortAggregateExec` operators), Comet reverts it to Spark's built-in shuffle.
 Keeping columnar shuffle between the two row-based aggregates would add `row -> Arrow -> shuffle -> Arrow -> row`
-conversions with no Comet consumer on either side to benefit from columnar output. Other shuffles between non-Comet
-operators are not reverted.
+conversions with no Comet consumer on either side to benefit from columnar output. The final aggregate has to read the
+shuffle directly, which a `SortAggregateExec` with grouping keys does not: it reads the shuffle through a sort, so that
+shuffle is not reverted. Other shuffles between non-Comet operators are not reverted either.
 
 This shifts the affected shuffles from Comet's off-heap memory pool back to the JVM execution memory pool. Clusters
 tuned for a small JVM heap may see `ExternalSorter` spills on queries where this revert fires. Shuffle I/O may also
@@ -92,7 +93,7 @@ Each revert is logged at `INFO` level on the driver as `Reverting Comet shuffle 
 and <child>`, which lets you correlate any unexpected behavior with this optimization.
 
 This optimization is enabled by default and can be disabled by setting
-`spark.comet.shuffle.revertRedundantColumnar.enabled=false`, in which case Comet will keep the columnar shuffle
+`spark.comet.shuffle.revertRedundantColumnar.enabled=false`, in which case Comet will keep its shuffle
 even when both of those aggregates run on Spark.
 
 ## Shuffle Compression
