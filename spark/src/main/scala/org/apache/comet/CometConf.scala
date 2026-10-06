@@ -152,6 +152,15 @@ object CometConf extends ShimCometConf {
       .checkValue(v => v > 0, "Data file concurrency limit must be positive")
       .createWithDefault(1)
 
+  val COMET_ICEBERG_IO_TIMEOUT: ConfigEntry[Long] =
+    conf("spark.comet.iceberg.ioTimeout")
+      .category(CATEGORY_SCAN)
+      .doc("Timeout for each storage I/O call, such as one read or write, that Comet's native " +
+        "Iceberg scan and write make. Passed to iceberg-rust as `opendal.io-timeout-ms`.")
+      .timeConf(TimeUnit.MILLISECONDS)
+      .checkValue(_ > 0, "The Iceberg I/O timeout must be positive")
+      .createWithDefault(TimeUnit.SECONDS.toMillis(30))
+
   val COMET_CSV_V2_NATIVE_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.scan.csv.v2.enabled")
       .category(CATEGORY_TESTING)
@@ -239,6 +248,28 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_CONVERT_FROM_ROW_DATA_SOURCE_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.convert.rowDataSource.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "When enabled, data from Data Source V1 relations that are not file-based, such as " +
+          "JDBC tables, will be converted to Arrow format. Spark scans these relations with " +
+          "`RowDataSourceScanExec`.")
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_CONVERT_FROM_TYPED_DATASET_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.convert.typedDataset.enabled")
+      .category(CATEGORY_EXEC)
+      .doc("When enabled, the output of typed Dataset operations, such as `map`, `flatMap`, " +
+        "`mapPartitions` and `groupByKey(...).mapGroups`, will be converted to Arrow format so " +
+        "that the operators above them can run natively. The user function still runs in " +
+        "Spark. This pays off when the operators above do enough work, such as an " +
+        "aggregation over many groups, and can be slower when they are cheap, such as an " +
+        "aggregation over a few groups after a selective filter.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_EXEC_ENABLED: ConfigEntry[Boolean] = conf(s"$COMET_EXEC_CONFIG_PREFIX.enabled")
     .category(CATEGORY_EXEC)
     .doc(
@@ -318,32 +349,37 @@ object CometConf extends ShimCometConf {
       "mergeRows",
       defaultValue = false,
       notes = Some(
-        "Only takes effect on Spark 3.5 and 4.0. Spark 3.4 has no MergeRowsExec, and Spark " +
-          "4.1 and later keep MergeRowsExec on Spark so V2 writers can consume its row-level " +
-          "metrics (https://github.com/apache/datafusion-comet/issues/6606)"))
+        "Only takes effect on Spark 3.5 and later. Spark 3.4 has no MergeRowsExec. On Spark " +
+          "4.1 and later, stock V2 writers retain Spark MergeRowsExec for MergeSummary; native " +
+          "MergeRows is used only where the enclosing Comet write path preserves that contract."))
 
   val COMET_EXEC_IN_MEMORY_CACHE_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.inMemoryCache.enabled")
       .category(CATEGORY_EXEC)
-      .doc("Whether to enable Comet native execution for in-memory cached tables. Its value at " +
-        "startup also decides whether CometDriverPlugin installs Comet's cache serializer, " +
-        "which stores cached data in Arrow format. The plugin installs it only if " +
-        "spark.comet.enabled and spark.comet.exec.enabled are also enabled at startup, and " +
-        "only with one of Comet's shuffle managers while Comet shuffle is enabled. " +
-        "Because spark.sql.cache.serializer is a " +
-        "static config, the cached format is fixed for the application, and disabling this " +
-        "at runtime only sends cached scans back to Spark's execution path. Relations whose " +
-        "schema Comet's Arrow writer does not support are always cached in Spark's default " +
-        "format. Each cached batch is stored as one Arrow IPC record batch with per-buffer " +
-        "zstd compression, and a scan copies out only the buffers of the columns it projected, " +
-        "so the unselected ones are never decompressed. Reads that feed Spark operators rather " +
-        "than Comet ones still pay a row conversion the default format avoids, and can be " +
-        "slower than Spark's cache. With spark.kryo.registrationRequired=true, the plugin " +
-        "installs it only if Kryo has registered Comet's cached batch, as " +
-        "spark.kryo.registrator=org.apache.comet.CometKryoRegistrator does when set before " +
-        "creating the SparkContext, because Kryo would otherwise reject a cached block as soon " +
-        "as it is serialized, including the disk half of the default MEMORY_AND_DISK storage " +
-        "level.")
+      .doc(
+        "Whether to enable Comet native scans and fused Spark reads of in-memory cached tables. " +
+          "Requires spark.comet.enabled=true. At startup, this setting also decides whether " +
+          "CometDriverPlugin installs Comet's cache serializer, which stores cached data in " +
+          "Arrow format. The plugin installs it only if spark.comet.enabled and " +
+          "spark.comet.exec.enabled are also enabled at startup, and only with one of Comet's " +
+          "shuffle managers while Comet shuffle is enabled. " +
+          "Because spark.sql.cache.serializer is a " +
+          "static config, the cached format is fixed for the application, and disabling this " +
+          "or spark.comet.enabled at runtime sends cached scans back to Spark's execution path " +
+          "without the fused reader. Relations whose schema Comet's Arrow writer does not " +
+          "support are always cached in Spark's default " +
+          "format. Each cached batch is stored as one Arrow IPC record batch with per-buffer " +
+          "zstd compression, and a scan copies out only the buffers of the columns it " +
+          "projected, so the unselected ones are never decompressed. Eligible Spark " +
+          "whole-stage codegen consumers read cached vectors directly when vectorized cache " +
+          "reading is enabled; other Spark row consumers use a reusable row buffer. Decoding " +
+          "costs can still make wide numeric reads slower than Spark's default cache. With " +
+          "spark.kryo.registrationRequired=true, the plugin installs it only if Kryo has " +
+          "registered Comet's cached batch, as " +
+          "spark.kryo.registrator=org.apache.comet.CometKryoRegistrator does when set before " +
+          "creating the SparkContext, because Kryo would otherwise reject a cached block as " +
+          "soon as it is serialized, including the disk half of the default " +
+          "MEMORY_AND_DISK storage level.")
       .booleanConf
       .createWithDefault(false)
 
@@ -1106,8 +1142,9 @@ object CometConf extends ShimCometConf {
           "without the `Exec` suffix. It is for operators that have no `spark.comet.convert` " +
           "config of their own, such as `BatchScan` for a Data Source V2 connector, or " +
           "`FileSourceScan` for file formats other than Parquet, JSON and CSV. Naming `Range`, " +
-          "`InMemoryTableScan`, `RDDScan` or `OneRowRelation` is deprecated and will stop " +
-          "working in a future major release. Use their `spark.comet.convert` configs instead.")
+          "`InMemoryTableScan`, `RDDScan`, `OneRowRelation` or `RowDataSourceScan` is " +
+          "deprecated and will stop working in a future major release. Use their " +
+          "`spark.comet.convert` configs instead.")
       .stringConf
       .toSequence
       .createWithDefault(Nil)

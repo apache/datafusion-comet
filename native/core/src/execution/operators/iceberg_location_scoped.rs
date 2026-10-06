@@ -654,12 +654,12 @@ impl LocationScopedFileWrite {
 /// `result` of a write call made at the snapshot of `generation`, after fetching `bucket`'s
 /// locations again if it failed in a way that may mean they changed. A free function so the
 /// writer, which is not `Sync`, is not borrowed across the refresh.
-async fn refresh_on_failure(
+async fn refresh_on_failure<T>(
     inner: &Inner,
     bucket: &BucketLocations,
     generation: u64,
-    result: Result<()>,
-) -> Result<()> {
+    result: Result<T>,
+) -> Result<T> {
     match result {
         Err(e) if may_mean_stale_locations(&e) => {
             match inner.shared.refresh(bucket, generation).await {
@@ -679,7 +679,7 @@ impl FileWrite for LocationScopedFileWrite {
         refresh_on_failure(&self.inner, &self.route.bucket, generation, result).await
     }
 
-    async fn close(&mut self) -> Result<()> {
+    async fn close(&mut self) -> Result<FileMetadata> {
         let generation = self.generation();
         let result = self.writer.close().await;
         refresh_on_failure(&self.inner, &self.route.bucket, generation, result).await
@@ -797,8 +797,10 @@ mod tests {
             Ok(())
         }
 
-        async fn close(&mut self) -> Result<()> {
-            self.0.check("close", &self.1)
+        async fn close(&mut self) -> Result<FileMetadata> {
+            self.0
+                .check("close", &self.1)
+                .map(|_| FileMetadata { size: 0 })
         }
     }
 
@@ -1512,7 +1514,7 @@ mod tests {
         let output = storage.new_output("s3://b/t/new/f.parquet").unwrap();
         let mut writer = output.writer().await.unwrap();
         writer.write(Bytes::from("data")).await.unwrap();
-        let err = writer.close().await.unwrap_err();
+        let err = writer.close().await.err().expect("close should fail");
         assert!(may_mean_stale_locations(&err), "{err}");
         assert_eq!(fixture.fetches(), 1);
         let mut writer = output.writer().await.unwrap();
