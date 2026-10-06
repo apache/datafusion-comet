@@ -75,7 +75,7 @@ class CometNativePositionalRoundRobinSuite extends CometTestBase with AdaptiveSp
     withTempPath { dir =>
       val path = dir.getAbsolutePath
       spark
-        .range(rows)
+        .range(rows.toLong)
         .selectExpr("id", "cast(id % 7 as string) as s", "id % 3 as g")
         .write
         .parquet(path)
@@ -197,7 +197,7 @@ class CometNativePositionalRoundRobinSuite extends CometTestBase with AdaptiveSp
           // Drop the map output so the next job re-runs the map stage under the new batch size.
           SparkEnv.get.mapOutputTracker
             .asInstanceOf[MapOutputTrackerMaster]
-            .unregisterAllMapAndMergeOutput(exchange.shuffleId)
+            .unregisterAllMapAndMergeOutput(exchange.shuffleDependency.shuffleId)
           assert(placement() == first)
         }
       }

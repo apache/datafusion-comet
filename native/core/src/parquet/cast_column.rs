@@ -24,7 +24,7 @@ use arrow::{
     record_batch::RecordBatch,
 };
 
-use crate::parquet::parquet_support::{spark_parquet_convert, SparkParquetOptions};
+use crate::parquet::parquet_support::{field_id, spark_parquet_convert, SparkParquetOptions};
 use datafusion::common::format::DEFAULT_CAST_OPTIONS;
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
 use datafusion::logical_expr::ColumnarValue;
@@ -37,36 +37,61 @@ use std::{
 };
 
 /// Returns true if two DataTypes are structurally equivalent (same data layout)
-/// but may differ in field names within nested types.
-fn types_differ_only_in_field_names(physical: &DataType, logical: &DataType) -> bool {
+/// but may differ in field names within nested types. With `use_field_id`, a struct
+/// field that carries a Parquet field id must also find that id on the file field at
+/// its position, since Spark's `clipParquetGroupFields` resolves such a field by id.
+fn types_differ_only_in_field_names(
+    physical: &DataType,
+    logical: &DataType,
+    use_field_id: bool,
+) -> bool {
     match (physical, logical) {
         (DataType::List(pf), DataType::List(lf)) => {
             pf.is_nullable() == lf.is_nullable()
                 && (pf.data_type() == lf.data_type()
-                    || types_differ_only_in_field_names(pf.data_type(), lf.data_type()))
+                    || types_differ_only_in_field_names(
+                        pf.data_type(),
+                        lf.data_type(),
+                        use_field_id,
+                    ))
         }
         (DataType::LargeList(pf), DataType::LargeList(lf)) => {
             pf.is_nullable() == lf.is_nullable()
                 && (pf.data_type() == lf.data_type()
-                    || types_differ_only_in_field_names(pf.data_type(), lf.data_type()))
+                    || types_differ_only_in_field_names(
+                        pf.data_type(),
+                        lf.data_type(),
+                        use_field_id,
+                    ))
         }
         (DataType::Map(pf, p_sorted), DataType::Map(lf, l_sorted)) => {
             p_sorted == l_sorted
                 && pf.is_nullable() == lf.is_nullable()
                 && (pf.data_type() == lf.data_type()
-                    || types_differ_only_in_field_names(pf.data_type(), lf.data_type()))
+                    || types_differ_only_in_field_names(
+                        pf.data_type(),
+                        lf.data_type(),
+                        use_field_id,
+                    ))
         }
         (DataType::Struct(pfields), DataType::Struct(lfields)) => {
             // For Struct types, field names are semantically meaningful (they
             // identify different columns), so we require name equality here.
             // This distinguishes from List/Map wrapper field names ("item" vs
-            // "element") which are purely cosmetic.
+            // "element") which are purely cosmetic. Under field-id matching a
+            // requested id must sit on the file field at the same position, or
+            // the relabel would read the wrong column (#6192).
             pfields.len() == lfields.len()
                 && pfields.iter().zip(lfields.iter()).all(|(pf, lf)| {
                     pf.name() == lf.name()
                         && pf.is_nullable() == lf.is_nullable()
+                        && (!use_field_id || field_id(lf).is_none() || field_id(lf) == field_id(pf))
                         && (pf.data_type() == lf.data_type()
-                            || types_differ_only_in_field_names(pf.data_type(), lf.data_type()))
+                            || types_differ_only_in_field_names(
+                                pf.data_type(),
+                                lf.data_type(),
+                                use_field_id,
+                            ))
                 })
         }
         _ => false,
@@ -155,6 +180,10 @@ pub struct CometCastColumnExpr {
     /// Spark parquet options for complex nested type conversions.
     /// When present, enables `spark_parquet_convert` as a fallback.
     parquet_options: Option<SparkParquetOptions>,
+    /// True when the physical and target types differ only in nested field names, so a
+    /// metadata-only relabel is the whole conversion. Derived from the fields above once
+    /// at construction rather than by walking the type tree on every batch.
+    relabel_only: bool,
 }
 
 // Manually derive `PartialEq`/`Hash` as `Arc<dyn PhysicalExpr>` does not
@@ -208,17 +237,24 @@ impl CometCastColumnExpr {
             )));
         }
 
+        let relabel_only = physical_type != target_type
+            && types_differ_only_in_field_names(physical_type, target_type, false);
         Ok(Self {
             expr,
             input_physical_field: physical_field,
             target_field,
             cast_options: cast_options.unwrap_or(DEFAULT_CAST_OPTIONS),
             parquet_options: None,
+            relabel_only,
         })
     }
 
     /// Set Spark parquet options to enable complex nested type conversions.
     pub fn with_parquet_options(mut self, options: SparkParquetOptions) -> Self {
+        let physical_type = self.input_physical_field.data_type();
+        let target_type = self.target_field.data_type();
+        self.relabel_only = physical_type != target_type
+            && types_differ_only_in_field_names(physical_type, target_type, options.use_field_id);
         self.parquet_options = Some(options);
         self
     }
@@ -267,34 +303,25 @@ impl PhysicalExpr for CometCastColumnExpr {
             return Ok(value);
         }
 
-        let input_physical_field = self.input_physical_field.data_type();
         let target_field = self.target_field.data_type();
 
-        match (input_physical_field, target_field) {
-            // Nested types that differ only in field names (e.g., List element named
-            // "item" vs "element", or Map entries named "key_value" vs "entries").
-            // Re-label the array so the DataType metadata matches the logical schema.
-            (physical, logical)
-                if physical != logical && types_differ_only_in_field_names(physical, logical) =>
-            {
-                match value {
-                    ColumnarValue::Array(array) => {
-                        let relabeled = relabel_array(array, logical);
-                        Ok(ColumnarValue::Array(relabeled))
-                    }
-                    other => Ok(other),
+        // Nested types that differ only in field names (e.g., List element named
+        // "item" vs "element", or Map entries named "key_value" vs "entries").
+        // Re-label the array so the DataType metadata matches the logical schema.
+        if self.relabel_only {
+            return Ok(match value {
+                ColumnarValue::Array(array) => {
+                    ColumnarValue::Array(relabel_array(array, target_field))
                 }
-            }
-            // Fallback: use spark_parquet_convert for complex nested type conversions
-            // (e.g., List<Struct{a,b,c}> → List<Struct{a,c}>, Map field selection, etc.)
-            _ => {
-                if let Some(parquet_options) = &self.parquet_options {
-                    let converted = spark_parquet_convert(value, target_field, parquet_options)?;
-                    Ok(converted)
-                } else {
-                    Ok(value)
-                }
-            }
+                other => other,
+            });
+        }
+        // Fallback: use spark_parquet_convert for complex nested type conversions
+        // (e.g., List<Struct{a,b,c}> → List<Struct{a,c}>, Map field selection, etc.)
+        if let Some(parquet_options) = &self.parquet_options {
+            spark_parquet_convert(value, target_field, parquet_options)
+        } else {
+            Ok(value)
         }
     }
 
@@ -338,6 +365,60 @@ mod tests {
     use arrow::datatypes::{Field, Fields};
     use datafusion::physical_expr::expressions::Column;
     use datafusion_comet_spark_expr::EvalMode;
+
+    /// File struct `x` (id 1) = 42, `y` (id 2) = 43; the requested struct names them the same
+    /// but swaps the ids. Names and types match at every position, so only the field id check
+    /// in the relabel shortcut keeps it from firing: the read resolves by id and the result
+    /// must be `x` = 43, `y` = 42 (#6192).
+    #[test]
+    fn test_swapped_field_ids_bypass_relabel_shortcut() {
+        use crate::parquet::schema_adapter::test::struct_type_with_field_id;
+
+        let physical_type =
+            struct_type_with_field_id(vec![("x", DataType::Int32, 1), ("y", DataType::Int32, 2)]);
+        let logical_type =
+            struct_type_with_field_id(vec![("x", DataType::Int32, 2), ("y", DataType::Int32, 1)]);
+        let DataType::Struct(physical_fields) = &physical_type else {
+            unreachable!()
+        };
+
+        let input_field = Arc::new(Field::new("s", physical_type.clone(), true));
+        let target_field = Arc::new(Field::new("s", logical_type.clone(), true));
+
+        let columns: Vec<ArrayRef> = vec![
+            Arc::new(Int32Array::from(vec![42])),
+            Arc::new(Int32Array::from(vec![43])),
+        ];
+        let struct_arr = StructArray::new(physical_fields.clone(), columns, None);
+        let schema = Schema::new(vec![Arc::clone(&input_field)]);
+        let batch = RecordBatch::try_new(Arc::new(schema), vec![Arc::new(struct_arr)]).unwrap();
+
+        let mut opts = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        opts.use_field_id = true;
+
+        let col_expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new("s", 0));
+        let cast_expr = CometCastColumnExpr::try_new(col_expr, input_field, target_field, None)
+            .unwrap()
+            .with_parquet_options(opts);
+
+        let ColumnarValue::Array(arr) = cast_expr.evaluate(&batch).unwrap() else {
+            panic!("expected array result");
+        };
+        assert_eq!(arr.data_type(), &logical_type);
+        let result = arr.as_any().downcast_ref::<StructArray>().unwrap();
+        let x = result
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        let y = result
+            .column(1)
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        assert_eq!(x.value(0), 43);
+        assert_eq!(y.value(0), 42);
+    }
 
     #[test]
     fn test_rejects_millisecond_logical_timestamp() {

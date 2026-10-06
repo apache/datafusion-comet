@@ -15,9 +15,8 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- With strict floating-point mode on, Comet's native float sort is Incompatible with Spark
--- (NaN / signed-zero ordering). CometSortArray mixes in CodegenDispatchFallback, so it routes
--- through the JVM codegen dispatcher and matches Spark exactly instead of falling back.
+-- Comet's native sort_array follows Spark's float ordering, so strict floating-point mode keeps it
+-- native. sort_array_floating_point.sql covers the ordering itself.
 
 -- Config: spark.comet.exec.strictFloatingPoint=true
 
@@ -52,6 +51,6 @@ SELECT sort_array(arr) FROM test_sort_array_strict_float
 query
 SELECT sort_array(arr, false) FROM test_sort_array_strict_float
 
--- nested float arrays also dispatch
+-- an array built from literals
 query
 SELECT sort_array(array(CAST('NaN' AS DOUBLE), double('-0.0'), 0.0, 1.0, CAST('-Infinity' AS DOUBLE)))

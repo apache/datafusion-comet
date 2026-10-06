@@ -16,6 +16,9 @@
 -- under the License.
 
 -- ConfigMatrix: parquet.enable.dictionary=false,true
+-- Disabling ObjectHashAggregate makes Spark plan SortAggregateExec for collect_set instead, so the
+-- matrix runs the whole fixture through both aggregate operators.
+-- ConfigMatrix: spark.sql.execution.useObjectHashAggregateExec=true,false
 
 -- ============================================================
 -- Setup: tables
@@ -253,6 +256,22 @@ FROM cs_src_multi GROUP BY grp ORDER BY grp
 
 query
 SELECT grp, sort_array(collect_set(DISTINCT i)) FROM cs_src_int GROUP BY grp ORDER BY grp
+
+-- ============================================================
+-- PartialMerge: collect_set combined with a distinct aggregate
+-- exercises native intermediate ArrayType state through shuffle
+-- ============================================================
+
+query
+SELECT grp, count(DISTINCT a), sort_array(collect_set(b))
+FROM cs_src_multi GROUP BY grp ORDER BY grp
+
+-- An inline VALUES relation stays a Spark LocalTableScan, so Spark runs the partial collect_set
+-- and the native PartialMerge decodes Spark's serialized buffer, which stores each binary value
+-- as an array of bytes. The Spark operators below the shuffle make this answer-only.
+query spark_answer_only
+SELECT x, count(DISTINCT y), collect_set(b)
+FROM VALUES (1, 1, X'ABCD'), (1, 2, X'ABCD') AS t(x, y, b) GROUP BY x
 
 -- ============================================================
 -- HAVING clause with collect_set

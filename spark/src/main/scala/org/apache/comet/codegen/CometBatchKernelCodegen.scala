@@ -19,6 +19,7 @@
 
 package org.apache.comet.codegen
 
+import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector._
 import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
 import org.apache.arrow.vector.types.pojo.Field
@@ -28,6 +29,7 @@ import org.apache.spark.sql.catalyst.expressions.codegen._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
+import org.apache.comet.CometArrowAllocator
 import org.apache.comet.shims.{CometExprTraitShim, CometTypeShim}
 
 /**
@@ -87,6 +89,21 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
    * single child and the generated writer NPEs on the missing ordinal-1 vector.
    * `CometCreateNamedStruct` declines them on the native path for the same reason, but a struct
    * nested inside a dispatcher-built value (a `CreateMap` value) never reaches that check.
+   *
+   * The `StringType` case admits non-default collations (Spark 4+), on purpose. Collation is
+   * carried by the expression, not by the value: the kernel runs Spark's own `doGenCode` against
+   * the bound tree, whose `collationId` survives closure serialization, and Arrow is only the
+   * byte store for the `UTF8String`s that code produces. So a dispatched expression over collated
+   * input answers exactly as Spark does.
+   *
+   * The proto type is a separate matter. `CometScalaUDF.emitJvmCodegenDispatch` declares the
+   * return type through `QueryPlanSerde.serializeDataType`, which flattens every `StringType` to
+   * one proto id, so the native plan describes a dispatched collated output as a plain string.
+   * Nothing on this route reads that back. The values are bytes and the kernel is what produced
+   * them. Whether a downstream operator may then treat the column collation-blind is decided per
+   * operator against the Catalyst `DataType`, which keeps its collation, and does not depend on
+   * what this predicate admits. Rejecting collated strings here would force a full Spark fallback
+   * for a route that is already correct.
    */
   def isSupportedDataType(dt: DataType): Boolean = dt match {
     case BooleanType | ByteType | ShortType | IntegerType | LongType => true
@@ -165,17 +182,21 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
     // `Unevaluable`: rejected by default. `isCodegenInertUnevaluable` exempts version-specific
     // leaves that are `Unevaluable` but never invoked by codegen (e.g. Spark 4.0's
     // `ResolvedCollation` in `Collate.collation`, where `Collate.genCode` delegates to its child).
+    //
+    // A native UDF call is a `CodegenFallback` whose `eval` only throws, since its implementation
+    // runs in the native library.
     boundExpr.find {
       case _: org.apache.spark.sql.catalyst.expressions.aggregate.AggregateFunction => true
       case _: org.apache.spark.sql.catalyst.expressions.Generator => true
       case u: Unevaluable if isCodegenInertUnevaluable(u) => false
       case _: Unevaluable => true
+      case _: org.apache.comet.udf.NativeUdfCall => true
       case _ => false
     } match {
       case Some(bad) =>
         return Some(
           s"codegen dispatch: expression ${bad.getClass.getSimpleName} not supported " +
-            "(aggregate, generator, or unevaluable)")
+            "(aggregate, generator, unevaluable, or native UDF)")
       case None =>
     }
     val badRef = boundExpr.collectFirst {
@@ -190,8 +211,12 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
    * Allocate an Arrow output vector from a pre-built `Field`. Forwards to
    * [[CometBatchKernelCodegenOutput.allocateOutput]].
    */
-  def allocateOutput(field: Field, numRows: Int, estimatedBytes: Int): FieldVector =
-    CometBatchKernelCodegenOutput.allocateOutput(field, numRows, estimatedBytes)
+  def allocateOutput(
+      field: Field,
+      numRows: Int,
+      estimatedBytes: Int,
+      allocator: BufferAllocator = CometArrowAllocator): FieldVector =
+    CometBatchKernelCodegenOutput.allocateOutput(field, numRows, estimatedBytes, allocator)
 
   /**
    * Spark `DataType` to an Arrow `Field`, resolving mismatches between Arrow Java's default field

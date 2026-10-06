@@ -25,9 +25,12 @@ against your own workloads.
 ## Overview
 
 Spark writes an Iceberg table through a single physical operator that combines data-file
-writing with metadata writing, committing, and catalog validation. Because that operator sits
-outside Spark's Adaptive Query Execution (AQE), the sub-query feeding the write — the scans,
-projects, sorts, and exchanges producing the rows — cannot be re-planned at runtime.
+writing with metadata writing, committing, and catalog validation. Spark's Adaptive Query
+Execution (AQE) already re-plans the sub-query feeding that operator — the scans, projects,
+sorts, and exchanges producing the rows — but the operator itself sits outside AQE, so the
+data-file writing cannot be re-planned in response to how its input ran. And because data-file
+writing is bundled with the metadata and commit steps, there is no separate step for Comet to
+replace.
 
 When `spark.comet.write.iceberg.splitOperator.enabled=true`, Comet rewrites eligible Iceberg
 writes into two operators:
@@ -39,12 +42,12 @@ writes into two operators:
    Iceberg commit (including commit-time validation), outside AQE, exactly once.
 
 With only the split plan enabled, data files are still written by iceberg-java; only the plan
-shape changes. The split makes the write's input visible to AQE and to Comet's columnar rules,
+shape changes. The split moves data-file writing inside AQE and separates it from the commit,
 and it is the foundation for the second toggle: when
-`spark.comet.iceberg.write.enabled=true` and the write passes the eligibility check below, the
+`spark.comet.write.iceberg.enabled=true` and the write passes the eligibility check below, the
 `IcebergWrite` operator's per-task Parquet write is delegated to
 [iceberg-rust](https://github.com/apache/iceberg-rust) via Comet's native execution pipeline
-([#5308](https://github.com/apache/datafusion-comet/issues/5308)).
+([#5361](https://github.com/apache/datafusion-comet/pull/5361)).
 
 ## How the native write works
 
@@ -64,6 +67,12 @@ the same `TaskCommit` message the JVM writer would have produced. Everything ice
 post-write — snapshot assignment, manifest-list aggregation, commit validation and retries —
 is untouched: `IcebergCommit` performs the normal `BatchWrite.commit`.
 
+Before a task opens a partition's first file, it holds that partition's first
+`write.parquet.page-row-limit` rows in memory, so that it can choose which columns to
+dictionary-encode the way iceberg-java would (see the accepted divergences below). The rows a
+task holds back this way, across all of its partitions, stay within about
+`write.parquet.row-group-size-bytes`.
+
 ## Configuration
 
 Standard Comet + Iceberg setup (see [`iceberg.md`](iceberg.md)) plus the write-side toggle:
@@ -79,8 +88,12 @@ spark.sql.catalog.<name>.warehouse=...
 # Split-operator plan (experimental, off by default)
 spark.comet.write.iceberg.splitOperator.enabled=true
 
-# Native-write eligibility detection (experimental, off by default; requires the split plan)
-spark.comet.iceberg.write.enabled=true
+# Native Parquet writer (experimental, off by default; requires the split plan)
+spark.comet.write.iceberg.enabled=true
+
+# Lets writes whose input is a local relation (INSERT ... VALUES, a local DataFrame) use the
+# native writer; see "Native Parquet write eligibility" below
+spark.comet.exec.localTableScan.enabled=true
 ```
 
 ## Supported operations
@@ -92,6 +105,12 @@ supports:
 - `INSERT OVERWRITE`, static and dynamic (`OverwriteByExpression`,
   `OverwritePartitionsDynamic`)
 - Copy-on-write `DELETE` / `UPDATE` / `MERGE` (`ReplaceData`)
+
+For an unpartitioned copy-on-write `MERGE`, the native Iceberg writer is reachable on Spark
+3.5+ when `spark.comet.exec.mergeRows.enabled=true`. With the flag disabled, the JVM
+`MergeRowsExec` breaks the fully-native child chain required by `CometIcebergWriteExec`.
+On Spark 4.1+, the native MergeRows path also preserves the semantic counters required by the
+summary-aware writer commit contract.
 
 The mechanism behind row-level DML differs by Spark version: on Spark 4.0+ the analyzer emits
 operation-coded rows that Comet's writer dispatches through `ReplaceData`'s projections, while
@@ -122,8 +141,8 @@ trade-off, only no plan change.
 
 ## Native Parquet write eligibility
 
-When `spark.comet.iceberg.write.enabled=true`
-([#5308](https://github.com/apache/datafusion-comet/issues/5308)), the `IcebergWrite` operator's
+When `spark.comet.write.iceberg.enabled=true`
+([#5361](https://github.com/apache/datafusion-comet/pull/5361)), the `IcebergWrite` operator's
 per-task Parquet write is delegated to [iceberg-rust](https://github.com/apache/iceberg-rust).
 The native writer must produce the same outcome as iceberg-java — the same Parquet features,
 statistics, and manifest metadata — so a write is only eligible when every table property it
@@ -132,7 +151,16 @@ feeding the write is fully Comet-native. For a partitioned table that plan inclu
 distribution and local sort Iceberg requests on its partition transforms; those stay native
 because the transforms themselves have native implementations (see
 [Iceberg system functions](iceberg.md)). Ineligible writes run through iceberg-java unchanged,
-with the reason reported as a fall-back reason in Comet's extended EXPLAIN output.
+with the reason reported as a fall-back reason in Comet's extended EXPLAIN output. A write that
+runs natively shows `CometIcebergWrite` under `IcebergCommit` in the physical plan; an ineligible
+write keeps `IcebergWrite`.
+
+The native writer reads its input as Arrow batches from a Comet operator, so the write's input
+must itself run in Comet. A write whose input is a local relation, such as `INSERT ... VALUES` or
+`df.writeTo(...).append()` on a DataFrame built from local data, is fed by Spark's
+`LocalTableScanExec`, which Comet only converts when `spark.comet.exec.localTableScan.enabled=true`
+(off by default). Without that setting such writes run through iceberg-java even when both write
+flags are on.
 
 **Most Iceberg write settings are not supported.** Detection is an allowlist: a write is
 eligible only when its entire effective configuration matches the table below, and anything
@@ -158,24 +186,27 @@ A write is eligible only when ALL of the following hold:
 | `write.metadata.metrics.*`                                                                                                                  | any value (manifest metrics are re-derived on the JVM with Iceberg's own logic)                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `write.spark.fanout.enabled`                                                                                                                | any value (the native writer implements both clustered and fanout modes)                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `write.target-file-size-bytes`                                                                                                              | any value (the two writers can choose different roll points; see accepted divergences)                                                                                                                                                                                                                                                                                                                                                                                          |
-| data location URI scheme                                                                                                                    | `file`, `memory`, `s3`, `s3a`, `gs` (`gs` only when the `FileIO` opening the data location is a `GCSFileIO`; see below)                                                                                                                                                                                                                                                                                                                                                         |
-| partition spec                                                                                                                              | any                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| data location URI scheme                                                                                                                    | `file`, `memory`, `s3`, `s3a`, `gs`, matched case-sensitively (`S3://` falls back). `s3`, `s3a` and `gs` need a bucket in the authority (`s3://bucket/...`), so a hostless form such as `s3:/bucket/key` falls back. `gs` only when the `FileIO` opening the data location is a `GCSFileIO`; see below                                                                                                                                                                          |
+| resolved `table.locationProvider()`                                                                                                         | Iceberg's built-in `DefaultLocationProvider`                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| partition spec                                                                                                                              | any, except an identity partition on a `float` or `double` column, or a `void` field whose source column was dropped beside a live field (see below)                                                                                                                                                                                                                                                                                                                            |
 | column types                                                                                                                                | any except `uuid` (Spark plans it as a string; no Arrow cast reaches `fixed(16)`)                                                                                                                                                                                                                                                                                                                                                                                               |
 
 Within the namespaces that shape data-file bytes — `write.parquet.*` and `parquet.*` —
 everything not listed above must be absent: unvetted `write.parquet.*` keys (e.g.
 `bloom-filter-max-bytes`, `stats-enabled.column.*`, keys added by future Iceberg versions),
 any `parquet.*` table property (including `parquet.enable.dictionary`), and any `parquet.*`
-key in the session Hadoop configuration (with `HadoopFileIO`-backed output those reach
+key in the session Hadoop configuration other than the reader-only
+`parquet.hadoop.vectored.io.enabled` (with `HadoopFileIO`-backed output those reach
 iceberg-java's writer but not the native one). Also gated explicitly: any `encryption.*` key,
 `write.object-storage.enabled=true`, `write.location-provider.impl`, and `io-impl`.
 
-Two checks look past properties at the table's instantiated state, because both can be
+Three checks look past properties at the table's instantiated state, because they can be
 configured at the catalog level (or by a custom `TableOperations`) without any table or write
-property changing: `table.io()` must be a recognized `FileIO` (the same allowlist the native
-scan uses, minus the `EncryptingFileIO` family — the native writer produces plaintext files,
-so an encrypting `FileIO` is rejected on the write side), and `table.encryption()` must be
-Iceberg's `PlaintextEncryptionManager`. Anything else falls back.
+property changing: `table.locationProvider()` must be Iceberg's `DefaultLocationProvider`;
+`table.io()` must be a recognized `FileIO` (the same allowlist the native scan uses, minus the
+`EncryptingFileIO` family — the native writer produces plaintext files, so an encrypting `FileIO`
+is rejected on the write side); and `table.encryption()` must be Iceberg's
+`PlaintextEncryptionManager`. Anything else falls back.
 
 A `gs` data location additionally requires that the `FileIO` actually opening it is a
 `GCSFileIO` (for a `ResolvingFileIO`, the delegate it instantiates for that location,
@@ -185,6 +216,19 @@ Configuration, and only `fs.s3a.*` is translated into the native `FileIO`, so th
 could resolve a different storage identity or endpoint than the JVM writer would. That
 combination falls back; a `GCSFileIO` carries its `gcs.*` settings in `FileIO.properties()`,
 which are forwarded.
+
+An identity partition on a `float` or `double` column falls back. iceberg-rust compares float
+partition values with an equality that treats `-0.0` and `0.0` as one value, so the native writer
+would put rows with either value in the same partition, where iceberg-java writes two. A read
+that prunes on the other value's partition would then miss rows. The fall-back stays until
+iceberg-rust distinguishes the two values
+([apache/iceberg-rust#3325](https://github.com/apache/iceberg-rust/issues/3325)).
+
+A format-version-1 table keeps a dropped partition field as a `void` field, and its source column
+can be dropped afterwards. A spec that mixes such a field with a live one falls back: iceberg-java
+cannot write through it either, so the write fails with iceberg-java's own error rather than in
+the native writer ([#6141](https://github.com/apache/datafusion-comet/issues/6141)). A spec whose
+fields are all `void` writes unpartitioned and stays eligible.
 
 Other `write.*` properties are intentionally not gated because they cannot make the native
 writer produce different data files: distribution and ordering settings shape the Spark plan
@@ -220,16 +264,17 @@ Partial results are never committed. The commit set is exactly the commit messag
 successful tasks — a failed task contributes none — and if the job fails, the driver-side
 commit operator aborts without committing anything. A failed task attempt also deletes the
 data files it created, as iceberg-java's writer abort does. The native writer records every
-location it hands to a file writer, and exactly one side owns deleting them at any moment: the
-native writer owns them until its output batch reaches the JVM (so it cleans up a failed write,
-a task torn down before the write completed — for example because the operator feeding it threw
-— and a failure encoding the manifest or building that batch), and the JVM owns them from then
-on through a task failure listener. The handoff does not depend on decoding the manifest: the
-native side reports the locations in the output batch alongside it, and the listener is handed
-them before the manifest is decoded, so a failure in that decode still cleans up. Both
-deletions are best-effort and never mask the original failure; anything they miss is invisible
-to every reader, since readers resolve files through committed manifests only, and is reclaimed
-by Iceberg's normal `remove_orphan_files` maintenance.
+location it hands to a file writer, and cleanup has no ownership gap. Native keeps its cleanup
+guard armed after yielding the output batch. The JVM reads those locations into a task failure
+listener first, then polls the native output to EOF; that EOF is the acknowledgement that lets
+native disarm. A failure in this narrow handoff window can therefore trigger best-effort deletion
+on both sides, which is harmless. The native guard still covers a failed write, a task torn down
+before the write completed — for example because the operator feeding it threw — and a failure
+encoding the manifest or building the output batch. The handoff does not depend on decoding the
+manifest: the locations are read before the manifest is decoded, so a failure in that decode still
+cleans up. Cleanup never masks the original failure; anything it misses is invisible to every
+reader, since readers resolve files through committed manifests only, and is reclaimed by Iceberg's
+normal `remove_orphan_files` maintenance.
 
 When one task fails, the tasks that had already completed leave committed-nothing data files
 too. The committer collects each task's commit message as that task finishes, so on a job
@@ -245,7 +290,7 @@ unchanged.
 
 Some differences between parquet-mr and the pinned parquet-rs / iceberg-rust are unconditional —
 they apply to every native write and cannot be configured away. Enabling
-`spark.comet.iceberg.write.enabled` accepts them. They fall into three classes with very
+`spark.comet.write.iceberg.enabled` accepts them. They fall into three classes with very
 different blast radius: differences confined to the physical bytes of a data file (cosmetic —
 no reader decision is based on them), differences visible in manifest metadata (these outlive
 the write and feed later readers' pruning decisions, so each one is analyzed individually
@@ -266,19 +311,32 @@ a data file but not what any reader computes from it:
 - Dictionary-encoded pages are labeled `RLE_DICTIONARY` (parquet-mr v1 files: `PLAIN_DICTIONARY`).
 - Fixed-length binary columns (`uuid`, `fixed`, decimals with precision > 18) are not
   dictionary-encoded (parquet-mr dictionary-encodes them).
+- Which columns are dictionary-encoded is decided as parquet-mr decides it: a column whose first
+  data page shows the dictionary saving no space is written plain, with no dictionary page,
+  instead of carrying a dictionary page that every selective read of it would have to fetch
+  ([#6114](https://github.com/apache/datafusion-comet/issues/6114)). The native writer decides
+  once per partition, from that partition's first page of rows in the task, and keeps the
+  decision for every file and row group it writes for the partition; parquet-mr decides again
+  for every row group. Where the page size rather than `write.parquet.page-row-limit` ends a
+  column's first page, the native page ends at the first row past parquet-mr's size threshold,
+  while parquet-mr only ends it at its next periodic size check, so a column close to the
+  cut-off can be decided the other way. Close to the cut-off both encodings take about the same
+  space. A column that keeps its dictionary and later fills it falls back to plain on both
+  writers, but parquet-rs's dictionary page then holds every entry, where parquet-mr's holds
+  only the entries earlier pages used.
 - Row-group boundaries: parquet-mr flushes by byte size at a record-count check cadence,
   parquet-rs buffers by row count. File naming follows the same cadence-style difference
   (iceberg-java names files `<partition>-<task>-<operation>-<count>`; iceberg-rust uses a
   process-local counter).
 - Partition directory names match iceberg-java 1.8+'s `PartitionSpec.partitionToPath` for every
-  partition type except `float` and `double`, where the value is rendered with Rust's shortest
-  representation instead of `Float.toString` / `Double.toString` (`f=1` where iceberg-java writes
-  `f=1.0`). On Iceberg 1.5.x, which the Spark 3.4 profile pins, iceberg-java itself spelled
-  `timestamp` and `timestamptz` directories with `LocalDateTime.toString()` /
-  `OffsetDateTime.toString()` (`ts=1969-12-31T23:59:58.500Z`) and left the partition field name
-  unescaped; Comet uses the 1.8+ spelling on every profile. Distinct partition values still get
-  distinct directories in all cases, and no reader parses these names — files are resolved through
-  committed manifests. Iceberg deprecated float and double partitioning in 1.3.
+  partition type the native writer accepts. Identity partitions on `float` and `double` columns
+  fall back (see [Native Parquet write eligibility](#native-parquet-write-eligibility)), so
+  iceberg-java names those directories itself. On Iceberg 1.5.x,
+  which the Spark 3.4 profile pins, iceberg-java itself spelled `timestamp` and `timestamptz`
+  directories with `LocalDateTime.toString()` / `OffsetDateTime.toString()`
+  (`ts=1969-12-31T23:59:58.500Z`) and left the partition field name unescaped; Comet uses the
+  1.8+ spelling on every profile. Distinct partition values still get distinct directories in all
+  cases, and no reader parses these names: files are resolved through committed manifests.
 - File rolling lands on the same row grid as iceberg-java but not necessarily on the same row.
   Both writers re-check the current file's size against `write.target-file-size-bytes` once
   every 1000 rows of that file (iceberg-java's `RollingFileWriter.ROWS_DIVISOR`; Comet hands the
@@ -315,8 +373,9 @@ so a divergence here would outlive the write. This class is deliberately kept al
 from each written file's parquet footer through iceberg-java's own `ParquetUtil.footerMetrics`
 and `MetricsConfig.forTable` (see above). Metrics modes, lower/upper bound truncation, the
 null-count conventions, and list/map bounds suppression are therefore iceberg-java's code
-making iceberg-java's decisions, and the parity suite compares committed manifests
-byte-for-byte against JVM-written ones. Two footer-derived values can still differ from what
+making iceberg-java's decisions. The parity tests write the same rows through both writers and
+compare the committed `readable_metrics` (value, null and NaN counts, and lower and upper bounds)
+for the column types they cover. Two footer-derived values can still differ from what
 iceberg-java's _writer-tracked_ state would have recorded, and both are analyzed safe:
 
 - Float/double bounds involving zero may differ in sign: parquet-rs normalises footer
@@ -324,7 +383,7 @@ iceberg-java's _writer-tracked_ state would have recorded, and both are analyzed
   iceberg-java's writer-tracked bounds preserve the exact sign it saw. The native path's
   manifest bounds inherit the normalised values — a strictly conservative widening that cannot
   change pruning decisions.
-- On Iceberg 1.10+, manifest `value_counts` / `null_value_counts` for float/double columns
+- On Iceberg 1.9+, manifest `value_counts` / `null_value_counts` for float/double columns
   nested under a nullable struct count rows whose parent struct is null (they come from the
   parquet footer), while iceberg-java's writer-tracked counts do not. Both counts inflate by
   the same amount, so the derived null ratios and `IS NULL` / `IS NOT NULL` pruning decisions

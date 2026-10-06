@@ -29,15 +29,17 @@ Arrow format, allowing the Comet pipeline to take over after that, but the proce
 
 ### Apache Iceberg
 
-Comet accelerates Iceberg scans of Parquet files. See the [Iceberg Guide] for more information.
+Comet accelerates Iceberg scans of Parquet files and has an experimental, opt-in native Iceberg writer.
+See the [Iceberg Guide] and [Iceberg Writes](iceberg-writes.md) for more information.
 
-[Iceberg Guide]: iceberg.md
+[iceberg guide]: iceberg.md
 
 ### CSV
 
 Comet provides experimental Rust-based CSV scan support. When `spark.comet.scan.csv.v2.enabled` is enabled, CSV files
 are read in Rust for improved performance. This feature is experimental and performance benefits are
-workload-dependent.
+workload-dependent. Only Spark's DataSource V2 CSV scan is accelerated, and Spark reads CSV through the V1 API by
+default, so also remove `csv` from `spark.sql.sources.useV1SourceList`.
 
 Alternatively, when `spark.comet.convert.csv.enabled` is enabled, data from Spark's CSV reader is immediately
 converted into Arrow format, allowing the Comet pipeline to take over after that.
@@ -47,13 +49,42 @@ converted into Arrow format, allowing the Comet pipeline to take over after that
 Comet does not provide a Rust-based JSON scan, but when `spark.comet.convert.json.enabled` is enabled, data is immediately
 converted into Arrow format, allowing the Comet pipeline to take over after that.
 
+### Other Spark inputs
+
+Comet can also convert the output of these Spark inputs to Arrow format, so that the operators
+above them can run in Comet. Each conversion is off by default.
+
+- `spark.comet.convert.range.enabled`: `spark.range` and SQL `range()`, for ranges that Comet does
+  not generate natively with `spark.comet.exec.range.enabled`.
+- `spark.comet.convert.inMemoryCache.enabled`: in-memory cached tables that Comet's native cache
+  scan does not read, such as tables cached in Spark's default format.
+- `spark.comet.convert.rdd.enabled`: a DataFrame created from an RDD of rows, for example with
+  `spark.createDataFrame(rdd, schema)`.
+- `spark.comet.convert.oneRowRelation.enabled`: the single row that a query without a `FROM`
+  clause, such as `SELECT 1`, reads.
+- `spark.comet.convert.rowDataSource.enabled`: Data Source V1 relations that are not file-based,
+  such as JDBC tables, which Spark scans with `RowDataSourceScanExec`.
+
+To convert any other leaf operator, such as the scan of a Data Source V2 connector or of a file
+format other than Parquet, JSON and CSV, set `spark.comet.sparkToColumnar.enabled=true` and name the
+operator in `spark.comet.sparkToColumnar.supportedOperatorList` by its Spark class name without the
+`Exec` suffix, such as `BatchScan` or `FileSourceScan`.
+
 ### Spark-to-Comet conversion types
 
-Spark-to-Comet conversion supports `ARRAY<STRING>` with binary string semantics, including
-nullable arrays and nullable elements, both as top-level fields and inside supported structs.
+Spark-to-Comet conversion supports `ARRAY<STRING>` and `MAP<STRING,STRING>` with binary
+string semantics, both as top-level fields and inside supported structs. Arrays and maps may
+be null; array elements and map values may also be null. Map keys must be non-null.
 This applies to Spark row and columnar inputs when conversion is enabled for the source.
-Other array element types, nested arrays, arrays of structs, maps, and non-binary string
-collations remain unsupported at this conversion boundary. Source defaults are unchanged.
+Other array element types, other map key/value types, nested collections, and non-binary
+string collations remain unsupported at this conversion boundary. Source defaults are unchanged.
+
+This includes row-backed `ExistingRDD` inputs when `spark.comet.convert.rdd.enabled=true`. Spark
+still produces the RDD rows; conversion lets eligible downstream operators execute in Comet.
+
+The same types apply to the output of typed `Dataset` operations, such as `map`, which Comet
+converts when `spark.comet.convert.typedDataset.enabled=true`. A column of any other type keeps
+the operators above the typed operation on Spark.
 
 ## Data Catalogs
 
@@ -308,6 +339,10 @@ credential providers and options documented above also apply to alias-scheme URL
 translation feeds the native Iceberg scan; see
 [Object store configuration (S3)](iceberg.md#object-store-configuration-s3) in the Iceberg guide.
 
+A native Parquet scan whose alias-scheme paths span more than one bucket falls back to Spark. Alias
+schemes apply to native scans only: a native Iceberg write to an alias-scheme location falls back to
+iceberg-java.
+
 ### Examples
 
 The following examples demonstrate how to configure S3 access using different authentication methods.
@@ -344,7 +379,7 @@ Comet's S3 support has the following limitations:
 
 1. **Partial Hadoop S3A configuration support**: Not all Hadoop S3A configurations are currently supported. Only the configurations listed in the tables above are translated and applied to the underlying `object_store` crate.
 
-2. **Custom credential providers**: Custom implementations of AWS credential providers are not supported. The implementation only supports the standard credential providers listed in the table above. We are planning to add support for custom credential providers through a JNI-based adapter that will allow calling Java credential providers from Rust code. See [#1829](https://github.com/apache/datafusion-comet/issues/1829) for more details.
+2. **Custom credential providers**: Custom credential provider classes named in `fs.s3a.aws.credentials.provider` are not supported; only the standard providers listed in the table above are. To route credential requests through your own Java code, implement Comet's `CometS3CredentialProvider` SPI; see [S3 Credential Providers](s3-credential-providers.md). Broader Hadoop S3A integration is tracked in [#1829](https://github.com/apache/datafusion-comet/issues/1829).
 
 ## Azure
 

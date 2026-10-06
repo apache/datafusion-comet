@@ -83,8 +83,8 @@ env:
 jobs:
 
   # Fast lint check - gates all other jobs. Runs in cache-refresh-only mode too:
-  # it is 40 seconds, and `build-native` and `linux-test-rust` both `needs:` it,
-  # so skipping it would skip the two jobs the push tier exists to run.
+  # it is 40 seconds, and `build-native` `needs:` it, so skipping it would skip
+  # the job the push tier exists to run.
   lint:
     name: Lint
     runs-on: ubuntu-24.04
@@ -109,10 +109,8 @@ jobs:
 
   # Fast syntactic-only scalafix check. Parses sources without compiling, so it
   # surfaces version-independent style issues (e.g. RedundantSyntax) in seconds,
-  # long before the lint-java matrix finishes its ~3.5 min build. It also scans
-  # the spark-4.1 / spark-4.2 sources that lint-java skips (those profiles can't
-  # run -Psemanticdb yet), so it is the only gate covering them. The full rule
-  # set, including the semantic rules, still runs in lint-java.
+  # long before the lint-java matrix finishes its ~3.5 min build. The full rule
+  # set, including the semantic rules, runs in lint-java.
   scalafix-syntactic:
     name: Lint Scala (syntactic)
     if: ${{ !inputs.cache-refresh-only && inputs.profiles != 'nightly' }}
@@ -177,10 +175,12 @@ jobs:
           - name: "Spark 4.0, JDK 21"
             java_version: "21"
             maven_opts: "-Pspark-4.0"
-          # Spark 4.1 and 4.2 are intentionally absent: the lint job invokes -Psemanticdb,
-          # but semanticdb-scalac for those Scala patch versions (2.13.17 / 2.13.18) is not
-          # yet published, so we cannot currently run scalafix against the spark-4.1 or
-          # spark-4.2 profiles.
+          - name: "Spark 4.1, JDK 17"
+            java_version: "17"
+            maven_opts: "-Pspark-4.1"
+          - name: "Spark 4.2, JDK 17"
+            java_version: "17"
+            maven_opts: "-Pspark-4.2"
       fail-fast: false
     steps:
       - uses: actions/checkout@v7
@@ -240,13 +240,14 @@ jobs:
             /root/.m2/repository
           key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-lint
 
-  # Compile-only verification for Spark 4.1. Tests are intentionally skipped: the spark-4.1
-  # profile is currently a build target only, and several runtime/test failures are tracked
-  # in follow-up PRs. Excluded from lint-java because semanticdb-scalac_2.13.17 is not yet
-  # published and the lint job activates -Psemanticdb.
-  build-spark-4-1:
+  # Compiles main and test sources with -Pstrict-warnings, which promotes scalac warnings to
+  # errors, so a change that reintroduces a cleared warning (an Int widened into a Long metric,
+  # a discarded builder result) fails here rather than accumulating. Spark 3.5 only: the profile
+  # passes on the Scala 2.12 profiles, and the Scala 2.13 remainder is tracked in
+  # https://github.com/apache/datafusion-comet/issues/5893.
+  strict-scala-warnings:
     needs: lint
-    name: Build Spark 4.1, JDK 17
+    name: Strict Scala warnings (Spark 3.5, JDK 17)
     if: ${{ !inputs.cache-refresh-only && inputs.profiles != 'nightly' }}
     runs-on: ubuntu-24.04
     container:
@@ -267,12 +268,12 @@ jobs:
           path: |
             ~/.m2/repository
             /root/.m2/repository
-          key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-spark-4.1-build
+          key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-strict-warnings
           restore-keys: |
             ${{ runner.os }}-java-maven-
 
-      - name: Compile (skip tests)
-        run: ./mvnw -B install -DskipTests -Dmaven.test.skip=true -Pspark-4.1
+      - name: Compile with strict warnings
+        run: ./mvnw -B test-compile -Pspark-3.5 -Pstrict-warnings -DskipTests
 
       # Saved only on main: an entry written from a pull request or a
       # `gh-readonly-queue/*` branch cannot be restored by any later run, and
@@ -285,7 +286,7 @@ jobs:
           path: |
             ~/.m2/repository
             /root/.m2/repository
-          key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-spark-4.1-build
+          key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-strict-warnings
 
   celeborn-reflection-compatibility:
     needs: lint
@@ -348,6 +349,11 @@ jobs:
   # Build native library once and share with all test jobs. Also the owner of
   # main's `cargo-ci` cache entry, which is why it runs in cache-refresh-only
   # mode: rebuilding native/target from cold costs every pull request ~20 min.
+  #
+  # The key covers the dependency set only. Keying on the Rust sources as well
+  # wrote a fresh ~1.4 GB entry on every push that touched Rust, which helped
+  # nobody (the workspace crates recompile either way) and pushed main's other
+  # entries out of the repository's 10 GB budget. See issue #6387.
   build-native:
     needs: lint
     name: Build Native Library
@@ -363,15 +369,14 @@ jobs:
           jdk-version: 17  # JDK only needed for JVM module proto generation
 
       - name: Restore Cargo cache
+        id: cargo-cache
         uses: actions/cache/restore@v6
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             native/target
-          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-
+          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}
 
       - name: Build native library (CI profile)
         run: |
@@ -386,31 +391,38 @@ jobs:
         uses: ./.github/actions/upload-artifact-retry
         with:
           name: native-lib-linux
-          path: native/target/ci/libcomet.so
+          # libcomet_test_udfs is the cdylib CometNativeUdfSuite loads; it is built by the same
+          # cargo invocation and the suite finds it next to libcomet.
+          path: |
+            native/target/ci/libcomet.so
+            native/target/ci/libcomet_test_udfs.so
           retention-days: 1
 
       - name: Save Cargo cache
         uses: actions/cache/save@v6
-        # The push run is the cache warmer (see the header); a scheduled run
-        # at the same sha would only re-archive an entry that already exists.
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        # The push run is the cache warmer (see the header), and it writes only
+        # when this dependency set has no entry yet. A scheduled run at the
+        # same sha would only re-archive an entry that already exists.
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             native/target
-          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
+          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}
 
   # Run Rust tests (runs in parallel with build-native, uses debug builds).
-  # Owns main's `cargo-debug` cache entry, so it runs in cache-refresh-only mode
-  # as well. The tests themselves are a small slice of its runtime -- almost all
-  # of it is the compile that populates the cache -- so there is nothing to gain
-  # from a compile-only variant, and running them keeps the cache contents
-  # identical to what a pull request restores.
+  #
+  # Deliberately uncached. A debug native/target is 4-5 GB, the largest entry
+  # the repository ever held, and it kept main's `cargo-ci` entry, which the
+  # native builds on the critical path need, from staying resident. This job is
+  # never the long pole of a run, so compiling the dependencies from scratch
+  # costs about 7 runner-minutes and no wall-clock time. With no cache to write
+  # it has nothing to do on push either. See issue #6387.
   linux-test-rust:
     needs: lint
     name: ubuntu-latest/rust-test
-    if: ${{ inputs.profiles != 'nightly' }}
+    if: ${{ !inputs.cache-refresh-only && inputs.profiles != 'nightly' }}
     runs-on: ubuntu-24.04
     container:
       image: amd64/rust
@@ -423,32 +435,8 @@ jobs:
           rust-version: ${{ env.RUST_VERSION }}
           jdk-version: 17
 
-      - name: Restore Cargo cache
-        uses: actions/cache/restore@v6
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            native/target
-          # Note: Java version intentionally excluded - Rust target is JDK-independent
-          key: ${{ runner.os }}-cargo-debug-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-debug-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-
-
       - name: Rust test steps
         uses: ./.github/actions/rust-test
-
-      - name: Save Cargo cache
-        uses: actions/cache/save@v6
-        # The push run is the cache warmer (see the header); a scheduled run
-        # at the same sha would only re-archive an entry that already exists.
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            native/target
-          key: ${{ runner.os }}-cargo-debug-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
 
   linux-test:
     # `lint` is already upstream via build-native; it is listed here so this
@@ -473,18 +461,19 @@ jobs:
               org.apache.comet.parquet.CometParquetWriterSuite
               org.apache.comet.parquet.CometEmptyRelationParquetWriterSuite
               org.apache.comet.parquet.ParquetReadV1Suite
-              org.apache.comet.parquet.ParquetReadV2Suite
               org.apache.comet.parquet.ParquetTimestampLtzAsNtzSuite
-              org.apache.spark.sql.comet.ParquetDatetimeRebaseV1Suite
-              org.apache.spark.sql.comet.ParquetDatetimeRebaseV2Suite
               org.apache.spark.sql.comet.ParquetEncryptionITCase
               org.apache.comet.exec.CometNativeReaderSuite
+              org.apache.comet.CometVariantProjectionSuite
+              org.apache.spark.sql.CometVariantShreddingSuite
               org.apache.comet.CometIcebergNativeSuite
               org.apache.comet.CometIcebergEncryptionSuite
               org.apache.comet.CometIcebergRewriteActionSuite
               org.apache.comet.CometIcebergWriteActionSuite
               org.apache.comet.CometIcebergWriteDetectionSuite
               org.apache.comet.CometIcebergSystemFunctionSuite
+              org.apache.comet.CometIcebergSystemFunctionExtensionsSuite
+              org.apache.comet.CometIcebergResidualPushdownSuite
               org.apache.comet.iceberg.IcebergReflectionSuite
               org.apache.comet.serde.operator.IcebergWriteProtoTranslationSuite
               org.apache.comet.csv.CometCsvNativeReadSuite
@@ -512,22 +501,28 @@ jobs:
               org.apache.spark.sql.comet.execution.shuffle.CometDiskBlockWriterSuite
               org.apache.comet.exec.CometShuffleEncryptionSuite
               org.apache.comet.exec.CometShuffleManagerSuite
-              org.apache.comet.exec.CometAsyncShuffleSuite
               org.apache.comet.exec.DisableAQECometShuffleSuite
-              org.apache.comet.exec.DisableAQECometAsyncShuffleSuite
-              org.apache.spark.shuffle.comet.CometBoundedShuffleMemoryAllocatorSuite
+              org.apache.spark.shuffle.comet.CometUnboundedShuffleMemoryAllocatorSuite
               org.apache.spark.shuffle.sort.SpillSorterSuite
           - name: "exec"
             value: |
               org.apache.comet.exec.CometAggregateSuite
               org.apache.comet.exec.CometExec3_4PlusSuite
               org.apache.comet.exec.CometExecSuite
+              org.apache.comet.exec.CometMergeRowsSuite
+              org.apache.comet.exec.CometTopKSuite
               org.apache.comet.exec.CometEmptyRelationExecSuite
+              org.apache.comet.exec.CometRangeExecSuite
               org.apache.comet.exec.CometInMemoryCacheSuite
+              org.apache.comet.exec.CometInMemoryCachePruningSuite
               org.apache.comet.exec.CometInMemoryCacheKryoSuite
+              org.apache.comet.exec.CometInMemoryCacheKryoUnregisteredSuite
+              org.apache.comet.exec.CometInMemoryCacheKryoClassesToRegisterSuite
+              org.apache.comet.exec.CometInMemoryCacheLastAttemptMetricSuite
               org.apache.comet.exec.CometGenerateExecSuite
               org.apache.comet.exec.CometWindowExecSuite
               org.apache.comet.exec.CometJoinSuite
+              org.apache.comet.exec.CometTypedDatasetSuite
               org.apache.spark.sql.comet.CometMapInBatchSuite
               org.apache.spark.sql.execution.python.CometArrowPythonRunnerSuite
               org.apache.comet.CometNativeSuite
@@ -536,6 +531,7 @@ jobs:
               org.apache.comet.QueryContextInternerSuite
               org.apache.comet.CometSetOpWithGroupBySuite
               org.apache.comet.CometSparkSessionExtensionsSuite
+              org.apache.spark.sql.comet.CometSessionExtensionsSuite
               org.apache.spark.CometPluginsSuite
               org.apache.spark.CometRuntimeShutdownSuite
               org.apache.spark.CometTaskMemoryManagerSuite
@@ -544,12 +540,16 @@ jobs:
               org.apache.spark.CometPluginsMemoryOverheadWarningSuite
               org.apache.spark.CometPluginsMemoryPoolFractionWarningSuite
               org.apache.spark.CometPluginsUnifiedModeSuite
+              org.apache.spark.CometPluginsExtensionOnlySuite
+              org.apache.spark.CometPluginsSparkShuffleManagerSuite
+              org.apache.spark.CometPluginsEventLogSuite
               org.apache.comet.rules.CometScanRuleSuite
               org.apache.comet.rules.CometScanContribSuite
               org.apache.comet.rules.CometScanSchemeFallbackSuite
               org.apache.comet.rules.CometExecRuleSuite
               org.apache.spark.sql.comet.CometPlanEqualitySuite
               org.apache.comet.rules.CometEmptyRelationExecRuleSuite
+              org.apache.comet.rules.EliminateRedundantTransitionsSuite
               org.apache.comet.rules.RevertNativeForTransitionHeavyStagesSuite
               org.apache.spark.sql.CometTPCDSQuerySuite
               org.apache.spark.sql.CometTPCDSQueryTestSuite
@@ -573,8 +573,12 @@ jobs:
               org.apache.comet.serde.operator.CometNativeScanSuite
               org.apache.spark.sql.CometToPrettyStringSuite
               org.apache.spark.sql.CometCollationSuite
+              org.apache.spark.sql.CometSortCollationSuite
               org.apache.comet.CometFuzzAggregateSuite
               org.apache.spark.sql.comet.execution.arrow.CometArrowStreamSuite
+              org.apache.spark.sql.comet.execution.arrow.CachedBatchRowIteratorSuite
+              org.apache.spark.sql.comet.execution.arrow.CometArrowWriterSuite
+              org.apache.spark.sql.comet.execution.arrow.CometStringWriterSuite
               org.apache.spark.sql.CometSparkInternalFunctionsSuite
           - name: "expressions"
             value: |
@@ -582,12 +586,13 @@ jobs:
               org.apache.comet.GenerateDocsSuite
               org.apache.comet.CometSqlFileTestSuite
               org.apache.comet.SqlFileTestParserSuite
-              org.apache.comet.CometExpressionCoverageSuite
               org.apache.comet.CometVariantTypeSuite
               org.apache.comet.CometHashExpressionSuite
+              org.apache.comet.CometFloatSemanticsSuite
               org.apache.comet.CometTemporalExpressionSuite
               org.apache.comet.CometArrayExpressionSuite
               org.apache.comet.CometNativeCastSuite
+              org.apache.comet.CometCastCollatedStringSuite
               org.apache.comet.CometDateTimeUtilsSuite
               org.apache.comet.CometMathExpressionSuite
               org.apache.comet.CometStringExpressionSuite
@@ -615,8 +620,10 @@ jobs:
               org.apache.comet.CometStringDecodeSuite
               org.apache.comet.CometWidthBucketSuite
               org.apache.comet.CometUuidExpressionSuite
+              org.apache.comet.CometNativeUdfSuite
               org.apache.comet.serde.CometScalarFunctionSuite
               org.apache.comet.serde.CometLiteralSuite
+              org.apache.comet.serde.QueryPlanSerdeSuite
               org.apache.comet.CometFallbackInvarianceSuite
       fail-fast: false
     name: ${{ matrix.profile.name }} [${{ matrix.suite.name }}]
