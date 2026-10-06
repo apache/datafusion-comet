@@ -837,6 +837,21 @@ expected size, but not necessarily the same rows.</p>
 it draws from a Poisson distribution that Comet does not implement natively
 (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5109">#5109</a>).</p>
 </section>
+<section id="sort-aggregation">
+<h2>Sort Aggregation<a class="headerlink" href="#sort-aggregation" title="Link to this heading">#</a></h2>
+<p>Comet runs <code class="docutils literal notranslate"><span class="pre">SortAggregateExec</span></code> natively when Comet shuffle is enabled and Comet supports every
+aggregate in it. The native aggregate keeps the grouping-key output order that Spark relies on.</p>
+<p>Decimal <code class="docutils literal notranslate"><span class="pre">sum</span></code> and <code class="docutils literal notranslate"><span class="pre">avg</span></code> over input precision 28 or more keep a running sum at precision 38, which
+can overflow even when the final sum fits. Whether Spark’s sort aggregation recovers from such an
+overflow depends on the other aggregates in the operator and on codegen. Comet does not track
+this, so a sort aggregate that contains such a <code class="docutils literal notranslate"><span class="pre">sum</span></code> or <code class="docutils literal notranslate"><span class="pre">avg</span></code> falls back to Spark.</p>
+<p><code class="docutils literal notranslate"><span class="pre">first</span></code> and <code class="docutils literal notranslate"><span class="pre">last</span></code> return the first or last value in the order that rows reach the aggregate,
+which Spark does not define within a group. Spark plans a sort aggregate for them when their buffer
+cannot use hash aggregation, for example over a string column. The sort below the aggregate orders
+rows by the grouping keys only, and Spark and Comet can leave rows with equal keys in different
+orders, so a group with more than one candidate value can return a different value than Spark.
+Both results are valid under Spark’s semantics for these functions.</p>
+</section>
 <section id="window-functions">
 <h2>Window Functions<a class="headerlink" href="#window-functions" title="Link to this heading">#</a></h2>
 <p>Comet runs <code class="docutils literal notranslate"><span class="pre">WindowExec</span></code> natively and it is enabled by default (<code class="docutils literal notranslate"><span class="pre">spark.comet.exec.window.enabled</span></code>). A broad set of
@@ -868,6 +883,11 @@ overflow instead of returning Spark’s <code class="docutils literal notranslat
 holding an array, such as <code class="docutils literal notranslate"><span class="pre">array(named_struct('x',</span> <span class="pre">x))</span></code>. DataFusion cannot compare those values to find the
 frame’s bounds (<a class="reference external" href="https://github.com/apache/datafusion/issues/24937">apache/datafusion#24937</a>). Ranking functions
 and <code class="docutils literal notranslate"><span class="pre">ROWS</span></code> frames over the same keys run natively.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">RANGE</span></code> frame bounded by <code class="docutils literal notranslate"><span class="pre">CURRENT</span> <span class="pre">ROW</span></code> when an <code class="docutils literal notranslate"><span class="pre">ORDER</span> <span class="pre">BY</span></code> key is an array or struct whose type can hold a null
+element or field, such as <code class="docutils literal notranslate"><span class="pre">array(x)</span></code> over a nullable <code class="docutils literal notranslate"><span class="pre">x</span></code>. DataFusion orders such a null above every other value
+when it looks for the frame’s bounds, while the sort puts it first as Spark does, so a frame could run to the end
+of the partition (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6477">#6477</a>). Ranking functions, <code class="docutils literal notranslate"><span class="pre">ROWS</span></code>
+frames, and a key that cannot hold a null element or field, such as <code class="docutils literal notranslate"><span class="pre">array(coalesce(x,</span> <span class="pre">0))</span></code>, run natively.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">first_value</span></code> / <code class="docutils literal notranslate"><span class="pre">last_value</span></code> on a <code class="docutils literal notranslate"><span class="pre">RANGE</span></code> frame with a literal offset
 (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4835">#4835</a>).</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">lag</span></code> / <code class="docutils literal notranslate"><span class="pre">lead</span></code> with a non-literal default value (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4268">#4268</a>).</p></li>
@@ -999,6 +1019,7 @@ they will be identical to Spark. Unsorted results may have different row orderin
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#empty-relations">Empty Relations</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#in-memory-cache">In-Memory Cache</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#sampling">Sampling</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#sort-aggregation">Sort Aggregation</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#window-functions">Window Functions</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#merge-into-mergerowsexec">MERGE INTO (MergeRowsExec)</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#round-robin-partitioning">Round-Robin Partitioning</a></li>
