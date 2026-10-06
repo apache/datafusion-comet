@@ -20,22 +20,17 @@
 package org.apache.comet.udf
 
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{ExpectsInputTypes, Expression}
-import org.apache.spark.sql.catalyst.expressions.codegen.CodegenFallback
+import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.types.DataType
 
 /**
- * A call to a vectorized UDF registered through [[CometJvmUDF]]. The function `register` installs
- * in the session builds one for each call it resolves.
+ * A call to a vectorized UDF registered through [[CometJvmUDF]].
  *
  * Comet replaces it with a native call that hands the arguments to `className` once per batch.
  * Spark evaluates it itself when Comet does not take the operator holding the call, inside an
  * expression the codegen dispatcher runs, and while planning in a few places: over local data, in
  * a filter on partition columns, and to sample the keys of a global sort. `eval` then runs the
  * UDF on one row at a time, which gives the same answer, only much more slowly.
- *
- * `argumentTypes` is the registered signature, one type per child. Spark's analyzer checks each
- * call against it, disregarding nullability, and inserts no casts.
  */
 case class JvmUdfCall(
     name: String,
@@ -44,26 +39,13 @@ case class JvmUdfCall(
     dataType: DataType,
     udfDeterministic: Boolean,
     children: Seq[Expression])
-    extends Expression
-    with ExpectsInputTypes
-    with CodegenFallback {
-
-  override def inputTypes: Seq[DataType] = argumentTypes
-
-  override def nullable: Boolean = true
-
-  override lazy val deterministic: Boolean =
-    udfDeterministic && children.forall(_.deterministic)
+    extends CometUdfCall {
 
   @transient private lazy val rowEvaluator =
     new JvmUdfRowEvaluator(className, argumentTypes, dataType)
 
   override def eval(input: InternalRow): Any =
     rowEvaluator.evaluate(InternalRow.fromSeq(children.map(_.eval(input))))
-
-  override def prettyName: String = name
-
-  override def toString: String = s"$name(${children.mkString(", ")})"
 
   override protected def withNewChildrenInternal(
       newChildren: IndexedSeq[Expression]): Expression =

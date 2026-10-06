@@ -20,21 +20,16 @@
 package org.apache.comet.udf
 
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{ExpectsInputTypes, Expression}
-import org.apache.spark.sql.catalyst.expressions.codegen.CodegenFallback
+import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.types.DataType
 
 /**
- * A call to a native UDF registered through [[CometNativeUDF]]. The function `register` installs
- * in the session builds one for each call it resolves.
+ * A call to a native UDF registered through [[CometNativeUDF]].
  *
  * Comet replaces it with a `NativeScalarUdf` that runs the function named `name` in the library
- * at `libraryPath`. Spark has no way to evaluate it, so `eval` throws. That happens only when
- * Comet does not take the operator holding the call, and failing there makes the fallback visible
- * rather than silent.
- *
- * `argumentTypes` is the registered signature, one type per child. Spark's analyzer checks each
- * call against it, disregarding nullability, and inserts no casts.
+ * at `libraryPath`. Spark has no way to evaluate it, so `eval` throws. Spark evaluates a call
+ * where Comet does not take the operator holding it, and while planning in a few places: over
+ * local data, in a filter on partition columns, and to sample the keys of a global sort.
  */
 case class NativeUdfCall(
     name: String,
@@ -43,22 +38,9 @@ case class NativeUdfCall(
     dataType: DataType,
     udfDeterministic: Boolean,
     children: Seq[Expression])
-    extends Expression
-    with ExpectsInputTypes
-    with CodegenFallback {
-
-  override def inputTypes: Seq[DataType] = argumentTypes
-
-  override def nullable: Boolean = true
-
-  override lazy val deterministic: Boolean =
-    udfDeterministic && children.forall(_.deterministic)
+    extends CometUdfCall {
 
   override def eval(input: InternalRow): Any = throw new CometUdfNotEvaluatedException(name)
-
-  override def prettyName: String = name
-
-  override def toString: String = s"$name(${children.mkString(", ")})"
 
   override protected def withNewChildrenInternal(
       newChildren: IndexedSeq[Expression]): Expression =

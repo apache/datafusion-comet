@@ -20,10 +20,7 @@
 package org.apache.comet.udf
 
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.comet.CometUdfErrors
 import org.apache.spark.sql.types.DataType
-
-import org.apache.comet.shims.ShimSessionFunctionRegistry
 
 /**
  * Entry point for registering scalar UDFs that run as native code inside Comet.
@@ -46,9 +43,10 @@ object CometNativeUDF {
   /**
    * Register a single native UDF with an explicit signature.
    *
-   * Validates the library on the driver (loads it, confirms a UDF named `name` exists), then
-   * installs `name` as a temporary function of the session, as `spark.udf.register` would: other
-   * sessions do not see it, and registering another function under the same name replaces it.
+   * Validates the library on the driver (loads it, confirms a UDF named `name` exists) and checks
+   * that Comet can carry the argument and return types natively, then installs `name` as a
+   * temporary function of the session, as `spark.udf.register` would: other sessions do not see
+   * it, and registering another function under the same name replaces it.
    *
    * Executors need no registration: the library path travels with the plan in the
    * `NativeScalarUdf` proto, and each executor loads the library itself on first use. The path
@@ -58,8 +56,9 @@ object CometNativeUDF {
    * argument types differ, other than in nullability, and inserts no casts, so cast the arguments
    * in the query instead.
    *
-   * Spark cannot evaluate the call itself: if Comet does not take the operator holding it, the
-   * query fails.
+   * Spark cannot evaluate the call itself, so a query fails where Spark would have to: in an
+   * operator Comet does not take, and while planning over local data, in a filter on partition
+   * columns, or to sample the keys of a global sort.
    *
    * `deterministic` must be `true`. Comet plans every imported kernel as immutable, so a
    * nondeterministic UDF cannot yet be expressed; passing `false` fails here rather than silently
@@ -85,21 +84,10 @@ object CometNativeUDF {
           "See https://github.com/apache/datafusion-comet/issues/5249")
     }
     validateLibrary(libraryPath, name)
-    ShimSessionFunctionRegistry
-      .functionRegistry(spark)
-      .createOrReplaceTempFunction(
-        name,
-        children => {
-          // Checked here, as built-in functions check it, because the analyzer's type coercion
-          // pairs arguments with types positionally before any check on the call would run.
-          if (children.length != inputTypes.length) {
-            throw CometUdfErrors.wrongNumArgs(name, inputTypes.length, children.length)
-          }
-          NativeUdfCall(name, libraryPath, inputTypes, returnType, deterministic, children)
-        },
-        // `ExpressionInfo` accepts only Spark's own source names. This is the one
-        // `spark.udf.register` gives a Scala UDF.
-        "scala_udf")
+    // The source `spark.udf.register` gives a Scala UDF.
+    CometUdfCall.register(spark, name, inputTypes, returnType, "scala_udf") { children =>
+      NativeUdfCall(name, libraryPath, inputTypes, returnType, deterministic, children)
+    }
   }
 
   /**
