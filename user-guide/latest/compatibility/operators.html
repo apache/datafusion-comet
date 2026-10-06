@@ -838,6 +838,18 @@ expected size, but not necessarily the same rows.</p>
 it draws from a Poisson distribution that Comet does not implement natively
 (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5109">#5109</a>).</p>
 </section>
+<section id="sort">
+<h2>Sort<a class="headerlink" href="#sort" title="Link to this heading">#</a></h2>
+<p>Spark orders a null element of an array sort key, or a null field of a struct sort key, below
+every other value, whatever the key’s <code class="docutils literal notranslate"><span class="pre">NULLS</span> <span class="pre">FIRST</span></code> or <code class="docutils literal notranslate"><span class="pre">NULLS</span> <span class="pre">LAST</span></code>. Comet’s native sort places it
+by the key’s null order instead. So a sort, TopK, or window order key whose type can hold a null
+element or field falls back to Spark under <code class="docutils literal notranslate"><span class="pre">ASC</span> <span class="pre">NULLS</span> <span class="pre">LAST</span></code> or <code class="docutils literal notranslate"><span class="pre">DESC</span> <span class="pre">NULLS</span> <span class="pre">FIRST</span></code>
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6476">#6476</a>). The default null orders,
+<code class="docutils literal notranslate"><span class="pre">ASC</span> <span class="pre">NULLS</span> <span class="pre">FIRST</span></code> and <code class="docutils literal notranslate"><span class="pre">DESC</span> <span class="pre">NULLS</span> <span class="pre">LAST</span></code>, place it where Spark does and run natively, and so does a
+key whose type cannot hold a null element or field, such as <code class="docutils literal notranslate"><span class="pre">array(coalesce(x,</span> <span class="pre">0))</span></code>. Set
+<code class="docutils literal notranslate"><span class="pre">spark.comet.expression.SortOrder.allowIncompatible=true</span></code> to run the other null orders natively
+anyway.</p>
+</section>
 <section id="sort-aggregation">
 <h2>Sort Aggregation<a class="headerlink" href="#sort-aggregation" title="Link to this heading">#</a></h2>
 <p>Comet runs <code class="docutils literal notranslate"><span class="pre">SortAggregateExec</span></code> natively when Comet shuffle is enabled and Comet supports every
@@ -1020,6 +1032,7 @@ they will be identical to Spark. Unsorted results may have different row orderin
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#empty-relations">Empty Relations</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#in-memory-cache">In-Memory Cache</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#sampling">Sampling</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#sort">Sort</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#sort-aggregation">Sort Aggregation</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#window-functions">Window Functions</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#merge-into-mergerowsexec">MERGE INTO (MergeRowsExec)</a></li>

@@ -739,8 +739,15 @@ chooses its own writer)</p></li>
 <code class="docutils literal notranslate"><span class="pre">IcebergWriteProtoTranslation</span></code></p></li>
 <li><p>the sort order id, which the native side ignores and the JVM stamps onto the files afterwards</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">catalog_properties</span></code> for the native <code class="docutils literal notranslate"><span class="pre">FileIO</span></code>: the table’s <code class="docutils literal notranslate"><span class="pre">FileIO.properties()</span></code> merged over the
-<code class="docutils literal notranslate"><span class="pre">fs.s3a.*</span></code> settings translated from the Hadoop configuration, the same translation the native
-scan uses</p></li>
+<code class="docutils literal notranslate"><span class="pre">fs.s3a.*</span></code> settings translated from the effective Hadoop configuration carried by the table’s
+<code class="docutils literal notranslate"><span class="pre">FileIO</span></code>, including SparkCatalog’s catalog-specific <code class="docutils literal notranslate"><span class="pre">hadoop.*</span></code> overrides at initialization.
+Later session or catalog changes do not replace values in that FileIO snapshot. Hadoop’s
+built-in default-source metadata is recovered separately for the S3 eligibility gate.
+FileIO implementations without a Hadoop configuration, such as <code class="docutils literal notranslate"><span class="pre">S3FileIO</span></code>, use only their
+initialized properties; session and catalog Hadoop options are neither checked nor forwarded.
+For <code class="docutils literal notranslate"><span class="pre">ResolvingFileIO</span></code>, this decision uses the instantiated delegate for the data location,
+including its <code class="docutils literal notranslate"><span class="pre">HadoopFileIO</span></code> fallback, rather than the wrapper’s Hadoop configuration.
+Failure to resolve that delegate causes a plan-time fallback.</p></li>
 </ul>
 <p>The per-task <code class="docutils literal notranslate"><span class="pre">partition_id</span></code> and <code class="docutils literal notranslate"><span class="pre">task_attempt_id</span></code> are stamped onto a copy of the proto inside the
 task closure in <code class="docutils literal notranslate"><span class="pre">CometIcebergWriteExec.doExecuteColumnar</span></code>. The native side refuses to run without
@@ -751,9 +758,12 @@ text dump, secrets included, into <code class="docutils literal notranslate"><sp
 adding fields.</p>
 <p>On Spark 4.x, copy-on-write <code class="docutils literal notranslate"><span class="pre">DELETE</span></code>/<code class="docutils literal notranslate"><span class="pre">UPDATE</span></code>/<code class="docutils literal notranslate"><span class="pre">MERGE</span></code> rows arrive with an operation code and file
 metadata columns around the data columns. <code class="docutils literal notranslate"><span class="pre">dropNonDataColumns</span></code> inserts a native <code class="docutils literal notranslate"><span class="pre">Projection</span></code> that
-keeps only the write schema’s columns. This is only equivalent to the JVM writer while format
-version 3 is declined, because on v3 iceberg-java reads row-lineage fields from those metadata
-columns.</p>
+keeps only the write schema’s columns. This is only equivalent to the JVM writer while the write
+schema has no row lineage columns. On a format-version 3 table, iceberg-java 1.10+ adds <code class="docutils literal notranslate"><span class="pre">_row_id</span></code>
+and <code class="docutils literal notranslate"><span class="pre">_last_updated_sequence_number</span></code> to the write schema of copy-on-write DML and
+<code class="docutils literal notranslate"><span class="pre">rewrite_data_files</span></code>, and fills them from those metadata columns. The gate’s
+<code class="docutils literal notranslate"><span class="pre">requireNoMetadataColumns</span></code> declines any write schema with a field id in the range the spec
+reserves for metadata columns, so those writes stay on iceberg-java.</p>
 </section>
 <section id="native-execution">
 <h3>Native execution<a class="headerlink" href="#native-execution" title="Link to this heading">#</a></h3>
@@ -817,6 +827,31 @@ order of an unordered read, so any map iteration that reaches the output needs t
 the storage backend from the data location’s scheme and wires in Comet’s S3 credential bridge when
 one is configured. For writes the bridge fails closed: if a configured provider cannot initialize,
 the task fails rather than writing with the default credential chain.</p>
+<p>The JVM eligibility gate fails closed before building that <code class="docutils literal notranslate"><span class="pre">FileIO</span></code> for an <code class="docutils literal notranslate"><span class="pre">s3</span></code> or <code class="docutils literal notranslate"><span class="pre">s3a</span></code> data
+location. It checks effective <code class="docutils literal notranslate"><span class="pre">fs.s3a.*</span></code> Hadoop settings against the six keys translated by
+<code class="docutils literal notranslate"><span class="pre">NativeConfig</span></code>, and separately checks <code class="docutils literal notranslate"><span class="pre">table.io().properties()</span></code> for <code class="docutils literal notranslate"><span class="pre">s3.*</span></code> / <code class="docutils literal notranslate"><span class="pre">client.*</span></code> keys
+against the properties consumed by the pinned iceberg-rust S3 parser and Comet credential bridge.
+That bridge set includes the explicit provider class and the built-in web-identity tuning
+properties documented in the S3 credential-provider guide. The <code class="docutils literal notranslate"><span class="pre">s3.sse.type</span></code> value is also
+checked: iceberg-rust supports <code class="docutils literal notranslate"><span class="pre">none</span></code>, <code class="docutils literal notranslate"><span class="pre">s3</span></code>, <code class="docutils literal notranslate"><span class="pre">kms</span></code>, and <code class="docutils literal notranslate"><span class="pre">custom</span></code>, but not Iceberg’s <code class="docutils literal notranslate"><span class="pre">dsse-kms</span></code>.
+When a Comet credential provider is configured, vendor-owned <code class="docutils literal notranslate"><span class="pre">s3.*</span></code> / <code class="docutils literal notranslate"><span class="pre">client.*</span></code> keys that are not
+part of Iceberg’s own S3 property vocabulary are preserved because the provider receives and may
+consume the unfiltered FileIO bag. Iceberg-defined properties remain subject to the storage
+allow-list, so configuring a provider does not make unsupported ACL, tag, storage-class, or other
+write settings eligible. That vocabulary is read from <code class="docutils literal notranslate"><span class="pre">S3FileIOProperties</span></code>,
+<code class="docutils literal notranslate"><span class="pre">AwsClientProperties</span></code>, and <code class="docutils literal notranslate"><span class="pre">AwsProperties</span></code>. Those classes link the AWS SDK, which HadoopFileIO does
+not always provide.
+If loading them fails with a linkage or class-not-found error, every non-allow-listed <code class="docutils literal notranslate"><span class="pre">s3.*</span></code> /
+<code class="docutils literal notranslate"><span class="pre">client.*</span></code> key falls back and planning continues; an empty vocabulary would admit <code class="docutils literal notranslate"><span class="pre">s3.acl</span></code>.
+Per-bucket <code class="docutils literal notranslate"><span class="pre">fs.s3a.bucket.&lt;bucket&gt;.*</span></code> keys are split into a complete bucket name and property
+suffix. <code class="docutils literal notranslate"><span class="pre">fs.s3a.bucket.target.other.endpoint</span></code> belongs to bucket <code class="docutils literal notranslate"><span class="pre">target.other</span></code>, so it does not
+make a write to <code class="docutils literal notranslate"><span class="pre">target</span></code> ineligible.
+The Hadoop check excludes keys whose only source is Hadoop’s built-in <code class="docutils literal notranslate"><span class="pre">core-default.xml</span></code>, while
+retaining programmatic, site-XML, and custom <code class="docutils literal notranslate"><span class="pre">*-default.xml</span></code> settings. It also ignores Spark’s
+session-wide S3A vectored-read and <code class="docutils literal notranslate"><span class="pre">downgrade.syncable.exceptions</span></code> settings, which cannot affect a
+data-file write request. Keep those allowlists aligned when adding storage support. Reaching
+<code class="docutils literal notranslate"><span class="pre">FileIOBuilder.with_prop</span></code> is not proof of support: the builder accepts unknown properties and the
+backend ignores them. A fallback reason must contain property names only, never values.</p>
 </section>
 <section id="native-to-jvm-the-task-payload">
 <h3>Native to JVM: the task payload<a class="headerlink" href="#native-to-jvm-the-task-payload" title="Link to this heading">#</a></h3>
@@ -830,7 +865,9 @@ length-prefixed UTF-8 string per location).</p></li>
 <p><code class="docutils literal notranslate"><span class="pre">CometIcebergWriteExec.doExecute</span></code> then, per task:</p>
 <ol class="arabic simple">
 <li><p>takes cleanup ownership of the locations from column 2 (see below)</p></li>
-<li><p>decodes the manifest with Iceberg’s own <code class="docutils literal notranslate"><span class="pre">ManifestFiles.read</span></code> (<code class="docutils literal notranslate"><span class="pre">decodeManifestToDataFiles</span></code>)</p></li>
+<li><p>decodes the manifest with Iceberg’s own <code class="docutils literal notranslate"><span class="pre">ManifestFiles.read</span></code> (<code class="docutils literal notranslate"><span class="pre">decodeManifestToDataFiles</span></code>).
+The transport manifest has no <code class="docutils literal notranslate"><span class="pre">first_row_id</span></code>, so the decoded files carry none, and on a
+format-version 3 table the commit assigns their row ids as it does for iceberg-java’s files.</p></li>
 <li><p>rebuilds each <code class="docutils literal notranslate"><span class="pre">DataFile</span></code>’s metrics with iceberg-java’s <code class="docutils literal notranslate"><span class="pre">ParquetUtil.footerMetrics</span></code> and
 <code class="docutils literal notranslate"><span class="pre">MetricsConfig.forTable</span></code>, reading each written file’s footer (<code class="docutils literal notranslate"><span class="pre">rebuildDataFilesWithJavaMetrics</span></code>).
 Only float/double NaN counts and bounds are carried over from the native writer, because the

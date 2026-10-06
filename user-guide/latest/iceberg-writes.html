@@ -835,10 +835,10 @@ and it is the foundation for the second toggle: when
 spec as JSON, the data location, the resolved parquet writer settings, the writer mode
 (unpartitioned / fanout / clustered, mirroring <code class="docutils literal notranslate"><span class="pre">SparkWrite</span></code>’s own choice), object-store
 configuration (the table’s <code class="docutils literal notranslate"><span class="pre">FileIO</span></code> properties, e.g. REST-vended credentials, merged over
-<code class="docutils literal notranslate"><span class="pre">fs.s3a.*</span></code> settings translated from the session Hadoop configuration — the same translation
-the native scan uses, since <code class="docutils literal notranslate"><span class="pre">HadoopFileIO</span></code> carries its S3 configuration in the Hadoop
-Configuration rather than in <code class="docutils literal notranslate"><span class="pre">FileIO</span></code> properties), and per-task IDs — into the serialized
-native plan. On each task, iceberg-rust writes the Parquet files and
+<code class="docutils literal notranslate"><span class="pre">fs.s3a.*</span></code> settings translated from the effective Hadoop configuration carried by the table’s
+<code class="docutils literal notranslate"><span class="pre">FileIO</span></code>, including catalog-specific <code class="docutils literal notranslate"><span class="pre">hadoop.*</span></code> overrides, since <code class="docutils literal notranslate"><span class="pre">HadoopFileIO</span></code> carries its S3
+configuration in the Hadoop Configuration rather than in <code class="docutils literal notranslate"><span class="pre">FileIO</span></code> properties), and per-task IDs —
+into the serialized native plan. On each task, iceberg-rust writes the Parquet files and
 returns its <code class="docutils literal notranslate"><span class="pre">DataFile</span></code> metadata packed as a single in-memory Iceberg V2 data manifest; the JVM
 decodes those bytes with Iceberg’s own <code class="docutils literal notranslate"><span class="pre">ManifestFiles.read</span></code>, re-derives each file’s manifest
 metrics from the written Parquet footer with Iceberg’s <code class="docutils literal notranslate"><span class="pre">MetricsConfig</span></code> logic (so metrics modes,
@@ -846,11 +846,17 @@ truncation, and bounds decisions are iceberg-java’s by construction), and wrap
 the same <code class="docutils literal notranslate"><span class="pre">TaskCommit</span></code> message the JVM writer would have produced. Everything iceberg-java does
 post-write — snapshot assignment, manifest-list aggregation, commit validation and retries —
 is untouched: <code class="docutils literal notranslate"><span class="pre">IcebergCommit</span></code> performs the normal <code class="docutils literal notranslate"><span class="pre">BatchWrite.commit</span></code>.</p>
-<p>Before a task opens a partition’s first file, it holds that partition’s first
-<code class="docutils literal notranslate"><span class="pre">write.parquet.page-row-limit</span></code> rows in memory, so that it can choose which columns to
-dictionary-encode the way iceberg-java would (see the accepted divergences below). The rows a
-task holds back this way, across all of its partitions, stay within about
-<code class="docutils literal notranslate"><span class="pre">write.parquet.row-group-size-bytes</span></code>.</p>
+<p>For <code class="docutils literal notranslate"><span class="pre">ResolvingFileIO</span></code>, Hadoop settings are taken from the delegate opening the data location.
+An S3 location handled by <code class="docutils literal notranslate"><span class="pre">S3FileIO</span></code> uses its initialized FileIO properties, so Hadoop options
+on the wrapper do not change the native endpoint or encryption settings. If that delegate cannot
+be resolved, the write falls back to iceberg-java.</p>
+<p>Before a task opens a partition’s first file, it holds the partition’s initial rows in memory
+to choose which columns to dictionary-encode using parquet-mr’s size accounting (see the
+accepted divergences below). It normally waits for at least <code class="docutils literal notranslate"><span class="pre">write.parquet.page-row-limit</span></code>
+rows (at least 100 when the configured limit is lower), or until the partition ends. The
+buffering threshold is <code class="docutils literal notranslate"><span class="pre">write.parquet.row-group-size-bytes</span></code>, shared across all partitions in
+a fanout write. Reaching it makes each partition still holding rows choose from the rows it
+already has, even if they do not fill its first page.</p>
 </section>
 <section id="configuration">
 <h2>Configuration<a class="headerlink" href="#configuration" title="Link to this heading">#</a></h2>
@@ -955,7 +961,7 @@ iceberg-java resolves per-write options and <code class="docutils literal notran
 <td><p><code class="docutils literal notranslate"><span class="pre">parquet</span></code></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">format-version</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">1</span></code> or <code class="docutils literal notranslate"><span class="pre">2</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">1</span></code>, <code class="docutils literal notranslate"><span class="pre">2</span></code> or <code class="docutils literal notranslate"><span class="pre">3</span></code> (on <code class="docutils literal notranslate"><span class="pre">3</span></code>, writes that carry row lineage fall back; see below)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">write.parquet.compression-codec</span></code> / <code class="docutils literal notranslate"><span class="pre">compression-level</span></code> / <code class="docutils literal notranslate"><span class="pre">row-group-size-bytes</span></code> / <code class="docutils literal notranslate"><span class="pre">page-size-bytes</span></code> / <code class="docutils literal notranslate"><span class="pre">page-row-limit</span></code> / <code class="docutils literal notranslate"><span class="pre">dict-size-bytes</span></code></p></td>
 <td><p>the sizes/limit must be positive Java ints (<code class="docutils literal notranslate"><span class="pre">Integer.parseInt</span></code> semantics — no trimming, no values past <code class="docutils literal notranslate"><span class="pre">Int.MaxValue</span></code> — matching iceberg-java, whose writer fails on anything else); <code class="docutils literal notranslate"><span class="pre">compression-level</span></code> must be a Java int within the native writer’s per-codec range (zstd 1–22, gzip 0–9, brotli 0–11; ignored by both writers for snappy/lz4/none) — iceberg-java never validates the level, so an out-of-range value falls back rather than becoming a native task failure</p></td>
@@ -993,11 +999,17 @@ iceberg-java resolves per-write options and <code class="docutils literal notran
 <tr class="row-odd"><td><p>resolved <code class="docutils literal notranslate"><span class="pre">table.locationProvider()</span></code></p></td>
 <td><p>Iceberg’s built-in <code class="docutils literal notranslate"><span class="pre">DefaultLocationProvider</span></code></p></td>
 </tr>
+<tr class="row-even"><td><p>Hadoop S3A settings for an <code class="docutils literal notranslate"><span class="pre">s3</span></code> / <code class="docutils literal notranslate"><span class="pre">s3a</span></code> data location</p></td>
+<td><p>only <code class="docutils literal notranslate"><span class="pre">fs.s3a.access.key</span></code>, <code class="docutils literal notranslate"><span class="pre">secret.key</span></code>, <code class="docutils literal notranslate"><span class="pre">session.token</span></code>, <code class="docutils literal notranslate"><span class="pre">endpoint</span></code>, <code class="docutils literal notranslate"><span class="pre">endpoint.region</span></code>, and <code class="docutils literal notranslate"><span class="pre">path.style.access</span></code>, including their <code class="docutils literal notranslate"><span class="pre">fs.s3a.bucket.&lt;data-bucket&gt;.*</span></code> forms; any other effective <code class="docutils literal notranslate"><span class="pre">fs.s3a.*</span></code> setting falls back</p></td>
+</tr>
+<tr class="row-odd"><td><p>Iceberg <code class="docutils literal notranslate"><span class="pre">FileIO</span></code> S3 settings for an <code class="docutils literal notranslate"><span class="pre">s3</span></code> / <code class="docutils literal notranslate"><span class="pre">s3a</span></code> data location</p></td>
+<td><p>the S3 endpoint, region, static/session credentials, path-style, SSE (<code class="docutils literal notranslate"><span class="pre">none</span></code>, <code class="docutils literal notranslate"><span class="pre">s3</span></code>, <code class="docutils literal notranslate"><span class="pre">kms</span></code>, or <code class="docutils literal notranslate"><span class="pre">custom</span></code>; not <code class="docutils literal notranslate"><span class="pre">dsse-kms</span></code>), assume-role, anonymous/config-chain settings parsed by the pinned iceberg-rust version, plus Comet’s credential-provider class and built-in web-identity properties. When a custom provider is configured, its vendor-owned <code class="docutils literal notranslate"><span class="pre">s3.*</span></code> / <code class="docutils literal notranslate"><span class="pre">client.*</span></code> properties are also forwarded; unsupported Iceberg-defined S3 settings still fall back</p></td>
+</tr>
 <tr class="row-even"><td><p>partition spec</p></td>
 <td><p>any, except an identity partition on a <code class="docutils literal notranslate"><span class="pre">float</span></code> or <code class="docutils literal notranslate"><span class="pre">double</span></code> column, or a <code class="docutils literal notranslate"><span class="pre">void</span></code> field whose source column was dropped beside a live field (see below)</p></td>
 </tr>
 <tr class="row-odd"><td><p>column types</p></td>
-<td><p>any except <code class="docutils literal notranslate"><span class="pre">uuid</span></code> (Spark plans it as a string; no Arrow cast reaches <code class="docutils literal notranslate"><span class="pre">fixed(16)</span></code>)</p></td>
+<td><p>any except <code class="docutils literal notranslate"><span class="pre">uuid</span></code> (Spark plans it as a string; no Arrow cast reaches <code class="docutils literal notranslate"><span class="pre">fixed(16)</span></code>) and the v3 types <code class="docutils literal notranslate"><span class="pre">variant</span></code>, <code class="docutils literal notranslate"><span class="pre">unknown</span></code>, <code class="docutils literal notranslate"><span class="pre">timestamp_ns</span></code>, <code class="docutils literal notranslate"><span class="pre">geometry</span></code> and <code class="docutils literal notranslate"><span class="pre">geography</span></code></p></td>
 </tr>
 </tbody>
 </table>
@@ -1025,12 +1037,40 @@ Configuration, and only <code class="docutils literal notranslate"><span class="
 could resolve a different storage identity or endpoint than the JVM writer would. That
 combination falls back; a <code class="docutils literal notranslate"><span class="pre">GCSFileIO</span></code> carries its <code class="docutils literal notranslate"><span class="pre">gcs.*</span></code> settings in <code class="docutils literal notranslate"><span class="pre">FileIO.properties()</span></code>,
 which are forwarded.</p>
+<p>For an <code class="docutils literal notranslate"><span class="pre">s3</span></code> or <code class="docutils literal notranslate"><span class="pre">s3a</span></code> data location, the gate also inspects both the table FileIO’s effective Hadoop
+configuration and <code class="docutils literal notranslate"><span class="pre">table.io().properties()</span></code>. These are separate allowlists because Hadoop S3A
+keys are translated before they reach iceberg-rust, while Iceberg <code class="docutils literal notranslate"><span class="pre">FileIO</span></code> keys are forwarded
+directly. When the FileIO exposes a Hadoop configuration, its initialized values govern both the
+gate and native translation, including after session or catalog options change. FileIO
+implementations without a Hadoop configuration, such as <code class="docutils literal notranslate"><span class="pre">S3FileIO</span></code>, use only their initialized
+properties; session and catalog Hadoop options are neither checked nor forwarded. Hadoop’s built-in
+<code class="docutils literal notranslate"><span class="pre">core-default.xml</span></code> values are not treated as explicit settings, but
+programmatic settings and values from site or custom <code class="docutils literal notranslate"><span class="pre">*-default.xml</span></code> resources are. Spark’s
+session-wide S3A vectored-read and <code class="docutils literal notranslate"><span class="pre">downgrade.syncable.exceptions</span></code> compatibility settings are also
+ignored because they cannot alter an Iceberg data-file write request. Unknown explicit
+<code class="docutils literal notranslate"><span class="pre">fs.s3a.*</span></code>, <code class="docutils literal notranslate"><span class="pre">s3.*</span></code>, or <code class="docutils literal notranslate"><span class="pre">client.*</span></code> settings therefore fall back at planning time instead of being
+silently ignored by the native storage backend. The exception is a vendor-owned <code class="docutils literal notranslate"><span class="pre">s3.*</span></code> /
+<code class="docutils literal notranslate"><span class="pre">client.*</span></code> property when
+<code class="docutils literal notranslate"><span class="pre">s3.comet.credential.provider.class</span></code> is configured: the provider receives the unfiltered FileIO
+bag and can consume that property. Iceberg-defined settings that the native storage path cannot
+honour still fall back even with a provider. A per-bucket Hadoop setting counts only for the exact
+data-bucket name, so configuration for a longer dotted bucket does not by itself disable the
+native write. If Iceberg’s AWS property classes cannot be loaded, vendor <code class="docutils literal notranslate"><span class="pre">s3.*</span></code> / <code class="docutils literal notranslate"><span class="pre">client.*</span></code> keys
+fall back too and planning still completes. The fall-back reason reports only sorted property
+names, never their values, so credentials and tokens do not enter EXPLAIN or plan logs.</p>
 <p>An identity partition on a <code class="docutils literal notranslate"><span class="pre">float</span></code> or <code class="docutils literal notranslate"><span class="pre">double</span></code> column falls back. iceberg-rust compares float
 partition values with an equality that treats <code class="docutils literal notranslate"><span class="pre">-0.0</span></code> and <code class="docutils literal notranslate"><span class="pre">0.0</span></code> as one value, so the native writer
 would put rows with either value in the same partition, where iceberg-java writes two. A read
 that prunes on the other value’s partition would then miss rows. The fall-back stays until
 iceberg-rust distinguishes the two values
 (<a class="reference external" href="https://github.com/apache/iceberg-rust/issues/3325">apache/iceberg-rust#3325</a>).</p>
+<p>On a format-version 3 table with Iceberg 1.10 or newer, a write that rewrites existing rows falls
+back. Copy-on-write <code class="docutils literal notranslate"><span class="pre">DELETE</span></code>, <code class="docutils literal notranslate"><span class="pre">UPDATE</span></code> and <code class="docutils literal notranslate"><span class="pre">MERGE</span></code> and <code class="docutils literal notranslate"><span class="pre">rewrite_data_files</span></code> write the row lineage
+columns <code class="docutils literal notranslate"><span class="pre">_row_id</span></code> and <code class="docutils literal notranslate"><span class="pre">_last_updated_sequence_number</span></code> into the new data files, so that rewritten
+rows keep their ids, and the native writer does not write those columns. Appends, overwrites,
+<code class="docutils literal notranslate"><span class="pre">CREATE</span> <span class="pre">TABLE</span> <span class="pre">...</span> <span class="pre">AS</span> <span class="pre">SELECT</span></code> and <code class="docutils literal notranslate"><span class="pre">REPLACE</span> <span class="pre">TABLE</span> <span class="pre">...</span> <span class="pre">AS</span> <span class="pre">SELECT</span></code> write the data columns only, and
+Iceberg assigns the new rows their ids when it commits, so those run natively. Earlier Iceberg
+versions write no lineage columns, so the rule never applies to them.</p>
 <p>A format-version-1 table keeps a dropped partition field as a <code class="docutils literal notranslate"><span class="pre">void</span></code> field, and its source column
 can be dropped afterwards. A spec that mixes such a field with a live one falls back: iceberg-java
 cannot write through it either, so the write fails with iceberg-java’s own error rather than in
@@ -1112,13 +1152,17 @@ should have read; page pruning uses the column index, which the native writer do
 <li><p>Dictionary-encoded pages are labeled <code class="docutils literal notranslate"><span class="pre">RLE_DICTIONARY</span></code> (parquet-mr v1 files: <code class="docutils literal notranslate"><span class="pre">PLAIN_DICTIONARY</span></code>).</p></li>
 <li><p>Fixed-length binary columns (<code class="docutils literal notranslate"><span class="pre">uuid</span></code>, <code class="docutils literal notranslate"><span class="pre">fixed</span></code>, decimals with precision &gt; 18) are not
 dictionary-encoded (parquet-mr dictionary-encodes them).</p></li>
-<li><p>Which columns are dictionary-encoded is decided as parquet-mr decides it: a column whose first
-data page shows the dictionary saving no space is written plain, with no dictionary page,
+<li><p>The native writer uses parquet-mr’s size accounting to choose dictionary encoding: a column
+whose sampled rows show the dictionary saving no space is written plain, with no dictionary page,
 instead of carrying a dictionary page that every selective read of it would have to fetch
 (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6114">#6114</a>). The native writer decides
-once per partition, from that partition’s first page of rows in the task, and keeps the
+once per partition, normally from that partition’s first page of rows in the task, and keeps the
 decision for every file and row group it writes for the partition; parquet-mr decides again
-for every row group. Where the page size rather than <code class="docutils literal notranslate"><span class="pre">write.parquet.page-row-limit</span></code> ends a
+for every row group. If buffered rows reach <code class="docutils literal notranslate"><span class="pre">write.parquet.row-group-size-bytes</span></code>, the choice
+uses the rows collected so far. In a fanout write, all partitions share this threshold, so
+each partition still buffering can make its choice before it has a full first page. Later
+rows could have changed parquet-mr’s decision, so this difference is not limited to columns
+close to the size cut-off. Where the page size rather than <code class="docutils literal notranslate"><span class="pre">write.parquet.page-row-limit</span></code> ends a
 column’s first page, the native page ends at the first row past parquet-mr’s size threshold,
 while parquet-mr only ends it at its next periodic size check, so a column close to the
 cut-off can be decided the other way. Close to the cut-off both encodings take about the same
@@ -1153,10 +1197,14 @@ two writers; rely only on each file rolling on its own 1000-row boundary.</p></l
 <li><p>A fanout write lists a task’s data files in file-path order, where iceberg-java lists them in
 its own <code class="docutils literal notranslate"><span class="pre">StructLikeMap</span></code> iteration order. Both are stable across runs, and neither is a
 documented ordering, but the manifest entry order becomes the scan-task order and so the row
-order of an unordered <code class="docutils literal notranslate"><span class="pre">SELECT</span> <span class="pre">*</span></code>. Only the sorted order is reproducible on the native path:
-iceberg-rust’s <code class="docutils literal notranslate"><span class="pre">FanoutWriter</span></code> closes its per-partition writers out of a <code class="docutils literal notranslate"><span class="pre">HashMap</span></code>, which under
-Rust’s per-process <code class="docutils literal notranslate"><span class="pre">RandomState</span></code> would otherwise give a different order on every run. Clustered
-and unpartitioned writes append in creation order on both paths and are unaffected.</p></li>
+order of an unordered <code class="docutils literal notranslate"><span class="pre">SELECT</span> <span class="pre">*</span></code>. On a format-version 3 table it also decides which row ids the
+commit gives each file’s rows, so the same rows can get different <code class="docutils literal notranslate"><span class="pre">_row_id</span></code> values from the two
+writers. The ids are unique either way, and across tasks iceberg-java’s own assignment already
+depends on the order in which the tasks finish. Only the sorted order is reproducible on the
+native path: iceberg-rust’s <code class="docutils literal notranslate"><span class="pre">FanoutWriter</span></code> closes its per-partition writers out of a <code class="docutils literal notranslate"><span class="pre">HashMap</span></code>,
+which under Rust’s per-process <code class="docutils literal notranslate"><span class="pre">RandomState</span></code> would otherwise give a different order on every
+run. Clustered and unpartitioned writes append in creation order on both paths and are
+unaffected.</p></li>
 <li><p>Compressed page bytes are implementation-defined: the codec and any explicit level are
 translated, but parquet-rs and parquet-mr embed different encoder implementations and
 defaults (zstd default levels, LZ4 framing), so byte-identical output is not achievable even
