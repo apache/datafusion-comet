@@ -674,7 +674,20 @@ pub(crate) fn timestamp_trunc_dyn(
         DataType::Dictionary(_, _) => {
             downcast_dictionary_array!(
                 array => {
-                    let truncated_values = timestamp_trunc_dyn(array.values(), format)?;
+                    // Dictionary values can outlive the rows that reference them (e.g. after
+                    // filtering). Unused entries, including entries hidden by NULL keys,
+                    // must not raise errors in the fallible timestamp kernel.
+                    let mut unused = vec![true; array.values().len()];
+                    for key in array.keys_iter().flatten() {
+                        unused[key] = false;
+                    }
+                    let values = if unused.iter().any(|unused| *unused) {
+                        arrow::compute::nullif(array.values(), &BooleanArray::from(unused))
+                            .map_err(|error| SparkError::Internal(error.to_string()))?
+                    } else {
+                        Arc::clone(array.values())
+                    };
+                    let truncated_values = timestamp_trunc_dyn(values.as_ref(), format)?;
                     Ok(Arc::new(array.with_values(truncated_values)))
                 }
                 dt => return_compute_error_with!("timestamp_trunc does not support", dt),
@@ -1010,6 +1023,37 @@ fn timestamp_trunc_coarse_tz(
     )
 }
 
+/// Handle the rare fine-unit batch whose physical values would underflow DataFusion's
+/// unchecked subtraction. Iterate logical values so NULL slots never cause errors.
+fn timestamp_trunc_fine_boundary(
+    array: &TimestampMicrosecondArray,
+    granularity: &str,
+    unit: i64,
+) -> Result<TimestampMicrosecondArray, SparkError> {
+    let mut builder = TimestampMicrosecondBuilder::with_capacity(array.len());
+    for value in array.iter() {
+        match value {
+            None => builder.append_null(),
+            Some(micros) => {
+                let remainder = micros.rem_euclid(unit);
+                let truncated = if matches!(granularity, "second" | "millisecond") {
+                    // Spark uses unchecked Long subtraction for these timezone-independent units.
+                    micros.wrapping_sub(remainder)
+                } else {
+                    // MINUTE/HOUR/DAY use Spark's exact instant-to-microseconds conversion.
+                    micros.checked_sub(remainder).ok_or_else(|| {
+                        SparkError::Internal(format!(
+                            "long overflow: Timestamp {micros} out of range after date_trunc({granularity})"
+                        ))
+                    })?
+                };
+                builder.append_value(truncated);
+            }
+        }
+    }
+    Ok(builder.finish().with_timezone_opt(array.timezone()))
+}
+
 fn timestamp_trunc_upstream(
     array: &TimestampMicrosecondArray,
     format: &str,
@@ -1038,6 +1082,23 @@ fn timestamp_trunc_upstream(
     if matches!(granularity, "week" | "month" | "quarter" | "year") {
         if let Some(timezone) = array.timezone().filter(|tz| !is_utc_timezone(tz)) {
             return timestamp_trunc_coarse_tz(array, format, timezone);
+        }
+    }
+
+    let fine_unit = match granularity {
+        "millisecond" => Some(1_000),
+        "second" => Some(1_000_000),
+        "minute" => Some(MICROS_PER_MINUTE),
+        "hour" if array.timezone().is_none() => Some(3_600_000_000),
+        "day" if array.timezone().is_none() => Some(MICROS_PER_DAY),
+        _ => None,
+    };
+    if let Some(unit) = fine_unit {
+        // First aligned microsecond value that can be represented after truncation.
+        let lower = i64::MIN + (unit - i64::MIN.rem_euclid(unit)).rem_euclid(unit);
+        // Check physical values too: DataFusion processes NULL slots before restoring validity.
+        if array.values().iter().any(|micros| *micros < lower) {
+            return timestamp_trunc_fine_boundary(array, granularity, unit);
         }
     }
 
@@ -1328,6 +1389,7 @@ mod tests {
         Array, Date32Array, DictionaryArray, Int32Array, PrimitiveArray, StringArray,
         TimestampMicrosecondArray,
     };
+    use arrow::datatypes::{DataType, TimeUnit};
     use chrono::{DateTime, Datelike, NaiveDate};
     use std::sync::Arc;
 
@@ -1975,6 +2037,150 @@ mod tests {
                 for format in ["YEAR", "QUARTER", "MONTH", "WEEK"] {
                     assert_eq!(timestamp_trunc(&input, format.to_string()).unwrap(), input);
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn test_timestamp_trunc_dictionary_unused_overflow() {
+        for timezone in [None, Some("UTC")] {
+            let values = TimestampMicrosecondArray::from(vec![
+                Some(instant_micros("2024-05-17T12:34:56Z")),
+                Some(i64::MIN),
+                None,
+            ])
+            .with_timezone_opt(timezone);
+            for keys in [
+                vec![Some(0), None, Some(2), Some(0)],
+                vec![None, None],
+                vec![],
+            ] {
+                let keys = Int32Array::from(keys);
+                let input =
+                    DictionaryArray::<Int32Type>::try_new(keys.clone(), Arc::new(values.clone()))
+                        .unwrap();
+                let expected_values = TimestampMicrosecondArray::from(vec![
+                    Some(instant_micros("2024-01-01T00:00:00Z")),
+                    None,
+                    None,
+                ])
+                .with_timezone_opt(timezone);
+                // Slice past the first key to check that referenced-entry masking respects offsets.
+                let input = input.slice(
+                    usize::from(!input.is_empty()),
+                    input.len().saturating_sub(1),
+                );
+                let expected =
+                    DictionaryArray::<Int32Type>::try_new(keys, Arc::new(expected_values)).unwrap();
+                let expected = expected.slice(
+                    usize::from(!expected.is_empty()),
+                    expected.len().saturating_sub(1),
+                );
+                let result = timestamp_trunc_dyn(&input, "YEAR".into()).unwrap();
+                // Unused entries can be masked, so compare the decoded logical rows.
+                let result = arrow::compute::cast(
+                    result.as_ref(),
+                    &DataType::Timestamp(TimeUnit::Microsecond, timezone.map(Into::into)),
+                )
+                .unwrap();
+                let expected = arrow::compute::cast(&expected, result.data_type()).unwrap();
+                assert_eq!(result.as_ref(), expected.as_ref());
+                let used = DictionaryArray::<Int32Type>::try_new(
+                    Int32Array::from(vec![1]),
+                    Arc::new(values.clone()),
+                )
+                .unwrap();
+                assert!(timestamp_trunc_dyn(&used, "YEAR".into())
+                    .unwrap_err()
+                    .to_string()
+                    .contains("long overflow"));
+            }
+        }
+    }
+
+    #[test]
+    fn test_timestamp_trunc_fine_poisoned_nulls() {
+        for timezone in [None, Some("UTC")] {
+            let input = TimestampMicrosecondArray::new(
+                vec![
+                    i64::MIN,
+                    instant_micros("2024-05-17T12:34:56Z"),
+                    i64::MIN + 1,
+                    i64::MAX,
+                ]
+                .into(),
+                Some(arrow::buffer::NullBuffer::from(vec![
+                    false, true, false, true,
+                ])),
+            )
+            .with_timezone_opt(timezone);
+            let clean = TimestampMicrosecondArray::from(vec![
+                None,
+                Some(instant_micros("2024-05-17T12:34:56Z")),
+                None,
+                Some(i64::MAX),
+            ])
+            .with_timezone_opt(timezone);
+            for format in [
+                "MINUTE",
+                "HOUR",
+                "DAY",
+                "SECOND",
+                "MILLISECOND",
+                "MICROSECOND",
+            ] {
+                assert_eq!(
+                    timestamp_trunc(&input, format.into()).unwrap(),
+                    timestamp_trunc(&clean, format.into()).unwrap()
+                );
+                let slice = input.slice(2, 2);
+                assert_eq!(
+                    timestamp_trunc(&slice, format.into()).unwrap(),
+                    timestamp_trunc(&clean.slice(2, 2), format.into()).unwrap()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_timestamp_trunc_fine_lower_bound() {
+        // First representable UTC boundary for each unit.
+        for (format, boundary) in [
+            ("MINUTE", -9_223_372_036_800_000_000),
+            ("HOUR", -9_223_372_036_800_000_000),
+            ("DAY", -9_223_372_022_400_000_000),
+        ] {
+            for timezone in [None, Some("UTC")] {
+                for micros in [i64::MIN, i64::MIN + 1, boundary - 1] {
+                    let input =
+                        TimestampMicrosecondArray::from(vec![micros]).with_timezone_opt(timezone);
+                    assert!(timestamp_trunc(&input, format.into())
+                        .unwrap_err()
+                        .to_string()
+                        .contains("long overflow"));
+                }
+                let input = TimestampMicrosecondArray::from(vec![boundary, boundary + 1])
+                    .with_timezone_opt(timezone);
+                let expected = TimestampMicrosecondArray::from(vec![boundary, boundary])
+                    .with_timezone_opt(timezone);
+                assert_eq!(timestamp_trunc(&input, format.into()).unwrap(), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn test_timestamp_trunc_fine_spark_wrapping() {
+        // Spark uses unchecked Long subtraction for SECOND/MILLISECOND, even at MIN.
+        for (format, expected) in [
+            ("SECOND", 9_223_372_036_854_551_616),
+            ("MILLISECOND", 9_223_372_036_854_775_616),
+        ] {
+            for timezone in [None, Some("UTC"), Some("Asia/Kolkata")] {
+                let input = TimestampMicrosecondArray::from(vec![Some(i64::MIN), None])
+                    .with_timezone_opt(timezone);
+                let expected = TimestampMicrosecondArray::from(vec![Some(expected), None])
+                    .with_timezone_opt(timezone);
+                assert_eq!(timestamp_trunc(&input, format.into()).unwrap(), expected);
             }
         }
     }

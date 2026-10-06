@@ -153,3 +153,17 @@ SELECT date_trunc('MONTH', ts) FROM test_trunc_ts_overflow
 
 query expect_error(long overflow)
 SELECT date_trunc('WEEK', ts) FROM test_trunc_ts_overflow
+
+query expect_error(long overflow)
+SELECT date_trunc('MINUTE', ts) FROM test_trunc_ts_overflow
+
+query expect_error(long overflow)
+SELECT date_trunc('HOUR', ts) FROM test_trunc_ts_overflow
+
+query expect_error(long overflow)
+SELECT date_trunc('DAY', ts) FROM test_trunc_ts_overflow
+
+-- Spark intentionally wraps Long subtraction for SECOND/MILLISECOND at the lower bound.
+query expect_native(date_trunc)
+SELECT date_trunc('SECOND', ts), date_trunc('MILLISECOND', ts)
+FROM test_trunc_ts_overflow
