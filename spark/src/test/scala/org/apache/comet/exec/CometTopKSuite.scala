@@ -156,7 +156,8 @@ class CometTopKSuite extends CometTestBase {
                   "(SELECT named_struct('max_a', max(a), 'min_b', min(b)) FROM topk_input)"
                 s"a + $subquery.max_a, b + $subquery.min_b"
             }
-            val query = sql(s"SELECT a, b FROM topk_input ORDER BY $orderBy LIMIT 7")
+            val queryText = s"SELECT a, b FROM topk_input ORDER BY $orderBy LIMIT 7"
+            val query = sql(queryText)
             if (subqueryType == "merged struct") {
               val mergedFields = query.queryExecution.optimizedPlan.collect { case node =>
                 node.expressions.flatMap(_.collect {
@@ -171,9 +172,20 @@ class CometTopKSuite extends CometTestBase {
               assert(mergedFields.forall(_.child.dataType.asInstanceOf[StructType].length == 2))
             }
 
-            val (_, plan) = checkSparkAnswerAndOperator(
-              query,
-              Seq(classOf[CometTakeOrderedAndProjectExec], classOf[CometNativeScanExec]))
+            // SPARK-45584: Spark 3.4's TopK can collect before its subqueries finish. Use a
+            // regular Spark sort for the reference answer, then restore TopK for Comet.
+            var expected: Seq[Row] = Seq.empty
+            withSQLConf(
+              CometConf.COMET_ENABLED.key -> "false",
+              SQLConf.TOP_K_SORT_FALLBACK_THRESHOLD.key -> "0") {
+              expected = sql(queryText).collect().toSeq
+            }
+            checkCometAnswer(query, expected)
+            val plan = query.queryExecution.executedPlan
+            checkCometOperators(stripAQEPlan(plan))
+            assert(
+              collect(plan) { case scan: CometNativeScanExec => scan }.nonEmpty,
+              s"Expected a native scan:\n$plan")
             val topKs = collect(plan) { case topK: CometTakeOrderedAndProjectExec => topK }
             assert(topKs.size == 1, s"Expected one native TopK:\n$plan")
             val topK = topKs.head
