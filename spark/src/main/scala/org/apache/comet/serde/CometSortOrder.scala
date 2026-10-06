@@ -90,7 +90,7 @@ object CometSortOrder extends CometExpressionSerde[SortOrder] {
    * struct field, at any depth. The key being null is not one: both engines place that by the
    * key's null order.
    */
-  private def canHoldNestedNull(dataType: DataType): Boolean = dataType match {
+  def canHoldNestedNull(dataType: DataType): Boolean = dataType match {
     case ArrayType(elementType, containsNull) => containsNull || canHoldNestedNull(elementType)
     case StructType(fields) => fields.exists(f => f.nullable || canHoldNestedNull(f.dataType))
     case _ => false
