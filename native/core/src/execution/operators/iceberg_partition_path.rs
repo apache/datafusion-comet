@@ -154,9 +154,9 @@ const NULL: &str = "null";
 /// | `binary` / `fixed` | base64                        | uppercase hex                    |
 /// | `float` / `double` | `1.0`, `1.0E20`               | `1`, `100000000000000000000`     |
 ///
-/// The nanosecond timestamp types get the same treatment for the same reason. They are V3-only, so
-/// `CometIcebergNativeWrite`'s format-version gate keeps them out of a native write today; the arms
-/// exist so a future V3 write does not reintroduce the panic.
+/// The nanosecond timestamp types get the same treatment for the same reason. Spark cannot plan a
+/// write to them today, and `CometIcebergNativeWrite`'s column-type rule declines them as well; the
+/// arms exist so a future write of one does not reintroduce the panic.
 ///
 /// `float` and `double` go through `java_float_string`, which `cast(float as string)` also uses;
 /// delegating rendered `Double.MAX_VALUE` as 309 digits and failed the write with `File name too
