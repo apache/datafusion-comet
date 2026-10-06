@@ -87,10 +87,10 @@ The same types apply to the output of typed `Dataset` operations, such as `map`,
 converts when `spark.comet.convert.typedDataset.enabled=true`. A column of any other type keeps
 the operators above the typed operation on Spark.
 
-Comet does not convert a source when the query uses `input_file_name()`, `input_file_block_start()`
-or `input_file_block_length()`, so the source and the operators above it run in Spark. These
-functions report the file that Spark's reader is on when Spark evaluates them, and the conversion and
-the Comet operators above it would read ahead of that.
+Comet does not convert a source, or the output of a typed `Dataset` operation, when the query uses
+`input_file_name()`, `input_file_block_start()` or `input_file_block_length()`, so the operators
+above it run in Spark. These functions report the file that Spark's reader is on when Spark evaluates
+them, and the conversion and the Comet operators above it would read ahead of that.
 
 ## Data Catalogs
 

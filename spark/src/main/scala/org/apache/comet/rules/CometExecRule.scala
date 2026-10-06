@@ -186,6 +186,11 @@ object CometExecRule {
    */
   private val TYPED_DATASET_PARTIAL_READER: TreeNodeTag[String] =
     TreeNodeTag[String]("comet.typedDatasetPartialReader")
+
+  /** Why Comet does not convert rows to Arrow in a plan that reads `InputFileBlockHolder`. */
+  private val INPUT_FILE_BLOCK_FALLBACK_REASON: String =
+    "Spark to Arrow conversion is not compatible with input_file_name, " +
+      "input_file_block_start, or input_file_block_length"
 }
 
 /**
@@ -397,7 +402,7 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
    */
   // spotless:on
   private def transform(plan: SparkPlan): SparkPlan = {
-    // Walks the whole plan, so it is lazy: only consulted once a leaf could be converted.
+    // Walks the whole plan, so it is lazy: only consulted once a node could be converted.
     lazy val readsInputFileBlock = CometScanRule.readsInputFileBlock(plan)
 
     if (CometConf.COMET_CONVERT_FROM_TYPED_DATASET_ENABLED.get(conf)) {
@@ -521,6 +526,10 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
               "Comet does not convert the output of a typed Dataset operation when " +
                 s"$reader can stop reading it early, because filling an Arrow batch would " +
                 "run the user function on rows that Spark never reaches")
+          // The conversion reads ahead of input_file_name and friends, as it does over a leaf.
+          // See shouldApplySparkToColumnar.
+          case None if readsInputFileBlock =>
+            withFallbackReason(op, CometExecRule.INPUT_FILE_BLOCK_FALLBACK_REASON)
           case None =>
             convertTypedDatasetOutput(op)
         }
@@ -1421,10 +1430,7 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
     if (!canApplySparkToColumnar(conf, op)) {
       false
     } else if (readsInputFileBlock) {
-      withFallbackReason(
-        op,
-        "Spark to Arrow conversion is not compatible with input_file_name, " +
-          "input_file_block_start, or input_file_block_length")
+      withFallbackReason(op, CometExecRule.INPUT_FILE_BLOCK_FALLBACK_REASON)
       false
     } else {
       true

@@ -4701,7 +4701,7 @@ class CometExecSuite extends CometTestBase {
   test("input_file_name above a converted RDD scan keeps the scan on Spark") {
     withTempPath { dir =>
       spark.range(9000).repartition(3).selectExpr("CAST(id AS STRING)").write.text(dir.toString)
-      withSQLConf(CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true") {
+      withSQLConf(CometConf.COMET_CONVERT_FROM_RDD_ENABLED.key -> "true") {
         // HadoopRDD sets the file Spark evaluates input_file_name against, as FileScanRDD does.
         val rows = spark.sparkContext.textFile(dir.toString).map(line => Row(line.toLong))
         val df = spark
