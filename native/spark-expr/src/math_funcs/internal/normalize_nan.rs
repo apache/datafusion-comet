@@ -71,6 +71,22 @@ impl NormalizeNaNAndZero {
             _ => Arc::clone(array),
         }
     }
+
+    /// Wraps a Float32 or Float64 key so values equal under Spark's SQL ordering also compare
+    /// equal in Arrow. Other types and keys already wrapped by Spark are returned as is.
+    pub fn wrap_if_needed(
+        child: Arc<dyn PhysicalExpr>,
+        schema: &Schema,
+    ) -> datafusion::common::Result<Arc<dyn PhysicalExpr>> {
+        let data_type = child.data_type(schema)?;
+        if matches!(data_type, DataType::Float32 | DataType::Float64)
+            && child.downcast_ref::<NormalizeNaNAndZero>().is_none()
+        {
+            Ok(Arc::new(Self::new(data_type, child)))
+        } else {
+            Ok(child)
+        }
+    }
 }
 
 impl PhysicalExpr for NormalizeNaNAndZero {
@@ -87,14 +103,23 @@ impl PhysicalExpr for NormalizeNaNAndZero {
     }
 
     fn evaluate(&self, batch: &RecordBatch) -> datafusion::common::Result<ColumnarValue> {
-        let cv = self.child.evaluate(batch)?;
-        let array = cv.into_array(batch.num_rows())?;
-
         match &self.data_type {
-            DataType::Float32 | DataType::Float64 => {
-                Ok(ColumnarValue::Array(Self::normalize_array(&array)))
-            }
+            DataType::Float32 | DataType::Float64 => {}
             dt => panic!("Unexpected data type {dt:?}"),
+        }
+        // A scalar stays a scalar, so a constant comparison operand is not expanded into a
+        // column and can still be recognized as a literal by pruning.
+        match self.child.evaluate(batch)? {
+            ColumnarValue::Array(array) => Ok(ColumnarValue::Array(Self::normalize_array(&array))),
+            ColumnarValue::Scalar(value) => Ok(ColumnarValue::Scalar(match value {
+                datafusion::common::ScalarValue::Float32(v) => {
+                    datafusion::common::ScalarValue::Float32(v.map(normalize_float))
+                }
+                datafusion::common::ScalarValue::Float64(v) => {
+                    datafusion::common::ScalarValue::Float64(v.map(normalize_float))
+                }
+                other => other,
+            })),
         }
     }
 
