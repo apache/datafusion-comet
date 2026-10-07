@@ -678,7 +678,7 @@ pub(crate) fn object_store_authority(url: &Url) -> &str {
     &url[start..url::Position::AfterPort]
 }
 
-fn object_store_url_key(url: &Url) -> String {
+pub(crate) fn object_store_url_key(url: &Url) -> String {
     format!("{}://{}", url.scheme(), object_store_authority(url))
 }
 
@@ -976,6 +976,103 @@ pub(crate) fn prepare_object_store_with_configs(
 
 #[cfg(test)]
 mod tests {
+    /// The same table is asserted on the JVM by `NativeConfigSuite` ("objectStoreKey - matches
+    /// the native object store key for each path form"). Native scans group files by this key.
+    #[test]
+    fn object_store_key_matches_jvm_fixture() {
+        use super::{normalize_object_store_url, object_store_url_key};
+        let configs = |aliases: &str, libhdfs: &str| {
+            let mut configs = std::collections::HashMap::new();
+            if !aliases.is_empty() {
+                configs.insert(
+                    "fs.comet.s3Compliant.schemes".to_string(),
+                    aliases.to_string(),
+                );
+            }
+            if !libhdfs.is_empty() {
+                configs.insert("fs.comet.libhdfs.schemes".to_string(), libhdfs.to_string());
+            }
+            configs
+        };
+        let abfss = "abfss://container@account.dfs.core.windows.net";
+        let abfs = "abfs://container@account.dfs.core.windows.net";
+        let (abfss_path, abfs_path) = (format!("{abfss}/k.parquet"), format!("{abfs}/k.parquet"));
+        // (path, s3-compliant aliases, libhdfs schemes or "" for the hdfs default, key, is_hdfs)
+        for (path, aliases, libhdfs, expected, expected_hdfs) in [
+            (
+                "s3a://Bucket.Upper/k.parquet",
+                "",
+                "",
+                "s3://Bucket.Upper",
+                false,
+            ),
+            (
+                "s3://bucket:9000/k.parquet",
+                "",
+                "",
+                "s3://bucket:9000",
+                false,
+            ),
+            (
+                "s3a://user:secret@bucket/k.parquet",
+                "",
+                "",
+                "s3://bucket",
+                false,
+            ),
+            ("S3A://bucket/k.parquet", "", "", "s3://bucket", false),
+            ("s3a:///bucket/k.parquet", "", "", "s3://bucket", false),
+            ("s3n://bucket/k.parquet", "", "", "s3n://bucket", false),
+            ("s3a://bucket/k.parquet", "", "s3a", "s3a://bucket", true),
+            // The next two share a key but not a store.
+            ("s3a://bucket/k.parquet", "", "s3", "s3://bucket", false),
+            ("s3://bucket/k.parquet", "", "s3", "s3://bucket", true),
+            ("blob://bucket/k.parquet", "blob", "", "s3://bucket", false),
+            ("blob:///bucket/k.parquet", "blob", "", "s3://bucket", false),
+            ("blob:/bucket/k.parquet", "blob", "", "s3://bucket", false),
+            ("blob://bucket/k.parquet", "", "", "blob://bucket", false),
+            (
+                "blob://bucket/k.parquet",
+                "blob",
+                "blob",
+                "blob://bucket",
+                true,
+            ),
+            ("s3:///bucket/k.parquet", "", "", "s3://", false),
+            ("file:///tmp/t/k.parquet", "file", "", "file://", false),
+            ("file:/tmp/t/k.parquet", "", "", "file://", false),
+            (
+                "HTTPS://Host.Example.com/k.parquet",
+                "",
+                "",
+                "https://host.example.com",
+                false,
+            ),
+            ("hdfs://nn:8020/t/k.parquet", "", "", "hdfs://nn:8020", true),
+            ("hdfs:///t/k.parquet", "", "", "hdfs://", true),
+            ("gs://bucket/k.parquet", "", "", "gs://bucket", false),
+            (abfss_path.as_str(), "", "", abfss, false),
+            (abfs_path.as_str(), "", "", abfs, false),
+            (
+                "wasbs://container@account.blob.core.windows.net/k.parquet",
+                "",
+                "",
+                "wasbs://account.blob.core.windows.net",
+                false,
+            ),
+        ] {
+            let normalized = normalize_object_store_url(path, &configs(aliases, libhdfs)).unwrap();
+            assert_eq!(
+                (
+                    object_store_url_key(&normalized.url).as_str(),
+                    normalized.is_hdfs
+                ),
+                (expected, expected_hdfs),
+                "{path} with aliases {aliases:?} and libhdfs {libhdfs:?}"
+            );
+        }
+    }
+
     /// Checks parser-backed I/O labels without constructing stores, including libhdfs overrides
     /// and rejection of unknown native schemes. Configured S3 aliases follow URL normalization.
     #[test]
