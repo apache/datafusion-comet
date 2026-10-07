@@ -177,30 +177,6 @@ where
     Ok(builder.finish().with_timezone(tz_str))
 }
 
-fn as_timestamp_tz_with_op_single<T: ArrowTemporalType, F>(
-    value: Option<T::Native>,
-    builder: &mut PrimitiveBuilder<TimestampMicrosecondType>,
-    tz: &Tz,
-    op: F,
-) -> Result<(), SparkError>
-where
-    F: Fn(DateTime<Tz>) -> i64,
-    i64: From<T::Native>,
-{
-    match value {
-        Some(value) => match as_datetime_with_timezone::<T>(value.into(), *tz) {
-            Some(time) => builder.append_value(op(time)),
-            _ => {
-                return Err(SparkError::Internal(
-                    "Unable to read value as datetime".to_string(),
-                ));
-            }
-        },
-        None => builder.append_null(),
-    }
-    Ok(())
-}
-
 // Apply the Tz to the Naive Date Time, convert to UTC, and return as microseconds in Unix epoch.
 // After truncation the carried UTC offset may be wrong if the truncated time falls in a different
 // DST period than the original (e.g., truncating a December/PST timestamp to QUARTER yields
@@ -1201,29 +1177,6 @@ fn timestamp_trunc_upstream(
     Ok(builder.finish().with_timezone_opt(array.timezone()))
 }
 
-/// Truncate a single NTZ value and append to builder
-fn timestamp_trunc_ntz_single<F>(
-    value: Option<i64>,
-    builder: &mut PrimitiveBuilder<TimestampMicrosecondType>,
-    op: F,
-) -> Result<(), SparkError>
-where
-    F: Fn(NaiveDateTime) -> Option<NaiveDateTime>,
-{
-    match value {
-        Some(micros) => match micros_to_naive(micros).and_then(op) {
-            Some(truncated) => builder.append_value(naive_to_micros(truncated)),
-            None => {
-                return Err(SparkError::Internal(
-                    "Unable to truncate NTZ timestamp".to_string(),
-                ))
-            }
-        },
-        None => builder.append_null(),
-    }
-    Ok(())
-}
-
 pub(crate) fn timestamp_trunc<T>(
     array: &PrimitiveArray<T>,
     format: String,
@@ -1260,154 +1213,109 @@ pub(crate) fn timestamp_trunc_array_fmt_dyn(
     array: &dyn Array,
     formats: &dyn Array,
 ) -> Result<ArrayRef, SparkError> {
-    match (array.data_type().clone(), formats.data_type().clone()) {
-        (DataType::Dictionary(_, _), DataType::Dictionary(_, _)) => {
-            downcast_dictionary_array!(
-                formats => {
-                    downcast_dictionary_array!(
-                        array => {
-                            timestamp_trunc_array_fmt_dict_dict(
-                                    &array.downcast_dict::<TimestampMicrosecondArray>().unwrap(),
-                                    &formats.downcast_dict::<StringArray>().unwrap())
-                            .map(|a| Arc::new(a) as ArrayRef)
-                        }
-                        dt => return_compute_error_with!("timestamp_trunc does not support", dt)
-                    )
-                }
-                fmt => return_compute_error_with!("timestamp_trunc does not support format type", fmt),
-            )
+    let array = unpack_dictionary(array)?;
+    let formats = unpack_dictionary(formats)?;
+    let array = match array.data_type() {
+        DataType::Timestamp(TimeUnit::Microsecond, _) => {
+            array.as_primitive::<TimestampMicrosecondType>()
         }
-        (DataType::Dictionary(_, _), DataType::Utf8) => {
-            downcast_dictionary_array!(
-                array => {
-                  timestamp_trunc_array_fmt_dict_plain(
-                        &array.downcast_dict::<PrimitiveArray<TimestampMicrosecondType>>().unwrap(),
-                        formats.as_any().downcast_ref::<StringArray>()
-                            .expect("Unexpected value type in formats"))
-                  .map(|a| Arc::new(a) as ArrayRef)
-                }
-                dt => return_compute_error_with!("timestamp_trunc does not support", dt),
-            )
+        dt => {
+            return_compute_error_with!("Unsupported input type for function 'timestamp_trunc'", dt)
         }
-        (DataType::Timestamp(TimeUnit::Microsecond, _), DataType::Dictionary(_, _)) => {
-            downcast_dictionary_array!(
-                formats => {
-                downcast_temporal_array!(array => {
-                        timestamp_trunc_array_fmt_plain_dict(
-                                array,
-                                &formats.downcast_dict::<StringArray>().unwrap())
-                        .map(|a| Arc::new(a) as ArrayRef)
-                    }
-                    dt => return_compute_error_with!("timestamp_trunc does not support", dt),
-                    )
-                }
-                fmt => return_compute_error_with!("timestamp_trunc does not support format type", fmt),
-            )
-        }
-        (DataType::Timestamp(TimeUnit::Microsecond, _), DataType::Utf8) => {
-            downcast_temporal_array!(
-                array => {
-                    timestamp_trunc_array_fmt_plain_plain(array,
-                        formats.as_any().downcast_ref::<StringArray>().expect("Unexpected value type in formats"))
-                    .map(|a| Arc::new(a) as ArrayRef)
-                },
-                dt => return_compute_error_with!("timestamp_trunc does not support", dt),
-            )
-        }
-        (dt, fmt) => Err(SparkError::Internal(format!(
-            "Unsupported datatype: {dt:}, format: {fmt:?} for function 'timestamp_trunc'"
-        ))),
+    };
+    let formats = match formats.data_type() {
+        DataType::Utf8 => formats.as_string::<i32>(),
+        fmt => return_compute_error_with!("timestamp_trunc does not support format type", fmt),
+    };
+    Ok(Arc::new(timestamp_trunc_by_row_format(array, formats)?))
+}
+
+fn unpack_dictionary(array: &dyn Array) -> Result<ArrayRef, SparkError> {
+    match array.data_type() {
+        DataType::Dictionary(_, value_type) => arrow::compute::cast(array, value_type)
+            .map_err(|error| SparkError::Internal(error.to_string())),
+        _ => Ok(make_array(array.to_data())),
     }
 }
 
-macro_rules! timestamp_trunc_array_fmt_helper {
-    ($array: ident, $formats: ident, $datatype: ident) => {{
-        let mut builder = TimestampMicrosecondBuilder::with_capacity($array.len());
-        let iter = $array.into_iter();
-        assert_eq!(
-            $array.len(),
-            $formats.len(),
-            "lengths of values array and format array must be the same"
-        );
-        match $datatype {
-            DataType::Timestamp(TimeUnit::Microsecond, None) => {
-                // TimestampNTZ: operate directly on naive microsecond values
-                for (index, val) in iter.enumerate() {
-                    let micros_val = val.map(|v| i64::from(v));
-                    let trunc_fn = ntz_trunc_fn_for_format($formats.value(index))?;
-                    timestamp_trunc_ntz_single(micros_val, &mut builder, trunc_fn)?;
-                }
-                Ok(builder.finish())
-            }
-            DataType::Timestamp(TimeUnit::Microsecond, Some(tz_str)) => {
-                let tz: Tz = tz_str.parse()?;
-                for (index, val) in iter.enumerate() {
-                    let trunc_fn = tz_trunc_fn_for_format($formats.value(index))?;
-                    as_timestamp_tz_with_op_single::<T, _>(val, &mut builder, &tz, |dt| {
-                        as_micros_from_unix_epoch_utc(trunc_fn(dt))
-                    })?;
-                }
-                Ok(builder.finish().with_timezone(tz_str.as_ref()))
-            }
-            dt => {
-                return_compute_error_with!(
-                    "Unsupported input type '{:?}' for function 'timestamp_trunc'",
-                    dt
-                )
-            }
+/// Truncates each row with the format in the same row.
+///
+/// Rows are grouped by format, and each group goes through the literal-format kernel with the
+/// other rows set to NULL. A row is therefore truncated by exactly the rules a literal format
+/// applies, including the DST handling, and a value in one group cannot make another group fail.
+/// A NULL format gives a NULL result, as in Spark.
+fn timestamp_trunc_by_row_format(
+    array: &TimestampMicrosecondArray,
+    formats: &StringArray,
+) -> Result<TimestampMicrosecondArray, SparkError> {
+    if array.len() != formats.len() {
+        return Err(SparkError::Internal(format!(
+            "timestamp_trunc has {} values but {} formats",
+            array.len(),
+            formats.len()
+        )));
+    }
+
+    let mut granularities: Vec<&'static str> = Vec::new();
+    // A batch rarely holds more than a few spellings, so parse each one once.
+    let mut spellings: Vec<(&str, usize)> = Vec::new();
+    let mut row_groups: Vec<Option<usize>> = Vec::with_capacity(array.len());
+    let mut null_format_hides_value = false;
+    for index in 0..array.len() {
+        if array.is_null(index) {
+            row_groups.push(None);
+            continue;
         }
-    }};
-}
+        if formats.is_null(index) {
+            null_format_hides_value = true;
+            row_groups.push(None);
+            continue;
+        }
+        let spelling = formats.value(index);
+        let group = match spellings.iter().find(|(seen, _)| *seen == spelling) {
+            Some((_, group)) => *group,
+            None => {
+                let granularity = normalize_timestamp_trunc_format(spelling)?;
+                let group = match granularities.iter().position(|g| *g == granularity) {
+                    Some(group) => group,
+                    None => {
+                        granularities.push(granularity);
+                        granularities.len() - 1
+                    }
+                };
+                spellings.push((spelling, group));
+                group
+            }
+        };
+        row_groups.push(Some(group));
+    }
 
-fn timestamp_trunc_array_fmt_plain_plain<T>(
-    array: &PrimitiveArray<T>,
-    formats: &StringArray,
-) -> Result<TimestampMicrosecondArray, SparkError>
-where
-    T: ArrowTemporalType + ArrowNumericType,
-    i64: From<T::Native>,
-{
-    let data_type = array.data_type();
-    timestamp_trunc_array_fmt_helper!(array, formats, data_type)
-}
-fn timestamp_trunc_array_fmt_plain_dict<T, K>(
-    array: &PrimitiveArray<T>,
-    formats: &TypedDictionaryArray<K, StringArray>,
-) -> Result<TimestampMicrosecondArray, SparkError>
-where
-    T: ArrowTemporalType + ArrowNumericType,
-    i64: From<T::Native>,
-    K: ArrowDictionaryKeyType,
-{
-    let data_type = array.data_type();
-    timestamp_trunc_array_fmt_helper!(array, formats, data_type)
-}
+    if granularities.len() == 1 && !null_format_hides_value {
+        return timestamp_trunc_upstream(array, granularities[0]);
+    }
 
-fn timestamp_trunc_array_fmt_dict_plain<T, K>(
-    array: &TypedDictionaryArray<K, PrimitiveArray<T>>,
-    formats: &StringArray,
-) -> Result<TimestampMicrosecondArray, SparkError>
-where
-    T: ArrowTemporalType + ArrowNumericType,
-    i64: From<T::Native>,
-    K: ArrowDictionaryKeyType,
-{
-    let data_type = array.values().data_type();
-    timestamp_trunc_array_fmt_helper!(array, formats, data_type)
-}
+    let truncated = granularities
+        .iter()
+        .enumerate()
+        .map(|(group, granularity)| {
+            let outside_group: BooleanArray = row_groups
+                .iter()
+                .map(|row_group| Some(*row_group != Some(group)))
+                .collect();
+            let input = arrow::compute::nullif(array, &outside_group)
+                .map_err(|error| SparkError::Internal(error.to_string()))?;
+            timestamp_trunc_upstream(input.as_primitive(), granularity)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
 
-fn timestamp_trunc_array_fmt_dict_dict<T, K, F>(
-    array: &TypedDictionaryArray<K, PrimitiveArray<T>>,
-    formats: &TypedDictionaryArray<F, StringArray>,
-) -> Result<TimestampMicrosecondArray, SparkError>
-where
-    T: ArrowTemporalType + ArrowNumericType,
-    i64: From<T::Native>,
-    K: ArrowDictionaryKeyType,
-    F: ArrowDictionaryKeyType,
-{
-    let data_type = array.values().data_type();
-    timestamp_trunc_array_fmt_helper!(array, formats, data_type)
+    let mut builder = TimestampMicrosecondBuilder::with_capacity(array.len());
+    for (index, row_group) in row_groups.iter().enumerate() {
+        match row_group.map(|group| &truncated[group]) {
+            Some(result) if result.is_valid(index) => builder.append_value(result.value(index)),
+            _ => builder.append_null(),
+        }
+    }
+    Ok(builder.finish().with_timezone_opt(array.timezone()))
 }
 
 #[cfg(test)]
@@ -2444,6 +2352,246 @@ mod tests {
                 None,
             ]
         );
+    }
+
+    /// Instants around DST and offset transitions, keyed by the session timezone the kernel sees.
+    /// `None` is a TIMESTAMP_NTZ array.
+    fn transition_instants() -> Vec<(Option<&'static str>, Vec<i64>)> {
+        let at = |instants: &[&str]| {
+            instants
+                .iter()
+                .map(|i| instant_micros(i))
+                .collect::<Vec<_>>()
+        };
+        vec![
+            // Toronto skipped 1919-03-30 23:30 to 1919-03-31 00:30.
+            (
+                Some("America/Toronto"),
+                at(&[
+                    "1919-03-31T04:30:00Z",
+                    "1919-03-31T04:45:00Z",
+                    "1919-04-02T16:00:00Z",
+                ]),
+            ),
+            // Havana repeated midnight on 2020-11-01.
+            (
+                Some("America/Havana"),
+                at(&[
+                    "2020-11-01T04:30:00Z",
+                    "2020-11-01T05:30:00Z",
+                    "2020-11-15T12:00:00Z",
+                ]),
+            ),
+            // Sao Paulo skipped midnight on 2018-11-04 and repeated 23:00 on 2019-02-16.
+            (
+                Some("America/Sao_Paulo"),
+                at(&[
+                    "2018-11-04T03:30:00Z",
+                    "2018-11-04T12:00:00Z",
+                    "2019-02-17T02:30:00Z",
+                ]),
+            ),
+            (
+                Some("America/Los_Angeles"),
+                at(&[
+                    "2024-03-10T10:30:00Z",
+                    "2024-03-10T11:15:30Z",
+                    "2024-11-03T08:30:00Z",
+                    "2024-11-03T09:30:00Z",
+                    "1883-06-15T10:30:45Z",
+                ]),
+            ),
+            // Monrovia used -00:44:30 until 1972.
+            (
+                Some("Africa/Monrovia"),
+                at(&[
+                    "1960-06-15T11:15:45Z",
+                    "1972-01-07T00:44:29Z",
+                    "1972-01-07T00:44:31Z",
+                ]),
+            ),
+            // Asuncion skipped midnight on 2023-10-01, a MONTH and QUARTER boundary.
+            (
+                Some("America/Asuncion"),
+                at(&[
+                    "2023-10-01T03:30:00Z",
+                    "2023-10-01T04:30:00Z",
+                    "2023-10-15T12:00:00Z",
+                ]),
+            ),
+            // Apia skipped 2011-12-30 entirely.
+            (
+                Some("Pacific/Apia"),
+                at(&[
+                    "2011-12-30T09:59:59Z",
+                    "2011-12-30T10:00:00Z",
+                    "2011-12-31T12:00:00Z",
+                ]),
+            ),
+            (
+                Some("UTC"),
+                at(&["1500-06-15T12:34:56.123456Z", "3333-05-17T12:34:56.123456Z"]),
+            ),
+            (
+                None,
+                vec![
+                    i64::MAX,
+                    i64::MIN + 400 * MICROS_PER_DAY,
+                    instant_micros("1969-12-31T23:59:59.999999Z"),
+                    instant_micros("2024-05-17T12:34:56.123456Z"),
+                ],
+            ),
+        ]
+    }
+
+    #[test]
+    fn row_formats_truncate_like_literal_formats() {
+        let spellings: Vec<&str> = TIMESTAMP_TRUNC_ALIASES
+            .iter()
+            .map(|(name, _)| *name)
+            .collect();
+        for (timezone, instants) in transition_instants() {
+            let input = TimestampMicrosecondArray::from(instants).with_timezone_opt(timezone);
+            let by_spelling: Vec<TimestampMicrosecondArray> = spellings
+                .iter()
+                .map(|spelling| timestamp_trunc(&input, spelling.to_string()).unwrap())
+                .collect();
+            // Rotate the spellings across the rows so every row meets every format in a column
+            // that mixes formats, which exercises the grouping and masking.
+            for shift in 0..spellings.len() {
+                let pick = |row: usize| (row + shift) % spellings.len();
+                let formats = StringArray::from(
+                    (0..input.len())
+                        .map(|row| spellings[pick(row)])
+                        .collect::<Vec<_>>(),
+                );
+                let result = timestamp_trunc_array_fmt_dyn(&input, &formats).unwrap();
+                let result = result
+                    .as_any()
+                    .downcast_ref::<TimestampMicrosecondArray>()
+                    .unwrap();
+                assert_eq!(result.data_type(), input.data_type());
+                for row in 0..input.len() {
+                    assert_eq!(
+                        result.value(row),
+                        by_spelling[pick(row)].value(row),
+                        "{timezone:?} {} at {}",
+                        spellings[pick(row)],
+                        input.value(row)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn row_format_week_resolves_a_midnight_gap_to_its_end() {
+        // Toronto's gap ran from 1919-03-30 23:30 to 1919-03-31 00:30, so the Monday that WEEK
+        // lands on starts at 00:30. DAY moves its nonexistent midnight forward by the gap to 01:00.
+        let input = TimestampMicrosecondArray::from(vec![
+            instant_micros("1919-04-02T16:00:00Z"),
+            instant_micros("1919-03-31T04:45:00Z"),
+        ])
+        .with_timezone("America/Toronto");
+        let formats = StringArray::from(vec!["WEEK", "DAY"]);
+        let result = timestamp_trunc_array_fmt_dyn(&input, &formats).unwrap();
+        let expected = TimestampMicrosecondArray::from(vec![
+            instant_micros("1919-03-31T04:30:00Z"),
+            instant_micros("1919-03-31T05:00:00Z"),
+        ])
+        .with_timezone("America/Toronto");
+        assert_eq!(
+            result
+                .as_any()
+                .downcast_ref::<TimestampMicrosecondArray>()
+                .unwrap(),
+            &expected
+        );
+    }
+
+    #[test]
+    fn row_formats_handle_nulls_like_spark() {
+        let input = TimestampMicrosecondArray::from(vec![
+            Some(instant_micros("2024-05-17T12:34:56Z")),
+            Some(instant_micros("2024-05-17T12:34:56Z")),
+            None,
+            Some(instant_micros("2024-05-17T12:34:56Z")),
+        ])
+        .with_timezone("America/Los_Angeles");
+        // A NULL format gives NULL, and so does a NULL value, whatever its format says.
+        let formats = StringArray::from(vec![Some("YEAR"), None, Some("not_a_unit"), Some("HOUR")]);
+        let result = timestamp_trunc_array_fmt_dyn(&input, &formats).unwrap();
+        let expected = TimestampMicrosecondArray::from(vec![
+            Some(instant_micros("2024-01-01T08:00:00Z")),
+            None,
+            None,
+            Some(instant_micros("2024-05-17T12:00:00Z")),
+        ])
+        .with_timezone("America/Los_Angeles");
+        assert_eq!(
+            result
+                .as_any()
+                .downcast_ref::<TimestampMicrosecondArray>()
+                .unwrap(),
+            &expected
+        );
+
+        let formats = StringArray::from(vec!["YEAR", "not_a_unit", "YEAR", "YEAR"]);
+        assert!(timestamp_trunc_array_fmt_dyn(&input, &formats).is_err());
+    }
+
+    #[test]
+    fn row_format_groups_do_not_fail_each_other() {
+        // SECOND wraps at the lower bound like Spark 4.1, while YEAR would overflow there. The
+        // YEAR group only sees its own row.
+        let input =
+            TimestampMicrosecondArray::from(vec![i64::MIN, instant_micros("2024-05-17T12:34:56Z")]);
+        let formats = StringArray::from(vec!["SECOND", "YEAR"]);
+        let result = timestamp_trunc_array_fmt_dyn(&input, &formats).unwrap();
+        let literal = timestamp_trunc(&input.slice(0, 1), "SECOND".to_string()).unwrap();
+        let result = result
+            .as_any()
+            .downcast_ref::<TimestampMicrosecondArray>()
+            .unwrap();
+        assert_eq!(result.value(0), literal.value(0));
+        assert_eq!(result.value(1), instant_micros("2024-01-01T00:00:00Z"));
+
+        let formats = StringArray::from(vec!["YEAR", "YEAR"]);
+        assert!(timestamp_trunc_array_fmt_dyn(&input, &formats).is_err());
+    }
+
+    #[test]
+    fn row_formats_accept_dictionaries() {
+        let instants = [
+            instant_micros("2024-03-10T10:30:00Z"),
+            instant_micros("2024-11-03T09:30:00Z"),
+            instant_micros("2024-11-03T09:30:00Z"),
+        ];
+        let input =
+            TimestampMicrosecondArray::from(instants.to_vec()).with_timezone("America/Los_Angeles");
+        let formats = StringArray::from(vec!["DAY", "HOUR", "MONTH"]);
+        let expected = timestamp_trunc_array_fmt_dyn(&input, &formats).unwrap();
+
+        let keys = Int32Array::from(vec![0, 1, 1]);
+        let values = TimestampMicrosecondArray::from(vec![instants[0], instants[1]])
+            .with_timezone("America/Los_Angeles");
+        let input_dict = DictionaryArray::try_new(keys, Arc::new(values)).unwrap();
+        let mut formats_builder = StringDictionaryBuilder::<Int32Type>::new();
+        for format in ["DAY", "HOUR", "MONTH"] {
+            formats_builder.append(format).unwrap();
+        }
+        let formats_dict = formats_builder.finish();
+
+        for (array, formats) in [
+            (&input_dict as &dyn Array, &formats as &dyn Array),
+            (&input as &dyn Array, &formats_dict as &dyn Array),
+            (&input_dict as &dyn Array, &formats_dict as &dyn Array),
+        ] {
+            assert_eq!(
+                &timestamp_trunc_array_fmt_dyn(array, formats).unwrap(),
+                &expected
+            );
+        }
     }
 
     #[test]
