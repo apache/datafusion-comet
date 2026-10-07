@@ -26,7 +26,7 @@ import org.scalatest.matchers.should.Matchers
 
 import org.apache.hadoop.conf.Configuration
 
-import org.apache.comet.CometConf.COMET_S3_COMPLIANT_SCHEMES_KEY
+import org.apache.comet.CometConf.{COMET_LIBHDFS_SCHEMES_KEY, COMET_S3_COMPLIANT_SCHEMES_KEY}
 
 class NativeConfigSuite extends AnyFunSuite with Matchers {
 
@@ -342,6 +342,82 @@ class NativeConfigSuite extends AnyFunSuite with Matchers {
         NativeConfig.bucketForUri(new URI(uri), schemes) shouldBe expected
       }
     }
+  }
+
+  test("objectStoreKey - matches the native object store key for each path form") {
+    // The same table is asserted natively by `object_store_key_matches_jvm_fixture` in
+    // native/core/src/parquet/parquet_support.rs. Native scans group files by this key, and the
+    // native planner rejects a partition whose files resolve to different stores. The scheme
+    // lists are comma-separated; an empty libhdfs list means the `hdfs` default.
+    case class Case(path: String, aliases: String, libhdfs: String, key: String, hdfs: Boolean)
+    val account = "account.dfs.core.windows.net"
+    val cases = Seq(
+      // s3a is read through the s3 store; the bucket keeps its case and port.
+      Case("s3a://Bucket.Upper/k.parquet", "", "", "s3://Bucket.Upper", hdfs = false),
+      Case("s3://bucket:9000/k.parquet", "", "", "s3://bucket:9000", hdfs = false),
+      Case("s3a://user:secret@bucket/k.parquet", "", "", "s3://bucket", hdfs = false),
+      Case("S3A://bucket/k.parquet", "", "", "s3://bucket", hdfs = false),
+      Case("s3a:///bucket/k.parquet", "", "", "s3://bucket", hdfs = false),
+      Case("s3n://bucket/k.parquet", "", "", "s3n://bucket", hdfs = false),
+      // A scheme routed through libhdfs keeps its spelling; the decision uses the scheme as
+      // written, so listing s3 does not capture s3a. The last two share a key but not a store.
+      Case("s3a://bucket/k.parquet", "", "s3a", "s3a://bucket", hdfs = true),
+      Case("s3a://bucket/k.parquet", "", "s3", "s3://bucket", hdfs = false),
+      Case("s3://bucket/k.parquet", "", "s3", "s3://bucket", hdfs = true),
+      // An opted-in alias is read through the s3 store, promoting a hostless bucket, unless
+      // libhdfs also lists it.
+      Case("blob://bucket/k.parquet", "blob", "", "s3://bucket", hdfs = false),
+      Case("blob:///bucket/k.parquet", "blob", "", "s3://bucket", hdfs = false),
+      Case("blob:/bucket/k.parquet", "blob", "", "s3://bucket", hdfs = false),
+      Case("blob://bucket/k.parquet", "", "", "blob://bucket", hdfs = false),
+      Case("blob://bucket/k.parquet", "blob", "blob", "blob://bucket", hdfs = true),
+      // Hostless plain s3 is not promoted.
+      Case("s3:///bucket/k.parquet", "", "", "s3://", hdfs = false),
+      // A listed URL-spec special scheme is never an alias.
+      Case("file:///tmp/t/k.parquet", "file", "", "file://", hdfs = false),
+      Case("file:/tmp/t/k.parquet", "", "", "file://", hdfs = false),
+      Case(
+        "HTTPS://Host.Example.com/k.parquet",
+        "",
+        "",
+        "https://host.example.com",
+        hdfs = false),
+      Case("hdfs://nn:8020/t/k.parquet", "", "", "hdfs://nn:8020", hdfs = true),
+      Case("hdfs:///t/k.parquet", "", "", "hdfs://", hdfs = true),
+      Case("gs://bucket/k.parquet", "", "", "gs://bucket", hdfs = false),
+      // ABFS keeps the container from the user info; WASB does not.
+      Case(s"abfss://container@$account/k.parquet", "", "", s"abfss://container@$account", false),
+      Case(s"abfs://container@$account/k.parquet", "", "", s"abfs://container@$account", false),
+      Case(
+        "wasbs://container@account.blob.core.windows.net/k.parquet",
+        "",
+        "",
+        "wasbs://account.blob.core.windows.net",
+        hdfs = false))
+
+    for (c <- cases) {
+      val libhdfs = if (c.libhdfs.isEmpty) Set("hdfs") else NativeConfig.parseSchemeSet(c.libhdfs)
+      withClue(s"${c.path} with aliases '${c.aliases}' and libhdfs '${c.libhdfs}': ") {
+        val key =
+          NativeConfig.objectStoreKey(
+            new URI(c.path),
+            NativeConfig.parseSchemeSet(c.aliases),
+            libhdfs)
+        (key.key, key.isLibhdfs) shouldBe ((c.key, c.hdfs))
+      }
+    }
+    // A path without a scheme is read from the local file system.
+    NativeConfig.objectStoreKey(new URI("/tmp/t/k.parquet"), Set.empty, Set("hdfs")) shouldBe
+      NativeConfig.ObjectStoreKey("file://", isLibhdfs = false)
+  }
+
+  test("resolveLibhdfsSchemes - hdfs when unset or blank, otherwise the configured list") {
+    val conf = new Configuration(false)
+    NativeConfig.resolveLibhdfsSchemes(conf) shouldBe Set("hdfs")
+    conf.set(COMET_LIBHDFS_SCHEMES_KEY, "  ")
+    NativeConfig.resolveLibhdfsSchemes(conf) shouldBe Set("hdfs")
+    conf.set(COMET_LIBHDFS_SCHEMES_KEY, " S3A , fake ")
+    NativeConfig.resolveLibhdfsSchemes(conf) shouldBe Set("s3a", "fake")
   }
 
   test("resolveS3CompliantSchemes - comma list is trimmed and lowercased, empty means none") {

@@ -26,7 +26,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.analysis.Resolver
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, Expression, Literal}
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
-import org.apache.spark.sql.comet.{CometNativeExec, CometNativeScanExec, CometScanExec}
+import org.apache.spark.sql.comet.{CometNativeExec, CometNativeScanExec, CometScanExec, CometScanUtils}
 import org.apache.spark.sql.execution.{FileSourceScanExec, InSubqueryExec, SubqueryAdaptiveBroadcastExec}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
 import org.apache.spark.sql.internal.SQLConf
@@ -240,6 +240,22 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
       scan: CometScanExec,
       builder: Operator.Builder,
       childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
+    val hadoopConf =
+      scan.relation.sparkSession.sessionState.newHadoopConfWithOptions(scan.relation.options)
+    // The root paths can miss a file, e.g. a catalog partition located outside the table, so
+    // check the listed files. The static partitions are a superset of what DPP keeps.
+    val multiStoreReason = CometScanUtils.multiStoreFallbackReason(
+      "Native Parquet scan",
+      scan.selectedPartitions.view.flatMap(_.files.view.map(_.getPath.toUri)),
+      NativeConfig.resolveS3CompliantSchemes(hadoopConf),
+      NativeConfig.resolveLibhdfsSchemes(hadoopConf),
+      scan.bucketedScan)
+    if (multiStoreReason.nonEmpty) {
+      // CometExecRule falls back to the wrapped scan, so tag it too for the explain output.
+      withFallbackReason(scan, multiStoreReason.get)
+      withFallbackReason(scan.wrapped, multiStoreReason.get)
+      return None
+    }
     val nativeScanBuilder = OperatorOuterClass.NativeScan.newBuilder()
     val commonBuilder = OperatorOuterClass.NativeScanCommon.newBuilder()
 
@@ -357,9 +373,6 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
       commonBuilder.setAllowTimestampLtzToNtz(CometConf.COMET_ALLOW_TIMESTAMP_LTZ_AS_NTZ)
 
       // Collect S3/cloud storage configurations
-      val hadoopConf = scan.relation.sparkSession.sessionState
-        .newHadoopConfWithOptions(scan.relation.options)
-
       commonBuilder.setEncryptionEnabled(CometParquetUtils.encryptionEnabled(hadoopConf))
 
       firstFileUri.foreach { uri =>

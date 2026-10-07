@@ -89,7 +89,7 @@ object NativeConfig {
   // (comma-separated, trimmed, lowercased, empty/missing => none). The native gate no longer
   // claims them, so the opt-in is resolved wherever the Hadoop config is available: the scan gate
   // (CometScanRule) and the Iceberg write path's data-bucket resolution.
-  private[comet] def resolveS3CompliantSchemes(hadoopConf: Configuration): Set[String] =
+  def resolveS3CompliantSchemes(hadoopConf: Configuration): Set[String] =
     parseSchemeSet(hadoopConf.get(COMET_S3_COMPLIANT_SCHEMES_KEY))
 
   /**
@@ -123,6 +123,62 @@ object NativeConfig {
             .map(_.takeWhile(_ != '/'))
             .filter(_.nonEmpty))
     }
+  }
+
+  /**
+   * The schemes native reads through libhdfs: the `fs.comet.libhdfs.schemes` list, or only `hdfs`
+   * when it is unset or blank, as native `is_hdfs_scheme` decides.
+   */
+  def resolveLibhdfsSchemes(hadoopConf: Configuration): Set[String] = {
+    val raw = hadoopConf.get(COMET_LIBHDFS_SCHEMES_KEY)
+    if (StringUtils.isBlank(raw)) Set("hdfs") else parseSchemeSet(raw)
+  }
+
+  // Schemes the URL standard treats as special: never an S3 alias, and their host is lowercased.
+  private val urlSpecialSchemes = Set("file", "http", "https", "ftp", "ws", "wss")
+
+  /**
+   * A native object store: its registry key, `scheme://authority`, and whether libhdfs serves it.
+   * Native planning tells stores apart by both, since `s3` routed through libhdfs and native
+   * `s3a` share a key.
+   */
+  case class ObjectStoreKey(key: String, isLibhdfs: Boolean) {
+    override def toString: String = if (isLibhdfs) s"$key (libhdfs)" else key
+  }
+
+  /**
+   * The object store native planning resolves for `uri`. Mirrors native
+   * `normalize_object_store_url` followed by `object_store_url_key`: a libhdfs scheme (decided on
+   * the scheme as written) keeps its spelling, `s3a` and opted-in aliases become `s3` with a
+   * hostless bucket promoted from the path, user info is dropped except for ABFS containers, and
+   * a path without a scheme is local. The one divergence is a default port of a special scheme
+   * (`https://host:443`), which native drops; that only splits files across more partitions.
+   * Files with different keys cannot share a native partition.
+   */
+  def objectStoreKey(
+      uri: URI,
+      s3CompliantSchemes: Set[String],
+      libhdfsSchemes: Set[String]): ObjectStoreKey = {
+    val scheme = lowerScheme(uri).getOrElse("file")
+    val isLibhdfs = libhdfsSchemes.contains(scheme)
+    val rawAuthority = Option(uri.getRawAuthority).getOrElse("")
+    val authority =
+      if (scheme == "abfs" || scheme == "abfss") rawAuthority
+      else rawAuthority.substring(rawAuthority.lastIndexOf('@') + 1)
+    val isS3Alias = !isLibhdfs &&
+      (scheme == "s3a" ||
+        (s3CompliantSchemes.contains(scheme) && !urlSpecialSchemes.contains(scheme)))
+    val key = if (isS3Alias) {
+      val bucket =
+        if (authority.nonEmpty) authority
+        else Option(uri.getRawPath).getOrElse("").stripPrefix("/").takeWhile(_ != '/')
+      s"s3://$bucket"
+    } else if (urlSpecialSchemes.contains(scheme)) {
+      s"$scheme://${authority.toLowerCase(Locale.ROOT)}"
+    } else {
+      s"$scheme://$authority"
+    }
+    ObjectStoreKey(key, isLibhdfs)
   }
 
   // s3/s3a/s3n and any opted-in alias share the authorityless path-promotion semantics above.

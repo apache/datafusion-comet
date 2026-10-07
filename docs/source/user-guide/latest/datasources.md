@@ -97,6 +97,19 @@ See the dedicated [Comet and Iceberg Guide](iceberg.md).
 
 Comet supports most standard storage systems, such as local file system and object storage.
 
+### Scans over more than one object store
+
+A native Parquet or CSV scan reads each of its partitions through one object store, such as one S3
+bucket, one GCS bucket, or one HDFS name node. When a scan's files live in more than one store,
+Comet puts the files of each store into separate partitions, so such a scan can run with a different
+number of partitions than Spark would use. A native Parquet scan packs each store's files on their
+own, so `spark.sql.files.maxPartitionNum` applies to each store's files separately.
+
+A native Parquet or CSV scan falls back to Spark when its files use schemes whose object store
+settings differ (for example `s3a://` and `gs://`, or an S3-compliant alias and `s3a://`), because
+it forwards the settings of one scheme. A native Parquet scan of a bucketed table also falls back
+when its files span more than one store, because each table bucket is read as one partition.
+
 ### HDFS
 
 The Apache DataFusion Comet Rust-based reader seamlessly scans files from remote HDFS for [supported formats](#supported-spark-data-sources)
@@ -340,9 +353,9 @@ credential providers and options documented above also apply to alias-scheme URL
 translation feeds the native Iceberg scan; see
 [Object store configuration (S3)](iceberg.md#object-store-configuration-s3) in the Iceberg guide.
 
-A native Parquet scan whose alias-scheme paths span more than one bucket falls back to Spark. Alias
-schemes apply to native scans only: a native Iceberg write to an alias-scheme location falls back to
-iceberg-java.
+A native Parquet scan whose alias-scheme paths span more than one bucket falls back to Spark,
+because settings under the `default` authority resolve for one bucket only. Alias schemes apply to
+native scans only: a native Iceberg write to an alias-scheme location falls back to iceberg-java.
 
 ### Examples
 

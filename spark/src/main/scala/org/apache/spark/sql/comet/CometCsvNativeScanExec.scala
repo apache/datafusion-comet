@@ -32,6 +32,7 @@ import org.apache.spark.sql.execution.datasources.v2.csv.CSVScan
 import com.google.common.base.Objects
 
 import org.apache.comet.{CometConf, ConfigEntry}
+import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass}
 import org.apache.comet.serde.OperatorOuterClass.Operator
@@ -50,8 +51,9 @@ case class CometCsvNativeScanExec(
 
   override val nodeName: String = "CometCsvNativeScan"
 
+  // The serialized partitions, which split any Spark partition that mixes object stores.
   override def outputPartitioning: Partitioning = UnknownPartitioning(
-    originalPlan.inputPartitions.length)
+    nativeOp.getCsvScan.getFilePartitionsCount)
 
   override def outputOrdering: Seq[SortOrder] = Nil
 
@@ -92,7 +94,27 @@ object CometCsvNativeScanExec extends CometOperatorSerde[CometBatchScanExec] {
       val timeZone = sessionState.conf.sessionLocalTimeZone
       new CSVOptions(csvScan.options.asScala.toMap, columnPruning, timeZone)
     }
-    val filePartitions = op.inputPartitions.map(_.asInstanceOf[FilePartition])
+    val hadoopConf =
+      sessionState.newHadoopConfWithOptions(op.session.sparkContext.conf.getAll.toMap)
+    val s3CompliantSchemes = NativeConfig.resolveS3CompliantSchemes(hadoopConf)
+    val libhdfsSchemes = NativeConfig.resolveLibhdfsSchemes(hadoopConf)
+    val inputPartitions = op.inputPartitions.map(_.asInstanceOf[FilePartition])
+    val multiStoreReason = CometScanUtils.multiStoreFallbackReason(
+      "Native CSV scan",
+      inputPartitions.view.flatMap(_.files.view.map(_.pathUri)),
+      s3CompliantSchemes,
+      libhdfsSchemes,
+      isBucketedScan = false)
+    if (multiStoreReason.nonEmpty) {
+      // CometExecRule falls back to the wrapped scan, so tag it too for the explain output.
+      withFallbackReason(op, multiStoreReason.get)
+      withFallbackReason(op.wrapped, multiStoreReason.get)
+      return None
+    }
+    // Native planning reads each partition through one object store.
+    val filePartitions = CometScanUtils.splitPartitionsByStore(
+      inputPartitions,
+      file => NativeConfig.objectStoreKey(file.pathUri, s3CompliantSchemes, libhdfsSchemes))
     val csvOptionsProto = csvOptions2Proto(options)
     val dataSchemaProto = schema2Proto(csvScan.dataSchema)
     val readSchemaFieldNames = csvScan.readDataSchema.fieldNames
@@ -106,8 +128,6 @@ object CometCsvNativeScanExec extends CometOperatorSerde[CometBatchScanExec] {
 
     val objectStoreOptions = filePartitions.headOption
       .flatMap { partitionFile =>
-        val hadoopConf = sessionState
-          .newHadoopConfWithOptions(op.session.sparkContext.conf.getAll.toMap)
         partitionFile.files.headOption
           .map(file => NativeConfig.extractObjectStoreOptions(hadoopConf, file.pathUri))
       }
