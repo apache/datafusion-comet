@@ -45,6 +45,7 @@ import org.apache.comet.codegen.CometBatchKernelCodegen
 import org.apache.comet.codegen.CometBatchKernelCodegen.ArrowColumnSpec
 import org.apache.comet.serde.{CometInvokeTargets, CometScalaUDF, QueryPlanSerde}
 import org.apache.comet.serde.ExprOuterClass.Expr.ExprStructCase
+import org.apache.comet.udf.CometUdfBridge
 import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 import org.apache.comet.vector.CometVector
 
@@ -1621,11 +1622,10 @@ class CometCodegenSuite
     // `init(int partitionIndex)`, called once per kernel allocation. Spark seeds
     // `XORShiftRandom(seed + partitionIndex)` per partition, so different partitions produce
     // different sequences for the same seed. Matching Spark across partitions requires the
-    // kernel to see the real partition index, which the dispatcher derives from
-    // `TaskContext.get().partitionId()`, live on this path thanks to the bridge-level
-    // TaskContext propagation. Composing with a ScalaUDF (identity on Double here) forces the
-    // tree through codegen dispatch so the Rand evaluation runs inside our kernel's init
-    // rather than via Spark's normal codegen.
+    // kernel to see the real partition index, which the native plan passes through the bridge.
+    // Composing with a ScalaUDF (identity on Double here) forces the tree through codegen
+    // dispatch so the Rand evaluation runs inside our kernel's init rather than via Spark's
+    // normal codegen.
     spark.udf.register("dblId", (d: Double) => d)
     val df = spark
       .range(0, 1024, 1, numPartitions = 4)
@@ -1643,6 +1643,59 @@ class CometCodegenSuite
       checkSparkAnswer(
         sql("SELECT COUNT(CAST((SELECT c1 FROM t) AS STRING COLLATE UTF8_LCASE)) FROM t"))
     }
+  }
+
+  test("dispatched kernels see the index of the partition the native plan computes") {
+    // Under a union, a coalesce and a cartesian product the native plan computes a partition
+    // whose index differs from `TaskContext.partitionId()`, and the coalesce runs two plans in
+    // one task. See https://github.com/apache/datafusion-comet/issues/6570.
+    val df = spark
+      .range(0, 8, 1, numPartitions = 2)
+      .selectExpr("id", "map(1, spark_partition_id()) AS m", "round(rand(42), 6) AS r")
+    Seq(df.union(df), df.coalesce(1)).foreach { q =>
+      assertCodegenRan(checkSparkAnswerAndOperator(q))
+    }
+    withSQLConf(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+      // `CartesianProductExec` stays in Spark, over native children.
+      assertCodegenRan(checkSparkAnswer(df.crossJoin(spark.range(0, 4, 1, 2))))
+    }
+    if (isSpark40Plus) {
+      // Spark 4 lowers `make_valid_utf8` to an `Invoke` whose `deterministic` skips its target
+      // object, so the partition-seeded input sits under a root that reports deterministic.
+      val invoke = spark
+        .range(0, 8, 1, numPartitions = 2)
+        .selectExpr(
+          "id",
+          "make_valid_utf8(cast(spark_partition_id() AS STRING)) AS p",
+          "make_valid_utf8(cast(round(rand(42), 6) AS STRING)) AS r")
+      assertCodegenRan(checkSparkAnswerAndOperator(invoke.coalesce(1)))
+    }
+  }
+
+  test("plans of a coalesce share deterministic kernels and drop their own when they close") {
+    // The coalesce runs four native plans in one task. The deterministic `round` compiles once
+    // for all of them and the nondeterministic one once per plan. Each plan's kernel is dropped
+    // when the plan closes, so once the rows are read only the shared one is left.
+    val df = spark
+      .range(0, 16, 1, numPartitions = 4)
+      .selectExpr("round(id / 3, 2) AS d", "round(rand(42), 6) AS r")
+      .coalesce(1)
+    CometScalaUDFCodegen.resetStats()
+    val cached = df.queryExecution.toRdd
+      .mapPartitions { rows =>
+        rows.foreach(_ => ())
+        val dispatcher = CometUdfBridge.instanceFor(
+          TaskContext.get().taskAttemptId(),
+          classOf[CometScalaUDFCodegen].getName)
+        Iterator(Option(dispatcher).map(_.asInstanceOf[CometScalaUDFCodegen].cachedPlanIds))
+      }
+      .collect()
+      .toSeq
+    assert(
+      cached == Seq(Some(List(CometScalaUDFCodegen.NoPlan))),
+      s"expected only the shared kernel to outlive the plans, got plan ids $cached")
+    val stats = CometScalaUDFCodegen.stats()
+    assert(stats.compileCount == 5, s"expected 1 shared and 4 per-plan compiles, got $stats")
   }
 
   test("ScalaUDF composed with reused scalar subquery across projection and filter") {
