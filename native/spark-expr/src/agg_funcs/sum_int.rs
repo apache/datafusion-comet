@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::{arithmetic_overflow_error, EvalMode};
+use crate::{long_add_overflow_error, EvalMode};
 use arrow::array::{
     as_primitive_array, cast::AsArray, Array, ArrayRef, ArrowNativeTypeOp, ArrowPrimitiveType,
     BooleanArray, Int64Array, PrimitiveArray,
@@ -201,7 +201,7 @@ impl Accumulator for SumIntegerAccumulatorAnsi {
                     })?;
                     sum = v
                         .add_checked(sum)
-                        .map_err(|_| DataFusionError::from(arithmetic_overflow_error("integer")))?;
+                        .map_err(|_| DataFusionError::from(long_add_overflow_error()))?;
                 }
             }
             Ok(sum)
@@ -574,10 +574,12 @@ impl GroupsAccumulator for SumIntGroupsAccumulatorAnsi {
                     let v = int_array.value(i).to_i64().ok_or_else(|| {
                         DataFusionError::Internal("Failed to convert value to i64".to_string())
                     })?;
-                    sums[group_index] =
-                        Some(sums[group_index].unwrap_or(0).add_checked(v).map_err(|_| {
-                            DataFusionError::from(arithmetic_overflow_error("integer"))
-                        })?);
+                    sums[group_index] = Some(
+                        sums[group_index]
+                            .unwrap_or(0)
+                            .add_checked(v)
+                            .map_err(|_| DataFusionError::from(long_add_overflow_error()))?,
+                    );
                 }
             }
             Ok(())
@@ -669,7 +671,7 @@ impl GroupsAccumulator for SumIntGroupsAccumulatorAnsi {
                     self.sums[group_index]
                         .unwrap()
                         .add_checked(that_sum)
-                        .map_err(|_| DataFusionError::from(arithmetic_overflow_error("integer")))?,
+                        .map_err(|_| DataFusionError::from(long_add_overflow_error()))?,
                 );
             }
         }
@@ -900,6 +902,7 @@ impl GroupsAccumulator for SumIntGroupsAccumulatorTry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::SparkError;
     use arrow::array::Int64Array;
     use datafusion::logical_expr::{EmitTo, GroupsAccumulator};
 
@@ -1016,5 +1019,88 @@ mod tests {
         ]));
         acc.merge_batch(&[states]).unwrap();
         assert_eq!(acc.evaluate().unwrap(), ScalarValue::Int64(Some(60)));
+    }
+
+    /// Spark's integral `SUM` adds through `Add` on `LONG`, so every ANSI overflow path must
+    /// report a long overflow with the `try_add` suggestion.
+    fn assert_long_add_overflow(error: DataFusionError) {
+        let DataFusionError::External(error) = error else {
+            panic!("Expected structured Spark error, got {error:?}")
+        };
+        match error.downcast_ref::<SparkError>() {
+            Some(SparkError::ArithmeticOverflow {
+                from_type,
+                function_name,
+            }) => {
+                assert_eq!(from_type, "long");
+                assert_eq!(function_name, "try_add");
+            }
+            other => panic!("Expected ArithmeticOverflow, got {other:?}"),
+        }
+    }
+
+    fn int64_array(values: Vec<i64>) -> ArrayRef {
+        Arc::new(Int64Array::from(values))
+    }
+
+    #[test]
+    fn test_ansi_accumulator_update_batch_overflow() {
+        let mut acc = SumIntegerAccumulatorAnsi::new();
+        let error = acc
+            .update_batch(&[int64_array(vec![i64::MAX, 1])])
+            .unwrap_err();
+        assert_long_add_overflow(error);
+    }
+
+    #[test]
+    fn test_ansi_accumulator_merge_batch_overflow() {
+        let mut acc = SumIntegerAccumulatorAnsi::new();
+        acc.merge_batch(&[int64_array(vec![i64::MAX])]).unwrap();
+        let error = acc.merge_batch(&[int64_array(vec![1])]).unwrap_err();
+        assert_long_add_overflow(error);
+    }
+
+    #[test]
+    fn test_ansi_accumulator_update_batch_underflow() {
+        let mut acc = SumIntegerAccumulatorAnsi::new();
+        let error = acc
+            .update_batch(&[int64_array(vec![i64::MIN, -1])])
+            .unwrap_err();
+        assert_long_add_overflow(error);
+    }
+
+    #[test]
+    fn test_ansi_groups_accumulator_update_batch_overflow() {
+        let mut acc = SumIntGroupsAccumulatorAnsi::new();
+        // Only group 1 overflows.
+        let error = acc
+            .update_batch(
+                &[int64_array(vec![1, i64::MAX, 2, 1])],
+                &[0, 1, 0, 1],
+                None,
+                2,
+            )
+            .unwrap_err();
+        assert_long_add_overflow(error);
+    }
+
+    #[test]
+    fn test_ansi_groups_accumulator_merge_batch_overflow() {
+        let mut acc = SumIntGroupsAccumulatorAnsi::new();
+        acc.merge_batch(&[int64_array(vec![i64::MAX, 5])], &[0, 1], 2)
+            .unwrap();
+        let error = acc
+            .merge_batch(&[int64_array(vec![1, 5])], &[0, 1], 2)
+            .unwrap_err();
+        assert_long_add_overflow(error);
+    }
+
+    #[test]
+    fn test_ansi_groups_accumulator_merge_batch_underflow() {
+        let mut acc = SumIntGroupsAccumulatorAnsi::new();
+        let error = acc
+            .merge_batch(&[int64_array(vec![i64::MIN, -1])], &[0, 0], 1)
+            .unwrap_err();
+        assert_long_add_overflow(error);
     }
 }

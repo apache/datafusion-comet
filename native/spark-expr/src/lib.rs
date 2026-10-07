@@ -140,6 +140,15 @@ pub(crate) fn arithmetic_overflow_error(from_type: &str) -> SparkError {
     }
 }
 
+/// Spark adds integral `SUM` inputs as `LONG` through `Add`, so an overflow reports a long
+/// overflow with the `try_add` suggestion whatever the input type.
+pub(crate) fn long_add_overflow_error() -> SparkError {
+    SparkError::ArithmeticOverflow {
+        from_type: "long".to_string(),
+        function_name: "try_add".to_string(),
+    }
+}
+
 pub(crate) fn decimal_sum_overflow_error(function_name: &str) -> SparkError {
     SparkError::DecimalSumOverflow {
         function_name: function_name.to_string(),

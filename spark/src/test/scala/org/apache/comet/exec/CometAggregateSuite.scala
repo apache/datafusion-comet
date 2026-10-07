@@ -24,7 +24,7 @@ import java.util.concurrent.atomic.AtomicLong
 import scala.util.Random
 
 import org.apache.hadoop.fs.Path
-import org.apache.spark.{CometListenerBusUtils, SparkConf}
+import org.apache.spark.{CometListenerBusUtils, SparkConf, SparkThrowable}
 import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
 import org.apache.spark.sql.{Column, CometTestBase, DataFrame, QueryTest, Row}
 import org.apache.spark.sql.catalyst.expressions.Cast
@@ -38,7 +38,7 @@ import org.apache.spark.sql.execution.SQLExecution
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AdaptiveSparkPlanHelper, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, ObjectHashAggregateExec, SortAggregateExec}
 import org.apache.spark.sql.execution.exchange.{ReusedExchangeExec, ShuffleExchangeExec}
-import org.apache.spark.sql.functions.{avg, col, collect_list, collect_set, count_distinct, expr, sort_array, sum}
+import org.apache.spark.sql.functions.{avg, col, collect_list, collect_set, count_distinct, expr, lit, sort_array, sum, when}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, DataTypes, StructField, StructType}
 
@@ -3297,36 +3297,49 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     (1 to 50).flatMap(_ => Seq((maxDec38_0, 1)))
   }
 
+  /** Spark's integral `SUM` overflow suggests `try_add`, so Comet's error must too. */
+  private def assertTryAddSuggestion(error: SparkThrowable, clue: String): Unit = {
+    val alternative = error.getMessageParameters.get("alternative")
+    assert(
+      alternative != null && alternative.contains("'try_add'"),
+      s"$clue -> alternative=$alternative")
+  }
+
   test("ANSI support - SUM function") {
     Seq(true, false).foreach { ansiEnabled =>
       withSQLConf(SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString) {
-        // Test long overflow
-        withParquetTable(Seq((Long.MaxValue, 1L), (100L, 1L)), "tbl") {
-          val res = sql("SELECT SUM(_1) FROM tbl")
-          if (ansiEnabled) {
-            checkSparkAnswerMaybeThrows(res) match {
-              case (Some(sparkExc), Some(cometExc)) =>
-                // make sure that the error message throws overflow exception only
-                assert(sparkExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
-                assert(cometExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
-              case _ => fail("Exception should be thrown for Long overflow in ANSI mode")
+        // Spark's integral SUM adds through `Add` on LONG, so an overflow reports
+        // `long overflow` with the `try_add` suggestion. With one partition both rows meet in
+        // the partial aggregate. With two partitions each holds one row, so the overflow only
+        // happens when the final aggregate merges the partial sums.
+        for ((extreme, step) <- Seq((Long.MaxValue, 1L), (Long.MinValue, -1L));
+          partitions <- Seq(1, 2);
+          grouped <- Seq(false, true)) {
+          withTempPath { dir =>
+            val path = dir.getCanonicalPath
+            spark
+              .range(0, 2, 1, partitions)
+              .select(when(col("id") === 0, extreme).otherwise(step).as("l"), lit(1).as("g"))
+              .write
+              .parquet(path)
+            // An open cost as large as the split size keeps each file in its own partition.
+            val openCost = SQLConf.FILES_MAX_PARTITION_BYTES.defaultValue.get.toString
+            withSQLConf(SQLConf.FILES_OPEN_COST_IN_BYTES.key -> openCost) {
+              withTempView("tbl") {
+                val input = spark.read.parquet(path)
+                assert(input.rdd.getNumPartitions == partitions)
+                input.createOrReplaceTempView("tbl")
+                val query =
+                  if (grouped) "SELECT g, SUM(l) FROM tbl GROUP BY g"
+                  else "SELECT SUM(l) FROM tbl"
+                val res = sql(query)
+                if (ansiEnabled) {
+                  assertTryAddSuggestion(checkSparkError(res, "ARITHMETIC_OVERFLOW"), query)
+                } else {
+                  checkSparkAnswerAndOperator(res)
+                }
+              }
             }
-          } else {
-            checkSparkAnswerAndOperator(res)
-          }
-        }
-        // Test long underflow
-        withParquetTable(Seq((Long.MinValue, 1L), (-100L, 1L)), "tbl") {
-          val res = sql("SELECT SUM(_1) FROM tbl")
-          if (ansiEnabled) {
-            checkSparkAnswerMaybeThrows(res) match {
-              case (Some(sparkExc), Some(cometExc)) =>
-                assert(sparkExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
-                assert(cometExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
-              case _ => fail("Exception should be thrown for Long underflow in ANSI mode")
-            }
-          } else {
-            checkSparkAnswerAndOperator(res)
           }
         }
         // Test Int SUM (should not overflow)
@@ -3381,13 +3394,9 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           "tbl") {
           val res = sql("SELECT _2, SUM(_1) FROM tbl GROUP BY _2").repartition(2)
           if (ansiEnabled) {
-            checkSparkAnswerMaybeThrows(res) match {
-              case (Some(sparkExc), Some(cometExc)) =>
-                assert(sparkExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
-                assert(cometExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
-              case _ =>
-                fail("Exception should be thrown for Long overflow with GROUP BY in ANSI mode")
-            }
+            assertTryAddSuggestion(
+              checkSparkError(res, "ARITHMETIC_OVERFLOW"),
+              "SELECT _2, SUM(_1) FROM tbl GROUP BY _2")
           } else {
             checkSparkAnswerAndOperator(res)
           }
@@ -3398,13 +3407,9 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           "tbl") {
           val res = sql("SELECT _2, SUM(_1) FROM tbl GROUP BY _2")
           if (ansiEnabled) {
-            checkSparkAnswerMaybeThrows(res) match {
-              case (Some(sparkExc), Some(cometExc)) =>
-                assert(sparkExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
-                assert(cometExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
-              case _ =>
-                fail("Exception should be thrown for Long underflow with GROUP BY in ANSI mode")
-            }
+            assertTryAddSuggestion(
+              checkSparkError(res, "ARITHMETIC_OVERFLOW"),
+              "SELECT _2, SUM(_1) FROM tbl GROUP BY _2")
           } else {
             checkSparkAnswerAndOperator(res)
           }
