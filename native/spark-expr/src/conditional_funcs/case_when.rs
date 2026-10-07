@@ -96,9 +96,10 @@ pub fn create_if_expr(
     )))
 }
 
-/// Reconciles Spark IF branches positionally, retaining THEN names and merging nullability.
-/// Spark has already coerced the branches to the same SQL type. DataFusion's struct union may
-/// instead match by name, pairing different positions when names differ only in case.
+/// Reconciles Spark IF branches, or the arguments of `greatest` and `least`, positionally,
+/// retaining the first one's names and merging nullability. Spark has already coerced them to the
+/// same SQL type. DataFusion's struct union may instead match by name, pairing different positions
+/// when names differ only in case.
 fn if_common_type(then_type: &DataType, else_type: &DataType) -> Option<DataType> {
     use arrow::datatypes::FieldRef;
 
@@ -160,6 +161,38 @@ fn coerce_branch(
         None,
         None,
     ))
+}
+
+/// Casts the arguments of a Spark `ComplexTypeMergingExpression` such as `greatest` or `least` to
+/// their common type, which keeps the first argument's field names, as Spark's result type does.
+///
+/// Spark has already given the arguments the same SQL type up to nullability, and up to the case
+/// of struct field names when the analysis is case-insensitive. It compares structs field by field
+/// by position. DataFusion's struct coercion and Arrow's struct cast both match fields by name
+/// when two structs hold the same set of names, which pairs different positions when the names
+/// differ only in case, so the arguments are reconciled here positionally instead. The arguments
+/// are returned unchanged when they have no positional common type.
+pub fn coerce_to_common_type(
+    exprs: Vec<Arc<dyn PhysicalExpr>>,
+    input_schema: &Schema,
+) -> Result<Vec<Arc<dyn PhysicalExpr>>> {
+    let types = exprs
+        .iter()
+        .map(|e| e.data_type(input_schema))
+        .collect::<Result<Vec<_>>>()?;
+    let Some((first, rest)) = types.split_first() else {
+        return Ok(exprs);
+    };
+    let Some(common_type) = rest.iter().try_fold(first.clone(), |common, data_type| {
+        if_common_type(&common, data_type)
+    }) else {
+        return Ok(exprs);
+    };
+    Ok(exprs
+        .into_iter()
+        .zip(&types)
+        .map(|(e, data_type)| coerce_branch(e, data_type, &common_type))
+        .collect())
 }
 
 /// Spark's `CASE WHEN`, which Comet also uses for `IF` and `COALESCE`.
@@ -1576,5 +1609,96 @@ mod tests {
             vec![(c("p"), c("t"))],
             Some(null)
         ));
+    }
+
+    /// `greatest` and `least` arguments whose struct fields hold the same names in another order,
+    /// which Spark accepts when the names differ only in case. They are cast to the first
+    /// argument's type by position, with each field nullable if any argument's is. Matching the
+    /// fields by name would put the second argument's `x` value in the first position.
+    #[test]
+    fn coerce_to_common_type_is_positional() {
+        use arrow::array::{Float64Array, ListArray};
+        use arrow::datatypes::Fields;
+
+        let float = |name: &str, nullable: bool| Field::new(name, DataType::Float64, nullable);
+        let first_fields: Fields = vec![float("x", false), float("X", false)].into();
+        let second_fields: Fields = vec![float("X", true), float("x", false)].into();
+        let expected_fields: Fields = vec![float("x", true), float("X", false)].into();
+        let list = |fields: &Fields| {
+            DataType::List(Arc::new(Field::new_list_field(
+                DataType::Struct(fields.clone()),
+                true,
+            )))
+        };
+        let schema = Schema::new(vec![
+            Field::new("a", DataType::Struct(first_fields.clone()), false),
+            Field::new("b", DataType::Struct(second_fields.clone()), false),
+            Field::new("la", list(&first_fields), false),
+            Field::new("lb", list(&second_fields), false),
+        ]);
+        let first = StructArray::new(
+            first_fields.clone(),
+            vec![
+                Arc::new(Float64Array::from(vec![0.0, 2.0])),
+                Arc::new(Float64Array::from(vec![1.0, 1.0])),
+            ],
+            None,
+        );
+        let second = StructArray::new(
+            second_fields.clone(),
+            vec![
+                Arc::new(Float64Array::from(vec![Some(1.0), None])),
+                Arc::new(Float64Array::from(vec![0.0, 2.0])),
+            ],
+            None,
+        );
+        let in_list = |values: &StructArray| -> ArrayRef {
+            Arc::new(ListArray::new(
+                Arc::new(Field::new_list_field(values.data_type().clone(), true)),
+                OffsetBuffer::from_lengths([1, 1]),
+                Arc::new(values.clone()),
+                None,
+            ))
+        };
+        let batch = RecordBatch::try_new(
+            Arc::new(schema.clone()),
+            vec![
+                Arc::new(first.clone()),
+                Arc::new(second.clone()),
+                in_list(&first),
+                in_list(&second),
+            ],
+        )
+        .unwrap();
+        // The second argument's values in its own positions, under the first argument's names
+        let expected_second = StructArray::new(
+            expected_fields.clone(),
+            vec![Arc::clone(second.column(0)), Arc::clone(second.column(1))],
+            None,
+        );
+        let c = |name: &str| col(name, &schema).unwrap();
+        for (args, expected_type, expected) in [
+            (
+                vec![c("a"), c("b")],
+                DataType::Struct(expected_fields.clone()),
+                vec![
+                    Arc::new(first.clone()) as ArrayRef,
+                    Arc::new(expected_second.clone()),
+                ],
+            ),
+            (
+                vec![c("la"), c("lb")],
+                list(&expected_fields),
+                vec![in_list(&first), in_list(&expected_second)],
+            ),
+        ] {
+            let args = coerce_to_common_type(args, &schema).unwrap();
+            for (arg, expected) in args.iter().zip(expected) {
+                assert_eq!(arg.data_type(&schema).unwrap(), expected_type);
+                let result = arg.evaluate(&batch).unwrap().into_array(2).unwrap();
+                let expected = cast(&expected, &expected_type).unwrap();
+                assert_eq!(result.as_ref(), expected.as_ref());
+            }
+        }
     }
 }
