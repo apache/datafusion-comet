@@ -36,10 +36,11 @@ readable empty output files and their schema metadata.
 
 Comet can store cached relations (`df.cache()`, `CACHE TABLE`) in Arrow format and scan them
 natively. This is experimental, and enabled by default from Spark 3.5 but not on Spark 3.4; see
-[In-Memory Cache](../in-memory-cache.md) for how to turn it off or on. Comet does not replace a `spark.sql.cache.serializer` that the application
-has already set. Relations whose schema Comet's Arrow writer does not support are cached in
-Spark's default format, and their scans fall back to Spark. Reads that feed Spark operators rather
-than Comet operators can be slower than Spark's cache.
+[In-Memory Cache](../in-memory-cache.md) for how to turn it off or on. Comet does not replace a
+`spark.sql.cache.serializer` that the application has already set. Relations whose schema Comet's
+Arrow writer does not support are cached in Spark's default format, and their scans fall back to
+Spark. Reads that feed Spark operators rather than Comet operators can be slower than Spark's
+cache.
 
 With Kryo and `spark.kryo.registrationRequired=true`, Comet needs its Kryo registrator whether or
 not the cache is enabled; see [Kryo serialization](../installation.md#kryo-serialization).
