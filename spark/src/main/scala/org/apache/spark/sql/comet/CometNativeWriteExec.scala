@@ -32,11 +32,13 @@ import org.apache.spark.internal.io.FileCommitProtocol.TaskCommitMessage
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.SaveMode
 import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.comet.execution.arrow.CometArrowStream
 import org.apache.spark.sql.comet.util.{Utils => CometUtils}
 import org.apache.spark.sql.errors.{QueryCompilationErrors, QueryExecutionErrors}
 import org.apache.spark.sql.execution.{SparkPlan, UnaryExecNode}
-import org.apache.spark.sql.execution.datasources.OutputWriterFactory
+import org.apache.spark.sql.execution.command.DataWritingCommandExec
+import org.apache.spark.sql.execution.datasources.{OutputWriterFactory, WriteFilesExec}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.{SerializableConfiguration, Utils}
@@ -50,9 +52,13 @@ import org.apache.comet.serde.operator.NativeWriteUtils
  * Both execution entry points run Spark's job and task commit lifecycle. Native code writes the
  * exact filename supplied by the configured commit protocol, using the prepared Hadoop job. Spark
  * 4.0+ uses CometWriteFilesExec and leaves the surrounding command with Spark instead.
+ *
+ * @param originalPlan
+ *   The JVM data-writing command restored when Comet reverts a transition-heavy stage
  */
 case class CometNativeWriteExec(
     nativeOp: Operator,
+    @transient override val originalPlan: DataWritingCommandExec,
     child: SparkPlan,
     outputPath: String,
     mode: SaveMode,
@@ -63,7 +69,19 @@ case class CometNativeWriteExec(
     extends CometNativeExec
     with UnaryExecNode {
 
-  override def originalPlan: SparkPlan = child
+  override def output: Seq[Attribute] = child.output
+
+  override def sparkFallback(newChildren: Seq[SparkPlan]): SparkPlan = newChildren match {
+    case Seq(newInput) =>
+      val restoredCommandChild = originalPlan.child match {
+        case writeFiles: WriteFilesExec => writeFiles.withNewChildren(Seq(newInput))
+        case _ => newInput
+      }
+      originalPlan.withNewChildren(Seq(restoredCommandChild))
+    case _ =>
+      throw new CometExec.InvalidSparkFallbackException(
+        s"${getClass.getSimpleName} expected one reverted input but received ${newChildren.size}")
+  }
 
   override def serializedPlanOpt: SerializedPlan =
     SerializedPlan(Some(CometExec.serializeNativePlan(nativeOp)))

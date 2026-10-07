@@ -93,9 +93,10 @@ trait ShimSparkErrorConverter {
 
       case "ArithmeticOverflow" =>
         val fromType = params("fromType").toString
+        val functionName = params.get("functionName").map(_.toString).getOrElse("")
         Some(
           QueryExecutionErrors
-            .arithmeticOverflowError(fromType + " overflow", "", sqlCtx(context)))
+            .arithmeticOverflowError(fromType + " overflow", functionName, sqlCtx(context)))
 
       case "IntegralDivideOverflow" =>
         Some(QueryExecutionErrors.overflowInIntegralDivideError(sqlCtx(context)))
@@ -289,6 +290,12 @@ trait ShimSparkErrorConverter {
             params("functionName").toString,
             params("groupCount").toString.toInt,
             params("groupIndex").toString.toInt))
+
+      case "InvalidUrl" =>
+        Some(
+          QueryExecutionErrors.invalidUrlError(
+            UTF8String.fromString(params("url").toString),
+            new java.net.URISyntaxException(params("url").toString, "Invalid URL")))
 
       case "DatatypeCannotOrder" =>
         Some(

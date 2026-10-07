@@ -197,6 +197,7 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
 
     CometNativeWriteExec(
       nativeOp,
+      op,
       childPlan,
       outputPath,
       cmd.mode,
