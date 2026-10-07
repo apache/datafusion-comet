@@ -138,6 +138,27 @@ class IcebergReflectionSuite extends AnyFunSuite {
     assert(ex.getCause.getMessage == "boom")
   }
 
+  test("taskCommitFileLocations reads plain SparkWrite task commits") {
+    val commit = new PlainTaskCommit(
+      Array(
+        new LocationFile("s3://bucket/data/a.parquet"),
+        new LocationFile("s3://bucket/data/b.parquet")))
+    assert(
+      IcebergReflection.taskCommitFileLocations(commit) ==
+        Seq("s3://bucket/data/a.parquet", "s3://bucket/data/b.parquet"))
+  }
+
+  test("taskCommitFileLocations reads new files from position-delta task commits") {
+    val commit = new DeltaTaskCommit(
+      Array(new LocationFile("s3://bucket/data/a.parquet")),
+      Array(new LocationFile("s3://bucket/delete/d.parquet")),
+      Array(new LocationFile("s3://bucket/delete/old.parquet")))
+
+    assert(
+      IcebergReflection.taskCommitFileLocations(commit) ==
+        Seq("s3://bucket/data/a.parquet", "s3://bucket/delete/d.parquet"))
+  }
+
   test("getFileFormat reads format() when declared") {
     val file = new FormatFile("PARQUET")
     assert(IcebergReflection.getFileFormat(classOf[FormatFile], file) == Some("PARQUET"))
@@ -307,6 +328,19 @@ class IcebergReflectionSuite extends AnyFunSuite {
     // The partition type Comet serializes alongside the rewritten spec has to agree with what
     // iceberg-rust derives for Transform::Unknown, which is string.
     assert(spec.partitionType().fields().get(0).`type`().toString == "string")
+  }
+
+  class PlainTaskCommit(taskFiles: Array[LocationFile]) {
+    def files(): Array[LocationFile] = taskFiles
+  }
+
+  class DeltaTaskCommit(
+      data: Array[LocationFile],
+      deletes: Array[LocationFile],
+      rewrittenDeletes: Array[LocationFile]) {
+    def dataFiles(): Array[LocationFile] = data
+    def deleteFiles(): Array[LocationFile] = deletes
+    def rewrittenDeleteFiles(): Array[LocationFile] = rewrittenDeletes
   }
 
   /** Mimics a newer Iceberg ContentFile, which exposes location(). */

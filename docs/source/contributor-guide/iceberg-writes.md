@@ -70,13 +70,13 @@ IcebergCommit                 driver: collect task commit messages, BatchWrite.c
    +- <input query>           scans, projects, exchanges, sorts; inside AQE with or without the split
 ```
 
-| Component                                                                       | Location                                           | Role                                                                                                                                                                                                                                    |
-| ------------------------------------------------------------------------------- | -------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `IcebergWriteStrategy`                                                          | `spark/src/main/scala/org/apache/comet/iceberg/`   | Planner strategy. Matches `AppendData`, `OverwriteByExpression`, `OverwritePartitionsDynamic`, `ReplaceData` (and Iceberg's own `ReplaceIcebergData`, which Iceberg 1.5.2 plans on Spark 3.4) whose `Write` is an Iceberg `SparkWrite`. |
-| `IcebergWriteLogical`                                                           | same                                               | Logical anchor for the writer, so AQE re-plans re-emit only the writer and not a second committer.                                                                                                                                      |
-| `IcebergWriteExec`                                                              | `spark/src/main/scala/org/apache/spark/sql/comet/` | JVM writer. Runs iceberg-java's `DataWriter` per task and returns the serialized `WriterCommitMessage` as one binary row.                                                                                                               |
-| `IcebergCommitExec`                                                             | same                                               | Driver committer. A `V2CommandExec`, so `run()` is memoized and the commit happens once.                                                                                                                                                |
-| `IcebergReplaceDataShim`, `IcebergRefreshCacheShim`, `IcebergDriverMetricsShim` | `spark/src/main/spark-*/org/apache/comet/iceberg/` | Version differences: Spark 4.x operation-coded `ReplaceData` rows, cache refresh by name on 4.1+, driver metric reporting.                                                                                                              |
+| Component                                                                                                                            | Location                                           | Role                                                                                                                                                                                                                                 |
+| ------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `IcebergWriteStrategy`                                                                                                               | `spark/src/main/scala/org/apache/comet/iceberg/`   | Planner strategy. Matches `AppendData`, `OverwriteByExpression`, `OverwritePartitionsDynamic`, `ReplaceData` (and Iceberg's own `ReplaceIcebergData`, which Iceberg 1.5.2 plans on Spark 3.4), plus Spark 3.5+ Iceberg `WriteDelta`. |
+| `IcebergWriteLogical`                                                                                                                | same                                               | Logical anchor for the writer, so AQE re-plans re-emit only the writer and not a second committer.                                                                                                                                   |
+| `IcebergWriteExec`                                                                                                                   | `spark/src/main/scala/org/apache/spark/sql/comet/` | JVM writer. Runs iceberg-java's `DataWriter` or, for `WriteDelta`, `DeltaWriter` per task and returns the serialized `WriterCommitMessage` as one binary row.                                                                        |
+| `IcebergCommitExec`                                                                                                                  | same                                               | Driver committer. A `V2CommandExec`, so `run()` is memoized and the commit happens once.                                                                                                                                             |
+| `IcebergReplaceDataShim`, `IcebergDeltaLogicalShim`, `IcebergDeltaWriterShim`, `IcebergRefreshCacheShim`, `IcebergDriverMetricsShim` | `spark/src/main/spark-*/org/apache/comet/iceberg/` | Version differences: operation-coded `ReplaceData` / `WriteDelta` rows, cache refresh by name on 4.1+, driver metric reporting.                                                                                                      |
 
 Things to know before changing this layer:
 
@@ -90,16 +90,19 @@ Things to know before changing this layer:
 - **Messages are collected per task as tasks finish** (`sparkContext.runJob` with a result
   handler), not with `executeCollect`. That is how a failed job still knows which tasks completed,
   so it can delete their files.
-- **Commit-coordinator writes are not intercepted.** Iceberg's `SparkWrite` never asks for one; the
-  check in `buildTwoOp` is defensive.
-- **What is not intercepted:** merge-on-read (`WriteDelta`), streaming writes, and CTAS/RTAS on
-  Spark 3.4. Those keep Spark's plan.
+- **Commit-coordinator writes are not intercepted.** Iceberg's current `SparkWrite` and
+  position-delta write do not ask for one; the checks in `buildTwoOp` and `buildDeltaTwoOp`
+  are defensive.
+- **WriteDelta stays JVM-backed.** Spark 3.5+ merge-on-read commands are intercepted by the split
+  plan, but `IcebergWriteExec` delegates their rows to Iceberg's JVM `DeltaWriter`; the native
+  Iceberg writer is explicitly declined. Spark 3.4 `WriteDelta` keeps Spark's plan.
+- **What is not intercepted:** streaming writes and CTAS/RTAS on Spark 3.4. Those keep Spark's plan.
 
 On Spark 4.1+, `IcebergWriteSummaryShim` finds either Spark's `MergeRowsExec` or
 `CometMergeRowsExec` in the executed query and forwards its eight action counters to
 `BatchWrite.commit(messages, summary)`. Native instructions carry the context of each `Keep`;
 `Discard` counts a deletion and `Split` counts one update. Spark 4.2 uses last-attempt
-accumulators, read through `MergeRowsMetricsShim`, so summary values come from the tasks that
+accumulators, read through `IcebergSemanticMetricsShim`, so summary values come from the tasks that
 produced the committed output. Stock V2 writers still require the concrete Spark node, so
 `IcebergWriteStrategy` tags a copy of its logical MERGE query before planning and AQE. The
 serializer requires that tag on Spark 4.1+, leaving stock writers on Spark throughout replanning.
@@ -107,9 +110,9 @@ serializer requires that tag on Spark 4.1+, leaving stock writers on Spark throu
 ## From `IcebergWrite` to `CometIcebergWrite`
 
 `CometExecRule` converts an `IcebergWriteExec` with the `CometIcebergNativeWrite` operator serde
-when `spark.comet.write.iceberg.enabled` is on. Two arms in `CometExecRule` handle it: one unwraps
-the double conversion AQE can produce when it re-fires write planning over a sub-tree that already
-contains a `CometIcebergWriteExec`, and the other calls `convertToComet`.
+when `spark.comet.write.iceberg.enabled` is on. A single arm in `CometExecRule` handles the
+conversion by calling `convertToComet`. The converted node keeps the `IcebergWriteExec` as its
+`originalPlan`, so AQE re-plans the write from that node.
 
 `CometIcebergNativeWrite.requiresNativeChildren` is `true`. The native writer consumes Arrow
 batches from its child over FFI, so the conversion is declined unless the child is already a Comet
@@ -479,8 +482,11 @@ Each of these has caused a bug on this path:
   ([#5691](https://github.com/apache/datafusion-comet/issues/5691),
   [#5693](https://github.com/apache/datafusion-comet/issues/5693),
   [#6141](https://github.com/apache/datafusion-comet/issues/6141)).
-- **Plan rewrites must keep the write node.** Rules that restore Spark operators from a Comet
-  node's `originalPlan` have to handle the write execs, whose `originalPlan` today is their child
+- **Plan rewrites must keep the write node.** `CometIcebergWriteExec.originalPlan` is the
+  `IcebergWriteExec` it replaced. Restoring Spark execution goes through
+  [`CometExec.sparkFallback`](adding_a_new_operator.md#restoring-the-spark-operator-sparkfallback),
+  which rebuilds that node around the reverted children. Pointing `originalPlan` at the child
+  drops the write, and AQE then treats the write as part of that child's stage
   ([#5719](https://github.com/apache/datafusion-comet/issues/5719)).
 - **The kill switch must still work.** Code that runs for Iceberg writes has to respect
   `spark.comet.enabled`, so that disabling Comet restores Spark's own plan

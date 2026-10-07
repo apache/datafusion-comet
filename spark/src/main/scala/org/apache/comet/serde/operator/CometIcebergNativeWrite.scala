@@ -30,7 +30,7 @@ import org.apache.spark.sql.comet.{CometIcebergWriteExec, CometNativeExec, Icebe
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
-import org.apache.comet.iceberg.IcebergReflection
+import org.apache.comet.iceberg.{IcebergReflection, PositionDeltaWrite, ReplaceDataWrite}
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.serde.{CometOperatorSerde, Compatible, OperatorOuterClass, SupportLevel, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.Operator
@@ -292,6 +292,12 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     }
 
   private def checkTriggers(op: IcebergWriteExec): Option[String] = {
+    op.dispatch match {
+      case PositionDeltaWrite(_) =>
+        return Some("Iceberg WriteDelta executes through the JVM DeltaWriter")
+      case _ =>
+    }
+
     val batchWrite = op.batchWrite
     if (!IcebergReflection.isIcebergBatchWrite(batchWrite)) {
       return Some(s"not an Iceberg SparkWrite: ${batchWrite.getClass.getName}")
@@ -935,13 +941,12 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
    * giving it the wider row (e.g. 6 columns when the schema has 3) and
    * `decorate_batch_with_field_ids` rejects the batch.
    *
-   * For Spark 3.4 / 3.5 the strategy shim returns `None` for `replaceDataDispatch` and the
-   * upstream plan already projects to the data columns -- no extra projection needed. For 4.x we
-   * splice a `Projection` proto between our `IcebergWrite` op and the FFI `Scan`, selecting the
-   * upstream attributes whose names match the Iceberg schema's columns. The JVM-side child stays
-   * at the original wide output, so its `executeColumnar()` still emits the wide batches the FFI
-   * scan declares; the projection then strips them inside the native runtime before the writer
-   * sees the data.
+   * Plain writes already present only data columns, so no extra projection is needed. For 4.x
+   * ReplaceData we splice a `Projection` proto between our `IcebergWrite` op and the FFI `Scan`,
+   * selecting the upstream attributes whose names match the Iceberg schema's columns. The
+   * JVM-side child stays at the original wide output, so its `executeColumnar()` still emits the
+   * wide batches the FFI scan declares; the projection then strips them inside the native runtime
+   * before the writer sees the data.
    */
   private def dropNonDataColumns(
       op: IcebergWriteExec,
@@ -950,7 +955,10 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     // write schema has no row lineage columns: when it has, Iceberg's writer reads their values
     // from the metadata columns (`ExtractRowLineage`), which this projection discards.
     // `requireNoMetadataColumns` declines those writes.
-    if (op.replaceDataDispatch.isEmpty) return Some(scan)
+    op.dispatch match {
+      case ReplaceDataWrite(_) =>
+      case _ => return Some(scan)
+    }
 
     val sparkWrite = IcebergReflection.getOuterSparkWrite(op.batchWrite).getOrElse {
       withFallbackReason(op, "Could not unwrap outer SparkWrite for ReplaceData projection")
@@ -1024,7 +1032,9 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
           "Native Iceberg write conversion: SparkWrite.outputSpecId reflection failed"))
     CometIcebergWriteExec(
       nativeOp,
+      op,
       op.child,
+      op.output,
       op.batchWrite,
       table.asInstanceOf[AnyRef],
       outputSpecId)
