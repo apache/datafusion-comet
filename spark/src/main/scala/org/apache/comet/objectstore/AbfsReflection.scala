@@ -90,14 +90,19 @@ private[objectstore] object AbfsReflection {
     /** `getAuthType(account)`: the `AuthType` enum constant. */
     def getAuthType(abfsConf: AnyRef, account: String): Enum[_]
 
-    /** `get(key)`: account-specific, then global. */
-    def get(abfsConf: AnyRef, key: String): Option[String]
-
     /**
      * `getPasswordString(key)`: container (3.4.2+), account, then global, via credential
      * providers.
      */
     def getPasswordString(abfsConf: AnyRef, key: String): Option[String]
+
+    /**
+     * `getPasswordString(key)` when `password` is set, otherwise `get(key)` (account-specific,
+     * then global). A value Hadoop cannot read (a `${...}` cycle, a failing credential provider)
+     * is returned as `Left` rather than thrown; fatal errors and linkage or reflection failures
+     * still propagate.
+     */
+    def read(abfsConf: AnyRef, key: String, password: Boolean): Either[Throwable, Option[String]]
 
     /**
      * `getTokenProviderClass(authType, key, null, xface)`: the provider class Hadoop would load.
@@ -222,11 +227,23 @@ private[objectstore] object AbfsReflection {
     override def getAuthType(abfsConf: AnyRef, account: String): Enum[_] =
       invoke(getAuthTypeMethod, abfsConf, account).asInstanceOf[Enum[_]]
 
-    override def get(abfsConf: AnyRef, key: String): Option[String] =
-      Option(invoke(getMethod, abfsConf, key)).map(_.asInstanceOf[String])
-
     override def getPasswordString(abfsConf: AnyRef, key: String): Option[String] =
       Option(invoke(getPasswordStringMethod, abfsConf, key)).map(_.asInstanceOf[String])
+
+    override def read(
+        abfsConf: AnyRef,
+        key: String,
+        password: Boolean): Either[Throwable, Option[String]] = {
+      val method = if (password) getPasswordStringMethod else getMethod
+      try {
+        Right(Option(method.invoke(abfsConf, key)).map(_.asInstanceOf[String]))
+      } catch {
+        // NonFatal excludes LinkageError, which rethrows below like any other failure.
+        case e: InvocationTargetException if e.getCause != null && NonFatal(e.getCause) =>
+          Left(e.getCause)
+        case e: InvocationTargetException => throw unwrapped(e)
+      }
+    }
 
     override def getTokenProviderClass(
         abfsConf: AnyRef,

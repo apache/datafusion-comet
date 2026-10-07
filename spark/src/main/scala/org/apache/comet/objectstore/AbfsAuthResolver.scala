@@ -278,8 +278,6 @@ private[comet] object AbfsAuthResolver extends Logging {
       account: String,
       secrets: ArrayBuffer[String]) {
 
-    def get(key: String): Option[String] = h.get(abfsConf, key)
-
     def password(key: String): Option[String] = {
       val value = h.getPasswordString(abfsConf, key)
       value.foreach(v => recordSecret(v))
@@ -303,24 +301,29 @@ private[comet] object AbfsAuthResolver extends Logging {
     def isConfigured: Boolean = {
       // Every credential is read (no short circuit) so a later failure message is redacted
       // against all of them.
-      val anyPassword = passwordAuthKeys.map(password).exists(_.isDefined)
-      val keyProviderKey = keyProviderAccountKey.isDefined
-      plainAuthKeys.exists(get(_).isDefined) || anyPassword || keyProviderKey
+      val anyPassword = passwordAuthKeys.map(isSet(abfsConf, _, password = true)).contains(true)
+      val keyProviderKey = hasKeyProviderAccountKey
+      plainAuthKeys.exists(isSet(abfsConf, _, password = false)) || anyPassword || keyProviderKey
     }
+
+    // A value Hadoop cannot read still counts as set: Hadoop reads a key only when the mechanism
+    // it picks needs it, and then fails in its own words.
+    private def isSet(conf: AnyRef, key: String, password: Boolean): Boolean =
+      h.read(conf, key, password) match {
+        case Right(value) =>
+          if (password) value.foreach(v => recordSecret(v))
+          value.isDefined
+        case Left(_) => true
+      }
 
     // SimpleKeyProvider reads the key through its own two-argument AbfsConfiguration, whose
     // container level on 3.4.2+ is the literal `key.null.<account>`; a key placed there
     // configures the account for Hadoop, so it counts here too.
-    private def keyProviderAccountKey: Option[String] = {
-      if (!h.hasContainerScopedConfiguration) {
-        None
-      } else {
-        val keyProviderConf = h.newKeyProviderConfiguration(hadoopConf, account)
-        val value = h.getPasswordString(keyProviderConf, Keys.ACCOUNT_KEY)
-        value.foreach(v => recordSecret(v))
-        value
-      }
-    }
+    private def hasKeyProviderAccountKey: Boolean =
+      h.hasContainerScopedConfiguration && isSet(
+        h.newKeyProviderConfiguration(hadoopConf, account),
+        Keys.ACCOUNT_KEY,
+        password = true)
   }
 
   private def sharedKey(session: Session, uri: URI, account: String): Outcome = {

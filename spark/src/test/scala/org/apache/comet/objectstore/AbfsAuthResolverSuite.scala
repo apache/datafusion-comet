@@ -69,6 +69,13 @@ class AbfsAuthResolverSuite extends AnyFunSuite with Matchers {
 
   private def resolveWith(pairs: (String, String)*): Outcome = resolve(conf(pairs: _*), uri)
 
+  /**
+   * `key` set to a `${...}` cycle through `other`, which `Configuration#get` cannot expand and
+   * throws on. Built by concatenation so scalac does not read it as a missing interpolator.
+   */
+  private def cyclic(key: String, other: String): Seq[(String, String)] =
+    Seq(key -> ("${" + other + "}"), other -> ("${" + key + "}"))
+
   private def assertNoAzureKeys(options: Map[String, String]): Unit = {
     val leaked = options.keys.filter(_.startsWith("fs."))
     assert(leaked.isEmpty, s"fs.* keys forwarded: $leaked")
@@ -357,6 +364,41 @@ class AbfsAuthResolverSuite extends AnyFunSuite with Matchers {
       Keys.ACCOUNT_KEY -> "c2VjcmV0")
   }
 
+  test("Resolved - SharedKey with an unreadable OAuth client secret it never reads") {
+    val outcome = resolveWith(
+      Seq(acct(Keys.ACCOUNT_KEY) -> "c2VjcmV0") ++
+        cyclic(Keys.CLIENT_SECRET, "unused.secret"): _*)
+    outcome shouldBe Resolved("SharedKey", None, Map(Keys.ACCOUNT_KEY -> "c2VjcmV0"))
+  }
+
+  test("Resolved - SharedKey with an unreadable OAuth provider type it never reads") {
+    val outcome = resolveWith(
+      Seq(acct(Keys.ACCOUNT_KEY) -> "c2VjcmV0") ++
+        cyclic(Keys.OAUTH_PROVIDER_TYPE, "unused.provider"): _*)
+    outcome shouldBe Resolved("SharedKey", None, Map(Keys.ACCOUNT_KEY -> "c2VjcmV0"))
+  }
+
+  test("not Unconfigured - an unreadable key alone fails in Hadoop's SharedKey words") {
+    Seq(Keys.CLIENT_SECRET, Keys.OAUTH_PROVIDER_TYPE).foreach { key =>
+      withClue(s"$key alone: ") {
+        val outcome = resolveWith(cyclic(key, "unused.value"): _*)
+        outcome shouldBe a[Failed]
+        outcome.asInstanceOf[Failed].exceptionClass shouldBe keyProviderException
+      }
+    }
+  }
+
+  test("Failed - an unreadable account key fails whether or not SharedKey is named") {
+    Seq(Seq.empty[(String, String)], Seq(acct(Keys.AUTH_TYPE) -> "SharedKey")).foreach {
+      authType =>
+        withClue(s"auth type $authType: ") {
+          val outcome = resolveWith(authType ++ cyclic(acct(Keys.ACCOUNT_KEY), "cycle.key"): _*)
+          outcome shouldBe a[Failed]
+          assertNoAzureKeys(toOptions(outcome))
+        }
+    }
+  }
+
   test("Resolved - SharedKey from the global key, with a port-scoped account") {
     resolveWith(Keys.ACCOUNT_KEY -> "Z2xvYmFs") shouldBe
       Resolved("SharedKey", None, Map(Keys.ACCOUNT_KEY -> "Z2xvYmFs"))
@@ -590,8 +632,11 @@ object LinkageStub extends Handles {
   override def newKeyProviderConfiguration(conf: Configuration, account: String): AnyRef =
     notReached
   override def getAuthType(abfsConf: AnyRef, account: String): Enum[_] = notReached
-  override def get(abfsConf: AnyRef, key: String): Option[String] = notReached
   override def getPasswordString(abfsConf: AnyRef, key: String): Option[String] = notReached
+  override def read(
+      abfsConf: AnyRef,
+      key: String,
+      password: Boolean): Either[Throwable, Option[String]] = notReached
   override def getTokenProviderClass(
       abfsConf: AnyRef,
       authType: Enum[_],
