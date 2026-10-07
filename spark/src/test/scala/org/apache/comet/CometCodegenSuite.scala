@@ -624,6 +624,30 @@ class CometCodegenSuite
         .contains(Set("hypot", "cast", "checkoverflow", "add")))
   }
 
+  test("the serde ships a digest of the serialized expression at arg 0 (#6705)") {
+    // The dispatcher trusts a cache hit on the digest without comparing the bytes, so the digest
+    // the serde ships must be the digest of the bytes it ships next to it. Calling the dispatcher
+    // directly cannot catch a mismatch, because those tests build their own digest.
+    val x = AttributeReference("x", DoubleType, nullable = false)()
+    def payload(e: Expression): (Array[Byte], Array[Byte]) = {
+      val proto = QueryPlanSerde.exprToProto(e, Seq(x)).get
+      assert(proto.hasJvmScalarUdf)
+      val args = proto.getJvmScalarUdf.getArgsList
+      (
+        args.get(0).getLiteral.getBytesVal.toByteArray,
+        args.get(1).getLiteral.getBytesVal.toByteArray)
+    }
+
+    val (hypotDigest, hypotBytes) = payload(Hypot(x, Literal(4.0d)))
+    val (otherDigest, otherBytes) = payload(Hypot(x, Literal(5.0d)))
+    assert(hypotDigest.sameElements(CometScalaUDFCodegen.digest(hypotBytes)))
+    assert(otherDigest.sameElements(CometScalaUDFCodegen.digest(otherBytes)))
+
+    // Expressions that differ only in a literal must not share a kernel.
+    assert(!hypotBytes.sameElements(otherBytes))
+    assert(!hypotDigest.sameElements(otherDigest))
+  }
+
   test("tags copied onto the shared TrueLiteral do not leak into unrelated plans") {
     // Catalyst copies a rewritten node's tags onto its replacement, so a tagged expression that an
     // earlier query rewrote into `Literal.TrueLiteral` brands that process-wide singleton for the
@@ -866,7 +890,7 @@ class CometCodegenSuite
     "same UDF over nullable and non-nullable columns gets distinct kernels with independent state") {
     // Two columns, same type, different schema-declared nullability. Same UDF applied to each
     // alongside a per-projection MonotonicallyIncreasingID. Each projection has its own MII
-    // child (different bytesKey), so each kernel must have its own counter advancing 0..N-1.
+    // child (a different digest), so each kernel must have its own counter advancing 0..N-1.
     // If the dispatcher collapses them onto one kernel or shares state somehow, the counters
     // would interleave and the output would diverge from Spark.
     spark.udf.register("withId", (s: String, id: Long) => s"${s}_${id}")
@@ -2329,6 +2353,7 @@ class CometCodegenSuite
     // because Spark 4.1 still rejects TIME columns in file-based data sources, so no SQL query
     // can produce a TIME input today.
     val timeVec = new TimeNanoVector("tm", CometArrowAllocator)
+    val digestVec = new VarBinaryVector("digest", CometArrowAllocator)
     val exprVec = new VarBinaryVector("expr", CometArrowAllocator)
     var out: ValueVector = null
     try {
@@ -2342,18 +2367,69 @@ class CometCodegenSuite
       val serialized = SparkEnv.get.closureSerializer.newInstance().serialize(expr)
       val bytes = new Array[Byte](serialized.remaining())
       serialized.get(bytes)
+      digestVec.allocateNew()
+      digestVec.setSafe(0, CometScalaUDFCodegen.digest(bytes))
+      digestVec.setValueCount(1)
       exprVec.allocateNew()
       exprVec.setSafe(0, bytes)
       exprVec.setValueCount(1)
 
-      out = new CometScalaUDFCodegen().evaluate(Array(exprVec, timeVec), 2)
+      out = new CometScalaUDFCodegen().evaluate(Array(digestVec, exprVec, timeVec), 2)
       val comet = CometVector.getVector(out.asInstanceOf[FieldVector], null)
       assert(comet.getLong(0) === 45296000000000L)
       assert(comet.isNullAt(1))
     } finally {
       if (out != null) out.close()
+      digestVec.close()
       exprVec.close()
       timeVec.close()
+    }
+  }
+
+  test("dispatcher finds a compiled kernel by the expression digest alone (#6705)") {
+    // The serde ships a digest of the serialized expression at arg 0 and the bytes at arg 1, and
+    // the dispatcher reads the bytes only to compile on a cache miss. The second call passes a
+    // null at arg 1, so it succeeds only if the digest finds the kernel the first call compiled.
+    val expr = Add(BoundReference(0, LongType, nullable = true), Literal(1L))
+    val serialized = SparkEnv.get.closureSerializer.newInstance().serialize(expr)
+    val bytes = new Array[Byte](serialized.remaining())
+    serialized.get(bytes)
+
+    def binaryScalar(name: String, value: Array[Byte]): VarBinaryVector = {
+      val v = new VarBinaryVector(name, CometArrowAllocator)
+      v.allocateNew()
+      if (value == null) v.setNull(0) else v.setSafe(0, value)
+      v.setValueCount(1)
+      v
+    }
+    val digestVec = binaryScalar("digest", CometScalaUDFCodegen.digest(bytes))
+    val exprVec = binaryScalar("expr", bytes)
+    val nullExprVec = binaryScalar("expr", null)
+    val input = new BigIntVector("x", CometArrowAllocator)
+    try {
+      input.allocateNew(2)
+      input.set(0, 41L)
+      input.setNull(1)
+      input.setValueCount(2)
+
+      val dispatcher = new CometScalaUDFCodegen()
+      Seq(exprVec, nullExprVec).foreach { arg1 =>
+        val out =
+          dispatcher.evaluate(Array(digestVec, arg1, input), 2).asInstanceOf[BigIntVector]
+        try {
+          assert(out.get(0) === 42L)
+          assert(out.isNull(1))
+        } finally out.close()
+      }
+
+      // The layout before the digest, with the serialized expression at arg 0, is refused
+      // rather than taken for a digest.
+      val e = intercept[IllegalArgumentException] {
+        dispatcher.evaluate(Array(exprVec, input), 2)
+      }
+      assert(e.getMessage.contains("expression digest"), e.getMessage)
+    } finally {
+      Seq(digestVec, exprVec, nullExprVec, input).foreach(_.close())
     }
   }
 
