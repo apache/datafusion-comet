@@ -1581,6 +1581,92 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
     }
   }
 
+  test("row-group statistics pruning fires for a floating-point comparison") {
+    // Native comparisons normalize float operands to follow Spark's ordering, which pruning
+    // cannot see through. A scan's data filters are built without that normalization, so they
+    // still prune, and the Filter above the scan applies Spark's semantics to the rows. Spark
+    // orders NaN above every other value, so `d > 500.0D` matches the NaN in the first row
+    // group even though every other value there is smaller: pruning must keep that row group.
+    withTempPath { dir =>
+      withSQLConf(SQLConf.LEAF_NODE_DEFAULT_PARALLELISM.key -> "1") {
+        spark
+          .range(0, 1000)
+          .selectExpr("IF(id = 10, double('NaN'), CAST(id AS DOUBLE)) AS d")
+          .repartition(1)
+          .write
+          .option("parquet.block.size", "1024")
+          .format("parquet")
+          .save(dir.toString)
+
+        val parquetFile = dir
+          .listFiles()
+          .find(_.getName.endsWith(".parquet"))
+          .getOrElse(fail("No parquet file was written"))
+        val reader = ParquetFileReader.open(
+          org.apache.parquet.hadoop.util.HadoopInputFile
+            .fromPath(new Path(parquetFile.getAbsolutePath), spark.sessionState.newHadoopConf()))
+        val numRowGroups =
+          try reader.getRowGroups.size()
+          finally reader.close()
+        assert(numRowGroups > 1, s"Test setup needs >1 row groups, got $numRowGroups")
+
+        val df = spark.read.parquet(dir.toString).where("d > 500.0D")
+        val (_, cometPlan) = checkSparkAnswerAndOperator(df)
+        val nativeScans = cometPlan.collect { case n: CometNativeScanExec => n }
+        assert(nativeScans.nonEmpty, "Expected a CometNativeScanExec")
+        val metrics = nativeScans.head.metrics
+        val pruned = metrics("row_groups_pruned_statistics").value
+        val matched = metrics("row_groups_matched_statistics").value
+        assert(
+          pruned > 0 && pruned + matched == numRowGroups,
+          "Row-group statistics pruning did not fire " +
+            s"(pruned=$pruned, matched=$matched of $numRowGroups total)")
+        assert(df.collect().exists(_.getDouble(0).isNaN), "The NaN row was filtered out")
+      }
+    }
+  }
+
+  test("bloom filter pruning matches either signed zero for a floating-point equality") {
+    // A bloom filter holds the bits of each value, so `-0.0` and `0.0` are separate entries,
+    // while Spark's `=` matches either zero. The scan's data filter probes for both, so the file
+    // holding `-0.0` and the file holding `0.0` are both read for either zero. Spark's own reader
+    // probes with the literal's bits and skips the file holding the other zero, so the expected
+    // rows are written out instead of compared with Spark's.
+    import testImplicits._
+    withTempPath { dir =>
+      val path = dir.getCanonicalPath
+      Seq(Seq(-1.0, -0.0, 1.0), Seq(-2.0, 0.0, 2.0)).foreach { values =>
+        values
+          .toDF("d")
+          .coalesce(1)
+          .write
+          .mode("append")
+          .option("parquet.bloom.filter.enabled#d", "true")
+          .option("parquet.enable.dictionary", "false")
+          .parquet(path)
+      }
+
+      def bloomFilterPruning(df: DataFrame): (Long, Long) = {
+        val scans = collect(df.queryExecution.executedPlan) { case s: CometNativeScanExec => s }
+        assert(scans.size == 1, s"Expected one CometNativeScanExec:\n${df.queryExecution}")
+        val metrics = scans.head.metrics
+        (
+          metrics("row_groups_pruned_bloom_filter").value,
+          metrics("row_groups_matched_bloom_filter").value)
+      }
+
+      Seq("-0.0D", "0.0D").foreach { zero =>
+        val df = spark.read.parquet(path).where(s"d = $zero")
+        checkAnswer(df, Seq(Row(-0.0), Row(0.0)))
+        assert(bloomFilterPruning(df) == ((0L, 2L)), s"d = $zero")
+      }
+      // The statistics of both files cover 0.5, so only their bloom filters prune them.
+      val df = spark.read.parquet(path).where("d = 0.5D")
+      checkAnswer(df, Seq.empty[Row])
+      assert(bloomFilterPruning(df) == ((2L, 0L)), "d = 0.5D")
+    }
+  }
+
   test("datafusion escape hatch pruning=false disables row-group statistics pruning") {
     // Regression test pinning the `pruning` field of the newly-plumbed session
     // `ParquetOptions` at the level users care about: an explicit
