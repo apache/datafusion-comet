@@ -29,7 +29,9 @@ import org.apache.comet.{CometConf, ExtendedExplainInfo}
  * `SPARK_GENERATE_BENCHMARK_FILES=1 make
  * benchmark-org.apache.spark.sql.benchmark.CometPredicateExpressionBenchmark` Results will be
  * written to "spark/benchmarks/CometPredicateExpressionBenchmark -**results.txt". Pass `--
- * atleastnnonnulls` to benchmark `DataFrame.na.drop`.
+ * atleastnnonnulls` to benchmark `DataFrame.na.drop`. Add `--focus-double` for the 32-column,
+ * half-threshold, full-consumer 0/5% NaN control, and `--reverse-modes` to reverse mode order in
+ * an independent run.
  */
 object CometPredicateExpressionBenchmark extends CometBenchmarkBase {
 
@@ -44,33 +46,40 @@ object CometPredicateExpressionBenchmark extends CometBenchmarkBase {
 
         val query = "select * from parquetV1Table where c1 in ('positive', 'zero')"
 
-        runExpressionBenchmark("in Expr", values, query)
+        runExpressionBenchmark("in Expr", values.toLong, query)
       }
     }
   }
 
-  def atLeastNNonNullsBenchmark(rows: Int): Unit = {
-    for (kind <- Seq("double", "string"); width <- Seq(4, 32); missing <- Seq(0, 50)) {
+  def atLeastNNonNullsBenchmark(rows: Int, focusDouble: Boolean, reverseModes: Boolean): Unit = {
+    for (kind <- (if (focusDouble) Seq("double") else Seq("double", "string"));
+      width <- (if (focusDouble) Seq(32) else Seq(4, 32));
+      missing <- (if (focusDouble) Seq(0) else Seq(0, 50));
+      nanPercent <- (if (kind == "double") Seq(0, 5) else Seq(0))) {
       withTempPath { dir =>
         val fields = (0 until width).map { i =>
           val bucket = s"pmod(xxhash64(id, $i), 100)"
-          val nan = if (kind == "double") {
-            s"WHEN $bucket < ${missing + 5} THEN cast('NaN' AS DOUBLE) "
+          val nan = if (nanPercent > 0) {
+            s"WHEN $bucket < ${missing + nanPercent} THEN cast('NaN' AS DOUBLE) "
           } else ""
           s"CASE WHEN $bucket < $missing THEN NULL " + nan +
             s"ELSE cast(id + $i AS $kind) END AS c$i"
         }
-        spark.range(rows).selectExpr(fields: _*).write.parquet(dir.getCanonicalPath)
+        spark.range(rows.toLong).selectExpr(fields: _*).write.parquet(dir.getCanonicalPath)
         val key = CometConf.getExprEnabledConfigKey("AtLeastNNonNulls")
-        val modes = Seq(
+        val defaultModes = Seq(
           ("Comet native", true, true),
           ("Comet fallback", true, false),
           ("Spark", false, true))
-        for (threshold <- Seq(1, width / 2, width);
-          consumed <- Seq(0, 1, math.min(4, width), width).distinct) {
+        val modes = if (reverseModes) defaultModes.reverse else defaultModes
+        for (threshold <- (if (focusDouble) Seq(width / 2) else Seq(1, width / 2, width));
+          consumed <-
+            (if (focusDouble) Seq(width)
+             else Seq(0, 1, math.min(4, width), width).distinct)) {
           val benchmark = new Benchmark(
-            s"na.drop: $width $kind columns, $missing% NULL, n=$threshold, consumed=$consumed",
-            rows,
+            s"na.drop: $width $kind columns, $missing% NULL, $nanPercent% NaN, " +
+              s"n=$threshold, consumed=$consumed",
+            rows.toLong,
             output = output)
           var expected: Option[Row] = None
           modes.foreach { case (name, comet, native) =>
@@ -101,6 +110,11 @@ object CometPredicateExpressionBenchmark extends CometBenchmarkBase {
                       .getNativeExpressions(plan)
                       .contains("atleastnnonnulls") == (comet && native))
                   require(!info.getCodegenDispatchExpressions(plan).contains("atleastnnonnulls"))
+                  if (kind == "double" && consumed > 0 && comet && native) {
+                    // The cleaned sums must exercise native IF, not silently fall back.
+                    require(info.getNativeExpressions(plan).contains("if"))
+                    require(!info.getCodegenDispatchExpressions(plan).contains("if"))
+                  }
                 }
               }
               result
@@ -119,7 +133,10 @@ object CometPredicateExpressionBenchmark extends CometBenchmarkBase {
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
     val values = 1024 * 1024
     if (mainArgs.contains("atleastnnonnulls")) {
-      atLeastNNonNullsBenchmark(values)
+      atLeastNNonNullsBenchmark(
+        values,
+        mainArgs.contains("--focus-double"),
+        mainArgs.contains("--reverse-modes"))
       return
     }
 

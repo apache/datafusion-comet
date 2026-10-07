@@ -29,6 +29,10 @@ Here is an overview of the changes that we need to make to Spark:
 - Modify SparkSession to load the Comet extension
 - Modify TestHive to load Comet
 - Modify SQLTestUtilsBase to load Comet when `ENABLE_COMET` environment variable exists
+- Modify `project/SparkBuild.scala` so that, when Comet is enabled, the `sql` and `hive` test JVMs use
+  `CometShuffleManager` as the default shuffle manager. Comet disables itself when its shuffle manager is not
+  registered, so without this default the suites that build their own `SparkSession` or `SparkContext` would
+  run without Comet
 
 Here are the steps involved in running the Spark SQL tests with Comet, using Spark 3.4.3 for this example.
 
@@ -181,11 +185,11 @@ git diff v3.5.6 > ../datafusion-comet/dev/diffs/3.5.6.diff
 ## Running Tests in CI
 
 The easiest way to run the tests is to open a pull request against Comet and let CI run them. Spark
-4.1 runs in the merge queue; Spark 3.5 and 4.0 run once a night against `main`. Each also runs
+4.1 runs in the merge queue; Spark 3.5, 4.0 and 4.2 run once a night against `main`. Each also runs
 earlier on a pull request carrying the `run-spark-3.5-tests` / `run-spark-4.0-tests` /
-`run-spark-4.1-tests` label. No Spark SQL suite runs on an unlabeled pull request. Apply the 3.5 or
-4.0 label when a change could behave differently on those versions, since without it the first
-verdict is the nightly run's, after the change has landed.
+`run-spark-4.1-tests` / `run-spark-4.2-tests` label. No Spark SQL suite runs on an unlabeled pull
+request. Apply the 3.5, 4.0 or 4.2 label when a change could behave differently on those versions,
+since without it the first verdict is the nightly run's, after the change has landed.
 
 Spark 3.4 is deprecated and is not run by the merge queue. It runs only when a pull request carries
 the `run-spark-3.4-tests` label, or when `ci.yml` is dispatched manually from the Actions page.

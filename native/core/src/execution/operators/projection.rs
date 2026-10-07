@@ -70,7 +70,7 @@ impl OperatorBuilder for ProjectionBuilder {
                 let indices = exprs.column_indices();
                 if indices.len() < child.schema().fields().len() {
                     // Filter each required output column once, then restore its order and aliases.
-                    // Keep both Spark nodes so their metrics describe the executed plans.
+                    // Keep both native plans so Spark metrics describe the executed work.
                     let mapping = ProjectionExprs::from_indices(&indices, &child.schema());
                     exprs = exprs.try_map_exprs(|expr| mapping.project_expr(&expr))?;
                     let filter = FilterExecBuilder::from(filter)

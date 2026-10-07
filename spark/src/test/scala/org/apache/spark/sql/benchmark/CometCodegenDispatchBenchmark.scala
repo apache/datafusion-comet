@@ -32,8 +32,8 @@ import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 
 /**
  * Benchmark of the expressions that the JVM codegen dispatcher picks up when no native handler
- * exists: `StaticInvoke` outside `CometStaticInvoke`'s allowlist, and `Invoke`, which has no
- * allowlist at all. Every case here fell the whole projection back to Spark before that catch-all
+ * exists: `StaticInvoke` outside `CometStaticInvoke`'s allowlist, and `Invoke`, when either calls
+ * Spark's own code. Every case here fell the whole projection back to Spark before that catch-all
  * existed, so the interesting comparison is not Comet against Spark but
  *
  *   - `codegen dispatch` -- the expression runs as a Janino-compiled kernel reading and writing
@@ -302,7 +302,7 @@ object CometCodegenDispatchBenchmark extends CometBenchmarkBase {
 
   private def runSteadyState(c: DispatchCase, rows: Int): Unit = {
     runBenchmark(s"${c.name} -- $rows rows") {
-      val benchmark = new Benchmark(s"${c.name} -- $rows rows", rows, output = output)
+      val benchmark = new Benchmark(s"${c.name} -- $rows rows", rows.toLong, output = output)
       checkPlans(benchmark, c)
       // The dispatch-off arm goes first so the `Relative` column reads as the speedup this
       // change buys over the behaviour that shipped before it.
@@ -372,7 +372,7 @@ object CometCodegenDispatchBenchmark extends CometBenchmarkBase {
   private def withCorpus(rows: Int)(f: => Unit): Unit = {
     withTempPath { dir =>
       withTempTable(tbl, "parquetV1Table") {
-        spark.range(rows).createOrReplaceTempView(tbl)
+        spark.range(rows.toLong).createOrReplaceTempView(tbl)
         prepareTable(dir, spark.sql(corpusQuery))
         f
       }

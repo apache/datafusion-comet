@@ -19,11 +19,16 @@
 
 package org.apache.comet.csv
 
-import org.apache.spark.sql.CometTestBase
-import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{IntegerType, StringType, StructType}
+import java.nio.charset.StandardCharsets
+import java.nio.file.Files
 
-import org.apache.comet.CometConf
+import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.comet.CometCsvNativeScanExec
+import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.types.{IntegerType, StringType, StructType, TimestampType}
+
+import org.apache.comet.{CometConf, ExtendedExplainInfo}
+import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
 
 class CometCsvNativeReadSuite extends CometTestBase {
   private val TEST_CSV_PATH_NO_HEADER = "src/test/resources/test-data/csv-test-1.csv"
@@ -84,6 +89,62 @@ class CometCsvNativeReadSuite extends CometTestBase {
       checkSparkAnswerAndFallbackReason(
         df,
         "Comet supports only single-character delimiters, but got: ',,'")
+    }
+  }
+
+  test("Native csv read - timestamps fall back unless the CSV timezone is UTC") {
+    withTempDir { dir =>
+      Files.write(
+        dir.toPath.resolve("part-0.csv"),
+        "id,ts\n0,2024-01-15 18:30:45\n1,2024-06-30T23:30:00\n".getBytes(StandardCharsets.UTF_8))
+      val schema = new StructType().add("id", IntegerType).add("ts", TimestampType)
+      def read(options: Map[String, String] = Map.empty) =
+        spark.read.option("header", "true").options(options).schema(schema).csv(dir.toString)
+
+      withSQLConf(
+        CometConf.COMET_CSV_V2_NATIVE_ENABLED.key -> "true",
+        SQLConf.USE_V1_SOURCE_LIST.key -> "") {
+        withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Los_Angeles") {
+          checkSparkAnswerAndFallbackReason(
+            read(),
+            "Comet's native CSV reader parses timestamps in UTC, but the CSV timezone is " +
+              "America/Los_Angeles")
+          checkSparkAnswerAndOperator(read(Map("timeZone" -> "UTC")))
+        }
+        withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC") {
+          checkSparkAnswerAndOperator(read())
+          checkSparkAnswerAndFallbackReason(
+            read(Map("timeZone" -> "Asia/Tokyo")),
+            "Comet's native CSV reader parses timestamps in UTC, but the CSV timezone is " +
+              "Asia/Tokyo")
+        }
+      }
+    }
+  }
+
+  test("Native csv read - TIME columns fall back") {
+    assume(isSpark41Plus, "TimeType requires Spark 4.1+")
+    withTempDir { dir =>
+      Files.write(
+        dir.toPath.resolve("part-0.csv"),
+        "t\n12:34:56\n".getBytes(StandardCharsets.UTF_8))
+      withSQLConf(
+        "spark.sql.timeType.enabled" -> "true",
+        CometConf.COMET_CSV_V2_NATIVE_ENABLED.key -> "true",
+        SQLConf.USE_V1_SOURCE_LIST.key -> "") {
+        // Spark 4.1's CSV reader rejects TIME when it reads the file, and Spark 4.2 parses it with
+        // the `timeFormat` option, which the native reader does not take. Either way the scan has
+        // to stay in Spark. Checked on the plan because Spark 4.1 has no answer to compare with.
+        val plan = spark.read
+          .option("header", "true")
+          .schema("t TIME")
+          .csv(dir.toString)
+          .queryExecution
+          .executedPlan
+        assert(plan.collectFirst { case s: CometCsvNativeScanExec => s }.isEmpty, plan)
+        val reasons = new ExtendedExplainInfo().getFallbackReasons(plan)
+        assert(reasons.exists(_.contains("Unsupported t of type TimeType(6)")), reasons)
+      }
     }
   }
 }

@@ -16,6 +16,10 @@
 // under the License.
 
 mod error;
+mod ffi_offsets;
+/// Test fixtures, reached by tests in other crates only. See the module docs.
+#[doc(hidden)]
+pub mod nested_nullability_fixture;
 mod query_context;
 mod schema;
 pub mod struct_nulls;
@@ -24,6 +28,7 @@ mod utf8;
 mod utils;
 
 pub use error::{decimal_overflow_error, SparkError, SparkErrorWithContext, SparkResult};
+pub use ffi_offsets::zero_offsets;
 pub use query_context::{create_query_context_map, QueryContext, QueryContextMap};
 pub use schema::{cast_and_stamp_schema, widen_nested_nullability};
 pub use struct_nulls::{child_with_parent_nulls, children_with_parent_nulls};
