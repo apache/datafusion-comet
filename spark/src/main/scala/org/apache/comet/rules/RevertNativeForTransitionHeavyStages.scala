@@ -79,17 +79,16 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession, wholePlan
   }
 
   /**
-   * Reverts the stage below a shuffle if needed and returns the shuffle over the reverted stage. A
-   * native shuffle over rows that `spark.comet.convert.shuffleInput.enabled` converted loses the
-   * conversion with the rest of the stage, so it goes back to the JVM columnar shuffle that the
-   * conversion replaced, which reads the stage's rows. Any other native shuffle consumes
+   * Reverts the stage below a shuffle if needed and returns the shuffle over the reverted stage.
+   * A native shuffle over rows that `spark.comet.convert.shuffleInput.enabled` converted loses
+   * the conversion with the rest of the stage, so it goes back to the JVM columnar shuffle that
+   * the conversion replaced, which reads the stage's rows. Any other native shuffle consumes
    * Arrow-backed Comet vectors, so the reverted stage is bridged back to them.
    */
   private def revertShuffleStageIfNeeded(exchange: ShuffleExchangeLike): Option[SparkPlan] =
     exchange match {
       case s: CometShuffleExchangeExec
-          if s.shuffleType == CometNativeShuffle &&
-            s.child.isInstanceOf[CometSparkToColumnarExec] =>
+          if s.shuffleType == CometNativeShuffle && convertsSparkRows(s.child) =>
         revertStageIfNeeded(s.child, s.supportsColumnar).map { reverted =>
           val columnar = s.copy(child = reverted, shuffleType = CometColumnarShuffle)
           columnar.copyTagsFrom(s)
@@ -103,6 +102,18 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession, wholePlan
         revertStageIfNeeded(exchange.child, exchange.supportsColumnar, outputArrow)
           .map(reverted => exchange.withNewChildren(Seq(reverted)))
     }
+
+  /**
+   * Whether `plan` is the conversion that `spark.comet.convert.shuffleInput.enabled` puts over a
+   * Spark operator. A Comet transition directly under a `CometSparkToColumnarExec` is a stacked
+   * bridge that the revert strips and then restores for a native shuffle, not that conversion.
+   */
+  private def convertsSparkRows(plan: SparkPlan): Boolean = plan match {
+    case conversion: CometSparkToColumnarExec =>
+      !conversion.child.isInstanceOf[CometNativeColumnarToRowExec] &&
+      !conversion.child.isInstanceOf[CometColumnarToRowExec]
+    case _ => false
+  }
 
   /**
    * Reverts the stage if C2R count exceeds threshold, restoring the stage's output format when
