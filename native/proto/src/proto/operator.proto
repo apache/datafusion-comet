@@ -828,6 +828,10 @@ message HashAggregate {
   // Offset in the child's output where aggregate buffer attributes start.
   // Used by PartialMerge to locate state fields in the input.
   int32 initial_input_buffer_offset = 7;
+  // Set for Spark's SortAggregateExec, which reports its output as ordered by the grouping
+  // keys (ascending, nulls first). The native planner sorts the aggregate output on the
+  // grouping columns unless the aggregate already emits its groups in that order.
+  bool ordered_by_grouping_keys = 9;
 }
 
 message Limit {
@@ -980,6 +984,18 @@ message MergeRows {
 
   // Schema of the emitted rows, matching `MergeRowsExec.output`.
   repeated spark.spark_expression.DataType output_types = 7;
+
+  // True when every Keep instruction must retain its Spark action context so the native
+  // operator can populate Spark 4.1+'s semantic MERGE counters.
+  bool semantic_metrics_required = 8;
+}
+
+enum MergeActionContext {
+  MERGE_ACTION_CONTEXT_UNSPECIFIED = 0;
+  MERGE_ACTION_COPY = 1;
+  MERGE_ACTION_DELETE = 2;
+  MERGE_ACTION_INSERT = 3;
+  MERGE_ACTION_UPDATE = 4;
 }
 
 message MergeInstruction {
@@ -987,6 +1003,8 @@ message MergeInstruction {
   spark.spark_expression.Expr condition = 1;
   // 0 output rows = Discard, 1 = Keep, 2 = Split.
   repeated MergeOutputRow outputs = 2;
+  // Present only for a one-row Keep. Required when semantic_metrics_required is true.
+  optional MergeActionContext context = 3;
 }
 
 message MergeOutputRow {

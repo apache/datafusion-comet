@@ -39,6 +39,12 @@ Compare this to JVM shuffle's data path:
 Comet Native (columnar) → ColumnarToRowExec → rows → JVM Shuffle → Arrow IPC → columnar
 ```
 
+When `RevertNativeForTransitionHeavyStages` restores the map stage to Spark execution, the
+native exchange stays in place. Its input still needs Arrow-backed Comet vectors, even if the
+restored Spark operator supports columnar output. The rule adds `CometSparkToColumnarExec` to
+convert either Spark rows or Spark columnar batches to Arrow before the native shuffle consumes
+them. Spark's `RowToColumnarExec` alone does not satisfy this input contract.
+
 ## When Native Shuffle is Used
 
 Native shuffle (`CometExchange`) is selected when all of the following conditions are met:
@@ -71,6 +77,12 @@ Native shuffle (`CometExchange`) is selected when all of the following condition
      Spark's `mapsort` normalization makes physical entry order irrelevant. A collated string at any
      depth still disqualifies the key. The config defaults to `false` pending measurement of the
      nested hashing paths, so by default a complex hash key falls back to JVM shuffle.
+   - A hash key that is or contains a decimal wider than 18 digits stays on JVM shuffle when the
+     shuffle's stage starts at a typed `Dataset` conversion
+     (`spark.comet.convert.typedDataset.enabled`) and the shuffle has more than one partition.
+     Native shuffle hashes such decimals differently from Spark
+     ([#5994](https://github.com/apache/datafusion-comet/issues/5994)). Without the conversion
+     this shuffle would have used JVM shuffle, and a join partner may still use it.
 
 ## Architecture
 
