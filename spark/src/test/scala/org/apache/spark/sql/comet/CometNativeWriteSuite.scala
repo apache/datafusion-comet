@@ -374,6 +374,7 @@ class CleanupFailingWriteMetric extends SQLMetric("sum") {
 class CleanupFailingNativeWriteExec(writer: CometNativeWriteExec)
     extends CometNativeWriteExec(
       writer.nativeOp,
+      writer.originalPlan,
       writer.child,
       writer.outputPath,
       writer.mode,

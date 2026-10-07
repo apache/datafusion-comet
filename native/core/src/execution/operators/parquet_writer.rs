@@ -862,9 +862,6 @@ mod tests {
         let writer = ParquetWriterExec::try_new(
             input,
             format!("file://{}", file.display()),
-            None,
-            None,
-            None,
             ParquetCompression::None,
             0,
             column_names,
