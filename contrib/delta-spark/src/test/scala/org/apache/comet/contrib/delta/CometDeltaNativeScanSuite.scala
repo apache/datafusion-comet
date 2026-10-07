@@ -27,9 +27,9 @@ import scala.collection.mutable.ListBuffer
 import org.apache.spark.CometListenerBusUtils
 import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
 import org.apache.spark.sql.{DataFrame, Row}
-import org.apache.spark.sql.catalyst.expressions.{AttributeReference, DynamicPruningExpression, NamedExpression, StructsToJson}
-import org.apache.spark.sql.comet.CometDeltaNativeScanExec
-import org.apache.spark.sql.execution.{FileSourceScanExec, QueryExecution, ScalarSubquery, SparkPlan, SubqueryExec}
+import org.apache.spark.sql.catalyst.expressions.{AttributeReference, DynamicPruningExpression, Expression, NamedExpression, StructsToJson}
+import org.apache.spark.sql.comet.{CometDeltaNativeScanExec, CometSubqueryBroadcastExec}
+import org.apache.spark.sql.execution.{FileSourceScanExec, InSubqueryExec, QueryExecution, ReusedSubqueryExec, ScalarSubquery, SparkPlan, SubqueryBroadcastExec, SubqueryExec}
 import org.apache.spark.sql.execution.datasources.v2.V2TableWriteExec
 import org.apache.spark.sql.functions.{col, lit, to_json}
 import org.apache.spark.sql.internal.SQLConf
@@ -37,7 +37,7 @@ import org.apache.spark.sql.types.{ByteType, LongType, StringType, StructField, 
 import org.apache.spark.sql.util.QueryExecutionListener
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
+import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
 import org.apache.comet.ExtendedExplainInfo
 import org.apache.comet.serde.OperatorOuterClass
 import org.apache.comet.serde.operator.CometNativeScan
@@ -1741,6 +1741,103 @@ class CometDeltaNativeScanSuite extends CometDeltaTestBase {
           assert(
             readFiles < staticFiles,
             s"expected DPP pruning: read $readFiles of $staticFiles files")
+        }
+      }
+    }
+  }
+
+  for (adaptive <- Seq(false, true)) {
+    test(
+      "DPP stays executable when transition reversion restores the delta scan: " +
+        s"AQE=$adaptive") {
+      assume(isSpark35Plus, "Comet AQE DPP query-stage optimizer rules require Spark 3.5+")
+      withTempPath { factDir =>
+        withTempPath { dimDir =>
+          val factPath = factDir.getAbsolutePath
+          val dimPath = dimDir.getAbsolutePath
+          spark
+            .range(0, 400)
+            .selectExpr(
+              "CAST(id AS INT) AS fact_id",
+              "CAST(id % 10 AS INT) AS fact_key",
+              "CONCAT('f', id) AS fact_str")
+            .write
+            .format("delta")
+            .partitionBy("fact_key")
+            .save(factPath)
+          spark
+            .range(0, 10)
+            .selectExpr(
+              "CAST(id AS INT) AS dim_id",
+              "CAST(id AS INT) AS dim_key",
+              "CONCAT('d', id) AS dim_str")
+            .write
+            .parquet(dimPath)
+
+          withTempView("revert_dpp_fact", "revert_dpp_dim") {
+            spark.read.format("delta").load(factPath).createOrReplaceTempView("revert_dpp_fact")
+            spark.read.parquet(dimPath).createOrReplaceTempView("revert_dpp_dim")
+            val query =
+              """SELECT f.fact_id, f.fact_str, d.dim_str
+                |FROM revert_dpp_fact f JOIN revert_dpp_dim d ON f.fact_key = d.dim_key
+                |WHERE d.dim_id < 5""".stripMargin
+
+            def hasDpp(filters: Seq[Expression]): Boolean =
+              filters.exists(_.isInstanceOf[DynamicPruningExpression])
+
+            withSQLConf(
+              SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+              SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true",
+              "spark.comet.exec.project.enabled" -> "false",
+              CometConf.COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS.key -> "0") {
+              // Without reversion the fact side is a native Delta scan carrying the DPP filter.
+              withSQLConf(CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "false") {
+                val df = sql(query)
+                assert(df.collect().length == 200)
+                val nativeScans = deltaNativeScans(df).collect {
+                  case s: CometDeltaNativeScanExec => s
+                }
+                assert(
+                  nativeScans.exists(s => hasDpp(s.runtimeFilters)),
+                  "expected a native Delta scan with a DPP filter:\n" +
+                    df.queryExecution.executedPlan)
+              }
+
+              withSQLConf(CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "true") {
+                val (_, cometPlan) = checkSparkAnswer(query)
+                assert(
+                  collectByName(cometPlan, "CometDeltaNativeScanExec").isEmpty,
+                  s"transition reversion should restore the Spark Delta scan:\n$cometPlan")
+                val restored = collect(cometPlan) {
+                  case s: FileSourceScanExec if hasDpp(s.partitionFilters) => s
+                }
+                assert(
+                  restored.nonEmpty,
+                  s"expected a restored scan with a DPP filter:\n$cometPlan")
+                restored.foreach { scan =>
+                  assert(
+                    scan.relation.fileFormat.getClass.getSimpleName.contains("Delta"),
+                    s"expected the restored scan to read Delta:\n$cometPlan")
+                  assert(
+                    scan.logicalLink.isDefined,
+                    s"restored scan lost its logical link:\n$scan")
+                  val subqueryPlans =
+                    scan.partitionFilters.flatMap(_.collect { case e: InSubqueryExec =>
+                      e.plan match {
+                        case ReusedSubqueryExec(p) => p
+                        case p => p
+                      }
+                    })
+                  assert(
+                    subqueryPlans.nonEmpty && subqueryPlans.forall {
+                      case _: SubqueryBroadcastExec | _: CometSubqueryBroadcastExec => true
+                      case _ => false
+                    },
+                    s"restored scan must carry the executable DPP subquery:\n$cometPlan")
+                }
+              }
+            }
+          }
         }
       }
     }

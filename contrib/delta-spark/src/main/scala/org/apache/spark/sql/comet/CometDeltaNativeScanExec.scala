@@ -59,6 +59,15 @@ case class CometDeltaNativeScanExec(
 
   override val nodeName: String = s"CometDeltaNativeScan $relation"
 
+  override def sparkFallback(newChildren: Seq[SparkPlan]): SparkPlan = {
+    // AQE rewrites DPP placeholders in runtimeFilters, not in originalPlan, so restore the scan
+    // with the live partition filters. dataFilters stays as Spark planned it: the live list also
+    // carries subquery filters harvested from the parent FilterExec.
+    val restoredScan = originalPlan.copy(partitionFilters = runtimeFilters)
+    originalPlan.logicalLink.foreach(restoredScan.setLogicalLink)
+    restoredScan
+  }
+
   // Derived from (originalPlan, runtimeFilters), never stored: any copy of this node
   // automatically gets a helper consistent with ITS runtimeFilters, avoiding the #3510 class of
   // bug where a stored helper field desyncs from rewritten filters. Costs one extra file listing
