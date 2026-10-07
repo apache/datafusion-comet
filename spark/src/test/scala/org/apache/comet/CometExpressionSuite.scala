@@ -242,11 +242,10 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  // Floats nested in array and struct sort keys are normalized natively as well, but strict mode
-  // declines a key whose type can hold a null element or field: Spark orders that null below
-  // every value whatever the key's null order, and the native sort places it by the null order
-  // (#6476). Every field the generator makes is nullable, so these sorts fall back. A unique `id`
-  // sorted last makes the ordering total, as above.
+  // Floats nested in array and struct sort keys are normalized natively, in strict mode too. A key
+  // whose type can hold a null element or field sorts natively under the default null order, which
+  // agrees with Spark's. Every field the generator makes is nullable. A unique `id` sorted last
+  // makes the ordering total, as above.
   private def checkStrictNestedFloatingPointSort(schema: StructType): Unit = {
     val df = FuzzDataGenerator.generateDataFrame(
       new Random(42),
@@ -260,21 +259,15 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       df.withColumn("id", monotonically_increasing_id()).write.parquet(path)
       spark.read.parquet(path).createOrReplaceTempView("tbl")
 
-      withSQLConf(
-        CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false",
-        CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
-        checkSparkAnswerAndFallbackReason(
-          sql("select * from tbl order by 1, 2, 3"),
-          "can hold a null element or field")
-      }
-
-      // The default null order agrees with Spark's, so opting in keeps the sort native and right.
-      withSQLConf(
-        CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "true",
-        CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
-        checkSparkAnswerAndOperator(
-          sql("select * from tbl order by 1, 2, 3"),
-          Seq(classOf[CometSortExec]))
+      // The sort stays native whether or not incompatible expressions are allowed.
+      Seq("false", "true").foreach { allowIncompat =>
+        withSQLConf(
+          CometConf.getExprAllowIncompatConfigKey("SortOrder") -> allowIncompat,
+          CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
+          checkSparkAnswerAndOperator(
+            sql("select * from tbl order by 1, 2, 3"),
+            Seq(classOf[CometSortExec]))
+        }
       }
     }
   }
