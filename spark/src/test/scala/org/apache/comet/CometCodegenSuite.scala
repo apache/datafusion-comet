@@ -1089,6 +1089,31 @@ class CometCodegenSuite
     }
   }
 
+  test("a disabled expression in a null guard keeps the guard native (#6704)") {
+    // Converting the guard natively checks `spark.comet.expression.<name>.enabled` on the UDF and
+    // on each node of the predicate, the guarded argument's included, and a disabled one takes
+    // the projection to Spark. Dispatching the guard has to make the same checks.
+    spark.udf.register("plusOne", (x: Long) => x + 1)
+    spark.udf.register("addBoth", (a: Long, b: Long) => a + b)
+    withTable("t") {
+      sql("CREATE TABLE t (a BIGINT, b BIGINT) USING parquet")
+      sql("INSERT INTO t VALUES (1, 10), (NULL, 20), (-3, NULL)")
+      Seq(
+        "ScalaUDF" -> "SELECT plusOne(a) FROM t",
+        "IsNull" -> "SELECT plusOne(a) FROM t",
+        "Or" -> "SELECT addBoth(a, b) FROM t",
+        "Multiply" -> "SELECT plusOne(a * 2) FROM t").foreach { case (name, query) =>
+        val key = CometConf.getExprEnabledConfigKey(name)
+        withSQLConf(key -> "false") {
+          val (_, cometPlan) = checkSparkAnswerAndFallbackReason(sql(query), s"Set $key=true")
+          assert(
+            collect(cometPlan) { case p: CometProjectExec => p }.isEmpty,
+            s"$query stayed in Comet with $key=false:\n$cometPlan")
+        }
+      }
+    }
+  }
+
   test("only the null guard Spark builds goes to the kernel with its UDF (#6704)") {
     spark.udf.register("plusOne", (x: Long) => x + 1)
     withTable("t") {

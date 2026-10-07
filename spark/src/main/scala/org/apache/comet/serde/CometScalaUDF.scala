@@ -60,9 +60,10 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
 
   /**
    * Emits Spark's null guard around a Scala UDF, together with the UDF, as one dispatcher call.
-   * Returns `None` when `expr` is not that guard or the dispatcher cannot take it, and records
-   * nothing on `expr` in that case: the caller converts `expr` as usual, which sends the UDF to
-   * the dispatcher on its own, and the UDF records its own fallback reason if it cannot go.
+   * Returns `None` when `expr` is not that guard, when an expression in it is disabled, or when
+   * the dispatcher cannot take it, and records nothing on `expr` in that case: the caller
+   * converts `expr` as usual, which sends the UDF to the dispatcher on its own, and the UDF
+   * records its own fallback reason if it cannot go.
    *
    * Spark's `HandleNullInputsForUDF` rule wraps a UDF with a primitive parameter over a nullable
    * input as `if (isnull(a) or isnull(b)) null else f(knownnotnull(a), knownnotnull(b))`, one
@@ -77,7 +78,29 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
    * `ReplaceNullWithFalseInPredicate` replaces the null with `false`, so that form matches too.
    */
   def emitNullGuardDispatch(expr: If, inputs: Seq[Attribute], binding: Boolean): Option[Expr] =
-    if (isNullGuard(expr)) tryJvmCodegenDispatch(expr, inputs, binding).toOption else None
+    if (isNullGuard(expr) && isEnabled(expr)) {
+      tryJvmCodegenDispatch(expr, inputs, binding).toOption
+    } else {
+      None
+    }
+
+  /**
+   * Whether converting `guard` natively would pass every `spark.comet.expression.<name>.enabled`
+   * check it makes: on the UDF, and on each node of the predicate and the true branch, the
+   * guarded arguments included. The dispatcher makes none of these checks, so a guard with a
+   * disabled expression stays native, where the conversion records the fallback reason. The UDF's
+   * arguments are not checked, because the dispatcher takes them unchecked with or without the
+   * guard.
+   */
+  private def isEnabled(guard: If): Boolean = {
+    def disabled(e: Expression): Boolean =
+      QueryPlanSerde.exprSerdeMap.get(e.getClass).exists { serde =>
+        !CometConf.isExprEnabled(
+          serde.asInstanceOf[CometExpressionSerde[Expression]].getExprConfigName(e))
+      }
+    !disabled(guard.falseValue) && !guard.predicate.exists(disabled) &&
+    !guard.trueValue.exists(disabled)
+  }
 
   private def isNullGuard(expr: If): Boolean = expr match {
     case If(predicate, Literal(null, _) | Literal.FalseLiteral, udf: ScalaUDF) =>
