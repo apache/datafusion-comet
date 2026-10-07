@@ -578,7 +578,13 @@ them. Spark’s <code class="docutils literal notranslate"><span class="pre">Row
 <ol class="arabic simple">
 <li><p><strong>Shuffle mode allows native</strong>: <code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.mode</span></code> is <code class="docutils literal notranslate"><span class="pre">native</span></code> or <code class="docutils literal notranslate"><span class="pre">auto</span></code>.</p></li>
 <li><p><strong>Child plan is a Comet native operator</strong>: The child must be a <code class="docutils literal notranslate"><span class="pre">CometPlan</span></code> that produces
-columnar output. Row-based Spark operators require JVM shuffle.</p></li>
+columnar output. Row-based Spark operators require JVM shuffle, unless
+<code class="docutils literal notranslate"><span class="pre">spark.comet.convert.shuffleInput.enabled</span></code> is set. Then a shuffle that JVM shuffle would take
+uses native shuffle instead, provided native shuffle supports the partitioning and the
+columns, and a <code class="docutils literal notranslate"><span class="pre">CometSparkToColumnarExec</span></code> converts the child’s rows to Arrow for it. A shuffle
+that hashes a string, a value computed from a string, or a decimal wider than 18 digits stays
+on JVM shuffle, because native shuffle would not put every row in the partition Spark’s
+partitioner does (<code class="docutils literal notranslate"><span class="pre">CometShuffleExchangeExec.convertsInputForNativeShuffle</span></code>).</p></li>
 <li><p><strong>Supported partitioning type</strong>: Native shuffle supports:</p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">HashPartitioning</span></code></p></li>
@@ -752,11 +758,14 @@ one of two shapes:</p>
 <li><p>The child plan’s <code class="docutils literal notranslate"><span class="pre">nativeOp</span></code> directly, when <code class="docutils literal notranslate"><span class="pre">CometShuffleExchangeExec</span></code>’s child is a
 <code class="docutils literal notranslate"><span class="pre">CometNativeExec</span></code> subtree. The upstream operators run inside the same <code class="docutils literal notranslate"><span class="pre">CometExecIterator</span></code>
 as the writer, with no JVM-to-native batch boundary between them.</p></li>
-<li><p>A synthetic <code class="docutils literal notranslate"><span class="pre">Scan(&quot;ShuffleWriterInput&quot;)</span></code> placeholder, when the dep was built via the
-convenience <code class="docutils literal notranslate"><span class="pre">prepareShuffleDependency(rdd,</span> <span class="pre">...)</span></code> overload (used by
-<code class="docutils literal notranslate"><span class="pre">CometCollectLimitExec</span></code> and <code class="docutils literal notranslate"><span class="pre">CometTakeOrderedAndProjectExec</span></code>, or when the
-exchange’s child is a non-native <code class="docutils literal notranslate"><span class="pre">CometPlan</span></code> such as <code class="docutils literal notranslate"><span class="pre">CometSparkToColumnarExec</span></code>). Native
-code reads <code class="docutils literal notranslate"><span class="pre">ColumnarBatch</span></code>es from the JVM input iterator via Arrow C Stream Interface.</p></li>
+<li><p>A synthetic <code class="docutils literal notranslate"><span class="pre">Scan(&quot;ShuffleWriterInput&quot;)</span></code> placeholder, when the exchange’s child is a
+non-native <code class="docutils literal notranslate"><span class="pre">CometPlan</span></code>, and for the dependencies that <code class="docutils literal notranslate"><span class="pre">CometCollectLimitExec</span></code> and
+<code class="docutils literal notranslate"><span class="pre">CometTakeOrderedAndProjectExec</span></code> build. Native code reads the input through the Arrow C
+Stream Interface. A <code class="docutils literal notranslate"><span class="pre">CometNativeArrowSource</span></code> child, such as <code class="docutils literal notranslate"><span class="pre">CometSparkToColumnarExec</span></code>,
+exports its own Arrow stream from <code class="docutils literal notranslate"><span class="pre">doExecuteAsArrowStream()</span></code>, which
+<code class="docutils literal notranslate"><span class="pre">prepareArrowStreamShuffleDependency</span></code> hands to native. Any other input is an
+<code class="docutils literal notranslate"><span class="pre">RDD[ColumnarBatch]</span></code>, which the convenience <code class="docutils literal notranslate"><span class="pre">prepareShuffleDependency(rdd,</span> <span class="pre">...)</span></code> overload
+wraps in a stream.</p></li>
 </ul>
 </li>
 <li><p><strong>Native execution</strong>: A single <code class="docutils literal notranslate"><span class="pre">CometExecIterator</span></code> per partition runs the unified plan.</p></li>

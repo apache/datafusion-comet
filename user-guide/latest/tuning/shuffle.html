@@ -884,20 +884,30 @@ write side. To restrict columnar shuffle to cases where the child is already a C
 <code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.convertFromSparkPlan.enabled=false</span></code>. Shuffles whose child is a Spark plan will then be left
 as native Spark shuffles, which avoids the row to columnar conversion but means the downstream stage will also start
 on Spark.</p>
+<p>Setting <code class="docutils literal notranslate"><span class="pre">spark.comet.convert.shuffleInput.enabled=true</span></code> makes such a shuffle use native shuffle instead. Comet
+converts the child’s rows to Arrow, as the <code class="docutils literal notranslate"><span class="pre">spark.comet.convert.*</span></code> settings do for Spark scans, and shuffles the
+batches natively. With hash partitioning that is usually faster than columnar shuffle, while with range partitioning
+the two come out about even. This applies only where native shuffle supports the partitioning and Comet can convert
+all of the child’s columns, which rules out calendar intervals, and arrays and maps other than <code class="docutils literal notranslate"><span class="pre">array&lt;string&gt;</span></code> and
+<code class="docutils literal notranslate"><span class="pre">map&lt;string,string&gt;</span></code>. A shuffle that hashes a decimal wider than 18 digits, or a string or a value computed from a
+string, stays on columnar shuffle, so that it partitions rows as Spark does. The converted batches are allocated on
+the JVM outside Comet’s memory pools. The setting is disabled by default.</p>
 </section>
 <section id="automatic-revert-to-spark-shuffle">
 <h3>Automatic Revert to Spark Shuffle<a class="headerlink" href="#automatic-revert-to-spark-shuffle" title="Link to this heading">#</a></h3>
-<p>When a Comet columnar shuffle ends up between a partial and a final aggregate that Comet could not convert (both
-remain Spark <code class="docutils literal notranslate"><span class="pre">HashAggregateExec</span></code> or <code class="docutils literal notranslate"><span class="pre">ObjectHashAggregateExec</span></code> operators), Comet reverts it to Spark’s built-in shuffle.
+<p>When a Comet columnar shuffle, or a native shuffle over rows that <code class="docutils literal notranslate"><span class="pre">spark.comet.convert.shuffleInput.enabled</span></code> converted,
+ends up between a partial and a final aggregate that Comet could not convert (both remain Spark <code class="docutils literal notranslate"><span class="pre">HashAggregateExec</span></code>,
+<code class="docutils literal notranslate"><span class="pre">ObjectHashAggregateExec</span></code> or <code class="docutils literal notranslate"><span class="pre">SortAggregateExec</span></code> operators), Comet reverts it to Spark’s built-in shuffle.
 Keeping columnar shuffle between the two row-based aggregates would add <code class="docutils literal notranslate"><span class="pre">row</span> <span class="pre">-&gt;</span> <span class="pre">Arrow</span> <span class="pre">-&gt;</span> <span class="pre">shuffle</span> <span class="pre">-&gt;</span> <span class="pre">Arrow</span> <span class="pre">-&gt;</span> <span class="pre">row</span></code>
-conversions with no Comet consumer on either side to benefit from columnar output. Other shuffles between non-Comet
-operators are not reverted.</p>
+conversions with no Comet consumer on either side to benefit from columnar output. The final aggregate has to read the
+shuffle directly, which a <code class="docutils literal notranslate"><span class="pre">SortAggregateExec</span></code> with grouping keys does not: it reads the shuffle through a sort, so that
+shuffle is not reverted. Other shuffles between non-Comet operators are not reverted either.</p>
 <p>This shifts the affected shuffles from Comet’s off-heap memory pool back to the JVM execution memory pool. Clusters
 tuned for a small JVM heap may see <code class="docutils literal notranslate"><span class="pre">ExternalSorter</span></code> spills on queries where this revert fires. Shuffle I/O may also
 grow marginally because Spark’s row-based serializer generally compresses less well than Comet’s Arrow IPC format.</p>
-<p>Each revert is logged at <code class="docutils literal notranslate"><span class="pre">INFO</span></code> level on the driver as <code class="docutils literal notranslate"><span class="pre">Reverting</span> <span class="pre">Comet</span> <span class="pre">columnar</span> <span class="pre">shuffle</span> <span class="pre">to</span> <span class="pre">Spark</span> <span class="pre">shuffle</span> <span class="pre">between</span> <span class="pre">&lt;parent&gt;</span> <span class="pre">and</span> <span class="pre">&lt;child&gt;</span></code>, which lets you correlate any unexpected behavior with this optimization.</p>
+<p>Each revert is logged at <code class="docutils literal notranslate"><span class="pre">INFO</span></code> level on the driver as <code class="docutils literal notranslate"><span class="pre">Reverting</span> <span class="pre">Comet</span> <span class="pre">shuffle</span> <span class="pre">to</span> <span class="pre">Spark</span> <span class="pre">shuffle</span> <span class="pre">between</span> <span class="pre">&lt;parent&gt;</span> <span class="pre">and</span> <span class="pre">&lt;child&gt;</span></code>, which lets you correlate any unexpected behavior with this optimization.</p>
 <p>This optimization is enabled by default and can be disabled by setting
-<code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.revertRedundantColumnar.enabled=false</span></code>, in which case Comet will keep the columnar shuffle
+<code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.revertRedundantColumnar.enabled=false</span></code>, in which case Comet will keep its shuffle
 even when both of those aggregates run on Spark.</p>
 </section>
 </section>
