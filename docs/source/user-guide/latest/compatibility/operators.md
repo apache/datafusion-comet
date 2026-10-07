@@ -60,6 +60,35 @@ Sampling with replacement (`df.sample(withReplacement = true, ...)`) falls back 
 it draws from a Poisson distribution that Comet does not implement natively
 ([#5109](https://github.com/apache/datafusion-comet/issues/5109)).
 
+## Sort
+
+Spark orders a null element of an array sort key, or a null field of a struct sort key, below
+every other value, whatever the key's `NULLS FIRST` or `NULLS LAST`. Comet's native sort places it
+by the key's null order instead. So a sort, TopK, or window order key whose type can hold a null
+element or field falls back to Spark under `ASC NULLS LAST` or `DESC NULLS FIRST`
+([#6476](https://github.com/apache/datafusion-comet/issues/6476)). The default null orders,
+`ASC NULLS FIRST` and `DESC NULLS LAST`, place it where Spark does and run natively, and so does a
+key whose type cannot hold a null element or field, such as `array(coalesce(x, 0))`. Set
+`spark.comet.expression.SortOrder.allowIncompatible=true` to run the other null orders natively
+anyway.
+
+## Sort Aggregation
+
+Comet runs `SortAggregateExec` natively when Comet shuffle is enabled and Comet supports every
+aggregate in it. The native aggregate keeps the grouping-key output order that Spark relies on.
+
+Decimal `sum` and `avg` over input precision 28 or more keep a running sum at precision 38, which
+can overflow even when the final sum fits. Whether Spark's sort aggregation recovers from such an
+overflow depends on the other aggregates in the operator and on codegen. Comet does not track
+this, so a sort aggregate that contains such a `sum` or `avg` falls back to Spark.
+
+`first` and `last` return the first or last value in the order that rows reach the aggregate,
+which Spark does not define within a group. Spark plans a sort aggregate for them when their buffer
+cannot use hash aggregation, for example over a string column. The sort below the aggregate orders
+rows by the grouping keys only, and Spark and Comet can leave rows with equal keys in different
+orders, so a group with more than one candidate value can return a different value than Spark.
+Both results are valid under Spark's semantics for these functions.
+
 ## Window Functions
 
 Comet runs `WindowExec` natively and it is enabled by default (`spark.comet.exec.window.enabled`). A broad set of
@@ -92,6 +121,11 @@ incorrect result. When any single window expression in a `WindowExec` falls back
   holding an array, such as `array(named_struct('x', x))`. DataFusion cannot compare those values to find the
   frame's bounds ([apache/datafusion#24937](https://github.com/apache/datafusion/issues/24937)). Ranking functions
   and `ROWS` frames over the same keys run natively.
+- `RANGE` frame bounded by `CURRENT ROW` when an `ORDER BY` key is an array or struct whose type can hold a null
+  element or field, such as `array(x)` over a nullable `x`. DataFusion orders such a null above every other value
+  when it looks for the frame's bounds, while the sort puts it first as Spark does, so a frame could run to the end
+  of the partition ([#6477](https://github.com/apache/datafusion-comet/issues/6477)). Ranking functions, `ROWS`
+  frames, and a key that cannot hold a null element or field, such as `array(coalesce(x, 0))`, run natively.
 - `first_value` / `last_value` on a `RANGE` frame with a literal offset
   ([#4835](https://github.com/apache/datafusion-comet/issues/4835)).
 - `lag` / `lead` with a non-literal default value ([#4268](https://github.com/apache/datafusion-comet/issues/4268)).

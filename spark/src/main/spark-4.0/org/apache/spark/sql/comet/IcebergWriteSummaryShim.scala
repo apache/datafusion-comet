@@ -22,12 +22,15 @@ package org.apache.spark.sql.comet
 import org.apache.spark.sql.connector.write.{BatchWrite, WriterCommitMessage}
 import org.apache.spark.sql.execution.SparkPlan
 
+import org.apache.comet.iceberg.DeltaCommand
+
 /** The `BatchWrite.commit(messages, summary)` overload only exists on Spark 4.1+. */
 private[comet] object IcebergWriteSummaryShim {
   def commit(
       batchWrite: BatchWrite,
       messages: Array[WriterCommitMessage],
-      query: SparkPlan): Unit = {
+      query: SparkPlan,
+      command: Option[DeltaCommand] = None): Unit = {
     batchWrite.commit(messages)
   }
 }

@@ -813,7 +813,7 @@ index e1a2fd33c7c..632f4b695df 100644
              }
            assert(scanOption.isDefined)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/ExplainSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/ExplainSuite.scala
-index 4c62c47971a..ecc7ed21546 100644
+index 4c62c47971a..fe788debf70 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/ExplainSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/ExplainSuite.scala
 @@ -268,7 +268,8 @@ class ExplainSuite extends ExplainSuiteHelper with DisableAdaptiveExecutionSuite
@@ -826,6 +826,15 @@ index 4c62c47971a..ecc7ed21546 100644
      withSQLConf(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "true") {
        withTempView("df") {
          val df1 = spark.range(1, 100)
+@@ -339,7 +340,7 @@ class ExplainSuite extends ExplainSuiteHelper with DisableAdaptiveExecutionSuite
+ 
+         val sqlText = "EXPLAIN FORMATTED SELECT (SELECT min(id) FROM df) as v"
+         val expected_pattern =
+-          "Subquery:1 Hosting operator id = 2 Hosting Expression = Subquery subquery#x"
++          "Subquery:1 Hosting operator id = \\d+ Hosting Expression = Subquery subquery#x"
+ 
+         withNormalizedExplain(sqlText) { normalizedOutput =>
+           assert(expected_pattern.r.findAllMatchIn(normalizedOutput).length == 1)
 @@ -471,7 +472,8 @@ class ExplainSuite extends ExplainSuiteHelper with DisableAdaptiveExecutionSuite
      }
    }
@@ -1313,7 +1322,7 @@ index cb9d0909554..084d6515e8b 100644
    }
  
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
-index 74cdee49e55..f7452c9abb7 100644
+index 74cdee49e55..1a7bc4567b4 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
 @@ -1521,7 +1521,8 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
@@ -1343,6 +1352,16 @@ index 74cdee49e55..f7452c9abb7 100644
  
        verifyCallCount(
          df.selectExpr("testUdf(a + 1) + testUdf(1 + a)", "testUdf(a + 1)"), Row(4, 2), 1)
+@@ -4741,7 +4749,8 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
+     )
+   }
+ 
+-  test("SPARK-47939: Explain should work with parameterized queries") {
++  test("SPARK-47939: Explain should work with parameterized queries",
++      IgnoreComet("Comet explain output is different")) {
+     def checkQueryPlan(df: DataFrame, plan: String): Unit = assert(
+       df.collect()
+         .map(_.getString(0))
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SQLQueryTestSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SQLQueryTestSuite.scala
 index 23f0144dcec..40d536bb23a 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SQLQueryTestSuite.scala
@@ -2204,26 +2223,31 @@ index 46ed8fdfd21..4585dbab5b8 100644
  
    private def checkWindowGroupLimits(query: String, count: Int): Unit = {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/ReplaceHashWithSortAggSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/ReplaceHashWithSortAggSuite.scala
-index 47679ed7865..9ffbaecb98e 100644
+index 47679ed7865..cbcabe00992 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/ReplaceHashWithSortAggSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/ReplaceHashWithSortAggSuite.scala
 @@ -18,6 +18,7 @@
  package org.apache.spark.sql.execution
  
  import org.apache.spark.sql.{DataFrame, QueryTest}
-+import org.apache.spark.sql.comet.CometHashAggregateExec
++import org.apache.spark.sql.comet.{CometHashAggregateExec, CometSortAggregateExec}
  import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanHelper, DisableAdaptiveExecutionSuite, EnableAdaptiveExecutionSuite}
  import org.apache.spark.sql.execution.aggregate.{HashAggregateExec, ObjectHashAggregateExec, SortAggregateExec}
  import org.apache.spark.sql.internal.SQLConf
-@@ -31,7 +32,7 @@ abstract class ReplaceHashWithSortAggSuiteBase
+@@ -31,9 +32,11 @@ abstract class ReplaceHashWithSortAggSuiteBase
    private def checkNumAggs(df: DataFrame, hashAggCount: Int, sortAggCount: Int): Unit = {
      val plan = df.queryExecution.executedPlan
      assert(collectWithSubqueries(plan) {
 -      case s @ (_: HashAggregateExec | _: ObjectHashAggregateExec) => s
 +      case s @ (_: HashAggregateExec | _: ObjectHashAggregateExec | _: CometHashAggregateExec ) => s
      }.length == hashAggCount)
-     assert(collectWithSubqueries(plan) { case s: SortAggregateExec => s }.length == sortAggCount)
+-    assert(collectWithSubqueries(plan) { case s: SortAggregateExec => s }.length == sortAggCount)
++    assert(collectWithSubqueries(plan) {
++      case s @ (_: SortAggregateExec | _: CometSortAggregateExec) => s
++    }.length == sortAggCount)
    }
+ 
+   private def checkAggs(
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/SQLWindowFunctionSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/SQLWindowFunctionSuite.scala
 index aa619c5cde8..4b5a42e683f 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/SQLWindowFunctionSuite.scala
@@ -2516,7 +2540,7 @@ index a3cfdc5a240..3793b6191bf 100644
        })
        checkAnswer(distinctWithId, Seq(Row(1, 0), Row(1, 0)))
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
-index 188a28ff1c0..8fdccf31749 100644
+index 188a28ff1c0..2717d45f3d0 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
 @@ -27,12 +27,14 @@ import org.apache.spark.SparkException
@@ -2588,7 +2612,7 @@ index 188a28ff1c0..8fdccf31749 100644
    private def findTopLevelAggregate(plan: SparkPlan): Seq[BaseAggregateExec] = {
      collect(plan) {
        case agg: BaseAggregateExec => agg
-+      case agg: CometHashAggregateExec => agg.originalPlan.asInstanceOf[BaseAggregateExec]
++      case agg: CometBaseAggregateExec => agg.originalPlan.asInstanceOf[BaseAggregateExec]
      }
    }
  
@@ -4158,14 +4182,14 @@ index e57c4e1e665..1dd8b80a006 100644
    // Necessary to make ScalaTest 3.x interrupt a thread on the JVM like ScalaTest 2.2.x
    implicit val defaultSignaler: Signaler = ThreadSignaler
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamingAggregationDistributionSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamingAggregationDistributionSuite.scala
-index 465da3cd469..92ac998929d 100644
+index 465da3cd469..2e6bcb6ca0d 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamingAggregationDistributionSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamingAggregationDistributionSuite.scala
 @@ -22,6 +22,7 @@ import java.io.File
  import org.scalatest.Assertions
  
  import org.apache.spark.sql.catalyst.plans.physical.UnspecifiedDistribution
-+import org.apache.spark.sql.comet.CometHashAggregateExec
++import org.apache.spark.sql.comet.CometBaseAggregateExec
  import org.apache.spark.sql.execution.aggregate.BaseAggregateExec
  import org.apache.spark.sql.execution.streaming.operators.stateful.{StateStoreRestoreExec, StateStoreSaveExec}
  import org.apache.spark.sql.execution.streaming.runtime.MemoryStream
@@ -4173,7 +4197,7 @@ index 465da3cd469..92ac998929d 100644
          // verify aggregations in between, except partial aggregation
          val allAggregateExecs = query.lastExecution.executedPlan.collect {
            case a: BaseAggregateExec => a
-+          case c: CometHashAggregateExec => c.originalPlan
++          case c: CometBaseAggregateExec => c.originalPlan
          }
  
          val aggregateExecsWithoutPartialAgg = allAggregateExecs.filter {
@@ -4181,7 +4205,7 @@ index 465da3cd469..92ac998929d 100644
          // verify aggregations in between, except partial aggregation
          val allAggregateExecs = executedPlan.collect {
            case a: BaseAggregateExec => a
-+          case c: CometHashAggregateExec => c.originalPlan
++          case c: CometBaseAggregateExec => c.originalPlan
          }
  
          val aggregateExecsWithoutPartialAgg = allAggregateExecs.filter {
