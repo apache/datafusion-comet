@@ -3523,11 +3523,9 @@ mod tests {
         );
     }
 
-    /// A serialized plan whose only operator is a range of `num_elements` longs from 0, which
-    /// needs no JVM input.
-    fn range_plan(num_elements: i64) -> Vec<u8> {
+    /// A range of `num_elements` longs from 0, which needs no JVM input and reserves no memory.
+    fn range_operator(num_elements: i64) -> Operator {
         use datafusion_comet_proto::spark_operator::RangeScan;
-        use prost::Message;
 
         Operator {
             plan_id: 1,
@@ -3539,7 +3537,59 @@ mod tests {
             })),
             ..Default::default()
         }
+    }
+
+    fn range_plan(num_elements: i64) -> Vec<u8> {
+        use prost::Message;
+        range_operator(num_elements).encode_to_vec()
+    }
+
+    /// A range of `num_elements` longs sorted in descending order. The sort buffers its whole
+    /// input, so the plan holds a memory reservation while it emits its output.
+    fn sorted_range_plan(num_elements: i64) -> Vec<u8> {
+        use datafusion_comet_proto::spark_expression::{
+            self, expr::ExprStruct, NullOrdering, SortDirection,
+        };
+        use datafusion_comet_proto::spark_operator::Sort;
+        use prost::Message;
+
+        let column = Expr {
+            expr_struct: Some(ExprStruct::Bound(spark_expression::BoundReference {
+                index: 0,
+                // A Spark `long`.
+                datatype: Some(spark_expression::DataType {
+                    type_id: 4,
+                    type_info: None,
+                }),
+            })),
+            ..Default::default()
+        };
+        let descending = Expr {
+            expr_struct: Some(ExprStruct::SortOrder(Box::new(
+                spark_expression::SortOrder {
+                    child: Some(Box::new(column)),
+                    direction: SortDirection::Descending as i32,
+                    null_ordering: NullOrdering::NullsLast as i32,
+                },
+            ))),
+            ..Default::default()
+        };
+        Operator {
+            plan_id: 2,
+            children: vec![range_operator(num_elements)],
+            op_struct: Some(OpStruct::Sort(Sort {
+                sort_orders: vec![descending],
+                ..Default::default()
+            })),
+            ..Default::default()
+        }
         .encode_to_vec()
+    }
+
+    fn long_values(batch: &RecordBatch) -> Vec<i64> {
+        arrow::array::AsArray::as_primitive::<arrow::datatypes::Int64Type>(batch.column(0))
+            .values()
+            .to_vec()
     }
 
     /// Creates a plan without a JVM: no metrics node or JVM input, and a memory pool backed by a
@@ -3580,7 +3630,7 @@ mod tests {
     }
 
     #[test]
-    fn plan_lifecycle_without_a_jvm() {
+    fn execute_plan_drains_a_plan() {
         let _guard = serial();
         let mut exec_context = create_test_plan(range_plan(10)).unwrap();
         assert!(
@@ -3588,31 +3638,45 @@ mod tests {
             "operators are created on first execution"
         );
 
-        // Without an update interval, metrics are published only when the plan is released.
-        let mut publishes = 0;
         let mut values = Vec::new();
-        while let Some(batch) = execute_plan(&mut exec_context, 0, 0, &mut |_| {
-            publishes += 1;
-            Ok(())
-        })
-        .unwrap()
-        {
+        while let Some(batch) = execute_plan(&mut exec_context, 0, 0, &mut |_| Ok(())).unwrap() {
             assert!(
                 batch.num_rows() <= 4,
                 "batches follow the configured batch size"
             );
-            let column =
-                arrow::array::AsArray::as_primitive::<arrow::datatypes::Int64Type>(batch.column(0));
-            values.extend(column.values().iter().copied());
+            values.extend(long_values(&batch));
         }
         assert_eq!(values, (0..10).collect::<Vec<i64>>());
-        assert_eq!(publishes, 0);
         assert!(
             exec_context.batch_producer.is_some(),
             "a plan without JVM input runs on a Tokio task"
         );
+        release_plan(exec_context, &mut |_| Ok(())).unwrap();
+    }
 
+    /// The sort holds a reservation while it emits its 10,000 sorted rows, 4 at a time.
+    const SORTED_ROWS: i64 = 10_000;
+
+    #[test]
+    fn release_plan_returns_the_plans_memory() {
+        let _guard = serial();
+        let mut exec_context = create_test_plan(sorted_range_plan(SORTED_ROWS)).unwrap();
+
+        // Without an update interval, metrics are published only when the plan is released.
+        let mut publishes = 0;
+        let batch = execute_plan(&mut exec_context, 0, 0, &mut |_| {
+            publishes += 1;
+            Ok(())
+        })
+        .unwrap()
+        .expect("the sort emits a first batch");
+        assert_eq!(long_values(&batch), [9999, 9998, 9997, 9996]);
+        assert_eq!(publishes, 0);
+
+        // Released mid-stream, as when Spark stops reading early, with the sort still holding
+        // its buffered input.
         let plan_memory = Arc::clone(&exec_context.plan_memory);
+        assert!(plan_memory.reserved() > 0, "the sort holds a reservation");
         release_plan(exec_context, &mut |ctx| {
             assert!(
                 ctx.root_op.is_some(),
@@ -3629,8 +3693,11 @@ mod tests {
     #[test]
     fn release_plan_reports_a_failed_metrics_publish() {
         let _guard = serial();
-        let mut exec_context = create_test_plan(range_plan(3)).unwrap();
+        let mut exec_context = create_test_plan(sorted_range_plan(SORTED_ROWS)).unwrap();
         execute_plan(&mut exec_context, 0, 0, &mut |_| Ok(())).unwrap();
+        let plan_memory = Arc::clone(&exec_context.plan_memory);
+        assert!(plan_memory.reserved() > 0, "the sort holds a reservation");
+
         let error = release_plan(exec_context, &mut |_| {
             Err(CometError::Internal("metrics node is gone".to_string()))
         })
@@ -3639,6 +3706,8 @@ mod tests {
             error.to_string().contains("metrics node is gone"),
             "{error}"
         );
+        // The plan is still released.
+        assert_eq!(plan_memory.reserved(), 0);
     }
 
     #[test]
