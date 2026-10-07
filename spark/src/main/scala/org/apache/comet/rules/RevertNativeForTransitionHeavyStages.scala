@@ -24,7 +24,7 @@ import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.comet.{CometBaseAggregateExec, CometColumnarToRowExec, CometExec, CometNativeColumnarToRowExec, CometSparkToColumnarExec}
-import org.apache.spark.sql.comet.execution.shuffle.{CometNativeShuffle, CometShuffleExchangeExec}
+import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, ColumnarToRowTransition, RowToColumnarExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.QueryStageExec
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeLike, ShuffleExchangeLike}
@@ -63,9 +63,7 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession, wholePlan
     plan match {
       case _: BroadcastExchangeLike => plan
       case exchange: ShuffleExchangeLike =>
-        revertShuffleStageIfNeeded(exchange)
-          .map(reverted => exchange.withNewChildren(Seq(reverted)))
-          .getOrElse(plan)
+        revertShuffleStageIfNeeded(exchange).getOrElse(plan)
       case _ =>
         // Result stage: its output is collected as rows.
         revertStageIfNeeded(plan, outputColumnar = false).getOrElse(plan)
@@ -74,20 +72,47 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession, wholePlan
 
   private def applyForNonAQE(plan: SparkPlan): SparkPlan = {
     val withRevertedStages = plan.transformUp { case exchange: ShuffleExchangeLike =>
-      revertShuffleStageIfNeeded(exchange)
-        .map(reverted => exchange.withNewChildren(Seq(reverted)))
-        .getOrElse(exchange)
+      revertShuffleStageIfNeeded(exchange).getOrElse(exchange)
     }
     revertStageIfNeeded(withRevertedStages, outputColumnar = false)
       .getOrElse(withRevertedStages)
   }
 
-  private def revertShuffleStageIfNeeded(exchange: ShuffleExchangeLike): Option[SparkPlan] = {
-    val outputArrow = exchange match {
-      case comet: CometShuffleExchangeExec => comet.shuffleType == CometNativeShuffle
-      case _ => false
+  /**
+   * Reverts the stage below a shuffle if needed and returns the shuffle over the reverted stage.
+   * A native shuffle over rows that `spark.comet.convert.shuffleInput.enabled` converted loses
+   * the conversion with the rest of the stage, so it goes back to the JVM columnar shuffle that
+   * the conversion replaced, which reads the stage's rows. Any other native shuffle consumes
+   * Arrow-backed Comet vectors, so the reverted stage is bridged back to them.
+   */
+  private def revertShuffleStageIfNeeded(exchange: ShuffleExchangeLike): Option[SparkPlan] =
+    exchange match {
+      case s: CometShuffleExchangeExec
+          if s.shuffleType == CometNativeShuffle && convertsSparkRows(s.child) =>
+        revertStageIfNeeded(s.child, s.supportsColumnar).map { reverted =>
+          val columnar = s.copy(child = reverted, shuffleType = CometColumnarShuffle)
+          columnar.copyTagsFrom(s)
+          columnar
+        }
+      case _ =>
+        val outputArrow = exchange match {
+          case comet: CometShuffleExchangeExec => comet.shuffleType == CometNativeShuffle
+          case _ => false
+        }
+        revertStageIfNeeded(exchange.child, exchange.supportsColumnar, outputArrow)
+          .map(reverted => exchange.withNewChildren(Seq(reverted)))
     }
-    revertStageIfNeeded(exchange.child, exchange.supportsColumnar, outputArrow)
+
+  /**
+   * Whether `plan` is the conversion that `spark.comet.convert.shuffleInput.enabled` puts over a
+   * Spark operator. A Comet transition directly under a `CometSparkToColumnarExec` is a stacked
+   * bridge that the revert strips and then restores for a native shuffle, not that conversion.
+   */
+  private def convertsSparkRows(plan: SparkPlan): Boolean = plan match {
+    case conversion: CometSparkToColumnarExec =>
+      !conversion.child.isInstanceOf[CometNativeColumnarToRowExec] &&
+      !conversion.child.isInstanceOf[CometColumnarToRowExec]
+    case _ => false
   }
 
   /**
