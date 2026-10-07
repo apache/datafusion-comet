@@ -166,6 +166,42 @@ class CometIcebergNativeSuite
     }
   }
 
+  // https://github.com/apache/datafusion-comet/issues/6707
+  test("input_file_name and input_file_block_* fall back to Spark's Iceberg reader") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.hadoop_catalog" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.hadoop_catalog.type" -> "hadoop",
+        "spark.sql.catalog.hadoop_catalog.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("CREATE TABLE hadoop_catalog.db.input_file (id BIGINT) USING iceberg")
+        for (i <- 0 until 3) {
+          spark.sql(
+            "INSERT INTO hadoop_catalog.db.input_file " +
+              s"SELECT id FROM range(${i * 1000}, ${(i + 1) * 1000})")
+        }
+        val columns = "input_file_name(), input_file_block_start(), input_file_block_length(), id"
+        for (query <- Seq(
+            s"SELECT $columns FROM hadoop_catalog.db.input_file",
+            s"SELECT $columns FROM hadoop_catalog.db.input_file WHERE id >= 0")) {
+          val (_, cometPlan) = checkSparkAnswerAndFallbackReason(query, "input_file_name")
+          assert(
+            collectIcebergNativeScans(cometPlan).isEmpty,
+            s"Expected fallback to Spark but found a CometIcebergNativeScanExec. Plan:\n$cometPlan")
+        }
+        // Without these expressions the scan stays native
+        checkIcebergNativeScan("SELECT id FROM hadoop_catalog.db.input_file WHERE id >= 0")
+
+        spark.sql("DROP TABLE hadoop_catalog.db.input_file")
+      }
+    }
+  }
+
   test("filter pushdown - equality predicates") {
     assume(icebergAvailable, "Iceberg not available in classpath")
 
