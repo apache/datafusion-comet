@@ -507,6 +507,35 @@ class CometArrowWriterSuite extends AnyFunSuite with Matchers {
     }
   }
 
+  test("a decimal past its precision in an unsafe array still fails the row path") {
+    // Written at a wider precision and read at precision p, so the array holds 10^p or -10^p, the
+    // smallest values past p. Up to 18 digits the array holds the unscaled long, and past that the
+    // unscaled bytes.
+    Seq(
+      (DecimalType(18, 2), DecimalType(5, 2), "1000.00"),
+      (DecimalType(38, 0), DecimalType(20, 0), "100000000000000000000")).foreach {
+      case (written, read, magnitude) =>
+        Seq(magnitude, s"-$magnitude").foreach { value =>
+          val decimal = Decimal(new JavaBigDecimal(value), written.precision, written.scale)
+          val row = UnsafeProjection.create(new StructType().add("a", ArrayType(written)))(
+            new GenericInternalRow(Array[Any](new GenericArrayData(Array[Any](decimal)))))
+          val allocator = new RootAllocator(Long.MaxValue)
+          val root = VectorSchemaRoot.create(
+            Utils.toArrowSchema(new StructType().add("a", ArrayType(read)), "UTC"),
+            allocator)
+          try {
+            val writer = ArrowWriter.create(root, 1)
+            withClue(s"$read $value: ") {
+              intercept[ArithmeticException](writer.write(row))
+            }
+          } finally {
+            root.close()
+            allocator.close()
+          }
+        }
+    }
+  }
+
   test("a narrow decimal with more digits than its precision passes through") {
     // Spark's getDecimal does not check an int- or long-backed value against the precision, so
     // neither path does. Arrow's BigDecimal setter, which the writer used before, threw instead.
