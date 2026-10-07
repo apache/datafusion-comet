@@ -686,12 +686,10 @@ class CometArrowWriterSuite extends AnyFunSuite with Matchers {
     }
   }
 
-  // Nested shapes whose unsafe forms take paths of their own: elements converted one at a time,
-  // collections inside collections, and a struct wider than one word of null bits.
-  private val moreNestedTypes: Seq[DataType] = Seq(
-    ArrayType(BooleanType),
-    ArrayType(DecimalType(38, 10)),
-    ArrayType(BinaryType),
+  // Nested shapes whose unsafe forms take paths of their own: an array of each primitive type,
+  // whose elements are either copied in one block or converted one at a time, collections inside
+  // collections, and a struct wider than one word of null bits.
+  private val moreNestedTypes: Seq[DataType] = primitiveTypes.map(ArrayType(_)) ++ Seq(
     ArrayType(MapType(StringType, IntegerType)),
     MapType(StringType, ArrayType(StringType)),
     MapType(LongType, DecimalType(9, 2)),
