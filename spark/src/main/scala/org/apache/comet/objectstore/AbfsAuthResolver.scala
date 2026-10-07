@@ -209,6 +209,8 @@ private[comet] object AbfsAuthResolver extends Logging {
       uri: URI,
       handles: Try[Handles]): Outcome = {
     val secrets = ArrayBuffer[String]()
+    // Set once the AbfsConfiguration exists, so a failure can read the credentials it skipped.
+    var openSession: Option[Session] = None
     try {
       handles match {
         case Failure(e) => failed(uri, e, secrets)
@@ -222,6 +224,7 @@ private[comet] object AbfsAuthResolver extends Logging {
                 hadoopConf,
                 account,
                 secrets)
+              openSession = Some(session)
               if (!session.isConfigured) {
                 Unconfigured
               } else {
@@ -240,7 +243,9 @@ private[comet] object AbfsAuthResolver extends Logging {
     } catch {
       // NonFatal alone misses NoSuchMethodError and friends, the reflection failures this must
       // report as an error marker rather than let escape into planning.
-      case e @ (_: LinkageError | NonFatal(_)) => failed(uri, e, secrets)
+      case e @ (_: LinkageError | NonFatal(_)) =>
+        openSession.foreach(_.recordSkippedSecrets())
+        failed(uri, e, secrets)
     }
   }
 
@@ -270,7 +275,8 @@ private[comet] object AbfsAuthResolver extends Logging {
   }
 
   // One resolution's view of an AbfsConfiguration; records every credential it reads so a
-  // failure message can be redacted against them.
+  // failure message can be redacted against them. Each password read may load a credential
+  // provider's keystore, so a successful resolution reads only what the mechanism needs.
   private final class Session(
       val h: Handles,
       val abfsConf: AnyRef,
@@ -298,13 +304,29 @@ private[comet] object AbfsAuthResolver extends Logging {
       key
     }
 
-    def isConfigured: Boolean = {
-      // Every credential is read (no short circuit) so a later failure message is redacted
-      // against all of them.
-      val anyPassword = passwordAuthKeys.map(isSet(abfsConf, _, password = true)).contains(true)
-      val keyProviderKey = hasKeyProviderAccountKey
-      plainAuthKeys.exists(isSet(abfsConf, _, password = false)) || anyPassword || keyProviderKey
+    // Stops at the first key that is set, plain keys first since they need no password lookup.
+    def isConfigured: Boolean =
+      plainAuthKeys.exists(isSet(abfsConf, _, password = false)) ||
+        passwordAuthKeys.exists(isSet(abfsConf, _, password = true)) ||
+        hasKeyProviderAccountKey
+
+    /**
+     * Reads every credential key the resolution may have skipped, so the failure message is
+     * redacted against all of them. A read that throws is ignored: the failure being reported is
+     * the one that matters.
+     */
+    def recordSkippedSecrets(): Unit = {
+      passwordAuthKeys.foreach(key => bestEffort(isSet(abfsConf, key, password = true)))
+      bestEffort(hasKeyProviderAccountKey)
     }
+
+    private def bestEffort(read: => Boolean): Unit =
+      try {
+        read
+        ()
+      } catch {
+        case _: LinkageError | NonFatal(_) => ()
+      }
 
     // A value Hadoop cannot read still counts as set: Hadoop reads a key only when the mechanism
     // it picks needs it, and then fails in its own words.

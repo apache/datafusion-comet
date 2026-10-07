@@ -71,11 +71,11 @@ class AbfsScanFallbackSuite extends CometTestBase {
     }
 
   private def writeParquet(dir: String, from: Int): Unit =
-    spark.range(from, from + 10).toDF("id").write.parquet(localDir(dir))
+    spark.range(from.toLong, from + 10L).toDF("id").write.parquet(localDir(dir))
 
   private def writeCsv(dir: String, from: Int): Unit =
     spark
-      .range(from, from + 10)
+      .range(from.toLong, from + 10L)
       .selectExpr("cast(id as int) as a", "cast(id * 2 as int) as b")
       .write
       .csv(localDir(dir))

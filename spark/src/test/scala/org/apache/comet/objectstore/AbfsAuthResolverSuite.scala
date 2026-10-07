@@ -21,6 +21,7 @@ package org.apache.comet.objectstore
 
 import java.net.URI
 
+import scala.collection.mutable.ArrayBuffer
 import scala.util.{Failure, Success, Try}
 
 import org.scalatest.funsuite.AnyFunSuite
@@ -281,6 +282,19 @@ class AbfsAuthResolverSuite extends AnyFunSuite with Matchers {
     assertNoAzureKeys(options)
   }
 
+  test("Failed - a credential the resolution never read is still redacted") {
+    // A client secret pasted into the auth type: Hadoop's enum error quotes it, and resolution
+    // stops at the auth type, so only the failure path reads the secret it must hide.
+    val secret = "oauth-client-secret-4f9a2c"
+    val outcome = resolveWith(acct(Keys.AUTH_TYPE) -> secret, acct(Keys.CLIENT_SECRET) -> secret)
+    outcome shouldBe a[Failed]
+    val failed = outcome.asInstanceOf[Failed]
+    failed.exceptionClass shouldBe classOf[IllegalArgumentException].getName
+    failed.message should include("No enum constant")
+    failed.message should include("<redacted>")
+    failed.message should not include secret
+  }
+
   test("Failed - an unknown auth type value is Hadoop's enum error") {
     val outcome = resolveWith(acct(Keys.AUTH_TYPE) -> "oauth")
     outcome shouldBe a[Failed]
@@ -362,6 +376,29 @@ class AbfsAuthResolverSuite extends AnyFunSuite with Matchers {
       Markers.RESOLUTION -> Markers.RESOLVED,
       Markers.AUTH_TYPE -> "SharedKey",
       Keys.ACCOUNT_KEY -> "c2VjcmV0")
+  }
+
+  test("Resolved - SharedKey reads no more credentials than Hadoop needs for the key") {
+    // Every getPassword can load a credential provider's keystore, so the resolver must not
+    // read the credentials of mechanisms Hadoop did not select.
+    def sharedKeyConf(): CountingConfiguration = {
+      val hadoopConf = new CountingConfiguration
+      hadoopConf.set(Keys.AUTH_TYPE, "SharedKey")
+      hadoopConf.set(acct(Keys.ACCOUNT_KEY), "c2VjcmV0")
+      hadoopConf
+    }
+    val direct = sharedKeyConf()
+    handles.getStorageAccountKey(
+      handles.newAbfsConfiguration(direct, account, container, uri)) shouldBe "c2VjcmV0"
+    direct.passwordReads should not be empty
+
+    val viaResolver = sharedKeyConf()
+    resolve(viaResolver, uri) shouldBe
+      Resolved("SharedKey", None, Map(Keys.ACCOUNT_KEY -> "c2VjcmV0"))
+    val reads = s"Hadoop read ${direct.passwordReads}, the resolver ${viaResolver.passwordReads}"
+    withClue(reads) {
+      viaResolver.passwordReads.size should be <= direct.passwordReads.size
+    }
   }
 
   test("Resolved - SharedKey with an unreadable OAuth client secret it never reads") {
@@ -565,6 +602,18 @@ class AbfsAuthResolverSuite extends AnyFunSuite with Matchers {
     outcome shouldBe a[Failed]
     outcome.asInstanceOf[Failed].exceptionClass shouldBe
       "org.apache.hadoop.fs.azurebfs.contracts.exceptions.SASTokenProviderException"
+  }
+}
+
+/** Records the key of every `getPassword` lookup, each of which may load a keystore. */
+class CountingConfiguration extends Configuration {
+  private val reads = ArrayBuffer[String]()
+
+  def passwordReads: Seq[String] = reads.synchronized(reads.toList)
+
+  override def getPassword(name: String): Array[Char] = {
+    reads.synchronized(reads += name)
+    super.getPassword(name)
   }
 }
 
