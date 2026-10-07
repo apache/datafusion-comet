@@ -271,6 +271,20 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_CONVERT_FROM_SHUFFLE_INPUT_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.convert.shuffleInput.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "When enabled, a shuffle that would use Comet's JVM columnar shuffle because its input " +
+          "comes from a Spark operator converts that input to Arrow format and uses Comet " +
+          "native shuffle instead. This applies only where native shuffle supports the " +
+          "partitioning and Comet can convert all of the input's columns, which rules out " +
+          "calendar intervals. A shuffle that hashes a decimal wider than 18 digits, or a " +
+          "string or a value computed from a string, stays on the JVM columnar shuffle, so " +
+          "that it partitions rows as Spark does.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_EXEC_ENABLED: ConfigEntry[Boolean] = conf(s"$COMET_EXEC_CONFIG_PREFIX.enabled")
     .category(CATEGORY_EXEC)
     .doc(
@@ -726,14 +740,14 @@ object CometConf extends ShimCometConf {
     conf("spark.comet.shuffle.revertRedundantColumnar.enabled")
       .withAlternative(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.revertRedundantColumnar.enabled")
       .category(CATEGORY_SHUFFLE)
-      .doc(
-        "When enabled, Comet reverts a `CometShuffleExchangeExec` with `CometColumnarShuffle` " +
-          "back to Spark's `ShuffleExchangeExec` when both its parent and child are non-Comet " +
-          "hash aggregate operators. This avoids a redundant " +
-          "row -> Arrow -> shuffle -> Arrow -> row conversion when no Comet operator on either " +
-          "side can consume columnar output. Disable to keep Comet columnar shuffle even in " +
-          "that case, which preserves Comet's off-heap shuffle memory accounting at the cost of " +
-          "the extra conversion.")
+      .doc("When enabled, Comet reverts a `CometShuffleExchangeExec` with `CometColumnarShuffle` " +
+        "back to Spark's `ShuffleExchangeExec` when both its parent and child are non-Comet " +
+        "aggregate operators. The same applies to a native shuffle whose input " +
+        s"`${COMET_CONVERT_FROM_SHUFFLE_INPUT_ENABLED.key}` converted. This avoids a redundant " +
+        "row -> Arrow -> shuffle -> Arrow -> row conversion when no Comet operator on either " +
+        "side can consume columnar output. Disable to keep the Comet shuffle even in " +
+        "that case, which preserves Comet's off-heap shuffle memory accounting at the cost of " +
+        "the extra conversion.")
       .booleanConf
       .createWithDefault(true)
 
