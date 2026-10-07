@@ -24,13 +24,11 @@ import org.apache.spark.sql.execution.SparkPlan
 
 import org.apache.comet.iceberg.DeltaCommand
 
-/** The `BatchWrite.commit(messages, summary)` overload only exists on Spark 4.1+. */
-private[comet] object IcebergWriteSummaryShim {
+/** Spark 4.1 has MERGE summaries; UPDATE and DELETE summaries arrive with Spark 4.2. */
+private[comet] object IcebergDeltaWriteSummaryShim {
   def commit(
       batchWrite: BatchWrite,
       messages: Array[WriterCommitMessage],
       query: SparkPlan,
-      command: Option[DeltaCommand] = None): Unit = {
-    batchWrite.commit(messages)
-  }
+      command: Option[DeltaCommand]): Boolean = false
 }

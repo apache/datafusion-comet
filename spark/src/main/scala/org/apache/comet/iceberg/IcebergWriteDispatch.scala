@@ -17,20 +17,12 @@
  * under the License.
  */
 
-package org.apache.spark.sql.comet
+package org.apache.comet.iceberg
 
-import org.apache.spark.sql.connector.write.{BatchWrite, WriterCommitMessage}
-import org.apache.spark.sql.execution.SparkPlan
+sealed trait IcebergWriteDispatch extends Product with Serializable
 
-import org.apache.comet.iceberg.DeltaCommand
+case object PlainIcebergWrite extends IcebergWriteDispatch
 
-/** The `BatchWrite.commit(messages, summary)` overload only exists on Spark 4.1+. */
-private[comet] object IcebergWriteSummaryShim {
-  def commit(
-      batchWrite: BatchWrite,
-      messages: Array[WriterCommitMessage],
-      query: SparkPlan,
-      command: Option[DeltaCommand] = None): Unit = {
-    batchWrite.commit(messages)
-  }
-}
+case class ReplaceDataWrite(info: ReplaceDataDispatchInfo) extends IcebergWriteDispatch
+
+case class PositionDeltaWrite(info: WriteDeltaDispatchInfo) extends IcebergWriteDispatch
