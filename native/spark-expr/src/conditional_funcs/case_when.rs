@@ -31,7 +31,6 @@ use datafusion::common::{
     exec_err, internal_datafusion_err, internal_err, DataFusionError, Result, ScalarValue,
 };
 use datafusion::logical_expr::type_coercion::binary::type_union_coercion;
-use datafusion::logical_expr::type_coercion::other::get_coerce_type_for_case_expression;
 use datafusion::logical_expr::{ColumnarValue, Operator};
 use datafusion::physical_expr::expressions::{
     BinaryExpr, CaseExpr, Column, IsNotNullExpr, IsNullExpr, Literal, NotExpr,
@@ -60,16 +59,40 @@ pub fn create_case_when(
         .transpose()?
         .unwrap_or(DataType::Null);
 
-    let Some(coerce_type) = get_coerce_type_for_case_expression(&then_types, Some(&else_type))
-    else {
+    // Spark keeps the first branch's nested field names and merges fields by position.
+    // Keep DataFusion's existing ELSE-first promotion order for scalar CASE results.
+    let first_nested = then_types
+        .iter()
+        .chain(std::iter::once(&else_type))
+        .find(|ty| !matches!(ty, DataType::Null))
+        .filter(|ty| {
+            matches!(
+                ty,
+                DataType::Struct(_) | DataType::List(_) | DataType::Map(_, _)
+            )
+        });
+    let coerce_type = match first_nested {
+        Some(first) => then_types
+            .iter()
+            .chain(std::iter::once(&else_type))
+            .try_fold(first.clone(), |merged, next| {
+                positional_common_type(&merged, next, PositionalTypeCoercion::Conditional)
+            }),
+        None => then_types
+            .iter()
+            .try_fold(else_type.clone(), |merged, next| {
+                positional_common_type(&merged, next, PositionalTypeCoercion::Conditional)
+            }),
+    };
+    let Some(coerce_type) = coerce_type else {
         return Ok(Arc::new(CaseWhenExpr::try_new(when_then, else_expr)?));
     };
     let when_then = when_then
         .into_iter()
         .zip(&then_types)
-        .map(|((when, then), then_type)| (when, coerce_branch(then, then_type, &coerce_type)))
+        .map(|((when, then), then_type)| (when, cast_to_common_type(then, then_type, &coerce_type)))
         .collect();
-    let else_expr = else_expr.map(|e| coerce_branch(e, &else_type, &coerce_type));
+    let else_expr = else_expr.map(|e| cast_to_common_type(e, &else_type, &coerce_type));
     Ok(Arc::new(CaseWhenExpr::try_new(when_then, else_expr)?))
 }
 
@@ -86,69 +109,102 @@ pub fn create_if_expr(
 ) -> Result<Arc<dyn PhysicalExpr>> {
     let true_type = true_expr.data_type(input_schema)?;
     let false_type = false_expr.data_type(input_schema)?;
-    let Some(common_type) = if_common_type(&true_type, &false_type) else {
+    let Some(common_type) =
+        positional_common_type(&true_type, &false_type, PositionalTypeCoercion::Conditional)
+    else {
         return Ok(Arc::new(IfExpr::new(if_expr, true_expr, false_expr)));
     };
     Ok(Arc::new(IfExpr::new(
         if_expr,
-        coerce_branch(true_expr, &true_type, &common_type),
-        coerce_branch(false_expr, &false_type, &common_type),
+        cast_to_common_type(true_expr, &true_type, &common_type),
+        cast_to_common_type(false_expr, &false_type, &common_type),
     )))
 }
 
-/// Reconciles Spark IF branches positionally, retaining THEN names and merging nullability.
-/// Spark has already coerced the branches to the same SQL type. DataFusion's struct union may
-/// instead match by name, pairing different positions when names differ only in case.
-fn if_common_type(then_type: &DataType, else_type: &DataType) -> Option<DataType> {
+/// Whether positional alignment can also promote physical leaf types.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum PositionalTypeCoercion {
+    /// Keep the existing IF/CASE leaf coercion, including Arrow representation differences.
+    Conditional,
+    /// Comparisons only align nested metadata; Catalyst has already coerced their leaf types.
+    MetadataOnly,
+}
+
+/// Merge compatible fields by position, retaining left names and unioning nullability.
+/// DataFusion's struct union can instead match by name and pair different positions.
+pub fn positional_common_type(
+    left: &DataType,
+    right: &DataType,
+    mode: PositionalTypeCoercion,
+) -> Option<DataType> {
     use arrow::datatypes::FieldRef;
 
-    fn field(then_field: &FieldRef, else_field: &FieldRef) -> Option<FieldRef> {
+    fn field(left: &FieldRef, right: &FieldRef, mode: PositionalTypeCoercion) -> Option<FieldRef> {
         Some(Arc::new(
-            then_field
-                .as_ref()
+            left.as_ref()
                 .clone()
-                .with_data_type(if_common_type(
-                    then_field.data_type(),
-                    else_field.data_type(),
+                .with_data_type(positional_common_type(
+                    left.data_type(),
+                    right.data_type(),
+                    mode,
                 )?)
-                .with_nullable(then_field.is_nullable() || else_field.is_nullable()),
+                .with_nullable(left.is_nullable() || right.is_nullable()),
         ))
     }
 
-    match (then_type, else_type) {
-        (DataType::Struct(then_fields), DataType::Struct(else_fields)) => {
-            if then_fields.len() != else_fields.len() {
-                return None;
-            }
+    // Spark casts reject direct dictionary targets, including a changed struct's child.
+    // Preserve conditional coercions that instead decode different dictionaries to a plain type.
+    if matches!(left, DataType::Dictionary(_, _)) || matches!(right, DataType::Dictionary(_, _)) {
+        return match mode {
+            PositionalTypeCoercion::Conditional => type_union_coercion(left, right)
+                .filter(|target| !matches!(target, DataType::Dictionary(_, _))),
+            PositionalTypeCoercion::MetadataOnly => None,
+        };
+    }
+    if left == right {
+        return Some(left.clone());
+    }
+    match (left, right) {
+        (DataType::Null, _) => Some(right.clone()),
+        (_, DataType::Null) => Some(left.clone()),
+        (DataType::Struct(left), DataType::Struct(right)) if left.len() == right.len() => {
             Some(DataType::Struct(
-                then_fields
-                    .iter()
-                    .zip(else_fields)
-                    .map(|(t, e)| field(t, e))
+                left.iter()
+                    .zip(right)
+                    .map(|(left, right)| field(left, right, mode))
                     .collect::<Option<Vec<_>>>()?
                     .into(),
             ))
         }
-        (DataType::List(t), DataType::List(e)) => Some(DataType::List(field(t, e)?)),
-        (DataType::Map(t, t_sorted), DataType::Map(e, e_sorted)) => {
-            Some(DataType::Map(field(t, e)?, *t_sorted && *e_sorted))
+        // Different struct arities are not compatible Spark conditional types either.
+        (DataType::Struct(_), DataType::Struct(_)) => None,
+        (DataType::List(left), DataType::List(right)) => {
+            Some(DataType::List(field(left, right, mode)?))
         }
-        _ => type_union_coercion(then_type, else_type),
+        (DataType::Map(left, left_sorted), DataType::Map(right, right_sorted))
+            if mode == PositionalTypeCoercion::Conditional || left_sorted == right_sorted =>
+        {
+            Some(DataType::Map(
+                field(left, right, mode)?,
+                *left_sorted && *right_sorted,
+            ))
+        }
+        _ if mode == PositionalTypeCoercion::Conditional => type_union_coercion(left, right),
+        _ => None,
     }
 }
 
-/// Casts a CASE WHEN or IF branch whose type is `data_type` to the branches' `common_type`.
+/// Cast to a common type by position, preserving values when struct field names differ.
 ///
-/// The branches share a Spark type, so any difference is in the Arrow representation. For a
+/// The expressions share a Spark type, so any difference is in the Arrow representation. For a
 /// timestamp that is the timezone label, and the cast only relabels it, but Comet's cast still
 /// needs a timezone. Every `TimestampType` value in a native plan is labelled UTC.
-fn coerce_branch(
+pub fn cast_to_common_type(
     expr: Arc<dyn PhysicalExpr>,
     data_type: &DataType,
     common_type: &DataType,
 ) -> Arc<dyn PhysicalExpr> {
-    // A branch that already has the common type is not wrapped in a cast, which would do nothing
-    // but hide what the branch is from the evaluation.
+    // Keep an already matching expression visible to the conditional evaluator's fast paths.
     if data_type == common_type {
         return expr;
     }
@@ -1308,6 +1364,63 @@ mod tests {
         );
     }
 
+    #[test]
+    fn positional_coercion_preserves_comparison_leaves() {
+        let structure = |name: &str, leaf: DataType, nullable: bool| {
+            DataType::Struct(vec![Field::new(name, leaf, nullable)].into())
+        };
+        let left = structure("x", DataType::Int32, false);
+        let right = structure("X", DataType::Int64, true);
+        assert_eq!(
+            positional_common_type(&left, &right, PositionalTypeCoercion::Conditional),
+            Some(structure("x", DataType::Int64, true))
+        );
+        assert!(
+            positional_common_type(&left, &right, PositionalTypeCoercion::MetadataOnly).is_none()
+        );
+        let right = structure("X", DataType::Int32, true);
+        assert_eq!(
+            positional_common_type(&left, &right, PositionalTypeCoercion::MetadataOnly),
+            Some(structure("x", DataType::Int32, true))
+        );
+
+        // A rename/nullability cast visits even unchanged dictionary children, which Spark's
+        // cast rejects. Neither caller may construct that unsupported target.
+        let dictionary = DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8));
+        let left = structure("x", dictionary.clone(), false);
+        let right = structure("X", dictionary, true);
+        for mode in [
+            PositionalTypeCoercion::Conditional,
+            PositionalTypeCoercion::MetadataOnly,
+        ] {
+            assert!(positional_common_type(&left, &right, mode).is_none());
+            let nested_left = structure("n", left.clone(), false);
+            let nested_right = structure("N", left.clone(), true);
+            // An unchanged inner struct is returned before its dictionary children are visited.
+            assert_eq!(
+                positional_common_type(&nested_left, &nested_right, mode),
+                Some(structure("n", left.clone(), true))
+            );
+            // Casting an untyped NULL to a nested type uses Arrow's null-array construction.
+            assert_eq!(
+                positional_common_type(&DataType::Null, &nested_left, mode),
+                Some(nested_left)
+            );
+        }
+        let small_dictionary =
+            DataType::Dictionary(Box::new(DataType::Int8), Box::new(DataType::Utf8));
+        let large_dictionary =
+            DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8));
+        assert_eq!(
+            positional_common_type(
+                &small_dictionary,
+                &large_dictionary,
+                PositionalTypeCoercion::Conditional,
+            ),
+            Some(DataType::Utf8)
+        );
+    }
+
     /// CASE branches that share a Spark timestamp type but carry different Arrow timezone labels
     /// are reconciled by relabelling them, which used to panic because the cast had no timezone.
     #[test]
@@ -1340,8 +1453,8 @@ mod tests {
         }
     }
 
-    /// Evaluates an IF over `batch`, whose first row takes the THEN branch and second row the ELSE
-    /// branch, and over each row alone, and checks that every result has the type the IF reports.
+    /// Evaluates a conditional over `batch`, whose first row takes THEN and second row ELSE,
+    /// and over each row alone, checking that every result has the type the expression reports.
     /// Returns the result for the whole batch.
     fn evaluate_if(expr: &Arc<dyn PhysicalExpr>, batch: &RecordBatch) -> ArrayRef {
         let data_type = expr.data_type(&batch.schema()).unwrap();
@@ -1361,7 +1474,7 @@ mod tests {
     /// Spark matches struct fields by position even when their case-distinct names are reordered.
     /// Name-based union pairs the first INT with the second DOUBLE and silently widens it.
     #[test]
-    fn if_reconciles_case_variant_fields_positionally() {
+    fn conditionals_reconcile_case_variant_fields_positionally() {
         use arrow::array::Float64Array;
 
         let then_fields: arrow::datatypes::Fields = vec![
@@ -1408,21 +1521,30 @@ mod tests {
         )
         .unwrap();
         let c = |name: &str| col(name, &schema).unwrap();
-        let expr = create_if_expr(c("b"), c("t"), c("e"), &schema).unwrap();
-        assert_eq!(
-            expr.data_type(&schema).unwrap(),
-            DataType::Struct(expected_fields.clone())
-        );
-        let result = evaluate_if(&expr, &batch);
         let expected = StructArray::new(
-            expected_fields,
+            expected_fields.clone(),
             vec![
                 Arc::new(Int32Array::from(vec![7, 0])),
                 Arc::new(Float64Array::from(vec![Some(5.5), None])),
             ],
             None,
         );
-        assert_eq!(result.as_ref(), &expected);
+        for expr in [
+            create_if_expr(c("b"), c("t"), c("e"), &schema).unwrap(),
+            create_case_when(vec![(c("b"), c("t"))], Some(c("e")), &schema).unwrap(),
+            create_case_when(
+                vec![(lit(false), lit(ScalarValue::Null)), (c("b"), c("t"))],
+                Some(c("e")),
+                &schema,
+            )
+            .unwrap(),
+        ] {
+            assert_eq!(
+                expr.data_type(&schema).unwrap(),
+                DataType::Struct(expected_fields.clone())
+            );
+            assert_eq!(evaluate_if(&expr, &batch).as_ref(), &expected);
+        }
     }
 
     /// IF branches that share a Spark timestamp type but carry different Arrow timezone labels are

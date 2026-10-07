@@ -31,8 +31,8 @@ use std::{
 pub struct CreateNamedStruct {
     values: Vec<Arc<dyn PhysicalExpr>>,
     names: Vec<String>,
-    // Catalyst's declared field nullability is part of the nested Arrow type. Inferring it
-    // from native children can disagree with typed struct literals (e.g. after a cast).
+    // Catalyst's declared field nullability is part of the nested Arrow type. Conservative
+    // native inference can make equivalent constructors disagree, e.g. in array_union.
     field_nullable: Vec<bool>,
 }
 
@@ -142,19 +142,18 @@ mod test {
     use super::CreateNamedStruct;
     use crate::{Cast, EvalMode, SparkCastOptions};
     use arrow::array::{
-        new_null_array, Array, Decimal128Array, DictionaryArray, Float64Array, Int32Array,
-        Int64Array, ListArray, RecordBatch, StringArray, StructArray,
+        Array, Decimal128Array, DictionaryArray, Float64Array, Int32Array, Int64Array, RecordBatch,
+        StringArray, StructArray,
     };
     use arrow::datatypes::{DataType, Field, Schema};
     use datafusion::common::{Result, ScalarValue};
-    use datafusion::functions_nested::make_array::array_array;
     use datafusion::physical_expr::expressions::{Column, Literal};
     use datafusion::physical_expr::PhysicalExpr;
     use datafusion::physical_plan::ColumnarValue;
     use std::sync::Arc;
 
     #[test]
-    fn test_create_struct_preserves_catalyst_nullability_in_array() -> Result<()> {
+    fn test_create_struct_preserves_catalyst_nullability() -> Result<()> {
         let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
         let batch = RecordBatch::try_new(
             Arc::clone(&schema),
@@ -191,33 +190,22 @@ mod test {
             assert_eq!(expr.data_type(&schema)?, expected);
             let value = expr.evaluate(&batch)?.into_array(batch.num_rows())?;
             assert_eq!(value.data_type(), &expected);
-            // This is MakeArray's concatenation path, which panicked when the computed struct
-            // and the typed NULL differed only in the score field's nullability.
-            let result = array_array::<i32>(
-                &[value, new_null_array(&expected, batch.num_rows())],
-                expected.clone(),
-                Field::LIST_FIELD_DEFAULT_NAME,
-            )?;
-            let result = result.as_any().downcast_ref::<ListArray>().unwrap();
-            assert_eq!(result.len(), 8);
+            let value = value.as_any().downcast_ref::<StructArray>().unwrap();
+            assert_eq!(value.len(), 8);
+            assert_eq!(value.null_count(), 0);
+            let score = value
+                .column(0)
+                .as_any()
+                .downcast_ref::<Float64Array>()
+                .unwrap();
+            let amount = value
+                .column(1)
+                .as_any()
+                .downcast_ref::<Decimal128Array>()
+                .unwrap();
             for row in 0..8 {
-                let items = result.value(row);
-                let items = items.as_any().downcast_ref::<StructArray>().unwrap();
-                assert_eq!(items.len(), 2);
-                assert!(items.is_valid(0));
-                assert!(items.is_null(1));
-                let score = items
-                    .column(0)
-                    .as_any()
-                    .downcast_ref::<Float64Array>()
-                    .unwrap();
-                let amount = items
-                    .column(1)
-                    .as_any()
-                    .downcast_ref::<Decimal128Array>()
-                    .unwrap();
-                assert_eq!(score.value(0), row as f64);
-                assert_eq!(amount.value(0), row as i128 * 100);
+                assert_eq!(score.value(row), row as f64);
+                assert_eq!(amount.value(row), row as i128 * 100);
             }
         }
         Ok(())

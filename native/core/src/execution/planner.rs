@@ -139,12 +139,13 @@ use datafusion_comet_proto::{
     },
 };
 use datafusion_comet_spark_expr::{
-    create_case_when, create_if_expr, jvm_udf::JvmScalarUdfExpr, spark_in_list, ApproxPercentile,
-    ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Correlation, Covariance, CreateNamedStruct,
-    DecimalRescaleCheckOverflow, GetArrayStructFields, GetStructField, HllPlusPlus, HllSketchAgg,
-    HllUnionAgg, IfExpr, ListExtract, MaxMinBy, Mode, NormalizeNaNAndZero, NormalizeNestedFloats,
-    Regr, RegrType, SparkCastOptions, Stddev, SumDecimal, ToJson, UnboundColumn, Variance,
-    WideDecimalBinaryExpr, WideDecimalOp,
+    cast_to_common_type, create_case_when, create_if_expr, jvm_udf::JvmScalarUdfExpr,
+    positional_common_type, spark_in_list, ApproxPercentile, ArrayInsert, Avg, AvgDecimal, Cast,
+    CheckOverflow, Correlation, Covariance, CreateNamedStruct, DecimalRescaleCheckOverflow,
+    GetArrayStructFields, GetStructField, HllPlusPlus, HllSketchAgg, HllUnionAgg, IfExpr,
+    ListExtract, MaxMinBy, Mode, NormalizeNaNAndZero, NormalizeNestedFloats,
+    PositionalTypeCoercion, Regr, RegrType, SparkCastOptions, Stddev, SumDecimal, ToJson,
+    UnboundColumn, Variance, WideDecimalBinaryExpr, WideDecimalOp,
 };
 use itertools::Itertools;
 use jni::objects::{Global, JObject};
@@ -778,16 +779,47 @@ impl PhysicalPlanner {
                     )?),
                 };
 
-                create_case_expr(when_then_pairs, else_phy_expr, &input_schema)
+                create_case_when(when_then_pairs, else_phy_expr, &input_schema)
+                    .map_err(|e| e.into())
             }
             ExprStruct::In(expr) => {
-                let value =
+                let mut value =
                     self.create_expr(expr.in_value.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let list = expr
+                let mut list = expr
                     .lists
                     .iter()
                     .map(|x| self.create_expr(x, Arc::clone(&input_schema)))
                     .collect::<Result<Vec<_>, _>>()?;
+
+                let value_type = value.data_type(&input_schema)?;
+                if matches!(
+                    value_type,
+                    DataType::Struct(_) | DataType::List(_) | DataType::Map(_, _)
+                ) {
+                    let list_types = list
+                        .iter()
+                        .map(|item| item.data_type(&input_schema))
+                        .collect::<datafusion::common::Result<Vec<_>>>()?;
+                    // A later candidate can widen nullability, so choose the common type before
+                    // casting any operand. Spark compares all struct fields by position in IN.
+                    let target = list_types
+                        .iter()
+                        .try_fold(value_type.clone(), |target, item| {
+                            positional_common_type(
+                                &target,
+                                item,
+                                PositionalTypeCoercion::MetadataOnly,
+                            )
+                        });
+                    if let Some(target) = target {
+                        value = cast_to_common_type(value, &value_type, &target);
+                        list = list
+                            .into_iter()
+                            .zip(list_types)
+                            .map(|(item, item_type)| cast_to_common_type(item, &item_type, &target))
+                            .collect();
+                    }
+                }
 
                 spark_in_list(value, list, expr.negated, input_schema.as_ref())
                     .map_err(|e| e.into())
@@ -1257,83 +1289,12 @@ impl PhysicalPlanner {
         }
     }
 
-    /// Merge compatible nested types by ordinal, retaining the left field names and physical
-    /// leaf types. Return None when a metadata-only Spark cast cannot safely align the layouts.
-    fn positional_nullability_union(left: &DataType, right: &DataType) -> Option<DataType> {
-        fn merge_field(left: &FieldRef, right: &FieldRef) -> Option<FieldRef> {
-            Some(Arc::new(
-                left.as_ref()
-                    .clone()
-                    .with_data_type(merge_type(left.data_type(), right.data_type())?)
-                    .with_nullable(left.is_nullable() || right.is_nullable()),
-            ))
-        }
-        fn merge_type(left: &DataType, right: &DataType) -> Option<DataType> {
-            // Comet's Spark cast cannot target a dictionary, even for an unchanged child.
-            if matches!(left, DataType::Dictionary(_, _))
-                || matches!(right, DataType::Dictionary(_, _))
-            {
-                return None;
-            }
-            if matches!(left, DataType::Null) {
-                return Some(right.clone());
-            }
-            if matches!(right, DataType::Null) {
-                return Some(left.clone());
-            }
-            if left == right {
-                return Some(left.clone());
-            }
-            Some(match (left, right) {
-                (DataType::Struct(left), DataType::Struct(right)) if left.len() == right.len() => {
-                    DataType::Struct(
-                        left.iter()
-                            .zip(right)
-                            .map(|(left, right)| merge_field(left, right))
-                            .collect::<Option<_>>()?,
-                    )
-                }
-                (DataType::List(left), DataType::List(right)) => {
-                    DataType::List(merge_field(left, right)?)
-                }
-                (DataType::Map(left, sorted), DataType::Map(right, right_sorted))
-                    if sorted == right_sorted =>
-                {
-                    DataType::Map(merge_field(left, right)?, *sorted)
-                }
-                _ => return None,
-            })
-        }
-        merge_type(left, right)
-    }
-
-    /// Cast nested metadata by ordinal. Arrow's native struct cast matches field names and can
-    /// silently reorder values when Spark considers differently named structs compatible.
-    fn cast_to_positional_nested_type(
-        expr: Arc<dyn PhysicalExpr>,
-        from_type: &DataType,
-        target: &DataType,
-    ) -> Arc<dyn PhysicalExpr> {
-        if from_type == target {
-            expr
-        } else {
-            Arc::new(Cast::new(
-                expr,
-                target.clone(),
-                SparkCastOptions::new_without_timezone(EvalMode::Legacy, false),
-                None,
-                None,
-            ))
-        }
-    }
-
-    /// DataFusion's nested comparison kernel (`apply_cmp_for_nested`) requires both operands to
-    /// have identical data types, including nested field names and nullability, whereas Spark
-    /// compares compatible struct fields by ordinal. When operands differ in nested metadata,
-    /// cast both to the left field names and their nullability-union type so the kernel accepts
-    /// them without changing field positions. Exact equality is required here: Arrow's
-    /// `equals_datatype` ignores nested field names, even when nullability already matches.
-    /// Non-comparison ops and non-nested or already-matching types are left untouched.
+    /// Align compatible nested comparison operands by position, as Spark does. Comet's
+    /// float-aware equality validator requires matching struct names; DataFusion's nested
+    /// comparison kernel ignores names but checks nested nullability. Both therefore need
+    /// compatible metadata. Use Comet's positional cast: Arrow's name-based struct cast can
+    /// reorder values and silently change ordering or null-safe equality results.
+    /// Non-comparison operations and unsupported physical layouts are left untouched.
     pub fn reconcile_nested_comparison_types(
         left: Arc<dyn PhysicalExpr>,
         right: Arc<dyn PhysicalExpr>,
@@ -1341,61 +1302,31 @@ impl PhysicalPlanner {
         input_schema: &SchemaRef,
     ) -> (Arc<dyn PhysicalExpr>, Arc<dyn PhysicalExpr>) {
         use DataFusionOperator::*;
-        let is_cmp = matches!(
+        if !matches!(
             op,
             Eq | NotEq | Lt | LtEq | Gt | GtEq | IsDistinctFrom | IsNotDistinctFrom
-        );
-        if !is_cmp {
+        ) {
             return (left, right);
         }
         let (lt, rt) = match (left.data_type(input_schema), right.data_type(input_schema)) {
             (Ok(lt), Ok(rt)) => (lt, rt),
             _ => return (left, right),
         };
-        // Only nested types route through `apply_cmp_for_nested`; primitives coerce fine.
-        let nested = matches!(
+        // Spark arrays are represented as List, not LargeList or FixedSizeList.
+        if !matches!(
             lt,
-            DataType::List(_)
-                | DataType::LargeList(_)
-                | DataType::FixedSizeList(_, _)
-                | DataType::Struct(_)
-                | DataType::Map(_, _)
-        );
-        if !nested || lt == rt {
-            return (left, right);
-        }
-        // Catalyst compares struct values by ordinal, even when their field names differ.
-        // A name-based Arrow cast would change the values being compared.
-        if let Some(target) = Self::positional_nullability_union(&lt, &rt) {
-            return (
-                Self::cast_to_positional_nested_type(left, &lt, &target),
-                Self::cast_to_positional_nested_type(right, &rt, &target),
-            );
-        }
-        if matches!(
-            lt,
-            DataType::Struct(_) | DataType::List(_) | DataType::Map(_, _)
-        ) {
-            return (left, right);
-        }
-        // `Field::try_merge` unions nullability recursively while preserving structure (and the
-        // Map/list invariants). Bail out unchanged if the structures are genuinely incompatible.
-        let mut merged = Field::new("c", lt.clone(), true);
-        if merged
-            .try_merge(&Field::new("c", rt.clone(), true))
-            .is_err()
+            DataType::List(_) | DataType::Struct(_) | DataType::Map(_, _)
+        ) || lt == rt
         {
             return (left, right);
         }
-        let target = merged.data_type().clone();
-        let cast_to_target = |e: Arc<dyn PhysicalExpr>, dt: &DataType| -> Arc<dyn PhysicalExpr> {
-            if dt.equals_datatype(&target) {
-                e
-            } else {
-                Arc::new(CastExpr::new(e, target.clone(), None))
-            }
-        };
-        (cast_to_target(left, &lt), cast_to_target(right, &rt))
+        match positional_common_type(&lt, &rt, PositionalTypeCoercion::MetadataOnly) {
+            Some(target) => (
+                cast_to_common_type(left, &lt, &target),
+                cast_to_common_type(right, &rt, &target),
+            ),
+            None => (left, right),
+        }
     }
 
     /// Create a DataFusion physical plan from Spark physical plan. There is a level of
@@ -4535,65 +4466,6 @@ fn parse_file_scan_tasks_from_common(
     results
 }
 
-/// Create CASE WHEN expression and add casting as needed
-fn create_case_expr(
-    when_then_pairs: Vec<(Arc<dyn PhysicalExpr>, Arc<dyn PhysicalExpr>)>,
-    else_expr: Option<Arc<dyn PhysicalExpr>>,
-    input_schema: &Schema,
-) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-    let then_types: Vec<DataType> = when_then_pairs
-        .iter()
-        .map(|x| x.1.data_type(input_schema))
-        .collect::<Result<Vec<_>, _>>()?;
-
-    let else_type: Option<DataType> = else_expr
-        .as_ref()
-        .map(|x| Arc::clone(x).data_type(input_schema))
-        .transpose()?
-        .or(Some(DataType::Null));
-
-    // Spark merges nested branch nullability by position, whereas DataFusion's type union can
-    // match struct fields by name. Only bypass its general coercion for compatible physical
-    // layouts; other CASE expressions retain their existing type-promotion path.
-    let first_non_null = then_types
-        .iter()
-        .chain(else_type.iter())
-        .find(|ty| !matches!(ty, DataType::Null));
-    let positional_type = first_non_null.and_then(|first| {
-        if !matches!(
-            first,
-            DataType::Struct(_) | DataType::List(_) | DataType::Map(_, _)
-        ) {
-            return None;
-        }
-        then_types
-            .iter()
-            .chain(else_type.iter())
-            .try_fold(first.clone(), |merged, next| {
-                PhysicalPlanner::positional_nullability_union(&merged, next)
-            })
-    });
-    // Keep main's Spark-compatible CASE evaluator and general coercion, aligning only the
-    // nested layouts here before DataFusion can merge struct fields by name.
-    let Some(target) = positional_type else {
-        return create_case_when(when_then_pairs, else_expr, input_schema).map_err(Into::into);
-    };
-    let when_then_pairs = when_then_pairs
-        .into_iter()
-        .zip(&then_types)
-        .map(|((when, then), from)| {
-            (
-                when,
-                PhysicalPlanner::cast_to_positional_nested_type(then, from, &target),
-            )
-        })
-        .collect();
-    let else_expr = else_expr.map(|expr| {
-        PhysicalPlanner::cast_to_positional_nested_type(expr, else_type.as_ref().unwrap(), &target)
-    });
-    create_case_when(when_then_pairs, else_expr, input_schema).map_err(Into::into)
-}
-
 fn from_protobuf_binary_output_style(
     value: i32,
 ) -> Result<BinaryOutputStyle, prost::UnknownEnumValue> {
@@ -5003,135 +4875,6 @@ mod tests {
         },
     };
     use datafusion_comet_spark_expr::EvalMode;
-
-    #[test]
-    fn test_if_reconciles_nested_branch_nullability() {
-        use arrow::array::{new_null_array, BooleanArray, ListArray, MapArray, StructArray};
-        use arrow::buffer::OffsetBuffer;
-        use arrow::util::display::array_value_to_string;
-
-        // The same positional values have either precise or widened nested field nullability.
-        fn value(names: &[&str], nullable: bool, container: &str) -> ArrayRef {
-            let fields = names
-                .iter()
-                .map(|name| Field::new(*name, DataType::Int32, nullable));
-            let columns = (0..names.len())
-                .map(|i| {
-                    Arc::new(Int32Array::from(vec![
-                        i as i32 * 10,
-                        i as i32 * 10 + 1,
-                        i as i32 * 10 + 2,
-                    ])) as ArrayRef
-                })
-                .collect();
-            let values: ArrayRef = Arc::new(StructArray::new(fields.collect(), columns, None));
-            let field = Arc::new(Field::new("item", values.data_type().clone(), nullable));
-            match container {
-                "struct" => values,
-                "nested" => Arc::new(StructArray::new(vec![field].into(), vec![values], None)),
-                "list" => Arc::new(ListArray::new(
-                    field,
-                    OffsetBuffer::from_lengths([1, 1, 1]),
-                    values,
-                    None,
-                )),
-                "map" => {
-                    let entries = StructArray::new(
-                        vec![
-                            Field::new("key", DataType::Int32, false),
-                            Field::new("value", values.data_type().clone(), nullable),
-                        ]
-                        .into(),
-                        vec![Arc::new(Int32Array::from(vec![0, 1, 2])), values],
-                        None,
-                    );
-                    Arc::new(MapArray::new(
-                        Arc::new(Field::new("entries", entries.data_type().clone(), false)),
-                        OffsetBuffer::from_lengths([1, 1, 1]),
-                        entries,
-                        None,
-                        false,
-                    ))
-                }
-                _ => unreachable!(),
-            }
-        }
-        // [x, X] / [X, x] detects a name-based cast silently reordering positional values.
-        for (names, null_names, container) in [
-            (vec!["x"], vec!["x"], "struct"),
-            (vec!["x"], vec!["X"], "struct"),
-            (vec!["x", "X"], vec!["X", "x"], "struct"),
-            (vec!["x"], vec!["X"], "nested"),
-            (vec!["x"], vec!["X"], "list"),
-            (vec!["x"], vec!["X"], "map"),
-        ] {
-            let narrow = value(&names, false, container);
-            let wide = value(&null_names, true, container);
-            let schema = Arc::new(Schema::new(vec![
-                Field::new("predicate", DataType::Boolean, true),
-                Field::new("value", narrow.data_type().clone(), false),
-                Field::new("typed_null", wide.data_type().clone(), true),
-            ]));
-            // Exercise both uniform fast paths, mixed predicates, and NULL selecting ELSE.
-            for predicates in [
-                vec![Some(true); 3],
-                vec![Some(false); 3],
-                vec![Some(true), Some(false), None],
-            ] {
-                let predicate = BooleanArray::from(predicates);
-                let batch = RecordBatch::try_new(
-                    Arc::clone(&schema),
-                    vec![
-                        Arc::new(predicate.clone()),
-                        Arc::clone(&narrow),
-                        new_null_array(wide.data_type(), 3),
-                    ],
-                )
-                .unwrap();
-                for (true_index, false_index) in [(1, 2), (2, 1)] {
-                    let expr = Expr {
-                        expr_struct: Some(If(Box::new(spark_expression::IfExpr {
-                            if_expr: Some(Box::new(create_bound_reference(0))),
-                            true_expr: Some(Box::new(create_bound_reference(true_index))),
-                            false_expr: Some(Box::new(create_bound_reference(false_index))),
-                        }))),
-                        ..Default::default()
-                    };
-                    let planned = PhysicalPlanner::default()
-                        .create_expr(&expr, Arc::clone(&schema))
-                        .unwrap();
-                    let expected = value(
-                        if true_index == 1 { &names } else { &null_names },
-                        true,
-                        container,
-                    );
-                    assert_eq!(planned.data_type(&schema).unwrap(), *expected.data_type());
-                    let result = planned.evaluate(&batch).unwrap().into_array(3).unwrap();
-                    assert_eq!(result.data_type(), expected.data_type());
-                    RecordBatch::try_new(
-                        Arc::new(Schema::new(vec![Field::new(
-                            "s",
-                            expected.data_type().clone(),
-                            true,
-                        )])),
-                        vec![Arc::clone(&result)],
-                    )
-                    .unwrap();
-                    for row in 0..3 {
-                        let use_true = predicate.is_valid(row) && predicate.value(row);
-                        let value_selected = if use_true { true_index } else { false_index } == 1;
-                        assert_eq!(result.is_valid(row), value_selected);
-                        if value_selected {
-                            assert_eq!(
-                                array_value_to_string(&result, row).unwrap(),
-                                array_value_to_string(&expected, row).unwrap()
-                            );
-                        }
-                    }
-                }
-            }
-        }
-    }
 
     #[test]
     fn scan_default_rejects_struct_expressions() {

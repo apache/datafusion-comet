@@ -15,41 +15,37 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Config: spark.comet.sparkToColumnar.enabled=true
--- Config: spark.comet.sparkToColumnar.supportedOperatorList=Range
+-- Config: spark.comet.exec.range.enabled=true
 -- Config: spark.sql.caseSensitive=false
 
--- Catalyst proves BIGINT -> DOUBLE nonnullable; native cast inference is conservative.
--- The computed struct must have the same field flags as the typed NULL array element.
-query
-SELECT array(named_struct('score', CAST(id AS DOUBLE),
-                          'amount', CAST(id AS DECIMAL(18,2))), NULL)
-FROM range(8)
+-- Catalyst proves both fields nonnullable, but native cast inference is conservative.
+-- array_repeat preserves the struct type, so array_union needs the same field flags on both
+-- sides. Unlike array(...), this path does not cast elements to a deeply-nullable type.
+query expect_native(array_union)
+SELECT array_union(
+  array_repeat(named_struct('x', CAST(id AS INT)), 2),
+  array_repeat(named_struct('x', IF(id = 0, 0, 1)), 2))
+FROM range(3)
 
--- The field contract must also survive a nested constructor with an actually nullable child.
-query
-SELECT array(named_struct('nested', named_struct('score', CAST(id AS DOUBLE),
-                         'optional', CASE WHEN id % 2 = 0 THEN id END)), NULL)
-FROM range(8)
+-- Preserve the field flags recursively through another struct constructor.
+query expect_native(array_union)
+SELECT array_union(
+  array_repeat(named_struct('inner', named_struct('x', CAST(id AS INT))), 2),
+  array_repeat(named_struct('inner', named_struct('x', IF(id = 0, 0, 1))), 2))
+FROM range(3)
 
--- CASE unions nullability by ordinal, even when case-insensitive names swap places.
+-- Map construction preserves Catalyst's nested nullability. CASE must union those flags by
+-- position, even when case-insensitive field names swap places, so neither NULL field is lost.
 query
 SELECT CASE WHEN id % 2 = 0
-  THEN named_struct('x', CAST(id AS DOUBLE), 'X', CAST(NULL AS DOUBLE))
-  ELSE named_struct('X', CAST(NULL AS DOUBLE), 'x', CAST(id AS DOUBLE))
-END FROM range(8)
+  THEN map(1, named_struct('x', CAST(id AS DOUBLE), 'X', CAST(NULL AS DOUBLE)))
+  ELSE map(1, named_struct('X', CAST(NULL AS DOUBLE), 'x', CAST(id AS DOUBLE)))
+END FROM range(4)
 
 -- An untyped NULL branch must not restore name-based struct coercion.
 query
 SELECT CASE WHEN id % 3 = 0
-  THEN named_struct('x', CAST(id AS DOUBLE), 'X', CAST(NULL AS DOUBLE))
+  THEN map(1, named_struct('x', CAST(id AS DOUBLE), 'X', CAST(NULL AS DOUBLE)))
   WHEN id % 3 = 1 THEN NULL
-  ELSE named_struct('X', CAST(NULL AS DOUBLE), 'x', CAST(id AS DOUBLE))
-END FROM range(8)
-
--- IF must report and return the same nested type for uniform and mixed predicates.
-query
-SELECT IF(id < 0, CAST(NULL AS STRUCT<x:BIGINT>), named_struct('x', id)),
-       IF(id >= 0, named_struct('x', id), CAST(NULL AS STRUCT<x:BIGINT>)),
-       IF(id = 1, CAST(NULL AS STRUCT<x:BIGINT>), named_struct('x', id))
-FROM range(8)
+  ELSE map(1, named_struct('X', CAST(NULL AS DOUBLE), 'x', CAST(id AS DOUBLE)))
+END FROM range(6)
