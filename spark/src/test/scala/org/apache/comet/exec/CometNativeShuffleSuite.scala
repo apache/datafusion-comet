@@ -42,14 +42,14 @@ import org.apache.spark.sql.catalyst.expressions.aggregate.Final
 import org.apache.spark.sql.catalyst.plans.logical.LocalRelation
 import org.apache.spark.sql.catalyst.plans.physical.HashPartitioning
 import org.apache.spark.sql.comet.{CometExec, CometHashAggregateExec, CometLocalTableScanExec, CometMetricNode, CometNativeExec, CometScanWrapper, CometSparkToColumnarExec, CometTakeOrderedAndProjectExec}
-import org.apache.spark.sql.comet.execution.arrow.CometArrowStream
+import org.apache.spark.sql.comet.execution.arrow.{CometArrowStream, CometNativeArrowSource}
 import org.apache.spark.sql.comet.execution.shuffle.{CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{LocalTableScanExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AdaptiveSparkPlanHelper, AQEShuffleReadExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.exchange.{ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.functions.{broadcast, col, count, countDistinct, sum}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, DataType, LongType, MapType, StructField, StructType}
+import org.apache.spark.sql.types.{ArrayType, DataType, IntegerType, LongType, MapType, StringType, StructField, StructType}
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 
 import org.apache.comet.{CometConf, CometExecIterator, CometExplainInfo, CometShuffleBlockIterator, CometShuffleSizeLimitException, Native}
@@ -691,6 +691,31 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
           "FROM VALUES (1), (2), (3) AS t(id)")
       val shuffled = df.repartition(2, $"id")
       checkShuffleAnswer(shuffled, 1)
+    }
+  }
+
+  test("native shuffle reads a struct column that a conversion writes over several batches") {
+    // A conversion of Spark rows writes every batch into the same vectors. Native shuffle reads
+    // its Arrow stream, as a native operator does, rather than batches that it would close once
+    // native has them: closing a struct vector drops its children before the next batch (#6685).
+    val schema = new StructType()
+      .add("k", IntegerType)
+      .add("payload", new StructType().add("v", LongType).add("s", StringType))
+    val data = (0 until 200).map(i => Row(i, Row(i.toLong, s"s$i")))
+    withSQLConf(
+      CometConf.COMET_BATCH_SIZE.key -> "7",
+      CometConf.COMET_CONVERT_FROM_RDD_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      // A converted RDD scan, and a local table scan.
+      val rdd = spark.createDataFrame(spark.sparkContext.parallelize(data, 1), schema)
+      val local = spark.createDataFrame(data.asJava, schema)
+      for (df <- Seq(rdd, local);
+        shuffled <- Seq(df.repartition(3, col("k")), df.repartitionByRange(3, col("k")))) {
+        val (_, plan) = checkSparkAnswer(shuffled)
+        val shuffles = collect(plan) { case s: CometShuffleExchangeExec => s }
+        assert(shuffles.map(_.shuffleType) == Seq(CometNativeShuffle), plan)
+        assert(shuffles.head.child.isInstanceOf[CometNativeArrowSource], plan)
+      }
     }
   }
 

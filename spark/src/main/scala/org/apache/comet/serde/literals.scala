@@ -113,7 +113,7 @@ object CometLiteral extends CometExpressionSerde[Literal] with CometTypeShim wit
 
         case arr: ArrayType =>
           val listLiteralBuilder: ListLiteral.Builder =
-            makeListLiteral(value.asInstanceOf[ArrayData].array, arr)
+            makeListLiteral(value.asInstanceOf[ArrayData].toArray[Any](arr.elementType), arr)
           exprBuilder.setListVal(listLiteralBuilder.build())
           exprBuilder.setDatatype(serializeDataType(dataType).get)
         case dt =>
@@ -225,7 +225,7 @@ object CometLiteral extends CometExpressionSerde[Literal] with CometTypeShim wit
         array.foreach(v => {
           val casted = v.asInstanceOf[ArrayData]
           listLiteralBuilder.addListValues(if (casted != null) {
-            makeListLiteral(casted.array, a)
+            makeListLiteral(casted.toArray[Any](a.elementType), a)
           } else ListLiteral.newBuilder())
           listLiteralBuilder.addNullMask(casted != null)
         })

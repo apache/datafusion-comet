@@ -62,10 +62,5 @@ INSERT INTO test_struct_positional_comparison VALUES
   (8, named_struct('x', CAST('NaN' AS DOUBLE), 'y', 1D), named_struct('y', CAST('NaN' AS DOUBLE), 'x', 1D)),
   (9, named_struct('x', CAST('NaN' AS DOUBLE), 'y', 1D), named_struct('y', 1D, 'x', 1D))
 
-query expect_native(equalto)
-SELECT id, a = b FROM test_struct_positional_comparison
-
--- Signed-zero ordering/null-safe equality is the separate #6157 gap, fixed upstream by #6447.
--- Keep this branch's positional regression independent of that fix; equality above covers zeros.
-query expect_native(lessthan,equalnullsafe)
-SELECT id, a < b, a <=> b FROM test_struct_positional_comparison WHERE id <> 7
+query expect_native(equalto,lessthan,equalnullsafe)
+SELECT id, a = b, a < b, a <=> b FROM test_struct_positional_comparison

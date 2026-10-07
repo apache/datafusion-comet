@@ -283,7 +283,6 @@ class CometMapExpressionSuite extends CometTestBase {
       }
       withSQLConf(
         CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
-        CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
         CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true") {
         val df = spark.read.parquet(filename)
         df.createOrReplaceTempView("t1")
