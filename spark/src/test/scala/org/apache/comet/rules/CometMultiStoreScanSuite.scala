@@ -93,7 +93,7 @@ class CometMultiStoreScanSuite extends CometTestBase with AdaptiveSparkPlanHelpe
   private def writeIds(path: String, from: Int, format: String = "parquet"): Unit =
     withoutComet {
       spark
-        .range(from, from + 5)
+        .range(from.toLong, from.toLong + 5)
         .selectExpr("cast(id as int) as id")
         .coalesce(1)
         .write
@@ -278,9 +278,10 @@ class CometMultiStoreScanSuite extends CometTestBase with AdaptiveSparkPlanHelpe
         }
         assert(scans.size == 1, s"expected one native scan of dpp_fact:\n$plan")
         val files = scans.head.perPartitionFilePaths.toSeq
-        assert(files.flatten.forall(!_.contains("p=c")), s"p = 'c' was not pruned: $files")
+        val allFiles = files.flatten
+        assert(allFiles.forall(!_.contains("p=c")), s"p = 'c' was not pruned: $files")
         assert(scans.head.partitionFilters.exists(_.isInstanceOf[DynamicPruningExpression]))
-        assert(files.flatten.map(storeOf).distinct.sorted == Seq("nn1", "nn2"), s"files: $files")
+        assert(allFiles.map(storeOf).distinct.sorted == Seq("nn1", "nn2"), s"files: $files")
         assert(files.forall(_.map(storeOf).distinct.size == 1), s"Comet's layout: $files")
         assert(scans.head.outputPartitioning.numPartitions == scans.head.perPartitionData.length)
       }

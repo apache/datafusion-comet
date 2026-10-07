@@ -187,7 +187,7 @@ class ParquetReadFromS3Suite extends CometS3TestBase with AdaptiveSparkPlanHelpe
       val target = new File(dir, "out").getAbsolutePath
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
         spark
-          .range(from, to + 1)
+          .range(from.toLong, to.toLong + 1)
           .selectExpr("cast(id as int) as id", s"'$tag' as bucket")
           .coalesce(1)
           .write
@@ -235,9 +235,8 @@ class ParquetReadFromS3Suite extends CometS3TestBase with AdaptiveSparkPlanHelpe
     val plan = df.queryExecution.executedPlan
     val scans = collect(plan) { case scan: CometNativeScanExec => scan }
     val cometLayouts = scans.map(_.perPartitionFilePaths.map(_.map(bucketOf).toSet).toSeq)
-    assert(
-      cometLayouts.exists(_.flatten.toSet.size > 1),
-      s"expected a native scan over both buckets:\n$plan")
+    val bucketsPerScan = cometLayouts.map(_.flatten.toSet)
+    assert(bucketsPerScan.exists(_.size > 1), s"expected a native scan over both buckets:\n$plan")
     assert(
       cometLayouts.forall(_.forall(_.size == 1)),
       s"Comet's partitions read buckets $cometLayouts")
