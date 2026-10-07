@@ -37,6 +37,8 @@ import org.apache.spark.sql.execution.vectorized.{ConstantColumnVector, Dictiona
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 
+import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
+
 /**
  * The columnar paths of [[ArrowWriter]] copy Spark's vectors in bulk where they can. Whatever
  * they take, they must produce what the row path writes for the same rows, which reads every
@@ -45,6 +47,12 @@ import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 class CometArrowWriterSuite extends AnyFunSuite with Matchers {
 
   private val numRows = 300
+
+  private val nanosPerDay = 24L * 60 * 60 * 1000 * 1000 * 1000
+
+  // `TimeType` only exists from Spark 4.1, so it is parsed from DDL rather than named.
+  private val timeTypes: Seq[DataType] =
+    if (isSpark41Plus) Seq(DataType.fromDDL("TIME")) else Seq.empty
 
   private val primitiveTypes: Seq[DataType] = Seq(
     BooleanType,
@@ -63,7 +71,7 @@ class CometArrowWriterSuite extends AnyFunSuite with Matchers {
     TimestampType,
     TimestampNTZType,
     YearMonthIntervalType(),
-    DayTimeIntervalType())
+    DayTimeIntervalType()) ++ timeTypes
 
   private val nestedTypes: Seq[DataType] = Seq(
     ArrayType(IntegerType),
@@ -109,6 +117,8 @@ class CometArrowWriterSuite extends AnyFunSuite with Matchers {
       case DoubleType => v.putDouble(row, rnd.nextDouble())
       case StringType | BinaryType => v.putByteArray(row, randomBytes(rnd))
       case dt: DecimalType => v.putDecimal(row, randomDecimal(rnd, dt), dt.precision)
+      case dt if Utils.isTimeType(dt) =>
+        v.putLong(row, Math.floorMod(rnd.nextLong(), nanosPerDay))
     }
 
   /**

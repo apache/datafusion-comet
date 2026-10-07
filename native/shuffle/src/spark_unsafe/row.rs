@@ -21,7 +21,7 @@ use crate::codec_context::ShuffleCodecContext;
 use crate::spark_unsafe::unsafe_object::{impl_primitive_accessors, SparkUnsafeObject};
 use crate::spark_unsafe::{
     list::append_list_element,
-    map::{append_map_elements, get_map_key_value_fields},
+    map::{append_map_elements, get_map_key_value_fields, map_key_value_fields},
 };
 use crate::writers::Checksum;
 use crate::writers::ShuffleBlockWriter;
@@ -705,7 +705,7 @@ fn append_map_column_batch(
     map_builder: &mut MapBuilder<Box<dyn ArrayBuilder>, Box<dyn ArrayBuilder>>,
 ) -> Result<(), CometError> {
     let mut row = SparkUnsafeRow::new(schema);
-    let (key_field, value_field, _) = get_map_key_value_fields(field)?;
+    let (key_field, value_field) = map_key_value_fields(field)?;
     let key_type = key_field.data_type();
     let value_type = value_field.data_type();
 

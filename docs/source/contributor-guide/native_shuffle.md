@@ -39,6 +39,12 @@ Compare this to JVM shuffle's data path:
 Comet Native (columnar) → ColumnarToRowExec → rows → JVM Shuffle → Arrow IPC → columnar
 ```
 
+When `RevertNativeForTransitionHeavyStages` restores the map stage to Spark execution, the
+native exchange stays in place. Its input still needs Arrow-backed Comet vectors, even if the
+restored Spark operator supports columnar output. The rule adds `CometSparkToColumnarExec` to
+convert either Spark rows or Spark columnar batches to Arrow before the native shuffle consumes
+them. Spark's `RowToColumnarExec` alone does not satisfy this input contract.
+
 ## When Native Shuffle is Used
 
 Native shuffle (`CometExchange`) is selected when all of the following conditions are met:

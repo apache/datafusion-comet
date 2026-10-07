@@ -44,8 +44,9 @@ const ICEBERG_PROVIDER_CLASS_PROPERTY: &str = "s3.comet.credential.provider.clas
 
 /// Key prefixes forwarded to iceberg-rust's `FileIO`. The full unfiltered catalog bag (catalog
 /// URI, OAuth tokens, credentials.uri, tenant-id, etc.) is kept upstream so
-/// `CometS3CredentialBridge` can read whatever the vendor needs.
-const STORAGE_PROPERTY_PREFIXES: &[&str] = &["s3.", "gcs.", "adls.", "client."];
+/// `CometS3CredentialBridge` can read whatever the vendor needs. `opendal.` carries
+/// iceberg-storage-opendal's own settings, such as `opendal.io-timeout-ms`.
+const STORAGE_PROPERTY_PREFIXES: &[&str] = &["s3.", "gcs.", "adls.", "client.", "opendal."];
 
 /// Pick an OpenDAL storage backend from a URI's scheme. `file` (or no scheme) falls through to
 /// the local file system. `memory` is used by the write path to assemble manifest bytes that
@@ -573,7 +574,7 @@ fn env_region_present() -> bool {
 /// The JVM write gate (`CometIcebergNativeWrite.storageScheme`) mirrors this rule exactly, case
 /// included. Change both together, and keep the cases in
 /// `scheme_of_extracts_scheme_from_all_uri_forms` in step with its `storageScheme` test.
-fn scheme_of(path: &str) -> &str {
+pub(crate) fn scheme_of(path: &str) -> &str {
     match path.split_once(':') {
         Some((scheme, _)) if !scheme.is_empty() && !scheme.contains('/') => scheme,
         _ => "file",
@@ -773,6 +774,17 @@ mod tests {
             .entries
             .keys()
             .all(|k| scheme_of(&k.reference_path) != "memory"));
+    }
+
+    /// The JVM sets this key from `spark.comet.iceberg.ioTimeout`.
+    #[test]
+    fn io_timeout_reaches_the_file_io() {
+        let key = iceberg_storage_opendal::OPENDAL_IO_TIMEOUT_MS;
+        assert_eq!(key, "opendal.io-timeout-ms");
+        let props = HashMap::from([(key.to_string(), "30000".to_string())]);
+        let (file_io, _) =
+            build_file_io(&props, "file:///tmp/warehouse", "", AccessMode::Read).unwrap();
+        assert_eq!(file_io.config().get(key).map(String::as_str), Some("30000"));
     }
 
     #[test]
