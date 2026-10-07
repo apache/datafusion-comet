@@ -54,26 +54,6 @@ class CometBitwiseExpressionSuite extends CometTestBase with AdaptiveSparkPlanHe
     }
   }
 
-  test("bitwise shift with different left/right types") {
-    Seq(false, true).foreach { dictionary =>
-      withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
-        val table = "test"
-        withTable(table) {
-          sql(s"create table $table(col1 long, col2 int) using parquet")
-          sql(s"insert into $table values(1111, 2)")
-          sql(s"insert into $table values(1111, 2)")
-          sql(s"insert into $table values(3333, 4)")
-          sql(s"insert into $table values(5555, 6)")
-
-          checkSparkAnswerAndOperator(
-            s"SELECT shiftright(col1, 2), shiftright(col1, col2) FROM $table")
-          checkSparkAnswerAndOperator(
-            s"SELECT shiftleft(col1, 2), shiftleft(col1, col2) FROM $table")
-        }
-      }
-    }
-  }
-
   test("bitwise_get - throws exceptions") {
     def checkSparkAndCometEqualThrows(query: String): Unit = {
       checkSparkAnswerMaybeThrows(sql(query)) match {

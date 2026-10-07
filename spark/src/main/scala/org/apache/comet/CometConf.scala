@@ -1265,6 +1265,19 @@ object CometConf extends ShimCometConf {
       .bytesConf(ByteUnit.BYTE)
       .createWithDefault(100L * 1024 * 1024 * 1024) // 100 GB
 
+  // Used on native side. Check spark_config.rs how the config is used
+  val COMET_EXEC_SPILL_COMPRESSION_CODEC: ConfigEntry[String] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.spill.compression.codec")
+      .category(CATEGORY_TUNING)
+      .doc(
+        "The codec used to compress the files that native sorts, aggregations, and joins " +
+          "spill to disk. lz4 and zstd are supported, and none disables compression. zstd " +
+          "writes smaller files than lz4 but uses more CPU. Comet's shuffle writers use " +
+          s"${COMET_SHUFFLE_COMPRESSION_CODEC.key} instead. $TUNING_GUIDE.")
+      .stringConf
+      .checkValues(Set("lz4", "zstd", "none"))
+      .createWithDefault("lz4")
+
   val COMET_RESPECT_DATAFUSION_CONFIGS: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.respectDataFusionConfigs")
       .category(CATEGORY_TESTING)
