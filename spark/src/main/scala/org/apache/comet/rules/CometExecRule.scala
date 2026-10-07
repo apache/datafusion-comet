@@ -205,11 +205,14 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
 
   /**
    * Revert any `CometShuffleExchangeExec` with `CometColumnarShuffle` whose parent and child are
-   * both non-Comet `HashAggregateExec` / `ObjectHashAggregateExec` operators back to the original
-   * Spark `ShuffleExchangeExec`. This is the partial-final-aggregate pattern where Comet couldn't
+   * both non-Comet aggregate operators (any `BaseAggregateExec`) back to the original Spark
+   * `ShuffleExchangeExec`. This is the partial-final-aggregate pattern where Comet couldn't
    * convert either aggregate; keeping a columnar shuffle between them only adds
    * row->arrow->shuffle->arrow->row conversion overhead with no Comet consumer on either side.
-   * See https://github.com/apache/datafusion-comet/issues/4004.
+   * See https://github.com/apache/datafusion-comet/issues/4004. A native shuffle over rows that
+   * `convertShuffleInput` converted is the same pattern, and is reverted the same way. A
+   * `SortAggregateExec` with grouping keys reads the shuffle through the `SortExec` that
+   * `EnsureRequirements` adds, so it is not the shuffle's parent and the shuffle stays.
    *
    * The match is intentionally narrow (both sides must be row-based aggregates that remained JVM
    * after the main transform pass). Running the revert post-transform means we only fire when the
@@ -230,26 +233,35 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
   private def revertRedundantColumnarShuffle(plan: SparkPlan): SparkPlan = {
     def isAggregate(p: SparkPlan): Boolean = p.isInstanceOf[BaseAggregateExec]
 
-    def isRedundantShuffle(child: SparkPlan): Boolean = child match {
-      case s: CometShuffleExchangeExec =>
-        s.shuffleType == CometColumnarShuffle && isAggregate(s.child)
-      case _ => false
+    // The Spark operator whose rows a Comet shuffle writes: the child of a JVM columnar shuffle,
+    // or the input of the conversion that `convertShuffleInput` put under a native shuffle.
+    def rowInput(s: CometShuffleExchangeExec): Option[SparkPlan] =
+      (s.shuffleType, s.child) match {
+        case (CometColumnarShuffle, child) => Some(child)
+        case (CometNativeShuffle, conversion: CometSparkToColumnarExec) => Some(conversion.child)
+        case _ => None
+      }
+
+    def redundantShuffleInput(child: SparkPlan): Option[SparkPlan] = child match {
+      case s: CometShuffleExchangeExec => rowInput(s).filter(isAggregate)
+      case _ => None
     }
 
     plan.transform {
-      case op if isAggregate(op) && op.children.exists(isRedundantShuffle) =>
-        val newChildren = op.children.map {
-          case s: CometShuffleExchangeExec
-              if s.shuffleType == CometColumnarShuffle && isAggregate(s.child) =>
-            val reverted =
-              s.originalPlan.withNewChildren(Seq(s.child)).asInstanceOf[ShuffleExchangeExec]
-            reverted.setTagValue(CometExecRule.SKIP_COMET_SHUFFLE_TAG, ())
-            logInfo(
-              "Reverting Comet columnar shuffle to Spark shuffle between " +
-                s"${op.getClass.getSimpleName} and ${s.child.getClass.getSimpleName} " +
-                "(no Comet operator on either side to consume columnar output)")
-            reverted
-          case other => other
+      case op if isAggregate(op) && op.children.exists(redundantShuffleInput(_).isDefined) =>
+        val newChildren = op.children.map { child =>
+          (child, redundantShuffleInput(child)) match {
+            case (s: CometShuffleExchangeExec, Some(input)) =>
+              val reverted =
+                s.originalPlan.withNewChildren(Seq(input)).asInstanceOf[ShuffleExchangeExec]
+              reverted.setTagValue(CometExecRule.SKIP_COMET_SHUFFLE_TAG, ())
+              logInfo(
+                "Reverting Comet shuffle to Spark shuffle between " +
+                  s"${op.getClass.getSimpleName} and ${input.getClass.getSimpleName} " +
+                  "(no Comet operator on either side to consume columnar output)")
+              reverted
+            case _ => child
+          }
         }
         op.withNewChildren(newChildren)
     }
@@ -608,6 +620,9 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       case s: ShuffleExchangeExec if shouldSkipCometShuffle(s) =>
         preserveSparkAggregateBuffers(s)
 
+      case s: ShuffleExchangeExec if CometShuffleExchangeExec.convertsInputForNativeShuffle(s) =>
+        convertShuffleInput(s)
+
       case s: ShuffleExchangeExec =>
         convertToComet(s, CometShuffleExchangeExec)
           .getOrElse(preserveSparkAggregateBuffers(s))
@@ -635,7 +650,8 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
             op
           case _: ColumnarToRowTransition =>
             // A transition does no work of its own. This rule only meets one that
-            // `convertTypedDatasetOutput` inserted on an earlier pass over the same plan.
+            // `convertTypedDatasetOutput` or `convertShuffleInput` inserted on an earlier pass
+            // over the same plan.
             op
           case _: WriteFilesExec =>
             // The write is converted at the enclosing DataWritingCommandExec above: on Spark 3.x
@@ -1395,6 +1411,30 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
         ApplyColumnarRulesAndInsertTransitions(Seq.empty, outputsColumnar = false).apply(op)
       convertToComet(withTransitions, CometSparkToColumnarExec).getOrElse(withTransitions)
     }
+  }
+
+  /**
+   * Converts the rows a Spark operator feeds to a shuffle to Arrow, so that the shuffle runs as
+   * native shuffle instead of the JVM columnar shuffle. See
+   * [[CometConf.COMET_CONVERT_FROM_SHUFFLE_INPUT_ENABLED]], and
+   * [[CometShuffleExchangeExec.convertsInputForNativeShuffle]] for when it applies.
+   *
+   * Spark inserts the columnar transitions after this rule, but it does not look below a
+   * `RowToColumnarTransition` such as `CometSparkToColumnarExec`. Without a transition, a Spark
+   * operator in the child's subtree that reads a Comet operator would do so through
+   * `CometExec.doExecute`, Spark's interpreted columnar-to-row path. So the subtree gets its
+   * transitions now, from Spark's own rule, and `EliminateRedundantTransitions` later replaces
+   * each one over a Comet child with Comet's own. Spark's rule leaves existing transitions alone,
+   * which matters because this rule runs over the same plan twice under AQE.
+   */
+  private def convertShuffleInput(s: ShuffleExchangeExec): SparkPlan = {
+    val child =
+      ApplyColumnarRulesAndInsertTransitions(Seq.empty, outputsColumnar = false).apply(s.child)
+    convertToComet(child, CometSparkToColumnarExec)
+      .flatMap(converted =>
+        convertToComet(s.withNewChildren(Seq(converted)), CometShuffleExchangeExec))
+      .getOrElse(
+        convertToComet(s, CometShuffleExchangeExec).getOrElse(preserveSparkAggregateBuffers(s)))
   }
 
   private def shouldApplySparkToColumnar(conf: SQLConf, op: SparkPlan): Boolean = {
