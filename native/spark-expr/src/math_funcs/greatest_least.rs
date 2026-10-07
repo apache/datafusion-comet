@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::float_semantics::{float_gt, float_lt, has_float_leaf, spark_comparator};
+use crate::float_semantics::{float_gt, float_lt, spark_comparator};
 use arrow::array::{Array, ArrayRef, AsArray, BooleanArray, PrimitiveArray};
 use arrow::buffer::{BooleanBuffer, NullBuffer, ScalarBuffer};
 use arrow::compute::cast;
@@ -28,15 +28,15 @@ use datafusion::logical_expr::{
 use num::Float;
 use std::sync::Arc;
 
-/// Spark's `greatest` or `least` over Float32 or Float64 values, or over arrays or structs with a
-/// float leaf.
+/// Spark's `greatest` or `least` over Float32 or Float64 values, or over arrays or structs.
 ///
 /// Spark orders floats with `SQLOrderingUtil.compareDoubles`, in which NaN is larger than every
 /// other value and `-0.0` equals `0.0`, at any depth. It walks the arguments in order and replaces
 /// its result only with a strictly greater (or smaller) value, skipping nulls, so of equal
 /// arguments the first one wins: `greatest(-0.0, 0.0)` is `-0.0`. DataFusion's `greatest` and
 /// `least` order floats by IEEE 754 total order, handle constant arguments before the others, and
-/// let a later argument win a tie.
+/// let a later argument win a tie. DataFusion's `least` also orders a null inside an array or
+/// struct after every other value, where Spark orders it first.
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub struct SparkGreatestLeast {
     signature: Signature,
@@ -51,11 +51,11 @@ impl SparkGreatestLeast {
         }
     }
 
-    /// Whether arguments of this type need Spark's float ordering. DataFusion's `greatest` and
-    /// `least` already match Spark for every other type, since equal values are identical there.
+    /// Whether arguments of this type need Spark's ordering, of floats or of nulls inside nested
+    /// values. DataFusion's `greatest` and `least` already match Spark for every other type, since
+    /// equal values are identical there.
     pub fn handles(data_type: &DataType) -> bool {
-        matches!(data_type, DataType::Float32 | DataType::Float64)
-            || (data_type.is_nested() && has_float_leaf(data_type))
+        matches!(data_type, DataType::Float32 | DataType::Float64) || data_type.is_nested()
     }
 
     fn validate_arg_count(&self, count: usize) -> Result<()> {
@@ -408,8 +408,44 @@ mod tests {
         Ok(())
     }
 
+    /// Spark orders a null inside a struct before every other value, in `least` as in `greatest`.
     #[test]
-    fn handles_floats_and_nested_floats_only() {
+    fn nested_nulls_sort_first() -> Result<()> {
+        use arrow::array::{Int32Array, StructArray};
+
+        let fields = Fields::from(vec![
+            Field::new("a", DataType::Int32, true),
+            Field::new("b", DataType::Int32, true),
+        ]);
+        let struct_of = |a: Option<i32>, b: i32| -> ColumnarValue {
+            ColumnarValue::Array(Arc::new(StructArray::new(
+                fields.clone(),
+                vec![
+                    Arc::new(Int32Array::from(vec![a])),
+                    Arc::new(Int32Array::from(vec![b])),
+                ],
+                None,
+            )))
+        };
+        for (greatest, expected) in [(true, Some(3)), (false, None)] {
+            let args = vec![struct_of(Some(3), 1), struct_of(None, 3)];
+            let result = invoke(greatest, args, 1, DataType::Struct(fields.clone()))?;
+            let result = result.into_array(1)?;
+            let a = result
+                .as_struct()
+                .column(0)
+                .as_primitive::<arrow::datatypes::Int32Type>();
+            assert_eq!(
+                a.is_valid(0).then(|| a.value(0)),
+                expected,
+                "greatest={greatest}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn handles_floats_and_nested_types_only() {
         let float_list = DataType::List(Arc::new(Field::new("item", DataType::Float32, true)));
         let int_list = DataType::List(Arc::new(Field::new("item", DataType::Int32, true)));
         let float_struct =
@@ -418,8 +454,8 @@ mod tests {
         assert!(SparkGreatestLeast::handles(&DataType::Float64));
         assert!(SparkGreatestLeast::handles(&float_list));
         assert!(SparkGreatestLeast::handles(&float_struct));
+        assert!(SparkGreatestLeast::handles(&int_list));
         assert!(!SparkGreatestLeast::handles(&DataType::Int32));
-        assert!(!SparkGreatestLeast::handles(&int_list));
         assert!(!SparkGreatestLeast::handles(&DataType::Utf8));
     }
 }
