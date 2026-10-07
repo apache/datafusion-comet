@@ -207,20 +207,27 @@ traffic accounting after cancellation.
 
 ### S3 HTTP attempts and retries
 
-The native S3 connector records these `scan_io_` counters per scan without changing retry policy:
+Native Parquet scans of S3 paths also count the GETs observed by the HTTP connector and their
+retries, after range coalescing, without changing the retry policy:
 
-| Metric suffix        | Meaning                                                |
-| -------------------- | ------------------------------------------------------ |
-| `http_observed_gets` | Logical GETs reaching the instrumented HTTP connector. |
-| `http_attempts`      | HTTP-service calls for those GETs, including retries.  |
-| `http_retries`       | Calls after the first attempt for each observed GET.   |
+| Metric suffix        | Meaning                                              |
+| -------------------- | ---------------------------------------------------- |
+| `http_observed_gets` | GETs reaching the instrumented HTTP connector.       |
+| `http_retries`       | Calls after the first attempt for each observed GET. |
 
-At a settled snapshot, attempts equal observed GETs plus retries. Request extensions preserve
-scan attribution across HTTP-status retries and interrupted-body resumes, even with shared S3
-clients. These counts exclude HEAD, credential requests, bucket-region discovery, and any
-redirects or protocol retries internal to reqwest; they are not all wire transmissions.
-Compare observed GETs with logical `object_store_get_calls` before interpreting zero retries.
-An uninstrumented transport contributes no HTTP coverage, not proof that it never retried.
+The total number of HTTP attempts is `scan_io_http_observed_gets` plus `scan_io_http_retries`.
+Each scan counts only its own requests, even when scans share an S3 client.
+Retries include HTTP-status retries, interrupted-body resumes, and Comet's location-scoped
+re-routing after a permission error refreshes the credential locations. A nonzero retry count
+can therefore reflect stale location credentials as well as S3 throttling or network failures.
+HEAD requests, credential requests, bucket-region lookups, and redirects or protocol retries
+handled inside reqwest are not counted.
+
+Only scans using the native S3 connector fill these counters. GCS, Azure, HTTP(S), local, and
+HDFS scans always report zero, which does not mean their requests were never retried. This also
+applies to S3 paths routed through HDFS by `fs.comet.libhdfs.schemes`. For a native S3 scan,
+`scan_io_http_observed_gets` normally matches `scan_io_object_store_get_calls`, the number of
+GETs after range coalescing.
 
 ## Task-Level Input Metrics on Spark 4.1+
 

@@ -18,9 +18,11 @@
 //! Scan attribution at object_store's HTTP connector boundary.
 //!
 //! The connector delegates client construction, requests, responses, and errors unchanged.
-//! Counts include object_store retries of HTTP errors and interrupted response bodies, but
-//! exclude redirects and protocol retries performed internally by reqwest, credential requests,
-//! and bucket-region discovery. They are not a count of every request transmitted on the wire.
+//! Counts include object_store retries of HTTP errors and interrupted response bodies, and
+//! Comet's location-scoped S3 re-routing after a 403. They exclude redirects and protocol retries
+//! performed internally by reqwest, credential requests, and bucket-region discovery. They are
+//! not a count of every request transmitted on the wire. Total connector attempts are the sum
+//! of observed GETs and retries.
 
 use async_trait::async_trait;
 use datafusion::physical_plan::metrics::Count;
@@ -35,21 +37,19 @@ use std::sync::Arc;
 #[derive(Debug, Clone)]
 pub(crate) struct HttpRequestMetrics {
     observed_requests: Count,
-    attempts: Count,
     retries: Count,
 }
 
 impl HttpRequestMetrics {
-    pub(crate) fn new(observed_requests: Count, attempts: Count, retries: Count) -> Self {
+    pub(crate) fn new(observed_requests: Count, retries: Count) -> Self {
         Self {
             observed_requests,
-            attempts,
             retries,
         }
     }
 
     /// Attach fresh state to one logical GET, preserving unrelated request extensions.
-    /// object_store clones the extension across both request and response-body retries.
+    /// object_store and Comet's location-scoped S3 routing preserve the extension across retries.
     /// Only an installed `ScanHttpConnector` records these counters: callers must compare
     /// observed requests with logical GETs before interpreting zero retries as full coverage.
     pub(crate) fn track(&self, options: &mut GetOptions) {
@@ -87,7 +87,6 @@ struct ScanHttpService {
 impl HttpService for ScanHttpService {
     async fn call(&self, request: HttpRequest) -> Result<HttpResponse, HttpError> {
         if let Some(state) = request.extensions().get::<Arc<RequestState>>() {
-            state.metrics.attempts.add(1);
             if !state.observed.swap(true, Ordering::Relaxed) {
                 state.metrics.observed_requests.add(1);
             } else {
@@ -169,17 +168,12 @@ mod tests {
         let metrics = ExecutionPlanMetricsSet::new();
         HttpRequestMetrics::new(
             MetricBuilder::new(&metrics).global_counter("requests"),
-            MetricBuilder::new(&metrics).global_counter("attempts"),
             MetricBuilder::new(&metrics).global_counter("retries"),
         )
     }
 
-    fn counts(metrics: &HttpRequestMetrics) -> (usize, usize, usize) {
-        (
-            metrics.observed_requests.value(),
-            metrics.attempts.value(),
-            metrics.retries.value(),
-        )
+    fn counts(metrics: &HttpRequestMetrics) -> (usize, usize) {
+        (metrics.observed_requests.value(), metrics.retries.value())
     }
 
     async fn read(
@@ -212,7 +206,7 @@ mod tests {
                 assert_eq!(bytes.as_ref(), b"abc");
             }
             assert_eq!(server.await.unwrap().len(), 3);
-            assert_eq!(counts(&metrics), (1, 3, 2));
+            assert_eq!(counts(&metrics), (1, 2));
         }
     }
 
@@ -225,7 +219,49 @@ mod tests {
         assert_eq!(read(&store(&endpoint), &metrics).await.unwrap(), "abc");
         let requests = server.await.unwrap();
         assert!(requests[1].contains("range: bytes=1-2\r\n"));
-        assert_eq!(counts(&metrics), (1, 2, 1));
+        assert_eq!(counts(&metrics), (1, 1));
+    }
+
+    #[tokio::test]
+    async fn location_reroute_preserves_request_attribution() {
+        use crate::parquet::objectstore::location_scoped::LocationScopedObjectStore;
+
+        let forbidden = "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        let (denied_endpoint, denied_server) = server(vec![forbidden]).await;
+        let (allowed_endpoint, allowed_server) = server(vec![SUCCESS]).await;
+        // The stale snapshot routes to the bucket root. After its 403, the refreshed
+        // locations route the same GET to a different instrumented S3 store.
+        let scoped_store = LocationScopedObjectStore::new(
+            "test".into(),
+            vec![],
+            Arc::new(|| Ok(vec!["warehouse".into()])),
+            Arc::new(move |location| {
+                let endpoint = match location {
+                    "/" => &denied_endpoint,
+                    "/warehouse" => &allowed_endpoint,
+                    _ => panic!("unexpected credential location: {location}"),
+                };
+                Ok(Arc::new(store(endpoint)))
+            }),
+        )
+        .unwrap();
+        let metrics = metrics();
+        let mut options = GetOptions {
+            range: Some((0..3).into()),
+            ..Default::default()
+        };
+        metrics.track(&mut options);
+        let bytes = scoped_store
+            .get_opts(&Path::from("warehouse/file"), options)
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
+        assert_eq!(bytes, "abc");
+        assert_eq!(denied_server.await.unwrap().len(), 1);
+        assert_eq!(allowed_server.await.unwrap().len(), 1);
+        assert_eq!(counts(&metrics), (1, 1));
     }
 
     #[tokio::test]
@@ -240,12 +276,12 @@ mod tests {
         // Either concurrent request can receive the 503. Only that request's scan retries.
         let mut concurrent = [counts(&first), counts(&second)];
         concurrent.sort_unstable();
-        assert_eq!(concurrent, [(1, 1, 0), (1, 2, 1)]);
+        assert_eq!(concurrent, [(1, 0), (1, 1)]);
         let before = counts(&first);
         let second_before = counts(&second);
         assert_eq!(read(&store, &first).await.unwrap(), "abc");
         assert_eq!(server.await.unwrap().len(), 4);
-        assert_eq!(counts(&first), (2, before.1 + 1, before.2));
+        assert_eq!(counts(&first), (2, before.1));
         assert_eq!(counts(&second), second_before);
     }
 
@@ -313,7 +349,6 @@ mod tests {
             for (name, expected) in [
                 ("scan_io_object_store_get_calls", 1),
                 ("scan_io_http_observed_gets", 1),
-                ("scan_io_http_attempts", 1),
                 ("scan_io_http_retries", 0),
             ] {
                 assert_eq!(

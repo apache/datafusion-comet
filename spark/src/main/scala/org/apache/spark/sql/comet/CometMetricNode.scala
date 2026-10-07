@@ -407,8 +407,6 @@ object CometMetricNode {
         SQLMetrics.createMetric(sc, "ObjectStore GET operations after range coalescing"),
       "scan_io_http_observed_gets" ->
         SQLMetrics.createMetric(sc, "S3 GETs observed by the HTTP connector"),
-      "scan_io_http_attempts" ->
-        SQLMetrics.createMetric(sc, "S3 GET HTTP attempts including retries"),
       "scan_io_http_retries" ->
         SQLMetrics.createMetric(sc, "S3 GET HTTP attempts after the first attempt"),
       "scan_io_object_store_get_requested_bytes" ->

@@ -110,7 +110,6 @@ pub(crate) enum ScanIoSource {
 #[derive(Debug)]
 struct ScanIoMetrics {
     http_observed_gets: Count,
-    http_attempts: Count,
     http_retries: Count,
     data_bytes: Count,
     metadata_bytes: Count,
@@ -127,7 +126,6 @@ impl ScanIoMetrics {
     fn new(metrics: &ExecutionPlanMetricsSet) -> Self {
         Self {
             http_observed_gets: count_counter(metrics, "scan_io_http_observed_gets"),
-            http_attempts: count_counter(metrics, "scan_io_http_attempts"),
             http_retries: count_counter(metrics, "scan_io_http_retries"),
             data_bytes: byte_counter(metrics, "scan_io_data_bytes"),
             metadata_bytes: byte_counter(metrics, "scan_io_metadata_bytes"),
@@ -734,7 +732,6 @@ impl ObjectStore for ScanIoObjectStore {
         if matches!(self.role, ScanIoStoreRole::ObjectStore) {
             HttpRequestMetrics::new(
                 self.scan_io_metrics.http_observed_gets.clone(),
-                self.scan_io_metrics.http_attempts.clone(),
                 self.scan_io_metrics.http_retries.clone(),
             )
             .track(&mut options);

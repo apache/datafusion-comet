@@ -2493,6 +2493,8 @@ class CometExecSuite extends CometTestBase {
             "scan_io_footer_reads",
             "scan_io_footer_bytes",
             "scan_io_object_store_get_calls",
+            "scan_io_http_observed_gets",
+            "scan_io_http_retries",
             "scan_io_object_store_get_requested_bytes",
             "scan_io_object_store_response_bytes_read",
             "scan_io_metadata_cache_hits",
@@ -2508,6 +2510,8 @@ class CometExecSuite extends CometTestBase {
           assert(metrics("scan_io_footer_reads").value > 0)
           assert(metrics("scan_io_footer_bytes").value > 0)
           assert(metrics("scan_io_object_store_get_calls").value == 0)
+          assert(metrics("scan_io_http_observed_gets").value == 0)
+          assert(metrics("scan_io_http_retries").value == 0)
           assert(metrics("scan_io_object_store_get_requested_bytes").value == 0)
           assert(metrics("scan_io_object_store_response_bytes_read").value == 0)
           assert(metrics("scan_io_metadata_cache_misses").value > 0)
