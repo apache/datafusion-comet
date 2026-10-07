@@ -461,12 +461,7 @@ private[arrow] object ArrowFieldWriter {
     if (numRows == 0) {
       return
     }
-    if (vector.getLastSet < outStart - 1) {
-      vector.fillEmpties(outStart)
-    }
-    while (vector.getValueCapacity < outStart + numRows) {
-      vector.reallocValidityAndOffsetBuffers()
-    }
+    reserveValues(vector, outStart, numRows)
     val offsets = vector.getOffsetBuffer
     val dataStart = vector.getStartOffset(outStart)
     val hasNull = input.hasNull
@@ -539,12 +534,7 @@ private[arrow] object ArrowFieldWriter {
     if (numRows == 0) {
       return
     }
-    if (vector.getLastSet < outStart - 1) {
-      vector.fillEmpties(outStart)
-    }
-    while (vector.getValueCapacity < outStart + numRows) {
-      vector.reallocValidityAndOffsetBuffers()
-    }
+    reserveValues(vector, outStart, numRows)
     val offsets = vector.getOffsetBuffer
     val ids = input.getDictionaryIds
     val hasNull = input.hasNull
@@ -600,6 +590,19 @@ private[arrow] object ArrowFieldWriter {
     if (end > Integer.MAX_VALUE) {
       throw new OversizedAllocationException(
         s"Arrow variable-width data would exceed ${Integer.MAX_VALUE} bytes")
+    }
+  }
+
+  /**
+   * Grows the validity and offset buffers of `vector` to hold values `[outStart, outStart +
+   * numValues)`, after filling in the offsets of any values skipped since the last one set.
+   */
+  def reserveValues(vector: BaseVariableWidthVector, outStart: Int, numValues: Int): Unit = {
+    if (vector.getLastSet < outStart - 1) {
+      vector.fillEmpties(outStart)
+    }
+    while (vector.getValueCapacity < outStart + numValues) {
+      vector.reallocValidityAndOffsetBuffers()
     }
   }
 
@@ -1474,13 +1477,8 @@ private[arrow] abstract class VariableWidthArrowFieldWriter extends ArrowFieldWr
       }
       i += 1
     }
-    while (valueVector.getValueCapacity < count + numElements) {
-      valueVector.reallocValidityAndOffsetBuffers()
-    }
+    reserveValues(valueVector, count, numElements)
     reserveData(valueVector, end)
-    if (valueVector.getLastSet < count - 1) {
-      valueVector.fillEmpties(count)
-    }
     val base = array.getBaseObject
     val baseOffset = array.getBaseOffset
     val data = valueVector.getDataBuffer.memoryAddress

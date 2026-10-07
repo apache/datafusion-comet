@@ -638,6 +638,52 @@ class CometArrowWriterSuite extends AnyFunSuite with Matchers {
     }
   }
 
+  test("a dictionary-encoded field appends as a column after its struct took the row path") {
+    // A struct with a collection field takes the row path in a batch that holds null structs,
+    // which leaves the offsets of its string field's trailing nulls for the next value to fill. A
+    // dictionary-encoded field has to fill them, and grow its buffers, before it appends a column.
+    val st = new StructType().add("a", ArrayType(IntegerType)).add("s", StringType)
+    val schema = new StructType().add("st", st)
+    val rnd = new Random(5)
+    val batches = Seq((0.5, 100), (0.0, 5000), (0.5, 100), (0.0, 5000)).map {
+      case (nullFraction, n) =>
+        val v = newVector(n, st, offHeap = false)
+        (0 until n).foreach { i =>
+          if (rnd.nextDouble() < nullFraction || (nullFraction > 0 && i == n - 1)) {
+            v.putNull(i)
+          }
+        }
+        fill(v.getChild(0), ArrayType(IntegerType), n, rnd, nullFraction = 0.0, reversed = false)
+        fillDictionary(v.getChild(1), StringType, n, rnd, nullFraction = 0.0)
+        // Spark's Parquet reader nulls the fields of a null struct.
+        (0 until n).foreach { i =>
+          if (v.isNullAt(i)) {
+            v.getChild(0).putNull(i)
+            v.getChild(1).putNull(i)
+          }
+        }
+        new ColumnarBatch(Array[ColumnVector](v), n)
+    }
+    val allocator = new RootAllocator(Long.MaxValue)
+    val arrowSchema = Utils.toArrowSchema(schema, "UTC")
+    val columnar = VectorSchemaRoot.create(arrowSchema, allocator)
+    val rows = VectorSchemaRoot.create(arrowSchema, allocator)
+    try {
+      val columnarWriter = ArrowWriter.create(columnar, 1)
+      batches.foreach(b => columnarWriter.writeColumns(b, 0, b.numRows()))
+      columnarWriter.finish()
+      val rowWriter = ArrowWriter.create(rows, 1)
+      batches.foreach(b => (0 until b.numRows()).foreach(i => rowWriter.write(b.getRow(i))))
+      rowWriter.finish()
+      assertSameRoots(rows, columnar)
+    } finally {
+      columnar.close()
+      rows.close()
+      allocator.close()
+      batches.foreach(_.close())
+    }
+  }
+
   test("a struct that switches between the columnar and row paths across appended batches") {
     // A struct with an array or a map field takes the row path only in batches that hold null
     // structs, so its fields' writers keep appending where the other path left off.
@@ -688,18 +734,19 @@ class CometArrowWriterSuite extends AnyFunSuite with Matchers {
     }
   }
 
-  // Nested shapes whose unsafe forms take paths of their own: an array of each primitive type,
-  // whose elements are either copied in one block or converted one at a time, collections inside
-  // collections, and a struct wider than one word of null bits.
-  private val moreNestedTypes: Seq[DataType] = primitiveTypes.map(ArrayType(_)) ++ Seq(
-    ArrayType(MapType(StringType, IntegerType)),
-    MapType(StringType, ArrayType(StringType)),
-    MapType(LongType, DecimalType(9, 2)),
-    new StructType()
-      .add("m", MapType(IntegerType, StringType))
-      .add("s", new StructType().add("x", BinaryType).add("y", DecimalType(18, 4))),
-    StructType(
-      (0 until 70).map(i => StructField(s"f$i", if (i % 7 == 3) StringType else LongType))))
+  // Nested shapes whose unsafe forms take paths of their own: an array of each primitive type not
+  // in `nestedTypes`, whose elements are either copied in one block or converted one at a time,
+  // collections inside collections, and a struct wider than one word of null bits.
+  private val moreNestedTypes: Seq[DataType] =
+    primitiveTypes.map(ArrayType(_)).filterNot(nestedTypes.contains) ++ Seq(
+      ArrayType(MapType(StringType, IntegerType)),
+      MapType(StringType, ArrayType(StringType)),
+      MapType(LongType, DecimalType(9, 2)),
+      new StructType()
+        .add("m", MapType(IntegerType, StringType))
+        .add("s", new StructType().add("x", BinaryType).add("y", DecimalType(18, 4))),
+      StructType(
+        (0 until 70).map(i => StructField(s"f$i", if (i % 7 == 3) StringType else LongType))))
 
   /**
    * Writes `numRows` rows, `row(i)` through the generic row path and its unsafe projection
