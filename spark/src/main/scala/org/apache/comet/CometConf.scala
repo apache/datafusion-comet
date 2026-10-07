@@ -178,10 +178,12 @@ object CometConf extends ShimCometConf {
         "When enabled, the native Parquet reader evaluates pushed filters during decode " +
           "and lazily materializes projected columns for surviving rows (DataFusion's " +
           "pushdown_filters / late-materialization). Format-level pruning (row-group " +
-          "statistics, page index, bloom filters) is independent of this flag and runs " +
-          "whenever Spark's spark.sql.parquet.filterPushdown is enabled. Disabling this " +
-          "flag still lets format-level pruning work; the per-row eval falls back to " +
-          "the CometFilter operator above the scan.")
+          "statistics, page index, bloom filters) runs whenever Spark's " +
+          "spark.sql.parquet.filterPushdown is enabled, except that while this flag is " +
+          "enabled, a pushed filter that compares FLOAT or DOUBLE values does not prune, " +
+          "because the reader must evaluate it with Spark's NaN and signed-zero semantics. " +
+          "Disabling this flag still lets format-level pruning work; the per-row eval falls " +
+          "back to the CometFilter operator above the scan.")
       .booleanConf
       .createWithDefault(false)
 
