@@ -1627,9 +1627,6 @@ private[arrow] class TimeNanoWriter(val valueVector: TimeNanoVector)
 private[arrow] class ArrayWriter(val valueVector: ListVector, val elementWriter: ArrowFieldWriter)
     extends ArrowFieldWriter {
 
-  // Pointed at each unsafe array in turn, rather than allocating a view per value.
-  private val elements = new UnsafeArrayData
-
   override def setNull(): Unit = {}
 
   override def setValue(input: SpecializedGetters, ordinal: Int): Unit = {
@@ -1648,11 +1645,13 @@ private[arrow] class ArrayWriter(val valueVector: ListVector, val elementWriter:
     }
   }
 
+  // Each unsafe array gets a view of its own from Spark's getter. A view reused across values
+  // would keep the last row it read reachable after that row's values were copied.
   override private[arrow] def writeUnsafeRowField(row: UnsafeRow, ordinal: Int): Unit = {
     if (row.isNullAt(ordinal)) {
       setNull()
     } else {
-      writeUnsafe(row.getBaseObject, row.getBaseOffset, row.getLong(ordinal))
+      writeElements(row.getArray(ordinal))
     }
     count += 1
   }
@@ -1664,17 +1663,11 @@ private[arrow] class ArrayWriter(val valueVector: ListVector, val elementWriter:
       if (array.isNullAt(i)) {
         setNull()
       } else {
-        writeUnsafe(array.getBaseObject, array.getBaseOffset, array.getLong(i))
+        writeElements(array.getArray(i))
       }
       count += 1
       i += 1
     }
-  }
-
-  /** Sets value `count` to the unsafe array that `offsetAndSize` locates from `baseOffset`. */
-  private def writeUnsafe(base: AnyRef, baseOffset: Long, offsetAndSize: Long): Unit = {
-    elements.pointTo(base, baseOffset + (offsetAndSize >> 32), offsetAndSize.toInt)
-    writeElements(elements)
   }
 
   private def writeElements(array: UnsafeArrayData): Unit = {
@@ -1724,9 +1717,6 @@ private[arrow] class StructWriter(
     children: Array[ArrowFieldWriter])
     extends ArrowFieldWriter {
 
-  // Pointed at each unsafe struct in turn, rather than allocating a view per value.
-  private val fields = new UnsafeRow(children.length)
-
   override def setNull(): Unit = {
     var i = 0
     while (i < children.length) {
@@ -1751,11 +1741,12 @@ private[arrow] class StructWriter(
     }
   }
 
+  // Each unsafe struct gets a view of its own, as in ArrayWriter.
   override private[arrow] def writeUnsafeRowField(row: UnsafeRow, ordinal: Int): Unit = {
     if (row.isNullAt(ordinal)) {
       setNull()
     } else {
-      writeUnsafe(row.getBaseObject, row.getBaseOffset, row.getLong(ordinal))
+      writeFields(row.getStruct(ordinal, children.length))
     }
     count += 1
   }
@@ -1767,17 +1758,11 @@ private[arrow] class StructWriter(
       if (array.isNullAt(i)) {
         setNull()
       } else {
-        writeUnsafe(array.getBaseObject, array.getBaseOffset, array.getLong(i))
+        writeFields(array.getStruct(i, children.length))
       }
       count += 1
       i += 1
     }
-  }
-
-  /** Sets value `count` to the unsafe struct that `offsetAndSize` locates from `baseOffset`. */
-  private def writeUnsafe(base: AnyRef, baseOffset: Long, offsetAndSize: Long): Unit = {
-    fields.pointTo(base, baseOffset + (offsetAndSize >> 32), offsetAndSize.toInt)
-    writeFields(fields)
   }
 
   private def writeFields(struct: UnsafeRow): Unit = {
@@ -1852,9 +1837,6 @@ private[arrow] class MapWriter(
     val valueWriter: ArrowFieldWriter)
     extends ArrowFieldWriter {
 
-  // Pointed at each unsafe map in turn, rather than allocating a view per value.
-  private val entries = new UnsafeMapData
-
   override def setNull(): Unit = {}
 
   override def setValue(input: SpecializedGetters, ordinal: Int): Unit = {
@@ -1877,11 +1859,12 @@ private[arrow] class MapWriter(
     }
   }
 
+  // Each unsafe map gets a view of its own, as in ArrayWriter.
   override private[arrow] def writeUnsafeRowField(row: UnsafeRow, ordinal: Int): Unit = {
     if (row.isNullAt(ordinal)) {
       setNull()
     } else {
-      writeUnsafe(row.getBaseObject, row.getBaseOffset, row.getLong(ordinal))
+      writeEntries(row.getMap(ordinal))
     }
     count += 1
   }
@@ -1893,17 +1876,11 @@ private[arrow] class MapWriter(
       if (array.isNullAt(i)) {
         setNull()
       } else {
-        writeUnsafe(array.getBaseObject, array.getBaseOffset, array.getLong(i))
+        writeEntries(array.getMap(i))
       }
       count += 1
       i += 1
     }
-  }
-
-  /** Sets value `count` to the unsafe map that `offsetAndSize` locates from `baseOffset`. */
-  private def writeUnsafe(base: AnyRef, baseOffset: Long, offsetAndSize: Long): Unit = {
-    entries.pointTo(base, baseOffset + (offsetAndSize >> 32), offsetAndSize.toInt)
-    writeEntries(entries)
   }
 
   private def writeEntries(map: UnsafeMapData): Unit = {

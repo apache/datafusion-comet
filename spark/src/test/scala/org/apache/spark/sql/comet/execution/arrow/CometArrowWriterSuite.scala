@@ -19,7 +19,9 @@
 
 package org.apache.spark.sql.comet.execution.arrow
 
+import java.lang.reflect.Modifier
 import java.math.{BigDecimal => JavaBigDecimal, BigInteger}
+import java.util.{ArrayDeque, Collections, IdentityHashMap}
 
 import scala.collection.mutable.ArrayBuffer
 import scala.jdk.CollectionConverters._
@@ -32,7 +34,7 @@ import org.apache.arrow.memory.{ArrowBuf, RootAllocator}
 import org.apache.arrow.vector.{BaseVariableWidthVector, DecimalVector, FieldVector, IntVector, ValueVector, VarCharVector, VectorSchemaRoot}
 import org.apache.arrow.vector.complex.{ListVector, StructVector}
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{GenericInternalRow, UnsafeProjection, UnsafeRow}
+import org.apache.spark.sql.catalyst.expressions.{GenericInternalRow, UnsafeArrayData, UnsafeMapData, UnsafeProjection, UnsafeRow}
 import org.apache.spark.sql.catalyst.util.{ArrayBasedMapData, GenericArrayData}
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.vectorized.{ConstantColumnVector, Dictionary, OffHeapColumnVector, OnHeapColumnVector, WritableColumnVector}
@@ -793,6 +795,82 @@ class CometArrowWriterSuite extends AnyFunSuite with Matchers {
         val schema = new StructType().add("c", dataType)
         assertFilledRowsMatch(schema, 24, nullFraction, offHeap = false, maxLength = 150)
       }
+    }
+  }
+
+  /**
+   * Whether `target` is reachable from `root` through the fields of the Arrow writers and of any
+   * Spark unsafe views they hold. Arrow's vectors hold only Arrow memory, so they are skipped.
+   */
+  private def reachable(root: AnyRef, target: AnyRef): Boolean = {
+    val writerPackage = classOf[ArrowWriter].getPackage.getName + "."
+    val seen = Collections.newSetFromMap(new IdentityHashMap[AnyRef, java.lang.Boolean])
+    val pending = new ArrayDeque[AnyRef]
+    def pushFields(o: AnyRef): Unit = {
+      var c: Class[_] = o.getClass
+      while (c != null) {
+        c.getDeclaredFields.foreach { field =>
+          if (!field.getType.isPrimitive && !Modifier.isStatic(field.getModifiers)) {
+            field.setAccessible(true)
+            val value = field.get(o)
+            if (value != null) {
+              pending.push(value)
+            }
+          }
+        }
+        c = c.getSuperclass
+      }
+    }
+    pending.push(root)
+    while (!pending.isEmpty) {
+      val o = pending.pop()
+      if (o eq target) {
+        return true
+      }
+      if (seen.add(o)) {
+        o match {
+          case objects: Array[AnyRef] => objects.foreach(x => if (x != null) pending.push(x))
+          case _: UnsafeArrayData | _: UnsafeMapData | _: UnsafeRow => pushFields(o)
+          case _ if o.getClass.getName.startsWith(writerPackage) => pushFields(o)
+          case _ =>
+        }
+      }
+    }
+    false
+  }
+
+  test("the row path keeps no reference to an unsafe row once it is written") {
+    // Arrays, maps and structs at the top level, inside one another and as array elements. A view
+    // reused across values would keep the last row it read, and the row's memory, reachable.
+    val schema = new StructType()
+      .add("a", ArrayType(ArrayType(IntegerType)))
+      .add("s", new StructType().add("x", StringType).add("y", ArrayType(LongType)))
+      .add("m", MapType(StringType, new StructType().add("z", BinaryType)))
+      .add("as", ArrayType(new StructType().add("w", IntegerType)))
+      .add("am", ArrayType(MapType(IntegerType, StringType)))
+    val n = 20
+    val rnd = new Random(7)
+    val vectors = schema.fields.map(f => newVector(n, f.dataType, offHeap = false))
+    val allocator = new RootAllocator(Long.MaxValue)
+    val root = VectorSchemaRoot.create(Utils.toArrowSchema(schema, "UTC"), allocator)
+    try {
+      schema.fields.zip(vectors).foreach { case (field, v) =>
+        fill(v, field.dataType, n, rnd, nullFraction = 0.0, reversed = false)
+      }
+      val batch = new ColumnarBatch(vectors.toArray[ColumnVector], n)
+      val project = UnsafeProjection.create(schema)
+      val writer = ArrowWriter.create(root, n)
+      (0 until n).foreach { i =>
+        val row = project(batch.getRow(i)).copy()
+        writer.write(row)
+        withClue(s"row $i: ") {
+          reachable(writer, row.getBaseObject) shouldBe false
+        }
+      }
+    } finally {
+      root.close()
+      allocator.close()
+      vectors.foreach(_.close())
     }
   }
 
