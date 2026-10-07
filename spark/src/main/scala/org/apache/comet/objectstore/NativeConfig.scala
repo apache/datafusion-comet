@@ -260,6 +260,41 @@ object NativeConfig {
   }
 
   /**
+   * The object store options for a scan over `uris`, or the reason the native scan cannot read
+   * them. The options are those of the first URI. Native reads every file of a partition through
+   * the store built for the partition's first file, and an ABFS store is bound to one container
+   * of one account, so a scan whose ABFS files span more than one container or account, or that
+   * mixes ABFS and other schemes, is declined.
+   */
+  def extractScanObjectStoreOptions(
+      hadoopConf: Configuration,
+      uris: Iterable[URI]): Either[String, Map[String, String]] = {
+    val iter = uris.iterator
+    if (!iter.hasNext) {
+      return Right(Map.empty)
+    }
+    val first = iter.next()
+    val firstIsAbfs = isAbfs(first)
+    while (iter.hasNext) {
+      val uri = iter.next()
+      if (isAbfs(uri) != firstIsAbfs) {
+        return Left(
+          "Native scan does not support a scan that mixes ABFS and other file systems " +
+            s"(${first.getScheme} and ${uri.getScheme})")
+      }
+      if (firstIsAbfs && uri.getRawAuthority != first.getRawAuthority) {
+        return Left(
+          "Native scan does not support ABFS files from more than one container or account " +
+            s"(${first.getRawAuthority} and ${uri.getRawAuthority})")
+      }
+    }
+    Right(extractObjectStoreOptions(hadoopConf, first))
+  }
+
+  private def isAbfs(uri: URI): Boolean =
+    lowerScheme(uri).exists(scheme => scheme == "abfs" || scheme == "abfss")
+
+  /**
    * The value Hadoop's own consumers observe for `key`. `Configuration#get` expands any `${...}`
    * variable reference in the stored value against other conf entries and system properties,
    * while `Configuration.Entry#getValue` (what `iterator()` surfaces) is the raw, unexpanded

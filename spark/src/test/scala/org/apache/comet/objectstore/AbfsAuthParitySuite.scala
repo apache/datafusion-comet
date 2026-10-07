@@ -80,7 +80,10 @@ class AbfsAuthParitySuite extends AnyFunSuite with Matchers with BeforeAndAfterA
     .filter(p => p.nonEmpty && p != "null" && !p.startsWith("$"))
     .map(p => Paths.get(p))
 
-  private val tempDir: Path = Files.createTempDirectory("abfs-auth-parity")
+  // The build points java.io.tmpdir under target/, which a fresh checkout may not have yet.
+  private val tempDir: Path = Files.createTempDirectory(
+    Files.createDirectories(Paths.get(System.getProperty("java.io.tmpdir"))),
+    "abfs-auth-parity")
   private val keystore: Path = tempDir.resolve("credentials.jceks")
   private val credentialProviderPath = "jceks://file" + keystore.toUri.getPath
 

@@ -32,6 +32,7 @@ import org.apache.spark.sql.execution.datasources.v2.csv.CSVScan
 import com.google.common.base.Objects
 
 import org.apache.comet.{CometConf, ConfigEntry}
+import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass}
 import org.apache.comet.serde.OperatorOuterClass.Operator
@@ -93,6 +94,18 @@ object CometCsvNativeScanExec extends CometOperatorSerde[CometBatchScanExec] {
       new CSVOptions(csvScan.options.asScala.toMap, columnPruning, timeZone)
     }
     val filePartitions = op.inputPartitions.map(_.asInstanceOf[FilePartition])
+    val hadoopConf =
+      sessionState.newHadoopConfWithOptions(op.session.sparkContext.conf.getAll.toMap)
+    val fileUris = filePartitions.view.flatMap(_.files).map(_.pathUri)
+    val objectStoreOptions =
+      NativeConfig.extractScanObjectStoreOptions(hadoopConf, fileUris) match {
+        case Right(options) => options
+        case Left(reason) =>
+          // CometExecRule falls back to the wrapped Spark scan, so it carries the reason too.
+          withFallbackReason(op, reason)
+          withFallbackReason(op.wrapped, reason)
+          return None
+      }
     val csvOptionsProto = csvOptions2Proto(options)
     val dataSchemaProto = schema2Proto(csvScan.dataSchema)
     val readSchemaFieldNames = csvScan.readDataSchema.fieldNames
@@ -103,15 +116,6 @@ object CometCsvNativeScanExec extends CometOperatorSerde[CometBatchScanExec] {
       .map(_._2.asInstanceOf[Integer])
     val partitionSchemaProto = schema2Proto(csvScan.readPartitionSchema)
     val partitionsProto = filePartitions.map(partition2Proto(_, csvScan.readPartitionSchema))
-
-    val objectStoreOptions = filePartitions.headOption
-      .flatMap { partitionFile =>
-        val hadoopConf = sessionState
-          .newHadoopConfWithOptions(op.session.sparkContext.conf.getAll.toMap)
-        partitionFile.files.headOption
-          .map(file => NativeConfig.extractObjectStoreOptions(hadoopConf, file.pathUri))
-      }
-      .getOrElse(Map.empty)
 
     csvScanBuilder.putAllObjectStoreOptions(objectStoreOptions.asJava)
     csvScanBuilder.setCsvOptions(csvOptionsProto)

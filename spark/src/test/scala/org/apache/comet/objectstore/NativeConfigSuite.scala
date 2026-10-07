@@ -413,4 +413,80 @@ class NativeConfigSuite extends AnyFunSuite with Matchers {
       assert(!opts.keys.exists(_.startsWith("comet.azure.")), s"$path: $opts")
     }
   }
+
+  private def abfsFile(container: String, account: String, file: String): URI =
+    new URI(s"abfss://$container@$account.dfs.core.windows.net/path/$file")
+
+  private def assertDeclined(hadoopConf: Configuration, uris: Seq[URI]): Unit =
+    NativeConfig.extractScanObjectStoreOptions(hadoopConf, uris) match {
+      case Left(reason) =>
+        reason should include(uris.head.getRawAuthority)
+        reason should include(uris.last.getRawAuthority)
+      case Right(options) => fail(s"expected a decline, got $options")
+    }
+
+  test("extractScanObjectStoreOptions - abfs accounts with different keys decline the scan") {
+    val hadoopConf = new Configuration()
+    hadoopConf.set("fs.azure.account.key.accta.dfs.core.windows.net", "a2V5LWE=")
+    hadoopConf.set("fs.azure.account.key.acctb.dfs.core.windows.net", "a2V5LWI=")
+    assertDeclined(
+      hadoopConf,
+      Seq(
+        abfsFile("data", "accta", "a1.parquet"),
+        abfsFile("data", "accta", "a2.parquet"),
+        abfsFile("data", "acctb", "b1.parquet")))
+  }
+
+  test("extractScanObjectStoreOptions - containers of one account decline the scan") {
+    // Native reads a whole partition through the store of its first file's container.
+    val hadoopConf = new Configuration()
+    hadoopConf.set("fs.azure.account.key.accta.dfs.core.windows.net", "a2V5LWE=")
+    assertDeclined(
+      hadoopConf,
+      Seq(abfsFile("data", "accta", "a1.parquet"), abfsFile("logs", "accta", "a2.parquet")))
+  }
+
+  test("extractScanObjectStoreOptions - accounts sharing a global key decline the scan") {
+    val hadoopConf = new Configuration()
+    hadoopConf.set("fs.azure.account.key", "Z2xvYmFs")
+    assertDeclined(
+      hadoopConf,
+      Seq(abfsFile("data", "accta", "a.parquet"), abfsFile("data", "acctb", "b.parquet")))
+  }
+
+  test("extractScanObjectStoreOptions - files in one container keep the first file's options") {
+    val hadoopConf = new Configuration()
+    hadoopConf.set("fs.azure.account.key.accta.dfs.core.windows.net", "a2V5LWE=")
+    val uris = (1 to 5).map(i => abfsFile("data", "accta", s"a$i.parquet"))
+
+    val single = NativeConfig.extractObjectStoreOptions(hadoopConf, uris.head)
+    assert(single("fs.azure.account.key") == "a2V5LWE=", single.toString)
+    NativeConfig.extractScanObjectStoreOptions(hadoopConf, uris) shouldBe Right(single)
+  }
+
+  test("extractScanObjectStoreOptions - abfs and non-abfs files in one scan decline it") {
+    val hadoopConf = new Configuration()
+    hadoopConf.set("fs.azure.account.key", "Z2xvYmFs")
+    val abfs = abfsFile("data", "accta", "a.parquet")
+    val s3 = new URI("s3a://bucket/path/b.parquet")
+
+    Seq(Seq(abfs, s3), Seq(s3, abfs)).foreach { uris =>
+      val result = NativeConfig.extractScanObjectStoreOptions(hadoopConf, uris)
+      assert(result.isLeft, s"$uris: $result")
+    }
+  }
+
+  test("extractScanObjectStoreOptions - non-abfs scans keep the first file's options") {
+    val hadoopConf = new Configuration()
+    hadoopConf.set("fs.s3a.access.key", "s3-access-key")
+    hadoopConf.set("fs.s3a.bucket.other.access.key", "other-access-key")
+    val uris = Seq(
+      new URI("s3a://bucket/path/a.parquet"),
+      new URI("s3a://other/path/b.parquet"),
+      new URI("s3://bucket/path/c.parquet"))
+
+    NativeConfig.extractScanObjectStoreOptions(hadoopConf, uris) shouldBe
+      Right(NativeConfig.extractObjectStoreOptions(hadoopConf, uris.head))
+    NativeConfig.extractScanObjectStoreOptions(hadoopConf, Seq.empty) shouldBe Right(Map.empty)
+  }
 }
