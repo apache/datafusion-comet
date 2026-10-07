@@ -57,6 +57,11 @@ This applies to Spark row and columnar inputs when conversion is enabled for the
 Other array element types, nested arrays, arrays of structs, maps, and non-binary string
 collations remain unsupported at this conversion boundary. Source defaults are unchanged.
 
+Comet does not convert a source when the query uses `input_file_name()`,
+`input_file_block_start()` or `input_file_block_length()`, so the operators above it run in Spark.
+These functions report the file that Spark's reader is on when Spark evaluates them, and the
+conversion and the Comet operators above it would read ahead of that.
+
 ## Data Catalogs
 
 ### Apache Iceberg
