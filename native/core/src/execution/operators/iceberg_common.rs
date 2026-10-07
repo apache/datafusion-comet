@@ -46,7 +46,14 @@ const ICEBERG_PROVIDER_CLASS_PROPERTY: &str = "s3.comet.credential.provider.clas
 /// URI, OAuth tokens, credentials.uri, tenant-id, etc.) is kept upstream so
 /// `CometS3CredentialBridge` can read whatever the vendor needs. `opendal.` carries
 /// iceberg-storage-opendal's own settings, such as `opendal.io-timeout-ms`.
-const STORAGE_PROPERTY_PREFIXES: &[&str] = &["s3.", "gcs.", "adls.", "client.", "opendal."];
+///
+/// `hdfs.` carries the NameNode declarations (`hdfs.name-node.<nameservice>`) and `hadoop.` the
+/// HDFS client overrides; dropping them would leave an HA table's nameservice authority
+/// undeclared, and iceberg-rust cannot resolve it (see
+/// `CometIcebergNativeScan.hadoopToIcebergHdfsProperties`).
+const STORAGE_PROPERTY_PREFIXES: &[&str] = &[
+    "s3.", "gcs.", "adls.", "client.", "opendal.", "hdfs.", "hadoop.",
+];
 
 /// Pick an OpenDAL storage backend from a URI's scheme. `file` (or no scheme) falls through to
 /// the local file system. `memory` is used by the write path to assemble manifest bytes that
@@ -72,6 +79,10 @@ pub(crate) fn storage_factory_for(
         "file" => Ok((Arc::new(OpenDalStorageFactory::Fs), true)),
         "memory" => Ok((Arc::new(OpenDalStorageFactory::Memory), true)),
         "gs" => Ok((Arc::new(OpenDalStorageFactory::Gcs), true)),
+        // iceberg-rust's pure-Rust `hdfs-native` backend -- NOT the libhdfs/JNI client the
+        // plain-Parquet path uses (`fs.comet.libhdfs.schemes`). Both link into the same
+        // `libcomet`, but they are separate clients with separate connections and Kerberos state.
+        "hdfs" => Ok((Arc::new(OpenDalStorageFactory::HdfsNative), true)),
         // Reads keep the OSS backend they have always had (CometScanRule admits `oss` scan
         // locations through HadoopFileIO). Writes fail closed: Comet does not forward `oss.*`
         // properties into the FileIO and no test covers the write path, so OSS-specific
@@ -328,6 +339,18 @@ pub(crate) fn load_file_io(
     )
 }
 
+/// The catalog properties iceberg-rust's `FileIO` is given: those under a
+/// [`STORAGE_PROPERTY_PREFIXES`] entry. The full unfiltered bag (catalog URI, OAuth tokens,
+/// credentials.uri, tenant-id, etc.) is kept upstream so `CometS3CredentialBridge` can read
+/// whatever the vendor needs.
+fn storage_properties(
+    catalog_properties: &HashMap<String, String>,
+) -> impl Iterator<Item = (&String, &String)> {
+    catalog_properties
+        .iter()
+        .filter(|(key, _)| STORAGE_PROPERTY_PREFIXES.iter().any(|p| key.starts_with(p)))
+}
+
 /// Build a `FileIO` whose storage scheme is inferred from `reference_path` and whose properties
 /// come from the catalog. The reference path is the metadata location for reads or the data
 /// location for writes — anything that carries the right URI scheme. `catalog_name` is the
@@ -347,13 +370,8 @@ fn build_file_io(
     )?;
     let mut file_io_builder = FileIOBuilder::new(factory);
 
-    // Narrow to storage-prefix keys before forwarding to iceberg-rust's FileIO. The full
-    // unfiltered bag (catalog URI, OAuth tokens, credentials.uri, tenant-id, etc.) is kept
-    // upstream so CometS3CredentialBridge can read whatever the vendor needs.
-    for (key, value) in catalog_properties {
-        if STORAGE_PROPERTY_PREFIXES.iter().any(|p| key.starts_with(p)) {
-            file_io_builder = file_io_builder.with_prop(key, value);
-        }
+    for (key, value) in storage_properties(catalog_properties) {
+        file_io_builder = file_io_builder.with_prop(key, value);
     }
 
     // Object-store's AmazonS3Builder defaults the SigV4 region to `us-east-1` when unset;
@@ -592,6 +610,8 @@ fn is_s3_family_scheme(scheme: &str, catalog_properties: &HashMap<String, String
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
 
     #[test]
@@ -688,6 +708,69 @@ mod tests {
         assert!(
             FileIoCacheKey::new(&HashMap::new(), "memory:///", "", AccessMode::Write).is_none()
         );
+    }
+
+    /// The cache is shared per executor, and an HDFS `FileIO` keeps its NameNode clients for life.
+    /// Two catalogs that differ only in how they reach HDFS must therefore never share a key, or
+    /// the second would be served by the first one's clients. A regression pin on the key: it
+    /// hashes every property, so this does not cover the `hdfs.`/`hadoop.` forwarding itself
+    /// (`storage_properties_keep_hdfs_and_hadoop_and_drop_catalog_identity` and
+    /// `hdfs_properties_reach_the_file_io` do).
+    #[test]
+    fn cache_key_separates_hdfs_catalogs() {
+        let table = "hdfs://nameservice1/warehouse/db/t";
+        let props = |name_node: &str, random_order: &str| {
+            HashMap::from([
+                // What the Scala side emits for an `hdfs://nameservice1/...` table.
+                (
+                    "hdfs.name-node.nameservice1".to_string(),
+                    name_node.to_string(),
+                ),
+                (
+                    "hadoop.dfs.client.failover.random.order".to_string(),
+                    random_order.to_string(),
+                ),
+            ])
+        };
+        let key = |props: &HashMap<String, String>| {
+            FileIoCacheKey::new(props, table, "cat", AccessMode::Read)
+        };
+        let base = props("hdfs://nn1:8020,hdfs://nn2:8020", "true");
+
+        // Control: the same properties always give the same key, so the inequalities below are
+        // down to the one property that changed.
+        assert!(key(&base).is_some());
+        assert_eq!(key(&base), key(&base.clone()));
+
+        // Only the `hdfs.name-node.nameservice1` declaration differs: another NameNode, another
+        // list, the same list reordered (which changes the failover order), and no list at all.
+        for other in [
+            props("hdfs://nn1:8020,hdfs://nn3:8020", "true"),
+            props("hdfs://nn1:8020", "true"),
+            props("hdfs://nn2:8020,hdfs://nn1:8020", "true"),
+        ] {
+            assert_ne!(key(&base), key(&other), "{other:?}");
+        }
+        let mut without_name_node = base.clone();
+        without_name_node.remove("hdfs.name-node.nameservice1");
+        assert_ne!(key(&base), key(&without_name_node));
+
+        // Only the `hadoop.dfs.client.failover.*` overrides differ: a changed value, an added
+        // override and a removed one.
+        let mut other_failover = base.clone();
+        other_failover.insert(
+            "hadoop.dfs.client.failover.proxy.provider.nameservice1".to_string(),
+            "org.apache.hadoop.hdfs.server.namenode.ha.ConfiguredFailoverProxyProvider".to_string(),
+        );
+        let mut without_failover = base.clone();
+        without_failover.remove("hadoop.dfs.client.failover.random.order");
+        for other in [
+            props("hdfs://nn1:8020,hdfs://nn2:8020", "false"),
+            other_failover,
+            without_failover,
+        ] {
+            assert_ne!(key(&base), key(&other), "{other:?}");
+        }
     }
 
     #[test]
@@ -840,7 +923,9 @@ mod tests {
 
     #[test]
     fn unknown_scheme_is_rejected() {
-        let err = factory_result("hdfs://nn/db/table", AccessMode::Read).unwrap_err();
+        // object_store recognizes abfss, but iceberg-rust's OpenDAL storage factory has no arm
+        // for it, so the JVM gate must decline rather than fail here at execution time.
+        let err = factory_result("abfss://c@acct/db/table", AccessMode::Read).unwrap_err();
         assert!(
             err.contains("Unsupported storage scheme"),
             "unexpected error: {err}"
@@ -867,6 +952,164 @@ mod tests {
             "arn:aws:iam::1:role/r".to_string(),
         );
         assert!(has_explicit_s3_credentials(&blank));
+    }
+
+    #[test]
+    fn hdfs_scheme_resolves_for_both_modes() {
+        // Unlike `oss`, writes are admitted: `hdfs.`/`hadoop.` properties are forwarded, so
+        // nothing is silently dropped.
+        for mode in [AccessMode::Read, AccessMode::Write] {
+            assert!(factory_result("hdfs://nn:8020/warehouse/db/t", mode).is_ok());
+            assert!(factory_result("hdfs://nameservice1/warehouse/db/t", mode).is_ok());
+        }
+    }
+
+    /// The HDFS properties the Scala side emits (`hdfs.name-node.<nameservice>` from
+    /// `hadoopToIcebergHdfsProperties`, `hadoop.*` from the catalog) next to the catalog identity
+    /// that must stay out of iceberg-rust's `FileIO`.
+    fn hdfs_catalog_properties() -> HashMap<String, String> {
+        HashMap::from([
+            (
+                "hdfs.name-node.nameservice1".to_string(),
+                "hdfs://nn1:8020,hdfs://nn2:8020".to_string(),
+            ),
+            (
+                "hadoop.dfs.client.failover.random.order".to_string(),
+                "true".to_string(),
+            ),
+            ("uri".to_string(), "thrift://metastore:9083".to_string()),
+            (
+                "warehouse".to_string(),
+                "hdfs://nameservice1/wh".to_string(),
+            ),
+            ("token".to_string(), "oauth-token".to_string()),
+            ("credential".to_string(), "client:secret".to_string()),
+            // The prefixes end in a dot: a bare key or a longer word is not under them.
+            ("hdfs".to_string(), "bare".to_string()),
+            ("hadoopish.key".to_string(), "lookalike".to_string()),
+        ])
+    }
+
+    #[test]
+    fn storage_properties_keep_hdfs_and_hadoop_and_drop_catalog_identity() {
+        let props = hdfs_catalog_properties();
+
+        let forwarded: BTreeMap<&str, &str> = storage_properties(&props)
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+
+        // If the narrowing drops these, an HA table connects to its nameservice as if it were a
+        // host and fails only once a task opens a file.
+        assert_eq!(
+            forwarded,
+            BTreeMap::from([
+                ("hadoop.dfs.client.failover.random.order", "true"),
+                (
+                    "hdfs.name-node.nameservice1",
+                    "hdfs://nn1:8020,hdfs://nn2:8020"
+                ),
+            ])
+        );
+    }
+
+    /// `build_file_io` has to use [`storage_properties`]: the properties a `FileIO` ends up with
+    /// are what the HDFS storage is later built from. `FileIOBuilder::build` is lazy and cannot
+    /// fail, so only the `FileIO`'s own config shows what was forwarded.
+    #[test]
+    fn hdfs_properties_reach_the_file_io() {
+        let (file_io, cacheable) = build_file_io(
+            &hdfs_catalog_properties(),
+            "hdfs://nameservice1/db/t",
+            "cat",
+            AccessMode::Read,
+        )
+        .unwrap();
+
+        assert!(cacheable);
+        assert_eq!(
+            file_io.config().props(),
+            &HashMap::from([
+                (
+                    "hdfs.name-node.nameservice1".to_string(),
+                    "hdfs://nn1:8020,hdfs://nn2:8020".to_string()
+                ),
+                (
+                    "hadoop.dfs.client.failover.random.order".to_string(),
+                    "true".to_string()
+                ),
+            ])
+        );
+    }
+
+    /// Builds the real HDFS storage from one property the way a `FileIO` does on first use.
+    /// Parsing is all it does: an operator, and with it a NameNode connection, is only made by
+    /// the first storage call, so this needs neither a NameNode nor a runtime. The storage is
+    /// inspected through its serde form, so this is a contract test on the pinned iceberg-rust
+    /// (mixermt/iceberg-rust b9624086, apache/iceberg-rust#3111) and its config field names.
+    fn build_hdfs_storage(key: &str, value: &str) -> Result<serde_json::Value, String> {
+        let config =
+            StorageConfig::from_props(HashMap::from([(key.to_string(), value.to_string())]));
+        let storage = OpenDalStorageFactory::HdfsNative
+            .build(&config)
+            .map_err(|e| e.to_string())?;
+        Ok(serde_json::to_value(&*storage).expect("the storage serializes"))
+    }
+
+    /// One Hadoop option of the parsed storage config.
+    fn parsed_option<'a>(storage: &'a serde_json::Value, key: &str) -> Option<&'a str> {
+        storage
+            .pointer("/HdfsNative/config/options")
+            .and_then(|options| options.get(key))
+            .and_then(serde_json::Value::as_str)
+    }
+
+    /// The contract `CometIcebergNativeScan.hadoopToIcebergHdfsProperties` relies on: it declares
+    /// an HA nameservice as `hdfs.name-node.<nameservice>`, and iceberg-rust expands that into
+    /// Hadoop's own `dfs.ha.namenodes.<ns>` / `dfs.namenode.rpc-address.<ns>.<nn>`, the keys its
+    /// resolver reads for a portless path authority. A portless entry is refused when the
+    /// storage is built, naming the key and the entry.
+    #[test]
+    fn hdfs_nameservice_declaration_is_parsed_by_the_real_storage() {
+        for input in [
+            "hdfs://nn1:8020,hdfs://nn2:8020",
+            // Whitespace around entries, a trailing slash and a missing prefix are tolerated.
+            " hdfs://nn1:8020/ , nn2:8020 ",
+        ] {
+            let storage = build_hdfs_storage("hdfs.name-node.ns1", input)
+                .unwrap_or_else(|e| panic!("`{input}` should be accepted: {e}"));
+            assert_eq!(
+                parsed_option(&storage, "dfs.ha.namenodes.ns1"),
+                Some("nn0,nn1"),
+                "input `{input}`: {storage}"
+            );
+            assert_eq!(
+                parsed_option(&storage, "dfs.namenode.rpc-address.ns1.nn0"),
+                Some("nn1:8020"),
+                "input `{input}`: {storage}"
+            );
+            assert_eq!(
+                parsed_option(&storage, "dfs.namenode.rpc-address.ns1.nn1"),
+                Some("nn2:8020"),
+                "input `{input}`: {storage}"
+            );
+        }
+
+        // A portless entry would only fail at the first I/O, so it is refused here, and the
+        // error names the offending key and entry rather than the whole list.
+        let err =
+            build_hdfs_storage("hdfs.name-node.ns1", "hdfs://nn1:8020,hdfs://nn2").unwrap_err();
+        assert!(
+            err.contains("hdfs.name-node.ns1")
+                && err.contains("hdfs://nn2")
+                && !err.contains("nn1"),
+            "unexpected error: {err}"
+        );
+        // The global key keeps its own validation; Comet no longer emits it, but a catalog may.
+        let err = build_hdfs_storage("hdfs.name-node", "hdfs://ns1").unwrap_err();
+        assert!(
+            err.contains("hdfs.name-node") && err.contains("hdfs://ns1"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

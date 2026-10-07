@@ -67,10 +67,7 @@ would remove JVM round-trips beyond those the lambda work above addresses.
 Comet's native Iceberg scans read V3 tables, including encrypted tables ([#4991]) and tables with deletion vectors
 ([#5853]). We want to add the remaining V3 features so that these scans don't fall back to Spark: row lineage
 metadata columns, column default values, and the new V3 types (`variant`, `geometry`, `geography`, and `unknown`).
-The work is tracked in [#3376], and upstream `iceberg-rust` support in [iceberg-rust #2411]. Native Iceberg scans
-also don't support HDFS-backed tables today: Comet's native Iceberg storage layer handles only local files, S3 and
-S3-compatible stores, GCS, and OSS, and would need an HDFS `StorageFactory` upstream in `iceberg-storage-opendal`.
-We're scoping what that work would take.
+The work is tracked in [#3376], and upstream `iceberg-rust` support in [iceberg-rust #2411].
 
 [#3376]: https://github.com/apache/datafusion-comet/issues/3376
 [#4991]: https://github.com/apache/datafusion-comet/pull/4991

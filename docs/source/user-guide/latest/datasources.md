@@ -112,8 +112,9 @@ attaches its own worker threads, so a worker that has read from HDFS can crash t
 the HDFS read itself, typically while an unrelated query is running.
 ```
 
-Native Iceberg scans do not support HDFS-backed tables; those scans fall back to Spark. See the
-[Comet and Iceberg Guide](iceberg.md).
+Native Iceberg scans and writes on `hdfs://` tables do not go through `libhdfs`. They use iceberg-rust's
+own pure-Rust HDFS client, which is part of every Comet build and is configured separately from the
+settings on this page. See [Object store configuration (HDFS)](iceberg.md#object-store-configuration-hdfs).
 
 ### Building Comet with HDFS support
 

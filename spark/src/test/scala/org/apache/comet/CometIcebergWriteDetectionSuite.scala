@@ -540,13 +540,88 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
         dir,
         "bad_scheme",
         partitionSpec = "",
-        properties = Some("'write.data.path'='hdfs://nonexistent.invalid/iceberg/db/bad_scheme'"))
-      assertUnsupportedContainsAllowingWriteFailure("bad_scheme", "storage scheme", "hdfs")
+        // abfss: object_store reads it, but iceberg-rust's OpenDAL factory has no arm for it.
+        properties =
+          Some("'write.data.path'='abfss://c@nonexistent.invalid/iceberg/db/bad_scheme'"))
+      assertUnsupportedContainsAllowingWriteFailure("bad_scheme", "storage scheme", "abfss")
+    }
+  }
+
+  test("Compatible when the data location scheme is hdfs") {
+    withDetectionCatalog { dir =>
+      createTable(
+        dir,
+        "hdfs_scheme",
+        partitionSpec = "",
+        properties =
+          Some("'write.data.path'='hdfs://nonexistent.invalid:8020/iceberg/db/hdfs_scheme'"))
+      assertSupportLevelIs[Compatible]("hdfs_scheme", allowWriteFailure = true)
+    }
+  }
+
+  test("fall-back: authority-less hdfs data location") {
+    // iceberg-rust would need `hdfs.name-node`, `hdfs.host`/`hdfs.port` or `hadoop.fs.defaultFS`
+    // for it, which Comet never relies on; the scheme rule declines it before the NameNode rule.
+    // Planned only, never executed: no filesystem on this classpath reaches it.
+    withDetectionCatalog { dir =>
+      createTable(
+        dir,
+        "hdfs_no_authority",
+        partitionSpec = "",
+        properties = Some("'write.data.path'='hdfs:///iceberg/db/hdfs_no_authority'"))
+      assertUnsupportedContains(
+        planInsertWriteExec(s"$catalog.$ns.hdfs_no_authority"),
+        "hdfs_no_authority",
+        "hdfs data location has no NameNode or nameservice in its authority",
+        "hdfs:///")
+    }
+  }
+
+  test("fall-back: hdfs data location in a nameservice that does not resolve to NameNodes") {
+    // `ns1` is a nameservice, not a host: without rpc-addresses to declare
+    // `hdfs.name-node.ns1` from, iceberg-rust could not resolve it and the task would fail on an
+    // executor.
+    withDetectionCatalog { dir =>
+      withSQLConf("dfs.nameservices" -> "ns1", "dfs.ha.namenodes.ns1" -> "nn1,nn2") {
+        createTable(
+          dir,
+          "hdfs_unresolved_ns",
+          partitionSpec = "",
+          properties = Some("'write.data.path'='hdfs://ns1/iceberg/db/hdfs_unresolved_ns'"))
+        assertUnsupportedContains(
+          planInsertWriteExec(s"$catalog.$ns.hdfs_unresolved_ns"),
+          "hdfs_unresolved_ns",
+          "nameservice 'ns1' but Comet could not resolve it",
+          "hdfs.name-node.ns1")
+      }
+    }
+  }
+
+  test("Compatible when the hdfs nameservice resolves to NameNodes") {
+    withDetectionCatalog { dir =>
+      // Planned only, never executed: running the INSERT would make the JVM client dial `ns1`
+      // (a host name to it without a failover proxy provider, which some resolvers answer) or,
+      // with one, retry the unreachable NameNodes with backoff for minutes.
+      withSQLConf(
+        "dfs.nameservices" -> "ns1",
+        "dfs.ha.namenodes.ns1" -> "nn1,nn2",
+        "dfs.namenode.rpc-address.ns1.nn1" -> "nn1.nonexistent.invalid:8020",
+        "dfs.namenode.rpc-address.ns1.nn2" -> "nn2.nonexistent.invalid:8020") {
+        createTable(
+          dir,
+          "hdfs_resolved_ns",
+          partitionSpec = "",
+          properties = Some("'write.data.path'='hdfs://ns1/iceberg/db/hdfs_resolved_ns'"))
+        val support = CometIcebergNativeWrite.getSupportLevel(
+          planInsertWriteExec(s"$catalog.$ns.hdfs_resolved_ns"))
+        assert(support.isInstanceOf[Compatible], s"expected Compatible, got $support")
+      }
     }
   }
 
   test("fall-back: hostless hdfs:/ data location is read as hdfs, not file") {
     // Hadoop normalises `hdfs:///p` to `hdfs:/p`; with no `://` the gate used to call it `file`.
+    // hdfs is a supported scheme on this branch, so the missing authority is what declines it.
     withDetectionCatalog { dir =>
       createTable(
         dir,
@@ -556,7 +631,7 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
       assertUnsupportedContains(
         planInsertWriteExec(s"$catalog.$ns.hostless_hdfs"),
         "hostless_hdfs",
-        "unsupported storage scheme: hdfs")
+        "hdfs data location has no NameNode or nameservice in its authority")
     }
   }
 

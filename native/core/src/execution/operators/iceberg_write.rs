@@ -620,6 +620,15 @@ impl Drop for AbortOnDrop {
             }
             // Dropped from a plain JVM thread (`releasePlan`): run the delete to completion so the
             // files are gone before the task reports its failure.
+            //
+            // This runtime is not the one the write ran on, which is only safe because a tracked
+            // location implies the `FileIO`'s storage was already built there. The `hdfs-native`
+            // operator is bound to the runtime that first builds it and is cached for good, so
+            // building it here would panic every later use with `JoinError::Cancelled`. That holds
+            // while a location is tracked and its operator built in the same poll (no yield
+            // between `generate_location` and `OutputFile::writer`) and the writes are polled
+            // inside Comet's global runtime. Capture the runtime `Handle` instead if either stops
+            // holding.
             Err(_) => match tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()

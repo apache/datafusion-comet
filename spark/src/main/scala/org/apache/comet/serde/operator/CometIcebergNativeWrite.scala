@@ -89,9 +89,13 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
   // `oss` is deliberately absent: iceberg-rust has an OSS backend, but Comet does not forward
   // `oss.*` catalog properties to it and no functional test covers the path, so an OSS write
   // could silently drop endpoint/credential configuration. Fail closed until it is covered.
+  //
+  // `hdfs` IS present: its NameNode endpoints are forwarded below, so nothing is dropped. The
+  // scheme alone does not make the location writable, though: `requireReachableHdfsNameNode`
+  // declines one whose NameNode the native client could not reach.
   // `gs` is additionally gated on the resolved FileIO (`requireGcsFileIOForGcsDataLocation`).
   private val SupportedStorageSchemes: Set[String] =
-    Set("file", "memory", "s3", "s3a", "gs")
+    Set("file", "memory", "s3", "s3a", "gs", "hdfs")
   // Supported schemes whose native backend is local and needs no host. Every other supported
   // scheme reads its bucket from the URL host (`requireSupportedStorageScheme`).
   private val LocalStorageSchemes: Set[String] = Set("file", "memory")
@@ -419,6 +423,7 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     requirePositiveIntParquetSizes,
     requireNoParquetHadoopConfOverrides,
     requireSupportedStorageScheme,
+    requireReachableHdfsNameNode,
     requireSupportedHadoopS3Settings,
     requireSupportedS3FileIOProperties,
     requireGcsFileIOForGcsDataLocation,
@@ -665,7 +670,9 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
         if (!SupportedStorageSchemes.contains(scheme)) {
           Some(s"unsupported storage scheme: $scheme")
         } else if (!LocalStorageSchemes.contains(scheme) && !hasBucketAuthority(location)) {
-          Some(s"$scheme data location has no bucket in its authority: $location")
+          // For hdfs the authority is the NameNode or nameservice rather than a bucket.
+          val missing = if (scheme == "hdfs") "NameNode or nameservice" else "bucket"
+          Some(s"$scheme data location has no $missing in its authority: $location")
         } else {
           None
         }
@@ -787,6 +794,38 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
       val properties = IcebergReflection.getFileIOProperties(ctx.table).getOrElse(Map.empty)
       unsupportedSettingsReason("S3 FileIO", unsupportedS3FileIOProperties(properties))
     }
+
+  // The scheme rule above admits any `hdfs://` location with an authority, but native dials an
+  // authority with a port as is and resolves a portless one (a nameservice) only through its
+  // `hdfs.name-node.<nameservice>` declaration. A NameNode entry that is not host:port or a
+  // nameservice that did not resolve would pass planning and then fail on an executor, so decline
+  // them here. The judgement uses the properties `buildIcebergWriteProto` hands to native (see
+  // `hdfsCatalogProperties`), so the decision and the execution agree.
+  private val requireReachableHdfsNameNode: TriggerRule = ctx =>
+    IcebergReflection.getDataLocation(ctx.table).filter(storageScheme(_) == "hdfs").flatMap {
+      location =>
+        val dataUri = new java.net.URI(location)
+        val fileIOProperties =
+          IcebergReflection.getFileIOProperties(ctx.table).getOrElse(Map.empty[String, String])
+        // Resolved as `buildIcebergWriteProto` does: the session configuration overlaid with the
+        // FileIO's (`effectiveHadoopConf`), so the decision and the executed declaration agree.
+        val resolutionConf =
+          CometIcebergNativeScan.hdfsResolutionConf(ctx.hadoopConf, Some(ctx.s3HadoopConf))
+        CometIcebergNativeScan.hdfsNameNodeFallbackReason(
+          dataUri,
+          resolutionConf,
+          hdfsCatalogProperties(dataUri, resolutionConf, fileIOProperties))
+    }
+
+  // NameNode-related catalog properties for native: the declaration derived from the session
+  // Hadoop configuration first, so an explicit catalog `hdfs.name-node.<nameservice>` among the
+  // FileIO properties wins, as on the scan path.
+  private def hdfsCatalogProperties(
+      dataUri: java.net.URI,
+      hadoopConf: Configuration,
+      fileIOProperties: Map[String, String]): Map[String, String] =
+    CometIcebergNativeScan.hadoopToIcebergHdfsProperties(dataUri, hadoopConf) ++
+      fileIOProperties
 
   // HadoopFileIO takes its GCS configuration from `fs.gs.*`, which is not forwarded to the
   // native writer (only `fs.s3a.*` is bridged). Admit a gs:// data location only when the FileIO
@@ -1154,8 +1193,15 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     val hadoopDerivedProperties = CometIcebergNativeScan.hadoopToIcebergS3Properties(
       NativeConfig.extractObjectStoreOptions(writeHadoopConf, dataUri),
       dataBucket)
+    // The HDFS properties are the ones `requireReachableHdfsNameNode` judged at planning time.
+    val hdfsResolutionConf = CometIcebergNativeScan.hdfsResolutionConf(
+      op.session.sessionState.newHadoopConf(),
+      Some(writeHadoopConf))
     val catalogProperties =
-      hadoopDerivedProperties ++ fileIOProperties + CometIcebergNativeScan.ioTimeoutProperty()
+      hadoopDerivedProperties ++ hdfsCatalogProperties(
+        dataUri,
+        hdfsResolutionConf,
+        fileIOProperties) + CometIcebergNativeScan.ioTimeoutProperty()
 
     val common = IcebergWriteProtoTranslation.buildCommon(
       catalogProperties = catalogProperties,

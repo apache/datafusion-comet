@@ -25,12 +25,14 @@ import java.nio.file.Files
 import java.util.UUID
 
 import org.apache.commons.io.FileUtils
+import org.apache.iceberg.{DataFiles, FileFormat, Table}
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.{CometTestBase, SaveMode}
-import org.apache.spark.sql.comet.CometScanExec
+import org.apache.spark.sql.comet.{CometBatchScanExec, CometScanExec}
 import org.apache.spark.sql.execution.{FileSourceScanExec, SparkPlan}
+import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 
-import org.apache.comet.CometConf
+import org.apache.comet.{CometConf, CometExplainInfo, CometIcebergTestBase}
 import org.apache.comet.hadoop.fs.{FakeHDFSFileSystem, FakeHdfsSchemeFileSystem}
 
 /**
@@ -43,7 +45,7 @@ import org.apache.comet.hadoop.fs.{FakeHDFSFileSystem, FakeHdfsSchemeFileSystem}
  * native probe is cached per probe URL so an authorityless URL can't poison the authority-bearing
  * form of the same scheme.
  */
-class CometScanSchemeFallbackSuite extends CometTestBase {
+class CometScanSchemeFallbackSuite extends CometTestBase with CometIcebergTestBase {
 
   private var fakeRootDir: File = _
 
@@ -129,7 +131,10 @@ class CometScanSchemeFallbackSuite extends CometTestBase {
       "s3://bucket/key.parquet",
       "s3a://bucket/key.parquet",
       "gs://bucket/key.parquet",
-      "oss://bucket/key.parquet").foreach { u =>
+      "oss://bucket/key.parquet",
+      // hdfs-native backend, not the libhdfs/JNI client the plain-Parquet path uses.
+      "hdfs://nn:8020/warehouse/db/t/key.parquet",
+      "hdfs://nameservice1/warehouse/db/t/key.parquet").foreach { u =>
       assert(
         CometScanRule.isIcebergReadableScheme(new URI(u), Set.empty),
         s"$u must be iceberg-readable; icebergReadableSchemes has regressed")
@@ -216,6 +221,13 @@ class CometScanSchemeFallbackSuite extends CometTestBase {
     assert(
       !openable("blob:///bucket/k.parquet", Set.empty),
       "without opt-in, blob gets no bucket promotion, so a hostless blob location is unopenable")
+    // hdfs: the authority is the NameNode, and the gate runs before the catalog properties that
+    // could supply one, so a hostless location declines rather than guess.
+    assert(openable("hdfs://nn:8020/warehouse/db/t/k.parquet"))
+    assert(openable("hdfs://nameservice1/warehouse/db/t/k.parquet"))
+    assert(
+      !openable("hdfs:///warehouse/db/t/k.parquet"),
+      "authorityless hdfs:/// carries no NameNode and gets no promotion")
   }
 
   test("native scan claims hdfs:// when libhdfs.schemes is unset (native-default lockstep)") {
@@ -244,5 +256,213 @@ class CometScanSchemeFallbackSuite extends CometTestBase {
           s"but it fell back to Spark:\n$transformed")
       assert(sparkScans.isEmpty, s"expected no leftover Spark FileSourceScanExec:\n$transformed")
     }
+  }
+
+  // --- Iceberg scans over HDFS data files ---------------------------------------------------
+  //
+  // These drive the real planner gate (`CometScanRule` on a `BatchScanExec` over a real Iceberg
+  // table) rather than the static helpers above, because the NameNode decisions need the catalog
+  // properties the rule assembles from the session Hadoop configuration. The data files are only
+  // registered in the table's manifests, with the `hdfs://` paths the test names: planning reads
+  // manifests, never the data files, so nothing here needs a NameNode and nothing is executed.
+
+  /**
+   * Plans `SELECT id` over an Iceberg table whose data files sit at `dataFiles`, applies
+   * `CometScanRule` with native Iceberg scans enabled and `hadoopConf` set on the session, and
+   * returns the scans the rule claimed plus the fallback reasons it left on the ones it declined.
+   */
+  private def planIcebergScanOverHdfs(
+      dataFiles: Seq[String],
+      hadoopConf: Seq[(String, String)] = Seq.empty,
+      catalogProps: Seq[(String, String)] = Seq.empty): (Seq[CometBatchScanExec], Set[String]) = {
+    // A catalog of its own, so no test reads another's cached catalog or warehouse.
+    val catalog = s"hdfs_gate_${UUID.randomUUID().toString.take(8)}"
+    var claimed = Seq.empty[CometBatchScanExec]
+    var reasons = Set.empty[String]
+    // Catalog options set before the catalog's first use, so its FileIO is built with them.
+    val catalogConfs = catalogProps.map { case (k, v) => s"spark.sql.catalog.$catalog.$k" -> v }
+    withHadoopCatalog(catalog) {
+      withSQLConf(catalogConfs: _*) {
+        spark.sql(s"CREATE TABLE $catalog.db.t (id INT) USING iceberg")
+        val table = loadIcebergTable(spark, catalog, "db", "t").asInstanceOf[Table]
+        val append = table.newAppend()
+        dataFiles.foreach { path =>
+          append.appendFile(
+            DataFiles
+              .builder(table.spec())
+              .withPath(path)
+              .withFormat(FileFormat.PARQUET)
+              .withFileSizeInBytes(1024)
+              .withRecordCount(1)
+              .build())
+        }
+        append.commit()
+
+        // The Spark plan first, with Comet off, then the rule alone: no execution.
+        var sparkPlan: SparkPlan = null
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          sparkPlan = spark.sql(s"SELECT id FROM $catalog.db.t").queryExecution.executedPlan
+        }
+        val confs = Seq(
+          CometConf.COMET_ENABLED.key -> "true",
+          CometConf.COMET_EXEC_ENABLED.key -> "true",
+          CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") ++ hadoopConf
+        withSQLConf(confs: _*) {
+          val transformed = CometScanRule(spark).apply(stripAQEPlan(sparkPlan))
+          claimed = transformed.collect { case s: CometBatchScanExec => s }
+          reasons = transformed
+            .collect { case s: BatchScanExec =>
+              s.getTagValue(CometExplainInfo.FALLBACK_REASONS).getOrElse(Set.empty[String])
+            }
+            .flatten
+            .toSet
+        }
+      }
+    }
+    (claimed, reasons)
+  }
+
+  test("iceberg scan: a configured HDFS nameservice that does not resolve is declined") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    // nn2 has no rpc-address, so the `hdfs.name-node.ns1` declaration is all-or-nothing empty and
+    // iceberg-rust could not resolve `ns1` on the executor.
+    val (claimed, reasons) = planIcebergScanOverHdfs(
+      Seq("hdfs://ns1/warehouse/db/t/a.parquet"),
+      Seq(
+        "dfs.nameservices" -> "ns1",
+        "dfs.ha.namenodes.ns1" -> "nn1,nn2",
+        "dfs.namenode.rpc-address.ns1.nn1" -> "nn1.example.com:8020"))
+    assert(claimed.isEmpty, "an unresolvable nameservice must not be claimed natively")
+    assert(
+      reasons.exists(_.contains("nameservice 'ns1' but Comet could not resolve it")),
+      s"expected the nameservice fall-back reason, got: $reasons")
+  }
+
+  test("iceberg scan: a nameservice listed only in dfs.nameservices is declined") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    val (claimed, reasons) = planIcebergScanOverHdfs(
+      Seq("hdfs://ns1/warehouse/db/t/a.parquet"),
+      Seq("dfs.nameservices" -> "ns1,ns2"))
+    assert(claimed.isEmpty, "a configured nameservice without NameNodes must not be claimed")
+    assert(
+      reasons.exists(_.contains("nameservice 'ns1' but Comet could not resolve it")),
+      s"expected the nameservice fall-back reason, got: $reasons")
+  }
+
+  test("iceberg scan: a resolvable HDFS nameservice is claimed with its NameNode declaration") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    // The control for the two tests above, and for the multi-authority one below: the same table
+    // shape is claimed once the nameservice resolves, so the declines are down to the gate under
+    // test.
+    val (claimed, reasons) = planIcebergScanOverHdfs(
+      Seq("hdfs://ns1/warehouse/db/t/a.parquet"),
+      Seq(
+        "dfs.nameservices" -> "ns1",
+        "dfs.ha.namenodes.ns1" -> "nn1,nn2",
+        "dfs.namenode.rpc-address.ns1.nn1" -> "nn1.example.com:9000",
+        "dfs.namenode.rpc-address.ns1.nn2" -> "hdfs://nn2.example.com:8020/"))
+    assert(claimed.size == 1, s"expected the scan to be claimed, fell back with: $reasons")
+    val properties = claimed.head.nativeIcebergScanMetadata.get.catalogProperties
+    // The per-nameservice key iceberg-rust resolves `hdfs://ns1` through; the global
+    // `hdfs.name-node` would only serve authority-less paths.
+    assert(
+      properties.get("hdfs.name-node.ns1") ==
+        Some("hdfs://nn1.example.com:9000,hdfs://nn2.example.com:8020"),
+      s"unexpected catalog properties: $properties")
+    assert(!properties.contains("hdfs.name-node"), s"unexpected catalog properties: $properties")
+  }
+
+  test("iceberg scan: a portless plain HDFS host is claimed on the default NameNode port") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    // Not a configured nameservice, so it is a host the JVM dials on 8020; iceberg-rust has no
+    // default port, so Comet declares it.
+    val (claimed, reasons) =
+      planIcebergScanOverHdfs(Seq("hdfs://nn.example.com/warehouse/db/t/a.parquet"))
+    assert(claimed.size == 1, s"expected the scan to be claimed, fell back with: $reasons")
+    val properties = claimed.head.nativeIcebergScanMetadata.get.catalogProperties
+    assert(
+      properties.get("hdfs.name-node.nn.example.com") == Some("hdfs://nn.example.com:8020"),
+      s"unexpected catalog properties: $properties")
+  }
+
+  test("iceberg scan: a plain host:port HDFS location is claimed with no NameNode property") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    // Indistinguishable from a real NameNode, so the path authority is left to iceberg-rust.
+    val (claimed, reasons) =
+      planIcebergScanOverHdfs(Seq("hdfs://nn.example.com:8020/warehouse/db/t/a.parquet"))
+    assert(claimed.size == 1, s"expected the scan to be claimed, fell back with: $reasons")
+    assert(
+      !claimed.head.nativeIcebergScanMetadata.get.catalogProperties.keys
+        .exists(_.startsWith("hdfs.name-node")))
+  }
+
+  test("iceberg scan: data files on two HDFS authorities are declined") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    // Comet declares the NameNodes of one HDFS authority per scan, so a second portless authority
+    // would reach native undeclared; the decline is conservative for host:port ones. It sits
+    // inline in the scan case of `CometScanRule.apply`, with no static helper of its own, so a real
+    // scan is the lowest layer that reaches it.
+    val (claimed, reasons) = planIcebergScanOverHdfs(
+      Seq(
+        "hdfs://nn1.example.com:8020/warehouse/db/t/a.parquet",
+        "hdfs://nn2.example.com:8020/warehouse/db/t/b.parquet"))
+    assert(claimed.isEmpty, "files on two NameNodes must not be claimed natively")
+    assert(
+      reasons.exists(
+        _.contains(
+          "across multiple HDFS authorities (nn1.example.com:8020, nn2.example.com:8020)")),
+      s"expected the multi-authority fall-back reason, got: $reasons")
+  }
+
+  private val resolvableNs1 = Seq(
+    "dfs.nameservices" -> "ns1",
+    "dfs.ha.namenodes.ns1" -> "nn1,nn2",
+    "dfs.namenode.rpc-address.ns1.nn1" -> "nn1.example.com:8020",
+    "dfs.namenode.rpc-address.ns1.nn2" -> "nn2.example.com:8020")
+
+  test("iceberg scan: a catalog hdfs.name-node.<ns> wins over the Hadoop-derived declaration") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    val (claimed, reasons) = planIcebergScanOverHdfs(
+      Seq("hdfs://ns1/warehouse/db/t/a.parquet"),
+      resolvableNs1,
+      Seq("hdfs.name-node.ns1" -> "nn9.example.com:8020"))
+    assert(claimed.size == 1, s"expected the scan to be claimed, fell back with: $reasons")
+    val properties = claimed.head.nativeIcebergScanMetadata.get.catalogProperties
+    assert(
+      properties.get("hdfs.name-node.ns1") == Some("nn9.example.com:8020"),
+      s"the catalog value must reach native: $properties")
+  }
+
+  test("iceberg scan: a catalog hdfs.name-node.<ns> entry without a port is declined") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    // It would override the resolvable Hadoop-derived list and then fail on every executor.
+    val (claimed, reasons) = planIcebergScanOverHdfs(
+      Seq("hdfs://ns1/warehouse/db/t/a.parquet"),
+      resolvableNs1,
+      Seq("hdfs.name-node.ns1" -> "nn1.example.com"))
+    assert(claimed.isEmpty, "a portless catalog entry must not be claimed natively")
+    assert(
+      reasons.exists(_.contains("hdfs.name-node.ns1 entry 'nn1.example.com' is not host:port")),
+      s"expected the entry fall-back reason, got: $reasons")
+  }
+
+  test("iceberg scan: an HA nameservice known only to the catalog's hadoop.* is declared") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    // The JVM reader resolves it through the FileIO's configuration, which carries the catalog's
+    // `hadoop.*` overrides; deriving from the session configuration alone would mistake `nsb` for
+    // a plain host and declare `hdfs://nsb:8020`.
+    val (claimed, reasons) = planIcebergScanOverHdfs(
+      Seq("hdfs://nsb/warehouse/db/t/a.parquet"),
+      catalogProps = Seq(
+        "hadoop.dfs.nameservices" -> "nsb",
+        "hadoop.dfs.ha.namenodes.nsb" -> "nn1,nn2",
+        "hadoop.dfs.namenode.rpc-address.nsb.nn1" -> "a.example.com:8020",
+        "hadoop.dfs.namenode.rpc-address.nsb.nn2" -> "b.example.com:8020"))
+    assert(claimed.size == 1, s"expected the scan to be claimed, fell back with: $reasons")
+    val properties = claimed.head.nativeIcebergScanMetadata.get.catalogProperties
+    assert(
+      properties.get("hdfs.name-node.nsb") ==
+        Some("hdfs://a.example.com:8020,hdfs://b.example.com:8020"),
+      s"unexpected catalog properties: $properties")
   }
 }

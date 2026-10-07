@@ -467,6 +467,7 @@ jobs:
               org.apache.comet.CometVariantProjectionSuite
               org.apache.spark.sql.CometVariantShreddingSuite
               org.apache.comet.CometIcebergNativeSuite
+              org.apache.comet.CometIcebergHdfsSuite
               org.apache.comet.CometIcebergEncryptionSuite
               org.apache.comet.CometIcebergRewriteActionSuite
               org.apache.comet.CometIcebergWriteActionSuite
