@@ -61,9 +61,14 @@ pub struct JvmScalarUdfExpr {
     /// duration of the call. `None` when no driving Spark task is available (unit tests, direct
     /// native driver runs); the bridge then installs nothing.
     class_loader: Option<Arc<Global<JObject<'static>>>>,
+    /// Index of the partition this native plan computes. See `CometUDF.evaluate`.
+    partition: i32,
+    /// Id of this native plan. See `CometUDF.evaluate`.
+    exec_context_id: i64,
 }
 
 impl JvmScalarUdfExpr {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         class_name: String,
         args: Vec<Arc<dyn PhysicalExpr>>,
@@ -71,6 +76,8 @@ impl JvmScalarUdfExpr {
         return_nullable: bool,
         task_context: Option<Arc<Global<JObject<'static>>>>,
         class_loader: Option<Arc<Global<JObject<'static>>>>,
+        partition: i32,
+        exec_context_id: i64,
     ) -> Self {
         debug_assert!(
             !class_name.is_empty(),
@@ -91,6 +98,8 @@ impl JvmScalarUdfExpr {
             return_nullable,
             task_context,
             class_loader,
+            partition,
+            exec_context_id,
         }
     }
 }
@@ -253,6 +262,8 @@ impl PhysicalExpr for JvmScalarUdfExpr {
                         JValue::Long(out_arr_ptr).as_jni(),
                         JValue::Long(out_sch_ptr).as_jni(),
                         JValue::Int(batch.num_rows() as i32).as_jni(),
+                        JValue::Int(self.partition).as_jni(),
+                        JValue::Long(self.exec_context_id).as_jni(),
                         JValue::Object(task_context_ref).as_jni(),
                         JValue::Object(class_loader_ref).as_jni(),
                     ],
@@ -295,6 +306,8 @@ impl PhysicalExpr for JvmScalarUdfExpr {
             self.return_nullable,
             self.task_context.clone(),
             self.class_loader.clone(),
+            self.partition,
+            self.exec_context_id,
         )))
     }
 }
@@ -319,6 +332,8 @@ mod tests {
             true,
             None,
             None,
+            0,
+            0,
         );
         let literal = udf.literal_arrays[0]
             .as_ref()

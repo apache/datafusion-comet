@@ -48,4 +48,23 @@ import org.apache.arrow.vector.ValueVector
  */
 trait CometUDF {
   def evaluate(inputs: Array[ValueVector], numRows: Int): ValueVector
+
+  /**
+   * The overload the bridge calls. `partitionIndex` is the index of the partition the calling
+   * native plan computes, which differs from `TaskContext.partitionId()` under a union, a
+   * coalesce or a cartesian product. `planId` tells apart the plans one task runs, such as the
+   * parent partitions of a coalesce. The default ignores both.
+   */
+  def evaluate(
+      inputs: Array[ValueVector],
+      numRows: Int,
+      partitionIndex: Int,
+      planId: Long): ValueVector =
+    evaluate(inputs, numRows)
+
+  /**
+   * Called once native plan `planId` has closed, so an implementation that keeps state per plan
+   * can drop it before the task ends. The default does nothing.
+   */
+  def releasePlan(planId: Long): Unit = ()
 }

@@ -244,7 +244,18 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_EXEC)
       .doc(
         "When enabled, the single row that a query without a FROM clause, such as `SELECT 1`, " +
-          "reads will be converted to Arrow format.")
+          "reads will be converted to Arrow format. The row has no columns, so converting it " +
+          "costs almost nothing, and it lets the operators above it run in Comet.")
+      .booleanConf
+      .createWithDefault(true)
+
+  val COMET_CONVERT_FROM_ROW_DATA_SOURCE_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.convert.rowDataSource.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "When enabled, data from Data Source V1 relations that are not file-based, such as " +
+          "JDBC tables, will be converted to Arrow format. Spark scans these relations with " +
+          "`RowDataSourceScanExec`.")
       .booleanConf
       .createWithDefault(false)
 
@@ -1132,8 +1143,9 @@ object CometConf extends ShimCometConf {
           "without the `Exec` suffix. It is for operators that have no `spark.comet.convert` " +
           "config of their own, such as `BatchScan` for a Data Source V2 connector, or " +
           "`FileSourceScan` for file formats other than Parquet, JSON and CSV. Naming `Range`, " +
-          "`InMemoryTableScan`, `RDDScan` or `OneRowRelation` is deprecated and will stop " +
-          "working in a future major release. Use their `spark.comet.convert` configs instead.")
+          "`InMemoryTableScan`, `RDDScan`, `OneRowRelation` or `RowDataSourceScan` is " +
+          "deprecated and will stop working in a future major release. Use their " +
+          "`spark.comet.convert` configs instead.")
       .stringConf
       .toSequence
       .createWithDefault(Nil)
@@ -1252,6 +1264,19 @@ object CometConf extends ShimCometConf {
           "error out.")
       .bytesConf(ByteUnit.BYTE)
       .createWithDefault(100L * 1024 * 1024 * 1024) // 100 GB
+
+  // Used on native side. Check spark_config.rs how the config is used
+  val COMET_EXEC_SPILL_COMPRESSION_CODEC: ConfigEntry[String] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.spill.compression.codec")
+      .category(CATEGORY_TUNING)
+      .doc(
+        "The codec used to compress the files that native sorts, aggregations, and joins " +
+          "spill to disk. lz4 and zstd are supported, and none disables compression. zstd " +
+          "writes smaller files than lz4 but uses more CPU. Comet's shuffle writers use " +
+          s"${COMET_SHUFFLE_COMPRESSION_CODEC.key} instead. $TUNING_GUIDE.")
+      .stringConf
+      .checkValues(Set("lz4", "zstd", "none"))
+      .createWithDefault("lz4")
 
   val COMET_RESPECT_DATAFUSION_CONFIGS: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.respectDataFusionConfigs")
