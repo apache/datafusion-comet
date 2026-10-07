@@ -623,6 +623,30 @@ class CometCodegenSuite
         .contains(Set("hypot", "cast", "checkoverflow", "add")))
   }
 
+  test("the serde ships a digest of the serialized expression at arg 0 (#6705)") {
+    // The dispatcher trusts a cache hit on the digest without comparing the bytes, so the digest
+    // the serde ships must be the digest of the bytes it ships next to it. Calling the dispatcher
+    // directly cannot catch a mismatch, because those tests build their own digest.
+    val x = AttributeReference("x", DoubleType, nullable = false)()
+    def payload(e: Expression): (Array[Byte], Array[Byte]) = {
+      val proto = QueryPlanSerde.exprToProto(e, Seq(x)).get
+      assert(proto.hasJvmScalarUdf)
+      val args = proto.getJvmScalarUdf.getArgsList
+      (
+        args.get(0).getLiteral.getBytesVal.toByteArray,
+        args.get(1).getLiteral.getBytesVal.toByteArray)
+    }
+
+    val (hypotDigest, hypotBytes) = payload(Hypot(x, Literal(4.0d)))
+    val (otherDigest, otherBytes) = payload(Hypot(x, Literal(5.0d)))
+    assert(hypotDigest.sameElements(CometScalaUDFCodegen.digest(hypotBytes)))
+    assert(otherDigest.sameElements(CometScalaUDFCodegen.digest(otherBytes)))
+
+    // Expressions that differ only in a literal must not share a kernel.
+    assert(!hypotBytes.sameElements(otherBytes))
+    assert(!hypotDigest.sameElements(otherDigest))
+  }
+
   test("tags copied onto the shared TrueLiteral do not leak into unrelated plans") {
     // Catalyst copies a rewritten node's tags onto its replacement, so a tagged expression that an
     // earlier query rewrote into `Literal.TrueLiteral` brands that process-wide singleton for the
