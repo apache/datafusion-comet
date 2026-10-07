@@ -43,8 +43,10 @@ JVM shuffle (`CometColumnarExchange`) is used instead of native shuffle (`CometE
 1. **Shuffle mode is explicitly set to "jvm"**: When `spark.comet.shuffle.mode` is set to `jvm`.
 
 2. **Child plan is not a Comet native operator**: When the child plan is a Spark row-based operator
-   (not a `CometPlan`), JVM shuffle is the only option since native shuffle requires columnar input
-   from Comet operators.
+   (not a `CometPlan`), JVM shuffle is used, since native shuffle requires columnar input from
+   Comet operators. The exception is `spark.comet.convert.shuffleInput.enabled`, which converts
+   the child's rows to Arrow with `CometSparkToColumnarExec` so that native shuffle can take the
+   shuffle instead. See [When Native Shuffle is Used](native_shuffle.md#when-native-shuffle-is-used).
 
 3. **Unsupported partition key types**: `RangePartitioning` keys must be primitive, so a complex
    range key always falls back here. `HashPartitioning` keys must be primitive only by default:

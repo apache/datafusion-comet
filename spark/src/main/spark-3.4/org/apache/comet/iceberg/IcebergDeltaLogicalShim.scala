@@ -17,20 +17,11 @@
  * under the License.
  */
 
-package org.apache.spark.sql.comet
+package org.apache.comet.iceberg
 
-import org.apache.spark.sql.connector.write.{BatchWrite, WriterCommitMessage}
-import org.apache.spark.sql.execution.SparkPlan
+import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 
-import org.apache.comet.iceberg.DeltaCommand
-
-/** The `BatchWrite.commit(messages, summary)` overload only exists on Spark 4.1+. */
-private[comet] object IcebergWriteSummaryShim {
-  def commit(
-      batchWrite: BatchWrite,
-      messages: Array[WriterCommitMessage],
-      query: SparkPlan,
-      command: Option[DeltaCommand] = None): Unit = {
-    batchWrite.commit(messages)
-  }
+/** WriteDelta interception starts with Spark 3.5. */
+private[iceberg] object IcebergDeltaLogicalShim extends IcebergDeltaLogicalShimApi {
+  override def extract(plan: LogicalPlan): Option[DeltaLogicalFields] = None
 }
