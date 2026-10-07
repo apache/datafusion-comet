@@ -30,6 +30,7 @@ use arrow::record_batch::RecordBatch;
 use datafusion::common::{internal_err, DFSchema, Result, ScalarValue};
 use datafusion::logical_expr::{ColumnarValue, Operator};
 use datafusion::physical_expr::expressions::{in_list, BinaryExpr, Column, InListExpr, Literal};
+use datafusion::physical_expr::utils::collect_columns;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr_common::physical_expr::is_volatile;
 use std::fmt::{Display, Formatter};
@@ -376,7 +377,9 @@ pub fn spark_in_list(
     let constants = candidates
         .iter()
         .map(|child| {
-            if is_volatile(child) {
+            // A candidate that reads a column is not a constant, even if it returns a scalar
+            // for the empty batch
+            if is_volatile(child) || !collect_columns(child).is_empty() {
                 return None;
             }
             match child.evaluate(&empty).ok()? {
@@ -759,6 +762,8 @@ mod tests {
     struct Probe {
         child: Arc<dyn PhysicalExpr>,
         volatile: bool,
+        /// Returns a scalar NULL for an empty batch, whatever the child returns
+        scalar_on_empty: bool,
         calls: Arc<std::sync::atomic::AtomicUsize>,
     }
     impl Eq for Probe {}
@@ -790,6 +795,11 @@ mod tests {
         }
         fn evaluate(&self, b: &RecordBatch) -> Result<ColumnarValue> {
             self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if self.scalar_on_empty && b.num_rows() == 0 {
+                return Ok(ColumnarValue::Scalar(ScalarValue::try_from(
+                    self.data_type(&b.schema())?,
+                )?));
+            }
             self.child.evaluate(b)
         }
         fn is_volatile_node(&self) -> bool {
@@ -805,6 +815,7 @@ mod tests {
             Ok(Arc::new(Self {
                 child: Arc::clone(&children[0]),
                 volatile: self.volatile,
+                scalar_on_empty: self.scalar_on_empty,
                 calls: Arc::clone(&self.calls),
             }))
         }
@@ -823,6 +834,7 @@ mod tests {
             let probe: Arc<dyn PhysicalExpr> = Arc::new(Probe {
                 child: literal(batch.column(0), 0),
                 volatile,
+                scalar_on_empty: false,
                 calls: Arc::clone(&calls),
             });
             // Volatility must also be recognized through a nonvolatile parent node.
@@ -836,6 +848,48 @@ mod tests {
         }
         Ok(())
     }
+    #[test]
+    fn candidates_reading_a_column_remain_dynamic() -> Result<()> {
+        let l: ArrayRef = Arc::new(ListArray::from_iter_primitive::<Float64Type, _, _>([
+            Some(vec![Some(-0.0)]),
+            Some(vec![Some(1.0)]),
+        ]));
+        let r: ArrayRef = Arc::new(ListArray::from_iter_primitive::<Float64Type, _, _>([
+            Some(vec![Some(0.0)]),
+            None,
+        ]));
+        let batch = batch(l, r);
+        let (a, b) = columns();
+        // CASE WHEN b IS NOT NULL THEN b END
+        let case_b: Arc<dyn PhysicalExpr> = Arc::new(crate::CaseWhenExpr::try_new(
+            vec![(
+                Arc::new(datafusion::physical_expr::expressions::IsNotNullExpr::new(
+                    Arc::clone(&b),
+                )),
+                Arc::clone(&b),
+            )],
+            None,
+        )?);
+        // An expression of b that returns a scalar for an empty batch
+        let scalar_on_empty: Arc<dyn PhysicalExpr> = Arc::new(Probe {
+            child: b,
+            volatile: false,
+            scalar_on_empty: true,
+            calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        });
+        for candidate in [case_b, scalar_on_empty] {
+            let expr = spark_in_list(
+                Arc::clone(&a),
+                vec![candidate],
+                false,
+                batch.schema().as_ref(),
+            )?;
+            assert!(expr.as_ref().is::<NestedPredicate>(), "{expr}");
+            assert_eq!(results(&expr, &batch), vec![Some(true), None]);
+        }
+        Ok(())
+    }
+
     #[test]
     fn dynamic_input_is_evaluated_once_and_runtime_errors_propagate() -> Result<()> {
         use datafusion::physical_expr::expressions::CastExpr;
@@ -852,6 +906,7 @@ mod tests {
         let value: Arc<dyn PhysicalExpr> = Arc::new(Probe {
             child: Arc::clone(&a),
             volatile: false,
+            scalar_on_empty: false,
             calls: Arc::clone(&calls),
         });
         let bad: Arc<dyn PhysicalExpr> = Arc::new(CastExpr::new(
