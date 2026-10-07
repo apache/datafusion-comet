@@ -46,7 +46,25 @@ import org.apache.spark.unsafe.Platform
 private[arrow] object ArrowWriter {
   def create(root: VectorSchemaRoot, fixedWidthCapacity: Int): ArrowWriter = {
     require(fixedWidthCapacity >= 0, "Fixed-width capacity must be non-negative")
-    val children = root.getFieldVectors().asScala.map { vector =>
+    val declaredFields = root.getSchema.getFields.asScala
+    val fieldVectors = root.getFieldVectors().asScala
+    require(
+      fieldVectors.length == declaredFields.length,
+      s"Arrow root has ${fieldVectors.length} vectors for ${declaredFields.length} fields")
+    val children = fieldVectors.zip(declaredFields).map { case (vector, declaredField) =>
+      vector match {
+        case struct: StructVector =>
+          val declaredChildren = declaredField.getChildren
+          if (struct.size() == 0 && !declaredChildren.isEmpty) {
+            struct.initializeChildrenFromFields(declaredChildren)
+          }
+          require(
+            struct.size() == declaredChildren.size(),
+            s"Arrow struct ${declaredField.getName} has ${struct.size()} vectors " +
+              s"for ${declaredChildren.size()} fields")
+        case _ =>
+      }
+
       vector match {
         case fixedWidth: BaseFixedWidthVector =>
           fixedWidth.allocateNew(fixedWidthCapacity)
@@ -86,7 +104,10 @@ private[arrow] object ArrowWriter {
         val keyWriter = createFieldWriter(structVector.getChild(MapVector.KEY_NAME))
         val valueWriter = createFieldWriter(structVector.getChild(MapVector.VALUE_NAME))
         new MapWriter(vector, structVector, keyWriter, valueWriter)
-      case (StructType(_), vector: StructVector) =>
+      case (StructType(fields), vector: StructVector) =>
+        require(
+          vector.size() == fields.length,
+          s"Arrow struct ${field.getName} has ${vector.size()} vectors for ${fields.length} fields")
         val children = (0 until vector.size()).map { ordinal =>
           createFieldWriter(vector.getChildByOrdinal(ordinal))
         }
@@ -1438,6 +1459,37 @@ private[arrow] class StructWriter(
     children: Array[ArrowFieldWriter])
     extends ArrowFieldWriter {
 
+  private val declaredType = Utils.fromArrowField(valueVector.getField).asInstanceOf[StructType]
+  private var allowValidatedTrailingFields = false
+
+  override def writeColumnSlice(input: ColumnVector, startRow: Int, numRows: Int): Unit = {
+    input.dataType() match {
+      case sourceType: StructType =>
+        require(
+          sourceType.length >= declaredType.length,
+          s"Cannot write ${declaredType.length} fields of struct $name from " +
+            s"${sourceType.length} fields")
+        val sourcePrefix = StructType(sourceType.fields.take(declaredType.length))
+        // Compare in Arrow's type domain. Spark logical annotations that Arrow cannot represent
+        // (for example string collations) are intentionally erased by the same conversion that
+        // produced the declared Arrow field.
+        val normalizedSourcePrefix = Utils
+          .fromArrowField(Utils.toArrowField(name, sourcePrefix, nullable = true, "UTC"))
+          .asInstanceOf[StructType]
+        require(
+          DataType.equalsIgnoreCompatibleNullability(normalizedSourcePrefix, declaredType),
+          s"Cannot write struct $name with declared type ${declaredType.simpleString} " +
+            s"from source type ${sourceType.simpleString}: leading fields are incompatible")
+      case sourceType =>
+        throw new IllegalArgumentException(
+          s"Cannot write Arrow struct $name from non-struct source type ${sourceType.simpleString}")
+    }
+
+    allowValidatedTrailingFields = true
+    try super.writeColumnSlice(input, startRow, numRows)
+    finally allowValidatedTrailingFields = false
+  }
+
   override def setNull(): Unit = {
     var i = 0
     while (i < children.length) {
@@ -1450,9 +1502,22 @@ private[arrow] class StructWriter(
 
   override def setValue(input: SpecializedGetters, ordinal: Int): Unit = {
     val struct = input.getStruct(ordinal, children.length)
+    if (allowValidatedTrailingFields) {
+      require(
+        struct.numFields >= children.length,
+        s"Cannot write ${children.length} fields of struct $name from ${struct.numFields} fields")
+    } else {
+      require(
+        struct.numFields == children.length,
+        s"Cannot write struct $name with ${children.length} fields from " +
+          s"${struct.numFields} fields without a validated columnar projection")
+    }
     var i = 0
     valueVector.setIndexDefined(count)
-    while (i < struct.numFields) {
+    // Spark's ColumnarRow ignores the requested field count in getStruct and exposes the full
+    // backing StructType. Arrow writes are schema-driven, so write only the declared children,
+    // but only a validated top-level columnar projection may contain trailing fields.
+    while (i < children.length) {
       children(i).write(struct, i)
       i += 1
     }
