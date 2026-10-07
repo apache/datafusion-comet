@@ -102,6 +102,8 @@ class CometUdfBridgeSuite extends AnyFunSuite {
           outArrays(0).memoryAddress(),
           outSchemas(0).memoryAddress(),
           numRows,
+          0,
+          0L,
           null,
           null)
 
@@ -172,6 +174,8 @@ class CometUdfBridgeSuite extends AnyFunSuite {
         outArrays(0).memoryAddress(),
         outSchemas(0).memoryAddress(),
         numRows,
+        0,
+        0L,
         null,
         null)
 

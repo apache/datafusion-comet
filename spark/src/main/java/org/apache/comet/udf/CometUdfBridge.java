@@ -32,6 +32,8 @@ import org.apache.spark.TaskContext;
 import org.apache.spark.comet.CometTaskContextShim;
 import org.apache.spark.util.TaskCompletionListener;
 
+import com.google.common.annotations.VisibleForTesting;
+
 import org.apache.comet.util.ClassLoaders;
 
 /**
@@ -86,6 +88,8 @@ public class CometUdfBridge {
    * @param numRows row count of the current batch. Mirrors DataFusion's {@code
    *     ScalarFunctionArgs.number_rows}; the only batch-size signal a zero-input UDF (e.g. a
    *     zero-arg non-deterministic ScalaUDF) ever sees.
+   * @param partitionIndex index of the partition the calling native plan computes
+   * @param planId id of the calling native plan
    * @param taskContext propagated Spark {@link TaskContext} from the driving Spark task thread, or
    *     {@code null} outside a Spark task. Treated as ground truth for the call: installed as the
    *     thread-local on entry, with the prior value (if any) saved and restored in {@code finally}.
@@ -113,6 +117,8 @@ public class CometUdfBridge {
       long outArrayPtr,
       long outSchemaPtr,
       int numRows,
+      int partitionIndex,
+      long planId,
       TaskContext taskContext,
       ClassLoader classLoader) {
     assert udfClassName != null && !udfClassName.isEmpty() : "udfClassName must be non-empty";
@@ -148,6 +154,8 @@ public class CometUdfBridge {
           outArrayPtr,
           outSchemaPtr,
           numRows,
+          partitionIndex,
+          planId,
           taskContext);
     } finally {
       // Unconditional: a no-op when nothing was installed, and it also undoes any change the
@@ -170,6 +178,8 @@ public class CometUdfBridge {
       long outArrayPtr,
       long outSchemaPtr,
       int numRows,
+      int partitionIndex,
+      long planId,
       TaskContext taskContext) {
     long taskAttemptId = (taskContext != null) ? taskContext.taskAttemptId() : NO_TASK_ID;
 
@@ -228,7 +238,7 @@ public class CometUdfBridge {
         inputs[i] = Data.importVector(importAllocator, inArr, inSch, null);
       }
 
-      result = udf.evaluate(inputs, numRows);
+      result = udf.evaluate(inputs, numRows, partitionIndex, planId);
       // Recorded before the checks below, so the invariant holds however this exits.
       resultIsInput = isOneOf(result, inputs);
       if (!(result instanceof FieldVector)) {
@@ -288,6 +298,27 @@ public class CometUdfBridge {
         }
       }
     }
+  }
+
+  /**
+   * Called by {@code CometExecIterator} once native plan {@code planId} of task {@code
+   * taskAttemptId} has closed. Passes the plan to every {@link CometUDF} instance of the task, see
+   * {@code CometUDF.releasePlan}.
+   */
+  public static void releasePlan(long taskAttemptId, long planId) {
+    ConcurrentHashMap<String, CometUDF> perTask = INSTANCES.get(taskAttemptId);
+    if (perTask != null) {
+      for (CometUDF udf : perTask.values()) {
+        udf.releasePlan(planId);
+      }
+    }
+  }
+
+  /** The instance of {@code udfClassName} that task {@code taskAttemptId} holds, or null. */
+  @VisibleForTesting
+  public static CometUDF instanceFor(long taskAttemptId, String udfClassName) {
+    ConcurrentHashMap<String, CometUDF> perTask = INSTANCES.get(taskAttemptId);
+    return perTask == null ? null : perTask.get(udfClassName);
   }
 
   /** Whether the UDF handed back one of the vectors it was given, rather than a new one. */
