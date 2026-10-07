@@ -616,7 +616,7 @@ the commit.</p>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">IcebergWriteStrategy</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">spark/src/main/scala/org/apache/comet/iceberg/</span></code></p></td>
-<td><p>Planner strategy. Matches <code class="docutils literal notranslate"><span class="pre">AppendData</span></code>, <code class="docutils literal notranslate"><span class="pre">OverwriteByExpression</span></code>, <code class="docutils literal notranslate"><span class="pre">OverwritePartitionsDynamic</span></code>, <code class="docutils literal notranslate"><span class="pre">ReplaceData</span></code> (and Iceberg’s own <code class="docutils literal notranslate"><span class="pre">ReplaceIcebergData</span></code>, which Iceberg 1.5.2 plans on Spark 3.4) whose <code class="docutils literal notranslate"><span class="pre">Write</span></code> is an Iceberg <code class="docutils literal notranslate"><span class="pre">SparkWrite</span></code>.</p></td>
+<td><p>Planner strategy. Matches <code class="docutils literal notranslate"><span class="pre">AppendData</span></code>, <code class="docutils literal notranslate"><span class="pre">OverwriteByExpression</span></code>, <code class="docutils literal notranslate"><span class="pre">OverwritePartitionsDynamic</span></code>, <code class="docutils literal notranslate"><span class="pre">ReplaceData</span></code> (and Iceberg’s own <code class="docutils literal notranslate"><span class="pre">ReplaceIcebergData</span></code>, which Iceberg 1.5.2 plans on Spark 3.4), plus Spark 3.5+ Iceberg <code class="docutils literal notranslate"><span class="pre">WriteDelta</span></code>.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">IcebergWriteLogical</span></code></p></td>
 <td><p>same</p></td>
@@ -624,15 +624,15 @@ the commit.</p>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">IcebergWriteExec</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">spark/src/main/scala/org/apache/spark/sql/comet/</span></code></p></td>
-<td><p>JVM writer. Runs iceberg-java’s <code class="docutils literal notranslate"><span class="pre">DataWriter</span></code> per task and returns the serialized <code class="docutils literal notranslate"><span class="pre">WriterCommitMessage</span></code> as one binary row.</p></td>
+<td><p>JVM writer. Runs iceberg-java’s <code class="docutils literal notranslate"><span class="pre">DataWriter</span></code> or, for <code class="docutils literal notranslate"><span class="pre">WriteDelta</span></code>, <code class="docutils literal notranslate"><span class="pre">DeltaWriter</span></code> per task and returns the serialized <code class="docutils literal notranslate"><span class="pre">WriterCommitMessage</span></code> as one binary row.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">IcebergCommitExec</span></code></p></td>
 <td><p>same</p></td>
 <td><p>Driver committer. A <code class="docutils literal notranslate"><span class="pre">V2CommandExec</span></code>, so <code class="docutils literal notranslate"><span class="pre">run()</span></code> is memoized and the commit happens once.</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">IcebergReplaceDataShim</span></code>, <code class="docutils literal notranslate"><span class="pre">IcebergRefreshCacheShim</span></code>, <code class="docutils literal notranslate"><span class="pre">IcebergDriverMetricsShim</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">IcebergReplaceDataShim</span></code>, <code class="docutils literal notranslate"><span class="pre">IcebergDeltaLogicalShim</span></code>, <code class="docutils literal notranslate"><span class="pre">IcebergDeltaWriterShim</span></code>, <code class="docutils literal notranslate"><span class="pre">IcebergRefreshCacheShim</span></code>, <code class="docutils literal notranslate"><span class="pre">IcebergDriverMetricsShim</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">spark/src/main/spark-*/org/apache/comet/iceberg/</span></code></p></td>
-<td><p>Version differences: Spark 4.x operation-coded <code class="docutils literal notranslate"><span class="pre">ReplaceData</span></code> rows, cache refresh by name on 4.1+, driver metric reporting.</p></td>
+<td><p>Version differences: operation-coded <code class="docutils literal notranslate"><span class="pre">ReplaceData</span></code> / <code class="docutils literal notranslate"><span class="pre">WriteDelta</span></code> rows, cache refresh by name on 4.1+, driver metric reporting.</p></td>
 </tr>
 </tbody>
 </table>
@@ -649,16 +649,19 @@ does not know which writer produced it.</p></li>
 <li><p><strong>Messages are collected per task as tasks finish</strong> (<code class="docutils literal notranslate"><span class="pre">sparkContext.runJob</span></code> with a result
 handler), not with <code class="docutils literal notranslate"><span class="pre">executeCollect</span></code>. That is how a failed job still knows which tasks completed,
 so it can delete their files.</p></li>
-<li><p><strong>Commit-coordinator writes are not intercepted.</strong> Iceberg’s <code class="docutils literal notranslate"><span class="pre">SparkWrite</span></code> never asks for one; the
-check in <code class="docutils literal notranslate"><span class="pre">buildTwoOp</span></code> is defensive.</p></li>
-<li><p><strong>What is not intercepted:</strong> merge-on-read (<code class="docutils literal notranslate"><span class="pre">WriteDelta</span></code>), streaming writes, and CTAS/RTAS on
-Spark 3.4. Those keep Spark’s plan.</p></li>
+<li><p><strong>Commit-coordinator writes are not intercepted.</strong> Iceberg’s current <code class="docutils literal notranslate"><span class="pre">SparkWrite</span></code> and
+position-delta write do not ask for one; the checks in <code class="docutils literal notranslate"><span class="pre">buildTwoOp</span></code> and <code class="docutils literal notranslate"><span class="pre">buildDeltaTwoOp</span></code>
+are defensive.</p></li>
+<li><p><strong>WriteDelta stays JVM-backed.</strong> Spark 3.5+ merge-on-read commands are intercepted by the split
+plan, but <code class="docutils literal notranslate"><span class="pre">IcebergWriteExec</span></code> delegates their rows to Iceberg’s JVM <code class="docutils literal notranslate"><span class="pre">DeltaWriter</span></code>; the native
+Iceberg writer is explicitly declined. Spark 3.4 <code class="docutils literal notranslate"><span class="pre">WriteDelta</span></code> keeps Spark’s plan.</p></li>
+<li><p><strong>What is not intercepted:</strong> streaming writes and CTAS/RTAS on Spark 3.4. Those keep Spark’s plan.</p></li>
 </ul>
 <p>On Spark 4.1+, <code class="docutils literal notranslate"><span class="pre">IcebergWriteSummaryShim</span></code> finds either Spark’s <code class="docutils literal notranslate"><span class="pre">MergeRowsExec</span></code> or
 <code class="docutils literal notranslate"><span class="pre">CometMergeRowsExec</span></code> in the executed query and forwards its eight action counters to
 <code class="docutils literal notranslate"><span class="pre">BatchWrite.commit(messages,</span> <span class="pre">summary)</span></code>. Native instructions carry the context of each <code class="docutils literal notranslate"><span class="pre">Keep</span></code>;
 <code class="docutils literal notranslate"><span class="pre">Discard</span></code> counts a deletion and <code class="docutils literal notranslate"><span class="pre">Split</span></code> counts one update. Spark 4.2 uses last-attempt
-accumulators, read through <code class="docutils literal notranslate"><span class="pre">MergeRowsMetricsShim</span></code>, so summary values come from the tasks that
+accumulators, read through <code class="docutils literal notranslate"><span class="pre">IcebergSemanticMetricsShim</span></code>, so summary values come from the tasks that
 produced the committed output. Stock V2 writers still require the concrete Spark node, so
 <code class="docutils literal notranslate"><span class="pre">IcebergWriteStrategy</span></code> tags a copy of its logical MERGE query before planning and AQE. The
 serializer requires that tag on Spark 4.1+, leaving stock writers on Spark throughout replanning.</p>
