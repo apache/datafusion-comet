@@ -244,9 +244,10 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_EXEC)
       .doc(
         "When enabled, the single row that a query without a FROM clause, such as `SELECT 1`, " +
-          "reads will be converted to Arrow format.")
+          "reads will be converted to Arrow format. The row has no columns, so converting it " +
+          "costs almost nothing, and it lets the operators above it run in Comet.")
       .booleanConf
-      .createWithDefault(false)
+      .createWithDefault(true)
 
   val COMET_CONVERT_FROM_ROW_DATA_SOURCE_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.convert.rowDataSource.enabled")
@@ -1267,6 +1268,19 @@ object CometConf extends ShimCometConf {
           "error out.")
       .bytesConf(ByteUnit.BYTE)
       .createWithDefault(100L * 1024 * 1024 * 1024) // 100 GB
+
+  // Used on native side. Check spark_config.rs how the config is used
+  val COMET_EXEC_SPILL_COMPRESSION_CODEC: ConfigEntry[String] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.spill.compression.codec")
+      .category(CATEGORY_TUNING)
+      .doc(
+        "The codec used to compress the files that native sorts, aggregations, and joins " +
+          "spill to disk. lz4 and zstd are supported, and none disables compression. zstd " +
+          "writes smaller files than lz4 but uses more CPU. Comet's shuffle writers use " +
+          s"${COMET_SHUFFLE_COMPRESSION_CODEC.key} instead. $TUNING_GUIDE.")
+      .stringConf
+      .checkValues(Set("lz4", "zstd", "none"))
+      .createWithDefault("lz4")
 
   val COMET_RESPECT_DATAFUSION_CONFIGS: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.respectDataFusionConfigs")

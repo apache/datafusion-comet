@@ -1056,7 +1056,7 @@ index c68f64d52f2..59f9f9bb092 100644
              }
            assert(scanOption.isDefined)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/ExplainSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/ExplainSuite.scala
-index 618f0ab675e..be186f99b66 100644
+index 618f0ab675e..efcd4853251 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/ExplainSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/ExplainSuite.scala
 @@ -268,7 +268,8 @@ class ExplainSuite extends ExplainSuiteHelper with DisableAdaptiveExecutionSuite
@@ -1069,6 +1069,15 @@ index 618f0ab675e..be186f99b66 100644
      withSQLConf(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "true") {
        withTempView("df") {
          val df1 = spark.range(1, 100)
+@@ -339,7 +340,7 @@ class ExplainSuite extends ExplainSuiteHelper with DisableAdaptiveExecutionSuite
+ 
+         val sqlText = "EXPLAIN FORMATTED SELECT (SELECT min(id) FROM df) as v"
+         val expected_pattern =
+-          "Subquery:1 Hosting operator id = 2 Hosting Expression = Subquery subquery#x"
++          "Subquery:1 Hosting operator id = \\d+ Hosting Expression = Subquery subquery#x"
+ 
+         withNormalizedExplain(sqlText) { normalizedOutput =>
+           assert(expected_pattern.r.findAllMatchIn(normalizedOutput).length == 1)
 @@ -471,7 +472,8 @@ class ExplainSuite extends ExplainSuiteHelper with DisableAdaptiveExecutionSuite
      }
    }
@@ -1587,7 +1596,7 @@ index 291aa7cab72..7783c37683e 100644
        super.test(testName, testTags: _*) {
          withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
-index da6f6aca2ad..c62307049a2 100644
+index da6f6aca2ad..64c981ad3d7 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
 @@ -40,6 +40,7 @@ import org.apache.spark.sql.catalyst.parser.ParseException
@@ -1633,6 +1642,16 @@ index da6f6aca2ad..c62307049a2 100644
            }
            assert(inMemoryTableScan.size == 2)
            checkAnswer(queryDf, Row(0, 1) :: Row(1, 2) :: Row(2, 3) :: Row(3, 4) :: Row(4, 5) :: Nil)
+@@ -4755,7 +4765,8 @@ class SQLQuerySuite extends SharedSparkSession with AdaptiveSparkPlanHelper
+     )
+   }
+ 
+-  test("SPARK-47939: Explain should work with parameterized queries") {
++  test("SPARK-47939: Explain should work with parameterized queries",
++      IgnoreComet("Comet explain output is different")) {
+     def checkQueryPlan(df: DataFrame, plan: String): Unit = assert(
+       df.collect()
+         .map(_.getString(0))
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SQLQueryTestSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SQLQueryTestSuite.scala
 index 395cb67f441..33ac6ed19af 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SQLQueryTestSuite.scala

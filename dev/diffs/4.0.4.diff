@@ -885,7 +885,7 @@ index 2c24cc7d570..505157acd91 100644
              }
            assert(scanOption.isDefined)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/ExplainSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/ExplainSuite.scala
-index ef9c301a66a..49fad8cbbf0 100644
+index ef9c301a66a..d97e9f76dc3 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/ExplainSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/ExplainSuite.scala
 @@ -268,7 +268,8 @@ class ExplainSuite extends ExplainSuiteHelper with DisableAdaptiveExecutionSuite
@@ -898,6 +898,15 @@ index ef9c301a66a..49fad8cbbf0 100644
      withSQLConf(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "true") {
        withTempView("df") {
          val df1 = spark.range(1, 100)
+@@ -339,7 +340,7 @@ class ExplainSuite extends ExplainSuiteHelper with DisableAdaptiveExecutionSuite
+ 
+         val sqlText = "EXPLAIN FORMATTED SELECT (SELECT min(id) FROM df) as v"
+         val expected_pattern =
+-          "Subquery:1 Hosting operator id = 2 Hosting Expression = Subquery subquery#x"
++          "Subquery:1 Hosting operator id = \\d+ Hosting Expression = Subquery subquery#x"
+ 
+         withNormalizedExplain(sqlText) { normalizedOutput =>
+           assert(expected_pattern.r.findAllMatchIn(normalizedOutput).length == 1)
 @@ -471,7 +472,8 @@ class ExplainSuite extends ExplainSuiteHelper with DisableAdaptiveExecutionSuite
      }
    }
@@ -1366,7 +1375,7 @@ index ad424b3a7cc..4ece0117a34 100644
    protected val baseResourcePath = {
      // use the same way as `SQLQueryTestSuite` to get the resource path
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
-index f294ff81021..17d07ab6103 100644
+index f294ff81021..f019c6de8e9 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
 @@ -38,6 +38,7 @@ import org.apache.spark.sql.catalyst.optimizer.{ConvertToLocalRelation, NestedCo
@@ -1412,6 +1421,16 @@ index f294ff81021..17d07ab6103 100644
            }
            assert(inMemoryTableScan.size == 2)
            checkAnswer(queryDf, Row(0, 1) :: Row(1, 2) :: Row(2, 3) :: Row(3, 4) :: Row(4, 5) :: Nil)
+@@ -4744,7 +4754,8 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
+     )
+   }
+ 
+-  test("SPARK-47939: Explain should work with parameterized queries") {
++  test("SPARK-47939: Explain should work with parameterized queries",
++      IgnoreComet("Comet explain output is different")) {
+     def checkQueryPlan(df: DataFrame, plan: String): Unit = assert(
+       df.collect()
+         .map(_.getString(0))
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SQLQueryTestSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SQLQueryTestSuite.scala
 index 575a4ae69d1..129d9f27232 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SQLQueryTestSuite.scala
