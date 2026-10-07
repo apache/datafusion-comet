@@ -565,6 +565,30 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("ANSI parse_url of an invalid URL raises a Spark error") {
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+      withTable("parse_url_invalid") {
+        sql("CREATE TABLE parse_url_invalid (u STRING) USING PARQUET")
+        sql("INSERT INTO parse_url_invalid VALUES ('inva lid://user:pass@host/file')")
+
+        val df = sql("SELECT parse_url(u, 'HOST') FROM parse_url_invalid")
+        checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+        checkSparkAnswerMaybeThrows(df) match {
+          case (Some(sparkException), Some(cometException)) =>
+            def sparkError(error: Throwable): SparkThrowable =
+              causeChain(error)
+                .collectFirst { case error: SparkThrowable => error }
+                .getOrElse(fail(s"Expected a SparkThrowable, got $error"))
+            val expected = sparkError(sparkException)
+            val actual = sparkError(cometException)
+            assert(actual.getErrorClass == expected.getErrorClass)
+            assert(actual.getSqlState == expected.getSqlState)
+          case errors => fail(s"Expected Spark and Comet invalid URL errors, got $errors")
+        }
+      }
+    }
+  }
+
   test("ANSI decimal divide by zero raises a Spark error") {
     withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
       withTable("decimal_div_zero") {

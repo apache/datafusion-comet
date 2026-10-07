@@ -79,9 +79,9 @@ abstract class CometTestBase
   }
 
   /**
-   * Sets each Spark-to-Arrow conversion that [[sparkConf]] turns on, which are off by default, to
-   * `enabled`. These are the conversions `spark.comet.sparkToColumnar.enabled` stood for before
-   * each had a config of its own.
+   * Sets each Spark-to-Arrow conversion that [[sparkConf]] turns on to `enabled`. All but the
+   * `OneRowRelation` conversion are off by default. These are the conversions
+   * `spark.comet.sparkToColumnar.enabled` stood for before each had a config of its own.
    */
   protected def sparkToArrowConversionConfs(enabled: Boolean): Seq[(String, String)] =
     Seq(

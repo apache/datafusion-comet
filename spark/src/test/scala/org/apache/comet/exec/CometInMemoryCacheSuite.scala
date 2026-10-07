@@ -199,6 +199,26 @@ class CometInMemoryCacheSuite extends CometTestBase {
     }
   }
 
+  // https://github.com/apache/spark/blob/v4.1.2/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala#L3178-L3191
+  test("AQE SPARK-42101: coalesce the shuffle partitions of a union with a table cache stage") {
+    assume(isSpark35Plus, "Table-cache query stages require Spark 3.5+")
+    withAQECache {
+      withSQLConf(SQLConf.COALESCE_PARTITIONS_MIN_PARTITION_NUM.key -> "1") {
+        val cached = Seq(1).toDF("c").cache()
+        val df = Seq(2).toDF("c").repartition($"c").union(cached)
+        checkAnswer(df, Seq(Row(1), Row(2)))
+        val plan = df.queryExecution.executedPlan
+        assert(plan.asInstanceOf[AdaptiveSparkPlanExec].isFinalPlan)
+        assert(collect(plan) { case u: org.apache.spark.sql.comet.CometUnionExec => u }.size == 1)
+        assert(collect(plan) { case r @ AQEShuffleReadExec(_: ShuffleQueryStageExec, _) =>
+          r
+        }.size == 1)
+        assert(collect(plan) { case s: QueryStageExec if isTableCacheStage(s) => s }.size == 1)
+        assert(collect(plan) { case s: CometInMemoryTableScanExec => s }.size == 1)
+      }
+    }
+  }
+
   // https://github.com/apache/spark/blob/v4.1.2/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala#L2780-L2832
   test("AQE SPARK-37742: use valid Comet cache statistics for join selection") {
     withAQECache {
