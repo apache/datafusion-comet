@@ -417,6 +417,8 @@ mod tests {
             true,
             None,
             None,
+            0,
+            0,
         ));
         let literal: Arc<dyn PhysicalExpr> = Arc::new(Literal::new(ScalarValue::Int32(Some(1))));
         let nested: Arc<dyn PhysicalExpr> =
