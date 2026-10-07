@@ -29,7 +29,7 @@ import scala.util.control.NonFatal
 import org.apache.arrow.vector._
 import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
 import org.apache.arrow.vector.types.pojo.Field
-import org.apache.spark.{SparkEnv, TaskContext}
+import org.apache.spark.SparkEnv
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.comet.util.Utils
@@ -41,8 +41,8 @@ import org.apache.comet.udf.CometUDF
 
 /**
  * Arrow-direct codegen dispatcher. For each `(bound expression, input Arrow schema)` pair,
- * compiles a specialized [[CometBatchKernel]] on first encounter, initializes it with the task's
- * partition index, and caches the live instance.
+ * compiles a specialized [[CometBatchKernel]] on first encounter, initializes it with the index
+ * of the partition the calling native plan computes, and caches the live instance.
  *
  * Arg 0 is a `VarBinaryVector` scalar carrying the closure-serialized bound `Expression` bytes;
  * args 1..N are the data columns the `BoundReference`s read in ordinal order.
@@ -56,16 +56,20 @@ import org.apache.comet.udf.CometUDF
  *   +----------------------------+  +----------------------------+  +----------------------------+
  *   | Key:   generated Java      |  | Key:   task + UDF class    |  | Key:   bound expression +  |
  *   |        source              |  |                            |  |        input column shapes |
- *   | Value: compiled Java class |  | Value: dispatcher object   |  | Value: ready-to-run kernel |
- *   | Scope: JVM, all queries    |  | Scope: one Spark task      |  |        with state primed   |
- *   |        share it            |  |                            |  | Scope: one Spark task      |
- *   | Owner: Spark               |  | Owner: Comet               |  |        (lives inside 2)    |
+ *   | Value: compiled Java class |  | Value: dispatcher object   |  |        (+ native plan if   |
+ *   | Scope: JVM, all queries    |  | Scope: one Spark task      |  |        nondeterministic)   |
+ *   |        share it            |  |                            |  | Value: ready-to-run kernel |
+ *   | Owner: Spark               |  | Owner: Comet               |  |        with state primed   |
+ *   |                            |  |                            |  | Scope: one Spark task      |
+ *   |                            |  |                            |  |        (lives inside 2),   |
+ *   |                            |  |                            |  |        or one native plan  |
+ *   |                            |  |                            |  |        if nondeterministic |
  *   |                            |  |                            |  | Owner: Comet               |
  *   +----------------------------+  +----------------------------+  +----------------------------+
  * }}}
  *
- * Stateful expressions (`Rand`, `MonotonicallyIncreasingID`) advance inside the per-task kernel
- * across batches.
+ * Stateful expressions (`Rand`, `MonotonicallyIncreasingID`) advance inside the per-plan kernel
+ * across batches. `CometExecIterator.close` drops a plan's kernels through `releasePlan`.
  *
  * `evaluate` runs under `this.synchronized` because DataFusion operators like `HashJoinExec`
  * pipeline build/probe via `OnceAsync` (`tokio::spawn`), so multiple Tokio worker threads can
@@ -81,15 +85,36 @@ class CometScalaUDFCodegen extends CometUDF with Logging {
    * Per-task cache keyed on serialized expression bytes plus per-column specs. The deserialized
    * `boundExpr` carries mutable state (`NamedLambdaVariable.value` for HOFs, `Rand`'s
    * `XORShiftRandom`) that must not be shared across concurrent tasks running the same query;
-   * keeping the cache per-task gives each task its own copy. Within a task, two occurrences of
-   * one non-deterministic expression get their own entries too, since the serde ships each with
-   * its own [[DispatchOccurrence]]. Guarded by `this.synchronized`.
+   * keeping the cache per-task gives each task its own copy. A nondeterministic kernel is seeded
+   * from the partition its plan computes, so its key also holds the plan: each plan a task runs,
+   * such as each parent partition of a coalesce, gets its own, dropped by `releasePlan` when the
+   * plan closes. Within a task, two occurrences of one non-deterministic expression get their own
+   * entries too, since the serde ships each with its own [[DispatchOccurrence]]. Guarded by
+   * `this.synchronized`.
    */
   private val kernelCache
       : mutable.Map[CometScalaUDFCodegen.CacheKey, CometScalaUDFCodegen.CacheEntry] =
     mutable.HashMap.empty
 
-  override def evaluate(inputs: Array[ValueVector], numRows: Int): ValueVector = {
+  // Kernels shared by every plan stay until the task ends.
+  override def releasePlan(planId: Long): Unit = this.synchronized {
+    kernelCache.keys.filter(_.planId == planId).toList.foreach(kernelCache.remove)
+  }
+
+  /** Plan ids of the cached kernels, `NoPlan` for a shared one. */
+  private[comet] def cachedPlanIds: List[Long] = this.synchronized {
+    kernelCache.keysIterator.map(_.planId).toList.sorted
+  }
+
+  // Callers that bypass the bridge (unit tests, benchmarks) have no native plan.
+  override def evaluate(inputs: Array[ValueVector], numRows: Int): ValueVector =
+    evaluate(inputs, numRows, partitionIndex = 0, planId = CometScalaUDFCodegen.NoPlan)
+
+  override def evaluate(
+      inputs: Array[ValueVector],
+      numRows: Int,
+      partitionIndex: Int,
+      planId: Long): ValueVector = {
     require(
       inputs.length >= 1,
       "CometScalaUDFCodegen requires at least 1 input (serialized expression), " +
@@ -117,12 +142,12 @@ class CometScalaUDFCodegen extends CometUDF with Logging {
     val n = numRows
     val specsSeq = specs.toIndexedSeq
 
-    val key = CometScalaUDFCodegen.CacheKey(ByteBuffer.wrap(bytes), specsSeq)
+    val key = CometScalaUDFCodegen.CacheKey(planId, ByteBuffer.wrap(bytes), specsSeq)
 
     // Cache lookup and `process` run under one lock to serialize concurrent Tokio callers that
     // would otherwise race on the kernel's per-batch instance fields.
     this.synchronized {
-      val entry = lookupOrCompile(key, bytes, specsSeq)
+      val entry = lookupOrCompile(key, bytes, specsSeq, partitionIndex)
 
       val out = CometBatchKernelCodegen.allocateOutput(
         entry.outputField,
@@ -146,9 +171,14 @@ class CometScalaUDFCodegen extends CometUDF with Logging {
   private def lookupOrCompile(
       key: CometScalaUDFCodegen.CacheKey,
       bytes: Array[Byte],
-      specs: IndexedSeq[ArrowColumnSpec]): CometScalaUDFCodegen.CacheEntry = {
+      specs: IndexedSeq[ArrowColumnSpec],
+      partitionIndex: Int): CometScalaUDFCodegen.CacheEntry = {
     assert(Thread.holdsLock(this), "lookupOrCompile must run under this.synchronized")
-    kernelCache.get(key) match {
+    // A deterministic kernel never reads the partition index, so one instance under the planless
+    // key serves every plan in the task. Only a kernel with a nondeterministic node is stored per
+    // plan.
+    val sharedKey = key.copy(planId = CometScalaUDFCodegen.NoPlan)
+    kernelCache.get(sharedKey).orElse(kernelCache.get(key)) match {
       case Some(entry) =>
         CometScalaUDFCodegen.cacheHitCount.incrementAndGet()
         entry
@@ -173,14 +203,17 @@ class CometScalaUDFCodegen extends CometUDF with Logging {
           }
         val compiled = CometBatchKernelCodegen.compile(boundExpr, specs)
         val kernel = compiled.newInstance()
-        kernel.init(CometScalaUDFCodegen.currentPartitionIndex())
+        kernel.init(partitionIndex)
         val outputField = CometBatchKernelCodegen.toFfiArrowField(
           "codegen_result",
           boundExpr.dataType,
           boundExpr.nullable)
         val entry =
           CometScalaUDFCodegen.CacheEntry(compiled, kernel, boundExpr.dataType, outputField)
-        kernelCache.put(key, entry)
+        // Walks the tree, because `deterministic` is not transitive everywhere. `Invoke` skips its
+        // `targetObject`, which is where Spark 4's `make_valid_utf8` puts its input.
+        val perPlan = boundExpr.exists(!_.deterministic)
+        kernelCache.put(if (perPlan) key else sharedKey, entry)
         CometScalaUDFCodegen.compileCount.incrementAndGet()
         CometScalaUDFCodegen.recordCompiledSignature(specs, boundExpr.dataType)
         entry
@@ -305,21 +338,22 @@ object CometScalaUDFCodegen {
   }
 
   /**
-   * Partition index for the kernel's `init`. Expressions whose `doGenCode` calls
-   * `addPartitionInitializationStatement` (`Rand`, `Randn`, `Uuid`) reseed mutable state from
-   * this. Falls back to 0 when the dispatcher is exercised outside a Spark task (unit tests).
+   * Plan id for kernels shared by every plan in a task, and for callers that bypass the bridge.
    */
-  private def currentPartitionIndex(): Int =
-    Option(TaskContext.get()).map(_.partitionId()).getOrElse(0)
+  private[comet] val NoPlan = -1L
 
   /**
-   * Cache key: serialized expression bytes plus per-column compile-time invariants. `hashCode`
-   * walks `bytesKey` per lookup, so for large ScalaUDF closures it scales with closure size.
+   * Cache key: calling native plan (`NoPlan` for a deterministic expression), serialized
+   * expression bytes plus per-column compile-time invariants. `hashCode` walks `bytesKey` per
+   * lookup, so for large ScalaUDF closures it scales with closure size.
    *
    * TODO(perf-cache-key): if hot, options are a driver-precomputed hash piggybacked through the
    * proto, per-instance last-key memoization, or a two-tier cache keyed on the generated source.
    */
-  final case class CacheKey(bytesKey: ByteBuffer, specs: IndexedSeq[ArrowColumnSpec])
+  final case class CacheKey(
+      planId: Long,
+      bytesKey: ByteBuffer,
+      specs: IndexedSeq[ArrowColumnSpec])
 
   /** Snapshot of dispatcher cache counters and current size. */
   final case class DispatcherStats(compileCount: Long, cacheHitCount: Long, cacheSize: Int) {

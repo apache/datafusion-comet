@@ -24,7 +24,10 @@ import org.apache.arrow.vector._
 import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
 import org.apache.arrow.vector.types.pojo.Field
 import org.apache.spark.internal.Logging
-import org.apache.spark.sql.catalyst.expressions.{BoundReference, Expression, Literal, Unevaluable}
+import org.apache.spark.sql.catalyst.DeserializerBuildHelper.createDeserializerForTypesSupportValueOf
+import org.apache.spark.sql.catalyst.SerializerBuildHelper.{createSerializerForBoolean, createSerializerForByte, createSerializerForDouble, createSerializerForFloat, createSerializerForInteger, createSerializerForLong, createSerializerForShort}
+import org.apache.spark.sql.catalyst.encoders.ExpressionEncoder
+import org.apache.spark.sql.catalyst.expressions.{BoundReference, Expression, Literal, ScalaUDF, Unevaluable}
 import org.apache.spark.sql.catalyst.expressions.codegen._
 import org.apache.spark.sql.execution.ExecSubqueryExpression
 import org.apache.spark.sql.internal.SQLConf
@@ -47,7 +50,8 @@ import org.apache.comet.shims.{CometExprTraitShim, CometTypeShim}
  * Input- and output-side emission live in [[CometBatchKernelCodegenInput]] and
  * [[CometBatchKernelCodegenOutput]]. This file owns the [[ArrowColumnSpec]] vocabulary, the
  * [[canHandle]] / [[allocateOutput]] / [[compile]] / [[generateSource]] entry points, and
- * cross-cutting kernel-shape decisions (NullIntolerant short-circuit, CSE variant).
+ * cross-cutting kernel-shape decisions (NullIntolerant short-circuit, CSE variant, boxed
+ * primitive `ScalaUDF` values without their encoders).
  *
  * The generated kernel is the `InternalRow` that Spark's `BoundReference.genCode` reads from. See
  * [[generateSource]] for how the wiring is set up.
@@ -264,6 +268,7 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
       inputSchema: Seq[ArrowColumnSpec]): GeneratedSource = {
     canHandle(boundExpr).foreach(reason =>
       throw new IllegalArgumentException(s"CometBatchKernelCodegen.generateSource: $reason"))
+    val expr = withoutBoxedPrimitiveEncoders(boundExpr)
     val ctx = new CodegenContext
     // `BoundReference.genCode` emits `${ctx.INPUT_ROW}.getUTF8String(ord)`. Aliasing `row` to
     // `this` at the top of `process` routes those reads to the kernel's typed getters (final
@@ -294,19 +299,19 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
       // `subexprFunctionsCode` is the concatenated helper invocation block, spliced into the
       // per-row body by `defaultBody`.
       val ev = if (SQLConf.get.subexpressionEliminationEnabled) {
-        ctx.generateExpressions(Seq(boundExpr), doSubexpressionElimination = true).head
+        ctx.generateExpressions(Seq(expr), doSubexpressionElimination = true).head
       } else {
-        boundExpr.genCode(ctx)
+        expr.genCode(ctx)
       }
       val subExprsCode = ctx.subexprFunctionsCode
       val (cls, setup, snippet) =
-        CometBatchKernelCodegenOutput.emitOutputWriter(boundExpr.dataType, ev.value, ctx)
-      (cls, setup, defaultBody(boundExpr, inputSchema, ev, snippet, subExprsCode))
+        CometBatchKernelCodegenOutput.emitOutputWriter(expr.dataType, ev.value, ctx)
+      (cls, setup, defaultBody(expr, inputSchema, ev, snippet, subExprsCode))
     }
 
     val typedFieldDecls = CometBatchKernelCodegenInput.emitInputFieldDecls(inputSchema)
     val typedInputCasts = CometBatchKernelCodegenInput.emitInputCasts(inputSchema)
-    val decimalTypeByOrdinal = CometBatchKernelCodegenInput.decimalPrecisionByOrdinal(boundExpr)
+    val decimalTypeByOrdinal = CometBatchKernelCodegenInput.decimalPrecisionByOrdinal(expr)
     val getters =
       CometBatchKernelCodegenInput.emitTypedGetters(inputSchema, decimalTypeByOrdinal)
     val nested = CometBatchKernelCodegenInput.emitNestedClasses(inputSchema)
@@ -371,6 +376,73 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
       new CodeAndComment(codeBody, ctx.getPlaceHolderToComments()))
     GeneratedSource(code.body, code, ctx.references.toArray)
   }
+
+  /**
+   * Drops the encoder from each boxed primitive parameter and result of every `ScalaUDF` in the
+   * tree, so the kernel passes those values to and from the user function directly (#6706).
+   *
+   * A typed Scala UDF carries an `ExpressionEncoder` for each parameter and one for its result.
+   * For a boxed primitive (`(x: java.lang.Long) => ...`) the parameter's deserializer is
+   * `java.lang.Long.valueOf(input[0])`, which yields null for a null input, and the result's
+   * serializer is `input[0].longValue()`. `ScalaUDF` runs each one on every row through a
+   * projection: a `SafeProjection` into a `GenericInternalRow` going in, and an
+   * `UnsafeProjection` into an `UnsafeRow` coming out. Spark's whole-stage codegen runs the same
+   * projections.
+   *
+   * Without an encoder, `ScalaUDF` converts the value with `CatalystTypeConverters` instead,
+   * which passes a primitive through in its boxed form: `identity` going in, and coming out an
+   * `Option` unwrap that a boxed value never takes. The function receives the same value or null,
+   * and Catalyst gets the same result. Spark 4 builds a Java UDF the same way, with no encoders.
+   *
+   * Only an encoder whose expression is exactly the one Spark builds for a boxed primitive is
+   * dropped. Every other encoder (`String`, `Option`, case classes, collections) stays.
+   */
+  private[comet] def withoutBoxedPrimitiveEncoders(expr: Expression): Expression =
+    expr.transformUp { case udf: ScalaUDF =>
+      udf.copy(
+        inputEncoders = udf.inputEncoders.zip(udf.children).map { case (enc, child) =>
+          enc.filterNot(isBoxedPrimitiveDeserializer(_, child.dataType))
+        },
+        outputEncoder = udf.outputEncoder.filterNot(isBoxedPrimitiveSerializer(_, udf.dataType)))
+    }
+
+  /**
+   * Boxed class of each type `CatalystTypeConverters` passes through, and Spark's builder for the
+   * serializer of that class's encoder.
+   */
+  private def boxedPrimitive(dt: DataType): Option[(Class[_], Expression => Expression)] =
+    dt match {
+      case BooleanType => Some((classOf[java.lang.Boolean], createSerializerForBoolean))
+      case ByteType => Some((classOf[java.lang.Byte], createSerializerForByte))
+      case ShortType => Some((classOf[java.lang.Short], createSerializerForShort))
+      case IntegerType => Some((classOf[java.lang.Integer], createSerializerForInteger))
+      case LongType => Some((classOf[java.lang.Long], createSerializerForLong))
+      case FloatType => Some((classOf[java.lang.Float], createSerializerForFloat))
+      case DoubleType => Some((classOf[java.lang.Double], createSerializerForDouble))
+      case _ => None
+    }
+
+  /**
+   * True iff `enc` deserializes a `dt` value exactly as the encoder of its boxed class does, with
+   * `valueOf` over a nullable reference. The reference must be nullable because `StaticInvoke`
+   * propagates null only from a nullable argument: over a non-nullable one, Spark would box the 0
+   * that a row holds for a null.
+   */
+  private def isBoxedPrimitiveDeserializer(enc: ExpressionEncoder[_], dt: DataType): Boolean =
+    boxedPrimitive(dt).exists { case (boxed, _) =>
+      enc.objDeserializer ==
+        createDeserializerForTypesSupportValueOf(BoundReference(0, dt, nullable = true), boxed)
+    }
+
+  /**
+   * True iff `enc` serializes a boxed `dt` value exactly as the encoder of the boxed class does,
+   * by unboxing it. `ScalaUDF` turns a null result into null before it calls the serializer, so
+   * the serializer only ever sees a boxed value.
+   */
+  private def isBoxedPrimitiveSerializer(enc: ExpressionEncoder[_], dt: DataType): Boolean =
+    boxedPrimitive(dt).exists { case (boxed, serializerFor) =>
+      enc.objSerializer == serializerFor(BoundReference(0, ObjectType(boxed), nullable = true))
+    }
 
   /**
    * Per-row body. For `NullIntolerant` expressions whose input nulls fully determine a null
