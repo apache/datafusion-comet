@@ -17,20 +17,14 @@
  * under the License.
  */
 
-package org.apache.spark.sql.comet
+package org.apache.comet.iceberg
 
-import org.apache.spark.sql.connector.write.{BatchWrite, WriterCommitMessage}
-import org.apache.spark.sql.execution.SparkPlan
+import org.apache.spark.SparkContext
+import org.apache.spark.sql.execution.metric.SQLMetric
 
-import org.apache.comet.iceberg.DeltaCommand
-
-/** The `BatchWrite.commit(messages, summary)` overload only exists on Spark 4.1+. */
-private[comet] object IcebergWriteSummaryShim {
-  def commit(
-      batchWrite: BatchWrite,
-      messages: Array[WriterCommitMessage],
-      query: SparkPlan,
-      command: Option[DeltaCommand] = None): Unit = {
-    batchWrite.commit(messages)
-  }
+/** Retry-aware row-level metrics are added in Spark 4.2. */
+object IcebergSemanticMetricsShim {
+  def deltaMetrics(sc: SparkContext, command: Option[DeltaCommand]): Map[String, SQLMetric] =
+    Map.empty
+  def value(metric: SQLMetric): Long = metric.value
 }
