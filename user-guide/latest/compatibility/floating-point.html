@@ -849,18 +849,38 @@ under the License.
 However, one exception is comparison. Spark does not normalize NaN and zero when comparing values
 because they are handled well in Spark (e.g., <code class="docutils literal notranslate"><span class="pre">SQLOrderingUtil.compareFloats</span></code>). But the comparison
 functions of arrow-rs used by DataFusion do not normalize NaN and zero (e.g., <a class="reference external" href="https://docs.rs/arrow/latest/arrow/compute/kernels/cmp/fn.eq.html#">arrow::compute::kernels::cmp::eq</a>).
-For top-level <code class="docutils literal notranslate"><span class="pre">FLOAT</span></code> and <code class="docutils literal notranslate"><span class="pre">DOUBLE</span></code> comparisons, Comet normalizes both operands before native
-execution, including noncanonical NaN literals. Top-level <code class="docutils literal notranslate"><span class="pre">IN</span></code>, <code class="docutils literal notranslate"><span class="pre">InSet</span></code>, and <code class="docutils literal notranslate"><span class="pre">NOT</span> <span class="pre">IN</span></code> membership
-also normalize dynamic candidates and lists containing NaN. When every candidate is a non-NaN
-literal, Comet keeps DataFusion’s static filter and pruning path, enumerating both signed-zero
-forms when a list contains zero.</p>
+For <code class="docutils literal notranslate"><span class="pre">FLOAT</span></code> and <code class="docutils literal notranslate"><span class="pre">DOUBLE</span></code> comparisons (<code class="docutils literal notranslate"><span class="pre">=</span></code>, <code class="docutils literal notranslate"><span class="pre">&lt;&gt;</span></code>, <code class="docutils literal notranslate"><span class="pre">&lt;=&gt;</span></code>, <code class="docutils literal notranslate"><span class="pre">&lt;</span></code>, <code class="docutils literal notranslate"><span class="pre">&lt;=</span></code>, <code class="docutils literal notranslate"><span class="pre">&gt;</span></code> and <code class="docutils literal notranslate"><span class="pre">&gt;=</span></code>), Comet
+normalizes both operands before native execution, including noncanonical NaN literals. This
+applies wherever a comparison appears: projections, filters, aggregate arguments and <code class="docutils literal notranslate"><span class="pre">FILTER</span></code>
+clauses, join conditions, sort keys, and generator arguments.</p>
+<p>A native Parquet scan prunes row groups and pages with its data filters. So that this pruning
+still applies, a <code class="docutils literal notranslate"><span class="pre">FLOAT</span></code> or <code class="docutils literal notranslate"><span class="pre">DOUBLE</span></code> column compared with a constant other than NaN in a data
+filter is compared without normalizing the column, and the filter above the scan evaluates the
+comparison again with Spark’s semantics. Every other comparison in a data filter is normalized.
+Bloom filters store <code class="docutils literal notranslate"><span class="pre">-0.0</span></code> and <code class="docutils literal notranslate"><span class="pre">0.0</span></code> separately, so <code class="docutils literal notranslate"><span class="pre">=</span></code> against either zero checks them for both.
+With <code class="docutils literal notranslate"><span class="pre">spark.comet.parquet.rowFilterPushdown.enabled=true</span></code> the scan also drops the rows its data
+filters reject, so every comparison in a data filter is normalized, and a <code class="docutils literal notranslate"><span class="pre">FLOAT</span></code> or <code class="docutils literal notranslate"><span class="pre">DOUBLE</span></code>
+comparison in a data filter does not prune row groups or pages
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6702">#6702</a>).</p>
+<p>Spark’s own Parquet reader keeps <code class="docutils literal notranslate"><span class="pre">-0.0</span></code> and <code class="docutils literal notranslate"><span class="pre">0.0</span></code> apart when it prunes row groups with dictionaries
+and bloom filters, so it can skip a row group holding rows that its filter matches. For example,
+<code class="docutils literal notranslate"><span class="pre">WHERE</span> <span class="pre">d</span> <span class="pre">=</span> <span class="pre">-0.0D</span></code> can skip a row group that holds <code class="docutils literal notranslate"><span class="pre">0.0</span></code> but not <code class="docutils literal notranslate"><span class="pre">-0.0</span></code>, and so can <code class="docutils literal notranslate"><span class="pre">&lt;=&gt;</span></code> or <code class="docutils literal notranslate"><span class="pre">IN</span></code>
+against <code class="docutils literal notranslate"><span class="pre">-0.0D</span></code>. <code class="docutils literal notranslate"><span class="pre">WHERE</span> <span class="pre">d</span> <span class="pre">&gt;=</span> <span class="pre">0.0D</span></code> can skip a dictionary-encoded row group whose largest value is
+<code class="docutils literal notranslate"><span class="pre">-0.0</span></code>, and <code class="docutils literal notranslate"><span class="pre">WHERE</span> <span class="pre">d</span> <span class="pre">&lt;=</span> <span class="pre">-0.0D</span></code> one whose smallest value is <code class="docutils literal notranslate"><span class="pre">0.0</span></code>. Comet reads those row groups, so
+it can return rows that Spark does not. Comet’s result is the one that Spark’s comparison semantics
+call for, and Spark returns the same rows with <code class="docutils literal notranslate"><span class="pre">spark.sql.parquet.filterPushdown=false</span></code>.</p>
+<p>Top-level <code class="docutils literal notranslate"><span class="pre">IN</span></code>, <code class="docutils literal notranslate"><span class="pre">InSet</span></code>, and <code class="docutils literal notranslate"><span class="pre">NOT</span> <span class="pre">IN</span></code> membership also normalize dynamic candidates and lists
+containing NaN. When every candidate is a non-NaN literal, Comet keeps DataFusion’s static filter
+and pruning path, enumerating both signed-zero forms when a list contains zero.</p>
 <p>This scalar membership handling does not yet recurse into floating-point leaves nested in arrays
 or structs; see <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6019">#6019</a>.</p>
-<section id="nested-equality-and-membership">
-<h2>Nested equality and membership<a class="headerlink" href="#nested-equality-and-membership" title="Link to this heading">#</a></h2>
+<section id="nested-comparisons-and-membership">
+<h2>Nested comparisons and membership<a class="headerlink" href="#nested-comparisons-and-membership" title="Link to this heading">#</a></h2>
 <p>For arrays and structs containing <code class="docutils literal notranslate"><span class="pre">FLOAT</span></code> or <code class="docutils literal notranslate"><span class="pre">DOUBLE</span></code>, native <code class="docutils literal notranslate"><span class="pre">=</span></code>, <code class="docutils literal notranslate"><span class="pre">&lt;&gt;</span></code>, <code class="docutils literal notranslate"><span class="pre">IN</span></code>, and <code class="docutils literal notranslate"><span class="pre">NOT</span> <span class="pre">IN</span></code>
 compare signed zeros as equal and all NaN representations as equal, matching Spark. This also
-covers single-candidate membership that Spark rewrites into equality.</p>
+covers single-candidate membership that Spark rewrites into equality. <code class="docutils literal notranslate"><span class="pre">&lt;=&gt;</span></code>, <code class="docutils literal notranslate"><span class="pre">&lt;</span></code>, <code class="docutils literal notranslate"><span class="pre">&lt;=</span></code>, <code class="docutils literal notranslate"><span class="pre">&gt;</span></code>, and
+<code class="docutils literal notranslate"><span class="pre">&gt;=</span></code> normalize the floating-point values inside both operands first, so they follow Spark’s order
+too, in which NaN sorts above every other value.</p>
 <p>Equality and dynamic membership compare nested elements directly and stop at the first mismatch.
 Constant membership sets use normalized comparison values for static lookup. These operations
 preserve SQL null semantics and do not change the values returned by projections.</p>
@@ -997,7 +1017,7 @@ array whose elements cannot be null in ascending order, Spark’s generated code
   </div>
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#nested-equality-and-membership">Nested equality and membership</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#nested-comparisons-and-membership">Nested comparisons and membership</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#ordering-nan-and-signed-zero-0-0-vs-0-0">Ordering: NaN and signed zero (<code class="docutils literal notranslate"><span class="pre">-0.0</span></code> vs <code class="docutils literal notranslate"><span class="pre">+0.0</span></code>)</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#min-max-greatest-and-least"><code class="docutils literal notranslate"><span class="pre">min</span></code>, <code class="docutils literal notranslate"><span class="pre">max</span></code>, <code class="docutils literal notranslate"><span class="pre">greatest</span></code>, and <code class="docutils literal notranslate"><span class="pre">least</span></code></a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#array-distinct-and-union">Array distinct and union</a></li>

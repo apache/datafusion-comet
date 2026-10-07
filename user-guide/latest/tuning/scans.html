@@ -854,7 +854,8 @@ decode step and lazily materializes projected columns for surviving rows. This c
 CPU and memory when the filter is highly selective on a small subset of columns. It is disabled by default
 because it can hurt when the filter is not selective or when most columns must be read anyway. Row-group,
 page-index, and bloom-filter pruning happen regardless of this flag whenever Spark’s
-<code class="docutils literal notranslate"><span class="pre">spark.sql.parquet.filterPushdown</span></code> is on.</p>
+<code class="docutils literal notranslate"><span class="pre">spark.sql.parquet.filterPushdown</span></code> is on, except for filters that compare <code class="docutils literal notranslate"><span class="pre">FLOAT</span></code> or <code class="docutils literal notranslate"><span class="pre">DOUBLE</span></code> values,
+which do not prune while this flag is on (see <a class="reference internal" href="../compatibility/floating-point.html"><span class="std std-doc">Floating-point Number Comparison</span></a>).</p>
 </section>
 <section id="parquet-native-scans">
 <h3>Parquet Native Scans<a class="headerlink" href="#parquet-native-scans" title="Link to this heading">#</a></h3>

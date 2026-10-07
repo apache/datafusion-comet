@@ -401,6 +401,7 @@ under the License.
 
 <li class="toctree-l1"><a class="reference internal" href="ffi.html">Arrow FFI</a></li>
 <li class="toctree-l1"><a class="reference internal" href="timezones.html">Timezone Handling</a></li>
+<li class="toctree-l1"><a class="reference internal" href="floating_point.html">Floating-Point Semantics</a></li>
 <li class="toctree-l1"><a class="reference internal" href="jvm_shuffle.html">JVM Shuffle</a></li>
 <li class="toctree-l1"><a class="reference internal" href="native_shuffle.html">Native Shuffle</a></li>
 <li class="toctree-l1"><a class="reference internal" href="memory_management.html">Memory Management</a></li>
@@ -906,6 +907,7 @@ include <code class="docutils literal notranslate"><span class="pre">make_decima
 <ul class="simple">
 <li><p><strong>Cover both column references and literals.</strong> Comet often uses different code paths for each. The Comet SQL Tests suite automatically disables constant folding, so all-literal queries are evaluated natively.</p></li>
 <li><p><strong>Include edge cases</strong> such as <code class="docutils literal notranslate"><span class="pre">NULL</span></code>, empty strings, boundary values, <code class="docutils literal notranslate"><span class="pre">NaN</span></code>, and multibyte UTF-8 characters.</p></li>
+<li><p><strong>For <code class="docutils literal notranslate"><span class="pre">FLOAT</span></code> and <code class="docutils literal notranslate"><span class="pre">DOUBLE</span></code> input, include <code class="docutils literal notranslate"><span class="pre">-0.0</span></code> and a NaN with the sign bit set.</strong> <a class="reference internal" href="floating_point.html"><span class="std std-doc">Floating-Point Semantics</span></a> explains which Spark rule an expression follows and how to test it.</p></li>
 <li><p><strong>Keep one file per expression</strong> to make failures easy to locate.</p></li>
 <li><p><strong>Pin the mechanism when it depends on the input.</strong> If your serde routes some input types natively and others through the JVM codegen dispatcher, say so with <code class="docutils literal notranslate"><span class="pre">expect_native(...)</span></code> and <code class="docutils literal notranslate"><span class="pre">expect_dispatch(...)</span></code>. A plain <code class="docutils literal notranslate"><span class="pre">query</span></code> cannot tell the two apart, so without these a later change that swaps one for the other passes silently. See <a class="reference internal" href="sql-file-tests.html"><span class="std std-doc">Comet SQL Tests</span></a>.</p></li>
 </ul>
