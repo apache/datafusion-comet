@@ -33,7 +33,7 @@ import org.apache.spark.sql.catalyst.expressions.{And, AttributeReference, Dynam
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight}
 import org.apache.spark.sql.catalyst.plans.Inner
 import org.apache.spark.sql.catalyst.plans.logical.Join
-import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometBroadcastNestedLoopJoinExec, CometFilterExec, CometHashJoinExec, CometNativeScanExec, CometSortExec, CometSortMergeJoinExec, CometUnionExec}
+import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometBroadcastNestedLoopJoinExec, CometFilterExec, CometHashJoinExec, CometNativeScanExec, CometSortExec, CometSortMergeJoinExec, CometUnionExec, CometWindowExec}
 import org.apache.spark.sql.execution.{ColumnarToRowTransition, InputAdapter, LocalTableScanExec, SortExec, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, QueryStageExec}
 import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException
@@ -1192,6 +1192,28 @@ class CometJoinSuite extends CometTestBase {
           checkSortRestoredOverHashJoin(
             "SELECT big._1, big._2, small._2 FROM big JOIN small ON big._1 = small._1 " +
               "WHERE EXISTS (SELECT 1 FROM mid WHERE mid._1 = big._1 AND mid._2 > small._2)")
+        }
+      }
+    }
+  }
+
+  // A window partitioned by the join key gets no sort of its own, since the sort-merge join's
+  // output ordering satisfies it, so the window needs that ordering restored too.
+  for (adaptive <- Seq(false, true)) {
+    test(s"forceShuffledHashJoin restores ordering for a window over the join, AQE=$adaptive") {
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+        SQLConf.SHUFFLE_PARTITIONS.key -> "2",
+        CometConf.COMET_FORCE_SHJ.key -> "true",
+        CometConf.COMET_FORCE_SHJ_MAX_BUILD_SIZE.key -> "-1") {
+        withChainedJoinTables(midRows = 3000, midKeys = 100) {
+          val (_, cometPlan) = checkSparkAnswer(
+            "SELECT big._1, big._2, small._2, count(*) OVER (PARTITION BY big._1) " +
+              "FROM big JOIN small ON big._1 = small._1")
+          assert(collect(cometPlan) { case j: CometHashJoinExec => j }.nonEmpty, cometPlan)
+          assert(collect(cometPlan) { case w: CometWindowExec => w }.nonEmpty, cometPlan)
         }
       }
     }
