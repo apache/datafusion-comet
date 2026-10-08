@@ -441,7 +441,7 @@ index 72a2da16054..54146036f8a 100644
  
    test("SPARK-51777: sql.columnar.* classes registered in KryoSerializer") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/CachedTableSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/CachedTableSuite.scala
-index 085dbcd8046..ac98c64ae92 100644
+index 085dbcd8046..8cee9832317 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/CachedTableSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/CachedTableSuite.scala
 @@ -37,6 +37,7 @@ import org.apache.spark.sql.catalyst.analysis.TempTableAlreadyExistsException
@@ -502,17 +502,7 @@ index 085dbcd8046..ac98c64ae92 100644
      val tableName = "ntzCache"
      withTable(tableName) {
        sql(s"CACHE TABLE $tableName AS SELECT TIMESTAMP_NTZ'2021-01-01 00:00:00'")
-@@ -1670,7 +1678,8 @@ class CachedTableSuite extends SharedSparkSession
-     }
-   }
- 
--  test("SPARK-35332: Make cache plan disable configs configurable - check AQE") {
-+  test("SPARK-35332: Make cache plan disable configs configurable - check AQE",
-+    IgnoreComet("Spark's SQL UI shows a cached plan only under Spark's own cache scan")) {
-     withSQLConf(SQLConf.SHUFFLE_PARTITIONS.key -> "2",
-       SQLConf.COALESCE_PARTITIONS_MIN_PARTITION_NUM.key -> "1",
-       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true") {
-@@ -1703,9 +1712,18 @@ class CachedTableSuite extends SharedSparkSession
+@@ -1703,9 +1711,19 @@ class CachedTableSuite extends SharedSparkSession
            _.nodeName.contains("TableCacheQueryStage"))
          val aqeNode = findNodeInSparkPlanInfo(inMemoryScanNode.get,
            _.nodeName.contains("AdaptiveSparkPlan"))
@@ -520,17 +510,18 @@ index 085dbcd8046..ac98c64ae92 100644
 -          _.nodeName.contains("ResultQueryStage"))
 -        aqePlanRoot.get.children.head.nodeName == "AQEShuffleRead"
 +        // Spark 4.0 wraps results in ResultQueryStage. The coalescing indicator is AQEShuffleRead
-+        // as the direct child of InputAdapter.
++        // as its direct child, as in Spark, when the table is cached in Comet's columnar format,
++        // or as the direct child of InputAdapter when Comet's plan is cached in Spark's format.
 +        // AdaptiveSparkPlan -> ResultQueryStage -> WholestageCodegen ->
 +        //     CometColumnarToRow -> InputAdapter -> AQEShuffleRead (if coalesced)
 +        val resultStage = aqeNode.get.children.head  // ResultQueryStage
-+        val wsc = resultStage.children.head           // WholeStageCodegen
++        val wsc = resultStage.children.head           // WholeStageCodegen or AQEShuffleRead
 +        val c2r = wsc.children.head                   // ColumnarToRow or CometColumnarToRow
 +        val inputAdapter = c2r.children.head           // InputAdapter
-+        resultStage.nodeName  ==   "ResultQueryStage" &&
++        resultStage.nodeName  ==   "ResultQueryStage" && (wsc.nodeName == "AQEShuffleRead" ||
 +          wsc.nodeName.startsWith("WholeStageCodegen") && // could be "WholeStageCodegen (1)"
 +          (c2r.nodeName ==  "CometColumnarToRow" || c2r.nodeName == "ColumnarToRow") &&
-+          inputAdapter.children.head.nodeName == "AQEShuffleRead"
++          inputAdapter.children.head.nodeName == "AQEShuffleRead")
        }
  
        withTempView("t0", "t1", "t2") {
