@@ -347,7 +347,7 @@ object CometConf extends ShimCometConf {
   val COMET_EXEC_TAKE_ORDERED_AND_PROJECT_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("takeOrderedAndProject", defaultValue = true)
   val COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED: ConfigEntry[Boolean] =
-    createExecEnabledConfig("localTableScan", defaultValue = false)
+    createExecEnabledConfig("localTableScan", defaultValue = true)
   val COMET_EXEC_RANGE_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig(
       "range",
