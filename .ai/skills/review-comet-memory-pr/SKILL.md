@@ -117,15 +117,10 @@ configuration, from the inside out:
       `HashMap<task_attempt_id, Weak<TaskSharedMemoryPool>>`. The returned `Arc` is the only
       lifetime handle, so there is no explicit release to forget and a `createPlan` that fails
       partway cleans up on unwind. A PR that adds an explicit release call, or stores the `Arc`
-      somewhere longer-lived, breaks that property. An entry stays, with an expired `Weak`, until
-      its pool has finished dropping, and `acquire_task_shared_pool` waits on `TEARDOWN_COMPLETE`
-      while such an entry exists. The wait is required: the fair pool returns its anchor byte to
-      Spark from its drop, and a replacement created before that release lands holds nothing from
-      Spark, so its first acquire can park and wake to a task entry the release removed. Only the
-      `TeardownComplete` guard removes an entry, and only an expired one. It is declared after
-      the inner pool so it drops last. Do not let a change reorder those fields, remove the entry
-      before the inner pool drops, create a replacement without waiting, or let `create` return a
-      pool something else still references.
+      somewhere longer-lived, breaks that property. `TaskSharedMemoryPool::drop` compares pointers
+      so it only removes an entry that is still its own, which handles the race where an `acquire`
+      observes an expired `Weak` and inserts a replacement first. Do not let that check be
+      simplified away.
 - [ ] **`fair_unified` and `greedy_unified` are the only pool types.** On-heap mode ignores the
       pool-type string and always gets `UnboundedMemoryPool`: it exists so the Spark SQL test suite
       can run against Comet, it accounts for nothing, and it must not be used in production. A PR
