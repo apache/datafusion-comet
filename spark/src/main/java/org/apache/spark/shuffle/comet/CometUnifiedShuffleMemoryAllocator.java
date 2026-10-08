@@ -91,7 +91,7 @@ public final class CometUnifiedShuffleMemoryAllocator extends CometShuffleMemory
    * drops the entry at a zero balance, so trying again is safe: it registers the task again and
    * waits for its share as Spark would have. After a few failed attempts the allocation fails with
    * a SparkOutOfMemoryError, which the shuffle writers handle like any other refused page, caused
-   * by the last attempt's exception. The Spark issue is SPARK-59827.
+   * by the last attempt's exception. The Spark issue is SPARK-59444.
    */
   private <T> T retryMissingTaskEntry(long required, Supplier<T> allocation) {
     for (int attempt = 1; ; attempt++) {
