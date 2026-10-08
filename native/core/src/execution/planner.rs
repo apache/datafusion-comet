@@ -1066,6 +1066,20 @@ impl PhysicalPlanner {
                     .map(|e| self.create_expr(e, Arc::clone(&input_schema)))
                     .collect::<Result<Vec<_>, _>>()?;
 
+                // The driver checked this when the function was registered, but the path arrives
+                // in the plan, so this side applies the policy too.
+                let policy = self
+                    .session_ctx
+                    .state_ref()
+                    .read()
+                    .config()
+                    .get_extension::<crate::execution::c_udf::policy::NativeUdfPolicy>();
+                if let Some(policy) = policy {
+                    policy
+                        .check(&call.library_path)
+                        .map_err(|e| GeneralError(e.to_string()))?;
+                }
+
                 let lib = crate::execution::c_udf::cache::get_or_load(&call.library_path).map_err(
                     |e| GeneralError(format!("native UDF load '{}': {e}", call.library_path)),
                 )?;
@@ -8086,5 +8100,61 @@ mod tests {
         let batch = RecordBatch::try_new(schema, vec![ids]).unwrap();
         let out = expr.evaluate(&batch).unwrap().into_array(2).unwrap();
         assert_eq!(out.data_type(), &promised);
+    }
+
+    /// The executor applies the native UDF policy to the library path in the plan, whatever the
+    /// driver that built the plan did.
+    #[test]
+    fn native_scalar_udf_load_follows_the_session_policy() {
+        use crate::execution::c_udf::policy::NativeUdfPolicy;
+        use crate::execution::c_udf::test_support::{test_udfs_path, BUILD_HINT};
+
+        let int64 = || spark_expression::DataType {
+            type_id: 4, // INT64
+            type_info: None,
+        };
+        let library = test_udfs_path();
+        let call = Expr {
+            expr_struct: Some(NativeScalarUdf(spark_expression::NativeScalarUdf {
+                name: "add_one_c".to_string(),
+                library_path: library.to_string_lossy().into_owned(),
+                args: vec![Expr {
+                    expr_struct: Some(Bound(spark_expression::BoundReference {
+                        index: 0,
+                        datatype: Some(int64()),
+                    })),
+                    ..Default::default()
+                }],
+                return_type: Some(int64()),
+                deterministic: true,
+            })),
+            ..Default::default()
+        };
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, true)]));
+        let plan_with = |policy: NativeUdfPolicy| {
+            let config = SessionConfig::new().with_extension(Arc::new(policy));
+            PhysicalPlanner::new(Arc::new(SessionContext::new_with_config(config)), 0)
+                .create_expr(&call, Arc::clone(&schema))
+        };
+
+        plan_with(NativeUdfPolicy::default()).expect(BUILD_HINT);
+
+        let err = plan_with(NativeUdfPolicy::new(false, "")).unwrap_err();
+        assert!(err.to_string().contains("disabled"), "unexpected: {err}");
+
+        let elsewhere = tempfile::tempdir().unwrap();
+        let err = plan_with(NativeUdfPolicy::new(
+            true,
+            elsewhere.path().to_str().unwrap(),
+        ))
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("spark.comet.nativeUdf.allowedPaths"),
+            "unexpected: {err}"
+        );
+
+        let allowed = library.parent().unwrap().to_str().unwrap().to_string();
+        plan_with(NativeUdfPolicy::new(true, &allowed)).expect(BUILD_HINT);
     }
 }

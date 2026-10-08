@@ -26,8 +26,11 @@ public final class CometNativeUdfBridge extends NativeBase {
   private CometNativeUdfBridge() {}
 
   /**
-   * Validate that {@code libraryPath} loads and exposes a UDF named {@code expectedName}. Returns
-   * normally when it does, and throws RuntimeException otherwise.
+   * Validate that {@code libraryPath} loads and exposes a UDF named {@code expectedName}, once
+   * {@code enabled} and the comma-separated {@code allowedPaths} (the {@code
+   * spark.comet.nativeUdf.*} configs) have allowed the path. Returns normally when it does, and
+   * throws RuntimeException otherwise.
    */
-  public static native void validateLibrary(String libraryPath, String expectedName);
+  public static native void validateLibrary(
+      String libraryPath, String expectedName, boolean enabled, String allowedPaths);
 }

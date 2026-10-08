@@ -177,9 +177,30 @@ rather than accept a function whose volatility it would go on to ignore.
 `libraryPath` is passed to the platform's dynamic loader. An absolute path is what you want in
 practice, and it is what the rest of this page assumes, but a bare library name resolves the same
 way it would for any other shared object, through `LD_LIBRARY_PATH` on Linux and
-`DYLD_LIBRARY_PATH` on macOS. That is a convenience, not a sandbox: Comet does not restrict which
-paths may be loaded, so it makes no difference to the trust decision described under
-[Limitations](#limitations).
+`DYLD_LIBRARY_PATH` on macOS. That is a convenience, not a sandbox: unless you set the configs
+below, Comet does not restrict which paths may be loaded, so it makes no difference to the trust
+decision described under [Limitations](#limitations).
+
+## Restricting which libraries can be loaded
+
+Loading a library runs its code with the privileges of the JVM, so an operator can limit it:
+
+| Config                               | Default | Effect                                                       |
+| ------------------------------------ | ------- | ------------------------------------------------------------ |
+| `spark.comet.nativeUdf.enabled`      | `true`  | When `false`, no native UDF library is loaded.               |
+| `spark.comet.nativeUdf.allowedPaths` | empty   | Comma-separated directories a library must be under, if set. |
+
+With `allowedPaths` set, a library is loaded only if its path is absolute and, once symlinks and
+`..` are resolved, lies under one of the listed directories (which are resolved the same way). A bare
+library name is refused, because the dynamic loader's search path is not something Comet can check.
+The check applies on the driver, where `register` fails with `CometNativeUdfNotAllowedException`,
+and again on each executor before it loads a library named in a plan.
+
+These are ordinary Spark configs, so they are set in the cluster's defaults and are not a defense
+against a user who can change session configuration: such a user can set them back. The allow-list
+limits which files Comet will load, not what the code in them does, and a file that is replaced
+between the check and the load is not detected. List only directories that are writable by users
+you trust.
 
 ## Return types
 
@@ -293,7 +314,9 @@ This feature is at an early stage. The current limitations are:
   layout.
 - **Loading a library is loading native code.** It runs with the full privileges of the executor
   process and Comet cannot sandbox it: a bug in a UDF can corrupt memory or crash the executor.
-  Only register libraries you trust and control.
+  Only register libraries you trust and control. See
+  [Restricting which libraries can be loaded](#restricting-which-libraries-can-be-loaded) for the
+  configs that turn the feature off or limit the directories libraries may come from.
 - Once loaded, a library stays loaded for the life of the process, and `register` loads it on the
   driver as well as on the executors. To deploy a new build, write it to a new path and register
   that, or restart the executors and the driver. Never copy a new build over a library that is

@@ -878,10 +878,14 @@ object CometExecIterator extends Logging {
       CometConf.COMET_EXEC_SPILL_COMPRESSION_CODEC,
       CometConf.COMET_EXPLAIN_NATIVE_ENABLED,
       CometConf.COMET_MAX_TEMP_DIRECTORY_SIZE,
+      CometConf.COMET_NATIVE_UDF_ENABLED,
       CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED,
       CometConf.COMET_TRACING_ENABLED).foreach { entry =>
       builder.putEntries(entry.key, entry.get(SQLConf.get).toString)
     }
+    builder.putEntries(
+      CometConf.COMET_NATIVE_UDF_ALLOWED_PATHS.key,
+      CometConf.COMET_NATIVE_UDF_ALLOWED_PATHS.get(SQLConf.get).mkString(","))
 
     builder.build().toByteArray
   }
