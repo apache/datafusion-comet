@@ -276,10 +276,11 @@ where
             Self::Array(array) => array.is_null(row),
         }
     }
+    #[inline(always)]
     fn value(&self, row: usize) -> i64 {
         match self {
             Self::Scalar(value) => value.unwrap().into(),
-            Self::Array(array) => array.value(row).into(),
+            Self::Array(array) => array.values()[row].into(),
         }
     }
     fn has_nulls(&self) -> bool {
@@ -297,6 +298,34 @@ struct Row {
     len: usize,
 }
 
+// Keep the borrowed input access in the typed row loops. An out-of-line tuple return adds
+// a call and stack writes for each row in both sizing and generation.
+#[inline(always)]
+fn row_bounds<T: Integral>(
+    start: &Input<'_, T>,
+    stop: &Input<'_, T>,
+    step: Option<&Input<'_, T>>,
+    has_nulls: bool,
+    row: usize,
+) -> Option<(i64, i64, i64)>
+where
+    T::Native: Into<i64>,
+{
+    if has_nulls
+        && (start.is_null(row) || stop.is_null(row) || step.is_some_and(|s| s.is_null(row)))
+    {
+        return None;
+    }
+    let start = start.value(row);
+    let stop = stop.value(row);
+    let step = match step {
+        Some(step) => step.value(row),
+        None if start <= stop => 1,
+        None => -1,
+    };
+    Some((start, stop, step))
+}
+
 fn sequence_integral<T: Integral>(
     args: &[ColumnarValue],
     rows: usize,
@@ -312,36 +341,20 @@ where
     let step = args.get(2).map(Input::<T>::new).transpose()?;
     let has_nulls =
         start.has_nulls() || stop.has_nulls() || step.as_ref().is_some_and(Input::has_nulls);
-    let row_bounds = |row| {
-        if has_nulls
-            && (start.is_null(row)
-                || stop.is_null(row)
-                || step.as_ref().is_some_and(|s| s.is_null(row)))
-        {
-            return None;
-        }
-        let start = start.value(row);
-        let stop = stop.value(row);
-        let step = step
-            .as_ref()
-            .map_or_else(|| if start <= stop { 1 } else { -1 }, |s| s.value(row));
-        Some((start, stop, step))
-    };
-    let row_value = |row| -> Result<Row> {
-        match row_bounds(row) {
-            Some((start, stop, step)) => Ok(Row {
-                start,
-                step,
-                len: sequence_length(start, stop, step)?,
-            }),
-            None => Ok(Row::default()),
-        }
-    };
     let scalar = args
         .iter()
         .all(|arg| matches!(arg, ColumnarValue::Scalar(_)));
     let repeated = if scalar && rows != 0 {
-        Some(row_value(0)?)
+        Some(
+            match row_bounds(&start, &stop, step.as_ref(), has_nulls, 0) {
+                Some((start, stop, step)) => Row {
+                    start,
+                    step,
+                    len: sequence_length(start, stop, step)?,
+                },
+                None => Row::default(),
+            },
+        )
     } else {
         None
     };
@@ -358,9 +371,10 @@ where
             if row != 0 && row % CHECK_ROWS == 0 {
                 check_cancelled(check)?;
             }
-            let value = row_value(row)?;
-            total += value.len as u128;
-            nullable |= value.len == 0;
+            match row_bounds(&start, &stop, step.as_ref(), has_nulls, row) {
+                Some((start, stop, step)) => total += sequence_length(start, stop, step)? as u128,
+                None => nullable = true,
+            }
         }
         (total, nullable)
     };
@@ -426,7 +440,7 @@ where
             Some(value) => value,
             // The complete sizing pass already validated these immutable inputs. Avoid
             // repeating boundary/overflow checks and constructing a Result for each row.
-            None => match row_bounds(row) {
+            None => match row_bounds(&start, &stop, step.as_ref(), has_nulls, row) {
                 Some((start, stop, step)) => Row {
                     start,
                     step,
@@ -496,7 +510,7 @@ where
 
 /// Match released Spark 3.4--4.1 Sequence.sequenceLength, including its wide-arithmetic
 /// fallback error when subtraction overflows even though the resulting length would fit.
-#[inline]
+#[inline(always)]
 fn sequence_length(start: i64, stop: i64, step: i64) -> Result<usize> {
     if !((step > 0 && start <= stop) || (step < 0 && start >= stop) || (step == 0 && start == stop))
     {
@@ -525,7 +539,7 @@ fn sequence_length(start: i64, stop: i64, step: i64) -> Result<usize> {
 /// Only valid after sequence_length succeeded for the same immutable inputs. Success proves
 /// subtraction fits i64, excludes MIN / -1, and bounds the quotient and final length. A zero
 /// step is valid only for equal bounds, handled before division.
-#[inline]
+#[inline(always)]
 fn validated_sequence_length(start: i64, stop: i64, step: i64) -> usize {
     if start == stop {
         return 1;
