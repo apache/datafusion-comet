@@ -701,7 +701,16 @@ allocator before reading anything into the split.</p>
 <p><strong>The JVM shuffle allocator is an ordinary Spark consumer.</strong> <code class="docutils literal notranslate"><span class="pre">CometShuffleMemoryAllocator.getInstance</span></code>
 returns <code class="docutils literal notranslate"><span class="pre">CometUnifiedShuffleMemoryAllocator</span></code>, a Spark <code class="docutils literal notranslate"><span class="pre">MemoryConsumer</span></code> drawing from
 <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code>, so shuffle pages are arbitrated against Spark’s other consumers in the
-same task like any other allocation.</p>
+same task like any other allocation. A page or pointer array allocation that waits in Spark for
+memory can wake up to find the task’s entry gone from Spark’s execution pool, because another
+consumer of the task released its last bytes in the meantime, and Spark then throws a
+<code class="docutils literal notranslate"><span class="pre">NoSuchElementException</span></code> (“key not found”) instead of a grant
+(<a class="reference external" href="https://issues.apache.org/jira/browse/SPARK-59444">SPARK-59444</a>). The allocator retries that
+case, since the failed call was granted nothing, and after three attempts throws
+<code class="docutils literal notranslate"><span class="pre">SparkOutOfMemoryError</span></code>, which the shuffle writers handle like any other refused page. Only the
+shuffle allocator’s callers are guarded this way. Spark’s operators in the same task, such as its
+sorters and aggregates, can still hit the exception until Spark re-registers a waiting task in
+<code class="docutils literal notranslate"><span class="pre">ExecutionMemoryPool</span></code> (<a class="reference external" href="https://github.com/apache/spark/pull/58747">apache/spark#58747</a>).</p>
 <p>Which allocator each call site uses, and who ends up charged for the bytes:</p>
 <object data="../_images/mermaid-24951e49e88a2a575316ecedeb5309d49a140d7a.svg" type="image/svg+xml">
             <p class="warning">flowchart LR

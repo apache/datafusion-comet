@@ -798,7 +798,9 @@ writes the same Arrow IPC block format as native shuffle, so direct read applies
 depends on Spark’s memory mode.</p></li>
 <li><p>Off-heap mode gets <code class="docutils literal notranslate"><span class="pre">CometUnifiedShuffleMemoryAllocator</span></code>, an ordinary Spark <code class="docutils literal notranslate"><span class="pre">MemoryConsumer</span></code>
 drawing from <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code>. When it cannot acquire a page the writer spills to
-disk.</p></li>
+disk. An allocation that loses the task’s entry in Spark’s execution pool while it waits
+(<a class="reference external" href="https://issues.apache.org/jira/browse/SPARK-59444">SPARK-59444</a>) is retried a few times before
+it counts as a page that could not be acquired.</p></li>
 <li><p>On-heap mode gets <code class="docutils literal notranslate"><span class="pre">CometUnboundedShuffleMemoryAllocator</span></code>, which keeps no budget and so never
 refuses a page. Nothing bounds these allocations, and memory pressure never triggers a spill.
 That mode exists only so the Spark SQL tests can run against Comet. See
