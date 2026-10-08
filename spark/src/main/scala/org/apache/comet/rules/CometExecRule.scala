@@ -186,6 +186,11 @@ object CometExecRule {
    */
   private val TYPED_DATASET_PARTIAL_READER: TreeNodeTag[String] =
     TreeNodeTag[String]("comet.typedDatasetPartialReader")
+
+  /** Why Comet does not convert rows to Arrow in a plan that reads `InputFileBlockHolder`. */
+  private val INPUT_FILE_BLOCK_FALLBACK_REASON: String =
+    "Spark to Arrow conversion is not compatible with input_file_name, " +
+      "input_file_block_start, or input_file_block_length"
 }
 
 /**
@@ -409,6 +414,9 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
    */
   // spotless:on
   private def transform(plan: SparkPlan): SparkPlan = {
+    // Walks the whole plan, so it is lazy: only consulted once a node could be converted.
+    lazy val readsInputFileBlock = CometScanRule.readsInputFileBlock(plan)
+
     if (CometConf.COMET_CONVERT_FROM_TYPED_DATASET_ENABLED.get(conf)) {
       tagPartiallyReadTypedDatasetOutputs(plan)
     }
@@ -484,7 +492,7 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
                 s"Set ${CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key}=true to enable it.")
           }
 
-          if (shouldApplySparkToColumnar(conf, scan)) {
+          if (shouldApplySparkToColumnar(conf, scan, readsInputFileBlock)) {
             convertToComet(scan, CometSparkToColumnarExec).getOrElse(scan)
           } else {
             scan
@@ -506,7 +514,7 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       case op: LeafExecNode if hasEnabledHandler(op) =>
         convertToComet(op, allExecs(op.getClass))
           .orElse {
-            if (shouldApplySparkToColumnar(conf, op)) {
+            if (shouldApplySparkToColumnar(conf, op, readsInputFileBlock)) {
               convertToComet(op, CometSparkToColumnarExec)
             } else {
               None
@@ -514,7 +522,7 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
           }
           .getOrElse(op)
 
-      case op if shouldApplySparkToColumnar(conf, op) =>
+      case op if shouldApplySparkToColumnar(conf, op, readsInputFileBlock) =>
         convertToComet(op, CometSparkToColumnarExec).getOrElse(op)
 
       // Typed Dataset operations (`map`, `flatMap`, `mapPartitions`, `mapGroups`, ...) pass JVM
@@ -530,6 +538,10 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
               "Comet does not convert the output of a typed Dataset operation when " +
                 s"$reader can stop reading it early, because filling an Arrow batch would " +
                 "run the user function on rows that Spark never reaches")
+          // The conversion reads ahead of input_file_name and friends, as it does over a leaf.
+          // See shouldApplySparkToColumnar.
+          case None if readsInputFileBlock =>
+            withFallbackReason(op, CometExecRule.INPUT_FILE_BLOCK_FALLBACK_REASON)
           case None =>
             convertTypedDatasetOutput(op)
         }
@@ -1420,7 +1432,27 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
         convertToComet(s, CometShuffleExchangeExec).getOrElse(preserveSparkAggregateBuffers(s)))
   }
 
-  private def shouldApplySparkToColumnar(conf: SQLConf, op: SparkPlan): Boolean = {
+  private def shouldApplySparkToColumnar(
+      conf: SQLConf,
+      op: SparkPlan,
+      readsInputFileBlock: => Boolean): Boolean = {
+    // A converted leaf reads ahead of the Spark operator that evaluates input_file_name and
+    // friends: the conversion fills a whole batch, and Comet operators above it may pull more
+    // before they emit. By the time Spark evaluates them, the leaf's reader may have moved on to
+    // a later file or unset InputFileBlockHolder at the end of its input, so rows would report
+    // another file's values or the unset defaults. Leave the leaf on Spark so that the plan above
+    // it stays on Spark too.
+    if (!canApplySparkToColumnar(conf, op)) {
+      false
+    } else if (readsInputFileBlock) {
+      withFallbackReason(op, CometExecRule.INPUT_FILE_BLOCK_FALLBACK_REASON)
+      false
+    } else {
+      true
+    }
+  }
+
+  private def canApplySparkToColumnar(conf: SQLConf, op: SparkPlan): Boolean = {
     // Only consider converting leaf nodes to columnar currently, so that all the following
     // operators can have a chance to be converted to columnar. Leaf operators that output
     // columnar batches, such as Spark's vectorized readers, will also be converted to native
