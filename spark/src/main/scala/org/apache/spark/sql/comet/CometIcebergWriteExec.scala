@@ -126,15 +126,18 @@ case class CometIcebergWriteExec(
 
   // Names mirror Spark's stock `BatchWriteHelper` metrics (`numFiles` / `numOutputRows` /
   // `numOutputBytes`) so the Spark SQL UI shows the same row as it would for a non-Comet
-  // Iceberg write. `write_time` is pushed from the native operator by name (see
-  // `iceberg_write.rs`).
+  // Iceberg write. `write_time` and `files_closed_early` are pushed from the native operator by
+  // name (see `iceberg_write.rs`).
   override lazy val metrics: Map[String, SQLMetric] = Map(
     "numFiles" -> SQLMetrics.createMetric(sparkContext, "number of files written"),
     "numOutputRows" -> SQLMetrics.createMetric(sparkContext, "number of output rows"),
     "numOutputBytes" -> SQLMetrics.createSizeMetric(sparkContext, "written output"),
     "write_time" -> SQLMetrics.createNanoTimingMetric(
       sparkContext,
-      "time in native Iceberg writer"))
+      "time in native Iceberg writer"),
+    "files_closed_early" -> SQLMetrics.createMetric(
+      sparkContext,
+      "files closed early to free memory"))
 
   override def doExecute(): RDD[InternalRow] = {
     val columnarRdd = doExecuteColumnar()

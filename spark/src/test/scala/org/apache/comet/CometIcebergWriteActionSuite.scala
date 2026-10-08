@@ -3078,21 +3078,21 @@ class CometIcebergWriteActionSuite
     }
   }
 
-  // The native writer reserves what its open files hold from the task's memory pool. A fanout
-  // write keeps a file open for every partition, so over enough partitions it outgrows the pool
-  // and fails its task, which Spark can retry, instead of growing in memory that no budget
-  // accounts for until the executor is killed.
-  test("native acceleration: a fanout write that outgrows the memory pool fails its task") {
+  // The native writer reserves what its partitions hold from the task's memory pool. A fanout
+  // write keeps every partition it has seen open, so over enough partitions it outgrows the pool.
+  // It then writes out and closes the partitions holding the most, whose next rows open new
+  // files, and finishes with more, smaller files where it would otherwise fail its task.
+  test("native acceleration: a fanout write that outgrows the memory pool closes partitions") {
     assumeNativeAcceleration()
     withIcebergCatalog { _ =>
       val session = spark
       import session.implicits._
-      // One task writes 64 partitions of 1000 random 500-byte strings, a run of rows per
-      // partition. Each open file holds about 500 KB, so the pool of about 4 MiB (0.002 of the
-      // suite's 2 GiB off-heap size) is outgrown long before all 64 files are open.
+      // One task writes 64 partitions of 1000 random 500-byte strings, the partitions taking
+      // turns, so every partition keeps getting rows. That is about 32 MB, and the pool of about
+      // 4 MiB (0.002 of the suite's 2 GiB off-heap size) holds an eighth of it.
       val rows = 64000
       (0 until rows)
-        .map(i => (i, s"r${i / 1000}", new scala.util.Random(i).alphanumeric.take(500).mkString))
+        .map(i => (i, s"r${i % 64}", new scala.util.Random(i).alphanumeric.take(500).mkString))
         .toDF("id", "region", "payload")
         .coalesce(1)
         .createOrReplaceTempView("fanout_oom_src")
@@ -3109,9 +3109,62 @@ class CometIcebergWriteActionSuite
       }
 
       withNativeEnabled {
+        var plans = Seq.empty[SparkPlan]
+        // withSQLConf returns Unit before Spark 4.0, so the plans are kept from inside it.
+        withSQLConf(CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key -> "0.002") {
+          plans = capturePlans(spark) {
+            spark.sql(s"INSERT INTO $catalog.$ns.fanout_oom SELECT * FROM fanout_oom_src")
+          }
+        }
+        val writers =
+          plans.flatMap(p => collectWithSubqueries(p) { case w: CometIcebergWriteExec => w })
+        assert(writers.nonEmpty, s"the write did not run natively:\n${plans.mkString("\n--\n")}")
+        assert(
+          writers.map(_.metrics("files_closed_early").value).sum > 0,
+          "the write closed no partition early")
+
+        // With the whole pool, every partition keeps its one file open.
+        spark.sql(s"INSERT INTO $catalog.$ns.fanout_oom_control SELECT * FROM fanout_oom_src")
+        assert(parquetFiles(dataDir("fanout_oom_control")).size == 64)
+        assert(
+          parquetFiles(dataDir("fanout_oom")).size > 64,
+          s"${parquetFiles(dataDir("fanout_oom")).size} files for 64 partitions")
+        def rowsOf(table: String) =
+          spark.sql(s"SELECT id, region, payload FROM $catalog.$ns.$table")
+        assert(rowsOf("fanout_oom").count() == rows)
+        assert(rowsOf("fanout_oom").exceptAll(rowsOf("fanout_oom_control")).isEmpty)
+        assert(rowsOf("fanout_oom_control").exceptAll(rowsOf("fanout_oom")).isEmpty)
+      }
+    }
+  }
+
+  // A write that keeps one file open has no partition to close early, so when the file outgrows
+  // the pool the task fails, which Spark can retry, instead of growing in memory that no budget
+  // accounts for until the executor is killed.
+  test("native acceleration: a write whose open file outgrows the memory pool fails its task") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { _ =>
+      val session = spark
+      import session.implicits._
+      // One task writes about 32 MB of random 500-byte strings into one file, whose row group
+      // outgrows the pool of about 4 MiB (0.002 of the suite's 2 GiB off-heap size).
+      val rows = 64000
+      (0 until rows)
+        .map(i => (i, "r", new scala.util.Random(i).alphanumeric.take(500).mkString))
+        .toDF("id", "region", "payload")
+        .coalesce(1)
+        .createOrReplaceTempView("file_oom_src")
+      Seq("file_oom", "file_oom_control").foreach { table =>
+        spark.sql(s"""
+          CREATE TABLE $catalog.$ns.$table (id INT, region STRING, payload STRING)
+          USING iceberg
+        """)
+      }
+
+      withNativeEnabled {
         withSQLConf(CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key -> "0.002") {
           val (failedPlans, error) = captureFailedPlans(spark) {
-            spark.sql(s"INSERT INTO $catalog.$ns.fanout_oom SELECT * FROM fanout_oom_src")
+            spark.sql(s"INSERT INTO $catalog.$ns.file_oom SELECT * FROM file_oom_src")
           }
           assert(
             error.toSeq
@@ -3125,23 +3178,22 @@ class CometIcebergWriteActionSuite
               collectWithSubqueries(p) { case w: CometIcebergWriteExec => w }.nonEmpty),
             s"the failed write did not run natively:\n${failedPlans.mkString("\n--\n")}")
         }
-        assert(countSnapshots("fanout_oom") == 0L, "the failed write must not commit")
+        assert(countSnapshots("file_oom") == 0L, "the failed write must not commit")
         assert(
-          parquetFiles(dataDir("fanout_oom")).isEmpty,
-          s"the failed task left data files behind: ${parquetFiles(dataDir("fanout_oom"))}")
+          parquetFiles(dataDir("file_oom")).isEmpty,
+          s"the failed task left data files behind: ${parquetFiles(dataDir("file_oom"))}")
 
         // The executor outlived the failure, and with the whole pool the same write succeeds.
         val controlPlans = capturePlans(spark) {
-          spark.sql(s"INSERT INTO $catalog.$ns.fanout_oom_control SELECT * FROM fanout_oom_src")
+          spark.sql(s"INSERT INTO $catalog.$ns.file_oom_control SELECT * FROM file_oom_src")
         }
         assert(
           controlPlans.exists(p =>
             collectWithSubqueries(p) { case w: CometIcebergWriteExec => w }.nonEmpty),
           "the control write did not run natively")
         assert(
-          spark.sql(s"SELECT count(*) FROM $catalog.$ns.fanout_oom_control").head().getLong(0)
+          spark.sql(s"SELECT count(*) FROM $catalog.$ns.file_oom_control").head().getLong(0)
             == rows)
-        assert(parquetFiles(dataDir("fanout_oom_control")).size == 64)
       }
     }
   }
