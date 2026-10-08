@@ -71,8 +71,8 @@ object CometSequenceBenchmark extends CometBenchmarkBase {
     ("seq_short_5_elems", "SELECT sequence(c_start, c_stop_5) FROM parquetV1Table"),
     ("seq_spine_365_elems", "SELECT sequence(c_start, c_stop_365) FROM parquetV1Table"),
     ("seq_long_1000_elems", "SELECT sequence(c_start, c_stop_1000) FROM parquetV1Table"),
-    ("seq_long_50000_elems", "SELECT sequence(c_start, c_stop_50000) FROM parquetV1Table"),
     ("seq_long_10000_elems", "SELECT sequence(c_start, c_stop_10000) FROM parquetV1Table"),
+    ("seq_long_50000_elems", "SELECT sequence(c_start, c_stop_50000) FROM parquetV1Table"),
     ("seq_descending_default_step", "SELECT sequence(c_stop_365, c_start) FROM parquetV1Table"),
     ("seq_explicit_step_7", "SELECT sequence(c_start, c_stop_365, 7L) FROM parquetV1Table"),
     (

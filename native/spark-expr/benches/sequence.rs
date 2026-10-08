@@ -19,7 +19,7 @@ use arrow::array::Int64Array;
 use arrow::datatypes::{DataType, Field};
 use criterion::{criterion_group, criterion_main, Criterion};
 use datafusion::common::{config::ConfigOptions, ScalarValue};
-use datafusion::logical_expr::{ScalarFunctionArgs, ScalarUDFImpl};
+use datafusion::logical_expr::{ScalarFunctionArgs, ScalarUDF};
 use datafusion::physical_plan::ColumnarValue;
 use datafusion_comet_spark_expr::{SequenceMemoryPool, SparkSequence};
 use std::hint::black_box;
@@ -145,6 +145,10 @@ fn criterion_benchmark(c: &mut Criterion) {
 
     // Exercise the physical UDF and the caller's expansion of a scalar result. Both the
     // baseline and candidate must produce the complete requested batch.
+    let scalar_udf = Arc::new(ScalarUDF::new_from_impl(SparkSequence::new(
+        return_type.clone(),
+        SequenceMemoryPool::new(1024 * 1024 * 1024),
+    )));
     let return_field = Arc::new(Field::new("result", return_type.clone(), true));
     let config_options = Arc::new(ConfigOptions::default());
     for rows in [1, NUM_ROWS] {
@@ -156,16 +160,17 @@ fn criterion_benchmark(c: &mut Criterion) {
             group.bench_function(format!("all_scalar_{rows}_rows_{elems}_elems"), |b| {
                 b.iter(|| {
                     black_box(
-                        udf.invoke_with_args(ScalarFunctionArgs {
-                            args: args.clone(),
-                            arg_fields: vec![],
-                            number_rows: rows,
-                            return_field: Arc::clone(&return_field),
-                            config_options: Arc::clone(&config_options),
-                        })
-                        .unwrap()
-                        .into_array(rows)
-                        .unwrap(),
+                        scalar_udf
+                            .invoke_with_args(ScalarFunctionArgs {
+                                args: args.clone(),
+                                arg_fields: vec![],
+                                number_rows: rows,
+                                return_field: Arc::clone(&return_field),
+                                config_options: Arc::clone(&config_options),
+                            })
+                            .unwrap()
+                            .into_array(rows)
+                            .unwrap(),
                     )
                 })
             });
