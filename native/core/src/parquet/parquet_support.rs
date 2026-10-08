@@ -793,7 +793,7 @@ fn create_hdfs_object_store(
 
 /// Cache identity: `(scheme://[container@]host:port, config_hash, hdfs_backend)`.
 /// Native `s3a` is normalized to `s3`; Hadoop-selected schemes keep their spelling.
-/// The hash covers the object-store configuration. The boolean is `true` for the
+/// The hash covers the options the backend reads. The boolean is `true` for the
 /// Hadoop backend (including custom schemes routed through Hadoop), `false` for native.
 type ObjectStoreCacheKey = (String, u64, bool);
 type ObjectStoreCache = RwLock<HashMap<ObjectStoreCacheKey, Arc<dyn ObjectStore>>>;
@@ -857,6 +857,23 @@ fn hash_object_store_configs(configs: &HashMap<String, String>) -> u64 {
     hasher.finish()
 }
 
+/// The option prefixes the store built for `scheme` reads. A scan forwards the options of every
+/// scheme it reads, so the cache identity and the store use only these, and a bucket keeps one
+/// store whatever other schemes the scan reads. `fs.comet.*` selects the backend.
+fn backend_option_prefixes(scheme: &str, is_hdfs: bool) -> &'static [&'static str] {
+    if is_hdfs {
+        &["fs.comet."]
+    } else if scheme == "s3" {
+        &["fs.comet.", "fs.s3a."]
+    } else if is_azure_scheme(scheme) {
+        // `comet.azure.*` carries the driver's credential resolution.
+        &["fs.comet.", "fs.azure.", "comet.azure."]
+    } else {
+        // `parse_url` reads no options.
+        &["fs.comet."]
+    }
+}
+
 /// The selected backend, independent of the URL used to register it in DataFusion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ObjectStoreBackend {
@@ -910,7 +927,13 @@ pub(crate) fn prepare_object_store_with_configs(
     let scheme = url.scheme();
     let url_key = object_store_url_key(&url);
 
-    let config_hash = hash_object_store_configs(object_store_configs);
+    let prefixes = backend_option_prefixes(scheme, is_hdfs_scheme);
+    let backend_configs: HashMap<String, String> = object_store_configs
+        .iter()
+        .filter(|(key, _)| prefixes.iter().any(|prefix| key.starts_with(prefix)))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    let config_hash = hash_object_store_configs(&backend_configs);
     let cache_key = (url_key.clone(), config_hash, is_hdfs_scheme);
 
     // Check the cache first to reuse existing object store instances.
@@ -933,9 +956,9 @@ pub(crate) fn prepare_object_store_with_configs(
             let (store, path): (Box<dyn ObjectStore>, Path) = if is_hdfs_scheme {
                 create_hdfs_object_store(&url)
             } else if scheme == "s3" {
-                objectstore::s3::create_store(&url, object_store_configs, Duration::from_secs(300))
+                objectstore::s3::create_store(&url, &backend_configs, Duration::from_secs(300))
             } else if is_azure_scheme(scheme) {
-                objectstore::azure::create_store(&url, object_store_configs)
+                objectstore::azure::create_store(&url, &backend_configs)
             } else {
                 parse_url(&url)
             }
@@ -1391,6 +1414,124 @@ mod tests {
             }
         }
         object_store_cache().write().unwrap().remove(&key);
+    }
+
+    /// A scan forwards the options of every scheme it reads, so the S3 store of a bucket must not
+    /// depend on keys only other backends read, while a changed `fs.s3a.*` key selects another
+    /// store. Seeds and removes two in-memory cache entries; no remote requests are performed.
+    #[test]
+    fn s3_store_cache_identity_ignores_options_of_other_backends() {
+        let bucket = "comet-isolation-other-backend-options";
+        let s3_options = HashMap::from([
+            (
+                "fs.s3a.endpoint".to_string(),
+                "http://localhost:9000".to_string(),
+            ),
+            ("fs.comet.libhdfs.schemes".to_string(), "hdfs".to_string()),
+        ]);
+        let mut changed_s3_options = s3_options.clone();
+        changed_s3_options.insert("fs.s3a.endpoint".into(), "http://localhost:9001".into());
+        let mut scan_options = s3_options.clone();
+        scan_options.insert("fs.gs.project.id".into(), "gcp-project".into());
+        scan_options.insert(
+            "fs.azure.account.key.acct.blob.core.windows.net".into(),
+            "azure-key".into(),
+        );
+
+        let seeded: Vec<(super::ObjectStoreCacheKey, Arc<dyn ObjectStore>)> =
+            [&s3_options, &changed_s3_options]
+                .iter()
+                .map(|options| {
+                    let key = (
+                        format!("s3://{bucket}"),
+                        hash_object_store_configs(options),
+                        false,
+                    );
+                    (key, Arc::new(InMemory::new()) as Arc<dyn ObjectStore>)
+                })
+                .collect();
+        for (key, store) in &seeded {
+            object_store_cache()
+                .write()
+                .unwrap()
+                .insert(key.clone(), Arc::clone(store));
+        }
+
+        let runtime = Arc::new(RuntimeEnv::default());
+        for (options, expected) in [
+            (&s3_options, &seeded[0].1),
+            (&scan_options, &seeded[0].1),
+            (&changed_s3_options, &seeded[1].1),
+        ] {
+            let (url, _, _) = prepare_object_store_with_configs(
+                Arc::clone(&runtime),
+                format!("s3a://{bucket}/file.parquet"),
+                options,
+            )
+            .unwrap();
+            assert!(Arc::ptr_eq(&runtime.object_store(&url).unwrap(), expected));
+        }
+        for (key, _) in &seeded {
+            object_store_cache().write().unwrap().remove(key);
+        }
+    }
+
+    /// The Azure store of a container depends on the `fs.azure.*` and `comet.azure.*` options only.
+    /// Seeds and removes three in-memory cache entries; no remote requests are performed.
+    #[test]
+    fn azure_store_cache_identity_ignores_options_of_other_backends() {
+        use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+
+        let container = "comet-isolation-azure-options";
+        let azure_options = HashMap::from([("fs.azure.account.key".into(), "c2VjcmV0".into())]);
+        let mut changed_azure_options = azure_options.clone();
+        changed_azure_options.insert("fs.azure.account.key".into(), "b3RoZXI=".into());
+        let mut resolved_options = azure_options.clone();
+        resolved_options.insert("comet.azure.auth.type".into(), "SharedKey".into());
+        let mut scan_options = azure_options.clone();
+        scan_options.insert("fs.s3a.access.key".into(), "s3-access-key".into());
+        scan_options.insert("fs.gs.project.id".into(), "gcp-project".into());
+
+        let seeded: Vec<(super::ObjectStoreCacheKey, Arc<dyn ObjectStore>)> =
+            [&azure_options, &changed_azure_options, &resolved_options]
+                .iter()
+                .map(|options| {
+                    let key = (
+                        format!("abfss://{container}@account.dfs.core.windows.net"),
+                        hash_object_store_configs(options),
+                        false,
+                    );
+                    (key, Arc::new(InMemory::new()) as Arc<dyn ObjectStore>)
+                })
+                .collect();
+        for (key, store) in &seeded {
+            object_store_cache()
+                .write()
+                .unwrap()
+                .insert(key.clone(), Arc::clone(store));
+        }
+
+        let runtime = RuntimeEnvBuilder::new()
+            .with_object_store_registry(Arc::new(super::CometObjectStoreRegistry::default()))
+            .build_arc()
+            .unwrap();
+        for (options, expected) in [
+            (&azure_options, &seeded[0].1),
+            (&scan_options, &seeded[0].1),
+            (&changed_azure_options, &seeded[1].1),
+            (&resolved_options, &seeded[2].1),
+        ] {
+            let (url, _, _) = prepare_object_store_with_configs(
+                Arc::clone(&runtime),
+                format!("abfss://{container}@account.dfs.core.windows.net/file.parquet"),
+                options,
+            )
+            .unwrap();
+            assert!(Arc::ptr_eq(&runtime.object_store(&url).unwrap(), expected));
+        }
+        for (key, _) in &seeded {
+            object_store_cache().write().unwrap().remove(key);
+        }
     }
 
     /// Checks that native file construction returns Local and cached Hadoop file routing returns
