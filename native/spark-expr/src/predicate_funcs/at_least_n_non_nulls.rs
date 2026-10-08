@@ -337,25 +337,44 @@ mod tests {
     #[test]
     fn at_least_n_non_nulls_mixed_types_and_thresholds() {
         let batch = batch(vec![
-            Arc::new(StringArray::from(vec![Some(""), None, Some("NaN"), None])),
+            Arc::new(StringArray::from(vec![
+                Some(""),
+                None,
+                Some("NaN"),
+                None,
+                None,
+                None,
+            ])),
             Arc::new(Float32Array::from(vec![
                 Some(f32::NAN),
                 Some(-0.0),
                 None,
                 None,
+                // Native arrays preserve NaN signs and payloads that Parquet canonicalizes.
+                Some(f32::from_bits(0xffc0_0001)),
+                Some(-0.0),
             ])),
             Arc::new(Float64Array::from(vec![
                 Some(1.0),
                 Some(f64::NAN),
                 Some(f64::INFINITY),
                 None,
+                Some(-0.0),
+                Some(f64::from_bits(0xfff8_0000_0000_0001)),
             ])),
-            Arc::new(NullArray::new(4)),
+            Arc::new(NullArray::new(6)),
         ]);
-        for n in [-1, 0, 1, 2, 3, 4, 5, i32::MAX] {
-            let expr = AtLeastNNonNulls::new(n, columns(&batch));
-            assert_eq!(result(&expr, &batch), [2, 1, 2, 0].map(|count| count >= n));
-            assert!(!expr.nullable(batch.schema_ref()).unwrap());
+        for threshold in [1, 64] {
+            for n in [-1, 0, 1, 2, 3, 4, 5, i32::MAX] {
+                let expr = AtLeastNNonNulls::new(n, columns(&batch))
+                    .with_small_batch_threshold(threshold)
+                    .unwrap();
+                assert_eq!(
+                    result(&expr, &batch),
+                    [2, 1, 2, 0, 1, 1].map(|count| count >= n)
+                );
+                assert!(!expr.nullable(batch.schema_ref()).unwrap());
+            }
         }
         let sliced = batch.slice(1, 2);
         assert_eq!(
