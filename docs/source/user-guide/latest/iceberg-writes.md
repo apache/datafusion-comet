@@ -119,10 +119,15 @@ For an unpartitioned copy-on-write `MERGE`, the native Iceberg writer is reachab
 On Spark 4.1+, the native MergeRows path also preserves the semantic counters required by the
 summary-aware writer commit contract.
 
-The mechanism behind row-level DML differs by Spark version: on Spark 4.0+ the analyzer emits
-operation-coded rows that Comet's writer dispatches through `ReplaceData`'s projections, while
-on Spark 3.4/3.5 the rewritten rows are written as a plain row stream. The supported set of
-operations is the same either way.
+For copy-on-write row-level DML, the mechanism differs by Spark version: on Spark 4.0+ the
+analyzer emits operation-coded rows that Comet's writer dispatches through `ReplaceData`'s
+projections, while on Spark 3.4/3.5 the rewritten rows are written as a plain row stream. The
+supported set of operations is the same either way.
+
+On Spark 3.5+, merge-on-read uses Spark's `WriteDelta`. The split plan intercepts that command so
+Comet can keep the same driver commit and reporting path, but task-side row-level writes stay on
+Iceberg's JVM `DeltaWriter`; `CometIcebergWriteExec` is never used for position-delta rows.
+Spark 3.4 leaves `WriteDelta` on Spark's stock write plan.
 
 On Spark 4.1+ the split plan matches two further stock-Spark behaviours: MERGE metrics are
 forwarded to the writer's commit (Iceberg 1.11+ records them in the snapshot summary), and
@@ -134,8 +139,9 @@ changes.
 The rewrite is skipped — and the write runs through Spark's stock combined operator — when:
 
 - `spark.comet.write.iceberg.splitOperator.enabled` is `false` (the default);
-- the write is not an Iceberg `SparkWrite` (any other V2 data source);
-- the table uses merge-on-read: delta writes (Iceberg `WriteDelta`) are not intercepted;
+- the write is neither an Iceberg `SparkWrite` nor a supported Iceberg position-delta write;
+- the table uses merge-on-read on Spark 3.4; Spark 3.5+ `WriteDelta` is intercepted but remains
+  on Iceberg's JVM `DeltaWriter`;
 - the statement is CTAS / RTAS on Spark 3.4, where the staged exec writes inline; on Spark
   3.5+ those statements re-plan their inner append, which is intercepted normally;
 - the write requires Spark's commit coordinator, which Comet's per-task commit protocol does
@@ -273,8 +279,9 @@ Other `write.*` properties are intentionally not gated because they cannot make 
 writer produce different data files: distribution and ordering settings shape the Spark plan
 identically on both paths, WAP / branch / snapshot properties act on the JVM committer,
 `write.avro.*` / `write.orc.*` apply only to formats already excluded, and merge-on-read
-settings route the write through `WriteDelta`, which the split plan never intercepts. Every
-rule is pinned by `CometIcebergWriteDetectionSuite`.
+settings route the write through `WriteDelta`, whose task writer remains iceberg-java rather
+than the native writer. Every native eligibility rule is pinned by
+`CometIcebergWriteDetectionSuite`.
 
 Manifest `DataFile` metrics are assembled on the JVM before commit: each written file's
 metrics are re-derived from its parquet footer through the version-matched
@@ -298,6 +305,18 @@ When a native write fails partway through a task (an object-store error, a data-
 failure), the error propagates as an ordinary Spark task failure and Spark's task retry
 re-executes it — through the native writer again. Retries cannot collide: each attempt's task
 attempt id is embedded in its data file names.
+
+The native writer's buffers are charged to Comet's memory pool, the off-heap budget Comet's other
+native operators draw on, where iceberg-java's buffers sit on the JVM heap. A fanout write keeps a
+data file open for every partition a task writes to. Each open file holds the row group it is
+writing in memory, up to `write.parquet.row-group-size-bytes`, and on S3 or GCS also the last row
+group it flushed, which is uploaded once the next one is complete or the file closes. So a task
+writing to many partitions needs memory in proportion to them. When the pool cannot grant it, the
+task fails with a `CometNativeException` reading `Additional allocation failed for IcebergWriteExec`
+instead of exceeding the executor's memory, and Spark retries it like any other task failure. Such a
+write fits in less memory with the fanout writer disabled (`write.spark.fanout.enabled=false`):
+Spark then sorts each task's rows by partition, and the task keeps one file open at a time. A
+smaller row-group size also helps. Otherwise the write needs a larger `spark.memory.offHeap.size`.
 
 Partial results are never committed. The commit set is exactly the commit messages returned by
 successful tasks — a failed task contributes none — and if the job fails, the driver-side

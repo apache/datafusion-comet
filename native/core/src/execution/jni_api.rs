@@ -40,6 +40,7 @@ use std::collections::HashSet;
 use arrow::array::{Array, RecordBatch};
 use arrow::datatypes::DataType as ArrowDataType;
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
+use datafusion::config::SpillCompression;
 use datafusion::execution::disk_manager::DiskManagerMode;
 use datafusion::execution::memory_pool::MemoryPool;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
@@ -129,9 +130,9 @@ use crate::execution::tracing::{
 use crate::execution::memory_pools::logging_pool::LoggingMemoryPool;
 use crate::execution::spark_config::{
     SparkConfig, COMET_DEBUG_ENABLED, COMET_DEBUG_MEMORY,
-    COMET_EXEC_AGGREGATE_SKIP_PARTIAL_ENABLED, COMET_EXPLAIN_NATIVE_ENABLED,
-    COMET_MAX_TEMP_DIRECTORY_SIZE, COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED,
-    COMET_TRACING_ENABLED, SPARK_EXECUTOR_CORES,
+    COMET_EXEC_AGGREGATE_SKIP_PARTIAL_ENABLED, COMET_EXEC_SPILL_COMPRESSION_CODEC,
+    COMET_EXPLAIN_NATIVE_ENABLED, COMET_MAX_TEMP_DIRECTORY_SIZE,
+    COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED, COMET_TRACING_ENABLED, SPARK_EXECUTOR_CORES,
 };
 use crate::parquet::encryption_support::{CometEncryptionFactory, ENCRYPTION_FACTORY_ID};
 use crate::parquet::parquet_support::CometObjectStoreRegistry;
@@ -901,6 +902,24 @@ fn prepare_datafusion_session_context(
         session_config =
             session_config.set_str("datafusion.execution.parquet.reorder_filters", "true");
     }
+
+    // Translate Comet's spill codec into DataFusion's spill compression, which DataFusion
+    // otherwise leaves uncompressed. Set before the pass-through below for the same reason,
+    // so an explicit `spark.comet.datafusion.execution.spill_compression` still wins.
+    let spill_compression = match spark_config
+        .get(COMET_EXEC_SPILL_COMPRESSION_CODEC)
+        .map(String::as_str)
+    {
+        None | Some("lz4") => SpillCompression::Lz4Frame,
+        Some("zstd") => SpillCompression::Zstd,
+        Some("none") => SpillCompression::Uncompressed,
+        Some(codec) => {
+            return Err(CometError::Config(format!(
+                "Unsupported spill compression codec: {codec}"
+            )))
+        }
+    };
+    session_config = session_config.with_spill_compression(spill_compression);
 
     // Pass through DataFusion configs from Spark.
     // e.g: spark-shell --conf spark.comet.datafusion.sql_parser.parse_float_as_decimal=true
