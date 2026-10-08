@@ -253,6 +253,46 @@ object NativeConfig {
    * The result feeds object_store's parse_url_opts natively.
    */
   def extractObjectStoreOptions(hadoopConf: Configuration, uri: URI): Map[String, String] = {
+    val (options, aliasOptions) = objectStoreOptionsAndAliasOptions(hadoopConf, uri)
+    options ++ aliasOptions
+  }
+
+  /**
+   * The object store options for a scan of `uris`: `extractObjectStoreOptions` of one URI per
+   * scheme, and of one per bucket for an opted-in alias. Each scheme forwards keys under its own
+   * prefixes. An alias bucket keeps only the settings translated for that bucket, applied after
+   * every scheme's own keys so that they win over a raw `fs.s3a.bucket.<bucket>.*` key.
+   */
+  def extractObjectStoreOptions(
+      hadoopConf: Configuration,
+      uris: Iterable[URI]): Map[String, String] = {
+    val s3CompliantSchemes = resolveS3CompliantSchemes(hadoopConf)
+    val representatives = scala.collection.mutable.LinkedHashMap[(String, Option[String]), URI]()
+    uris.foreach { uri =>
+      val scheme = lowerScheme(uri).getOrElse("file")
+      val aliasBucket =
+        if (s3CompliantSchemes.contains(scheme)) bucketForUri(uri, s3CompliantSchemes) else None
+      representatives.getOrElseUpdate((scheme, aliasBucket), uri)
+    }
+    val parts = representatives.values.toSeq.map { uri =>
+      val (options, aliasOptions) = objectStoreOptionsAndAliasOptions(hadoopConf, uri)
+      val scope = bucketForUri(uri, s3CompliantSchemes)
+        .map(bucket => s"fs.s3a.bucket.$bucket")
+        .getOrElse("fs.s3a")
+      val ownKeys = vendorPropertyToS3aSuffix.values.map(suffix => s"$scope.$suffix").toSet
+      (options, aliasOptions.filter { case (key, _) => ownKeys.contains(key) })
+    }
+    parts.map(_._1).foldLeft(Map.empty[String, String])(_ ++ _) ++
+      parts.map(_._2).foldLeft(Map.empty[String, String])(_ ++ _)
+  }
+
+  /**
+   * The options `extractObjectStoreOptions` forwards for `uri`, as the keys copied from the
+   * Hadoop configuration and the alias settings translated over them.
+   */
+  private def objectStoreOptionsAndAliasOptions(
+      hadoopConf: Configuration,
+      uri: URI): (Map[String, String], Map[String, String]) = {
     val scheme = Option(uri.getScheme).map(_.toLowerCase(Locale.ROOT)).getOrElse("file")
 
     import scala.jdk.CollectionConverters._
@@ -275,7 +315,7 @@ object NativeConfig {
       if (s3CompliantSchemes.contains(scheme)) objectStoreConfigPrefixes.get("s3a") else None
     }
     if (prefixes.isEmpty) {
-      return options.toMap
+      return (options.toMap, Map.empty)
     }
 
     // A configured S3-compliant alias also contributes vendor keys, but those must be applied
@@ -298,12 +338,12 @@ object NativeConfig {
     }
 
     // Pass the resolved bucket so `fs.<scheme>.default.*` lands at that bucket's scope.
-    if (vendorEntries.nonEmpty) {
-      translateVendorKeys(vendorEntries.toSeq, options, bucketForUri(uri, s3CompliantSchemes))
-        .foreach { case (k, v) => options(k) = v }
-    }
+    val defaultBucket = bucketForUri(uri, s3CompliantSchemes)
+    val aliasOptions =
+      if (vendorEntries.isEmpty) Map.empty[String, String]
+      else translateVendorKeys(vendorEntries.toSeq, options, defaultBucket)
 
-    options.toMap
+    (options.toMap, aliasOptions)
   }
 
   /**

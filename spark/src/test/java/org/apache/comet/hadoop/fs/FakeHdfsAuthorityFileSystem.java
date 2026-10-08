@@ -26,9 +26,10 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.RawLocalFileSystem;
 
 /**
- * A local-disk-backed FileSystem for the {@code hdfs} scheme that keeps the authority it is
- * initialized with, so {@code hdfs://nn1/...} and {@code hdfs://nn2/...} are two file systems (two
- * native object stores) whose paths both resolve on the local disk.
+ * A local-disk-backed FileSystem that keeps the scheme and authority it is initialized with, so
+ * {@code hdfs://nn1/...} and {@code hdfs://nn2/...} are two file systems (two native object stores)
+ * whose paths both resolve on the local disk. The scheme is {@code hdfs} unless it is registered
+ * for another one.
  */
 public class FakeHdfsAuthorityFileSystem extends RawLocalFileSystem {
   private static final URI DEFAULT_URI = URI.create("hdfs://fake-namenode");
@@ -45,12 +46,12 @@ public class FakeHdfsAuthorityFileSystem extends RawLocalFileSystem {
   @Override
   public void initialize(URI name, Configuration conf) throws IOException {
     super.initialize(name, conf);
-    uri = URI.create("hdfs://" + name.getAuthority());
+    uri = URI.create(name.getScheme() + "://" + name.getAuthority());
   }
 
   @Override
   public String getScheme() {
-    return "hdfs";
+    return getUri().getScheme();
   }
 
   @Override

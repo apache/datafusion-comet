@@ -57,6 +57,9 @@ case class CometCsvNativeScanExec(
 
   override def outputOrdering: Seq[SortOrder] = Nil
 
+  // The native operator holds the object store options, so the plan's text leaves it out.
+  override def stringArgs: Iterator[Any] = Iterator(output)
+
   override protected def doCanonicalize(): SparkPlan = {
     CometCsvNativeScanExec(nativeOp, output, originalPlan, serializedPlanOpt)
   }
@@ -115,6 +118,16 @@ object CometCsvNativeScanExec extends CometOperatorSerde[CometBatchScanExec] {
     val filePartitions = CometScanUtils.splitPartitionsByStore(
       inputPartitions,
       file => NativeConfig.objectStoreKey(file.pathUri, s3CompliantSchemes, libhdfsSchemes))
+    // Spark 3.4 reports a one-partition scan as SinglePartition and plans no exchange above it,
+    // so the operators above rely on the scan's partition count.
+    if (filePartitions.length != inputPartitions.length &&
+      !op.wrapped.outputPartitioning.isInstanceOf[UnknownPartitioning]) {
+      val reason = "Native CSV scan would split a partition that mixes object stores, but " +
+        "Spark planned the operators above it for the scan's own partitioning"
+      withFallbackReason(op, reason)
+      withFallbackReason(op.wrapped, reason)
+      return None
+    }
     val csvOptionsProto = csvOptions2Proto(options)
     val dataSchemaProto = schema2Proto(csvScan.dataSchema)
     val readSchemaFieldNames = csvScan.readDataSchema.fieldNames
@@ -126,12 +139,9 @@ object CometCsvNativeScanExec extends CometOperatorSerde[CometBatchScanExec] {
     val partitionSchemaProto = schema2Proto(csvScan.readPartitionSchema)
     val partitionsProto = filePartitions.map(partition2Proto(_, csvScan.readPartitionSchema))
 
-    val objectStoreOptions = filePartitions.headOption
-      .flatMap { partitionFile =>
-        partitionFile.files.headOption
-          .map(file => NativeConfig.extractObjectStoreOptions(hadoopConf, file.pathUri))
-      }
-      .getOrElse(Map.empty)
+    val objectStoreOptions = NativeConfig.extractObjectStoreOptions(
+      hadoopConf,
+      filePartitions.view.flatMap(_.files.view.map(_.pathUri)))
 
     csvScanBuilder.putAllObjectStoreOptions(objectStoreOptions.asJava)
     csvScanBuilder.setCsvOptions(csvOptionsProto)

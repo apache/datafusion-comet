@@ -25,6 +25,8 @@ import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.util.Base64
 
+import scala.jdk.CollectionConverters._
+
 import org.apache.parquet.crypto.DecryptionPropertiesFactory
 import org.apache.parquet.crypto.keytools.{KeyToolkit, PropertiesDrivenCryptoFactory}
 import org.apache.parquet.crypto.keytools.mocks.InMemoryKMS
@@ -145,25 +147,26 @@ class ParquetReadFromS3Suite extends CometS3TestBase with AdaptiveSparkPlanHelpe
     assert(df.first().getLong(0) == 499500)
   }
 
-  test("mixed-bucket blob:// scan falls back and returns correct results") {
-    // Alias settings under the hostless `default` authority resolve for one bucket only, so
-    // CometScanRule declines a blob scan spanning two buckets and Spark reads both. Same key in
-    // each bucket makes a misread visible.
-    createBucketIfNotExists(secondBucketName)
-    val key = "multibucket/same-key.parquet"
-    val firstPath = s"blob://$testBucketName/$key"
-    val secondPath = s"blob://$secondBucketName/$key"
-    spark.range(111, 112).toDF("id").write.mode(SaveMode.Overwrite).parquet(firstPath)
-    spark.range(222, 223).toDF("id").write.mode(SaveMode.Overwrite).parquet(secondPath)
-
-    val df = spark.read.parquet(firstPath, secondPath)
-    assert(
-      cometScans(df.queryExecution.executedPlan).isEmpty,
-      "mixed-bucket alias scan must fall back to Spark, but Comet claimed it:\n" +
-        df.queryExecution.executedPlan)
-    assert(
-      df.collect().map(_.getLong(0)).toSet == Set(111L, 222L),
-      "both buckets must be read; a single registered object store would read one bucket twice")
+  test("mixed-bucket blob:// scan reads each bucket natively with its own alias settings") {
+    // The first bucket's alias settings are `fs.blob.<bucket>.*` and the second's are
+    // `fs.blob.default.*`. Same keys in each bucket make a misread visible.
+    putTwoBucketTable("mb-blob", "mb-blob", Seq("f1.parquet", "f2.parquet"))
+    val paths = Seq(s"blob://$testBucketName/mb-blob", s"blob://$secondBucketName/mb-blob")
+    val secondBucketSettings = Seq(
+      "fs.blob.default.endpoint" -> minioContainer.getS3URL,
+      "fs.blob.default.awsAccessKeyId" -> userName,
+      "fs.blob.default.awsSecretAccessKey" -> password)
+    withSQLConf(onePartition ++ secondBucketSettings: _*) {
+      assertMultiBucketRead(() => spark.read.parquet(paths: _*), sparkMixesBuckets = true)
+      val plan = spark.read.parquet(paths: _*).queryExecution.executedPlan
+      val scans = collect(plan) { case scan: CometNativeScanExec => scan }
+      val options = scans.head.nativeOp.getNativeScan.getCommon.getObjectStoreOptionsMap.asScala
+      Seq(testBucketName, secondBucketName).foreach { bucket =>
+        assert(
+          options.get(s"fs.s3a.bucket.$bucket.endpoint").contains(minioContainer.getS3URL),
+          s"bucket $bucket must get its own translated endpoint")
+      }
+    }
   }
 
   // Spark packs every file of the scan into one partition.

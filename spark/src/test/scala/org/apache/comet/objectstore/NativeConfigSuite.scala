@@ -321,6 +321,99 @@ class NativeConfigSuite extends AnyFunSuite with Matchers {
     assert(opts("fs.s3a.bucket.mybucket.path.style.access") == "false")
   }
 
+  test("extractObjectStoreOptions over a scan's files forwards every scheme's options") {
+    val hadoopConf = new Configuration()
+    hadoopConf.set(COMET_LIBHDFS_SCHEMES_KEY, "hdfs")
+    hadoopConf.set("fs.s3a.access.key", "s3-access-key")
+    hadoopConf.set("fs.gs.project.id", "gcp-project")
+    hadoopConf.set("fs.azure.account.key.acct.blob.core.windows.net", "azure-key")
+    val uris = Seq(
+      "file:///tmp/t/p=1/a.parquet",
+      "hdfs://nn1/t/p=2/b.parquet",
+      "s3a://bucket-a/t/p=3/c.parquet",
+      "gs://bucket-b/t/p=4/d.parquet",
+      "s3a://bucket-c/t/p=5/e.parquet").map(new URI(_))
+
+    val opts = NativeConfig.extractObjectStoreOptions(hadoopConf, uris)
+    assert(opts("fs.s3a.access.key") == "s3-access-key")
+    assert(opts("fs.gs.project.id") == "gcp-project")
+    assert(opts(COMET_LIBHDFS_SCHEMES_KEY) == "hdfs")
+    // No file of the scan is on Azure.
+    assert(!opts.contains("fs.azure.account.key.acct.blob.core.windows.net"))
+    // The union of the options of each scheme on its own.
+    val perScheme = uris.map(NativeConfig.extractObjectStoreOptions(hadoopConf, _))
+    assert(opts == perScheme.reduce(_ ++ _))
+    assert(NativeConfig.extractObjectStoreOptions(hadoopConf, Nil).isEmpty)
+    // A file on Azure brings the Azure options.
+    val withAzure = NativeConfig.extractObjectStoreOptions(
+      hadoopConf,
+      uris :+ new URI("wasbs://container@acct.blob.core.windows.net/t/f.parquet"))
+    assert(withAzure("fs.azure.account.key.acct.blob.core.windows.net") == "azure-key")
+    assert(withAzure("fs.s3a.access.key") == "s3-access-key")
+  }
+
+  test("extractObjectStoreOptions over a scan's files keeps two aliases' settings apart") {
+    val hadoopConf = new Configuration()
+    hadoopConf.set(COMET_S3_COMPLIANT_SCHEMES_KEY, "blob,wasabi")
+    hadoopConf.set("fs.blob.default.endpoint", "https://blob.example.internal")
+    hadoopConf.set("fs.wasabi.default.endpoint", "https://wasabi.example.internal")
+    val uris = Seq("blob://bucket-a/t/1.parquet", "wasabi://bucket-b/t/2.parquet").map(new URI(_))
+
+    Seq(uris, uris.reverse).foreach { files =>
+      val opts = NativeConfig.extractObjectStoreOptions(hadoopConf, files)
+      assert(opts("fs.s3a.bucket.bucket-a.endpoint") == "https://blob.example.internal")
+      assert(opts("fs.s3a.bucket.bucket-b.endpoint") == "https://wasabi.example.internal")
+      assert(!opts.contains("fs.s3a.endpoint"))
+    }
+  }
+
+  test("extractObjectStoreOptions over a scan's files translates alias settings per bucket") {
+    val hadoopConf = new Configuration()
+    hadoopConf.set(COMET_S3_COMPLIANT_SCHEMES_KEY, "blob")
+    hadoopConf.set("fs.blob.default.endpoint", "https://blob.example.internal")
+    hadoopConf.set("fs.blob.default.awsAccessKeyId", "AKIA-blob")
+    // A raw per-bucket key for an alias bucket: the alias translation must win it, even when
+    // another file's scheme copies the raw key too.
+    hadoopConf.set("fs.s3a.bucket.bucket-a.endpoint", "https://stale.example.internal")
+    hadoopConf.set("fs.s3a.bucket.bucket-s3a.endpoint", "https://s3a.example.internal")
+    val uris = Seq(
+      "blob://bucket-a/t/1.parquet",
+      "s3a://bucket-s3a/t/2.parquet",
+      "blob:///bucket-b/t/3.parquet").map(new URI(_))
+
+    val opts = NativeConfig.extractObjectStoreOptions(hadoopConf, uris)
+    Seq("bucket-a", "bucket-b").foreach { bucket =>
+      assert(opts(s"fs.s3a.bucket.$bucket.endpoint") == "https://blob.example.internal")
+      assert(opts(s"fs.s3a.bucket.$bucket.access.key") == "AKIA-blob")
+      assert(opts(s"fs.s3a.bucket.$bucket.path.style.access") == "true")
+    }
+    // The plain s3a bucket keeps its own settings, without the alias defaults.
+    assert(opts("fs.s3a.bucket.bucket-s3a.endpoint") == "https://s3a.example.internal")
+    assert(!opts.contains("fs.s3a.bucket.bucket-s3a.access.key"))
+    // Whichever order the files come in.
+    assert(NativeConfig.extractObjectStoreOptions(hadoopConf, uris.reverse) == opts)
+  }
+
+  test("extractObjectStoreOptions over a scan's files keeps each alias bucket's translation") {
+    // Bucket b1's own translation keeps the default path style, while bucket b2's translation
+    // derives b1's path style from b1's explicit endpoint. Only b1's own one may apply to b1.
+    val hadoopConf = new Configuration()
+    hadoopConf.set(COMET_S3_COMPLIANT_SCHEMES_KEY, "blob")
+    hadoopConf.set("fs.blob.default.pathStyleAccess", "false")
+    hadoopConf.set("fs.blob.b1.endpoint", "https://b1.example.internal")
+    val b1 = new URI("blob://b1/t/1.parquet")
+    val b2 = new URI("blob://b2/t/2.parquet")
+    val alone = NativeConfig.extractObjectStoreOptions(hadoopConf, b1)
+    assert(alone("fs.s3a.bucket.b1.path.style.access") == "false")
+
+    Seq(Seq(b1, b2), Seq(b2, b1)).foreach { uris =>
+      val opts = NativeConfig.extractObjectStoreOptions(hadoopConf, uris)
+      assert(opts("fs.s3a.bucket.b1.endpoint") == "https://b1.example.internal")
+      assert(opts("fs.s3a.bucket.b1.path.style.access") == "false", s"files $uris")
+      assert(opts("fs.s3a.bucket.b2.path.style.access") == "false", s"files $uris")
+    }
+  }
+
   test("bucketForUri - authority, alias path promotion, and non-S3 schemes") {
     // `blob:///mybucket/...` reports authority "default"; the real bucket is the first path
     // segment (matching the native rewrite), but path promotion applies ONLY to S3-family

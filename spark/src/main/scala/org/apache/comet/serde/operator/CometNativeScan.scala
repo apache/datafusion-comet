@@ -295,14 +295,6 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
           return None
       }
 
-      // Extract object store options from first file (S3 configs apply to all files in scan).
-      // Use selectedPartitions (static) instead of getFilePartitions() because at planning time
-      // DPP subqueries haven't been resolved yet. Object store options don't depend on DPP.
-      val firstFileUri = scan.selectedPartitions
-        .flatMap(_.files.headOption)
-        .headOption
-        .map(_.getPath.toUri)
-
       // Constant metadata columns (file_path, file_name, file_size, file_block_start,
       // file_block_length, file_modification_time) are known before opening the file and
       // constant for every row read from it, exactly like partition columns. Spark places
@@ -375,12 +367,14 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
       // Collect S3/cloud storage configurations
       commonBuilder.setEncryptionEnabled(CometParquetUtils.encryptionEnabled(hadoopConf))
 
-      firstFileUri.foreach { uri =>
-        val objectStoreOptions =
-          NativeConfig.extractObjectStoreOptions(hadoopConf, uri)
-        objectStoreOptions.foreach { case (key, value) =>
-          commonBuilder.putObjectStoreOptions(key, value)
-        }
+      // The options of every scheme the scan reads. Use selectedPartitions (static) instead of
+      // getFilePartitions() because at planning time DPP subqueries haven't been resolved yet.
+      // Object store options don't depend on DPP.
+      val objectStoreOptions = NativeConfig.extractObjectStoreOptions(
+        hadoopConf,
+        scan.selectedPartitions.view.flatMap(_.files.view.map(_.getPath.toUri)))
+      objectStoreOptions.foreach { case (key, value) =>
+        commonBuilder.putObjectStoreOptions(key, value)
       }
 
       // Set common data in NativeScan (file_partition will be populated at execution time)

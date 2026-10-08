@@ -290,18 +290,6 @@ case class CometScanRule(session: SparkSession)
         s"Unsupported filesystem schemes: ${unsupportedFsSchemes.mkString(", ")}")
       return None
     }
-    // An alias scan forwards vendor settings under the `default` authority for the first file's
-    // bucket only, so alias paths across buckets fall back; see aliasScanBuckets. Other scans
-    // over several stores are handled by multiStoreFallbackReason below.
-    val scanBuckets = CometScanRule.aliasScanBuckets(roots)
-    if (scanBuckets.size > 1) {
-      withFallbackReason(
-        scanExec,
-        "Native Parquet scan reads S3-compliant alias paths across multiple buckets " +
-          s"(${scanBuckets.toSeq.sorted.mkString(", ")}); Comet resolves alias settings " +
-          "under the `default` authority for one bucket only")
-      return None
-    }
     // An early answer from the root paths. CometNativeScan.convert decides, over the listed
     // files and with the scheme lists from the Hadoop conf that native uses.
     val multiStoreReason = CometScanUtils.multiStoreFallbackReason(
@@ -1241,8 +1229,7 @@ object CometScanRule extends Logging {
       uri: URI,
       scheme: Option[String],
       isLibhdfs: Boolean,
-      isAlias: Boolean,
-      bucket: Option[String])
+      isAlias: Boolean)
 
   private[rules] def classifyRootPaths(
       uris: Seq[URI],
@@ -1254,18 +1241,8 @@ object CometScanRule extends Logging {
         uri,
         scheme,
         isLibhdfs = scheme.exists(libhdfsSchemes.contains),
-        isAlias = scheme.exists(s3CompliantSchemes.contains),
-        bucket = NativeConfig.bucketForUri(uri, s3CompliantSchemes))
+        isAlias = scheme.exists(s3CompliantSchemes.contains))
     }
-
-  /**
-   * The distinct buckets this scan's root paths address, or empty when none of them uses an
-   * opt-in S3-compliant alias. More than one bucket means the Parquet gate must fall back: vendor
-   * settings under the hostless `default` authority are resolved for the first file's bucket
-   * only, so a second bucket would be read without them.
-   */
-  private[rules] def aliasScanBuckets(roots: Seq[RootPathInfo]): Set[String] =
-    if (!roots.exists(_.isAlias)) Set.empty else roots.flatMap(_.bucket).toSet
 
   /**
    * Ask the native object_store parser whether it can build `url`: both the scheme and, via

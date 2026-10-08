@@ -108,12 +108,17 @@ A native Parquet or CSV scan reads each of its partitions through one object sto
 bucket, one GCS bucket, or one HDFS name node. When a scan's files live in more than one store,
 Comet puts the files of each store into separate partitions, so such a scan can run with a different
 number of partitions than Spark would use. A native Parquet scan packs each store's files on their
-own, so `spark.sql.files.maxPartitionNum` applies to each store's files separately.
+own, so `spark.sql.files.maxPartitionNum` applies to each store's files separately. A native CSV
+scan that would split a partition falls back to Spark when Spark planned the operators above it for
+the scan's own partitioning, as Spark 3.4 does for a scan of one partition.
 
-A native Parquet or CSV scan falls back to Spark when its files use schemes whose object store
-settings differ (for example `s3a://` and `gs://`, or an S3-compliant alias and `s3a://`), because
-it forwards the settings of one scheme. A native Parquet scan of a bucketed table also falls back
-when its files span more than one store, because each table bucket is read as one partition.
+Such a scan forwards the object store settings of every scheme it reads, so its files can mix
+schemes such as `s3a://`, `gs://` and `hdfs://`. It falls back to Spark when it reads one bucket
+through an S3-compliant alias and through another scheme (for example `blob://bucket` and
+`s3a://bucket`), because the alias settings would then apply to both. It also falls back when an
+alias path names no bucket (`blob:///`) next to other S3 paths, because that path's alias settings
+would apply to every bucket. A native Parquet scan of a bucketed table also falls back when its
+files span more than one store, because each table bucket is read as one partition.
 
 ### HDFS
 
@@ -344,11 +349,12 @@ above. The recognized vendor-style properties and their `fs.s3a.*` targets are:
 
 Unrecognized `fs.<s>.<authority>.*` properties are ignored.
 
-A URL with no authority, such as the triple-slash `blob:///bucket/key` form, reports its authority
-as the literal string `default`. For that case, list the keys under `fs.<s>.default.<property>`.
-Comet resolves `default` to the bucket taken from the URL path (`bucket` here) and applies the
-translated settings at that bucket's scope, exactly as if they had been written under
-`fs.<s>.bucket.<property>`.
+Keys under the literal authority `default`, `fs.<s>.default.<property>`, apply to every bucket of
+that scheme that has no `fs.<s>.<bucket>.<property>` key of its own, whether the URL names the
+bucket as its authority (`blob://bucket/key`) or in its path. A URL with no authority, such as the
+triple-slash `blob:///bucket/key` form, reports its authority as `default`, so these keys are the
+way to configure it. Comet applies them at the scope of the bucket the URL names (`bucket` here),
+exactly as if they had been written under `fs.<s>.bucket.<property>`.
 
 When `fs.<s>.<authority>.endpoint` is set, Comet defaults path-style access to enabled for that
 bucket, since most non-AWS S3-compatible services require it. This is only a default: set
@@ -361,9 +367,9 @@ credential providers and options documented above also apply to alias-scheme URL
 translation feeds the native Iceberg scan; see
 [Object store configuration (S3)](iceberg.md#object-store-configuration-s3) in the Iceberg guide.
 
-A native Parquet scan whose alias-scheme paths span more than one bucket falls back to Spark,
-because settings under the `default` authority resolve for one bucket only. Alias schemes apply to
-native scans only: a native Iceberg write to an alias-scheme location falls back to iceberg-java.
+A native Parquet or CSV scan whose alias-scheme paths span more than one bucket resolves the alias
+settings for each bucket. Alias schemes apply to native scans only: a native Iceberg write to an
+alias-scheme location falls back to iceberg-java.
 
 ### Examples
 

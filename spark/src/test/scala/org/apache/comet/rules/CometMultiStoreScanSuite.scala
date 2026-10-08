@@ -30,16 +30,20 @@ import org.apache.commons.io.FileUtils
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.{CometTestBase, DataFrame, SaveMode}
 import org.apache.spark.sql.catalyst.expressions.DynamicPruningExpression
+import org.apache.spark.sql.catalyst.plans.physical.UnknownPartitioning
 import org.apache.spark.sql.comet.{CometCsvNativeScanExec, CometNativeScanExec, CometScanExec}
-import org.apache.spark.sql.execution.{FileSourceScanExec, SparkPlan}
+import org.apache.spark.sql.execution.{ExtendedMode, FileSourceScanExec, FormattedMode, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.execution.datasources.FilePartition
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
+import org.apache.spark.sql.execution.exchange.ShuffleExchangeLike
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{IntegerType, StructType}
 
 import org.apache.comet.CometConf
+import org.apache.comet.CometConf.COMET_S3_COMPLIANT_SCHEMES_KEY
 import org.apache.comet.hadoop.fs.FakeHdfsAuthorityFileSystem
+import org.apache.comet.objectstore.NativeConfig
 
 /**
  * Native scans over files in more than one object store, without a cloud store: `hdfs://nn1` and
@@ -80,6 +84,15 @@ class CometMultiStoreScanSuite extends CometTestBase with AdaptiveSparkPlanHelpe
     SQLConf.FILES_OPEN_COST_IN_BYTES.key -> "1",
     SQLConf.FILES_MAX_PARTITION_BYTES.key -> (128L * 1024 * 1024).toString)
 
+  // Over the files `writeMixedLayout` writes (120, 15 and 10 bytes, with a 140 byte split), Spark
+  // packs the first two into one partition and the third into a second one.
+  private val twoPartitionsOneMixed = Seq(
+    SQLConf.FILES_MIN_PARTITION_NUM.key -> "1",
+    SQLConf.FILES_OPEN_COST_IN_BYTES.key -> "1",
+    SQLConf.FILES_MAX_PARTITION_BYTES.key -> "140")
+
+  private val idSchema = new StructType().add("id", IntegerType)
+
   private def hdfs(nameNode: String, name: String): String =
     s"hdfs://$nameNode${rootDir.getAbsolutePath}/$name"
 
@@ -87,13 +100,31 @@ class CometMultiStoreScanSuite extends CometTestBase with AdaptiveSparkPlanHelpe
 
   private def storeOf(path: String): String = new URI(path).getAuthority
 
+  private def storeKey(path: String): String =
+    NativeConfig.objectStoreKey(new URI(path), Set.empty, Set("hdfs")).key
+
+  // A forwarded object store option that the plan's text must not show.
+  private val forwardedMarker = COMET_S3_COMPLIANT_SCHEMES_KEY -> "zzforwardedmarker"
+
+  private def assertPlanHidesForwardedOptions(df: DataFrame): Unit = {
+    val texts = Seq(
+      df.queryExecution.executedPlan.toString,
+      df.queryExecution.explainString(ExtendedMode),
+      df.queryExecution.explainString(FormattedMode))
+    texts.foreach(text => assert(!text.contains(forwardedMarker._2), text))
+  }
+
   private def withoutComet(f: => Unit): Unit =
     withSQLConf(CometConf.COMET_ENABLED.key -> "false")(f)
 
-  private def writeIds(path: String, from: Int, format: String = "parquet"): Unit =
+  private def writeIds(
+      path: String,
+      from: Int,
+      format: String = "parquet",
+      count: Int = 5): Unit =
     withoutComet {
       spark
-        .range(from.toLong, from.toLong + 5)
+        .range(from.toLong, from.toLong + count)
         .selectExpr("cast(id as int) as id")
         .coalesce(1)
         .write
@@ -101,6 +132,13 @@ class CometMultiStoreScanSuite extends CometTestBase with AdaptiveSparkPlanHelpe
         .format(format)
         .save(path)
     }
+
+  /** CSV files of 120, 15 and 10 bytes at `first`, `second` and `third`. */
+  private def writeMixedLayout(first: String, second: String, third: String): Unit = {
+    writeIds(first, 100, "csv", count = 30)
+    writeIds(second, 10, "csv")
+    writeIds(third, 0, "csv")
+  }
 
   /** The files of each partition of Spark's own scans in `df`, which is planned, not run. */
   private def sparkLayout(df: => DataFrame): Seq[Seq[String]] = {
@@ -162,14 +200,15 @@ class CometMultiStoreScanSuite extends CometTestBase with AdaptiveSparkPlanHelpe
   }
 
   test("csv scan over two name nodes splits partitions that mix name nodes") {
-    val (a, b) = (hdfs("nn1", "csv-two-nn-a"), hdfs("nn2", "csv-two-nn-b"))
-    writeIds(a, 0, "csv")
-    writeIds(b, 10, "csv")
-    val schema = new StructType().add("id", IntegerType)
-    withSQLConf(nativeCsv ++ onePartition: _*) {
-      val sparkFiles = sparkLayout(spark.read.schema(schema).csv(a, b))
+    val (a, b, c) =
+      (hdfs("nn1", "csv-two-nn-a"), hdfs("nn2", "csv-two-nn-b"), hdfs("nn1", "csv-two-nn-c"))
+    writeMixedLayout(a, b, c)
+    withSQLConf(nativeCsv ++ twoPartitionsOneMixed: _*) {
+      val sparkFiles = sparkLayout(spark.read.schema(idSchema).csv(a, b, c))
+      // More than one partition, so every Spark version plans the scan as unknown partitioning.
+      assert(sparkFiles.size > 1, s"Spark's: $sparkFiles")
       assert(sparkFiles.exists(_.map(storeOf).distinct.size > 1), s"Spark's: $sparkFiles")
-      val df = spark.read.schema(schema).csv(a, b)
+      val df = spark.read.schema(idSchema).csv(a, b, c)
       val plan = df.queryExecution.executedPlan
       val scans = collect(plan) { case scan: CometCsvNativeScanExec => scan }
       assert(scans.size == 1, s"expected one native CSV scan:\n$plan")
@@ -181,22 +220,71 @@ class CometMultiStoreScanSuite extends CometTestBase with AdaptiveSparkPlanHelpe
     }
   }
 
-  test("csv scan over files of two scheme families falls back to Spark") {
-    val (a, b) = (local("csv-mixed-a"), hdfs("nn2", "csv-mixed-b"))
+  test("global aggregate over a csv scan Spark plans as one partition across name nodes") {
+    // Spark 3.4 reports a one-partition V2 scan as SinglePartition and plans no exchange below
+    // the final aggregate, so a split scan would run that aggregate on two partitions.
+    val (a, b) = (hdfs("nn1", "csv-agg-a"), hdfs("nn2", "csv-agg-b"))
     writeIds(a, 0, "csv")
     writeIds(b, 10, "csv")
-    val schema = new StructType().add("id", IntegerType)
-    withSQLConf(nativeCsv: _*) {
-      checkSparkAnswerAndFallbackReason(
-        spark.read.schema(schema).csv(a, b),
-        "Native CSV scan reads paths with schemes file, hdfs, whose object store settings " +
-          "differ, but forwards the settings of one scheme")
+    def query: DataFrame = spark.read.schema(idSchema).csv(a, b).groupBy().count()
+    withSQLConf(
+      nativeCsv ++ onePartition :+ (SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false"): _*) {
+      var sparkScan: BatchScanExec = null
+      withoutComet {
+        sparkScan = collect(query.queryExecution.executedPlan) { case s: BatchScanExec => s }.head
+      }
+      val sparkFiles = sparkScan.inputPartitions.collect { case p: FilePartition =>
+        p.files.map(file => storeOf(file.filePath.toString)).toSeq
+      }
+      assert(sparkFiles.size == 1, s"Spark's: $sparkFiles")
+      assert(sparkFiles.head.distinct.sorted == Seq("nn1", "nn2"), s"Spark's: $sparkFiles")
+
+      val plan = query.queryExecution.executedPlan
+      val scans = collect(plan) { case scan: CometCsvNativeScanExec => scan }
+      if (sparkScan.outputPartitioning.isInstanceOf[UnknownPartitioning]) {
+        // Spark planned an exchange above the scan, so splitting the scan is safe. The query is
+        // not run because native cannot read the fake stores.
+        assert(scans.size == 1, s"expected one native CSV scan:\n$plan")
+        assert(scans.head.outputPartitioning.numPartitions == 2)
+        val exchanges = collect(plan) { case e: ShuffleExchangeLike => e }
+        assert(exchanges.nonEmpty, s"no exchange above the scan:\n$plan")
+      } else {
+        assert(scans.isEmpty, s"a split scan would break Spark's partitioning:\n$plan")
+        checkSparkAnswerAndFallbackReason(
+          query,
+          "Native CSV scan would split a partition that mixes object stores, but Spark " +
+            "planned the operators above it for the scan's own partitioning")
+      }
     }
   }
 
-  test("catalog table with a partition in another scheme family falls back to Spark") {
+  test("csv scan over local and hdfs files reads each store's files in their own partitions") {
+    val (a, b, c) = (local("csv-mixed-a"), hdfs("nn2", "csv-mixed-b"), local("csv-mixed-c"))
+    writeMixedLayout(a, b, c)
+    withSQLConf(nativeCsv ++ twoPartitionsOneMixed :+ forwardedMarker: _*) {
+      val sparkFiles = sparkLayout(spark.read.schema(idSchema).csv(a, b, c))
+      assert(sparkFiles.exists(_.map(storeKey).distinct.size > 1), s"Spark's: $sparkFiles")
+      val df = spark.read.schema(idSchema).csv(a, b, c)
+      val plan = df.queryExecution.executedPlan
+      val scans = collect(plan) { case scan: CometCsvNativeScanExec => scan }
+      assert(scans.size == 1, s"expected one native CSV scan:\n$plan")
+      val csvScan = scans.head.nativeOp.getCsvScan
+      val partitions = csvScan.getFilePartitionsList.asScala.toSeq
+        .map(_.getPartitionedFileList.asScala.map(_.getFilePath).toSeq)
+      assert(partitions.forall(_.map(storeKey).distinct.size == 1), s"Comet's: $partitions")
+      assert(partitions.flatten.map(storeKey).distinct.sorted == Seq("file://", "hdfs://nn2"))
+      // Spark's mixed partition becomes two.
+      assert(partitions.size == sparkFiles.size + 1, s"Comet's: $partitions")
+      assert(scans.head.outputPartitioning.numPartitions == partitions.size)
+      val options = csvScan.getObjectStoreOptionsMap.asScala
+      assert(options.get(forwardedMarker._1).contains(forwardedMarker._2))
+      assertPlanHidesForwardedOptions(df)
+    }
+  }
+
+  test("catalog table with a partition on another scheme reads each store's files apart") {
     // Without a partition filter the scan's root path is the table location alone, so only
-    // the listed files show the second family.
+    // the listed files show the second store.
     withTable("mixed_family") {
       withoutComet {
         sql(s"""CREATE TABLE mixed_family (id INT, p STRING) USING parquet PARTITIONED BY (p)
@@ -207,11 +295,15 @@ class CometMultiStoreScanSuite extends CometTestBase with AdaptiveSparkPlanHelpe
         sql("ALTER TABLE mixed_family ADD PARTITION (p = 'b')")
         sql(s"ALTER TABLE mixed_family PARTITION (p = 'b') SET LOCATION '$partitionB'")
       }
-      withSQLConf(nativeScan: _*) {
-        checkSparkAnswerAndFallbackReason(
-          spark.table("mixed_family"),
-          "Native Parquet scan reads paths with schemes file, hdfs, whose object store " +
-            "settings differ, but forwards the settings of one scheme")
+      withSQLConf(nativeScan ++ onePartition :+ forwardedMarker: _*) {
+        val df = spark.table("mixed_family")
+        val scan = nativeParquetScan(df)
+        val files = scan.perPartitionFilePaths.toSeq
+        assert(files.forall(_.map(storeKey).distinct.size == 1), s"Comet's: $files")
+        assert(files.flatten.map(storeKey).distinct.sorted == Seq("file://", "hdfs://nn2"))
+        val options = scan.nativeOp.getNativeScan.getCommon.getObjectStoreOptionsMap.asScala
+        assert(options.get(forwardedMarker._1).contains(forwardedMarker._2))
+        assertPlanHidesForwardedOptions(df)
       }
     }
   }
