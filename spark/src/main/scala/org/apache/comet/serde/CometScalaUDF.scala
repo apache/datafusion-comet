@@ -185,7 +185,7 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
     }
 
     // Serialize via Spark's closure serializer: respects the task context classloader (so user
-    // UDF jars are visible) and matches Spark's wire format. The bytes become arg 0 of the
+    // UDF jars are visible) and matches Spark's wire format. The bytes become arg 1 of the
     // JvmScalarUdf proto and self-describe the expression so this works in cluster mode without
     // executor-side driver registry state.
     //
@@ -211,10 +211,15 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
             s"$exprName: codegen dispatch: expression could not be closure-serialized " +
               s"(${e.getClass.getSimpleName}: ${e.getMessage})")
       }
-    val exprArg = exprToProtoInternal(Literal(bytes, BinaryType), inputs, binding).getOrElse {
-      return Left(
-        s"$exprName: codegen dispatch: could not serialize closure-serialized bound " +
-          "expression payload")
+    // Arg 0 is a digest of the bytes. The dispatcher finds each batch's kernel by it, so it reads
+    // the bytes only to compile on a cache miss instead of copying and hashing them for every
+    // batch.
+    val exprArgs = Seq(CometScalaUDFCodegen.digest(bytes), bytes).map { payload =>
+      exprToProtoInternal(Literal(payload, BinaryType), inputs, binding).getOrElse {
+        return Left(
+          s"$exprName: codegen dispatch: could not serialize closure-serialized bound " +
+            "expression payload")
+      }
     }
 
     val dataArgs = attrs.map { a =>
@@ -229,7 +234,7 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
     val udfBuilder = ExprOuterClass.JvmScalarUdf
       .newBuilder()
       .setClassName(classOf[CometScalaUDFCodegen].getName)
-      .addArgs(exprArg)
+    exprArgs.foreach(udfBuilder.addArgs)
     dataArgs.foreach(udfBuilder.addArgs)
     udfBuilder
       .setReturnType(returnTypeProto)
