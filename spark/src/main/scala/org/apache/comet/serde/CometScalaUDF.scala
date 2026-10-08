@@ -22,7 +22,7 @@ package org.apache.comet.serde
 import scala.util.control.NonFatal
 
 import org.apache.spark.SparkEnv
-import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, AttributeSeq, BindReferences, Expression, If, IsNull, KnownNotNull, Literal, Or, RuntimeReplaceable, ScalaUDF}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, AttributeSeq, BindReferences, Expression, ExpressionSet, If, IsNull, KnownNotNull, Literal, Or, RuntimeReplaceable, ScalaUDF}
 import org.apache.spark.sql.types.BinaryType
 
 import org.apache.comet.CometConf
@@ -72,9 +72,9 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
    * protects. In the kernel it is a branch per row.
    *
    * Only that shape matches: the predicate must be the one the rule builds from the UDF's guarded
-   * arguments. The kernel then runs no expression it would not run for the UDF alone, apart from
-   * the guard's own `if`, `or` and `isnull`, and it runs Spark's code for all of them. In a
-   * filter or join condition, and in the predicate of a conditional,
+   * arguments, each checked once. The kernel then runs no expression it would not run for the UDF
+   * alone, apart from the guard's own `if`, `or` and `isnull`, and it runs Spark's code for all
+   * of them. In a filter or join condition, and in the predicate of a conditional,
    * `ReplaceNullWithFalseInPredicate` replaces the null with `false`, so that form matches too.
    */
   def emitNullGuardDispatch(expr: If, inputs: Seq[Attribute], binding: Boolean): Option[Expr] =
@@ -107,8 +107,9 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
       val guarded = udf.inputPrimitives.zip(udf.children).collect {
         case (true, KnownNotNull(arg)) => arg
       }
+      // The optimizer drops a repeated `isnull`, as in `f(a, a)`, so check each argument once.
       // `semanticEquals` is false for a nondeterministic argument, so that guard stays native.
-      guarded
+      ExpressionSet(guarded).toSeq
         .map(IsNull(_))
         .reduceLeftOption[Expression](Or)
         .exists(_.semanticEquals(predicate))

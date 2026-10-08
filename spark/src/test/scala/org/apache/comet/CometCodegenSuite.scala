@@ -1035,6 +1035,8 @@ class CometCodegenSuite
     // goes to the kernel with the call, and neither `if` nor `isnull` is native.
     spark.udf.register("plusOne", (x: Long) => x + 1)
     spark.udf.register("combine", (a: Long, b: Int, s: String) => s"$s:${a + b}")
+    spark.udf.register("addBoth", (x: Long, y: Long) => x + y)
+    spark.udf.register("addThree", (x: Long, y: Int, z: Long) => x + y + z)
     withTable("t") {
       sql("CREATE TABLE t (a BIGINT, b INT, s STRING) USING parquet")
       sql(
@@ -1053,6 +1055,15 @@ class CometCodegenSuite
       checkSparkAnswerAndImpl(
         sql("SELECT combine(a, b, s) FROM t"),
         dispatched = Seq("combine", "or") ++ guard)
+      // The optimizer drops a repeated `isnull`, so a column passed twice is checked once.
+      checkSparkAnswerAndImpl(sql("SELECT addBoth(a, a) FROM t"), dispatched = "addboth" +: guard)
+      checkSparkAnswerAndImpl(
+        sql("SELECT addThree(a, b, a) FROM t"),
+        dispatched = Seq("addthree", "or") ++ guard)
+      // An argument that cannot be null gets no `isnull`.
+      checkSparkAnswerAndImpl(
+        sql("SELECT addBoth(a, 1L) FROM t"),
+        dispatched = "addboth" +: guard)
     }
   }
 
