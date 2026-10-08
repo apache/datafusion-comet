@@ -1063,11 +1063,12 @@ mod tests {
             ($ty:ty, $variant:ident) => {{
                 let pool = SequenceMemoryPool::new(1024 * 1024);
                 let udf = SparkSequence::new(list_of(<$ty>::DATA_TYPE), Arc::clone(&pool));
-                let args = [0, 99, 1]
+                let args = [-64, 64, 1]
                     .into_iter()
                     .map(|value| ColumnarValue::Scalar(ScalarValue::$variant(Some(value))))
                     .collect::<Vec<_>>();
-                // 100,000 values cross a checkpoint within a copied row, in every width.
+                // 129 elements exceed both 64- and 128-byte Arrow alignment even for Int8.
+                // 129,000 values cross a checkpoint within a copied row, in every width.
                 let ColumnarValue::Array(array) = udf.evaluate(&args, 1000).unwrap() else {
                     panic!("expected array")
                 };
@@ -1075,9 +1076,9 @@ mod tests {
                 for row in 0..1000 {
                     let values = list.value(row);
                     let values = as_primitive_array::<$ty>(&values).unwrap();
-                    assert_eq!(values.len(), 100);
+                    assert_eq!(values.len(), 129);
                     for (i, value) in values.values().iter().enumerate() {
-                        assert_eq!(*value as usize, i);
+                        assert_eq!(*value as i64, i as i64 - 64);
                     }
                 }
                 drop(list);
