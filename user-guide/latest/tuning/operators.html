@@ -853,7 +853,15 @@ under the License.
 to configure Comet to convert <code class="docutils literal notranslate"><span class="pre">SortMergeJoin</span></code> to <code class="docutils literal notranslate"><span class="pre">ShuffledHashJoin</span></code>. Comet does not yet provide spill-to-disk for
 <code class="docutils literal notranslate"><span class="pre">ShuffledHashJoin</span></code> so this could result in OOM. Also, <code class="docutils literal notranslate"><span class="pre">SortMergeJoin</span></code> may still be faster in some cases. It is best
 to test with both for your specific workloads.</p>
-<p>To configure Comet to convert <code class="docutils literal notranslate"><span class="pre">SortMergeJoin</span></code> to <code class="docutils literal notranslate"><span class="pre">ShuffledHashJoin</span></code>, set <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.forceShuffledHashJoin=true</span></code>.</p>
+<p>To configure Comet to convert <code class="docutils literal notranslate"><span class="pre">SortMergeJoin</span></code> to <code class="docutils literal notranslate"><span class="pre">ShuffledHashJoin</span></code>, set <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.forceShuffledHashJoin=true</span></code>.
+The conversion only happens when the build side is under a size limit, and a join whose build side has no statistics
+is left as a <code class="docutils literal notranslate"><span class="pre">SortMergeJoin</span></code>. The size is Spark’s planning estimate of the build side, or under AQE the materialized
+shuffle size of the build side. By default the limit is Spark’s own rule for choosing a <code class="docutils literal notranslate"><span class="pre">ShuffledHashJoin</span></code>:
+<code class="docutils literal notranslate"><span class="pre">spark.sql.autoBroadcastJoinThreshold</span></code> times the initial shuffle partition count
+(<code class="docutils literal notranslate"><span class="pre">spark.sql.adaptive.coalescePartitions.initialPartitionNum</span></code> when AQE and partition coalescing are both on and it is
+set, else <code class="docutils literal notranslate"><span class="pre">spark.sql.shuffle.partitions</span></code>). When broadcasts are disabled with a non-positive threshold, Spark’s default
+threshold of 10 MB is used instead. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.forceShuffledHashJoin.maxBuildSize</span></code> to a size in bytes to use a fixed
+limit, or to a non-positive value to convert every eligible join regardless of size.</p>
 <section id="join-runtime-filters">
 <h3>Join Runtime Filters<a class="headerlink" href="#join-runtime-filters" title="Link to this heading">#</a></h3>
 <p>Set <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.join.dynamicFilter.enabled=true</span></code> to try experimental native hash join runtime

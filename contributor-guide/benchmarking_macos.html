@@ -670,6 +670,7 @@ In order to start local Apache Spark cluster on <code class="docutils literal no
 <span class="w">    </span>--conf<span class="w"> </span>spark.comet.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--conf<span class="w"> </span>spark.comet.shuffle.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--conf<span class="w"> </span>spark.comet.exec.forceShuffledHashJoin<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.comet.exec.forceShuffledHashJoin.maxBuildSize<span class="o">=</span>-1<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span><span class="nv">$DF_BENCH</span>/runners/datafusion-comet/tpcbench.py<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--benchmark<span class="w"> </span>tpch<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--data<span class="w"> </span><span class="nv">$BENCH_DATA</span>/<span class="w"> </span><span class="se">\</span>

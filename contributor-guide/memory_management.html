@@ -1198,7 +1198,7 @@ simply being too small, or at the JVM side, which the same lines report as <code
 <code class="docutils literal notranslate"><span class="pre">batch_size</span> <span class="pre">*</span> <span class="pre">columns</span></code>, and wide or deeply nested schemas amplify it.</p></li>
 <li><p>Check whether the operators involved can spill at all. <code class="docutils literal notranslate"><span class="pre">ShuffledHashJoin</span></code> cannot, so
 <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.forceShuffledHashJoin=true</span></code> converts a spillable sort-merge join into one that
-is not.</p></li>
+is not, for build sides under <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.forceShuffledHashJoin.maxBuildSize</span></code>.</p></li>
 </ol>
 </section>
 </section>
