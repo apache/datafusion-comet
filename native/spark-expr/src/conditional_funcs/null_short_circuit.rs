@@ -243,7 +243,9 @@ struct Arg {
     field: Option<FieldRef>,
     /// For an argument evaluated for only the rows where no earlier argument is NULL, the input
     /// columns it reads, and the argument reading them from a batch of just those columns, so
-    /// that skipping rows filters no other column
+    /// that skipping rows filters no other column. It is evaluated in place of `expr` for every
+    /// batch, even one with no NULL, because rebuilding the argument gave it its own copy of any
+    /// state kept across batches, such as the random generator of `shuffle`
     masked: Option<(Vec<usize>, Arc<dyn PhysicalExpr>)>,
 }
 
@@ -264,12 +266,16 @@ impl Arg {
     /// Evaluates the argument, for just the rows outside `nulls` if it is masked, returning a
     /// value for every row of the batch.
     fn evaluate(&self, batch: &RecordBatch, nulls: Option<&NullBuffer>) -> Result<ColumnarValue> {
-        match (&self.masked, nulls) {
-            (Some((projection, projected)), Some(nulls)) => {
+        let Some((projection, projected)) = &self.masked else {
+            return self.expr.evaluate(batch);
+        };
+        let batch = batch.project(projection)?;
+        match nulls {
+            Some(nulls) => {
                 let rows = BooleanArray::new(nulls.inner().clone(), None);
-                projected.evaluate_selection(&batch.project(projection)?, &rows)
+                projected.evaluate_selection(&batch, &rows)
             }
-            _ => self.expr.evaluate(batch),
+            None => projected.evaluate(&batch),
         }
     }
 }
@@ -305,13 +311,14 @@ fn project(expr: &Arc<dyn PhysicalExpr>) -> Result<(Vec<usize>, Arc<dyn Physical
 mod tests {
     use super::*;
     use crate::{
-        create_query_context_map, Cast, EvalMode, ListExtract, SparkArrayPositionFunc,
+        create_query_context_map, Cast, EvalMode, ListExtract, ShuffleExpr, SparkArrayPositionFunc,
         SparkArraySlice, SparkCastOptions,
     };
     use arrow::array::{ArrayRef, Int32Array, Int64Array, ListArray, StringArray};
     use arrow::datatypes::{Field, Int32Type};
     use datafusion::common::config::ConfigOptions;
     use datafusion::common::ScalarValue;
+    use datafusion::functions_nested::set_ops::array_union_udf;
     use datafusion::logical_expr::ScalarUDF;
     use datafusion::physical_expr::expressions::{col, lit, CaseExpr, IsNotNullExpr};
     use datafusion::physical_expr::ScalarFunctionExpr;
@@ -597,6 +604,45 @@ mod tests {
             None,
         ]));
         assert_eq!(actual.as_ref(), expected.as_ref());
+    }
+
+    #[test]
+    fn stateful_argument_keeps_its_state_across_batches() {
+        let list = DataType::new_list(DataType::Int32, true);
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", list.clone(), true),
+            Field::new("b", list.clone(), true),
+        ]));
+        // array_union(a, shuffle(b)). The masked shuffle reads `b` from the first column of a
+        // batch of just that column, so it is rebuilt, with a generator of its own.
+        let union = || {
+            let shuffle = Arc::new(ShuffleExpr::new(col("b", &schema).unwrap(), 42));
+            let udf = array_union_udf().as_ref().clone();
+            function(udf, vec![col("a", &schema).unwrap(), shuffle], list.clone())
+        };
+        // An empty array and [1, 2, 3, 4] on each row that is not NULL. A shuffle draws nothing
+        // for a NULL row, so the unwrapped function, which evaluates it for the rows whose array
+        // is NULL as well, draws the same permutations as Spark.
+        let batch = |valid: &[bool]| {
+            let four = || (1..=4).map(Some).collect::<Vec<_>>();
+            let a = valid.iter().map(|&v| v.then(Vec::<Option<i32>>::new));
+            let b = valid.iter().map(|&v| v.then(four));
+            let columns: Vec<ArrayRef> = vec![
+                Arc::new(ListArray::from_iter_primitive::<Int32Type, _, _>(a)),
+                Arc::new(ListArray::from_iter_primitive::<Int32Type, _, _>(b)),
+            ];
+            RecordBatch::try_new(Arc::clone(&schema), columns).unwrap()
+        };
+        let unguarded = union();
+        let guarded = NullShortCircuit::wrap(union(), &schema).unwrap();
+        assert!(guarded.is::<NullShortCircuit>());
+        // The permutations carry on from one batch to the next, whether or not it has a NULL
+        for valid in [vec![true, true], vec![false, true, true], vec![true, true]] {
+            let batch = batch(&valid);
+            let expected = evaluate(&unguarded, &batch).unwrap();
+            let actual = evaluate(&guarded, &batch).unwrap();
+            assert_eq!(actual.as_ref(), expected.as_ref());
+        }
     }
 
     /// Evaluates `child`, recording the rows and columns of each batch that it is evaluated for.
