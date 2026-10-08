@@ -293,7 +293,14 @@ bounds carried over from the native writer's tracked state. iceberg-java's metad
 — metrics modes, the inferred-column cap
 (`write.metadata.metrics.max-inferred-column-defaults`), bound truncation, and list/map bounds
 suppression — are therefore applied by iceberg-java's own code regardless of what the native
-writer reports. This costs one footer-sized ranged read per written file at write time.
+writer reports.
+
+iceberg-java's writer takes these metrics from the footer it still holds in memory, but the native
+path reads each footer back from storage: two small reads per written file, one for the footer's
+length and one for the footer itself, made one file after another before the task finishes. On S3
+or GCS each read is a GET request, so the task waits two request round trips per file. That is
+small next to uploading a large file, but a write that produces many small files, such as a fanout
+write over many partitions, pays it for every one of them.
 
 ## Failure handling
 

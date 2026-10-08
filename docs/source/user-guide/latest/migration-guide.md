@@ -99,6 +99,11 @@ new default unless it sets `spark.comet.write.iceberg.enabled=false`.
 `spark.comet.write.iceberg.splitOperator.enabled` is now a testing setting, and setting it to
 `false` does not turn the split operator off. See [Iceberg Writes](iceberg-writes.md).
 
+To compute the Iceberg metrics of a natively written file, Comet reads the file's Parquet footer
+back from storage, where iceberg-java's writer takes them from memory. On S3 or GCS that is two GET
+requests per file, which adds up for a write that produces many small files. See
+[Native Parquet write eligibility](iceberg-writes.md#native-parquet-write-eligibility).
+
 The native writer's buffers count against Comet's off-heap memory pool, where iceberg-java's buffers
 sit on the JVM heap. A fanout write keeps a data file open for every partition a task writes to, and
 each open file holds the row group it is writing, so a task that writes to many partitions can need
