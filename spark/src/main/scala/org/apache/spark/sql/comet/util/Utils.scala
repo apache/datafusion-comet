@@ -59,6 +59,9 @@ object Utils extends CometTypeShim with Logging {
   private val NATIVE_IPC_ZSTD_PREFIX = Array[Byte](0x5a, 0x53, 0x54, 0x44)
   private val VariantExtensionName = "arrow.parquet.variant"
 
+  def majorMinorPatchVersion(version: String): Option[(Int, Int, Int)] =
+    org.apache.spark.util.VersionUtils.majorMinorPatchVersion(version)
+
   def getConfPath(confFileName: String): String = {
     sys.env
       .get(COMET_CONF_DIR_ENV)

@@ -19,35 +19,26 @@
 
 pub use crate::errors::ExecutionError;
 
-pub use aligned_stream_reader::*;
-pub use copy::*;
 pub use iceberg_scan::*;
 pub use scan::*;
 
-mod aligned_stream_reader;
-mod copy;
 mod dynamic_filter;
-pub(crate) use dynamic_filter::DynamicFilterJoinExec;
-mod filter;
-pub(crate) use filter::CometFilterExec;
-mod expand;
-pub use expand::ExpandExec;
-mod explode;
-pub use explode::ExplodeExec;
+pub(crate) use dynamic_filter::{DynamicFilterJoinExec, TopKReaderFilterExec};
 pub(crate) mod iceberg_common;
 pub use iceberg_common::clear_file_io_cache;
+mod iceberg_dictionary;
+pub(crate) mod iceberg_location_scoped;
 mod iceberg_partition_path;
+mod iceberg_partition_value;
 mod iceberg_scan;
 mod iceberg_write;
 pub use iceberg_write::IcebergWriteExec;
+mod merge_rows;
+pub use merge_rows::{MergeActionContext, MergeInstructionExec, MergeRowsExec};
 mod parquet_writer;
 pub use parquet_writer::{ParquetCompression, ParquetWriterExec};
 mod csv_scan;
 pub mod projection;
-mod sample;
-pub use sample::SampleExec;
-mod rank_limit;
-pub use rank_limit::{PartitionedRankLimitExec, WindowFnKind};
 mod scan;
 mod shuffle_scan;
 pub use csv_scan::init_csv_datasource_exec;

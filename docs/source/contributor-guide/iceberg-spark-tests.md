@@ -35,7 +35,7 @@ Here is an overview of the changes that the diffs make to Iceberg:
   native scan in every Comet-configured session. The flag is off by default for users, so Iceberg's own suites
   are the only place the split plan (`IcebergCommit -> IcebergWrite`) is exercised against Iceberg's write,
   commit, and row-level-operation tests. See [#5259]
-- Enable Comet's native (iceberg-rust) Parquet writer (`spark.comet.iceberg.write.enabled`) in the same sessions.
+- Enable Comet's native (iceberg-rust) Parquet writer (`spark.comet.write.iceberg.enabled`) in the same sessions.
   The native writer is experimental and off by default for users, so this is where it runs against Iceberg's
   write, commit, and row-level-operation tests.
 - Enable `spark.comet.exec.localTableScan.enabled` in the same sessions. `CometIcebergNativeWrite` sets
