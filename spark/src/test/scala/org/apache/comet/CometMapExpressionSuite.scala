@@ -467,18 +467,24 @@ class CometMapExpressionSuite extends CometTestBase {
   }
 
   // The collated counterpart of the double-key `map_contains_key` case above: a nested
-  // `UTF8_LCASE`-keyed map would reach `array_contains` with bytewise comparison. Expansion declines
-  // the folded literal so the case-insensitive lookup stays on Spark. The outer lookup key is the
-  // dynamic `_1` so the inner map survives as a literal (a constant key would let Spark fold
-  // `map_keys` into a collated-string array literal instead, which never reaches this guard).
+  // `UTF8_LCASE`-keyed map would reach `array_contains` with bytewise comparison. Like the
+  // floating-point case, `CometArrayContains` reports collated element types Incompatible, so the
+  // default config codegen-dispatches it; `allowIncompatible=true` forces the native kernel so the
+  // expansion guard runs. Expansion declines the folded literal so the case-insensitive lookup
+  // stays on Spark. The outer lookup key is the dynamic `_1` so the inner map survives as a literal
+  // (a constant key would let Spark fold `map_keys` into a collated-string array literal instead,
+  // which never reaches this guard).
   test("map_contains_key over nested collated map keys falls back (multirow)") {
     assume(isSpark40Plus)
+    val query = "SELECT _1 AS id, map_contains_key(" +
+      "element_at(map(1, map(CAST('A1' AS STRING COLLATE UTF8_LCASE), 7)), _1), " +
+      "CAST('a1' AS STRING COLLATE UTF8_LCASE)) AS present FROM tbl"
     withParquetTable((1 until 4).map(i => (i, i.toLong)), "tbl") {
-      checkSparkAnswerAndFallbackReason(
-        "SELECT _1 AS id, map_contains_key(" +
-          "element_at(map(1, map(CAST('A1' AS STRING COLLATE UTF8_LCASE), 7)), _1), " +
-          "CAST('a1' AS STRING COLLATE UTF8_LCASE)) AS present FROM tbl",
-        "Unsupported data type MapType")
+      withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[ArrayContains]) -> "true") {
+        checkSparkAnswerAndFallbackReason(query, "Unsupported data type MapType")
+      }
+      // Under the default config the collated lookup is dispatched and matches Spark.
+      checkSparkAnswer(query)
     }
   }
 
