@@ -3298,8 +3298,9 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   /**
-   * Spark's integral SUM adds through `Add`, so an ANSI overflow is `long overflow` with the
-   * `try_add` suggestion. Compare the structured error, not just its error class.
+   * Spark's integral SUM adds through `Add`, so an ANSI overflow carries the `try_add`
+   * suggestion. Compare the structured error, not just its error class. The overflow wording is
+   * left to the message parameters: Spark 4.2 normalizes `long overflow` to `overflow`.
    */
   private def assertAnsiSumOverflowMatchesSpark(df: DataFrame): Unit = {
     val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
@@ -3317,7 +3318,6 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     assert(actual.getErrorClass == expected.getErrorClass)
     assert(actual.getSqlState == expected.getSqlState)
     assert(actual.getMessageParameters == expected.getMessageParameters)
-    assert(actual.getMessage.contains("long overflow"))
     assert(actual.getMessage.contains("try_add"))
   }
 
