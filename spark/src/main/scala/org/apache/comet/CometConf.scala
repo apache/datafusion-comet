@@ -900,7 +900,7 @@ object CometConf extends ShimCometConf {
       .checkValue(
         v => v > 0 && v <= Int.MaxValue,
         s"Read buffer size must be between 1 and ${Int.MaxValue} bytes")
-      .createWithDefault(CometShuffleBlockIterator.DEFAULT_READ_BUFFER_SIZE)
+      .createWithDefault(CometShuffleBlockIterator.DEFAULT_READ_BUFFER_SIZE.toLong)
 
   val COMET_SHUFFLE_JVM_PREFER_DICTIONARY_RATIO: ConfigEntry[Double] = conf(
     "spark.comet.shuffle.jvm.preferDictionary.ratio")
