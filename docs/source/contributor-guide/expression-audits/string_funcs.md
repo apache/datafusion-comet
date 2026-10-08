@@ -66,9 +66,10 @@
 
 ## concat_ws
 
-- Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
-- Spark 3.5.8 (audited 2026-05-27): baseline. `Seq[Expression] -> StringType`; NULL separator yields NULL, NULL element values are skipped, children can be `StringType` or `ArrayType(StringType)`. Comet serde rewrites a NULL-literal separator to a NULL of the result type and bails out on all-foldable inputs so Spark's `ConstantFolding` handles them; otherwise delegates to DataFusion `concat_ws`.
-- Spark 4.0.1 (audited 2026-05-27): `inputTypes` widened to `StringTypeWithCollation` / `AbstractArrayType`; `dataType` becomes `children.head.dataType` (collation-derived). Semantics unchanged for `UTF8_BINARY`. Non-default collations not honoured by Comet ([#4496](https://github.com/apache/datafusion-comet/issues/4496)).
+- Spark 3.4.3 (audited 2026-09-06): identical to 3.5.8.
+- Spark 3.5.8 (audited 2026-09-06): accepts ordered mixtures of strings and string arrays, skips null arguments and array elements, and returns NULL for a NULL separator. Comet retains DataFusion's string kernel and uses DataFusion Spark's `SparkConcatWs` for arrays and separator-only inputs, with native column coverage for multiple arrays, empty arrays, nulls, empty strings, Unicode, and varying separators. The existing all-foldable codegen fallback remains. A native adapter evaluates runtime scalars once and returns a scalar for broadcasting, including non-foldable scalar subqueries.
+- Spark 4.0.1 (audited 2026-09-06): collation-aware input and result types; concatenation still uses `UTF8String.concatWs` without collation-dependent comparisons.
+- Spark 4.1.1 (audited 2026-09-06): same concatenation and null semantics as 4.0.1.
 
 ## contains
 
@@ -123,7 +124,7 @@
 ## length
 
 - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
-- Spark 3.5.8 (audited 2026-05-27): baseline. `(StringType|BinaryType) -> IntegerType`; eval returns `numChars` for strings and `.length` for binary. `BinaryType` input falls back via `Unsupported` (DataFusion's `character_length` accepts string types only).
+- Spark 3.5.8 (audited 2026-05-27): baseline. `(StringType|BinaryType) -> IntegerType`; eval returns `numChars` for strings and `.length` for binary. `BinaryType` input runs natively since Comet registers `datafusion-spark`'s `length`, which returns the byte count for binary and the character count for strings (audit refreshed 2026-09-12).
 - Spark 4.0.1 (audited 2026-05-27): `inputTypes` widened to `StringTypeWithCollation(supportsTrimCollation = true)`; semantics unchanged. Non-default collations not honoured by Comet ([#4496](https://github.com/apache/datafusion-comet/issues/4496)).
 
 ## lower

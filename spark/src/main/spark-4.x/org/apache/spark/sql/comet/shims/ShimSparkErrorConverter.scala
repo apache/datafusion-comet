@@ -25,7 +25,7 @@ import scala.util.matching.Regex
 
 import org.apache.spark.{QueryContext, SparkException, SparkIllegalArgumentException}
 import org.apache.spark.sql.errors.QueryExecutionErrors
-import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException
+import org.apache.spark.sql.execution.datasources.{DataSourceUtils, SchemaColumnConvertNotSupportedException}
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
 
@@ -112,9 +112,13 @@ trait ShimSparkErrorConverter {
 
       case "ArithmeticOverflow" =>
         val fromType = params("fromType").toString
+        val functionName = params.get("functionName").map(_.toString).getOrElse("")
         Some(
           QueryExecutionErrors
-            .arithmeticOverflowError(fromType + " overflow", "", context.headOption.orNull))
+            .arithmeticOverflowError(
+              fromType + " overflow",
+              functionName,
+              context.headOption.orNull))
 
       case "IntegralDivideOverflow" =>
         Some(QueryExecutionErrors.overflowInIntegralDivideError(context.headOption.orNull))
@@ -126,7 +130,8 @@ trait ShimSparkErrorConverter {
             .overflowInSumOfDecimalError(context.headOption.orNull, s"try_$functionName"))
 
       case "NumericValueOutOfRange" =>
-        val decimal = Decimal(params("value").toString)
+        // Use Java BigDecimal to avoid Scala BigDecimal's DECIMAL128 MathContext rewriting.
+        val decimal = Decimal(new java.math.BigDecimal(params("value").toString))
         Some(
           QueryExecutionErrors.cannotChangeDecimalPrecisionError(
             decimal,
@@ -288,6 +293,9 @@ trait ShimSparkErrorConverter {
       case "CannotParseDecimal" =>
         Some(QueryExecutionErrors.cannotParseDecimalError())
 
+      case "MalformedVariant" =>
+        Some(QueryExecutionErrors.malformedVariant())
+
       case "InvalidUtf8String" =>
         val hexStr = UTF8String.fromString(params("hexString").toString)
         Some(QueryExecutionErrors.invalidUTF8StringError(hexStr))
@@ -310,6 +318,12 @@ trait ShimSparkErrorConverter {
             params("groupCount").toString.toInt,
             params("groupIndex").toString.toInt))
 
+      case "InvalidUrl" =>
+        Some(
+          QueryExecutionErrors.invalidUrlError(
+            UTF8String.fromString(params("url").toString),
+            new java.net.URISyntaxException(params("url").toString, "Invalid URL")))
+
       case "DatatypeCannotOrder" =>
         Some(
           QueryExecutionErrors.orderedOperationUnsupportedByDataTypeError(
@@ -317,6 +331,9 @@ trait ShimSparkErrorConverter {
 
       case "ScalarSubqueryTooManyRows" =>
         Some(QueryExecutionErrors.multipleRowScalarSubqueryError(context.headOption.orNull))
+
+      case "MergeCardinalityViolation" =>
+        Some(QueryExecutionErrors.mergeCardinalityViolationError())
 
       case "IntervalArithmeticOverflowWithSuggestion" =>
         Some(
@@ -385,6 +402,11 @@ trait ShimSparkErrorConverter {
         Some(
           QueryExecutionErrors
             .fileNotExistError(path, new FileNotFoundException(s"File $path does not exist")))
+
+      case "ReadAncientDatetime" =>
+        // Spark raises this unwrapped, not as FAILED_READ_FILE. The helper picks the rebase
+        // config for the format and throws on a format it does not know.
+        Some(DataSourceUtils.newRebaseExceptionInRead(params("format").toString))
 
       case "CannotReadFile" =>
         // A per-file read failure (corrupt/truncated/deleted parquet, object_store, IO) classified

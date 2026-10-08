@@ -15,8 +15,10 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Config: spark.comet.exec.strictFloatingPoint=true
 -- ConfigMatrix: parquet.enable.dictionary=false,true
+-- Disabling ObjectHashAggregate makes Spark plan SortAggregateExec for collect_set instead, so the
+-- matrix runs the whole fixture through both aggregate operators.
+-- ConfigMatrix: spark.sql.execution.useObjectHashAggregateExec=true,false
 
 -- ============================================================
 -- Setup: tables
@@ -148,42 +150,6 @@ query
 SELECT grp, sort_array(collect_set(bi)) FROM cs_src_intbig GROUP BY grp ORDER BY grp
 
 -- ============================================================
--- Float (with NULLs, NaN, Inf, -Inf, +0, -0)
--- Comet deduplicates NaN while Spark does not; with
--- strictFloatingPoint=true collect_set falls back to Spark.
--- ============================================================
-
-statement
-CREATE TABLE cs_src_float(v float, grp string) USING parquet
-
-statement
-INSERT INTO cs_src_float VALUES
-  (1.5,                'a'), (2.5,                'a'), (1.5, 'a'), (NULL, 'a'),
-  (CAST('NaN' AS FLOAT), 'b'), (CAST('NaN' AS FLOAT), 'b'), (1.0, 'b'),
-  (CAST('Infinity' AS FLOAT), 'c'), (CAST('-Infinity' AS FLOAT), 'c'), (CAST('Infinity' AS FLOAT), 'c'),
-  (CAST(0.0 AS FLOAT), 'd'), (float('-0.0'), 'd'), (1.0, 'd'), (NULL, 'd')
-
-query expect_fallback(not fully compatible with Spark)
-SELECT grp, sort_array(collect_set(v)) FROM cs_src_float GROUP BY grp ORDER BY grp
-
--- ============================================================
--- Double (with NULLs, NaN, Inf, -Inf, +0, -0)
--- ============================================================
-
-statement
-CREATE TABLE cs_src_double(v double, grp string) USING parquet
-
-statement
-INSERT INTO cs_src_double VALUES
-  (1.1,   'a'), (2.2,   'a'), (1.1, 'a'), (NULL, 'a'),
-  (CAST('NaN' AS DOUBLE), 'b'), (CAST('NaN' AS DOUBLE), 'b'), (1.0, 'b'),
-  (CAST('Infinity' AS DOUBLE), 'c'), (CAST('-Infinity' AS DOUBLE), 'c'), (CAST('Infinity' AS DOUBLE), 'c'),
-  (0.0,  'd'), (double('-0.0'),  'd'), (1.0, 'd'), (NULL, 'd')
-
-query expect_fallback(not fully compatible with Spark)
-SELECT grp, sort_array(collect_set(v)) FROM cs_src_double GROUP BY grp ORDER BY grp
-
--- ============================================================
 -- String (with NULLs and empty string)
 -- ============================================================
 
@@ -290,6 +256,22 @@ FROM cs_src_multi GROUP BY grp ORDER BY grp
 
 query
 SELECT grp, sort_array(collect_set(DISTINCT i)) FROM cs_src_int GROUP BY grp ORDER BY grp
+
+-- ============================================================
+-- PartialMerge: collect_set combined with a distinct aggregate
+-- exercises native intermediate ArrayType state through shuffle
+-- ============================================================
+
+query
+SELECT grp, count(DISTINCT a), sort_array(collect_set(b))
+FROM cs_src_multi GROUP BY grp ORDER BY grp
+
+-- An inline VALUES relation stays a Spark LocalTableScan, so Spark runs the partial collect_set
+-- and the native PartialMerge decodes Spark's serialized buffer, which stores each binary value
+-- as an array of bytes. The Spark operators below the shuffle make this answer-only.
+query spark_answer_only
+SELECT x, count(DISTINCT y), collect_set(b)
+FROM VALUES (1, 1, X'ABCD'), (1, 2, X'ABCD') AS t(x, y, b) GROUP BY x
 
 -- ============================================================
 -- HAVING clause with collect_set

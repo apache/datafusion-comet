@@ -94,6 +94,7 @@ message Expr {
     Shuffle shuffle = 72;
     RandStr rand_str = 73;
     Uuid uuid = 74;
+    NativeScalarUdf native_scalar_udf = 75;
   }
 
   reserved 20;
@@ -163,6 +164,12 @@ message AggExpr {
     HllPlusPlus hllpp = 20;
     CollectList collectList = 21;
     Regr regr = 22;
+    Mode mode = 23;
+    MaxBy maxBy = 24;
+    MinBy minBy = 25;
+    ListAgg listAgg = 26;
+    HllSketchAgg hllSketchAgg = 27;
+    HllUnionAgg hllUnionAgg = 28;
   }
 
   // Optional filter expression for SQL FILTER (WHERE ...) clause.
@@ -335,6 +342,20 @@ enum BloomFilterVersion {
   BLOOM_FILTER_VERSION_V2 = 2;
 }
 
+message HllSketchAgg {
+  // Child value expression (integral, string, or binary).
+  Expr child = 1;
+  // DataSketches lgConfigK (log2 of the number of buckets), Spark default 12.
+  int32 lg_config_k = 2;
+}
+
+message HllUnionAgg {
+  // Child sketch expression (Binary column of serialized HLL sketches).
+  Expr child = 1;
+  // When false, Spark errors if input sketches have differing lgConfigK.
+  bool allow_different_lg_config_k = 2;
+}
+
 message CollectSet {
   Expr child = 1;
   DataType datatype = 2;
@@ -350,6 +371,43 @@ message HllPlusPlus {
   Expr child = 1;
   // Number of addressing bits, computed from relativeSD to match Spark.
   int32 precision = 2;
+}
+
+// Spark 4.0+ LISTAGG / STRING_AGG aggregate.
+//
+// Comet only serializes the simple form: a StringType child with a literal
+// (or NULL) delimiter and no WITHIN GROUP ORDER BY. DISTINCT falls back to
+// Spark because Comet rejects multi-column distinct aggregates in
+// aggExprToProto, so the native side never sees it.
+message ListAgg {
+  Expr child = 1;
+  // Literal delimiter expression. NULL delimiter is normalized to empty string
+  // by Spark's semantics. The result type is always Utf8 (Spark StringType), so
+  // no datatype field is needed.
+  Expr delimiter = 2;
+}
+
+message MaxBy {
+  // The value returned by the aggregate (associated with the maximum ordering).
+  Expr value = 1;
+  // The ordering expression whose maximum selects the returned value.
+  Expr ordering = 2;
+}
+
+message MinBy {
+  // The value returned by the aggregate (associated with the minimum ordering).
+  Expr value = 1;
+  // The ordering expression whose minimum selects the returned value.
+  Expr ordering = 2;
+}
+
+message Mode {
+  Expr child = 1;
+  DataType datatype = 2;
+  // Whether `-0.0` should be folded into `0.0` before it is used as a frequency-map key.
+  // Spark only started doing this in 4.2.0 (SPARK-57329), so this tracks the Spark version
+  // Comet is running against. See `Mode` in the spark-expr crate for the full rationale.
+  bool normalize_neg_zero = 3;
 }
 
 enum EvalMode {
@@ -539,6 +597,11 @@ message TruncTimestamp {
   Expr format = 1;
   Expr child = 2;
   string timezone = 3;
+  // Whether SECOND and MILLISECOND truncation wraps when the result would fall below the
+  // smallest timestamp. Spark before 4.2.0 wraps the Long subtraction; 4.2.0 (SPARK-56663)
+  // raises `long overflow` like every other unit. This tracks the Spark version Comet is
+  // running against.
+  bool wrap_second_millisecond_overflow = 4;
 }
 
 message Subquery {
@@ -648,4 +711,30 @@ message JvmScalarUdf {
   DataType return_type = 3;
   // Whether the result column may contain nulls.
   bool return_nullable = 4;
+}
+
+// Call to a user-supplied native UDF loaded from a shared library.
+//
+// The native side resolves (library_path, name) against its loaded-library
+// cache, looks up the kernel by name, and invokes it through the Comet UDF
+// C ABI. That ABI is parameterized only by the Arrow C Data Interface, so
+// the message says nothing about the language the library was written in;
+// the Rust SDK is the only supported way to produce one today.
+message NativeScalarUdf {
+  // Function name as registered through CometNativeUDF.register on the JVM
+  // side; matched against names exposed by the cdylib.
+  string name = 1;
+  // Filesystem path of the cdylib.
+  string library_path = 2;
+  // Argument expressions, evaluated before invocation.
+  repeated Expr args = 3;
+  // Expected return type, declared at register time on the JVM side.
+  DataType return_type = 4;
+  // Whether the call is deterministic (mirrors Spark's deterministic flag).
+  //
+  // Always true today: registration rejects deterministic = false, because the
+  // native side plans every native UDF with Volatility::Immutable and has no way
+  // to express a volatile one. The field is carried so that honoring it later
+  // does not need a wire change.
+  bool deterministic = 5;
 }

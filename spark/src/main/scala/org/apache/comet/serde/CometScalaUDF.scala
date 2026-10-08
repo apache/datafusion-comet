@@ -65,9 +65,10 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
    * batch kernel on first invocation per task.
    *
    * Returns `None` (with `withFallbackReason` tagging the reason) when the dispatcher is disabled
-   * via [[CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED]], when [[CometBatchKernelCodegen.canHandle]]
-   * refuses the expression tree, or when the bound tree cannot be closure-serialized. Callers
-   * should treat `None` as a clean Spark-fallback signal; this method never throws.
+   * via [[CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED]], when the tree calls into code other than
+   * Spark's own (see [[CometInvokeTargets]]), when [[CometBatchKernelCodegen.canHandle]] refuses
+   * the expression tree, or when the bound tree cannot be closure-serialized. Callers should
+   * treat `None` as a clean Spark-fallback signal; this method never throws.
    */
   def emitJvmCodegenDispatch(
       expr: Expression,
@@ -92,6 +93,15 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
       case other => other
     }
 
+    // The kernel runs every call in the tree, not only the root, so a DataSource V2 function
+    // under a dispatched `map(...)` would run in it too. Check the whole tree.
+    CometInvokeTargets.declineReason(target) match {
+      case Some(reason) =>
+        withFallbackReason(expr, s"$exprName: codegen dispatch: $reason")
+        return None
+      case None =>
+    }
+
     // Bind against only the AttributeReferences the tree actually reads, so ordinals align with
     // the data args we ship.
     val attrs = target.collect { case a: AttributeReference => a }.distinct
@@ -107,7 +117,7 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
     }
 
     // Serialize via Spark's closure serializer: respects the task context classloader (so user
-    // UDF jars are visible) and matches Spark's wire format. The bytes become arg 0 of the
+    // UDF jars are visible) and matches Spark's wire format. The bytes become arg 1 of the
     // JvmScalarUdf proto and self-describe the expression so this works in cluster mode without
     // executor-side driver registry state.
     //
@@ -135,12 +145,17 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
               s"(${e.getClass.getSimpleName}: ${e.getMessage})")
           return None
       }
-    val exprArg = exprToProtoInternal(Literal(bytes, BinaryType), inputs, binding).getOrElse {
-      withFallbackReason(
-        expr,
-        s"$exprName: codegen dispatch: could not serialize closure-serialized bound " +
-          "expression payload")
-      return None
+    // Arg 0 is a digest of the bytes. The dispatcher finds each batch's kernel by it, so it reads
+    // the bytes only to compile on a cache miss instead of copying and hashing them for every
+    // batch.
+    val exprArgs = Seq(CometScalaUDFCodegen.digest(bytes), bytes).map { payload =>
+      exprToProtoInternal(Literal(payload, BinaryType), inputs, binding).getOrElse {
+        withFallbackReason(
+          expr,
+          s"$exprName: codegen dispatch: could not serialize closure-serialized bound " +
+            "expression payload")
+        return None
+      }
     }
 
     val dataArgs = attrs.map { a =>
@@ -159,7 +174,7 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
     val udfBuilder = ExprOuterClass.JvmScalarUdf
       .newBuilder()
       .setClassName(classOf[CometScalaUDFCodegen].getName)
-      .addArgs(exprArg)
+    exprArgs.foreach(udfBuilder.addArgs)
     dataArgs.foreach(udfBuilder.addArgs)
     udfBuilder
       .setReturnType(returnTypeProto)
@@ -172,6 +187,18 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
     // their descendants' names.
     expr.setTagValue(CometExplainInfo.DISPATCHED_SELF, ())
     withCodegenDispatchExpr(expr, exprName)
+    // The whole subtree under `expr` was bound and closure-serialized into this one kernel, so
+    // every expression in it ran in the JVM, not just the root. Naming only the root understates
+    // that: for `hypot(abs(b), c)` the dispatched set would hold `hypot` alone, and a test could
+    // assert `abs` was native while an `abs` was in fact running inside the kernel. Attribute
+    // references and literals are the kernel's inputs rather than work it performed, so they are
+    // left out - which also keeps them from appearing in the coverage stats as "expressions".
+    target.foreach {
+      case _: AttributeReference | _: Literal =>
+      case node if !(node eq target) =>
+        val _ = withCodegenDispatchExpr(expr, CometExplainInfo.exprDisplayName(node))
+      case _ =>
+    }
     Some(
       ExprOuterClass.Expr
         .newBuilder()

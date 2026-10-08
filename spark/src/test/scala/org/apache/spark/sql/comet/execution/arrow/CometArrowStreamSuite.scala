@@ -19,22 +19,30 @@
 
 package org.apache.spark.sql.comet.execution.arrow
 
-import java.nio.ByteOrder
+import java.nio.charset.StandardCharsets
 
+import scala.collection.mutable.ArrayBuffer
 import scala.jdk.CollectionConverters._
+import scala.util.Using
 
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 
 import org.apache.arrow.memory.{AllocationListener, RootAllocator}
-import org.apache.arrow.vector.{BaseFixedWidthVector, BaseValueVector, BigIntVector, BitVector, DecimalVector, IntervalMonthDayNanoVector, IntVector, VectorSchemaRoot}
-import org.apache.arrow.vector.types.pojo.{ArrowType, Field, FieldType, Schema}
+import org.apache.arrow.vector.{BaseFixedWidthVector, BaseValueVector, BigIntVector, BitVector, DecimalVector, IntervalMonthDayNanoVector, IntVector, VarCharVector, VectorLoader, VectorSchemaRoot, VectorUnloader}
+import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
+import org.apache.arrow.vector.dictionary.{Dictionary => ArrowDictionary}
+import org.apache.arrow.vector.dictionary.DictionaryProvider.MapDictionaryProvider
+import org.apache.arrow.vector.ipc.ArrowReader
+import org.apache.arrow.vector.types.pojo.{ArrowType, DictionaryEncoding, Field, FieldType, Schema}
+import org.apache.spark.rdd.InputFileBlockHolder
 import org.apache.spark.sql.catalyst.expressions.{GenericInternalRow, SpecializedGetters}
+import org.apache.spark.sql.catalyst.util.{ArrayBasedMapData, GenericArrayData}
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.vectorized.{ConstantColumnVector, Dictionary, OffHeapColumnVector, OnHeapColumnVector}
-import org.apache.spark.sql.types.{ArrayType, BooleanType, ByteType, CalendarIntervalType, DataType, DateType, DayTimeIntervalType, Decimal, DecimalType, DoubleType, FloatType, IntegerType, LongType, ShortType, StringType, StructField, StructType, TimestampNTZType, TimestampType, YearMonthIntervalType}
-import org.apache.spark.sql.vectorized.{ColumnarArray, ColumnarBatch, ColumnVector}
-import org.apache.spark.unsafe.types.CalendarInterval
+import org.apache.spark.sql.types.{ArrayType, BooleanType, ByteType, CalendarIntervalType, DataType, DateType, DayTimeIntervalType, Decimal, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, StructField, StructType, TimestampNTZType, TimestampType, YearMonthIntervalType}
+import org.apache.spark.sql.vectorized.{ColumnarArray, ColumnarBatch, ColumnarMap, ColumnVector}
+import org.apache.spark.unsafe.types.{CalendarInterval, UTF8String}
 
 import org.apache.comet.vector.{CometPlainVector, CometVector, NativeUtil}
 
@@ -122,7 +130,7 @@ class CometArrowStreamSuite extends AnyFunSuite with Matchers {
         }
         requiredInput.putInt(i, -i)
         booleanInput.putBoolean(i, (i & 1) == 0)
-        val decimal = Decimal(i % 10000, decimalType.precision, decimalType.scale)
+        val decimal = Decimal((i % 10000).toLong, decimalType.precision, decimalType.scale)
         decimalInput.putDecimal(i, decimal, decimalType.precision)
         i += 1
       }
@@ -147,7 +155,7 @@ class CometArrowStreamSuite extends AnyFunSuite with Matchers {
         requiredArrow.get(i) shouldBe -i
         booleanArrow.get(i) shouldBe (if ((i & 1) == 0) 1 else 0)
         decimalArrow.getObject(i) shouldBe
-          Decimal(i % 10000, decimalType.precision, decimalType.scale).toJavaBigDecimal
+          Decimal((i % 10000).toLong, decimalType.precision, decimalType.scale).toJavaBigDecimal
         i += 1
       }
       // A realloc frees the old buffers, so cumulative allocations would exceed live memory.
@@ -162,7 +170,7 @@ class CometArrowStreamSuite extends AnyFunSuite with Matchers {
     }
   }
 
-  test("bulk copy dispatch handles heap, off-heap, slices, and dictionary fallback") {
+  test("fixed-width slices skip per-value setters for heap, off-heap, slices and dictionaries") {
     val allocator = new RootAllocator(Long.MaxValue)
     val startRow = 3
     val numRows = 32
@@ -180,11 +188,7 @@ class CometArrowStreamSuite extends AnyFunSuite with Matchers {
       }
     }
 
-    def check(
-        input: ColumnVector,
-        rows: Int,
-        expected: Int => Long,
-        expectedScalarWrites: Int): Unit = {
+    def check(input: ColumnVector, rows: Int, expected: Int => Long): Unit = {
       val output = new BigIntVector("long", allocator)
       output.allocateNew(rows)
       val writer = new CountingLongWriter(output)
@@ -192,7 +196,7 @@ class CometArrowStreamSuite extends AnyFunSuite with Matchers {
         writer.writeColumnSlice(input, startRow, rows)
         writer.finish()
 
-        writer.scalarWrites shouldBe expectedScalarWrites
+        writer.scalarWrites shouldBe 0
         output.getValueCount shouldBe rows
         var i = 0
         while (i < rows) {
@@ -213,11 +217,11 @@ class CometArrowStreamSuite extends AnyFunSuite with Matchers {
         i += 1
       }
 
-      def scalarWrites(rows: Int): Int =
-        if (rows < 32 || ByteOrder.nativeOrder() != ByteOrder.LITTLE_ENDIAN) rows else 0
-      check(onHeap, numRows, i => 1000L + startRow + i, scalarWrites(numRows))
-      check(offHeap, numRows, i => 2000L + startRow + i, scalarWrites(numRows))
-      check(onHeap, numRows - 1, i => 1000L + startRow + i, scalarWrites(numRows - 1))
+      // Large on-heap slices are bulk copied and smaller ones read value by value, both without
+      // going through Arrow's per-value setters.
+      check(onHeap, numRows, i => 1000L + startRow + i)
+      check(offHeap, numRows, i => 2000L + startRow + i)
+      check(onHeap, numRows - 1, i => 1000L + startRow + i)
 
       dictionary.setDictionary(new Dictionary {
         override def decodeToInt(id: Int): Int = id
@@ -232,7 +236,7 @@ class CometArrowStreamSuite extends AnyFunSuite with Matchers {
         dictionaryIds.putInt(i, i)
         i += 1
       }
-      check(dictionary, numRows, i => 3000L + startRow + i, numRows)
+      check(dictionary, numRows, i => 3000L + startRow + i)
     } finally {
       onHeap.close()
       offHeap.close()
@@ -245,7 +249,7 @@ class CometArrowStreamSuite extends AnyFunSuite with Matchers {
     val allocator = new RootAllocator(Long.MaxValue)
     val numRows = 32
     class CountingFixedWidthWriter(override val valueVector: BaseFixedWidthVector)
-        extends FixedWidthArrowFieldWriter {
+        extends FixedWidthArrowFieldWriter(valueVector) {
       var scalarWrites: Int = 0
       override def setValue(input: SpecializedGetters, ordinal: Int): Unit = scalarWrites += 1
       override protected def setValueUnsafe(input: SpecializedGetters, ordinal: Int): Unit =
@@ -276,8 +280,7 @@ class CometArrowStreamSuite extends AnyFunSuite with Matchers {
 
         try {
           writer.writeColumnSlice(input, 0, numRows)
-          writer.scalarWrites shouldBe
-            (if (ByteOrder.nativeOrder() == ByteOrder.LITTLE_ENDIAN) 0 else numRows)
+          writer.scalarWrites shouldBe 0
         } finally {
           input.close()
           output.close()
@@ -339,6 +342,164 @@ class CometArrowStreamSuite extends AnyFunSuite with Matchers {
       rowReader.close()
       columnReader.close()
       input.close()
+      allocator.close()
+    }
+  }
+
+  for (nullable <- Seq(false, true); containsNull <- Seq(false, true);
+    columnar <- Seq(false, true)) {
+    test(
+      "string arrays preserve slices and ownership: " +
+        s"nullable=$nullable, containsNull=$containsNull, columnar=$columnar") {
+      val arrayType = ArrayType(StringType, containsNull)
+      val schema = StructType(Seq(StructField("tags", arrayType, nullable)))
+      val arrowSchema = Utils.toArrowSchema(schema, "UTC")
+      val longString = "東京" * 32768
+      val many = Seq.tabulate(4097)(i => if (i == 1) longString else s"value-$i")
+      val values = Seq(
+        Seq("", "é", "a\u0000b", "dup", "dup"),
+        Seq.empty,
+        null,
+        null,
+        Seq.empty,
+        if (containsNull) Seq(null, "x", null) else Seq("x"),
+        many,
+        Seq.empty,
+        Seq("last")) ++ (if (nullable) Seq.fill(5)(null) else Seq.empty)
+      val expected = if (nullable) values else values.filter(_ != null)
+      val allocator = new RootAllocator(Long.MaxValue)
+      val arrays = new OnHeapColumnVector(expected.size, arrayType)
+      val elements = arrays.getChild(0)
+      elements.reserve(expected.filter(_ != null).map(_.size).sum + 2)
+      var elementOffset = 2 // The source child vector need not start at offset zero.
+      expected.zipWithIndex.foreach { case (value, row) =>
+        if (value == null) arrays.putNull(row)
+        else {
+          arrays.putArray(row, elementOffset, value.size)
+          value.foreach { text =>
+            if (text == null) elements.putNull(elementOffset)
+            else elements.putByteArray(elementOffset, text.getBytes(StandardCharsets.UTF_8))
+            elementOffset += 1
+          }
+        }
+      }
+      val input = new ColumnarBatch(Array[ColumnVector](arrays), expected.size)
+      val empty = new ColumnarBatch(Array[ColumnVector](arrays), 0)
+      val reusedRow = new GenericInternalRow(1)
+      val backing = ArrayBuffer.empty[Array[Byte]]
+      val rows = expected.iterator.map { value =>
+        backing.foreach(bytes => java.util.Arrays.fill(bytes, 0.toByte))
+        backing.clear()
+        reusedRow.update(
+          0,
+          if (value == null) null
+          else
+            new GenericArrayData(
+              value
+                .map {
+                  case null => null
+                  case text =>
+                    val bytes = ("!" + text + "!").getBytes(StandardCharsets.UTF_8)
+                    backing += bytes
+                    UTF8String.fromBytes(bytes, 1, bytes.length - 2)
+                }
+                .toArray[Any]))
+        reusedRow
+      }
+      val reader: ArrowReader = if (columnar) {
+        new SparkColumnarArrowReader(allocator, arrowSchema, Iterator(empty, input, empty), 2)
+      } else {
+        new RowArrowReader(allocator, arrowSchema, rows, 2)
+      }
+      val retained = ArrayBuffer.empty[VectorSchemaRoot]
+      try {
+        while (reader.loadNextBatch()) {
+          // Retain the actual buffers, as an exported batch does, rather than copying values.
+          val batch = new VectorUnloader(reader.getVectorSchemaRoot).getRecordBatch
+          val output = VectorSchemaRoot.create(arrowSchema, allocator)
+          retained += output
+          try new VectorLoader(output).load(batch)
+          finally batch.close()
+        }
+        reader.close()
+        backing.foreach(bytes => java.util.Arrays.fill(bytes, 0.toByte))
+        val sourceBytes = elements.getChild(0)
+        (0 until sourceBytes.getElementsAppended).foreach(sourceBytes.putByte(_, 0.toByte))
+        var start = 0
+        retained.foreach { root =>
+          val chunk = expected.slice(start, start + 2)
+          root.getRowCount shouldBe chunk.size
+          root.getSchema shouldBe arrowSchema
+          val field = root.getSchema.getFields.get(0)
+          field.isNullable shouldBe nullable
+          field.getChildren.get(0).isNullable shouldBe containsNull
+          Utils.fromArrowField(field) shouldBe arrayType
+          val lists = root.getVector(0).asInstanceOf[ListVector]
+          val strings = lists.getDataVector.asInstanceOf[VarCharVector]
+          val childCount = chunk.filter(_ != null).map(_.size).sum
+          lists.getValueCount shouldBe chunk.size
+          strings.getValueCount shouldBe childCount
+          var offset = 0
+          chunk.zipWithIndex.foreach { case (value, row) =>
+            lists.isNull(row) shouldBe (value == null)
+            lists.getOffsetBuffer.getInt(row * 4L) shouldBe offset
+            if (value != null) value.foreach { text =>
+              strings.isNull(offset) shouldBe (text == null)
+              if (text != null)
+                new String(strings.get(offset), StandardCharsets.UTF_8) shouldBe text
+              offset += 1
+            }
+            lists.getOffsetBuffer.getInt((row + 1) * 4L) shouldBe offset
+          }
+          start += chunk.size
+        }
+        start shouldBe expected.size
+        retained.foreach(_.close())
+        retained.clear()
+        // Reader/output cleanup must not close borrowed Spark columns.
+        arrays
+          .getArray(expected.indexWhere(v => v != null && v.nonEmpty))
+          .numElements() shouldBe 5
+      } finally {
+        reader.close()
+        retained.foreach(_.close())
+        input.close()
+        allocator.close()
+      }
+    }
+  }
+
+  test("string arrays release allocations when an element cannot be encoded") {
+    val allocator = new RootAllocator(Long.MaxValue)
+    val arrayType = ArrayType(StringType, containsNull = true)
+    val schema = StructType(Seq(StructField("tags", arrayType)))
+    val failure = new IllegalStateException("string element encoding failed")
+    val child = new ConstantColumnVector(2, StringType) {
+      override def getUTF8String(row: Int): UTF8String = {
+        if (row == 1) throw failure
+        UTF8String.fromString("first")
+      }
+    }
+    val arrays = new ConstantColumnVector(1, arrayType) {
+      override def getArray(row: Int): ColumnarArray = new ColumnarArray(child, 0, 2)
+    }
+    val input = new ColumnarBatch(Array[ColumnVector](arrays), 1)
+    try {
+      intercept[IllegalStateException] {
+        CometArrowConverters.columnarBatchToArrowBatch(
+          input,
+          Utils.toArrowSchema(schema, "UTC"),
+          allocator)
+      } should be theSameInstanceAs failure
+      allocator.getAllocatedMemory shouldBe 0L
+      val rows = Iterator(new GenericInternalRow(Array[Any](new ColumnarArray(child, 0, 2))))
+      intercept[IllegalStateException] {
+        CometArrowConverters.rowToArrowBatchIter(rows, schema, 2, "UTC", allocator).next()
+      } should be theSameInstanceAs failure
+      allocator.getAllocatedMemory shouldBe 0L
+    } finally {
+      input.close()
+      child.close()
       allocator.close()
     }
   }
@@ -433,6 +594,182 @@ class CometArrowStreamSuite extends AnyFunSuite with Matchers {
     }
   }
 
+  for (nullable <- Seq(false, true); valueContainsNull <- Seq(false, true);
+    columnar <- Seq(false, true)) {
+    test(s"string maps preserve slices and ownership: $nullable/$valueContainsNull/$columnar") {
+      val mapType = MapType(StringType, StringType, valueContainsNull)
+      val schema = StructType(Seq(StructField("tags", mapType, nullable)))
+      val arrowSchema = Utils.toArrowSchema(schema, "UTC")
+      val values: Seq[Seq[(String, String)]] = Seq(
+        Seq("" -> "", "é" -> "東京", "a\u0000b" -> "duplicate", "b" -> "duplicate"),
+        Seq.empty,
+        null,
+        null,
+        Seq.empty,
+        Seq("nullable" -> (if (valueContainsNull) null else "value")),
+        Seq.tabulate(4097)(i => s"key-$i" -> (if (i == 1) "東京" * 32768 else s"value-$i")),
+        Seq.empty,
+        Seq("last" -> "value")) ++ (if (nullable) Seq.fill(5)(null) else Seq.empty)
+      val expected = if (nullable) values else values.filter(_ != null)
+      val allocator = new RootAllocator(Long.MaxValue)
+      val maps = new OnHeapColumnVector(expected.size, mapType)
+      val keys = maps.getChild(0)
+      val vals = maps.getChild(1)
+      val capacity = expected.filter(_ != null).map(_.size).sum + 2
+      keys.reserve(capacity)
+      vals.reserve(capacity)
+      var elementOffset = 2 // Exercise a nonzero offset in both child vectors.
+      expected.zipWithIndex.foreach { case (entries, row) =>
+        if (entries == null) maps.putNull(row)
+        else {
+          maps.putArray(row, elementOffset, entries.size)
+          entries.foreach { case (key, value) =>
+            keys.putByteArray(elementOffset, key.getBytes(StandardCharsets.UTF_8))
+            if (value == null) vals.putNull(elementOffset)
+            else vals.putByteArray(elementOffset, value.getBytes(StandardCharsets.UTF_8))
+            elementOffset += 1
+          }
+        }
+      }
+      val input = new ColumnarBatch(Array[ColumnVector](maps), expected.size)
+      val empty = new ColumnarBatch(Array[ColumnVector](maps), 0)
+      val reusedRow = new GenericInternalRow(1)
+      val backing = ArrayBuffer.empty[Array[Byte]]
+      def borrowedString(text: String): UTF8String = {
+        if (text == null) null
+        else {
+          val bytes = ("!" + text + "!").getBytes(StandardCharsets.UTF_8)
+          backing += bytes
+          UTF8String.fromBytes(bytes, 1, bytes.length - 2)
+        }
+      }
+      val rows = expected.iterator.map { entries =>
+        backing.foreach(bytes => java.util.Arrays.fill(bytes, 0.toByte))
+        backing.clear()
+        reusedRow.update(
+          0,
+          if (entries == null) null
+          else
+            new ArrayBasedMapData(
+              new GenericArrayData(entries.map(e => borrowedString(e._1)).toArray[Any]),
+              new GenericArrayData(entries.map(e => borrowedString(e._2)).toArray[Any])))
+        reusedRow
+      }
+      val reader: ArrowReader = if (columnar) {
+        new SparkColumnarArrowReader(allocator, arrowSchema, Iterator(empty, input, empty), 2)
+      } else {
+        new RowArrowReader(allocator, arrowSchema, rows, 2)
+      }
+      val retained = ArrayBuffer.empty[VectorSchemaRoot]
+      try {
+        while (reader.loadNextBatch()) {
+          val batch = new VectorUnloader(reader.getVectorSchemaRoot).getRecordBatch
+          val output = VectorSchemaRoot.create(arrowSchema, allocator)
+          retained += output
+          try new VectorLoader(output).load(batch)
+          finally batch.close()
+        }
+        reader.close()
+        backing.foreach(bytes => java.util.Arrays.fill(bytes, 0.toByte))
+        Seq(keys, vals).foreach { child =>
+          val bytes = child.getChild(0)
+          (0 until bytes.getElementsAppended).foreach(bytes.putByte(_, 0.toByte))
+        }
+        var start = 0
+        retained.foreach { root =>
+          val chunk = expected.slice(start, start + 2)
+          root.getRowCount shouldBe chunk.size
+          root.getSchema shouldBe arrowSchema
+          val field = root.getSchema.getFields.get(0)
+          field.isNullable shouldBe nullable
+          Utils.fromArrowField(field) shouldBe mapType
+          val entriesField = field.getChildren.get(0)
+          entriesField.isNullable shouldBe false
+          entriesField.getChildren.get(0).isNullable shouldBe false
+          entriesField.getChildren.get(1).isNullable shouldBe valueContainsNull
+          val output = root.getVector(0).asInstanceOf[MapVector]
+          val entries = output.getDataVector.asInstanceOf[StructVector]
+          val outKeys = entries.getChild(MapVector.KEY_NAME).asInstanceOf[VarCharVector]
+          val outVals = entries.getChild(MapVector.VALUE_NAME).asInstanceOf[VarCharVector]
+          val childCount = chunk.filter(_ != null).map(_.size).sum
+          entries.getValueCount shouldBe childCount
+          outKeys.getValueCount shouldBe childCount
+          outVals.getValueCount shouldBe childCount
+          var offset = 0
+          chunk.zipWithIndex.foreach { case (value, row) =>
+            output.isNull(row) shouldBe (value == null)
+            output.getOffsetBuffer.getInt(row * 4L) shouldBe offset
+            if (value != null) value.foreach { case (key, text) =>
+              entries.isNull(offset) shouldBe false
+              outKeys.isNull(offset) shouldBe false
+              new String(outKeys.get(offset), StandardCharsets.UTF_8) shouldBe key
+              outVals.isNull(offset) shouldBe (text == null)
+              if (text != null)
+                new String(outVals.get(offset), StandardCharsets.UTF_8) shouldBe text
+              offset += 1
+            }
+            output.getOffsetBuffer.getInt((row + 1) * 4L) shouldBe offset
+          }
+          start += chunk.size
+        }
+        start shouldBe expected.size
+        retained.foreach(_.close())
+        retained.clear()
+        maps.getMap(0).numElements() shouldBe 4 // Closing output must not close Spark input.
+      } finally {
+        reader.close()
+        retained.foreach(_.close())
+        input.close()
+        allocator.close()
+      }
+    }
+  }
+
+  test("string maps release reader allocations when a key or value cannot be encoded") {
+    for (failInKey <- Seq(false, true); columnar <- Seq(false, true)) {
+      val allocator = new RootAllocator(Long.MaxValue)
+      val mapType = MapType(StringType, StringType, valueContainsNull = true)
+      val schema = StructType(Seq(StructField("tags", mapType)))
+      val failure = new IllegalStateException("map entry encoding failed")
+      def strings(failHere: Boolean) = new ConstantColumnVector(2, StringType) {
+        override def getUTF8String(row: Int): UTF8String = {
+          if (failHere && row == 1) throw failure
+          UTF8String.fromString(s"value-$row")
+        }
+      }
+      val keys = strings(failInKey)
+      val values = strings(!failInKey)
+      val map = new ColumnarMap(keys, values, 0, 2)
+      val maps = new ConstantColumnVector(1, mapType) {
+        override def getMap(row: Int): ColumnarMap = map
+      }
+      val input = new ColumnarBatch(Array[ColumnVector](maps), 1)
+      val arrowSchema = Utils.toArrowSchema(schema, "UTC")
+      val reader: ArrowReader = if (columnar) {
+        new SparkColumnarArrowReader(allocator, arrowSchema, Iterator.single(input), 2)
+      } else {
+        new RowArrowReader(
+          allocator,
+          arrowSchema,
+          Iterator(new GenericInternalRow(Array[Any](map))),
+          2)
+      }
+      try {
+        try {
+          intercept[IllegalStateException](
+            reader.loadNextBatch()) should be theSameInstanceAs failure
+        } finally reader.close()
+        allocator.getAllocatedMemory shouldBe 0L
+      } finally {
+        reader.close()
+        input.close()
+        keys.close()
+        values.close()
+        allocator.close()
+      }
+    }
+  }
+
   test("Spark columnar reader preserves split input slice offsets") {
     val allocator = new RootAllocator(Long.MaxValue)
     val numRows = 12
@@ -475,6 +812,111 @@ class CometArrowStreamSuite extends AnyFunSuite with Matchers {
       reader.close()
       input.close()
       allocator.close()
+    }
+  }
+
+  test("Spark columnar reader fills batches across reused input batches") {
+    val allocator = new RootAllocator(Long.MaxValue)
+    val schema = StructType(Seq(StructField("long", LongType), StructField("string", StringType)))
+    // One pair of vectors refilled for every batch, as Spark's vectorized readers reuse theirs.
+    val longs = new OnHeapColumnVector(4, LongType)
+    val strings = new OnHeapColumnVector(4, StringType)
+    val sizes = Seq(3, 4, 1, 4, 2)
+    var next = 0L
+    val source = sizes.iterator.map { size =>
+      longs.reset()
+      strings.reset()
+      (0 until size).foreach { i =>
+        if (next % 5 == 0) {
+          longs.putNull(i)
+          strings.putNull(i)
+        } else {
+          longs.putLong(i, next)
+          strings.putByteArray(i, s"s$next".getBytes(StandardCharsets.UTF_8))
+        }
+        next += 1
+      }
+      new ColumnarBatch(Array[ColumnVector](longs, strings), size)
+    }
+    val reader = new SparkColumnarArrowReader(
+      allocator,
+      Utils.toArrowSchema(schema, "UTC"),
+      source,
+      maxRecordsPerBatch = 5)
+
+    try {
+      var expected = 0L
+      Seq(5, 5, 4).foreach { batchSize =>
+        reader.loadNextBatch() shouldBe true
+        val root = reader.getVectorSchemaRoot
+        root.getRowCount shouldBe batchSize
+        val outLongs = root.getVector(0).asInstanceOf[BigIntVector]
+        val outStrings = root.getVector(1).asInstanceOf[VarCharVector]
+        (0 until batchSize).foreach { i =>
+          outLongs.isNull(i) shouldBe (expected % 5 == 0)
+          outStrings.isNull(i) shouldBe (expected % 5 == 0)
+          if (expected % 5 != 0) {
+            outLongs.get(i) shouldBe expected
+            new String(outStrings.get(i), StandardCharsets.UTF_8) shouldBe s"s$expected"
+          }
+          expected += 1
+        }
+      }
+      reader.loadNextBatch() shouldBe false
+      expected shouldBe sizes.sum
+    } finally {
+      reader.close()
+      longs.close()
+      strings.close()
+      allocator.close()
+    }
+  }
+
+  test("Spark columnar reader does not fill batches across input files") {
+    val allocator = new RootAllocator(Long.MaxValue)
+    val schema = StructType(Seq(StructField("long", LongType, nullable = false)))
+    // Refill one vector for every batch, as Spark's vectorized file readers do. The first two
+    // batches come from the same file and can be combined. Pulling the third must leave it
+    // buffered and restore the first file's context until the partial Arrow batch is consumed.
+    val longs = new OnHeapColumnVector(3, LongType)
+    val inputs = Seq(
+      ("file:///first.parquet", 0L, 100L, 2),
+      ("file:///first.parquet", 0L, 100L, 2),
+      ("file:///second.parquet", 0L, 200L, 3))
+    var next = 0L
+    val source = inputs.iterator.map { case (path, start, length, size) =>
+      InputFileBlockHolder.set(path, start, length)
+      longs.reset()
+      (0 until size).foreach { i =>
+        longs.putLong(i, next)
+        next += 1
+      }
+      new ColumnarBatch(Array[ColumnVector](longs), size)
+    }
+    val reader = new SparkColumnarArrowReader(
+      allocator,
+      Utils.toArrowSchema(schema, "UTC"),
+      source,
+      maxRecordsPerBatch = 3)
+
+    try {
+      Seq(
+        (3, "file:///first.parquet", 0L, 100L),
+        (1, "file:///first.parquet", 0L, 100L),
+        (3, "file:///second.parquet", 0L, 200L)).foreach {
+        case (batchSize, path, start, length) =>
+          reader.loadNextBatch() shouldBe true
+          reader.getVectorSchemaRoot.getRowCount shouldBe batchSize
+          InputFileBlockHolder.getInputFilePath.toString shouldBe path
+          InputFileBlockHolder.getStartOffset shouldBe start
+          InputFileBlockHolder.getLength shouldBe length
+      }
+      reader.loadNextBatch() shouldBe false
+    } finally {
+      reader.close()
+      longs.close()
+      allocator.close()
+      InputFileBlockHolder.unset()
     }
   }
 
@@ -533,6 +975,91 @@ class CometArrowStreamSuite extends AnyFunSuite with Matchers {
       CometArrowStream.reconcileStreamSchema("test", expected, Iterator.empty)
     returned shouldBe expected
     iter.hasNext shouldBe false
+  }
+
+  test("dictionary stream schema and reader preserve logical values after closing the source") {
+    import org.apache.comet.vector.{CometDictionary, CometDictionaryVector}
+
+    val rootAllocator = new RootAllocator(Long.MaxValue)
+    val sourceAllocator = rootAllocator.newChildAllocator("source", 0L, Long.MaxValue)
+    val readerAllocator = rootAllocator.newChildAllocator("reader", 0L, Long.MaxValue)
+    val indexType = new ArrowType.Int(32, true)
+    val encoding = new DictionaryEncoding(31L, false, indexType)
+    val values = new VarCharVector("dictionary_values", sourceAllocator)
+    val indices =
+      new IntVector("compact_text", new FieldType(true, indexType, encoding), sourceAllocator)
+    val plain = new BigIntVector("plain_id", sourceAllocator)
+    var sourceClosed = false
+    try {
+      values.allocateNew()
+      values.setSafe(0, "alpha".getBytes(StandardCharsets.UTF_8))
+      values.setSafe(1, "λ".getBytes(StandardCharsets.UTF_8))
+      values.setValueCount(2)
+      indices.allocateNew(4)
+      indices.set(0, 0)
+      indices.setNull(1)
+      indices.set(2, 1)
+      indices.set(3, 0)
+      indices.setValueCount(4)
+      plain.allocateNew(4)
+      (0 until 4).foreach(row => plain.set(row, 10L + row))
+      plain.setNull(2)
+      plain.setValueCount(4)
+
+      val dictionary = new CometDictionaryVector(
+        new CometPlainVector(indices),
+        new CometDictionary(new CometPlainVector(values)),
+        new MapDictionaryProvider(new ArrowDictionary(values, encoding)))
+      val sourceBatch =
+        new ColumnarBatch(Array[ColumnVector](dictionary, new CometPlainVector(plain)), 4) {
+
+          override def close(): Unit = {
+            sourceClosed = true
+            super.close()
+          }
+        }
+      val expected =
+        expectedSchema("text" -> ArrowType.Utf8.INSTANCE, "id" -> new ArrowType.Int(64, true))
+      val (schema, input) = CometArrowStream.reconcileStreamSchema(
+        "dictionary-test",
+        expected,
+        Iterator.single(sourceBatch))
+      schema shouldBe expected
+      schema.getFields.get(0).getDictionary shouldBe null
+      sourceClosed shouldBe false
+
+      Using.resource(new ColumnarBatchArrowReader(readerAllocator, schema, input)) { reader =>
+        reader.loadNextBatch() shouldBe true
+        sourceClosed shouldBe true
+        indices.getValueCount shouldBe 0
+        values.getValueCount shouldBe 0
+        plain.getValueCount shouldBe 0
+
+        // The stable reader root owns references to decoded and plain buffers after source close.
+        val root = reader.getVectorSchemaRoot
+        root.getSchema shouldBe expected
+        root.getRowCount shouldBe 4
+        val text = root.getVector("text").asInstanceOf[VarCharVector]
+        text.getObject(0).toString shouldBe "alpha"
+        text.isNull(1) shouldBe true
+        text.getObject(2).toString shouldBe "λ"
+        text.getObject(3).toString shouldBe "alpha"
+        val ids = root.getVector("id").asInstanceOf[BigIntVector]
+        ids.get(0) shouldBe 10L
+        ids.get(1) shouldBe 11L
+        ids.isNull(2) shouldBe true
+        ids.get(3) shouldBe 13L
+        reader.loadNextBatch() shouldBe false
+      }
+      readerAllocator.getAllocatedMemory shouldBe 0L
+      sourceAllocator.getAllocatedMemory shouldBe 0L
+      rootAllocator.getAllocatedMemory shouldBe 0L
+    } finally {
+      if (!sourceClosed) Seq(plain, indices, values).foreach(_.close())
+      readerAllocator.close()
+      sourceAllocator.close()
+      rootAllocator.close()
+    }
   }
 
   test("reconcileStreamSchema returns expected schema when types match") {
@@ -618,6 +1145,62 @@ class CometArrowStreamSuite extends AnyFunSuite with Matchers {
 
       cv.close()
     } finally {
+      allocator.close()
+    }
+  }
+
+  test("columnar writes are driven by the schema, not by the input batch width") {
+    val allocator = new RootAllocator(Long.MaxValue)
+    val numRows = 3
+    val schema = StructType(Seq(StructField("name", StringType)))
+    val arrowSchema = Utils.toArrowSchema(schema, "UTC")
+    // A connector may hand over a batch wider than the schema it is read under. Iceberg's
+    // vectorized reader is the case that found this: it reads with the schema its delete filter
+    // required, which carries `_pos` after the projected columns when a data file has position
+    // deletes, and only trims the extras back when the file also has equality deletes. The
+    // trailing columns are the extras, so the schema's fields line up with the leading ones.
+    val names = new OnHeapColumnVector(numRows, StringType)
+    val positions = new OnHeapColumnVector(numRows, LongType)
+    val input = new ColumnarBatch(Array[ColumnVector](names, positions), numRows)
+    try {
+      (0 until numRows).foreach { i =>
+        names.putByteArray(i, s"n$i".getBytes(StandardCharsets.UTF_8))
+        positions.putLong(i, i.toLong)
+      }
+      val batch = CometArrowConverters.columnarBatchToArrowBatch(input, arrowSchema, allocator)
+      try {
+        batch.numCols() shouldBe 1
+        batch.numRows() shouldBe numRows
+        (0 until numRows).foreach { i =>
+          batch.column(0).getUTF8String(i).toString shouldBe s"n$i"
+        }
+      } finally batch.close()
+    } finally {
+      input.close()
+      allocator.close()
+    }
+  }
+
+  test("a batch narrower than the schema is refused rather than written short") {
+    val allocator = new RootAllocator(Long.MaxValue)
+    val numRows = 2
+    val schema =
+      StructType(Seq(StructField("name", StringType), StructField("id", LongType)))
+    val arrowSchema = Utils.toArrowSchema(schema, "UTC")
+    val names = new OnHeapColumnVector(numRows, StringType)
+    val input = new ColumnarBatch(Array[ColumnVector](names), numRows)
+    try {
+      (0 until numRows).foreach { i =>
+        names.putByteArray(i, s"n$i".getBytes(StandardCharsets.UTF_8))
+      }
+      val failure = intercept[IllegalArgumentException] {
+        CometArrowConverters.columnarBatchToArrowBatch(input, arrowSchema, allocator)
+      }
+      failure.getMessage should include("1 column")
+      failure.getMessage should include("2")
+      allocator.getAllocatedMemory shouldBe 0L
+    } finally {
+      input.close()
       allocator.close()
     }
   }

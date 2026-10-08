@@ -68,4 +68,9 @@ pub(crate) trait PartitionWriter: Send {
     /// [`finish_partition`](PartitionWriter::finish_partition).
     fn finish_all(&mut self, metrics: &ShufflePartitionerMetrics)
         -> datafusion::common::Result<()>;
+
+    /// Marks the end of one burst of [`write`](PartitionWriter::write) calls (a spill
+    /// event), letting the writer drop transient encode state. Staging more batches
+    /// afterwards is still allowed.
+    fn write_burst_complete(&mut self) {}
 }

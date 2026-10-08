@@ -39,3 +39,10 @@ SELECT array_append(array(1, 2, 3), val) FROM test_array_append
 -- literal + literal
 query
 SELECT array_append(array(1, 2, 3), 4), array_append(array(), 1), array_append(cast(NULL as array<int>), 1)
+
+-- Arrays of maps. `CometCreateArray` widens every child to a deeply-nullable element type while
+-- the appended item keeps Spark's own, so the kernel's declared result type and its two operand
+-- types all have to agree with what the batch carries.
+query
+SELECT array_append(array(map(1, 2), map(3, 4)), map(5, 6)),
+       array_append(array(map(1, array(2))), map(3, array(4)))
