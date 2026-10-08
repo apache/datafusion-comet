@@ -20,10 +20,12 @@
 package org.apache.spark.sql.comet
 
 import java.io.File
+import java.util.Properties
 
 import scala.collection.mutable
 
-import org.apache.spark.{SparkConf, SparkContext, SparkEnv, Success, TaskContext}
+import org.apache.spark.{SparkConf, SparkContext, SparkEnv, Success, TaskContext, TaskContextImpl}
+import org.apache.spark.executor.TaskMetrics
 import org.apache.spark.memory.{TaskMemoryManager, TestMemoryManager}
 import org.apache.spark.scheduler.SparkListener
 import org.apache.spark.scheduler.SparkListenerJobStart
@@ -31,7 +33,8 @@ import org.apache.spark.scheduler.SparkListenerTaskEnd
 import org.apache.spark.shuffle.comet.CometShuffleMemoryAllocator
 import org.apache.spark.shuffle.sort.CometShuffleExternalSorter
 import org.apache.spark.sql.CometTestBase
-import org.apache.spark.sql.catalyst.expressions.UnsafeRow
+import org.apache.spark.sql.catalyst.expressions.{Literal, Sequence, UnsafeRow}
+import org.apache.spark.sql.comet.execution.arrow.CometArrowStream
 import org.apache.spark.sql.comet.execution.shuffle.CometBypassMergeSortShuffleHandle
 import org.apache.spark.sql.comet.execution.shuffle.CometColumnarShuffle
 import org.apache.spark.sql.comet.execution.shuffle.CometNativeShuffle
@@ -42,11 +45,12 @@ import org.apache.spark.sql.execution.exchange.ShuffleExchangeLike
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{IntegerType, StructType}
+import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 import org.apache.spark.unsafe.Platform
 
-import org.apache.comet.CometConf
+import org.apache.comet.{CometConf, CometExecIterator}
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark41Plus}
-import org.apache.comet.serde.{Metric, OperatorOuterClass}
+import org.apache.comet.serde.{CometSequence, Metric, OperatorOuterClass}
 
 class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
@@ -55,6 +59,80 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   import testImplicits._
+
+  test("native sequence observes its captured Spark task cancellation and a new task recovers") {
+    val expr = CometSequence
+      .convert(Sequence(Literal(1), Literal(3), None), Seq.empty, binding = true)
+      .get
+    val scan = OperatorOuterClass.Operator
+      .newBuilder()
+      .setScan(OperatorOuterClass.Scan.newBuilder().setSource("SequenceCancellationInput"))
+      .build()
+    val plan = OperatorOuterClass.Operator
+      .newBuilder()
+      .setProjection(OperatorOuterClass.Projection.newBuilder().addProjectList(expr))
+      .addChildren(scan)
+      .build()
+      .toByteArray
+    val previous = TaskContext.get()
+    for (cancelled <- Seq(true, false)) {
+      val memoryManager = new TestMemoryManager(new SparkConf())
+      val taskMemoryManager = new TaskMemoryManager(memoryManager, 0L)
+      val context = new TaskContextImpl(
+        stageId = 0,
+        stageAttemptNumber = 0,
+        partitionId = 0,
+        numPartitions = 1,
+        taskAttemptId = 0L,
+        attemptNumber = 0,
+        taskMemoryManager = taskMemoryManager,
+        localProperties = new Properties,
+        metricsSystem = null,
+        taskMetrics = TaskMetrics.empty,
+        cpus = 1,
+        resources = Map.empty)
+      TaskContext.setTaskContext(context)
+      try {
+        val batch = new ColumnarBatch(Array.empty[ColumnVector], 3)
+        val inputs = CometArrowStream.inputObjects(
+          Iterator.single(batch),
+          StructType(Nil),
+          "sequence-cancellation-test")
+        val iterator = new CometExecIterator(
+          CometExec.newIterId,
+          inputs,
+          0,
+          plan,
+          CometMetricNode(Map.empty),
+          1,
+          0)
+        try {
+          // Interrupt after createPlan captured this exact context, before native evaluation.
+          if (cancelled) {
+            context.markInterrupted("sequence test cancellation")
+            val error = intercept[Exception](iterator.hasNext)
+            assert(
+              error.getMessage.contains(
+                "Integral sequence interrupted by Spark task cancellation"))
+          } else {
+            assert(iterator.hasNext)
+            val output = iterator.next()
+            assert(output.numRows() == 3)
+            for (row <- 0 until output.numRows()) {
+              assert(output.column(0).getArray(row).toIntArray.toSeq == Seq(1, 2, 3))
+            }
+            assert(!iterator.hasNext)
+          }
+        } finally {
+          iterator.close()
+        }
+      } finally {
+        context.markTaskCompleted(None)
+        taskMemoryManager.cleanUpAllAllocatedMemory()
+        if (previous == null) TaskContext.unset() else TaskContext.setTaskContext(previous)
+      }
+    }
+  }
 
   test("spill metric tree counts nested shared accumulators once") {
     def metric(name: String, value: Long): SQLMetric = {

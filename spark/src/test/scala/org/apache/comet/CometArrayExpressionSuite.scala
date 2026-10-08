@@ -1714,9 +1714,27 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       val e = intercept[SparkException](sql(query).collect())
       assert(e.getMessage.contains("2147483648"), e.getMessage)
       assert(e.getMessage.contains("spark.comet.batchSize"), e.getMessage)
-      withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "256") {
+      withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "128") {
         checkSparkAnswerAndOperator(query)
       }
     }
   }
+
+  test("sequence byte allowance refuses before allocation and a smaller batch recovers") {
+    withTable("t_seq_bytes") {
+      sql("CREATE TABLE t_seq_bytes(a INT, b INT) USING parquet")
+      sql("INSERT INTO t_seq_bytes SELECT 0, 65535 FROM range(0, 1024, 1, 1)")
+      val query = "SELECT sum(CAST(size(sequence(a, b)) AS BIGINT)) FROM t_seq_bytes"
+      // Values alone occupy 256 MiB. Offsets take the complete invocation over the default;
+      // increasing a SQL session setting cannot enlarge the executor's startup allowance.
+      withSQLConf(CometConf.COMET_SEQUENCE_MAX_BYTES_PER_EXECUTOR.key -> "4g") {
+        val error = intercept[SparkException](sql(query).collect())
+        assert(error.getMessage.contains("spark.comet.exec.sequence.maxBytesPerExecutor"))
+      }
+      withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "128") {
+        checkSparkAnswerAndImpl(sql(query), native = Seq("sequence"))
+      }
+    }
+  }
+
 }

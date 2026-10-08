@@ -26,7 +26,7 @@ anyone debugging an out-of-memory report. For user-facing tuning advice, see the
 
 This page covers off-heap mode (`spark.memory.offHeap.enabled=true`) only. Comet also has an
 on-heap mode, but it exists so that the Spark SQL test suite can run against Comet without changing
-Spark's memory configuration. Comet performs no memory accounting in it: the native side gets
+Spark's memory configuration. Comet performs no operator-pool memory accounting in it: the native side gets
 DataFusion's `UnboundedMemoryPool` and the JVM shuffle allocator
 (`CometUnboundedShuffleMemoryAllocator`) hands out `Unsafe` pages against no budget. Native memory
 is not on the JVM heap, so there is no Spark pool it could honestly be charged to, and the
@@ -369,6 +369,32 @@ local checks and carries what Spark does not grant as overcommit. Every other re
 unchanged. `spill_replay.rs` describes how the wrapper recognizes these requests and what that relies
 on in DataFusion. [Issue #6583](https://github.com/apache/datafusion-comet/issues/6583) tracks
 removing it.
+
+## Integral sequence output allowance
+
+Native integral `sequence` has a separate, non-spillable allowance in both on-heap and off-heap
+modes: `spark.comet.exec.sequence.maxBytesPerExecutor`, default **256 MiB**. It is read from the
+executor's startup `SparkConf`; setting it in a SQL session does not change the allowance. The
+outstanding-byte counter is shared by every native plan and task in the process, and survives
+Spark context recreation while any old buffers remain live.
+
+The kernel validates and sizes the complete invocation before allocating its values, list offsets,
+and optional validity bitmap. It rounds each allocation to Arrow's platform alignment and admits
+their combined capacity atomically. If the requested bytes plus live sequence allocations exceed
+the allowance, the task fails immediately with a resource error. It does not spill or wait for
+another task or downstream consumer. Reducing `spark.comet.batchSize` or sequence lengths reduces
+the request; increasing the allowance requires an application startup setting.
+
+Each backing allocation owns its charge. Arrow clones, slices retaining only the child values,
+and C Data Interface exports keep the relevant charges until their final owner releases them.
+Dropping the producing plan does not return credit for buffers still held by the JVM. Scalar-only
+native calls generate and admit the full requested row count, and are not folded into a list
+scalar whose later expansion could bypass admission.
+
+This allowance does not use Spark's execution memory pool and does not bound total native memory
+or RSS. Allocator bookkeeping, retained pages, small array/owner objects, other kernels, and copies
+made by downstream operators remain outside it. The existing per-row Spark array-length rules and
+the per-batch `i32` list-offset ceiling still apply before byte admission.
 
 ## How DataFusion consumes the pool
 

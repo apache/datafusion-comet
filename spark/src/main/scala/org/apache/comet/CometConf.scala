@@ -478,6 +478,20 @@ object CometConf extends ShimCometConf {
     .booleanConf
     .createWithDefault(false)
 
+  val COMET_SEQUENCE_MAX_BYTES_PER_EXECUTOR: ConfigEntry[Long] =
+    conf("spark.comet.exec.sequence.maxBytesPerExecutor")
+      .category(CATEGORY_TUNING)
+      .doc(
+        "Maximum live backing-buffer bytes for native integral sequence outputs on an executor, " +
+          "shared by all tasks. Includes values, list offsets, validity and alignment padding. " +
+          "Outputs retain their charge through Arrow sharing and JVM exports. Requests that " +
+          "do not fit fail immediately; they cannot spill or wait. This is separate from the " +
+          "operator memory pool. Read from executor SparkConf, so set it at application startup; " +
+          "SQL session changes are ignored.")
+      .bytesConf(ByteUnit.BYTE)
+      .checkValue(_ > 0, "The sequence allowance must be positive")
+      .createWithDefault(256L * 1024 * 1024)
+
   val COMET_MEMORY_LOG_INTERVAL: ConfigEntry[Long] = conf("spark.comet.memory.logInterval")
     .category(CATEGORY_TUNING)
     .doc(
