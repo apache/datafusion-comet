@@ -93,9 +93,10 @@ trait ShimSparkErrorConverter {
 
       case "ArithmeticOverflow" =>
         val fromType = params("fromType").toString
+        val functionName = params.get("functionName").map(_.toString).getOrElse("")
         Some(
           QueryExecutionErrors
-            .arithmeticOverflowError(fromType + " overflow", "", sqlCtx(context)))
+            .arithmeticOverflowError(fromType + " overflow", functionName, sqlCtx(context)))
 
       case "IntegralDivideOverflow" =>
         Some(QueryExecutionErrors.overflowInIntegralDivideError(sqlCtx(context)))
@@ -292,6 +293,12 @@ trait ShimSparkErrorConverter {
             errorClass = "INVALID_REGEX_GROUP_INDEX",
             messageParameters = params.map { case (k, v) => (k, v.toString) },
             cause = null))
+
+      case "InvalidUrl" =>
+        Some(
+          QueryExecutionErrors.invalidUrlError(
+            UTF8String.fromString(params("url").toString),
+            new java.net.URISyntaxException(params("url").toString, "Invalid URL")))
 
       case "DatatypeCannotOrder" =>
         // orderedOperationUnsupportedByDataTypeError takes DataType in Spark 3.4, not String

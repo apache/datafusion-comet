@@ -16,8 +16,8 @@
 # under the License.
 
 [workspace]
-default-members = ["core", "spark-expr", "common", "proto", "jni-bridge", "shuffle", "operators"]
-members = ["core", "spark-expr", "common", "proto", "jni-bridge", "shuffle", "operators"]
+default-members = ["core", "spark-expr", "common", "proto", "jni-bridge", "shuffle", "operators", "comet-udf-sdk", "comet-test-udfs"]
+members = ["core", "spark-expr", "common", "proto", "jni-bridge", "shuffle", "operators", "comet-udf-sdk", "comet-test-udfs"]
 # Crates under ../contrib are intentionally NOT workspace members. Core pulls them in as
 # optional path dependencies when their corresponding contrib feature is enabled.
 exclude = ["../contrib"]
@@ -33,8 +33,9 @@ readme = "README.md"
 license = "Apache-2.0"
 edition = "2021"
 
-# Comet uses the same minimum Rust version as DataFusion
-rust-version = "1.94.0"
+# The highest minimum Rust version among Comet's dependencies: iceberg-rust requires 1.95,
+# above DataFusion's 1.94
+rust-version = "1.95.0"
 
 [workspace.dependencies]
 arrow = { version = "59.2.0", features = ["prettyprint", "ffi", "chrono-tz"] }
@@ -45,6 +46,7 @@ bytes = { version = "1.11.1" }
 parquet = { version = "59.2.0", default-features = false, features = ["experimental"] }
 datafusion = { version = "55.1.0", default-features = false, features = ["unicode_expressions", "crypto_expressions", "nested_expressions", "parquet"] }
 datafusion-datasource = { version = "55.1.0" }
+datafusion-functions = { version = "55.1.0", default-features = false, features = ["datetime_expressions"] }
 datafusion-physical-expr-adapter = { version = "55.1.0" }
 datafusion-spark = { version = "55.1.0", features = ["core"] }
 datafusion-comet-spark-expr = { path = "spark-expr" }

@@ -22,6 +22,7 @@ package org.apache.comet
 import scala.util.Random
 
 import org.apache.hadoop.fs.Path
+import org.apache.spark.SparkException
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayDistinct, ArrayExcept, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayRepeat, ArrayUnion}
 import org.apache.spark.sql.catalyst.expressions.{ArrayContains, ArrayRemove}
@@ -33,7 +34,7 @@ import org.apache.spark.sql.types.{ArrayType, DataType, DoubleType, FloatType, I
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
 import org.apache.comet.DataTypeSupport.isComplexType
-import org.apache.comet.serde.{ArraySetSupport, CometArrayDistinct, CometArrayExcept, CometArrayJoin, CometArrayRemove, CometArrayReverse, CometArrayUnion, CometFlatten, Compatible, ExprOuterClass, Incompatible}
+import org.apache.comet.serde.{ArrayElementEqualitySupport, ArraySetSupport, CometArrayDistinct, CometArrayExcept, CometArrayJoin, CometArrayRemove, CometArrayReverse, CometArrayUnion, CometFlatten, Compatible, ExprOuterClass, Incompatible}
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
 
 class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
@@ -91,9 +92,14 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       "STRUCT<s: ARRAY<STRING COLLATE UTF8_LCASE>, f: FLOAT>",
       "ARRAY<STRUCT<s: STRING COLLATE UTF8_LCASE, d: DOUBLE>>").foreach { ddl =>
       val child = AttributeReference("a", ArrayType(DataType.fromDDL(ddl)))()
-      val expected = Incompatible(Some(ArraySetSupport.collationReason))
-      assert(CometArrayDistinct.getSupportLevel(ArrayDistinct(child)) == expected, ddl)
-      assert(CometArrayUnion.getSupportLevel(ArrayUnion(child, child)) == expected, ddl)
+      def expected(name: String) =
+        Incompatible(Some(ArrayElementEqualitySupport.collationReason(name)))
+      assert(
+        CometArrayDistinct.getSupportLevel(ArrayDistinct(child)) == expected("array_distinct"),
+        ddl)
+      assert(
+        CometArrayUnion.getSupportLevel(ArrayUnion(child, child)) == expected("array_union"),
+        ddl)
     }
   }
 
@@ -1743,6 +1749,27 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
         // split(NULL, ...) yields a null array; arr[0] on a null array must return NULL
         // rather than failing the non-nullable schema validation in native execution.
         checkSparkAnswerAndOperator(sql("SELECT split(s, ',')[0] FROM test_split_null"))
+      }
+    }
+  }
+
+  // 8192 rows of sequence(0, 262143) put 8192 * 262144 = 2^31 elements in one batch, one past
+  // the Int.MaxValue limit of Arrow's i32 list offsets. Spark builds one array per row and
+  // completes; Comet fails the batch and points at spark.comet.batchSize. The lower batch size
+  // is kept small because each successful batch materializes its elements in native memory.
+  test("sequence over the per-batch element limit fails until the batch size is lowered") {
+    withTable("t_seq_ceiling") {
+      sql("CREATE TABLE t_seq_ceiling(a INT, b INT) USING parquet")
+      sql("INSERT INTO t_seq_ceiling SELECT 0, 262143 FROM range(0, 8192, 1, 1)")
+      val query = "SELECT sum(CAST(size(sequence(a, b)) AS BIGINT)) FROM t_seq_ceiling"
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        assert(sql(query).collect().map(_.getLong(0)).toSeq == Seq(2147483648L))
+      }
+      val e = intercept[SparkException](sql(query).collect())
+      assert(e.getMessage.contains("2147483648"), e.getMessage)
+      assert(e.getMessage.contains("spark.comet.batchSize"), e.getMessage)
+      withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "256") {
+        checkSparkAnswerAndOperator(query)
       }
     }
   }

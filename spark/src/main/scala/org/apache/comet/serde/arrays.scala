@@ -115,15 +115,24 @@ object CometArrayAppend extends CometExpressionSerde[ArrayAppend] with ArraysBas
 
 object CometArrayContains
     extends CometExpressionSerde[ArrayContains]
+    with CometTypeShim
     with CodegenDispatchFallback {
+
+  override def hasConditionalNativeDefault: Boolean = true
 
   private val floatingPointReason: String =
     "Spark compares array elements with ordering.equiv, so -0.0 matches +0.0 and all NaNs match " +
       "each other; Comet's native array_contains compares the raw Arrow values bitwise"
 
-  override def getIncompatibleReasons(): Seq[String] = Seq(floatingPointReason)
+  private val collationReason: String =
+    ArrayElementEqualitySupport.collationReason("array_contains")
+
+  override def getIncompatibleReasons(): Seq[String] = Seq(floatingPointReason, collationReason)
 
   override def getSupportLevel(expr: ArrayContains): SupportLevel = expr.left.dataType match {
+    // See ArrayElementEqualitySupport: bytewise string comparison ignores the collation.
+    case ArrayType(elementType, _) if hasNonDefaultStringCollation(elementType) =>
+      Incompatible(Some(collationReason))
     // Native array_contains compares floating-point elements bitwise, disagreeing with Spark for
     // -0.0/+0.0 and NaN. Report Incompatible (not Unsupported) for float/double element types (at
     // any nesting level) so the expression routes through the JVM codegen dispatcher (Spark's own
@@ -309,7 +318,19 @@ object CometArrayMin extends CometExpressionSerde[ArrayMin] with CodegenDispatch
   }
 }
 
-object CometArraysOverlap extends CometExpressionSerde[ArraysOverlap] {
+object CometArraysOverlap
+    extends CometExpressionSerde[ArraysOverlap]
+    with CodegenDispatchFallback {
+
+  override def hasConditionalNativeDefault: Boolean = true
+
+  override def getIncompatibleReasons(): Seq[String] =
+    Seq(ArrayElementEqualitySupport.collationReason("arrays_overlap"))
+
+  // Both inputs share one element type, so checking the left side is enough.
+  override def getSupportLevel(expr: ArraysOverlap): SupportLevel =
+    ArrayElementEqualitySupport.getSupportLevel("arrays_overlap", expr.left.dataType)
+
   override def convert(
       expr: ArraysOverlap,
       inputs: Seq[Attribute],
@@ -538,16 +559,35 @@ object CometSlice extends CometExpressionSerde[Slice] {
   }
 }
 
+/**
+ * Support level for native array kernels that compare elements for equality (membership, overlap,
+ * dedup). They compare strings by raw bytes, so a non-UTF8_BINARY collation (for example
+ * UTF8_LCASE, where 'a' equals 'A') gives wrong answers, and these cases report Incompatible.
+ * Serdes with a boolean result mix in CodegenDispatchFallback, so the JVM codegen dispatcher runs
+ * Spark's collation-aware comparison. Array-valued serdes fall back instead (see
+ * ArraySetSupport).
+ */
+private[comet] object ArrayElementEqualitySupport extends CometTypeShim {
+  def collationReason(name: String): String =
+    "Spark compares non-UTF8_BINARY collated string elements under their collation, while " +
+      s"Comet's native $name compares raw bytes"
+
+  def collationSupportLevel(name: String, arrayType: DataType): Option[SupportLevel] =
+    if (hasNonDefaultStringCollation(arrayType)) {
+      Some(Incompatible(Some(collationReason(name))))
+    } else {
+      None
+    }
+
+  def getSupportLevel(name: String, arrayType: DataType): SupportLevel =
+    collationSupportLevel(name, arrayType).getOrElse(Compatible())
+}
+
 private[comet] object ArraySetSupport {
   val floatingPointReason: String =
     "Floating-point elements match Spark's signed-zero semantics natively only on Spark " +
       "4.0.5+, 4.1.4+ and 4.2+, which treat -0.0 and 0.0 as one value in these functions " +
       "(SPARK-54918, SPARK-59602)"
-
-  val collationReason: String =
-    "Elements that hold both a floating-point value and a non-UTF8_BINARY collated string fall " +
-      "back to Spark, which compares the strings under their collation, while Comet's native " +
-      "kernels compare their raw bytes"
 
   // Spark 4.2.0 normalizes the arguments of these functions in the plan (SPARK-54918), and 4.0.5,
   // 4.1.4 and 4.2.1 normalize while evaluating them (SPARK-59602). Either way, Spark treats -0.0
@@ -563,17 +603,25 @@ private[comet] object ArraySetSupport {
     }
 
   def supportLevel(dataType: DataType): SupportLevel = {
-    if (hasFloats(dataType) && hasNonDefaultStringCollation(dataType)) {
-      // The spark_ variants normalize the floats, then DataFusion compares the elements, strings
-      // included, by their bytes. Collated strings without floats take the plain DataFusion
-      // functions: https://github.com/apache/datafusion-comet/issues/6470.
-      Incompatible(Some(collationReason))
-    } else if (hasFloats(dataType) && !normalizesFloats(SPARK_VERSION)) {
+    if (hasFloats(dataType) && !normalizesFloats(SPARK_VERSION)) {
       Incompatible(Some(floatingPointReason))
     } else {
       Compatible()
     }
   }
+
+  /**
+   * Collated string elements are also Incompatible; see ArrayElementEqualitySupport. That check
+   * runs first, so an element with both a float and a collated string falls back on every
+   * version: the spark_ variants normalize the floats but compare strings by their bytes.
+   */
+  def supportLevel(name: String, dataType: DataType): SupportLevel =
+    ArrayElementEqualitySupport
+      .collationSupportLevel(name, dataType)
+      .getOrElse(supportLevel(dataType))
+
+  def incompatibleReasons(name: String): Seq[String] =
+    Seq(floatingPointReason, ArrayElementEqualitySupport.collationReason(name))
 
   // DataFusion folds -0.0 into 0.0 only in a flat float array and compares NaNs by their bits.
   // The spark_ variants normalize floats at any depth first, as Spark does.
@@ -588,10 +636,10 @@ private[comet] object ArraySetSupport {
 // The native implementation remains available through opt-in.
 object CometArrayDistinct extends CometExpressionSerde[ArrayDistinct] {
   override def getIncompatibleReasons(): Seq[String] =
-    Seq(ArraySetSupport.floatingPointReason, ArraySetSupport.collationReason)
+    ArraySetSupport.incompatibleReasons("array_distinct")
 
   override def getSupportLevel(expr: ArrayDistinct): SupportLevel =
-    ArraySetSupport.supportLevel(expr.dataType)
+    ArraySetSupport.supportLevel("array_distinct", expr.dataType)
 
   override def convert(
       expr: ArrayDistinct,
@@ -606,10 +654,10 @@ object CometArrayDistinct extends CometExpressionSerde[ArrayDistinct] {
 
 object CometArrayUnion extends CometExpressionSerde[ArrayUnion] {
   override def getIncompatibleReasons(): Seq[String] =
-    Seq(ArraySetSupport.floatingPointReason, ArraySetSupport.collationReason)
+    ArraySetSupport.incompatibleReasons("array_union")
 
   override def getSupportLevel(expr: ArrayUnion): SupportLevel =
-    ArraySetSupport.supportLevel(expr.dataType)
+    ArraySetSupport.supportLevel("array_union", expr.dataType)
 
   override def convert(
       expr: ArrayUnion,
