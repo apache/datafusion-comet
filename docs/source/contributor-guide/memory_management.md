@@ -378,9 +378,11 @@ An operator that never calls `try_grow` is invisible to the pool no matter how m
 ### Native writers
 
 Both native writers reserve what they hold between batches through a single consumer per task,
-`ParquetWriterExec[N]` or `IcebergWriteExec[N]`, resized after every batch. Neither can spill, so
-when the pool refuses a resize the task fails with a `CometNativeException` whose message starts
-`Additional allocation failed for` and names the consumer. That is a task failure Spark can retry.
+`ParquetWriterExec[N]` or `IcebergWriteExec[N]`, resized after every batch. Neither can spill. A
+fanout Iceberg write can give memory back by closing partitions early, and does so when the pool
+refuses a resize, as described below. Otherwise, when the pool refuses a resize, the task fails
+with a `CometNativeException` whose message starts `Additional allocation failed for` and names the
+consumer. That is a task failure Spark can retry.
 Unreserved, the same memory would count only toward the container limit, where exceeding it kills
 the executor.
 
@@ -400,10 +402,13 @@ the executor.
   it has flushed since its last part was uploaded. At the default row-group size
   (`write.parquet.row-group-size-bytes`, 128 MiB) that is the last row group it flushed. The
   reservation also covers the rows each partition holds back, first for its dictionary choice and
-  then until they fill the 1000-row unit the rolling writer is fed in. It does not cover what
-  parquet-rs holds beyond the encoded size: dictionary hash tables, unencoded dictionary indices
-  and buffer capacity. Native writes decline Bloom filters today, and neither figure would include
-  them.
+  then until they fill the 1000-row unit the rolling writer is fed in. When the pool refuses a
+  fanout write's resize, the writer writes out and closes the partitions holding the most, file
+  and held rows together, until the resize succeeds, so the write ends with more files rather than
+  failing. Each file also reports to its partition's total, which is how the writer finds them.
+  The reservation does not cover what parquet-rs holds beyond the encoded size: dictionary hash
+  tables, unencoded dictionary indices and buffer capacity. Native writes decline Bloom filters
+  today, and neither figure would include them.
 
 The writers register one consumer per task rather than one per open file because every consumer
 registered with `fair_unified` lowers the share of every other consumer in the task. A consumer per

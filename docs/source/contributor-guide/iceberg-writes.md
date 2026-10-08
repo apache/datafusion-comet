@@ -223,7 +223,7 @@ per task, and `PartitionWriterBuilder` builds the rest of the stack once per par
 partition's Parquet writer properties:
 
 ```text
-UnpartitionedWriter | FanoutWriter | ClusteredWriter
+UnpartitionedWriter | FanoutFiles | ClusteredWriter
   -> PartitionWriterBuilder, per partition:
        ParquetWriterBuilder -> RollingFileWriterBuilder -> DataFileWriterBuilder
 ```
@@ -270,8 +270,9 @@ Points where Comet adapts iceberg-rust to match iceberg-java:
 - **Field ids and casting.** `decorate_batch_with_field_ids` casts each batch to the
   field-id-annotated Arrow schema derived from the Iceberg schema, with `safe: false`, so a type
   mismatch fails the task instead of writing NULLs.
-- **Deterministic output order.** iceberg-rust's `FanoutWriter` closes its writers out of a
-  `HashMap`, so the fanout path sorts its `DataFile`s by path before returning them
+- **Deterministic output order.** `FanoutFiles`, Comet's version of iceberg-rust's `FanoutWriter`,
+  closes its writers out of a `HashMap`, so the fanout path sorts its `DataFile`s by path before
+  returning them
   ([#5776](https://github.com/apache/datafusion-comet/issues/5776)). Manifest order becomes the row
   order of an unordered read, so any map iteration that reaches the output needs the same care.
 
@@ -281,9 +282,15 @@ hold in memory. It hands `ParquetWriter` each file's `OutputFile` behind a `Coun
 writer counts the bytes that leave memory on their way to storage, and a file reports what it has
 written less those. When they leave depends on the storage (`StorageWrites`). After every batch
 `run_write_task` resizes the task's reservation to what the open files report plus the rows each
-`PartitionFeed` holds, for the dictionary choice or for pacing, and a resize the pool refuses fails
-the task. What that figure covers, and what it misses, is described under
-[Native writers](memory_management.md#native-writers).
+`PartitionFeed` holds, for the dictionary choice or for pacing. When the pool refuses a fanout
+write, `run_write_task` writes out and closes the partitions holding the most, in their open file
+and their feed, until the resize succeeds (`InnerWriter::partitions_by_memory`), and counts them in
+the `files_closed_early` metric. That is why the fanout path uses `FanoutFiles` rather than
+iceberg-rust's `FanoutWriter`, which cannot close one partition's writer. A closed partition's next
+rows open a new file with the properties its first file used, which `PartitionProperties::get`
+keeps for it. A write the pool still refuses, with nothing left to close, fails the task, as an
+unpartitioned or clustered write always does. What the reserved figure covers, and what it misses,
+is described under [Native writers](memory_management.md#native-writers).
 
 `FileIO` comes from `load_file_io` in `iceberg_common.rs`, shared with the native scan. It picks
 the storage backend from the data location's scheme and wires in Comet's S3 credential bridge when
