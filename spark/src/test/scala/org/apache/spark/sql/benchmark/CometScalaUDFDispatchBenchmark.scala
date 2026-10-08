@@ -22,7 +22,7 @@ package org.apache.spark.sql.benchmark
 import org.apache.arrow.vector.{BigIntVector, ValueVector, VarBinaryVector}
 import org.apache.spark.SparkEnv
 import org.apache.spark.benchmark.Benchmark
-import org.apache.spark.sql.catalyst.expressions.{AttributeReference, AttributeSeq, BindReferences, Expression, ScalaUDF}
+import org.apache.spark.sql.catalyst.expressions.{Alias, AttributeReference, AttributeSeq, BindReferences, Expression}
 import org.apache.spark.sql.execution.adaptive.QueryStageExec
 
 import org.apache.comet.{CometArrowAllocator, CometConf}
@@ -37,9 +37,9 @@ import org.apache.comet.udf.codegen.CometScalaUDFCodegen
  * Part 1 runs `SELECT max(f(c))` over a Parquet `bigint` column end to end at several batch
  * sizes. The total of a cost paid once per batch grows as batches shrink, and the total of a cost
  * paid per row does not. A tenth of the rows are null. Spark wraps a UDF with a primitive
- * parameter in a null check, `if(isnull(c), null, f(knownnotnull(c)))`, which runs natively
- * around the dispatched call; a UDF with a boxed parameter gets no such wrapper and converts its
- * input through Spark's encoder instead.
+ * parameter in a null check, `if(isnull(c), null, f(knownnotnull(c)))`, which runs in the
+ * dispatcher's kernel with the call; a UDF with a boxed parameter gets no such wrapper and
+ * converts its input through Spark's encoder instead.
  *
  * Part 2 calls the dispatcher directly on the same in-memory batch over and over, with no Spark
  * query and no native code, and does the same with the generated kernel it runs. The difference
@@ -124,12 +124,15 @@ object CometScalaUDFDispatchBenchmark extends CometBenchmarkBase {
     benchmark.run()
   }
 
-  /** The bound UDF subtree the serde would dispatch, and its closure-serialized bytes. */
+  /**
+   * The bound subtree the serde would dispatch for `f`, and its closure-serialized bytes. For a
+   * primitive parameter that is Spark's null check together with the call.
+   */
   private def boundUdf(f: String): (Expression, Array[Byte]) = {
     val plan = spark.sql(s"SELECT $f FROM parquetV1Table").queryExecution.optimizedPlan
-    val udf = plan.expressions.flatMap(_.collect { case u: ScalaUDF => u }).head
-    val attrs = udf.collect { case a: AttributeReference => a }.distinct
-    val bound = BindReferences.bindReference(udf: Expression, AttributeSeq(attrs))
+    val dispatched = plan.expressions.collectFirst { case Alias(child, _) => child }.get
+    val attrs = dispatched.collect { case a: AttributeReference => a }.distinct
+    val bound = BindReferences.bindReference(dispatched, AttributeSeq(attrs))
     val buffer = SparkEnv.get.closureSerializer.newInstance().serialize(bound)
     val bytes = new Array[Byte](buffer.remaining())
     buffer.get(bytes)
