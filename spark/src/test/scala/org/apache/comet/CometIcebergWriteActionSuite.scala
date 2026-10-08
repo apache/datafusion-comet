@@ -3109,19 +3109,24 @@ class CometIcebergWriteActionSuite
       }
 
       withNativeEnabled {
-        var plans = Seq.empty[SparkPlan]
-        // withSQLConf returns Unit before Spark 4.0, so the plans are kept from inside it.
+        // withSQLConf returns Unit before Spark 4.0, so the assertions run inside it.
         withSQLConf(CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key -> "0.002") {
-          plans = capturePlans(spark) {
+          val snapshot = captureWrite("fanout_oom") {
             spark.sql(s"INSERT INTO $catalog.$ns.fanout_oom SELECT * FROM fanout_oom_src")
           }
+          assert(
+            snapshot.snapshotDelta == 1L,
+            s"expected 1 commit, got ${snapshot.snapshotDelta}")
+          val writers = snapshot.plans.flatMap { plan =>
+            collectWithSubqueries(plan) { case w: CometIcebergWriteExec => w }
+          }
+          assert(
+            writers.nonEmpty,
+            s"the write did not run natively:\n${snapshot.plans.mkString("\n--\n")}")
+          assert(
+            writers.map(_.metrics("files_closed_early").value).sum > 0,
+            "the write closed no partition early")
         }
-        val writers =
-          plans.flatMap(p => collectWithSubqueries(p) { case w: CometIcebergWriteExec => w })
-        assert(writers.nonEmpty, s"the write did not run natively:\n${plans.mkString("\n--\n")}")
-        assert(
-          writers.map(_.metrics("files_closed_early").value).sum > 0,
-          "the write closed no partition early")
 
         // With the whole pool, every partition keeps its one file open.
         spark.sql(s"INSERT INTO $catalog.$ns.fanout_oom_control SELECT * FROM fanout_oom_src")

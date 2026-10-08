@@ -26,7 +26,6 @@
 //! `ManifestFiles.read(...)` to recover the `DataFile`s for commit.
 
 use std::cmp::Reverse;
-use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -126,18 +125,17 @@ struct PartitionWriterBuilder {
 }
 
 impl PartitionWriterBuilder {
-    /// The data file writer for `partition_key`, writing with `properties`, whose files also
-    /// report what they hold to `partition`, if given.
+    /// The data file writer for `partition_key`, writing with `properties`, whose files report
+    /// what they hold to `open_files`.
     async fn build_with(
         &self,
         partition_key: Option<PartitionKey>,
         properties: WriterProperties,
-        partition: Option<OpenFileMemory>,
+        open_files: OpenFileMemory,
     ) -> iceberg::Result<PartitionDataFileWriter> {
         let parquet_builder = MeteredParquetWriterBuilder {
             inner: ParquetWriterBuilder::new(properties, Arc::clone(&self.schema)),
-            open_files: self.open_files.clone(),
-            partition,
+            open_files,
             storage: self.storage,
         };
         let rolling_builder = RollingFileWriterBuilder::new(
@@ -154,7 +152,7 @@ impl PartitionWriterBuilder {
 }
 
 /// How the unpartitioned and clustered writers open a partition's writer: once, with the
-/// properties chosen for it, which are no longer needed after.
+/// properties chosen for it.
 #[async_trait::async_trait]
 impl IcebergWriterBuilder for PartitionWriterBuilder {
     type R = PartitionDataFileWriter;
@@ -163,7 +161,8 @@ impl IcebergWriterBuilder for PartitionWriterBuilder {
         let properties = self
             .properties
             .take(partition_key.as_ref().map(PartitionKey::data));
-        self.build_with(partition_key, properties, None).await
+        self.build_with(partition_key, properties, self.open_files.clone())
+            .await
     }
 }
 
@@ -171,10 +170,9 @@ impl IcebergWriterBuilder for PartitionWriterBuilder {
 /// dictionary choice [`DictionaryChooser`] made from the partition's first rows.
 ///
 /// A partition's [`PartitionFeed`] records the choice before it hands the partition's first rows
-/// to the writer, and [`PartitionWriterBuilder`] takes it back out when that first write opens the
-/// partition's writer. The unpartitioned and clustered writers open a partition's writer exactly
-/// once per task, on its first write. A fanout partition whose file [`FanoutFiles`] closed early
-/// opens another, so a fanout write reads the choice and leaves it in place.
+/// to the writer, and the partition takes it back out when that first write opens the partition's
+/// writer, once per task. A fanout partition keeps what it took for the files it opens after
+/// closing one early (see [`FanoutPartition`]).
 struct PartitionProperties {
     chooser: DictionaryChooser,
     /// Keyed by partition value; `None` is the whole task of an unpartitioned write.
@@ -205,21 +203,6 @@ impl PartitionProperties {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .remove(&partition.cloned());
-        self.or_base(chosen)
-    }
-
-    /// The properties chosen for `partition`, kept for the next file the partition opens.
-    fn get(&self, partition: Option<&IcebergStruct>) -> WriterProperties {
-        let chosen = self
-            .chosen
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .get(&partition.cloned())
-            .cloned();
-        self.or_base(chosen)
-    }
-
-    fn or_base(&self, chosen: Option<WriterProperties>) -> WriterProperties {
         debug_assert!(
             chosen.is_some(),
             "a partition's writer opened before its dictionary choice was made"
@@ -228,37 +211,37 @@ impl PartitionProperties {
     }
 }
 
-/// What a task's open data files hold in memory between them, or what one fanout partition's
-/// open file holds.
+/// What a task's open data files hold in memory between them.
 ///
 /// iceberg-rust keeps each open file writer private inside its rolling writer, so the files report
 /// their own shares here through [`MeteredParquetWriter`], and `run_write_task` reserves the
-/// task's total. A fanout write keeps one file open per partition, so the total grows with the
-/// partition count, and [`FanoutFiles`] keeps each partition's too, to find the partitions to
-/// close when the pool refuses the total.
+/// total. A fanout write keeps one file open per partition, so this is what grows with the
+/// partition count. Each fanout partition's files report to a [`child`](Self::child) of it, which
+/// is how the write finds the partitions to close when the pool refuses the total.
 #[derive(Clone, Debug, Default)]
-struct OpenFileMemory(Arc<AtomicUsize>);
+struct OpenFileMemory {
+    bytes: Arc<AtomicUsize>,
+    /// The total this one is part of, for a fanout partition's.
+    parent: Option<Arc<AtomicUsize>>,
+}
 
 impl OpenFileMemory {
     fn bytes(&self) -> usize {
-        self.0.load(Ordering::Relaxed)
+        self.bytes.load(Ordering::Relaxed)
     }
 
-    /// A newly opened file's share of this total and, for a fanout partition's file, of the
-    /// partition's.
-    fn share(&self, partition: Option<OpenFileMemory>) -> OpenFileShare {
-        OpenFileShare {
-            total: self.clone(),
-            partition,
-            bytes: 0,
+    /// A counter for one fanout partition's files, which also counts towards this one.
+    fn child(&self) -> OpenFileMemory {
+        OpenFileMemory {
+            bytes: Arc::default(),
+            parent: Some(Arc::clone(&self.bytes)),
         }
     }
 
-    fn change(&self, from: usize, to: usize) {
-        if to > from {
-            self.0.fetch_add(to - from, Ordering::Relaxed);
-        } else {
-            self.0.fetch_sub(from - to, Ordering::Relaxed);
+    fn share(&self) -> OpenFileShare {
+        OpenFileShare {
+            total: self.clone(),
+            bytes: 0,
         }
     }
 }
@@ -268,15 +251,17 @@ impl OpenFileMemory {
 #[derive(Debug)]
 struct OpenFileShare {
     total: OpenFileMemory,
-    partition: Option<OpenFileMemory>,
     bytes: usize,
 }
 
 impl OpenFileShare {
     fn set(&mut self, bytes: usize) {
-        self.total.change(self.bytes, bytes);
-        if let Some(partition) = &self.partition {
-            partition.change(self.bytes, bytes);
+        for total in std::iter::once(&self.total.bytes).chain(&self.total.parent) {
+            if bytes > self.bytes {
+                total.fetch_add(bytes - self.bytes, Ordering::Relaxed);
+            } else {
+                total.fetch_sub(self.bytes - bytes, Ordering::Relaxed);
+            }
         }
         self.bytes = bytes;
     }
@@ -288,14 +273,12 @@ impl Drop for OpenFileShare {
     }
 }
 
-/// [`ParquetWriterBuilder`] whose files report what they hold in memory to the task's
-/// [`OpenFileMemory`], and to their fanout partition's.
+/// [`ParquetWriterBuilder`] whose files report what they hold in memory to an
+/// [`OpenFileMemory`].
 #[derive(Clone, Debug)]
 struct MeteredParquetWriterBuilder {
     inner: ParquetWriterBuilder,
     open_files: OpenFileMemory,
-    /// The fanout partition the files belong to, if [`FanoutFiles`] tracks it.
-    partition: Option<OpenFileMemory>,
     /// How the files' storage takes the row groups they flush.
     storage: StorageWrites,
 }
@@ -308,7 +291,7 @@ impl FileWriterBuilder for MeteredParquetWriterBuilder {
         let output_file = CountedOutput::wrap(output_file, self.storage, Arc::clone(&released));
         Ok(MeteredParquetWriter {
             inner: self.inner.build(output_file).await?,
-            share: self.open_files.share(self.partition.clone()),
+            share: self.open_files.share(),
             released,
         })
     }
@@ -861,11 +844,7 @@ impl ExecutionPlan for IcebergWriteExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> DFResult<SendableRecordBatchStream> {
-        let metrics = WriteMetrics {
-            write_time: MetricBuilder::new(&self.metrics).subset_time("write_time", partition),
-            files_closed_early: MetricBuilder::new(&self.metrics)
-                .counter("files_closed_early", partition),
-        };
+        let metrics = WriteMetrics::new(&self.metrics, partition);
         // One consumer for the whole task, however many files it opens: a consumer per file
         // would shrink every other consumer's share of the fair pool as a fanout write widened.
         let reservation = MemoryConsumer::new(format!("IcebergWriteExec[{partition}]"))
@@ -966,16 +945,25 @@ struct WriteMetrics {
     files_closed_early: Count,
 }
 
+impl WriteMetrics {
+    fn new(metrics: &ExecutionPlanMetricsSet, partition: usize) -> Self {
+        Self {
+            write_time: MetricBuilder::new(metrics).subset_time("write_time", partition),
+            files_closed_early: MetricBuilder::new(metrics)
+                .counter("files_closed_early", partition),
+        }
+    }
+}
+
 /// One-shot per-task write coroutine. Builds the iceberg-rust writer stack, decorates each input
 /// batch with `PARQUET_FIELD_ID_META_KEY` metadata so iceberg-rust can match Arrow columns to
-/// Iceberg field IDs, and routes through `UnpartitionedWriter`/[`FanoutFiles`]/`ClusteredWriter`
-/// depending on `writer_mode`.
+/// Iceberg field IDs, and routes through `UnpartitionedWriter`/[`FanoutPartitions`]/
+/// `ClusteredWriter` depending on `writer_mode`.
 ///
-/// After every batch, `reservation` is resized to what the task's writers hold between batches:
-/// the open files' shares (see [`MeteredParquetWriter`]) and the rows waiting in their
-/// [`PartitionFeed`]s. When the pool refuses, a fanout write writes out and closes its
-/// partitions, the one holding the most first, until what is left fits. The writer cannot spill,
-/// so a reservation the pool still refuses with nothing left to close fails the task.
+/// After every batch, `reservation` is resized to what the task's writers hold between batches
+/// (see [`InnerWriter::reserve`]), and a fanout write the pool refuses closes partitions early
+/// until what is left fits. The writer cannot spill, so a reservation the pool still refuses
+/// fails the task.
 ///
 /// On success the still-armed [`AbortOnDrop`] is returned along with the data files: the caller
 /// owns cleanup until the JVM acknowledges the output after recording its locations.
@@ -1070,11 +1058,9 @@ async fn run_write_task(
             UnpartitionedWriter::new(data_file_builder),
             PartitionFeed::new(None, slicer),
         ),
-        (false, ProtoIcebergWriterMode::IcebergWriterFanout) => InnerWriter::Fanout(
-            FanoutFiles::new(data_file_builder),
-            splitter()?,
-            FanoutFeeds::default(),
-        ),
+        (false, ProtoIcebergWriterMode::IcebergWriterFanout) => {
+            InnerWriter::Fanout(FanoutPartitions::new(data_file_builder), splitter()?)
+        }
         (false, ProtoIcebergWriterMode::IcebergWriterClustered) => {
             InnerWriter::Clustered(ClusteredWriter::new(data_file_builder), splitter()?, None)
         }
@@ -1094,25 +1080,10 @@ async fn run_write_task(
             }
             let timer = metrics.write_time.timer();
             writer.write(decorated, &properties).await?;
-            if let Err(mut refused) =
-                reservation.try_resize(open_files.bytes() + writer.pending_bytes())
-            {
-                let mut fits = false;
-                for partition in writer.partitions_by_memory() {
-                    writer.close_partition(&partition, &properties).await?;
-                    metrics.files_closed_early.add(1);
-                    match reservation.try_resize(open_files.bytes() + writer.pending_bytes()) {
-                        Ok(()) => {
-                            fits = true;
-                            break;
-                        }
-                        Err(e) => refused = e,
-                    }
-                }
-                if !fits {
-                    return Err(refused);
-                }
-            }
+            let closed = writer
+                .reserve(&reservation, &open_files, &properties)
+                .await?;
+            metrics.files_closed_early.add(closed);
             timer.done();
         }
         let _timer = metrics.write_time.timer();
@@ -1134,75 +1105,199 @@ async fn run_write_task(
     }
 }
 
-/// The fanout writer: like iceberg-rust's `FanoutWriter`, a data file writer open for every
-/// partition the task has written to, except that a partition's file can be closed before the
-/// task ends, to give back the memory it holds. The partition's next rows then open a new file,
-/// with the same properties.
+/// A fanout write: like iceberg-rust's `FanoutWriter`, a data file writer open for every
+/// partition the task has written to, except that a partition can be closed before the task ends,
+/// to give back the memory it holds. Its next rows then open a new file, with the same properties.
+/// `FanoutWriter` keeps its writers private and closes them only all at once, so the fanout path
+/// keeps its own.
 ///
 /// iceberg-java's fanout writer keeps every file open until the task ends, its buffers growing on
 /// the JVM heap. The native writer's buffers count against the task's memory pool instead, so when
 /// the pool refuses them, closing partitions early lets the write finish with more, smaller files
-/// rather than fail (see [`InnerWriter::partitions_by_memory`]).
-struct FanoutFiles {
+/// rather than fail (see [`InnerWriter::reserve`]).
+struct FanoutPartitions {
     builder: PartitionWriterBuilder,
-    /// Each open partition's writer, and what its open file holds.
-    open: HashMap<IcebergStruct, (PartitionDataFileWriter, OpenFileMemory)>,
+    /// Every partition the task has seen, in the order it first saw them.
+    partitions: Vec<FanoutPartition>,
+    /// Where each partition value sits in `partitions`.
+    index: HashMap<IcebergStruct, usize>,
+    /// Bytes the feeds hold back for their dictionary choice, across all partitions. Every
+    /// partition stays open, so the rows they hold back share one limit: once they reach it, every
+    /// partition still holding makes its choice from the rows it has. A task fanning out to many
+    /// partitions that each get less than a page would otherwise hold all of its rows back,
+    /// uncompressed, until it closed.
+    held_bytes: usize,
     /// The data files of the partitions closed early.
     closed: Vec<DataFile>,
 }
 
-impl FanoutFiles {
+/// One partition of a fanout write.
+struct FanoutPartition {
+    /// Kept so held rows can still be written out at close.
+    key: PartitionKey,
+    feed: PartitionFeed,
+    /// The writer of the partition's open file, if it has one open.
+    writer: Option<PartitionDataFileWriter>,
+    /// What the open file holds, as part of the task's [`OpenFileMemory`].
+    memory: OpenFileMemory,
+    /// The properties the partition's files are written with, taken when its first file opens and
+    /// kept for the files it opens after closing one early.
+    properties: Option<WriterProperties>,
+}
+
+impl FanoutPartition {
+    /// What the partition holds: its open file and the rows its feed has not handed over.
+    fn bytes(&self) -> usize {
+        self.memory.bytes() + self.feed.pending_bytes()
+    }
+
+    /// Writes `unit` to the partition's open file, opening one first if it has none.
+    async fn write(
+        &mut self,
+        builder: &PartitionWriterBuilder,
+        unit: RecordBatch,
+    ) -> iceberg::Result<()> {
+        if self.writer.is_none() {
+            let properties = self
+                .properties
+                .get_or_insert_with(|| builder.properties.take(Some(self.key.data())))
+                .clone();
+            self.writer = Some(
+                builder
+                    .build_with(Some(self.key.clone()), properties, self.memory.clone())
+                    .await?,
+            );
+        }
+        self.writer
+            .as_mut()
+            .expect("the partition's file was opened above")
+            .write(unit)
+            .await
+    }
+
+    /// Writes out every row the partition still holds back and closes its file, returning that
+    /// file's data files. A file closed at a partial unit ends off iceberg-java's row grid, as the
+    /// last file of a task does.
+    async fn close(
+        &mut self,
+        builder: &PartitionWriterBuilder,
+        properties: &PartitionProperties,
+    ) -> DFResult<Vec<DataFile>> {
+        for unit in self.feed.finish(properties)? {
+            self.write(builder, unit).await.map_err(iceberg_err)?;
+        }
+        match self.writer.take() {
+            Some(mut writer) => writer.close().await.map_err(iceberg_err),
+            None => Ok(Vec::new()),
+        }
+    }
+}
+
+impl FanoutPartitions {
     fn new(builder: PartitionWriterBuilder) -> Self {
         Self {
             builder,
-            open: HashMap::new(),
+            partitions: Vec::new(),
+            index: HashMap::new(),
+            held_bytes: 0,
             closed: Vec::new(),
         }
     }
 
-    /// What `partition`'s open file holds, if it has one open.
-    fn held(&self, partition: &IcebergStruct) -> usize {
-        self.open
-            .get(partition)
-            .map_or(0, |(_, memory)| memory.bytes())
+    /// Memory held by the rows waiting in the feeds, for every partition the task has seen.
+    fn pending_bytes(&self) -> usize {
+        self.partitions
+            .iter()
+            .map(|partition| partition.feed.pending_bytes())
+            .sum()
     }
 
-    /// Closes `partition`'s file, if it has one open.
-    async fn close_partition(&mut self, partition: &IcebergStruct) -> iceberg::Result<()> {
-        if let Some((mut writer, _)) = self.open.remove(partition) {
-            self.closed.extend(writer.close().await?);
+    /// Writes `batch`, feeding each of its partitions separately.
+    async fn write(
+        &mut self,
+        splitter: &PartitionSplitter,
+        batch: &RecordBatch,
+        properties: &PartitionProperties,
+    ) -> DFResult<()> {
+        for (key, part) in splitter.split_groups(batch)? {
+            let next = self.partitions.len();
+            let i = *self.index.entry(key.data().clone()).or_insert(next);
+            if i == next {
+                self.partitions.push(FanoutPartition {
+                    feed: PartitionFeed::new(Some(key.data().clone()), splitter.slicer),
+                    key,
+                    writer: None,
+                    memory: self.builder.open_files.child(),
+                    properties: None,
+                });
+            }
+            let partition = &mut self.partitions[i];
+            let held_before = partition.feed.held_bytes();
+            let units = partition.feed.push(part, properties)?;
+            self.held_bytes = self.held_bytes - held_before + partition.feed.held_bytes();
+            for unit in units {
+                partition
+                    .write(&self.builder, unit)
+                    .await
+                    .map_err(iceberg_err)?;
+            }
+        }
+        if !properties.chooser.may_hold(self.held_bytes) {
+            for partition in &mut self.partitions {
+                for unit in partition.feed.release(properties)? {
+                    partition
+                        .write(&self.builder, unit)
+                        .await
+                        .map_err(iceberg_err)?;
+                }
+            }
+            self.held_bytes = 0;
         }
         Ok(())
     }
-}
 
-#[async_trait::async_trait]
-impl PartitioningWriter for FanoutFiles {
-    async fn write(
-        &mut self,
-        partition_key: PartitionKey,
-        input: RecordBatch,
-    ) -> iceberg::Result<()> {
-        let (writer, _) = match self.open.entry(partition_key.data().clone()) {
-            Entry::Occupied(open) => open.into_mut(),
-            Entry::Vacant(vacant) => {
-                let memory = OpenFileMemory::default();
-                let properties = self.builder.properties.get(Some(partition_key.data()));
-                let writer = self
-                    .builder
-                    .build_with(Some(partition_key), properties, Some(memory.clone()))
-                    .await?;
-                vacant.insert((writer, memory))
-            }
-        };
-        writer.write(input).await
+    /// The partitions holding memory, as indexes into `partitions`, the most first. Of two holding
+    /// as much, the one seen first comes first, so which files a write closes early does not
+    /// depend on `HashMap` order.
+    fn by_memory(&self) -> Vec<usize> {
+        let mut holding: Vec<(usize, usize)> = self
+            .partitions
+            .iter()
+            .enumerate()
+            .map(|(i, partition)| (partition.bytes(), i))
+            .filter(|&(bytes, _)| bytes > 0)
+            .collect();
+        holding.sort_unstable_by_key(|&(bytes, i)| (Reverse(bytes), i));
+        holding.into_iter().map(|(_, i)| i).collect()
     }
 
-    async fn close(self) -> iceberg::Result<Vec<DataFile>> {
-        let mut data_files = self.closed;
-        for (_, (mut writer, _)) in self.open {
-            data_files.extend(writer.close().await?);
+    /// Closes the partition at `i` before the task ends, keeping its data files for the output.
+    async fn close_early(&mut self, i: usize, properties: &PartitionProperties) -> DFResult<()> {
+        let partition = &mut self.partitions[i];
+        self.held_bytes -= partition.feed.held_bytes();
+        let data_files = partition.close(&self.builder, properties).await?;
+        self.closed.extend(data_files);
+        Ok(())
+    }
+
+    /// Closes every partition and returns the task's data files in file-path order.
+    async fn close(mut self, properties: &PartitionProperties) -> DFResult<Vec<DataFile>> {
+        let mut data_files = std::mem::take(&mut self.closed);
+        for partition in &mut self.partitions {
+            data_files.extend(partition.close(&self.builder, properties).await?);
         }
+        // The files come back in the order the partitions closed, which depends on the order the
+        // rows arrived in and on which partitions closed early. That order becomes the manifest
+        // entry order, then the scan-task order, then the row order of an unordered `SELECT *`,
+        // which Iceberg's own
+        // `TestMetadataTablesWithPartitionEvolution.testPartitionColumnNamedPartition` compares
+        // positionally against what iceberg-java wrote (apache/datafusion-comet#5776).
+        //
+        // Sorting by path is what makes the task's output reproducible. Path order sorts by
+        // partition directory, then by the file name counter within a partition, and needs nothing
+        // from the write order. The clustered and unpartitioned writers append in creation order
+        // and are already deterministic, so only the fanout path sorts.
+        data_files.sort_unstable_by(|a, b| a.file_path().cmp(b.file_path()));
         Ok(data_files)
     }
 }
@@ -1216,7 +1311,7 @@ impl PartitioningWriter for FanoutFiles {
 enum InnerWriter {
     Unpartitioned(UnpartitionedWriter<PartitionWriterBuilder>, PartitionFeed),
     /// The fanout writer keeps one file open per partition, so every partition is fed separately.
-    Fanout(FanoutFiles, PartitionSplitter, FanoutFeeds),
+    Fanout(FanoutPartitions, PartitionSplitter),
     /// The clustered writer closes a partition's file as soon as the next key arrives, so only the
     /// current key's held rows are live; they are written out before the switch.
     Clustered(
@@ -1233,67 +1328,42 @@ impl InnerWriter {
     fn pending_bytes(&self) -> usize {
         match self {
             InnerWriter::Unpartitioned(_, feed) => feed.pending_bytes(),
-            InnerWriter::Fanout(_, _, fanout) => fanout
-                .feeds
-                .values()
-                .map(|(_, feed, _)| feed.pending_bytes())
-                .sum(),
+            InnerWriter::Fanout(fanout, _) => fanout.pending_bytes(),
             InnerWriter::Clustered(_, _, live) => {
                 live.as_ref().map_or(0, |(_, feed)| feed.pending_bytes())
             }
         }
     }
 
-    /// The partitions of a fanout write that hold memory, in their open file or in the rows their
-    /// feed has not handed over, the most first. Of two holding as much, the one seen first comes
-    /// first, so which files a write closes early does not depend on `HashMap` order.
-    ///
-    /// A task that the pool refuses closes them in this order until what is left fits. The
-    /// unpartitioned and clustered writers hold one file open, at most a row group, and have none
-    /// to close.
-    fn partitions_by_memory(&self) -> Vec<IcebergStruct> {
-        let InnerWriter::Fanout(files, _, fanout) = self else {
-            return Vec::new();
-        };
-        let mut holding: Vec<_> = fanout
-            .feeds
-            .iter()
-            .map(|(partition, (_, feed, seen))| {
-                (
-                    files.held(partition) + feed.pending_bytes(),
-                    *seen,
-                    partition,
-                )
-            })
-            .filter(|(bytes, _, _)| *bytes > 0)
-            .collect();
-        holding.sort_unstable_by_key(|(bytes, seen, _)| (Reverse(*bytes), *seen));
-        holding
-            .into_iter()
-            .map(|(_, _, partition)| partition.clone())
-            .collect()
-    }
-
-    /// Writes out every row a fanout `partition` still holds and closes its file, so that it
-    /// holds nothing until its next rows open a new one. Closing at a partial unit ends the file
-    /// off iceberg-java's row grid, as the end of the task would.
-    async fn close_partition(
+    /// Resizes `reservation` to what the task's writers hold between batches: the open files'
+    /// shares (`open_files`, see [`MeteredParquetWriter`]) and the rows waiting in their
+    /// [`PartitionFeed`]s. When the pool refuses, a fanout write writes out and closes its
+    /// partitions, the one holding the most first, until what is left fits, and this returns how
+    /// many it closed. The unpartitioned and clustered writers hold one file open, at most a row
+    /// group, and cannot close it early, so the pool's refusal stands.
+    async fn reserve(
         &mut self,
-        partition: &IcebergStruct,
+        reservation: &MemoryReservation,
+        open_files: &OpenFileMemory,
         properties: &PartitionProperties,
-    ) -> DFResult<()> {
-        let InnerWriter::Fanout(files, _, fanout) = self else {
-            return Ok(());
+    ) -> DFResult<usize> {
+        let mut pending = self.pending_bytes();
+        let mut refused = match reservation.try_resize(open_files.bytes() + pending) {
+            Ok(()) => return Ok(0),
+            Err(refused) => refused,
         };
-        let (key, feed, _) = fanout
-            .feeds
-            .get_mut(partition)
-            .expect("a fanout partition holding memory has a feed");
-        fanout.held_bytes -= feed.held_bytes();
-        for unit in feed.finish(properties)? {
-            files.write(key.clone(), unit).await.map_err(iceberg_err)?;
+        let InnerWriter::Fanout(fanout, _) = self else {
+            return Err(refused);
+        };
+        for (closed, i) in fanout.by_memory().into_iter().enumerate() {
+            pending -= fanout.partitions[i].feed.pending_bytes();
+            fanout.close_early(i, properties).await?;
+            match reservation.try_resize(open_files.bytes() + pending) {
+                Ok(()) => return Ok(closed + 1),
+                Err(e) => refused = e,
+            }
         }
-        files.close_partition(partition).await.map_err(iceberg_err)
+        Err(refused)
     }
 
     /// Writes `batch` through the writer this task built, in the [`ROWS_DIVISOR`]-row units the
@@ -1313,31 +1383,8 @@ impl InnerWriter {
                 }
                 Ok(())
             }
-            InnerWriter::Fanout(w, splitter, fanout) => {
-                for (key, part) in splitter.split_groups(&batch)? {
-                    let seen = fanout.feeds.len();
-                    let (key, feed, _) =
-                        fanout.feeds.entry(key.data().clone()).or_insert_with(|| {
-                            let partition = Some(key.data().clone());
-                            (key, PartitionFeed::new(partition, splitter.slicer), seen)
-                        });
-                    let held_before = feed.held_bytes();
-                    let units = feed.push(part, properties)?;
-                    fanout.held_bytes = fanout.held_bytes - held_before + feed.held_bytes();
-                    for unit in units {
-                        w.write(key.clone(), unit).await.map_err(iceberg_err)?;
-                    }
-                }
-                // Every partition stays open, so the rows they hold back share one limit.
-                if !properties.chooser.may_hold(fanout.held_bytes) {
-                    for (key, feed, _) in fanout.feeds.values_mut() {
-                        for unit in feed.release(properties)? {
-                            w.write(key.clone(), unit).await.map_err(iceberg_err)?;
-                        }
-                    }
-                    fanout.held_bytes = 0;
-                }
-                Ok(())
+            InnerWriter::Fanout(fanout, splitter) => {
+                fanout.write(splitter, &batch, properties).await
             }
             InnerWriter::Clustered(w, splitter, live) => {
                 for (key, part) in splitter.split_runs(&batch)? {
@@ -1381,29 +1428,7 @@ impl InnerWriter {
                 }
                 w.close().await.map_err(iceberg_err)
             }
-            InnerWriter::Fanout(mut w, _, fanout) => {
-                for (_, (key, mut feed, _)) in fanout.feeds {
-                    for unit in feed.finish(properties)? {
-                        w.write(key.clone(), unit).await.map_err(iceberg_err)?;
-                    }
-                }
-                let mut data_files = w.close().await.map_err(iceberg_err)?;
-                // `FanoutFiles` holds its per-partition writers in a `HashMap` and `close`
-                // iterates it directly, so the order it returns follows Rust's per-process
-                // `RandomState` and differs on every run. That order becomes the manifest entry
-                // order, then the scan-task order, then the row order of an unordered
-                // `SELECT *` -- which Iceberg's own
-                // `TestMetadataTablesWithPartitionEvolution.testPartitionColumnNamedPartition`
-                // compares positionally against what iceberg-java wrote
-                // (apache/datafusion-comet#5776).
-                //
-                // Sorting by path is what makes the task's output reproducible. Path order sorts
-                // by partition directory, then by the file name counter within a partition, and
-                // needs nothing from the write order. The clustered and unpartitioned writers
-                // append in creation order and are already deterministic, so only this arm sorts.
-                data_files.sort_unstable_by(|a, b| a.file_path().cmp(b.file_path()));
-                Ok(data_files)
-            }
+            InnerWriter::Fanout(fanout, _) => fanout.close(properties).await,
             InnerWriter::Clustered(mut w, splitter, live) => {
                 if let Some((key, mut feed)) = live {
                     // Feeding defers a partition's rows to here, so the unclustered-input
@@ -1924,22 +1949,6 @@ impl PartitionFeed {
         }
         Ok(units)
     }
-}
-
-/// The feeds of a fanout write, one per partition, all open at once.
-///
-/// Between them they hold back no more than a single partition may: once the rows held across all
-/// partitions reach that, every partition still holding makes its choice from the rows it has. A
-/// task fanning out to many partitions that each get less than a page would otherwise hold all of
-/// its rows back, uncompressed, until it closed.
-#[derive(Default)]
-struct FanoutFeeds {
-    /// The `PartitionKey` is kept alongside each feed so held rows can still be written out at
-    /// close, and so is how many partitions the task had seen before this one, which orders
-    /// partitions that hold as much memory.
-    feeds: HashMap<IcebergStruct, (PartitionKey, PartitionFeed, usize)>,
-    /// Bytes held back across all feeds.
-    held_bytes: usize,
 }
 
 /// `true` when `data_type` puts a float or double under a list or map, where a slice's offset
@@ -3246,11 +3255,10 @@ mod tests {
 
         /// A fanout task's data files must come back in a deterministic order.
         ///
-        /// `FanoutFiles` keeps its per-partition writers in a `HashMap` and `close` iterates it
-        /// directly, so the `DataFile` order it returns follows Rust's
-        /// per-process `RandomState` -- a different order on every run. That order becomes the
-        /// manifest entry order, which becomes the scan-task order, which becomes the row order
-        /// of an unordered `SELECT *`. Iceberg's own
+        /// The order a fanout write closes its files in depends on the order its rows arrived in
+        /// and on which partitions it closed early. That order would become the manifest entry
+        /// order, which becomes the scan-task order, which becomes the row order of an unordered
+        /// `SELECT *`. Iceberg's own
         /// `TestMetadataTablesWithPartitionEvolution.testPartitionColumnNamedPartition` compares
         /// such a `SELECT *` positionally against what iceberg-java wrote, and fails when the
         /// two disagree. See https://github.com/apache/datafusion-comet/issues/5776.
@@ -4851,28 +4859,6 @@ mod tests {
             writer_properties: WriterProperties,
             target_file_size_bytes: u64,
         ) -> (TempDir, DFResult<Vec<DataFile>>) {
-            write_reporting_to(
-                pool,
-                schema,
-                writer_mode,
-                batches,
-                writer_properties,
-                target_file_size_bytes,
-                WriteMetrics::default(),
-            )
-            .await
-        }
-
-        /// [`write_reserving_from`], reporting to `metrics`.
-        async fn write_reporting_to(
-            pool: &Arc<PeakMemoryPool>,
-            schema: Schema,
-            writer_mode: ProtoIcebergWriterMode,
-            batches: Vec<RecordBatch>,
-            writer_properties: WriterProperties,
-            target_file_size_bytes: u64,
-            metrics: WriteMetrics,
-        ) -> (TempDir, DFResult<Vec<DataFile>>) {
             let temp_dir = TempDir::new().unwrap();
             let spec = match writer_mode {
                 ProtoIcebergWriterMode::IcebergWriterUnpartitioned => {
@@ -4902,7 +4888,7 @@ mod tests {
                 writer_properties,
                 Some(0),
                 Some(0),
-                metrics,
+                WriteMetrics::default(),
                 reservation,
             )
             .await
@@ -5124,27 +5110,14 @@ mod tests {
             rows
         }
 
-        /// A fanout write whose partitions outgrow what the pool grants writes out and closes the
-        /// ones holding the most until what is left fits, and carries on: a closed partition's
-        /// next rows open a new file. Every row still lands, in more files than partitions.
-        #[tokio::test]
-        async fn a_fanout_write_the_pool_cannot_hold_closes_partitions_until_it_fits() {
-            // Four batches, each a unit for every one of 16 partitions, so a partition closed
-            // early gets more rows after it.
-            let batches = || {
-                (0..4)
-                    .map(|batch| {
-                        round_robin_batch_from(batch * 16 * ROWS_DIVISOR, 16 * ROWS_DIVISOR, 16)
-                    })
-                    .collect::<Vec<_>>()
-            };
-            // One unit is one page, so every unit goes straight to its partition's file.
-            let properties = || {
-                WriterProperties::builder()
-                    .set_data_page_row_count_limit(ROWS_DIVISOR)
-                    .build()
-            };
-
+        /// Writes `batches` into a fanout table twice: with a pool to spare, then with half the
+        /// most that first write reserved, which it can only fit by closing partitions early.
+        /// Returns both writes' data files and the second write's directory, after checking that
+        /// the second fit and gave its reservation back.
+        async fn fanout_write_in_half_the_pool(
+            batches: impl Fn() -> Vec<RecordBatch>,
+            properties: impl Fn() -> WriterProperties,
+        ) -> (Vec<DataFile>, Vec<DataFile>, TempDir) {
             let roomy = Arc::new(PeakMemoryPool::new(usize::MAX));
             let (_dir, written) = write_reserving_from(
                 &roomy,
@@ -5155,41 +5128,49 @@ mod tests {
                 TARGET_FILE_SIZE,
             )
             .await;
-            assert_eq!(
-                record_counts(&written.unwrap()),
-                vec![4 * ROWS_DIVISOR as u64; 16]
-            );
-
+            let roomy_files = written.unwrap();
             let tight = Arc::new(PeakMemoryPool::new(roomy.peak() / 2));
-            let metrics = WriteMetrics::default();
-            let (dir, written) = write_reporting_to(
+            let (dir, written) = write_reserving_from(
                 &tight,
                 iceberg_user_schema(),
                 ProtoIcebergWriterMode::IcebergWriterFanout,
                 batches(),
                 properties(),
                 TARGET_FILE_SIZE,
-                metrics.clone(),
             )
             .await;
-            let data_files = written.expect("closing partitions early lets the write fit");
-            assert!(
-                metrics.files_closed_early.value() > 0,
-                "no partition was closed early"
-            );
-            assert!(
-                data_files.len() > 16,
-                "{} files for 16 partitions",
-                data_files.len()
-            );
-            let rows = rows_per_partition(&data_files);
-            assert_eq!(rows.len(), 16);
-            assert!(
-                rows.values().all(|&rows| rows == 4 * ROWS_DIVISOR as u64),
-                "{rows:?}"
-            );
-            assert_eq!(parquet_files_under(dir.path()).len(), data_files.len());
+            let tight_files = written.expect("closing partitions early lets the write fit");
             assert_eq!(tight.reserved(), 0, "the write kept a reservation");
+            (roomy_files, tight_files, dir)
+        }
+
+        /// A fanout write whose partitions outgrow what the pool grants writes out and closes the
+        /// ones holding the most until what is left fits, and carries on: a closed partition's
+        /// next rows open a new file. Every row still lands, in more files than partitions.
+        #[tokio::test]
+        async fn a_fanout_write_the_pool_cannot_hold_closes_partitions_until_it_fits() {
+            // Four batches, each a unit for every one of 16 partitions, so a partition closed
+            // early gets more rows after it. One unit is one page, so every unit goes straight to
+            // its partition's file.
+            let (roomy, tight, dir) = fanout_write_in_half_the_pool(
+                || {
+                    (0..4)
+                        .map(|batch| {
+                            round_robin_batch_from(batch * 16 * ROWS_DIVISOR, 16 * ROWS_DIVISOR, 16)
+                        })
+                        .collect()
+                },
+                || {
+                    WriterProperties::builder()
+                        .set_data_page_row_count_limit(ROWS_DIVISOR)
+                        .build()
+                },
+            )
+            .await;
+            assert_eq!(roomy.len(), 16);
+            assert!(tight.len() > 16, "{} files for 16 partitions", tight.len());
+            assert_eq!(rows_per_partition(&tight), rows_per_partition(&roomy));
+            assert_eq!(parquet_files_under(dir.path()).len(), tight.len());
         }
 
         /// A partition's memory counts the rows its feed still holds back, and closing it writes
@@ -5197,40 +5178,12 @@ mod tests {
         /// file is open when the pool refuses: the write only fits by writing partitions out.
         #[tokio::test]
         async fn closing_a_partition_early_writes_out_the_rows_it_holds_back() {
-            let batches = || vec![round_robin_batch(16 * ROWS_DIVISOR, 16)];
-            let properties = || WriterProperties::builder().build();
-
-            let roomy = Arc::new(PeakMemoryPool::new(usize::MAX));
-            let (_dir, written) = write_reserving_from(
-                &roomy,
-                iceberg_user_schema(),
-                ProtoIcebergWriterMode::IcebergWriterFanout,
-                batches(),
-                properties(),
-                TARGET_FILE_SIZE,
+            let (roomy, tight, _dir) = fanout_write_in_half_the_pool(
+                || vec![round_robin_batch(16 * ROWS_DIVISOR, 16)],
+                || WriterProperties::builder().build(),
             )
             .await;
-            assert_eq!(written.unwrap().len(), 16);
-
-            let tight = Arc::new(PeakMemoryPool::new(roomy.peak() / 2));
-            let metrics = WriteMetrics::default();
-            let (_dir, written) = write_reporting_to(
-                &tight,
-                iceberg_user_schema(),
-                ProtoIcebergWriterMode::IcebergWriterFanout,
-                batches(),
-                properties(),
-                TARGET_FILE_SIZE,
-                metrics.clone(),
-            )
-            .await;
-            let data_files = written.expect("writing held rows out lets the write fit");
-            assert!(
-                metrics.files_closed_early.value() > 0,
-                "no partition was closed early"
-            );
-            assert_eq!(record_counts(&data_files), vec![ROWS_DIVISOR as u64; 16]);
-            assert_eq!(tight.reserved(), 0, "the write kept a reservation");
+            assert_eq!(record_counts(&tight), record_counts(&roomy));
         }
 
         /// A write whose open file outgrows what the pool grants, with no partition it can close
@@ -5301,7 +5254,6 @@ mod tests {
             let builder = MeteredParquetWriterBuilder {
                 inner: ParquetWriterBuilder::new(WriterProperties::builder().build(), schema),
                 open_files: open_files.clone(),
-                partition: None,
                 storage: StorageWrites::Through,
             };
             let mut closed = builder
@@ -5345,7 +5297,6 @@ mod tests {
                         Arc::clone(&schema),
                     ),
                     open_files: open_files.clone(),
-                    partition: None,
                     storage,
                 };
                 let location = format!("memory:/t/{storage:?}.parquet");
