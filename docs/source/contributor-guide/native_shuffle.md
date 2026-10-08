@@ -490,9 +490,12 @@ The `MultiPartitionShuffleRepartitioner` holds:
   neither `memory_spilled_bytes` nor `spark.comet.shuffle.native.maxBufferBytes`. The three
   file and copy buffers ask the pool for their full size, and when it refuses the writer
   uses an 8 KiB buffer instead and charges that; the data file buffer, built before the
-  writer has a reservation, is rebuilt at that size while still empty. The scratch and the
-  zstd context already exist when they are charged, so the writer records them without
-  asking.
+  writer has a reservation, is rebuilt at that size while still empty. A spill forced by pool
+  pressure opens the spill file while its batches are still charged, so that buffer often
+  starts small; after each spill has freed its batches, the writer asks for the full size
+  again until the pool grants it, and moves the buffered bytes into the larger buffer. The
+  scratch and the zstd context already exist when they are charged, so the writer records
+  them without asking.
 
 The spill file is owned by `PartitionedSpill` in `writers/local/spill.rs`. It holds one DataFusion
 `SpillFile`, created lazily on the first spill and shared by every output partition, and tracks per

@@ -473,6 +473,14 @@ impl PartitionWriter for LocalPartitionWriter {
         // sit on the zstd workspace.
         self.codec_context.release_zstd();
         self.sync_buffer_reservation();
+        // A spill under pool pressure opens the spill file while its batches are still
+        // charged, so the buffer may have fallen back to the small size. The spill has freed
+        // them by now, so ask for the configured size again.
+        if let (Some(buffers), DataOutput::Multi { spill, .. }) =
+            (&self.buffers, &mut self.data_output)
+        {
+            spill.restore_buffer(buffers);
+        }
     }
 
     fn attach_buffer_reservation(

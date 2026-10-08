@@ -649,8 +649,6 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
                     )
                 })
             };
-            self.partition_writer.write_burst_complete();
-
             // Count the input capacity released from buffering by this spill, including a
             // rejected reservation. Shared allocations are charged once within a spill, but
             // contribute again if buffered for a later spill, regardless of input batching.
@@ -658,6 +656,9 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
             let memory_spilled_bytes = self.reservation.free().saturating_add(unreserved_bytes);
             self.metrics.memory_spilled_bytes.add(memory_spilled_bytes);
             self.pinned_buffers.clear();
+            // After the batches are freed, so the writer can grow buffers the spill had to take
+            // small.
+            self.partition_writer.write_burst_complete();
             self.metrics.spill_count.add(1);
             write_result
         })
@@ -1614,6 +1615,85 @@ mod tests {
                 spill_every_chunk(&dir, runtime_with_pool(limit), write_buffer_size).await;
             assert_eq!(capacities, expected, "pool limit {limit}");
             assert_eq!(output, baseline, "pool limit {limit} changed the output");
+        }
+    }
+
+    /// Every value in a shuffle data file, sorted.
+    fn output_values(bytes: &[u8]) -> Vec<i64> {
+        let mut values = Vec::new();
+        let mut pos = 0;
+        while pos < bytes.len() {
+            let len = u64::from_le_bytes(bytes[pos..pos + 8].try_into().unwrap()) as usize;
+            let batch = crate::read_ipc_compressed(&bytes[pos + 16..pos + 8 + len]).unwrap();
+            let column = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap();
+            values.extend_from_slice(column.values());
+            pos += 8 + len;
+        }
+        values.sort_unstable();
+        values
+    }
+
+    const PRESSURE_ROWS: i64 = 4096 * 1024;
+
+    /// Writes 1024 chunks (32 MiB of values) with no buffer limit, so a small pool spills under
+    /// pressure, then finishes the output. Returns the values written and the spill buffer
+    /// capacity seen after each spill.
+    async fn spill_under_pressure(
+        dir: &tempfile::TempDir,
+        runtime: Arc<RuntimeEnv>,
+        write_buffer_size: usize,
+    ) -> (Vec<i64>, Vec<usize>) {
+        let mut repartitioner = hash_repartitioner(
+            local_writer(dir, 2, write_buffer_size, Arc::clone(&runtime)),
+            2,
+            Arc::clone(&runtime),
+            None,
+        );
+        let mut spill_buffers = Vec::new();
+        for start in (0..PRESSURE_ROWS).step_by(4096) {
+            let spills = repartitioner.spill_count();
+            repartitioner
+                .insert_batch(int64_batch(start..start + 4096))
+                .await
+                .unwrap();
+            if repartitioner.spill_count() > spills {
+                spill_buffers.push(repartitioner.partition_writer().buffer_capacities().1);
+                assert_local_buffers_charged(&repartitioner, &runtime);
+            }
+        }
+        repartitioner.shuffle_write().unwrap();
+        let bytes = std::fs::read(dir.path().join("data.out")).unwrap();
+        (output_values(&bytes), spill_buffers)
+    }
+
+    /// With no buffer limit every spill is a pressure spill, so the spill file buffer is asked
+    /// for while the batches still fill the pool and falls back to the small size. Once the
+    /// spill has freed the batches, the buffer is grown back to the configured size, and every
+    /// value is written once.
+    #[tokio::test]
+    async fn pressure_spill_restores_the_spill_buffer() {
+        let write_buffer_size = 256 * 1024;
+        let expected: Vec<i64> = (0..PRESSURE_ROWS).collect();
+        for limit in [1 << 20, 4 << 20, 16 << 20] {
+            let dir = tempfile::tempdir().unwrap();
+            let (values, spill_buffers) =
+                spill_under_pressure(&dir, runtime_with_pool(limit), write_buffer_size).await;
+            assert!(
+                spill_buffers.len() >= 2,
+                "pool limit {limit}: {spill_buffers:?}"
+            );
+            assert!(
+                spill_buffers.iter().all(|&size| size == write_buffer_size),
+                "pool limit {limit}: spill buffer after each spill {spill_buffers:?}"
+            );
+            assert!(
+                values == expected,
+                "pool limit {limit} lost or repeated rows"
+            );
         }
     }
 
