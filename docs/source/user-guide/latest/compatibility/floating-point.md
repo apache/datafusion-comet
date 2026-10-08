@@ -23,20 +23,43 @@ Spark normalizes NaN and zero for floating point numbers for several cases. See 
 However, one exception is comparison. Spark does not normalize NaN and zero when comparing values
 because they are handled well in Spark (e.g., `SQLOrderingUtil.compareFloats`). But the comparison
 functions of arrow-rs used by DataFusion do not normalize NaN and zero (e.g., [arrow::compute::kernels::cmp::eq](https://docs.rs/arrow/latest/arrow/compute/kernels/cmp/fn.eq.html#)).
-For top-level `FLOAT` and `DOUBLE` comparisons, Comet normalizes both operands before native
-execution, including noncanonical NaN literals. Top-level `IN`, `InSet`, and `NOT IN` membership
-also normalize dynamic candidates and lists containing NaN. When every candidate is a non-NaN
-literal, Comet keeps DataFusion's static filter and pruning path, enumerating both signed-zero
-forms when a list contains zero.
+For `FLOAT` and `DOUBLE` comparisons (`=`, `<>`, `<=>`, `<`, `<=`, `>` and `>=`), Comet
+normalizes both operands before native execution, including noncanonical NaN literals. This
+applies wherever a comparison appears: projections, filters, aggregate arguments and `FILTER`
+clauses, join conditions, sort keys, and generator arguments.
+
+A native Parquet scan prunes row groups and pages with its data filters. So that this pruning
+still applies, a `FLOAT` or `DOUBLE` column compared with a constant other than NaN in a data
+filter is compared without normalizing the column, and the filter above the scan evaluates the
+comparison again with Spark's semantics. Every other comparison in a data filter is normalized.
+Bloom filters store `-0.0` and `0.0` separately, so `=` against either zero checks them for both.
+With `spark.comet.parquet.rowFilterPushdown.enabled=true` the scan also drops the rows its data
+filters reject, so every comparison in a data filter is normalized, and a `FLOAT` or `DOUBLE`
+comparison in a data filter does not prune row groups or pages
+([#6702](https://github.com/apache/datafusion-comet/issues/6702)).
+
+Spark's own Parquet reader keeps `-0.0` and `0.0` apart when it prunes row groups with dictionaries
+and bloom filters, so it can skip a row group holding rows that its filter matches. For example,
+`WHERE d = -0.0D` can skip a row group that holds `0.0` but not `-0.0`, and so can `<=>` or `IN`
+against `-0.0D`. `WHERE d >= 0.0D` can skip a dictionary-encoded row group whose largest value is
+`-0.0`, and `WHERE d <= -0.0D` one whose smallest value is `0.0`. Comet reads those row groups, so
+it can return rows that Spark does not. Comet's result is the one that Spark's comparison semantics
+call for, and Spark returns the same rows with `spark.sql.parquet.filterPushdown=false`.
+
+Top-level `IN`, `InSet`, and `NOT IN` membership also normalize dynamic candidates and lists
+containing NaN. When every candidate is a non-NaN literal, Comet keeps DataFusion's static filter
+and pruning path, enumerating both signed-zero forms when a list contains zero.
 
 This scalar membership handling does not yet recurse into floating-point leaves nested in arrays
 or structs; see [#6019](https://github.com/apache/datafusion-comet/issues/6019).
 
-## Nested equality and membership
+## Nested comparisons and membership
 
 For arrays and structs containing `FLOAT` or `DOUBLE`, native `=`, `<>`, `IN`, and `NOT IN`
 compare signed zeros as equal and all NaN representations as equal, matching Spark. This also
-covers single-candidate membership that Spark rewrites into equality.
+covers single-candidate membership that Spark rewrites into equality. `<=>`, `<`, `<=`, `>`, and
+`>=` normalize the floating-point values inside both operands first, so they follow Spark's order
+too, in which NaN sorts above every other value.
 
 Equality and dynamic membership compare nested elements directly and stop at the first mismatch.
 Constant membership sets use normalized comparison values for static lookup. These operations

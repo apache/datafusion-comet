@@ -119,10 +119,15 @@ For an unpartitioned copy-on-write `MERGE`, the native Iceberg writer is reachab
 On Spark 4.1+, the native MergeRows path also preserves the semantic counters required by the
 summary-aware writer commit contract.
 
-The mechanism behind row-level DML differs by Spark version: on Spark 4.0+ the analyzer emits
-operation-coded rows that Comet's writer dispatches through `ReplaceData`'s projections, while
-on Spark 3.4/3.5 the rewritten rows are written as a plain row stream. The supported set of
-operations is the same either way.
+For copy-on-write row-level DML, the mechanism differs by Spark version: on Spark 4.0+ the
+analyzer emits operation-coded rows that Comet's writer dispatches through `ReplaceData`'s
+projections, while on Spark 3.4/3.5 the rewritten rows are written as a plain row stream. The
+supported set of operations is the same either way.
+
+On Spark 3.5+, merge-on-read uses Spark's `WriteDelta`. The split plan intercepts that command so
+Comet can keep the same driver commit and reporting path, but task-side row-level writes stay on
+Iceberg's JVM `DeltaWriter`; `CometIcebergWriteExec` is never used for position-delta rows.
+Spark 3.4 leaves `WriteDelta` on Spark's stock write plan.
 
 On Spark 4.1+ the split plan matches two further stock-Spark behaviours: MERGE metrics are
 forwarded to the writer's commit (Iceberg 1.11+ records them in the snapshot summary), and
@@ -137,8 +142,9 @@ The rewrite is skipped — and the write runs through Spark's stock combined ope
 - Comet is disabled (`spark.comet.enabled=false`), or its native execution is
   (`spark.comet.exec.enabled=false`);
 - Comet is in plan-only mode (`spark.comet.explain.planOnly.enabled=true`);
-- the write is not an Iceberg `SparkWrite` (any other V2 data source);
-- the table uses merge-on-read: delta writes (Iceberg `WriteDelta`) are not intercepted;
+- the write is neither an Iceberg `SparkWrite` nor a supported Iceberg position-delta write;
+- the table uses merge-on-read on Spark 3.4; Spark 3.5+ `WriteDelta` is intercepted but remains
+  on Iceberg's JVM `DeltaWriter`;
 - the statement is CTAS / RTAS on Spark 3.4, where the staged exec writes inline; on Spark
   3.5+ those statements re-plan their inner append, which is intercepted normally;
 - the write requires Spark's commit coordinator, which Comet's per-task commit protocol does
@@ -276,8 +282,9 @@ Other `write.*` properties are intentionally not gated because they cannot make 
 writer produce different data files: distribution and ordering settings shape the Spark plan
 identically on both paths, WAP / branch / snapshot properties act on the JVM committer,
 `write.avro.*` / `write.orc.*` apply only to formats already excluded, and merge-on-read
-settings route the write through `WriteDelta`, which the split plan never intercepts. Every
-rule is pinned by `CometIcebergWriteDetectionSuite`.
+settings route the write through `WriteDelta`, whose task writer remains iceberg-java rather
+than the native writer. Every native eligibility rule is pinned by
+`CometIcebergWriteDetectionSuite`.
 
 Manifest `DataFile` metrics are assembled on the JVM before commit: each written file's
 metrics are re-derived from its parquet footer through the version-matched
