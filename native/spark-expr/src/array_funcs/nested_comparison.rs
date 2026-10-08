@@ -335,6 +335,20 @@ impl SparkComparison {
     pub fn right(&self) -> &Arc<dyn PhysicalExpr> {
         &self.right
     }
+
+    /// Whether the comparison cannot fail for any value: when both operands have the same type.
+    /// The float kernels and the nested comparators fail only on operands of different types,
+    /// such as a dictionary-encoded leaf against a plain one, which the logical type check in
+    /// [`spark_comparison`] lets through for lists and structs.
+    pub(crate) fn is_infallible(&self, input_schema: &Schema) -> bool {
+        match (
+            self.left.data_type(input_schema),
+            self.right.data_type(input_schema),
+        ) {
+            (Ok(left), Ok(right)) => left == right,
+            _ => false,
+        }
+    }
 }
 
 impl PartialEq for SparkComparison {
