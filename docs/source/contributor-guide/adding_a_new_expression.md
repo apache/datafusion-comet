@@ -583,6 +583,18 @@ If the expression you're adding has different behavior across different Spark ve
 1. Shims that exist in `spark/src/main/spark-$SPARK_VERSION/org/apache/comet/shims/CometExprShim.scala` for each Spark version. These shims are used to provide compatibility between different Spark versions.
 2. Variables that correspond to the Spark version, such as `isSpark33Plus`, which can be used to conditionally execute code based on the Spark version.
 
+#### Name the behavior, not the Spark version
+
+When a code path or a protobuf field depends on how Spark behaves, name it for the behavior and not for the Spark version that introduced it. Resolve the version in Scala, in the serde or a shim, and pass the result to native code as a parameter that describes the behavior. For example, `TruncTimestamp` carries a `wrap_second_millisecond_overflow` flag, which the serde sets from `!isSpark42Plus`. It is not called `spark_420_plus`.
+
+Reasons to prefer behavior names:
+
+- Some deployments run a Spark fork that backports fixes from newer open-source releases. They can set a behavior flag in their own shim, but cannot make a `spark_420_plus` flag mean something it does not.
+- Spark occasionally changes behavior in a patch release or between minor releases, so a version number is a poor proxy for the behavior.
+- The native code stays free of Spark version logic, and a reader of the Rust or proto definition can tell what the flag does without looking up a release.
+
+Write comments the same way. Say "Spark 4.2 and later" for a behavior that future releases inherit, rather than "Spark 4.2". If a later release changes the behavior again, add a new parameter or shim for that change.
+
 ## Shimming to Support Different Spark Versions
 
 If the expression you're adding has different behavior across different Spark versions, you can use the shim system located in `spark/src/main/spark-$SPARK_VERSION/org/apache/comet/shims/CometExprShim.scala` for each Spark version.
