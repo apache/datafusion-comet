@@ -3129,11 +3129,12 @@ class CometIcebergWriteActionSuite
         assert(
           parquetFiles(dataDir("fanout_oom")).size > 64,
           s"${parquetFiles(dataDir("fanout_oom")).size} files for 64 partitions")
-        def rowsOf(table: String) =
-          spark.sql(s"SELECT id, region, payload FROM $catalog.$ns.$table")
-        assert(rowsOf("fanout_oom").count() == rows)
-        assert(rowsOf("fanout_oom").exceptAll(rowsOf("fanout_oom_control")).isEmpty)
-        assert(rowsOf("fanout_oom_control").exceptAll(rowsOf("fanout_oom")).isEmpty)
+        // Compared with the source rather than the control, which is native too and could lose
+        // the same rows.
+        val written = spark.sql(s"SELECT id, region, payload FROM $catalog.$ns.fanout_oom")
+        val source = spark.table("fanout_oom_src")
+        assert(written.count() == rows)
+        assert(written.exceptAll(source).isEmpty && source.exceptAll(written).isEmpty)
       }
     }
   }

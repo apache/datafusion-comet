@@ -431,9 +431,8 @@ a data file but not what any reader computes from it:
   commit gives each file's rows, so the same rows can get different `_row_id` values from the two
   writers. The ids are unique either way, and across tasks iceberg-java's own assignment already
   depends on the order in which the tasks finish. Only the sorted order is reproducible on the
-  native path: iceberg-rust's `FanoutWriter` closes its per-partition writers out of a `HashMap`,
-  which under Rust's per-process `RandomState` would otherwise give a different order on every
-  run. Clustered and unpartitioned writes append in creation order on both paths and are
+  native path: the native fanout writer closes its per-partition writers out of a `HashMap`, which
+  under Rust's per-process `RandomState` would otherwise give a different order on every run. Clustered and unpartitioned writes append in creation order on both paths and are
   unaffected.
 - Compressed page bytes are implementation-defined: the codec and any explicit level are
   translated, but parquet-rs and parquet-mr embed different encoder implementations and

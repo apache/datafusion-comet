@@ -1140,8 +1140,8 @@ async fn run_write_task(
 /// with the same properties.
 ///
 /// iceberg-java's fanout writer keeps every file open until the task ends, its buffers growing on
-/// the JVM heap. The native writer's count against the task's memory pool instead, so when the
-/// pool refuses them, closing partitions early lets the write finish with more, smaller files
+/// the JVM heap. The native writer's buffers count against the task's memory pool instead, so when
+/// the pool refuses them, closing partitions early lets the write finish with more, smaller files
 /// rather than fail (see [`InnerWriter::partitions_by_memory`]).
 struct FanoutFiles {
     builder: PartitionWriterBuilder,
