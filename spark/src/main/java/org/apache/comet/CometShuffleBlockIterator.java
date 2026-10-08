@@ -25,8 +25,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
-import java.nio.channels.Channels;
-import java.nio.channels.ReadableByteChannel;
 import java.util.function.LongConsumer;
 
 /**
@@ -44,7 +42,11 @@ public class CometShuffleBlockIterator implements Closeable {
 
   private static final int INITIAL_BUFFER_SIZE = 128 * 1024;
 
-  private final ReadableByteChannel channel;
+  private static final int READ_CHUNK_SIZE = 64 * 1024;
+
+  private static final ThreadLocal<byte[]> READ_CHUNK =
+      ThreadLocal.withInitial(() -> new byte[READ_CHUNK_SIZE]);
+
   private final InputStream inputStream;
   private final LongConsumer recordsReadUpdater;
   private final ByteBuffer headerBuf = ByteBuffer.allocate(16).order(ByteOrder.LITTLE_ENDIAN);
@@ -58,7 +60,6 @@ public class CometShuffleBlockIterator implements Closeable {
 
   public CometShuffleBlockIterator(InputStream in, LongConsumer recordsReadUpdater) {
     this.inputStream = in;
-    this.channel = Channels.newChannel(in);
     this.recordsReadUpdater = recordsReadUpdater;
   }
 
@@ -77,17 +78,15 @@ public class CometShuffleBlockIterator implements Closeable {
     }
 
     // Read 16-byte header: clear() resets position=0, limit=capacity,
-    // preparing the buffer for channel.read() to fill it
+    // preparing the buffer for readFully() to fill it
     headerBuf.clear();
-    while (headerBuf.hasRemaining()) {
-      int bytesRead = channel.read(headerBuf);
-      if (bytesRead < 0) {
-        if (headerBuf.position() == 0) {
-          close();
-          return -1;
-        }
-        throw new EOFException("Data corrupt: unexpected EOF while reading batch header");
+    readFully(headerBuf);
+    if (headerBuf.hasRemaining()) {
+      if (headerBuf.position() == 0) {
+        close();
+        return -1;
       }
+      throw new EOFException("Data corrupt: unexpected EOF while reading batch header");
     }
     headerBuf.flip();
     long compressedLength = headerBuf.getLong();
@@ -121,16 +120,31 @@ public class CometShuffleBlockIterator implements Closeable {
 
     dataBuf.clear();
     dataBuf.limit(currentBlockLength);
-    while (dataBuf.hasRemaining()) {
-      int bytesRead = channel.read(dataBuf);
-      if (bytesRead < 0) {
-        throw new EOFException("Data corrupt: unexpected EOF while reading compressed batch");
-      }
+    readFully(dataBuf);
+    if (dataBuf.hasRemaining()) {
+      throw new EOFException("Data corrupt: unexpected EOF while reading compressed batch");
     }
     // Note: native side uses get_direct_buffer_address (base pointer) + currentBlockLength,
     // not the buffer's position/limit. No flip needed.
 
     return currentBlockLength;
+  }
+
+  /**
+   * Fills {@code dst} from the stream, stopping short only at the end of the stream. The stream is
+   * read directly, in pieces of up to {@code READ_CHUNK_SIZE}. {@code Channels.newChannel} would
+   * read 8 KiB at a time and call {@code available()} before every piece but the first, which costs
+   * an fstat and an lseek on a local shuffle file.
+   */
+  private void readFully(ByteBuffer dst) throws IOException {
+    byte[] chunk = READ_CHUNK.get();
+    while (dst.hasRemaining()) {
+      int read = inputStream.read(chunk, 0, Math.min(dst.remaining(), chunk.length));
+      if (read < 0) {
+        return;
+      }
+      dst.put(chunk, 0, read);
+    }
   }
 
   /**

@@ -21,7 +21,6 @@ package org.apache.spark.sql.comet.execution.shuffle
 
 import java.io.{EOFException, InputStream}
 import java.nio.{ByteBuffer, ByteOrder}
-import java.nio.channels.{Channels, ReadableByteChannel}
 
 import scala.util.control.NonFatal
 
@@ -60,15 +59,9 @@ case class NativeBatchDecoderIterator(
 
   import NativeBatchDecoderIterator._
 
-  private val channel: ReadableByteChannel = if (in != null) {
-    Channels.newChannel(in)
-  } else {
-    null
-  }
-
   override def hasNext: Boolean = {
     synchronized {
-      if (channel == null || isClosed) {
+      if (in == null || isClosed) {
         return false
       }
       if (batch.isDefined) {
@@ -172,7 +165,7 @@ case class NativeBatchDecoderIterator(
   private def readNextBlock(): Option[(Int, ByteBuffer, Int)] = {
     // read compressed batch size from header
     longBuf.clear()
-    while (longBuf.hasRemaining && channel.read(longBuf) >= 0) {}
+    readFully(longBuf)
 
     // If we reach the end of the stream, we are done, or if we read partial length
     // then the stream is corrupted.
@@ -189,7 +182,7 @@ case class NativeBatchDecoderIterator(
 
     // read field count from header
     longBuf.clear()
-    while (longBuf.hasRemaining && channel.read(longBuf) >= 0) {}
+    readFully(longBuf)
     if (longBuf.hasRemaining) {
       throw new EOFException("Data corrupt: unexpected EOF while reading field count")
     }
@@ -214,12 +207,29 @@ case class NativeBatchDecoderIterator(
     }
     dataBuf.clear()
     dataBuf.limit(bytesToRead.toInt)
-    while (dataBuf.hasRemaining && channel.read(dataBuf) >= 0) {}
+    readFully(dataBuf)
     if (dataBuf.hasRemaining) {
       throw new EOFException("Data corrupt: unexpected EOF while reading compressed batch")
     }
 
     Some((fieldCount, dataBuf, bytesToRead.toInt))
+  }
+
+  /**
+   * Fills `dst` from `in`, stopping short only at the end of the stream. `in` is read directly,
+   * in pieces of up to `READ_CHUNK_SIZE`. `Channels.newChannel(in)` would read 8 KiB at a time
+   * and call `in.available()` before every piece but the first, which costs an fstat and an lseek
+   * on a local shuffle file.
+   */
+  private def readFully(dst: ByteBuffer): Unit = {
+    val chunk = threadLocalReadChunk.get()
+    while (dst.hasRemaining) {
+      val read = in.read(chunk, 0, math.min(dst.remaining(), chunk.length))
+      if (read < 0) {
+        return
+      }
+      dst.put(chunk, 0, read)
+    }
   }
 
   def close(): Unit = {
@@ -260,6 +270,11 @@ case class NativeBatchDecoderIterator(
 object NativeBatchDecoderIterator {
 
   private val INITIAL_BUFFER_SIZE = 128 * 1024
+
+  private val READ_CHUNK_SIZE = 64 * 1024
+
+  private val threadLocalReadChunk: ThreadLocal[Array[Byte]] =
+    ThreadLocal.withInitial(() => new Array[Byte](READ_CHUNK_SIZE))
 
   private val threadLocalDataBuf: ThreadLocal[ByteBuffer] = ThreadLocal.withInitial(() => {
     ByteBuffer.allocateDirect(INITIAL_BUFFER_SIZE)

@@ -117,6 +117,49 @@ private[shuffle] object NativeBatchDecoderIteratorLifecycleChecks {
     }
   }
 
+  def readsLargeBlocksInBigPiecesWithoutAvailable(): Unit = {
+    val bodyBytes = 1024 * 1024
+    val largeFrame = ByteBuffer
+      .allocate(16 + bodyBytes)
+      .order(ByteOrder.LITTLE_ENDIAN)
+      .putLong(8L + bodyBytes)
+      .putLong(0L)
+      .array()
+    var availableCalls = 0
+    var largestRead = 0
+    val input = new ByteArrayInputStream(largeFrame) {
+      override def available(): Int = {
+        availableCalls += 1
+        super.available()
+      }
+
+      override def read(bytes: Array[Byte], offset: Int, length: Int): Int = {
+        largestRead = math.max(largestRead, length)
+        super.read(bytes, offset, length)
+      }
+    }
+    val batch = new TrackingBatch()
+    val util = new NativeUtil {
+      override def getNextBatch(
+          numOutputCols: Int,
+          decode: (Array[Long], Array[Long]) => Long): Option[ColumnarBatch] = Some(batch)
+    }
+    try {
+      val decoder = NativeBatchDecoderIterator(
+        input,
+        new SQLMetric("nsTiming", 0L),
+        null,
+        util,
+        tracingEnabled = false)
+      assert(decoder.next() eq batch)
+      assert(!decoder.hasNext)
+      assert(availableCalls == 0, "The decoder asked the stream for available bytes")
+      assert(largestRead > 8 * 1024, s"The largest read was $largestRead bytes")
+    } finally {
+      util.close()
+    }
+  }
+
   def closesPrefetchedBatch(): Unit = {
     val batch = new TrackingBatch()
     withDecoder(batch) { (decoder, inputCloseCalls) =>
