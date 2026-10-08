@@ -31,8 +31,9 @@ import org.apache.comet.CometSparkSessionExtensions.isCometLoaded
 import org.apache.comet.shims.ShimCometMergeRows
 
 /**
- * Spark strategy for Comet's split Iceberg V2 writer. WriteDelta is modeled and dispatched here,
- * but position-delta rows are still executed by Iceberg's JVM DeltaWriter.
+ * Spark strategy for Comet's split Iceberg V2 writer. WriteDelta is modeled and dispatched here
+ * when the testing split flag is on, but position-delta rows are still executed by Iceberg's JVM
+ * DeltaWriter.
  */
 case class IcebergWriteStrategy(session: SparkSession) extends SparkStrategy {
 
@@ -82,7 +83,11 @@ case class IcebergWriteStrategy(session: SparkSession) extends SparkStrategy {
       // Hit by AQE.
       case l @ IcebergWriteLogical(child, batchWrite, dispatch) =>
         Seq(IcebergWriteExec(batchWrite, l.output, planLater(child), dispatch))
-      case delta =>
+      // Iceberg's JVM DeltaWriter writes a merge-on-read write's rows under the split plan too,
+      // so the plan would give it nothing over Spark's own operator. Until the native writer can
+      // write them, only the testing split flag plans it.
+      // https://github.com/apache/datafusion-comet/issues/6240
+      case delta if CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.get(conf) =>
         IcebergDeltaLogicalShim
           .extract(delta)
           .flatMap { fields =>
@@ -110,6 +115,7 @@ case class IcebergWriteStrategy(session: SparkSession) extends SparkStrategy {
             }
           }
           .toList
+      case _ => Nil
     }
   }
 

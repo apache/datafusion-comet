@@ -127,8 +127,8 @@ object CometConf extends ShimCometConf {
       .doc(
         "Whether to plan Iceberg writes as Comet's file writer and committer even when " +
           "`spark.comet.write.iceberg.enabled` is false, so that Iceberg's own writer writes " +
-          "every data file inside Comet's plan. Used by tests to compare the two writers " +
-          "under the same plan.")
+          "every data file inside Comet's plan. It is also what plans merge-on-read writes on " +
+          "Spark 3.5+ that way. Used by tests to compare the two writers under the same plan.")
       .booleanConf
       .createWithDefault(false)
 
@@ -140,7 +140,8 @@ object CometConf extends ShimCometConf {
           "replaces Spark's combined V2 write operator with a file writer (inside AQE) under a " +
           "committer (outside AQE), and writes the data files of each eligible write with its " +
           "native (iceberg-rust) writer. Other writes use Iceberg's own writer, and Iceberg " +
-          "commits every write. Set this to false to plan Spark's own V2 write operator.")
+          "commits every write. Merge-on-read writes keep Spark's operator. Set this to false " +
+          "to plan Spark's own V2 write operator.")
       .booleanConf
       .createWithDefault(true)
 

@@ -185,6 +185,43 @@ class CometIcebergWriteActionSuite
     }
   }
 
+  // Iceberg's DeltaWriter writes a merge-on-read write's rows under either plan, so with no flag
+  // set the write keeps Spark's own operator. Only the testing split flag plans it as Comet's.
+  // https://github.com/apache/datafusion-comet/issues/6240
+  test("a merge-on-read write keeps Spark's own write plan when no flag is set") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    assume(isSpark35Plus, "WriteDelta interception starts with Spark 3.5")
+    withIcebergCatalog { warehouseDir =>
+      createTable(
+        warehouseDir,
+        "mor_defaults",
+        partitionSpec = "PARTITIONED BY (region)",
+        properties = Some("'format-version'='2', 'write.delete.mode'='merge-on-read'"))
+      // Ids 1 and 2 share a data file, so deleting id 1 writes a delete file through WriteDelta
+      // rather than dropping a whole file.
+      coalesceInsert("mor_defaults", Seq((1, "a", 10.0), (2, "a", 20.0), (3, "c", 30.0)))
+      val snapshot = captureWrite("mor_defaults") {
+        withSessionConf(
+          CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key -> None,
+          CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> None) {
+          spark.sql(s"DELETE FROM $catalog.$ns.mor_defaults WHERE id = 1")
+        }
+      }
+      assert(snapshot.snapshotDelta == 1L, s"expected 1 commit, got ${snapshot.snapshotDelta}")
+      val (commits, writes) = collectIcebergWriteOps(snapshot.plans)
+      val sparkDeltaWrites = snapshot.plans.flatMap { plan =>
+        collectWithSubqueries(plan) {
+          case p if p.getClass.getSimpleName == "WriteDeltaExec" => p
+        }
+      }
+      assert(
+        commits.isEmpty && writes.isEmpty && sparkDeltaWrites.nonEmpty,
+        "expected Spark's WriteDeltaExec for a merge-on-read DELETE. Plans:\n" +
+          snapshot.plans.mkString("\n--\n"))
+      assertRows("mor_defaults", expectedIds = Seq(2, 3))
+    }
+  }
+
   // With no flag set, an eligible write becomes a CometIcebergWriteExec, so reverting a
   // transition-heavy stage has to put a JVM writer back rather than drop the write. The same write
   // runs first under the default threshold, which leaves its stage alone, so that the reverted run

@@ -169,8 +169,8 @@ records one of three writers:
 - `jvm`: Comet's split operator planned the write but kept Iceberg's JVM writer (`IcebergWriteExec`).
   The line includes the reasons Comet recorded for not converting it.
 - `spark`: Spark's own V2 write operator ran the write, so Comet's split operator never saw it. Examples
-  are `WriteDelta` for merge-on-read, `WriteToDataSourceV2` for a streaming micro-batch, and on Spark
-  3.4 the CTAS and RTAS execs, which write the table themselves.
+  are `WriteToDataSourceV2` for a streaming micro-batch, and on Spark 3.4 both `WriteDelta` for
+  merge-on-read and the CTAS and RTAS execs, which write the table themselves.
 
 `dev/ci/summarize-iceberg-writes.py` turns these records into a table on the job's summary page. It
 shows the count and share of each writer, the most common fallback reasons, and the Spark write

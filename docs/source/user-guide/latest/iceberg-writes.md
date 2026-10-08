@@ -124,10 +124,11 @@ analyzer emits operation-coded rows that Comet's writer dispatches through `Repl
 projections, while on Spark 3.4/3.5 the rewritten rows are written as a plain row stream. The
 supported set of operations is the same either way.
 
-On Spark 3.5+, merge-on-read uses Spark's `WriteDelta`. The split plan intercepts that command so
-Comet can keep the same driver commit and reporting path, but task-side row-level writes stay on
-Iceberg's JVM `DeltaWriter`; `CometIcebergWriteExec` is never used for position-delta rows.
-Spark 3.4 leaves `WriteDelta` on Spark's stock write plan.
+Merge-on-read uses Spark's `WriteDelta`, and Iceberg's JVM `DeltaWriter` writes its rows under
+either plan, so it keeps Spark's stock write plan. On Spark 3.5+ the testing setting
+`spark.comet.write.iceberg.splitOperator.enabled` plans it as the split plan, with the same driver
+commit and reporting path, but `CometIcebergWriteExec` is never used for position-delta rows.
+Spark 3.4 always leaves `WriteDelta` on Spark's stock write plan.
 
 On Spark 4.1+ the split plan matches two further stock-Spark behaviours: MERGE metrics are
 forwarded to the writer's commit (Iceberg 1.11+ records them in the snapshot summary), and
@@ -143,8 +144,8 @@ The rewrite is skipped — and the write runs through Spark's stock combined ope
   (`spark.comet.exec.enabled=false`);
 - Comet is in plan-only mode (`spark.comet.explain.planOnly.enabled=true`);
 - the write is neither an Iceberg `SparkWrite` nor a supported Iceberg position-delta write;
-- the table uses merge-on-read on Spark 3.4; Spark 3.5+ `WriteDelta` is intercepted but remains
-  on Iceberg's JVM `DeltaWriter`;
+- the table uses merge-on-read (`WriteDelta`), unless the testing setting
+  `spark.comet.write.iceberg.splitOperator.enabled` is on with Spark 3.5+;
 - the statement is CTAS / RTAS on Spark 3.4, where the staged exec writes inline; on Spark
   3.5+ those statements re-plan their inner append, which is intercepted normally;
 - the write requires Spark's commit coordinator, which Comet's per-task commit protocol does
