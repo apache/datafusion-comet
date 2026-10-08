@@ -187,12 +187,8 @@ class CometTaskMemoryManagerSuite extends SparkFunSuite {
   }
 
   test("a short grant is handed back while another acquire of the task waits in Spark") {
-    // A 100 byte off-heap execution pool. Another task holds 82 bytes and a third holds 1.
-    val conf = new SparkConf()
-      .set("spark.memory.offHeap.enabled", "true")
-      .set("spark.memory.offHeap.size", "100")
-      .set("spark.memory.storageFraction", "0")
-    val memoryManager = new UnifiedMemoryManager(conf, 1000L, 500L, 1)
+    // Another task holds 82 bytes and a third holds 1.
+    val memoryManager = offHeapMemoryManager()
     val otherTask = new OffHeapConsumer(new TaskMemoryManager(memoryManager, 1L))
     val thirdTask = new OffHeapConsumer(new TaskMemoryManager(memoryManager, 2L))
     assert(otherTask.acquireMemory(82L) == 82L)
@@ -206,7 +202,7 @@ class CometTaskMemoryManagerSuite extends SparkFunSuite {
         // Out of Spark's monitor, the short grant waits until the second acquire has parked.
         if (got < required && shortGrant.getCount > 0) {
           shortGrant.countDown()
-          secondParked.await(TimeoutSeconds, TimeUnit.SECONDS)
+          secondParked.await(2 * TimeoutSeconds, TimeUnit.SECONDS)
         }
         got
       }
@@ -214,108 +210,49 @@ class CometTaskMemoryManagerSuite extends SparkFunSuite {
 
     withTaskContext(taskMemoryManager) { _ =>
       val manager = new CometTaskMemoryManager(1L, 0L)
-      // The fair pool's anchor keeps this task in Spark's active set.
+      // Hold one byte so that handing back the short grant never empties the task's balance,
+      // which would drop its entry from Spark's pool under the waiting acquire.
       assert(manager.acquireMemory(1L) == 1L)
 
       // Three active tasks and 16 bytes free: a 30 byte request is short granted 16 bytes, which
       // native code then hands back.
-      val firstGranted = new AtomicLong(-1L)
-      val first = new Thread(() => {
-        firstGranted.set(manager.acquireMemory(30L))
-        manager.releaseMemory(firstGranted.get)
-      })
-      val secondGranted = new AtomicLong(-1L)
-      val second = new Thread(() => secondGranted.set(manager.acquireMemory(10L)))
-      Seq(first, second).foreach(_.setDaemon(true))
+      val first = new NativeThread(
+        "the first acquire",
+        () => {
+          val granted = manager.acquireMemory(30L)
+          manager.releaseMemory(granted)
+          granted
+        })
+      val second = new NativeThread("the second acquire", () => manager.acquireMemory(10L))
 
       try {
-        first.start()
-        assert(shortGrant.await(TimeoutSeconds, TimeUnit.SECONDS), "no short grant")
-        // The third task leaves. With two active tasks this task's minimum share is 25 bytes and
-        // 1 byte is free, so a 10 byte request waits inside Spark holding the task's monitor.
-        thirdTask.freeMemory(1L)
-        second.start()
-        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(TimeoutSeconds)
-        while (!waitingInSpark(second) && System.nanoTime() < deadline) Thread.sleep(10)
-        assert(waitingInSpark(second), s"the second acquire is ${second.getState}")
-        secondParked.countDown()
+        // At DEBUG the short grant is logged, which must not wait on the task's monitor that the
+        // parked second acquire holds.
+        val messages = logEvents(Level.DEBUG) {
+          first.start()
+          assert(shortGrant.await(TimeoutSeconds, TimeUnit.SECONDS), s"no short grant: $first")
+          // The third task leaves. With two active tasks this task's minimum share is 25 bytes
+          // and 1 byte is free, so a 10 byte request waits inside Spark holding the task's
+          // monitor.
+          thirdTask.freeMemory(1L)
+          second.start()
+          awaitWaitingInSpark(second)
+          secondParked.countDown()
 
-        // Handing back the short grant is what lets the second acquire through.
-        second.join(TimeUnit.SECONDS.toMillis(TimeoutSeconds))
+          // Handing back the short grant is what lets the second acquire through.
+          assert(second.result(first) == 10L)
+          assert(first.result(second) == 16L)
+        }.map(_.getMessage.getFormattedMessage)
         assert(
-          !second.isAlive,
-          s"the first acquire is ${first.getState} and the second is ${second.getState}")
-        assert(firstGranted.get == 16L)
-        assert(secondGranted.get == 10L)
+          messages.exists(_.contains("requested 30 bytes but only received 16 bytes")),
+          messages.mkString("\n"))
       } finally {
         secondParked.countDown()
         // Free the other task's memory so that neither thread outlives a failed test.
         otherTask.freeMemory(otherTask.getUsed)
-        Seq(first, second).foreach(_.join(TimeUnit.SECONDS.toMillis(TimeoutSeconds)))
+        Seq(first, second).foreach(_.join())
       }
-      manager.releaseMemory(secondGranted.get)
-      manager.releaseMemory(1L)
-      assert(taskMemoryManager.getMemoryConsumptionForThisTask == 0L)
-    }
-  }
-
-  test("releasing the last bytes held without the anchor keeps a parked anchor retry's entry") {
-    // A 100 byte off-heap execution pool.
-    val conf = new SparkConf()
-      .set("spark.memory.offHeap.enabled", "true")
-      .set("spark.memory.offHeap.size", "100")
-      .set("spark.memory.storageFraction", "0")
-    val memoryManager = new UnifiedMemoryManager(conf, 1000L, 500L, 1)
-    val otherTask = new OffHeapConsumer(new TaskMemoryManager(memoryManager, 1L))
-    val taskMemoryManager = new TaskMemoryManager(memoryManager, 0L)
-
-    withTaskContext(taskMemoryManager) { _ =>
-      val manager = new CometTaskMemoryManager(1L, 0L)
-      val sibling = new OffHeapConsumer(taskMemoryManager)
-
-      // A sibling consumer holds the task's whole share, so Spark declines the anchor. It frees
-      // its memory and another task takes 90 bytes before the pool's real request of 10.
-      assert(sibling.acquireMemory(100L) == 100L)
-      assert(manager.acquireMemory(1L) == 0L)
-      sibling.freeMemory(100L)
-      assert(otherTask.acquireMemory(90L) == 90L)
-      assert(manager.acquireMemory(10L) == 10L)
-
-      // The next grow retries the anchor. With two active tasks its minimum share is 25 bytes
-      // and nothing is free, so it waits inside Spark.
-      val retryGranted = new AtomicLong(-1L)
-      val retryFailure = new AtomicReference[Throwable]()
-      val retry = new Thread(() =>
-        try retryGranted.set(manager.acquireMemory(1L))
-        catch { case t: Throwable => retryFailure.set(t) })
-      retry.setDaemon(true)
-
-      try {
-        retry.start()
-        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(TimeoutSeconds)
-        while (!waitingInSpark(retry) && System.nanoTime() < deadline) Thread.sleep(10)
-        assert(waitingInSpark(retry), s"the anchor retry is ${retry.getState}")
-
-        // The pool releases its 10 bytes while the anchor is still missing, and keeps one of
-        // them as the anchor by handing back only 9. Releasing all 10 would remove the task's
-        // entry under the retry.
-        manager.releaseMemory(9L)
-
-        retry.join(TimeUnit.SECONDS.toMillis(TimeoutSeconds))
-        assert(!retry.isAlive, s"the anchor retry is ${retry.getState}")
-        assert(retryFailure.get == null, s"the anchor retry failed: ${retryFailure.get}")
-        assert(retryGranted.get == 1L)
-      } finally {
-        // Free the other task's memory so that the retry does not outlive a failed test.
-        otherTask.freeMemory(otherTask.getUsed)
-        retry.join(TimeUnit.SECONDS.toMillis(TimeoutSeconds))
-      }
-
-      // The pool already holds the kept byte, so it hands the retry's byte back.
-      manager.releaseMemory(1L)
-      assert(manager.getUsed == 1L, "the kept byte counts like any other grant")
-      assert(nativeMemoryConsumer(manager).getUsed == 1L)
-      assert(taskMemoryManager.getMemoryConsumptionForThisTask == 1L)
+      manager.releaseMemory(10L)
       manager.releaseMemory(1L)
       assert(taskMemoryManager.getMemoryConsumptionForThisTask == 0L)
     }
@@ -323,11 +260,54 @@ class CometTaskMemoryManagerSuite extends SparkFunSuite {
 
   private val TimeoutSeconds = 10L
 
+  /** A 100 byte off-heap execution pool. */
+  private def offHeapMemoryManager(): UnifiedMemoryManager = {
+    val conf = new SparkConf()
+      .set("spark.memory.offHeap.enabled", "true")
+      .set("spark.memory.offHeap.size", "100")
+      .set("spark.memory.storageFraction", "0")
+    new UnifiedMemoryManager(conf, 1000L, 500L, 1)
+  }
+
   private def waitingInSpark(thread: Thread): Boolean =
     thread.getState == Thread.State.WAITING &&
       thread.getStackTrace.exists(_.getClassName == "org.apache.spark.memory.ExecutionMemoryPool")
 
-  /** An off-heap consumer of another task, which never spills. */
+  /** Waits for `native` to park inside Spark, and stops early if its thread ends. */
+  private def awaitWaitingInSpark(native: NativeThread): Unit = {
+    val thread = native.thread
+    val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(TimeoutSeconds)
+    while (thread.isAlive && !waitingInSpark(thread) && System.nanoTime() < deadline) {
+      Thread.sleep(10)
+    }
+    assert(waitingInSpark(thread), s"$native")
+  }
+
+  /** Runs `body` on a daemon thread, as native code would, keeping its result or failure. */
+  private class NativeThread(name: String, body: () => Long) {
+    private val value = new AtomicLong(-1L)
+    private val failure = new AtomicReference[Throwable]()
+    val thread: Thread = new Thread(() =>
+      try value.set(body())
+      catch { case t: Throwable => failure.set(t) })
+    thread.setDaemon(true)
+
+    def start(): Unit = thread.start()
+
+    def join(): Unit = thread.join(TimeUnit.SECONDS.toMillis(TimeoutSeconds))
+
+    /** Waits for `body` to return and gives its result, adding `clue` to a failure. */
+    def result(clue: => Any = ""): Long = {
+      join()
+      assert(!thread.isAlive && failure.get == null, s"$this. $clue")
+      value.get
+    }
+
+    override def toString: String =
+      Option(failure.get).fold(s"$name is ${thread.getState}")(t => s"$name failed: $t")
+  }
+
+  /** An off-heap consumer that never spills. */
   private class OffHeapConsumer(taskMemoryManager: TaskMemoryManager)
       extends MemoryConsumer(taskMemoryManager, 0L, MemoryMode.OFF_HEAP) {
     override def spill(size: Long, trigger: MemoryConsumer): Long = 0L

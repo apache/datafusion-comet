@@ -183,40 +183,35 @@ fn is_final_aggregate(consumer: &MemoryConsumer) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::super::fair_pool::ANCHOR_BYTES;
     use super::super::spark_memory::fake::FakeSpark;
     use super::super::{create_pool, overcommit, MemoryPoolConfig, MemoryPoolType};
     use super::*;
     use datafusion::execution::memory_pool::UnboundedMemoryPool;
 
-    /// A pool type's name, a pool of that type, the fake Spark it is connected to, and what the
-    /// pool holds from Spark besides its reservations: the fair pool takes its anchor byte on its
-    /// first grow and keeps it until it drops.
-    type PoolUnderTest = (&'static str, Arc<dyn MemoryPool>, Arc<FakeSpark>, usize);
-
     /// A pool of each type, built the way `createPlan` builds it and connected to a fake Spark
     /// that grants at most 100 bytes. The fair pool's own limits are far above that, so only
     /// Spark refuses. Task-shared pools are keyed by task attempt process-wide, so each pool needs
     /// its own id.
-    fn each_pool_type(task_attempt_ids: [i64; 2]) -> Vec<PoolUnderTest> {
+    fn each_pool_type(
+        task_attempt_ids: [i64; 2],
+    ) -> Vec<(&'static str, Arc<dyn MemoryPool>, Arc<FakeSpark>)> {
         [
-            ("greedy_unified", MemoryPoolType::GreedyUnified, 0),
-            ("fair_unified", MemoryPoolType::FairUnified, ANCHOR_BYTES),
+            ("greedy_unified", MemoryPoolType::GreedyUnified),
+            ("fair_unified", MemoryPoolType::FairUnified),
         ]
         .into_iter()
         .zip(task_attempt_ids)
-        .map(|((name, pool_type, anchor), task_attempt_id)| {
+        .map(|((name, pool_type), task_attempt_id)| {
             let fake = FakeSpark::with(100);
             let config = MemoryPoolConfig::new(pool_type, 1000);
             let pool = create_pool(&config, task_attempt_id, || fake.memory());
-            (name, pool, fake, anchor)
+            (name, pool, fake)
         })
         .collect()
     }
 
     /// A `fair_unified` pool of `pool_size` bytes, built the way `createPlan` builds it and
     /// connected to a fake Spark that grants everything, so only the pool's own limits refuse.
-    /// Spark also holds the pool's anchor byte, `ANCHOR_BYTES`, from the first grow on.
     fn fair_pool(task_attempt_id: i64, pool_size: usize) -> (Arc<dyn MemoryPool>, Arc<FakeSpark>) {
         let fake = FakeSpark::with(usize::MAX);
         let config = MemoryPoolConfig::new(MemoryPoolType::FairUnified, pool_size);
@@ -226,29 +221,26 @@ mod tests {
 
     #[test]
     fn a_final_aggregate_reading_its_spill_files_back_carries_what_spark_refuses() {
-        for (name, pool, fake, anchor) in each_pool_type([-3011, -3012]) {
+        for (name, pool, fake) in each_pool_type([-3011, -3012]) {
             // Like DataFusion 55's final hash aggregate, whose spill merge and replay table are
             // sibling reservations of one consumer.
             let merge = MemoryConsumer::new("FinalHashAggregateStream[0]").register(&pool);
             let replay = merge.new_empty();
             merge.try_grow(90).unwrap();
 
-            // Spark grants the replay the 10 bytes it has left, less the anchor, and the rest
-            // of the 30 is overcommit.
+            // Spark grants 10 of the replay's 30 bytes, and the other 20 are overcommit.
             replay.try_grow(30).unwrap();
             assert_eq!(pool.reserved(), 120, "{name}");
             assert_eq!(fake.held(), 100, "{name}");
-            assert_eq!(overcommit(&pool), 20 + anchor, "{name}");
+            assert_eq!(overcommit(&pool), 20, "{name}");
 
             // The replay emits groups and shrinks, which repays the overcommit before Spark.
             replay.shrink(25);
             assert_eq!(overcommit(&pool), 0, "{name}");
-            assert_eq!(fake.held(), 95 + anchor, "{name}");
+            assert_eq!(fake.held(), 95, "{name}");
             drop(merge);
             drop(replay);
             assert_eq!(pool.reserved(), 0, "{name}");
-            assert_eq!(fake.held(), anchor, "{name}");
-            drop(pool);
             assert_eq!(fake.held(), 0, "{name}");
         }
     }
@@ -263,7 +255,7 @@ mod tests {
         // The aggregate is the only consumer, so its share is the whole pool.
         replay.try_grow(30).unwrap();
         assert_eq!(pool.reserved(), 120);
-        assert_eq!(fake.held(), 120 + ANCHOR_BYTES);
+        assert_eq!(fake.held(), 120);
         assert_eq!(overcommit(&pool), 0);
     }
 
@@ -279,13 +271,13 @@ mod tests {
         // 25 + 20 is within the aggregate's share of 50, but 70 + 25 + 20 is over the pool's 100.
         replay.try_grow(20).unwrap();
         assert_eq!(pool.reserved(), 115);
-        assert_eq!(fake.held(), 115 + ANCHOR_BYTES);
+        assert_eq!(fake.held(), 115);
         assert_eq!(overcommit(&pool), 0);
     }
 
     #[test]
     fn other_refusals_are_unchanged() {
-        for (name, pool, fake, anchor) in each_pool_type([-3015, -3016]) {
+        for (name, pool, fake) in each_pool_type([-3015, -3016]) {
             // While the aggregate reads its input, its table is the consumer's only reservation
             // holding memory, so a refusal makes it spill.
             let table = MemoryConsumer::new("FinalHashAggregateStream[0]").register(&pool);
@@ -307,7 +299,7 @@ mod tests {
             sort.try_grow(90).unwrap();
             assert!(sibling.try_grow(30).is_err(), "{name}");
             assert_eq!(pool.reserved(), 90, "{name}");
-            assert_eq!(fake.held(), 90 + anchor, "{name}");
+            assert_eq!(fake.held(), 90, "{name}");
         }
     }
 

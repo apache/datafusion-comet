@@ -328,54 +328,16 @@ This is why `fair_unified` can spill earlier than `greedy_unified`: a consumer a
 refused even when the rest of the pool is free, which keeps that memory for the task's other
 consumers.
 
-**The fair pool holds an anchor byte for its whole life.** Spark drops a task's `memoryForTask`
-entry when the task's balance reaches zero, and an acquire parked inside
-`ExecutionMemoryPool.acquireMemory` reads that entry when it wakes. So the first `try_grow` that
-passes both checks, or the first `grow`, takes one extra byte from Spark before its own request,
-and the pool keeps that byte until it drops. While it is held, no release, the pool's own or a
-sibling consumer's such as the shuffle allocator, can zero the balance under a parked acquire, and
-the task stays in Spark's active set, so `NativeMemoryConsumer.getUsed` reports at least 1. The byte
-goes back to Spark when the pool drops, and a plan of the same task that asks for a pool while that
-release is in flight waits for it to land, as described under task-shared pools below. Creating
-the pool makes no JVM call: a plan that never allocates natively never touches Spark's memory
-manager and never counts as an active task there. Spark declines the byte with a zero grant when the
-task is already at its share. The pool then runs without it and each grow retries it, as a request
-of its own, before the real one, until it is held. If Spark frees up between a declined retry and
-the real request, the pool holds bytes from Spark without the anchor, and the next retry can park.
-So the first release that hands bytes back to Spark while the anchor is missing, a shrink or the
-rollback of a short grant, hands back all but one of them and keeps that one as the anchor, and
-none of the pool's own releases can zero the balance. Until a retry lands, a JVM consumer of the
-same task such as the shuffle allocator can still free its last bytes while a request of the pool
-is parked and the pool holds nothing from Spark. Spark then fails that acquire. A `try_grow` rolls
-its charge back and reports an error, and a `grow` keeps its charge as overcommit. That is the one
-window the anchor does not cover. The anchor goes through `CometTaskMemoryManager.acquireMemory`
-and `releaseMemory` and is counted like any other grant, in `CometTaskMemoryManager.getUsed` as
-well. That is safe because `CometExecIterator.close` checks the task's manager only after the
-task's last plan has closed, and by then releasing that plan has dropped the pool and returned the
-anchor, as described under task-shared pools below. This holds when the pool is dropped with the
-last plan's release. A spawned task that still holds the pool for a moment after an early stop can
-make `close` log the anchor as a one byte leak.
-
-**The anchor can make the grow that takes it wait.** The anchor byte is taken just before that
-grow's own request, on the first grow or on a retry after Spark declined it. When that request
-needs exactly the bytes Spark has left for the task, the anchor leaves it one byte short. If the
-task is then below its 1/(2N) minimum share, N being the executor's active tasks, Spark parks the
-request like any other under-share acquire until memory is released, where without the anchor it
-would have been granted at once. A release by any task of the executor wakes it, and once the byte
-is free the request gets its full grant. At or above the minimum share Spark grants one byte short
-instead of waiting, which a `try_grow` reports as a short grant for the caller to spill and a
-`grow` carries as one byte of overcommit. This is accepted because the anchor is what keeps a
-release from removing the task's entry under a parked acquire, and Spark fails an acquire whose
-entry is gone. The extra wait only happens when the request would take exactly the memory Spark has
-free, and it ends at the next release.
-
 **The pool mutex is never held across a JNI call.** Both checks run, and the bytes are charged to
 the pool's total and to the consumer's running total, under the lock. The lock is dropped before
 `acquireMemory` or `releaseMemory` runs, and the bookkeeping is settled after the call returns. This
 holds for `grow` as well as `try_grow`: `grow` skips both checks but charges its bytes under the
-lock the same way, and its JVM call runs without it. The reason is the parked acquire above: it
-waits inside Spark for another thread of the same task to release memory. If the release had to take
-a lock that the parked acquire was holding, it could never land and the task would hang.
+lock the same way, and its JVM call runs without it. The reason is an acquire parked inside
+`ExecutionMemoryPool.acquireMemory` below its minimum share: it waits for another thread of the same
+task to release memory. If the release had to take a lock that the parked acquire was holding, it
+could not land until an unrelated task freed memory, so the task would stall meanwhile. Such a
+release can empty the task's balance, which makes Spark drop the task's entry under the parked
+acquire, and `CometTaskMemoryManager.acquireMemory` then asks Spark again.
 
 Settling after the call leaves two windows, both on the conservative side:
 
@@ -395,7 +357,7 @@ Settling after the call leaves two windows, both on the conservative side:
 Neither window admits a `try_grow` that the two checks would have refused. A refusal is the ordinary
 `ResourcesExhausted` error, which a spillable operator answers by spilling. `grow` is never refused:
 it is not subject to either check, and whatever Spark declines of it becomes overcommit, as
-described above. The anchor byte is neither part of the pool's total nor of the overcommit.
+described above.
 
 ### Task-shared pools and their lifetime
 
@@ -419,14 +381,9 @@ per task.
 disappears when the last plan (and its last reservation) drops. There is no explicit release call to
 forget, and a `createPlan` that fails partway through cleans up on unwind.
 
-Dropping the pool and replacing it must not overlap. The fair pool hands its anchor byte back to
-Spark from its drop, and a replacement created before that release lands holds nothing from Spark
-yet, so its first acquire could park inside Spark and wake to a task entry the release has removed.
-The registry entry therefore stays in place, with an expired `Weak`, until the pool has finished
-dropping, anchor release included. `acquire_task_shared_pool` treats an expired entry as a pool that
-is still tearing down and waits for it to go before creating the replacement. A guard field,
-dropped after the pool, removes the entry, and only when its `Weak` is expired, so the entry of a
-live pool is never removed.
+`TaskSharedMemoryPool::drop` has to handle one race: an `acquire` can observe an expired `Weak` and
+insert a replacement before the dying pool reaches the registry lock. The drop therefore compares
+pointers and only removes an entry that is still its own.
 
 The pool acquires memory from Spark through the `CometTaskMemoryManager` passed with the plan that
 created it, so the JVM side shares one manager per task as well: `CometExecIterator.taskMemory`

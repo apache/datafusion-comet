@@ -66,8 +66,9 @@ impl SparkMemoryManager for JniMemoryManager {
 /// Every byte a pool records through this type is backed either by Spark's grant or by
 /// overcommit, so Spark's grant plus `overcommit` equals the bytes recorded and not yet released.
 /// Spark is handed back more than it granted only if a release takes less from `overcommit` than
-/// it could. `CometUnifiedMemoryPool` calls in here from several threads without a lock, and
-/// updates its own `used` separately, so this rests on three things:
+/// it could. `CometUnifiedMemoryPool` and `CometFairMemoryPool` both call in here from several
+/// threads without holding a lock, and each updates its own `used` separately, so this rests on
+/// three things:
 ///
 /// - `overcommit` only grows by bytes that are being recorded in the same call.
 /// - Each repayment takes its share of `overcommit` in a single atomic update, so two concurrent
@@ -85,7 +86,8 @@ pub(super) struct SparkMemory {
 pub(super) struct Refusal {
     /// Outstanding overcommit that was asked for on top of the request.
     pub(super) overcommit: usize,
-    /// What Spark offered before it was handed back.
+    /// What Spark granted toward the request and the overcommit together, which can exceed
+    /// the request.
     pub(super) granted: usize,
 }
 
@@ -106,8 +108,8 @@ impl SparkMemory {
         self.task_attempt_id
     }
 
-    /// The Spark calls themselves, without the overcommit ledger, for bytes a pool never
-    /// records, such as the fair pool's anchor byte and a short grant it hands back itself.
+    /// The Spark calls themselves, without the overcommit ledger, for a short grant a pool
+    /// hands back itself.
     pub(super) fn manager(&self) -> &dyn SparkMemoryManager {
         self.manager.as_ref()
     }
@@ -172,19 +174,9 @@ impl SparkMemory {
 
     /// Frees `size` bytes, repaying overcommit before releasing the rest to Spark.
     pub(super) fn release(&self, size: usize) -> CometResult<()> {
-        self.release_through(size, |to_release| self.manager.release(to_release))
-    }
-
-    /// Like [`Self::release`], with `hand_back` making the call that returns what is left once
-    /// the overcommit is repaid. It is not called when nothing is left.
-    pub(super) fn release_through(
-        &self,
-        size: usize,
-        hand_back: impl FnOnce(usize) -> CometResult<()>,
-    ) -> CometResult<()> {
         let to_release = size - self.repay(size);
         if to_release > 0 {
-            hand_back(to_release)?;
+            self.manager.release(to_release)?;
         }
         Ok(())
     }
@@ -193,15 +185,14 @@ impl SparkMemory {
         self.overcommit.load(Relaxed)
     }
 
-    /// Asks Spark for the pool's anchor, `size` bytes the overcommit ledger never records, and
-    /// returns how many it granted. Spark can block it like any other acquire.
-    pub(super) fn acquire_anchor(&self, size: usize) -> CometResult<i64> {
-        self.ask_spark(size)
-    }
-
     /// Asks Spark for `size` bytes and returns how many it granted.
+    ///
+    /// Spark can block the call until other tasks release memory, so it runs in `block_in_place`.
+    /// On a Tokio worker that hands the worker's other tasks to another thread while the call
+    /// blocks, so they keep running. One of them may be what would release the memory, such as a
+    /// task of a released plan that only needs to be cancelled.
     fn ask_spark(&self, size: usize) -> CometResult<i64> {
-        wait_on_spark(|| self.manager.acquire(size))
+        tokio::task::block_in_place(|| self.manager.acquire(size))
     }
 
     /// Takes up to `size` bytes off the overcommit in one atomic step and returns how many.
@@ -211,14 +202,6 @@ impl SparkMemory {
             .update(Relaxed, Relaxed, |debt| debt.saturating_sub(size));
         debt.min(size)
     }
-}
-
-/// Makes an acquire call to Spark, which can block it until other tasks release memory, so it
-/// runs in `block_in_place`. On a Tokio worker that hands the worker's other tasks to another
-/// thread while the call blocks, so they keep running. One of them may be what would release the
-/// memory, such as a task of a released plan that only needs to be cancelled.
-fn wait_on_spark(acquire: impl FnOnce() -> CometResult<i64>) -> CometResult<i64> {
-    tokio::task::block_in_place(acquire)
 }
 
 /// Clamps Spark's reply to an acquire: it never grants more than asked, and never a negative.

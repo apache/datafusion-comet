@@ -42,8 +42,7 @@ pub(crate) use task_shared::*;
 /// Creates the memory pool for a native plan.
 ///
 /// Task-shared pools use their returned `Arc` as the RAII handle, so they remain registered for as
-/// long as the plan or any of its reservations retain the pool. Creating a pool makes no JVM call.
-/// The fair unified pool takes its anchor byte from Spark on its first grow.
+/// long as the plan or any of its reservations retain the pool.
 pub(crate) fn create_memory_pool(
     memory_pool_config: &MemoryPoolConfig,
     comet_task_memory_manager: Arc<Global<JObject<'static>>>,
@@ -124,25 +123,23 @@ mod tests {
 
     #[test]
     fn overcommit_is_read_through_the_wrappers_of_each_pool_type() {
-        // Task-shared pools are keyed by task attempt process-wide, so each gets its own id. The
-        // fair pool takes its anchor byte before the grow's own request, so Spark grants that
-        // request one byte less.
-        for (name, task_attempt_id, pool_type, granted) in [
-            ("greedy_unified", -3001, MemoryPoolType::GreedyUnified, 100),
-            ("fair_unified", -3002, MemoryPoolType::FairUnified, 99),
+        // Task-shared pools are keyed by task attempt process-wide, so each gets its own id.
+        for (name, task_attempt_id, pool_type) in [
+            ("greedy_unified", -3001, MemoryPoolType::GreedyUnified),
+            ("fair_unified", -3002, MemoryPoolType::FairUnified),
         ] {
             let config = MemoryPoolConfig::new(pool_type, 1000);
             let pool = create_memory_pool_with_fake_spark(&config, task_attempt_id, 100);
             let reservation = MemoryConsumer::new("spill reader").register(&pool);
 
-            // Spark grants `granted` of the 150 bytes, and the pool records all of them.
+            // Spark grants 100 of the 150 bytes, and the pool records all of them.
             reservation.grow(150);
             assert_eq!(pool.reserved(), 150, "{name}");
-            assert_eq!(overcommit(&pool), 150 - granted, "{name}");
+            assert_eq!(overcommit(&pool), 50, "{name}");
 
             // Freeing memory repays the overcommit first.
             reservation.shrink(30);
-            assert_eq!(overcommit(&pool), 120 - granted, "{name}");
+            assert_eq!(overcommit(&pool), 20, "{name}");
             drop(reservation);
             assert_eq!(overcommit(&pool), 0, "{name}");
         }
