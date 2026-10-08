@@ -617,6 +617,8 @@ lines. Here is a minimal example:</p>
 <div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="c1">-- Config: spark.sql.ansi.enabled=true</span>
 </pre></div>
 </div>
+<p>The first <code class="docutils literal notranslate"><span class="pre">=</span></code> separates the key from the value. Values containing <code class="docutils literal notranslate"><span class="pre">=</span></code>, such as base64
+encryption keys, are preserved. An empty value is allowed; the key must be non-empty.</p>
 </section>
 <section id="configmatrix">
 <h4><code class="docutils literal notranslate"><span class="pre">ConfigMatrix</span></code><a class="headerlink" href="#configmatrix" title="Link to this heading">#</a></h4>
@@ -632,6 +634,40 @@ cross product of all combinations.</p>
 </div>
 <p>Only add a <code class="docutils literal notranslate"><span class="pre">ConfigMatrix</span></code> directive when there is a real reason to run the test under
 multiple configurations. Do not add <code class="docutils literal notranslate"><span class="pre">ConfigMatrix</span></code> directives speculatively.</p>
+<p>Values are comma-separated and must be non-empty. As with <code class="docutils literal notranslate"><span class="pre">Config</span></code>, any <code class="docutils literal notranslate"><span class="pre">=</span></code> within a
+value is preserved. A matrix value overrides a <code class="docutils literal notranslate"><span class="pre">Config</span></code> value for the same key.</p>
+</section>
+<section id="excluderules">
+<h4><code class="docutils literal notranslate"><span class="pre">ExcludeRules</span></code><a class="headerlink" href="#excluderules" title="Link to this heading">#</a></h4>
+<p>Adds fully qualified optimizer rule names to the exclusion list. Constant folding remains
+disabled by default.</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="c1">-- ExcludeRules: org.apache.spark.sql.catalyst.optimizer.NullPropagation</span>
+<span class="c1">-- ExcludeRules: org.apache.spark.sql.catalyst.optimizer.ConvertToLocalRelation</span>
+</pre></div>
+</div>
+<p>Repeated lines are combined, and duplicate rules are removed. Rules declared through
+<code class="docutils literal notranslate"><span class="pre">Config:</span> <span class="pre">spark.sql.optimizer.excludedRules=...</span></code> are also retained; a matrix selects the
+value of that config before <code class="docutils literal notranslate"><span class="pre">ExcludeRules</span></code> and the default exclusion are added. Unknown
+rules and rules Spark does not permit excluding fail the fixture rather than silently
+leaving the optimizer unchanged.</p>
+<p>Exclude <code class="docutils literal notranslate"><span class="pre">NullPropagation</span></code> when the test needs a NULL argument to reach an expression.
+Disabling ConstantFolding alone does not prevent Spark from replacing <code class="docutils literal notranslate"><span class="pre">abs(NULL)</span></code> with a
+NULL literal.</p>
+</section>
+<section id="constantfolding">
+<h4><code class="docutils literal notranslate"><span class="pre">ConstantFolding</span></code><a class="headerlink" href="#constantfolding" title="Link to this heading">#</a></h4>
+<p>Lets Spark fold constants for a fixture that tests folded complex literals.</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="c1">-- ConstantFolding: enabled</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">disabled</span></code> is the default. With <code class="docutils literal notranslate"><span class="pre">enabled</span></code>, an all-literal <code class="docutils literal notranslate"><span class="pre">array(...)</span></code>, <code class="docutils literal notranslate"><span class="pre">map(...)</span></code> or
+<code class="docutils literal notranslate"><span class="pre">named_struct(...)</span></code> can become a complex <code class="docutils literal notranslate"><span class="pre">Literal</span></code> before Comet sees it. This exercises
+Comet’s literal handling, rather than its expression constructors. Ordinary all-literal
+function queries may instead fold away entirely; use column inputs when those functions
+must execute in Comet. Combining <code class="docutils literal notranslate"><span class="pre">enabled</span></code> with an explicit ConstantFolding exclusion
+is rejected as contradictory. Repeated <code class="docutils literal notranslate"><span class="pre">ConstantFolding</span></code> directives must agree.</p>
+<p>Malformed configuration directives fail that fixture with its file path and source line
+instead of being treated as ordinary comments. Other fixtures still run.</p>
 </section>
 <section id="minsparkversion">
 <h4><code class="docutils literal notranslate"><span class="pre">MinSparkVersion</span></code><a class="headerlink" href="#minsparkversion" title="Link to this heading">#</a></h4>
@@ -661,6 +697,29 @@ and <code class="docutils literal notranslate"><span class="pre">INSERT</span></
 <span class="k">INSERT</span><span class="w"> </span><span class="k">INTO</span><span class="w"> </span><span class="n">my_table</span><span class="w"> </span><span class="k">VALUES</span><span class="w"> </span><span class="p">(</span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="mi">2</span><span class="p">.</span><span class="mi">0</span><span class="p">),</span><span class="w"> </span><span class="p">(</span><span class="mi">3</span><span class="p">,</span><span class="w"> </span><span class="mi">4</span><span class="p">.</span><span class="mi">0</span><span class="p">),</span><span class="w"> </span><span class="p">(</span><span class="k">NULL</span><span class="p">,</span><span class="w"> </span><span class="k">NULL</span><span class="p">)</span>
 </pre></div>
 </div>
+<p>Use <code class="docutils literal notranslate"><span class="pre">SET</span></code> statements to change SQL configs between queries:</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="c1">-- Starts with the fixture default, ANSI disabled.</span>
+<span class="n">query</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="k">CAST</span><span class="p">(</span><span class="n">v</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="nb">INT</span><span class="p">)</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">my_strings</span>
+
+<span class="k">statement</span>
+<span class="k">SET</span><span class="w"> </span><span class="n">spark</span><span class="p">.</span><span class="k">sql</span><span class="p">.</span><span class="n">ansi</span><span class="p">.</span><span class="n">enabled</span><span class="o">=</span><span class="k">true</span>
+
+<span class="n">query</span><span class="w"> </span><span class="n">expect_error</span><span class="p">(</span><span class="n">CAST_INVALID_INPUT</span><span class="p">)</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="k">CAST</span><span class="p">(</span><span class="n">v</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="nb">INT</span><span class="p">)</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">my_strings</span>
+</pre></div>
+</div>
+<p>All SQLConf changes are restored when the fixture finishes, including on failure and
+between matrix combinations. Keys changed by <code class="docutils literal notranslate"><span class="pre">SET</span></code> need not also appear in <code class="docutils literal notranslate"><span class="pre">Config</span></code>.
+<code class="docutils literal notranslate"><span class="pre">RESET</span></code> is restored too, but it removes the selected setting for the remaining queries;
+<code class="docutils literal notranslate"><span class="pre">RESET</span></code> without a key also resets the harness’s ANSI and optimizer settings. A mid-file
+<code class="docutils literal notranslate"><span class="pre">SET</span> <span class="pre">spark.sql.optimizer.excludedRules=...</span></code> replaces the whole exclusion list, including
+the default ConstantFolding exclusion.</p>
+<p>Enabling the codegen dispatcher through <code class="docutils literal notranslate"><span class="pre">SET</span></code> still requires a non-error sentinel when
+the file contains <code class="docutils literal notranslate"><span class="pre">expect_error</span></code>, just as enabling it through <code class="docutils literal notranslate"><span class="pre">Config</span></code> does. Run that
+sentinel under the same settings as the error query.</p>
+<p>This isolation covers SQL configs, not <code class="docutils literal notranslate"><span class="pre">USE</span></code>, temporary views or functions, or SQL
+session variables. Manage those separately.</p>
 </section>
 <section id="queries">
 <h3>Queries<a class="headerlink" href="#queries" title="Link to this heading">#</a></h3>
@@ -839,7 +898,9 @@ planning, so Comet would never see them. However, <code class="docutils literal 
 disables constant folding (by excluding <code class="docutils literal notranslate"><span class="pre">ConstantFolding</span></code> from the optimizer rules), so
 all-literal queries are evaluated by Comet’s native engine. This means you can use the
 default <code class="docutils literal notranslate"><span class="pre">query</span></code> mode for all-literal cases and they will be tested natively just like
-column-based queries.</p>
+column-based queries, subject to other optimizer rewrites such as <code class="docutils literal notranslate"><span class="pre">NullPropagation</span></code> and
+Comet’s own plan-time literal handling. <code class="docutils literal notranslate"><span class="pre">ConstantFolding:</span> <span class="pre">enabled</span></code> opts out of the default
+exclusion for fixtures that deliberately test folded literals.</p>
 </section>
 <section id="cover-edge-cases">
 <h4>Cover edge cases<a class="headerlink" href="#cover-edge-cases" title="Link to this heading">#</a></h4>
@@ -986,6 +1047,8 @@ file and config combination, and executes them using <code class="docutils liter
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#directives">Directives</a><ul class="nav section-nav flex-column">
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#config"><code class="docutils literal notranslate"><span class="pre">Config</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#configmatrix"><code class="docutils literal notranslate"><span class="pre">ConfigMatrix</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#excluderules"><code class="docutils literal notranslate"><span class="pre">ExcludeRules</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#constantfolding"><code class="docutils literal notranslate"><span class="pre">ConstantFolding</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#minsparkversion"><code class="docutils literal notranslate"><span class="pre">MinSparkVersion</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#maxsparkversion"><code class="docutils literal notranslate"><span class="pre">MaxSparkVersion</span></code></a></li>
 </ul>
