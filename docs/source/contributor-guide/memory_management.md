@@ -253,14 +253,17 @@ ignored and the pool is always `UnboundedMemoryPool`.
 the inside out, a Comet plan in the default configuration sees:
 
 ```text
-[LoggingMemoryPool]        <- only when spark.comet.debug.memory=true
-  [TaskSharedMemoryPool]   <- RAII handle for the per-task registry
-    [TrackConsumersPool]   <- DataFusion; names the top 10 consumers in error messages
-      [CometFairMemoryPool]  <- delegates acquire/release to Spark over JNI
+[LoggingMemoryPool]          <- only when spark.comet.debug.memory=true
+  [TaskSharedMemoryPool]     <- RAII handle for the per-task registry
+    [SpillReplayPool]        <- lets a spilled final aggregate read its spill files back
+      [TrackConsumersPool]   <- DataFusion; names the top 10 consumers in error messages
+        [CometFairMemoryPool]  <- delegates acquire/release to Spark over JNI
 ```
 
 Each decorator forwards every `MemoryPool` method to its inner pool, so `reserved()` at any level
-reports the base pool's number.
+reports the base pool's number. `SpillReplayPool` also turns one kind of refused `try_grow` into a
+`grow`; see
+[Final aggregates reading their spill files back](#final-aggregates-reading-their-spill-files-back).
 
 ### The unified pools
 
@@ -346,6 +349,18 @@ hands every native plan in a task the same one and drops it when the task comple
 covers the whole task, so `CometExecIterator.close()` warns about memory still in use only when
 the task's last open native plan closes.
 
+### Final aggregates reading their spill files back
+
+`SpillReplayPool` (`spill_replay.rs`) wraps both Comet pools to work around
+[issue #6254](https://github.com/apache/datafusion-comet/issues/6254). Once one of DataFusion 55's
+final aggregates has spilled, it reads its spill files back through an aggregate that cannot spill,
+so a refused `try_grow` there fails the task. When the pool refuses such a request,
+`SpillReplayPool` records it with the pool's `grow` instead, which skips `CometFairMemoryPool`'s
+local checks and carries what Spark does not grant as overcommit. Every other refusal is passed on
+unchanged. `spill_replay.rs` describes how the wrapper recognizes these requests and what that relies
+on in DataFusion. [Issue #6583](https://github.com/apache/datafusion-comet/issues/6583) tracks
+removing it.
+
 ## How DataFusion consumes the pool
 
 Native operators reserve through DataFusion's `MemoryConsumer` / `MemoryReservation` API:
@@ -359,6 +374,40 @@ Native operators reserve through DataFusion's `MemoryConsumer` / `MemoryReservat
 - `shrink(n)` returns bytes to the pool.
 
 An operator that never calls `try_grow` is invisible to the pool no matter how much memory it uses.
+
+### Native writers
+
+Both native writers reserve what they hold between batches through a single consumer per task,
+`ParquetWriterExec[N]` or `IcebergWriteExec[N]`, resized after every batch. Neither can spill, so
+when the pool refuses a resize the task fails with a `CometNativeException` whose message starts
+`Additional allocation failed for` and names the consumer. That is a task failure Spark can retry.
+Unreserved, the same memory would count only toward the container limit, where exceeding it kills
+the executor.
+
+- `ParquetWriterExec` writes one file per task and reserves parquet-rs's estimate of the file's
+  in-progress row group (`ArrowWriter::memory_size`). The estimate counts encoded pages, encoder
+  buffers, dictionaries and Bloom filters. The writer keeps parquet-rs's default row-group limit of
+  1Mi rows and sets no byte limit, so a wide schema can hold a large row group
+  ([#5304](https://github.com/apache/datafusion-comet/issues/5304)).
+- The Iceberg writer keeps one file open per partition in a fanout write, so its reservation grows
+  with the number of partitions a task writes. iceberg-rust's `ParquetWriter` does not expose
+  parquet-rs's `memory_size`, only every byte the file has written, its in-progress row group's
+  encoded size included. So each file's writer counts the bytes that leave memory on their way to
+  storage, and the file reports what it has written less those. A local file writes a flushed row
+  group out at once, so it reports its in-progress row group and the few KiB parquet-rs buffers in
+  front of storage. S3 and GCS take a file in parts of at least 5 MiB, and OpenDAL holds each part
+  in memory until the next one is complete or the file closes, so there a file also reports what
+  it has flushed since its last part was uploaded. At the default row-group size
+  (`write.parquet.row-group-size-bytes`, 128 MiB) that is the last row group it flushed. The
+  reservation also covers the rows each partition holds back, first for its dictionary choice and
+  then until they fill the 1000-row unit the rolling writer is fed in. It does not cover what
+  parquet-rs holds beyond the encoded size: dictionary hash tables, unencoded dictionary indices
+  and buffer capacity. Native writes decline Bloom filters today, and neither figure would include
+  them.
+
+The writers register one consumer per task rather than one per open file because every consumer
+registered with `fair_unified` lowers the share of every other consumer in the task. A consumer per
+partition would shrink the task's other operators' shares as a fanout write widened.
 
 ## Crossing the FFI boundary
 
@@ -410,7 +459,8 @@ The pool tracks _declared reservations_. Container RSS counts _pages the process
 diverge for several structural reasons:
 
 - **Undeclared allocations.** Arrow array builders, expression kernels producing intermediate
-  arrays, decompression buffers, Parquet metadata structures, `object_store` request buffers, and
+  arrays, decompression buffers, Parquet metadata structures, the part of a native writer's buffers
+  its estimate misses (see [Native writers](#native-writers)), `object_store` request buffers, and
   tokio's own machinery all allocate without reserving. Only operators that were explicitly written
   to reserve show up in the pool.
 - **Rounding and padding.** Arrow buffers are padded to 64-byte boundaries and builders grow by

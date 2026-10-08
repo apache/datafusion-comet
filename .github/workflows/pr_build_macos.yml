@@ -121,7 +121,11 @@ jobs:
         uses: ./.github/actions/upload-artifact-retry
         with:
           name: native-lib-macos
-          path: native/target/ci/libcomet.dylib
+          # libcomet_test_udfs is the cdylib CometNativeUdfSuite loads; it is built by the same
+          # cargo invocation and the suite finds it next to libcomet.
+          path: |
+            native/target/ci/libcomet.dylib
+            native/target/ci/libcomet_test_udfs.dylib
           retention-days: 1
 
       - name: Save Cargo cache
@@ -186,6 +190,7 @@ jobs:
               org.apache.comet.exec.CometShuffle4_0Suite
               org.apache.comet.exec.CometNativeColumnarToRowSuite
               org.apache.comet.exec.CometNativeShuffleSuite
+              org.apache.comet.exec.CometShuffleInputConversionSuite
               org.apache.comet.shuffle.CelebornShufflePartitionPusherSuite
               org.apache.spark.sql.comet.execution.shuffle.CometCelebornShuffleManagerSuite
               org.apache.spark.sql.comet.execution.shuffle.CometCelebornNativeShuffleWriterSuite
@@ -320,6 +325,7 @@ jobs:
               org.apache.comet.CometStringDecodeSuite
               org.apache.comet.CometWidthBucketSuite
               org.apache.comet.CometUuidExpressionSuite
+              org.apache.comet.CometNativeUdfSuite
               org.apache.comet.serde.CometScalarFunctionSuite
               org.apache.comet.serde.CometLiteralSuite
               org.apache.comet.serde.QueryPlanSerdeSuite

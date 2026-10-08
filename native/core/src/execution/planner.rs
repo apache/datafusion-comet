@@ -144,10 +144,10 @@ use datafusion_comet_proto::{
 use datafusion_comet_spark_expr::{
     create_case_when, create_if_expr, jvm_udf::JvmScalarUdfExpr, spark_in_list, ApproxPercentile,
     ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Correlation, Covariance, CreateNamedStruct,
-    DecimalRescaleCheckOverflow, GetArrayStructFields, GetStructField, HllPlusPlus, HllSketchAgg,
-    HllUnionAgg, IfExpr, ListExtract, MaxMinBy, Mode, NormalizeNaNAndZero, NormalizeNestedFloats,
-    Regr, RegrType, SparkCastOptions, SparkMinMax, Stddev, SumDecimal, ToJson, UnboundColumn,
-    Variance, WideDecimalBinaryExpr, WideDecimalOp,
+    DecimalRescaleCheckOverflow, FloatOperands, GetArrayStructFields, GetStructField, HllPlusPlus,
+    HllSketchAgg, HllUnionAgg, IfExpr, ListExtract, MaxMinBy, Mode, NormalizeNaNAndZero,
+    NormalizeNestedFloats, Regr, RegrType, SparkCastOptions, SparkMinMax, Stddev, SumDecimal,
+    ToJson, UnboundColumn, Variance, WideDecimalBinaryExpr, WideDecimalOp,
 };
 use itertools::Itertools;
 use jni::objects::{Global, JObject};
@@ -325,6 +325,7 @@ pub struct BinaryExprOptions {
 pub const TEST_EXEC_CONTEXT_ID: i64 = -1;
 
 /// The query planner for converting Spark query plans to DataFusion query plans.
+#[derive(Clone)]
 pub struct PhysicalPlanner {
     // The execution context id of this planner.
     exec_context_id: i64,
@@ -346,6 +347,9 @@ pub struct PhysicalPlanner {
     /// Task-owned destination for remote shuffle blocks, registered on the driving Spark task
     /// thread before native planning. Only explicit RSS destinations may use it.
     shuffle_partition_pusher: Option<Arc<dyn ShufflePartitionPusher>>,
+    /// How comparisons treat floating-point operands. `Raw` only while planning a scan's data
+    /// filters; see [`Self::create_data_filter`].
+    float_operands: FloatOperands,
 }
 
 impl Default for PhysicalPlanner {
@@ -365,6 +369,7 @@ impl PhysicalPlanner {
             task_context: None,
             class_loader: None,
             shuffle_partition_pusher: None,
+            float_operands: FloatOperands::Normalize,
         }
     }
 
@@ -475,6 +480,11 @@ impl PhysicalPlanner {
     ) -> Self {
         self.shuffle_partition_pusher = shuffle_partition_pusher;
         self
+    }
+
+    /// How comparisons treat floating-point operands.
+    pub fn float_operands(&self) -> FloatOperands {
+        self.float_operands
     }
 
     /// Return session context of this planner.
@@ -1045,9 +1055,126 @@ impl PhysicalPlanner {
                     udf.return_nullable,
                     self.task_context.clone(),
                     self.class_loader.clone(),
+                    self.partition,
+                    self.exec_context_id,
                 )))
             }
+            ExprStruct::NativeScalarUdf(call) => {
+                let arg_exprs: Vec<Arc<dyn PhysicalExpr>> = call
+                    .args
+                    .iter()
+                    .map(|e| self.create_expr(e, Arc::clone(&input_schema)))
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                let lib = crate::execution::c_udf::cache::get_or_load(&call.library_path).map_err(
+                    |e| GeneralError(format!("native UDF load '{}': {e}", call.library_path)),
+                )?;
+
+                let loaded = lib
+                    .udfs
+                    .iter()
+                    .find(|u| u.name == call.name)
+                    .ok_or_else(|| {
+                        GeneralError(format!(
+                            "native UDF '{}' not found in '{}'",
+                            call.name, call.library_path
+                        ))
+                    })?;
+
+                let udf = Arc::new(ScalarUDF::new_from_shared_impl(Arc::clone(
+                    &loaded.udf_impl,
+                )));
+
+                let return_type =
+                    to_arrow_datatype(call.return_type.as_ref().ok_or_else(|| {
+                        GeneralError("NativeScalarUdf missing return_type".into())
+                    })?);
+
+                // The declared return type comes from the JVM-side `CometNativeUDF.register` call
+                // and is what Spark planned against; the kernel's own `return_field` is what will
+                // actually be produced. If they disagree, fail here with both types named rather
+                // than letting it surface later as a bare type assertion mid-execution.
+                let arg_types = arg_exprs
+                    .iter()
+                    .map(|e| e.data_type(input_schema.as_ref()))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let kernel_return_type = loaded.udf_impl.return_type(&arg_types)?;
+                if !crate::execution::c_udf::return_types_compatible(
+                    &return_type,
+                    &kernel_return_type,
+                ) {
+                    return Err(GeneralError(format!(
+                        "native UDF '{}' was registered as returning {return_type} but its \
+                         return_field reports {kernel_return_type} for argument types {arg_types:?}. \
+                         Make the type passed to CometNativeUDF.register match what the UDF returns. \
+                         Note that a timestamp's timezone, a decimal's precision and scale, and \
+                         struct field names all have to match exactly; Spark's TimestampType is \
+                         Timestamp(Microsecond, Some(\"UTC\")) and TimestampNTZType is \
+                         Timestamp(Microsecond, None).",
+                        call.name
+                    )));
+                }
+
+                // Promise DataFusion the kernel's type in the form other expressions producing it
+                // use, rather than as the kernel reports it: list and map child fields carry
+                // Comet's canonical names, and every nested field is nullable. An operator that
+                // combines this column with one from another expression, such as `if`, needs the
+                // two types to agree, and cannot narrow a nullable field to match a non-nullable
+                // one. The adapter conforms each result to this type.
+                let return_field = Arc::new(Field::new(
+                    &call.name,
+                    crate::execution::c_udf::promised_return_type(&kernel_return_type),
+                    true,
+                ));
+                let expr = Arc::new(ScalarFunctionExpr::new(
+                    &call.name,
+                    udf,
+                    arg_exprs,
+                    return_field,
+                    Arc::new(ConfigOptions::default()),
+                ));
+                Ok(expr)
+            }
             expr => Err(GeneralError(format!("Not implemented: {expr:?}"))),
+        }
+    }
+
+    /// Create a data filter that a scan pushes into the Parquet reader, with float operands
+    /// treated as [`Self::data_filter_float_operands`] decides.
+    fn create_data_filter(
+        &self,
+        spark_expr: &Expr,
+        input_schema: SchemaRef,
+        float_operands: FloatOperands,
+    ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
+        let planner = Self {
+            float_operands,
+            ..self.clone()
+        };
+        planner.create_expr(spark_expr, input_schema)
+    }
+
+    /// How a scan's data filters treat float operands. The Parquet reader prunes row groups and
+    /// pages with them, and with row-level pushdown (`pushdown_filters`) it also drops the rows
+    /// they reject, which Spark's Filter above the scan then never sees.
+    ///
+    /// Without row-level pushdown the filters only prune, and pruning only recognizes a column
+    /// compared with a literal, so that shape keeps the raw column ([`FloatOperands::Raw`]). With
+    /// it, every operand is normalized and float comparisons give up pruning: a raw column would
+    /// drop a stored NaN that Spark matches, such as one with the sign bit set, which Arrow orders
+    /// below every other value.
+    fn data_filter_float_operands(&self) -> FloatOperands {
+        if self
+            .session_ctx
+            .copied_config()
+            .options()
+            .execution
+            .parquet
+            .pushdown_filters
+        {
+            FloatOperands::Normalize
+        } else {
+            FloatOperands::Raw
         }
     }
 
@@ -1832,10 +1959,17 @@ impl PhysicalPlanner {
                                 .cloned()
                                 .collect::<Vec<FieldRef>>(),
                         ));
+                        let float_operands = self.data_filter_float_operands();
                         common
                             .data_filters
                             .iter()
-                            .map(|expr| self.create_expr(expr, Arc::clone(&filter_schema)))
+                            .map(|expr| {
+                                self.create_data_filter(
+                                    expr,
+                                    Arc::clone(&filter_schema),
+                                    float_operands,
+                                )
+                            })
                             .collect()
                     };
 
@@ -5748,6 +5882,121 @@ mod tests {
         assert_eq!(0, filter_exec.additional_native_plans.len());
     }
 
+    /// Comparisons normalize float operands, except in the data filters that a scan pushes into
+    /// the Parquet reader, where pruning has to see the column itself.
+    #[test]
+    fn scan_data_filters_compare_float_columns_directly() {
+        use datafusion::physical_expr::expressions::BinaryExpr;
+        use datafusion_comet_spark_expr::NormalizeNaNAndZero;
+        let double = spark_expression::DataType {
+            type_id: 6,
+            type_info: None,
+        };
+        let operand = |expr_struct| Expr {
+            expr_struct: Some(expr_struct),
+            query_context: None,
+            expr_id: None,
+        };
+        let expr = operand(Gt(Box::new(spark_expression::BinaryExpr {
+            left: Some(Box::new(operand(Bound(spark_expression::BoundReference {
+                index: 0,
+                datatype: Some(double.clone()),
+            })))),
+            right: Some(Box::new(operand(Literal(spark_expression::Literal {
+                value: Some(literal::Value::DoubleVal(500.0)),
+                datatype: Some(double),
+                is_null: false,
+            })))),
+        })));
+        let schema = Arc::new(Schema::new(vec![Field::new("d", DataType::Float64, true)]));
+        let left_operand = |expr: Arc<dyn PhysicalExpr>| {
+            let comparison = expr.downcast_ref::<BinaryExpr>().expect("a comparison");
+            Arc::clone(comparison.left())
+        };
+        let planner = PhysicalPlanner::default();
+        let comparison = planner.create_expr(&expr, Arc::clone(&schema)).unwrap();
+        assert!(left_operand(comparison)
+            .downcast_ref::<NormalizeNaNAndZero>()
+            .is_some());
+        let data_filter = planner
+            .create_data_filter(&expr, schema, planner.data_filter_float_operands())
+            .unwrap();
+        assert!(left_operand(data_filter).downcast_ref::<Column>().is_some());
+    }
+
+    /// With row-level pushdown the Parquet reader drops the rows a data filter rejects, so the
+    /// filter normalizes the column as well as the literal. A raw column would drop a stored NaN
+    /// whose bits differ from the normalized literal, and a stored NaN with the sign bit set
+    /// under any ordering comparison, both of which Spark matches.
+    #[test]
+    fn scan_data_filters_normalize_float_columns_with_row_level_pushdown() {
+        use arrow::array::{AsArray, BooleanArray};
+        use datafusion::physical_expr::expressions::BinaryExpr;
+        use datafusion_comet_spark_expr::{FloatOperands, NormalizeNaNAndZero};
+        let double = spark_expression::DataType {
+            type_id: 6,
+            type_info: None,
+        };
+        let operand = |expr_struct| Expr {
+            expr_struct: Some(expr_struct),
+            query_context: None,
+            expr_id: None,
+        };
+        let column_and = |value: f64| {
+            Box::new(spark_expression::BinaryExpr {
+                left: Some(Box::new(operand(Bound(spark_expression::BoundReference {
+                    index: 0,
+                    datatype: Some(double.clone()),
+                })))),
+                right: Some(Box::new(operand(Literal(spark_expression::Literal {
+                    value: Some(literal::Value::DoubleVal(value)),
+                    datatype: Some(double.clone()),
+                    is_null: false,
+                })))),
+            })
+        };
+        // Spark folds `-double('NaN')` into a literal with the sign bit set.
+        let negative_nan = f64::from_bits(0xfff8_0000_0000_0000);
+        let schema = Arc::new(Schema::new(vec![Field::new("d", DataType::Float64, true)]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Float64Array::from(vec![
+                negative_nan,
+                f64::NAN,
+                1.0,
+            ]))],
+        )
+        .unwrap();
+        let config =
+            SessionConfig::new().set_bool("datafusion.execution.parquet.pushdown_filters", true);
+        let planner = PhysicalPlanner::new(Arc::new(SessionContext::new_with_config(config)), 0);
+        assert_eq!(
+            planner.data_filter_float_operands(),
+            FloatOperands::Normalize
+        );
+        for (expr, expected) in [
+            (operand(Eq(column_and(negative_nan))), [true, true, false]),
+            (operand(Gt(column_and(0.0))), [true, true, true]),
+        ] {
+            let data_filter = planner
+                .create_data_filter(
+                    &expr,
+                    Arc::clone(&schema),
+                    planner.data_filter_float_operands(),
+                )
+                .unwrap();
+            let comparison = data_filter
+                .downcast_ref::<BinaryExpr>()
+                .expect("a comparison");
+            assert!(comparison
+                .left()
+                .downcast_ref::<NormalizeNaNAndZero>()
+                .is_some());
+            let matched = data_filter.evaluate(&batch).unwrap().into_array(3).unwrap();
+            assert_eq!(matched.as_boolean(), &BooleanArray::from(expected.to_vec()));
+        }
+    }
+
     #[test]
     fn spark_plan_metrics_hash_join() {
         let op_scan = create_scan();
@@ -7782,5 +8031,60 @@ mod tests {
             err.to_string().contains("Non-empty FileScanTask partition"),
             "unexpected error: {err}"
         );
+    }
+
+    /// The planner promises DataFusion a native UDF's return type with every nested field nullable,
+    /// whatever the kernel reports, and every batch the UDF produces has that type. `make_struct_c`
+    /// reports its struct's field `a` as non-nullable for a registration that declares it nullable.
+    #[test]
+    fn native_scalar_udf_promises_nullable_nested_fields() {
+        use crate::execution::c_udf::test_support::{test_udfs_path, BUILD_HINT};
+        use datafusion_comet_proto::spark_expression::data_type::{
+            data_type_info::DatatypeStruct, DataTypeInfo, StructInfo,
+        };
+
+        let int_type = |type_id| spark_expression::DataType {
+            type_id,
+            type_info: None,
+        };
+        let declared = spark_expression::DataType {
+            type_id: 16, // STRUCT
+            type_info: Some(Box::new(DataTypeInfo {
+                datatype_struct: Some(DatatypeStruct::Struct(StructInfo {
+                    field_names: vec!["a".to_string()],
+                    field_datatypes: vec![int_type(3)], // INT32
+                    field_nullable: vec![true],
+                    field_metadata: vec![],
+                })),
+            })),
+        };
+        let call = Expr {
+            expr_struct: Some(NativeScalarUdf(spark_expression::NativeScalarUdf {
+                name: "make_struct_c".to_string(),
+                library_path: test_udfs_path().to_string_lossy().into_owned(),
+                args: vec![Expr {
+                    expr_struct: Some(Bound(spark_expression::BoundReference {
+                        index: 0,
+                        datatype: Some(int_type(4)), // INT64
+                    })),
+                    ..Default::default()
+                }],
+                return_type: Some(declared),
+                deterministic: true,
+            })),
+            ..Default::default()
+        };
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, true)]));
+        let expr = PhysicalPlanner::default()
+            .create_expr(&call, Arc::clone(&schema))
+            .expect(BUILD_HINT);
+
+        let promised = DataType::Struct(Fields::from(vec![Field::new("a", DataType::Int32, true)]));
+        assert_eq!(expr.data_type(&schema).unwrap(), promised);
+
+        let ids: ArrayRef = Arc::new(arrow::array::Int64Array::from(vec![Some(1), None]));
+        let batch = RecordBatch::try_new(schema, vec![ids]).unwrap();
+        let out = expr.evaluate(&batch).unwrap().into_array(2).unwrap();
+        assert_eq!(out.data_type(), &promised);
     }
 }

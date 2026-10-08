@@ -417,6 +417,8 @@ mod tests {
             true,
             None,
             None,
+            0,
+            0,
         ));
         let literal: Arc<dyn PhysicalExpr> = Arc::new(Literal::new(ScalarValue::Int32(Some(1))));
         let nested: Arc<dyn PhysicalExpr> =
@@ -1344,6 +1346,79 @@ mod tests {
         assert!(bloom_bytes > 0);
         assert_eq!(scan_metric(&scan, "scan_io_data_bytes"), 0);
         assert!(scan_metric(&scan, "scan_io_metadata_bytes") >= bloom_bytes);
+    }
+
+    /// A bloom filter holds the bits of each value, so `-0.0` and `0.0` are separate entries in it,
+    /// while Spark's `=` matches either zero. A data filter that only prunes (no row-level
+    /// pushdown) probes the filter for both zeros, so the row group holding `-0.0` and no `0.0`
+    /// is read for `d = 0.0` and for `d = -0.0`, and a value the filter does not hold still
+    /// prunes it. The column statistics cover all three values, so only the bloom filter prunes.
+    #[tokio::test]
+    async fn bloom_filter_pruning_matches_either_signed_zero() {
+        use arrow::array::Float64Array;
+        use datafusion::physical_plan::metrics::MetricValue;
+        use datafusion_comet_spark_expr::{spark_comparison, FloatOperands};
+
+        let schema = Arc::new(Schema::new(vec![Field::new("d", DataType::Float64, false)]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Float64Array::from(vec![-1.0, -0.0, 1.0]))],
+        )
+        .unwrap();
+        let filename = get_temp_filename()
+            .as_path()
+            .as_os_str()
+            .to_str()
+            .unwrap()
+            .to_string();
+        let props = WriterProperties::builder()
+            .set_bloom_filter_enabled(true)
+            .build();
+        let file = File::create(&filename).unwrap();
+        let mut writer = ArrowWriter::try_new(file, Arc::clone(&schema), Some(props)).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+
+        let session_ctx = Arc::new(SessionContext::new());
+        for (value, read) in [(-0.0, true), (0.0, true), (0.5, false)] {
+            let filter = spark_comparison(
+                Arc::new(Column::new("d", 0)),
+                Operator::Eq,
+                Arc::new(Literal::new(ScalarValue::Float64(Some(value)))),
+                &schema,
+                FloatOperands::Raw,
+            )
+            .unwrap();
+            let scan = init_test_scan(
+                Arc::clone(&schema),
+                Arc::clone(&schema),
+                PartitionedFile::from_path(filename.clone()).unwrap(),
+                None,
+                Some(vec![filter]),
+                &session_ctx,
+            );
+            let mut stream = scan.execute(0, session_ctx.task_ctx()).unwrap();
+            let mut rows = 0;
+            while let Some(batch) = stream.next().await {
+                rows += batch.unwrap().num_rows();
+            }
+            let bloom_filter = scan
+                .metrics()
+                .unwrap()
+                .sum_by_name("row_groups_pruned_bloom_filter");
+            let Some(MetricValue::PruningMetrics {
+                pruning_metrics, ..
+            }) = bloom_filter
+            else {
+                panic!("missing bloom filter pruning metrics: {bloom_filter:?}");
+            };
+            let expected = if read { (0, 1, 3) } else { (1, 0, 0) };
+            assert_eq!(
+                (pruning_metrics.pruned(), pruning_metrics.matched(), rows),
+                expected,
+                "d = {value:?}"
+            );
+        }
     }
 
     #[tokio::test]

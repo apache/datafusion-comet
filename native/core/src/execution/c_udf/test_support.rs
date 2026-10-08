@@ -1,0 +1,29 @@
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//   http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+//! Test helpers shared across the c_udf submodules.
+
+/// `comet-test-udfs` is `crate-type = ["cdylib"]` and has no test targets, so a
+/// test build compiles it without emitting the shared library these tests
+/// dlopen. Name the fix in the failure rather than leaving a bare dlopen error.
+pub(crate) const BUILD_HINT: &str = "run `cargo build -p comet-test-udfs` first";
+
+/// Path to the `comet-test-udfs` cdylib, baked in at build time by
+/// `core/build.rs`.
+pub(crate) fn test_udfs_path() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("COMET_TEST_UDFS_LIB"))
+}
