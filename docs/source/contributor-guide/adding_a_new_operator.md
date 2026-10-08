@@ -148,7 +148,10 @@ own operators itself. Spark computes a typed operation's rows one at a time, as 
 the conversion fills a whole Arrow batch first. So the rule leaves the output unconverted where a
 limit, a `mapPartitions` function, or code reading `Dataset.rdd` could stop reading it early, unless
 an operator that reads all of its input first, such as an exchange, a sort, or a hash aggregate,
-sits in between. Fusing the deserializer, the `Invoke` that calls the user function, and the
+sits in between. For the same reason, it leaves the output unconverted when the plan uses
+`input_file_name()`, `input_file_block_start()` or `input_file_block_length()`: filling the batch
+moves the scan's reader past the file that these report when Spark evaluates them above the
+conversion. Fusing the deserializer, the `Invoke` that calls the user function, and the
 serializer of `Dataset.map` into one projection in the JVM codegen dispatcher was tried in
 [#5714](https://github.com/apache/datafusion-comet/pull/5714) and dropped. The dispatcher only calls
 into Spark's own classes, and the conversion gets nearly the same speedup for `map` while also
@@ -730,6 +733,34 @@ Use `QueryPlanSerde.exprToProto` to convert Spark expressions to protobuf:
 ```scala
 val protoExpr = exprToProto(sparkExpr, inputSchema)
 ```
+
+### Restoring the Spark operator (`sparkFallback`)
+
+`CometExec.originalPlan` is the Spark operator this node replaced. `CometExecRule` copies
+`originalPlan.logicalLink` onto the Comet node, which is how AQE finds the node again when it
+re-plans a stage. `RevertNativeForTransitionHeavyStages` calls `sparkFallback(newChildren)` to
+rebuild that Spark operator with the children of the reverted stage.
+
+The default implementation is `originalPlan.withNewChildren(newChildren)`. It refuses a null
+`originalPlan`, an `originalPlan` that is one of the node's own children, or a different number of
+children than the Spark operator has.
+
+Override `sparkFallback` when conversion changes the plan shape, so the restored node is not that
+Spark operator with the same children. `CometNativeWriteExec` replaces a `DataWritingCommandExec`
+and drops the `WriteFilesExec` under it; its override puts that wrapper back around the restored
+input. `CometIcebergWriteExec` keeps the same shape as `IcebergWriteExec`, so the default is
+enough.
+
+Also override `sparkFallback` when the operator's live state differs from `originalPlan`.
+`CometNativeScanExec` restores its current partition and data filters, and
+`CometIcebergNativeScanExec` restores its current runtime filters, so AQE's executable DPP
+subqueries survive reversion. `CometLocalTopKExec` returns the restored child directly: Comet
+inserted that local candidate selection, and only the outer TopK restores Spark's offset and
+projection. Rebuilding the original TopK at both nodes would apply it twice.
+
+Do not point `originalPlan` at a child. If that child is a shuffle or query stage, the copied
+logical link puts this node inside the stage's `LogicalQueryStage`. AQE then re-plans a second
+copy of the operator around the one that is already there.
 
 ### Handling Fallback
 

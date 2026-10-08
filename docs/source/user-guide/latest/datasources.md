@@ -52,7 +52,8 @@ converted into Arrow format, allowing the Comet pipeline to take over after that
 ### Other Spark inputs
 
 Comet can also convert the output of these Spark inputs to Arrow format, so that the operators
-above them can run in Comet. Each conversion is off by default.
+above them can run in Comet. Only `spark.comet.convert.oneRowRelation.enabled` is on by default,
+because the row it converts has no columns.
 
 - `spark.comet.convert.range.enabled`: `spark.range` and SQL `range()`, for ranges that Comet does
   not generate natively with `spark.comet.exec.range.enabled`.
@@ -85,6 +86,11 @@ still produces the RDD rows; conversion lets eligible downstream operators execu
 The same types apply to the output of typed `Dataset` operations, such as `map`, which Comet
 converts when `spark.comet.convert.typedDataset.enabled=true`. A column of any other type keeps
 the operators above the typed operation on Spark.
+
+Comet does not convert a source, or the output of a typed `Dataset` operation, when the query uses
+`input_file_name()`, `input_file_block_start()` or `input_file_block_length()`, so the operators
+above it run in Spark. These functions report the file that Spark's reader is on when Spark evaluates
+them, and the conversion and the Comet operators above it would read ahead of that.
 
 ## Data Catalogs
 
@@ -288,7 +294,10 @@ URLs.
 This is opt-in and disabled by default. Enable it by listing the schemes to treat as S3-compliant
 aliases in `spark.hadoop.fs.comet.s3Compliant.schemes` (Hadoop key
 `fs.comet.s3Compliant.schemes`), a comma-separated, case-insensitive list. This mirrors the
-existing `fs.comet.libhdfs.schemes` config.
+existing `fs.comet.libhdfs.schemes` config. The list entries are case-insensitive, but an Iceberg
+table location must write the alias in lowercase (`blob://`, not `BLOB://`): the native Iceberg
+reader opens each recorded location as written, and its S3 backend accepts only a lowercase
+scheme prefix, so Comet declines such a location up front and leaves that scan to Spark.
 
 ```shell
 --conf spark.hadoop.fs.comet.s3Compliant.schemes=blob

@@ -41,6 +41,9 @@ pub struct TimestampTruncExpr {
     /// `Arc<str>` so it can be cheaply cloned onto Arrow `Timestamp` data types without
     /// reallocating, and parsed once into a `chrono::TimeZone` per batch.
     timezone: Arc<str>,
+    /// Whether SECOND and MILLISECOND truncation wraps below the smallest timestamp, as Spark
+    /// did before 4.2.0, instead of raising `long overflow` as 4.2.0 does (SPARK-56663).
+    wrap_second_millisecond_overflow: bool,
 }
 
 impl Hash for TimestampTruncExpr {
@@ -48,6 +51,7 @@ impl Hash for TimestampTruncExpr {
         self.child.hash(state);
         self.format.hash(state);
         self.timezone.hash(state);
+        self.wrap_second_millisecond_overflow.hash(state);
     }
 }
 impl PartialEq for TimestampTruncExpr {
@@ -55,6 +59,7 @@ impl PartialEq for TimestampTruncExpr {
         self.child.eq(&other.child)
             && self.format.eq(&other.format)
             && self.timezone.eq(&other.timezone)
+            && self.wrap_second_millisecond_overflow == other.wrap_second_millisecond_overflow
     }
 }
 
@@ -63,11 +68,13 @@ impl TimestampTruncExpr {
         child: Arc<dyn PhysicalExpr>,
         format: Arc<dyn PhysicalExpr>,
         timezone: String,
+        wrap_second_millisecond_overflow: bool,
     ) -> Self {
         TimestampTruncExpr {
             child,
             format,
             timezone: Arc::from(timezone),
+            wrap_second_millisecond_overflow,
         }
     }
 }
@@ -100,6 +107,7 @@ impl PhysicalExpr for TimestampTruncExpr {
         let format = self.format.evaluate(batch)?;
         let output_type = output_type(&timestamp.data_type());
         let tz = &self.timezone;
+        let wrap = self.wrap_second_millisecond_overflow;
         let resolve_tz = |ts: ArrayRef| -> datafusion::common::Result<ArrayRef> {
             // For TimestampNTZ (Timestamp(Microsecond, None)), skip timezone conversion.
             // NTZ values are timezone-independent and truncation should operate directly on the
@@ -121,7 +129,7 @@ impl PhysicalExpr for TimestampTruncExpr {
         };
         match (timestamp, format) {
             (ColumnarValue::Array(ts), ColumnarValue::Scalar(Utf8(Some(format)))) => {
-                let result = timestamp_trunc_dyn(&resolve_tz(ts)?, format)?;
+                let result = timestamp_trunc_dyn(&resolve_tz(ts)?, format, wrap)?;
                 Ok(ColumnarValue::Array(relabel(result)?))
             }
             (ColumnarValue::Array(ts), ColumnarValue::Array(formats)) => {
@@ -129,7 +137,8 @@ impl PhysicalExpr for TimestampTruncExpr {
                 Ok(ColumnarValue::Array(relabel(result)?))
             }
             (ColumnarValue::Scalar(ts_scalar), ColumnarValue::Scalar(Utf8(Some(format)))) => {
-                let result = timestamp_trunc_dyn(&resolve_tz(ts_scalar.to_array()?)?, format)?;
+                let result =
+                    timestamp_trunc_dyn(&resolve_tz(ts_scalar.to_array()?)?, format, wrap)?;
                 let scalar = ScalarValue::try_from_array(&relabel(result)?, 0)?;
                 Ok(ColumnarValue::Scalar(scalar))
             }
@@ -153,6 +162,7 @@ impl PhysicalExpr for TimestampTruncExpr {
             Arc::clone(&children[0]),
             Arc::clone(&self.format),
             self.timezone.to_string(),
+            self.wrap_second_millisecond_overflow,
         )))
     }
 }
@@ -195,6 +205,7 @@ mod tests {
             Arc::new(Column::new("ts", 0)),
             Arc::new(Literal::new(Utf8(Some("HOUR".to_string())))),
             "Asia/Kolkata".to_string(),
+            false,
         );
         let declared = expr.data_type(&schema).unwrap();
         let ColumnarValue::Array(result) = expr.evaluate(&batch).unwrap() else {
