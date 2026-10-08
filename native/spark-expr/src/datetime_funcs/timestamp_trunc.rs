@@ -42,7 +42,7 @@ pub struct TimestampTruncExpr {
     /// reallocating, and parsed once into a `chrono::TimeZone` per batch.
     timezone: Arc<str>,
     /// Whether SECOND and MILLISECOND truncation wraps below the smallest timestamp, as Spark
-    /// did before 4.2.0, instead of raising `long overflow` as 4.2.0 does (SPARK-56663).
+    /// did before 4.2.0, instead of raising `long overflow` as 4.2.0 and later do (SPARK-56663).
     wrap_second_millisecond_overflow: bool,
 }
 
@@ -133,7 +133,7 @@ impl PhysicalExpr for TimestampTruncExpr {
                 Ok(ColumnarValue::Array(relabel(result)?))
             }
             (ColumnarValue::Array(ts), ColumnarValue::Array(formats)) => {
-                let result = timestamp_trunc_array_fmt_dyn(&resolve_tz(ts)?, &formats)?;
+                let result = timestamp_trunc_array_fmt_dyn(&resolve_tz(ts)?, &formats, wrap)?;
                 Ok(ColumnarValue::Array(relabel(result)?))
             }
             (ColumnarValue::Scalar(ts_scalar), ColumnarValue::Scalar(Utf8(Some(format)))) => {

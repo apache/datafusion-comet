@@ -644,7 +644,7 @@ where
 ///   format is a scalar string specifying the format to apply to the timestamp value.
 ///
 ///   wrap_second_millisecond_overflow selects how SECOND and MILLISECOND truncation treats a
-///            result below the smallest timestamp: Spark before 4.2 wraps, 4.2 raises.
+///            result below the smallest timestamp: Spark before 4.2 wraps, 4.2 and later raise.
 pub(crate) fn timestamp_trunc_dyn(
     array: &dyn Array,
     format: String,
@@ -1090,7 +1090,8 @@ fn timestamp_trunc_fine_boundary(
                     micros.wrapping_sub(remainder)
                 } else {
                     // MINUTE/HOUR/DAY use Spark's exact instant-to-microseconds conversion, and
-                    // Spark 4.2 (SPARK-56663) checks the SECOND/MILLISECOND subtraction too.
+                    // Spark 4.2 and later (SPARK-56663) check the SECOND/MILLISECOND
+                    // subtraction too.
                     micros.checked_sub(remainder).ok_or_else(|| {
                         SparkError::Internal(format!(
                             "long overflow: Timestamp {micros} out of range after date_trunc({granularity})"
@@ -1251,9 +1252,13 @@ where
 ///
 ///   format is an array of strings specifying the format to apply to the corresponding timestamp
 ///             value. The array may be a dictionary array.
+///
+///   wrap_second_millisecond_overflow is passed to the literal-format kernel, as in
+///            `timestamp_trunc_dyn`.
 pub(crate) fn timestamp_trunc_array_fmt_dyn(
     array: &dyn Array,
     formats: &dyn Array,
+    wrap_second_millisecond_overflow: bool,
 ) -> Result<ArrayRef, SparkError> {
     let array = unpack_dictionary(array)?;
     let formats = unpack_dictionary(formats)?;
@@ -1269,7 +1274,11 @@ pub(crate) fn timestamp_trunc_array_fmt_dyn(
         DataType::Utf8 => formats.as_string::<i32>(),
         fmt => return_compute_error_with!("timestamp_trunc does not support format type", fmt),
     };
-    Ok(Arc::new(timestamp_trunc_by_row_format(array, formats)?))
+    Ok(Arc::new(timestamp_trunc_by_row_format(
+        array,
+        formats,
+        wrap_second_millisecond_overflow,
+    )?))
 }
 
 fn unpack_dictionary(array: &dyn Array) -> Result<ArrayRef, SparkError> {
@@ -1289,6 +1298,7 @@ fn unpack_dictionary(array: &dyn Array) -> Result<ArrayRef, SparkError> {
 fn timestamp_trunc_by_row_format(
     array: &TimestampMicrosecondArray,
     formats: &StringArray,
+    wrap_second_millisecond_overflow: bool,
 ) -> Result<TimestampMicrosecondArray, SparkError> {
     if array.len() != formats.len() {
         return Err(SparkError::Internal(format!(
@@ -1333,7 +1343,7 @@ fn timestamp_trunc_by_row_format(
     }
 
     if granularities.len() == 1 && !null_format_hides_value {
-        return timestamp_trunc_upstream(array, granularities[0]);
+        return timestamp_trunc_upstream(array, granularities[0], wrap_second_millisecond_overflow);
     }
 
     let truncated = granularities
@@ -1346,7 +1356,11 @@ fn timestamp_trunc_by_row_format(
                 .collect();
             let input = arrow::compute::nullif(array, &outside_group)
                 .map_err(|error| SparkError::Internal(error.to_string()))?;
-            timestamp_trunc_upstream(input.as_primitive(), granularity)
+            timestamp_trunc_upstream(
+                input.as_primitive(),
+                granularity,
+                wrap_second_millisecond_overflow,
+            )
         })
         .collect::<Result<Vec<_>, _>>()?;
 
@@ -2151,7 +2165,7 @@ mod tests {
     #[test]
     fn test_timestamp_trunc_dictionary_fine_unused_extremes() {
         // Unused MIN entries must not raise, whether SECOND/MILLISECOND wrap (Spark before 4.2)
-        // or fail (Spark 4.2).
+        // or fail (Spark 4.2 and later).
         for wrap in [true, false] {
             for timezone in [None, Some("UTC"), Some("Asia/Tokyo")] {
                 let values = TimestampMicrosecondArray::from(vec![
@@ -2296,8 +2310,8 @@ mod tests {
 
     #[test]
     fn test_timestamp_trunc_fine_spark42_overflow() {
-        // Spark 4.2 (SPARK-56663) checks the SECOND/MILLISECOND subtraction like every other
-        // unit. First representable boundary for each unit.
+        // Spark 4.2 and later (SPARK-56663) check the SECOND/MILLISECOND subtraction like every
+        // other unit. First representable boundary for each unit.
         for (format, boundary) in [
             ("SECOND", -9_223_372_036_854_000_000),
             ("MILLISECOND", -9_223_372_036_854_775_000),
@@ -2581,11 +2595,14 @@ mod tests {
             .iter()
             .map(|(name, _)| *name)
             .collect();
-        for (timezone, instants) in transition_instants() {
+        for ((timezone, instants), wrap) in transition_instants()
+            .into_iter()
+            .flat_map(|zone| [(zone.clone(), true), (zone, false)])
+        {
             let input = TimestampMicrosecondArray::from(instants).with_timezone_opt(timezone);
             let by_spelling: Vec<TimestampMicrosecondArray> = spellings
                 .iter()
-                .map(|spelling| timestamp_trunc(&input, spelling.to_string()).unwrap())
+                .map(|spelling| timestamp_trunc(&input, spelling.to_string(), wrap).unwrap())
                 .collect();
             // Rotate the spellings across the rows so every row meets every format in a column
             // that mixes formats, which exercises the grouping and masking.
@@ -2596,7 +2613,7 @@ mod tests {
                         .map(|row| spellings[pick(row)])
                         .collect::<Vec<_>>(),
                 );
-                let result = timestamp_trunc_array_fmt_dyn(&input, &formats).unwrap();
+                let result = timestamp_trunc_array_fmt_dyn(&input, &formats, true).unwrap();
                 let result = result
                     .as_any()
                     .downcast_ref::<TimestampMicrosecondArray>()
@@ -2625,7 +2642,7 @@ mod tests {
         ])
         .with_timezone("America/Toronto");
         let formats = StringArray::from(vec!["WEEK", "DAY"]);
-        let result = timestamp_trunc_array_fmt_dyn(&input, &formats).unwrap();
+        let result = timestamp_trunc_array_fmt_dyn(&input, &formats, true).unwrap();
         let expected = TimestampMicrosecondArray::from(vec![
             instant_micros("1919-03-31T04:30:00Z"),
             instant_micros("1919-03-31T05:00:00Z"),
@@ -2651,7 +2668,7 @@ mod tests {
         .with_timezone("America/Los_Angeles");
         // A NULL format gives NULL, and so does a NULL value, whatever its format says.
         let formats = StringArray::from(vec![Some("YEAR"), None, Some("not_a_unit"), Some("HOUR")]);
-        let result = timestamp_trunc_array_fmt_dyn(&input, &formats).unwrap();
+        let result = timestamp_trunc_array_fmt_dyn(&input, &formats, true).unwrap();
         let expected = TimestampMicrosecondArray::from(vec![
             Some(instant_micros("2024-01-01T08:00:00Z")),
             None,
@@ -2668,18 +2685,18 @@ mod tests {
         );
 
         let formats = StringArray::from(vec!["YEAR", "not_a_unit", "YEAR", "YEAR"]);
-        assert!(timestamp_trunc_array_fmt_dyn(&input, &formats).is_err());
+        assert!(timestamp_trunc_array_fmt_dyn(&input, &formats, true).is_err());
     }
 
     #[test]
     fn row_format_groups_do_not_fail_each_other() {
-        // SECOND wraps at the lower bound like Spark 4.1, while YEAR would overflow there. The
-        // YEAR group only sees its own row.
+        // SECOND wraps at the lower bound like Spark before 4.2, while YEAR would overflow there.
+        // The YEAR group only sees its own row.
         let input =
             TimestampMicrosecondArray::from(vec![i64::MIN, instant_micros("2024-05-17T12:34:56Z")]);
         let formats = StringArray::from(vec!["SECOND", "YEAR"]);
-        let result = timestamp_trunc_array_fmt_dyn(&input, &formats).unwrap();
-        let literal = timestamp_trunc(&input.slice(0, 1), "SECOND".to_string()).unwrap();
+        let result = timestamp_trunc_array_fmt_dyn(&input, &formats, true).unwrap();
+        let literal = timestamp_trunc(&input.slice(0, 1), "SECOND".to_string(), true).unwrap();
         let result = result
             .as_any()
             .downcast_ref::<TimestampMicrosecondArray>()
@@ -2688,7 +2705,7 @@ mod tests {
         assert_eq!(result.value(1), instant_micros("2024-01-01T00:00:00Z"));
 
         let formats = StringArray::from(vec!["YEAR", "YEAR"]);
-        assert!(timestamp_trunc_array_fmt_dyn(&input, &formats).is_err());
+        assert!(timestamp_trunc_array_fmt_dyn(&input, &formats, true).is_err());
     }
 
     #[test]
@@ -2701,7 +2718,7 @@ mod tests {
         let input =
             TimestampMicrosecondArray::from(instants.to_vec()).with_timezone("America/Los_Angeles");
         let formats = StringArray::from(vec!["DAY", "HOUR", "MONTH"]);
-        let expected = timestamp_trunc_array_fmt_dyn(&input, &formats).unwrap();
+        let expected = timestamp_trunc_array_fmt_dyn(&input, &formats, true).unwrap();
 
         let keys = Int32Array::from(vec![0, 1, 1]);
         let values = TimestampMicrosecondArray::from(vec![instants[0], instants[1]])
@@ -2719,7 +2736,7 @@ mod tests {
             (&input_dict as &dyn Array, &formats_dict as &dyn Array),
         ] {
             assert_eq!(
-                &timestamp_trunc_array_fmt_dyn(array, formats).unwrap(),
+                &timestamp_trunc_array_fmt_dyn(array, formats, true).unwrap(),
                 &expected
             );
         }
@@ -2821,7 +2838,7 @@ mod tests {
         }
 
         // test cases
-        if let Ok(a) = timestamp_trunc_array_fmt_dyn(&array, &fmt_array) {
+        if let Ok(a) = timestamp_trunc_array_fmt_dyn(&array, &fmt_array, true) {
             for i in 0..array.len() {
                 assert!(
                     array.value(i)
@@ -2834,7 +2851,7 @@ mod tests {
         } else {
             unreachable!()
         }
-        if let Ok(a) = timestamp_trunc_array_fmt_dyn(&array_dict, &fmt_array) {
+        if let Ok(a) = timestamp_trunc_array_fmt_dyn(&array_dict, &fmt_array, true) {
             for i in 0..array.len() {
                 assert!(
                     array.value(i)
@@ -2847,7 +2864,7 @@ mod tests {
         } else {
             unreachable!()
         }
-        if let Ok(a) = timestamp_trunc_array_fmt_dyn(&array, &fmt_dict) {
+        if let Ok(a) = timestamp_trunc_array_fmt_dyn(&array, &fmt_dict, true) {
             for i in 0..array.len() {
                 assert!(
                     array.value(i)
@@ -2860,7 +2877,7 @@ mod tests {
         } else {
             unreachable!()
         }
-        if let Ok(a) = timestamp_trunc_array_fmt_dyn(&array_dict, &fmt_dict) {
+        if let Ok(a) = timestamp_trunc_array_fmt_dyn(&array_dict, &fmt_dict, true) {
             for i in 0..array.len() {
                 assert!(
                     array.value(i)
@@ -2872,6 +2889,27 @@ mod tests {
             }
         } else {
             unreachable!()
+        }
+    }
+
+    #[test]
+    fn row_formats_follow_the_overflow_policy() {
+        // Spark before 4.2 wraps SECOND and MILLISECOND below the smallest timestamp, and 4.2 and
+        // later raise. Cover a column with one format and one that mixes formats.
+        let input = TimestampMicrosecondArray::from(vec![
+            i64::MIN,
+            i64::MIN,
+            instant_micros("2024-05-17T12:34:56Z"),
+        ])
+        .with_timezone("UTC");
+        for formats in [
+            vec!["SECOND", "SECOND", "SECOND"],
+            vec!["SECOND", "MILLISECOND", "YEAR"],
+        ] {
+            let formats = StringArray::from(formats);
+            assert!(timestamp_trunc_array_fmt_dyn(&input, &formats, true).is_ok());
+            let error = timestamp_trunc_array_fmt_dyn(&input, &formats, false).unwrap_err();
+            assert!(error.to_string().contains("long overflow"), "{error}");
         }
     }
 
