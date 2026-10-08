@@ -41,10 +41,10 @@ import org.apache.comet.udf.{CometJvmUDF, CometUDF}
  *
  * The vectorized form reads and writes the value buffers directly and copies the validity bitmap
  * in one call. Its arguments are evaluated natively, so only the column itself crosses into the
- * JVM. For functions this simple, most of the difference from the dispatched form is the
- * dispatcher's overhead around the call, not the call itself, which the JIT inlines into the
- * generated loop: Spark guards a primitive parameter with a null check that runs natively as a
- * `CASE` over the batch, and the dispatcher pays a fixed cost per batch.
+ * JVM. For functions this simple, most of the difference from the dispatched form is the work the
+ * dispatcher's kernel does around the call for each row, not the call itself, which the JIT
+ * inlines into the generated loop. Spark's null check around a primitive parameter runs in that
+ * kernel too, and the dispatcher's fixed cost per batch is a smaller part of the difference.
  *
  * A last row runs the query without the UDF. Its time is the floor every Comet row shares, so the
  * difference between it and a UDF row is what that form of the UDF costs.
