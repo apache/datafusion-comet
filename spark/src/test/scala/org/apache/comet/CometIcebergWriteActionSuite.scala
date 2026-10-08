@@ -186,7 +186,9 @@ class CometIcebergWriteActionSuite
   }
 
   // With no flag set, an eligible write becomes a CometIcebergWriteExec, so reverting a
-  // transition-heavy stage has to put a JVM writer back rather than drop the write.
+  // transition-heavy stage has to put a JVM writer back rather than drop the write. The same write
+  // runs first under the default threshold, which leaves its stage alone, so that the reverted run
+  // is known to start from a native write rather than from one that was never eligible.
   // https://github.com/apache/datafusion-comet/issues/5719
   for (adaptive <- Seq(false, true)) {
     test(s"transition-heavy fallback keeps the write when no flag is set with AQE=$adaptive") {
@@ -203,29 +205,52 @@ class CometIcebergWriteActionSuite
             .parquet(dir.getCanonicalPath)
           val table = s"transition_defaults_${if (adaptive) "aqe" else "no_aqe"}"
           createTable(warehouseDir, table, partitionSpec = "")
-          // withSQLConf returns Unit before Spark 4.0, so the assertions run inside it.
-          withSQLConf(
-            SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
-            CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS.key -> "0") {
-            val snapshot = captureWrite(table) {
-              withSessionConf(
-                CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key -> None,
-                CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> None) {
-                spark.read.parquet(dir.getCanonicalPath).writeTo(s"$catalog.$ns.$table").append()
+          // Appends the source with no write flag set, checks that it committed once, and returns
+          // the plans it ran.
+          def append(maxTransitions: Int): Seq[SparkPlan] = {
+            var plans = Seq.empty[SparkPlan]
+            // withSQLConf returns Unit before Spark 4.0, so the plans are kept from inside it.
+            withSQLConf(
+              SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+              CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "true",
+              CometConf.COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS.key -> maxTransitions.toString) {
+              val snapshot = captureWrite(table) {
+                withSessionConf(
+                  CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key -> None,
+                  CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> None) {
+                  spark.read
+                    .parquet(dir.getCanonicalPath)
+                    .writeTo(s"$catalog.$ns.$table")
+                    .append()
+                }
               }
+              assert(
+                snapshot.snapshotDelta == 1L,
+                s"expected 1 commit, got ${snapshot.snapshotDelta}")
+              plans = snapshot.plans
             }
-            assertExactlyOneCommit(snapshot)
-            // Also shows the stage was reverted: otherwise the native writer would still be here.
-            val nativeWrites = snapshot.plans.flatMap { plan =>
-              collectWithSubqueries(plan) { case e: CometIcebergWriteExec => e }
-            }
-            assert(
-              nativeWrites.isEmpty,
-              "transition reversion should restore IcebergWriteExec. Plans:\n" +
-                snapshot.plans.mkString("\n--\n"))
+            plans
           }
-          assertRows(table, Seq(1, 2, 3))
+
+          // The default threshold of two transitions leaves the stage alone.
+          val native = append(maxTransitions = 2)
+          val (nativeCommits, _) = collectIcebergWriteOps(native)
+          assert(
+            nativeCommits.nonEmpty && native.exists { plan =>
+              collectWithSubqueries(plan) { case e: CometIcebergWriteExec => e }.nonEmpty
+            },
+            "expected an IcebergCommitExec over a CometIcebergWriteExec. Plans:\n" +
+              native.mkString("\n--\n"))
+
+          val reverted = append(maxTransitions = 0)
+          val (revertedCommits, revertedWrites) = collectIcebergWriteOps(reverted)
+          assert(
+            revertedCommits.nonEmpty && revertedWrites.nonEmpty && reverted.forall { plan =>
+              collectWithSubqueries(plan) { case e: CometIcebergWriteExec => e }.isEmpty
+            },
+            "transition reversion should restore IcebergWriteExec. Plans:\n" +
+              reverted.mkString("\n--\n"))
+          assertRows(table, Seq(1, 1, 2, 2, 3, 3))
         }
       }
     }
