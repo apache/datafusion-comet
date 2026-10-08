@@ -631,4 +631,4 @@ A checklist for triaging an executor OOM kill:
    `batch_size * columns`, and wide or deeply nested schemas amplify it.
 4. Check whether the operators involved can spill at all. `ShuffledHashJoin` cannot, so
    `spark.comet.exec.forceShuffledHashJoin=true` converts a spillable sort-merge join into one that
-   is not.
+   is not, for build sides under `spark.comet.exec.forceShuffledHashJoin.maxBuildSize`.

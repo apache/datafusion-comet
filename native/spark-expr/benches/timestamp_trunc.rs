@@ -56,6 +56,7 @@ fn criterion_benchmark(c: &mut Criterion) {
                 Arc::new(Column::new("a", 0)),
                 lit(format),
                 timezone.to_string(),
+                true,
             );
             for rows in ROW_COUNTS {
                 for (null_ratio, tag) in NULL_RATIOS.into_iter().chain([(0.875, "dense")]) {
@@ -110,6 +111,7 @@ fn criterion_benchmark(c: &mut Criterion) {
                     Arc::new(Column::new("a", 0)),
                     lit(format),
                     "UTC".into(),
+                    true,
                 );
                 let cardinality_tag = if cardinality == rows { "high" } else { "low" };
                 group.bench_with_input(
@@ -136,8 +138,12 @@ fn criterion_benchmark(c: &mut Criterion) {
                 true,
             )]));
             let batch = RecordBatch::try_new(schema, vec![Arc::new(input)]).unwrap();
-            let expr =
-                TimestampTruncExpr::new(Arc::new(Column::new("a", 0)), lit("YEAR"), "UTC".into());
+            let expr = TimestampTruncExpr::new(
+                Arc::new(Column::new("a", 0)),
+                lit("YEAR"),
+                "UTC".into(),
+                true,
+            );
             assert_eq!(expr.evaluate(&batch).is_err(), referenced);
             group.bench_with_input(
                 BenchmarkId::from_parameter(format!("YEAR/{rows}/{tag}")),
