@@ -30,9 +30,12 @@ to configure Comet to convert `SortMergeJoin` to `ShuffledHashJoin`. Comet does 
 to test with both for your specific workloads.
 
 To configure Comet to convert `SortMergeJoin` to `ShuffledHashJoin`, set `spark.comet.exec.forceShuffledHashJoin=true`.
-The conversion only happens when the build side is under a size limit, and a join whose build side has no statistics
-is left as a `SortMergeJoin`. The size is Spark's planning estimate of the build side, or under AQE the materialized
-shuffle size of the build side. By default the limit is Spark's own rule for choosing a `ShuffledHashJoin`:
+Comet makes the choice while Spark plans the query, so a join Spark would broadcast, or one with a join strategy hint
+such as `MERGE`, is planned as Spark would plan it. The choice also applies to joins of static tables inside a
+streaming query, which then run as Spark's own `ShuffledHashJoin`. The conversion only happens when the build side is
+under a size limit, and a join whose build side has no statistics is left as a `SortMergeJoin`. The size is Spark's
+planning estimate of the build side, or under AQE the materialized shuffle size of the build side. By default the
+limit is Spark's own rule for choosing a `ShuffledHashJoin`:
 `spark.sql.autoBroadcastJoinThreshold` times the initial shuffle partition count
 (`spark.sql.adaptive.coalescePartitions.initialPartitionNum` when AQE and partition coalescing are both on and it is
 set, else `spark.sql.shuffle.partitions`). When broadcasts are disabled with a non-positive threshold, Spark's default

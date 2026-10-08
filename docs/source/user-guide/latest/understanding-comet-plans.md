@@ -224,6 +224,8 @@ Keep the following in mind when reading the reports:
   native plan still counts as accelerated, so treat the percentage as an upper bound.
 - Comet's split Iceberg V2 write (`spark.comet.write.iceberg.splitOperator.enabled`) is
   declined in plan-only mode, so such writes run on, and are reported as, Spark.
+- `spark.comet.exec.forceShuffledHashJoin` is not applied in plan-only mode, so the report shows
+  the sort-merge joins Spark plans rather than the hash joins a real run would use.
 - Under AQE the report describes the plan before any adaptive re-planning, so coverage of the
   plan that finally executes can differ. In particular, AQE plans subqueries into the outer
   query only after the report is produced, so the outer report counts their operators as
