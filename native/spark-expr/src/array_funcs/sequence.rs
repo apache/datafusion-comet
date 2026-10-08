@@ -270,10 +270,11 @@ where
             ColumnarValue::Array(array) => Ok(Self::Array(as_primitive_array::<T>(array)?)),
         }
     }
+    #[inline(always)]
     fn is_null(&self, row: usize) -> bool {
         match self {
             Self::Scalar(value) => value.is_none(),
-            Self::Array(array) => array.is_null(row),
+            Self::Array(array) => array.nulls().is_some_and(|nulls| nulls.is_null(row)),
         }
     }
     #[inline(always)]
