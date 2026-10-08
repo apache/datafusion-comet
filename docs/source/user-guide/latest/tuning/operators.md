@@ -59,6 +59,31 @@ boundaries. A shuffled hash join can still filter probe batches after shuffle, b
 its filter back to an earlier scan stage. Compare the [runtime-filter and scan metrics](../metrics.md#hash-joins)
 with the setting disabled to distinguish reduced hash-probe work from reader I/O savings.
 
+#### Early filtering in join chains
+
+With `spark.comet.exec.join.dynamicFilter.enabled=true`, an eligible join can also
+use its completed build keys to filter decoded rows before an intermediate inner
+join. For example, when a final join accepts only customer 42, it can remove other
+customers before an earlier join looks up their orders. This reduces intermediate
+join work while the final join still checks every match and preserves duplicates.
+
+Placement follows direct probe-side columns through ordinary inner joins already
+eligible for runtime filtering (a single signed-integer key),
+column-only projections, and direct column null checks above the first intermediate join.
+After crossing a join, the early consumer stays above inferred null checks so null
+keys do not prevent adaptive bypass. It stops at computed
+expressions, other predicates, limits, unsupported joins, and execution boundaries.
+These early filters operate on decoded batches; they do not introduce additional
+Parquet pruning or skip schema conversions. Each intermediate join retains its
+existing reader-filter checks.
+
+Early filtering stops evaluating after two consecutive nonempty evaluated batches
+remove no rows, avoiding repeated membership checks on unselective inputs. That
+decision is local to one execution. The final join remains responsible for matching
+rows, including if later batches become more selective. The `dynamic_filter_early_*`
+metrics belong to the join supplying the filter; intermediate joins and projections
+retain their own input/output metrics.
+
 ## Adaptive Partial Aggregation
 
 Set `spark.comet.exec.aggregate.skipPartial.enabled=true` to let Comet bypass partial hash
