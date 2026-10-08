@@ -1279,12 +1279,12 @@ expressions. The following function families are <strong>not currently planned</
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">array_contains</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Hybrid</p></td>
-<td><p>Float/double element arrays route through the JVM codegen dispatcher by default; the native path is opt-in via allowIncompatible</p></td>
+<td><p>Float/double element arrays and non-default string collations route through the JVM codegen dispatcher by default; the native path is opt-in via allowIncompatible</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">array_distinct</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Native</p></td>
-<td><p>Floating-point elements fall back on Spark versions other than 4.2.0; signed-zero and NaN results may differ with native opt-in (<a class="reference internal" href="compatibility/floating-point.html"><span class="std std-doc">details</span></a>)</p></td>
+<td><p>Floating-point elements fall back on Spark versions other than 4.2.0; signed-zero and NaN results may differ with native opt-in (<a class="reference internal" href="compatibility/floating-point.html"><span class="std std-doc">details</span></a>). Non-default string collations fall back</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">array_except</span></code></p></td>
 <td><p>✅</p></td>
@@ -1339,12 +1339,12 @@ expressions. The following function families are <strong>not currently planned</
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">array_union</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Native</p></td>
-<td><p>Floating-point elements fall back on Spark versions other than 4.2.0; signed-zero and NaN results may differ with native opt-in (<a class="reference internal" href="compatibility/floating-point.html"><span class="std std-doc">details</span></a>)</p></td>
+<td><p>Floating-point elements fall back on Spark versions other than 4.2.0; signed-zero and NaN results may differ with native opt-in (<a class="reference internal" href="compatibility/floating-point.html"><span class="std std-doc">details</span></a>). Non-default string collations fall back</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">arrays_overlap</span></code></p></td>
 <td><p>✅</p></td>
-<td><p>Native</p></td>
-<td><p></p></td>
+<td><p>Hybrid</p></td>
+<td><p>Non-default string collations use the JVM codegen dispatcher</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">arrays_zip</span></code></p></td>
 <td><p>✅</p></td>

@@ -854,9 +854,10 @@ under the License.
 <!--BEGIN:EXPR_COMPAT[array]-->
 <section id="arraycontains">
 <h2>ArrayContains<a class="headerlink" href="#arraycontains" title="Link to this heading">#</a></h2>
-<p>By default, <code class="docutils literal notranslate"><span class="pre">ArrayContains</span></code> is evaluated in the JVM using Spark’s own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.ArrayContains.allowIncompatible=true</span></code> to opt into Comet’s native implementation instead, which has the following differences from Spark:</p>
+<p>For applicable cases that are not selected for native execution automatically, <code class="docutils literal notranslate"><span class="pre">ArrayContains</span></code> is evaluated in the JVM using Spark’s own code-generated implementation (run inside the Comet pipeline) by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.ArrayContains.allowIncompatible=true</span></code> to explicitly select Comet’s native implementation, which has the following differences from Spark:</p>
 <ul class="simple">
 <li><p>Spark compares array elements with ordering.equiv, so -0.0 matches +0.0 and all NaNs match each other; Comet’s native array_contains compares the raw Arrow values bitwise</p></li>
+<li><p>Spark compares non-UTF8_BINARY collated string elements under their collation, while Comet’s native array_contains compares raw bytes</p></li>
 </ul>
 </section>
 <section id="arraydistinct">
@@ -864,6 +865,7 @@ under the License.
 <p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">ArrayDistinct</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.ArrayDistinct.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
 <ul class="simple">
 <li><p>Floating-point elements match Spark’s signed-zero and NaN semantics natively only on Spark 4.2.0, whose optimizer normalizes the arguments (SPARK-54918)</p></li>
+<li><p>Spark compares non-UTF8_BINARY collated string elements under their collation, while Comet’s native array_distinct compares raw bytes</p></li>
 </ul>
 </section>
 <section id="arrayexcept">
@@ -908,6 +910,14 @@ under the License.
 <p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">ArrayUnion</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.ArrayUnion.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
 <ul class="simple">
 <li><p>Floating-point elements match Spark’s signed-zero and NaN semantics natively only on Spark 4.2.0, whose optimizer normalizes the arguments (SPARK-54918)</p></li>
+<li><p>Spark compares non-UTF8_BINARY collated string elements under their collation, while Comet’s native array_union compares raw bytes</p></li>
+</ul>
+</section>
+<section id="arraysoverlap">
+<h2>ArraysOverlap<a class="headerlink" href="#arraysoverlap" title="Link to this heading">#</a></h2>
+<p>For applicable cases that are not selected for native execution automatically, <code class="docutils literal notranslate"><span class="pre">ArraysOverlap</span></code> is evaluated in the JVM using Spark’s own code-generated implementation (run inside the Comet pipeline) by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.ArraysOverlap.allowIncompatible=true</span></code> to explicitly select Comet’s native implementation, which has the following differences from Spark:</p>
+<ul class="simple">
+<li><p>Spark compares non-UTF8_BINARY collated string elements under their collation, while Comet’s native arrays_overlap compares raw bytes</p></li>
 </ul>
 </section>
 <section id="arrayszip">
@@ -990,6 +1000,7 @@ under the License.
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#arraymax">ArrayMax</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#arraymin">ArrayMin</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#arrayunion">ArrayUnion</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#arraysoverlap">ArraysOverlap</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#arrayszip">ArraysZip</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#sequence">Sequence</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#shuffle">Shuffle</a></li>

@@ -23,15 +23,17 @@ under the License.
 
 ## ArrayContains
 
-By default, `ArrayContains` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set `spark.comet.expression.ArrayContains.allowIncompatible=true` to opt into Comet's native implementation instead, which has the following differences from Spark:
+For applicable cases that are not selected for native execution automatically, `ArrayContains` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline) by default. Set `spark.comet.expression.ArrayContains.allowIncompatible=true` to explicitly select Comet's native implementation, which has the following differences from Spark:
 
 - Spark compares array elements with ordering.equiv, so -0.0 matches +0.0 and all NaNs match each other; Comet's native array_contains compares the raw Arrow values bitwise
+- Spark compares non-UTF8_BINARY collated string elements under their collation, while Comet's native array_contains compares raw bytes
 
 ## ArrayDistinct
 
 The following incompatibilities cause `ArrayDistinct` to fall back to Spark by default. Set `spark.comet.expression.ArrayDistinct.allowIncompatible=true` to enable Comet acceleration despite these differences.
 
 - Floating-point elements match Spark's signed-zero and NaN semantics natively only on Spark 4.2.0, whose optimizer normalizes the arguments (SPARK-54918)
+- Spark compares non-UTF8_BINARY collated string elements under their collation, while Comet's native array_distinct compares raw bytes
 
 ## ArrayExcept
 
@@ -70,6 +72,13 @@ For applicable cases that are not selected for native execution automatically, `
 The following incompatibilities cause `ArrayUnion` to fall back to Spark by default. Set `spark.comet.expression.ArrayUnion.allowIncompatible=true` to enable Comet acceleration despite these differences.
 
 - Floating-point elements match Spark's signed-zero and NaN semantics natively only on Spark 4.2.0, whose optimizer normalizes the arguments (SPARK-54918)
+- Spark compares non-UTF8_BINARY collated string elements under their collation, while Comet's native array_union compares raw bytes
+
+## ArraysOverlap
+
+For applicable cases that are not selected for native execution automatically, `ArraysOverlap` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline) by default. Set `spark.comet.expression.ArraysOverlap.allowIncompatible=true` to explicitly select Comet's native implementation, which has the following differences from Spark:
+
+- Spark compares non-UTF8_BINARY collated string elements under their collation, while Comet's native arrays_overlap compares raw bytes
 
 ## ArraysZip
 
