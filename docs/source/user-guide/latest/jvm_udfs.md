@@ -118,6 +118,9 @@ Comet release, which can change the Arrow Java version behind them.
   the nullability of nested fields, as long as a field declared non-nullable holds no nulls.
 - `evaluate` receives no allocator yet. Allocate the result from an argument's allocator, as
   `in.getAllocator()` does above.
+- Do not modify the argument vectors. Their memory belongs to native execution: a literal
+  argument's buffers are the same on every call, and a column argument can share its buffers with
+  the rest of the query.
 - Do not close the argument vectors, or keep them or the result past the call. Comet closes the
   arguments when the call returns and hands the result to native execution.
 - The class needs a public no-argument constructor. Comet creates one instance per class for each
