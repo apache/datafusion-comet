@@ -16,4 +16,5 @@
 // under the License.
 
 pub mod credential_bridge;
+pub(crate) mod policy_locations;
 pub mod web_identity;

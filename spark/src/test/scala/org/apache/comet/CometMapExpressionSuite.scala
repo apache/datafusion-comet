@@ -283,7 +283,6 @@ class CometMapExpressionSuite extends CometTestBase {
       }
       withSQLConf(
         CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
-        CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
         CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true") {
         val df = spark.read.parquet(filename)
         df.createOrReplaceTempView("t1")
@@ -468,18 +467,24 @@ class CometMapExpressionSuite extends CometTestBase {
   }
 
   // The collated counterpart of the double-key `map_contains_key` case above: a nested
-  // `UTF8_LCASE`-keyed map would reach `array_contains` with bytewise comparison. Expansion declines
-  // the folded literal so the case-insensitive lookup stays on Spark. The outer lookup key is the
-  // dynamic `_1` so the inner map survives as a literal (a constant key would let Spark fold
-  // `map_keys` into a collated-string array literal instead, which never reaches this guard).
+  // `UTF8_LCASE`-keyed map would reach `array_contains` with bytewise comparison. Like the
+  // floating-point case, `CometArrayContains` reports collated element types Incompatible, so the
+  // default config codegen-dispatches it; `allowIncompatible=true` forces the native kernel so the
+  // expansion guard runs. Expansion declines the folded literal so the case-insensitive lookup
+  // stays on Spark. The outer lookup key is the dynamic `_1` so the inner map survives as a literal
+  // (a constant key would let Spark fold `map_keys` into a collated-string array literal instead,
+  // which never reaches this guard).
   test("map_contains_key over nested collated map keys falls back (multirow)") {
     assume(isSpark40Plus)
+    val query = "SELECT _1 AS id, map_contains_key(" +
+      "element_at(map(1, map(CAST('A1' AS STRING COLLATE UTF8_LCASE), 7)), _1), " +
+      "CAST('a1' AS STRING COLLATE UTF8_LCASE)) AS present FROM tbl"
     withParquetTable((1 until 4).map(i => (i, i.toLong)), "tbl") {
-      checkSparkAnswerAndFallbackReason(
-        "SELECT _1 AS id, map_contains_key(" +
-          "element_at(map(1, map(CAST('A1' AS STRING COLLATE UTF8_LCASE), 7)), _1), " +
-          "CAST('a1' AS STRING COLLATE UTF8_LCASE)) AS present FROM tbl",
-        "Unsupported data type MapType")
+      withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[ArrayContains]) -> "true") {
+        checkSparkAnswerAndFallbackReason(query, "Unsupported data type MapType")
+      }
+      // Under the default config the collated lookup is dispatched and matches Spark.
+      checkSparkAnswer(query)
     }
   }
 
@@ -493,6 +498,19 @@ class CometMapExpressionSuite extends CometTestBase {
       checkSparkAnswerAndFallbackReason(
         s"SELECT _1 AS id, element_at(map(CAST(0 AS DOUBLE), 7), $lookup) AS v FROM tbl",
         "Spark normalizes floating-point map keys")
+    }
+  }
+
+  // A TRY cast over a foldable map folds to a literal whose failing key is null. With a single
+  // entry it has to stay on Spark too, rather than being rebuilt as a `CreateMap` that rejects the
+  // null key. Spark returns NULL for both rows.
+  // https://github.com/apache/datafusion-comet/issues/6584
+  test("folded single-entry map literal with a null key falls back (multirow)") {
+    withParquetTable((1 until 3).map(i => (i, i.toLong)), "tbl") {
+      checkSparkAnswerAndFallbackReason(
+        "SELECT _1 AS id, element_at(try_cast(map(9999999999L, 20) AS map<int, int>), _1) AS v " +
+          "FROM tbl",
+        "Unsupported data type MapType")
     }
   }
 
@@ -547,6 +565,34 @@ class CometMapExpressionSuite extends CometTestBase {
       checkSparkAnswerAndOperator(
         "SELECT _1 AS id, element_at(" +
           "map_from_arrays(sequence(1, 100000), sequence(1, 100000)), _1) AS v FROM tbl")
+    }
+  }
+
+  // A folded `map('z', 0)` has `valueContainsNull = false`, and a `MAP<STRING, INT>` column has
+  // `valueContainsNull = true`. Spark's `If` treats the two as one type and adds no cast, so the
+  // native planner has to cast the branch whose Arrow type differs from the common type (#6334).
+  // Each INSERT writes its own files and a batch never spans files, so there are batches in which
+  // every row takes the THEN branch, batches in which every row takes the ELSE branch, and batches
+  // that mix the two. The ones in which every row takes the ELSE branch failed with "column types
+  // must match schema types". `if_nested_nullability.sql` covers the constructor path.
+  test("IF with a folded map literal branch and a map column (multirow)") {
+    withTable("t") {
+      sql("CREATE TABLE t(c BOOLEAN, m MAP<STRING, INT>) USING parquet")
+      // Write the rows in Spark, so that only the queries below run in Comet
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        // c is true and m is not NULL in every row
+        sql("INSERT INTO t VALUES (true, map('a', 1)), (true, map('b', CAST(NULL AS INT)))")
+        // c is false or NULL and m is NULL in every row
+        sql("INSERT INTO t VALUES (false, NULL), (NULL, NULL)")
+        // pairs of rows that take different branches
+        val mixed =
+          (0 until 10).map(i => if (i % 2 == 0) s"(true, map('k', $i))" else "(false, NULL)")
+        sql(s"INSERT INTO t VALUES ${mixed.mkString(", ")}")
+      }
+      Seq("IF(c, m, map('z', 0))", "IF(c, map('z', 0), m)", "IF(m IS NULL, map('z', 0), m)")
+        .foreach { expr =>
+          checkSparkAnswerAndOperator(s"SELECT $expr AS r FROM t")
+        }
     }
   }
 

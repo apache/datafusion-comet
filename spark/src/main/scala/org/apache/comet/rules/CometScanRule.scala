@@ -47,7 +47,7 @@ import org.apache.spark.sql.types._
 import org.apache.comet.{CometConf, DataTypeSupport, NativeBase}
 import org.apache.comet.CometConf._
 import org.apache.comet.CometSparkSessionExtensions.{isCometLoaded, isSpark35Plus, withFallbackReason, withFallbackReasons}
-import org.apache.comet.iceberg.{CometIcebergNativeScanMetadata, IcebergReflection}
+import org.apache.comet.iceberg.{CometIcebergNativeScanMetadata, IcebergReflection, IcebergStorageSchemes}
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.parquet.CometParquetUtils.{encryptionEnabled, isEncryptionConfigSupported, readFieldId}
 import org.apache.comet.serde.operator.{CometIcebergNativeScan, CometNativeScan}
@@ -169,10 +169,16 @@ case class CometScanRule(session: SparkSession)
 
     // fileConstantMetadataColumns (file_path, file_name, file_size, file_block_start,
     // file_block_length, file_modification_time) are known before opening the file and
-    // supported below via the same projection mechanism as partition columns. Any other
-    // metadata column (currently only `_metadata.row_index`, generated per row by the reader)
-    // is not.
-    val constantMetadataColNames = scanExec.fileConstantMetadataColumns.map(_.name).toSet
+    // supported below via the same projection mechanism as partition columns. The exceptions
+    // are file_block_start and file_block_length. They are constant per split, but when Spark
+    // splits a file, which split reads a row group is a reader decision: DataFusion keeps a row
+    // group in the split that holds its first page, while Spark's parquet-mr reader keeps it in
+    // the split that holds its midpoint, so rows would report the wrong split
+    // (https://github.com/apache/datafusion-comet/issues/6505). Those two, and any other metadata
+    // column (currently only `_metadata.row_index`, generated per row by the reader), fall back.
+    val constantMetadataColNames = scanExec.fileConstantMetadataColumns
+      .map(_.name)
+      .toSet -- Set("file_block_start", "file_block_length")
     val unsupportedMetadataColNames =
       metadataCols(scanExec).filterNot(constantMetadataColNames.contains)
     if (unsupportedMetadataColNames.nonEmpty) {
@@ -348,14 +354,10 @@ case class CometScanRule(session: SparkSession)
       withFallbackReason(scanExec, "Native Parquet Variant scans do not support encryption")
       return None
     }
-    // input_file_name, input_file_block_start, and input_file_block_length read from
-    // InputFileBlockHolder, a thread-local set by Spark's FileScanRDD. The native DataFusion
-    // scan does not use FileScanRDD, so these expressions would return empty/default values.
-    if (plan.exists(node =>
-        node.expressions.exists(_.exists {
-          case _: InputFileName | _: InputFileBlockStart | _: InputFileBlockLength => true
-          case _ => false
-        }))) {
+    // input_file_name, input_file_block_start, and input_file_block_length read values that
+    // Spark's FileScanRDD sets. The native DataFusion scan does not use FileScanRDD, so these
+    // expressions would return empty/default values.
+    if (CometScanRule.readsInputFileBlock(plan)) {
       withFallbackReason(
         scanExec,
         "Native Parquet scan is not compatible with input_file_name, " +
@@ -721,16 +723,27 @@ case class CometScanRule(session: SparkSession)
             }
           }
 
+        // Projected roots are matched by field ID so historical snapshots still identify renamed
+        // columns. Both schema checks below use them.
+        val projectedDataColumns = scanExec.output.filterNot(_.isMetadataCol)
+        val resolver = session.sessionState.conf.resolver
+        val projectedFieldIds = projectedDataColumns.map { attr =>
+          metadata.globalFieldIdMapping.collectFirst {
+            case (fieldName, fieldId) if resolver(fieldName, attr.name) => fieldId
+          }
+        }
+        val resolvedProjectedFieldIds = projectedFieldIds.flatten.toSet
+        val hasUnresolvedProjectedFieldIds = projectedFieldIds.exists(_.isEmpty)
+
         // The whole Iceberg table schema is serialized to native, but iceberg-rust can represent
-        // Variant in that schema as long as no projected field contains one. Match projected
-        // roots by field ID so historical snapshots still identify renamed columns, check them
-        // strictly, and allow Variant only under entirely unprojected roots. Other unsupported
-        // types still fail closed everywhere. An empty data projection is also strict because
-        // iceberg-rust currently interprets an empty field-id list as a request for every column.
+        // Variant in that schema as long as no projected field contains one. Check projected
+        // roots strictly, and allow Variant only under entirely unprojected roots. Other
+        // unsupported types still fail closed everywhere. An empty data projection is also strict
+        // because iceberg-rust currently interprets an empty field-id list as a request for every
+        // column.
         val schemaTypesSupported =
           try {
             val fullSchema = IcebergReflection.toSparkSchema(metadata.tableSchema)
-            val projectedDataColumns = scanExec.output.filterNot(_.isMetadataCol)
             // DataTypeSupport recursively dispatches back to this override for struct fields,
             // array elements, and map entries, so Variant is allowed at any nesting depth only
             // when its entire top-level Iceberg field is unprojected.
@@ -741,15 +754,7 @@ case class CometScanRule(session: SparkSession)
                   reasons: ListBuffer[String]): Boolean =
                 isVariantType(dt) || super.isTypeSupported(dt, name, reasons)
             }
-            val resolver = session.sessionState.conf.resolver
             val tableFieldIds = IcebergReflection.buildFieldIdMapping(metadata.tableSchema)
-            val projectedFieldIds = projectedDataColumns.map { attr =>
-              metadata.globalFieldIdMapping.collectFirst {
-                case (fieldName, fieldId) if resolver(fieldName, attr.name) => fieldId
-              }
-            }
-            val resolvedProjectedFieldIds = projectedFieldIds.flatten.toSet
-            val hasUnresolvedProjectedFieldIds = projectedFieldIds.exists(_.isEmpty)
 
             fullSchema.fields.forall { field =>
               val isProjected = projectedDataColumns.isEmpty ||
@@ -762,6 +767,44 @@ case class CometScanRule(session: SparkSession)
             case e: Exception =>
               fallbackReasons += "Iceberg reflection failure: could not verify column " +
                 s"types: ${e.getMessage}"
+              false
+          }
+
+        // Neither iceberg-rust nor the batch adaptation after it matches a data file's nested
+        // fields to the table's by field id (apache/iceberg-rust#2617). A file written before a
+        // nested field was added (to a struct, or to a struct inside a list or map) fails the
+        // native scan with "Incorrect number of arrays for StructArray fields", and a nested field
+        // renamed since the file was written can read back as NULL. The native read asks for a
+        // projected column's full nested type even when Spark prunes it, taken from the current
+        // table schema, or from the scan schema when VERSION AS OF reads a dropped column (see
+        // CometIcebergNativeScan). A FileScanTask does not record which schema wrote its file, so
+        // fall back when any schema in the table's history lacks a nested field of a projected
+        // column or names it differently.
+        val nestedFieldsSupported =
+          try {
+            val schemas = Seq(metadata.tableSchema, metadata.scanSchema)
+            val fieldIds =
+              if (hasUnresolvedProjectedFieldIds) {
+                schemas.flatMap(IcebergReflection.buildFieldIdMapping(_).values).toSet
+              } else {
+                resolvedProjectedFieldIds
+              }
+            val changed = schemas
+              .flatMap { schema =>
+                IcebergReflection.nestedFieldsAddedOrRenamed(metadata.table, schema, fieldIds)
+              }
+              .distinct
+              .sorted
+            if (changed.nonEmpty) {
+              fallbackReasons += "Nested fields added or renamed by Iceberg schema evolution are " +
+                "not yet supported by Comet's native reader, which cannot match them to data " +
+                s"files written before the change: ${changed.mkString(", ")}"
+            }
+            changed.isEmpty
+          } catch {
+            case e: Exception =>
+              fallbackReasons += "Iceberg reflection failure: could not compare nested fields " +
+                s"with the table's schema history: ${e.getMessage}"
               false
           }
 
@@ -1000,7 +1043,8 @@ case class CometScanRule(session: SparkSession)
           defaultValuesSupported && schemaTypesSupported && encryptionKeyLengthSupported &&
           taskValidation.allParquet && allSupportedFilesystems && allLocationsOpenable &&
           metadataSchemeSupported && partitionTypesSupported && unifiedPartitionTypeSupported &&
-          transformFunctionsSupported && deleteFileTypesSupported && dppSubqueriesSupported) {
+          transformFunctionsSupported && deleteFileTypesSupported && dppSubqueriesSupported &&
+          nestedFieldsSupported) {
           CometBatchScanExec(
             scanExec.clone().asInstanceOf[BatchScanExec],
             runtimeFilters = scanExec.runtimeFilters,
@@ -1100,6 +1144,12 @@ case class CometScanTypeChecker() extends DataTypeSupport with CometTypeShim {
           "native execution if your data does not contain unsigned small integers. " +
           CometConf.COMPAT_GUIDE
         false
+      case dt if isTimeType(dt) =>
+        // The native Parquet reader has not been taught to decode the TIME logical type into
+        // an Arrow Time64(NANOSECOND) vector, so fall back to Spark for scans that expose one.
+        fallbackReasons += s"Unsupported $name of type $dt (native Parquet scan does not " +
+          "support TIME)"
+        false
       case dt if isStringCollationType(dt) =>
         // we don't need specific support for collation in scans, but this
         // is a convenient place to force the whole query to fall back to Spark for now
@@ -1130,6 +1180,20 @@ case class CometScanTypeChecker() extends DataTypeSupport with CometTypeShim {
 }
 
 object CometScanRule extends Logging {
+
+  /**
+   * Whether any node in `plan` evaluates `input_file_name`, `input_file_block_start` or
+   * `input_file_block_length`. These read `InputFileBlockHolder`, a thread-local that the reader
+   * producing the rows (`FileScanRDD`, the V2 file readers, `HadoopRDD`, `NewHadoopRDD`,
+   * connector readers such as Iceberg's) sets as it moves from file to file, so they only return
+   * each row's values when Spark evaluates them as that reader produces the row.
+   */
+  def readsInputFileBlock(plan: SparkPlan): Boolean =
+    plan.exists(node =>
+      node.expressions.exists(_.exists {
+        case _: InputFileName | _: InputFileBlockStart | _: InputFileBlockLength => true
+        case _ => false
+      }))
 
   // Memo of `NativeBase.isObjectStoreSchemeSupported`, keyed by the probe URL rather than the
   // scheme: object_store's parser keys on (scheme, host-presence), so an authorityless URL would
@@ -1222,20 +1286,25 @@ object CometScanRule extends Logging {
     org.apache.spark.sql.catalyst.trees.TreeNodeTag[Unit]("comet.skipCometScan")
 
   /**
-   * Schemes Comet's native Iceberg scan can actually open, mirroring the match arms in
-   * `native/core/src/execution/operators/iceberg_common.rs::storage_factory_for`. Deliberately
-   * NOT delegated to `isNativelyReadableScheme`: object_store recognizes schemes (http/https,
-   * azure, memory) that iceberg-rust's OpenDAL storage factory cannot build, and admitting them
-   * here turns a clean JVM fallback into a native runtime "Unsupported storage scheme" error. Add
-   * here what you add to `storage_factory_for` (currently Aliyun `oss` and GCS `gs`).
-   * S3-compliant aliases like `blob` are opt-in via `fs.comet.s3Compliant.schemes` (see
-   * `isIcebergReadableScheme`), not hardcoded, since the native planner opens them via S3. The
-   * write path keeps its own list (`CometIcebergNativeWrite.SupportedStorageSchemes`), which
-   * differs deliberately: it excludes `oss` (fails closed, see `storage_factory_for`) and
-   * includes `memory`.
+   * Schemes Comet's native Iceberg scan can open, loaded from the native storage factory over JNI
+   * so this gate cannot drift from `storage_factory_for`. Lazy so that constructing the rule does
+   * not touch the native library before `isCometLoaded` has been consulted. Opt-in aliases from
+   * `fs.comet.s3Compliant.schemes` are additive (see `isIcebergReadableScheme`); the write path
+   * loads its own set (`CometIcebergNativeWrite.SupportedStorageSchemes`).
    */
-  private val icebergReadableSchemes: Set[String] =
-    Set("file", "s3", "s3a", "gs", "oss")
+  private lazy val icebergReadableSchemes: Set[String] = IcebergStorageSchemes.read
+
+  /**
+   * True when the Iceberg scan gate admits `scheme`, written exactly as recorded. Native opens a
+   * location by its raw scheme, and OpenDAL's S3 backend checks it against a `scheme://bucket/`
+   * prefix whose scheme comes from `Url::parse` and so is lowercase: `S3://` is not `s3://`, and
+   * `BLOB://` is not an opted-in `blob`. The alias set is lowercase
+   * (`NativeConfig.parseSchemeSet`), so an alias is admitted only when the location writes it in
+   * lowercase. The Parquet gate stays case-insensitive because it rewrites alias URLs to `s3://`
+   * before anything opens them.
+   */
+  private def isAdmittedIcebergScheme(scheme: String, s3CompliantSchemes: Set[String]): Boolean =
+    icebergReadableSchemes.contains(scheme) || s3CompliantSchemes.contains(scheme)
 
   /**
    * "Supported schemes: ..." suffix shared by the Iceberg scheme-fallback messages. Lists the
@@ -1256,8 +1325,7 @@ object CometScanRule extends Logging {
       s3CompliantSchemes: Set[String]): Boolean = {
     val scheme = uri.getScheme
     if (scheme == null) return true
-    val lower = scheme.toLowerCase(Locale.ROOT)
-    icebergReadableSchemes.contains(lower) || s3CompliantSchemes.contains(lower)
+    isAdmittedIcebergScheme(scheme, s3CompliantSchemes)
   }
 
   /**
@@ -1319,9 +1387,6 @@ object CometScanRule extends Logging {
     // hasOpenableAuthority); non-empty => decline. One example suffices for the message.
     var hostlessLocation: Option[String] = None
 
-    // Union of the two admitted scheme sets, built once so the per-file loop does one lookup.
-    val openableSchemes = icebergReadableSchemes ++ s3CompliantSchemes
-
     // Classify one data/delete file location; see `icebergReadableSchemes` for why that allowlist
     // is narrower than the Parquet native gate. Runs per data and delete file, so the scheme and
     // the bucket are each derived once and threaded down.
@@ -1332,9 +1397,8 @@ object CometScanRule extends Logging {
       // A schemeless local path routes to iceberg-rust's LocalFs and needs no host.
       val scheme = uri.getScheme
       if (scheme == null) return
-      val lower = scheme.toLowerCase(Locale.ROOT)
-      if (!openableSchemes.contains(lower)) {
-        unsupportedSchemes += lower
+      if (!isAdmittedIcebergScheme(scheme, s3CompliantSchemes)) {
+        unsupportedSchemes += scheme
       } else if (!hasOpenableAuthority(uri, s3CompliantSchemes)) {
         if (hostlessLocation.isEmpty) hostlessLocation = Some(rawPath)
       } else {

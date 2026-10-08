@@ -93,8 +93,7 @@ impl MemoryPool for CometUnifiedMemoryPool {
         }
         self.spark.acquire(additional);
         self.used
-            .fetch_update(Relaxed, Relaxed, |old| Some(old.saturating_add(additional)))
-            .unwrap();
+            .update(Relaxed, Relaxed, |old| old.saturating_add(additional));
     }
 
     fn shrink(&self, _: &MemoryReservation, size: usize) {
@@ -106,7 +105,7 @@ impl MemoryPool for CometUnifiedMemoryPool {
         }
         if let Err(prev) = self
             .used
-            .fetch_update(Relaxed, Relaxed, |old| old.checked_sub(size))
+            .try_update(Relaxed, Relaxed, |old| old.checked_sub(size))
         {
             panic!(
                 "Task {} overflow when releasing {size} of {prev} bytes",
@@ -130,7 +129,7 @@ impl MemoryPool for CometUnifiedMemoryPool {
             }
             if let Err(prev) = self
                 .used
-                .fetch_update(Relaxed, Relaxed, |old| old.checked_add(additional))
+                .try_update(Relaxed, Relaxed, |old| old.checked_add(additional))
             {
                 return Err(resources_datafusion_err!(
                     "Task {} failed to acquire {} bytes due to overflow. Reserved: {}",

@@ -52,7 +52,8 @@ public class IcebergRESTVendedS3ProviderTest {
   @Test
   public void initializeThenGetReturnsVendedCredentials() {
     IcebergRESTVendedS3Provider p = new IcebergRESTVendedS3Provider();
-    p.initialize(staticVendedProps());
+    Map<String, String> props = staticVendedProps();
+    p.initialize(props);
 
     CometS3Credentials c =
         p.getCredentialsForPath(
@@ -61,8 +62,10 @@ public class IcebergRESTVendedS3ProviderTest {
     assertEquals("AKIA_TEST", c.getAccessKeyId());
     assertEquals("secret_TEST", c.getSecretAccessKey());
     assertEquals("token_TEST", c.getSessionToken());
-    // Wrapper publishes 0 since VendedCredentialsProvider's CachedSupplier owns the expiry.
-    assertEquals(0L, c.getExpirationEpochMillis());
+    // The wrapper publishes the vended credential's expiry, so Comet reuses it until shortly
+    // before and never after.
+    assertEquals(
+        Long.parseLong(props.get("s3.session-token-expires-at-ms")), c.getExpirationEpochMillis());
   }
 
   @Test

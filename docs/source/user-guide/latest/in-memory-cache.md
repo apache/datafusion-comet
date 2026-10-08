@@ -34,11 +34,13 @@ $SPARK_HOME/bin/spark-shell \
 ```
 
 It has to be set before the `SparkContext` starts. Comet's driver plugin chooses
-`spark.sql.cache.serializer` once, while the context is initializing, so a session that started
-with the default goes on using Spark's cache format however the config is set afterwards. The
-plugin installs Comet's serializer only if `spark.comet.enabled` and `spark.comet.exec.enabled`
-are enabled at that point too, because an application that starts without native execution could
-not scan Comet's format natively.
+`spark.sql.cache.serializer` once, while the context is initializing, so an application keeps the
+cache format it started with however the config is set afterwards. The plugin installs Comet's
+serializer only if `spark.comet.enabled` and `spark.comet.exec.enabled` are enabled at that point
+too, because an application that starts without native execution could not scan Comet's format
+natively. It also keeps Spark's format when Comet shuffle is enabled but `spark.shuffle.manager` is
+not one of Comet's shuffle managers, since Comet then disables itself, and when Kryo would reject
+Comet's format; see [Kryo](#kryo).
 
 ## What changes when it is enabled
 
@@ -48,6 +50,9 @@ With Comet's serializer installed as `spark.sql.cache.serializer`:
 - Cached tables are scanned by `CometInMemoryTableScan`, which feeds Comet operators directly.
 - Per-batch column statistics are recorded in the layout Spark's `SimpleMetricsCachedBatchSerializer`
   expects, so Spark can prune whole cached batches on a predicate before any of them is decoded.
+- The size Spark's planner sees for a cached relation is its decoded Arrow size, not the compressed
+  size it occupies in memory, as with Spark's own cache formats. Compression therefore does not
+  change how queries over a cached relation are planned, such as whether a join broadcasts it.
 
 Relations whose schema Comet's Arrow writer cannot store — interval types, most notably — are
 delegated in full to Spark's default cache format, per relation. Which format a relation uses does
@@ -56,7 +61,12 @@ relation whose format could change mid-session could not be read back reliably. 
 codec is a runtime config, but each batch records the codec it was written with, so data cached
 under one setting stays readable after the setting changes. Turning
 `spark.comet.exec.inMemoryCache.enabled` off at runtime only sends cached scans back to Spark's
-execution path; the cached data stays readable either way.
+execution path, where Spark operators read them through the row reader described under
+[Limitations](#limitations); the cached data stays readable either way.
+
+A relation whose cached plan records observed metrics, from `Dataset.observe`, is still stored in
+Comet's format but is scanned by Spark's `InMemoryTableScanExec`, because Spark collects those
+metrics only through that scan.
 
 ## Storage format
 
@@ -172,26 +182,61 @@ spark.kryo.registrator=org.apache.comet.CometKryoRegistrator
 
 Comet cannot set `spark.kryo.registrator` for you the way it sets `spark.sql.cache.serializer`:
 `KryoSerializer` reads it when `SparkEnv` builds the serializer, which happens before any plugin
-runs. Without it, caching fails with a "Class is not registered" error that does not name this
-feature. Comet's driver plugin warns at startup when it sees Kryo, `registrationRequired`, and no
-registrator. Native broadcast needs the same registrator even when the cache is disabled; see
+runs. Without it, Kryo would reject Comet's cached batch with a "Class is not registered" error
+that does not name this feature. So when Kryo requires registration and has not registered
+Comet's cached batch, Comet's driver plugin does not install Comet's serializer, and caches stay in
+Spark's format. Registrations made another way, through a registrator of the application's own or
+`spark.kryo.classesToRegister`, count as well. The plugin warns at startup when Kryo requires
+registration and has not registered every class `CometKryoRegistrator` registers. An application
+that sets `spark.sql.cache.serializer` to Comet's serializer itself gets the error instead. Native
+broadcast needs the same registrator even when the cache is disabled; see
 [Kryo serialization](installation.md#kryo-serialization).
+
+Spark registers its own cached batch with Kryo only from Spark 4.1, so on earlier versions caching
+in either format under `registrationRequired` needs a registrator. `CometKryoRegistrator` registers
+Spark's cached batch too.
 
 ## Limitations
 
-Reads that feed **Spark** operators rather than Comet ones are slower than Spark's own cache
-format, and the narrower the read, the wider the gap. Measured by the same benchmark over the same
-5M-row relation, with Comet off so that Spark operators consume the cached data:
+Reads that feed **Spark** operators rather than Comet ones can be slower than Spark's own cache
+format, because every cached batch is decoded from Arrow before Spark reads it. How a Spark
+operator reads a relation cached in Comet's format depends on the scan below it:
 
-| Read shape              | Spark's cache format | Comet's cache format | Slowdown |
-| ----------------------- | -------------------: | -------------------: | -------: |
-| Row count only (0 of 6) |                35 ms |               183 ms |     5.2x |
-| 1 of 6 columns          |                54 ms |               257 ms |     4.8x |
-| 3 of 6 columns          |                98 ms |               331 ms |     3.4x |
-| 6 of 6 columns          |               410 ms |               623 ms |     1.5x |
+- With native execution enabled (`spark.comet.exec.enabled=true`), the cache is scanned by
+  `CometInMemoryTableScan`, and a Spark operator above it reads the scan's batches through
+  `CometColumnarToRow`, as it would above any other Comet operator.
+- With Comet enabled but native execution disabled, the cache is scanned by Spark's
+  `InMemoryTableScanExec`. When the operator directly above the scan takes part in whole-stage code
+  generation, as filters, projections and aggregates do, Comet puts Spark's `ColumnarToRowExec`
+  between the two, and the generated code reads the cached Arrow vectors directly, with no
+  intermediate row. The plan shows this as a `ColumnarToRow` above the `InMemoryTableScan`. It
+  needs `spark.sql.inMemoryColumnarStorage.enableVectorizedReader` (on by default) and whole-stage
+  code generation, and applies to relations of at most `spark.sql.codegen.maxFields` fields (100 by
+  default, counting nested fields), beyond which Spark reads a cached relation only as rows. It is
+  not applied in plan-only mode (`spark.comet.explain.planOnly.enabled`), where Spark executes its
+  own plan unchanged.
+- Otherwise the scan's row reader decodes each batch and writes its rows into one reused
+  `UnsafeRow`. That covers Comet or `spark.comet.exec.inMemoryCache.enabled` turned off at runtime,
+  and operators that do not take part in code generation, such as exchanges and limits, or a query
+  that returns the cached rows as they are.
 
-This is why the feature is off by default. The cause is not yet established;
-[#5485](https://github.com/apache/datafusion-comet/issues/5485) tracks it.
+Measured by the same benchmark over the same 5M-row relation, with native execution off so that
+Spark operators consume the cached data, Comet disabled for the row reader and enabled for the fused
+reader (Apple M4, JDK 17, Spark 4.1; the average of two runs):
+
+| Read shape              | Spark's cache format | Comet's format, row reader | Comet's format, fused reader |
+| ----------------------- | -------------------: | -------------------------: | ---------------------------: |
+| Row count only (0 of 6) |                63 ms |                      57 ms |                        35 ms |
+| 1 of 6 columns          |                63 ms |                      77 ms |                        54 ms |
+| 3 of 6 columns          |               113 ms |                     176 ms |                       133 ms |
+| 6 of 6 columns          |               306 ms |                     500 ms |                       334 ms |
+
+The fused reader is faster than Spark's own format for the narrowest reads and within 20% of it for
+the others. The row reader takes up to 1.6 times as long, and it is the only reader for relations
+wider than `spark.sql.codegen.maxFields`: reading every column of relations of 100, 200 and 1500
+nullable `bigint` columns took 2.2 to 2.5 times as long as from Spark's format. These gaps are why
+the feature is still off by default;
+[#5485](https://github.com/apache/datafusion-comet/issues/5485) tracks them.
 
 Comet's serializer exists because Spark's own Arrow cache format
 ([SPARK-57268](https://issues.apache.org/jira/browse/SPARK-57268)) is only available from Spark

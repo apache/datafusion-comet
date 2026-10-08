@@ -35,15 +35,17 @@ import org.apache.parquet.schema.{MessageType, Type}
 import org.apache.spark.internal.io.FileCommitProtocol
 import org.apache.spark.sql.{AnalysisException, DataFrame, Row, SaveMode}
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeScanExec, CometScanExec, CometWriteFilesExec}
-import org.apache.spark.sql.execution.{FileSourceScanExec, SparkPlan}
-import org.apache.spark.sql.execution.datasources.{BasicWriteTaskStats, SQLHadoopMapReduceCommitProtocol, WriteTaskStats, WriteTaskStatsTracker}
+import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeColumnarToRowExec, CometNativeScanExec, CometNativeWriteExec, CometScanExec, CometSparkToColumnarExec, CometWriteFilesExec}
+import org.apache.spark.sql.execution.{ColumnarToRowTransition, FileSourceScanExec, SparkPlan, SQLExecution}
+import org.apache.spark.sql.execution.command.DataWritingCommandExec
+import org.apache.spark.sql.execution.datasources.{BasicWriteTaskStats, SQLHadoopMapReduceCommitProtocol, WriteFilesExec, WriteTaskStats, WriteTaskStatsTracker}
 import org.apache.spark.sql.functions.{array, col, map, struct, when}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, LongType, MapType, Metadata, MetadataBuilder, StringType, StructField, StructType}
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
+import org.apache.comet.rules.RevertNativeForTransitionHeavyStages
 import org.apache.comet.serde.operator.NativeWriteUtils
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, SchemaGenOptions}
 
@@ -121,6 +123,161 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
           }
 
           verifyWrittenFile(outputPath)
+        }
+      }
+    }
+  }
+
+  for (adaptive <- Seq(false, true)) {
+    test(s"transition-heavy fallback restores the Spark write plan with AQE=$adaptive") {
+      // Force a transition below the writer on both paths: Spark 3.x replaces the command,
+      // whereas Spark 4.x replaces only its WriteFilesExec child.
+      withTempPath { dir =>
+        withTempPath { inputDir =>
+          val inputPath = createTestData(inputDir)
+          val nativeOutput = new File(dir, "native-output").getAbsolutePath
+          val commonConf = Seq(
+            CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
+            SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Halifax",
+            CometConf.COMET_OPERATOR_DATA_WRITING_COMMAND_ALLOW_INCOMPAT.key -> "true",
+            CometConf.COMET_EXEC_ENABLED.key -> "true",
+            SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString)
+
+          withSQLConf(
+            (commonConf :+
+              (CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "false")): _*) {
+            val df = spark.read.parquet(inputPath)
+            val nativePlan = captureWritePlan(path => df.write.parquet(path), nativeOutput)
+            assertHasCometNativeWriteExec(nativePlan)
+            verifyWrittenFile(nativeOutput)
+            val nativeWrite: SparkPlan = nativePlan
+              .collectFirst {
+                case write: CometNativeWriteExec => write
+                case write: CometWriteFilesExec => write
+              }
+              .getOrElse(fail(s"expected a native parquet writer:\n$nativePlan"))
+            val stageWithTransition = nativeWrite.withNewChildren(Seq(
+              CometSparkToColumnarExec(CometNativeColumnarToRowExec(nativeWrite.children.head))))
+            assert(
+              stageWithTransition.collect { case _: ColumnarToRowTransition => true }.nonEmpty,
+              s"test requires a C2R transition:\n$stageWithTransition")
+
+            var fallbackPlan: SparkPlan = null
+            withSQLConf(
+              CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "true",
+              CometConf.COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS.key -> "0") {
+              val stagePlan = if (isSpark40Plus) {
+                val command = nativePlan
+                  .collectFirst { case node: DataWritingCommandExec => node }
+                  .getOrElse(fail(s"expected a Spark write command:\n$nativePlan"))
+                command.withNewChildren(Seq(stageWithTransition))
+              } else {
+                stageWithTransition
+              }
+              fallbackPlan = RevertNativeForTransitionHeavyStages(spark)(stagePlan)
+            }
+            assertNoCometNativeWriteExec(fallbackPlan)
+            val commands = fallbackPlan.collect { case command: DataWritingCommandExec =>
+              command
+            }
+            assert(
+              commands.exists(_.child.isInstanceOf[WriteFilesExec]),
+              s"expected DataWritingCommandExec -> WriteFilesExec after fallback:\n$fallbackPlan")
+
+            deletePath(nativeOutput)
+            SQLExecution.withNewExecutionId(spark.range(0).queryExecution) {
+              fallbackPlan.executeCollect()
+            }
+            verifyWrittenFile(nativeOutput)
+          }
+        }
+      }
+    }
+  }
+
+  for (adaptive <- Seq(false, true)) {
+    test(
+      s"transition-heavy fallback restores parquet writes through the query pipeline with AQE=$adaptive") {
+      withTempPath { dir =>
+        val nativeOutput = new File(dir, "native-output").getAbsolutePath
+        val fallbackOutput = new File(dir, "fallback-output").getAbsolutePath
+        // Row source, matching the Iceberg VALUES e2e: native write engages via SparkToColumnar.
+        val commonConf = Seq(
+          CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
+          CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
+          SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Halifax",
+          CometConf.COMET_OPERATOR_DATA_WRITING_COMMAND_ALLOW_INCOMPAT.key -> "true",
+          CometConf.COMET_EXEC_ENABLED.key -> "true",
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString)
+
+        def rangeWrite(path: String): Unit =
+          spark.range(0, 1000, 1, numPartitions = 4).toDF("id").write.parquet(path)
+
+        val sparkOutput = new File(dir, "spark-output").getAbsolutePath
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          rangeWrite(sparkOutput)
+        }
+
+        withSQLConf(
+          (commonConf :+
+            (CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "false")): _*) {
+          val nativePlan = captureWritePlan(rangeWrite, nativeOutput)
+          assertHasCometNativeWriteExec(nativePlan)
+          assertWrittenRows(nativeOutput, sparkOutput, 1000)
+        }
+
+        withSQLConf(
+          (commonConf ++ Seq(
+            CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "true",
+            CometConf.COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS.key -> "0")): _*) {
+          val fallbackPlan = captureWritePlan(rangeWrite, fallbackOutput)
+          assertTransitionHeavyParquetFallback(fallbackPlan)
+          assertWrittenRows(fallbackOutput, sparkOutput, 1000)
+        }
+      }
+    }
+  }
+
+  for (adaptive <- Seq(false, true)) {
+    test(s"transition-heavy fallback restores a union of row sources with AQE=$adaptive") {
+      withTempPath { dir =>
+        val nativeOutput = new File(dir, "native-union-output").getAbsolutePath
+        val fallbackOutput = new File(dir, "fallback-union-output").getAbsolutePath
+        val commonConf = Seq(
+          CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
+          CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
+          SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Halifax",
+          CometConf.COMET_OPERATOR_DATA_WRITING_COMMAND_ALLOW_INCOMPAT.key -> "true",
+          CometConf.COMET_EXEC_ENABLED.key -> "true",
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString)
+
+        def unionedWrite(path: String): Unit = {
+          val left = spark.range(0, 1000, 1, numPartitions = 2).toDF("id")
+          val mid = spark.range(1000, 2000, 1, numPartitions = 2).toDF("id")
+          val right = spark.range(2000, 3000, 1, numPartitions = 2).toDF("id")
+          left.union(mid).union(right).write.parquet(path)
+        }
+
+        val sparkOutput = new File(dir, "spark-output").getAbsolutePath
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          unionedWrite(sparkOutput)
+        }
+
+        withSQLConf(
+          (commonConf :+
+            (CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "false")): _*) {
+          val nativePlan = captureWritePlan(unionedWrite, nativeOutput)
+          assertHasCometNativeWriteExec(nativePlan)
+          assertWrittenRows(nativeOutput, sparkOutput, 3000)
+        }
+
+        withSQLConf(
+          (commonConf ++ Seq(
+            CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "true",
+            CometConf.COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS.key -> "0")): _*) {
+          val fallbackPlan = captureWritePlan(unionedWrite, fallbackOutput)
+          assertTransitionHeavyParquetFallback(fallbackPlan)
+          assertWrittenRows(fallbackOutput, sparkOutput, 3000)
         }
       }
     }
@@ -1442,6 +1599,41 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
     }
   }
 
+  test("a row group the pool cannot hold fails its task with a native out-of-memory error") {
+    // The native writer reserves its in-progress row group from the task's memory pool, so a row
+    // group that outgrows the pool fails the task, which Spark can retry, instead of growing in
+    // memory that no budget accounts for until the executor is killed.
+    withTempPath { dir =>
+      val outputPath = new File(dir, "output.parquet").getAbsolutePath
+      val sourcePath = new File(dir, "source.parquet").getAbsolutePath
+      withNativeWriter {
+        // One task writes about 10 MB of random strings, which snappy cannot shrink, into a single
+        // row group, against a pool of about 4 MiB: 0.002 of the suite's 2 GiB off-heap size.
+        val rows = 20000
+        val df = materializeAsCometSource(
+          (0 until rows)
+            .map(i => (i, new Random(i).alphanumeric.take(500).mkString))
+            .toDF("id", "payload")
+            .repartition(1),
+          sourcePath)
+        withSQLConf(CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key -> "0.002") {
+          val e = intercept[Exception] {
+            df.write.parquet(outputPath)
+          }
+          val outOfMemory = causeChain(e)
+            .flatMap(t => Option(t.getMessage))
+            .exists(_.contains("Additional allocation failed for ParquetWriterExec"))
+          assert(outOfMemory, s"Expected the native writer's out-of-memory error, got: $e")
+        }
+
+        // The executor outlived the failure, and with the whole pool the same write succeeds.
+        val plan = captureWritePlan(p => df.write.mode(SaveMode.Overwrite).parquet(p), outputPath)
+        assertHasCometNativeWriteExec(plan)
+        assert(spark.read.parquet(outputPath).count() == rows)
+      }
+    }
+  }
+
   test("the Spark 3.x opt-in key still enables native writes on Spark 4.0+") {
     assume(isSpark40Plus, "Requires the WriteFilesExec seam")
     // The opt-in moved from DataWritingCommandExec to WriteFilesExec with the operator. Jobs that
@@ -1514,6 +1706,58 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
     }
   }
 
+  private def deletePath(path: String): Unit = {
+    def delete(file: File): Unit = {
+      if (file.isDirectory) {
+        Option(file.listFiles()).foreach(_.foreach(delete))
+      }
+      file.delete()
+    }
+    delete(new File(path))
+  }
+
+  /**
+   * Spark 3.x replaces the whole command with `CometNativeWriteExec`, and Spark then inserts a
+   * C2R above that columnar node, so `maxTransitions = 0` reverts the stage back to
+   * `DataWritingCommandExec` -> `WriteFilesExec`. Spark 4.0+ leaves the command in place and does
+   * not insert a C2R above `CometWriteFilesExec`. These row sources only add `SparkToColumnar`,
+   * which is an R2C, so the stage is not transition-heavy and the native write stays.
+   */
+  private def assertTransitionHeavyParquetFallback(plan: SparkPlan): Unit = {
+    if (isSpark40Plus) {
+      assertHasCometNativeWriteExec(plan)
+    } else {
+      assertNoCometNativeWriteExec(plan)
+      assertRestoredParquetWriteCommand(plan)
+    }
+  }
+
+  private def assertRestoredParquetWriteCommand(plan: SparkPlan): Unit = {
+    assert(
+      plan
+        .collect { case command: DataWritingCommandExec => command }
+        .exists(_.child.isInstanceOf[WriteFilesExec]),
+      s"expected DataWritingCommandExec -> WriteFilesExec after fallback:\n$plan")
+  }
+
+  // Compare every row with Spark-written data using the row-based parquet reader, so this
+  // check is independent of Comet scans and detects duplicates or missing union inputs.
+  private def assertWrittenRows(
+      outputPath: String,
+      sparkOutputPath: String,
+      expectedRows: Int): Unit = {
+    val outputDir = new File(outputPath)
+    val partFiles = outputDir.listFiles().filter(_.getName.startsWith("part-"))
+    assert(partFiles.length > 1, s"Expected multiple part files under $outputPath")
+    withSQLConf(
+      CometConf.COMET_ENABLED.key -> "false",
+      SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "false") {
+      val expected = spark.read.parquet(sparkOutputPath).collect().toSeq
+      assert(expected.size == expectedRows)
+      checkAnswer(spark.read.parquet(outputPath), expected)
+    }
+  }
+
   private def writeWithCometNativeWriteExec(
       inputPath: String,
       outputPath: String,
@@ -1529,10 +1773,10 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
     Some(plan)
   }
 
-  private def verifyWrittenFile(outputPath: String): Unit = {
+  private def verifyWrittenFile(outputPath: String, expectedRows: Int = 1000): Unit = {
     // Verify the data was written correctly
     val resultDf = spark.read.parquet(outputPath)
-    assert(resultDf.count() == 1000, "Expected 1000 rows to be written")
+    assert(resultDf.count() == expectedRows, s"Expected $expectedRows rows to be written")
 
     // Verify multiple part files were created
     val outputDir = new File(outputPath)

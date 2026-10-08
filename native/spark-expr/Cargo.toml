@@ -30,6 +30,7 @@ edition = { workspace = true }
 arrow = { workspace = true }
 chrono = { workspace = true }
 datafusion = { workspace = true }
+datafusion-functions = { workspace = true }
 datafusion-spark = { workspace = true }
 num = { workspace = true }
 regex = { workspace = true }
@@ -43,6 +44,8 @@ smallvec = "1.16"
 datafusion-comet-common = { workspace = true }
 datafusion-comet-jni-bridge = { workspace = true }
 jni = "0.22.4"
+# jni-bridge's `jni_static_call!` expands to `paste::paste!`, so callers need `paste` directly
+paste = "1.0.14"
 futures = { workspace = true }
 twox-hash = "2.1.2"
 rand = { workspace = true }
@@ -60,6 +63,10 @@ rand = { workspace = true}
 tokio = { version = "1", features = ["rt-multi-thread"] }
 datafusion = { workspace = true, features = ["sql"] }
 
+# `paste` is only used through macro expansion, which cargo machete cannot see
+[package.metadata.cargo-machete]
+ignored = ["paste"]
+
 [lib]
 name = "datafusion_comet_spark_expr"
 path = "src/lib.rs"
@@ -74,6 +81,10 @@ harness = false
 
 [[bench]]
 name = "cast_from_string"
+harness = false
+
+[[bench]]
+name = "cast_nested"
 harness = false
 
 [[bench]]
@@ -174,6 +185,10 @@ harness = false
 
 [[bench]]
 name = "bloom_filter_agg"
+harness = false
+
+[[bench]]
+name = "bloom_filter_might_contain"
 harness = false
 
 [[bench]]
@@ -341,6 +356,22 @@ name = "abs"
 harness = false
 
 [[bench]]
+name = "sqrt"
+harness = false
+
+[[bench]]
+name = "concat_ws"
+harness = false
+
+[[bench]]
+name = "list_positions"
+harness = false
+
+[[bench]]
+name = "map_from_arrays"
+harness = false
+
+[[bench]]
 name = "murmur3"
 harness = false
 
@@ -433,6 +464,18 @@ name = "aggregate_stats"
 harness = false
 
 [[bench]]
+name = "hll_agg"
+harness = false
+
+[[bench]]
+name = "hll_scalar"
+harness = false
+
+[[bench]]
+name = "aggregate_misc"
+harness = false
+
+[[bench]]
 name = "nondeterministic"
 harness = false
 
@@ -446,4 +489,20 @@ harness = false
 
 [[bench]]
 name = "nested_comparison"
+harness = false
+
+[[bench]]
+name = "float_comparison"
+harness = false
+
+[[bench]]
+name = "float_arrays"
+harness = false
+
+[[bench]]
+name = "min_max"
+harness = false
+
+[[bench]]
+name = "greatest_least"
 harness = false

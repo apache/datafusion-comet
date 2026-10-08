@@ -35,8 +35,9 @@ import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.DynamicPruningExpression
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.{CometNativeShuffle, CometShuffleExchangeExec}
-import org.apache.spark.sql.execution.{InSubqueryExec, ReusedSubqueryExec, SparkPlan, SubqueryExec}
+import org.apache.spark.sql.execution.{InSubqueryExec, ReusedSubqueryExec, SparkPlan, SubqueryAdaptiveBroadcastExec, SubqueryBroadcastExec, SubqueryExec}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AdaptiveSparkPlanHelper, BroadcastQueryStageExec}
+import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.exchange.{ReusedExchangeExec, ShuffleExchangeExec, ShuffleExchangeLike}
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
@@ -100,6 +101,19 @@ class CometIcebergNativeSuite
       collectIcebergNativeScans(cometPlan).isEmpty,
       s"Expected fallback to Spark ($reason) but found a CometIcebergNativeScanExec. " +
         s"Plan:\n$cometPlan")
+  }
+
+  /**
+   * Verifies query correctness and that it falls back to Spark because a projected column's
+   * nested fields were added or renamed over the table's schema history, as `fields` lists them
+   * (for example `s.b (added)`).
+   */
+  private def checkNestedFieldEvolutionFallback(query: String, fields: String): Unit = {
+    val (_, cometPlan) =
+      checkSparkAnswerAndFallbackReason(query, s"files written before the change: $fields")
+    assert(
+      collectIcebergNativeScans(cometPlan).isEmpty,
+      s"Expected fallback to Spark but found a CometIcebergNativeScanExec. Plan:\n$cometPlan")
   }
 
   /** Counts non-overlapping occurrences of `needle` within `haystack`. */
@@ -1749,6 +1763,264 @@ class CometIcebergNativeSuite
         checkIcebergNativeScan("SELECT id, name FROM test_cat.db.drop_column_test ORDER BY id")
 
         spark.sql("DROP TABLE test_cat.db.drop_column_test")
+      }
+    }
+  }
+
+  // The native read does not match a data file's nested fields to the table's by field id
+  // (apache/iceberg-rust#2617). It fails on a file that lacks a nested field the table has gained,
+  // and can return NULL for a nested field renamed since the file was written, so these reads
+  // must fall back.
+  test("schema evolution - nested field added to a struct falls back") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        val table = "test_cat.db.evo_struct"
+        spark.sql(s"CREATE TABLE $table (id INT, s STRUCT<a: INT>) USING iceberg")
+        spark.sql(s"INSERT INTO $table VALUES (1, named_struct('a', 1)), (2, null)")
+        val snapshotBeforeAdd = spark
+          .sql(s"SELECT snapshot_id FROM $table.snapshots ORDER BY committed_at DESC LIMIT 1")
+          .collect()(0)
+          .getLong(0)
+        spark.sql(s"ALTER TABLE $table ADD COLUMN s.b INT")
+        spark.sql(s"INSERT INTO $table VALUES (3, named_struct('a', 3, 'b', 30))")
+
+        checkNestedFieldEvolutionFallback(s"SELECT id, s FROM $table ORDER BY id", "s.b (added)")
+        // Spark pushes these null checks into the scan.
+        checkNestedFieldEvolutionFallback(
+          s"SELECT id, s FROM $table WHERE s IS NOT NULL ORDER BY id",
+          "s.b (added)")
+        checkNestedFieldEvolutionFallback(
+          s"SELECT id FROM $table WHERE s IS NULL ORDER BY id",
+          "s.b (added)")
+        // The native read asks for the column's full nested type even when Spark prunes it.
+        checkNestedFieldEvolutionFallback(
+          s"SELECT id, s.a FROM $table ORDER BY id",
+          "s.b (added)")
+        checkNestedFieldEvolutionFallback(
+          s"SELECT l.id, r.id FROM $table l JOIN $table r ON l.s = r.s ORDER BY l.id",
+          "s.b (added)")
+        // The old snapshot's files lack s.b too, and the native read uses the current schema.
+        checkNestedFieldEvolutionFallback(
+          s"SELECT id, s FROM $table VERSION AS OF $snapshotBeforeAdd ORDER BY id",
+          "s.b (added)")
+
+        // A read that does not project the evolved column stays native.
+        checkIcebergNativeScan(s"SELECT id FROM $table ORDER BY id")
+
+        spark.sql(s"DROP TABLE $table")
+      }
+    }
+  }
+
+  test("schema evolution - nested field added inside an array or a map falls back") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        val listTable = "test_cat.db.evo_list"
+        spark.sql(s"CREATE TABLE $listTable (id INT, items ARRAY<STRUCT<a: INT>>) USING iceberg")
+        spark.sql(s"INSERT INTO $listTable VALUES (1, array(named_struct('a', 10))), (2, null)")
+        spark.sql(s"ALTER TABLE $listTable ADD COLUMN items.element.b INT")
+        spark.sql(s"INSERT INTO $listTable VALUES (3, array(named_struct('a', 30, 'b', 300)))")
+
+        checkNestedFieldEvolutionFallback(
+          s"SELECT id, items FROM $listTable ORDER BY id",
+          "items.element.b (added)")
+        // Spark infers isnotnull(items) below a non-outer generator and pushes it into the scan.
+        checkNestedFieldEvolutionFallback(
+          s"SELECT id, e.a, e.b FROM $listTable LATERAL VIEW explode(items) x AS e ORDER BY id",
+          "items.element.b (added)")
+        checkNestedFieldEvolutionFallback(
+          s"SELECT id, posexplode(items) FROM $listTable ORDER BY id",
+          "items.element.b (added)")
+        checkNestedFieldEvolutionFallback(
+          s"SELECT id, inline(items) FROM $listTable ORDER BY id",
+          "items.element.b (added)")
+
+        val mapTable = "test_cat.db.evo_map"
+        spark.sql(s"CREATE TABLE $mapTable (id INT, m MAP<STRING, STRUCT<a: INT>>) USING iceberg")
+        spark.sql(s"INSERT INTO $mapTable VALUES (1, map('k', named_struct('a', 1))), (2, null)")
+        spark.sql(s"ALTER TABLE $mapTable ADD COLUMN m.value.b INT")
+        spark.sql(s"INSERT INTO $mapTable VALUES (3, map('k', named_struct('a', 3, 'b', 30)))")
+
+        checkNestedFieldEvolutionFallback(
+          s"SELECT id, m FROM $mapTable ORDER BY id",
+          "m.value.b (added)")
+        checkNestedFieldEvolutionFallback(
+          s"SELECT id, explode(m) FROM $mapTable ORDER BY id",
+          "m.value.b (added)")
+
+        // A field added several levels down, and a struct-typed field, are found too.
+        val deepTable = "test_cat.db.evo_deep"
+        spark.sql(
+          s"CREATE TABLE $deepTable (id INT, s STRUCT<l: ARRAY<STRUCT<a: INT>>>) USING iceberg")
+        spark.sql(
+          s"INSERT INTO $deepTable VALUES (1, named_struct('l', array(named_struct('a', 1))))")
+        spark.sql(s"ALTER TABLE $deepTable ADD COLUMN s.l.element.b INT")
+        spark.sql(s"ALTER TABLE $deepTable ADD COLUMN s.t STRUCT<x: INT>")
+        checkNestedFieldEvolutionFallback(
+          s"SELECT id, s FROM $deepTable ORDER BY id",
+          "s.l.element.b (added), s.t (added)")
+
+        spark.sql(s"DROP TABLE $listTable")
+        spark.sql(s"DROP TABLE $mapTable")
+        spark.sql(s"DROP TABLE $deepTable")
+      }
+    }
+  }
+
+  test("schema evolution - nested field dropped and re-added under the same name falls back") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        // The re-added s.b has a new field id, so the old file's s.b is not it. Drop and re-add it
+        // in one schema change, so every schema in the history has a field named s.b and only
+        // the field id tells them apart.
+        val table = "test_cat.db.evo_readd"
+        spark.sql(s"CREATE TABLE $table (id INT, s STRUCT<a: INT, b: INT>) USING iceberg")
+        spark.sql(s"INSERT INTO $table VALUES (1, named_struct('a', 1, 'b', 2))")
+        loadIcebergTable(spark, "test_cat", "db", "evo_readd")
+          .asInstanceOf[org.apache.iceberg.Table]
+          .updateSchema()
+          .deleteColumn("s.b")
+          .addColumn("s", "b", org.apache.iceberg.types.Types.IntegerType.get())
+          .commit()
+        spark.sql(s"REFRESH TABLE $table")
+        spark.sql(s"INSERT INTO $table VALUES (2, named_struct('a', 3, 'b', 4))")
+
+        checkNestedFieldEvolutionFallback(s"SELECT id, s FROM $table ORDER BY id", "s.b (added)")
+
+        spark.sql(s"DROP TABLE $table")
+      }
+    }
+  }
+
+  test("schema evolution - nested field renamed falls back") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        val table = "test_cat.db.evo_rename"
+        spark.sql(s"""
+          CREATE TABLE $table (
+            id INT,
+            s STRUCT<a: INT, b: STRING>,
+            items ARRAY<STRUCT<a: INT, b: INT>>,
+            moved STRUCT<a: INT, b: INT>
+          ) USING iceberg
+        """)
+        // The nulls make Iceberg write the nested fields as optional, as the table declares them,
+        // which is the layout where the native read returns NULL for a renamed field.
+        spark.sql(s"""
+          INSERT INTO $table VALUES
+            (1, named_struct('a', 1, 'b', 'x'), array(named_struct('a', 1, 'b', 2)),
+             named_struct('a', 1, 'b', 2)),
+            (2, named_struct('a', CAST(NULL AS INT), 'b', CAST(NULL AS STRING)),
+             array(CAST(NULL AS STRUCT<a: INT, b: INT>)),
+             named_struct('a', CAST(NULL AS INT), 'b', CAST(NULL AS INT)))
+        """)
+        spark.sql(s"ALTER TABLE $table RENAME COLUMN s.a TO z")
+        spark.sql(s"ALTER TABLE $table RENAME COLUMN items.element.a TO z")
+        spark.sql(s"ALTER TABLE $table ALTER COLUMN moved.b FIRST")
+        spark.sql(s"ALTER TABLE $table RENAME COLUMN moved.a TO c")
+        spark.sql(s"""
+          INSERT INTO $table VALUES
+            (3, named_struct('z', 3, 'b', 'y'), array(named_struct('z', 3, 'b', 4)),
+             named_struct('b', 4, 'c', 3))
+        """)
+
+        checkNestedFieldEvolutionFallback(
+          s"SELECT id, s FROM $table ORDER BY id",
+          "s.z (renamed from a)")
+        checkNestedFieldEvolutionFallback(
+          s"SELECT id, items FROM $table ORDER BY id",
+          "items.element.z (renamed from a)")
+        checkNestedFieldEvolutionFallback(
+          s"SELECT id, moved FROM $table ORDER BY id",
+          "moved.c (renamed from a)")
+
+        spark.sql(s"DROP TABLE $table")
+      }
+    }
+  }
+
+  test("schema evolution - nested field dropped, moved, or promoted stays native") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        val table = "test_cat.db.evo_no_add"
+        spark.sql(s"""
+          CREATE TABLE $table (
+            id INT,
+            dropped STRUCT<a: INT, b: INT>,
+            moved STRUCT<a: INT, b: INT>,
+            promoted STRUCT<a: INT>
+          ) USING iceberg
+        """)
+        // Spark 4 writes the first file's nested fields as required and the second's as optional.
+        // The native read casts the first layout and passes the second through, so cover both.
+        spark.sql(s"""
+          INSERT INTO $table VALUES
+            (1, named_struct('a', 1, 'b', 2), named_struct('a', 1, 'b', 2), named_struct('a', 1))
+        """)
+        spark.sql(s"""
+          INSERT INTO $table VALUES
+            (2, named_struct('a', 2, 'b', 20), named_struct('a', 2, 'b', 20), named_struct('a', 2)),
+            (3, named_struct('a', CAST(NULL AS INT), 'b', CAST(NULL AS INT)),
+             named_struct('a', CAST(NULL AS INT), 'b', CAST(NULL AS INT)),
+             named_struct('a', CAST(NULL AS INT)))
+        """)
+        spark.sql(s"ALTER TABLE $table DROP COLUMN dropped.b")
+        spark.sql(s"ALTER TABLE $table ALTER COLUMN moved.b FIRST")
+        spark.sql(s"ALTER TABLE $table ALTER COLUMN promoted.a TYPE BIGINT")
+        spark.sql(s"""
+          INSERT INTO $table VALUES
+            (4, named_struct('a', 4), named_struct('b', 40, 'a', 4),
+             named_struct('a', 3000000000L))
+        """)
+
+        checkIcebergNativeScan(s"SELECT * FROM $table ORDER BY id")
+
+        spark.sql(s"DROP TABLE $table")
       }
     }
   }
@@ -4399,6 +4671,88 @@ class CometIcebergNativeSuite
           s"Scans with different pushed filters must not share an exchange:\n$cometPlan")
 
         spark.sql("DROP TABLE reuse_cat.db.reuse_table")
+      }
+    }
+  }
+
+  test("AQE DPP remains executable when transition reversion restores an Iceberg scan") {
+    assume(icebergAvailable, "Iceberg not available")
+    assume(isSpark35Plus, "Comet AQE DPP query-stage optimizer rules require Spark 3.5+")
+
+    withTempIcebergDir { warehouseDir =>
+      val dimDir = new File(warehouseDir, "dim_parquet")
+      withSQLConf(
+        "spark.sql.catalog.revert_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.revert_cat.type" -> "hadoop",
+        "spark.sql.catalog.revert_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "1KB",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+        SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true",
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true",
+        "spark.comet.exec.project.enabled" -> "false",
+        CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS.key -> "0") {
+
+        withSQLConf(
+          CometConf.COMET_EXEC_ENABLED.key -> "false",
+          CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "false") {
+          spark.sql("""
+            CREATE TABLE revert_cat.db.dpp_fact (
+              id BIGINT, data STRING, date DATE
+            ) USING iceberg PARTITIONED BY (date)
+          """)
+          spark.sql("""
+            INSERT INTO revert_cat.db.dpp_fact VALUES
+            (1, 'a', DATE '1970-01-01'), (2, 'b', DATE '1970-01-02'),
+            (3, 'c', DATE '1970-01-02'), (4, 'd', DATE '1970-01-03')
+          """)
+
+          spark
+            .createDataFrame(Seq((1L, java.sql.Date.valueOf("1970-01-02"))))
+            .toDF("id", "date")
+            .write
+            .parquet(dimDir.getAbsolutePath)
+        }
+        spark.read.parquet(dimDir.getAbsolutePath).createOrReplaceTempView("revert_dpp_dim")
+
+        val query =
+          """SELECT /*+ BROADCAST(d) */ f.* FROM revert_cat.db.dpp_fact f
+            |JOIN revert_dpp_dim d ON f.date = d.date AND d.id = 1""".stripMargin
+        val (_, cometPlan) = checkSparkAnswer(query)
+
+        assert(
+          collectIcebergNativeScans(cometPlan).isEmpty,
+          s"Transition reversion should restore the Spark Iceberg scan:\n$cometPlan")
+        val scans = collect(cometPlan) {
+          case scan: BatchScanExec
+              if IcebergReflection.isIcebergScanClass(scan.scan.getClass.getName) =>
+            scan
+        }
+        assert(scans.nonEmpty, s"Expected a reverted Iceberg BatchScanExec:\n$cometPlan")
+
+        def unwrapReuse(plan: SparkPlan): SparkPlan = plan match {
+          case ReusedSubqueryExec(child) => unwrapReuse(child)
+          case other => other
+        }
+        val dppSubqueries = scans
+          .flatMap(_.runtimeFilters)
+          .collect { case DynamicPruningExpression(e: InSubqueryExec) => unwrapReuse(e.plan) }
+        assert(
+          dppSubqueries.nonEmpty,
+          s"Expected DPP runtime filters on reverted scan:\n$cometPlan")
+        assert(
+          dppSubqueries.exists {
+            case _: CometSubqueryBroadcastExec | _: SubqueryBroadcastExec => true
+            case _ => false
+          },
+          s"Reverted scan should retain an executable DPP subquery:\n$cometPlan")
+        assert(
+          !dppSubqueries.exists(_.isInstanceOf[SubqueryAdaptiveBroadcastExec]),
+          s"Reverted scan must not restore an AQE DPP placeholder:\n$cometPlan")
+
+        spark.sql("DROP TABLE revert_cat.db.dpp_fact")
       }
     }
   }

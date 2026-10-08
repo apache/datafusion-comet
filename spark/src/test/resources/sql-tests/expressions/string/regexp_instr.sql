@@ -16,6 +16,7 @@
 -- under the License.
 
 -- Test regexp_instr via JVM regex engine
+-- Raw literals keep Spark from dropping regex backslashes such as '\d'.
 
 statement
 CREATE TABLE test_regexp_instr(s string) USING parquet
@@ -24,25 +25,25 @@ statement
 INSERT INTO test_regexp_instr VALUES ('abc123def'), ('no match'), (NULL), ('123xyz'), ('hello world'), ('aa')
 
 -- basic: position of first digit sequence
-query
-SELECT regexp_instr(s, '\d+', 0) FROM test_regexp_instr
+query expect_dispatch(regexp_instr)
+SELECT regexp_instr(s, r'\d+', 0) FROM test_regexp_instr
 
 -- group 1 (still returns position of entire match per Spark semantics)
-query
-SELECT regexp_instr(s, '([a-z]+)(\d+)', 1) FROM test_regexp_instr
+query expect_dispatch(regexp_instr)
+SELECT regexp_instr(s, r'([a-z]+)(\d+)', 1) FROM test_regexp_instr
 
 -- no match returns 0
-query
+query expect_dispatch(regexp_instr)
 SELECT regexp_instr(s, 'NOMATCH', 0) FROM test_regexp_instr
 
 -- backreference pattern (Java-only)
-query
-SELECT regexp_instr(s, '(\w)\1', 0) FROM test_regexp_instr
+query expect_dispatch(regexp_instr)
+SELECT regexp_instr(s, r'(\w)\1', 0) FROM test_regexp_instr
 
 -- embedded flags (Java-only)
-query
+query expect_dispatch(regexp_instr)
 SELECT regexp_instr(s, '(?i)HELLO', 0) FROM test_regexp_instr
 
 -- literal arguments
-query
-SELECT regexp_instr('abc123', '\d+', 0), regexp_instr('no digits', '\d+', 0), regexp_instr(NULL, '\d+', 0)
+query expect_dispatch(regexp_instr)
+SELECT regexp_instr('abc123', r'\d+', 0), regexp_instr('no digits', r'\d+', 0), regexp_instr(NULL, r'\d+', 0)
