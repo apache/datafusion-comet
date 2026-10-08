@@ -158,7 +158,12 @@ impl ExpressionBuilder for TruncTimestampBuilder {
         let format = planner.create_expr(expr.format.as_ref().unwrap(), input_schema)?;
         let timezone = expr.timezone.clone();
 
-        Ok(Arc::new(TimestampTruncExpr::new(child, format, timezone)))
+        Ok(Arc::new(TimestampTruncExpr::new(
+            child,
+            format,
+            timezone,
+            expr.wrap_second_millisecond_overflow,
+        )))
     }
 }
 
