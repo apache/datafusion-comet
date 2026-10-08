@@ -101,7 +101,7 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         val iterator = new CometExecIterator(
           CometExec.newIterId,
           inputs,
-          0,
+          numOutputCols = 1,
           plan,
           CometMetricNode(Map.empty),
           1,
