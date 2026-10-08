@@ -21,29 +21,17 @@
 
 ## Does Comet plan to add an API for vectorized Java/Scala UDFs similar to the Rust UDF API?
 
-Not at the moment. Comet already runs ordinary Scala and Java UDFs in its pipeline with no code
-changes, as described in [Scala UDF and Java UDF Support](../user-guide/latest/scala_java_udfs.md).
-Its code generator compiles each call into a loop over a whole batch of rows, and the JVM inlines a
-simple function into that loop.
+Not at the moment. Comet already runs ordinary Scala and Java UDFs in its pipeline without code
+changes, compiling each call into a loop over a whole batch that the JVM optimizes well. See
+[Scala UDF and Java UDF Support](../user-guide/latest/scala_java_udfs.md).
 
-We built a prototype of a vectorized API, in which a UDF receives each argument as an Arrow vector
-and returns an Arrow vector for the whole batch
-([#6697](https://github.com/apache/datafusion-comet/pull/6697)). Once some overheads in the code
-generator were removed, rewriting a simple function of primitive values, such as `x + 1`, in
-vectorized form saved about 3 nanoseconds per row. That was about a fifth of the time of a query
-that did little besides scan one column. The gain did not justify what the API would ask of users:
+A prototype ([#6697](https://github.com/apache/datafusion-comet/pull/6697)) found that, once the code
+generator's overheads were reduced, a vectorized rewrite of a simple function such as `x + 1` saved
+only about 3 ns per row. That does not justify asking users to rewrite their functions against
+Comet's relocated Arrow classes and rebuild them for every Comet release, so the effort is going into
+the code generator instead.
 
-- writing each function a second time, against Comet's interfaces rather than Spark's
-- compiling it against the copy of Arrow Java that Comet relocates into its own jar, and rebuilding
-  it for every Comet release
-- handling nulls and Arrow buffer layouts by hand, with Arrow Java's bounds checks turned off
-
-Improving the code generator speeds up existing UDFs without any rewrite, so that is where the work
-is going instead.
-
-A vectorized function could still pay off for work that a function of one row cannot express, such
-as processing the UTF-8 bytes of a string column instead of one `String` per row, setup done once
-per batch, or one call per batch into a library that works on batches. If you have a use case like
-that, please describe it in [#6694](https://github.com/apache/datafusion-comet/issues/6694). A
-function that needs native speed can be written in Rust with the experimental
-[Rust UDF API](../user-guide/latest/rust_udfs.md).
+If you have a use case that a function of one row handles poorly, such as working on the UTF-8 bytes
+of strings or calling a library that processes whole batches, please describe it in
+[#6694](https://github.com/apache/datafusion-comet/issues/6694). For native speed, see the
+experimental [Rust UDF API](../user-guide/latest/rust_udfs.md).
