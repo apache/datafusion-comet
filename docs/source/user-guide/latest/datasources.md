@@ -117,8 +117,11 @@ schemes such as `s3a://`, `gs://` and `hdfs://`. It falls back to Spark when it 
 through an S3-compliant alias and through another scheme (for example `blob://bucket` and
 `s3a://bucket`), because the alias settings would then apply to both. It also falls back when an
 alias path names no bucket (`blob:///`) next to other S3 paths, because that path's alias settings
-would apply to every bucket. A native Parquet scan of a bucketed table also falls back when its
-files span more than one store, because each table bucket is read as one partition.
+would apply to every bucket. An alias scheme that is also listed in `fs.comet.libhdfs.schemes` is
+read through libhdfs, so Comet translates none of its settings and such a path does not cause
+either fallback. A native Parquet scan of a
+bucketed table also falls back when its files span more than one store, because each table bucket
+is read as one partition.
 
 ### HDFS
 

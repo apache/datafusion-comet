@@ -261,12 +261,14 @@ object NativeConfig {
    * The object store options for a scan of `uris`: `extractObjectStoreOptions` of one URI per
    * scheme, and of one per bucket for an opted-in alias. Each scheme forwards keys under its own
    * prefixes. An alias bucket keeps only the settings translated for that bucket, applied after
-   * every scheme's own keys so that they win over a raw `fs.s3a.bucket.<bucket>.*` key.
+   * every scheme's own keys so that they win over a raw `fs.s3a.bucket.<bucket>.*` key. An alias
+   * read through libhdfs translates nothing, since only a native S3 store reads those keys.
    */
   def extractObjectStoreOptions(
       hadoopConf: Configuration,
       uris: Iterable[URI]): Map[String, String] = {
     val s3CompliantSchemes = resolveS3CompliantSchemes(hadoopConf)
+    val libhdfsSchemes = resolveLibhdfsSchemes(hadoopConf)
     val representatives = scala.collection.mutable.LinkedHashMap[(String, Option[String]), URI]()
     uris.foreach { uri =>
       val scheme = lowerScheme(uri).getOrElse("file")
@@ -279,7 +281,9 @@ object NativeConfig {
       val scope = bucketForUri(uri, s3CompliantSchemes)
         .map(bucket => s"fs.s3a.bucket.$bucket")
         .getOrElse("fs.s3a")
-      val ownKeys = vendorPropertyToS3aSuffix.values.map(suffix => s"$scope.$suffix").toSet
+      val ownKeys =
+        if (objectStoreKey(uri, s3CompliantSchemes, libhdfsSchemes).isLibhdfs) Set.empty[String]
+        else vendorPropertyToS3aSuffix.values.map(suffix => s"$scope.$suffix").toSet
       (options, aliasOptions.filter { case (key, _) => ownKeys.contains(key) })
     }
     parts.map(_._1).foldLeft(Map.empty[String, String])(_ ++ _) ++

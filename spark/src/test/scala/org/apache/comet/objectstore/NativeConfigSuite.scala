@@ -414,6 +414,42 @@ class NativeConfigSuite extends AnyFunSuite with Matchers {
     }
   }
 
+  test("extractObjectStoreOptions over a scan's files translates no alias read through libhdfs") {
+    val hadoopConf = new Configuration()
+    hadoopConf.set(COMET_S3_COMPLIANT_SCHEMES_KEY, "blob")
+    hadoopConf.set(COMET_LIBHDFS_SCHEMES_KEY, "hdfs,blob")
+    hadoopConf.set("fs.s3a.endpoint", "http://s3.example.internal:19001")
+    hadoopConf.set("fs.blob.default.endpoint", "http://blob.example.internal:19002")
+    val s3a = new URI("s3a://bucket/t/1.parquet")
+    val blob = new URI("blob://bucket/t/2.parquet")
+
+    // The libhdfs store reads no `fs.s3a.*` keys, so the alias settings must not reach the
+    // native S3 store of the same bucket.
+    Seq(Seq(s3a, blob), Seq(blob, s3a)).foreach { uris =>
+      val opts = NativeConfig.extractObjectStoreOptions(hadoopConf, uris)
+      assert(opts("fs.s3a.endpoint") == "http://s3.example.internal:19001", s"files $uris")
+      assert(!opts.contains("fs.s3a.bucket.bucket.endpoint"), s"files $uris")
+      assert(!opts.contains("fs.s3a.bucket.bucket.path.style.access"), s"files $uris")
+      assert(opts == NativeConfig.extractObjectStoreOptions(hadoopConf, Seq(s3a)))
+    }
+
+    // An alias read only through libhdfs gets no translated settings either.
+    val blobOnly = NativeConfig.extractObjectStoreOptions(hadoopConf, Seq(blob))
+    assert(!blobOnly.keys.exists(_.startsWith("fs.s3a.bucket.")))
+    assert(blobOnly(COMET_LIBHDFS_SCHEMES_KEY) == "hdfs,blob")
+
+    // An alias the native S3 store reads keeps its translation next to an s3a file.
+    hadoopConf.set(COMET_LIBHDFS_SCHEMES_KEY, "hdfs")
+    val nativeBlob = new URI("blob://bucket-b/t/3.parquet")
+    Seq(Seq(s3a, nativeBlob), Seq(nativeBlob, s3a)).foreach { uris =>
+      val opts = NativeConfig.extractObjectStoreOptions(hadoopConf, uris)
+      assert(opts("fs.s3a.endpoint") == "http://s3.example.internal:19001", s"files $uris")
+      assert(opts("fs.s3a.bucket.bucket-b.endpoint") == "http://blob.example.internal:19002")
+      assert(opts("fs.s3a.bucket.bucket-b.path.style.access") == "true")
+      assert(!opts.contains("fs.s3a.bucket.bucket.endpoint"), s"files $uris")
+    }
+  }
+
   test("bucketForUri - authority, alias path promotion, and non-S3 schemes") {
     // `blob:///mybucket/...` reports authority "default"; the real bucket is the first path
     // segment (matching the native rewrite), but path promotion applies ONLY to S3-family
