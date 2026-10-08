@@ -119,38 +119,6 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
     assert(registration.getReturnType == java.lang.Void.TYPE)
   }
 
-  test("shuffle block iterator reads large blocks in big pieces without asking for available") {
-    val bodyBytes = 1024 * 1024
-    val frame = ByteBuffer
-      .allocate(16 + bodyBytes)
-      .order(ByteOrder.LITTLE_ENDIAN)
-      .putLong(8L + bodyBytes)
-      .putLong(0L)
-      .array()
-    var availableCalls = 0
-    var largestRead = 0
-    val input = new ByteArrayInputStream(frame) {
-      override def available(): Int = {
-        availableCalls += 1
-        super.available()
-      }
-
-      override def read(bytes: Array[Byte], offset: Int, length: Int): Int = {
-        largestRead = math.max(largestRead, length)
-        super.read(bytes, offset, length)
-      }
-    }
-    val blocks = new CometShuffleBlockIterator(input)
-    try {
-      assert(blocks.hasNext() == bodyBytes)
-      assert(blocks.hasNext() == -1)
-    } finally {
-      blocks.close()
-    }
-    assert(availableCalls == 0, "The iterator asked the stream for available bytes")
-    assert(largestRead > 8 * 1024, s"The largest read was $largestRead bytes")
-  }
-
   test("native RSS shuffle invokes its task-owned JVM callback with a complete frame") {
     val planBytes = rssShufflePlanBytes
 

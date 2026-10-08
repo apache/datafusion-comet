@@ -1631,8 +1631,8 @@ class CometCelebornShuffleReaderSuite extends CometTestBase {
     NativeBatchDecoderIteratorLifecycleChecks.closesPrefetchedBatch()
   }
 
-  test("decoder reads large blocks in big pieces without asking for available bytes") {
-    NativeBatchDecoderIteratorLifecycleChecks.readsLargeBlocksInBigPiecesWithoutAvailable()
+  test("shuffle readers read in pieces of the read buffer size without asking for available") {
+    NativeBatchDecoderIteratorLifecycleChecks.readersReadInPiecesOfTheReadBufferSize()
   }
 
   test("decoder cleanup releases its delivered batch exactly once") {

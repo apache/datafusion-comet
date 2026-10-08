@@ -91,6 +91,7 @@ class CometBlockStoreShuffleReader[K, C](
     val nativeLib = new Native()
     val nativeUtil = new NativeUtil()
     val tracingEnabled = CometConf.COMET_TRACING_ENABLED.get()
+    val readBufferSize = CometConf.COMET_SHUFFLE_READ_BUFFER_SIZE.get().toInt
 
     // Closes last read iterator and shared resources after the task is finished.
     // We need to close read iterator during iterating input streams,
@@ -113,7 +114,8 @@ class CometBlockStoreShuffleReader[K, C](
           dep.decodeTime,
           nativeLib,
           nativeUtil,
-          tracingEnabled)
+          tracingEnabled,
+          readBufferSize = readBufferSize)
         currentReadIterator
       })
       .map(b => (0, b))

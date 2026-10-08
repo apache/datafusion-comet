@@ -27,7 +27,7 @@ import org.apache.spark.sql.execution.metric.{SQLMetric, SQLShuffleReadMetricsRe
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
-import org.apache.comet.CometShuffleBlockIterator
+import org.apache.comet.{CometConf, CometShuffleBlockIterator}
 
 /**
  * Different from [[org.apache.spark.sql.execution.ShuffledRowRDD]], this RDD is specialized for
@@ -176,7 +176,8 @@ class CometShuffledBatchRDD(
     }
     new CometShuffleBlockIterator(
       readerAndMetrics._1.readAsRawStream(),
-      readerAndMetrics._2.incRecordsRead)
+      readerAndMetrics._2.incRecordsRead,
+      CometConf.COMET_SHUFFLE_READ_BUFFER_SIZE.get().toInt)
   }
 
   override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
