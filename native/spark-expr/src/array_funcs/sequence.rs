@@ -312,24 +312,30 @@ where
     let step = args.get(2).map(Input::<T>::new).transpose()?;
     let has_nulls =
         start.has_nulls() || stop.has_nulls() || step.as_ref().is_some_and(Input::has_nulls);
-    let row_value = |row| -> Result<Row> {
+    let row_bounds = |row| {
         if has_nulls
             && (start.is_null(row)
                 || stop.is_null(row)
                 || step.as_ref().is_some_and(|s| s.is_null(row)))
         {
-            return Ok(Row::default());
+            return None;
         }
         let start = start.value(row);
         let stop = stop.value(row);
         let step = step
             .as_ref()
             .map_or_else(|| if start <= stop { 1 } else { -1 }, |s| s.value(row));
-        Ok(Row {
-            start,
-            step,
-            len: sequence_length(start, stop, step)?,
-        })
+        Some((start, stop, step))
+    };
+    let row_value = |row| -> Result<Row> {
+        match row_bounds(row) {
+            Some((start, stop, step)) => Ok(Row {
+                start,
+                step,
+                len: sequence_length(start, stop, step)?,
+            }),
+            None => Ok(Row::default()),
+        }
     };
     let scalar = args
         .iter()
@@ -418,7 +424,16 @@ where
         }
         let value = match repeated {
             Some(value) => value,
-            None => row_value(row)?,
+            // The complete sizing pass already validated these immutable inputs. Avoid
+            // repeating boundary/overflow checks and constructing a Result for each row.
+            None => match row_bounds(row) {
+                Some((start, stop, step)) => Row {
+                    start,
+                    step,
+                    len: validated_sequence_length(start, stop, step),
+                },
+                None => Row::default(),
+            },
         };
         if value.len != 0 {
             if let Some(slots) = &mut validity_slots {
@@ -429,15 +444,26 @@ where
             let mut generated = 0;
             while generated < value.len {
                 let count = (value.len - generated).min(until_check);
-                let first = value
-                    .start
-                    .wrapping_add(value.step.wrapping_mul(generated as i64));
-                // Fixed bounds and independent arithmetic let LLVM vectorise the stores; there
-                // are no push/capacity branches, null checks, or JNI calls inside this loop.
-                for (i, slot) in value_slots[written..written + count].iter_mut().enumerate() {
-                    slot.write(T::from_i64(
-                        first.wrapping_add(value.step.wrapping_mul(i as i64)),
-                    ));
+                // For repeated scalar rows, reuse the first generated row once its byte length
+                // reaches Arrow's alignment. Tiny rows keep arithmetic to avoid a short memcpy.
+                // Both paths write only the admitted allocation and use the same checkpoints.
+                if repeated.is_some()
+                    && row != 0
+                    && value.len * std::mem::size_of::<T::Native>() >= arrow::alloc::ALIGNMENT
+                {
+                    let (prefix, output) = value_slots.split_at_mut(written);
+                    output[..count].copy_from_slice(&prefix[generated..generated + count]);
+                } else {
+                    let first = value
+                        .start
+                        .wrapping_add(value.step.wrapping_mul(generated as i64));
+                    // Fixed bounds and independent arithmetic let LLVM vectorise the stores;
+                    // no push/capacity branches, null checks, or JNI calls occur in this loop.
+                    for (i, slot) in value_slots[written..written + count].iter_mut().enumerate() {
+                        slot.write(T::from_i64(
+                            first.wrapping_add(value.step.wrapping_mul(i as i64)),
+                        ));
+                    }
                 }
                 written += count;
                 generated += count;
@@ -470,23 +496,22 @@ where
 
 /// Match released Spark 3.4--4.1 Sequence.sequenceLength, including its wide-arithmetic
 /// fallback error when subtraction overflows even though the resulting length would fit.
+#[inline]
 fn sequence_length(start: i64, stop: i64, step: i64) -> Result<usize> {
     if !((step > 0 && start <= stop) || (step < 0 && start >= stop) || (step == 0 && start == stop))
     {
-        return Err(DataFusionError::External(Box::new(
-            SparkError::SequenceIllegalBoundaries {
-                start: start.to_string(),
-                stop: stop.to_string(),
-                step: step.to_string(),
-            },
-        )));
+        return Err(boundary_error(start, stop, step));
     }
     if stop == start {
         return Ok(1);
     }
     if let Some(len) = stop
         .checked_sub(start)
-        .and_then(|delta| delta.checked_div(step))
+        .and_then(|delta| match step {
+            1 => Some(delta),
+            -1 => delta.checked_neg(),
+            _ => delta.checked_div(step),
+        })
         .and_then(|quotient| quotient.checked_add(1))
     {
         if len <= MAX_ROUNDED_ARRAY_LENGTH {
@@ -494,6 +519,37 @@ fn sequence_length(start: i64, stop: i64, step: i64) -> Result<usize> {
         }
         return Err(length_error(len as i128));
     }
+    sequence_length_overflow(start, stop, step)
+}
+
+/// Only valid after sequence_length succeeded for the same immutable inputs. Success proves
+/// subtraction fits i64, excludes MIN / -1, and bounds the quotient and final length. A zero
+/// step is valid only for equal bounds, handled before division.
+#[inline]
+fn validated_sequence_length(start: i64, stop: i64, step: i64) -> usize {
+    if start == stop {
+        return 1;
+    }
+    let delta = stop.wrapping_sub(start);
+    let quotient = match step {
+        1 => delta,
+        -1 => delta.wrapping_neg(),
+        _ => delta / step,
+    };
+    quotient as usize + 1
+}
+
+#[cold]
+fn boundary_error(start: i64, stop: i64, step: i64) -> DataFusionError {
+    DataFusionError::External(Box::new(SparkError::SequenceIllegalBoundaries {
+        start: start.to_string(),
+        stop: stop.to_string(),
+        step: step.to_string(),
+    }))
+}
+
+#[cold]
+fn sequence_length_overflow(start: i64, stop: i64, step: i64) -> Result<usize> {
     // Only the rare overflow/error path needs wide division. There is no separate add-overflow
     // branch: its exact length necessarily exceeds Spark's maximum and is rejected here.
     let len = 1 + (stop as i128 - start as i128) / step as i128;
@@ -505,6 +561,7 @@ fn sequence_length(start: i64, stop: i64, step: i64) -> Result<usize> {
     ))))
 }
 
+#[cold]
 fn length_error(len: i128) -> DataFusionError {
     DataFusionError::External(Box::new(SparkError::CollectionSizeLimitExceeded {
         num_elements: len.to_string(),
@@ -858,6 +915,9 @@ mod tests {
             for stop in values {
                 for step in values {
                     let result = sequence_length(start, stop, step);
+                    if let Ok(len) = &result {
+                        assert_eq!(validated_sequence_length(start, stop, step), *len);
+                    }
                     let legal = (step > 0 && start <= stop)
                         || (step < 0 && start >= stop)
                         || (step == 0 && start == stop);
@@ -899,7 +959,14 @@ mod tests {
     #[test]
     fn cancellation_and_unwind_return_partial_allocations() {
         use std::sync::atomic::{AtomicUsize, Ordering};
-        for panic in [false, true] {
+        // The first shape interrupts arithmetic within its first row. The second interrupts
+        // the copy of its second row, after exactly CHECK_VALUES generated values.
+        for (stop, rows, panic) in [
+            (CHECK_VALUES * 3, 1, false),
+            (CHECK_VALUES * 3, 1, true),
+            (CHECK_VALUES / 2 - 1, 3, false),
+            (CHECK_VALUES / 2 - 1, 3, true),
+        ] {
             let pool = SequenceMemoryPool::new(8 * CHECK_VALUES * 4);
             let count = Arc::new(AtomicUsize::new(0));
             let counter = Arc::clone(&count);
@@ -914,9 +981,10 @@ mod tests {
                 }
                 Ok(())
             }));
-            let args = scalar_args(Some(0), Some((CHECK_VALUES * 3) as i64), Some(1));
-            let result =
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| udf.evaluate(&args, 1)));
+            let args = scalar_args(Some(0), Some(stop as i64), Some(1));
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                udf.evaluate(&args, rows)
+            }));
             if panic {
                 assert!(result.is_err());
             } else {
@@ -928,7 +996,7 @@ mod tests {
             }
             assert_eq!(count.load(Ordering::SeqCst), 4);
             assert_eq!(pool.reserved(), 0);
-            assert!(evaluate(&pool, &args, 1).is_ok());
+            assert!(evaluate(&pool, &args, rows).is_ok());
         }
     }
 
@@ -987,5 +1055,39 @@ mod tests {
         });
         assert_eq!(admitted, 2);
         assert_eq!(pool.reserved(), 0);
+    }
+
+    #[test]
+    fn repeated_scalar_rows_copy_across_cancellation_chunks() {
+        macro_rules! verify {
+            ($ty:ty, $variant:ident) => {{
+                let pool = SequenceMemoryPool::new(1024 * 1024);
+                let udf = SparkSequence::new(list_of(<$ty>::DATA_TYPE), Arc::clone(&pool));
+                let args = [0, 99, 1]
+                    .into_iter()
+                    .map(|value| ColumnarValue::Scalar(ScalarValue::$variant(Some(value))))
+                    .collect::<Vec<_>>();
+                // 100,000 values cross a checkpoint within a copied row, in every width.
+                let ColumnarValue::Array(array) = udf.evaluate(&args, 1000).unwrap() else {
+                    panic!("expected array")
+                };
+                let list = as_primitive_list(&array);
+                for row in 0..1000 {
+                    let values = list.value(row);
+                    let values = as_primitive_array::<$ty>(&values).unwrap();
+                    assert_eq!(values.len(), 100);
+                    for (i, value) in values.values().iter().enumerate() {
+                        assert_eq!(*value as usize, i);
+                    }
+                }
+                drop(list);
+                drop(array);
+                assert_eq!(pool.reserved(), 0);
+            }};
+        }
+        verify!(Int8Type, Int8);
+        verify!(Int16Type, Int16);
+        verify!(Int32Type, Int32);
+        verify!(Int64Type, Int64);
     }
 }
