@@ -397,11 +397,7 @@ case class CometScanRule(session: SparkSession)
     // As in transformV1Scan: these expressions read InputFileBlockHolder, which the source's own
     // reader sets per file. Comet's native V2 scans (Iceberg, CSV) do not, so they would return
     // empty/default values (https://github.com/apache/datafusion-comet/issues/6707).
-    if (plan.exists(node =>
-        node.expressions.exists(_.exists {
-          case _: InputFileName | _: InputFileBlockStart | _: InputFileBlockLength => true
-          case _ => false
-        }))) {
+    if (CometScanRule.readsInputFileBlock(plan)) {
       return withFallbackReason(
         scanExec,
         "Native V2 scan is not compatible with input_file_name, " +
