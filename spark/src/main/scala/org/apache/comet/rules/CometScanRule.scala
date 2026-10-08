@@ -28,6 +28,7 @@ import java.util.concurrent.ConcurrentHashMap
 import scala.collection.mutable
 import scala.collection.mutable.ListBuffer
 import scala.jdk.CollectionConverters._
+import scala.util.control.NonFatal
 
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark.internal.Logging
@@ -36,9 +37,10 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, DynamicPruningExpre
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.{sideBySide, ArrayBasedMapData, DateTimeUtils, GenericArrayData, MetadataColumnHelper}
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
-import org.apache.spark.sql.comet.{CometBatchScanExec, CometScanExec}
+import org.apache.spark.sql.comet.{CometBatchScanExec, CometScanExec, CometScanUtils}
 import org.apache.spark.sql.execution.{FileSourceScanExec, InSubqueryExec, SparkPlan, SubqueryAdaptiveBroadcastExec}
 import org.apache.spark.sql.execution.datasources.HadoopFsRelation
+import org.apache.spark.sql.execution.datasources.parquet.{ParquetOptions, ParquetUtils}
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.datasources.v2.csv.CSVScan
 import org.apache.spark.sql.internal.SQLConf
@@ -372,7 +374,39 @@ case class CometScanRule(session: SparkSession)
       withFallbackReason(scanExec, "Native Parquet scan does not support row index generation")
       return None
     }
-    Some(CometScanExec(scanExec, session))
+    val cometScan = CometScanExec(scanExec, session)
+    if (COMET_SCAN_PARQUET_CHECK_DATETIME_REBASE.get() &&
+      CometScanUtils.readsRebasableDatetimes(scanExec.requiredSchema)) {
+      val options = new ParquetOptions(r.options, conf)
+      val files = cometScan.selectedPartitions.iterator
+        .flatMap(_.files.iterator.map(f =>
+          CometScanUtils.ParquetFileInfo(f.getPath, f.getLen, f.getModificationTime)))
+        .toSeq
+      // The check finds statistics by column name, so a read by field ID cannot use them.
+      val readsByFieldId = conf.getConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED) &&
+        ParquetUtils.hasFieldIds(scanExec.requiredSchema)
+      try {
+        val reason = CometScanUtils.datetimeRebaseFallbackReason(
+          files,
+          hadoopConf,
+          options.datetimeRebaseModeInRead,
+          options.int96RebaseModeInRead,
+          scanExec.requiredSchema,
+          useStatistics = !readsByFieldId)
+        if (reason.isDefined) {
+          withFallbackReason(scanExec, reason.get)
+          return None
+        }
+      } catch {
+        case NonFatal(e) =>
+          logWarning("Unable to inspect Parquet datetime rebase metadata", e)
+          withFallbackReason(
+            scanExec,
+            "Native Parquet scan could not verify datetime rebase metadata")
+          return None
+      }
+    }
+    Some(cometScan)
   }
 
   private def transformV2Scan(scanExec: BatchScanExec): SparkPlan = {

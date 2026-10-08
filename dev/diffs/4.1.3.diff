@@ -1889,29 +1889,6 @@ index ede5d285932..c9a8abb5a94 100644
    import testImplicits._
  
    before {
-diff --git a/sql/core/src/test/scala/org/apache/spark/sql/errors/QueryExecutionErrorsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/errors/QueryExecutionErrorsSuite.scala
-index fcecaf25d4c..e5a511022cc 100644
---- a/sql/core/src/test/scala/org/apache/spark/sql/errors/QueryExecutionErrorsSuite.scala
-+++ b/sql/core/src/test/scala/org/apache/spark/sql/errors/QueryExecutionErrorsSuite.scala
-@@ -31,7 +31,7 @@ import org.mockito.Mockito.{mock, spy, when}
- import org.scalatest.time.SpanSugar._
- 
- import org.apache.spark._
--import org.apache.spark.sql.{AnalysisException, DataFrame, Dataset, Encoder, KryoData, QueryTest, Row, SaveMode}
-+import org.apache.spark.sql.{AnalysisException, DataFrame, Dataset, Encoder, IgnoreComet, KryoData, QueryTest, Row, SaveMode}
- import org.apache.spark.sql.catalyst.FunctionIdentifier
- import org.apache.spark.sql.catalyst.analysis.{NamedParameter, UnresolvedGenerator}
- import org.apache.spark.sql.catalyst.encoders.{ExpressionEncoder, RowEncoder}
-@@ -267,7 +267,8 @@ class QueryExecutionErrorsSuite
-   }
- 
-   test("INCONSISTENT_BEHAVIOR_CROSS_VERSION: " +
--    "compatibility with Spark 2.4/3.2 in reading/writing dates") {
-+    "compatibility with Spark 2.4/3.2 in reading/writing dates",
-+    IgnoreComet("Comet doesn't completely support datetime rebase mode yet")) {
- 
-     // Fail to read ancient datetime values.
-     withSQLConf(SQLConf.PARQUET_REBASE_MODE_IN_READ.key -> EXCEPTION.toString) {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/CoalesceShufflePartitionsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/CoalesceShufflePartitionsSuite.scala
 index 28762f01d7a..6cdc3953bf3 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/CoalesceShufflePartitionsSuite.scala
@@ -3396,31 +3373,6 @@ index 97aad5b30ea..77de969b80b 100644
          checkAnswer(readParquet("a DECIMAL(3, 2)", path), sql("SELECT 1.00"))
          checkAnswer(readParquet("a DECIMAL(11, 2)", path), sql("SELECT 1.00"))
          checkAnswer(readParquet("b DECIMAL(3, 2)", path), Row(null))
-diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRebaseDatetimeSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRebaseDatetimeSuite.scala
-index 30503af0fab..1491f4bc2d5 100644
---- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRebaseDatetimeSuite.scala
-+++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRebaseDatetimeSuite.scala
-@@ -21,7 +21,7 @@ import java.nio.file.{Files, Paths, StandardCopyOption}
- import java.sql.{Date, Timestamp}
- 
- import org.apache.spark.{SPARK_VERSION_SHORT, SparkConf, SparkException, SparkUpgradeException}
--import org.apache.spark.sql.{QueryTest, Row, SPARK_LEGACY_DATETIME_METADATA_KEY, SPARK_LEGACY_INT96_METADATA_KEY, SPARK_TIMEZONE_METADATA_KEY}
-+import org.apache.spark.sql.{IgnoreCometSuite, QueryTest, Row, SPARK_LEGACY_DATETIME_METADATA_KEY, SPARK_LEGACY_INT96_METADATA_KEY, SPARK_TIMEZONE_METADATA_KEY}
- import org.apache.spark.sql.catalyst.util.DateTimeTestUtils
- import org.apache.spark.sql.internal.{LegacyBehaviorPolicy, SQLConf}
- import org.apache.spark.sql.internal.LegacyBehaviorPolicy.{CORRECTED, EXCEPTION, LEGACY}
-@@ -30,9 +30,11 @@ import org.apache.spark.sql.internal.SQLConf.ParquetOutputTimestampType.{INT96,
- import org.apache.spark.sql.test.SharedSparkSession
- import org.apache.spark.tags.SlowSQLTest
- 
-+// Comet is disabled for this suite because it doesn't support datetime rebase mode
- abstract class ParquetRebaseDatetimeSuite
-   extends QueryTest
-   with ParquetTest
-+  with IgnoreCometSuite
-   with SharedSparkSession {
- 
-   import testImplicits._
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRowIndexSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRowIndexSuite.scala
 index 08fd8a9ecb5..e0b8cada307 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRowIndexSuite.scala
