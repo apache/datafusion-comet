@@ -1223,9 +1223,7 @@ object CometConf extends ShimCometConf {
         "When enabled, fall back to Spark for floating-point operations that may differ from " +
           "Spark, such as comparing -0.0 and 0.0. `ORDER BY`, window ordering and range " +
           "partitioning keys are unaffected, including floating-point values nested in arrays " +
-          "and structs, because Comet normalizes those comparison keys to match Spark. The " +
-          "exception is a nested key whose type can hold a null element or field, which falls " +
-          "back until the native sort and window frames order those nulls as Spark does. " +
+          "and structs, because Comet normalizes those comparison keys to match Spark. " +
           "`sort_array` is unaffected too, because it follows Spark's ordering. " +
           s"$COMPAT_GUIDE.")
       .booleanConf
